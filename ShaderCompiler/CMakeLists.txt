@@ -28,9 +28,18 @@ if(WIN32)
 endif()
 
 if(RVX_ENABLE_VULKAN)
-    target_link_libraries(RVX_ShaderCompiler PRIVATE
-        unofficial::spirv-reflect::spirv-reflect
-    )
+    # vcpkg's spirv-reflect port exports `unofficial::spirv-reflect` (not
+    # `unofficial::spirv-reflect::spirv-reflect`). Keep a small compatibility
+    # shim in case target names differ across environments.
+    if(TARGET unofficial::spirv-reflect)
+        target_link_libraries(RVX_ShaderCompiler PRIVATE unofficial::spirv-reflect)
+    elseif(TARGET unofficial::spirv-reflect::spirv-reflect)
+        target_link_libraries(RVX_ShaderCompiler PRIVATE unofficial::spirv-reflect::spirv-reflect)
+    elseif(TARGET spirv-reflect::spirv-reflect)
+        target_link_libraries(RVX_ShaderCompiler PRIVATE spirv-reflect::spirv-reflect)
+    else()
+        message(FATAL_ERROR "SPIRV-Reflect CMake target not found. Expected one of: unofficial::spirv-reflect, unofficial::spirv-reflect::spirv-reflect, spirv-reflect::spirv-reflect")
+    endif()
 endif()
 
 add_library(RVX::ShaderCompiler ALIAS RVX_ShaderCompiler)

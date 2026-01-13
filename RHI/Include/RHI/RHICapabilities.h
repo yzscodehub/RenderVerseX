@@ -24,16 +24,24 @@ namespace RVX
         std::string adapterName;
         std::string driverVersion;
 
+        // Memory info
+        uint64 dedicatedVideoMemory = 0;
+        uint64 sharedSystemMemory = 0;
+
         // Basic limits
+        uint32 maxTextureSize = 16384;
         uint32 maxTextureSize2D = 16384;
         uint32 maxTextureSize3D = 2048;
         uint32 maxTextureSizeCube = 16384;
         uint32 maxTextureArrayLayers = 2048;
+        uint32 maxTextureLayers = 2048;
         uint32 maxColorAttachments = 8;
+        uint32 maxComputeWorkGroupSize[3] = {1024, 1024, 64};
         uint32 maxComputeWorkGroupSizeX = 1024;
         uint32 maxComputeWorkGroupSizeY = 1024;
         uint32 maxComputeWorkGroupSizeZ = 64;
         uint32 maxComputeWorkGroupCount = 65535;
+        uint32 maxPushConstantSize = 128;
 
         // Bindless support
         bool supportsBindless = false;

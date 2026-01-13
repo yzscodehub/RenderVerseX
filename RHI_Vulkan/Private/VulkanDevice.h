@@ -1,0 +1,119 @@
+#pragma once
+
+#include "VulkanCommon.h"
+#include "RHI/RHIDevice.h"
+#include <mutex>
+
+namespace RVX
+{
+    class VulkanSwapChain;
+
+    // =============================================================================
+    // Vulkan Device Implementation
+    // =============================================================================
+    class VulkanDevice : public IRHIDevice
+    {
+    public:
+        VulkanDevice(const RHIDeviceDesc& desc);
+        ~VulkanDevice() override;
+
+        // =========================================================================
+        // IRHIDevice Interface
+        // =========================================================================
+        RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override;
+        RHITextureRef CreateTexture(const RHITextureDesc& desc) override;
+        RHITextureViewRef CreateTextureView(RHITexture* texture, const RHITextureViewDesc& desc = {}) override;
+        RHISamplerRef CreateSampler(const RHISamplerDesc& desc) override;
+        RHIShaderRef CreateShader(const RHIShaderDesc& desc) override;
+
+        RHIDescriptorSetLayoutRef CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc& desc) override;
+        RHIPipelineLayoutRef CreatePipelineLayout(const RHIPipelineLayoutDesc& desc) override;
+        RHIPipelineRef CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc) override;
+        RHIPipelineRef CreateComputePipeline(const RHIComputePipelineDesc& desc) override;
+
+        RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) override;
+
+        RHICommandContextRef CreateCommandContext(RHICommandQueueType type) override;
+        void SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence) override;
+        void SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence) override;
+
+        RHISwapChainRef CreateSwapChain(const RHISwapChainDesc& desc) override;
+
+        RHIFenceRef CreateFence(uint64 initialValue) override;
+        void WaitForFence(RHIFence* fence, uint64 value) override;
+        void WaitIdle() override;
+
+        void BeginFrame() override;
+        void EndFrame() override;
+        uint32 GetCurrentFrameIndex() const override { return m_currentFrameIndex; }
+
+        const RHICapabilities& GetCapabilities() const override { return m_capabilities; }
+        RHIBackendType GetBackendType() const override { return RHIBackendType::Vulkan; }
+
+        // =========================================================================
+        // Vulkan Specific Accessors
+        // =========================================================================
+        VkInstance GetInstance() const { return m_instance; }
+        VkPhysicalDevice GetPhysicalDevice() const { return m_physicalDevice; }
+        VkDevice GetDevice() const { return m_device; }
+        VmaAllocator GetAllocator() const { return m_allocator; }
+
+        VkQueue GetGraphicsQueue() const { return m_graphicsQueue; }
+        VkQueue GetComputeQueue() const { return m_computeQueue; }
+        VkQueue GetTransferQueue() const { return m_transferQueue; }
+        
+        uint32 GetGraphicsQueueFamily() const { return m_queueFamilies.graphicsFamily.value(); }
+        uint32 GetComputeQueueFamily() const { return m_queueFamilies.computeFamily.value_or(m_queueFamilies.graphicsFamily.value()); }
+        uint32 GetTransferQueueFamily() const { return m_queueFamilies.transferFamily.value_or(m_queueFamilies.graphicsFamily.value()); }
+
+        VkCommandPool GetCommandPool(RHICommandQueueType type);
+        VkDescriptorPool GetDescriptorPool() const { return m_descriptorPool; }
+
+    private:
+        bool CreateInstance(bool enableValidation);
+        bool SelectPhysicalDevice();
+        bool CreateLogicalDevice();
+        bool CreateAllocator();
+        bool CreateCommandPools();
+        bool CreateDescriptorPool();
+
+        QueueFamilyIndices FindQueueFamilies(VkPhysicalDevice device);
+        bool CheckDeviceExtensionSupport(VkPhysicalDevice device);
+        void QueryDeviceCapabilities();
+
+        // Vulkan objects
+        VkInstance m_instance = VK_NULL_HANDLE;
+        VkDebugUtilsMessengerEXT m_debugMessenger = VK_NULL_HANDLE;
+        VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
+        VkDevice m_device = VK_NULL_HANDLE;
+        VmaAllocator m_allocator = VK_NULL_HANDLE;
+
+        // Queues
+        VkQueue m_graphicsQueue = VK_NULL_HANDLE;
+        VkQueue m_computeQueue = VK_NULL_HANDLE;
+        VkQueue m_transferQueue = VK_NULL_HANDLE;
+        QueueFamilyIndices m_queueFamilies;
+
+        // Command pools (per queue type)
+        VkCommandPool m_graphicsCommandPool = VK_NULL_HANDLE;
+        VkCommandPool m_computeCommandPool = VK_NULL_HANDLE;
+        VkCommandPool m_transferCommandPool = VK_NULL_HANDLE;
+
+        // Descriptor pool
+        VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
+
+        // Per-frame synchronization
+        std::array<VkFence, RVX_MAX_FRAME_COUNT> m_frameFences = {};
+        std::array<VkSemaphore, RVX_MAX_FRAME_COUNT> m_imageAvailableSemaphores = {};
+        std::array<VkSemaphore, RVX_MAX_FRAME_COUNT> m_renderFinishedSemaphores = {};
+        uint32 m_currentFrameIndex = 0;
+
+        // State
+        RHICapabilities m_capabilities;
+        bool m_validationEnabled = false;
+
+        // Thread safety
+        std::mutex m_submitMutex;
+    };
+
+} // namespace RVX

@@ -2,6 +2,18 @@
 # Tests - Validation test suites
 # =============================================================================
 
+# Collect all enabled backend libraries
+set(RVX_ALL_BACKENDS "")
+if(RVX_ENABLE_DX11)
+    list(APPEND RVX_ALL_BACKENDS RVX::RHI_DX11)
+endif()
+if(RVX_ENABLE_DX12)
+    list(APPEND RVX_ALL_BACKENDS RVX::RHI_DX12)
+endif()
+if(RVX_ENABLE_VULKAN)
+    list(APPEND RVX_ALL_BACKENDS RVX::RHI_Vulkan)
+endif()
+
 # Test Framework library
 add_library(RVX_TestFramework STATIC
     TestFramework/TestRunner.cpp
@@ -24,7 +36,7 @@ if(RVX_ENABLE_DX12)
     target_link_libraries(DX12Validation PRIVATE
         RVX_TestFramework
         RVX::RenderGraph
-        RVX::RHI_DX12
+        ${RVX_ALL_BACKENDS}
         glfw
     )
 endif()
@@ -37,7 +49,7 @@ if(RVX_ENABLE_VULKAN)
     target_link_libraries(VulkanValidation PRIVATE
         RVX_TestFramework
         RVX::RenderGraph
-        RVX::RHI_Vulkan
+        ${RVX_ALL_BACKENDS}
         glfw
     )
 endif()
@@ -50,7 +62,7 @@ if(RVX_ENABLE_DX11)
     target_link_libraries(DX11Validation PRIVATE
         RVX_TestFramework
         RVX::RenderGraph
-        RVX::RHI_DX11
+        ${RVX_ALL_BACKENDS}
         glfw
     )
 endif()

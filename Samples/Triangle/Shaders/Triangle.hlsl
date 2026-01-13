@@ -1,6 +1,13 @@
 // =============================================================================
-// Triangle Shader
+// Triangle Shader with Transform Support
 // =============================================================================
+
+// Constant buffer for transformation matrix
+cbuffer TransformCB : register(b0)
+{
+    row_major float4x4 worldMatrix;
+    float4 tintColor;
+};
 
 struct VSInput
 {
@@ -17,8 +24,11 @@ struct PSInput
 PSInput VSMain(VSInput input)
 {
     PSInput output;
-    output.position = float4(input.position, 1.0);
-    output.color = input.color;
+    float4 worldPos = mul(worldMatrix, float4(input.position, 1.0));
+    // Keep z in valid clip range [0,1] to avoid clipping
+    // Map z from [-1,1] to [0.1, 0.9] for safety margin
+    output.position = float4(worldPos.xy, worldPos.z * 0.4 + 0.5, 1.0);
+    output.color = input.color * tintColor;
     return output;
 }
 

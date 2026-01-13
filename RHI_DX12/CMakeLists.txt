@@ -17,6 +17,10 @@ target_include_directories(RVX_RHI_DX12 PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
+target_include_directories(RVX_RHI_DX12 PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/Private
+)
+
 target_link_libraries(RVX_RHI_DX12 PUBLIC
     RVX::RHI
     RVX::ShaderCompiler
@@ -30,7 +34,11 @@ target_link_libraries(RVX_RHI_DX12 PRIVATE
 )
 
 # D3D12 Memory Allocator
-if(TARGET D3D12MemoryAllocator)
+if(TARGET unofficial::D3D12MemoryAllocator)
+    target_link_libraries(RVX_RHI_DX12 PRIVATE unofficial::D3D12MemoryAllocator)
+    target_compile_definitions(RVX_RHI_DX12 PRIVATE RVX_USE_D3D12MA=1)
+elseif(TARGET D3D12MemoryAllocator)
+    # Compatibility with environments that export a non-namespaced target.
     target_link_libraries(RVX_RHI_DX12 PRIVATE D3D12MemoryAllocator)
     target_compile_definitions(RVX_RHI_DX12 PRIVATE RVX_USE_D3D12MA=1)
 endif()

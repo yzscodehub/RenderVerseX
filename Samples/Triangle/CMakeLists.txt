@@ -1,5 +1,5 @@
 # =============================================================================
-# Triangle Sample - Basic triangle rendering demo
+# Triangle Sample - Interactive triangle rendering demo with mouse rotation
 # =============================================================================
 add_executable(Triangle
     main.cpp
@@ -8,6 +8,7 @@ add_executable(Triangle
 target_link_libraries(Triangle PRIVATE
     RVX::RenderGraph
     glfw
+    d3dcompiler
 )
 
 # Link enabled backends

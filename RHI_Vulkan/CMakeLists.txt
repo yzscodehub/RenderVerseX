@@ -10,6 +10,7 @@ target_sources(RVX_RHI_Vulkan PRIVATE
     Private/VulkanPipeline.cpp
     Private/VulkanDescriptorPool.cpp
     Private/VulkanSwapChain.cpp
+    Private/VulkanMemoryAllocator.cpp
 )
 
 target_include_directories(RVX_RHI_Vulkan PUBLIC

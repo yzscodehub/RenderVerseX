@@ -58,6 +58,11 @@ namespace RVX
             case RHIFormat::D32_FLOAT_S8_UINT:
                 return 8;
 
+            case RHIFormat::RGB32_FLOAT:
+            case RHIFormat::RGB32_UINT:
+            case RHIFormat::RGB32_SINT:
+                return 12;
+
             case RHIFormat::RGBA32_FLOAT:
             case RHIFormat::RGBA32_UINT:
             case RHIFormat::RGBA32_SINT:

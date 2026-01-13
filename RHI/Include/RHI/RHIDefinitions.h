@@ -69,6 +69,11 @@ namespace RVX
         RGB10A2_UINT,
         RG11B10_FLOAT,
 
+        // 96-bit formats (used for vertex data)
+        RGB32_FLOAT,
+        RGB32_UINT,
+        RGB32_SINT,
+
         // 64-bit formats
         RG32_FLOAT,
         RG32_UINT,

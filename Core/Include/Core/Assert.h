@@ -13,7 +13,16 @@
     #define RVX_DEBUGBREAK()
 #endif
 
-#define RVX_ASSERT(condition, ...)                                          \
+#define RVX_ASSERT(condition)                                               \
+    do {                                                                    \
+        if (!(condition)) {                                                 \
+            RVX_CORE_CRITICAL("Assertion Failed: {}", #condition);          \
+            RVX_DEBUGBREAK();                                               \
+            std::abort();                                                   \
+        }                                                                   \
+    } while (false)
+
+#define RVX_ASSERT_MSG(condition, ...)                                      \
     do {                                                                    \
         if (!(condition)) {                                                 \
             RVX_CORE_CRITICAL("Assertion Failed: {}", #condition);          \
@@ -33,9 +42,11 @@
 
 // Debug-only assertions
 #ifdef RVX_DEBUG
-    #define RVX_DEBUG_ASSERT(condition, ...) RVX_ASSERT(condition, __VA_ARGS__)
+    #define RVX_DEBUG_ASSERT(condition) RVX_ASSERT(condition)
+    #define RVX_DEBUG_ASSERT_MSG(condition, ...) RVX_ASSERT_MSG(condition, __VA_ARGS__)
 #else
-    #define RVX_DEBUG_ASSERT(condition, ...) ((void)0)
+    #define RVX_DEBUG_ASSERT(condition) ((void)0)
+    #define RVX_DEBUG_ASSERT_MSG(condition, ...) ((void)0)
 #endif
 
 // Unreachable code marker

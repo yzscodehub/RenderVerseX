@@ -49,8 +49,43 @@ endif()
 if(WIN32)
     find_package(directx-dxc CONFIG REQUIRED)
     if(RVX_ENABLE_DX12)
-        find_package(directx12-agility CONFIG)
-        find_package(D3D12MemoryAllocator CONFIG)
+        # Detect Windows SDK path for D3D12.lib (required by directx12-agility)
+        # CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION is set by Visual Studio generators
+        if(CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION)
+            set(_WIN_SDK_VERSION ${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION})
+        elseif(DEFINED ENV{WindowsSDKVersion})
+            string(REGEX REPLACE "\\\\$" "" _WIN_SDK_VERSION "$ENV{WindowsSDKVersion}")
+        else()
+            # Default to a common version
+            set(_WIN_SDK_VERSION "10.0.22621.0")
+        endif()
+        
+        # Common Windows 10/11 SDK paths
+        set(_WIN_SDK_SEARCH_PATHS
+            "$ENV{WindowsSdkDir}/Lib/${_WIN_SDK_VERSION}/um/x64"
+            "C:/Program Files (x86)/Windows Kits/10/Lib/${_WIN_SDK_VERSION}/um/x64"
+            "${CMAKE_WINDOWS_KITS_10_DIR}/Lib/${_WIN_SDK_VERSION}/um/x64"
+        )
+        
+        find_library(D3D12_SDK_LIB d3d12 PATHS ${_WIN_SDK_SEARCH_PATHS} NO_DEFAULT_PATH)
+        if(NOT D3D12_SDK_LIB)
+            # Fallback: let CMake search default paths
+            find_library(D3D12_SDK_LIB d3d12)
+        endif()
+        
+        if(D3D12_SDK_LIB)
+            message(STATUS "Found D3D12: ${D3D12_SDK_LIB}")
+            # Set D3D12_LIB in cache so directx12-agility-config.cmake can find it
+            # Use FORCE to override any previous NOTFOUND value
+            set(D3D12_LIB "${D3D12_SDK_LIB}" CACHE FILEPATH "Path to D3D12.lib" FORCE)
+            find_package(directx12-agility CONFIG)
+            # vcpkg port name is `d3d12-memory-allocator` and it exports `unofficial::D3D12MemoryAllocator`.
+            find_package(d3d12-memory-allocator CONFIG)
+        else()
+            message(WARNING "D3D12.lib not found in Windows SDK - disabling DX12 backend. "
+                            "Searched in: ${_WIN_SDK_SEARCH_PATHS}")
+            set(RVX_ENABLE_DX12 OFF)
+        endif()
     endif()
 endif()
 
