@@ -1,0 +1,30 @@
+{
+  "name": "renderversex",
+  "version": "0.1.0",
+  "description": "A cross-platform rendering framework with DX11/DX12/Vulkan backends",
+  "dependencies": [
+    "spdlog",
+    "glfw3",
+    {
+      "name": "vulkan",
+      "platform": "windows | linux"
+    },
+    {
+      "name": "vulkan-memory-allocator",
+      "platform": "windows | linux"
+    },
+    "spirv-reflect",
+    {
+      "name": "directx-dxc",
+      "platform": "windows"
+    },
+    {
+      "name": "directx12-agility",
+      "platform": "windows"
+    },
+    {
+      "name": "d3d12-memory-allocator",
+      "platform": "windows"
+    }
+  ]
+}

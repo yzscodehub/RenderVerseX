@@ -1,0 +1,42 @@
+# Build directories
+build/
+out/
+cmake-build-*/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# vcpkg
+vcpkg_installed/
+
+# Compiled binaries
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.exp
+*.obj
+*.o
+*.a
+
+# Shader cache
+*.cso
+*.dxil
+*.spv
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Cursor
+.cursorignore
