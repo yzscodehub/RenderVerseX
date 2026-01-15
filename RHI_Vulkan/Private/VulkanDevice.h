@@ -70,11 +70,23 @@ namespace RVX
         VkDescriptorPool GetDescriptorPool() const { return m_descriptorPool; }
 
         VkSemaphore GetImageAvailableSemaphore() const { return m_imageAvailableSemaphores[m_currentFrameIndex]; }
-        VkSemaphore GetRenderFinishedSemaphore() const { return m_renderFinishedSemaphores[m_currentFrameIndex]; }
+        VkSemaphore GetRenderFinishedSemaphore() const;
         VkFence GetCurrentFrameFence() const { return m_frameFences[m_currentFrameIndex]; }
         std::mutex& GetSubmitMutex() { return m_submitMutex; }
 
+        void SetPrimarySwapChain(VulkanSwapChain* swapChain) { m_primarySwapChain = swapChain; }
+        VulkanSwapChain* GetPrimarySwapChain() const { return m_primarySwapChain; }
+
+        // Debug Utils function pointers
+        PFN_vkCmdBeginDebugUtilsLabelEXT vkCmdBeginDebugUtilsLabel = nullptr;
+        PFN_vkCmdEndDebugUtilsLabelEXT vkCmdEndDebugUtilsLabel = nullptr;
+        PFN_vkCmdInsertDebugUtilsLabelEXT vkCmdInsertDebugUtilsLabel = nullptr;
+        PFN_vkSetDebugUtilsObjectNameEXT vkSetDebugUtilsObjectName = nullptr;
+
+        bool HasDebugUtils() const { return m_validationEnabled && vkCmdBeginDebugUtilsLabel != nullptr; }
+
     private:
+        void LoadDebugUtilsFunctions();
         bool CreateInstance(bool enableValidation);
         bool SelectPhysicalDevice();
         bool CreateLogicalDevice();
@@ -119,6 +131,9 @@ namespace RVX
 
         // Thread safety
         std::mutex m_submitMutex;
+
+        // Optional primary swapchain for per-image sync
+        VulkanSwapChain* m_primarySwapChain = nullptr;
     };
 
 } // namespace RVX

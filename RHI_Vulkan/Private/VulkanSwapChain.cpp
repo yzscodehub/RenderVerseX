@@ -14,6 +14,10 @@ namespace RVX
         , m_vsync(desc.vsync)
         , m_windowHandle(desc.windowHandle)
     {
+        if (m_device)
+        {
+            m_device->SetPrimarySwapChain(this);
+        }
         // Create surface
 #ifdef _WIN32
         VkWin32SurfaceCreateInfoKHR surfaceInfo = {VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
@@ -47,6 +51,11 @@ namespace RVX
 
         if (m_surface)
             vkDestroySurfaceKHR(m_device->GetInstance(), m_surface, nullptr);
+
+        if (m_device && m_device->GetPrimarySwapChain() == this)
+        {
+            m_device->SetPrimarySwapChain(nullptr);
+        }
     }
 
     void VulkanSwapChain::CreateSwapchain()
@@ -109,6 +118,8 @@ namespace RVX
     {
         m_backBuffers.clear();
         m_backBufferViews.clear();
+        m_renderFinishedSemaphores.clear();
+        m_imagesInFlight.clear();
 
         // Get swapchain images
         uint32 imageCount;
@@ -117,6 +128,11 @@ namespace RVX
         vkGetSwapchainImagesKHR(m_device->GetDevice(), m_swapchain, &imageCount, images.data());
 
         // Create texture wrappers and views
+        m_renderFinishedSemaphores.resize(imageCount, VK_NULL_HANDLE);
+        m_imagesInFlight.resize(imageCount, VK_NULL_HANDLE);
+
+        VkSemaphoreCreateInfo semaphoreInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+
         for (uint32 i = 0; i < imageCount; ++i)
         {
             RHITextureDesc texDesc;
@@ -137,11 +153,23 @@ namespace RVX
             viewDesc.format = m_format;
             VulkanTextureView* rawView = new VulkanTextureView(m_device, rawTex, viewDesc);
             m_backBufferViews.push_back(RHITextureViewRef(rawView));
+
+            VK_CHECK(vkCreateSemaphore(m_device->GetDevice(), &semaphoreInfo, nullptr, &m_renderFinishedSemaphores[i]));
         }
     }
 
     void VulkanSwapChain::CleanupSwapchain()
     {
+        for (auto semaphore : m_renderFinishedSemaphores)
+        {
+            if (semaphore != VK_NULL_HANDLE)
+            {
+                vkDestroySemaphore(m_device->GetDevice(), semaphore, nullptr);
+            }
+        }
+        m_renderFinishedSemaphores.clear();
+        m_imagesInFlight.clear();
+
         m_backBufferViews.clear();
         m_backBuffers.clear();
 
@@ -235,6 +263,17 @@ namespace RVX
             return false;
         }
 
+        if (m_currentImageIndex < m_imagesInFlight.size())
+        {
+            VkFence& inFlightFence = m_imagesInFlight[m_currentImageIndex];
+            VkFence currentFrameFence = m_device->GetCurrentFrameFence();
+            if (inFlightFence != VK_NULL_HANDLE && inFlightFence != currentFrameFence)
+            {
+                VK_CHECK(vkWaitForFences(m_device->GetDevice(), 1, &inFlightFence, VK_TRUE, UINT64_MAX));
+            }
+            inFlightFence = currentFrameFence;
+        }
+
         m_hasAcquiredImage = true;
         return true;
     }
@@ -249,7 +288,7 @@ namespace RVX
 
         VkPresentInfoKHR presentInfo = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
         presentInfo.waitSemaphoreCount = 1;
-        VkSemaphore waitSemaphore = m_device->GetRenderFinishedSemaphore();
+        VkSemaphore waitSemaphore = GetCurrentRenderFinishedSemaphore();
         presentInfo.pWaitSemaphores = &waitSemaphore;
         presentInfo.swapchainCount = 1;
         presentInfo.pSwapchains = &m_swapchain;
@@ -276,6 +315,15 @@ namespace RVX
             const_cast<VulkanSwapChain*>(this)->AcquireNextImage();
         }
         return m_currentImageIndex;
+    }
+
+    VkSemaphore VulkanSwapChain::GetCurrentRenderFinishedSemaphore() const
+    {
+        if (!m_hasAcquiredImage || m_currentImageIndex >= m_renderFinishedSemaphores.size())
+        {
+            return VK_NULL_HANDLE;
+        }
+        return m_renderFinishedSemaphores[m_currentImageIndex];
     }
 
     void VulkanSwapChain::Resize(uint32 width, uint32 height)

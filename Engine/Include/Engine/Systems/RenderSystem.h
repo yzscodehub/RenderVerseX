@@ -40,7 +40,13 @@ namespace RVX
 
             m_device->BeginFrame();
             uint32 backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
-            auto& cmdContext = (*m_contexts)[backBufferIndex];
+            const uint32 frameIndex = m_device->GetCurrentFrameIndex();
+            if (frameIndex >= m_contexts->size())
+            {
+                m_device->EndFrame();
+                return;
+            }
+            auto& cmdContext = (*m_contexts)[frameIndex];
             cmdContext->Begin();
 
             if (m_renderCallback)

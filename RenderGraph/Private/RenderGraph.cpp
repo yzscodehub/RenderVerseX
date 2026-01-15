@@ -299,11 +299,28 @@ namespace RVX
         return m_impl->stats;
     }
 
+    void RenderGraph::SetMemoryAliasingEnabled(bool enabled)
+    {
+        m_impl->enableMemoryAliasing = enabled;
+    }
+
+    bool RenderGraph::IsMemoryAliasingEnabled() const
+    {
+        return m_impl->enableMemoryAliasing;
+    }
+
     void RenderGraph::Clear()
     {
         m_impl->passes.clear();
         m_impl->textures.clear();
         m_impl->buffers.clear();
+        m_impl->executionOrder.clear();
+        m_impl->transientHeaps.clear();
+        m_impl->stats = {};
+        m_impl->totalMemoryWithoutAliasing = 0;
+        m_impl->totalMemoryWithAliasing = 0;
+        m_impl->aliasedTextureCount = 0;
+        m_impl->aliasedBufferCount = 0;
     }
 
 } // namespace RVX

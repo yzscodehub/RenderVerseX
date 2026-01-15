@@ -67,21 +67,41 @@ namespace RVX
 
     void VulkanCommandContext::BeginEvent(const char* name, uint32 color)
     {
-        // Would use vkCmdBeginDebugUtilsLabelEXT if available
-        (void)name;
-        (void)color;
+        if (!m_device->HasDebugUtils())
+            return;
+
+        VkDebugUtilsLabelEXT label = {VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
+        label.pLabelName = name;
+        // Convert color from ARGB to float RGBA
+        label.color[0] = ((color >> 16) & 0xFF) / 255.0f;  // R
+        label.color[1] = ((color >> 8) & 0xFF) / 255.0f;   // G
+        label.color[2] = (color & 0xFF) / 255.0f;          // B
+        label.color[3] = ((color >> 24) & 0xFF) / 255.0f;  // A
+
+        m_device->vkCmdBeginDebugUtilsLabel(m_commandBuffer, &label);
     }
 
     void VulkanCommandContext::EndEvent()
     {
-        // Would use vkCmdEndDebugUtilsLabelEXT if available
+        if (!m_device->HasDebugUtils())
+            return;
+
+        m_device->vkCmdEndDebugUtilsLabel(m_commandBuffer);
     }
 
     void VulkanCommandContext::SetMarker(const char* name, uint32 color)
     {
-        // Would use vkCmdInsertDebugUtilsLabelEXT if available
-        (void)name;
-        (void)color;
+        if (!m_device->HasDebugUtils())
+            return;
+
+        VkDebugUtilsLabelEXT label = {VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
+        label.pLabelName = name;
+        label.color[0] = ((color >> 16) & 0xFF) / 255.0f;
+        label.color[1] = ((color >> 8) & 0xFF) / 255.0f;
+        label.color[2] = (color & 0xFF) / 255.0f;
+        label.color[3] = ((color >> 24) & 0xFF) / 255.0f;
+
+        m_device->vkCmdInsertDebugUtilsLabel(m_commandBuffer, &label);
     }
 
     void VulkanCommandContext::BufferBarrier(const RHIBufferBarrier& barrier)
@@ -497,51 +517,75 @@ namespace RVX
         return Ref<VulkanCommandContext>(new VulkanCommandContext(device, type));
     }
 
+    static VkQueue GetQueueForType(VulkanDevice* device, RHICommandQueueType type)
+    {
+        switch (type)
+        {
+            case RHICommandQueueType::Graphics: return device->GetGraphicsQueue();
+            case RHICommandQueueType::Compute:  return device->GetComputeQueue();
+            case RHICommandQueueType::Copy:     return device->GetTransferQueue();
+            default: return device->GetGraphicsQueue();
+        }
+    }
+
     void SubmitVulkanCommandContext(VulkanDevice* device, RHICommandContext* context, RHIFence* signalFence)
     {
         auto* vkContext = static_cast<VulkanCommandContext*>(context);
 
         std::lock_guard<std::mutex> lock(device->GetSubmitMutex());
 
-        VkSemaphore waitSemaphores[1] = {};
-        VkPipelineStageFlags waitStages[1] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-        uint32 waitCount = 0;
-
-        VkSemaphore signalSemaphores[1] = {};
-        uint32 signalCount = 0;
-
-        VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        submitInfo.commandBufferCount = 1;
+        VkQueue queue = GetQueueForType(device, vkContext->GetQueueType());
         VkCommandBuffer cmdBuffer = vkContext->GetCommandBuffer();
-        submitInfo.pCommandBuffers = &cmdBuffer;
 
-        VkQueue queue;
-        switch (vkContext->GetQueueType())
-        {
-            case RHICommandQueueType::Graphics: queue = device->GetGraphicsQueue(); break;
-            case RHICommandQueueType::Compute:  queue = device->GetComputeQueue(); break;
-            case RHICommandQueueType::Copy:     queue = device->GetTransferQueue(); break;
-            default: queue = device->GetGraphicsQueue(); break;
-        }
+        // Build semaphore arrays
+        std::vector<VkSemaphore> waitSemaphores;
+        std::vector<VkPipelineStageFlags> waitStages;
+        std::vector<uint64> waitValues;
 
-        VkFence fence = VK_NULL_HANDLE;  // Would get from signalFence if provided
+        std::vector<VkSemaphore> signalSemaphores;
+        std::vector<uint64> signalValues;
 
+        VkFence fence = VK_NULL_HANDLE;
+
+        // Graphics queue needs swapchain synchronization
         if (vkContext->GetQueueType() == RHICommandQueueType::Graphics)
         {
-            waitSemaphores[0] = device->GetImageAvailableSemaphore();
-            waitCount = 1;
+            waitSemaphores.push_back(device->GetImageAvailableSemaphore());
+            waitStages.push_back(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+            waitValues.push_back(0);  // Binary semaphore
 
-            signalSemaphores[0] = device->GetRenderFinishedSemaphore();
-            signalCount = 1;
+            signalSemaphores.push_back(device->GetRenderFinishedSemaphore());
+            signalValues.push_back(0);  // Binary semaphore
 
             fence = device->GetCurrentFrameFence();
         }
 
-        submitInfo.waitSemaphoreCount = waitCount;
-        submitInfo.pWaitSemaphores = waitCount ? waitSemaphores : nullptr;
-        submitInfo.pWaitDstStageMask = waitCount ? waitStages : nullptr;
-        submitInfo.signalSemaphoreCount = signalCount;
-        submitInfo.pSignalSemaphores = signalSemaphores;
+        // Handle timeline semaphore for signalFence
+        uint64 signalFenceValue = 0;
+        if (signalFence)
+        {
+            auto* vkFence = static_cast<VulkanFence*>(signalFence);
+            signalSemaphores.push_back(vkFence->GetSemaphore());
+            signalFenceValue = vkFence->GetCompletedValue() + 1;
+            signalValues.push_back(signalFenceValue);
+        }
+
+        // Use timeline semaphore submit info
+        VkTimelineSemaphoreSubmitInfo timelineInfo = {VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+        timelineInfo.waitSemaphoreValueCount = static_cast<uint32>(waitValues.size());
+        timelineInfo.pWaitSemaphoreValues = waitValues.data();
+        timelineInfo.signalSemaphoreValueCount = static_cast<uint32>(signalValues.size());
+        timelineInfo.pSignalSemaphoreValues = signalValues.data();
+
+        VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submitInfo.pNext = (signalFence || !waitValues.empty()) ? &timelineInfo : nullptr;
+        submitInfo.waitSemaphoreCount = static_cast<uint32>(waitSemaphores.size());
+        submitInfo.pWaitSemaphores = waitSemaphores.empty() ? nullptr : waitSemaphores.data();
+        submitInfo.pWaitDstStageMask = waitStages.empty() ? nullptr : waitStages.data();
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &cmdBuffer;
+        submitInfo.signalSemaphoreCount = static_cast<uint32>(signalSemaphores.size());
+        submitInfo.pSignalSemaphores = signalSemaphores.empty() ? nullptr : signalSemaphores.data();
 
         VK_CHECK(vkQueueSubmit(queue, 1, &submitInfo, fence));
     }
@@ -549,12 +593,110 @@ namespace RVX
     void SubmitVulkanCommandContexts(VulkanDevice* device, std::span<RHICommandContext* const> contexts, 
                                       RHIFence* signalFence)
     {
+        if (contexts.empty())
+            return;
+
+        std::lock_guard<std::mutex> lock(device->GetSubmitMutex());
+
+        // Group contexts by queue type for batch submission
+        std::vector<VkCommandBuffer> graphicsCmdBuffers;
+        std::vector<VkCommandBuffer> computeCmdBuffers;
+        std::vector<VkCommandBuffer> copyCmdBuffers;
+
         for (auto* context : contexts)
         {
-            SubmitVulkanCommandContext(device, context, nullptr);
+            auto* vkContext = static_cast<VulkanCommandContext*>(context);
+            VkCommandBuffer cmdBuffer = vkContext->GetCommandBuffer();
+
+            switch (vkContext->GetQueueType())
+            {
+                case RHICommandQueueType::Graphics:
+                    graphicsCmdBuffers.push_back(cmdBuffer);
+                    break;
+                case RHICommandQueueType::Compute:
+                    computeCmdBuffers.push_back(cmdBuffer);
+                    break;
+                case RHICommandQueueType::Copy:
+                    copyCmdBuffers.push_back(cmdBuffer);
+                    break;
+            }
         }
-        // Signal fence after all submissions if provided
-        (void)signalFence;
+
+        // Submit copy commands first (no sync needed usually)
+        if (!copyCmdBuffers.empty())
+        {
+            VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            submitInfo.commandBufferCount = static_cast<uint32>(copyCmdBuffers.size());
+            submitInfo.pCommandBuffers = copyCmdBuffers.data();
+            VK_CHECK(vkQueueSubmit(device->GetTransferQueue(), 1, &submitInfo, VK_NULL_HANDLE));
+        }
+
+        // Submit compute commands
+        if (!computeCmdBuffers.empty())
+        {
+            VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            submitInfo.commandBufferCount = static_cast<uint32>(computeCmdBuffers.size());
+            submitInfo.pCommandBuffers = computeCmdBuffers.data();
+            VK_CHECK(vkQueueSubmit(device->GetComputeQueue(), 1, &submitInfo, VK_NULL_HANDLE));
+        }
+
+        // Submit graphics commands with swapchain sync
+        if (!graphicsCmdBuffers.empty())
+        {
+            VkSemaphore waitSemaphore = device->GetImageAvailableSemaphore();
+            VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            VkSemaphore signalSemaphore = device->GetRenderFinishedSemaphore();
+
+            std::vector<VkSemaphore> signalSemaphores = {signalSemaphore};
+            std::vector<uint64> signalValues = {0};  // Binary semaphore
+
+            uint64 signalFenceValue = 0;
+            if (signalFence)
+            {
+                auto* vkFence = static_cast<VulkanFence*>(signalFence);
+                signalSemaphores.push_back(vkFence->GetSemaphore());
+                signalFenceValue = vkFence->GetCompletedValue() + 1;
+                signalValues.push_back(signalFenceValue);
+            }
+
+            VkTimelineSemaphoreSubmitInfo timelineInfo = {VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+            uint64 waitValue = 0;
+            timelineInfo.waitSemaphoreValueCount = 1;
+            timelineInfo.pWaitSemaphoreValues = &waitValue;
+            timelineInfo.signalSemaphoreValueCount = static_cast<uint32>(signalValues.size());
+            timelineInfo.pSignalSemaphoreValues = signalValues.data();
+
+            VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            submitInfo.pNext = signalFence ? &timelineInfo : nullptr;
+            submitInfo.waitSemaphoreCount = 1;
+            submitInfo.pWaitSemaphores = &waitSemaphore;
+            submitInfo.pWaitDstStageMask = &waitStage;
+            submitInfo.commandBufferCount = static_cast<uint32>(graphicsCmdBuffers.size());
+            submitInfo.pCommandBuffers = graphicsCmdBuffers.data();
+            submitInfo.signalSemaphoreCount = static_cast<uint32>(signalSemaphores.size());
+            submitInfo.pSignalSemaphores = signalSemaphores.data();
+
+            VK_CHECK(vkQueueSubmit(device->GetGraphicsQueue(), 1, &submitInfo, device->GetCurrentFrameFence()));
+        }
+        else if (signalFence)
+        {
+            // No graphics commands but we need to signal the fence
+            // Submit an empty batch to signal the timeline semaphore
+            auto* vkFence = static_cast<VulkanFence*>(signalFence);
+            uint64 signalValue = vkFence->GetCompletedValue() + 1;
+
+            VkTimelineSemaphoreSubmitInfo timelineInfo = {VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+            timelineInfo.signalSemaphoreValueCount = 1;
+            timelineInfo.pSignalSemaphoreValues = &signalValue;
+
+            VkSemaphore signalSemaphore = vkFence->GetSemaphore();
+            VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            submitInfo.pNext = &timelineInfo;
+            submitInfo.signalSemaphoreCount = 1;
+            submitInfo.pSignalSemaphores = &signalSemaphore;
+
+            VK_CHECK(vkQueueSubmit(device->GetGraphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE));
+        }
     }
 
 } // namespace RVX

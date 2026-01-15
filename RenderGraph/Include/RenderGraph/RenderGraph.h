@@ -115,8 +115,11 @@ namespace RVX
 
         struct CompileStats
         {
+            // Pass statistics
             uint32 totalPasses = 0;
             uint32 culledPasses = 0;
+            
+            // Barrier statistics
             uint32 barrierCount = 0;
             uint32 textureBarrierCount = 0;
             uint32 bufferBarrierCount = 0;
@@ -124,9 +127,29 @@ namespace RVX
             uint32 mergedTextureBarrierCount = 0;
             uint32 mergedBufferBarrierCount = 0;
             uint32 crossPassMergedBarrierCount = 0;
+            
+            // Memory aliasing statistics
+            uint32 totalTransientTextures = 0;
+            uint32 totalTransientBuffers = 0;
+            uint32 aliasedTextureCount = 0;
+            uint32 aliasedBufferCount = 0;
+            uint64 memoryWithoutAliasing = 0;  // Total memory if no aliasing
+            uint64 memoryWithAliasing = 0;      // Actual memory used with aliasing
+            uint32 transientHeapCount = 0;
+            
+            // Memory savings percentage (0-100)
+            float GetMemorySavingsPercent() const {
+                if (memoryWithoutAliasing == 0) return 0.0f;
+                return 100.0f * (1.0f - static_cast<float>(memoryWithAliasing) / 
+                    static_cast<float>(memoryWithoutAliasing));
+            }
         };
 
         const CompileStats& GetCompileStats() const;
+
+        // Memory aliasing control
+        void SetMemoryAliasingEnabled(bool enabled);
+        bool IsMemoryAliasingEnabled() const;
 
         // Clear for next frame
         void Clear();

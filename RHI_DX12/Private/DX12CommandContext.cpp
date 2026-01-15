@@ -84,30 +84,43 @@ namespace RVX
 
     // =============================================================================
     // Debug Markers
+    // Uses ID3D12GraphicsCommandList::BeginEvent/EndEvent/SetMarker which are
+    // compatible with PIX, RenderDoc, and other GPU profilers.
+    // These APIs are available on Windows SDK and don't require the PIX header.
     // =============================================================================
     void DX12CommandContext::BeginEvent(const char* name, uint32 color)
     {
-        #ifdef _DEBUG
+        if (!name) return;
+
+        // Convert ARGB color to PIX-compatible format (already ARGB)
+        // PIX uses ARGB format where the upper byte is alpha
+        UINT64 pixColor = static_cast<UINT64>(color);
+
         wchar_t wname[256];
         MultiByteToWideChar(CP_UTF8, 0, name, -1, wname, 256);
-        // PIXBeginEvent(m_commandList.Get(), color, wname);
-        #endif
+
+        // Use the built-in D3D12 debug marker API
+        // This is picked up by PIX, RenderDoc, NSight, etc.
+        m_commandList->BeginEvent(static_cast<UINT>(pixColor), wname, 
+            static_cast<UINT>((wcslen(wname) + 1) * sizeof(wchar_t)));
     }
 
     void DX12CommandContext::EndEvent()
     {
-        #ifdef _DEBUG
-        // PIXEndEvent(m_commandList.Get());
-        #endif
+        m_commandList->EndEvent();
     }
 
     void DX12CommandContext::SetMarker(const char* name, uint32 color)
     {
-        #ifdef _DEBUG
+        if (!name) return;
+
+        UINT64 pixColor = static_cast<UINT64>(color);
+
         wchar_t wname[256];
         MultiByteToWideChar(CP_UTF8, 0, name, -1, wname, 256);
-        // PIXSetMarker(m_commandList.Get(), color, wname);
-        #endif
+
+        m_commandList->SetMarker(static_cast<UINT>(pixColor), wname,
+            static_cast<UINT>((wcslen(wname) + 1) * sizeof(wchar_t)));
     }
 
     // =============================================================================

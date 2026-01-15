@@ -21,6 +21,42 @@ namespace RVX
         return device;
     }
 
+    bool IsDX12Available()
+    {
+        // Try to create a minimal DXGI factory to check DX12 availability
+        ComPtr<IDXGIFactory4> factory;
+        if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+        {
+            return false;
+        }
+
+        // Try to find a DX12-capable adapter
+        ComPtr<IDXGIAdapter1> adapter;
+        for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i)
+        {
+            DXGI_ADAPTER_DESC1 desc;
+            adapter->GetDesc1(&desc);
+
+            // Skip software adapters
+            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+            {
+                adapter.Reset();
+                continue;
+            }
+
+            // Check if adapter supports D3D12
+            if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0, 
+                __uuidof(ID3D12Device), nullptr)))
+            {
+                return true;
+            }
+
+            adapter.Reset();
+        }
+
+        return false;
+    }
+
     // =============================================================================
     // Constructor / Destructor
     // =============================================================================
@@ -251,6 +287,8 @@ namespace RVX
     // =============================================================================
     bool DX12Device::CreateDevice(bool enableGPUValidation)
     {
+        (void)enableGPUValidation;  // GPU validation is configured in EnableDebugLayer
+
         // Try to create device with highest feature level first
         D3D_FEATURE_LEVEL featureLevels[] =
         {

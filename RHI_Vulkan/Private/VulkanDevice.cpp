@@ -134,6 +134,9 @@ namespace RVX
 
         QueryDeviceCapabilities();
 
+        // Load debug utils functions if validation is enabled
+        LoadDebugUtilsFunctions();
+
         RVX_RHI_INFO("Vulkan Device initialized successfully");
         RVX_RHI_INFO("  Adapter: {}", m_capabilities.adapterName);
         RVX_RHI_INFO("  VRAM: {} MB", m_capabilities.dedicatedVideoMemory / (1024 * 1024));
@@ -621,6 +624,32 @@ namespace RVX
     // =============================================================================
     // Capabilities Query
     // =============================================================================
+    // =============================================================================
+    // Debug Utils Loading
+    // =============================================================================
+    void VulkanDevice::LoadDebugUtilsFunctions()
+    {
+        if (!m_validationEnabled || !m_device)
+            return;
+
+        vkCmdBeginDebugUtilsLabel = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
+            vkGetDeviceProcAddr(m_device, "vkCmdBeginDebugUtilsLabelEXT"));
+        vkCmdEndDebugUtilsLabel = reinterpret_cast<PFN_vkCmdEndDebugUtilsLabelEXT>(
+            vkGetDeviceProcAddr(m_device, "vkCmdEndDebugUtilsLabelEXT"));
+        vkCmdInsertDebugUtilsLabel = reinterpret_cast<PFN_vkCmdInsertDebugUtilsLabelEXT>(
+            vkGetDeviceProcAddr(m_device, "vkCmdInsertDebugUtilsLabelEXT"));
+        vkSetDebugUtilsObjectName = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
+            vkGetDeviceProcAddr(m_device, "vkSetDebugUtilsObjectNameEXT"));
+
+        if (vkCmdBeginDebugUtilsLabel)
+        {
+            RVX_RHI_DEBUG("Debug Utils functions loaded successfully");
+        }
+    }
+
+    // =============================================================================
+    // Capabilities Query
+    // =============================================================================
     void VulkanDevice::QueryDeviceCapabilities()
     {
         VkPhysicalDeviceProperties props;
@@ -691,6 +720,19 @@ namespace RVX
     void VulkanDevice::EndFrame()
     {
         m_currentFrameIndex = (m_currentFrameIndex + 1) % RVX_MAX_FRAME_COUNT;
+    }
+
+    VkSemaphore VulkanDevice::GetRenderFinishedSemaphore() const
+    {
+        if (m_primarySwapChain)
+        {
+            VkSemaphore semaphore = m_primarySwapChain->GetCurrentRenderFinishedSemaphore();
+            if (semaphore != VK_NULL_HANDLE)
+            {
+                return semaphore;
+            }
+        }
+        return m_renderFinishedSemaphores[m_currentFrameIndex];
     }
 
     void VulkanDevice::WaitIdle()
@@ -771,7 +813,9 @@ namespace RVX
 
     RHISwapChainRef VulkanDevice::CreateSwapChain(const RHISwapChainDesc& desc)
     {
-        return CreateVulkanSwapChain(this, desc);
+        auto swapChain = CreateVulkanSwapChain(this, desc);
+        m_primarySwapChain = static_cast<VulkanSwapChain*>(swapChain.Get());
+        return swapChain;
     }
 
     RHIFenceRef VulkanDevice::CreateFence(uint64 initialValue)

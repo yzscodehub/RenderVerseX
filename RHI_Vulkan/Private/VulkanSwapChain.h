@@ -32,6 +32,7 @@ namespace RVX
 
         VkSwapchainKHR GetSwapchain() const { return m_swapchain; }
         bool AcquireNextImage();
+        VkSemaphore GetCurrentRenderFinishedSemaphore() const;
 
     private:
         void CreateSwapchain();
@@ -53,6 +54,8 @@ namespace RVX
 
         std::vector<RHITextureRef> m_backBuffers;
         std::vector<RHITextureViewRef> m_backBufferViews;
+        std::vector<VkSemaphore> m_renderFinishedSemaphores;
+        std::vector<VkFence> m_imagesInFlight;
         uint32 m_currentImageIndex = 0;
 
         bool m_hasAcquiredImage = false;

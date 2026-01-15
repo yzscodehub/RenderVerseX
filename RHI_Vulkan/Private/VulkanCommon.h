@@ -64,7 +64,7 @@ namespace RVX
         if (result != VK_SUCCESS)
         {
             RVX_RHI_ERROR("{}: {}", message, VkResultToString(result));
-            RVX_ASSERT(false, "Vulkan Error");
+            RVX_ASSERT_MSG(false, "Vulkan Error");
         }
     }
 

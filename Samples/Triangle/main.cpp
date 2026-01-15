@@ -178,8 +178,8 @@ int main(int argc, char *argv[])
 #endif
 
     // Create per-frame command contexts
-    std::vector<RVX::RHICommandContextRef> cmdContexts(swapChain->GetBufferCount());
-    for (RVX::uint32 i = 0; i < swapChain->GetBufferCount(); ++i)
+    std::vector<RVX::RHICommandContextRef> cmdContexts(RVX::RVX_MAX_FRAME_COUNT);
+    for (RVX::uint32 i = 0; i < RVX::RVX_MAX_FRAME_COUNT; ++i)
     {
         cmdContexts[i] = device->CreateCommandContext(RVX::RHICommandQueueType::Graphics);
     }
@@ -262,10 +262,6 @@ int main(int argc, char *argv[])
     vsLoad.backend = backend;
     vsLoad.enableDebugInfo = true;
     vsLoad.enableOptimization = false;
-    if (backend == RVX::RHIBackendType::DX12)
-    {
-        vsLoad.targetProfile = "vs_5_0";
-    }
 
     auto vsResult = shaderManager.LoadFromFile(device.get(), vsLoad);
     if (!vsResult.compileResult.success || !vsResult.shader)
@@ -301,10 +297,6 @@ int main(int argc, char *argv[])
     {
         psLoad.defines.push_back({"RVX_APPLY_SRGB_OUTPUT", "1"});
     }
-    if (backend == RVX::RHIBackendType::DX12)
-    {
-        psLoad.targetProfile = "ps_5_0";
-    }
 
     auto psResult = shaderManager.LoadFromFile(device.get(), psLoad);
     if (!psResult.compileResult.success || !psResult.shader)
@@ -338,7 +330,7 @@ int main(int argc, char *argv[])
     // =========================================================================
     std::vector<RVX::ReflectedShader> reflectedShaders = {
         {vsResult.compileResult.reflection, RVX::RHIShaderStage::Vertex},
-        {psResult.compileResult.reflection, RVX::RHIShaderStage::Pixel}};
+        {psResult.compileResult.reflection, RVX::RHIShaderStage::Pixel}}; 
 
     auto autoLayout = RVX::BuildAutoPipelineLayout(reflectedShaders);
     RVX_CORE_INFO("AutoLayout: set count={}, push constants size={}, stages={}",

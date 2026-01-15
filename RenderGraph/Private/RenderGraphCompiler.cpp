@@ -381,12 +381,299 @@ namespace RVX
             barriers.swap(filtered);
             return beforeCount - static_cast<uint32>(barriers.size());
         }
+
+        // Estimate texture memory size based on format and dimensions
+        uint64 EstimateTextureMemorySize(const RHITextureDesc& desc)
+        {
+            uint64 bpp = GetFormatBytesPerPixel(desc.format);
+            if (bpp == 0) bpp = 4;  // Fallback for compressed formats
+            
+            uint64 totalSize = 0;
+            uint32 width = desc.width;
+            uint32 height = desc.height;
+            uint32 depth = desc.depth;
+            
+            for (uint32 mip = 0; mip < desc.mipLevels; ++mip)
+            {
+                uint64 mipSize = static_cast<uint64>(width) * height * depth * bpp;
+                totalSize += mipSize * desc.arraySize;
+                
+                width = std::max(1u, width / 2);
+                height = std::max(1u, height / 2);
+                depth = std::max(1u, depth / 2);
+            }
+            
+            // Account for MSAA
+            totalSize *= static_cast<uint32>(desc.sampleCount);
+            
+            // Align to 64KB (D3D12 default heap alignment)
+            return (totalSize + 65535) & ~65535ULL;
+        }
+
+        // Estimate buffer memory size
+        uint64 EstimateBufferMemorySize(const RHIBufferDesc& desc)
+        {
+            // Align to 256 bytes (constant buffer alignment)
+            return (desc.size + 255) & ~255ULL;
+        }
+
+        // Check if two lifetimes overlap
+        bool LifetimesOverlap(const ResourceLifetime& a, const ResourceLifetime& b)
+        {
+            if (!a.isUsed || !b.isUsed) return false;
+            return !(a.lastUsePass < b.firstUsePass || b.lastUsePass < a.firstUsePass);
+        }
     }
 
+    // =============================================================================
+    // Calculate Resource Lifetimes
+    // =============================================================================
+    void CalculateResourceLifetimes(RenderGraphImpl& graph)
+    {
+        // Reset lifetimes
+        for (auto& texture : graph.textures)
+        {
+            texture.lifetime = ResourceLifetime{};
+            texture.alias = MemoryAlias{};
+        }
+        for (auto& buffer : graph.buffers)
+        {
+            buffer.lifetime = ResourceLifetime{};
+            buffer.alias = MemoryAlias{};
+        }
+
+        // Calculate lifetimes based on pass usages
+        for (uint32 passIndex = 0; passIndex < graph.passes.size(); ++passIndex)
+        {
+            const auto& pass = graph.passes[passIndex];
+            if (pass.culled) continue;
+
+            for (const auto& usage : pass.usages)
+            {
+                if (usage.type == ResourceType::Texture)
+                {
+                    if (usage.index >= graph.textures.size()) continue;
+                    auto& texture = graph.textures[usage.index];
+                    if (texture.imported) continue;  // Don't alias imported resources
+
+                    texture.lifetime.isUsed = true;
+                    texture.lifetime.firstUsePass = std::min(texture.lifetime.firstUsePass, passIndex);
+                    texture.lifetime.lastUsePass = std::max(texture.lifetime.lastUsePass, passIndex);
+                    texture.lifetime.memorySize = EstimateTextureMemorySize(texture.desc);
+                    texture.lifetime.alignment = 65536;  // D3D12 texture alignment
+                }
+                else
+                {
+                    if (usage.index >= graph.buffers.size()) continue;
+                    auto& buffer = graph.buffers[usage.index];
+                    if (buffer.imported) continue;
+
+                    buffer.lifetime.isUsed = true;
+                    buffer.lifetime.firstUsePass = std::min(buffer.lifetime.firstUsePass, passIndex);
+                    buffer.lifetime.lastUsePass = std::max(buffer.lifetime.lastUsePass, passIndex);
+                    buffer.lifetime.memorySize = EstimateBufferMemorySize(buffer.desc);
+                    buffer.lifetime.alignment = 256;  // Constant buffer alignment
+                }
+            }
+        }
+    }
+
+    // =============================================================================
+    // Compute Memory Aliases using Interval Graph Coloring
+    // =============================================================================
+    void ComputeMemoryAliases(RenderGraphImpl& graph)
+    {
+        if (!graph.enableMemoryAliasing)
+            return;
+
+        // Collect all transient resources with their lifetimes
+        struct ResourceInfo
+        {
+            ResourceType type;
+            uint32 index;
+            ResourceLifetime* lifetime;
+            MemoryAlias* alias;
+        };
+        std::vector<ResourceInfo> resources;
+
+        for (uint32 i = 0; i < graph.textures.size(); ++i)
+        {
+            auto& texture = graph.textures[i];
+            if (!texture.imported && texture.lifetime.isUsed)
+            {
+                resources.push_back({ResourceType::Texture, i, &texture.lifetime, &texture.alias});
+                graph.totalMemoryWithoutAliasing += texture.lifetime.memorySize;
+                graph.stats.totalTransientTextures++;
+            }
+        }
+        for (uint32 i = 0; i < graph.buffers.size(); ++i)
+        {
+            auto& buffer = graph.buffers[i];
+            if (!buffer.imported && buffer.lifetime.isUsed)
+            {
+                resources.push_back({ResourceType::Buffer, i, &buffer.lifetime, &buffer.alias});
+                graph.totalMemoryWithoutAliasing += buffer.lifetime.memorySize;
+                graph.stats.totalTransientBuffers++;
+            }
+        }
+
+        if (resources.empty())
+            return;
+
+        // Sort by first use pass (earliest first), then by memory size (largest first)
+        std::sort(resources.begin(), resources.end(),
+            [](const ResourceInfo& a, const ResourceInfo& b) {
+                if (a.lifetime->firstUsePass != b.lifetime->firstUsePass)
+                    return a.lifetime->firstUsePass < b.lifetime->firstUsePass;
+                return a.lifetime->memorySize > b.lifetime->memorySize;
+            });
+
+        // Greedy interval coloring algorithm
+        // Each "color" is a heap with a list of (offset, size, lastUsePass) allocations
+        struct HeapAllocation
+        {
+            uint64 offset;
+            uint64 size;
+            uint32 lastUsePass;
+        };
+        struct Heap
+        {
+            uint64 totalSize = 0;
+            std::vector<HeapAllocation> allocations;
+        };
+        std::vector<Heap> heaps;
+
+        for (auto& res : resources)
+        {
+            uint64 requiredSize = res.lifetime->memorySize;
+            uint64 alignment = res.lifetime->alignment;
+            uint32 firstUse = res.lifetime->firstUsePass;
+            uint32 lastUse = res.lifetime->lastUsePass;
+
+            // Try to find an existing heap with a suitable gap
+            int32 bestHeap = -1;
+            uint64 bestOffset = 0;
+            uint64 bestWaste = UINT64_MAX;
+
+            for (size_t heapIdx = 0; heapIdx < heaps.size(); ++heapIdx)
+            {
+                auto& heap = heaps[heapIdx];
+
+                // Check if we can reuse any freed allocation's space
+                uint64 currentOffset = 0;
+                for (const auto& alloc : heap.allocations)
+                {
+                    // If this allocation's lifetime doesn't overlap with ours
+                    if (alloc.lastUsePass < firstUse)
+                    {
+                        // Check if we can fit in this space
+                        uint64 alignedOffset = (currentOffset + alignment - 1) & ~(alignment - 1);
+                        if (alignedOffset >= alloc.offset && 
+                            alignedOffset + requiredSize <= alloc.offset + alloc.size)
+                        {
+                            uint64 waste = alloc.size - requiredSize;
+                            if (waste < bestWaste)
+                            {
+                                bestHeap = static_cast<int32>(heapIdx);
+                                bestOffset = alignedOffset;
+                                bestWaste = waste;
+                            }
+                        }
+                    }
+                    currentOffset = alloc.offset + alloc.size;
+                }
+
+                // Note: Could also check appending at the end, but we prefer aliasing over just appending
+            }
+
+            // If no good fit found, try to find a heap where we can append without overlap
+            if (bestHeap < 0)
+            {
+                for (size_t heapIdx = 0; heapIdx < heaps.size(); ++heapIdx)
+                {
+                    auto& heap = heaps[heapIdx];
+                    
+                    // Find the end offset of all overlapping allocations
+                    uint64 maxEndOffset = 0;
+                    for (const auto& alloc : heap.allocations)
+                    {
+                        if (alloc.lastUsePass >= firstUse)
+                        {
+                            // Lifetime overlaps, need to place after this allocation
+                            maxEndOffset = std::max(maxEndOffset, alloc.offset + alloc.size);
+                        }
+                    }
+
+                    // Try to fit after all overlapping allocations
+                    uint64 alignedOffset = (maxEndOffset + alignment - 1) & ~(alignment - 1);
+                    
+                    // Accept this heap if the growth is reasonable
+                    if (alignedOffset + requiredSize <= heap.totalSize * 2 + requiredSize)
+                    {
+                        bestHeap = static_cast<int32>(heapIdx);
+                        bestOffset = alignedOffset;
+                        break;
+                    }
+                }
+            }
+
+            // If still no heap found, create a new one
+            if (bestHeap < 0)
+            {
+                bestHeap = static_cast<int32>(heaps.size());
+                bestOffset = 0;
+                heaps.push_back(Heap{});
+            }
+
+            // Assign the resource to this heap
+            auto& heap = heaps[static_cast<size_t>(bestHeap)];
+            heap.allocations.push_back({bestOffset, requiredSize, lastUse});
+            heap.totalSize = std::max(heap.totalSize, bestOffset + requiredSize);
+
+            res.alias->heapIndex = static_cast<uint32>(bestHeap);
+            res.alias->heapOffset = bestOffset;
+            res.alias->isAliased = (heap.allocations.size() > 1);
+
+            if (res.alias->isAliased)
+            {
+                if (res.type == ResourceType::Texture)
+                    graph.aliasedTextureCount++;
+                else
+                    graph.aliasedBufferCount++;
+            }
+        }
+
+        // Create transient heaps
+        graph.transientHeaps.clear();
+        graph.transientHeaps.reserve(heaps.size());
+        for (const auto& heap : heaps)
+        {
+            TransientHeap th;
+            th.size = heap.totalSize;
+            th.resourceCount = static_cast<uint32>(heap.allocations.size());
+            graph.transientHeaps.push_back(th);
+            graph.totalMemoryWithAliasing += heap.totalSize;
+        }
+
+        // Update stats
+        graph.stats.aliasedTextureCount = graph.aliasedTextureCount;
+        graph.stats.aliasedBufferCount = graph.aliasedBufferCount;
+        graph.stats.memoryWithoutAliasing = graph.totalMemoryWithoutAliasing;
+        graph.stats.memoryWithAliasing = graph.totalMemoryWithAliasing;
+        graph.stats.transientHeapCount = static_cast<uint32>(graph.transientHeaps.size());
+    }
+
+    // =============================================================================
+    // Compile Render Graph
+    // =============================================================================
     void CompileRenderGraph(RenderGraphImpl& graph)
     {
         graph.stats = {};
         graph.stats.totalPasses = static_cast<uint32>(graph.passes.size());
+        
+        // Note: Resource creation is now deferred until after lifetime calculation
+        // For now, we still create resources immediately (aliasing info is calculated but not used yet)
+        // Full placed resource support requires RHI changes
         if (graph.device)
         {
             for (auto& texture : graph.textures)
@@ -602,15 +889,24 @@ namespace RVX
             }
         }
 
-        for (auto& pass : graph.passes)
+        // Mark culled passes first (needed for lifetime calculation)
+        for (uint32 passIndex = 0; passIndex < graph.passes.size(); ++passIndex)
         {
-            uint32 passIndex = static_cast<uint32>(&pass - graph.passes.data());
             if (!passNeeded.empty() && passNeeded[passIndex] == 0)
             {
-                pass.culled = true;
+                graph.passes[passIndex].culled = true;
                 graph.stats.culledPasses++;
-                continue;
             }
+        }
+
+        // Calculate resource lifetimes and memory aliases
+        CalculateResourceLifetimes(graph);
+        ComputeMemoryAliases(graph);
+
+        for (auto& pass : graph.passes)
+        {
+            if (pass.culled)
+                continue;
 
             for (const auto& usage : pass.usages)
             {
