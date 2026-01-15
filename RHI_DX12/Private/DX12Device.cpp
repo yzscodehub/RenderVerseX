@@ -332,6 +332,60 @@ namespace RVX
         }
     }
 
+    ID3D12CommandSignature* DX12Device::GetDrawCommandSignature()
+    {
+        if (!m_drawCommandSignature)
+        {
+            D3D12_INDIRECT_ARGUMENT_DESC arg = {};
+            arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+
+            D3D12_COMMAND_SIGNATURE_DESC desc = {};
+            desc.ByteStride = sizeof(D3D12_DRAW_ARGUMENTS);
+            desc.NumArgumentDescs = 1;
+            desc.pArgumentDescs = &arg;
+
+            DX12_CHECK(m_device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&m_drawCommandSignature)));
+        }
+
+        return m_drawCommandSignature.Get();
+    }
+
+    ID3D12CommandSignature* DX12Device::GetDrawIndexedCommandSignature()
+    {
+        if (!m_drawIndexedCommandSignature)
+        {
+            D3D12_INDIRECT_ARGUMENT_DESC arg = {};
+            arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+
+            D3D12_COMMAND_SIGNATURE_DESC desc = {};
+            desc.ByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+            desc.NumArgumentDescs = 1;
+            desc.pArgumentDescs = &arg;
+
+            DX12_CHECK(m_device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&m_drawIndexedCommandSignature)));
+        }
+
+        return m_drawIndexedCommandSignature.Get();
+    }
+
+    ID3D12CommandSignature* DX12Device::GetDispatchCommandSignature()
+    {
+        if (!m_dispatchCommandSignature)
+        {
+            D3D12_INDIRECT_ARGUMENT_DESC arg = {};
+            arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+
+            D3D12_COMMAND_SIGNATURE_DESC desc = {};
+            desc.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
+            desc.NumArgumentDescs = 1;
+            desc.pArgumentDescs = &arg;
+
+            DX12_CHECK(m_device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&m_dispatchCommandSignature)));
+        }
+
+        return m_dispatchCommandSignature.Get();
+    }
+
     // =============================================================================
     // Capabilities
     // =============================================================================

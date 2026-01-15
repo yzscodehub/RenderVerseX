@@ -2,6 +2,7 @@
 
 #include "RHI/RHI.h"
 #include <functional>
+#include <memory>
 
 namespace RVX
 {
@@ -63,6 +64,11 @@ namespace RVX
 
         // Depth-stencil
         void SetDepthStencil(RGTextureHandle texture, bool depthWrite = true, bool stencilWrite = false);
+
+    private:
+        class Impl;
+        Impl* m_impl = nullptr;
+        friend class RenderGraph;
     };
 
     // =============================================================================
@@ -73,6 +79,8 @@ namespace RVX
     public:
         RenderGraph();
         ~RenderGraph();
+
+        void SetDevice(IRHIDevice* device);
 
         // Create transient resources
         RGTextureHandle CreateTexture(const RHITextureDesc& desc);
@@ -100,8 +108,35 @@ namespace RVX
         void Clear();
 
     private:
+        void AddPassInternal(
+            const char* name,
+            RenderGraphPassType type,
+            std::function<void(RenderGraphBuilder&)> setup,
+            std::function<void(RHICommandContext&)> execute);
+
         class Impl;
         std::unique_ptr<Impl> m_impl;
     };
+
+    template<typename Data>
+    void RenderGraph::AddPass(
+        const char* name,
+        RenderGraphPassType type,
+        std::function<void(RenderGraphBuilder&, Data&)> setup,
+        std::function<void(const Data&, RHICommandContext&)> execute)
+    {
+        auto data = std::make_shared<Data>();
+        AddPassInternal(
+            name,
+            type,
+            [data, setup](RenderGraphBuilder& builder)
+            {
+                setup(builder, *data);
+            },
+            [data, execute](RHICommandContext& ctx)
+            {
+                execute(*data, ctx);
+            });
+    }
 
 } // namespace RVX

@@ -157,12 +157,26 @@ namespace RVX
         if (m_descriptorPool)
             vkDestroyDescriptorPool(m_device, m_descriptorPool, nullptr);
 
-        if (m_graphicsCommandPool)
-            vkDestroyCommandPool(m_device, m_graphicsCommandPool, nullptr);
-        if (m_computeCommandPool)
-            vkDestroyCommandPool(m_device, m_computeCommandPool, nullptr);
-        if (m_transferCommandPool)
-            vkDestroyCommandPool(m_device, m_transferCommandPool, nullptr);
+        const VkCommandPool graphicsPool = m_graphicsCommandPool;
+        const VkCommandPool computePool = m_computeCommandPool;
+        const VkCommandPool transferPool = m_transferCommandPool;
+
+        if (graphicsPool)
+        {
+            vkDestroyCommandPool(m_device, graphicsPool, nullptr);
+        }
+        if (computePool && computePool != graphicsPool)
+        {
+            vkDestroyCommandPool(m_device, computePool, nullptr);
+        }
+        if (transferPool && transferPool != graphicsPool && transferPool != computePool)
+        {
+            vkDestroyCommandPool(m_device, transferPool, nullptr);
+        }
+
+        m_graphicsCommandPool = VK_NULL_HANDLE;
+        m_computeCommandPool = VK_NULL_HANDLE;
+        m_transferCommandPool = VK_NULL_HANDLE;
 
         if (m_allocator)
             vmaDestroyAllocator(m_allocator);

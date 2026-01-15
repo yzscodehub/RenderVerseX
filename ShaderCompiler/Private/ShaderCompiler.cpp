@@ -1,11 +1,11 @@
 #include "ShaderCompiler/ShaderCompiler.h"
+#include "DXCCompiler.h"
 
 namespace RVX
 {
-    // Placeholder - will forward to DXCCompiler
     std::unique_ptr<IShaderCompiler> CreateShaderCompiler()
     {
-        return nullptr;
+        return CreateDXCShaderCompiler();
     }
 
 } // namespace RVX

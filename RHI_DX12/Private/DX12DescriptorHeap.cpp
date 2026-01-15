@@ -1,4 +1,5 @@
 #include "DX12DescriptorHeap.h"
+#include <algorithm>
 
 namespace RVX
 {
@@ -43,16 +44,23 @@ namespace RVX
         uint32 index = RVX_INVALID_INDEX;
 
         // Try to reuse from free list first
-        if (!m_freeList.empty())
+        while (!m_freeList.empty())
         {
-            index = m_freeList.front();
+            uint32 candidate = m_freeList.front();
             m_freeList.pop();
+
+            if (candidate < m_maxDescriptors && !m_allocated[candidate])
+            {
+                index = candidate;
+                break;
+            }
         }
-        else if (m_nextFreeIndex < m_maxDescriptors)
+
+        if (index == RVX_INVALID_INDEX && m_nextFreeIndex < m_maxDescriptors)
         {
             index = m_nextFreeIndex++;
         }
-        else
+        else if (index == RVX_INVALID_INDEX)
         {
             RVX_RHI_ERROR("Descriptor heap exhausted! Type: {}", static_cast<int>(m_type));
             return {};
@@ -71,6 +79,64 @@ namespace RVX
         return handle;
     }
 
+    DX12DescriptorHandle DX12StaticDescriptorHeap::AllocateRange(uint32 count)
+    {
+        if (count == 0)
+            return {};
+
+        if (count == 1)
+            return Allocate();
+
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        uint32 startIndex = RVX_INVALID_INDEX;
+        uint32 searchStart = 0;
+
+        // Try a simple linear scan for a contiguous free range
+        for (uint32 i = searchStart; i + count <= m_maxDescriptors; ++i)
+        {
+            bool available = true;
+            for (uint32 j = 0; j < count; ++j)
+            {
+                if (m_allocated[i + j])
+                {
+                    available = false;
+                    i += j; // Skip ahead to after the first allocated slot
+                    break;
+                }
+            }
+
+            if (available)
+            {
+                startIndex = i;
+                break;
+            }
+        }
+
+        if (startIndex == RVX_INVALID_INDEX)
+        {
+            RVX_RHI_ERROR("Descriptor heap range allocation failed! Type: {}, Count: {}",
+                static_cast<int>(m_type), count);
+            return {};
+        }
+
+        for (uint32 j = 0; j < count; ++j)
+        {
+            m_allocated[startIndex + j] = true;
+        }
+        m_nextFreeIndex = std::max(m_nextFreeIndex, startIndex + count);
+
+        DX12DescriptorHandle handle;
+        handle.heapIndex = startIndex;
+        handle.cpuHandle.ptr = m_cpuStart.ptr + startIndex * m_descriptorSize;
+        if (m_shaderVisible)
+        {
+            handle.gpuHandle.ptr = m_gpuStart.ptr + startIndex * m_descriptorSize;
+        }
+
+        return handle;
+    }
+
     void DX12StaticDescriptorHeap::Free(DX12DescriptorHandle handle)
     {
         if (!handle.IsValid())
@@ -82,6 +148,24 @@ namespace RVX
         {
             m_allocated[handle.heapIndex] = false;
             m_freeList.push(handle.heapIndex);
+        }
+    }
+
+    void DX12StaticDescriptorHeap::FreeRange(DX12DescriptorHandle handle, uint32 count)
+    {
+        if (!handle.IsValid() || count == 0)
+            return;
+
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        for (uint32 i = 0; i < count; ++i)
+        {
+            uint32 index = handle.heapIndex + i;
+            if (index < m_maxDescriptors && m_allocated[index])
+            {
+                m_allocated[index] = false;
+                m_freeList.push(index);
+            }
         }
     }
 

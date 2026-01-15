@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RHI/RHIDefinitions.h"
+#include "ShaderCompiler/ShaderReflection.h"
 #include <vector>
 #include <string>
 
@@ -29,6 +30,7 @@ namespace RVX
         const char* entryPoint = "main";
         const char* sourceCode = nullptr;
         const char* sourcePath = nullptr;
+        const char* targetProfile = nullptr;
         std::vector<ShaderMacro> defines;
         RHIBackendType targetBackend = RHIBackendType::DX12;
         bool enableDebugInfo = false;
@@ -44,6 +46,7 @@ namespace RVX
         std::vector<uint8> bytecode;
         std::string errorMessage;
         uint64 permutationHash = 0;
+        ShaderReflection reflection;
     };
 
     // =============================================================================

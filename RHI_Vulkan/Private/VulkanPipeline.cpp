@@ -43,6 +43,16 @@ namespace RVX
         }
     }
 
+    const RHIBindingLayoutEntry* VulkanDescriptorSetLayout::FindEntry(uint32 binding) const
+    {
+        for (const auto& entry : m_entries)
+        {
+            if (entry.binding == binding)
+                return &entry;
+        }
+        return nullptr;
+    }
+
     // =============================================================================
     // Vulkan Pipeline Layout
     // =============================================================================
@@ -347,8 +357,8 @@ namespace RVX
             SetDebugName(desc.debugName);
         }
 
-        auto* vkLayout = static_cast<VulkanDescriptorSetLayout*>(desc.layout);
-        m_layout = vkLayout->GetLayout();
+        m_layoutWrapper = static_cast<VulkanDescriptorSetLayout*>(desc.layout);
+        m_layout = m_layoutWrapper ? m_layoutWrapper->GetLayout() : VK_NULL_HANDLE;
 
         VkDescriptorSetAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         allocInfo.descriptorPool = device->GetDescriptorPool();
@@ -380,6 +390,13 @@ namespace RVX
 
         for (const auto& binding : bindings)
         {
+            const RHIBindingLayoutEntry* entry = m_layoutWrapper ? m_layoutWrapper->FindEntry(binding.binding) : nullptr;
+            if (!entry)
+            {
+                RVX_RHI_WARN("VulkanDescriptorSet: binding {} not found in layout", binding.binding);
+                continue;
+            }
+
             VkWriteDescriptorSet write = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             write.dstSet = m_descriptorSet;
             write.dstBinding = binding.binding;
@@ -396,7 +413,25 @@ namespace RVX
                 bufferInfo.range = binding.range == RVX_WHOLE_SIZE ? VK_WHOLE_SIZE : binding.range;
                 bufferInfos.push_back(bufferInfo);
 
-                write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                switch (entry->type)
+                {
+                    case RHIBindingType::UniformBuffer:
+                        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                        break;
+                    case RHIBindingType::DynamicUniformBuffer:
+                        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+                        break;
+                    case RHIBindingType::StorageBuffer:
+                        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                        break;
+                    case RHIBindingType::DynamicStorageBuffer:
+                        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+                        break;
+                    default:
+                        RVX_RHI_WARN("VulkanDescriptorSet: binding {} expects non-buffer type", binding.binding);
+                        continue;
+                }
+
                 write.pBufferInfo = &bufferInfos.back();
             }
             else if (binding.textureView)
@@ -405,17 +440,35 @@ namespace RVX
                 
                 VkDescriptorImageInfo imageInfo = {};
                 imageInfo.imageView = vkView->GetImageView();
-                imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                
-                if (binding.sampler)
+
+                switch (entry->type)
                 {
-                    auto* vkSampler = static_cast<VulkanSampler*>(binding.sampler);
-                    imageInfo.sampler = vkSampler->GetSampler();
-                    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                }
-                else
-                {
-                    write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                    case RHIBindingType::SampledTexture:
+                        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                        write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                        break;
+                    case RHIBindingType::StorageTexture:
+                        imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+                        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                        break;
+                    case RHIBindingType::CombinedTextureSampler:
+                    {
+                        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                        if (binding.sampler)
+                        {
+                            auto* vkSampler = static_cast<VulkanSampler*>(binding.sampler);
+                            imageInfo.sampler = vkSampler->GetSampler();
+                        }
+                        else
+                        {
+                            RVX_RHI_WARN("VulkanDescriptorSet: combined binding {} missing sampler", binding.binding);
+                        }
+                        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                        break;
+                    }
+                    default:
+                        RVX_RHI_WARN("VulkanDescriptorSet: binding {} expects non-texture type", binding.binding);
+                        continue;
                 }
                 
                 imageInfos.push_back(imageInfo);
@@ -423,6 +476,12 @@ namespace RVX
             }
             else if (binding.sampler)
             {
+                if (entry->type != RHIBindingType::Sampler)
+                {
+                    RVX_RHI_WARN("VulkanDescriptorSet: binding {} expects non-sampler type", binding.binding);
+                    continue;
+                }
+
                 auto* vkSampler = static_cast<VulkanSampler*>(binding.sampler);
                 
                 VkDescriptorImageInfo imageInfo = {};

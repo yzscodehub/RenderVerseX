@@ -33,6 +33,8 @@ namespace RVX
         if (m_isRecording)
             return;
 
+        VK_CHECK(vkResetCommandBuffer(m_commandBuffer, 0));
+
         VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
@@ -499,6 +501,15 @@ namespace RVX
     {
         auto* vkContext = static_cast<VulkanCommandContext*>(context);
 
+        std::lock_guard<std::mutex> lock(device->GetSubmitMutex());
+
+        VkSemaphore waitSemaphores[1] = {};
+        VkPipelineStageFlags waitStages[1] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+        uint32 waitCount = 0;
+
+        VkSemaphore signalSemaphores[1] = {};
+        uint32 signalCount = 0;
+
         VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
         submitInfo.commandBufferCount = 1;
         VkCommandBuffer cmdBuffer = vkContext->GetCommandBuffer();
@@ -514,6 +525,24 @@ namespace RVX
         }
 
         VkFence fence = VK_NULL_HANDLE;  // Would get from signalFence if provided
+
+        if (vkContext->GetQueueType() == RHICommandQueueType::Graphics)
+        {
+            waitSemaphores[0] = device->GetImageAvailableSemaphore();
+            waitCount = 1;
+
+            signalSemaphores[0] = device->GetRenderFinishedSemaphore();
+            signalCount = 1;
+
+            fence = device->GetCurrentFrameFence();
+        }
+
+        submitInfo.waitSemaphoreCount = waitCount;
+        submitInfo.pWaitSemaphores = waitCount ? waitSemaphores : nullptr;
+        submitInfo.pWaitDstStageMask = waitCount ? waitStages : nullptr;
+        submitInfo.signalSemaphoreCount = signalCount;
+        submitInfo.pSignalSemaphores = signalSemaphores;
+
         VK_CHECK(vkQueueSubmit(queue, 1, &submitInfo, fence));
     }
 

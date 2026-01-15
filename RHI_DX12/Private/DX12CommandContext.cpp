@@ -354,26 +354,94 @@ namespace RVX
         if (!m_currentPipeline || !set) return;
 
         auto* dx12Set = static_cast<DX12DescriptorSet*>(set);
-        auto* rootSig = m_currentPipeline->GetRootSignature();
-        
-        // Get the pipeline layout to find root parameter indices
-        // For now, we use a simple mapping: slot 0 = first CBV, etc.
+        auto* pipelineLayout = m_currentPipeline->GetPipelineLayout();
         const auto& bindings = dx12Set->GetBindings();
-        
-        for (const auto& binding : bindings)
+
+        if (pipelineLayout)
         {
-            if (binding.buffer)
+            // Bind descriptor tables (SRV/UAV + Sampler)
+            uint32 srvUavTableIndex = pipelineLayout->GetSrvUavTableIndex(slot);
+            if (srvUavTableIndex != UINT32_MAX && dx12Set->HasCbvSrvUavTable())
             {
+                if (m_currentPipeline->IsCompute())
+                {
+                    m_commandList->SetComputeRootDescriptorTable(srvUavTableIndex, dx12Set->GetCbvSrvUavGpuHandle());
+                }
+                else
+                {
+                    m_commandList->SetGraphicsRootDescriptorTable(srvUavTableIndex, dx12Set->GetCbvSrvUavGpuHandle());
+                }
+            }
+
+            uint32 samplerTableIndex = pipelineLayout->GetSamplerTableIndex(slot);
+            if (samplerTableIndex != UINT32_MAX && dx12Set->HasSamplerTable())
+            {
+                if (m_currentPipeline->IsCompute())
+                {
+                    m_commandList->SetComputeRootDescriptorTable(samplerTableIndex, dx12Set->GetSamplerGpuHandle());
+                }
+                else
+                {
+                    m_commandList->SetGraphicsRootDescriptorTable(samplerTableIndex, dx12Set->GetSamplerGpuHandle());
+                }
+            }
+
+            // Bind root CBVs for uniform buffers
+            auto* layout = dx12Set->GetLayout();
+            for (const auto& binding : bindings)
+            {
+                if (!binding.buffer || !layout)
+                    continue;
+
+                const auto* entry = layout->FindEntry(binding.binding);
+                if (!entry)
+                    continue;
+
+                if (entry->type != RHIBindingType::UniformBuffer &&
+                    entry->type != RHIBindingType::DynamicUniformBuffer)
+                {
+                    continue;
+                }
+
+                uint32 rootIndex = pipelineLayout->GetRootCBVIndex(slot, binding.binding);
+                if (rootIndex == UINT32_MAX)
+                    continue;
+
+                uint64 dynamicOffset = 0;
+                if (entry->isDynamic)
+                {
+                    uint32 dynamicIndex = layout->GetDynamicBindingIndex(binding.binding);
+                    if (dynamicIndex != UINT32_MAX && dynamicIndex < dynamicOffsets.size())
+                    {
+                        dynamicOffset = dynamicOffsets[dynamicIndex];
+                    }
+                }
+
                 auto* dx12Buffer = static_cast<DX12Buffer*>(binding.buffer);
-                D3D12_GPU_VIRTUAL_ADDRESS gpuAddr = dx12Buffer->GetGPUVirtualAddress();
-                
-                // Apply offset if specified
-                gpuAddr += binding.offset;
-                
-                // The root parameter index is simply the binding number for now
-                // In a full implementation, this would be looked up from the pipeline layout
+                D3D12_GPU_VIRTUAL_ADDRESS gpuAddr = dx12Buffer->GetGPUVirtualAddress() + binding.offset + dynamicOffset;
+
+                if (m_currentPipeline->IsCompute())
+                {
+                    m_commandList->SetComputeRootConstantBufferView(rootIndex, gpuAddr);
+                }
+                else
+                {
+                    m_commandList->SetGraphicsRootConstantBufferView(rootIndex, gpuAddr);
+                }
+            }
+        }
+        else
+        {
+            // Fallback: root index == binding
+            for (const auto& binding : bindings)
+            {
+                if (!binding.buffer)
+                    continue;
+
+                auto* dx12Buffer = static_cast<DX12Buffer*>(binding.buffer);
+                D3D12_GPU_VIRTUAL_ADDRESS gpuAddr = dx12Buffer->GetGPUVirtualAddress() + binding.offset;
                 uint32 rootIndex = binding.binding;
-                
+
                 if (m_currentPipeline->IsCompute())
                 {
                     m_commandList->SetComputeRootConstantBufferView(rootIndex, gpuAddr);
@@ -391,8 +459,10 @@ namespace RVX
         if (!m_currentPipeline || !data || size == 0) return;
 
         // Get push constant root index from pipeline layout
-        // For now, assume push constants are at root index after CBVs
-        uint32 rootIndex = 0;  // This should come from pipeline layout
+        auto* pipelineLayout = m_currentPipeline->GetPipelineLayout();
+        uint32 rootIndex = pipelineLayout ? pipelineLayout->GetPushConstantRootIndex() : UINT32_MAX;
+        if (rootIndex == UINT32_MAX)
+            return;
         
         if (m_currentPipeline->IsCompute())
         {
@@ -475,13 +545,57 @@ namespace RVX
     void DX12CommandContext::DrawIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride)
     {
         FlushBarriers();
-        // TODO: Implement indirect draw
+        auto* dx12Buffer = static_cast<DX12Buffer*>(buffer);
+        if (!dx12Buffer)
+            return;
+
+        if (stride == 0)
+            stride = sizeof(D3D12_DRAW_ARGUMENTS);
+
+        if (stride != sizeof(D3D12_DRAW_ARGUMENTS))
+        {
+            RVX_RHI_WARN("DrawIndirect stride {} does not match D3D12_DRAW_ARGUMENTS size {}", stride, sizeof(D3D12_DRAW_ARGUMENTS));
+        }
+
+        auto* signature = m_device->GetDrawCommandSignature();
+        if (!signature)
+            return;
+
+        m_commandList->ExecuteIndirect(
+            signature,
+            drawCount,
+            dx12Buffer->GetResource(),
+            offset,
+            nullptr,
+            0);
     }
 
     void DX12CommandContext::DrawIndexedIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride)
     {
         FlushBarriers();
-        // TODO: Implement indirect draw
+        auto* dx12Buffer = static_cast<DX12Buffer*>(buffer);
+        if (!dx12Buffer)
+            return;
+
+        if (stride == 0)
+            stride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+
+        if (stride != sizeof(D3D12_DRAW_INDEXED_ARGUMENTS))
+        {
+            RVX_RHI_WARN("DrawIndexedIndirect stride {} does not match D3D12_DRAW_INDEXED_ARGUMENTS size {}", stride, sizeof(D3D12_DRAW_INDEXED_ARGUMENTS));
+        }
+
+        auto* signature = m_device->GetDrawIndexedCommandSignature();
+        if (!signature)
+            return;
+
+        m_commandList->ExecuteIndirect(
+            signature,
+            drawCount,
+            dx12Buffer->GetResource(),
+            offset,
+            nullptr,
+            0);
     }
 
     // =============================================================================
@@ -496,7 +610,21 @@ namespace RVX
     void DX12CommandContext::DispatchIndirect(RHIBuffer* buffer, uint64 offset)
     {
         FlushBarriers();
-        // TODO: Implement indirect dispatch
+        auto* dx12Buffer = static_cast<DX12Buffer*>(buffer);
+        if (!dx12Buffer)
+            return;
+
+        auto* signature = m_device->GetDispatchCommandSignature();
+        if (!signature)
+            return;
+
+        m_commandList->ExecuteIndirect(
+            signature,
+            1,
+            dx12Buffer->GetResource(),
+            offset,
+            nullptr,
+            0);
     }
 
     // =============================================================================

@@ -82,6 +82,10 @@ namespace RVX
         
         ID3D12CommandQueue* GetQueue(RHICommandQueueType type) const;
 
+        ID3D12CommandSignature* GetDrawCommandSignature();
+        ID3D12CommandSignature* GetDrawIndexedCommandSignature();
+        ID3D12CommandSignature* GetDispatchCommandSignature();
+
         #ifdef RVX_USE_D3D12MA
         D3D12MA::Allocator* GetMemoryAllocator() const { return m_memoryAllocator.Get(); }
         #endif
@@ -103,6 +107,11 @@ namespace RVX
         ComPtr<ID3D12CommandQueue> m_graphicsQueue;
         ComPtr<ID3D12CommandQueue> m_computeQueue;
         ComPtr<ID3D12CommandQueue> m_copyQueue;
+
+        // Command Signatures (for indirect)
+        ComPtr<ID3D12CommandSignature> m_drawCommandSignature;
+        ComPtr<ID3D12CommandSignature> m_drawIndexedCommandSignature;
+        ComPtr<ID3D12CommandSignature> m_dispatchCommandSignature;
 
         // Frame synchronization
         ComPtr<ID3D12Fence> m_frameFence;

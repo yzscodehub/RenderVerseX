@@ -19,6 +19,7 @@ namespace RVX
 
         VkDescriptorSetLayout GetLayout() const { return m_layout; }
         const std::vector<RHIBindingLayoutEntry>& GetEntries() const { return m_entries; }
+        const RHIBindingLayoutEntry* FindEntry(uint32 binding) const;
 
     private:
         VulkanDevice* m_device;
@@ -85,6 +86,7 @@ namespace RVX
         VulkanDevice* m_device;
         VkDescriptorSet m_descriptorSet = VK_NULL_HANDLE;
         VkDescriptorSetLayout m_layout = VK_NULL_HANDLE;
+        VulkanDescriptorSetLayout* m_layoutWrapper = nullptr;
     };
 
     // =============================================================================

@@ -34,5 +34,9 @@ PSInput VSMain(VSInput input)
 
 float4 PSMain(PSInput input) : SV_Target
 {
-    return input.color;
+    float4 color = input.color;
+#if defined(RVX_APPLY_SRGB_OUTPUT)
+    color.rgb = pow(color.rgb, 1.0f / 2.2f);
+#endif
+    return color;
 }

@@ -8,7 +8,6 @@ add_executable(Triangle
 target_link_libraries(Triangle PRIVATE
     RVX::RenderGraph
     glfw
-    d3dcompiler
 )
 
 # Link enabled backends

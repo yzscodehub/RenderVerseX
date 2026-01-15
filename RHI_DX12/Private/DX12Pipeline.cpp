@@ -1,9 +1,46 @@
 #include "DX12Pipeline.h"
 #include "DX12Device.h"
 #include "DX12Resources.h"
+#include <algorithm>
+#include <vector>
+#include <d3d12sdklayers.h>
 
 namespace RVX
 {
+    namespace
+    {
+        void DumpD3D12InfoQueue(ID3D12Device* device)
+        {
+            ComPtr<ID3D12InfoQueue> infoQueue;
+            if (FAILED(device->QueryInterface(IID_PPV_ARGS(&infoQueue))))
+            {
+                return;
+            }
+
+            const UINT64 messageCount = infoQueue->GetNumStoredMessages();
+            for (UINT64 i = 0; i < messageCount; ++i)
+            {
+                SIZE_T messageLength = 0;
+                infoQueue->GetMessage(i, nullptr, &messageLength);
+                if (messageLength == 0)
+                {
+                    continue;
+                }
+
+                std::vector<char> messageData(messageLength);
+                auto* message = reinterpret_cast<D3D12_MESSAGE*>(messageData.data());
+                if (SUCCEEDED(infoQueue->GetMessage(i, message, &messageLength)))
+                {
+                    if (message->pDescription)
+                    {
+                        RVX_RHI_ERROR("  D3D12: {}", message->pDescription);
+                    }
+                }
+            }
+
+            infoQueue->ClearStoredMessages();
+        }
+    }
     // =============================================================================
     // Helper: Convert blend factor
     // =============================================================================
@@ -106,9 +143,79 @@ namespace RVX
         }
 
         m_entries = desc.entries;
+
+        uint32 cbvSrvUavIndex = 0;
+        uint32 samplerIndex = 0;
+        uint32 dynamicIndex = 0;
+
+        for (size_t i = 0; i < m_entries.size(); ++i)
+        {
+            const auto& entry = m_entries[i];
+            m_entryIndices[entry.binding] = static_cast<uint32>(i);
+
+            if (entry.isDynamic)
+            {
+                m_dynamicBindingIndices[entry.binding] = dynamicIndex++;
+            }
+
+            switch (entry.type)
+            {
+                case RHIBindingType::SampledTexture:
+                case RHIBindingType::StorageTexture:
+                case RHIBindingType::StorageBuffer:
+                case RHIBindingType::DynamicStorageBuffer:
+                case RHIBindingType::CombinedTextureSampler:
+                    m_cbvSrvUavIndices[entry.binding] = cbvSrvUavIndex;
+                    cbvSrvUavIndex += std::max(1u, entry.count);
+                    break;
+                case RHIBindingType::Sampler:
+                    m_samplerIndices[entry.binding] = samplerIndex;
+                    samplerIndex += std::max(1u, entry.count);
+                    break;
+                case RHIBindingType::UniformBuffer:
+                case RHIBindingType::DynamicUniformBuffer:
+                default:
+                    break;
+            }
+
+            if (entry.type == RHIBindingType::CombinedTextureSampler)
+            {
+                m_samplerIndices[entry.binding] = samplerIndex;
+                samplerIndex += std::max(1u, entry.count);
+            }
+        }
+
+        m_cbvSrvUavCount = cbvSrvUavIndex;
+        m_samplerCount = samplerIndex;
     }
 
     DX12DescriptorSetLayout::~DX12DescriptorSetLayout() = default;
+
+    const RHIBindingLayoutEntry* DX12DescriptorSetLayout::FindEntry(uint32 binding) const
+    {
+        auto it = m_entryIndices.find(binding);
+        if (it == m_entryIndices.end())
+            return nullptr;
+        return &m_entries[it->second];
+    }
+
+    uint32 DX12DescriptorSetLayout::GetCbvSrvUavIndex(uint32 binding) const
+    {
+        auto it = m_cbvSrvUavIndices.find(binding);
+        return it != m_cbvSrvUavIndices.end() ? it->second : UINT32_MAX;
+    }
+
+    uint32 DX12DescriptorSetLayout::GetSamplerIndex(uint32 binding) const
+    {
+        auto it = m_samplerIndices.find(binding);
+        return it != m_samplerIndices.end() ? it->second : UINT32_MAX;
+    }
+
+    uint32 DX12DescriptorSetLayout::GetDynamicBindingIndex(uint32 binding) const
+    {
+        auto it = m_dynamicBindingIndices.find(binding);
+        return it != m_dynamicBindingIndices.end() ? it->second : UINT32_MAX;
+    }
 
     // =============================================================================
     // DX12 Pipeline Layout
@@ -126,11 +233,24 @@ namespace RVX
 
     DX12PipelineLayout::~DX12PipelineLayout() = default;
 
+    uint32 DX12PipelineLayout::GetSrvUavTableIndex(uint32 setIndex) const
+    {
+        auto it = m_srvUavTableIndices.find(setIndex);
+        return it != m_srvUavTableIndices.end() ? it->second : UINT32_MAX;
+    }
+
+    uint32 DX12PipelineLayout::GetSamplerTableIndex(uint32 setIndex) const
+    {
+        auto it = m_samplerTableIndices.find(setIndex);
+        return it != m_samplerTableIndices.end() ? it->second : UINT32_MAX;
+    }
+
     void DX12PipelineLayout::CreateRootSignature(const RHIPipelineLayoutDesc& desc)
     {
         auto d3dDevice = m_device->GetD3DDevice();
 
         std::vector<D3D12_ROOT_PARAMETER1> rootParams;
+        std::vector<std::vector<D3D12_DESCRIPTOR_RANGE1>> rangesStorage;
 
         // Process each descriptor set layout
         // Use root CBVs for uniform buffers for efficiency
@@ -142,6 +262,8 @@ namespace RVX
             if (!setLayout) continue;
 
             const auto& entries = setLayout->GetEntries();
+            std::vector<D3D12_DESCRIPTOR_RANGE1> srvUavRanges;
+            std::vector<D3D12_DESCRIPTOR_RANGE1> samplerRanges;
             
             for (const auto& entry : entries)
             {
@@ -160,7 +282,74 @@ namespace RVX
                     rootParams.push_back(param);
                     cbvRegister++;
                 }
-                // TODO: Add descriptor table support for SRVs/UAVs/Samplers when needed
+                else if (entry.type == RHIBindingType::SampledTexture ||
+                         entry.type == RHIBindingType::CombinedTextureSampler)
+                {
+                    D3D12_DESCRIPTOR_RANGE1 range = {};
+                    range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+                    range.NumDescriptors = std::max(1u, entry.count);
+                    range.BaseShaderRegister = entry.binding;
+                    range.RegisterSpace = setIndex;
+                    range.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+                    range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+                    srvUavRanges.push_back(range);
+                }
+                else if (entry.type == RHIBindingType::StorageTexture ||
+                         entry.type == RHIBindingType::StorageBuffer ||
+                         entry.type == RHIBindingType::DynamicStorageBuffer)
+                {
+                    D3D12_DESCRIPTOR_RANGE1 range = {};
+                    range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+                    range.NumDescriptors = std::max(1u, entry.count);
+                    range.BaseShaderRegister = entry.binding;
+                    range.RegisterSpace = setIndex;
+                    range.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+                    range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+                    srvUavRanges.push_back(range);
+                }
+
+                if (entry.type == RHIBindingType::Sampler ||
+                    entry.type == RHIBindingType::CombinedTextureSampler)
+                {
+                    D3D12_DESCRIPTOR_RANGE1 range = {};
+                    range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+                    range.NumDescriptors = std::max(1u, entry.count);
+                    range.BaseShaderRegister = entry.binding;
+                    range.RegisterSpace = setIndex;
+                    range.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+                    range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+                    samplerRanges.push_back(range);
+                }
+            }
+
+            if (!srvUavRanges.empty())
+            {
+                rangesStorage.push_back(std::move(srvUavRanges));
+                auto& ranges = rangesStorage.back();
+
+                D3D12_ROOT_PARAMETER1 tableParam = {};
+                tableParam.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                tableParam.DescriptorTable.NumDescriptorRanges = static_cast<UINT>(ranges.size());
+                tableParam.DescriptorTable.pDescriptorRanges = ranges.data();
+                tableParam.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+                m_srvUavTableIndices[setIndex] = static_cast<uint32>(rootParams.size());
+                rootParams.push_back(tableParam);
+            }
+
+            if (!samplerRanges.empty())
+            {
+                rangesStorage.push_back(std::move(samplerRanges));
+                auto& ranges = rangesStorage.back();
+
+                D3D12_ROOT_PARAMETER1 tableParam = {};
+                tableParam.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                tableParam.DescriptorTable.NumDescriptorRanges = static_cast<UINT>(ranges.size());
+                tableParam.DescriptorTable.pDescriptorRanges = ranges.data();
+                tableParam.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+                m_samplerTableIndices[setIndex] = static_cast<uint32>(rootParams.size());
+                rootParams.push_back(tableParam);
             }
         }
 
@@ -244,16 +433,17 @@ namespace RVX
         // Get or create root signature
         if (desc.pipelineLayout)
         {
-            auto* dx12Layout = static_cast<DX12PipelineLayout*>(desc.pipelineLayout);
-            m_rootSignature = dx12Layout->GetRootSignature();
+            m_pipelineLayout = static_cast<DX12PipelineLayout*>(desc.pipelineLayout);
+            m_rootSignature = m_pipelineLayout->GetRootSignature();
         }
         else
         {
             // Create a default root signature
             RHIPipelineLayoutDesc layoutDesc;
             layoutDesc.pushConstantSize = 128;
-            auto layout = CreateDX12PipelineLayout(m_device, layoutDesc);
-            m_rootSignature = static_cast<DX12PipelineLayout*>(layout.Get())->GetRootSignature();
+            m_ownedLayout = CreateDX12PipelineLayout(m_device, layoutDesc);
+            m_pipelineLayout = static_cast<DX12PipelineLayout*>(m_ownedLayout.Get());
+            m_rootSignature = m_pipelineLayout->GetRootSignature();
         }
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
@@ -381,6 +571,16 @@ namespace RVX
         if (FAILED(hr))
         {
             RVX_RHI_ERROR("Failed to create graphics pipeline state: 0x{:08X}", static_cast<uint32>(hr));
+            if (desc.debugName)
+            {
+                RVX_RHI_ERROR("  Pipeline: {}", desc.debugName);
+            }
+            RVX_RHI_ERROR("  InputLayout elements: {}", static_cast<uint32>(inputElements.size()));
+            RVX_RHI_ERROR("  NumRenderTargets: {} DSVFormat: {}", desc.numRenderTargets,
+                static_cast<int>(desc.depthStencilFormat));
+            RVX_RHI_ERROR("  RTVFormat[0]: {}", static_cast<int>(desc.renderTargetFormats[0]));
+            RVX_RHI_ERROR("  RootSignature: {}", m_rootSignature ? "valid" : "null");
+            DumpD3D12InfoQueue(d3dDevice);
             return;
         }
 
@@ -399,14 +599,15 @@ namespace RVX
         // Get or create root signature
         if (desc.pipelineLayout)
         {
-            auto* dx12Layout = static_cast<DX12PipelineLayout*>(desc.pipelineLayout);
-            m_rootSignature = dx12Layout->GetRootSignature();
+            m_pipelineLayout = static_cast<DX12PipelineLayout*>(desc.pipelineLayout);
+            m_rootSignature = m_pipelineLayout->GetRootSignature();
         }
         else
         {
             RHIPipelineLayoutDesc layoutDesc;
-            auto layout = CreateDX12PipelineLayout(m_device, layoutDesc);
-            m_rootSignature = static_cast<DX12PipelineLayout*>(layout.Get())->GetRootSignature();
+            m_ownedLayout = CreateDX12PipelineLayout(m_device, layoutDesc);
+            m_pipelineLayout = static_cast<DX12PipelineLayout*>(m_ownedLayout.Get());
+            m_rootSignature = m_pipelineLayout->GetRootSignature();
         }
 
         D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
@@ -439,15 +640,200 @@ namespace RVX
             SetDebugName(desc.debugName);
         }
 
+        m_layout = static_cast<DX12DescriptorSetLayout*>(desc.layout);
         m_bindings = desc.bindings;
+
+        if (m_layout)
+        {
+            m_cbvSrvUavCount = m_layout->GetCbvSrvUavCount();
+            m_samplerCount = m_layout->GetSamplerCount();
+
+            auto& heapManager = m_device->GetDescriptorHeapManager();
+            if (m_cbvSrvUavCount > 0)
+            {
+                m_cbvSrvUavHandle = heapManager.AllocateCbvSrvUavRange(m_cbvSrvUavCount);
+            }
+            if (m_samplerCount > 0)
+            {
+                m_samplerHandle = heapManager.AllocateSamplerRange(m_samplerCount);
+            }
+        }
+
+        if (!m_bindings.empty())
+        {
+            Update(m_bindings);
+        }
     }
 
-    DX12DescriptorSet::~DX12DescriptorSet() = default;
+    DX12DescriptorSet::~DX12DescriptorSet()
+    {
+        auto& heapManager = m_device->GetDescriptorHeapManager();
+
+        if (m_cbvSrvUavHandle.IsValid() && m_cbvSrvUavCount > 0)
+        {
+            heapManager.FreeCbvSrvUavRange(m_cbvSrvUavHandle, m_cbvSrvUavCount);
+        }
+
+        if (m_samplerHandle.IsValid() && m_samplerCount > 0)
+        {
+            heapManager.FreeSamplerRange(m_samplerHandle, m_samplerCount);
+        }
+    }
 
     void DX12DescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
     {
         m_bindings = bindings;
-        // TODO: Update descriptor heap entries
+        if (!m_layout)
+        {
+            return;
+        }
+
+        auto d3dDevice = m_device->GetD3DDevice();
+        auto& heapManager = m_device->GetDescriptorHeapManager();
+
+        const uint32 cbvSrvUavSize = heapManager.GetCbvSrvUavDescriptorSize();
+        const uint32 samplerSize = heapManager.GetSamplerDescriptorSize();
+
+        for (const auto& binding : m_bindings)
+        {
+            const auto* entry = m_layout->FindEntry(binding.binding);
+            if (!entry)
+            {
+                RVX_RHI_WARN("Descriptor binding {} not found in layout", binding.binding);
+                continue;
+            }
+
+            switch (entry->type)
+            {
+                case RHIBindingType::UniformBuffer:
+                case RHIBindingType::DynamicUniformBuffer:
+                    // Root CBVs are bound in the command context
+                    break;
+                case RHIBindingType::StorageBuffer:
+                case RHIBindingType::DynamicStorageBuffer:
+                {
+                    if (!binding.buffer || !m_cbvSrvUavHandle.IsValid())
+                        break;
+
+                    auto* dx12Buffer = static_cast<DX12Buffer*>(binding.buffer);
+                    const DX12DescriptorHandle& srcHandle =
+                        dx12Buffer->GetUAVHandle().IsValid() ? dx12Buffer->GetUAVHandle() : dx12Buffer->GetSRVHandle();
+
+                    if (!srcHandle.IsValid())
+                    {
+                        RVX_RHI_WARN("StorageBuffer binding {} missing SRV/UAV handle", binding.binding);
+                        break;
+                    }
+
+                    uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
+                    if (dstIndex == UINT32_MAX)
+                        break;
+
+                    D3D12_CPU_DESCRIPTOR_HANDLE dst = m_cbvSrvUavHandle.cpuHandle;
+                    dst.ptr += static_cast<SIZE_T>(dstIndex) * cbvSrvUavSize;
+
+                    d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                    break;
+                }
+                case RHIBindingType::SampledTexture:
+                {
+                    if (!binding.textureView || !m_cbvSrvUavHandle.IsValid())
+                        break;
+
+                    auto* dx12View = static_cast<DX12TextureView*>(binding.textureView);
+                    const DX12DescriptorHandle& srcHandle = dx12View->GetSRVHandle();
+                    if (!srcHandle.IsValid())
+                        break;
+
+                    uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
+                    if (dstIndex == UINT32_MAX)
+                        break;
+
+                    D3D12_CPU_DESCRIPTOR_HANDLE dst = m_cbvSrvUavHandle.cpuHandle;
+                    dst.ptr += static_cast<SIZE_T>(dstIndex) * cbvSrvUavSize;
+
+                    d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                    break;
+                }
+                case RHIBindingType::StorageTexture:
+                {
+                    if (!binding.textureView || !m_cbvSrvUavHandle.IsValid())
+                        break;
+
+                    auto* dx12View = static_cast<DX12TextureView*>(binding.textureView);
+                    const DX12DescriptorHandle& srcHandle = dx12View->GetUAVHandle();
+                    if (!srcHandle.IsValid())
+                        break;
+
+                    uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
+                    if (dstIndex == UINT32_MAX)
+                        break;
+
+                    D3D12_CPU_DESCRIPTOR_HANDLE dst = m_cbvSrvUavHandle.cpuHandle;
+                    dst.ptr += static_cast<SIZE_T>(dstIndex) * cbvSrvUavSize;
+
+                    d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                    break;
+                }
+                case RHIBindingType::Sampler:
+                {
+                    if (!binding.sampler || !m_samplerHandle.IsValid())
+                        break;
+
+                    auto* dx12Sampler = static_cast<DX12Sampler*>(binding.sampler);
+                    const DX12DescriptorHandle& srcHandle = dx12Sampler->GetHandle();
+                    if (!srcHandle.IsValid())
+                        break;
+
+                    uint32 dstIndex = m_layout->GetSamplerIndex(binding.binding);
+                    if (dstIndex == UINT32_MAX)
+                        break;
+
+                    D3D12_CPU_DESCRIPTOR_HANDLE dst = m_samplerHandle.cpuHandle;
+                    dst.ptr += static_cast<SIZE_T>(dstIndex) * samplerSize;
+
+                    d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+                    break;
+                }
+                case RHIBindingType::CombinedTextureSampler:
+                {
+                    if (binding.textureView && m_cbvSrvUavHandle.IsValid())
+                    {
+                        auto* dx12View = static_cast<DX12TextureView*>(binding.textureView);
+                        const DX12DescriptorHandle& srcHandle = dx12View->GetSRVHandle();
+                        if (srcHandle.IsValid())
+                        {
+                            uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
+                            if (dstIndex != UINT32_MAX)
+                            {
+                                D3D12_CPU_DESCRIPTOR_HANDLE dst = m_cbvSrvUavHandle.cpuHandle;
+                                dst.ptr += static_cast<SIZE_T>(dstIndex) * cbvSrvUavSize;
+                                d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                            }
+                        }
+                    }
+
+                    if (binding.sampler && m_samplerHandle.IsValid())
+                    {
+                        auto* dx12Sampler = static_cast<DX12Sampler*>(binding.sampler);
+                        const DX12DescriptorHandle& srcHandle = dx12Sampler->GetHandle();
+                        if (srcHandle.IsValid())
+                        {
+                            uint32 dstIndex = m_layout->GetSamplerIndex(binding.binding);
+                            if (dstIndex != UINT32_MAX)
+                            {
+                                D3D12_CPU_DESCRIPTOR_HANDLE dst = m_samplerHandle.cpuHandle;
+                                dst.ptr += static_cast<SIZE_T>(dstIndex) * samplerSize;
+                                d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+                            }
+                        }
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
     }
 
     // =============================================================================
@@ -465,12 +851,24 @@ namespace RVX
 
     RHIPipelineRef CreateDX12GraphicsPipeline(DX12Device* device, const RHIGraphicsPipelineDesc& desc)
     {
-        return Ref<DX12Pipeline>(new DX12Pipeline(device, desc));
+        auto pipeline = Ref<DX12Pipeline>(new DX12Pipeline(device, desc));
+        if (!pipeline->IsValid())
+        {
+            RVX_RHI_ERROR("DX12 graphics pipeline creation failed (invalid pipeline state)");
+            return nullptr;
+        }
+        return pipeline;
     }
 
     RHIPipelineRef CreateDX12ComputePipeline(DX12Device* device, const RHIComputePipelineDesc& desc)
     {
-        return Ref<DX12Pipeline>(new DX12Pipeline(device, desc));
+        auto pipeline = Ref<DX12Pipeline>(new DX12Pipeline(device, desc));
+        if (!pipeline->IsValid())
+        {
+            RVX_RHI_ERROR("DX12 compute pipeline creation failed (invalid pipeline state)");
+            return nullptr;
+        }
+        return pipeline;
     }
 
     RHIDescriptorSetRef CreateDX12DescriptorSet(DX12Device* device, const RHIDescriptorSetDesc& desc)

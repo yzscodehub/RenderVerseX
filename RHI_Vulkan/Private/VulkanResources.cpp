@@ -1,5 +1,6 @@
 #include "VulkanResources.h"
 #include "VulkanDevice.h"
+#include <cmath>
 
 namespace RVX
 {
@@ -286,6 +287,32 @@ namespace RVX
     // =============================================================================
     // Vulkan Sampler
     // =============================================================================
+    static VkBorderColor ToVkBorderColor(const float borderColor[4])
+    {
+        auto closeTo = [](float value, float target) {
+            return std::abs(value - target) < 1e-6f;
+        };
+
+        const bool isZeroRgb = closeTo(borderColor[0], 0.0f) &&
+                               closeTo(borderColor[1], 0.0f) &&
+                               closeTo(borderColor[2], 0.0f);
+        const bool isOneRgb = closeTo(borderColor[0], 1.0f) &&
+                              closeTo(borderColor[1], 1.0f) &&
+                              closeTo(borderColor[2], 1.0f);
+        const bool isAlphaZero = closeTo(borderColor[3], 0.0f);
+        const bool isAlphaOne = closeTo(borderColor[3], 1.0f);
+
+        if (isZeroRgb && isAlphaZero)
+            return VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+        if (isZeroRgb && isAlphaOne)
+            return VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+        if (isOneRgb && isAlphaOne)
+            return VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+
+        RVX_RHI_WARN("Unsupported Vulkan border color (only transparent/opaque black/white supported). Using transparent black.");
+        return VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+    }
+
     VulkanSampler::VulkanSampler(VulkanDevice* device, const RHISamplerDesc& desc)
         : m_device(device)
     {
@@ -308,7 +335,7 @@ namespace RVX
         samplerInfo.compareOp = ToVkCompareOp(desc.compareOp);
         samplerInfo.minLod = desc.minLod;
         samplerInfo.maxLod = desc.maxLod;
-        samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;  // TODO: Make configurable
+        samplerInfo.borderColor = ToVkBorderColor(desc.borderColor);
 
         VK_CHECK(vkCreateSampler(device->GetDevice(), &samplerInfo, nullptr, &m_sampler));
     }

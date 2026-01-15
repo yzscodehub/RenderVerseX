@@ -33,15 +33,6 @@ namespace RVX
             return;
         }
 
-        // Create semaphores
-        VkSemaphoreCreateInfo semaphoreInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        VK_CHECK(vkCreateSemaphore(device->GetDevice(), &semaphoreInfo, nullptr, &m_imageAvailableSemaphore));
-        VK_CHECK(vkCreateSemaphore(device->GetDevice(), &semaphoreInfo, nullptr, &m_renderFinishedSemaphore));
-
-        VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-        VK_CHECK(vkCreateFence(device->GetDevice(), &fenceInfo, nullptr, &m_inFlightFence));
-
         CreateSwapchain();
         CreateImageViews();
 
@@ -53,13 +44,6 @@ namespace RVX
         m_device->WaitIdle();
 
         CleanupSwapchain();
-
-        if (m_imageAvailableSemaphore)
-            vkDestroySemaphore(m_device->GetDevice(), m_imageAvailableSemaphore, nullptr);
-        if (m_renderFinishedSemaphore)
-            vkDestroySemaphore(m_device->GetDevice(), m_renderFinishedSemaphore, nullptr);
-        if (m_inFlightFence)
-            vkDestroyFence(m_device->GetDevice(), m_inFlightFence, nullptr);
 
         if (m_surface)
             vkDestroySurfaceKHR(m_device->GetInstance(), m_surface, nullptr);
@@ -237,10 +221,8 @@ namespace RVX
 
     bool VulkanSwapChain::AcquireNextImage()
     {
-        VK_CHECK(vkWaitForFences(m_device->GetDevice(), 1, &m_inFlightFence, VK_TRUE, UINT64_MAX));
-
         VkResult result = vkAcquireNextImageKHR(m_device->GetDevice(), m_swapchain, UINT64_MAX,
-            m_imageAvailableSemaphore, VK_NULL_HANDLE, &m_currentImageIndex);
+            m_device->GetImageAvailableSemaphore(), VK_NULL_HANDLE, &m_currentImageIndex);
 
         if (result == VK_ERROR_OUT_OF_DATE_KHR)
         {
@@ -253,15 +235,22 @@ namespace RVX
             return false;
         }
 
-        VK_CHECK(vkResetFences(m_device->GetDevice(), 1, &m_inFlightFence));
+        m_hasAcquiredImage = true;
         return true;
     }
 
     void VulkanSwapChain::Present()
     {
+        if (!m_hasAcquiredImage)
+        {
+            if (!AcquireNextImage())
+                return;
+        }
+
         VkPresentInfoKHR presentInfo = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
         presentInfo.waitSemaphoreCount = 1;
-        presentInfo.pWaitSemaphores = &m_renderFinishedSemaphore;
+        VkSemaphore waitSemaphore = m_device->GetRenderFinishedSemaphore();
+        presentInfo.pWaitSemaphores = &waitSemaphore;
         presentInfo.swapchainCount = 1;
         presentInfo.pSwapchains = &m_swapchain;
         presentInfo.pImageIndices = &m_currentImageIndex;
@@ -276,6 +265,17 @@ namespace RVX
         {
             RVX_RHI_ERROR("Failed to present: {}", VkResultToString(result));
         }
+
+        m_hasAcquiredImage = false;
+    }
+
+    uint32 VulkanSwapChain::GetCurrentBackBufferIndex() const
+    {
+        if (!m_hasAcquiredImage)
+        {
+            const_cast<VulkanSwapChain*>(this)->AcquireNextImage();
+        }
+        return m_currentImageIndex;
     }
 
     void VulkanSwapChain::Resize(uint32 width, uint32 height)
@@ -289,15 +289,24 @@ namespace RVX
         CreateImageViews();
 
         RVX_RHI_INFO("Vulkan SwapChain resized: {}x{}", m_width, m_height);
+        m_hasAcquiredImage = false;
     }
 
     RHITexture* VulkanSwapChain::GetCurrentBackBuffer()
     {
+        if (!m_hasAcquiredImage)
+        {
+            AcquireNextImage();
+        }
         return m_backBuffers[m_currentImageIndex].Get();
     }
 
     RHITextureView* VulkanSwapChain::GetCurrentBackBufferView()
     {
+        if (!m_hasAcquiredImage)
+        {
+            AcquireNextImage();
+        }
         return m_backBufferViews[m_currentImageIndex].Get();
     }
 

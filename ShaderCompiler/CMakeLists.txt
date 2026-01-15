@@ -5,6 +5,8 @@ add_library(RVX_ShaderCompiler STATIC)
 
 target_sources(RVX_ShaderCompiler PRIVATE
     Private/ShaderCompiler.cpp
+    Private/ShaderManager.cpp
+    Private/ShaderLayout.cpp
     Private/DXCCompiler.cpp
     Private/ShaderReflection.cpp
     Private/ShaderCache.cpp
@@ -24,6 +26,7 @@ target_link_libraries(RVX_ShaderCompiler PUBLIC
 if(WIN32)
     target_link_libraries(RVX_ShaderCompiler PRIVATE
         Microsoft::DirectXShaderCompiler
+        d3dcompiler
     )
 endif()
 

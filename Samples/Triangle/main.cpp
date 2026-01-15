@@ -6,14 +6,16 @@
 #ifdef _WIN32
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
-#include <d3dcompiler.h>
-#pragma comment(lib, "d3dcompiler.lib")
+#include <Windows.h>
 #endif
 
 #include <fstream>
 #include <vector>
 #include <string>
 #include <cmath>
+
+#include "ShaderCompiler/ShaderManager.h"
+#include "ShaderCompiler/ShaderLayout.h"
 
 // =============================================================================
 // Math Utilities
@@ -174,9 +176,6 @@ void ScrollCallback(GLFWwindow* window, double xoffset, double yoffset)
 // =============================================================================
 // File Loading
 // =============================================================================
-#ifdef _WIN32
-#include <Windows.h>
-#endif
 
 std::string GetExecutableDir()
 {
@@ -224,64 +223,6 @@ std::string LoadTextFile(const std::string& path)
                        std::istreambuf_iterator<char>());
 }
 
-// =============================================================================
-// Shader Compilation (D3DCompile for DX12)
-// =============================================================================
-#ifdef _WIN32
-bool CompileShader(const std::string& source, const char* entryPoint, const char* target,
-                   std::vector<uint8_t>& outBytecode, std::string& outError)
-{
-    ID3DBlob* shaderBlob = nullptr;
-    ID3DBlob* errorBlob = nullptr;
-
-    UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
-#ifdef _DEBUG
-    compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#else
-    compileFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
-#endif
-
-    HRESULT hr = D3DCompile(
-        source.c_str(),
-        source.length(),
-        nullptr,
-        nullptr,
-        D3D_COMPILE_STANDARD_FILE_INCLUDE,
-        entryPoint,
-        target,
-        compileFlags,
-        0,
-        &shaderBlob,
-        &errorBlob
-    );
-
-    if (FAILED(hr))
-    {
-        if (errorBlob)
-        {
-            outError = std::string(static_cast<const char*>(errorBlob->GetBufferPointer()),
-                                   errorBlob->GetBufferSize());
-            errorBlob->Release();
-        }
-        if (shaderBlob)
-        {
-            shaderBlob->Release();
-        }
-        return false;
-    }
-
-    outBytecode.resize(shaderBlob->GetBufferSize());
-    memcpy(outBytecode.data(), shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize());
-
-    shaderBlob->Release();
-    if (errorBlob)
-    {
-        errorBlob->Release();
-    }
-
-    return true;
-}
-#endif
 
 // =============================================================================
 // Main
@@ -356,7 +297,7 @@ int main(int argc, char* argv[])
     swapChainDesc.windowHandle = glfwGetWin32Window(window);
     swapChainDesc.width = 1280;
     swapChainDesc.height = 720;
-    swapChainDesc.format = RVX::RHIFormat::BGRA8_UNORM;
+    swapChainDesc.format = RVX::RHIFormat::BGRA8_UNORM_SRGB;
     swapChainDesc.bufferCount = 3;
     swapChainDesc.vsync = true;
 
@@ -411,7 +352,7 @@ int main(int argc, char* argv[])
     // Create Constant Buffer for Transform
     // =========================================================================
     RVX::RHIBufferDesc cbDesc;
-    cbDesc.size = sizeof(TransformCB);
+    cbDesc.size = (sizeof(TransformCB) + 255) & ~255u;
     cbDesc.usage = RVX::RHIBufferUsage::Constant;
     cbDesc.memoryType = RVX::RHIMemoryType::Upload;
     cbDesc.debugName = "Transform CB";
@@ -444,73 +385,124 @@ int main(int argc, char* argv[])
         return -1;
     }
 
-    std::vector<uint8_t> vsBytecode, psBytecode;
-    std::string compileError;
+    RVX::ShaderManager shaderManager(RVX::CreateShaderCompiler());
 
-#ifdef _WIN32
-    // Compile vertex shader
-    if (!CompileShader(shaderSource, "VSMain", "vs_5_0", vsBytecode, compileError))
+    const bool useSrgbOutput = (swapChain->GetFormat() == RVX::RHIFormat::BGRA8_UNORM_SRGB ||
+        swapChain->GetFormat() == RVX::RHIFormat::RGBA8_UNORM_SRGB);
+
+    RVX::ShaderLoadDesc vsLoad;
+    vsLoad.path = shaderPath;
+    vsLoad.entryPoint = "VSMain";
+    vsLoad.stage = RVX::RHIShaderStage::Vertex;
+    vsLoad.backend = backend;
+    vsLoad.enableDebugInfo = true;
+    vsLoad.enableOptimization = false;
+    if (backend == RVX::RHIBackendType::DX12)
     {
-        RVX_CORE_CRITICAL("Failed to compile vertex shader: {}", compileError);
+        vsLoad.targetProfile = "vs_5_0";
+    }
+
+    auto vsResult = shaderManager.LoadFromFile(device.get(), vsLoad);
+    if (!vsResult.compileResult.success || !vsResult.shader)
+    {
+        RVX_CORE_CRITICAL("Failed to compile vertex shader: {}", vsResult.compileResult.errorMessage);
+        shaderManager.ClearCache();
+        constantBuffer = nullptr;
+        cmdContexts.clear();
+        vertexBuffer = nullptr;
+        swapChain = nullptr;
         device.reset();
         glfwDestroyWindow(window);
         glfwTerminate();
         return -1;
     }
-    RVX_CORE_INFO("Compiled vertex shader ({} bytes)", vsBytecode.size());
-
-    // Compile pixel shader
-    if (!CompileShader(shaderSource, "PSMain", "ps_5_0", psBytecode, compileError))
+    auto vertexShader = vsResult.shader;
+    RVX_CORE_INFO("VS bytecode size: {} bytes", vsResult.compileResult.bytecode.size());
+    RVX_CORE_INFO("VS reflection: {} resources, {} inputs, {} push constants",
+        vsResult.compileResult.reflection.resources.size(),
+        vsResult.compileResult.reflection.inputs.size(),
+        vsResult.compileResult.reflection.pushConstants.size());
+    if (vsResult.compileResult.bytecode.size() >= sizeof(RVX::uint32))
     {
-        RVX_CORE_CRITICAL("Failed to compile pixel shader: {}", compileError);
+        RVX::uint32 magic = 0;
+        std::memcpy(&magic, vsResult.compileResult.bytecode.data(), sizeof(RVX::uint32));
+        RVX_CORE_INFO("VS bytecode magic: 0x{:08X}", magic);
+    }
+
+    RVX::ShaderLoadDesc psLoad = vsLoad;
+    psLoad.entryPoint = "PSMain";
+    psLoad.stage = RVX::RHIShaderStage::Pixel;
+    if (!useSrgbOutput)
+    {
+        psLoad.defines.push_back({"RVX_APPLY_SRGB_OUTPUT", "1"});
+    }
+    if (backend == RVX::RHIBackendType::DX12)
+    {
+        psLoad.targetProfile = "ps_5_0";
+    }
+
+    auto psResult = shaderManager.LoadFromFile(device.get(), psLoad);
+    if (!psResult.compileResult.success || !psResult.shader)
+    {
+        RVX_CORE_CRITICAL("Failed to compile pixel shader: {}", psResult.compileResult.errorMessage);
+        shaderManager.ClearCache();
+        constantBuffer = nullptr;
+        cmdContexts.clear();
+        vertexBuffer = nullptr;
+        swapChain = nullptr;
         device.reset();
         glfwDestroyWindow(window);
         glfwTerminate();
         return -1;
     }
-    RVX_CORE_INFO("Compiled pixel shader ({} bytes)", psBytecode.size());
-#endif
-
-    // Create RHI shader objects
-    RVX::RHIShaderDesc vsDesc;
-    vsDesc.stage = RVX::RHIShaderStage::Vertex;
-    vsDesc.bytecode = vsBytecode.data();
-    vsDesc.bytecodeSize = vsBytecode.size();
-    vsDesc.entryPoint = "VSMain";
-    vsDesc.debugName = "TriangleVS";
-    auto vertexShader = device->CreateShader(vsDesc);
-
-    RVX::RHIShaderDesc psDesc;
-    psDesc.stage = RVX::RHIShaderStage::Pixel;
-    psDesc.bytecode = psBytecode.data();
-    psDesc.bytecodeSize = psBytecode.size();
-    psDesc.entryPoint = "PSMain";
-    psDesc.debugName = "TrianglePS";
-    auto pixelShader = device->CreateShader(psDesc);
-
-    if (!vertexShader || !pixelShader)
+    auto pixelShader = psResult.shader;
+    RVX_CORE_INFO("PS bytecode size: {} bytes", psResult.compileResult.bytecode.size());
+    RVX_CORE_INFO("PS reflection: {} resources, {} inputs, {} push constants",
+        psResult.compileResult.reflection.resources.size(),
+        psResult.compileResult.reflection.inputs.size(),
+        psResult.compileResult.reflection.pushConstants.size());
+    if (psResult.compileResult.bytecode.size() >= sizeof(RVX::uint32))
     {
-        RVX_CORE_CRITICAL("Failed to create shader objects");
-        device.reset();
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return -1;
+        RVX::uint32 magic = 0;
+        std::memcpy(&magic, psResult.compileResult.bytecode.data(), sizeof(RVX::uint32));
+        RVX_CORE_INFO("PS bytecode magic: 0x{:08X}", magic);
     }
 
     // =========================================================================
-    // Create Descriptor Set Layout and Pipeline Layout
+    // Create Descriptor Set Layout and Pipeline Layout (Auto)
     // =========================================================================
-    RVX::RHIDescriptorSetLayoutDesc setLayoutDesc;
-    setLayoutDesc.debugName = "TriangleSetLayout";
-    setLayoutDesc.AddBinding(0, RVX::RHIBindingType::UniformBuffer, RVX::RHIShaderStage::Vertex);
-    auto descriptorSetLayout = device->CreateDescriptorSetLayout(setLayoutDesc);
+    std::vector<RVX::ReflectedShader> reflectedShaders = {
+        {vsResult.compileResult.reflection, RVX::RHIShaderStage::Vertex},
+        {psResult.compileResult.reflection, RVX::RHIShaderStage::Pixel}
+    };
 
-    RVX::RHIPipelineLayoutDesc pipelineLayoutDesc;
-    pipelineLayoutDesc.setLayouts.push_back(descriptorSetLayout.Get());
+    auto autoLayout = RVX::BuildAutoPipelineLayout(reflectedShaders);
+    RVX_CORE_INFO("AutoLayout: set count={}, push constants size={}, stages={}",
+        autoLayout.setLayouts.size(),
+        autoLayout.pipelineLayout.pushConstantSize,
+        static_cast<RVX::uint32>(autoLayout.pipelineLayout.pushConstantStages));
+
+    std::vector<RVX::RHIDescriptorSetLayoutRef> setLayouts(autoLayout.setLayouts.size());
+    for (size_t i = 0; i < autoLayout.setLayouts.size(); ++i)
+    {
+        if (autoLayout.setLayouts[i].entries.empty())
+            continue;
+
+        autoLayout.setLayouts[i].debugName = "TriangleSetLayout";
+        RVX_CORE_INFO("Set {} bindings: {}", static_cast<RVX::uint32>(i),
+            static_cast<RVX::uint32>(autoLayout.setLayouts[i].entries.size()));
+        setLayouts[i] = device->CreateDescriptorSetLayout(autoLayout.setLayouts[i]);
+    }
+
+    RVX::RHIPipelineLayoutDesc pipelineLayoutDesc = autoLayout.pipelineLayout;
     pipelineLayoutDesc.debugName = "TrianglePipelineLayout";
-    auto pipelineLayout = device->CreatePipelineLayout(pipelineLayoutDesc);
+    for (const auto& layout : setLayouts)
+    {
+        pipelineLayoutDesc.setLayouts.push_back(layout.Get());
+    }
 
-    if (!descriptorSetLayout || !pipelineLayout)
+    auto pipelineLayout = device->CreatePipelineLayout(pipelineLayoutDesc);
+    if (!pipelineLayout)
     {
         RVX_CORE_CRITICAL("Failed to create pipeline layout");
         device.reset();
@@ -523,7 +515,15 @@ int main(int argc, char* argv[])
     // Create Descriptor Set
     // =========================================================================
     RVX::RHIDescriptorSetDesc descSetDesc;
-    descSetDesc.layout = descriptorSetLayout.Get();
+    descSetDesc.layout = setLayouts.empty() ? nullptr : setLayouts[0].Get();
+    if (!descSetDesc.layout)
+    {
+        RVX_CORE_CRITICAL("Auto layout generation failed (set 0 missing)");
+        device.reset();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
     descSetDesc.debugName = "TriangleDescSet";
     descSetDesc.BindBuffer(0, constantBuffer.Get());
     auto descriptorSet = device->CreateDescriptorSet(descSetDesc);
@@ -561,7 +561,7 @@ int main(int argc, char* argv[])
 
     // Render target format
     pipelineDesc.numRenderTargets = 1;
-    pipelineDesc.renderTargetFormats[0] = RVX::RHIFormat::BGRA8_UNORM;
+    pipelineDesc.renderTargetFormats[0] = swapChain->GetFormat();
     pipelineDesc.depthStencilFormat = RVX::RHIFormat::Unknown;
     pipelineDesc.primitiveTopology = RVX::RHIPrimitiveTopology::TriangleList;
 
@@ -569,6 +569,18 @@ int main(int argc, char* argv[])
     if (!pipeline)
     {
         RVX_CORE_CRITICAL("Failed to create graphics pipeline");
+        descriptorSet = nullptr;
+        pipelineLayout = nullptr;
+        setLayouts.clear();
+        vertexShader = nullptr;
+        pixelShader = nullptr;
+        vsResult.shader = nullptr;
+        psResult.shader = nullptr;
+        shaderManager.ClearCache();
+        constantBuffer = nullptr;
+        cmdContexts.clear();
+        vertexBuffer = nullptr;
+        swapChain = nullptr;
         device.reset();
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -589,7 +601,7 @@ int main(int argc, char* argv[])
     double lastTime = glfwGetTime();
 
     // Track back buffer states
-    std::vector<RVX::RHIResourceState> backBufferStates(swapChain->GetBufferCount(), RVX::RHIResourceState::Common);
+    std::vector<RVX::RHIResourceState> backBufferStates(swapChain->GetBufferCount(), RVX::RHIResourceState::Undefined);
 
     while (!glfwWindowShouldClose(window))
     {
@@ -712,7 +724,7 @@ int main(int argc, char* argv[])
             swapChain->Resize(static_cast<RVX::uint32>(width), static_cast<RVX::uint32>(height));
             
             // Reset back buffer states after resize
-            backBufferStates.assign(swapChain->GetBufferCount(), RVX::RHIResourceState::Common);
+            backBufferStates.assign(swapChain->GetBufferCount(), RVX::RHIResourceState::Undefined);
             
             RVX_CORE_INFO("Resized to {}x{}", width, height);
         }
@@ -724,9 +736,12 @@ int main(int argc, char* argv[])
     descriptorSet = nullptr;
     pipeline = nullptr;
     pipelineLayout = nullptr;
-    descriptorSetLayout = nullptr;
+    setLayouts.clear();
     vertexShader = nullptr;
     pixelShader = nullptr;
+    vsResult.shader = nullptr;
+    psResult.shader = nullptr;
+    shaderManager.ClearCache();
     constantBuffer = nullptr;
     cmdContexts.clear();
     vertexBuffer = nullptr;

@@ -37,7 +37,9 @@ namespace RVX
             bool shaderVisible);
 
         DX12DescriptorHandle Allocate();
+        DX12DescriptorHandle AllocateRange(uint32 count);
         void Free(DX12DescriptorHandle handle);
+        void FreeRange(DX12DescriptorHandle handle, uint32 count);
 
         ID3D12DescriptorHeap* GetHeap() const { return m_heap.Get(); }
         uint32 GetDescriptorSize() const { return m_descriptorSize; }
@@ -126,6 +128,12 @@ namespace RVX
         void FreeSampler(DX12DescriptorHandle handle) { m_samplerHeap.Free(handle); }
         void FreeRTV(DX12DescriptorHandle handle) { m_rtvHeap.Free(handle); }
         void FreeDSV(DX12DescriptorHandle handle) { m_dsvHeap.Free(handle); }
+
+        // Static range allocations (contiguous descriptors for descriptor tables)
+        DX12DescriptorHandle AllocateCbvSrvUavRange(uint32 count) { return m_cbvSrvUavHeap.AllocateRange(count); }
+        DX12DescriptorHandle AllocateSamplerRange(uint32 count) { return m_samplerHeap.AllocateRange(count); }
+        void FreeCbvSrvUavRange(DX12DescriptorHandle handle, uint32 count) { m_cbvSrvUavHeap.FreeRange(handle, count); }
+        void FreeSamplerRange(DX12DescriptorHandle handle, uint32 count) { m_samplerHeap.FreeRange(handle, count); }
 
         // Transient allocations (per-frame, auto-reset)
         DX12DescriptorHandle AllocateTransientCbvSrvUav(uint32 count = 1);

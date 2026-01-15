@@ -38,13 +38,35 @@ namespace RVX
         swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
 
         ComPtr<IDXGISwapChain1> swapChain1;
-        DX12_CHECK(device->GetDXGIFactory()->CreateSwapChainForHwnd(
+        HRESULT hr = device->GetDXGIFactory()->CreateSwapChainForHwnd(
             device->GetGraphicsQueue(),
             hwnd,
             &swapChainDesc,
             nullptr,
             nullptr,
-            &swapChain1));
+            &swapChain1);
+        if (FAILED(hr))
+        {
+            // Some drivers reject sRGB swapchains; fall back to UNORM.
+            if (desc.format == RHIFormat::BGRA8_UNORM_SRGB)
+            {
+                RVX_RHI_WARN("DX12 swapchain sRGB not supported (0x{:08X}), falling back to UNORM",
+                    static_cast<uint32>(hr));
+                swapChainDesc.Format = ToDXGIFormat(RHIFormat::BGRA8_UNORM);
+                hr = device->GetDXGIFactory()->CreateSwapChainForHwnd(
+                    device->GetGraphicsQueue(),
+                    hwnd,
+                    &swapChainDesc,
+                    nullptr,
+                    nullptr,
+                    &swapChain1);
+                if (SUCCEEDED(hr))
+                {
+                    m_format = RHIFormat::BGRA8_UNORM;
+                }
+            }
+        }
+        DX12_CHECK(hr);
 
         // Disable Alt+Enter fullscreen toggle
         device->GetDXGIFactory()->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);

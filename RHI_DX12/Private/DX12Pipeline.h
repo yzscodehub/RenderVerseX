@@ -1,9 +1,11 @@
 #pragma once
 
 #include "DX12Common.h"
+#include "DX12DescriptorHeap.h"
 #include "RHI/RHIPipeline.h"
 #include "RHI/RHIDescriptor.h"
 #include <map>
+#include <unordered_map>
 
 namespace RVX
 {
@@ -19,10 +21,22 @@ namespace RVX
         ~DX12DescriptorSetLayout() override;
 
         const std::vector<RHIBindingLayoutEntry>& GetEntries() const { return m_entries; }
+        const RHIBindingLayoutEntry* FindEntry(uint32 binding) const;
+        uint32 GetCbvSrvUavCount() const { return m_cbvSrvUavCount; }
+        uint32 GetSamplerCount() const { return m_samplerCount; }
+        uint32 GetCbvSrvUavIndex(uint32 binding) const;
+        uint32 GetSamplerIndex(uint32 binding) const;
+        uint32 GetDynamicBindingIndex(uint32 binding) const;
 
     private:
         DX12Device* m_device = nullptr;
         std::vector<RHIBindingLayoutEntry> m_entries;
+        std::unordered_map<uint32, uint32> m_cbvSrvUavIndices;
+        std::unordered_map<uint32, uint32> m_samplerIndices;
+        std::unordered_map<uint32, uint32> m_dynamicBindingIndices;
+        std::unordered_map<uint32, uint32> m_entryIndices;
+        uint32 m_cbvSrvUavCount = 0;
+        uint32 m_samplerCount = 0;
     };
 
     // =============================================================================
@@ -43,6 +57,8 @@ namespace RVX
             auto it = m_rootCBVIndices.find({setIndex, binding});
             return it != m_rootCBVIndices.end() ? it->second : UINT32_MAX;
         }
+        uint32 GetSrvUavTableIndex(uint32 setIndex) const;
+        uint32 GetSamplerTableIndex(uint32 setIndex) const;
 
     private:
         void CreateRootSignature(const RHIPipelineLayoutDesc& desc);
@@ -51,6 +67,8 @@ namespace RVX
         ComPtr<ID3D12RootSignature> m_rootSignature;
         uint32 m_pushConstantRootIndex = UINT32_MAX;
         std::map<std::pair<uint32, uint32>, uint32> m_rootCBVIndices;  // (setIndex, binding) -> root param index
+        std::unordered_map<uint32, uint32> m_srvUavTableIndices;
+        std::unordered_map<uint32, uint32> m_samplerTableIndices;
     };
 
     // =============================================================================
@@ -68,6 +86,8 @@ namespace RVX
         ID3D12PipelineState* GetPipelineState() const { return m_pipelineState.Get(); }
         ID3D12RootSignature* GetRootSignature() const { return m_rootSignature.Get(); }
         D3D_PRIMITIVE_TOPOLOGY GetPrimitiveTopology() const { return m_primitiveTopology; }
+        DX12PipelineLayout* GetPipelineLayout() const { return m_pipelineLayout; }
+        bool IsValid() const { return m_pipelineState != nullptr; }
 
     private:
         void CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc);
@@ -78,6 +98,8 @@ namespace RVX
         ComPtr<ID3D12RootSignature> m_rootSignature;  // Owned or referenced
         D3D_PRIMITIVE_TOPOLOGY m_primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
         bool m_isCompute = false;
+        RHIPipelineLayoutRef m_ownedLayout;
+        DX12PipelineLayout* m_pipelineLayout = nullptr;
     };
 
     // =============================================================================
@@ -92,10 +114,20 @@ namespace RVX
         void Update(const std::vector<RHIDescriptorBinding>& bindings) override;
 
         const std::vector<RHIDescriptorBinding>& GetBindings() const { return m_bindings; }
+        DX12DescriptorSetLayout* GetLayout() const { return m_layout; }
+        bool HasCbvSrvUavTable() const { return m_cbvSrvUavHandle.IsValid(); }
+        bool HasSamplerTable() const { return m_samplerHandle.IsValid(); }
+        D3D12_GPU_DESCRIPTOR_HANDLE GetCbvSrvUavGpuHandle() const { return m_cbvSrvUavHandle.gpuHandle; }
+        D3D12_GPU_DESCRIPTOR_HANDLE GetSamplerGpuHandle() const { return m_samplerHandle.gpuHandle; }
 
     private:
         DX12Device* m_device = nullptr;
+        DX12DescriptorSetLayout* m_layout = nullptr;
         std::vector<RHIDescriptorBinding> m_bindings;
+        DX12DescriptorHandle m_cbvSrvUavHandle;
+        DX12DescriptorHandle m_samplerHandle;
+        uint32 m_cbvSrvUavCount = 0;
+        uint32 m_samplerCount = 0;
     };
 
     // =============================================================================

@@ -69,6 +69,11 @@ namespace RVX
         VkCommandPool GetCommandPool(RHICommandQueueType type);
         VkDescriptorPool GetDescriptorPool() const { return m_descriptorPool; }
 
+        VkSemaphore GetImageAvailableSemaphore() const { return m_imageAvailableSemaphores[m_currentFrameIndex]; }
+        VkSemaphore GetRenderFinishedSemaphore() const { return m_renderFinishedSemaphores[m_currentFrameIndex]; }
+        VkFence GetCurrentFrameFence() const { return m_frameFences[m_currentFrameIndex]; }
+        std::mutex& GetSubmitMutex() { return m_submitMutex; }
+
     private:
         bool CreateInstance(bool enableValidation);
         bool SelectPhysicalDevice();

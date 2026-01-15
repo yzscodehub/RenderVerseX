@@ -25,15 +25,12 @@ namespace RVX
         uint32 GetHeight() const override { return m_height; }
         RHIFormat GetFormat() const override { return m_format; }
         uint32 GetBufferCount() const override { return static_cast<uint32>(m_backBuffers.size()); }
-        uint32 GetCurrentBackBufferIndex() const override { return m_currentImageIndex; }
+        uint32 GetCurrentBackBufferIndex() const override;
 
         RHITexture* GetCurrentBackBuffer() override;
         RHITextureView* GetCurrentBackBufferView() override;
 
         VkSwapchainKHR GetSwapchain() const { return m_swapchain; }
-        VkSemaphore GetImageAvailableSemaphore() const { return m_imageAvailableSemaphore; }
-        VkSemaphore GetRenderFinishedSemaphore() const { return m_renderFinishedSemaphore; }
-
         bool AcquireNextImage();
 
     private:
@@ -58,9 +55,7 @@ namespace RVX
         std::vector<RHITextureViewRef> m_backBufferViews;
         uint32 m_currentImageIndex = 0;
 
-        VkSemaphore m_imageAvailableSemaphore = VK_NULL_HANDLE;
-        VkSemaphore m_renderFinishedSemaphore = VK_NULL_HANDLE;
-        VkFence m_inFlightFence = VK_NULL_HANDLE;
+        bool m_hasAcquiredImage = false;
 
         void* m_windowHandle = nullptr;
     };
