@@ -6,6 +6,7 @@ add_library(RVX_Core STATIC)
 target_sources(RVX_Core PRIVATE
     Private/Memory.cpp
     Private/Log.cpp
+    Private/SystemManager.cpp
 )
 
 target_include_directories(RVX_Core PUBLIC

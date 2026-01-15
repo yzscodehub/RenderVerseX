@@ -2290,60 +2290,48 @@ public:
 
 ## 14. 实施计划 (分阶段落地)
 
-> 原则：先完成 DX12/Vulkan 接口实现与基础验证，再推进 RenderGraph 规则与调度。每阶段都有可验证产出。
+> 原则：先确保 RenderGraph 的可用性与正确性，再逐步做性能优化与高级功能。每阶段都有可验证产出。
 
-### Phase 0：DX12/Vulkan 接口实现与验证 (预计 12~18 天)
+### Phase 1：正确性与可用性 (预计 5~7 天)
 
-1. DX12 端：Device/Resources/Descriptor/Command/Pipeline 接口实现
-2. Vulkan 端：Device/Resources/Descriptor/Command/Pipeline 接口实现
-3. 统一 RHI 接口覆盖率检查（确保两后端实现一致）
-4. 基础验证：Triangle + Texture + MRT + Barrier 基础用例
-
-**验证**：
-- DX12Validation / VulkanValidation 完整通过  
-- Debug/Validation Layer 无错误  
-- 资源生命周期与同步路径正确
-
-### Phase A：RenderGraph 编译规则完善 (预计 5~7 天)
-
-1. 新增 `RGAccessType` 与规则表（`RGQueueStateRules`）
-2. RenderGraphCompiler 引入规则表驱动状态映射
-3. Barrier 合并与去重策略实现
-4. 产出：RenderGraph 编译统计里新增 `mergedBarriers` 指标
+1. 子资源与范围访问：让 `ReadMip/WriteMip/Range` 真正生效，生成 Subresource Barrier  
+2. Pass 队列语义：区分 Graphics/Compute/Copy，限制非法队列命令  
+3. 资源导出状态：支持资源离开 RG 的最终状态（尤其是 SwapChain backbuffer）  
+4. RenderGraphValidation 用例补充：read/write + barrier 基础覆盖
 
 **验证**：
-- RenderGraphValidation 新增 “Barrier 合并” 用例  
-- 渲染输出一致但 Barrier 计数下降
+- RenderGraphValidation 覆盖基本读写与 Barrier  
+- Triangle/简单样例可通过 RG 正确绘制  
 
-### Phase B：View Handle 引入 (预计 4~6 天)
+### Phase 2：性能与稳定性 (预计 4~6 天)
 
-1. 增加 `RGTextureViewHandle` / `RGBufferViewHandle`
-2. RenderGraph 内部统一创建 View 并托管生命周期
-3. Pass Setup 支持直接声明 View 读写
-
-**验证**：
-- Import 资源 + View 使用场景正确插入 Barrier  
-- View 生命周期在帧结束后正确释放
-
-### Phase C：PipelineLayout/DescriptorLayout 缓存统一 (预计 4~5 天)
-
-1. 设计 `RHIPipelineLayoutKey`  
-2. 统一 Bindless/传统路径的 Layout Hash 规则  
-3. 统计 Layout Cache 命中率
+1. Barrier 合并与去重（同资源连续状态合并）  
+2. 生命周期分析（为 alias 做准备）  
+3. Compile 统计：barrierCount / mergedBarriers / transientCount  
 
 **验证**：
-- 多材质切换场景命中率提升  
-- Pipeline 创建次数减少
+- Barrier 计数下降但输出一致  
+- 统计输出符合预期  
 
-### Phase D：CommandContext 队列限制与调度 (预计 3~4 天)
+### Phase 3：功能完整性 (预计 6~9 天)
 
-1. `GetQueueType()` 接口补齐  
-2. RenderGraphExecutor 添加 “队列能力 + 运行时统计” 双判定  
-3. DX11 Adaptive 运行时降级指标输出
+1. Async Compute：跨队列依赖与同步  
+2. View Handle 引入：`RGTextureViewHandle` / `RGBufferViewHandle`  
+3. 外部资源与视图导入限制（避免生命周期冲突）  
 
 **验证**：
-- DX11 低 DrawCall 正确降级  
-- Copy Queue 不出现非 Copy 命令
+- Async Compute 用例正确同步  
+- View 生命周期与状态转换正确  
+
+### Phase 4：集成与示例 (预计 3~5 天)
+
+1. Triangle/Scene 接入 RenderGraph  
+2. Graph 可视化输出（dump/Graphviz）  
+3. Cross-backend 一致性回归
+
+**验证**：
+- DX12/Vulkan 结果一致  
+- RenderGraphValidation 通过
 
 ---
 
@@ -2357,8 +2345,7 @@ public:
 
 ## 16. 推荐优先级
 
-1. Phase 0 (DX12/Vulkan 接口实现与验证)  
-2. Phase A (RenderGraph 规则与 Barrier)  
-3. Phase B (View Handle 生命周期)  
-4. Phase D (队列限制与调度)  
-5. Phase C (Layout 缓存统一)  
+1. Phase 1：正确性与可用性  
+2. Phase 2：性能与稳定性  
+3. Phase 3：功能完整性  
+4. Phase 4：集成与示例  

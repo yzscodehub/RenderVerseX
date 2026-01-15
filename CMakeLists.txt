@@ -104,6 +104,10 @@ endif()
 # Subdirectories
 # =============================================================================
 add_subdirectory(Core)
+add_subdirectory(Platform)
+add_subdirectory(Input)
+add_subdirectory(Camera)
+add_subdirectory(Engine)
 add_subdirectory(RHI)
 add_subdirectory(ShaderCompiler)
 
@@ -120,6 +124,7 @@ if(RVX_ENABLE_VULKAN)
 endif()
 
 add_subdirectory(RenderGraph)
+add_subdirectory(Render)
 
 if(RVX_BUILD_SAMPLES)
     add_subdirectory(Samples)

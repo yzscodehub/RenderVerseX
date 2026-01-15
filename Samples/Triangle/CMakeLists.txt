@@ -7,6 +7,7 @@ add_executable(Triangle
 
 target_link_libraries(Triangle PRIVATE
     RVX::RenderGraph
+    RVX::Engine
     glfw
 )
 

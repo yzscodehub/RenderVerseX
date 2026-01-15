@@ -12,6 +12,8 @@ namespace RVX
     struct RGTextureHandle
     {
         uint32 index = RVX_INVALID_INDEX;
+        bool hasSubresourceRange = false;
+        RHISubresourceRange subresourceRange = RHISubresourceRange::All();
 
         bool IsValid() const { return index != RVX_INVALID_INDEX; }
         
@@ -23,6 +25,9 @@ namespace RVX
     struct RGBufferHandle
     {
         uint32 index = RVX_INVALID_INDEX;
+        bool hasRange = false;
+        uint64 rangeOffset = 0;
+        uint64 rangeSize = RVX_WHOLE_SIZE;
 
         bool IsValid() const { return index != RVX_INVALID_INDEX; }
 
@@ -90,6 +95,10 @@ namespace RVX
         RGTextureHandle ImportTexture(RHITexture* texture, RHIResourceState initialState);
         RGBufferHandle ImportBuffer(RHIBuffer* buffer, RHIResourceState initialState);
 
+        // Export final state for external usage
+        void SetExportState(RGTextureHandle texture, RHIResourceState finalState);
+        void SetExportState(RGBufferHandle buffer, RHIResourceState finalState);
+
         // Add passes
         template<typename Data>
         void AddPass(
@@ -103,6 +112,21 @@ namespace RVX
 
         // Execute the graph
         void Execute(RHICommandContext& ctx);
+
+        struct CompileStats
+        {
+            uint32 totalPasses = 0;
+            uint32 culledPasses = 0;
+            uint32 barrierCount = 0;
+            uint32 textureBarrierCount = 0;
+            uint32 bufferBarrierCount = 0;
+            uint32 mergedBarrierCount = 0;
+            uint32 mergedTextureBarrierCount = 0;
+            uint32 mergedBufferBarrierCount = 0;
+            uint32 crossPassMergedBarrierCount = 0;
+        };
+
+        const CompileStats& GetCompileStats() const;
 
         // Clear for next frame
         void Clear();
