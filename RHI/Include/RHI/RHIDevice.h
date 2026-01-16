@@ -10,6 +10,7 @@
 #include "RHI/RHISwapChain.h"
 #include "RHI/RHISynchronization.h"
 #include "RHI/RHICapabilities.h"
+#include "RHI/RHIHeap.h"
 
 namespace RVX
 {
@@ -40,6 +41,22 @@ namespace RVX
         virtual RHITextureViewRef CreateTextureView(RHITexture* texture, const RHITextureViewDesc& desc = {}) = 0;
         virtual RHISamplerRef CreateSampler(const RHISamplerDesc& desc) = 0;
         virtual RHIShaderRef CreateShader(const RHIShaderDesc& desc) = 0;
+
+        // =========================================================================
+        // Memory Heap Management (for Placed Resources / Memory Aliasing)
+        // =========================================================================
+        virtual RHIHeapRef CreateHeap(const RHIHeapDesc& desc) = 0;
+        virtual RHITextureRef CreatePlacedTexture(RHIHeap* heap, uint64 offset, const RHITextureDesc& desc) = 0;
+        virtual RHIBufferRef CreatePlacedBuffer(RHIHeap* heap, uint64 offset, const RHIBufferDesc& desc) = 0;
+        
+        // Query memory requirements before creating placed resources
+        struct MemoryRequirements
+        {
+            uint64 size = 0;
+            uint64 alignment = 0;
+        };
+        virtual MemoryRequirements GetTextureMemoryRequirements(const RHITextureDesc& desc) = 0;
+        virtual MemoryRequirements GetBufferMemoryRequirements(const RHIBufferDesc& desc) = 0;
 
         // =========================================================================
         // Pipeline Creation

@@ -8,6 +8,7 @@
 #include "RHI/RHIShader.h"
 #include "RHI/RHIDescriptor.h"
 #include "RHI/RHISynchronization.h"
+#include "RHI/RHIHeap.h"
 
 namespace RVX
 {
@@ -200,6 +201,31 @@ namespace RVX
     };
 
     // =============================================================================
+    // DX12 Heap (for Memory Aliasing / Placed Resources)
+    // =============================================================================
+    class DX12Heap : public RHIHeap
+    {
+    public:
+        DX12Heap(DX12Device* device, const RHIHeapDesc& desc);
+        ~DX12Heap() override;
+
+        // RHIHeap interface
+        uint64 GetSize() const override { return m_size; }
+        RHIHeapType GetType() const override { return m_type; }
+        RHIHeapFlags GetFlags() const override { return m_flags; }
+
+        // DX12 Specific
+        ID3D12Heap* GetHeap() const { return m_heap.Get(); }
+
+    private:
+        DX12Device* m_device = nullptr;
+        ComPtr<ID3D12Heap> m_heap;
+        uint64 m_size = 0;
+        RHIHeapType m_type = RHIHeapType::Default;
+        RHIHeapFlags m_flags = RHIHeapFlags::AllowAll;
+    };
+
+    // =============================================================================
     // Factory Functions
     // =============================================================================
     RHIBufferRef CreateDX12Buffer(DX12Device* device, const RHIBufferDesc& desc);
@@ -210,5 +236,10 @@ namespace RVX
     RHIShaderRef CreateDX12Shader(DX12Device* device, const RHIShaderDesc& desc);
     RHIFenceRef CreateDX12Fence(DX12Device* device, uint64 initialValue);
     void WaitForDX12Fence(DX12Device* device, RHIFence* fence, uint64 value);
+
+    // Heap functions (for Memory Aliasing)
+    RHIHeapRef CreateDX12Heap(DX12Device* device, const RHIHeapDesc& desc);
+    RHITextureRef CreateDX12PlacedTexture(DX12Device* device, RHIHeap* heap, uint64 offset, const RHITextureDesc& desc);
+    RHIBufferRef CreateDX12PlacedBuffer(DX12Device* device, RHIHeap* heap, uint64 offset, const RHIBufferDesc& desc);
 
 } // namespace RVX

@@ -4,7 +4,7 @@
 add_library(RVX_Render STATIC)
 
 target_sources(RVX_Render PRIVATE
-    Private/RenderSystem.cpp
+    Private/RenderService.cpp
     Private/SwapChainManager.cpp
 )
 

@@ -1,4 +1,6 @@
 #include "RenderGraphInternal.h"
+#include <sstream>
+#include <fstream>
 
 namespace RVX
 {
@@ -321,6 +323,153 @@ namespace RVX
         m_impl->totalMemoryWithAliasing = 0;
         m_impl->aliasedTextureCount = 0;
         m_impl->aliasedBufferCount = 0;
+    }
+
+    std::string RenderGraph::ExportGraphviz() const
+    {
+        std::ostringstream ss;
+        ss << "digraph RenderGraph {\n";
+        ss << "  rankdir=LR;\n";
+        ss << "  node [fontname=\"Helvetica\", fontsize=10];\n";
+        ss << "  edge [color=\"#666666\"];\n\n";
+        
+        // Subgraph for resources
+        ss << "  subgraph cluster_resources {\n";
+        ss << "    label=\"Resources\";\n";
+        ss << "    style=dashed;\n";
+        ss << "    color=\"#cccccc\";\n\n";
+        
+        // Texture nodes (ellipse)
+        for (size_t i = 0; i < m_impl->textures.size(); ++i)
+        {
+            const auto& tex = m_impl->textures[i];
+            std::string name = tex.desc.debugName ? tex.desc.debugName : ("Tex" + std::to_string(i));
+            std::string fillColor = tex.imported ? "#b3d9ff" : (tex.alias.isAliased ? "#ffffb3" : "#b3ffb3");
+            
+            ss << "    tex" << i << " [shape=ellipse, style=filled, fillcolor=\"" << fillColor << "\", ";
+            ss << "label=\"" << name << "\\n" << tex.desc.width << "x" << tex.desc.height;
+            if (tex.alias.isAliased)
+            {
+                ss << "\\n(aliased H" << tex.alias.heapIndex << ")";
+            }
+            ss << "\"];\n";
+        }
+        
+        // Buffer nodes (ellipse with different shape)
+        for (size_t i = 0; i < m_impl->buffers.size(); ++i)
+        {
+            const auto& buf = m_impl->buffers[i];
+            std::string name = buf.desc.debugName ? buf.desc.debugName : ("Buf" + std::to_string(i));
+            std::string fillColor = buf.imported ? "#b3d9ff" : (buf.alias.isAliased ? "#ffffb3" : "#b3ffb3");
+            
+            ss << "    buf" << i << " [shape=box, style=\"filled,rounded\", fillcolor=\"" << fillColor << "\", ";
+            ss << "label=\"" << name << "\\n" << (buf.desc.size / 1024) << " KB";
+            if (buf.alias.isAliased)
+            {
+                ss << "\\n(aliased H" << buf.alias.heapIndex << ")";
+            }
+            ss << "\"];\n";
+        }
+        
+        ss << "  }\n\n";
+        
+        // Pass nodes (boxes)
+        ss << "  // Passes\n";
+        for (size_t i = 0; i < m_impl->passes.size(); ++i)
+        {
+            const auto& pass = m_impl->passes[i];
+            
+            std::string color;
+            if (pass.culled)
+                color = "#e0e0e0";
+            else if (pass.type == RenderGraphPassType::Compute)
+                color = "#fff2cc";
+            else if (pass.type == RenderGraphPassType::Copy)
+                color = "#d9ead3";
+            else
+                color = "#f4cccc";
+            
+            std::string style = pass.culled ? "dashed" : "filled";
+            
+            ss << "  pass" << i << " [shape=box, style=\"" << style << "\", fillcolor=\"" << color << "\", ";
+            ss << "label=\"" << pass.name;
+            if (pass.culled)
+                ss << "\\n(CULLED)";
+            ss << "\"];\n";
+        }
+        
+        // Dependencies (resource -> pass for reads, pass -> resource for writes)
+        ss << "\n  // Read edges (resource -> pass)\n";
+        for (size_t i = 0; i < m_impl->passes.size(); ++i)
+        {
+            const auto& pass = m_impl->passes[i];
+            for (uint32 texIdx : pass.readTextures)
+            {
+                ss << "  tex" << texIdx << " -> pass" << i << " [color=\"#3366cc\"];\n";
+            }
+            for (uint32 bufIdx : pass.readBuffers)
+            {
+                ss << "  buf" << bufIdx << " -> pass" << i << " [color=\"#3366cc\"];\n";
+            }
+        }
+        
+        ss << "\n  // Write edges (pass -> resource)\n";
+        for (size_t i = 0; i < m_impl->passes.size(); ++i)
+        {
+            const auto& pass = m_impl->passes[i];
+            for (uint32 texIdx : pass.writeTextures)
+            {
+                ss << "  pass" << i << " -> tex" << texIdx << " [color=\"#cc3333\", style=bold];\n";
+            }
+            for (uint32 bufIdx : pass.writeBuffers)
+            {
+                ss << "  pass" << i << " -> buf" << bufIdx << " [color=\"#cc3333\", style=bold];\n";
+            }
+        }
+        
+        // Execution order edges
+        if (m_impl->executionOrder.size() > 1)
+        {
+            ss << "\n  // Execution order (invisible edges for layout)\n";
+            ss << "  edge [style=invis];\n";
+            for (size_t i = 1; i < m_impl->executionOrder.size(); ++i)
+            {
+                ss << "  pass" << m_impl->executionOrder[i - 1] << " -> pass" << m_impl->executionOrder[i] << ";\n";
+            }
+        }
+        
+        // Legend
+        ss << "\n  // Legend\n";
+        ss << "  subgraph cluster_legend {\n";
+        ss << "    label=\"Legend\";\n";
+        ss << "    style=solid;\n";
+        ss << "    rank=sink;\n";
+        ss << "    legend_imported [shape=ellipse, style=filled, fillcolor=\"#b3d9ff\", label=\"Imported\"];\n";
+        ss << "    legend_transient [shape=ellipse, style=filled, fillcolor=\"#b3ffb3\", label=\"Transient\"];\n";
+        ss << "    legend_aliased [shape=ellipse, style=filled, fillcolor=\"#ffffb3\", label=\"Aliased\"];\n";
+        ss << "    legend_graphics [shape=box, style=filled, fillcolor=\"#f4cccc\", label=\"Graphics\"];\n";
+        ss << "    legend_compute [shape=box, style=filled, fillcolor=\"#fff2cc\", label=\"Compute\"];\n";
+        ss << "    legend_copy [shape=box, style=filled, fillcolor=\"#d9ead3\", label=\"Copy\"];\n";
+        ss << "    legend_imported -> legend_transient -> legend_aliased -> legend_graphics -> legend_compute -> legend_copy [style=invis];\n";
+        ss << "  }\n";
+        
+        ss << "}\n";
+        
+        return ss.str();
+    }
+
+    bool RenderGraph::SaveGraphviz(const char* filename) const
+    {
+        std::string dot = ExportGraphviz();
+        
+        std::ofstream file(filename);
+        if (!file.is_open())
+        {
+            return false;
+        }
+        
+        file << dot;
+        return file.good();
     }
 
 } // namespace RVX

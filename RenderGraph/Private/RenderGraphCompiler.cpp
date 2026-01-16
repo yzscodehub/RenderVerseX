@@ -1,5 +1,6 @@
 #include "RenderGraphInternal.h"
 #include "Core/Assert.h"
+#include "Core/Log.h"
 #include <algorithm>
 
 namespace RVX
@@ -442,9 +443,72 @@ namespace RVX
             buffer.alias = MemoryAlias{};
         }
 
-        // Calculate lifetimes based on pass usages
-        for (uint32 passIndex = 0; passIndex < graph.passes.size(); ++passIndex)
+        // Helper to get texture memory requirements (use device query if available, else estimate)
+        auto getTextureMemReqs = [&](const RHITextureDesc& desc) -> std::pair<uint64, uint64> {
+            if (graph.device)
+            {
+                auto reqs = graph.device->GetTextureMemoryRequirements(desc);
+                return {reqs.size, reqs.alignment};
+            }
+            return {EstimateTextureMemorySize(desc), 65536};
+        };
+
+        auto getBufferMemReqs = [&](const RHIBufferDesc& desc) -> std::pair<uint64, uint64> {
+            if (graph.device)
+            {
+                auto reqs = graph.device->GetBufferMemoryRequirements(desc);
+                return {reqs.size, reqs.alignment};
+            }
+            return {EstimateBufferMemorySize(desc), 256};
+        };
+
+        // Calculate lifetimes based on execution order (not insertion order)
+        // This is critical for correct memory aliasing after topological sort
+        if (graph.executionOrder.empty())
         {
+            // Fallback to insertion order if execution order not yet computed
+            for (uint32 passIndex = 0; passIndex < graph.passes.size(); ++passIndex)
+            {
+                const auto& pass = graph.passes[passIndex];
+                if (pass.culled) continue;
+
+                for (const auto& usage : pass.usages)
+                {
+                    if (usage.type == ResourceType::Texture)
+                    {
+                        if (usage.index >= graph.textures.size()) continue;
+                        auto& texture = graph.textures[usage.index];
+                        if (texture.imported) continue;
+
+                        texture.lifetime.isUsed = true;
+                        texture.lifetime.firstUsePass = std::min(texture.lifetime.firstUsePass, passIndex);
+                        texture.lifetime.lastUsePass = std::max(texture.lifetime.lastUsePass, passIndex);
+                        auto [size, alignment] = getTextureMemReqs(texture.desc);
+                        texture.lifetime.memorySize = size;
+                        texture.lifetime.alignment = alignment;
+                    }
+                    else
+                    {
+                        if (usage.index >= graph.buffers.size()) continue;
+                        auto& buffer = graph.buffers[usage.index];
+                        if (buffer.imported) continue;
+
+                        buffer.lifetime.isUsed = true;
+                        buffer.lifetime.firstUsePass = std::min(buffer.lifetime.firstUsePass, passIndex);
+                        buffer.lifetime.lastUsePass = std::max(buffer.lifetime.lastUsePass, passIndex);
+                        auto [size, alignment] = getBufferMemReqs(buffer.desc);
+                        buffer.lifetime.memorySize = size;
+                        buffer.lifetime.alignment = alignment;
+                    }
+                }
+            }
+            return;
+        }
+
+        // Use execution order index as the timeline for lifetime calculation
+        for (uint32 order = 0; order < static_cast<uint32>(graph.executionOrder.size()); ++order)
+        {
+            uint32 passIndex = graph.executionOrder[order];
             const auto& pass = graph.passes[passIndex];
             if (pass.culled) continue;
 
@@ -457,10 +521,12 @@ namespace RVX
                     if (texture.imported) continue;  // Don't alias imported resources
 
                     texture.lifetime.isUsed = true;
-                    texture.lifetime.firstUsePass = std::min(texture.lifetime.firstUsePass, passIndex);
-                    texture.lifetime.lastUsePass = std::max(texture.lifetime.lastUsePass, passIndex);
-                    texture.lifetime.memorySize = EstimateTextureMemorySize(texture.desc);
-                    texture.lifetime.alignment = 65536;  // D3D12 texture alignment
+                    // Use 'order' (execution timeline) not 'passIndex' (insertion order)
+                    texture.lifetime.firstUsePass = std::min(texture.lifetime.firstUsePass, order);
+                    texture.lifetime.lastUsePass = std::max(texture.lifetime.lastUsePass, order);
+                    auto [size, alignment] = getTextureMemReqs(texture.desc);
+                    texture.lifetime.memorySize = size;
+                    texture.lifetime.alignment = alignment;
                 }
                 else
                 {
@@ -469,10 +535,11 @@ namespace RVX
                     if (buffer.imported) continue;
 
                     buffer.lifetime.isUsed = true;
-                    buffer.lifetime.firstUsePass = std::min(buffer.lifetime.firstUsePass, passIndex);
-                    buffer.lifetime.lastUsePass = std::max(buffer.lifetime.lastUsePass, passIndex);
-                    buffer.lifetime.memorySize = EstimateBufferMemorySize(buffer.desc);
-                    buffer.lifetime.alignment = 256;  // Constant buffer alignment
+                    buffer.lifetime.firstUsePass = std::min(buffer.lifetime.firstUsePass, order);
+                    buffer.lifetime.lastUsePass = std::max(buffer.lifetime.lastUsePass, order);
+                    auto [size, alignment] = getBufferMemReqs(buffer.desc);
+                    buffer.lifetime.memorySize = size;
+                    buffer.lifetime.alignment = alignment;
                 }
             }
         }
@@ -664,18 +731,171 @@ namespace RVX
     }
 
     // =============================================================================
-    // Compile Render Graph
+    // Compute Aliasing Barriers
+    // When multiple resources share the same heap memory, we need to ensure proper
+    // synchronization when switching from one resource to another.
     // =============================================================================
-    void CompileRenderGraph(RenderGraphImpl& graph)
+    void ComputeAliasingBarriers(RenderGraphImpl& graph)
     {
-        graph.stats = {};
-        graph.stats.totalPasses = static_cast<uint32>(graph.passes.size());
-        
-        // Note: Resource creation is now deferred until after lifetime calculation
-        // For now, we still create resources immediately (aliasing info is calculated but not used yet)
-        // Full placed resource support requires RHI changes
-        if (graph.device)
+        if (!graph.enableMemoryAliasing)
+            return;
+
+        // Track which resource last used each (heapIndex, offset) location
+        // This is a simplified implementation - a full implementation would track
+        // exact memory ranges, but for now we just track per-resource
+        std::unordered_map<uint64, std::pair<ResourceType, uint32>> lastResourceAtLocation;
+
+        auto makeLocationKey = [](uint32 heapIndex, uint64 offset) -> uint64 {
+            return (static_cast<uint64>(heapIndex) << 48) | (offset & 0x0000FFFFFFFFFFFF);
+        };
+
+        for (uint32 order = 0; order < static_cast<uint32>(graph.executionOrder.size()); ++order)
         {
+            uint32 passIndex = graph.executionOrder[order];
+            auto& pass = graph.passes[passIndex];
+            if (pass.culled) continue;
+
+            pass.aliasingBarriers.clear();
+
+            for (const auto& usage : pass.usages)
+            {
+                if (usage.type == ResourceType::Texture)
+                {
+                    if (usage.index >= graph.textures.size()) continue;
+                    auto& texture = graph.textures[usage.index];
+                    if (!texture.alias.isAliased) continue;
+
+                    uint64 key = makeLocationKey(texture.alias.heapIndex, texture.alias.heapOffset);
+                    auto it = lastResourceAtLocation.find(key);
+
+                    if (it != lastResourceAtLocation.end())
+                    {
+                        // Different resource was using this memory location before
+                        if (it->second.second != usage.index)
+                        {
+                            AliasingBarrier ab;
+                            ab.type = ResourceType::Texture;
+                            ab.beforeResourceIndex = it->second.second;
+                            ab.afterResourceIndex = usage.index;
+                            pass.aliasingBarriers.push_back(ab);
+                        }
+                    }
+
+                    // Update the last resource at this location
+                    lastResourceAtLocation[key] = {ResourceType::Texture, usage.index};
+                }
+                else
+                {
+                    if (usage.index >= graph.buffers.size()) continue;
+                    auto& buffer = graph.buffers[usage.index];
+                    if (!buffer.alias.isAliased) continue;
+
+                    uint64 key = makeLocationKey(buffer.alias.heapIndex, buffer.alias.heapOffset);
+                    auto it = lastResourceAtLocation.find(key);
+
+                    if (it != lastResourceAtLocation.end())
+                    {
+                        if (it->second.second != usage.index)
+                        {
+                            AliasingBarrier ab;
+                            ab.type = ResourceType::Buffer;
+                            ab.beforeResourceIndex = it->second.second;
+                            ab.afterResourceIndex = usage.index;
+                            pass.aliasingBarriers.push_back(ab);
+                        }
+                    }
+
+                    lastResourceAtLocation[key] = {ResourceType::Buffer, usage.index};
+                }
+            }
+        }
+    }
+
+    // =============================================================================
+    // Create Transient Resources (with optional memory aliasing)
+    // =============================================================================
+    void CreateTransientResources(RenderGraphImpl& graph)
+    {
+        if (!graph.device)
+            return;
+
+        // If memory aliasing is enabled and heaps have been computed, use placed resources
+        if (graph.enableMemoryAliasing && !graph.transientHeaps.empty())
+        {
+            // Create RHI Heaps
+            for (auto& th : graph.transientHeaps)
+            {
+                if (!th.heap && th.size > 0)
+                {
+                    RHIHeapDesc heapDesc;
+                    heapDesc.size = th.size;
+                    heapDesc.type = RHIHeapType::Default;
+                    heapDesc.flags = RHIHeapFlags::AllowAll;
+                    heapDesc.debugName = "TransientHeap";
+                    
+                    th.heap = graph.device->CreateHeap(heapDesc);
+                    if (!th.heap)
+                    {
+                        RVX_CORE_WARN("RenderGraph: Failed to create transient heap, falling back to independent resources");
+                    }
+                }
+            }
+
+            // Create Placed Textures
+            for (auto& texture : graph.textures)
+            {
+                if (texture.imported || texture.texture)
+                    continue;
+
+                if (texture.alias.heapIndex < graph.transientHeaps.size() &&
+                    graph.transientHeaps[texture.alias.heapIndex].heap)
+                {
+                    auto* heap = graph.transientHeaps[texture.alias.heapIndex].heap.Get();
+                    texture.texture = graph.device->CreatePlacedTexture(
+                        heap,
+                        texture.alias.heapOffset,
+                        texture.desc);
+                }
+                
+                // Fallback to independent resource if placed creation fails
+                if (!texture.texture)
+                {
+                    texture.texture = graph.device->CreateTexture(texture.desc);
+                }
+                
+                texture.initialState = RHIResourceState::Undefined;
+                texture.currentState = texture.initialState;
+            }
+
+            // Create Placed Buffers
+            for (auto& buffer : graph.buffers)
+            {
+                if (buffer.imported || buffer.buffer)
+                    continue;
+
+                if (buffer.alias.heapIndex < graph.transientHeaps.size() &&
+                    graph.transientHeaps[buffer.alias.heapIndex].heap)
+                {
+                    auto* heap = graph.transientHeaps[buffer.alias.heapIndex].heap.Get();
+                    buffer.buffer = graph.device->CreatePlacedBuffer(
+                        heap,
+                        buffer.alias.heapOffset,
+                        buffer.desc);
+                }
+                
+                // Fallback to independent resource if placed creation fails
+                if (!buffer.buffer)
+                {
+                    buffer.buffer = graph.device->CreateBuffer(buffer.desc);
+                }
+                
+                buffer.initialState = RHIResourceState::Undefined;
+                buffer.currentState = buffer.initialState;
+            }
+        }
+        else
+        {
+            // No aliasing: create independent resources
             for (auto& texture : graph.textures)
             {
                 if (!texture.imported && !texture.texture)
@@ -696,6 +916,19 @@ namespace RVX
                 }
             }
         }
+    }
+
+    // =============================================================================
+    // Compile Render Graph
+    // =============================================================================
+    void CompileRenderGraph(RenderGraphImpl& graph)
+    {
+        graph.stats = {};
+        graph.stats.totalPasses = static_cast<uint32>(graph.passes.size());
+        graph.totalMemoryWithoutAliasing = 0;
+        graph.totalMemoryWithAliasing = 0;
+        graph.aliasedTextureCount = 0;
+        graph.aliasedBufferCount = 0;
 
         std::vector<std::vector<uint32>> textureWriters(graph.textures.size());
         std::vector<std::vector<uint32>> bufferWriters(graph.buffers.size());
@@ -902,6 +1135,12 @@ namespace RVX
         // Calculate resource lifetimes and memory aliases
         CalculateResourceLifetimes(graph);
         ComputeMemoryAliases(graph);
+
+        // Create transient resources (with optional placed resource aliasing)
+        CreateTransientResources(graph);
+
+        // Compute aliasing barriers for resources that share memory
+        ComputeAliasingBarriers(graph);
 
         for (auto& pass : graph.passes)
         {

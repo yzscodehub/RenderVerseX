@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RenderGraph/RenderGraph.h"
+#include "RHI/RHIHeap.h"
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -51,10 +52,8 @@ namespace RVX
         uint64 size = 0;                     // Total heap size
         uint32 resourceCount = 0;            // Number of resources using this heap
         
-        // Platform-specific heap handles (set during resource creation)
-        // DX12: ID3D12Heap*
-        // Vulkan: VkDeviceMemory
-        void* platformHeap = nullptr;
+        // RHI Heap handle (set during resource creation)
+        RHIHeapRef heap;
     };
 
     struct TextureResource
@@ -108,6 +107,16 @@ namespace RVX
         bool hasRange = false;
     };
 
+    // =============================================================================
+    // Aliasing Barrier Info
+    // =============================================================================
+    struct AliasingBarrier
+    {
+        ResourceType type = ResourceType::Texture;
+        uint32 beforeResourceIndex = RVX_INVALID_INDEX;  // Resource that was using this memory before
+        uint32 afterResourceIndex = RVX_INVALID_INDEX;   // Resource that will use this memory now
+    };
+
     struct Pass
     {
         std::string name;
@@ -120,6 +129,7 @@ namespace RVX
         bool culled = false;
         std::vector<RHITextureBarrier> textureBarriers;
         std::vector<RHIBufferBarrier> bufferBarriers;
+        std::vector<AliasingBarrier> aliasingBarriers;  // For memory aliasing
         std::function<void(RHICommandContext&)> execute;
     };
 

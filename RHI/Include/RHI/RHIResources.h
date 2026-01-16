@@ -20,6 +20,7 @@ namespace RVX
     class RHISwapChain;
     class RHIFence;
     class RHICommandContext;
+    class RHIHeap;
 
     // =============================================================================
     // Type Aliases
@@ -36,6 +37,7 @@ namespace RVX
     using RHISwapChainRef           = Ref<RHISwapChain>;
     using RHIFenceRef               = Ref<RHIFence>;
     using RHICommandContextRef      = Ref<RHICommandContext>;
+    using RHIHeapRef                = Ref<RHIHeap>;
 
     // =============================================================================
     // RHI Resource Base Class

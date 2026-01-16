@@ -489,6 +489,15 @@ int main(int argc, char *argv[])
 
     auto *renderSystem = systems.RegisterSystem<RVX::RenderSystem>();
     renderSystem->Initialize(device.get(), swapChain.Get(), &cmdContexts);
+    // Track if we've logged render graph stats
+    bool loggedRenderGraphStats = false;
+    bool savedGraphviz = false;
+
+    // Track memory aliasing demo state
+    // Run the demo for a few frames, then WaitIdle before switching to normal rendering
+    int memoryAliasingDemoFrameCount = 0;
+    constexpr int DEMO_FRAMES = 3;  // Run demo for 3 frames to match triple buffering
+
     renderSystem->SetRenderCallback([&](RVX::RHICommandContext &ctx,
                                         RVX::RHISwapChain &swapChainRef,
                                         RVX::RenderGraph &graph,
@@ -497,62 +506,227 @@ int main(int argc, char *argv[])
         auto* backBuffer = swapChainRef.GetCurrentBackBuffer();
         auto* backBufferView = swapChainRef.GetCurrentBackBufferView();
 
-        graph.Clear();
-
-        struct TrianglePassData
+        // During demo phase and transition, wait for GPU to prevent destroying in-use resources
+        // This is needed because demo creates new transient resources each frame
+        if (memoryAliasingDemoFrameCount > 0 && memoryAliasingDemoFrameCount <= DEMO_FRAMES)
         {
-            RVX::RGTextureHandle colorTarget;
-            RVX::RHITextureView* colorTargetView = nullptr;
-        };
+            device->WaitIdle();
+        }
+
+        graph.Clear();
 
         auto backBufferHandle = graph.ImportTexture(backBuffer, backBufferStates[backBufferIndex]);
         graph.SetExportState(backBufferHandle, RVX::RHIResourceState::Present);
 
-        graph.AddPass<TrianglePassData>(
-            "Triangle",
-            RVX::RenderGraphPassType::Graphics,
-            [&](RVX::RenderGraphBuilder& builder, TrianglePassData& data)
+        // Only demonstrate memory aliasing on first few frames
+        bool showMemoryAliasingDemo = (memoryAliasingDemoFrameCount < DEMO_FRAMES);
+        
+        if (showMemoryAliasingDemo)
+        {
+            // Enable memory aliasing for transient resources
+            graph.SetMemoryAliasingEnabled(true);
+
+            // Create some transient textures to demonstrate memory aliasing
+            // These textures have non-overlapping lifetimes and can share memory
+            RVX::RHITextureDesc transientDesc;
+            transientDesc.width = swapChainRef.GetWidth() / 2;
+            transientDesc.height = swapChainRef.GetHeight() / 2;
+            transientDesc.format = RVX::RHIFormat::RGBA16_FLOAT;
+            transientDesc.usage = RVX::RHITextureUsage::RenderTarget | RVX::RHITextureUsage::ShaderResource;
+            
+            transientDesc.debugName = "TransientA";
+            auto transientA = graph.CreateTexture(transientDesc);
+
+            transientDesc.debugName = "TransientB";
+            auto transientB = graph.CreateTexture(transientDesc);
+
+            transientDesc.debugName = "TransientC";
+            auto transientC = graph.CreateTexture(transientDesc);
+
+            struct PassAData { RVX::RGTextureHandle output; };
+            struct PassBData { RVX::RGTextureHandle input; RVX::RGTextureHandle output; };
+            struct PassCData { RVX::RGTextureHandle input; RVX::RGTextureHandle output; };
+
+            // Pass 1: Write to TransientA
+            graph.AddPass<PassAData>(
+                "TransientPass_A",
+                RVX::RenderGraphPassType::Graphics,
+                [&](RVX::RenderGraphBuilder& builder, PassAData& data)
+                {
+                    data.output = builder.Write(transientA, RVX::RHIResourceState::RenderTarget);
+                },
+                [](const PassAData&, RVX::RHICommandContext&) { /* Dummy clear or render */ });
+
+            // Pass 2: Read TransientA, Write TransientB
+            graph.AddPass<PassBData>(
+                "TransientPass_B",
+                RVX::RenderGraphPassType::Graphics,
+                [&](RVX::RenderGraphBuilder& builder, PassBData& data)
+                {
+                    data.input = builder.Read(transientA);
+                    data.output = builder.Write(transientB, RVX::RHIResourceState::RenderTarget);
+                },
+                [](const PassBData&, RVX::RHICommandContext&) { /* Dummy process */ });
+
+            // Pass 3: Read TransientB, Write TransientC
+            graph.AddPass<PassCData>(
+                "TransientPass_C",
+                RVX::RenderGraphPassType::Graphics,
+                [&](RVX::RenderGraphBuilder& builder, PassCData& data)
+                {
+                    data.input = builder.Read(transientB);
+                    data.output = builder.Write(transientC, RVX::RHIResourceState::RenderTarget);
+                },
+                [](const PassCData&, RVX::RHICommandContext&) { /* Dummy process */ });
+
+            // Main triangle pass - also reads TransientC to keep the chain alive
+            struct TrianglePassDataFull
             {
-                data.colorTarget = builder.Write(backBufferHandle, RVX::RHIResourceState::RenderTarget);
-                data.colorTargetView = backBufferView;
-            },
-            [&](const TrianglePassData& data, RVX::RHICommandContext& ctx)
+                RVX::RGTextureHandle colorTarget;
+                RVX::RGTextureHandle transientInput;
+                RVX::RHITextureView* colorTargetView = nullptr;
+            };
+
+            graph.AddPass<TrianglePassDataFull>(
+                "Triangle",
+                RVX::RenderGraphPassType::Graphics,
+                [&](RVX::RenderGraphBuilder& builder, TrianglePassDataFull& data)
+                {
+                    data.transientInput = builder.Read(transientC);
+                    data.colorTarget = builder.Write(backBufferHandle, RVX::RHIResourceState::RenderTarget);
+                    data.colorTargetView = backBufferView;
+                },
+                [&](const TrianglePassDataFull& data, RVX::RHICommandContext& ctx)
+                {
+                    RVX::RHIRenderPassDesc renderPass;
+                    renderPass.AddColorAttachment(
+                        data.colorTargetView,
+                        RVX::RHILoadOp::Clear,
+                        RVX::RHIStoreOp::Store,
+                        {0.08f, 0.08f, 0.12f, 1.0f}
+                    );
+
+                    ctx.BeginRenderPass(renderPass);
+
+                    RVX::RHIViewport viewport;
+                    viewport.x = 0;
+                    viewport.y = 0;
+                    viewport.width = static_cast<float>(swapChainRef.GetWidth());
+                    viewport.height = static_cast<float>(swapChainRef.GetHeight());
+                    viewport.minDepth = 0.0f;
+                    viewport.maxDepth = 1.0f;
+                    ctx.SetViewport(viewport);
+
+                    RVX::RHIRect scissor;
+                    scissor.x = 0;
+                    scissor.y = 0;
+                    scissor.width = swapChainRef.GetWidth();
+                    scissor.height = swapChainRef.GetHeight();
+                    ctx.SetScissor(scissor);
+
+                    ctx.SetPipeline(pipeline.Get());
+                    ctx.SetDescriptorSet(0, descriptorSet.Get());
+                    ctx.SetVertexBuffer(0, vertexBuffer.Get());
+                    ctx.Draw(3, 1, 0, 0);
+                    ctx.EndRenderPass();
+                });
+
+            graph.Compile();
+
+            // Log render graph statistics once
+            if (!loggedRenderGraphStats)
             {
-                RVX::RHIRenderPassDesc renderPass;
-                renderPass.AddColorAttachment(
-                    data.colorTargetView,
-                    RVX::RHILoadOp::Clear,
-                    RVX::RHIStoreOp::Store,
-                    {0.08f, 0.08f, 0.12f, 1.0f}
-                );
+                const auto& stats = graph.GetCompileStats();
+                RVX_CORE_INFO("=== RenderGraph Statistics (Memory Aliasing Demo) ===");
+                RVX_CORE_INFO("  Total passes: {}", stats.totalPasses);
+                RVX_CORE_INFO("  Culled passes: {}", stats.culledPasses);
+                RVX_CORE_INFO("  Barriers: {} (tex: {}, buf: {})", 
+                    stats.barrierCount, stats.textureBarrierCount, stats.bufferBarrierCount);
+                RVX_CORE_INFO("  Merged barriers: {}", stats.mergedBarrierCount);
+                RVX_CORE_INFO("  Transient textures: {}, buffers: {}", 
+                    stats.totalTransientTextures, stats.totalTransientBuffers);
+                RVX_CORE_INFO("  Aliased textures: {}, buffers: {}", 
+                    stats.aliasedTextureCount, stats.aliasedBufferCount);
+                RVX_CORE_INFO("  Memory without aliasing: {} KB", stats.memoryWithoutAliasing / 1024);
+                RVX_CORE_INFO("  Memory with aliasing: {} KB", stats.memoryWithAliasing / 1024);
+                RVX_CORE_INFO("  Memory savings: {:.1f}%", stats.GetMemorySavingsPercent());
+                RVX_CORE_INFO("  Transient heaps: {}", stats.transientHeapCount);
+                loggedRenderGraphStats = true;
+            }
 
-                ctx.BeginRenderPass(renderPass);
+            // Save Graphviz DOT file once
+            if (!savedGraphviz)
+            {
+                std::string dotPath = exeDir + "render_graph.dot";
+                if (graph.SaveGraphviz(dotPath.c_str()))
+                {
+                    RVX_CORE_INFO("Saved RenderGraph visualization to: {}", dotPath);
+                    RVX_CORE_INFO("  To view: dot -Tpng {} -o render_graph.png", dotPath);
+                }
+                savedGraphviz = true;
+            }
 
-                RVX::RHIViewport viewport;
-                viewport.x = 0;
-                viewport.y = 0;
-                viewport.width = static_cast<float>(swapChainRef.GetWidth());
-                viewport.height = static_cast<float>(swapChainRef.GetHeight());
-                viewport.minDepth = 0.0f;
-                viewport.maxDepth = 1.0f;
-                ctx.SetViewport(viewport);
+            graph.Execute(ctx);
+            
+            // Increment demo frame counter
+            memoryAliasingDemoFrameCount++;
+        }
+        else
+        {
+            // Simple rendering without transient resources (normal per-frame path)
+            struct TrianglePassData
+            {
+                RVX::RGTextureHandle colorTarget;
+                RVX::RHITextureView* colorTargetView = nullptr;
+            };
 
-                RVX::RHIRect scissor;
-                scissor.x = 0;
-                scissor.y = 0;
-                scissor.width = swapChainRef.GetWidth();
-                scissor.height = swapChainRef.GetHeight();
-                ctx.SetScissor(scissor);
+            graph.AddPass<TrianglePassData>(
+                "Triangle",
+                RVX::RenderGraphPassType::Graphics,
+                [&](RVX::RenderGraphBuilder& builder, TrianglePassData& data)
+                {
+                    data.colorTarget = builder.Write(backBufferHandle, RVX::RHIResourceState::RenderTarget);
+                    data.colorTargetView = backBufferView;
+                },
+                [&](const TrianglePassData& data, RVX::RHICommandContext& ctx)
+                {
+                    RVX::RHIRenderPassDesc renderPass;
+                    renderPass.AddColorAttachment(
+                        data.colorTargetView,
+                        RVX::RHILoadOp::Clear,
+                        RVX::RHIStoreOp::Store,
+                        {0.08f, 0.08f, 0.12f, 1.0f}
+                    );
 
-                ctx.SetPipeline(pipeline.Get());
-                ctx.SetDescriptorSet(0, descriptorSet.Get());
-                ctx.SetVertexBuffer(0, vertexBuffer.Get());
-                ctx.Draw(3, 1, 0, 0);
-                ctx.EndRenderPass();
-            });
+                    ctx.BeginRenderPass(renderPass);
 
-        graph.Compile();
-        graph.Execute(ctx);
+                    RVX::RHIViewport viewport;
+                    viewport.x = 0;
+                    viewport.y = 0;
+                    viewport.width = static_cast<float>(swapChainRef.GetWidth());
+                    viewport.height = static_cast<float>(swapChainRef.GetHeight());
+                    viewport.minDepth = 0.0f;
+                    viewport.maxDepth = 1.0f;
+                    ctx.SetViewport(viewport);
+
+                    RVX::RHIRect scissor;
+                    scissor.x = 0;
+                    scissor.y = 0;
+                    scissor.width = swapChainRef.GetWidth();
+                    scissor.height = swapChainRef.GetHeight();
+                    ctx.SetScissor(scissor);
+
+                    ctx.SetPipeline(pipeline.Get());
+                    ctx.SetDescriptorSet(0, descriptorSet.Get());
+                    ctx.SetVertexBuffer(0, vertexBuffer.Get());
+                    ctx.Draw(3, 1, 0, 0);
+                    ctx.EndRenderPass();
+                });
+
+            graph.Compile();
+            graph.Execute(ctx);
+        }
+
         backBufferStates[backBufferIndex] = RVX::RHIResourceState::Present; });
 
     systems.AddDependency("InputSystem", "WindowSystem");

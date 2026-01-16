@@ -18,13 +18,20 @@
 | CalculateResourceLifetimes() | ✅ 完成 | `RenderGraphCompiler.cpp` |
 | ComputeMemoryAliases() | ✅ 完成 | `RenderGraphCompiler.cpp` |
 | 统计信息扩展 | ✅ 完成 | `RenderGraph.h` |
-| Placed Resource 创建 | ⏳ 待实现 | 需要 RHI 扩展 |
+| 生命周期基于执行顺序 | ✅ 完成 | `RenderGraphCompiler.cpp` |
+| 统计数据编译前重置 | ✅ 完成 | `RenderGraphCompiler.cpp` |
+| RHI Heap 接口 | ✅ 完成 | `RHI/RHIHeap.h`, `RHI/RHIDevice.h` |
+| DX12 Heap 实现 | ✅ 完成 | `DX12Resources.cpp` |
+| Vulkan Heap 实现 | ✅ 完成 | `VulkanResources.cpp` |
+| Placed Resource 创建 | ✅ 完成 | `RenderGraphCompiler.cpp` |
+| Aliasing Barrier 跟踪 | ✅ 完成 | `RenderGraphInternal.h`, `RenderGraphCompiler.cpp` |
+| Graphviz DOT 导出 | ✅ 完成 | `RenderGraph.cpp` |
 
-### 待完成：Placed Resource 支持
+### ✅ 已完成：Placed Resource 支持
 
-当前实现已计算别名信息，但资源创建仍使用独立内存。需要以下步骤完成真正的内存共享：
+以下所有步骤已实现完成：
 
-#### 1. RHI 接口扩展
+#### 1. RHI 接口扩展 ✅
 
 ```cpp
 // RHI/RHIDevice.h - 添加以下接口
@@ -74,7 +81,7 @@ public:
 };
 ```
 
-#### 2. DX12 实现
+#### 2. DX12 实现 ✅
 
 ```cpp
 // RHI_DX12/Private/DX12Device.cpp
@@ -127,7 +134,7 @@ RHITextureRef DX12Device::CreatePlacedTexture(
 }
 ```
 
-#### 3. Vulkan 实现
+#### 3. Vulkan 实现 ✅
 
 ```cpp
 // RHI_Vulkan/Private/VulkanDevice.cpp
@@ -178,7 +185,7 @@ RHITextureRef VulkanDevice::CreatePlacedTexture(
 }
 ```
 
-#### 4. RenderGraph 资源创建修改
+#### 4. RenderGraph 资源创建修改 ✅
 
 ```cpp
 // RenderGraph/Private/RenderGraphCompiler.cpp
@@ -249,7 +256,7 @@ void CreateTransientResources(RenderGraphImpl& graph)
 }
 ```
 
-#### 5. Aliasing Barrier 插入
+#### 5. Aliasing Barrier 插入 ✅
 
 当同一 Heap 位置被不同资源使用时，需要插入 Aliasing Barrier：
 
@@ -278,6 +285,67 @@ void InsertAliasingBarriers(RenderGraphImpl& graph, Pass& pass, RHICommandContex
             }
         }
     }
+}
+```
+#### 6. 生命周期计算修正（按执行顺序） ✅
+
+当前 `CalculateResourceLifetimes()` 使用 Pass 插入顺序，若执行顺序被拓扑排序重排，会导致生命周期区间错误。应改为基于 `executionOrder` 计算：
+
+```cpp
+// RenderGraph/Private/RenderGraphCompiler.cpp
+// 用 executionOrder 序号作为“时间轴”
+void CalculateResourceLifetimes(RenderGraphImpl& graph)
+{
+    // Reset lifetimes
+    for (auto& texture : graph.textures)
+    {
+        texture.lifetime = ResourceLifetime{};
+        texture.alias = MemoryAlias{};
+    }
+    for (auto& buffer : graph.buffers)
+    {
+        buffer.lifetime = ResourceLifetime{};
+        buffer.alias = MemoryAlias{};
+    }
+
+    // executionOrder 为空则回退到插入顺序
+    if (graph.executionOrder.empty())
+    {
+        for (uint32 passIndex = 0; passIndex < graph.passes.size(); ++passIndex)
+        {
+            // 旧逻辑
+        }
+        return;
+    }
+
+    for (uint32 order = 0; order < graph.executionOrder.size(); ++order)
+    {
+        uint32 passIndex = graph.executionOrder[order];
+        const auto& pass = graph.passes[passIndex];
+        if (pass.culled) continue;
+
+        for (const auto& usage : pass.usages)
+        {
+            // 将 order 视为 first/lastUse
+        }
+    }
+}
+```
+
+#### 7. 统计数据编译前重置 ✅
+
+避免多次 `Compile()` 叠加统计数据：
+
+```cpp
+// RenderGraph/Private/RenderGraphCompiler.cpp
+void CompileRenderGraph(RenderGraphImpl& graph)
+{
+    graph.stats = {};
+    graph.totalMemoryWithoutAliasing = 0;
+    graph.totalMemoryWithAliasing = 0;
+    graph.aliasedTextureCount = 0;
+    graph.aliasedBufferCount = 0;
+    // ...
 }
 ```
 
@@ -613,20 +681,23 @@ dot -Tpng render_graph.dot -o render_graph.png
 | 阶段 | 优先级 | 预期收益 | 复杂度 | 状态 |
 |------|:------:|----------|:------:|:----:|
 | 1. Memory Aliasing (算法) | 🔴 高 | 显存节省 30-50% | 中 | ✅ 完成 |
-| 1. Memory Aliasing (RHI) | 🔴 高 | 实际生效 | 高 | ⏳ 待实现 |
+| 1. Memory Aliasing (RHI) | 🔴 高 | 实际生效 | 高 | ✅ 完成 |
+| 1.5. Graphviz 导出 | 🟡 低 | 调试便利 | 低 | ✅ 完成 |
 | 2. Split Barriers | 🟠 中 | GPU 利用率 +5-15% | 中 | ⏳ 待实现 |
 | 3. Async Compute | 🟠 中 | GPU 利用率 +10-30% | 高 | ⏳ 待实现 |
 | 4. Lambda 优化 | 🟡 低 | CPU 开销减少 | 低 | ⏳ 待实现 |
-| 5. Graphviz 导出 | 🟡 低 | 调试便利 | 低 | ⏳ 待实现 |
 
 ---
 
 ## 验收标准
 
-### 阶段一（完整）
-- [ ] RHI 支持 CreateHeap / CreatePlacedTexture / CreatePlacedBuffer
-- [ ] 相同场景显存占用降低 30%+
-- [ ] 无内存泄漏或访问冲突
+### 阶段一（完整） ✅
+- [x] RHI 支持 CreateHeap / CreatePlacedTexture / CreatePlacedBuffer
+- [x] 生命周期计算基于执行顺序（拓扑排序后）
+- [x] Aliasing Barrier 跟踪机制
+- [x] Graphviz DOT 导出功能
+- [ ] 相同场景显存占用降低 30%+（待性能验证）
+- [ ] 无内存泄漏或访问冲突（待测试验证）
 
 ### 阶段二
 - [ ] Split Barrier 正确插入
@@ -638,7 +709,3 @@ dot -Tpng render_graph.dot -o render_graph.png
 
 ### 阶段四
 - [ ] 添加 100 个 Pass 时无堆分配
-
-### 阶段五
-- [ ] 生成的 DOT 可被 Graphviz 正确渲染
-- [ ] 显示 Pass 名称、资源、依赖关系

@@ -771,6 +771,124 @@ namespace RVX
         return CreateVulkanShader(this, desc);
     }
 
+    // =============================================================================
+    // Memory Heap Management
+    // =============================================================================
+    RHIHeapRef VulkanDevice::CreateHeap(const RHIHeapDesc& desc)
+    {
+        return CreateVulkanHeap(this, desc);
+    }
+
+    RHITextureRef VulkanDevice::CreatePlacedTexture(RHIHeap* heap, uint64 offset, const RHITextureDesc& desc)
+    {
+        return CreateVulkanPlacedTexture(this, heap, offset, desc);
+    }
+
+    RHIBufferRef VulkanDevice::CreatePlacedBuffer(RHIHeap* heap, uint64 offset, const RHIBufferDesc& desc)
+    {
+        return CreateVulkanPlacedBuffer(this, heap, offset, desc);
+    }
+
+    IRHIDevice::MemoryRequirements VulkanDevice::GetTextureMemoryRequirements(const RHITextureDesc& desc)
+    {
+        // Create a temporary image to query memory requirements
+        VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        
+        switch (desc.dimension)
+        {
+            case RHITextureDimension::Texture1D:
+                imageInfo.imageType = VK_IMAGE_TYPE_1D;
+                break;
+            case RHITextureDimension::Texture2D:
+                imageInfo.imageType = VK_IMAGE_TYPE_2D;
+                break;
+            case RHITextureDimension::Texture3D:
+                imageInfo.imageType = VK_IMAGE_TYPE_3D;
+                break;
+            case RHITextureDimension::TextureCube:
+                imageInfo.imageType = VK_IMAGE_TYPE_2D;
+                imageInfo.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+                break;
+        }
+
+        imageInfo.extent.width = desc.width;
+        imageInfo.extent.height = desc.height;
+        imageInfo.extent.depth = desc.depth;
+        imageInfo.mipLevels = desc.mipLevels;
+        imageInfo.arrayLayers = desc.arraySize;
+        imageInfo.format = ToVkFormat(desc.format);
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.samples = static_cast<VkSampleCountFlagBits>(desc.sampleCount);
+
+        // Usage flags
+        imageInfo.usage = 0;
+        if (HasFlag(desc.usage, RHITextureUsage::ShaderResource))
+            imageInfo.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (HasFlag(desc.usage, RHITextureUsage::UnorderedAccess))
+            imageInfo.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        if (HasFlag(desc.usage, RHITextureUsage::RenderTarget))
+            imageInfo.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        if (HasFlag(desc.usage, RHITextureUsage::DepthStencil))
+            imageInfo.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        
+        imageInfo.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        imageInfo.flags |= VK_IMAGE_CREATE_ALIAS_BIT;
+
+        VkImage tempImage = VK_NULL_HANDLE;
+        VkResult result = vkCreateImage(m_device, &imageInfo, nullptr, &tempImage);
+        if (result != VK_SUCCESS)
+        {
+            RVX_RHI_ERROR("Failed to create temp image for memory requirements query");
+            return {0, 65536};  // Fallback
+        }
+
+        VkMemoryRequirements memReqs;
+        vkGetImageMemoryRequirements(m_device, tempImage, &memReqs);
+        
+        vkDestroyImage(m_device, tempImage, nullptr);
+
+        return {memReqs.size, memReqs.alignment};
+    }
+
+    IRHIDevice::MemoryRequirements VulkanDevice::GetBufferMemoryRequirements(const RHIBufferDesc& desc)
+    {
+        VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bufferInfo.size = desc.size;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        // Usage flags
+        bufferInfo.usage = 0;
+        if (HasFlag(desc.usage, RHIBufferUsage::Vertex))
+            bufferInfo.usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        if (HasFlag(desc.usage, RHIBufferUsage::Index))
+            bufferInfo.usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        if (HasFlag(desc.usage, RHIBufferUsage::Constant))
+            bufferInfo.usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        if (HasFlag(desc.usage, RHIBufferUsage::ShaderResource))
+            bufferInfo.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess))
+            bufferInfo.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        
+        bufferInfo.usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+        VkBuffer tempBuffer = VK_NULL_HANDLE;
+        VkResult result = vkCreateBuffer(m_device, &bufferInfo, nullptr, &tempBuffer);
+        if (result != VK_SUCCESS)
+        {
+            RVX_RHI_ERROR("Failed to create temp buffer for memory requirements query");
+            return {desc.size, 256};  // Fallback
+        }
+
+        VkMemoryRequirements memReqs;
+        vkGetBufferMemoryRequirements(m_device, tempBuffer, &memReqs);
+        
+        vkDestroyBuffer(m_device, tempBuffer, nullptr);
+
+        return {memReqs.size, memReqs.alignment};
+    }
+
     RHIDescriptorSetLayoutRef VulkanDevice::CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc& desc)
     {
         return CreateVulkanDescriptorSetLayout(this, desc);

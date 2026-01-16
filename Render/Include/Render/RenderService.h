@@ -6,11 +6,17 @@
 
 namespace RVX
 {
-    class RenderSystem
+    /// @brief Low-level render service for frame management (renamed from RenderSystem
+    ///        to avoid confusion with Engine/Systems/RenderSystem which is an ISystem)
+    class RenderService
     {
     public:
         void Initialize(IRHIDevice* device, RHISwapChain* swapChain);
         void SetRenderGraph(RenderGraph* graph) { m_graph = graph; }
+
+        IRHIDevice* GetDevice() const { return m_device; }
+        RHISwapChain* GetSwapChain() const { return m_swapChain; }
+        RenderGraph* GetRenderGraph() const { return m_graph; }
 
         void BeginFrame();
         void Render(const Camera& camera);

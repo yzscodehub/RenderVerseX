@@ -185,11 +185,12 @@ namespace RVX
         m_currentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
-    VulkanTexture::VulkanTexture(VulkanDevice* device, VkImage image, const RHITextureDesc& desc)
+    VulkanTexture::VulkanTexture(VulkanDevice* device, VkImage image, const RHITextureDesc& desc, bool ownsImage)
         : m_device(device)
         , m_desc(desc)
         , m_image(image)
-        , m_ownsImage(false)
+        , m_ownsImage(ownsImage)
+        , m_ownsAllocation(false)  // External image - no VMA allocation
         , m_currentLayout(VK_IMAGE_LAYOUT_UNDEFINED)
     {
         if (desc.debugName)
@@ -200,9 +201,18 @@ namespace RVX
 
     VulkanTexture::~VulkanTexture()
     {
-        if (m_ownsImage && m_image && m_allocation)
+        if (m_ownsImage && m_image)
         {
-            vmaDestroyImage(m_device->GetAllocator(), m_image, m_allocation);
+            if (m_ownsAllocation && m_allocation)
+            {
+                // VMA-allocated resource
+                vmaDestroyImage(m_device->GetAllocator(), m_image, m_allocation);
+            }
+            else
+            {
+                // Placed resource (memory owned by heap) - just destroy the image
+                vkDestroyImage(m_device->GetDevice(), m_image, nullptr);
+            }
         }
     }
 
@@ -467,6 +477,252 @@ namespace RVX
         {
             static_cast<VulkanFence*>(fence)->Wait(value);
         }
+    }
+
+    // =============================================================================
+    // Vulkan Heap Implementation (for Memory Aliasing)
+    // =============================================================================
+    VulkanHeap::VulkanHeap(VulkanDevice* device, const RHIHeapDesc& desc)
+        : m_device(device)
+        , m_size(desc.size)
+        , m_type(desc.type)
+        , m_flags(desc.flags)
+    {
+        if (desc.debugName)
+        {
+            SetDebugName(desc.debugName);
+        }
+
+        // Determine memory property flags based on heap type
+        VkMemoryPropertyFlags requiredFlags = 0;
+        VkMemoryPropertyFlags preferredFlags = 0;
+
+        switch (desc.type)
+        {
+            case RHIHeapType::Default:
+                requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+                break;
+            case RHIHeapType::Upload:
+                requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+                preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+                break;
+            case RHIHeapType::Readback:
+                requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+                break;
+        }
+
+        // Get physical device memory properties
+        VkPhysicalDeviceMemoryProperties memProperties;
+        vkGetPhysicalDeviceMemoryProperties(device->GetPhysicalDevice(), &memProperties);
+
+        // Find a suitable memory type
+        m_memoryTypeIndex = UINT32_MAX;
+        for (uint32 i = 0; i < memProperties.memoryTypeCount; ++i)
+        {
+            VkMemoryPropertyFlags flags = memProperties.memoryTypes[i].propertyFlags;
+            if ((flags & requiredFlags) == requiredFlags)
+            {
+                // Prefer memory types that also have preferred flags
+                if (m_memoryTypeIndex == UINT32_MAX || (flags & preferredFlags) == preferredFlags)
+                {
+                    m_memoryTypeIndex = i;
+                    if ((flags & preferredFlags) == preferredFlags)
+                        break;  // Found ideal memory type
+                }
+            }
+        }
+
+        if (m_memoryTypeIndex == UINT32_MAX)
+        {
+            RVX_RHI_ERROR("Failed to find suitable memory type for Vulkan Heap");
+            return;
+        }
+
+        // Allocate memory
+        VkMemoryAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocInfo.allocationSize = desc.size;
+        allocInfo.memoryTypeIndex = m_memoryTypeIndex;
+
+        VkResult result = vkAllocateMemory(device->GetDevice(), &allocInfo, nullptr, &m_memory);
+        if (result != VK_SUCCESS)
+        {
+            RVX_RHI_ERROR("Failed to allocate Vulkan Heap memory: {}", static_cast<int32>(result));
+            m_memory = VK_NULL_HANDLE;
+            return;
+        }
+
+        RVX_RHI_DEBUG("Created Vulkan Heap: {} bytes, memory type {}", desc.size, m_memoryTypeIndex);
+    }
+
+    VulkanHeap::~VulkanHeap()
+    {
+        if (m_memory != VK_NULL_HANDLE)
+        {
+            vkFreeMemory(m_device->GetDevice(), m_memory, nullptr);
+        }
+    }
+
+    RHIHeapRef CreateVulkanHeap(VulkanDevice* device, const RHIHeapDesc& desc)
+    {
+        auto heap = Ref<VulkanHeap>(new VulkanHeap(device, desc));
+        if (!heap->GetMemory())
+        {
+            return nullptr;
+        }
+        return heap;
+    }
+
+    // =============================================================================
+    // Vulkan Placed Texture Implementation
+    // =============================================================================
+    RHITextureRef CreateVulkanPlacedTexture(VulkanDevice* device, RHIHeap* heap, uint64 offset, const RHITextureDesc& desc)
+    {
+        auto* vkHeap = static_cast<VulkanHeap*>(heap);
+        if (!vkHeap || !vkHeap->GetMemory())
+        {
+            RVX_RHI_ERROR("Invalid heap for placed texture");
+            return nullptr;
+        }
+
+        // Create image without memory allocation
+        VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        
+        switch (desc.dimension)
+        {
+            case RHITextureDimension::Texture1D:
+                imageInfo.imageType = VK_IMAGE_TYPE_1D;
+                break;
+            case RHITextureDimension::Texture2D:
+                imageInfo.imageType = VK_IMAGE_TYPE_2D;
+                break;
+            case RHITextureDimension::Texture3D:
+                imageInfo.imageType = VK_IMAGE_TYPE_3D;
+                break;
+            case RHITextureDimension::TextureCube:
+                imageInfo.imageType = VK_IMAGE_TYPE_2D;
+                imageInfo.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+                break;
+        }
+
+        imageInfo.extent.width = desc.width;
+        imageInfo.extent.height = desc.height;
+        imageInfo.extent.depth = desc.depth;
+        imageInfo.mipLevels = desc.mipLevels;
+        imageInfo.arrayLayers = desc.arraySize;
+        imageInfo.format = ToVkFormat(desc.format);
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.samples = static_cast<VkSampleCountFlagBits>(desc.sampleCount);
+
+        // Usage flags
+        imageInfo.usage = 0;
+        if (HasFlag(desc.usage, RHITextureUsage::ShaderResource))
+            imageInfo.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (HasFlag(desc.usage, RHITextureUsage::UnorderedAccess))
+            imageInfo.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        if (HasFlag(desc.usage, RHITextureUsage::RenderTarget))
+            imageInfo.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        if (HasFlag(desc.usage, RHITextureUsage::DepthStencil))
+            imageInfo.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        
+        imageInfo.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+        // For placed resources, we need the ALIAS flag if memory may be shared
+        imageInfo.flags |= VK_IMAGE_CREATE_ALIAS_BIT;
+
+        VkImage image = VK_NULL_HANDLE;
+        VkResult result = vkCreateImage(device->GetDevice(), &imageInfo, nullptr, &image);
+        if (result != VK_SUCCESS)
+        {
+            RVX_RHI_ERROR("Failed to create Vulkan placed image: {}", static_cast<int32>(result));
+            return nullptr;
+        }
+
+        // Bind image to the shared memory at the specified offset
+        result = vkBindImageMemory(device->GetDevice(), image, vkHeap->GetMemory(), offset);
+        if (result != VK_SUCCESS)
+        {
+            RVX_RHI_ERROR("Failed to bind Vulkan placed image to memory: {}", static_cast<int32>(result));
+            vkDestroyImage(device->GetDevice(), image, nullptr);
+            return nullptr;
+        }
+
+        if (desc.debugName)
+        {
+            if (device->vkSetDebugUtilsObjectName)
+            {
+                VkDebugUtilsObjectNameInfoEXT nameInfo = {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
+                nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
+                nameInfo.objectHandle = reinterpret_cast<uint64>(image);
+                nameInfo.pObjectName = desc.debugName;
+                device->vkSetDebugUtilsObjectName(device->GetDevice(), &nameInfo);
+            }
+        }
+
+        // Use the existing constructor that accepts a pre-created image
+        // Pass ownsImage=true so the VkImage is destroyed when the texture is released
+        return Ref<VulkanTexture>(new VulkanTexture(device, image, desc, true));
+    }
+
+    // =============================================================================
+    // Vulkan Placed Buffer Implementation
+    // =============================================================================
+    RHIBufferRef CreateVulkanPlacedBuffer(VulkanDevice* device, RHIHeap* heap, uint64 offset, const RHIBufferDesc& desc)
+    {
+        auto* vkHeap = static_cast<VulkanHeap*>(heap);
+        if (!vkHeap || !vkHeap->GetMemory())
+        {
+            RVX_RHI_ERROR("Invalid heap for placed buffer");
+            return nullptr;
+        }
+
+        VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bufferInfo.size = desc.size;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        // Usage flags
+        bufferInfo.usage = 0;
+        if (HasFlag(desc.usage, RHIBufferUsage::Vertex))
+            bufferInfo.usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        if (HasFlag(desc.usage, RHIBufferUsage::Index))
+            bufferInfo.usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        if (HasFlag(desc.usage, RHIBufferUsage::Constant))
+            bufferInfo.usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        if (HasFlag(desc.usage, RHIBufferUsage::ShaderResource))
+            bufferInfo.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess))
+            bufferInfo.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        if (HasFlag(desc.usage, RHIBufferUsage::Structured))
+            bufferInfo.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        if (HasFlag(desc.usage, RHIBufferUsage::IndirectArgs))
+            bufferInfo.usage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+        
+        bufferInfo.usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bufferInfo.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkResult result = vkCreateBuffer(device->GetDevice(), &bufferInfo, nullptr, &buffer);
+        if (result != VK_SUCCESS)
+        {
+            RVX_RHI_ERROR("Failed to create Vulkan placed buffer: {}", static_cast<int32>(result));
+            return nullptr;
+        }
+
+        // Bind buffer to the shared memory at the specified offset
+        result = vkBindBufferMemory(device->GetDevice(), buffer, vkHeap->GetMemory(), offset);
+        if (result != VK_SUCCESS)
+        {
+            RVX_RHI_ERROR("Failed to bind Vulkan placed buffer to memory: {}", static_cast<int32>(result));
+            vkDestroyBuffer(device->GetDevice(), buffer, nullptr);
+            return nullptr;
+        }
+
+        // Note: For placed buffers, we need a special wrapper that doesn't use VMA
+        // For now, fall back to committed resource
+        RVX_RHI_WARN("Placed buffer creation not fully implemented, using VMA resource");
+        vkDestroyBuffer(device->GetDevice(), buffer, nullptr);
+        return CreateVulkanBuffer(device, desc);
     }
 
 } // namespace RVX

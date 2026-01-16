@@ -567,6 +567,88 @@ namespace RVX
     }
 
     // =============================================================================
+    // Memory Heap Management
+    // =============================================================================
+    RHIHeapRef DX12Device::CreateHeap(const RHIHeapDesc& desc)
+    {
+        return CreateDX12Heap(this, desc);
+    }
+
+    RHITextureRef DX12Device::CreatePlacedTexture(RHIHeap* heap, uint64 offset, const RHITextureDesc& desc)
+    {
+        return CreateDX12PlacedTexture(this, heap, offset, desc);
+    }
+
+    RHIBufferRef DX12Device::CreatePlacedBuffer(RHIHeap* heap, uint64 offset, const RHIBufferDesc& desc)
+    {
+        return CreateDX12PlacedBuffer(this, heap, offset, desc);
+    }
+
+    IRHIDevice::MemoryRequirements DX12Device::GetTextureMemoryRequirements(const RHITextureDesc& desc)
+    {
+        D3D12_RESOURCE_DESC resourceDesc = {};
+        
+        switch (desc.dimension)
+        {
+            case RHITextureDimension::Texture1D:
+                resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE1D;
+                resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.arraySize);
+                break;
+            case RHITextureDimension::Texture2D:
+            case RHITextureDimension::TextureCube:
+                resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.arraySize);
+                break;
+            case RHITextureDimension::Texture3D:
+                resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+                resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.depth);
+                break;
+        }
+        
+        resourceDesc.Width = desc.width;
+        resourceDesc.Height = desc.height;
+        resourceDesc.MipLevels = static_cast<UINT16>(desc.mipLevels);
+        resourceDesc.Format = ToDXGIFormat(desc.format);
+        resourceDesc.SampleDesc.Count = static_cast<UINT>(desc.sampleCount);
+        resourceDesc.SampleDesc.Quality = 0;
+        resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+        
+        if (HasFlag(desc.usage, RHITextureUsage::RenderTarget))
+            resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        if (HasFlag(desc.usage, RHITextureUsage::DepthStencil))
+            resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+        if (HasFlag(desc.usage, RHITextureUsage::UnorderedAccess))
+            resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+        D3D12_RESOURCE_ALLOCATION_INFO allocInfo = m_device->GetResourceAllocationInfo(0, 1, &resourceDesc);
+        
+        return {allocInfo.SizeInBytes, allocInfo.Alignment};
+    }
+
+    IRHIDevice::MemoryRequirements DX12Device::GetBufferMemoryRequirements(const RHIBufferDesc& desc)
+    {
+        D3D12_RESOURCE_DESC resourceDesc = {};
+        resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        resourceDesc.Width = desc.size;
+        resourceDesc.Height = 1;
+        resourceDesc.DepthOrArraySize = 1;
+        resourceDesc.MipLevels = 1;
+        resourceDesc.Format = DXGI_FORMAT_UNKNOWN;
+        resourceDesc.SampleDesc.Count = 1;
+        resourceDesc.SampleDesc.Quality = 0;
+        resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+        
+        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess))
+            resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+        D3D12_RESOURCE_ALLOCATION_INFO allocInfo = m_device->GetResourceAllocationInfo(0, 1, &resourceDesc);
+        
+        return {allocInfo.SizeInBytes, allocInfo.Alignment};
+    }
+
+    // =============================================================================
     // Pipeline Creation
     // =============================================================================
     RHIDescriptorSetLayoutRef DX12Device::CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc& desc)

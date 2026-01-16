@@ -13,26 +13,24 @@ namespace RVX
         const char* GetName() const override { return "InputSystem"; }
 
         void SetBackend(std::unique_ptr<InputBackend> backend) { m_backend = std::move(backend); }
+        
         const Input& GetInput() const { return m_input; }
         Input& GetInput() { return m_input; }
+        
+        /// @brief Get current input state (convenience accessor)
+        const InputState& GetState() const { return m_input.GetState(); }
 
         void OnUpdate(float) override
         {
             m_input.ClearFrameState();
             if (m_backend)
             {
-                m_inputState.mouseDeltaX = 0.0f;
-                m_inputState.mouseDeltaY = 0.0f;
-                m_inputState.mouseWheel = 0.0f;
-                m_backend->Poll(m_inputState);
+                m_backend->Poll(m_input.GetMutableState());
             }
         }
 
-        const InputState& GetState() const { return m_inputState; }
-
     private:
         Input m_input;
-        InputState m_inputState;
         std::unique_ptr<InputBackend> m_backend;
     };
 } // namespace RVX

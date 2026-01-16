@@ -6,6 +6,7 @@
 #include "RHI/RHISampler.h"
 #include "RHI/RHIShader.h"
 #include "RHI/RHISynchronization.h"
+#include "RHI/RHIHeap.h"
 
 namespace RVX
 {
@@ -47,7 +48,7 @@ namespace RVX
     {
     public:
         VulkanTexture(VulkanDevice* device, const RHITextureDesc& desc);
-        VulkanTexture(VulkanDevice* device, VkImage image, const RHITextureDesc& desc);  // For swapchain images
+        VulkanTexture(VulkanDevice* device, VkImage image, const RHITextureDesc& desc, bool ownsImage = false);  // For swapchain/placed
         ~VulkanTexture() override;
 
         uint32 GetWidth() const override { return m_desc.width; }
@@ -70,7 +71,8 @@ namespace RVX
         VkImage m_image = VK_NULL_HANDLE;
         VmaAllocation m_allocation = VK_NULL_HANDLE;
         VkImageLayout m_currentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        bool m_ownsImage = true;
+        bool m_ownsImage = true;  // True for VMA-allocated and placed resources
+        bool m_ownsAllocation = true;  // False for placed resources (memory owned by heap)
     };
 
     // =============================================================================
@@ -157,6 +159,33 @@ namespace RVX
     };
 
     // =============================================================================
+    // Vulkan Heap (for Memory Aliasing / Placed Resources)
+    // =============================================================================
+    class VulkanHeap : public RHIHeap
+    {
+    public:
+        VulkanHeap(VulkanDevice* device, const RHIHeapDesc& desc);
+        ~VulkanHeap() override;
+
+        // RHIHeap interface
+        uint64 GetSize() const override { return m_size; }
+        RHIHeapType GetType() const override { return m_type; }
+        RHIHeapFlags GetFlags() const override { return m_flags; }
+
+        // Vulkan Specific
+        VkDeviceMemory GetMemory() const { return m_memory; }
+        uint32 GetMemoryTypeIndex() const { return m_memoryTypeIndex; }
+
+    private:
+        VulkanDevice* m_device = nullptr;
+        VkDeviceMemory m_memory = VK_NULL_HANDLE;
+        uint64 m_size = 0;
+        RHIHeapType m_type = RHIHeapType::Default;
+        RHIHeapFlags m_flags = RHIHeapFlags::AllowAll;
+        uint32 m_memoryTypeIndex = 0;
+    };
+
+    // =============================================================================
     // Factory Functions
     // =============================================================================
     RHIBufferRef CreateVulkanBuffer(VulkanDevice* device, const RHIBufferDesc& desc);
@@ -166,5 +195,10 @@ namespace RVX
     RHIShaderRef CreateVulkanShader(VulkanDevice* device, const RHIShaderDesc& desc);
     RHIFenceRef CreateVulkanFence(VulkanDevice* device, uint64 initialValue);
     void WaitForVulkanFence(VulkanDevice* device, RHIFence* fence, uint64 value);
+
+    // Heap functions (for Memory Aliasing)
+    RHIHeapRef CreateVulkanHeap(VulkanDevice* device, const RHIHeapDesc& desc);
+    RHITextureRef CreateVulkanPlacedTexture(VulkanDevice* device, RHIHeap* heap, uint64 offset, const RHITextureDesc& desc);
+    RHIBufferRef CreateVulkanPlacedBuffer(VulkanDevice* device, RHIHeap* heap, uint64 offset, const RHIBufferDesc& desc);
 
 } // namespace RVX

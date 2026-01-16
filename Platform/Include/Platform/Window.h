@@ -3,6 +3,11 @@
 #include "Core/Types.h"
 #include <memory>
 
+// Undefine Windows macros that conflict with our API
+#ifdef CreateWindow
+#undef CreateWindow
+#endif
+
 namespace RVX
 {
     struct WindowDesc

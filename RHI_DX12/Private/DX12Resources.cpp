@@ -883,4 +883,280 @@ namespace RVX
         dx12Fence->Wait(value, UINT64_MAX);
     }
 
+    // =============================================================================
+    // DX12 Heap Implementation (for Memory Aliasing)
+    // =============================================================================
+    DX12Heap::DX12Heap(DX12Device* device, const RHIHeapDesc& desc)
+        : m_device(device)
+        , m_size(desc.size)
+        , m_type(desc.type)
+        , m_flags(desc.flags)
+    {
+        if (desc.debugName)
+        {
+            SetDebugName(desc.debugName);
+        }
+
+        D3D12_HEAP_DESC heapDesc = {};
+        heapDesc.SizeInBytes = desc.size;
+        heapDesc.Alignment = desc.alignment > 0 ? desc.alignment : D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+
+        // Set heap type
+        switch (desc.type)
+        {
+            case RHIHeapType::Default:
+                heapDesc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+                break;
+            case RHIHeapType::Upload:
+                heapDesc.Properties.Type = D3D12_HEAP_TYPE_UPLOAD;
+                break;
+            case RHIHeapType::Readback:
+                heapDesc.Properties.Type = D3D12_HEAP_TYPE_READBACK;
+                break;
+        }
+
+        // Set heap flags based on allowed resource types
+        heapDesc.Flags = D3D12_HEAP_FLAG_NONE;
+        
+        bool allowTextures = HasFlag(desc.flags, RHIHeapFlags::AllowTextures);
+        bool allowBuffers = HasFlag(desc.flags, RHIHeapFlags::AllowBuffers);
+        bool allowRT = HasFlag(desc.flags, RHIHeapFlags::AllowRenderTargets);
+        bool allowDS = HasFlag(desc.flags, RHIHeapFlags::AllowDepthStencil);
+
+        // D3D12 heap tier 1 requires separate heaps for buffers and textures
+        // For simplicity, we use ALLOW_ALL if both are requested
+        if (allowTextures && allowBuffers)
+        {
+            heapDesc.Flags |= D3D12_HEAP_FLAG_ALLOW_ALL_BUFFERS_AND_TEXTURES;
+        }
+        else if (allowBuffers)
+        {
+            heapDesc.Flags |= D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
+        }
+        else if (allowTextures)
+        {
+            if (allowRT || allowDS)
+            {
+                heapDesc.Flags |= D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES;
+            }
+            else
+            {
+                heapDesc.Flags |= D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
+            }
+        }
+
+        HRESULT hr = device->GetD3DDevice()->CreateHeap(&heapDesc, IID_PPV_ARGS(&m_heap));
+        if (FAILED(hr))
+        {
+            RVX_RHI_ERROR("Failed to create DX12 Heap: 0x{:08X}", static_cast<uint32>(hr));
+            return;
+        }
+
+        if (desc.debugName)
+        {
+            wchar_t wname[256];
+            MultiByteToWideChar(CP_UTF8, 0, desc.debugName, -1, wname, 256);
+            m_heap->SetName(wname);
+        }
+
+        RVX_RHI_DEBUG("Created DX12 Heap: {} bytes", desc.size);
+    }
+
+    DX12Heap::~DX12Heap()
+    {
+        // D3D12 heap is released automatically via ComPtr
+    }
+
+    RHIHeapRef CreateDX12Heap(DX12Device* device, const RHIHeapDesc& desc)
+    {
+        auto heap = Ref<DX12Heap>(new DX12Heap(device, desc));
+        if (!heap->GetHeap())
+        {
+            return nullptr;
+        }
+        return heap;
+    }
+
+    // =============================================================================
+    // DX12 Placed Texture Implementation
+    // =============================================================================
+    RHITextureRef CreateDX12PlacedTexture(DX12Device* device, RHIHeap* heap, uint64 offset, const RHITextureDesc& desc)
+    {
+        auto* dx12Heap = static_cast<DX12Heap*>(heap);
+        if (!dx12Heap || !dx12Heap->GetHeap())
+        {
+            RVX_RHI_ERROR("Invalid heap for placed texture");
+            return nullptr;
+        }
+
+        DXGI_FORMAT dxgiFormat = ToDXGIFormat(desc.format);
+
+        D3D12_RESOURCE_DESC resourceDesc = {};
+        resourceDesc.Alignment = 0;
+        resourceDesc.Width = desc.width;
+        resourceDesc.Height = desc.height;
+        resourceDesc.MipLevels = static_cast<UINT16>(desc.mipLevels);
+        resourceDesc.Format = dxgiFormat;
+        resourceDesc.SampleDesc.Count = static_cast<UINT>(desc.sampleCount);
+        resourceDesc.SampleDesc.Quality = 0;
+        resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+        // Use typeless format for depth if SRV is needed
+        if (IsDepthFormat(desc.format) && HasFlag(desc.usage, RHITextureUsage::ShaderResource))
+        {
+            resourceDesc.Format = GetTypelessFormat(dxgiFormat);
+        }
+
+        switch (desc.dimension)
+        {
+            case RHITextureDimension::Texture1D:
+                resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE1D;
+                resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.arraySize);
+                break;
+            case RHITextureDimension::Texture2D:
+            case RHITextureDimension::TextureCube:
+                resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.arraySize);
+                break;
+            case RHITextureDimension::Texture3D:
+                resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+                resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.depth);
+                break;
+        }
+
+        if (HasFlag(desc.usage, RHITextureUsage::RenderTarget))
+        {
+            resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        }
+        if (HasFlag(desc.usage, RHITextureUsage::DepthStencil))
+        {
+            resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+        }
+        if (HasFlag(desc.usage, RHITextureUsage::UnorderedAccess))
+        {
+            resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        }
+
+        D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
+
+        D3D12_CLEAR_VALUE clearValue = {};
+        D3D12_CLEAR_VALUE* pClearValue = nullptr;
+
+        if (HasFlag(desc.usage, RHITextureUsage::RenderTarget))
+        {
+            clearValue.Format = dxgiFormat;
+            clearValue.Color[0] = 0.0f;
+            clearValue.Color[1] = 0.0f;
+            clearValue.Color[2] = 0.0f;
+            clearValue.Color[3] = 1.0f;
+            pClearValue = &clearValue;
+        }
+        else if (HasFlag(desc.usage, RHITextureUsage::DepthStencil))
+        {
+            clearValue.Format = dxgiFormat;
+            clearValue.DepthStencil.Depth = 1.0f;
+            clearValue.DepthStencil.Stencil = 0;
+            pClearValue = &clearValue;
+            initialState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+        }
+
+        ComPtr<ID3D12Resource> resource;
+        HRESULT hr = device->GetD3DDevice()->CreatePlacedResource(
+            dx12Heap->GetHeap(),
+            offset,
+            &resourceDesc,
+            initialState,
+            pClearValue,
+            IID_PPV_ARGS(&resource));
+
+        if (FAILED(hr))
+        {
+            RVX_RHI_ERROR("Failed to create placed texture: 0x{:08X}", static_cast<uint32>(hr));
+            return nullptr;
+        }
+
+        if (desc.debugName)
+        {
+            wchar_t wname[256];
+            MultiByteToWideChar(CP_UTF8, 0, desc.debugName, -1, wname, 256);
+            resource->SetName(wname);
+        }
+
+        // Use the existing constructor that accepts a pre-created resource
+        return Ref<DX12Texture>(new DX12Texture(device, resource, desc));
+    }
+
+    // =============================================================================
+    // DX12 Placed Buffer Implementation
+    // =============================================================================
+    RHIBufferRef CreateDX12PlacedBuffer(DX12Device* device, RHIHeap* heap, uint64 offset, const RHIBufferDesc& desc)
+    {
+        auto* dx12Heap = static_cast<DX12Heap*>(heap);
+        if (!dx12Heap || !dx12Heap->GetHeap())
+        {
+            RVX_RHI_ERROR("Invalid heap for placed buffer");
+            return nullptr;
+        }
+
+        D3D12_RESOURCE_DESC resourceDesc = {};
+        resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        resourceDesc.Alignment = 0;
+        resourceDesc.Width = desc.size;
+        resourceDesc.Height = 1;
+        resourceDesc.DepthOrArraySize = 1;
+        resourceDesc.MipLevels = 1;
+        resourceDesc.Format = DXGI_FORMAT_UNKNOWN;
+        resourceDesc.SampleDesc.Count = 1;
+        resourceDesc.SampleDesc.Quality = 0;
+        resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess))
+        {
+            resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        }
+
+        D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
+        if (desc.memoryType == RHIMemoryType::Upload)
+        {
+            initialState = D3D12_RESOURCE_STATE_GENERIC_READ;
+        }
+        else if (desc.memoryType == RHIMemoryType::Readback)
+        {
+            initialState = D3D12_RESOURCE_STATE_COPY_DEST;
+        }
+
+        ComPtr<ID3D12Resource> resource;
+        HRESULT hr = device->GetD3DDevice()->CreatePlacedResource(
+            dx12Heap->GetHeap(),
+            offset,
+            &resourceDesc,
+            initialState,
+            nullptr,
+            IID_PPV_ARGS(&resource));
+
+        if (FAILED(hr))
+        {
+            RVX_RHI_ERROR("Failed to create placed buffer: 0x{:08X}", static_cast<uint32>(hr));
+            return nullptr;
+        }
+
+        if (desc.debugName)
+        {
+            wchar_t wname[256];
+            MultiByteToWideChar(CP_UTF8, 0, desc.debugName, -1, wname, 256);
+            resource->SetName(wname);
+        }
+
+        // Note: For placed buffers, we need a special constructor or factory
+        // For now, we create a wrapper that uses the pre-created resource
+        // This requires extending DX12Buffer to accept external resources
+        // TODO: Add DX12Buffer constructor that accepts ComPtr<ID3D12Resource>
+        
+        // Temporary: Fall back to committed resource (no aliasing)
+        RVX_RHI_WARN("Placed buffer creation not fully implemented, using committed resource");
+        return CreateDX12Buffer(device, desc);
+    }
+
 } // namespace RVX

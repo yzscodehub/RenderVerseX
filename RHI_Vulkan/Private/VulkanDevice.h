@@ -26,6 +26,13 @@ namespace RVX
         RHISamplerRef CreateSampler(const RHISamplerDesc& desc) override;
         RHIShaderRef CreateShader(const RHIShaderDesc& desc) override;
 
+        // Memory Heap Management (for Placed Resources / Memory Aliasing)
+        RHIHeapRef CreateHeap(const RHIHeapDesc& desc) override;
+        RHITextureRef CreatePlacedTexture(RHIHeap* heap, uint64 offset, const RHITextureDesc& desc) override;
+        RHIBufferRef CreatePlacedBuffer(RHIHeap* heap, uint64 offset, const RHIBufferDesc& desc) override;
+        MemoryRequirements GetTextureMemoryRequirements(const RHITextureDesc& desc) override;
+        MemoryRequirements GetBufferMemoryRequirements(const RHIBufferDesc& desc) override;
+
         RHIDescriptorSetLayoutRef CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc& desc) override;
         RHIPipelineLayoutRef CreatePipelineLayout(const RHIPipelineLayoutDesc& desc) override;
         RHIPipelineRef CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc) override;

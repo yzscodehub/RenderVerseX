@@ -72,9 +72,10 @@ namespace RVX
         {
             if (!m_device || !m_swapChain)
                 return;
+            // Wait for GPU to finish before destroying any resources
+            m_device->WaitIdle();
             // Release backbuffer references held by the graph before resizing.
             m_graph.Clear();
-            m_device->WaitIdle();
             m_swapChain->Resize(width, height);
             ResetBackBufferStates();
         }

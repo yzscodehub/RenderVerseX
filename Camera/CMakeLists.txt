@@ -7,7 +7,7 @@ target_sources(RVX_Camera PRIVATE
     Private/Camera.cpp
     Private/OrbitController.cpp
     Private/FPSController.cpp
-    Private/CameraSystem.cpp
+    Private/CameraRegistry.cpp
 )
 
 target_include_directories(RVX_Camera PUBLIC

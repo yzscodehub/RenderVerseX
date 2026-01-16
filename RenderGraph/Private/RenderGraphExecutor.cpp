@@ -13,6 +13,17 @@ namespace RVX
                 if (pass.culled)
                     continue;
                 ctx.BeginEvent(pass.name.c_str());
+
+                // Note: Aliasing barriers for placed resources
+                // Currently handled implicitly via Undefined -> desired state transitions
+                // When a placed resource is first used, its state is Undefined, which tells
+                // the GPU that previous contents are invalid (equivalent to aliasing barrier)
+                // Future: Could add explicit RHI AliasingBarrier support for more control
+                // if (!pass.aliasingBarriers.empty())
+                // {
+                //     ctx.AliasingBarriers(graph, pass.aliasingBarriers);
+                // }
+
                 if (!pass.bufferBarriers.empty() || !pass.textureBarriers.empty())
                 {
                     ctx.Barriers(pass.bufferBarriers, pass.textureBarriers);

@@ -151,6 +151,10 @@ namespace RVX
         void SetMemoryAliasingEnabled(bool enabled);
         bool IsMemoryAliasingEnabled() const;
 
+        // Debug/Visualization
+        std::string ExportGraphviz() const;
+        bool SaveGraphviz(const char* filename) const;
+
         // Clear for next frame
         void Clear();
 
