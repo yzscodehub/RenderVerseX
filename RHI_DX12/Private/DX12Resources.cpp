@@ -100,6 +100,44 @@ namespace RVX
         }
     }
 
+    DX12Buffer::DX12Buffer(DX12Device* device, ComPtr<ID3D12Resource> resource, const RHIBufferDesc& desc, bool ownsResource)
+        : m_device(device)
+        , m_desc(desc)
+        , m_resource(resource)
+        , m_ownsResource(ownsResource)
+    {
+        // NOTE: For Placed Resources, the Heap type must match the buffer memory type:
+        // - Upload buffer requires D3D12_HEAP_TYPE_UPLOAD heap
+        // - Readback buffer requires D3D12_HEAP_TYPE_READBACK heap
+        // - Default buffer requires D3D12_HEAP_TYPE_DEFAULT heap
+        // CreatePlacedResource will fail if there's a mismatch, so validation is implicit.
+
+        if (desc.debugName)
+        {
+            SetDebugName(desc.debugName);
+
+            wchar_t wname[256];
+            MultiByteToWideChar(CP_UTF8, 0, desc.debugName, -1, wname, 256);
+            m_resource->SetName(wname);
+        }
+
+        CreateViews();
+
+        // Upload buffers: persistent mapping for efficient per-frame updates
+        // Placed resources support mapping if bound to host-visible heap (Upload/Readback)
+        if (desc.memoryType == RHIMemoryType::Upload)
+        {
+            D3D12_RANGE readRange = {0, 0};  // CPU doesn't read from upload buffers
+            HRESULT hr = m_resource->Map(0, &readRange, &m_mappedData);
+            if (FAILED(hr))
+            {
+                RVX_RHI_ERROR("Failed to persistently map placed upload buffer: 0x{:08X}", static_cast<uint32>(hr));
+                m_mappedData = nullptr;
+            }
+        }
+        // Note: Readback buffers are mapped on-demand in Map() method
+    }
+
     DX12Buffer::~DX12Buffer()
     {
         // Unmap persistently mapped buffers
@@ -122,6 +160,14 @@ namespace RVX
             heapManager.FreeCbvSrvUav(m_srvHandle);
         if (m_uavHandle.IsValid())
             heapManager.FreeCbvSrvUav(m_uavHandle);
+
+        // IMPORTANT: Resource lifecycle for Placed Resources:
+        // - m_resource (ID3D12Resource) is destroyed here via ComPtr::Release()
+        // - The underlying memory remains valid as it's owned by the ID3D12Heap
+        // - RenderGraph/caller MUST ensure correct destruction order:
+        //   1. First: Release all Placed Buffers/Textures (this destructor)
+        //   2. Then: Destroy the Heap (ID3D12Heap)
+        // Destroying the Heap before the Placed Resources causes undefined behavior.
     }
 
     void DX12Buffer::CreateViews()
@@ -1149,14 +1195,8 @@ namespace RVX
             resource->SetName(wname);
         }
 
-        // Note: For placed buffers, we need a special constructor or factory
-        // For now, we create a wrapper that uses the pre-created resource
-        // This requires extending DX12Buffer to accept external resources
-        // TODO: Add DX12Buffer constructor that accepts ComPtr<ID3D12Resource>
-        
-        // Temporary: Fall back to committed resource (no aliasing)
-        RVX_RHI_WARN("Placed buffer creation not fully implemented, using committed resource");
-        return CreateDX12Buffer(device, desc);
+        // Use the external resource constructor (memory owned by heap)
+        return Ref<DX12Buffer>(new DX12Buffer(device, resource, desc, false));
     }
 
 } // namespace RVX

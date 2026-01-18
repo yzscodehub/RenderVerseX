@@ -31,9 +31,300 @@ bool Test_BufferCreation()
     bufferDesc.size = 1024;
     bufferDesc.usage = RHIBufferUsage::Vertex;
     bufferDesc.memoryType = RHIMemoryType::Default;
+    bufferDesc.debugName = "TestVertexBuffer";
     
     auto buffer = device->CreateBuffer(bufferDesc);
     TEST_ASSERT_NOT_NULL(buffer.Get());
+    TEST_ASSERT_EQ(buffer->GetSize(), 1024u);
+    
+    return true;
+}
+
+bool Test_UploadBuffer()
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    TEST_ASSERT_NOT_NULL(device.get());
+    
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 256;
+    bufferDesc.usage = RHIBufferUsage::Constant;
+    bufferDesc.memoryType = RHIMemoryType::Upload;
+    bufferDesc.debugName = "TestUploadBuffer";
+    
+    auto buffer = device->CreateBuffer(bufferDesc);
+    TEST_ASSERT_NOT_NULL(buffer.Get());
+    
+    void* mappedData = buffer->Map();
+    TEST_ASSERT_NOT_NULL(mappedData);
+    
+    float testData[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    std::memcpy(mappedData, testData, sizeof(testData));
+    buffer->Unmap();
+    
+    return true;
+}
+
+bool Test_TextureCreation()
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    TEST_ASSERT_NOT_NULL(device.get());
+    
+    auto textureDesc = RHITextureDesc::Texture2D(512, 512, RHIFormat::RGBA8_UNORM);
+    textureDesc.debugName = "TestTexture";
+    auto texture = device->CreateTexture(textureDesc);
+    TEST_ASSERT_NOT_NULL(texture.Get());
+    TEST_ASSERT_EQ(texture->GetWidth(), 512u);
+    TEST_ASSERT_EQ(texture->GetHeight(), 512u);
+    
+    return true;
+}
+
+bool Test_RenderTargetTexture()
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    TEST_ASSERT_NOT_NULL(device.get());
+    
+    auto textureDesc = RHITextureDesc::RenderTarget(1920, 1080, RHIFormat::RGBA16_FLOAT);
+    textureDesc.debugName = "TestRenderTarget";
+    auto texture = device->CreateTexture(textureDesc);
+    TEST_ASSERT_NOT_NULL(texture.Get());
+    TEST_ASSERT_TRUE(HasFlag(texture->GetUsage(), RHITextureUsage::RenderTarget));
+    
+    return true;
+}
+
+bool Test_DepthStencilTexture()
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    TEST_ASSERT_NOT_NULL(device.get());
+    
+    auto textureDesc = RHITextureDesc::DepthStencil(1920, 1080, RHIFormat::D24_UNORM_S8_UINT);
+    textureDesc.debugName = "TestDepthStencil";
+    auto texture = device->CreateTexture(textureDesc);
+    TEST_ASSERT_NOT_NULL(texture.Get());
+    TEST_ASSERT_TRUE(HasFlag(texture->GetUsage(), RHITextureUsage::DepthStencil));
+    
+    return true;
+}
+
+bool Test_TextureView()
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    TEST_ASSERT_NOT_NULL(device.get());
+    
+    auto textureDesc = RHITextureDesc::Texture2D(256, 256, RHIFormat::RGBA8_UNORM);
+    auto texture = device->CreateTexture(textureDesc);
+    TEST_ASSERT_NOT_NULL(texture.Get());
+    
+    RHITextureViewDesc viewDesc;
+    viewDesc.format = RHIFormat::RGBA8_UNORM;
+    auto view = device->CreateTextureView(texture.Get(), viewDesc);
+    TEST_ASSERT_NOT_NULL(view.Get());
+    
+    return true;
+}
+
+bool Test_Sampler()
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    TEST_ASSERT_NOT_NULL(device.get());
+    
+    RHISamplerDesc samplerDesc;
+    samplerDesc.magFilter = RHIFilterMode::Linear;
+    samplerDesc.minFilter = RHIFilterMode::Linear;
+    samplerDesc.debugName = "TestSampler";
+    
+    auto sampler = device->CreateSampler(samplerDesc);
+    TEST_ASSERT_NOT_NULL(sampler.Get());
+    
+    return true;
+}
+
+bool Test_CommandContext()
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    TEST_ASSERT_NOT_NULL(device.get());
+    
+    auto ctx = device->CreateCommandContext(RHICommandQueueType::Graphics);
+    TEST_ASSERT_NOT_NULL(ctx.Get());
+    
+    ctx->Begin();
+    ctx->End();
+    
+    device->SubmitCommandContext(ctx.Get(), nullptr);
+    device->WaitIdle();
+    
+    return true;
+}
+
+bool Test_BarrierBatching()
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    TEST_ASSERT_NOT_NULL(device.get());
+    
+    // Create multiple textures
+    std::vector<RHITextureRef> textures;
+    for (int i = 0; i < 5; ++i)
+    {
+        auto desc = RHITextureDesc::RenderTarget(256, 256, RHIFormat::RGBA8_UNORM);
+        desc.debugName = "BarrierTestTexture";
+        textures.push_back(device->CreateTexture(desc));
+        TEST_ASSERT_NOT_NULL(textures.back().Get());
+    }
+    
+    auto ctx = device->CreateCommandContext(RHICommandQueueType::Graphics);
+    ctx->Begin();
+    
+    // Issue multiple barriers - should be batched internally
+    for (auto& tex : textures)
+    {
+        ctx->TextureBarrier({tex.Get(), RHIResourceState::Undefined, RHIResourceState::RenderTarget});
+    }
+    
+    // More barriers
+    for (auto& tex : textures)
+    {
+        ctx->TextureBarrier({tex.Get(), RHIResourceState::RenderTarget, RHIResourceState::ShaderResource});
+    }
+    
+    ctx->End();
+    
+    device->SubmitCommandContext(ctx.Get(), nullptr);
+    device->WaitIdle();
+    
+    return true;
+}
+
+bool Test_Fence()
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    TEST_ASSERT_NOT_NULL(device.get());
+    
+    auto fence = device->CreateFence(0);
+    TEST_ASSERT_NOT_NULL(fence.Get());
+    TEST_ASSERT_EQ(fence->GetCompletedValue(), 0u);
+    
+    fence->Signal(1);
+    fence->Wait(1);
+    TEST_ASSERT_TRUE(fence->GetCompletedValue() >= 1u);
+    
+    return true;
+}
+
+bool Test_Heap()
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    TEST_ASSERT_NOT_NULL(device.get());
+    
+    RHIHeapDesc heapDesc;
+    heapDesc.size = 64 * 1024 * 1024;
+    heapDesc.type = RHIHeapType::Default;
+    heapDesc.flags = RHIHeapFlags::AllowRenderTargets;
+    heapDesc.debugName = "TestHeap";
+    
+    auto heap = device->CreateHeap(heapDesc);
+    TEST_ASSERT_NOT_NULL(heap.Get());
+    TEST_ASSERT_EQ(heap->GetSize(), 64u * 1024u * 1024u);
+    
+    return true;
+}
+
+bool Test_PlacedTexture()
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    TEST_ASSERT_NOT_NULL(device.get());
+    
+    RHIHeapDesc heapDesc;
+    heapDesc.size = 64 * 1024 * 1024;
+    heapDesc.type = RHIHeapType::Default;
+    heapDesc.flags = RHIHeapFlags::AllowRenderTargets;
+    
+    auto heap = device->CreateHeap(heapDesc);
+    TEST_ASSERT_NOT_NULL(heap.Get());
+    
+    auto textureDesc = RHITextureDesc::RenderTarget(1024, 1024, RHIFormat::RGBA16_FLOAT);
+    textureDesc.debugName = "PlacedRenderTarget";
+    
+    auto memReq = device->GetTextureMemoryRequirements(textureDesc);
+    TEST_ASSERT_TRUE(memReq.size > 0);
+    
+    auto texture = device->CreatePlacedTexture(heap.Get(), 0, textureDesc);
+    TEST_ASSERT_NOT_NULL(texture.Get());
+    
+    return true;
+}
+
+bool Test_PlacedBuffer()
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    TEST_ASSERT_NOT_NULL(device.get());
+    
+    RHIHeapDesc heapDesc;
+    heapDesc.size = 16 * 1024 * 1024;
+    heapDesc.type = RHIHeapType::Default;
+    heapDesc.flags = RHIHeapFlags::AllowBuffers;
+    
+    auto heap = device->CreateHeap(heapDesc);
+    TEST_ASSERT_NOT_NULL(heap.Get());
+    
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024 * 1024;
+    bufferDesc.usage = RHIBufferUsage::UnorderedAccess | RHIBufferUsage::Structured;
+    bufferDesc.memoryType = RHIMemoryType::Default;
+    bufferDesc.stride = 16;
+    bufferDesc.debugName = "PlacedStructuredBuffer";
+    
+    auto buffer = device->CreatePlacedBuffer(heap.Get(), 0, bufferDesc);
+    TEST_ASSERT_NOT_NULL(buffer.Get());
+    TEST_ASSERT_EQ(buffer->GetSize(), 1024u * 1024u);
+    
+    return true;
+}
+
+bool Test_ComputeContext()
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    TEST_ASSERT_NOT_NULL(device.get());
+    
+    auto ctx = device->CreateCommandContext(RHICommandQueueType::Compute);
+    TEST_ASSERT_NOT_NULL(ctx.Get());
+    
+    ctx->Begin();
+    ctx->End();
+    
+    device->SubmitCommandContext(ctx.Get(), nullptr);
+    device->WaitIdle();
+    
+    return true;
+}
+
+bool Test_CopyContext()
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    TEST_ASSERT_NOT_NULL(device.get());
+    
+    auto ctx = device->CreateCommandContext(RHICommandQueueType::Copy);
+    TEST_ASSERT_NOT_NULL(ctx.Get());
+    
+    ctx->Begin();
+    ctx->End();
+    
+    device->SubmitCommandContext(ctx.Get(), nullptr);
+    device->WaitIdle();
     
     return true;
 }
@@ -44,8 +335,34 @@ int main()
     RVX_CORE_INFO("Vulkan Validation Tests");
     
     TestSuite suite;
+    
+    // Device tests
     suite.AddTest("DeviceCreation", Test_DeviceCreation);
+    
+    // Buffer tests
     suite.AddTest("BufferCreation", Test_BufferCreation);
+    suite.AddTest("UploadBuffer", Test_UploadBuffer);
+    
+    // Texture tests
+    suite.AddTest("TextureCreation", Test_TextureCreation);
+    suite.AddTest("RenderTargetTexture", Test_RenderTargetTexture);
+    suite.AddTest("DepthStencilTexture", Test_DepthStencilTexture);
+    suite.AddTest("TextureView", Test_TextureView);
+    
+    // Other resources
+    suite.AddTest("Sampler", Test_Sampler);
+    suite.AddTest("Fence", Test_Fence);
+    
+    // Command context tests
+    suite.AddTest("CommandContext", Test_CommandContext);
+    suite.AddTest("ComputeContext", Test_ComputeContext);
+    suite.AddTest("CopyContext", Test_CopyContext);
+    suite.AddTest("BarrierBatching", Test_BarrierBatching);
+    
+    // Memory aliasing tests
+    suite.AddTest("Heap", Test_Heap);
+    suite.AddTest("PlacedTexture", Test_PlacedTexture);
+    suite.AddTest("PlacedBuffer", Test_PlacedBuffer);
     
     auto results = suite.Run();
     suite.PrintResults(results);

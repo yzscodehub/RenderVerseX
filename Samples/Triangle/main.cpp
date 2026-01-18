@@ -121,7 +121,7 @@ int main(int argc, char *argv[])
     }
 
     // Select backend
-    RVX::RHIBackendType backend = RVX::RHIBackendType::Vulkan;
+    RVX::RHIBackendType backend = RVX::RHIBackendType::DX12;
 
     // Parse command line for backend selection
     for (int i = 1; i < argc; ++i)

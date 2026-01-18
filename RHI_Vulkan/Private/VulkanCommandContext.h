@@ -63,6 +63,9 @@ namespace RVX
         VkCommandBuffer GetCommandBuffer() const { return m_commandBuffer; }
         RHICommandQueueType GetQueueType() const { return m_queueType; }
 
+        // Flush pending barriers before draw/dispatch/copy operations
+        void FlushBarriers();
+
     private:
         VulkanDevice* m_device;
         RHICommandQueueType m_queueType;
@@ -72,6 +75,10 @@ namespace RVX
         VulkanPipeline* m_currentPipeline = nullptr;
         bool m_isRecording = false;
         bool m_inRenderPass = false;
+
+        // Pending barriers for batch submission (matching DX12 design)
+        std::vector<VkImageMemoryBarrier2> m_pendingImageBarriers;
+        std::vector<VkBufferMemoryBarrier2> m_pendingBufferBarriers;
     };
 
     // Factory and submit functions

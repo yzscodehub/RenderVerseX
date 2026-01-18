@@ -316,7 +316,8 @@ namespace RVX
                     range.NumDescriptors = std::max(1u, entry.count);
                     range.BaseShaderRegister = entry.binding;
                     range.RegisterSpace = setIndex;
-                    range.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+                    // Samplers don't point to data, so DATA_* flags are not allowed
+                    range.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
                     range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
                     samplerRanges.push_back(range);
                 }
@@ -694,144 +695,63 @@ namespace RVX
         const uint32 cbvSrvUavSize = heapManager.GetCbvSrvUavDescriptorSize();
         const uint32 samplerSize = heapManager.GetSamplerDescriptorSize();
 
+        // Process bindings based on what resources are actually set,
+        // rather than relying on layout entry type (which may conflict when
+        // texture and sampler share the same binding number in different register spaces)
         for (const auto& binding : m_bindings)
         {
-            const auto* entry = m_layout->FindEntry(binding.binding);
-            if (!entry)
+            // Handle texture view (SRV) - copy to CBV_SRV_UAV heap
+            if (binding.textureView && m_cbvSrvUavHandle.IsValid())
             {
-                RVX_RHI_WARN("Descriptor binding {} not found in layout", binding.binding);
-                continue;
+                auto* dx12View = static_cast<DX12TextureView*>(binding.textureView);
+                const DX12DescriptorHandle& srcHandle = dx12View->GetSRVHandle();
+                if (srcHandle.IsValid())
+                {
+                    uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
+                    if (dstIndex != UINT32_MAX)
+                    {
+                        D3D12_CPU_DESCRIPTOR_HANDLE dst = m_cbvSrvUavHandle.cpuHandle;
+                        dst.ptr += static_cast<SIZE_T>(dstIndex) * cbvSrvUavSize;
+                        d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                    }
+                }
             }
 
-            switch (entry->type)
+            // Handle sampler - copy to Sampler heap
+            if (binding.sampler && m_samplerHandle.IsValid())
             {
-                case RHIBindingType::UniformBuffer:
-                case RHIBindingType::DynamicUniformBuffer:
-                    // Root CBVs are bound in the command context
-                    break;
-                case RHIBindingType::StorageBuffer:
-                case RHIBindingType::DynamicStorageBuffer:
+                auto* dx12Sampler = static_cast<DX12Sampler*>(binding.sampler);
+                const DX12DescriptorHandle& srcHandle = dx12Sampler->GetHandle();
+                if (srcHandle.IsValid())
                 {
-                    if (!binding.buffer || !m_cbvSrvUavHandle.IsValid())
-                        break;
-
-                    auto* dx12Buffer = static_cast<DX12Buffer*>(binding.buffer);
-                    const DX12DescriptorHandle& srcHandle =
-                        dx12Buffer->GetUAVHandle().IsValid() ? dx12Buffer->GetUAVHandle() : dx12Buffer->GetSRVHandle();
-
-                    if (!srcHandle.IsValid())
-                    {
-                        RVX_RHI_WARN("StorageBuffer binding {} missing SRV/UAV handle", binding.binding);
-                        break;
-                    }
-
-                    uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
-                    if (dstIndex == UINT32_MAX)
-                        break;
-
-                    D3D12_CPU_DESCRIPTOR_HANDLE dst = m_cbvSrvUavHandle.cpuHandle;
-                    dst.ptr += static_cast<SIZE_T>(dstIndex) * cbvSrvUavSize;
-
-                    d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-                    break;
-                }
-                case RHIBindingType::SampledTexture:
-                {
-                    if (!binding.textureView || !m_cbvSrvUavHandle.IsValid())
-                        break;
-
-                    auto* dx12View = static_cast<DX12TextureView*>(binding.textureView);
-                    const DX12DescriptorHandle& srcHandle = dx12View->GetSRVHandle();
-                    if (!srcHandle.IsValid())
-                        break;
-
-                    uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
-                    if (dstIndex == UINT32_MAX)
-                        break;
-
-                    D3D12_CPU_DESCRIPTOR_HANDLE dst = m_cbvSrvUavHandle.cpuHandle;
-                    dst.ptr += static_cast<SIZE_T>(dstIndex) * cbvSrvUavSize;
-
-                    d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-                    break;
-                }
-                case RHIBindingType::StorageTexture:
-                {
-                    if (!binding.textureView || !m_cbvSrvUavHandle.IsValid())
-                        break;
-
-                    auto* dx12View = static_cast<DX12TextureView*>(binding.textureView);
-                    const DX12DescriptorHandle& srcHandle = dx12View->GetUAVHandle();
-                    if (!srcHandle.IsValid())
-                        break;
-
-                    uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
-                    if (dstIndex == UINT32_MAX)
-                        break;
-
-                    D3D12_CPU_DESCRIPTOR_HANDLE dst = m_cbvSrvUavHandle.cpuHandle;
-                    dst.ptr += static_cast<SIZE_T>(dstIndex) * cbvSrvUavSize;
-
-                    d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-                    break;
-                }
-                case RHIBindingType::Sampler:
-                {
-                    if (!binding.sampler || !m_samplerHandle.IsValid())
-                        break;
-
-                    auto* dx12Sampler = static_cast<DX12Sampler*>(binding.sampler);
-                    const DX12DescriptorHandle& srcHandle = dx12Sampler->GetHandle();
-                    if (!srcHandle.IsValid())
-                        break;
-
                     uint32 dstIndex = m_layout->GetSamplerIndex(binding.binding);
-                    if (dstIndex == UINT32_MAX)
-                        break;
-
-                    D3D12_CPU_DESCRIPTOR_HANDLE dst = m_samplerHandle.cpuHandle;
-                    dst.ptr += static_cast<SIZE_T>(dstIndex) * samplerSize;
-
-                    d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
-                    break;
+                    if (dstIndex != UINT32_MAX)
+                    {
+                        D3D12_CPU_DESCRIPTOR_HANDLE dst = m_samplerHandle.cpuHandle;
+                        dst.ptr += static_cast<SIZE_T>(dstIndex) * samplerSize;
+                        d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+                    }
                 }
-                case RHIBindingType::CombinedTextureSampler:
+            }
+
+            // Handle buffer (storage/uniform buffer)
+            if (binding.buffer && m_cbvSrvUavHandle.IsValid())
+            {
+                auto* dx12Buffer = static_cast<DX12Buffer*>(binding.buffer);
+                // Prefer UAV if available, otherwise use SRV
+                const DX12DescriptorHandle& srcHandle =
+                    dx12Buffer->GetUAVHandle().IsValid() ? dx12Buffer->GetUAVHandle() : dx12Buffer->GetSRVHandle();
+
+                if (srcHandle.IsValid())
                 {
-                    if (binding.textureView && m_cbvSrvUavHandle.IsValid())
+                    uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
+                    if (dstIndex != UINT32_MAX)
                     {
-                        auto* dx12View = static_cast<DX12TextureView*>(binding.textureView);
-                        const DX12DescriptorHandle& srcHandle = dx12View->GetSRVHandle();
-                        if (srcHandle.IsValid())
-                        {
-                            uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
-                            if (dstIndex != UINT32_MAX)
-                            {
-                                D3D12_CPU_DESCRIPTOR_HANDLE dst = m_cbvSrvUavHandle.cpuHandle;
-                                dst.ptr += static_cast<SIZE_T>(dstIndex) * cbvSrvUavSize;
-                                d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-                            }
-                        }
+                        D3D12_CPU_DESCRIPTOR_HANDLE dst = m_cbvSrvUavHandle.cpuHandle;
+                        dst.ptr += static_cast<SIZE_T>(dstIndex) * cbvSrvUavSize;
+                        d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
                     }
-
-                    if (binding.sampler && m_samplerHandle.IsValid())
-                    {
-                        auto* dx12Sampler = static_cast<DX12Sampler*>(binding.sampler);
-                        const DX12DescriptorHandle& srcHandle = dx12Sampler->GetHandle();
-                        if (srcHandle.IsValid())
-                        {
-                            uint32 dstIndex = m_layout->GetSamplerIndex(binding.binding);
-                            if (dstIndex != UINT32_MAX)
-                            {
-                                D3D12_CPU_DESCRIPTOR_HANDLE dst = m_samplerHandle.cpuHandle;
-                                dst.ptr += static_cast<SIZE_T>(dstIndex) * samplerSize;
-                                d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
-                            }
-                        }
-                    }
-                    break;
                 }
-                default:
-                    break;
             }
         }
     }

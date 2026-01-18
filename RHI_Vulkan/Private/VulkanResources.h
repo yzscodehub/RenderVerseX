@@ -19,6 +19,9 @@ namespace RVX
     {
     public:
         VulkanBuffer(VulkanDevice* device, const RHIBufferDesc& desc);
+        // Constructor for placed resources (external buffer, memory owned by heap)
+        VulkanBuffer(VulkanDevice* device, VkBuffer buffer, VkDeviceMemory memory, 
+                     uint64 memoryOffset, const RHIBufferDesc& desc, bool ownsBuffer);
         ~VulkanBuffer() override;
 
         uint64 GetSize() const override { return m_desc.size; }
@@ -39,6 +42,9 @@ namespace RVX
         VmaAllocation m_allocation = VK_NULL_HANDLE;
         VkDeviceAddress m_deviceAddress = 0;
         void* m_mappedData = nullptr;
+        bool m_ownsBuffer = true;           // False for placed resources
+        VkDeviceMemory m_boundMemory = VK_NULL_HANDLE;  // For placed resources (memory owned by heap)
+        uint64 m_memoryOffset = 0;          // Offset within the heap memory
     };
 
     // =============================================================================

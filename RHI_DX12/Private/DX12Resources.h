@@ -21,6 +21,8 @@ namespace RVX
     {
     public:
         DX12Buffer(DX12Device* device, const RHIBufferDesc& desc);
+        // Constructor for placed resources (external resource, memory owned by heap)
+        DX12Buffer(DX12Device* device, ComPtr<ID3D12Resource> resource, const RHIBufferDesc& desc, bool ownsResource);
         ~DX12Buffer() override;
 
         // RHIBuffer interface
@@ -49,6 +51,7 @@ namespace RVX
         #ifdef RVX_USE_D3D12MA
         ComPtr<D3D12MA::Allocation> m_allocation;
         #endif
+        bool m_ownsResource = true;  // False for placed resources (memory owned by heap)
 
         DX12DescriptorHandle m_cbvHandle;
         DX12DescriptorHandle m_srvHandle;

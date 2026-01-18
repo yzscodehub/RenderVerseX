@@ -76,6 +76,19 @@ target_link_libraries(RenderGraphValidation PRIVATE
     RVX::RenderGraph
 )
 
+# Cross-Backend Validation Tests (requires both DX12 and Vulkan)
+if(RVX_ENABLE_DX12 AND RVX_ENABLE_VULKAN)
+    add_executable(CrossBackendValidation
+        CrossBackendValidation/main.cpp
+    )
+    target_link_libraries(CrossBackendValidation PRIVATE
+        RVX_TestFramework
+        RVX::RenderGraph
+        ${RVX_ALL_BACKENDS}
+        glfw
+    )
+endif()
+
 # Copy test shaders
 file(GLOB TEST_SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/*.hlsl")
 foreach(SHADER ${TEST_SHADERS})

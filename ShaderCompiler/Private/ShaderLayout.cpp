@@ -6,17 +6,49 @@ namespace RVX
 {
     namespace
     {
+        // Helper to classify binding types into DX12-compatible register spaces
+        // In DX12/HLSL: t=SRV, s=Sampler, u=UAV, b=CBV - each has separate namespace
+        enum class RegisterSpace : uint32
+        {
+            SRV = 0,     // t registers: Texture, Buffer (SRV)
+            Sampler = 1, // s registers: Sampler
+            UAV = 2,     // u registers: RWTexture, RWBuffer
+            CBV = 3      // b registers: ConstantBuffer
+        };
+
+        RegisterSpace GetRegisterSpace(RHIBindingType type)
+        {
+            switch (type)
+            {
+            case RHIBindingType::Sampler:
+                return RegisterSpace::Sampler;
+            case RHIBindingType::UniformBuffer:
+            case RHIBindingType::DynamicUniformBuffer:
+                return RegisterSpace::CBV;
+            case RHIBindingType::StorageBuffer:
+            case RHIBindingType::DynamicStorageBuffer:
+            case RHIBindingType::StorageTexture:
+                return RegisterSpace::UAV;
+            case RHIBindingType::SampledTexture:
+            case RHIBindingType::CombinedTextureSampler:
+            default:
+                return RegisterSpace::SRV;
+            }
+        }
+
         struct BindingKey
         {
             uint32 set;
             uint32 binding;
+            RegisterSpace regSpace; // Different register spaces can share binding numbers
         };
 
         struct BindingKeyHash
         {
             size_t operator()(const BindingKey& key) const
             {
-                return (static_cast<size_t>(key.set) << 32) ^ key.binding;
+                return (static_cast<size_t>(key.set) << 32) ^ 
+                       (static_cast<size_t>(key.regSpace) << 16) ^ key.binding;
             }
         };
 
@@ -24,7 +56,7 @@ namespace RVX
         {
             bool operator()(const BindingKey& a, const BindingKey& b) const
             {
-                return a.set == b.set && a.binding == b.binding;
+                return a.set == b.set && a.binding == b.binding && a.regSpace == b.regSpace;
             }
         };
     }
@@ -41,7 +73,7 @@ namespace RVX
         {
             for (const auto& res : shader.reflection.resources)
             {
-                BindingKey key{res.set, res.binding};
+                BindingKey key{res.set, res.binding, GetRegisterSpace(res.type)};
                 auto it = entries.find(key);
                 if (it == entries.end())
                 {
@@ -57,7 +89,8 @@ namespace RVX
                 {
                     if (it->second.type != res.type || it->second.count != res.count)
                     {
-                        RVX_CORE_WARN("Descriptor binding conflict at set {}, binding {}", res.set, res.binding);
+                        RVX_CORE_WARN("Descriptor binding conflict at set {}, binding {} (register space {})", 
+                                      res.set, res.binding, static_cast<uint32>(key.regSpace));
                     }
                     it->second.visibility = it->second.visibility | shader.stage;
                 }

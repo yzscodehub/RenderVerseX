@@ -70,7 +70,37 @@ namespace RVX
 
         FlushBarriers();
 
-        DX12_CHECK(m_commandList->Close());
+        HRESULT hr = m_commandList->Close();
+        if (FAILED(hr))
+        {
+            RVX_RHI_ERROR("m_commandList->Close(): HRESULT = 0x{:08X}", static_cast<uint32>(hr));
+            
+            // Dump D3D12 info queue messages
+            ComPtr<ID3D12InfoQueue> infoQueue;
+            if (SUCCEEDED(m_device->GetD3DDevice()->QueryInterface(IID_PPV_ARGS(&infoQueue))))
+            {
+                const UINT64 messageCount = infoQueue->GetNumStoredMessages();
+                for (UINT64 i = 0; i < messageCount; ++i)
+                {
+                    SIZE_T messageLength = 0;
+                    infoQueue->GetMessage(i, nullptr, &messageLength);
+                    if (messageLength == 0) continue;
+
+                    std::vector<char> messageData(messageLength);
+                    auto* message = reinterpret_cast<D3D12_MESSAGE*>(messageData.data());
+                    if (SUCCEEDED(infoQueue->GetMessage(i, message, &messageLength)))
+                    {
+                        if (message->pDescription)
+                        {
+                            RVX_RHI_ERROR("  D3D12: {}", message->pDescription);
+                        }
+                    }
+                }
+                infoQueue->ClearStoredMessages();
+            }
+            
+            RVX_ASSERT(false);
+        }
         m_isRecording = false;
     }
 
@@ -374,6 +404,7 @@ namespace RVX
         {
             // Bind descriptor tables (SRV/UAV + Sampler)
             uint32 srvUavTableIndex = pipelineLayout->GetSrvUavTableIndex(slot);
+            uint32 samplerTableIndex = pipelineLayout->GetSamplerTableIndex(slot);
             if (srvUavTableIndex != UINT32_MAX && dx12Set->HasCbvSrvUavTable())
             {
                 if (m_currentPipeline->IsCompute())
@@ -386,7 +417,6 @@ namespace RVX
                 }
             }
 
-            uint32 samplerTableIndex = pipelineLayout->GetSamplerTableIndex(slot);
             if (samplerTableIndex != UINT32_MAX && dx12Set->HasSamplerTable())
             {
                 if (m_currentPipeline->IsCompute())
@@ -400,28 +430,21 @@ namespace RVX
             }
 
             // Bind root CBVs for uniform buffers
+            // Try to bind buffer as root CBV if it exists in the root signature
             auto* layout = dx12Set->GetLayout();
             for (const auto& binding : bindings)
             {
-                if (!binding.buffer || !layout)
+                if (!binding.buffer)
                     continue;
 
-                const auto* entry = layout->FindEntry(binding.binding);
-                if (!entry)
-                    continue;
-
-                if (entry->type != RHIBindingType::UniformBuffer &&
-                    entry->type != RHIBindingType::DynamicUniformBuffer)
-                {
-                    continue;
-                }
-
+                // Try to get root CBV index - if it exists, bind the buffer as CBV
                 uint32 rootIndex = pipelineLayout->GetRootCBVIndex(slot, binding.binding);
                 if (rootIndex == UINT32_MAX)
                     continue;
 
+                // Handle dynamic offset if applicable
                 uint64 dynamicOffset = 0;
-                if (entry->isDynamic)
+                if (layout)
                 {
                     uint32 dynamicIndex = layout->GetDynamicBindingIndex(binding.binding);
                     if (dynamicIndex != UINT32_MAX && dynamicIndex < dynamicOffsets.size())

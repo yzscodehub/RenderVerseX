@@ -84,11 +84,65 @@ namespace RVX
         }
     }
 
+    VulkanBuffer::VulkanBuffer(VulkanDevice* device, VkBuffer buffer, VkDeviceMemory memory,
+                               uint64 memoryOffset, const RHIBufferDesc& desc, bool ownsBuffer)
+        : m_device(device)
+        , m_desc(desc)
+        , m_buffer(buffer)
+        , m_allocation(VK_NULL_HANDLE)  // Placed resource - no VMA allocation
+        , m_ownsBuffer(ownsBuffer)
+        , m_boundMemory(memory)
+        , m_memoryOffset(memoryOffset)
+    {
+        if (desc.debugName)
+        {
+            SetDebugName(desc.debugName);
+        }
+
+        // Upload buffers: persistent mapping for efficient per-frame updates
+        // Readback buffers: on-demand mapping in Map() method (consistent with VMA behavior)
+        if (desc.memoryType == RHIMemoryType::Upload)
+        {
+            VkResult result = vkMapMemory(device->GetDevice(), memory, memoryOffset, desc.size, 0, &m_mappedData);
+            if (result != VK_SUCCESS)
+            {
+                RVX_RHI_ERROR("Failed to map placed upload buffer memory: {}", static_cast<int32>(result));
+                m_mappedData = nullptr;
+            }
+        }
+        // Note: Readback buffers are mapped on-demand in Map() method
+
+        // Get device address
+        VkBufferDeviceAddressInfo addressInfo = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+        addressInfo.buffer = m_buffer;
+        m_deviceAddress = vkGetBufferDeviceAddress(device->GetDevice(), &addressInfo);
+    }
+
     VulkanBuffer::~VulkanBuffer()
     {
-        if (m_buffer && m_allocation)
+        // Unmap placed resources before destruction (Upload is persistently mapped)
+        if (m_mappedData && m_boundMemory != VK_NULL_HANDLE)
         {
-            vmaDestroyBuffer(m_device->GetAllocator(), m_buffer, m_allocation);
+            vkUnmapMemory(m_device->GetDevice(), m_boundMemory);
+            m_mappedData = nullptr;
+        }
+
+        if (m_buffer)
+        {
+            if (m_allocation)
+            {
+                // VMA-allocated buffer
+                vmaDestroyBuffer(m_device->GetAllocator(), m_buffer, m_allocation);
+            }
+            else if (m_ownsBuffer)
+            {
+                // Placed resource: destroy VkBuffer object, memory is owned by Heap
+                // IMPORTANT: Caller MUST ensure correct destruction order:
+                //   1. First: Release all Placed Buffers (this destructor)
+                //   2. Then: Destroy the Heap (VkDeviceMemory)
+                vkDestroyBuffer(m_device->GetDevice(), m_buffer, nullptr);
+            }
+            // If !m_ownsBuffer, the buffer is managed externally (e.g., swapchain)
         }
     }
 
@@ -103,21 +157,47 @@ namespace RVX
             return nullptr;
         }
 
-        VK_CHECK(vmaMapMemory(m_device->GetAllocator(), m_allocation, &m_mappedData));
+        if (m_allocation)
+        {
+            // VMA-allocated buffer
+            VK_CHECK(vmaMapMemory(m_device->GetAllocator(), m_allocation, &m_mappedData));
+        }
+        else if (m_boundMemory != VK_NULL_HANDLE)
+        {
+            // Placed resource - manual mapping
+            VkResult result = vkMapMemory(m_device->GetDevice(), m_boundMemory, 
+                                          m_memoryOffset, m_desc.size, 0, &m_mappedData);
+            if (result != VK_SUCCESS)
+            {
+                RVX_RHI_ERROR("Failed to map placed buffer: {}", static_cast<int32>(result));
+                m_mappedData = nullptr;
+            }
+        }
+
         return m_mappedData;
     }
 
     void VulkanBuffer::Unmap()
     {
-        // Persistently mapped buffers don't need unmapping
-        if (m_desc.memoryType == RHIMemoryType::Upload || m_desc.memoryType == RHIMemoryType::Readback)
+        if (!m_mappedData)
             return;
 
-        if (m_mappedData)
+        // Upload buffers are persistently mapped - don't unmap
+        if (m_desc.memoryType == RHIMemoryType::Upload)
+            return;
+
+        if (m_allocation)
         {
+            // VMA-allocated buffer
             vmaUnmapMemory(m_device->GetAllocator(), m_allocation);
-            m_mappedData = nullptr;
         }
+        else if (m_boundMemory != VK_NULL_HANDLE)
+        {
+            // Placed resource - manual unmapping (only for Readback)
+            vkUnmapMemory(m_device->GetDevice(), m_boundMemory);
+        }
+
+        m_mappedData = nullptr;
     }
 
     // =============================================================================
@@ -718,11 +798,23 @@ namespace RVX
             return nullptr;
         }
 
-        // Note: For placed buffers, we need a special wrapper that doesn't use VMA
-        // For now, fall back to committed resource
-        RVX_RHI_WARN("Placed buffer creation not fully implemented, using VMA resource");
-        vkDestroyBuffer(device->GetDevice(), buffer, nullptr);
-        return CreateVulkanBuffer(device, desc);
+        if (desc.debugName)
+        {
+            if (device->vkSetDebugUtilsObjectName)
+            {
+                VkDebugUtilsObjectNameInfoEXT nameInfo = {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
+                nameInfo.objectType = VK_OBJECT_TYPE_BUFFER;
+                nameInfo.objectHandle = reinterpret_cast<uint64>(buffer);
+                nameInfo.pObjectName = desc.debugName;
+                device->vkSetDebugUtilsObjectName(device->GetDevice(), &nameInfo);
+            }
+        }
+
+        // Create placed buffer using the external resource constructor:
+        // - ownsBuffer = true: VkBuffer will be destroyed via vkDestroyBuffer() on release
+        // - m_boundMemory (VkDeviceMemory) is owned by the Heap, NOT freed here
+        // IMPORTANT: Caller must ensure Heap outlives all Placed Buffers bound to it
+        return Ref<VulkanBuffer>(new VulkanBuffer(device, buffer, vkHeap->GetMemory(), offset, desc, true));
     }
 
 } // namespace RVX

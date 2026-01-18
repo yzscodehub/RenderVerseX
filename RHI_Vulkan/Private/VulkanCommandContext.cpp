@@ -53,6 +53,8 @@ namespace RVX
             EndRenderPass();
         }
 
+        FlushBarriers();  // Ensure all pending barriers are submitted
+
         VK_CHECK(vkEndCommandBuffer(m_commandBuffer));
         m_isRecording = false;
     }
@@ -119,11 +121,8 @@ namespace RVX
         bufferBarrier.offset = barrier.offset;
         bufferBarrier.size = barrier.size == RVX_WHOLE_SIZE ? VK_WHOLE_SIZE : barrier.size;
 
-        VkDependencyInfo dependencyInfo = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-        dependencyInfo.bufferMemoryBarrierCount = 1;
-        dependencyInfo.pBufferMemoryBarriers = &bufferBarrier;
-
-        vkCmdPipelineBarrier2(m_commandBuffer, &dependencyInfo);
+        // Accumulate barrier for batch submission (matching DX12 design)
+        m_pendingBufferBarriers.push_back(bufferBarrier);
     }
 
     void VulkanCommandContext::TextureBarrier(const RHITextureBarrier& barrier)
@@ -149,21 +148,28 @@ namespace RVX
         imageBarrier.subresourceRange.layerCount = (barrier.subresourceRange.arrayLayerCount == 0 || barrier.subresourceRange.arrayLayerCount == RVX_ALL_LAYERS) ?
             VK_REMAINING_ARRAY_LAYERS : barrier.subresourceRange.arrayLayerCount;
 
-        // Determine aspect mask
+        // Determine aspect mask - must match VulkanTextureView logic for depth/stencil formats
         if (HasFlag(barrier.texture->GetUsage(), RHITextureUsage::DepthStencil))
         {
-            imageBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            RHIFormat format = barrier.texture->GetFormat();
+            // Use IsStencilFormat() for maintainability - handles D24_UNORM_S8_UINT and D32_FLOAT_S8_UINT
+            if (IsStencilFormat(format))
+            {
+                imageBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+            }
+            else
+            {
+                // Pure depth formats: D16_UNORM, D32_FLOAT
+                imageBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            }
         }
         else
         {
             imageBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         }
 
-        VkDependencyInfo dependencyInfo = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-        dependencyInfo.imageMemoryBarrierCount = 1;
-        dependencyInfo.pImageMemoryBarriers = &imageBarrier;
-
-        vkCmdPipelineBarrier2(m_commandBuffer, &dependencyInfo);
+        // Accumulate barrier for batch submission (matching DX12 design)
+        m_pendingImageBarriers.push_back(imageBarrier);
 
         // Update tracked layout
         vkTexture->SetCurrentLayout(imageBarrier.newLayout);
@@ -178,10 +184,29 @@ namespace RVX
             TextureBarrier(barrier);
     }
 
+    void VulkanCommandContext::FlushBarriers()
+    {
+        if (m_pendingImageBarriers.empty() && m_pendingBufferBarriers.empty())
+            return;
+
+        VkDependencyInfo dependencyInfo = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependencyInfo.imageMemoryBarrierCount = static_cast<uint32>(m_pendingImageBarriers.size());
+        dependencyInfo.pImageMemoryBarriers = m_pendingImageBarriers.data();
+        dependencyInfo.bufferMemoryBarrierCount = static_cast<uint32>(m_pendingBufferBarriers.size());
+        dependencyInfo.pBufferMemoryBarriers = m_pendingBufferBarriers.data();
+
+        vkCmdPipelineBarrier2(m_commandBuffer, &dependencyInfo);
+
+        m_pendingImageBarriers.clear();
+        m_pendingBufferBarriers.clear();
+    }
+
     void VulkanCommandContext::BeginRenderPass(const RHIRenderPassDesc& desc)
     {
         if (m_inRenderPass)
             return;
+
+        FlushBarriers();  // Ensure layout transitions are applied before rendering
 
         // Use dynamic rendering (Vulkan 1.3)
         std::vector<VkRenderingAttachmentInfo> colorAttachments;
@@ -387,34 +412,40 @@ namespace RVX
     void VulkanCommandContext::Draw(uint32 vertexCount, uint32 instanceCount, 
                                      uint32 firstVertex, uint32 firstInstance)
     {
+        FlushBarriers();
         vkCmdDraw(m_commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
     }
 
     void VulkanCommandContext::DrawIndexed(uint32 indexCount, uint32 instanceCount, 
                                             uint32 firstIndex, int32 vertexOffset, uint32 firstInstance)
     {
+        FlushBarriers();
         vkCmdDrawIndexed(m_commandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
     }
 
     void VulkanCommandContext::DrawIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride)
     {
+        FlushBarriers();
         auto* vkBuffer = static_cast<VulkanBuffer*>(buffer);
         vkCmdDrawIndirect(m_commandBuffer, vkBuffer->GetBuffer(), offset, drawCount, stride);
     }
 
     void VulkanCommandContext::DrawIndexedIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride)
     {
+        FlushBarriers();
         auto* vkBuffer = static_cast<VulkanBuffer*>(buffer);
         vkCmdDrawIndexedIndirect(m_commandBuffer, vkBuffer->GetBuffer(), offset, drawCount, stride);
     }
 
     void VulkanCommandContext::Dispatch(uint32 groupCountX, uint32 groupCountY, uint32 groupCountZ)
     {
+        FlushBarriers();
         vkCmdDispatch(m_commandBuffer, groupCountX, groupCountY, groupCountZ);
     }
 
     void VulkanCommandContext::DispatchIndirect(RHIBuffer* buffer, uint64 offset)
     {
+        FlushBarriers();
         auto* vkBuffer = static_cast<VulkanBuffer*>(buffer);
         vkCmdDispatchIndirect(m_commandBuffer, vkBuffer->GetBuffer(), offset);
     }
@@ -422,6 +453,8 @@ namespace RVX
     void VulkanCommandContext::CopyBuffer(RHIBuffer* src, RHIBuffer* dst, 
                                            uint64 srcOffset, uint64 dstOffset, uint64 size)
     {
+        FlushBarriers();
+
         auto* vkSrc = static_cast<VulkanBuffer*>(src);
         auto* vkDst = static_cast<VulkanBuffer*>(dst);
 
@@ -435,6 +468,8 @@ namespace RVX
 
     void VulkanCommandContext::CopyTexture(RHITexture* src, RHITexture* dst, const RHITextureCopyDesc& desc)
     {
+        FlushBarriers();
+
         auto* vkSrc = static_cast<VulkanTexture*>(src);
         auto* vkDst = static_cast<VulkanTexture*>(dst);
 
@@ -462,6 +497,8 @@ namespace RVX
     void VulkanCommandContext::CopyBufferToTexture(RHIBuffer* src, RHITexture* dst, 
                                                     const RHIBufferTextureCopyDesc& desc)
     {
+        FlushBarriers();
+
         auto* vkSrc = static_cast<VulkanBuffer*>(src);
         auto* vkDst = static_cast<VulkanTexture*>(dst);
 
@@ -487,6 +524,8 @@ namespace RVX
     void VulkanCommandContext::CopyTextureToBuffer(RHITexture* src, RHIBuffer* dst,
                                                     const RHIBufferTextureCopyDesc& desc)
     {
+        FlushBarriers();
+
         auto* vkSrc = static_cast<VulkanTexture*>(src);
         auto* vkDst = static_cast<VulkanBuffer*>(dst);
 
