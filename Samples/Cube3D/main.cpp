@@ -153,7 +153,10 @@ int main(int argc, char* argv[])
 #if defined(__APPLE__)
     RVX::RHIBackendType backend = RVX::RHIBackendType::Metal;
 #elif defined(_WIN32)
-    RVX::RHIBackendType backend = RVX::RHIBackendType::DX12;
+    // RVX::RHIBackendType backend = RVX::RHIBackendType::DX11;
+    // RVX::RHIBackendType backend = RVX::RHIBackendType::DX12;
+    RVX::RHIBackendType backend = RVX::RHIBackendType::Vulkan;
+    // RVX::RHIBackendType backend = RVX::RHIBackendType::OpenGL;
 #else
     RVX::RHIBackendType backend = RVX::RHIBackendType::Vulkan;
 #endif
@@ -223,8 +226,12 @@ int main(int argc, char* argv[])
     auto depthView = device->CreateTextureView(depthBuffer.Get(), depthViewDesc);
     RVX_CORE_INFO("Created depth buffer");
 
-    // Create command context
-    auto cmdContext = device->CreateCommandContext(RVX::RHICommandQueueType::Graphics);
+    // Create per-frame command contexts (one per frame in flight)
+    std::vector<RVX::RHICommandContextRef> cmdContexts(RVX::RVX_MAX_FRAME_COUNT);
+    for (RVX::uint32 i = 0; i < RVX::RVX_MAX_FRAME_COUNT; ++i)
+    {
+        cmdContexts[i] = device->CreateCommandContext(RVX::RHICommandQueueType::Graphics);
+    }
 
     // =========================================================================
     // Create Cube Geometry
@@ -363,7 +370,10 @@ int main(int argc, char* argv[])
     RVX_CORE_INFO("3D Cube sample initialized - press ESC to exit");
     RVX_CORE_INFO("The cube will rotate automatically");
 
-    RVX::RHIResourceState backBufferState = RVX::RHIResourceState::Undefined;
+    // Track back buffer states (one per swapchain buffer)
+    std::vector<RVX::RHIResourceState> backBufferStates(
+        swapChain->GetBufferCount(),
+        RVX::RHIResourceState::Undefined);
     RVX::RHIResourceState depthState = RVX::RHIResourceState::Undefined;
     double startTime = glfwGetTime();
 
@@ -393,7 +403,9 @@ int main(int argc, char* argv[])
         RVX::Mat4 proj = RVX::MakePerspective(60.0f * 3.14159f / 180.0f, aspect, 0.1f, 100.0f);
         
         TransformCB cbData;
-        cbData.worldViewProj = world * view * proj;
+        // GLM uses column-major matrices, so multiplication order is right-to-left:
+        // point' = proj * view * world * point
+        cbData.worldViewProj = proj * view * world;
         cbData.world = world;
         // Light direction (normalized)
         cbData.lightDir[0] = 0.577f;
@@ -406,13 +418,18 @@ int main(int argc, char* argv[])
         // Begin frame - resets fence and prepares for new frame
         device->BeginFrame();
         
+        RVX::uint32 backBufferIndex = swapChain->GetCurrentBackBufferIndex();
+        RVX::uint32 frameIndex = device->GetCurrentFrameIndex();
         auto* backBuffer = swapChain->GetCurrentBackBuffer();
         auto* backBufferView = swapChain->GetCurrentBackBufferView();
+        
+        // Use the command context for this frame
+        auto& cmdContext = cmdContexts[frameIndex];
 
         cmdContext->Begin();
 
         // Transition resources
-        cmdContext->TextureBarrier({backBuffer, backBufferState, RVX::RHIResourceState::RenderTarget});
+        cmdContext->TextureBarrier({backBuffer, backBufferStates[backBufferIndex], RVX::RHIResourceState::RenderTarget});
         // Only transition depth buffer if not already in DepthWrite state
         if (depthState != RVX::RHIResourceState::DepthWrite)
         {
@@ -449,7 +466,7 @@ int main(int argc, char* argv[])
 
         // Transition to present
         cmdContext->TextureBarrier({backBuffer, RVX::RHIResourceState::RenderTarget, RVX::RHIResourceState::Present});
-        backBufferState = RVX::RHIResourceState::Present;
+        backBufferStates[backBufferIndex] = RVX::RHIResourceState::Present;
         // depthState stays as DepthWrite (no transition needed)
 
         cmdContext->End();
@@ -466,13 +483,16 @@ int main(int argc, char* argv[])
     pipeline = nullptr;
     pipelineLayout = nullptr;
     setLayouts.clear();
+    // Clear shader references before clearing cache and destroying device
+    vsResult.shader = nullptr;
+    psResult.shader = nullptr;
     shaderManager.ClearCache();
     constantBuffer = nullptr;
     indexBuffer = nullptr;
     vertexBuffer = nullptr;
     depthView = nullptr;
     depthBuffer = nullptr;
-    cmdContext = nullptr;
+    cmdContexts.clear();
     swapChain = nullptr;
     device.reset();
 

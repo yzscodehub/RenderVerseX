@@ -27,6 +27,14 @@ namespace RVX
         if (id == 131169 || id == 131185 || id == 131218 || id == 131204)
             return;
 
+        // Ignore debug group push/pop messages (these are for GPU profilers like RenderDoc)
+        if (type == GL_DEBUG_TYPE_PUSH_GROUP || type == GL_DEBUG_TYPE_POP_GROUP)
+            return;
+
+        // Ignore notification-level messages from application (our own debug scopes)
+        if (source == GL_DEBUG_SOURCE_APPLICATION && severity == GL_DEBUG_SEVERITY_NOTIFICATION)
+            return;
+
         const char* sourceStr = "Unknown";
         switch (source)
         {
@@ -120,7 +128,11 @@ namespace RVX
             // Flush deletion queue
             m_deletionQueue.FlushAll();
             
-            // Shutdown debug system
+            // Clear caches before debug shutdown (they are member variables destroyed after destructor body)
+            m_fboCache.Clear();
+            m_vaoCache.Clear();
+            
+            // Shutdown debug system (must be after all resources are destroyed)
             OpenGLDebug::Get().Shutdown();
             
             RVX_RHI_INFO("OpenGL Device destroyed");

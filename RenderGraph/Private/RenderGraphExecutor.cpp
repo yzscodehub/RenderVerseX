@@ -59,7 +59,7 @@ namespace RVX
 
         for (auto& resource : graph.textures)
         {
-            if (!resource.exportState || !resource.texture)
+            if (!resource.exportState || !resource.GetTexture())
                 continue;
 
             RHIResourceState desired = *resource.exportState;
@@ -100,7 +100,7 @@ namespace RVX
 
         for (auto& resource : graph.buffers)
         {
-            if (!resource.exportState || !resource.buffer)
+            if (!resource.exportState || !resource.GetBuffer())
                 continue;
 
             RHIResourceState desired = *resource.exportState;

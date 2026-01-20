@@ -1158,7 +1158,7 @@ namespace RVX
                 if (usage.type == ResourceType::Texture)
                 {
                     auto& resource = graph.textures[usage.index];
-                    if (!resource.texture)
+                    if (!resource.GetTexture())
                         continue;
 
                     RHISubresourceRange range = usage.hasSubresourceRange ? usage.subresourceRange : RHISubresourceRange::All();
@@ -1209,7 +1209,7 @@ namespace RVX
                 else
                 {
                     auto& resource = graph.buffers[usage.index];
-                    if (!resource.buffer)
+                    if (!resource.GetBuffer())
                         continue;
 
                     uint64 offset = usage.hasRange ? usage.offset : 0;

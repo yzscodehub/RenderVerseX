@@ -396,8 +396,9 @@ namespace RVX
             glslCompiler.set_entry_point(entryPoint, executionModel);
 
             // Remap bindings: flatten set/binding to OpenGL binding points
+            // Note: UBO binding 0 is reserved for push constants (see OpenGLPipeline.h PUSH_CONSTANT_BINDING)
             auto resources = glslCompiler.get_shader_resources();
-            uint32_t uboIndex = 0;
+            uint32_t uboIndex = 1;  // Start from 1, 0 is reserved for push constants
             uint32_t ssboIndex = 0;
             uint32_t textureIndex = 0;
             uint32_t samplerIndex = 0;
