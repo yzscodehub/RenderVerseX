@@ -1,10 +1,11 @@
 {
   "name": "renderversex",
   "version": "0.1.0",
-  "description": "A cross-platform rendering framework with DX11/DX12/Vulkan/Metal backends",
+  "description": "A cross-platform rendering framework with DX11/DX12/Vulkan/Metal/OpenGL backends",
   "dependencies": [
     "spdlog",
     "glfw3",
+    "glm",
     {
       "name": "vulkan",
       "platform": "windows | linux"
@@ -31,11 +32,15 @@
     },
     {
       "name": "spirv-cross",
-      "platform": "osx"
+      "platform": "osx | linux | windows"
     },
     {
       "name": "glslang",
       "platform": "osx"
+    },
+    {
+      "name": "glad",
+      "platform": "linux | windows"
     }
   ]
 }

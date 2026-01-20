@@ -18,6 +18,20 @@ namespace RVX
         const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
         void* pUserData)
     {
+        // Filter out harmless loader messages about missing external overlay layers
+        // These occur when third-party software (Epic Games, Steam, etc.) registers
+        // Vulkan layers but the layer files are missing or moved
+        const char* msg = pCallbackData->pMessage;
+        if (msg)
+        {
+            // Skip loader_get_json errors (missing layer JSON files)
+            if (strstr(msg, "loader_get_json") != nullptr)
+                return VK_FALSE;
+            // Skip other common harmless loader messages
+            if (strstr(msg, "OverlayVkLayer") != nullptr)
+                return VK_FALSE;
+        }
+
         if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
         {
             RVX_RHI_ERROR("Vulkan Validation: {}", pCallbackData->pMessage);
@@ -341,14 +355,18 @@ namespace RVX
             if (!CheckDeviceExtensionSupport(device))
                 continue;
 
-            // Score device
+            // Score device - prioritize discrete GPUs heavily
+            // Discrete GPUs get 100000 base score to ensure they're always preferred
+            // over integrated GPUs with inflated shared memory VRAM values
             int score = 0;
             if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
-                score += 1000;
+                score += 100000;
             else if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
                 score += 100;
 
-            score += static_cast<int>(vram / (1024 * 1024));
+            // Add VRAM bonus (in MB, capped at 64GB to prevent overflow)
+            VkDeviceSize vramMB = std::min(vram / (1024 * 1024), static_cast<VkDeviceSize>(65536));
+            score += static_cast<int>(vramMB);
 
             if (score > bestScore)
             {

@@ -1,6 +1,6 @@
 #include "Core/Core.h"
 #include "RHI/RHI.h"
-#include "Core/Math.h"
+#include "Core/MathTypes.h"
 
 #include <GLFW/glfw3.h>
 
@@ -382,24 +382,15 @@ int main(int argc, char* argv[])
         float aspect = static_cast<float>(swapChain->GetWidth()) / 
                        static_cast<float>(swapChain->GetHeight());
         
-        RVX::Mat4 world = RVX::Mat4::RotationXYZ({time * 0.5f, time * 0.7f, time * 0.3f});
+        RVX::Mat4 world = RVX::MakeRotationXYZ(RVX::Vec3(time * 0.5f, time * 0.7f, time * 0.3f));
         
         // Create view matrix (camera at z=-3 looking at origin)
-        RVX::Vec3 eye = {0, 0, -3};
-        RVX::Vec3 at = {0, 0, 0};
-        RVX::Vec3 up = {0, 1, 0};
-        RVX::Vec3 zAxis = RVX::Normalize(at - eye);
-        RVX::Vec3 xAxis = RVX::Normalize(RVX::Cross(up, zAxis));
-        RVX::Vec3 yAxis = RVX::Cross(zAxis, xAxis);
-        RVX::Mat4 view = RVX::Mat4::Identity();
-        view.m[0] = xAxis.x; view.m[4] = xAxis.y; view.m[8] = xAxis.z;
-        view.m[1] = yAxis.x; view.m[5] = yAxis.y; view.m[9] = yAxis.z;
-        view.m[2] = zAxis.x; view.m[6] = zAxis.y; view.m[10] = zAxis.z;
-        view.m[12] = -RVX::Dot(xAxis, eye);
-        view.m[13] = -RVX::Dot(yAxis, eye);
-        view.m[14] = -RVX::Dot(zAxis, eye);
+        RVX::Vec3 eye(0.0f, 0.0f, -3.0f);
+        RVX::Vec3 at(0.0f, 0.0f, 0.0f);
+        RVX::Vec3 up(0.0f, 1.0f, 0.0f);
+        RVX::Mat4 view = RVX::lookAt(eye, at, up);
         
-        RVX::Mat4 proj = RVX::Mat4::Perspective(60.0f * 3.14159f / 180.0f, aspect, 0.1f, 100.0f);
+        RVX::Mat4 proj = RVX::MakePerspective(60.0f * 3.14159f / 180.0f, aspect, 0.1f, 100.0f);
         
         TransformCB cbData;
         cbData.worldViewProj = world * view * proj;

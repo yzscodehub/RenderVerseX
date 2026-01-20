@@ -74,7 +74,10 @@ namespace RVX
     RGTextureHandle RenderGraph::ImportTexture(RHITexture* texture, RHIResourceState initialState)
     {
         TextureResource resource;
-        resource.texture.Reset(texture);
+        // For imported textures, store a raw pointer without taking ownership
+        // The external owner (e.g., swap chain) is responsible for the texture's lifetime
+        // We use importedRaw to store non-owning pointer for imported resources
+        resource.importedRaw = texture;
         if (texture)
         {
             resource.desc.width = texture->GetWidth();
@@ -97,7 +100,8 @@ namespace RVX
     RGBufferHandle RenderGraph::ImportBuffer(RHIBuffer* buffer, RHIResourceState initialState)
     {
         BufferResource resource;
-        resource.buffer.Reset(buffer);
+        // For imported buffers, store a raw pointer without taking ownership
+        resource.importedRaw = buffer;
         if (buffer)
         {
             resource.desc.size = buffer->GetSize();

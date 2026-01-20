@@ -17,7 +17,7 @@ namespace RVX
         m_projectionType = CameraProjection::Orthographic;
         m_nearZ = nearZ;
         m_farZ = farZ;
-        m_projection = Mat4::Orthographic(width, height, nearZ, farZ);
+        m_projection = MakeOrthographic(width, height, nearZ, farZ);
         UpdateMatrices();
     }
 
@@ -40,13 +40,13 @@ namespace RVX
 
     void Camera::UpdateMatrices()
     {
-        Mat4 rotation = Mat4::RotationXYZ({-m_rotation.x, -m_rotation.y, -m_rotation.z});
-        Mat4 translation = Mat4::Translation({-m_position.x, -m_position.y, -m_position.z});
+        Mat4 rotation = MakeRotationXYZ(Vec3(-m_rotation.x, -m_rotation.y, -m_rotation.z));
+        Mat4 translation = MakeTranslation(Vec3(-m_position.x, -m_position.y, -m_position.z));
         m_view = rotation * translation;
 
         if (m_projectionType == CameraProjection::Perspective)
         {
-            m_projection = Mat4::Perspective(m_fov, m_aspect, m_nearZ, m_farZ);
+            m_projection = MakePerspective(m_fov, m_aspect, m_nearZ, m_farZ);
         }
 
         m_viewProjection = m_projection * m_view;

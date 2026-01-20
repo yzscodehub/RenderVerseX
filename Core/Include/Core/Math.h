@@ -1,6 +1,22 @@
 #pragma once
 
+/**
+ * @file Math.h
+ * @brief DEPRECATED - Use Core/MathTypes.h instead
+ * 
+ * This file contains legacy math types and is kept for backward compatibility.
+ * All new code should use Core/MathTypes.h which provides GLM-based types
+ * with RVX namespace aliases for easy future replacement.
+ * 
+ * @deprecated Use Core/MathTypes.h for all new code
+ */
+
 #include <cmath>
+
+// Emit deprecation warning when included
+#ifdef _MSC_VER
+#pragma message("Warning: Core/Math.h is deprecated. Use Core/MathTypes.h instead.")
+#endif
 
 namespace RVX
 {

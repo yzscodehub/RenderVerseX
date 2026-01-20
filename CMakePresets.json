@@ -4,6 +4,9 @@
     {
       "name": "windows-base",
       "hidden": true,
+      "environment": {
+        "VCPKG_ROOT": "C:/Tools/vcpkg"
+      },
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_TOOLCHAIN_FILE": {
@@ -14,6 +17,7 @@
         "RVX_ENABLE_DX12": "ON",
         "RVX_ENABLE_VULKAN": "ON",
         "RVX_ENABLE_METAL": "OFF",
+        "RVX_ENABLE_OPENGL": "ON",
         "RVX_BUILD_SAMPLES": "ON",
         "RVX_BUILD_TESTS": "ON"
       },

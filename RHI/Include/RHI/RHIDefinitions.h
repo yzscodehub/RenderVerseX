@@ -14,7 +14,8 @@ namespace RVX
         DX11,
         DX12,
         Vulkan,
-        Metal
+        Metal,
+        OpenGL
     };
 
     inline const char* ToString(RHIBackendType type)
@@ -25,6 +26,7 @@ namespace RVX
             case RHIBackendType::DX12:   return "DirectX 12";
             case RHIBackendType::Vulkan: return "Vulkan";
             case RHIBackendType::Metal:  return "Metal";
+            case RHIBackendType::OpenGL: return "OpenGL";
             default:                     return "Unknown";
         }
     }

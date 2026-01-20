@@ -27,7 +27,7 @@
 #include "Engine/Systems/CameraSystem.h"
 #include "Platform/InputBackend_GLFW.h"
 #include "Camera/OrbitController.h"
-#include "Core/Math.h"
+#include "Core/MathTypes.h"
 
 // =============================================================================
 // Transform Constant Buffer Data
@@ -113,19 +113,17 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // Create window (no OpenGL context)
+    // Temporary window to query backend before creating final window
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow *window = glfwCreateWindow(1280, 720, "RenderVerseX - Interactive Triangle", nullptr, nullptr);
-    if (!window)
-    {
-        RVX_CORE_CRITICAL("Failed to create window");
-        glfwTerminate();
-        return -1;
-    }
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);  // Hidden initially
+    GLFWwindow *window = glfwCreateWindow(1, 1, "temp", nullptr, nullptr);
 
     // Select backend
 #ifdef _WIN32
-        RVX::RHIBackendType backend = RVX::RHIBackendType::DX12;
+        // RVX::RHIBackendType backend = RVX::RHIBackendType::DX12;
+        // RVX::RHIBackendType backend = RVX::RHIBackendType::DX11;
+        // RVX::RHIBackendType backend = RVX::RHIBackendType::Vulkan;
+        RVX::RHIBackendType backend = RVX::RHIBackendType::OpenGL;
 #elif __APPLE__
         RVX::RHIBackendType backend = RVX::RHIBackendType::Metal;
 #elif __linux__
@@ -146,9 +144,51 @@ int main(int argc, char *argv[])
             backend = RVX::RHIBackendType::Vulkan;
         else if (arg == "--metal" || arg == "-mtl")
             backend = RVX::RHIBackendType::Metal;
+        else if (arg == "--opengl" || arg == "-gl")
+            backend = RVX::RHIBackendType::OpenGL;
     }
 
     RVX_CORE_INFO("Using backend: {}", RVX::ToString(backend));
+
+    // Destroy the window created without API and recreate with correct hints
+    glfwDestroyWindow(window);
+    
+    // Set window hints based on backend
+    if (backend == RVX::RHIBackendType::OpenGL)
+    {
+        // OpenGL needs a context created by GLFW
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+#ifdef RVX_DEBUG
+        glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
+#endif
+    }
+    else
+    {
+        // Other backends don't need GLFW to create a graphics context
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    }
+
+    // Make the final window visible (was hidden for the temporary window)
+    glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
+
+    window = glfwCreateWindow(1280, 720, "RenderVerseX - Interactive Triangle", nullptr, nullptr);
+    if (!window)
+    {
+        RVX_CORE_CRITICAL("Failed to create window for backend");
+        glfwTerminate();
+        return -1;
+    }
+
+    // For OpenGL, make context current before creating device
+    if (backend == RVX::RHIBackendType::OpenGL)
+    {
+        glfwMakeContextCurrent(window);
+        glfwSwapInterval(1);  // VSync
+    }
 
     // Create RHI device
     RVX::RHIDeviceDesc deviceDesc;
@@ -171,11 +211,20 @@ int main(int argc, char *argv[])
 
     // Create swap chain
     RVX::RHISwapChainDesc swapChainDesc;
+    // Set window handle based on backend
+    if (backend == RVX::RHIBackendType::OpenGL)
+    {
+        // OpenGL uses GLFW for swap buffers, needs GLFWwindow*
+        swapChainDesc.windowHandle = window;
+    }
+    else
+    {
 #ifdef _WIN32
-    swapChainDesc.windowHandle = glfwGetWin32Window(window);
+        swapChainDesc.windowHandle = glfwGetWin32Window(window);
 #elif __APPLE__
-    swapChainDesc.windowHandle = glfwGetCocoaWindow(window);
+        swapChainDesc.windowHandle = glfwGetCocoaWindow(window);
 #endif
+    }
     swapChainDesc.width = 1280;
     swapChainDesc.height = 720;
     swapChainDesc.format = RVX::RHIFormat::BGRA8_UNORM_SRGB;
@@ -813,8 +862,8 @@ int main(int argc, char *argv[])
         TransformCB transformData;
         auto camRotation = cameraSystem->GetCamera().GetRotation();
         // Transpose for Metal (SPIRV-Cross changes mul order)
-        transformData.worldMatrix = RVX::Mat4::Transpose(
-            RVX::Mat4::RotationXYZ({camRotation.x, camRotation.y, modelRoll}));
+        transformData.worldMatrix = RVX::transpose(
+            RVX::MakeRotationXYZ(RVX::Vec3(camRotation.x, camRotation.y, modelRoll)));
 
         // Pulsing tint color based on time
         double currentTime = glfwGetTime();

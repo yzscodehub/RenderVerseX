@@ -16,6 +16,7 @@ option(RVX_ENABLE_DX11 "Enable DirectX 11 backend" ON)
 option(RVX_ENABLE_DX12 "Enable DirectX 12 backend" ON)
 option(RVX_ENABLE_VULKAN "Enable Vulkan backend" ON)
 option(RVX_ENABLE_METAL "Enable Metal backend (macOS/iOS)" OFF)
+option(RVX_ENABLE_OPENGL "Enable OpenGL backend" OFF)
 option(RVX_BUILD_SAMPLES "Build sample applications" ON)
 option(RVX_BUILD_TESTS "Build validation tests" ON)
 
@@ -49,9 +50,10 @@ elseif(APPLE)
 elseif(UNIX)
     set(RVX_PLATFORM_LINUX ON)
     add_compile_definitions(RVX_PLATFORM_LINUX=1)
-    # Disable DX backends on Linux
+    # Disable DX backends on Linux, enable OpenGL as fallback
     set(RVX_ENABLE_DX11 OFF)
     set(RVX_ENABLE_DX12 OFF)
+    set(RVX_ENABLE_OPENGL ON)
 endif()
 
 # =============================================================================
@@ -59,6 +61,7 @@ endif()
 # =============================================================================
 find_package(spdlog CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
+find_package(glm CONFIG REQUIRED)
 
 if(RVX_ENABLE_VULKAN)
     find_package(Vulkan REQUIRED)
@@ -66,13 +69,21 @@ if(RVX_ENABLE_VULKAN)
     find_package(unofficial-spirv-reflect CONFIG REQUIRED)
 endif()
 
-# SPIRV-Cross is needed for Metal shader translation (SPIR-V -> MSL)
-if(RVX_ENABLE_METAL)
+# SPIRV-Cross is needed for Metal/OpenGL shader translation (SPIR-V -> MSL/GLSL)
+if(RVX_ENABLE_METAL OR RVX_ENABLE_OPENGL)
     # Note: Order matters - glsl must be found before msl due to dependencies
     find_package(spirv_cross_core CONFIG REQUIRED)
     find_package(spirv_cross_glsl CONFIG REQUIRED)
-    find_package(spirv_cross_hlsl CONFIG REQUIRED)
-    find_package(spirv_cross_msl CONFIG REQUIRED)
+    if(RVX_ENABLE_METAL)
+        find_package(spirv_cross_hlsl CONFIG REQUIRED)
+        find_package(spirv_cross_msl CONFIG REQUIRED)
+    endif()
+endif()
+
+# OpenGL dependencies
+if(RVX_ENABLE_OPENGL)
+    find_package(glad CONFIG REQUIRED)
+    find_package(OpenGL REQUIRED)
 endif()
 
 if(WIN32)
@@ -138,9 +149,13 @@ endif()
 # Subdirectories
 # =============================================================================
 add_subdirectory(Core)
+add_subdirectory(Scene)
+add_subdirectory(Animation)
+add_subdirectory(Acceleration)
 add_subdirectory(Platform)
 add_subdirectory(Input)
 add_subdirectory(Camera)
+add_subdirectory(Picking)
 add_subdirectory(Engine)
 add_subdirectory(RHI)
 add_subdirectory(ShaderCompiler)
@@ -159,6 +174,10 @@ endif()
 
 if(RVX_ENABLE_METAL)
     add_subdirectory(RHI_Metal)
+endif()
+
+if(RVX_ENABLE_OPENGL)
+    add_subdirectory(RHI_OpenGL)
 endif()
 
 add_subdirectory(RenderGraph)
@@ -184,6 +203,7 @@ message(STATUS "  DX11 Backend: ${RVX_ENABLE_DX11}")
 message(STATUS "  DX12 Backend: ${RVX_ENABLE_DX12}")
 message(STATUS "  Vulkan:       ${RVX_ENABLE_VULKAN}")
 message(STATUS "  Metal:        ${RVX_ENABLE_METAL}")
+message(STATUS "  OpenGL:       ${RVX_ENABLE_OPENGL}")
 message(STATUS "  Samples:      ${RVX_BUILD_SAMPLES}")
 message(STATUS "  Tests:        ${RVX_BUILD_TESTS}")
 message(STATUS "")

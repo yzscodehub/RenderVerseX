@@ -1,4 +1,5 @@
 #include "ShaderCompiler/ShaderCompiler.h"
+#include "SPIRVCrossTranslator.h"
 #include <Windows.h>
 #include <unknwn.h>
 #include <dxcapi.h>
@@ -71,7 +72,7 @@ namespace RVX
             }
 
             // Use FXC for DX11/DX12 to guarantee SM5 compatibility.
-            if (options.targetBackend != RHIBackendType::Vulkan)
+            if (options.targetBackend == RHIBackendType::DX11 || options.targetBackend == RHIBackendType::DX12)
             {
                 const char* profile = nullptr;
                 std::string profileOverride;
@@ -196,12 +197,21 @@ namespace RVX
                 args.push_back(L"-O3");
             }
 
-            if (options.targetBackend == RHIBackendType::Vulkan)
+            // OpenGL and Vulkan both need SPIR-V output
+            if (options.targetBackend == RHIBackendType::Vulkan || options.targetBackend == RHIBackendType::OpenGL)
             {
                 args.push_back(L"-spirv");
                 args.push_back(L"-fvk-use-dx-layout");
                 args.push_back(L"-fvk-use-dx-position-w");
-                args.push_back(L"-fspv-target-env=vulkan1.2");
+                if (options.targetBackend == RHIBackendType::Vulkan)
+                {
+                    args.push_back(L"-fspv-target-env=vulkan1.2");
+                }
+                else
+                {
+                    // OpenGL: use Vulkan 1.0 semantics for broader compatibility
+                    args.push_back(L"-fspv-target-env=vulkan1.0");
+                }
             }
 
             if (options.sourcePath)
@@ -257,6 +267,82 @@ namespace RVX
             if (FAILED(dxcResult->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&shaderBlob), nullptr)) || !shaderBlob)
             {
                 result.errorMessage = "DXC output blob missing";
+                return result;
+            }
+
+            // For OpenGL, we need to translate SPIR-V to GLSL
+            if (options.targetBackend == RHIBackendType::OpenGL)
+            {
+                // Get SPIR-V bytecode
+                std::vector<uint8_t> spirvBytecode(shaderBlob->GetBufferSize());
+                std::memcpy(spirvBytecode.data(), shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize());
+
+                // Translate to GLSL using SPIRV-Cross
+                SPIRVCrossTranslator translator;
+                SPIRVToGLSLOptions glslOptions;
+                glslOptions.glslVersion = 450;
+                glslOptions.es = false;
+                glslOptions.vulkanSemantics = false;
+                glslOptions.enable420Pack = true;
+                glslOptions.emitPushConstantAsUBO = true;
+                glslOptions.forceZeroInit = true;
+
+                auto glslResult = translator.TranslateToGLSL(
+                    spirvBytecode,
+                    options.stage,
+                    options.entryPoint,
+                    glslOptions);
+
+                if (!glslResult.success)
+                {
+                    result.errorMessage = "SPIRV-Cross translation failed: " + glslResult.errorMessage;
+                    return result;
+                }
+
+                result.success = true;
+                result.glslSource = std::move(glslResult.glslSource);
+                result.glslVersion = glslOptions.glslVersion;
+                result.reflection = std::move(glslResult.reflection);
+
+                // Store binding info
+                for (const auto& remap : glslResult.bindingRemaps)
+                {
+                    uint32_t key = ShaderCompileResult::GLSLBindingInfo::MakeKey(remap.originalSet, remap.originalBinding);
+                    result.glslBindings.setBindingToGLBinding[key] = remap.glBinding;
+
+                    switch (remap.type)
+                    {
+                        case RHIBindingType::UniformBuffer:
+                            result.glslBindings.uboBindings[remap.name] = remap.glBinding;
+                            break;
+                        case RHIBindingType::StorageBuffer:
+                            result.glslBindings.ssboBindings[remap.name] = remap.glBinding;
+                            break;
+                        case RHIBindingType::SampledTexture:
+                        case RHIBindingType::CombinedTextureSampler:
+                            result.glslBindings.textureBindings[remap.name] = remap.glBinding;
+                            break;
+                        case RHIBindingType::Sampler:
+                            result.glslBindings.samplerBindings[remap.name] = remap.glBinding;
+                            break;
+                        case RHIBindingType::StorageTexture:
+                            result.glslBindings.imageBindings[remap.name] = remap.glBinding;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+
+                if (glslResult.pushConstantInfo)
+                {
+                    result.glslPushConstant = ShaderCompileResult::GLSLPushConstant{
+                        glslResult.pushConstantInfo->glBinding,
+                        glslResult.pushConstantInfo->size
+                    };
+                }
+
+                // Also store SPIR-V bytecode for potential future use
+                result.bytecode = std::move(spirvBytecode);
                 return result;
             }
 

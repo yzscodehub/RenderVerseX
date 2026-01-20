@@ -52,9 +52,11 @@ namespace RVX
             return result;
         }
 
-        // Skip disk cache for Metal backend - MSL source can't be reflected after caching
+        // Skip disk cache for Metal and OpenGL backends
+        // Metal: MSL source can't be reflected after caching
+        // OpenGL: Need GLSL source, not SPIR-V/DXBC bytecode
         // TODO: Save reflection data alongside bytecode in cache
-        if (desc.backend != RHIBackendType::Metal)
+        if (desc.backend != RHIBackendType::Metal && desc.backend != RHIBackendType::OpenGL)
         {
             std::vector<uint8> cachedBytes;
             if (LoadCachedBytecode(key, cachedBytes))
@@ -105,9 +107,25 @@ namespace RVX
         RHIShaderDesc shaderDesc;
         shaderDesc.stage = desc.stage;
         shaderDesc.entryPoint = desc.entryPoint.c_str();
-        shaderDesc.bytecode = result.compileResult.bytecode.data();
-        shaderDesc.bytecodeSize = result.compileResult.bytecode.size();
         shaderDesc.debugName = desc.path.empty() ? "Shader" : desc.path.c_str();
+
+        // For OpenGL, use GLSL source instead of bytecode
+        if (desc.backend == RHIBackendType::OpenGL)
+        {
+            if (result.compileResult.glslSource.empty())
+            {
+                result.compileResult.success = false;
+                result.compileResult.errorMessage = "OpenGL shader compilation failed: no GLSL source generated";
+                return result;
+            }
+            shaderDesc.bytecode = reinterpret_cast<const uint8*>(result.compileResult.glslSource.data());
+            shaderDesc.bytecodeSize = result.compileResult.glslSource.size();
+        }
+        else
+        {
+            shaderDesc.bytecode = result.compileResult.bytecode.data();
+            shaderDesc.bytecodeSize = result.compileResult.bytecode.size();
+        }
 
         result.shader = device->CreateShader(shaderDesc);
         if (!result.shader)
@@ -117,8 +135,8 @@ namespace RVX
             return result;
         }
 
-        // Skip disk cache for Metal - see comment above
-        if (desc.backend != RHIBackendType::Metal)
+        // Skip disk cache for Metal and OpenGL - see comment above
+        if (desc.backend != RHIBackendType::Metal && desc.backend != RHIBackendType::OpenGL)
         {
             SaveCachedBytecode(key, result.compileResult.bytecode);
         }

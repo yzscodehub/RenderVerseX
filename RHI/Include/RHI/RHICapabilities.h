@@ -82,6 +82,43 @@ namespace RVX
             uint32 maxPushConstantSize = 128;
             uint32 apiVersion = 0;  // VK_MAKE_VERSION
         } vulkan;
+
+        // OpenGL-specific
+        struct OpenGLSpecific
+        {
+            // Version info
+            uint32 majorVersion = 0;       // e.g., 4
+            uint32 minorVersion = 0;       // e.g., 5
+            bool coreProfile = true;
+            std::string renderer;          // GPU name
+            std::string vendor;            // Vendor name
+            std::string glslVersion;       // GLSL version string
+
+            // Core feature detection
+            bool hasDSA = false;                    // Direct State Access (4.5+)
+            bool hasARBSpirv = false;               // GL_ARB_gl_spirv (4.6+)
+            bool hasBindlessTexture = false;        // GL_ARB_bindless_texture
+            bool hasComputeShader = false;          // 4.3+
+            bool hasSSBO = false;                   // 4.3+
+            bool hasMultiBind = false;              // 4.4+
+            bool hasTextureView = false;            // GL_ARB_texture_view (4.3+)
+            bool hasBufferStorage = false;          // GL_ARB_buffer_storage (4.4+)
+            bool hasSeparateShaderObjects = false;  // Separate shader objects
+            bool hasDebugOutput = false;            // GL_KHR_debug
+            bool hasPersistentMapping = false;      // Persistent mapping (4.4+)
+
+            // Binding point limits (runtime queried)
+            uint32 maxUniformBufferBindings = 14;   // GL_MAX_UNIFORM_BUFFER_BINDINGS
+            uint32 maxTextureUnits = 16;            // GL_MAX_TEXTURE_IMAGE_UNITS
+            uint32 maxImageUnits = 8;               // GL_MAX_IMAGE_UNITS
+            uint32 maxSSBOBindings = 8;             // GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS
+            uint32 maxVertexAttribs = 16;           // GL_MAX_VERTEX_ATTRIBS
+            uint32 maxUniformBlockSize = 65536;     // GL_MAX_UNIFORM_BLOCK_SIZE
+            uint32 maxSSBOSize = 0;                 // GL_MAX_SHADER_STORAGE_BLOCK_SIZE
+
+            // Compute shader limits
+            uint32 maxComputeSharedMemorySize = 32768;
+        } opengl;
     };
 
 } // namespace RVX

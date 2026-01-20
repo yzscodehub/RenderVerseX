@@ -21,6 +21,11 @@ namespace RVX { std::unique_ptr<IRHIDevice> CreateDX11Device(const RHIDeviceDesc
 namespace RVX { std::unique_ptr<IRHIDevice> CreateMetalDevice(const RHIDeviceDesc& desc); }
 #endif
 
+#if RVX_ENABLE_OPENGL
+// Forward declaration - implemented in RHI_OpenGL
+namespace RVX { std::unique_ptr<IRHIDevice> CreateOpenGLDevice(const RHIDeviceDesc& desc); }
+#endif
+
 namespace RVX
 {
     std::unique_ptr<IRHIDevice> CreateRHIDevice(RHIBackendType backend, const RHIDeviceDesc& desc)
@@ -47,6 +52,11 @@ namespace RVX
 #if RVX_ENABLE_METAL
             case RHIBackendType::Metal:
                 return CreateMetalDevice(desc);
+#endif
+
+#if RVX_ENABLE_OPENGL
+            case RHIBackendType::OpenGL:
+                return CreateOpenGLDevice(desc);
 #endif
 
             default:

@@ -16,6 +16,7 @@ target_include_directories(RVX_Core PUBLIC
 
 target_link_libraries(RVX_Core PUBLIC
     spdlog::spdlog
+    glm::glm
 )
 
 # Alias for cleaner target names

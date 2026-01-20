@@ -121,7 +121,7 @@ namespace RVX
                 uint64 overlapSize = overlapEnd - overlapStart;
                 if (range.state != desiredState)
                 {
-                    outBarriers.push_back({resource.buffer.Get(), range.state, desiredState, overlapStart, overlapSize});
+                    outBarriers.push_back({resource.GetBuffer(), range.state, desiredState, overlapStart, overlapSize});
                 }
                 updated.push_back({overlapStart, overlapSize, desiredState});
 
@@ -1183,7 +1183,7 @@ namespace RVX
                                 if (current != usage.desiredState)
                                 {
                                     pass.textureBarriers.push_back(
-                                        {resource.texture.Get(),
+                                        {resource.GetTexture(),
                                          current,
                                          usage.desiredState,
                                          RHISubresourceRange{mip, 1, layer, 1, range.aspect}});
@@ -1202,7 +1202,7 @@ namespace RVX
                     else if (resource.currentState != usage.desiredState)
                     {
                         pass.textureBarriers.push_back(
-                            {resource.texture.Get(), resource.currentState, usage.desiredState, RHISubresourceRange::All()});
+                            {resource.GetTexture(), resource.currentState, usage.desiredState, RHISubresourceRange::All()});
                         resource.currentState = usage.desiredState;
                     }
                 }
@@ -1231,7 +1231,7 @@ namespace RVX
                     else if (resource.currentState != usage.desiredState)
                     {
                         pass.bufferBarriers.push_back(
-                            {resource.buffer.Get(), resource.currentState, usage.desiredState, offset, isWhole ? RVX_WHOLE_SIZE : rangeSize});
+                            {resource.GetBuffer(), resource.currentState, usage.desiredState, offset, isWhole ? RVX_WHOLE_SIZE : rangeSize});
                         resource.currentState = usage.desiredState;
                     }
                 }

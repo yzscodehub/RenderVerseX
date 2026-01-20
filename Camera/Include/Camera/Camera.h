@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Core/Math.h"
+#include "Core/MathTypes.h"
 
 namespace RVX
 {
@@ -39,15 +39,15 @@ namespace RVX
     private:
         CameraProjection m_projectionType = CameraProjection::Perspective;
         CameraViewport m_viewport;
-        Vec3 m_position{};
-        Vec3 m_rotation{};
+        Vec3 m_position{0.0f, 0.0f, 0.0f};
+        Vec3 m_rotation{0.0f, 0.0f, 0.0f};
         float m_fov = 1.0f;
         float m_aspect = 1.0f;
         float m_nearZ = 0.1f;
         float m_farZ = 1000.0f;
 
-        Mat4 m_view = Mat4::Identity();
-        Mat4 m_projection = Mat4::Identity();
-        Mat4 m_viewProjection = Mat4::Identity();
+        Mat4 m_view = Mat4Identity();
+        Mat4 m_projection = Mat4Identity();
+        Mat4 m_viewProjection = Mat4Identity();
     };
 } // namespace RVX

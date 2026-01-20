@@ -79,7 +79,7 @@ namespace RVX
                         if (current != desired)
                         {
                             exportTextureBarriers.push_back(
-                                {resource.texture.Get(),
+                                {resource.GetTexture(),
                                  current,
                                  desired,
                                  RHISubresourceRange{mip, 1, layer, 1, RHITextureAspect::Color}});
@@ -93,7 +93,7 @@ namespace RVX
             else if (resource.currentState != desired)
             {
                 exportTextureBarriers.push_back(
-                    {resource.texture.Get(), resource.currentState, desired, RHISubresourceRange::All()});
+                    {resource.GetTexture(), resource.currentState, desired, RHISubresourceRange::All()});
                 resource.currentState = desired;
             }
         }
@@ -111,7 +111,7 @@ namespace RVX
                     if (range.state != desired)
                     {
                         exportBufferBarriers.push_back(
-                            {resource.buffer.Get(), range.state, desired, range.offset, range.size});
+                            {resource.GetBuffer(), range.state, desired, range.offset, range.size});
                     }
                 }
                 resource.rangeStates.clear();
@@ -121,7 +121,7 @@ namespace RVX
             else if (resource.currentState != desired)
             {
                 exportBufferBarriers.push_back(
-                    {resource.buffer.Get(), resource.currentState, desired, 0, RVX_WHOLE_SIZE});
+                    {resource.GetBuffer(), resource.currentState, desired, 0, RVX_WHOLE_SIZE});
                 resource.currentState = desired;
             }
         }

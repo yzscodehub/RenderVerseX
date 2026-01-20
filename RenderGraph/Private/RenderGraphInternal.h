@@ -59,7 +59,8 @@ namespace RVX
     struct TextureResource
     {
         RHITextureDesc desc;
-        RHITextureRef texture;
+        RHITextureRef texture;           // Owned texture (for transient/created textures)
+        RHITexture* importedRaw = nullptr; // Non-owning pointer for imported textures
         RHIResourceState initialState = RHIResourceState::Undefined;
         RHIResourceState currentState = RHIResourceState::Undefined;
         std::unordered_map<uint32, RHIResourceState> subresourceStates;
@@ -70,12 +71,16 @@ namespace RVX
         // Memory aliasing
         ResourceLifetime lifetime;
         MemoryAlias alias;
+        
+        // Get the actual texture pointer (either owned or imported)
+        RHITexture* GetTexture() const { return imported ? importedRaw : texture.Get(); }
     };
 
     struct BufferResource
     {
         RHIBufferDesc desc;
-        RHIBufferRef buffer;
+        RHIBufferRef buffer;               // Owned buffer (for transient/created buffers)
+        RHIBuffer* importedRaw = nullptr;  // Non-owning pointer for imported buffers
         RHIResourceState initialState = RHIResourceState::Undefined;
         RHIResourceState currentState = RHIResourceState::Undefined;
         std::optional<RHIResourceState> exportState;
@@ -92,6 +97,9 @@ namespace RVX
         // Memory aliasing
         ResourceLifetime lifetime;
         MemoryAlias alias;
+        
+        // Get the actual buffer pointer (either owned or imported)
+        RHIBuffer* GetBuffer() const { return imported ? importedRaw : buffer.Get(); }
     };
 
     struct ResourceUsage

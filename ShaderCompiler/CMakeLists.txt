@@ -18,6 +18,7 @@ if(WIN32)
     target_sources(RVX_ShaderCompiler PRIVATE
         Private/DXCCompiler.cpp
         Private/DX11SlotMapper.cpp
+        Private/SPIRVCrossTranslator.cpp
     )
 elseif(APPLE)
     target_sources(RVX_ShaderCompiler PRIVATE
@@ -35,11 +36,13 @@ target_link_libraries(RVX_ShaderCompiler PUBLIC
     RVX::RHI
 )
 
-# Windows: Link DirectX Shader Compiler and D3DCompiler
+# Windows: Link DirectX Shader Compiler, D3DCompiler, and SPIRV-Cross for OpenGL support
 if(WIN32)
     target_link_libraries(RVX_ShaderCompiler PRIVATE
         Microsoft::DirectXShaderCompiler
         d3dcompiler
+        spirv-cross-core
+        spirv-cross-glsl
     )
 endif()
 

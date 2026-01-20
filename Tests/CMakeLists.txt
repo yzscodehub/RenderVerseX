@@ -16,6 +16,9 @@ endif()
 if(RVX_ENABLE_METAL)
     list(APPEND RVX_ALL_BACKENDS RVX::RHI_Metal)
 endif()
+if(RVX_ENABLE_OPENGL)
+    list(APPEND RVX_ALL_BACKENDS RVX::RHI_OpenGL)
+endif()
 
 # Test Framework library
 add_library(RVX_TestFramework STATIC

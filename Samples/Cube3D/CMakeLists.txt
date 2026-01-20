@@ -25,6 +25,9 @@ endif()
 if(RVX_ENABLE_METAL)
     target_link_libraries(Cube3D PRIVATE RVX::RHI_Metal)
 endif()
+if(RVX_ENABLE_OPENGL)
+    target_link_libraries(Cube3D PRIVATE RVX::RHI_OpenGL)
+endif()
 
 # Copy shaders to output directory
 set(SHADER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/Shaders")

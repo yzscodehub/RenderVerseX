@@ -35,4 +35,8 @@ if(RVX_ENABLE_METAL)
     target_compile_definitions(RVX_RHI PUBLIC RVX_ENABLE_METAL=1)
 endif()
 
+if(RVX_ENABLE_OPENGL)
+    target_compile_definitions(RVX_RHI PUBLIC RVX_ENABLE_OPENGL=1)
+endif()
+
 add_library(RVX::RHI ALIAS RVX_RHI)

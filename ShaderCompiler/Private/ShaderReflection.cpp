@@ -373,6 +373,12 @@ namespace RVX
 #else
                 return {};
 #endif
+            case RHIBackendType::DX11:
+#if defined(_WIN32)
+                return ReflectDxbc(bytecode);
+#else
+                return {};
+#endif
             default:
                 return {};
         }
