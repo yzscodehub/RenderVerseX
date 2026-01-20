@@ -8,6 +8,9 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 #include <Windows.h>
+#elif __APPLE__
+#define GLFW_EXPOSE_NATIVE_COCOA
+#include <GLFW/glfw3native.h>
 #endif
 
 #include <fstream>
@@ -146,8 +149,15 @@ int main(int argc, char* argv[])
         return -1;
     }
 
-    // Select backend
+    // Select backend (platform-specific default)
+#if defined(__APPLE__)
+    RVX::RHIBackendType backend = RVX::RHIBackendType::Metal;
+#elif defined(_WIN32)
+    RVX::RHIBackendType backend = RVX::RHIBackendType::DX12;
+#else
     RVX::RHIBackendType backend = RVX::RHIBackendType::Vulkan;
+#endif
+
     for (int i = 1; i < argc; ++i)
     {
         std::string arg = argv[i];
@@ -157,6 +167,8 @@ int main(int argc, char* argv[])
             backend = RVX::RHIBackendType::DX12;
         else if (arg == "--vulkan" || arg == "-vk")
             backend = RVX::RHIBackendType::Vulkan;
+        else if (arg == "--metal" || arg == "-mtl")
+            backend = RVX::RHIBackendType::Metal;
     }
 
     RVX_CORE_INFO("Using backend: {}", RVX::ToString(backend));
@@ -178,9 +190,12 @@ int main(int argc, char* argv[])
     RVX_CORE_INFO("Adapter: {}", device->GetCapabilities().adapterName);
 
     // Create swap chain
-#ifdef _WIN32
     RVX::RHISwapChainDesc swapChainDesc;
+#ifdef _WIN32
     swapChainDesc.windowHandle = glfwGetWin32Window(window);
+#elif __APPLE__
+    swapChainDesc.windowHandle = glfwGetCocoaWindow(window);
+#endif
     swapChainDesc.width = 1280;
     swapChainDesc.height = 720;
     swapChainDesc.format = RVX::RHIFormat::BGRA8_UNORM_SRGB;
@@ -196,7 +211,6 @@ int main(int argc, char* argv[])
         glfwTerminate();
         return -1;
     }
-#endif
 
     // Create depth buffer
     RVX::RHITextureDesc depthDesc = RVX::RHITextureDesc::DepthStencil(

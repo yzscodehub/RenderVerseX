@@ -22,6 +22,9 @@ endif()
 if(RVX_ENABLE_VULKAN)
     target_link_libraries(TexturedQuad PRIVATE RVX::RHI_Vulkan)
 endif()
+if(RVX_ENABLE_METAL)
+    target_link_libraries(TexturedQuad PRIVATE RVX::RHI_Metal)
+endif()
 
 # Copy shaders to output directory
 set(SHADER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/Shaders")

@@ -3,16 +3,28 @@
 # =============================================================================
 add_library(RVX_ShaderCompiler STATIC)
 
+# Common sources
 target_sources(RVX_ShaderCompiler PRIVATE
     Private/ShaderCompiler.cpp
     Private/ShaderManager.cpp
     Private/ShaderLayout.cpp
-    Private/DXCCompiler.cpp
     Private/ShaderReflection.cpp
     Private/ShaderCache.cpp
     Private/ShaderPermutationCache.cpp
-    Private/DX11SlotMapper.cpp
 )
+
+# Platform-specific DXC compiler implementation
+if(WIN32)
+    target_sources(RVX_ShaderCompiler PRIVATE
+        Private/DXCCompiler.cpp
+        Private/DX11SlotMapper.cpp
+    )
+elseif(APPLE)
+    target_sources(RVX_ShaderCompiler PRIVATE
+        Private/DXCCompiler_Apple.cpp
+        Private/SPIRVCrossTranslator.cpp
+    )
+endif()
 
 target_include_directories(RVX_ShaderCompiler PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
@@ -23,6 +35,7 @@ target_link_libraries(RVX_ShaderCompiler PUBLIC
     RVX::RHI
 )
 
+# Windows: Link DirectX Shader Compiler and D3DCompiler
 if(WIN32)
     target_link_libraries(RVX_ShaderCompiler PRIVATE
         Microsoft::DirectXShaderCompiler
@@ -30,6 +43,25 @@ if(WIN32)
     )
 endif()
 
+# Apple: Use glslang for HLSL -> SPIR-V, then SPIRV-Cross for SPIR-V -> MSL
+if(APPLE)
+    # Link glslang for HLSL compilation (HLSL support is built into main library)
+    target_link_libraries(RVX_ShaderCompiler PRIVATE
+        glslang::glslang
+        glslang::glslang-default-resource-limits
+        glslang::SPIRV
+    )
+    
+    # Link SPIRV-Cross libraries for MSL translation
+    target_link_libraries(RVX_ShaderCompiler PRIVATE
+        spirv-cross-core
+        spirv-cross-glsl
+        spirv-cross-hlsl
+        spirv-cross-msl
+    )
+endif()
+
+# Vulkan: Link SPIRV-Reflect for shader reflection
 if(RVX_ENABLE_VULKAN)
     # vcpkg's spirv-reflect port exports `unofficial::spirv-reflect` (not
     # `unofficial::spirv-reflect::spirv-reflect`). Keep a small compatibility

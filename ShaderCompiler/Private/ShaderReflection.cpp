@@ -9,14 +9,21 @@
 #include <dxcapi.h>
 #include <d3d12shader.h>
 #include <d3dcompiler.h>
-#endif
-
 #include <spirv_reflect.h>
+#define HAS_SPIRV_REFLECT 1
+#elif defined(__linux__)
+#include <spirv_reflect.h>
+#define HAS_SPIRV_REFLECT 1
+#else
+// macOS: spirv-reflect not available via vcpkg, skip SPIR-V reflection
+#define HAS_SPIRV_REFLECT 0
+#endif
 
 namespace RVX
 {
     namespace
     {
+#if HAS_SPIRV_REFLECT
         RHIBindingType ToBindingType(SpvReflectDescriptorType type)
         {
             switch (type)
@@ -59,6 +66,7 @@ namespace RVX
                 default: return RHIFormat::Unknown;
             }
         }
+#endif // HAS_SPIRV_REFLECT
 
 #if defined(_WIN32)
         RHIFormat ToRhiFormat(const D3D12_SIGNATURE_PARAMETER_DESC& desc)
@@ -105,6 +113,7 @@ namespace RVX
 #endif
     }
 
+#if HAS_SPIRV_REFLECT
     static ShaderReflection ReflectSpirv(const std::vector<uint8>& bytecode)
     {
         ShaderReflection reflection;
@@ -166,6 +175,14 @@ namespace RVX
         spvReflectDestroyShaderModule(&module);
         return reflection;
     }
+#else
+    // macOS stub - SPIR-V reflection not available
+    static ShaderReflection ReflectSpirv(const std::vector<uint8>& /* bytecode */)
+    {
+        // On macOS, shader reflection happens at MSL compilation time via SPIRV-Cross
+        return ShaderReflection{};
+    }
+#endif // HAS_SPIRV_REFLECT
 
 #if defined(_WIN32)
     static ShaderReflection ReflectDxbc(const std::vector<uint8>& bytecode)

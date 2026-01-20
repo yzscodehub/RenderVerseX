@@ -13,7 +13,8 @@ namespace RVX
         None = 0,
         DX11,
         DX12,
-        Vulkan
+        Vulkan,
+        Metal
     };
 
     inline const char* ToString(RHIBackendType type)
@@ -23,6 +24,7 @@ namespace RVX
             case RHIBackendType::DX11:   return "DirectX 11";
             case RHIBackendType::DX12:   return "DirectX 12";
             case RHIBackendType::Vulkan: return "Vulkan";
+            case RHIBackendType::Metal:  return "Metal";
             default:                     return "Unknown";
         }
     }
@@ -160,6 +162,7 @@ namespace RVX
         UnorderedAccess = 1 << 3,
         CopySrc         = 1 << 4,
         CopyDst         = 1 << 5,
+        Transient       = 1 << 6,  // Memoryless/transient render target (content not preserved between passes)
     };
 
     inline RHITextureUsage operator|(RHITextureUsage a, RHITextureUsage b)

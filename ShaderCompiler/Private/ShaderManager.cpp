@@ -52,24 +52,29 @@ namespace RVX
             return result;
         }
 
-        std::vector<uint8> cachedBytes;
-        if (LoadCachedBytecode(key, cachedBytes))
+        // Skip disk cache for Metal backend - MSL source can't be reflected after caching
+        // TODO: Save reflection data alongside bytecode in cache
+        if (desc.backend != RHIBackendType::Metal)
         {
-            RHIShaderDesc shaderDesc;
-            shaderDesc.stage = desc.stage;
-            shaderDesc.entryPoint = desc.entryPoint.c_str();
-            shaderDesc.bytecode = cachedBytes.data();
-            shaderDesc.bytecodeSize = cachedBytes.size();
-            shaderDesc.debugName = desc.path.empty() ? "Shader" : desc.path.c_str();
-
-            result.shader = device->CreateShader(shaderDesc);
-            if (result.shader)
+            std::vector<uint8> cachedBytes;
+            if (LoadCachedBytecode(key, cachedBytes))
             {
-                result.compileResult.success = true;
-                result.compileResult.bytecode = std::move(cachedBytes);
-                result.compileResult.reflection = ReflectShader(desc.backend, desc.stage, result.compileResult.bytecode);
-                m_cache.emplace(key, result.shader);
-                return result;
+                RHIShaderDesc shaderDesc;
+                shaderDesc.stage = desc.stage;
+                shaderDesc.entryPoint = desc.entryPoint.c_str();
+                shaderDesc.bytecode = cachedBytes.data();
+                shaderDesc.bytecodeSize = cachedBytes.size();
+                shaderDesc.debugName = desc.path.empty() ? "Shader" : desc.path.c_str();
+
+                result.shader = device->CreateShader(shaderDesc);
+                if (result.shader)
+                {
+                    result.compileResult.success = true;
+                    result.compileResult.bytecode = std::move(cachedBytes);
+                    result.compileResult.reflection = ReflectShader(desc.backend, desc.stage, result.compileResult.bytecode);
+                    m_cache.emplace(key, result.shader);
+                    return result;
+                }
             }
         }
 
@@ -89,7 +94,13 @@ namespace RVX
         {
             return result;
         }
-        result.compileResult.reflection = ReflectShader(desc.backend, desc.stage, result.compileResult.bytecode);
+        // Only call ReflectShader if compiler didn't provide reflection data
+        if (result.compileResult.reflection.resources.empty() && 
+            result.compileResult.reflection.inputs.empty() &&
+            result.compileResult.reflection.pushConstants.empty())
+        {
+            result.compileResult.reflection = ReflectShader(desc.backend, desc.stage, result.compileResult.bytecode);
+        }
 
         RHIShaderDesc shaderDesc;
         shaderDesc.stage = desc.stage;
@@ -106,7 +117,11 @@ namespace RVX
             return result;
         }
 
-        SaveCachedBytecode(key, result.compileResult.bytecode);
+        // Skip disk cache for Metal - see comment above
+        if (desc.backend != RHIBackendType::Metal)
+        {
+            SaveCachedBytecode(key, result.compileResult.bytecode);
+        }
         m_cache.emplace(key, result.shader);
         return result;
     }

@@ -332,6 +332,14 @@ bool Test_CopyContext()
 int main()
 {
     Log::Initialize();
+
+#if defined(__APPLE__)
+    // Vulkan is not enabled on macOS (using Metal instead)
+    RVX_CORE_INFO("Vulkan Validation Tests - SKIPPED (not available on macOS)");
+    Log::Shutdown();
+    return 0;
+#endif
+
     RVX_CORE_INFO("Vulkan Validation Tests");
     
     TestSuite suite;

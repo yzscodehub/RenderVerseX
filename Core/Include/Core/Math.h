@@ -110,6 +110,15 @@ namespace RVX
             result.m[14] = -nearZ / (farZ - nearZ);
             return result;
         }
+
+        static Mat4 Transpose(const Mat4& m)
+        {
+            Mat4 result;
+            for (int i = 0; i < 4; ++i)
+                for (int j = 0; j < 4; ++j)
+                    result.m[i * 4 + j] = m.m[j * 4 + i];
+            return result;
+        }
     };
 
     inline Mat4 Multiply(const Mat4& a, const Mat4& b)

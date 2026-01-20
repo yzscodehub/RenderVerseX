@@ -323,6 +323,14 @@ bool Test_MultipleBufferTypes()
 int main()
 {
     Log::Initialize();
+
+#if !defined(_WIN32)
+    // DX12 is only available on Windows
+    RVX_CORE_INFO("DX12 Validation Tests - SKIPPED (only available on Windows)");
+    Log::Shutdown();
+    return 0;
+#endif
+
     RVX_CORE_INFO("DX12 Validation Tests");
     
     TestSuite suite;

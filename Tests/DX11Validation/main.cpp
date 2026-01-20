@@ -252,6 +252,14 @@ bool Test_BarrierOperations()
 int main()
 {
     Log::Initialize();
+
+#if !defined(_WIN32)
+    // DX11 is only available on Windows
+    RVX_CORE_INFO("DX11 Validation Tests - SKIPPED (only available on Windows)");
+    Log::Shutdown();
+    return 0;
+#endif
+
     RVX_CORE_INFO("DX11 Validation Tests");
     
     TestSuite suite;

@@ -15,6 +15,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(RVX_ENABLE_DX11 "Enable DirectX 11 backend" ON)
 option(RVX_ENABLE_DX12 "Enable DirectX 12 backend" ON)
 option(RVX_ENABLE_VULKAN "Enable Vulkan backend" ON)
+option(RVX_ENABLE_METAL "Enable Metal backend (macOS/iOS)" OFF)
 option(RVX_BUILD_SAMPLES "Build sample applications" ON)
 option(RVX_BUILD_TESTS "Build validation tests" ON)
 
@@ -26,7 +27,26 @@ if(WIN32)
     add_compile_definitions(RVX_PLATFORM_WINDOWS=1)
     add_compile_definitions(NOMINMAX)
     add_compile_definitions(WIN32_LEAN_AND_MEAN)
-elseif(UNIX AND NOT APPLE)
+elseif(APPLE)
+    set(RVX_PLATFORM_APPLE ON)
+    add_compile_definitions(RVX_PLATFORM_APPLE=1)
+    
+    if(IOS)
+        set(RVX_PLATFORM_IOS ON)
+        add_compile_definitions(RVX_PLATFORM_IOS=1)
+    else()
+        set(RVX_PLATFORM_MACOS ON)
+        add_compile_definitions(RVX_PLATFORM_MACOS=1)
+    endif()
+    
+    # Apple platform: disable DirectX backends, enable Metal
+    set(RVX_ENABLE_DX11 OFF)
+    set(RVX_ENABLE_DX12 OFF)
+    set(RVX_ENABLE_METAL ON)
+    
+    # Enable Objective-C++ for Metal implementation
+    enable_language(OBJCXX)
+elseif(UNIX)
     set(RVX_PLATFORM_LINUX ON)
     add_compile_definitions(RVX_PLATFORM_LINUX=1)
     # Disable DX backends on Linux
@@ -44,6 +64,15 @@ if(RVX_ENABLE_VULKAN)
     find_package(Vulkan REQUIRED)
     find_package(VulkanMemoryAllocator CONFIG REQUIRED)
     find_package(unofficial-spirv-reflect CONFIG REQUIRED)
+endif()
+
+# SPIRV-Cross is needed for Metal shader translation (SPIR-V -> MSL)
+if(RVX_ENABLE_METAL)
+    # Note: Order matters - glsl must be found before msl due to dependencies
+    find_package(spirv_cross_core CONFIG REQUIRED)
+    find_package(spirv_cross_glsl CONFIG REQUIRED)
+    find_package(spirv_cross_hlsl CONFIG REQUIRED)
+    find_package(spirv_cross_msl CONFIG REQUIRED)
 endif()
 
 if(WIN32)
@@ -89,6 +118,11 @@ if(WIN32)
     endif()
 endif()
 
+# macOS: Use glslang for HLSL -> SPIR-V compilation (DXC not available via vcpkg)
+if(APPLE)
+    find_package(glslang CONFIG REQUIRED)
+endif()
+
 # =============================================================================
 # Compiler Flags
 # =============================================================================
@@ -123,6 +157,10 @@ if(RVX_ENABLE_VULKAN)
     add_subdirectory(RHI_Vulkan)
 endif()
 
+if(RVX_ENABLE_METAL)
+    add_subdirectory(RHI_Metal)
+endif()
+
 add_subdirectory(RenderGraph)
 add_subdirectory(Render)
 
@@ -145,6 +183,7 @@ message(STATUS "  Build Type:   ${CMAKE_BUILD_TYPE}")
 message(STATUS "  DX11 Backend: ${RVX_ENABLE_DX11}")
 message(STATUS "  DX12 Backend: ${RVX_ENABLE_DX12}")
 message(STATUS "  Vulkan:       ${RVX_ENABLE_VULKAN}")
+message(STATUS "  Metal:        ${RVX_ENABLE_METAL}")
 message(STATUS "  Samples:      ${RVX_BUILD_SAMPLES}")
 message(STATUS "  Tests:        ${RVX_BUILD_TESTS}")
 message(STATUS "")

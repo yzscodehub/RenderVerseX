@@ -47,6 +47,10 @@ namespace RVX
         std::string errorMessage;
         uint64 permutationHash = 0;
         ShaderReflection reflection;
+
+        // Metal-specific: MSL source and entry point (when targeting Metal backend)
+        std::string mslSource;
+        std::string mslEntryPoint;
     };
 
     // =============================================================================

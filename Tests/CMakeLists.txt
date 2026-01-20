@@ -13,6 +13,9 @@ endif()
 if(RVX_ENABLE_VULKAN)
     list(APPEND RVX_ALL_BACKENDS RVX::RHI_Vulkan)
 endif()
+if(RVX_ENABLE_METAL)
+    list(APPEND RVX_ALL_BACKENDS RVX::RHI_Metal)
+endif()
 
 # Test Framework library
 add_library(RVX_TestFramework STATIC

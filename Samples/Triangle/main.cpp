@@ -8,6 +8,9 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 #include <Windows.h>
+#elif __APPLE__
+#define GLFW_EXPOSE_NATIVE_COCOA
+#include <GLFW/glfw3native.h>
 #endif
 
 #include <fstream>
@@ -121,7 +124,15 @@ int main(int argc, char *argv[])
     }
 
     // Select backend
-    RVX::RHIBackendType backend = RVX::RHIBackendType::DX12;
+#ifdef _WIN32
+        RVX::RHIBackendType backend = RVX::RHIBackendType::DX12;
+#elif __APPLE__
+        RVX::RHIBackendType backend = RVX::RHIBackendType::Metal;
+#elif __linux__
+        RVX::RHIBackendType backend = RVX::RHIBackendType::Vulkan;
+#else
+        RVX::RHIBackendType backend = RVX::RHIBackendType::None;
+#endif
 
     // Parse command line for backend selection
     for (int i = 1; i < argc; ++i)
@@ -133,6 +144,8 @@ int main(int argc, char *argv[])
             backend = RVX::RHIBackendType::DX12;
         else if (arg == "--vulkan" || arg == "-vk")
             backend = RVX::RHIBackendType::Vulkan;
+        else if (arg == "--metal" || arg == "-mtl")
+            backend = RVX::RHIBackendType::Metal;
     }
 
     RVX_CORE_INFO("Using backend: {}", RVX::ToString(backend));
@@ -157,9 +170,12 @@ int main(int argc, char *argv[])
     RVX_CORE_INFO("  Raytracing: {}", device->GetCapabilities().supportsRaytracing ? "Yes" : "No");
 
     // Create swap chain
-#ifdef _WIN32
     RVX::RHISwapChainDesc swapChainDesc;
+#ifdef _WIN32
     swapChainDesc.windowHandle = glfwGetWin32Window(window);
+#elif __APPLE__
+    swapChainDesc.windowHandle = glfwGetCocoaWindow(window);
+#endif
     swapChainDesc.width = 1280;
     swapChainDesc.height = 720;
     swapChainDesc.format = RVX::RHIFormat::BGRA8_UNORM_SRGB;
@@ -175,7 +191,6 @@ int main(int argc, char *argv[])
         glfwTerminate();
         return -1;
     }
-#endif
 
     // Create per-frame command contexts
     std::vector<RVX::RHICommandContextRef> cmdContexts(RVX::RVX_MAX_FRAME_COUNT);
@@ -449,8 +464,9 @@ int main(int argc, char *argv[])
     // =========================================================================
     RVX_CORE_INFO("Triangle sample initialized - entering main loop");
     RVX_CORE_INFO("Controls:");
+    RVX_CORE_INFO("  Arrow Keys: Rotate X/Y");
+    RVX_CORE_INFO("  Q/E: Rotate Z");
     RVX_CORE_INFO("  Left Mouse Drag: Rotate X/Y");
-    RVX_CORE_INFO("  Mouse Scroll: Rotate Z");
     RVX_CORE_INFO("  ESC: Exit");
 
     RVX::uint32 frameCount = 0;
@@ -738,22 +754,67 @@ int main(int argc, char *argv[])
     float modelRoll = 0.0f;
     while (!windowSystem->ShouldClose())
     {
+        double now = glfwGetTime();
+        float deltaTime = static_cast<float>(now - lastFrameTime);
+        lastFrameTime = now;
+
+        // Poll events first
+        glfwPollEvents();
+
+        // Get mouse state directly from GLFW
+        double mouseX, mouseY;
+        glfwGetCursorPos(window, &mouseX, &mouseY);
+        static double lastMouseX = mouseX, lastMouseY = mouseY;
+        float mouseDeltaX = static_cast<float>(mouseX - lastMouseX);
+        float mouseDeltaY = static_cast<float>(mouseY - lastMouseY);
+        lastMouseX = mouseX;
+        lastMouseY = mouseY;
+        bool leftMouseButton = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+
         // Check for ESC key
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
 
+        // Update camera rotation based on mouse drag
+        if (leftMouseButton)
+        {
+            RVX::Vec3 rotation = cameraSystem->GetCamera().GetRotation();
+            rotation.y += mouseDeltaX * 0.01f;
+            rotation.x += mouseDeltaY * 0.01f;
+            cameraSystem->GetCamera().SetRotation(rotation);
+        }
+
+        // Keyboard controls for rotation (Arrow keys)
+        RVX::Vec3 rotation = cameraSystem->GetCamera().GetRotation();
+        if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
+            rotation.y -= 2.0f * deltaTime;
+        if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
+            rotation.y += 2.0f * deltaTime;
+        if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
+            rotation.x -= 2.0f * deltaTime;
+        if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
+            rotation.x += 2.0f * deltaTime;
+        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
+            modelRoll -= 2.0f * deltaTime;
+        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
+            modelRoll += 2.0f * deltaTime;
+        cameraSystem->GetCamera().SetRotation(rotation);
+
+        // Scroll wheel for Z rotation (via GLFW callback in inputSystem)
         const auto &inputState = inputSystem->GetState();
         if (inputState.mouseWheel != 0.0f)
         {
             modelRoll += inputState.mouseWheel * 0.1f;
         }
 
-        // Update constant buffer with transform
+        // Update constant buffer with transform BEFORE rendering
         TransformCB transformData;
-        auto rotation = cameraSystem->GetCamera().GetRotation();
-        transformData.worldMatrix = RVX::Mat4::RotationXYZ({rotation.x, rotation.y, modelRoll});
+        auto camRotation = cameraSystem->GetCamera().GetRotation();
+        // Transpose for Metal (SPIRV-Cross changes mul order)
+        transformData.worldMatrix = RVX::Mat4::Transpose(
+            RVX::Mat4::RotationXYZ({camRotation.x, camRotation.y, modelRoll}));
 
         // Pulsing tint color based on time
         double currentTime = glfwGetTime();
@@ -765,9 +826,7 @@ int main(int argc, char *argv[])
 
         constantBuffer->Upload(&transformData, 1);
 
-        double now = glfwGetTime();
-        float deltaTime = static_cast<float>(now - lastFrameTime);
-        lastFrameTime = now;
+        // Now tick engine (which includes rendering)
         engine.Tick(deltaTime);
 
         frameCount++;

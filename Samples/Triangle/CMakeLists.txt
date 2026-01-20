@@ -24,6 +24,10 @@ if(RVX_ENABLE_VULKAN)
     target_link_libraries(Triangle PRIVATE RVX::RHI_Vulkan)
 endif()
 
+if(RVX_ENABLE_METAL)
+    target_link_libraries(Triangle PRIVATE RVX::RHI_Metal)
+endif()
+
 # Copy shaders to output directory
 add_custom_command(TARGET Triangle POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory

@@ -27,14 +27,31 @@ struct BackendTestResult
 };
 
 // =============================================================================
+// Get Available Backends for Current Platform
+// =============================================================================
+std::vector<RHIBackendType> GetAvailableBackends()
+{
+    std::vector<RHIBackendType> backends;
+
+#if defined(__APPLE__)
+    backends.push_back(RHIBackendType::Metal);
+#elif defined(_WIN32)
+    backends.push_back(RHIBackendType::DX12);
+    backends.push_back(RHIBackendType::DX11);
+    backends.push_back(RHIBackendType::Vulkan);
+#else
+    backends.push_back(RHIBackendType::Vulkan);
+#endif
+
+    return backends;
+}
+
+// =============================================================================
 // Buffer Creation Consistency
 // =============================================================================
 bool Test_BufferCreationConsistency()
 {
-    std::vector<RHIBackendType> backends = {
-        RHIBackendType::DX12,
-        RHIBackendType::Vulkan
-    };
+    std::vector<RHIBackendType> backends = GetAvailableBackends();
     
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 4096;
@@ -80,10 +97,7 @@ bool Test_BufferCreationConsistency()
 // =============================================================================
 bool Test_TextureCreationConsistency()
 {
-    std::vector<RHIBackendType> backends = {
-        RHIBackendType::DX12,
-        RHIBackendType::Vulkan
-    };
+    std::vector<RHIBackendType> backends = GetAvailableBackends();
     
     // Test various texture types
     struct TextureTestCase
@@ -133,10 +147,7 @@ bool Test_TextureCreationConsistency()
 // =============================================================================
 bool Test_CommandContextConsistency()
 {
-    std::vector<RHIBackendType> backends = {
-        RHIBackendType::DX12,
-        RHIBackendType::Vulkan
-    };
+    std::vector<RHIBackendType> backends = GetAvailableBackends();
     
     for (auto backend : backends)
     {
@@ -182,10 +193,7 @@ bool Test_CommandContextConsistency()
 // =============================================================================
 bool Test_BarrierOperationsConsistency()
 {
-    std::vector<RHIBackendType> backends = {
-        RHIBackendType::DX12,
-        RHIBackendType::Vulkan
-    };
+    std::vector<RHIBackendType> backends = GetAvailableBackends();
     
     for (auto backend : backends)
     {
@@ -235,10 +243,7 @@ bool Test_BarrierOperationsConsistency()
 // =============================================================================
 bool Test_FenceConsistency()
 {
-    std::vector<RHIBackendType> backends = {
-        RHIBackendType::DX12,
-        RHIBackendType::Vulkan
-    };
+    std::vector<RHIBackendType> backends = GetAvailableBackends();
     
     for (auto backend : backends)
     {
@@ -278,10 +283,7 @@ bool Test_FenceConsistency()
 // =============================================================================
 bool Test_HeapConsistency()
 {
-    std::vector<RHIBackendType> backends = {
-        RHIBackendType::DX12,
-        RHIBackendType::Vulkan
-    };
+    std::vector<RHIBackendType> backends = GetAvailableBackends();
     
     for (auto backend : backends)
     {
@@ -325,10 +327,7 @@ bool Test_HeapConsistency()
 // =============================================================================
 bool Test_SamplerConsistency()
 {
-    std::vector<RHIBackendType> backends = {
-        RHIBackendType::DX12,
-        RHIBackendType::Vulkan
-    };
+    std::vector<RHIBackendType> backends = GetAvailableBackends();
     
     struct SamplerTestCase
     {
@@ -396,7 +395,13 @@ int main()
 {
     Log::Initialize();
     RVX_CORE_INFO("Cross-Backend Validation Tests");
-    RVX_CORE_INFO("Testing consistency between DX12 and Vulkan backends");
+#if defined(__APPLE__)
+    RVX_CORE_INFO("Testing Metal backend on macOS");
+#elif defined(_WIN32)
+    RVX_CORE_INFO("Testing DX11, DX12, and Vulkan backends on Windows");
+#else
+    RVX_CORE_INFO("Testing Vulkan backend on Linux");
+#endif
     
     TestSuite suite;
     

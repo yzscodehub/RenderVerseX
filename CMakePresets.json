@@ -2,27 +2,80 @@
   "version": 6,
   "configurePresets": [
     {
-      "name": "debug",
-      "displayName": "Debug",
-      "binaryDir": "${sourceDir}/build/Debug",
+      "name": "windows-base",
+      "hidden": true,
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_TOOLCHAIN_FILE": {
-          "value": "E:/WorkSpace/vcpkg/scripts/buildsystems/vcpkg.cmake",
+          "value": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
           "type": "FILEPATH"
         },
         "RVX_ENABLE_DX11": "ON",
         "RVX_ENABLE_DX12": "ON",
         "RVX_ENABLE_VULKAN": "ON",
+        "RVX_ENABLE_METAL": "OFF",
         "RVX_BUILD_SAMPLES": "ON",
         "RVX_BUILD_TESTS": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "macos-base",
+      "hidden": true,
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_TOOLCHAIN_FILE": {
+          "value": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+          "type": "FILEPATH"
+        },
+        "RVX_ENABLE_DX11": "OFF",
+        "RVX_ENABLE_DX12": "OFF",
+        "RVX_ENABLE_VULKAN": "OFF",
+        "RVX_ENABLE_METAL": "ON",
+        "RVX_BUILD_SAMPLES": "ON",
+        "RVX_BUILD_TESTS": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug (Windows)",
+      "inherits": "windows-base",
+      "binaryDir": "${sourceDir}/build/Debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
       }
     },
     {
       "name": "release",
-      "displayName": "Release",
-      "inherits": "debug",
+      "displayName": "Release (Windows)",
+      "inherits": "windows-base",
+      "binaryDir": "${sourceDir}/build/Release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "macos-debug",
+      "displayName": "Debug (macOS)",
+      "inherits": "macos-base",
+      "binaryDir": "${sourceDir}/build/Debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "macos-release",
+      "displayName": "Release (macOS)",
+      "inherits": "macos-base",
       "binaryDir": "${sourceDir}/build/Release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
@@ -37,6 +90,14 @@
     {
       "name": "release",
       "configurePreset": "release"
+    },
+    {
+      "name": "macos-debug",
+      "configurePreset": "macos-debug"
+    },
+    {
+      "name": "macos-release",
+      "configurePreset": "macos-release"
     }
   ]
 }
