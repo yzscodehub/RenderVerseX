@@ -9,6 +9,10 @@
  * robust implementation for quaternions, matrix operations, and more.
  */
 
+// GLM configuration for Vulkan compatibility
+// Must be defined BEFORE including GLM headers
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE  // Vulkan uses [0, 1] depth range instead of OpenGL's [-1, 1]
+
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -151,11 +155,13 @@ namespace RVX
         return Mat4(1.0f);
     }
     
-    /// Create perspective projection matrix
+    /// Create perspective projection matrix (Vulkan-compatible)
     /// @param fovRadians Field of view in radians
     /// @param aspect Aspect ratio (width/height)
     /// @param nearZ Near clipping plane
     /// @param farZ Far clipping plane
+    /// @note Uses [0,1] depth range (via GLM_FORCE_DEPTH_ZERO_TO_ONE)
+    ///       Y-flip for Vulkan should be applied at upload time, not here
     inline Mat4 MakePerspective(float fovRadians, float aspect, float nearZ, float farZ)
     {
         return glm::perspective(fovRadians, aspect, nearZ, farZ);
@@ -166,6 +172,7 @@ namespace RVX
     /// @param height Viewport height
     /// @param nearZ Near clipping plane
     /// @param farZ Far clipping plane
+    /// @note Uses [0,1] depth range. Y-flip for Vulkan should be applied at upload time.
     inline Mat4 MakeOrthographic(float width, float height, float nearZ, float farZ)
     {
         return glm::ortho(-width * 0.5f, width * 0.5f, -height * 0.5f, height * 0.5f, nearZ, farZ);

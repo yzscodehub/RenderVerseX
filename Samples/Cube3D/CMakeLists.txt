@@ -1,15 +1,24 @@
 # =============================================================================
-# Cube3D Sample - Demonstrates 3D rendering with depth buffer
+# Cube3D Sample - Demonstrates Engine architecture with 3D rendering
+# =============================================================================
+# This sample uses:
+# - Engine + Subsystem pattern
+# - WindowSubsystem for window management
+# - RenderSubsystem for rendering coordination
+# - RenderGraph for automatic barrier management
+# - 3D transforms with depth buffer
 # =============================================================================
 
 add_executable(Cube3D main.cpp)
 
 target_link_libraries(Cube3D PRIVATE
     RVX::Core
+    RVX::Engine
+    RVX::Runtime
+    RVX::Render
     RVX::RHI
-    RVX::RenderGraph
     RVX::ShaderCompiler
-    glfw
+    RVX::HAL
 )
 
 # Link all enabled backends

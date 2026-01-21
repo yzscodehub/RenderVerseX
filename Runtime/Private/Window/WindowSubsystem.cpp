@@ -4,6 +4,7 @@
  */
 
 #include "Runtime/Window/WindowSubsystem.h"
+#include "HAL/HAL.h"
 #include "Core/Log.h"
 
 namespace RVX
@@ -13,14 +14,14 @@ void WindowSubsystem::Initialize()
 {
     RVX_CORE_INFO("WindowSubsystem initializing...");
 
-    WindowDesc desc;
+    HAL::WindowDesc desc;
     desc.width = m_config.width;
     desc.height = m_config.height;
     desc.title = m_config.title;
     desc.resizable = m_config.resizable;
     desc.fullscreen = m_config.fullscreen;
 
-    m_window = CreateWindow(desc);
+    m_window = HAL::CreateWindow(desc);
 
     if (!m_window)
     {
@@ -28,7 +29,10 @@ void WindowSubsystem::Initialize()
         return;
     }
 
-    m_window->GetFramebufferSize(m_lastWidth, m_lastHeight);
+    uint32 w, h;
+    m_window->GetFramebufferSize(w, h);
+    m_lastWidth = w;
+    m_lastHeight = h;
     
     RVX_CORE_INFO("WindowSubsystem initialized: {}x{}", m_lastWidth, m_lastHeight);
 }
@@ -50,7 +54,7 @@ void WindowSubsystem::Tick(float deltaTime)
     m_window->PollEvents();
 
     // Check for resize
-    uint32_t currentWidth, currentHeight;
+    uint32 currentWidth, currentHeight;
     m_window->GetFramebufferSize(currentWidth, currentHeight);
 
     if (currentWidth != m_lastWidth || currentHeight != m_lastHeight)
@@ -59,7 +63,7 @@ void WindowSubsystem::Tick(float deltaTime)
         m_lastHeight = currentHeight;
 
         // Publish resize event
-        EventBus::Get().Publish(WindowResizedEvent(currentWidth, currentHeight));
+        EventBus::Get().Publish(HAL::WindowResizedEvent(currentWidth, currentHeight));
     }
 }
 

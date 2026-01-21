@@ -1,13 +1,22 @@
 # =============================================================================
-# Triangle Sample - Interactive triangle rendering demo with mouse rotation
+# Triangle Sample - Interactive triangle rendering demo
+# =============================================================================
+# Demonstrates:
+# - Direct RHI device and swapchain usage
+# - RenderGraph for automatic barrier management
+# - Camera controls with mouse/keyboard input
 # =============================================================================
 add_executable(Triangle
     main.cpp
 )
 
 target_link_libraries(Triangle PRIVATE
-    RVX::RenderGraph
-    RVX::Engine
+    RVX::Core
+    RVX::RHI
+    RVX::Render          # Includes RenderGraph
+    RVX::Runtime         # Camera
+    RVX::ShaderCompiler
+    RVX::HAL
     glfw
 )
 

@@ -1,12 +1,17 @@
 /**
  * @file PickingSystem.h
- * @brief Mouse picking system for selecting scene objects
+ * @brief DEPRECATED: Use World/PickingService.h instead
  * 
- * Provides ray-based object selection using BVH acceleration.
+ * This header provides backward compatibility.
+ * New code should use World/PickingService.h and World/SpatialSubsystem.h
  */
 
 #pragma once
 
+#pragma message("Warning: Picking/PickingSystem.h is deprecated, use World/PickingService.h")
+
+#include "World/PickingService.h"
+#include "World/SpatialSubsystem.h"
 #include "Core/Math/Geometry.h"
 #include <memory>
 #include <vector>
@@ -19,19 +24,16 @@ namespace RVX
 class Camera;
 class Node;
 class Mesh;
-class MeshBVH;
-class SceneBVH;
-struct BVHStats;
 
 /**
  * @brief Picking result with detailed hit information
+ * @deprecated Use RaycastHit from Scene/SceneManager.h
  */
 struct PickResult
 {
     bool hit{false};
     RayHit rayHit;
 
-    // Convenience accessors
     bool HasHit() const { return hit && rayHit.IsValid(); }
     float GetDistance() const { return rayHit.t; }
     Vec3 GetPosition() const { return rayHit.position; }
@@ -42,34 +44,8 @@ struct PickResult
 };
 
 /**
- * @brief Picking configuration
- */
-struct PickingConfig
-{
-    bool pickClosest{true};         // Find closest hit or first hit
-    bool cullBackfaces{false};      // Cull backfacing triangles
-    float maxDistance{10000.0f};    // Maximum picking distance
-};
-
-/**
  * @brief Mouse picking system
- * 
- * Usage:
- * @code
- * PickingSystem picker;
- * 
- * // Build acceleration structure from scene
- * picker.BuildFromScene(rootNode);
- * 
- * // Pick on mouse click
- * Ray ray = picker.ScreenToRay(camera, mouseX, mouseY, screenWidth, screenHeight);
- * PickResult result = picker.Pick(ray);
- * 
- * if (result.HasHit()) {
- *     int nodeIndex = result.GetNodeIndex();
- *     // Handle selection...
- * }
- * @endcode
+ * @deprecated Use World::Pick() or SpatialSubsystem::Raycast()
  */
 class PickingSystem
 {
@@ -77,9 +53,6 @@ public:
     PickingSystem();
     ~PickingSystem();
 
-    /**
-     * @brief Convert screen coordinates to world-space ray
-     */
     static Ray ScreenToRay(
         const Camera& camera,
         float screenX,
@@ -87,26 +60,17 @@ public:
         float screenWidth,
         float screenHeight);
 
-    /**
-     * @brief Convert normalized device coordinates to ray
-     */
     static Ray NDCToRay(
         const Camera& camera,
         float ndcX,
         float ndcY);
 
-    /**
-     * @brief Add a pickable mesh with its transform
-     */
     void AddMesh(
         int nodeIndex,
         int meshIndex,
         const std::shared_ptr<Mesh>& mesh,
         const Mat4& worldTransform);
 
-    /**
-     * @brief Add mesh with position data directly
-     */
     void AddMesh(
         int nodeIndex,
         int meshIndex,
@@ -114,29 +78,12 @@ public:
         const std::vector<uint32_t>& indices,
         const Mat4& worldTransform);
 
-    /**
-     * @brief Build acceleration structure
-     */
     void Build();
-
-    /**
-     * @brief Rebuild acceleration structure
-     */
     void Rebuild();
-
-    /**
-     * @brief Clear all pickable objects
-     */
     void Clear();
 
-    /**
-     * @brief Pick with a ray
-     */
     PickResult Pick(const Ray& ray, const PickingConfig& config = {}) const;
 
-    /**
-     * @brief Pick from screen coordinates
-     */
     PickResult PickScreen(
         const Camera& camera,
         float screenX,
@@ -145,30 +92,25 @@ public:
         float screenHeight,
         const PickingConfig& config = {}) const;
 
-    /**
-     * @brief Check if any object is hit (shadow-ray style)
-     */
     bool IsOccluded(const Ray& ray) const;
-
-    /**
-     * @brief Get number of pickable objects
-     */
     size_t GetObjectCount() const;
-
-    /**
-     * @brief Check if built
-     */
     bool IsBuilt() const { return m_isBuilt; }
 
-    /**
-     * @brief Get build statistics
-     */
+    struct BVHStats
+    {
+        size_t nodeCount = 0;
+        size_t leafCount = 0;
+        size_t triangleCount = 0;
+        int maxDepth = 0;
+    };
+
     const BVHStats& GetStats() const;
 
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;
     bool m_isBuilt{false};
+    mutable BVHStats m_stats;
 };
 
 } // namespace RVX

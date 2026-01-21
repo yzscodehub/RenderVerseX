@@ -1,5 +1,5 @@
 #include "Core/Core.h"
-#include "RenderGraph/RenderGraph.h"
+#include "Render/Graph/RenderGraph.h"
 #include "TestFramework/TestRunner.h"
 
 using namespace RVX;

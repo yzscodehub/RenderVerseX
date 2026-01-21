@@ -5,7 +5,8 @@
 
 #include "Runtime/Input/InputSubsystem.h"
 #include "Runtime/Window/WindowSubsystem.h"
-#include "Platform/InputBackend_GLFW.h"
+#include "HAL/HAL.h"
+#include "GLFW/GLFWInputBackend.h"
 #include "Core/Log.h"
 
 namespace RVX
@@ -39,9 +40,10 @@ void InputSubsystem::SetWindow(Window* window)
     
     if (window)
     {
-        // Create GLFW backend (platform-specific)
-        m_backend = std::make_unique<GlfwInputBackend>(
-            static_cast<GLFWwindow*>(window->GetNativeHandle())
+        // Create GLFW backend using internal handle (GLFWwindow*)
+        // Note: GetNativeHandle() returns HWND on Windows, we need the GLFW handle
+        m_backend = std::make_unique<HAL::GLFWInputBackend>(
+            static_cast<GLFWwindow*>(window->GetInternalHandle())
         );
         
         // Initialize mouse position
@@ -89,42 +91,42 @@ void InputSubsystem::Tick(float deltaTime)
 
 bool InputSubsystem::IsKeyDown(int keyCode) const
 {
-    if (keyCode < 0 || keyCode >= static_cast<int>(RVX_MAX_KEYS))
+    if (keyCode < 0 || keyCode >= static_cast<int>(HAL::MAX_KEYS))
         return false;
     return m_input.GetState().keys[keyCode];
 }
 
 bool InputSubsystem::IsKeyPressed(int keyCode) const
 {
-    if (keyCode < 0 || keyCode >= static_cast<int>(RVX_MAX_KEYS))
+    if (keyCode < 0 || keyCode >= static_cast<int>(HAL::MAX_KEYS))
         return false;
     return m_keysPressed[keyCode];
 }
 
 bool InputSubsystem::IsKeyReleased(int keyCode) const
 {
-    if (keyCode < 0 || keyCode >= static_cast<int>(RVX_MAX_KEYS))
+    if (keyCode < 0 || keyCode >= static_cast<int>(HAL::MAX_KEYS))
         return false;
     return m_keysReleased[keyCode];
 }
 
 bool InputSubsystem::IsMouseButtonDown(int button) const
 {
-    if (button < 0 || button >= static_cast<int>(RVX_MAX_MOUSE_BUTTONS))
+    if (button < 0 || button >= static_cast<int>(HAL::MAX_MOUSE_BUTTONS))
         return false;
     return m_input.GetState().mouseButtons[button];
 }
 
 bool InputSubsystem::IsMouseButtonPressed(int button) const
 {
-    if (button < 0 || button >= static_cast<int>(RVX_MAX_MOUSE_BUTTONS))
+    if (button < 0 || button >= static_cast<int>(HAL::MAX_MOUSE_BUTTONS))
         return false;
     return m_mouseButtonsPressed[button];
 }
 
 bool InputSubsystem::IsMouseButtonReleased(int button) const
 {
-    if (button < 0 || button >= static_cast<int>(RVX_MAX_MOUSE_BUTTONS))
+    if (button < 0 || button >= static_cast<int>(HAL::MAX_MOUSE_BUTTONS))
         return false;
     return m_mouseButtonsReleased[button];
 }

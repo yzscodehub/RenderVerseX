@@ -4,6 +4,9 @@
  */
 
 #include "Engine/Engine.h"
+#include "World/World.h"
+#include "Render/RenderSubsystem.h"
+#include "Runtime/Window/WindowSubsystem.h"
 #include "Core/Log.h"
 #include "Core/Job/JobSystem.h"
 #include "Runtime/Time/Time.h"
@@ -54,11 +57,8 @@ void Engine::Initialize()
         JobSystem::Get().Initialize(m_config.jobWorkerCount);
     }
 
-    // Initialize new-style subsystems
+    // Initialize subsystems (in dependency order)
     InitializeSubsystems();
-
-    // Initialize legacy systems (for backward compatibility)
-    m_legacySystems.InitAll();
 
     m_initialized = true;
     m_shouldShutdown = false;
@@ -78,15 +78,70 @@ void Engine::Tick()
 
 void Engine::Tick(float deltaTime)
 {
-    // Process deferred events
+    // 1. Process deferred events
     EventBus::Get().ProcessDeferredEvents();
 
-    // Tick new-style subsystems
+    // 2. Tick subsystems (window, input, etc.)
     TickSubsystems(deltaTime);
 
-    // Tick legacy systems
-    m_legacySystems.UpdateAll(deltaTime);
-    m_legacySystems.RenderAll();
+    // 3. Tick all worlds
+    TickWorlds(deltaTime);
+
+    // 4. Process GPU resource uploads (with time budget)
+    if (auto* render = GetSubsystem<RenderSubsystem>())
+    {
+        render->ProcessGPUUploads(2.0f);  // 2ms budget per frame
+    }
+
+    // 5. Render active world (if auto-render is enabled)
+    if (auto* render = GetSubsystem<RenderSubsystem>())
+    {
+        if (render->GetConfig().autoRender && m_activeWorld)
+        {
+            render->RenderFrame(m_activeWorld);
+        }
+    }
+
+    // 6. Check for window close
+    if (auto* window = GetSubsystem<WindowSubsystem>())
+    {
+        if (window->ShouldClose())
+        {
+            RequestShutdown();
+        }
+    }
+
+    m_frameNumber++;
+}
+
+void Engine::TickWithoutRender()
+{
+    Time::Update();
+    float deltaTime = Time::DeltaTime();
+    TickWithoutRender(deltaTime);
+}
+
+void Engine::TickWithoutRender(float deltaTime)
+{
+    // 1. Process deferred events
+    EventBus::Get().ProcessDeferredEvents();
+
+    // 2. Tick subsystems (window, input, etc.)
+    TickSubsystems(deltaTime);
+
+    // 3. Tick all worlds
+    TickWorlds(deltaTime);
+
+    // 4. Skip rendering
+
+    // 5. Check for window close
+    if (auto* window = GetSubsystem<WindowSubsystem>())
+    {
+        if (window->ShouldClose())
+        {
+            RequestShutdown();
+        }
+    }
 
     m_frameNumber++;
 }
@@ -100,9 +155,8 @@ void Engine::Shutdown()
 
     RVX_CORE_INFO("=== RenderVerseX Engine Shutting Down ===");
 
-    // Shutdown legacy systems first
-    m_legacySystems.ShutdownAll();
-    m_legacySystems.Clear();
+    // Shutdown worlds first
+    ShutdownWorlds();
 
     // Shutdown subsystems
     ShutdownSubsystems();
@@ -118,29 +172,89 @@ void Engine::Shutdown()
     RVX_CORE_INFO("=== RenderVerseX Engine Shutdown Complete ===");
 }
 
-void Engine::Run(const std::function<bool()>& shouldExit, 
-                 const std::function<float()>& getDeltaTime)
+// =============================================================================
+// World Management
+// =============================================================================
+
+World* Engine::CreateWorld(const std::string& name)
 {
-    Initialize();
-
-    while (!shouldExit || !shouldExit())
+    if (m_worlds.find(name) != m_worlds.end())
     {
-        if (getDeltaTime)
-        {
-            Tick(getDeltaTime());
-        }
-        else
-        {
-            Tick();  // Use internal time
-        }
-
-        if (m_shouldShutdown)
-        {
-            break;
-        }
+        RVX_CORE_WARN("World '{}' already exists", name);
+        return m_worlds[name].get();
     }
 
-    Shutdown();
+    auto world = std::make_unique<World>();
+    WorldConfig config;
+    config.name = name;
+    world->Initialize(config);
+
+    World* ptr = world.get();
+    m_worlds[name] = std::move(world);
+
+    RVX_CORE_INFO("Created world: {}", name);
+
+    // If no active world, set this one
+    if (m_activeWorld == nullptr)
+    {
+        m_activeWorld = ptr;
+    }
+
+    return ptr;
+}
+
+World* Engine::GetWorld(const std::string& name) const
+{
+    auto it = m_worlds.find(name);
+    if (it != m_worlds.end())
+    {
+        return it->second.get();
+    }
+    return nullptr;
+}
+
+void Engine::DestroyWorld(const std::string& name)
+{
+    auto it = m_worlds.find(name);
+    if (it == m_worlds.end())
+    {
+        RVX_CORE_WARN("World '{}' not found", name);
+        return;
+    }
+
+    // Clear active world if it's being destroyed
+    if (m_activeWorld == it->second.get())
+    {
+        m_activeWorld = nullptr;
+    }
+
+    it->second->Shutdown();
+    m_worlds.erase(it);
+
+    RVX_CORE_INFO("Destroyed world: {}", name);
+}
+
+void Engine::SetActiveWorld(World* world)
+{
+    m_activeWorld = world;
+}
+
+void Engine::TickWorlds(float deltaTime)
+{
+    for (auto& [name, world] : m_worlds)
+    {
+        world->Tick(deltaTime);
+    }
+}
+
+void Engine::ShutdownWorlds()
+{
+    m_activeWorld = nullptr;
+    for (auto& [name, world] : m_worlds)
+    {
+        world->Shutdown();
+    }
+    m_worlds.clear();
 }
 
 void Engine::InitializeSubsystems()

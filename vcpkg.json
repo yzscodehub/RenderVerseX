@@ -6,6 +6,8 @@
     "spdlog",
     "glfw3",
     "glm",
+    "tinygltf",
+    "stb",
     {
       "name": "vulkan",
       "platform": "windows | linux"

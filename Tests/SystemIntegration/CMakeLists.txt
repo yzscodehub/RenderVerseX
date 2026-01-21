@@ -5,7 +5,7 @@ target_link_libraries(SystemIntegrationTest PRIVATE
     RVX::Core
     Spatial
     RVX::Scene
-    RVX::Asset
+    RVX::Resource
 )
 
 target_compile_features(SystemIntegrationTest PRIVATE cxx_std_20)

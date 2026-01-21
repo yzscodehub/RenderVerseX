@@ -5,7 +5,7 @@
 
 #include "Picking/PickingSystem.h"
 #include "PickingBVH.h"
-#include "Camera/Camera.h"
+#include "Runtime/Camera/Camera.h"
 #include "Scene/Mesh.h"
 #include "Scene/VertexAttribute.h"
 #include <cmath>
@@ -238,9 +238,15 @@ size_t PickingSystem::GetObjectCount() const
     return m_impl->sceneBVH.GetObjectCount();
 }
 
-const BVHStats& PickingSystem::GetStats() const
+const PickingSystem::BVHStats& PickingSystem::GetStats() const
 {
-    return m_impl->sceneBVH.GetStats();
+    // Convert from internal BVHStats to PickingSystem::BVHStats
+    const auto& internalStats = m_impl->sceneBVH.GetStats();
+    m_stats.nodeCount = static_cast<size_t>(internalStats.nodeCount);
+    m_stats.leafCount = static_cast<size_t>(internalStats.leafCount);
+    m_stats.triangleCount = 0;  // Not tracked in internal stats
+    m_stats.maxDepth = internalStats.maxDepth;
+    return m_stats;
 }
 
 } // namespace RVX

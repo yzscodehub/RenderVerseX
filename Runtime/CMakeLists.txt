@@ -11,9 +11,18 @@
 add_library(RVX_Runtime STATIC)
 
 target_sources(RVX_Runtime PRIVATE
+    # Window
     Private/Window/WindowSubsystem.cpp
+    # Input
     Private/Input/InputSubsystem.cpp
+    # Time
     Private/Time/Time.cpp
+    Private/Time/TimeSubsystem.cpp
+    # Camera
+    Private/Camera/Camera.cpp
+    Private/Camera/FPSController.cpp
+    Private/Camera/OrbitController.cpp
+    Private/Camera/CameraRegistry.cpp
 )
 
 target_include_directories(RVX_Runtime PUBLIC
@@ -23,8 +32,7 @@ target_include_directories(RVX_Runtime PUBLIC
 
 target_link_libraries(RVX_Runtime PUBLIC
     RVX_Core
-    RVX_Platform
-    RVX_Input
+    RVX_HAL
 )
 
 add_library(RVX::Runtime ALIAS RVX_Runtime)

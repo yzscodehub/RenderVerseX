@@ -1,6 +1,7 @@
 #include "VulkanPipeline.h"
 #include "VulkanDevice.h"
 #include "VulkanResources.h"
+#include <unordered_map>
 
 namespace RVX
 {
@@ -172,26 +173,47 @@ namespace RVX
         // Vertex input
         std::vector<VkVertexInputBindingDescription> bindingDescs;
         std::vector<VkVertexInputAttributeDescription> attributeDescs;
-        uint32 currentOffset = 0;
+        
+        // Track per-binding offsets and strides for separate vertex buffer slots
+        std::unordered_map<uint32, uint32> bindingOffsets;  // Current offset per binding
+        std::unordered_map<uint32, uint32> bindingStrides;  // Total stride per binding
+        std::unordered_map<uint32, bool> bindingPerInstance; // Per-instance rate per binding
 
         for (const auto& elem : desc.inputLayout.elements)
         {
+            uint32 bindingSlot = elem.inputSlot;
+            
+            // Initialize binding tracking if this is a new slot
+            if (bindingOffsets.find(bindingSlot) == bindingOffsets.end())
+            {
+                bindingOffsets[bindingSlot] = 0;
+                bindingStrides[bindingSlot] = 0;
+                bindingPerInstance[bindingSlot] = elem.perInstance;
+            }
+
             VkVertexInputAttributeDescription attr = {};
             attr.location = static_cast<uint32>(attributeDescs.size());
-            attr.binding = elem.inputSlot;
+            attr.binding = bindingSlot;
             attr.format = ToVkFormat(elem.format);
+            
+            // Calculate offset within this binding
+            uint32& currentOffset = bindingOffsets[bindingSlot];
             attr.offset = (elem.alignedByteOffset == 0xFFFFFFFF) ? currentOffset : elem.alignedByteOffset;
             attributeDescs.push_back(attr);
-            currentOffset = attr.offset + GetFormatBytesPerPixel(elem.format);
+            
+            // Update stride for this binding
+            uint32 elemSize = GetFormatBytesPerPixel(elem.format);
+            currentOffset = attr.offset + elemSize;
+            bindingStrides[bindingSlot] = currentOffset;
         }
 
-        // Add binding description for slot 0 if we have attributes
-        if (!attributeDescs.empty())
+        // Create a binding description for each unique input slot
+        for (const auto& [slot, stride] : bindingStrides)
         {
             VkVertexInputBindingDescription binding = {};
-            binding.binding = 0;
-            binding.stride = currentOffset;
-            binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+            binding.binding = slot;
+            binding.stride = stride;
+            binding.inputRate = bindingPerInstance[slot] ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX;
             bindingDescs.push_back(binding);
         }
 

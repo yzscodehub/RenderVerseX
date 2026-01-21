@@ -40,7 +40,8 @@ namespace RVX
         CreateSwapchain();
         CreateImageViews();
 
-        RVX_RHI_INFO("Vulkan SwapChain created: {}x{}, {} buffers", m_width, m_height, m_backBuffers.size());
+        RVX_RHI_INFO("Vulkan SwapChain created: {}x{}, {} buffers, format: {}", 
+                     m_width, m_height, m_backBuffers.size(), static_cast<int>(m_format));
     }
 
     VulkanSwapChain::~VulkanSwapChain()
@@ -182,20 +183,32 @@ namespace RVX
 
     VkSurfaceFormatKHR VulkanSwapChain::ChooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats)
     {
-        // Prefer BGRA8 SRGB
+        // Convert requested format to Vulkan format
+        VkFormat requestedVkFormat = ToVkFormat(m_format);
+        
+        // First, try to find exact match for the requested format
         for (const auto& format : formats)
         {
-            if (format.format == VK_FORMAT_B8G8R8A8_SRGB && 
-                format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+            if (format.format == requestedVkFormat)
             {
                 return format;
             }
         }
 
-        // Prefer BGRA8 UNORM
+        // If exact match not found, prefer BGRA8 UNORM (most common for rendering)
         for (const auto& format : formats)
         {
             if (format.format == VK_FORMAT_B8G8R8A8_UNORM)
+            {
+                return format;
+            }
+        }
+
+        // Fallback to BGRA8 SRGB
+        for (const auto& format : formats)
+        {
+            if (format.format == VK_FORMAT_B8G8R8A8_SRGB && 
+                format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
             {
                 return format;
             }

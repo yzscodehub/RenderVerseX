@@ -1,6 +1,19 @@
+/**
+ * @file Triangle Sample
+ * @brief Interactive triangle rendering demo using RHI and RenderGraph
+ *
+ * This sample demonstrates:
+ * - Direct RHI device and swapchain creation
+ * - RenderGraph usage for automatic barrier management
+ * - Camera controls with mouse/keyboard input
+ */
+
 #include "Core/Core.h"
+#include "Core/MathTypes.h"
 #include "RHI/RHI.h"
-#include "RenderGraph/RenderGraph.h"
+#include "Render/Graph/RenderGraph.h"
+#include "ShaderCompiler/ShaderManager.h"
+#include "ShaderCompiler/ShaderLayout.h"
 
 #include <GLFW/glfw3.h>
 
@@ -17,17 +30,6 @@
 #include <vector>
 #include <string>
 #include <cmath>
-
-#include "ShaderCompiler/ShaderManager.h"
-#include "ShaderCompiler/ShaderLayout.h"
-#include "Engine/Engine.h"
-#include "Engine/Systems/WindowSystem.h"
-#include "Engine/Systems/RenderSystem.h"
-#include "Engine/Systems/InputSystem.h"
-#include "Engine/Systems/CameraSystem.h"
-#include "Platform/InputBackend_GLFW.h"
-#include "Camera/OrbitController.h"
-#include "Core/MathTypes.h"
 
 // =============================================================================
 // Transform Constant Buffer Data
@@ -48,9 +50,8 @@ struct Vertex
 };
 
 // =============================================================================
-// File Loading
+// File Loading Utilities
 // =============================================================================
-
 std::string GetExecutableDir()
 {
 #ifdef _WIN32
@@ -68,71 +69,42 @@ std::string GetExecutableDir()
 #endif
 }
 
-std::vector<uint8_t> LoadFile(const std::string &path)
-{
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file.is_open())
-    {
-        RVX_CORE_ERROR("Failed to open file: {}", path);
-        return {};
-    }
-
-    size_t size = file.tellg();
-    file.seekg(0, std::ios::beg);
-
-    std::vector<uint8_t> data(size);
-    file.read(reinterpret_cast<char *>(data.data()), size);
-    return data;
-}
-
-std::string LoadTextFile(const std::string &path)
-{
-    std::ifstream file(path);
-    if (!file.is_open())
-    {
-        RVX_CORE_ERROR("Failed to open file: {}", path);
-        return {};
-    }
-    return std::string((std::istreambuf_iterator<char>(file)),
-                       std::istreambuf_iterator<char>());
-}
-
 // =============================================================================
-// Main
+// Main Application
 // =============================================================================
 int main(int argc, char *argv[])
 {
-    // Initialize logging
     RVX::Log::Initialize();
-    RVX_CORE_INFO("RenderVerseX Triangle Sample - Interactive Rotation");
+    RVX_CORE_INFO("Triangle Sample - RHI + RenderGraph Demo");
 
-    // Initialize GLFW
+    // =========================================================================
+    // GLFW Window Setup
+    // =========================================================================
     if (!glfwInit())
     {
-        RVX_CORE_CRITICAL("Failed to initialize GLFW");
+        RVX_CORE_ERROR("Failed to initialize GLFW");
         return -1;
     }
 
-    // Temporary window to query backend before creating final window
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);  // Hidden initially
-    GLFWwindow *window = glfwCreateWindow(1, 1, "temp", nullptr, nullptr);
+    GLFWwindow *window = glfwCreateWindow(1280, 720, "Triangle - RenderVerseX", nullptr, nullptr);
+    if (!window)
+    {
+        RVX_CORE_ERROR("Failed to create GLFW window");
+        glfwTerminate();
+        return -1;
+    }
 
     // Select backend
-#ifdef _WIN32
-        // RVX::RHIBackendType backend = RVX::RHIBackendType::DX12;
-        // RVX::RHIBackendType backend = RVX::RHIBackendType::DX11;
-        // RVX::RHIBackendType backend = RVX::RHIBackendType::Vulkan;
-        RVX::RHIBackendType backend = RVX::RHIBackendType::OpenGL;
-#elif __APPLE__
-        RVX::RHIBackendType backend = RVX::RHIBackendType::Metal;
-#elif __linux__
-        RVX::RHIBackendType backend = RVX::RHIBackendType::Vulkan;
+#if defined(__APPLE__)
+    RVX::RHIBackendType backend = RVX::RHIBackendType::Metal;
+#elif defined(_WIN32)
+    RVX::RHIBackendType backend = RVX::RHIBackendType::DX12;
 #else
-        RVX::RHIBackendType backend = RVX::RHIBackendType::None;
+    RVX::RHIBackendType backend = RVX::RHIBackendType::Vulkan;
 #endif
 
-    // Parse command line for backend selection
+    // Command line override
     for (int i = 1; i < argc; ++i)
     {
         std::string arg = argv[i];
@@ -144,53 +116,13 @@ int main(int argc, char *argv[])
             backend = RVX::RHIBackendType::Vulkan;
         else if (arg == "--metal" || arg == "-mtl")
             backend = RVX::RHIBackendType::Metal;
-        else if (arg == "--opengl" || arg == "-gl")
-            backend = RVX::RHIBackendType::OpenGL;
     }
 
     RVX_CORE_INFO("Using backend: {}", RVX::ToString(backend));
 
-    // Destroy the window created without API and recreate with correct hints
-    glfwDestroyWindow(window);
-    
-    // Set window hints based on backend
-    if (backend == RVX::RHIBackendType::OpenGL)
-    {
-        // OpenGL needs a context created by GLFW
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-#ifdef RVX_DEBUG
-        glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
-#endif
-    }
-    else
-    {
-        // Other backends don't need GLFW to create a graphics context
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    }
-
-    // Make the final window visible (was hidden for the temporary window)
-    glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
-
-    window = glfwCreateWindow(1280, 720, "RenderVerseX - Interactive Triangle", nullptr, nullptr);
-    if (!window)
-    {
-        RVX_CORE_CRITICAL("Failed to create window for backend");
-        glfwTerminate();
-        return -1;
-    }
-
-    // For OpenGL, make context current before creating device
-    if (backend == RVX::RHIBackendType::OpenGL)
-    {
-        glfwMakeContextCurrent(window);
-        glfwSwapInterval(1);  // VSync
-    }
-
-    // Create RHI device
+    // =========================================================================
+    // RHI Device Creation
+    // =========================================================================
     RVX::RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
     deviceDesc.applicationName = "Triangle Sample";
@@ -198,315 +130,183 @@ int main(int argc, char *argv[])
     auto device = RVX::CreateRHIDevice(backend, deviceDesc);
     if (!device)
     {
-        RVX_CORE_CRITICAL("Failed to create RHI device");
+        RVX_CORE_ERROR("Failed to create RHI device");
         glfwDestroyWindow(window);
         glfwTerminate();
         return -1;
     }
 
-    RVX_CORE_INFO("Device capabilities:");
-    RVX_CORE_INFO("  Adapter: {}", device->GetCapabilities().adapterName);
-    RVX_CORE_INFO("  Bindless: {}", device->GetCapabilities().supportsBindless ? "Yes" : "No");
-    RVX_CORE_INFO("  Raytracing: {}", device->GetCapabilities().supportsRaytracing ? "Yes" : "No");
+    RVX_CORE_INFO("Adapter: {}", device->GetCapabilities().adapterName);
 
-    // Create swap chain
+    // =========================================================================
+    // Swap Chain Creation
+    // =========================================================================
     RVX::RHISwapChainDesc swapChainDesc;
-    // Set window handle based on backend
-    if (backend == RVX::RHIBackendType::OpenGL)
-    {
-        // OpenGL uses GLFW for swap buffers, needs GLFWwindow*
-        swapChainDesc.windowHandle = window;
-    }
-    else
-    {
 #ifdef _WIN32
-        swapChainDesc.windowHandle = glfwGetWin32Window(window);
+    swapChainDesc.windowHandle = glfwGetWin32Window(window);
 #elif __APPLE__
-        swapChainDesc.windowHandle = glfwGetCocoaWindow(window);
+    swapChainDesc.windowHandle = glfwGetCocoaWindow(window);
 #endif
-    }
     swapChainDesc.width = 1280;
     swapChainDesc.height = 720;
-    swapChainDesc.format = RVX::RHIFormat::BGRA8_UNORM_SRGB;
     swapChainDesc.bufferCount = 3;
+    swapChainDesc.format = RVX::RHIFormat::RGBA8_UNORM;
     swapChainDesc.vsync = true;
 
     auto swapChain = device->CreateSwapChain(swapChainDesc);
     if (!swapChain)
     {
-        RVX_CORE_CRITICAL("Failed to create swap chain");
+        RVX_CORE_ERROR("Failed to create swap chain");
         device.reset();
         glfwDestroyWindow(window);
         glfwTerminate();
         return -1;
     }
 
-    // Create per-frame command contexts
+    // =========================================================================
+    // Command Contexts (per frame)
+    // =========================================================================
     std::vector<RVX::RHICommandContextRef> cmdContexts(RVX::RVX_MAX_FRAME_COUNT);
     for (RVX::uint32 i = 0; i < RVX::RVX_MAX_FRAME_COUNT; ++i)
     {
         cmdContexts[i] = device->CreateCommandContext(RVX::RHICommandQueueType::Graphics);
-    }
-
-    // =========================================================================
-    // Create Vertex Buffer - Triangle in NDC
-    // =========================================================================
-    Vertex triangleVertices[] =
+        if (!cmdContexts[i])
         {
-            {{0.0f, 0.6f, 0.0f}, {1.0f, 0.2f, 0.3f, 1.0f}},   // Top - Coral
-            {{0.5f, -0.4f, 0.0f}, {0.2f, 1.0f, 0.4f, 1.0f}},  // Right - Lime
-            {{-0.5f, -0.4f, 0.0f}, {0.3f, 0.4f, 1.0f, 1.0f}}, // Left - Sky Blue
-        };
-
-    RVX::RHIBufferDesc vbDesc;
-    vbDesc.size = sizeof(triangleVertices);
-    vbDesc.usage = RVX::RHIBufferUsage::Vertex;
-    vbDesc.memoryType = RVX::RHIMemoryType::Upload;
-    vbDesc.stride = sizeof(Vertex);
-    vbDesc.debugName = "Triangle VB";
-
-    auto vertexBuffer = device->CreateBuffer(vbDesc);
-    if (!vertexBuffer)
-    {
-        RVX_CORE_CRITICAL("Failed to create vertex buffer");
-        device.reset();
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return -1;
+            RVX_CORE_ERROR("Failed to create command context {}", i);
+            return -1;
+        }
     }
-    vertexBuffer->Upload(triangleVertices, 3);
-    RVX_CORE_INFO("Created vertex buffer");
 
     // =========================================================================
-    // Create Constant Buffer for Transform
+    // Vertex Buffer
+    // =========================================================================
+    Vertex triangleVertices[] = {
+        {{0.0f, 0.5f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},  // Top (Red)
+        {{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f, 1.0f}}, // Right (Green)
+        {{-0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f, 1.0f}} // Left (Blue)
+    };
+
+    RVX::RHIBufferDesc vertexBufferDesc;
+    vertexBufferDesc.size = sizeof(triangleVertices);
+    vertexBufferDesc.usage = RVX::RHIBufferUsage::Vertex;
+    vertexBufferDesc.memoryType = RVX::RHIMemoryType::Upload;
+    vertexBufferDesc.stride = sizeof(Vertex);
+    vertexBufferDesc.debugName = "TriangleVertexBuffer";
+
+    auto vertexBuffer = device->CreateBuffer(vertexBufferDesc);
+    std::memcpy(vertexBuffer->Map(), triangleVertices, sizeof(triangleVertices));
+    vertexBuffer->Unmap();
+
+    // =========================================================================
+    // Constant Buffer
     // =========================================================================
     RVX::RHIBufferDesc cbDesc;
-    cbDesc.size = (sizeof(TransformCB) + 255) & ~255u;
+    cbDesc.size = (sizeof(TransformCB) + 255) & ~255u; // 256-byte aligned
     cbDesc.usage = RVX::RHIBufferUsage::Constant;
     cbDesc.memoryType = RVX::RHIMemoryType::Upload;
-    cbDesc.debugName = "Transform CB";
+    cbDesc.debugName = "TransformCB";
 
     auto constantBuffer = device->CreateBuffer(cbDesc);
-    if (!constantBuffer)
-    {
-        RVX_CORE_CRITICAL("Failed to create constant buffer");
-        device.reset();
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return -1;
-    }
-    RVX_CORE_INFO("Created constant buffer");
 
     // =========================================================================
-    // Load and Compile Shaders
+    // Shaders
     // =========================================================================
     std::string exeDir = GetExecutableDir();
-    std::string shaderPath = exeDir + "Shaders/Triangle.hlsl";
-    RVX_CORE_INFO("Loading shader from: {}", shaderPath);
-
-    std::string shaderSource = LoadTextFile(shaderPath);
-    if (shaderSource.empty())
-    {
-        RVX_CORE_CRITICAL("Failed to load shader source");
-        device.reset();
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return -1;
-    }
-
     RVX::ShaderManager shaderManager(RVX::CreateShaderCompiler());
 
-    const bool useSrgbOutput = (swapChain->GetFormat() == RVX::RHIFormat::BGRA8_UNORM_SRGB ||
-                                swapChain->GetFormat() == RVX::RHIFormat::RGBA8_UNORM_SRGB);
-
     RVX::ShaderLoadDesc vsLoad;
-    vsLoad.path = shaderPath;
+    vsLoad.path = exeDir + "Shaders/Triangle.hlsl";
     vsLoad.entryPoint = "VSMain";
     vsLoad.stage = RVX::RHIShaderStage::Vertex;
     vsLoad.backend = backend;
-    vsLoad.enableDebugInfo = true;
-    vsLoad.enableOptimization = false;
 
     auto vsResult = shaderManager.LoadFromFile(device.get(), vsLoad);
-    if (!vsResult.compileResult.success || !vsResult.shader)
+    if (!vsResult.compileResult.success)
     {
-        RVX_CORE_CRITICAL("Failed to compile vertex shader: {}", vsResult.compileResult.errorMessage);
-        shaderManager.ClearCache();
-        constantBuffer = nullptr;
-        cmdContexts.clear();
-        vertexBuffer = nullptr;
-        swapChain = nullptr;
-        device.reset();
-        glfwDestroyWindow(window);
-        glfwTerminate();
+        RVX_CORE_ERROR("Failed to compile vertex shader: {}", vsResult.compileResult.errorMessage);
         return -1;
-    }
-    auto vertexShader = vsResult.shader;
-    RVX_CORE_INFO("VS bytecode size: {} bytes", vsResult.compileResult.bytecode.size());
-    RVX_CORE_INFO("VS reflection: {} resources, {} inputs, {} push constants",
-                  vsResult.compileResult.reflection.resources.size(),
-                  vsResult.compileResult.reflection.inputs.size(),
-                  vsResult.compileResult.reflection.pushConstants.size());
-    if (vsResult.compileResult.bytecode.size() >= sizeof(RVX::uint32))
-    {
-        RVX::uint32 magic = 0;
-        std::memcpy(&magic, vsResult.compileResult.bytecode.data(), sizeof(RVX::uint32));
-        RVX_CORE_INFO("VS bytecode magic: 0x{:08X}", magic);
     }
 
     RVX::ShaderLoadDesc psLoad = vsLoad;
     psLoad.entryPoint = "PSMain";
     psLoad.stage = RVX::RHIShaderStage::Pixel;
-    if (!useSrgbOutput)
-    {
-        psLoad.defines.push_back({"RVX_APPLY_SRGB_OUTPUT", "1"});
-    }
 
     auto psResult = shaderManager.LoadFromFile(device.get(), psLoad);
-    if (!psResult.compileResult.success || !psResult.shader)
+    if (!psResult.compileResult.success)
     {
-        RVX_CORE_CRITICAL("Failed to compile pixel shader: {}", psResult.compileResult.errorMessage);
-        shaderManager.ClearCache();
-        constantBuffer = nullptr;
-        cmdContexts.clear();
-        vertexBuffer = nullptr;
-        swapChain = nullptr;
-        device.reset();
-        glfwDestroyWindow(window);
-        glfwTerminate();
+        RVX_CORE_ERROR("Failed to compile pixel shader: {}", psResult.compileResult.errorMessage);
         return -1;
     }
-    auto pixelShader = psResult.shader;
-    RVX_CORE_INFO("PS bytecode size: {} bytes", psResult.compileResult.bytecode.size());
-    RVX_CORE_INFO("PS reflection: {} resources, {} inputs, {} push constants",
-                  psResult.compileResult.reflection.resources.size(),
-                  psResult.compileResult.reflection.inputs.size(),
-                  psResult.compileResult.reflection.pushConstants.size());
-    if (psResult.compileResult.bytecode.size() >= sizeof(RVX::uint32))
-    {
-        RVX::uint32 magic = 0;
-        std::memcpy(&magic, psResult.compileResult.bytecode.data(), sizeof(RVX::uint32));
-        RVX_CORE_INFO("PS bytecode magic: 0x{:08X}", magic);
-    }
+
+    RVX_CORE_INFO("Compiled shaders successfully");
 
     // =========================================================================
-    // Create Descriptor Set Layout and Pipeline Layout (Auto)
+    // Pipeline Layout
     // =========================================================================
     std::vector<RVX::ReflectedShader> reflectedShaders = {
         {vsResult.compileResult.reflection, RVX::RHIShaderStage::Vertex},
-        {psResult.compileResult.reflection, RVX::RHIShaderStage::Pixel}}; 
+        {psResult.compileResult.reflection, RVX::RHIShaderStage::Pixel}};
 
     auto autoLayout = RVX::BuildAutoPipelineLayout(reflectedShaders);
-    RVX_CORE_INFO("AutoLayout: set count={}, push constants size={}, stages={}",
-                  autoLayout.setLayouts.size(),
-                  autoLayout.pipelineLayout.pushConstantSize,
-                  static_cast<RVX::uint32>(autoLayout.pipelineLayout.pushConstantStages));
 
     std::vector<RVX::RHIDescriptorSetLayoutRef> setLayouts(autoLayout.setLayouts.size());
     for (size_t i = 0; i < autoLayout.setLayouts.size(); ++i)
     {
         if (autoLayout.setLayouts[i].entries.empty())
             continue;
-
-        autoLayout.setLayouts[i].debugName = "TriangleSetLayout";
-        RVX_CORE_INFO("Set {} bindings: {}", static_cast<RVX::uint32>(i),
-                      static_cast<RVX::uint32>(autoLayout.setLayouts[i].entries.size()));
         setLayouts[i] = device->CreateDescriptorSetLayout(autoLayout.setLayouts[i]);
     }
 
     RVX::RHIPipelineLayoutDesc pipelineLayoutDesc = autoLayout.pipelineLayout;
-    pipelineLayoutDesc.debugName = "TrianglePipelineLayout";
     for (const auto &layout : setLayouts)
     {
         pipelineLayoutDesc.setLayouts.push_back(layout.Get());
     }
 
     auto pipelineLayout = device->CreatePipelineLayout(pipelineLayoutDesc);
-    if (!pipelineLayout)
-    {
-        RVX_CORE_CRITICAL("Failed to create pipeline layout");
-        device.reset();
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return -1;
-    }
 
-    // =========================================================================
-    // Create Descriptor Set
-    // =========================================================================
+    // Create descriptor set
     RVX::RHIDescriptorSetDesc descSetDesc;
     descSetDesc.layout = setLayouts.empty() ? nullptr : setLayouts[0].Get();
-    if (!descSetDesc.layout)
-    {
-        RVX_CORE_CRITICAL("Auto layout generation failed (set 0 missing)");
-        device.reset();
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return -1;
-    }
-    descSetDesc.debugName = "TriangleDescSet";
     descSetDesc.BindBuffer(0, constantBuffer.Get());
     auto descriptorSet = device->CreateDescriptorSet(descSetDesc);
 
-    if (!descriptorSet)
-    {
-        RVX_CORE_CRITICAL("Failed to create descriptor set");
-        device.reset();
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return -1;
-    }
-
     // =========================================================================
-    // Create Graphics Pipeline
+    // Graphics Pipeline
     // =========================================================================
     RVX::RHIGraphicsPipelineDesc pipelineDesc;
-    pipelineDesc.vertexShader = vertexShader.Get();
-    pipelineDesc.pixelShader = pixelShader.Get();
+    pipelineDesc.vertexShader = vsResult.shader.Get();
+    pipelineDesc.pixelShader = psResult.shader.Get();
     pipelineDesc.pipelineLayout = pipelineLayout.Get();
     pipelineDesc.debugName = "TrianglePipeline";
 
-    // Input layout
     pipelineDesc.inputLayout.AddElement("POSITION", RVX::RHIFormat::RGB32_FLOAT, 0);
     pipelineDesc.inputLayout.AddElement("COLOR", RVX::RHIFormat::RGBA32_FLOAT, 0);
 
-    // Rasterizer state - disable culling to see both sides
-    pipelineDesc.rasterizerState = RVX::RHIRasterizerState::NoCull();
+    pipelineDesc.rasterizerState = RVX::RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RVX::RHICullMode::None;
 
-    // Depth stencil - disabled for simple 2D triangle
-    pipelineDesc.depthStencilState = RVX::RHIDepthStencilState::Disabled();
+    pipelineDesc.depthStencilState.depthTestEnable = false;
+    pipelineDesc.depthStencilState.depthWriteEnable = false;
 
-    // Blend state
     pipelineDesc.blendState = RVX::RHIBlendState::Default();
 
-    // Render target format
     pipelineDesc.numRenderTargets = 1;
     pipelineDesc.renderTargetFormats[0] = swapChain->GetFormat();
-    pipelineDesc.depthStencilFormat = RVX::RHIFormat::Unknown;
     pipelineDesc.primitiveTopology = RVX::RHIPrimitiveTopology::TriangleList;
 
     auto pipeline = device->CreateGraphicsPipeline(pipelineDesc);
     if (!pipeline)
     {
-        RVX_CORE_CRITICAL("Failed to create graphics pipeline");
-        descriptorSet = nullptr;
-        pipelineLayout = nullptr;
-        setLayouts.clear();
-        vertexShader = nullptr;
-        pixelShader = nullptr;
-        vsResult.shader = nullptr;
-        psResult.shader = nullptr;
-        shaderManager.ClearCache();
-        constantBuffer = nullptr;
-        cmdContexts.clear();
-        vertexBuffer = nullptr;
-        swapChain = nullptr;
-        device.reset();
-        glfwDestroyWindow(window);
-        glfwTerminate();
+        RVX_CORE_ERROR("Failed to create graphics pipeline");
         return -1;
     }
-    RVX_CORE_INFO("Created graphics pipeline");
+
+    // =========================================================================
+    // RenderGraph
+    // =========================================================================
+    RVX::RenderGraph renderGraph;
+    renderGraph.SetDevice(device.get());
 
     // =========================================================================
     // Main Loop
@@ -519,324 +319,48 @@ int main(int argc, char *argv[])
     RVX_CORE_INFO("  ESC: Exit");
 
     RVX::uint32 frameCount = 0;
-    double lastTime = glfwGetTime();
-
-    // Track back buffer states
-    std::vector<RVX::RHIResourceState> backBufferStates(
-        swapChain->GetBufferCount(),
-        RVX::RHIResourceState::Undefined);
-
-    // System-based rendering setup
-    RVX::Engine engine;
-    auto &systems = engine.GetSystemManager();
-    auto *windowSystem = systems.RegisterSystem<RVX::WindowSystem>(
-        []()
-        { glfwPollEvents(); },
-        [&]()
-        { return glfwWindowShouldClose(window); },
-        [&](RVX::uint32 &w, RVX::uint32 &h)
-        {
-            int width = 0;
-            int height = 0;
-            glfwGetFramebufferSize(window, &width, &height);
-            w = static_cast<RVX::uint32>(width);
-            h = static_cast<RVX::uint32>(height);
-        });
-
-    auto *inputSystem = systems.RegisterSystem<RVX::InputSystem>();
-    inputSystem->SetBackend(std::make_unique<RVX::GlfwInputBackend>(window));
-
-    auto *cameraSystem = systems.RegisterSystem<RVX::CameraSystem>();
-    cameraSystem->SetInputSystem(inputSystem);
-    cameraSystem->SetController(std::make_unique<RVX::OrbitController>());
-    float aspect = static_cast<float>(swapChain->GetWidth()) / static_cast<float>(swapChain->GetHeight());
-    cameraSystem->GetCamera().SetPerspective(60.0f * 3.14159265f / 180.0f, aspect, 0.1f, 100.0f);
-
-    auto *renderSystem = systems.RegisterSystem<RVX::RenderSystem>();
-    renderSystem->Initialize(device.get(), swapChain.Get(), &cmdContexts);
-    // Track if we've logged render graph stats
-    bool loggedRenderGraphStats = false;
-    bool savedGraphviz = false;
-
-    // Track memory aliasing demo state
-    // Run the demo for a few frames, then WaitIdle before switching to normal rendering
-    int memoryAliasingDemoFrameCount = 0;
-    constexpr int DEMO_FRAMES = 3;  // Run demo for 3 frames to match triple buffering
-
-    renderSystem->SetRenderCallback([&](RVX::RHICommandContext &ctx,
-                                        RVX::RHISwapChain &swapChainRef,
-                                        RVX::RenderGraph &graph,
-                                        RVX::uint32 backBufferIndex)
-                                    {
-        auto* backBuffer = swapChainRef.GetCurrentBackBuffer();
-        auto* backBufferView = swapChainRef.GetCurrentBackBufferView();
-
-        // During demo phase and transition, wait for GPU to prevent destroying in-use resources
-        // This is needed because demo creates new transient resources each frame
-        if (memoryAliasingDemoFrameCount > 0 && memoryAliasingDemoFrameCount <= DEMO_FRAMES)
-        {
-            device->WaitIdle();
-        }
-
-        graph.Clear();
-
-        auto backBufferHandle = graph.ImportTexture(backBuffer, backBufferStates[backBufferIndex]);
-        graph.SetExportState(backBufferHandle, RVX::RHIResourceState::Present);
-
-        // Only demonstrate memory aliasing on first few frames
-        bool showMemoryAliasingDemo = (memoryAliasingDemoFrameCount < DEMO_FRAMES);
-        
-        if (showMemoryAliasingDemo)
-        {
-            // Enable memory aliasing for transient resources
-            graph.SetMemoryAliasingEnabled(true);
-
-            // Create some transient textures to demonstrate memory aliasing
-            // These textures have non-overlapping lifetimes and can share memory
-            RVX::RHITextureDesc transientDesc;
-            transientDesc.width = swapChainRef.GetWidth() / 2;
-            transientDesc.height = swapChainRef.GetHeight() / 2;
-            transientDesc.format = RVX::RHIFormat::RGBA16_FLOAT;
-            transientDesc.usage = RVX::RHITextureUsage::RenderTarget | RVX::RHITextureUsage::ShaderResource;
-            
-            transientDesc.debugName = "TransientA";
-            auto transientA = graph.CreateTexture(transientDesc);
-
-            transientDesc.debugName = "TransientB";
-            auto transientB = graph.CreateTexture(transientDesc);
-
-            transientDesc.debugName = "TransientC";
-            auto transientC = graph.CreateTexture(transientDesc);
-
-            struct PassAData { RVX::RGTextureHandle output; };
-            struct PassBData { RVX::RGTextureHandle input; RVX::RGTextureHandle output; };
-            struct PassCData { RVX::RGTextureHandle input; RVX::RGTextureHandle output; };
-
-            // Pass 1: Write to TransientA
-            graph.AddPass<PassAData>(
-                "TransientPass_A",
-                RVX::RenderGraphPassType::Graphics,
-                [&](RVX::RenderGraphBuilder& builder, PassAData& data)
-                {
-                    data.output = builder.Write(transientA, RVX::RHIResourceState::RenderTarget);
-                },
-                [](const PassAData&, RVX::RHICommandContext&) { /* Dummy clear or render */ });
-
-            // Pass 2: Read TransientA, Write TransientB
-            graph.AddPass<PassBData>(
-                "TransientPass_B",
-                RVX::RenderGraphPassType::Graphics,
-                [&](RVX::RenderGraphBuilder& builder, PassBData& data)
-                {
-                    data.input = builder.Read(transientA);
-                    data.output = builder.Write(transientB, RVX::RHIResourceState::RenderTarget);
-                },
-                [](const PassBData&, RVX::RHICommandContext&) { /* Dummy process */ });
-
-            // Pass 3: Read TransientB, Write TransientC
-            graph.AddPass<PassCData>(
-                "TransientPass_C",
-                RVX::RenderGraphPassType::Graphics,
-                [&](RVX::RenderGraphBuilder& builder, PassCData& data)
-                {
-                    data.input = builder.Read(transientB);
-                    data.output = builder.Write(transientC, RVX::RHIResourceState::RenderTarget);
-                },
-                [](const PassCData&, RVX::RHICommandContext&) { /* Dummy process */ });
-
-            // Main triangle pass - also reads TransientC to keep the chain alive
-            struct TrianglePassDataFull
-            {
-                RVX::RGTextureHandle colorTarget;
-                RVX::RGTextureHandle transientInput;
-                RVX::RHITextureView* colorTargetView = nullptr;
-            };
-
-            graph.AddPass<TrianglePassDataFull>(
-                "Triangle",
-                RVX::RenderGraphPassType::Graphics,
-                [&](RVX::RenderGraphBuilder& builder, TrianglePassDataFull& data)
-                {
-                    data.transientInput = builder.Read(transientC);
-                    data.colorTarget = builder.Write(backBufferHandle, RVX::RHIResourceState::RenderTarget);
-                    data.colorTargetView = backBufferView;
-                },
-                [&](const TrianglePassDataFull& data, RVX::RHICommandContext& ctx)
-                {
-                    RVX::RHIRenderPassDesc renderPass;
-                    renderPass.AddColorAttachment(
-                        data.colorTargetView,
-                        RVX::RHILoadOp::Clear,
-                        RVX::RHIStoreOp::Store,
-                        {0.08f, 0.08f, 0.12f, 1.0f}
-                    );
-
-                    ctx.BeginRenderPass(renderPass);
-
-                    RVX::RHIViewport viewport;
-                    viewport.x = 0;
-                    viewport.y = 0;
-                    viewport.width = static_cast<float>(swapChainRef.GetWidth());
-                    viewport.height = static_cast<float>(swapChainRef.GetHeight());
-                    viewport.minDepth = 0.0f;
-                    viewport.maxDepth = 1.0f;
-                    ctx.SetViewport(viewport);
-
-                    RVX::RHIRect scissor;
-                    scissor.x = 0;
-                    scissor.y = 0;
-                    scissor.width = swapChainRef.GetWidth();
-                    scissor.height = swapChainRef.GetHeight();
-                    ctx.SetScissor(scissor);
-
-                    ctx.SetPipeline(pipeline.Get());
-                    ctx.SetDescriptorSet(0, descriptorSet.Get());
-                    ctx.SetVertexBuffer(0, vertexBuffer.Get());
-                    ctx.Draw(3, 1, 0, 0);
-                    ctx.EndRenderPass();
-                });
-
-            graph.Compile();
-
-            // Log render graph statistics once
-            if (!loggedRenderGraphStats)
-            {
-                const auto& stats = graph.GetCompileStats();
-                RVX_CORE_INFO("=== RenderGraph Statistics (Memory Aliasing Demo) ===");
-                RVX_CORE_INFO("  Total passes: {}", stats.totalPasses);
-                RVX_CORE_INFO("  Culled passes: {}", stats.culledPasses);
-                RVX_CORE_INFO("  Barriers: {} (tex: {}, buf: {})", 
-                    stats.barrierCount, stats.textureBarrierCount, stats.bufferBarrierCount);
-                RVX_CORE_INFO("  Merged barriers: {}", stats.mergedBarrierCount);
-                RVX_CORE_INFO("  Transient textures: {}, buffers: {}", 
-                    stats.totalTransientTextures, stats.totalTransientBuffers);
-                RVX_CORE_INFO("  Aliased textures: {}, buffers: {}", 
-                    stats.aliasedTextureCount, stats.aliasedBufferCount);
-                RVX_CORE_INFO("  Memory without aliasing: {} KB", stats.memoryWithoutAliasing / 1024);
-                RVX_CORE_INFO("  Memory with aliasing: {} KB", stats.memoryWithAliasing / 1024);
-                RVX_CORE_INFO("  Memory savings: {:.1f}%", stats.GetMemorySavingsPercent());
-                RVX_CORE_INFO("  Transient heaps: {}", stats.transientHeapCount);
-                loggedRenderGraphStats = true;
-            }
-
-            // Save Graphviz DOT file once
-            if (!savedGraphviz)
-            {
-                std::string dotPath = exeDir + "render_graph.dot";
-                if (graph.SaveGraphviz(dotPath.c_str()))
-                {
-                    RVX_CORE_INFO("Saved RenderGraph visualization to: {}", dotPath);
-                    RVX_CORE_INFO("  To view: dot -Tpng {} -o render_graph.png", dotPath);
-                }
-                savedGraphviz = true;
-            }
-
-            graph.Execute(ctx);
-            
-            // Increment demo frame counter
-            memoryAliasingDemoFrameCount++;
-        }
-        else
-        {
-            // Simple rendering without transient resources (normal per-frame path)
-            struct TrianglePassData
-            {
-                RVX::RGTextureHandle colorTarget;
-                RVX::RHITextureView* colorTargetView = nullptr;
-            };
-
-            graph.AddPass<TrianglePassData>(
-                "Triangle",
-                RVX::RenderGraphPassType::Graphics,
-                [&](RVX::RenderGraphBuilder& builder, TrianglePassData& data)
-                {
-                    data.colorTarget = builder.Write(backBufferHandle, RVX::RHIResourceState::RenderTarget);
-                    data.colorTargetView = backBufferView;
-                },
-                [&](const TrianglePassData& data, RVX::RHICommandContext& ctx)
-                {
-                    RVX::RHIRenderPassDesc renderPass;
-                    renderPass.AddColorAttachment(
-                        data.colorTargetView,
-                        RVX::RHILoadOp::Clear,
-                        RVX::RHIStoreOp::Store,
-                        {0.08f, 0.08f, 0.12f, 1.0f}
-                    );
-
-                    ctx.BeginRenderPass(renderPass);
-
-                    RVX::RHIViewport viewport;
-                    viewport.x = 0;
-                    viewport.y = 0;
-                    viewport.width = static_cast<float>(swapChainRef.GetWidth());
-                    viewport.height = static_cast<float>(swapChainRef.GetHeight());
-                    viewport.minDepth = 0.0f;
-                    viewport.maxDepth = 1.0f;
-                    ctx.SetViewport(viewport);
-
-                    RVX::RHIRect scissor;
-                    scissor.x = 0;
-                    scissor.y = 0;
-                    scissor.width = swapChainRef.GetWidth();
-                    scissor.height = swapChainRef.GetHeight();
-                    ctx.SetScissor(scissor);
-
-                    ctx.SetPipeline(pipeline.Get());
-                    ctx.SetDescriptorSet(0, descriptorSet.Get());
-                    ctx.SetVertexBuffer(0, vertexBuffer.Get());
-                    ctx.Draw(3, 1, 0, 0);
-                    ctx.EndRenderPass();
-                });
-
-            graph.Compile();
-            graph.Execute(ctx);
-        }
-
-        backBufferStates[backBufferIndex] = RVX::RHIResourceState::Present; });
-
-    systems.AddDependency("InputSystem", "WindowSystem");
-    systems.AddDependency("CameraSystem", "InputSystem");
-    systems.AddDependency("RenderSystem", "WindowSystem");
-    engine.Init();
-
+    double lastFPSTime = glfwGetTime();
     double lastFrameTime = glfwGetTime();
+
+    RVX::Vec3 rotation{0.0f, 0.0f, 0.0f};
     float modelRoll = 0.0f;
-    while (!windowSystem->ShouldClose())
+
+    std::vector<RVX::RHIResourceState> backBufferStates(
+        swapChain->GetBufferCount(), RVX::RHIResourceState::Undefined);
+
+    double lastMouseX = 0, lastMouseY = 0;
+    glfwGetCursorPos(window, &lastMouseX, &lastMouseY);
+
+    while (!glfwWindowShouldClose(window))
     {
+        glfwPollEvents();
+
         double now = glfwGetTime();
         float deltaTime = static_cast<float>(now - lastFrameTime);
         lastFrameTime = now;
 
-        // Poll events first
-        glfwPollEvents();
-
-        // Get mouse state directly from GLFW
-        double mouseX, mouseY;
-        glfwGetCursorPos(window, &mouseX, &mouseY);
-        static double lastMouseX = mouseX, lastMouseY = mouseY;
-        float mouseDeltaX = static_cast<float>(mouseX - lastMouseX);
-        float mouseDeltaY = static_cast<float>(mouseY - lastMouseY);
-        lastMouseX = mouseX;
-        lastMouseY = mouseY;
-        bool leftMouseButton = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-
-        // Check for ESC key
+        // ESC to exit
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
 
-        // Update camera rotation based on mouse drag
-        if (leftMouseButton)
+        // Mouse input
+        double mouseX, mouseY;
+        glfwGetCursorPos(window, &mouseX, &mouseY);
+        float mouseDeltaX = static_cast<float>(mouseX - lastMouseX);
+        float mouseDeltaY = static_cast<float>(mouseY - lastMouseY);
+        lastMouseX = mouseX;
+        lastMouseY = mouseY;
+
+        // Mouse drag rotation
+        if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
         {
-            RVX::Vec3 rotation = cameraSystem->GetCamera().GetRotation();
             rotation.y += mouseDeltaX * 0.01f;
             rotation.x += mouseDeltaY * 0.01f;
-            cameraSystem->GetCamera().SetRotation(rotation);
         }
 
-        // Keyboard controls for rotation (Arrow keys)
-        RVX::Vec3 rotation = cameraSystem->GetCamera().GetRotation();
+        // Keyboard rotation
         if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
             rotation.y -= 2.0f * deltaTime;
         if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
@@ -849,25 +373,13 @@ int main(int argc, char *argv[])
             modelRoll -= 2.0f * deltaTime;
         if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
             modelRoll += 2.0f * deltaTime;
-        cameraSystem->GetCamera().SetRotation(rotation);
 
-        // Scroll wheel for Z rotation (via GLFW callback in inputSystem)
-        const auto &inputState = inputSystem->GetState();
-        if (inputState.mouseWheel != 0.0f)
-        {
-            modelRoll += inputState.mouseWheel * 0.1f;
-        }
-
-        // Update constant buffer with transform BEFORE rendering
+        // Update constant buffer
         TransformCB transformData;
-        auto camRotation = cameraSystem->GetCamera().GetRotation();
-        // Transpose for Metal (SPIRV-Cross changes mul order)
         transformData.worldMatrix = RVX::transpose(
-            RVX::MakeRotationXYZ(RVX::Vec3(camRotation.x, camRotation.y, modelRoll)));
+            RVX::MakeRotationXYZ(RVX::Vec3(rotation.x, rotation.y, modelRoll)));
 
-        // Pulsing tint color based on time
-        double currentTime = glfwGetTime();
-        float pulse = (std::sin(static_cast<float>(currentTime) * 2.0f) + 1.0f) * 0.2f + 0.8f;
+        float pulse = (std::sin(static_cast<float>(now) * 2.0f) + 1.0f) * 0.2f + 0.8f;
         transformData.tintColor[0] = pulse;
         transformData.tintColor[1] = pulse;
         transformData.tintColor[2] = pulse;
@@ -875,42 +387,115 @@ int main(int argc, char *argv[])
 
         constantBuffer->Upload(&transformData, 1);
 
-        // Now tick engine (which includes rendering)
-        engine.Tick(deltaTime);
+        // =====================================================================
+        // Render Frame using RenderGraph
+        // =====================================================================
+        device->BeginFrame();
+
+        RVX::uint32 backBufferIndex = swapChain->GetCurrentBackBufferIndex();
+        RVX::uint32 frameIndex = device->GetCurrentFrameIndex();
+
+        auto &ctx = *cmdContexts[frameIndex];
+        ctx.Begin();
+
+        // Build RenderGraph
+        renderGraph.Clear();
+
+        auto *backBuffer = swapChain->GetCurrentBackBuffer();
+        auto *backBufferView = swapChain->GetCurrentBackBufferView();
+
+        auto backBufferHandle = renderGraph.ImportTexture(backBuffer, backBufferStates[backBufferIndex]);
+        renderGraph.SetExportState(backBufferHandle, RVX::RHIResourceState::Present);
+
+        struct TrianglePassData
+        {
+            RVX::RGTextureHandle renderTarget;
+        };
+
+        // Capture necessary pointers for the lambda
+        auto *pPipeline = pipeline.Get();
+        auto *pDescSet = descriptorSet.Get();
+        auto *pVB = vertexBuffer.Get();
+        auto *pSwapChain = swapChain.Get();
+        auto *pBackBufferView = backBufferView;
+
+        renderGraph.AddPass<TrianglePassData>(
+            "TrianglePass",
+            RVX::RenderGraphPassType::Graphics,
+            [&](RVX::RenderGraphBuilder &builder, TrianglePassData &data)
+            {
+                data.renderTarget = builder.Write(backBufferHandle, RVX::RHIResourceState::RenderTarget);
+            },
+            [=](const TrianglePassData &, RVX::RHICommandContext &cmdCtx)
+            {
+                RVX::RHIRenderPassDesc renderPass;
+                renderPass.AddColorAttachment(pBackBufferView,
+                                              RVX::RHILoadOp::Clear, RVX::RHIStoreOp::Store,
+                                              {0.1f, 0.1f, 0.2f, 1.0f});
+
+                cmdCtx.BeginRenderPass(renderPass);
+
+                RVX::RHIViewport viewport = {0, 0,
+                                             static_cast<float>(pSwapChain->GetWidth()),
+                                             static_cast<float>(pSwapChain->GetHeight()),
+                                             0.0f, 1.0f};
+                cmdCtx.SetViewport(viewport);
+
+                RVX::RHIRect scissor = {0, 0, pSwapChain->GetWidth(), pSwapChain->GetHeight()};
+                cmdCtx.SetScissor(scissor);
+
+                cmdCtx.SetPipeline(pPipeline);
+                cmdCtx.SetDescriptorSet(0, pDescSet);
+                cmdCtx.SetVertexBuffer(0, pVB);
+                cmdCtx.Draw(3, 1, 0, 0);
+
+                cmdCtx.EndRenderPass();
+            });
+
+        renderGraph.Compile();
+        renderGraph.Execute(ctx);
+
+        backBufferStates[backBufferIndex] = RVX::RHIResourceState::Present;
+
+        ctx.End();
+        device->SubmitCommandContext(&ctx, nullptr);
+        swapChain->Present();
+        device->EndFrame();
 
         frameCount++;
 
         // FPS counter
-        if (currentTime - lastTime >= 1.0)
+        if (now - lastFPSTime >= 1.0)
         {
             RVX_CORE_DEBUG("FPS: {}", frameCount);
             frameCount = 0;
-            lastTime = currentTime;
+            lastFPSTime = now;
         }
 
         // Handle resize
-        RVX::uint32 width = 0;
-        RVX::uint32 height = 0;
-        if (windowSystem->ConsumeResize(width, height))
+        int newWidth, newHeight;
+        glfwGetFramebufferSize(window, &newWidth, &newHeight);
+        if (newWidth > 0 && newHeight > 0 &&
+            (static_cast<RVX::uint32>(newWidth) != swapChain->GetWidth() ||
+             static_cast<RVX::uint32>(newHeight) != swapChain->GetHeight()))
         {
-            renderSystem->HandleResize(width, height);
-            float newAspect = static_cast<float>(swapChain->GetWidth()) / static_cast<float>(swapChain->GetHeight());
-            cameraSystem->GetCamera().SetPerspective(60.0f * 3.14159265f / 180.0f, newAspect, 0.1f, 100.0f);
+            device->WaitIdle();
+            renderGraph.Clear();
+            swapChain->Resize(static_cast<RVX::uint32>(newWidth), static_cast<RVX::uint32>(newHeight));
             backBufferStates.assign(swapChain->GetBufferCount(), RVX::RHIResourceState::Undefined);
-            RVX_CORE_INFO("Resized to {}x{}", width, height);
+            RVX_CORE_INFO("Resized to {}x{}", newWidth, newHeight);
         }
     }
 
+    // =========================================================================
     // Cleanup
-    engine.Shutdown();
+    // =========================================================================
     device->WaitIdle();
 
     descriptorSet = nullptr;
     pipeline = nullptr;
     pipelineLayout = nullptr;
     setLayouts.clear();
-    vertexShader = nullptr;
-    pixelShader = nullptr;
     vsResult.shader = nullptr;
     psResult.shader = nullptr;
     shaderManager.ClearCache();

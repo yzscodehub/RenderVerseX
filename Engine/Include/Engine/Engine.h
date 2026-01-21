@@ -5,15 +5,18 @@
  * @brief Main engine class - coordinates all subsystems
  */
 
-#include "Core/SystemManager.h"
 #include "Core/Subsystem/SubsystemCollection.h"
 #include "Core/Subsystem/EngineSubsystem.h"
 #include "Core/Event/EventBus.h"
 #include <functional>
 #include <memory>
+#include <string>
+#include <unordered_map>
 
 namespace RVX
 {
+    // Forward declarations
+    class World;
     /**
      * @brief Engine configuration
      */
@@ -31,13 +34,26 @@ namespace RVX
      * @brief Main engine class
      * 
      * The Engine coordinates all subsystems and provides the main game loop.
-     * It supports both the legacy SystemManager pattern and the new
-     * EngineSubsystem pattern.
+     * Uses the EngineSubsystem pattern for modular, dependency-aware initialization.
      * 
-     * Usage (new style):
+     * Built-in subsystems (from Runtime module):
+     * - WindowSubsystem: Window creation and management
+     * - InputSubsystem: Input polling and events
+     * - TimeSubsystem: Frame timing
+     * 
+     * Render subsystems (from Render module):
+     * - RenderSubsystem: Rendering coordination
+     * 
+     * Usage:
      * @code
      * Engine engine;
-     * engine.AddSubsystem<MySubsystem>();
+     * engine.SetConfig(config);
+     * 
+     * // Add subsystems (order doesn't matter - dependencies are resolved automatically)
+     * engine.AddSubsystem<WindowSubsystem>();
+     * engine.AddSubsystem<InputSubsystem>();
+     * engine.AddSubsystem<RenderSubsystem>();
+     * 
      * engine.Initialize();
      * 
      * while (!engine.ShouldShutdown()) {
@@ -45,13 +61,6 @@ namespace RVX
      * }
      * 
      * engine.Shutdown();
-     * @endcode
-     * 
-     * Usage (legacy style, still supported):
-     * @code
-     * Engine engine;
-     * engine.GetSystemManager().RegisterSystem<MySystem>(...);
-     * engine.Run(shouldExit, getDeltaTime);
      * @endcode
      */
     class Engine
@@ -76,7 +85,7 @@ namespace RVX
         const EngineConfig& GetConfig() const { return m_config; }
 
         // =====================================================================
-        // Subsystem Management (New API)
+        // Subsystem Management
         // =====================================================================
 
         /**
@@ -112,12 +121,40 @@ namespace RVX
         }
 
         // =====================================================================
-        // Legacy System Manager (for backward compatibility)
+        // World Management
         // =====================================================================
 
-        /// Get the legacy system manager
-        [[deprecated("Use AddSubsystem/GetSubsystem instead")]]
-        SystemManager& GetSystemManager() { return m_legacySystems; }
+        /**
+         * @brief Create a new world
+         * @param name Name of the world (default: "Main")
+         * @return Pointer to the created world
+         */
+        World* CreateWorld(const std::string& name = "Main");
+
+        /**
+         * @brief Get a world by name
+         * @param name Name of the world
+         * @return Pointer to the world or nullptr if not found
+         */
+        World* GetWorld(const std::string& name = "Main") const;
+
+        /**
+         * @brief Destroy a world by name
+         * @param name Name of the world to destroy
+         */
+        void DestroyWorld(const std::string& name);
+
+        /**
+         * @brief Set the active world for rendering
+         * @param world The world to set as active (must be owned by this engine)
+         */
+        void SetActiveWorld(World* world);
+
+        /**
+         * @brief Get the currently active world
+         * @return Pointer to the active world or nullptr
+         */
+        World* GetActiveWorld() const { return m_activeWorld; }
 
         // =====================================================================
         // Lifecycle
@@ -126,11 +163,24 @@ namespace RVX
         /// Initialize the engine and all subsystems
         void Initialize();
 
-        /// Process one frame
+        /// Process one frame (uses internal time tracking)
         void Tick();
 
-        /// Tick with explicit delta time (legacy compatibility)
+        /// Process one frame with explicit delta time
         void Tick(float deltaTime);
+
+        /**
+         * @brief Process one frame without rendering
+         * 
+         * Use this when you need manual control over rendering.
+         * Call RenderSubsystem methods directly for rendering.
+         */
+        void TickWithoutRender();
+
+        /**
+         * @brief Process one frame without rendering, with explicit delta time
+         */
+        void TickWithoutRender(float deltaTime);
 
         /// Shutdown the engine
         void Shutdown();
@@ -145,15 +195,6 @@ namespace RVX
         bool IsInitialized() const { return m_initialized; }
 
         // =====================================================================
-        // Legacy Run Loop (for backward compatibility)
-        // =====================================================================
-
-        /// Legacy run method (deprecated, use Initialize/Tick/Shutdown instead)
-        [[deprecated("Use Initialize/Tick/Shutdown loop instead")]]
-        void Run(const std::function<bool()>& shouldExit, 
-                 const std::function<float()>& getDeltaTime);
-
-        // =====================================================================
         // Accessors
         // =====================================================================
 
@@ -163,17 +204,22 @@ namespace RVX
         /// Get current frame number
         uint64_t GetFrameNumber() const { return m_frameNumber; }
 
-        /// Compatibility aliases
+        /// Compatibility alias
         void Init() { Initialize(); }
 
     private:
         void InitializeSubsystems();
         void TickSubsystems(float deltaTime);
         void ShutdownSubsystems();
+        void TickWorlds(float deltaTime);
+        void ShutdownWorlds();
 
         EngineConfig m_config;
         SubsystemCollection<EngineSubsystem> m_subsystems;
-        SystemManager m_legacySystems;  // For backward compatibility
+
+        // World management
+        std::unordered_map<std::string, std::unique_ptr<World>> m_worlds;
+        World* m_activeWorld = nullptr;
 
         bool m_initialized = false;
         bool m_shouldShutdown = false;

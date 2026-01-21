@@ -5,7 +5,7 @@
  * Validates the integration of:
  * - Spatial module (BoundingBox, Frustum, BVHIndex)
  * - Scene module (SceneEntity, SceneManager)
- * - Asset module (Asset, AssetHandle, ResourceManager)
+ * - Resource module (IResource, ResourceHandle, ResourceManager)
  */
 
 #include "Core/MathTypes.h"
@@ -17,13 +17,8 @@
 // Scene module
 #include "Scene/Scene.h"
 
-// Asset module
-#include "Asset/Asset.h"
-#include "Asset/AssetHandle.h"
-#include "Asset/ResourceManager.h"
-#include "Asset/Types/MeshAsset.h"
-#include "Asset/Types/TextureAsset.h"
-#include "Asset/Types/MaterialAsset.h"
+// Resource module
+#include "Resource/Resource.h"
 
 #include <iostream>
 #include <cassert>
@@ -200,77 +195,77 @@ bool TestSceneModule()
 }
 
 // ============================================================================
-// Test: Asset Module
+// Test: Resource Module
 // ============================================================================
 
-bool TestAssetModule()
+bool TestResourceModule()
 {
-    LOG_INFO("=== Testing Asset Module ===");
+    LOG_INFO("=== Testing Resource Module ===");
 
-    // Test Asset ID generation
+    // Test Resource ID generation
     {
-        Asset::AssetId id1 = Asset::GenerateAssetId("path/to/asset.png");
-        Asset::AssetId id2 = Asset::GenerateAssetId("path/to/asset.png");
-        Asset::AssetId id3 = Asset::GenerateAssetId("path/to/other.png");
+        Resource::ResourceId id1 = Resource::GenerateResourceId("path/to/resource.png");
+        Resource::ResourceId id2 = Resource::GenerateResourceId("path/to/resource.png");
+        Resource::ResourceId id3 = Resource::GenerateResourceId("path/to/other.png");
 
         assert(id1 == id2);
         assert(id1 != id3);
-        LOG_INFO("  AssetId: PASS");
+        LOG_INFO("  ResourceId: PASS");
     }
 
-    // Test MeshAsset
+    // Test MeshResource
     {
-        auto meshAsset = new Asset::MeshAsset();
-        meshAsset->SetId(Asset::GenerateAssetId("test/mesh.obj"));
-        meshAsset->SetPath("test/mesh.obj");
-        meshAsset->SetName("TestMesh");
+        auto meshResource = new Resource::MeshResource();
+        meshResource->SetId(Resource::GenerateResourceId("test/mesh.obj"));
+        meshResource->SetPath("test/mesh.obj");
+        meshResource->SetName("TestMesh");
 
-        assert(meshAsset->GetType() == Asset::AssetType::Mesh);
-        assert(meshAsset->GetTypeName() == std::string("Mesh"));
+        assert(meshResource->GetType() == Resource::ResourceType::Mesh);
+        assert(meshResource->GetTypeName() == std::string("Mesh"));
 
         auto mesh = std::make_shared<Mesh>();
         mesh->SetPositions({Vec3(0, 0, 0), Vec3(1, 0, 0), Vec3(0, 1, 0)});
         mesh->SetIndices(std::vector<uint32_t>{0, 1, 2});
-        meshAsset->SetMesh(mesh);
+        meshResource->SetMesh(mesh);
 
-        assert(meshAsset->GetMesh() != nullptr);
-        assert(meshAsset->GetMemoryUsage() > 0);
+        assert(meshResource->GetMesh() != nullptr);
+        assert(meshResource->GetMemoryUsage() > 0);
 
-        delete meshAsset;
-        LOG_INFO("  MeshAsset: PASS");
+        delete meshResource;
+        LOG_INFO("  MeshResource: PASS");
     }
 
-    // Test AssetHandle
+    // Test ResourceHandle
     {
-        auto* asset = new Asset::MeshAsset();
-        asset->SetId(1);
+        auto* resource = new Resource::MeshResource();
+        resource->SetId(1);
 
-        Asset::AssetHandle<Asset::MeshAsset> handle1(asset);
+        Resource::ResourceHandle<Resource::MeshResource> handle1(resource);
         assert(handle1.IsValid());
         assert(handle1.GetId() == 1);
 
         // Copy
-        Asset::AssetHandle<Asset::MeshAsset> handle2 = handle1;
+        Resource::ResourceHandle<Resource::MeshResource> handle2 = handle1;
         assert(handle2.IsValid());
         assert(handle2.Get() == handle1.Get());
 
         // Move
-        Asset::AssetHandle<Asset::MeshAsset> handle3 = std::move(handle1);
+        Resource::ResourceHandle<Resource::MeshResource> handle3 = std::move(handle1);
         assert(handle3.IsValid());
         assert(!handle1.IsValid());
 
-        LOG_INFO("  AssetHandle: PASS");
+        LOG_INFO("  ResourceHandle: PASS");
     }
 
     // Test ResourceManager
     {
-        auto& rm = Asset::ResourceManager::Get();
+        auto& rm = Resource::ResourceManager::Get();
         rm.Initialize();
 
         assert(rm.IsInitialized());
 
         auto stats = rm.GetStats();
-        assert(stats.loadedAssets == 0);
+        assert(stats.loadedCount == 0);
 
         rm.Shutdown();
         LOG_INFO("  ResourceManager: PASS");
@@ -278,12 +273,12 @@ bool TestAssetModule()
 
     // Test DependencyGraph
     {
-        Asset::DependencyGraph graph;
+        Resource::DependencyGraph graph;
 
-        graph.AddAsset(1, {2, 3});
-        graph.AddAsset(2, {4});
-        graph.AddAsset(3, {4});
-        graph.AddAsset(4, {});
+        graph.AddResource(1, {2, 3});
+        graph.AddResource(2, {4});
+        graph.AddResource(3, {4});
+        graph.AddResource(4, {});
 
         auto deps = graph.GetDependencies(1);
         assert(deps.size() == 2);
@@ -300,7 +295,7 @@ bool TestAssetModule()
         LOG_INFO("  DependencyGraph: PASS");
     }
 
-    LOG_INFO("Asset Module: ALL TESTS PASSED");
+    LOG_INFO("Resource Module: ALL TESTS PASSED");
     return true;
 }
 
@@ -312,17 +307,17 @@ bool TestIntegration()
 {
     LOG_INFO("=== Testing System Integration ===");
 
-    // Create a complete scene with assets
+    // Create a complete scene with resources
     {
         // Initialize ResourceManager
-        auto& rm = Asset::ResourceManager::Get();
+        auto& rm = Resource::ResourceManager::Get();
         rm.Initialize();
 
         // Initialize SceneManager
         SceneManager sceneManager;
         sceneManager.Initialize();
 
-        // Create some entities with mesh assets
+        // Create some entities with mesh resources
         auto handle1 = sceneManager.CreateEntity("Cube");
         auto* cube = sceneManager.GetEntity(handle1);
         cube->SetPosition(Vec3(0, 0, 0));
@@ -388,7 +383,7 @@ int main()
 
     allPassed &= TestSpatialModule();
     allPassed &= TestSceneModule();
-    allPassed &= TestAssetModule();
+    allPassed &= TestResourceModule();
     allPassed &= TestIntegration();
 
     LOG_INFO("========================================");

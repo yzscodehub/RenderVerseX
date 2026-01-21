@@ -6,15 +6,18 @@
  */
 
 #include "Core/Subsystem/EngineSubsystem.h"
-#include "Input/Input.h"
-#include "Input/InputState.h"
-#include "Platform/InputBackend.h"
+#include "HAL/Input/IInputBackend.h"
+#include "HAL/Input/InputState.h"
+#include "HAL/Input/KeyCodes.h"
+#include "HAL/Input/Input.h"
 #include <memory>
 #include <array>
 
 namespace RVX
 {
-    class Window;
+    // Forward declaration using HAL types
+    namespace HAL { class IWindow; }
+    using Window = HAL::IWindow;
 
     /**
      * @brief Input subsystem - manages input state and events
@@ -26,11 +29,11 @@ namespace RVX
      * auto* inputSys = engine.GetSubsystem<InputSubsystem>();
      * 
      * // Polling-based
-     * if (inputSys->IsKeyDown(KeyCode::W)) {
+     * if (inputSys->IsKeyDown(Key::W)) {
      *     MoveForward();
      * }
      * 
-     * if (inputSys->IsKeyPressed(KeyCode::Space)) {
+     * if (inputSys->IsKeyPressed(Key::Space)) {
      *     Jump();  // Only triggers once when pressed
      * }
      * @endcode
@@ -93,14 +96,14 @@ namespace RVX
 
     private:
         Input m_input;
-        std::unique_ptr<InputBackend> m_backend;
+        std::unique_ptr<HAL::IInputBackend> m_backend;
         Window* m_window = nullptr;
         
         // Per-frame state tracking
-        std::array<bool, RVX_MAX_KEYS> m_keysPressed{};
-        std::array<bool, RVX_MAX_KEYS> m_keysReleased{};
-        std::array<bool, RVX_MAX_MOUSE_BUTTONS> m_mouseButtonsPressed{};
-        std::array<bool, RVX_MAX_MOUSE_BUTTONS> m_mouseButtonsReleased{};
+        std::array<bool, HAL::MAX_KEYS> m_keysPressed{};
+        std::array<bool, HAL::MAX_KEYS> m_keysReleased{};
+        std::array<bool, HAL::MAX_MOUSE_BUTTONS> m_mouseButtonsPressed{};
+        std::array<bool, HAL::MAX_MOUSE_BUTTONS> m_mouseButtonsReleased{};
         
         float m_lastMouseX = 0.0f;
         float m_lastMouseY = 0.0f;

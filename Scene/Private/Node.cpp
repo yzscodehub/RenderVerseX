@@ -326,6 +326,15 @@ namespace RVX
         return -1;
     }
 
+    void Node::SetMaterialIndex(size_t submeshIndex, int materialIndex)
+    {
+        if (submeshIndex >= m_materialIndices.size())
+        {
+            m_materialIndices.resize(submeshIndex + 1, -1);
+        }
+        m_materialIndices[submeshIndex] = materialIndex;
+    }
+
     void Node::TraverseDepthFirst(const std::function<void(Node*)>& visitor)
     {
         visitor(this);

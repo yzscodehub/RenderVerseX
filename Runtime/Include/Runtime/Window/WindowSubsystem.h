@@ -7,7 +7,8 @@
 
 #include "Core/Subsystem/EngineSubsystem.h"
 #include "Core/Event/EventBus.h"
-#include "Platform/Window.h"
+#include "HAL/Window/IWindow.h"
+#include "HAL/Window/WindowEvents.h"
 #include <memory>
 #include <functional>
 
@@ -24,20 +25,6 @@ namespace RVX
         bool resizable = true;
         bool fullscreen = false;
         bool vsync = true;
-    };
-
-    /**
-     * @brief Window resize event (published when window size changes)
-     */
-    struct WindowResizedEvent : Event
-    {
-        RVX_EVENT_TYPE(WindowResizedEvent)
-        
-        uint32_t width = 0;
-        uint32_t height = 0;
-        
-        WindowResizedEvent() = default;
-        WindowResizedEvent(uint32_t w, uint32_t h) : width(w), height(h) {}
     };
 
     /**
@@ -74,7 +61,7 @@ namespace RVX
         const WindowConfig& GetConfig() const { return m_config; }
 
         /// Get the underlying window
-        Window* GetWindow() const { return m_window.get(); }
+        HAL::IWindow* GetWindow() const { return m_window.get(); }
 
         /// Check if window should close
         bool ShouldClose() const;
@@ -90,7 +77,7 @@ namespace RVX
 
     private:
         WindowConfig m_config;
-        std::unique_ptr<Window> m_window;
+        std::unique_ptr<HAL::IWindow> m_window;
         uint32_t m_lastWidth = 0;
         uint32_t m_lastHeight = 0;
     };

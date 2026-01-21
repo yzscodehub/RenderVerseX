@@ -5,7 +5,7 @@
       "name": "windows-base",
       "hidden": true,
       "environment": {
-        "VCPKG_ROOT": "C:/Tools/vcpkg"
+        "VCPKG_ROOT": "E:/WorkSpace/vcpkg"
       },
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",

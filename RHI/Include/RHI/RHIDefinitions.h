@@ -11,6 +11,7 @@ namespace RVX
     enum class RHIBackendType : uint8
     {
         None = 0,
+        Auto,       // Automatically select the best backend for the platform
         DX11,
         DX12,
         Vulkan,
@@ -22,6 +23,7 @@ namespace RVX
     {
         switch (type)
         {
+            case RHIBackendType::Auto:   return "Auto";
             case RHIBackendType::DX11:   return "DirectX 11";
             case RHIBackendType::DX12:   return "DirectX 12";
             case RHIBackendType::Vulkan: return "Vulkan";
@@ -29,6 +31,22 @@ namespace RVX
             case RHIBackendType::OpenGL: return "OpenGL";
             default:                     return "Unknown";
         }
+    }
+
+    /**
+     * @brief Select the best RHI backend for the current platform
+     * @return The recommended backend type
+     */
+    inline RHIBackendType SelectBestBackend()
+    {
+#if defined(_WIN32)
+        return RHIBackendType::Vulkan;
+        return RHIBackendType::DX12;
+#elif defined(__APPLE__)
+        return RHIBackendType::Metal;
+#else
+        return RHIBackendType::Vulkan;
+#endif
     }
 
     // =============================================================================

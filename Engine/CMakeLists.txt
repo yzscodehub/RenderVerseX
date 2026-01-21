@@ -1,6 +1,16 @@
 # =============================================================================
 # Engine Module - Main engine and subsystem coordinator
 # =============================================================================
+# The Engine module coordinates all other modules and provides the main
+# application lifecycle management.
+#
+# Module Architecture (after refactoring):
+# - HAL: Hardware abstraction (Window, Input backend)
+# - Runtime: Runtime services (Window, Input, Time, Camera subsystems)
+# - World: Scene management (Scene, Spatial, Picking)
+# - Render: Rendering (RenderGraph, RenderSubsystem)
+# - Resource: Asset management (ResourceSubsystem)
+# =============================================================================
 add_library(RVX_Engine STATIC)
 
 target_sources(RVX_Engine PRIVATE
@@ -13,13 +23,25 @@ target_include_directories(RVX_Engine PUBLIC
 )
 
 target_link_libraries(RVX_Engine PUBLIC
+    # Foundation
     RVX_Core
-    RVX_Runtime
-    RVX_Platform
-    RVX_Input
-    RVX_Camera
-    RVX_RenderGraph
+    
+    # Hardware Abstraction
+    RVX_HAL
     RVX_RHI
+    
+    # Runtime Services
+    RVX_Runtime
+    
+    # World & Scene
+    RVX_World
+    
+    # Rendering
+    RVX_Render
+    
+    # Resources
+    RVX_Resource
+    
 )
 
 add_library(RVX::Engine ALIAS RVX_Engine)

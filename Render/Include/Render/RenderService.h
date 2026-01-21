@@ -1,8 +1,10 @@
 #pragma once
 
-#include "Camera/Camera.h"
+#include "Runtime/Camera/Camera.h"
 #include "RHI/RHI.h"
-#include "RenderGraph/RenderGraph.h"
+
+// Forward declaration
+namespace RVX { class RenderGraph; }
 
 namespace RVX
 {

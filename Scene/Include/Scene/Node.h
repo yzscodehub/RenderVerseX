@@ -326,6 +326,25 @@ namespace RVX
 
         std::optional<BoundingBox> ComputeWorldBoundingBox() const;
 
+        // =====================================================================
+        // Resource Indices (for Prefab/Instantiate pattern)
+        // =====================================================================
+
+        /// Get mesh index (-1 means no mesh), references ModelResource.meshes[]
+        int GetMeshIndex() const { return m_meshIndex; }
+        void SetMeshIndex(int index) { m_meshIndex = index; }
+
+        /// Get material indices for each submesh, references ModelResource.materials[]
+        const std::vector<int>& GetMaterialIndices() const { return m_materialIndices; }
+        void SetMaterialIndices(const std::vector<int>& indices) { m_materialIndices = indices; }
+        void SetMaterialIndex(size_t submeshIndex, int materialIndex);
+
+        /// Check if this node uses index-based resource references
+        bool UsesIndexMode() const { return m_meshIndex >= 0; }
+
+        /// Check if this node has a mesh (either via MeshComponent or index)
+        bool HasMeshData() const { return m_meshIndex >= 0 || HasComponent<MeshComponent>(); }
+
     private:
         std::string m_name;
         uint32_t m_id;
@@ -339,6 +358,10 @@ namespace RVX
         std::vector<Ptr> m_children;
 
         std::unordered_map<std::string, std::unique_ptr<NodeComponent>> m_components;
+
+        // Resource indices (for Prefab/Instantiate pattern)
+        int m_meshIndex = -1;                   ///< Index into ModelResource.meshes[], -1 = no mesh
+        std::vector<int> m_materialIndices;    ///< Per-submesh material indices into ModelResource.materials[]
 
         void UpdateWorldMatrix() const;
         void MarkWorldMatrixDirty();
