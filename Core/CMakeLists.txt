@@ -4,9 +4,17 @@
 add_library(RVX_Core STATIC)
 
 target_sources(RVX_Core PRIVATE
+    # Core
     Private/Memory.cpp
     Private/Log.cpp
     Private/SystemManager.cpp
+    
+    # Event System
+    Private/Event/EventBus.cpp
+    
+    # Job System
+    Private/Job/ThreadPool.cpp
+    Private/Job/JobSystem.cpp
 )
 
 target_include_directories(RVX_Core PUBLIC
