@@ -150,13 +150,28 @@ graph TB
 
 ## Module Structure
 
+### 依赖的外部模块
+
+Asset 模块依赖以下模块的数据类型：
+
+| 依赖模块 | 使用的类型 | 用途 |
+|----------|-----------|------|
+| **Core** | `RefCounted`, `Math types` | 基础设施 |
+| **Scene** | `Mesh`, `MaterialData`, `Node` | 数据定义 |
+| **Spatial** | `BoundingBox`, `BoundingSphere` | 边界体积 |
+| **Animation** | `Skeleton`, `AnimationClip` | 动画数据 |
+| **RHI** | `BufferHandle`, `TextureHandle` | GPU 资源 |
+| **ShaderCompiler** | `CompiledShader` | 编译后着色器 |
+
+### 目录结构
+
 ```
 Asset/
   CMakeLists.txt
   Include/
     Asset/
       # ============ Core Framework ============
-      Asset.h                    # Base asset class
+      Asset.h                    # Base asset class (uses Core::RefCounted)
       AssetHandle.h              # Smart handle with ref counting
       AssetId.h                  # Asset identification (GUID/hash)
       AssetRegistry.h            # Asset metadata registry
@@ -177,14 +192,14 @@ Asset/
       FileWatcher.h              # File change detection
       
       # ============ Primitive Asset Types ============
-      # 存储实际数据的资源类型
+      # 封装来自其他模块的数据类型，提供生命周期管理
       Types/
-        MeshAsset.h              # 几何数据
-        TextureAsset.h           # 纹理数据
-        MaterialAsset.h          # 材质参数 + 纹理引用
+        MeshAsset.h              # 封装 Scene::Mesh + Spatial::BoundingBox
+        TextureAsset.h           # 纹理数据 + GPU 资源
+        MaterialAsset.h          # 封装 Scene::MaterialData + 纹理引用
         ShaderAsset.h            # 编译后的着色器
-        SkeletonAsset.h          # 骨骼层级
-        AnimationAsset.h         # 动画片段
+        SkeletonAsset.h          # 封装 Animation::Skeleton
+        AnimationAsset.h         # 封装 Animation::AnimationClip
         AudioAsset.h             # 音频数据
         ScriptAsset.h            # 脚本代码
       
@@ -192,7 +207,7 @@ Asset/
       # 存储引用/清单的资源类型
       Types/
         ModelAsset.h             # Mesh + Materials + Skeleton + Animations 引用
-        SceneAsset.h             # Node hierarchy + Models 引用
+        SceneAsset.h             # 封装 Scene::Node 层级 + Models 引用
         PrefabAsset.h            # 可复用的实体模板
       
       # ============ Loaders (Importers) ============
@@ -667,86 +682,133 @@ private:
 ### Mesh Asset (Primitive - 原始资源)
 
 ```cpp
+// Asset/Include/Asset/Types/MeshAsset.h
+
+// 注意：MeshAsset 封装 Scene::Mesh，提供资源生命周期和 GPU 资源管理
+// Scene::Mesh 定义在 Scene/Mesh.h
+
 class MeshAsset : public Asset {
 public:
-    // CPU 数据
-    std::shared_ptr<Mesh> GetMesh() const { return m_mesh; }
+    // ========== CPU 数据（来自 Scene 模块）==========
     
-    // GPU 资源 (延迟创建)
+    std::shared_ptr<Scene::Mesh> GetMesh() const { return m_mesh; }
+    
+    // ========== GPU 资源（延迟创建）==========
+    
     RHI::BufferHandle GetVertexBuffer();
     RHI::BufferHandle GetIndexBuffer();
-    
-    // LOD 支持
-    int GetLODCount() const;
-    std::shared_ptr<Mesh> GetLOD(int level) const;
-    void SetLODBias(float bias);
-    
-    // 边界
-    const BoundingBox& GetBounds() const;
-    
-    // 内存统计
-    size_t GetMemoryUsage() const override;
-    size_t GetGPUMemoryUsage() const override;
     
     // GPU 资源管理
     void UploadToGPU(RHI::Device* device);
     void ReleaseGPUResources();
     bool IsGPUResident() const;
     
-private:
-    std::shared_ptr<Mesh> m_mesh;
-    std::vector<std::shared_ptr<Mesh>> m_lods;
-    BoundingBox m_bounds;
+    // ========== LOD 支持 ==========
     
-    // GPU 资源 (惰性创建)
+    int GetLODCount() const;
+    std::shared_ptr<Scene::Mesh> GetLOD(int level) const;
+    void SetLODBias(float bias);
+    
+    // ========== 边界（来自 Spatial 模块）==========
+    
+    const Spatial::BoundingBox& GetBounds() const { return m_bounds; }
+    
+    // ========== 内存统计 ==========
+    
+    size_t GetMemoryUsage() const override;
+    size_t GetGPUMemoryUsage() const override;
+    
+private:
+    // 核心数据（来自 Scene 模块）
+    std::shared_ptr<Scene::Mesh> m_mesh;
+    std::vector<std::shared_ptr<Scene::Mesh>> m_lods;
+    
+    // 边界（来自 Spatial 模块）
+    Spatial::BoundingBox m_bounds;
+    
+    // GPU 资源（惰性创建）
     RHI::BufferHandle m_vertexBuffer;
     RHI::BufferHandle m_indexBuffer;
     bool m_gpuDirty{true};
 };
 ```
 
+> **设计说明**：
+> - `Scene::Mesh` 是纯几何数据（顶点、索引）
+> - `Spatial::BoundingBox` 提供边界体积
+> - `Asset::MeshAsset` 封装它们，管理 GPU 资源上传/卸载
+
 ### Material Asset (Primitive - 原始资源)
 
 ```cpp
+// Asset/Include/Asset/Types/MaterialAsset.h
+
+// 注意：MaterialAsset 封装 Scene::MaterialData，提供资源生命周期管理
+// Scene::MaterialData 是纯数据结构，定义在 Scene/Material/MaterialData.h
+
 class MaterialAsset : public Asset {
 public:
-    // 基础属性
-    const std::string& GetName() const;
-    MaterialType GetMaterialType() const;  // PBR, Unlit, Custom
+    // ========== 数据访问 ==========
     
-    // 纹理引用 (自动作为依赖)
-    AssetHandle<TextureAsset> GetTexture(TextureSlot slot) const;
-    void SetTexture(TextureSlot slot, AssetHandle<TextureAsset> texture);
+    // 获取底层材质数据（来自 Scene 模块）
+    const Scene::MaterialData& GetMaterialData() const { return m_data; }
+    Scene::MaterialData& GetMaterialData() { return m_data; }
     
-    // 参数
-    Vec4 GetParameter(const std::string& name) const;
-    void SetParameter(const std::string& name, const Vec4& value);
+    // 便捷访问
+    const std::string& GetName() const { return m_data.name; }
+    const std::string& GetTemplateName() const { return m_data.templateName; }
     
-    // Shader 引用
-    AssetHandle<ShaderAsset> GetShader() const;
+    // ========== 纹理引用（已解析为 Asset 句柄）==========
     
-    // GPU 资源
-    RHI::PipelineStateHandle GetPipelineState(const RenderPassInfo& passInfo);
+    AssetHandle<TextureAsset> GetTexture(const std::string& slot) const;
+    void SetTexture(const std::string& slot, AssetHandle<TextureAsset> texture);
     
-    // 依赖
+    // ========== 参数访问（委托给 MaterialData）==========
+    
+    template<typename T>
+    T GetParameter(const std::string& name) const;
+    
+    void SetFloat(const std::string& name, float value);
+    void SetVector(const std::string& name, const Vec4& value);
+    
+    // ========== 运行时实例创建 ==========
+    
+    // 创建可修改的运行时实例
+    std::unique_ptr<Scene::MaterialInstance> CreateInstance() const;
+    
+    // ========== Shader 引用 ==========
+    
+    AssetHandle<ShaderAsset> GetShader() const { return m_shader; }
+    
+    // ========== 依赖管理 ==========
+    
     std::vector<AssetId> GetRequiredDependencies() const override {
         std::vector<AssetId> deps;
-        for (const auto& [slot, tex] : m_textures) {
+        for (const auto& [slot, tex] : m_resolvedTextures) {
             if (tex.IsValid()) deps.push_back(tex.GetId());
         }
         if (m_shader.IsValid()) deps.push_back(m_shader.GetId());
         return deps;
     }
     
-private:
-    std::string m_name;
-    MaterialType m_type{MaterialType::PBR};
+    size_t GetMemoryUsage() const override;
     
-    std::unordered_map<TextureSlot, AssetHandle<TextureAsset>> m_textures;
-    std::unordered_map<std::string, Vec4> m_parameters;
+private:
+    // 核心数据（来自 Scene 模块）
+    Scene::MaterialData m_data;
+    
+    // 已解析的纹理引用（从 m_data.textures 路径解析）
+    std::unordered_map<std::string, AssetHandle<TextureAsset>> m_resolvedTextures;
+    
+    // Shader 引用
     AssetHandle<ShaderAsset> m_shader;
 };
 ```
+
+> **设计说明**：
+> - `Scene::MaterialData` 是纯数据结构，存储参数和纹理路径
+> - `Asset::MaterialAsset` 封装它，负责解析纹理路径为 `TextureAsset` 句柄
+> - 这种分离确保 Scene 模块不依赖 Asset 系统
 
 ### Texture Asset (Primitive - 原始资源)
 
@@ -787,12 +849,20 @@ private:
 ### Skeleton Asset (Primitive - 原始资源)
 
 ```cpp
+// Asset/Include/Asset/Types/SkeletonAsset.h
+
+// 注意：SkeletonAsset 封装 Animation::Skeleton
+// Animation::Skeleton 定义在 Animation/Data/Skeleton.h
+
 class SkeletonAsset : public Asset {
 public:
-    // 骨骼数据
-    const Animation::Skeleton& GetSkeleton() const { return *m_skeleton; }
+    // ========== 骨骼数据（来自 Animation 模块）==========
     
-    // 查询
+    const Animation::Skeleton& GetSkeleton() const { return *m_skeleton; }
+    std::shared_ptr<Animation::Skeleton> GetSkeletonPtr() const { return m_skeleton; }
+    
+    // ========== 便捷查询 ==========
+    
     int GetBoneCount() const;
     int FindBoneIndex(const std::string& name) const;
     const std::string& GetBoneName(int index) const;
@@ -801,9 +871,12 @@ public:
     const Mat4& GetBindPose(int boneIndex) const;
     const Mat4& GetInverseBindPose(int boneIndex) const;
     
+    // ========== 内存统计 ==========
+    
     size_t GetMemoryUsage() const override;
     
 private:
+    // 核心数据（来自 Animation 模块）
     std::shared_ptr<Animation::Skeleton> m_skeleton;
 };
 ```
@@ -811,58 +884,133 @@ private:
 ### Animation Asset (Primitive - 原始资源)
 
 ```cpp
+// Asset/Include/Asset/Types/AnimationAsset.h
+
+// 注意：AnimationAsset 封装 Animation::AnimationClip
+// Animation::AnimationClip 定义在 Animation/Data/AnimationClip.h
+
 class AnimationAsset : public Asset {
 public:
-    // 动画数据
-    const Animation::AnimationClip& GetClip() const { return *m_clip; }
+    // ========== 动画数据（来自 Animation 模块）==========
     
-    // 元数据
+    const Animation::AnimationClip& GetClip() const { return *m_clip; }
+    std::shared_ptr<Animation::AnimationClip> GetClipPtr() const { return m_clip; }
+    
+    // ========== 元数据 ==========
+    
     const std::string& GetName() const;
     float GetDuration() const;  // 秒
     float GetFrameRate() const;
     int GetFrameCount() const;
     
-    // 兼容性检查
+    // ========== 兼容性检查 ==========
+    
     bool IsCompatibleWith(const SkeletonAsset& skeleton) const;
+    bool IsCompatibleWith(const Animation::Skeleton& skeleton) const;
+    
+    // ========== 内存统计 ==========
     
     size_t GetMemoryUsage() const override;
     
 private:
+    // 核心数据（来自 Animation 模块）
     std::shared_ptr<Animation::AnimationClip> m_clip;
 };
 ```
 
+> **设计说明**：
+> - `Animation::Skeleton` 和 `Animation::AnimationClip` 是纯数据类
+> - `Asset::SkeletonAsset` 和 `Asset::AnimationAsset` 封装它们，提供生命周期管理
+> - 这种分离确保 Animation 模块可以独立于 Asset 系统使用
+
 ### Scene Asset (Composite - 组合资源)
 
 ```cpp
+// Asset/Include/Asset/Types/SceneAsset.h
+
+// 注意：SceneAsset 存储场景的序列化数据
+// Scene::SceneManager 负责运行时管理，通过 LoadFromAsset() 加载 SceneAsset
+
 class SceneAsset : public Asset {
 public:
-    // 场景层级
-    std::shared_ptr<Node> GetRootNode() const { return m_rootNode; }
+    // ========== 场景层级（使用 Scene 模块的 Node）==========
+    
+    std::shared_ptr<Scene::Node> GetRootNode() const { return m_rootNode; }
+    
+    // ========== 资源引用 ==========
     
     // 包含的模型引用
     const std::vector<AssetHandle<ModelAsset>>& GetModels() const;
     
-    // 场景设置
-    const SceneSettings& GetSettings() const;  // 光照、天空盒等
+    // 包含的材质引用（场景级材质覆盖）
+    const std::vector<AssetHandle<MaterialAsset>>& GetMaterials() const;
     
-    // 实例化
-    std::shared_ptr<Node> Instantiate() const;  // 创建副本
+    // ========== 场景设置 ==========
     
-    std::vector<AssetId> GetRequiredDependencies() const override;
+    const SceneSettings& GetSettings() const;  // 光照、天空盒、环境等
+    
+    // ========== 实例化 ==========
+    
+    // 创建节点树副本（用于运行时修改）
+    std::shared_ptr<Scene::Node> Instantiate() const;
+    
+    // 加载到 SceneManager（推荐方式）
+    // 使用: sceneManager.LoadFromAsset(sceneAsset.Get());
+    
+    // ========== 依赖管理 ==========
+    
+    std::vector<AssetId> GetRequiredDependencies() const override {
+        std::vector<AssetId> deps;
+        for (const auto& model : m_models) {
+            if (model.IsValid()) deps.push_back(model.GetId());
+        }
+        for (const auto& mat : m_materials) {
+            if (mat.IsValid()) deps.push_back(mat.GetId());
+        }
+        return deps;
+    }
+    
+    size_t GetMemoryUsage() const override;
     
 private:
-    std::shared_ptr<Node> m_rootNode;
+    // 节点层级（使用 Scene 模块的类型）
+    std::shared_ptr<Scene::Node> m_rootNode;
+    
+    // 资源引用
     std::vector<AssetHandle<ModelAsset>> m_models;
+    std::vector<AssetHandle<MaterialAsset>> m_materials;
+    
+    // 场景设置
     SceneSettings m_settings;
 };
 ```
 
+> **与 SceneManager 的关系**：
+> - `SceneAsset` 是静态数据（可序列化、可缓存）
+> - `SceneManager` 是运行时管理器（管理活动实体、空间查询）
+> - 加载流程：`ResourceManager.Load<SceneAsset>()` → `SceneManager.LoadFromAsset()`
+
 ## Implementation Phases
+
+> **注意**：本路线图与 Unified Scene and Spatial System 的实现阶段协调。
+> Asset 系统依赖 Scene/Spatial 提供的数据类型。
+
+### 前置依赖（来自 Scene/Spatial 设计）
+
+Asset 模块开始前，需要以下模块就绪：
+
+| 依赖模块 | 所需类型 | 对应 Scene/Spatial Phase |
+|----------|---------|-------------------------|
+| **Spatial** | `BoundingBox`, `BoundingSphere` | Phase 1 |
+| **Scene** | `Mesh`, `Node`, `Transform` | Phase 2 |
+| **Scene** | `MaterialData`, `MaterialTemplate` | Phase 3 |
+| **Animation** | `Skeleton`, `AnimationClip` | 已存在 |
 
 ### Phase 1: Core Framework (基础架构)
 
 **目标**：建立资源系统的核心骨架
+
+**前置依赖**：Spatial Phase 1 完成
 
 - `Asset` 基类 + 引用计数 (利用现有 `Core/RefCounted.h`)
 - `AssetHandle<T>` 智能句柄
@@ -886,16 +1034,28 @@ private:
 
 **目标**：实现最常用的资源类型
 
+**前置依赖**：Scene Phase 2-3 完成
+
 - `TextureAsset` + `TextureLoader` (PNG, JPG, DDS)
-- `MeshAsset` + `MeshLoader` (集成现有 Scene 模块)
-- `MaterialAsset` + `MaterialLoader`
+- `MeshAsset` + `MeshLoader` - 封装 `Scene::Mesh` + `Spatial::BoundingBox`
+- `MaterialAsset` + `MaterialLoader` - 封装 `Scene::MaterialData`
 - `ShaderAsset` + `ShaderLoader` (集成 ShaderCompiler 模块)
 
-**集成**：
+**集成关系**：
 
-- 利用现有 `Scene/Mesh.h`
-- 利用现有 `Scene/Material.h`
-- 利用现有 `ShaderCompiler/ShaderCompiler.h`
+```cpp
+// MeshAsset 封装 Scene::Mesh
+class MeshAsset : public Asset {
+    std::shared_ptr<Scene::Mesh> m_mesh;
+    Spatial::BoundingBox m_bounds;
+};
+
+// MaterialAsset 封装 Scene::MaterialData
+class MaterialAsset : public Asset {
+    Scene::MaterialData m_data;
+    std::unordered_map<std::string, AssetHandle<TextureAsset>> m_resolvedTextures;
+};
+```
 
 ### Phase 3: Model Composite Asset (模型组合资源)
 
@@ -919,7 +1079,53 @@ Load<ModelAsset>("x.fbx")
     → 组装 ModelAsset
 ```
 
-### Phase 4: Geometry Importers (几何导入器)
+### Phase 4: Scene/Spatial 集成
+
+**目标**：实现与 SceneManager 的无缝集成
+
+**前置依赖**：Scene Phase 4 完成
+
+- `SceneAsset` - 封装 `Scene::Node` 层级
+- `PrefabAsset` - 可复用实体模板
+- `SceneLoader` - .scene 文件解析
+- 与 `SceneManager` 的集成测试
+
+**集成验证**：
+
+```cpp
+// 完整加载流程验证
+auto sceneAsset = ResourceManager::Get().Load<SceneAsset>("level.scene");
+sceneManager.LoadFromAsset(sceneAsset.Get());
+
+// 验证空间查询正常工作
+std::vector<SceneEntity*> visible;
+sceneManager.QueryVisible(camera, visible);
+```
+
+### Phase 5: Animation Assets (动画资源)
+
+**目标**：完善动画支持
+
+- `SkeletonAsset` + `SkeletonLoader` - 封装 `Animation::Skeleton`
+- `AnimationAsset` + `AnimationLoader` - 封装 `Animation::AnimationClip`
+- Animation Extractors 集成
+- 延迟加载动画验证
+
+**集成关系**：
+
+```cpp
+// SkeletonAsset 封装 Animation::Skeleton
+class SkeletonAsset : public Asset {
+    std::shared_ptr<Animation::Skeleton> m_skeleton;
+};
+
+// AnimationAsset 封装 Animation::AnimationClip
+class AnimationAsset : public Asset {
+    std::shared_ptr<Animation::AnimationClip> m_clip;
+};
+```
+
+### Phase 6: Geometry Importers (几何导入器)
 
 **目标**：迁移现有导入器到资源系统
 
@@ -930,18 +1136,7 @@ Load<ModelAsset>("x.fbx")
 
 **迁移来源**：`D:\Work\found\src\renderer\resouce\importer\geometry\`
 
-### Phase 5: Animation & Skeleton Assets (动画资源)
-
-**目标**：完善动画支持
-
-- `SkeletonAsset` + `SkeletonLoader`
-- `AnimationAsset` + `AnimationLoader`
-- Animation Extractors 集成
-- 延迟加载动画验证
-
-**集成**：利用现有 `Animation` 模块
-
-### Phase 6: Async Loading (异步加载)
+### Phase 7: Async Loading (异步加载)
 
 **目标**：支持非阻塞资源加载
 
@@ -950,15 +1145,6 @@ Load<ModelAsset>("x.fbx")
 - 回调系统
 - 进度追踪
 - 批量加载
-
-### Phase 7: Scene & Prefab Assets (场景资源)
-
-**目标**：支持复杂场景
-
-- `SceneAsset` (节点层级 + 模型引用)
-- `PrefabAsset` (可复用模板)
-- `SceneLoader`
-- 场景序列化/反序列化
 
 ### Phase 8: Advanced Features (高级功能)
 
@@ -973,72 +1159,214 @@ Load<ModelAsset>("x.fbx")
 
 ### Phase Summary
 
-| Phase | 内容 | 依赖 | 预计工作量 |
+| Phase | 内容 | 依赖 | Scene/Spatial 依赖 |
+|-------|------|------|-------------------|
+| 1 | Core Framework | - | Spatial Phase 1 |
+| 2 | Primitive Assets | Phase 1 | Scene Phase 2-3 |
+| 3 | ModelAsset | Phase 2 | - |
+| 4 | Scene 集成 | Phase 3 | Scene Phase 4 |
+| 5 | Animation Assets | Phase 3 | Animation 模块 |
+| 6 | Geometry Importers | Phase 3 | - |
+| 7 | Async Loading | Phase 1-3 | - |
+| 8 | Advanced Features | All | - |
 
-|-------|------|------|-----------|
+### 统一实现顺序
 
-| 1 | Core Framework | - | 中 |
-
-| 2 | Primitive Assets | Phase 1, Scene模块 | 中 |
-
-| 3 | ModelAsset | Phase 2 | 中 |
-
-| 4 | Geometry Importers | Phase 3 | 大 |
-
-| 5 | Animation Assets | Phase 3, Animation模块 | 中 |
-
-| 6 | Async Loading | Phase 1-3 | 中 |
-
-| 7 | Scene Assets | Phase 3 | 中 |
-
-| 8 | Advanced Features | All | 大 |
+```mermaid
+gantt
+    title Asset + Scene/Spatial 统一实现路线
+    dateFormat  X
+    axisFormat %s
+    
+    section Scene/Spatial
+    Spatial Phase 1 - 边界体积  :s1, 0, 1
+    Scene Phase 2 - 实体重构    :s2, after s1, 1
+    Scene Phase 3 - 材质数据    :s3, after s2, 1
+    Scene Phase 4 - Asset 集成  :s4, after a4, 1
+    
+    section Asset
+    Asset Phase 1 - 核心框架    :a1, after s1, 1
+    Asset Phase 2 - 原始资源    :a2, after s3, 1
+    Asset Phase 3 - ModelAsset  :a3, after a2, 1
+    Asset Phase 4 - Scene 集成  :a4, after a3, 1
+    Asset Phase 5 - 动画资源    :a5, after a3, 1
+    
+    section 后续
+    Phase 6 - 导入器            :p6, after a4, 1
+    Phase 7 - 异步加载          :p7, after a4, 1
+    Phase 8 - 高级功能          :p8, after p7, 1
+```
 
 ## Integration with Existing Modules
+
+### 与 Scene/Spatial 系统的统一架构
+
+本设计与 Unified Scene and Spatial System Design 协同工作：
+
+```mermaid
+graph TB
+    subgraph data_layer [数据定义层]
+        Mesh[Scene::Mesh]
+        MaterialData[Scene::MaterialData]
+        Skeleton[Animation::Skeleton]
+        AnimClip[Animation::AnimationClip]
+    end
+    
+    subgraph asset_layer [资源管理层]
+        MeshAsset[Asset::MeshAsset]
+        MaterialAsset[Asset::MaterialAsset]
+        TextureAsset[Asset::TextureAsset]
+        SkeletonAsset[Asset::SkeletonAsset]
+        AnimationAsset[Asset::AnimationAsset]
+        ModelAsset[Asset::ModelAsset]
+        SceneAsset[Asset::SceneAsset]
+    end
+    
+    subgraph runtime_layer [运行时层]
+        SceneManager[Scene::SceneManager]
+        SceneEntity[Scene::SceneEntity]
+        MaterialInstance[Scene::MaterialInstance]
+        SpatialIndex[Spatial::ISpatialIndex]
+    end
+    
+    Mesh --> MeshAsset
+    MaterialData --> MaterialAsset
+    Skeleton --> SkeletonAsset
+    AnimClip --> AnimationAsset
+    
+    MeshAsset --> ModelAsset
+    MaterialAsset --> ModelAsset
+    SkeletonAsset --> ModelAsset
+    AnimationAsset --> ModelAsset
+    
+    ModelAsset --> SceneAsset
+    
+    SceneAsset --> |LoadFromAsset| SceneManager
+    ModelAsset --> |InstantiateModel| SceneManager
+    
+    SceneManager --> SceneEntity
+    SceneEntity --> SpatialIndex
+    MaterialAsset --> MaterialInstance
+```
+
+### 模块依赖关系
 
 ```mermaid
 graph LR
     Asset[Asset Module] --> Scene[Scene Module]
+    Asset --> Spatial[Spatial Module]
     Asset --> Animation[Animation Module]
     Asset --> ShaderCompiler[ShaderCompiler]
     Asset --> RHI[RHI]
     
-    Scene --> |Model, Node, Mesh| Asset
+    Scene --> |Mesh, MaterialData, Node| Asset
+    Spatial --> |BoundingBox| Asset
     Animation --> |Skeleton, Clips| Asset
     ShaderCompiler --> |Compiled Shaders| Asset
     RHI --> |GPU Resources| Asset
 ```
 
+### 职责划分
+
+| 模块 | 职责 | 提供给 Asset 的类型 |
+|------|------|-------------------|
+| **Scene** | 数据结构定义、运行时管理 | `Mesh`, `MaterialData`, `Node` |
+| **Spatial** | 边界体积、空间查询 | `BoundingBox`, `BoundingSphere` |
+| **Animation** | 骨骼/动画数据 | `Skeleton`, `AnimationClip` |
+| **RHI** | GPU 资源抽象 | Buffer/Texture 句柄 |
+| **ShaderCompiler** | 着色器编译 | 编译后的 SPIR-V/字节码 |
+
 ## Usage Examples
 
-### Basic Loading (Hybrid Approach)
+### Basic Loading with SceneManager Integration
 
 ```cpp
+// ========== 资源加载（Asset 层）==========
+
 // 加载模型 - 自动解析并加载所有必需依赖 (mesh, materials, textures)
-auto model = ResourceManager::Get().Load<ModelAsset>("models/character.fbx");
+auto modelAsset = ResourceManager::Get().Load<ModelAsset>("models/character.fbx");
 
 // 访问子资源 - 已自动加载
-auto mesh = model->GetMesh();
-auto materials = model->GetMaterials();
-auto skeleton = model->GetSkeleton();  // 如果存在
+auto meshAsset = modelAsset->GetMesh();           // Asset::MeshAsset
+auto materials = modelAsset->GetMaterials();       // std::vector<Asset::MaterialAsset>
+auto skeletonAsset = modelAsset->GetSkeleton();   // Asset::SkeletonAsset (如果存在)
 
-// 渲染
-renderer->DrawMesh(mesh->GetVertexBuffer(), mesh->GetIndexBuffer(), materials);
+// ========== 场景实例化（Scene 层）==========
+
+// 方式 1：通过 SceneManager 实例化模型
+auto entity = sceneManager.InstantiateModel(modelAsset.Get(), Transform::Identity());
+
+// 方式 2：手动创建实体并设置
+auto entity = sceneManager.CreateEntity<ModelEntity>("Player");
+entity->SetMeshAsset(meshAsset);
+entity->SetMaterials(materials);
+
+// ========== 空间查询（Spatial 层）==========
+
+// 实体自动注册到 ISpatialIndex
+std::vector<SceneEntity*> visible;
+sceneManager.QueryVisible(camera, visible);  // 视锥剔除
+
+// ========== 渲染（Render 层）==========
+
+for (auto* entity : visible) {
+    auto* meshAsset = entity->GetMeshAsset();
+    auto* material = entity->GetMaterial();
+    
+    // GPU 资源绑定
+    materialBinder.Bind(ctx, material);
+    ctx->DrawIndexed(meshAsset->GetVertexBuffer(), meshAsset->GetIndexBuffer());
+}
+```
+
+### Scene Loading with SceneManager
+
+```cpp
+// ========== 加载场景资源 ==========
+
+auto sceneAsset = ResourceManager::Get().Load<SceneAsset>("levels/level1.scene");
+
+// SceneAsset 自动加载所有依赖的 ModelAsset、MaterialAsset、TextureAsset
+
+// ========== 加载到 SceneManager ==========
+
+// 方式 1：完全替换当前场景
+sceneManager.LoadFromAsset(sceneAsset.Get());
+
+// 方式 2：增量添加（保留现有实体）
+auto rootNode = sceneAsset->Instantiate();  // 创建节点树副本
+sceneManager.AddHierarchy(rootNode);
+
+// ========== 场景已就绪，可以进行查询 ==========
+
+// 视锥剔除
+std::vector<SceneEntity*> visible;
+sceneManager.QueryVisible(camera, visible);
+
+// 光线拾取
+RaycastHit hit;
+if (sceneManager.Raycast(mouseRay, hit)) {
+    LOG_INFO("Hit entity: {}", hit.entity->GetName());
+}
 ```
 
 ### Lazy Animation Loading
 
 ```cpp
 // 模型加载时动画不会自动加载
-auto model = ResourceManager::Get().Load<ModelAsset>("models/character.fbx");
+auto modelAsset = ResourceManager::Get().Load<ModelAsset>("models/character.fbx");
 
 // 查看可用动画
-for (size_t i = 0; i < model->GetAnimationCount(); ++i) {
-    LOG_INFO("Animation {}: {}", i, model->GetAnimationName(i));
+for (size_t i = 0; i < modelAsset->GetAnimationCount(); ++i) {
+    LOG_INFO("Animation {}: {}", i, modelAsset->GetAnimationName(i));
 }
 
 // 需要时才加载动画
-auto walkAnim = model->LoadAnimation("walk");
-auto runAnim = model->LoadAnimation("run");
+auto walkAnim = modelAsset->LoadAnimation("walk");   // 返回 AssetHandle<AnimationAsset>
+auto runAnim = modelAsset->LoadAnimation("run");
+
+// 获取底层动画数据
+const Animation::AnimationClip& walkClip = walkAnim->GetClip();
 
 // 使用动画
 animator->Play(walkAnim);
@@ -1169,3 +1497,35 @@ ResourceManager::Get().UnloadUnused();
 // 强制卸载特定资源
 ResourceManager::Get().Unload(model->GetId());
 ```
+
+---
+
+## Related Documents
+
+### 与 Scene/Spatial System 的关系
+
+本设计与 [Unified Scene and Spatial System Design](./Unified%20Scene%20and%20Spatial%20System%20Design.md) 紧密协作：
+
+| Asset 系统封装 | 来自 Scene/Spatial |
+|---------------|-------------------|
+| `MeshAsset` | `Scene::Mesh` + `Spatial::BoundingBox` |
+| `MaterialAsset` | `Scene::MaterialData` |
+| `SceneAsset` | `Scene::Node` 层级 |
+| `SkeletonAsset` | `Animation::Skeleton` |
+| `AnimationAsset` | `Animation::AnimationClip` |
+
+### 职责划分总结
+
+| 层次 | 模块 | 职责 |
+|------|------|------|
+| **数据定义** | Scene, Spatial, Animation | 定义纯数据结构（Mesh, MaterialData, Skeleton） |
+| **资源管理** | Asset | 封装数据，提供生命周期管理（加载、缓存、卸载） |
+| **运行时管理** | Scene (SceneManager) | 管理活动实体，空间查询 |
+| **GPU 绑定** | Render | 材质绑定，渲染管线 |
+
+### 设计原则
+
+1. **Scene/Spatial 模块不依赖 Asset 系统**：确保数据类型可独立使用
+2. **Asset 系统封装 Scene/Spatial 类型**：提供资源生命周期管理
+3. **SceneManager 可选择使用 Asset**：通过接口方法集成，不强制依赖
+4. **命名清晰区分**：`MaterialData`（数据）vs `MaterialAsset`（资源）

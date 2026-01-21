@@ -514,12 +514,12 @@ Scene/
 ├── Include/Scene/
 │   ├── Scene.h                     # 统一头文件
 │   │
-│   ├── SceneManager.h              # NEW: 场景管理器
+│   ├── SceneManager.h              # NEW: 场景管理器（运行时）
 │   ├── SceneEntity.h               # NEW: 实体基类
 │   │
 │   ├── Node.h                      # 重构: 继承 SceneEntity
 │   ├── Transform.h                 # 分离: 从 Node 中提取
-│   ├── Model.h                     # 保持
+│   ├── Model.h                     # 保持（运行时模型实例）
 │   │
 │   ├── Components/                 # 组件
 │   │   ├── Component.h             # 组件基类
@@ -527,14 +527,14 @@ Scene/
 │   │   ├── LightComponent.h        # 光源组件
 │   │   └── CameraComponent.h       # 相机组件
 │   │
-│   ├── Mesh.h                      # 保持
+│   ├── Mesh.h                      # 保持（纯几何数据）
 │   ├── VertexAttribute.h           # 保持
 │   │
-│   └── Material/                   # 材质子系统
+│   └── Material/                   # 材质子系统（纯数据定义）
 │       ├── MaterialTypes.h         # 枚举和参数类型
-│       ├── MaterialAsset.h         # 材质资产（原 Material.h）
+│       ├── MaterialData.h          # 材质数据（可被 Asset::MaterialAsset 封装）
 │       ├── MaterialTemplate.h      # 材质模板
-│       └── MaterialInstance.h      # 材质实例
+│       └── MaterialInstance.h      # 材质实例（运行时覆盖）
 │
 └── Private/
     ├── SceneManager.cpp
@@ -544,10 +544,16 @@ Scene/
     ├── Model.cpp
     ├── Mesh.cpp
     └── Material/
-        ├── MaterialAsset.cpp
+        ├── MaterialData.cpp
         ├── MaterialTemplate.cpp
         └── MaterialInstance.cpp
 ```
+
+> **与 Asset 系统的关系**：
+> - `Scene::Mesh` → 被 `Asset::MeshAsset` 封装
+> - `Scene::MaterialData` → 被 `Asset::MaterialAsset` 封装
+> - `Scene::Model` → 运行时实例，由 `Asset::ModelAsset` 加载后创建
+> - `Scene::SceneManager` → 管理活动实体，`Asset::SceneAsset` 存储序列化数据
 
 ### 5.3 核心接口
 
@@ -647,6 +653,9 @@ namespace RVX
 
 namespace RVX
 {
+    // 前向声明 Asset 类型（避免硬依赖）
+    namespace Asset { class SceneAsset; class ModelAsset; class PrefabAsset; }
+
     class SceneManager
     {
     public:
@@ -671,6 +680,24 @@ namespace RVX
 
         void DestroyEntity(SceneEntity::Handle handle);
         SceneEntity* GetEntity(SceneEntity::Handle handle);
+
+        // =====================================================================
+        // Asset 系统集成
+        // =====================================================================
+        
+        // 从 SceneAsset 加载整个场景（替换当前内容）
+        void LoadFromAsset(const Asset::SceneAsset* sceneAsset);
+        
+        // 实例化模型到场景
+        SceneEntity* InstantiateModel(const Asset::ModelAsset* modelAsset, 
+                                       const Transform& transform = {});
+        
+        // 实例化预制体
+        SceneEntity* InstantiatePrefab(const Asset::PrefabAsset* prefabAsset,
+                                        const Transform& transform = {});
+        
+        // 添加节点层级（从 Asset 解析后的节点树）
+        void AddHierarchy(std::shared_ptr<Node> rootNode);
 
         // =====================================================================
         // 空间查询（委托给 ISpatialIndex）
@@ -715,14 +742,20 @@ namespace RVX
 
 ### 6.1 设计理念
 
-材质系统分为两层：
+材质系统分为**三层**，与 Asset 资源系统协调：
 - **Scene 层**：材质数据定义（可序列化，不依赖 RHI）
+- **Asset 层**：资源生命周期管理（加载、缓存、卸载）
 - **Render 层**：GPU 资源绑定（创建 Pipeline、DescriptorSet）
 
 ```mermaid
 graph TB
+    subgraph asset_layer [Asset 层 - 资源管理]
+        MaterialAssetRes[Asset::MaterialAsset<br/>继承 Asset 基类<br/>生命周期管理]
+        TextureAsset[Asset::TextureAsset]
+    end
+    
     subgraph scene_layer [Scene 层 - 数据定义]
-        MaterialAsset[MaterialAsset<br/>PBR参数+纹理路径]
+        MaterialData[MaterialData<br/>PBR参数+纹理路径]
         MaterialTemplate[MaterialTemplate<br/>参数布局定义]
         MaterialInstance[MaterialInstance<br/>运行时参数覆盖]
     end
@@ -733,22 +766,32 @@ graph TB
         PipelineCache[PipelineCache<br/>Pipeline 复用]
     end
     
-    MaterialAsset --> MaterialInstance
-    MaterialTemplate --> MaterialAsset
+    MaterialAssetRes --> |包含| MaterialData
+    MaterialAssetRes --> |引用| TextureAsset
+    MaterialData --> MaterialInstance
+    MaterialTemplate --> MaterialData
     MaterialInstance --> MaterialBinder
     MaterialBinder --> GPUMaterial
     MaterialBinder --> PipelineCache
 ```
 
+> **与 Asset 系统的关系**：
+> - `Scene::MaterialData` 是纯数据结构，定义材质参数
+> - `Asset::MaterialAsset` 封装 `MaterialData`，提供资源生命周期管理
+> - 这种分离确保 Scene 层不依赖 Asset 系统，保持清晰的层次
+
 ### 6.2 Scene/Material 文件结构
 
 ```
 Scene/Include/Scene/Material/
-├── MaterialTypes.h         # 类型定义
-├── MaterialAsset.h         # 材质资产
-├── MaterialTemplate.h      # 材质模板
-└── MaterialInstance.h      # 材质实例
+├── MaterialTypes.h         # 类型定义（枚举、参数类型）
+├── MaterialData.h          # 材质数据（纯数据结构，原 MaterialAsset）
+├── MaterialTemplate.h      # 材质模板（参数布局定义）
+└── MaterialInstance.h      # 材质实例（运行时参数覆盖）
 ```
+
+> **注意**：`MaterialData` 是纯数据定义，不继承任何基类。
+> `Asset::MaterialAsset`（在 Asset 模块中）封装 `MaterialData` 并继承 `Asset` 基类。
 
 ### 6.3 核心接口
 
@@ -850,26 +893,24 @@ namespace RVX
 }
 ```
 
-#### 6.3.3 MaterialAsset - 材质资产
+#### 6.3.3 MaterialData - 材质数据
 
 ```cpp
-// Scene/Include/Scene/Material/MaterialAsset.h
+// Scene/Include/Scene/Material/MaterialData.h
 
 namespace RVX
 {
-    // 材质资产 - 具体的材质实例数据（可序列化）
-    class MaterialAsset
+    // 材质数据 - 纯数据结构（可序列化，不依赖 Asset 系统）
+    // 注意：Asset::MaterialAsset 会封装此结构并提供生命周期管理
+    struct MaterialData
     {
-    public:
-        using Ptr = std::shared_ptr<MaterialAsset>;
-
         std::string name;
         std::string templateName;           // 使用的模板名
 
         // 参数值
         std::unordered_map<std::string, ParameterValue> parameters;
 
-        // 纹理
+        // 纹理路径（Asset 层会解析为 TextureAsset 引用）
         std::unordered_map<std::string, TextureSlot> textures;
 
         // 渲染状态覆盖
@@ -888,6 +929,10 @@ namespace RVX
 
         // 创建运行时实例
         std::unique_ptr<MaterialInstance> CreateInstance() const;
+
+        // 序列化支持
+        void Serialize(ISerializer& serializer) const;
+        static MaterialData Deserialize(IDeserializer& deserializer);
     };
 }
 ```
@@ -1062,13 +1107,21 @@ namespace RVX::Render
 
 ## 7. 模块依赖关系
 
+### 7.1 与 Asset 系统的统一架构
+
+本设计与 Resource Management System 协同工作，形成完整的引擎架构：
+
 ```mermaid
 graph TB
-    Core[Core<br/>Math, Types]
+    Core[Core<br/>Math, Types, RefCounted]
     
     Spatial[Spatial<br/>Bounds, Index]
     
-    Scene[Scene<br/>Entity, Material]
+    Scene[Scene<br/>Entity, MaterialData]
+    
+    Asset[Asset<br/>ResourceManager, Loaders]
+    
+    Animation[Animation<br/>Skeleton, Clip]
     
     Acceleration[Acceleration<br/>MeshBVH, Ray]
     
@@ -1080,60 +1133,174 @@ graph TB
     
     Core --> Spatial
     Core --> Scene
-    Spatial --> Scene
-    Spatial --> Acceleration
+    Core --> Asset
+    Core --> Animation
     Core --> RHI
+    
+    Spatial --> Scene
+    Spatial --> Asset
+    Spatial --> Acceleration
+    
+    Scene --> Asset
+    Animation --> Asset
+    
     RHI --> ShaderCompiler
+    RHI --> Asset
+    
+    Asset --> Render
     Scene --> Render
     ShaderCompiler --> Render
     RHI --> Render
 ```
 
-### 依赖矩阵
+### 7.2 依赖矩阵
 
 | 模块 | 依赖 | 被依赖 |
 |------|------|--------|
 | **Core** | - | 全部 |
-| **Spatial** | Core | Scene, Acceleration, Render |
-| **Scene** | Core, Spatial | Render, Application |
+| **Spatial** | Core | Scene, Asset, Acceleration, Render |
+| **Scene** | Core, Spatial | Asset, Render, Application |
+| **Asset** | Core, Spatial, Scene, Animation, RHI | Render, Application |
+| **Animation** | Core | Asset |
 | **Acceleration** | Core, Spatial | Application |
-| **RHI** | Core | ShaderCompiler, Render |
-| **ShaderCompiler** | Core, RHI | Render |
-| **Render** | Core, RHI, ShaderCompiler, Scene | Application |
+| **RHI** | Core | ShaderCompiler, Asset, Render |
+| **ShaderCompiler** | Core, RHI | Asset, Render |
+| **Render** | Core, RHI, ShaderCompiler, Scene, Asset | Application |
+
+### 7.3 Scene 与 Asset 的职责划分
+
+| 概念 | Scene 模块（数据定义） | Asset 模块（资源封装） |
+|------|----------------------|----------------------|
+| **材质** | `MaterialData` - 纯参数结构 | `MaterialAsset : Asset` - 包装 MaterialData |
+| **网格** | `Mesh` - 顶点/索引数据 | `MeshAsset : Asset` - 包装 Mesh |
+| **纹理** | - | `TextureAsset : Asset` - GPU 纹理资源 |
+| **场景** | `SceneManager` - 运行时管理 | `SceneAsset : Asset` - 场景序列化数据 |
+| **实体** | `SceneEntity` - 运行时实体 | `PrefabAsset : Asset` - 实体模板 |
+
+### 7.4 典型数据流
+
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant RM as ResourceManager
+    participant MA as MaterialAsset
+    participant MD as MaterialData
+    participant MI as MaterialInstance
+    participant MB as MaterialBinder
+    participant GPU as GPU
+    
+    App->>RM: Load<MaterialAsset>("mat.json")
+    RM->>MA: 创建 MaterialAsset
+    MA->>MD: 包含 MaterialData
+    MA-->>App: AssetHandle<MaterialAsset>
+    
+    App->>MA: CreateInstance()
+    MA->>MI: 基于 MaterialData 创建
+    MI-->>App: MaterialInstance*
+    
+    App->>MB: Prepare(instance)
+    MB->>GPU: 创建 Pipeline, DescriptorSet
+    MB-->>App: GPUMaterialHandle
+```
 
 ---
 
 ## 8. 实现路线图
 
+> **注意**：本路线图与 Resource Management System 的实现阶段协调。
+> 优先实现 Scene/Spatial 基础，为 Asset 系统提供数据类型支持。
+
 ### Phase 1: Spatial 模块基础
 
-1. 创建 `Spatial/` 模块目录结构
+**目标**：为整个引擎提供空间查询基础设施
+
+1. 创建 `Spatial/` 模块目录结构和 CMakeLists.txt
 2. 移动 `BoundingBox` 到 `Spatial/Bounds/`
 3. 实现 `Frustum` 和 `BoundingSphere`
-4. 定义 `ISpatialIndex` 接口
+4. 定义 `ISpatialIndex` 和 `ISpatialEntity` 接口
 5. 实现 `BVHIndex`（从现有 SceneBVH 适配）
+
+**产出**：`Spatial::BoundingBox`, `Spatial::ISpatialIndex` 可供 Asset 模块使用
 
 ### Phase 2: Scene 模块重构
 
+**目标**：建立场景运行时管理基础
+
 1. 创建 `SceneEntity` 基类（实现 `ISpatialEntity`）
 2. 重构 `Node` 继承 `SceneEntity`
-3. 实现 `SceneManager`
-4. 集成 `ISpatialIndex` 进行查询
+3. 分离 `Transform` 组件
+4. 实现 `SceneManager` 基础功能
+5. 集成 `ISpatialIndex` 进行查询
 
-### Phase 3: 材质系统完善
+**产出**：`Scene::Mesh`, `Scene::Node`, `Scene::SceneManager` 可供 Asset 模块使用
+
+### Phase 3: 材质数据系统
+
+**目标**：建立材质数据定义（为 Asset::MaterialAsset 提供基础）
 
 1. 重组 `Material.h` 为 `Material/` 子目录
-2. 实现 `MaterialTemplate` 和 `MaterialInstance`
-3. 实现 `Render/MaterialBinder`
-4. 创建内置材质模板
-5. 更新 Samples 使用新材质系统
+2. 将 `MaterialAsset` 重命名为 `MaterialData`（纯数据结构）
+3. 实现 `MaterialTemplate`（参数布局定义）
+4. 实现 `MaterialInstance`（运行时参数覆盖）
 
-### Phase 4: 高级特性
+**产出**：`Scene::MaterialData`, `Scene::MaterialInstance` 可供 Asset 和 Render 模块使用
+
+### Phase 4: 与 Asset 系统集成
+
+**目标**：确保 Scene/Spatial 与 Asset 系统无缝协作
+
+1. 添加 `SceneManager::LoadFromAsset()` 方法
+2. 添加 `SceneManager::InstantiateModel()` 方法
+3. 添加 `SceneManager::InstantiatePrefab()` 方法
+4. 确保 `SceneEntity` 可以持有 `AssetHandle`
+
+**依赖**：需要 Asset 模块 Phase 1-3 完成
+
+### Phase 5: Render 材质绑定
+
+**目标**：完成材质到 GPU 的绑定链路
+
+1. 实现 `Render/MaterialBinder`
+2. 实现 `Render/GPUMaterial`
+3. 创建内置材质模板（PBR、Unlit 等）
+4. 更新 Samples 使用新材质系统
+
+**依赖**：需要 Phase 3 完成
+
+### Phase 6: 高级特性
+
+**目标**：性能优化和扩展功能
 
 1. 实现 `OctreeIndex`（动态场景优化）
 2. 增量更新机制完善
-3. GPU 剔除支持
+3. GPU 剔除支持（Compute Shader）
 4. 材质 LOD 系统
+
+### 实现顺序总览
+
+```mermaid
+gantt
+    title Scene/Spatial + Asset 统一实现路线
+    dateFormat  X
+    axisFormat %s
+    
+    section Spatial
+    Phase 1 - Spatial 基础    :a1, 0, 1
+    
+    section Scene
+    Phase 2 - Scene 重构      :a2, after a1, 1
+    Phase 3 - 材质数据        :a3, after a2, 1
+    
+    section Asset
+    Asset Phase 1 - 核心框架  :b1, after a1, 1
+    Asset Phase 2 - 原始资源  :b2, after a3, 1
+    Asset Phase 3 - ModelAsset:b3, after b2, 1
+    
+    section 集成
+    Phase 4 - 系统集成        :c1, after b3, 1
+    Phase 5 - Render 绑定     :c2, after c1, 1
+    Phase 6 - 高级特性        :c3, after c2, 1
+```
 
 ---
 
@@ -1151,4 +1318,39 @@ graph TB
 
 - **场景结构**：采用 Entity + Component 模式（类似 Unity）
 - **加速结构**：可插拔接口 + BVH 默认实现（类似 Unreal 灵活性）
-- **材质系统**：Template + Asset + Instance 三层（类似 Unreal 的 Material/MaterialInstance）
+- **材质系统**：Template + Data + Instance 三层（类似 Unreal 的 Material/MaterialInstance）
+
+---
+
+## 10. 相关文档
+
+### 与 Resource Management System 的关系
+
+本设计与 [Resource Management System Design](./Resource%20Management%20System%20Design.md) 紧密协作：
+
+| 本设计提供 | Asset 系统使用 |
+|-----------|---------------|
+| `Spatial::BoundingBox` | `MeshAsset::m_bounds` |
+| `Scene::Mesh` | `MeshAsset::m_mesh` |
+| `Scene::MaterialData` | `MaterialAsset::m_data` |
+| `Scene::Node` | `SceneAsset::m_rootNode` |
+| `Scene::SceneManager` | `SceneAsset::LoadFromAsset()` |
+
+### 数据流向
+
+```
+Asset 系统（加载）
+    ↓
+Scene/Spatial 系统（运行时管理 + 空间查询）
+    ↓
+Render 系统（GPU 绑定 + 渲染）
+```
+
+### 命名约定
+
+| 概念 | Scene 模块命名 | Asset 模块命名 |
+|------|---------------|---------------|
+| 材质数据 | `MaterialData` | `MaterialAsset` |
+| 网格数据 | `Mesh` | `MeshAsset` |
+| 场景管理 | `SceneManager` | `SceneAsset` |
+| 实体 | `SceneEntity` | `PrefabAsset` |

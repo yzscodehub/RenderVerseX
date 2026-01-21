@@ -9,6 +9,8 @@ target_sources(RVX_Scene PRIVATE
     Private/Material.cpp
     Private/Node.cpp
     Private/Model.cpp
+    Private/SceneEntity.cpp
+    Private/SceneManager.cpp
 )
 
 target_include_directories(RVX_Scene PUBLIC
@@ -18,6 +20,7 @@ target_include_directories(RVX_Scene PUBLIC
 
 target_link_libraries(RVX_Scene PUBLIC
     RVX::Core
+    Spatial
 )
 
 # Alias for cleaner target names

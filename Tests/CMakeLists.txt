@@ -95,6 +95,18 @@ if(RVX_ENABLE_DX12 AND RVX_ENABLE_VULKAN)
     )
 endif()
 
+# System Integration Test (Spatial + Scene + Asset)
+add_executable(SystemIntegrationTest
+    SystemIntegration/main.cpp
+)
+target_link_libraries(SystemIntegrationTest PRIVATE
+    RVX::Core
+    Spatial
+    RVX::Scene
+    RVX::Asset
+)
+target_compile_features(SystemIntegrationTest PRIVATE cxx_std_20)
+
 # Copy test shaders
 file(GLOB TEST_SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/*.hlsl")
 foreach(SHADER ${TEST_SHADERS})

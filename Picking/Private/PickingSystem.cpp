@@ -4,6 +4,7 @@
  */
 
 #include "Picking/PickingSystem.h"
+#include "PickingBVH.h"
 #include "Camera/Camera.h"
 #include "Scene/Mesh.h"
 #include "Scene/VertexAttribute.h"
@@ -11,6 +12,29 @@
 
 namespace RVX
 {
+
+struct PickingSystem::Impl
+{
+    struct PendingMesh
+    {
+        int nodeIndex;
+        int meshIndex;
+        std::vector<Vec3> positions;
+        std::vector<uint32_t> indices;
+        Mat4 worldTransform;
+    };
+
+    std::vector<PendingMesh> pendingMeshes;
+    std::vector<std::shared_ptr<MeshBVH>> meshBVHs;
+    SceneBVH sceneBVH;
+};
+
+PickingSystem::PickingSystem()
+    : m_impl(std::make_unique<Impl>())
+{
+}
+
+PickingSystem::~PickingSystem() = default;
 
 Ray PickingSystem::ScreenToRay(
     const Camera& camera,
@@ -92,37 +116,37 @@ void PickingSystem::AddMesh(
 {
     if (positions.empty() || indices.empty()) return;
     
-    PendingMesh pending;
+    Impl::PendingMesh pending;
     pending.nodeIndex = nodeIndex;
     pending.meshIndex = meshIndex;
     pending.positions = positions;
     pending.indices = indices;
     pending.worldTransform = worldTransform;
     
-    m_pendingMeshes.push_back(std::move(pending));
+    m_impl->pendingMeshes.push_back(std::move(pending));
     m_isBuilt = false;
 }
 
 void PickingSystem::Build()
 {
-    m_meshBVHs.clear();
-    m_sceneBVH.Clear();
+    m_impl->meshBVHs.clear();
+    m_impl->sceneBVH.Clear();
     
-    if (m_pendingMeshes.empty())
+    if (m_impl->pendingMeshes.empty())
     {
         m_isBuilt = true;
         return;
     }
     
     // Build mesh BVHs
-    for (const auto& pending : m_pendingMeshes)
+    for (const auto& pending : m_impl->pendingMeshes)
     {
         auto meshBVH = std::make_shared<MeshBVH>();
         meshBVH->Build(pending.positions, pending.indices);
         
         // Compute world bounds
-        BoundingBox localBounds = meshBVH->GetBounds();
-        BoundingBox worldBounds;
+        AABB localBounds = meshBVH->GetBounds();
+        AABB worldBounds;
         
         // Transform AABB corners to world space
         Vec3 localMin = localBounds.GetMin();
@@ -148,12 +172,12 @@ void PickingSystem::Build()
         entry.inverseTransform = inverse(pending.worldTransform);
         entry.meshBVH = meshBVH;
         
-        m_sceneBVH.AddObject(entry);
-        m_meshBVHs.push_back(meshBVH);
+        m_impl->sceneBVH.AddObject(entry);
+        m_impl->meshBVHs.push_back(meshBVH);
     }
     
     // Build scene BVH
-    m_sceneBVH.Build();
+    m_impl->sceneBVH.Build();
     m_isBuilt = true;
 }
 
@@ -164,9 +188,9 @@ void PickingSystem::Rebuild()
 
 void PickingSystem::Clear()
 {
-    m_pendingMeshes.clear();
-    m_meshBVHs.clear();
-    m_sceneBVH.Clear();
+    m_impl->pendingMeshes.clear();
+    m_impl->meshBVHs.clear();
+    m_impl->sceneBVH.Clear();
     m_isBuilt = false;
 }
 
@@ -183,7 +207,7 @@ PickResult PickingSystem::Pick(const Ray& ray, const PickingConfig& config) cons
     boundedRay.tMax = config.maxDistance;
     
     // Perform intersection test
-    if (m_sceneBVH.Intersect(boundedRay, result.rayHit))
+    if (m_impl->sceneBVH.Intersect(boundedRay, result.rayHit))
     {
         result.hit = true;
     }
@@ -206,7 +230,17 @@ PickResult PickingSystem::PickScreen(
 bool PickingSystem::IsOccluded(const Ray& ray) const
 {
     if (!m_isBuilt) return false;
-    return m_sceneBVH.IntersectAny(ray);
+    return m_impl->sceneBVH.IntersectAny(ray);
+}
+
+size_t PickingSystem::GetObjectCount() const
+{
+    return m_impl->sceneBVH.GetObjectCount();
+}
+
+const BVHStats& PickingSystem::GetStats() const
+{
+    return m_impl->sceneBVH.GetStats();
 }
 
 } // namespace RVX

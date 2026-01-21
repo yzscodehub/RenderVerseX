@@ -149,9 +149,9 @@ endif()
 # Subdirectories
 # =============================================================================
 add_subdirectory(Core)
+add_subdirectory(Spatial)
 add_subdirectory(Scene)
 add_subdirectory(Animation)
-add_subdirectory(Acceleration)
 add_subdirectory(Platform)
 add_subdirectory(Input)
 add_subdirectory(Camera)
@@ -182,6 +182,7 @@ endif()
 
 add_subdirectory(RenderGraph)
 add_subdirectory(Render)
+add_subdirectory(Asset)
 
 if(RVX_BUILD_SAMPLES)
     add_subdirectory(Samples)

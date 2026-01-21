@@ -1,23 +1,35 @@
 /**
  * @file Intersection.h
- * @brief Ray intersection algorithms
+ * @brief Geometric intersection and distance tests
  * 
  * Implements:
  * - Ray-AABB intersection (slab method)
  * - Ray-Triangle intersection (Moller-Trumbore)
  * - Ray-Sphere intersection
+ * - Ray-Plane intersection
+ * - AABB-AABB, Sphere-Sphere, AABB-Sphere tests
+ * - Frustum culling tests
+ * - Distance functions
  */
 
 #pragma once
 
-#include "Acceleration/Ray.h"
-#include "Scene/BoundingBox.h"
 #include "Core/MathTypes.h"
+#include "Core/Math/Ray.h"
+#include "Core/Math/AABB.h"
+#include "Core/Math/Sphere.h"
+#include "Core/Math/Plane.h"
+#include "Core/Math/Frustum.h"
 #include <cmath>
 #include <algorithm>
+#include <limits>
 
 namespace RVX
 {
+
+// =============================================================================
+// Ray Intersection Tests
+// =============================================================================
 
 /**
  * @brief Ray-AABB intersection using slab method
@@ -32,7 +44,7 @@ namespace RVX
  */
 inline bool RayAABBIntersect(
     const Ray& ray,
-    const BoundingBox& box,
+    const AABB& box,
     float& tMin,
     float& tMax)
 {
@@ -60,7 +72,7 @@ inline bool RayAABBIntersect(
 /**
  * @brief Simplified Ray-AABB test (just returns hit/miss)
  */
-inline bool RayAABBTest(const Ray& ray, const BoundingBox& box)
+inline bool RayAABBTest(const Ray& ray, const AABB& box)
 {
     float tMin, tMax;
     return RayAABBIntersect(ray, box, tMin, tMax);
@@ -204,6 +216,15 @@ inline bool RaySphereIntersect(
 }
 
 /**
+ * @brief Ray-Sphere intersection (Sphere object overload)
+ */
+inline bool RaySphereIntersect(const Ray& ray, const Sphere& sphere, float& t)
+{
+    if (!sphere.IsValid()) return false;
+    return RaySphereIntersect(ray, sphere.GetCenter(), sphere.GetRadius(), t);
+}
+
+/**
  * @brief Ray-Plane intersection
  * 
  * @param ray The ray to test
@@ -230,6 +251,152 @@ inline bool RayPlaneIntersect(
 
     return (t >= ray.tMin && t <= ray.tMax);
 }
+
+/**
+ * @brief Ray-Plane intersection (Plane object overload)
+ */
+inline bool RayPlaneIntersect(const Ray& ray, const Plane& plane, float& t)
+{
+    return RayPlaneIntersect(ray, plane.normal, plane.GetPoint(), t);
+}
+
+// =============================================================================
+// AABB Tests
+// =============================================================================
+
+/// Check if two boxes overlap
+inline bool Overlaps(const AABB& a, const AABB& b)
+{
+    return a.Overlaps(b);
+}
+
+/// Check if box A contains box B
+inline bool Contains(const AABB& a, const AABB& b)
+{
+    return a.Contains(b);
+}
+
+/// Check if a point is inside a box
+inline bool Contains(const AABB& box, const Vec3& point)
+{
+    return box.Contains(point);
+}
+
+// =============================================================================
+// Sphere Tests
+// =============================================================================
+
+/// Check if two spheres overlap
+inline bool Overlaps(const Sphere& a, const Sphere& b)
+{
+    return a.Overlaps(b);
+}
+
+/// Check if sphere A contains sphere B
+inline bool Contains(const Sphere& a, const Sphere& b)
+{
+    return a.Contains(b);
+}
+
+/// Check if a point is inside a sphere
+inline bool Contains(const Sphere& sphere, const Vec3& point)
+{
+    return sphere.Contains(point);
+}
+
+// =============================================================================
+// AABB-Sphere Tests
+// =============================================================================
+
+/// Check if a box and sphere overlap
+inline bool Overlaps(const AABB& box, const Sphere& sphere)
+{
+    if (!box.IsValid() || !sphere.IsValid()) return false;
+
+    // Find closest point on box to sphere center
+    Vec3 closest = glm::clamp(sphere.GetCenter(), box.GetMin(), box.GetMax());
+    float distSq = glm::dot(closest - sphere.GetCenter(), closest - sphere.GetCenter());
+    return distSq <= sphere.GetRadius() * sphere.GetRadius();
+}
+
+inline bool Overlaps(const Sphere& sphere, const AABB& box)
+{
+    return Overlaps(box, sphere);
+}
+
+// =============================================================================
+// Frustum Tests
+// =============================================================================
+
+/// Check if frustum intersects box (returns true if visible)
+inline bool Overlaps(const Frustum& frustum, const AABB& box)
+{
+    return frustum.IsVisible(box);
+}
+
+inline bool Overlaps(const AABB& box, const Frustum& frustum)
+{
+    return frustum.IsVisible(box);
+}
+
+/// Check if frustum intersects sphere
+inline bool Overlaps(const Frustum& frustum, const Sphere& sphere)
+{
+    return frustum.IsVisible(sphere);
+}
+
+inline bool Overlaps(const Sphere& sphere, const Frustum& frustum)
+{
+    return frustum.IsVisible(sphere);
+}
+
+/// Check if a point is inside a frustum
+inline bool Contains(const Frustum& frustum, const Vec3& point)
+{
+    return frustum.Contains(point);
+}
+
+// =============================================================================
+// Distance Functions
+// =============================================================================
+
+/// Squared distance from a point to the nearest point on a box
+inline float DistanceSquared(const Vec3& point, const AABB& box)
+{
+    if (!box.IsValid()) return std::numeric_limits<float>::max();
+    
+    Vec3 closest = glm::clamp(point, box.GetMin(), box.GetMax());
+    return glm::dot(point - closest, point - closest);
+}
+
+/// Distance from a point to the nearest point on a box
+inline float Distance(const Vec3& point, const AABB& box)
+{
+    return std::sqrt(DistanceSquared(point, box));
+}
+
+/// Squared distance from a point to a sphere surface
+inline float DistanceSquared(const Vec3& point, const Sphere& sphere)
+{
+    if (!sphere.IsValid()) return std::numeric_limits<float>::max();
+    
+    float dist = glm::length(point - sphere.GetCenter()) - sphere.GetRadius();
+    if (dist < 0) return 0.0f;
+    return dist * dist;
+}
+
+/// Distance from a point to a sphere surface
+inline float Distance(const Vec3& point, const Sphere& sphere)
+{
+    if (!sphere.IsValid()) return std::numeric_limits<float>::max();
+    
+    float dist = glm::length(point - sphere.GetCenter()) - sphere.GetRadius();
+    return dist > 0 ? dist : 0.0f;
+}
+
+// =============================================================================
+// Barycentric Coordinates
+// =============================================================================
 
 /**
  * @brief Compute barycentric coordinates

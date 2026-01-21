@@ -1,17 +1,16 @@
 /**
- * @file BVH.h
- * @brief Bounding Volume Hierarchy for ray-scene intersection
+ * @file PickingBVH.h
+ * @brief Internal BVH implementation for Picking module
  * 
  * Implements a BVH with Surface Area Heuristic (SAH) for optimal construction.
  * Supports both scene-level and mesh-level acceleration.
+ * 
+ * This is an internal header for the Picking module.
  */
 
 #pragma once
 
-#include "Acceleration/Ray.h"
-#include "Acceleration/Intersection.h"
-#include "Scene/BoundingBox.h"
-#include "Core/MathTypes.h"
+#include "Core/Math/Geometry.h"
 #include <vector>
 #include <memory>
 #include <functional>
@@ -30,7 +29,7 @@ class Node;
  */
 struct BVHNode
 {
-    BoundingBox bounds;
+    AABB bounds;
     int leftChild{-1};      // Index of left child (-1 if leaf)
     int rightChild{-1};     // Index of right child (-1 if leaf)
     int primitiveStart{0};  // Start index in primitive array (for leaves)
@@ -45,11 +44,11 @@ struct BVHNode
 struct BVHPrimitive
 {
     int index;              // Original primitive index
-    BoundingBox bounds;
+    AABB bounds;
     Vec3 centroid;
 
     BVHPrimitive() = default;
-    BVHPrimitive(int idx, const BoundingBox& b)
+    BVHPrimitive(int idx, const AABB& b)
         : index(idx), bounds(b), centroid(b.GetCenter()) {}
 };
 
@@ -59,7 +58,7 @@ struct BVHPrimitive
 struct SAHBucket
 {
     int count{0};
-    BoundingBox bounds;
+    AABB bounds;
 };
 
 /**
@@ -95,10 +94,6 @@ public:
 
     /**
      * @brief Build BVH from triangle positions
-     * 
-     * @param positions Vertex positions (3 floats per vertex)
-     * @param indices Triangle indices (3 indices per triangle)
-     * @param params Build parameters
      */
     void Build(
         const std::vector<Vec3>& positions,
@@ -107,10 +102,6 @@ public:
 
     /**
      * @brief Ray intersection test
-     * 
-     * @param ray The ray to test
-     * @param hit Output hit information
-     * @return true if ray hits any triangle
      */
     bool Intersect(const Ray& ray, RayHit& hit) const;
 
@@ -127,7 +118,7 @@ public:
     /**
      * @brief Get root bounding box
      */
-    const BoundingBox& GetBounds() const
+    const AABB& GetBounds() const
     {
         return m_nodes.empty() ? m_emptyBox : m_nodes[0].bounds;
     }
@@ -153,11 +144,11 @@ private:
 
 private:
     std::vector<BVHNode> m_nodes;
-    std::vector<int> m_primitiveIndices;  // Reordered primitive indices
+    std::vector<int> m_primitiveIndices;
     std::vector<Vec3> m_positions;
     std::vector<uint32_t> m_indices;
     BVHStats m_stats;
-    BoundingBox m_emptyBox;
+    AABB m_emptyBox;
 };
 
 /**
@@ -173,7 +164,7 @@ public:
     {
         int nodeIndex{-1};
         int meshIndex{-1};
-        BoundingBox worldBounds;
+        AABB worldBounds;
         Mat4 worldTransform{1.0f};
         Mat4 inverseTransform{1.0f};
         std::shared_ptr<MeshBVH> meshBVH;
@@ -181,36 +172,14 @@ public:
 
     SceneBVH() = default;
 
-    /**
-     * @brief Add an object to the scene
-     */
     void AddObject(const ObjectEntry& entry);
-
-    /**
-     * @brief Build scene BVH from added objects
-     */
     void Build(const BVHBuildParams& params = {});
-
-    /**
-     * @brief Clear all objects
-     */
     void Clear();
 
-    /**
-     * @brief Ray intersection test against entire scene
-     */
     bool Intersect(const Ray& ray, RayHit& hit) const;
-
-    /**
-     * @brief Check if any intersection exists
-     */
     bool IntersectAny(const Ray& ray) const;
 
-    /**
-     * @brief Get build statistics
-     */
     const BVHStats& GetStats() const { return m_stats; }
-
     size_t GetObjectCount() const { return m_objects.size(); }
 
 private:
@@ -233,12 +202,12 @@ private:
 private:
     std::vector<ObjectEntry> m_objects;
     std::vector<BVHNode> m_nodes;
-    std::vector<int> m_objectIndices;  // Reordered object indices
+    std::vector<int> m_objectIndices;
     BVHStats m_stats;
 };
 
 // ============================================================================
-// Inline Implementations
+// MeshBVH Implementation
 // ============================================================================
 
 inline void MeshBVH::Build(
@@ -259,14 +228,13 @@ inline void MeshBVH::Build(
     std::vector<BVHPrimitive> primitives;
     primitives.reserve(triangleCount);
 
-    // Build primitive list
     for (int i = 0; i < triangleCount; ++i)
     {
         uint32_t i0 = indices[i * 3 + 0];
         uint32_t i1 = indices[i * 3 + 1];
         uint32_t i2 = indices[i * 3 + 2];
 
-        BoundingBox bounds;
+        AABB bounds;
         bounds.Expand(positions[i0]);
         bounds.Expand(positions[i1]);
         bounds.Expand(positions[i2]);
@@ -277,7 +245,6 @@ inline void MeshBVH::Build(
     m_nodes.reserve(triangleCount * 2);
     BuildRecursive(primitives, 0, triangleCount, 0, params);
 
-    // Build reordered primitive indices
     m_primitiveIndices.resize(triangleCount);
     for (int i = 0; i < triangleCount; ++i)
     {
@@ -297,9 +264,8 @@ inline int MeshBVH::BuildRecursive(
     int nodeIndex = static_cast<int>(m_nodes.size());
     m_nodes.emplace_back();
 
-    // Compute bounds
-    BoundingBox bounds;
-    BoundingBox centroidBounds;
+    AABB bounds;
+    AABB centroidBounds;
     for (int i = start; i < end; ++i)
     {
         bounds = bounds.Union(primitives[i].bounds);
@@ -311,7 +277,6 @@ inline int MeshBVH::BuildRecursive(
 
     m_stats.maxDepth = std::max(m_stats.maxDepth, depth);
 
-    // Create leaf if few primitives
     if (primitiveCount <= params.maxPrimitivesPerLeaf)
     {
         m_nodes[nodeIndex].primitiveStart = start;
@@ -332,7 +297,6 @@ inline int MeshBVH::BuildRecursive(
     {
         if (extent[axis] < 1e-6f) continue;
 
-        // Initialize buckets
         std::vector<SAHBucket> buckets(params.sahBucketCount);
 
         for (int i = start; i < end; ++i)
@@ -345,10 +309,9 @@ inline int MeshBVH::BuildRecursive(
             buckets[bucketIdx].bounds = buckets[bucketIdx].bounds.Union(primitives[i].bounds);
         }
 
-        // Evaluate SAH cost for each split
         for (int split = 1; split < params.sahBucketCount; ++split)
         {
-            BoundingBox leftBounds, rightBounds;
+            AABB leftBounds, rightBounds;
             int leftCount = 0, rightCount = 0;
 
             for (int i = 0; i < split; ++i)
@@ -379,7 +342,6 @@ inline int MeshBVH::BuildRecursive(
         }
     }
 
-    // Check if split is beneficial
     float leafCost = primitiveCount * params.intersectionCost;
     if (bestCost >= leafCost || extent[bestAxis] < 1e-6f)
     {
@@ -390,7 +352,6 @@ inline int MeshBVH::BuildRecursive(
         return nodeIndex;
     }
 
-    // Partition primitives
     float splitPos = centroidBounds.GetMin()[bestAxis] +
         (extent[bestAxis] * bestBucket) / params.sahBucketCount;
 
@@ -403,7 +364,6 @@ inline int MeshBVH::BuildRecursive(
 
     int mid = static_cast<int>(midIter - primitives.begin());
 
-    // Ensure valid split
     if (mid == start || mid == end)
     {
         mid = (start + end) / 2;
@@ -416,7 +376,6 @@ inline int MeshBVH::BuildRecursive(
             });
     }
 
-    // Build children
     m_nodes[nodeIndex].leftChild = BuildRecursive(primitives, start, mid, depth + 1, params);
     m_nodes[nodeIndex].rightChild = BuildRecursive(primitives, mid, end, depth + 1, params);
 
@@ -449,7 +408,6 @@ inline void MeshBVH::IntersectNode(int nodeIndex, const Ray& ray, RayHit& hit) c
 
     if (node.IsLeaf())
     {
-        // Test all primitives in leaf
         for (int i = 0; i < node.primitiveCount; ++i)
         {
             int primIdx = m_primitiveIndices[node.primitiveStart + i];
@@ -470,14 +428,12 @@ inline void MeshBVH::IntersectNode(int nodeIndex, const Ray& ray, RayHit& hit) c
         return;
     }
 
-    // Check children
     float tMinL, tMaxL, tMinR, tMaxR;
     bool hitL = RayAABBIntersect(ray, m_nodes[node.leftChild].bounds, tMinL, tMaxL);
     bool hitR = RayAABBIntersect(ray, m_nodes[node.rightChild].bounds, tMinR, tMaxR);
 
     if (hitL && hitR)
     {
-        // Visit closer child first
         if (tMinL < tMinR)
         {
             IntersectNode(node.leftChild, ray, hit);
@@ -604,8 +560,8 @@ inline int SceneBVH::BuildRecursive(
     int nodeIndex = static_cast<int>(m_nodes.size());
     m_nodes.emplace_back();
 
-    BoundingBox bounds;
-    BoundingBox centroidBounds;
+    AABB bounds;
+    AABB centroidBounds;
     for (int i = start; i < end; ++i)
     {
         bounds = bounds.Union(primitives[i].bounds);
@@ -625,7 +581,6 @@ inline int SceneBVH::BuildRecursive(
         return nodeIndex;
     }
 
-    // Find best axis using simple median split
     Vec3 extent = centroidBounds.GetExtent();
     int axis = 0;
     if (extent.y > extent.x) axis = 1;
@@ -672,7 +627,6 @@ inline void SceneBVH::IntersectNode(int nodeIndex, const Ray& ray, RayHit& hit) 
 
             if (!obj.meshBVH) continue;
 
-            // Transform ray to object space
             Ray localRay = ray.Transform(obj.inverseTransform);
 
             RayHit localHit;
@@ -680,7 +634,6 @@ inline void SceneBVH::IntersectNode(int nodeIndex, const Ray& ray, RayHit& hit) 
 
             if (obj.meshBVH->Intersect(localRay, localHit))
             {
-                // Transform hit back to world space
                 Vec3 worldPos = Vec3(obj.worldTransform * Vec4(localHit.position, 1.0f));
                 float worldT = length(worldPos - ray.origin);
 

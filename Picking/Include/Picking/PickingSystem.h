@@ -7,9 +7,7 @@
 
 #pragma once
 
-#include "Core/MathTypes.h"
-#include "Acceleration/Ray.h"
-#include "Acceleration/BVH.h"
+#include "Core/Math/Geometry.h"
 #include <memory>
 #include <vector>
 #include <functional>
@@ -21,6 +19,9 @@ namespace RVX
 class Camera;
 class Node;
 class Mesh;
+class MeshBVH;
+class SceneBVH;
+struct BVHStats;
 
 /**
  * @brief Picking result with detailed hit information
@@ -73,18 +74,11 @@ struct PickingConfig
 class PickingSystem
 {
 public:
-    PickingSystem() = default;
-    ~PickingSystem() = default;
+    PickingSystem();
+    ~PickingSystem();
 
     /**
      * @brief Convert screen coordinates to world-space ray
-     * 
-     * @param camera The camera
-     * @param screenX Mouse X position in pixels
-     * @param screenY Mouse Y position in pixels
-     * @param screenWidth Viewport width in pixels
-     * @param screenHeight Viewport height in pixels
-     * @return Ray from camera through screen point
      */
     static Ray ScreenToRay(
         const Camera& camera,
@@ -95,11 +89,6 @@ public:
 
     /**
      * @brief Convert normalized device coordinates to ray
-     * 
-     * @param camera The camera
-     * @param ndcX Normalized X [-1, 1]
-     * @param ndcY Normalized Y [-1, 1] (Y up)
-     * @return Ray from camera through NDC point
      */
     static Ray NDCToRay(
         const Camera& camera,
@@ -108,11 +97,6 @@ public:
 
     /**
      * @brief Add a pickable mesh with its transform
-     * 
-     * @param nodeIndex Scene node index
-     * @param meshIndex Mesh index within node
-     * @param mesh The mesh to add
-     * @param worldTransform World transform matrix
      */
     void AddMesh(
         int nodeIndex,
@@ -132,15 +116,11 @@ public:
 
     /**
      * @brief Build acceleration structure
-     * 
-     * Call this after adding all meshes.
      */
     void Build();
 
     /**
      * @brief Rebuild acceleration structure
-     * 
-     * Call when scene changes.
      */
     void Rebuild();
 
@@ -173,7 +153,7 @@ public:
     /**
      * @brief Get number of pickable objects
      */
-    size_t GetObjectCount() const { return m_sceneBVH.GetObjectCount(); }
+    size_t GetObjectCount() const;
 
     /**
      * @brief Check if built
@@ -183,21 +163,11 @@ public:
     /**
      * @brief Get build statistics
      */
-    const BVHStats& GetStats() const { return m_sceneBVH.GetStats(); }
+    const BVHStats& GetStats() const;
 
 private:
-    struct PendingMesh
-    {
-        int nodeIndex;
-        int meshIndex;
-        std::vector<Vec3> positions;
-        std::vector<uint32_t> indices;
-        Mat4 worldTransform;
-    };
-
-    std::vector<PendingMesh> m_pendingMeshes;
-    std::vector<std::shared_ptr<MeshBVH>> m_meshBVHs;
-    SceneBVH m_sceneBVH;
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
     bool m_isBuilt{false};
 };
 

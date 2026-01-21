@@ -7,6 +7,24 @@ namespace RVX
 {
     std::shared_ptr<spdlog::logger> Log::s_coreLogger;
     std::shared_ptr<spdlog::logger> Log::s_rhiLogger;
+    std::shared_ptr<spdlog::logger> Log::s_sceneLogger;
+    std::shared_ptr<spdlog::logger> Log::s_assetLogger;
+    std::shared_ptr<spdlog::logger> Log::s_spatialLogger;
+    std::shared_ptr<spdlog::logger> Log::s_renderLogger;
+
+    namespace
+    {
+        std::shared_ptr<spdlog::logger> CreateLogger(
+            const std::string& name, 
+            const std::vector<spdlog::sink_ptr>& sinks)
+        {
+            auto logger = std::make_shared<spdlog::logger>(name, sinks.begin(), sinks.end());
+            spdlog::register_logger(logger);
+            logger->set_level(spdlog::level::trace);
+            logger->flush_on(spdlog::level::trace);
+            return logger;
+        }
+    }
 
     void Log::Initialize()
     {
@@ -19,16 +37,13 @@ namespace RVX
         sinks[0]->set_pattern("%^[%T] [%n] [%l]%$ %v");
         sinks[1]->set_pattern("[%T] [%n] [%l] %v");
 
-        // Create loggers
-        s_coreLogger = std::make_shared<spdlog::logger>("CORE", sinks.begin(), sinks.end());
-        spdlog::register_logger(s_coreLogger);
-        s_coreLogger->set_level(spdlog::level::trace);
-        s_coreLogger->flush_on(spdlog::level::trace);
-
-        s_rhiLogger = std::make_shared<spdlog::logger>("RHI", sinks.begin(), sinks.end());
-        spdlog::register_logger(s_rhiLogger);
-        s_rhiLogger->set_level(spdlog::level::trace);
-        s_rhiLogger->flush_on(spdlog::level::trace);
+        // Create module loggers
+        s_coreLogger    = CreateLogger("CORE",    sinks);
+        s_rhiLogger     = CreateLogger("RHI",     sinks);
+        s_sceneLogger   = CreateLogger("SCENE",   sinks);
+        s_assetLogger   = CreateLogger("ASSET",   sinks);
+        s_spatialLogger = CreateLogger("SPATIAL", sinks);
+        s_renderLogger  = CreateLogger("RENDER",  sinks);
 
         RVX_CORE_INFO("RenderVerseX Logger Initialized");
     }
