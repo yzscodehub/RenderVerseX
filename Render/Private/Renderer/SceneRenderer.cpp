@@ -45,6 +45,14 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
 
     // Create pipeline cache with shader reflection
     m_pipelineCache = std::make_unique<PipelineCache>();
+
+    // Create transient resource pool for RenderGraph
+    m_transientResourcePool = std::make_unique<TransientResourcePool>();
+    m_transientResourcePool->Initialize(m_renderContext->GetDevice());
+
+    // Create resource view cache for automatic view management
+    m_resourceViewCache = std::make_unique<ResourceViewCache>();
+    m_resourceViewCache->Initialize(m_renderContext->GetDevice());
     
     RVX_CORE_INFO("SceneRenderer: Searching for shader directory...");
     RVX_CORE_INFO("  Current working directory: {}", std::filesystem::current_path().string());
@@ -126,6 +134,18 @@ void SceneRenderer::Shutdown()
         m_pipelineCache->Shutdown();
         m_pipelineCache.reset();
     }
+
+    if (m_transientResourcePool)
+    {
+        m_transientResourcePool->Shutdown();
+        m_transientResourcePool.reset();
+    }
+
+    if (m_resourceViewCache)
+    {
+        m_resourceViewCache->Shutdown();
+        m_resourceViewCache.reset();
+    }
     
     if (m_gpuResourceManager)
     {
@@ -183,6 +203,17 @@ void SceneRenderer::Render()
     if (!m_initialized || !m_renderGraph || !m_renderContext)
         return;
 
+    // Begin new frame for transient resource pool and view cache
+    if (m_transientResourcePool)
+    {
+        m_transientResourcePool->BeginFrame();
+    }
+
+    if (m_resourceViewCache)
+    {
+        m_resourceViewCache->BeginFrame();
+    }
+
     // Process pending GPU uploads with time budget
     if (m_gpuResourceManager)
     {
@@ -195,25 +226,53 @@ void SceneRenderer::Render()
         m_pipelineCache->UpdateViewConstants(m_viewData);
     }
 
-    // Update pass resources (render scene, visible indices, etc.)
-    UpdatePassResources();
-
     // Clear the render graph for this frame
     m_renderGraph->Clear();
 
-    // Build the render graph by calling Setup on all passes
+    // Build the render graph (creates depth buffer if needed, imports resources)
     BuildRenderGraph();
 
-    // Compile the render graph
+    // Update pass resources AFTER BuildRenderGraph creates resources
+    // This provides passes with render scene data and texture views
+    UpdatePassResources();
+
+    // Compile the render graph (computes barriers, memory aliasing, pass culling)
     m_renderGraph->Compile();
 
-    // Get command context and execute
+    // Execute through RenderGraph for automatic barrier management
     RHICommandContext* ctx = m_renderContext->GetGraphicsContext();
     if (ctx)
     {
-        // For now, execute passes directly instead of through render graph
-        // TODO: Integrate IRenderPass with RenderGraph's callback-based system
-        ExecutePasses(*ctx);
+        m_renderGraph->Execute(*ctx);
+    }
+
+    // Update depth buffer state after RenderGraph execution
+    // RenderGraph may have transitioned it to DepthWrite
+    if (m_depthTexture)
+    {
+        m_depthBufferState = RHIResourceState::DepthWrite;
+    }
+
+    // Log compile stats periodically for debugging
+    static uint64_t frameCount = 0;
+    if (++frameCount == 1)
+    {
+        const auto& stats = m_renderGraph->GetCompileStats();
+        RVX_CORE_INFO("RenderGraph stats: {} passes ({} culled), {} barriers, memory savings: {:.1f}%",
+                      stats.totalPasses, stats.culledPasses, stats.barrierCount,
+                      stats.GetMemorySavingsPercent());
+    }
+
+    // End frame for transient resource pool
+    if (m_transientResourcePool)
+    {
+        m_transientResourcePool->EndFrame();
+        
+        // Evict unused resources every 60 frames (approx 1 second at 60fps)
+        if (frameCount % 60 == 0)
+        {
+            m_transientResourcePool->EvictUnused(3);  // Evict resources unused for 3 frames
+        }
     }
 }
 
@@ -286,10 +345,8 @@ void SceneRenderer::UpdatePassResources()
     {
         m_opaquePass->SetRenderScene(&m_renderScene, &m_visibleObjectIndices);
         
-        // Ensure depth buffer exists and is correct size
-        EnsureDepthBuffer(m_viewData.viewportWidth, m_viewData.viewportHeight);
-        
         // Set render target views
+        // Note: Depth buffer is created in BuildRenderGraph and imported into RenderGraph
         RHITextureView* colorTargetView = m_renderContext->GetCurrentBackBufferView();
         m_opaquePass->SetRenderTargets(colorTargetView, m_depthTextureView.Get());
     }
@@ -353,35 +410,42 @@ void SceneRenderer::EnsureDepthBuffer(uint32_t width, uint32_t height)
 
 void SceneRenderer::BuildRenderGraph()
 {
+    // Store RenderGraph and ViewCache pointers in ViewData so passes can access resources
+    m_viewData.renderGraph = m_renderGraph.get();
+    m_viewData.viewCache = m_resourceViewCache.get();
+
     // Import back buffer from swap chain
     if (m_renderContext->GetSwapChain())
     {
         RHITexture* backBuffer = m_renderContext->GetCurrentBackBuffer();
         if (backBuffer)
         {
+            // Import with current state (may be Present or Undefined depending on frame)
             m_viewData.colorTarget = m_renderGraph->ImportTexture(backBuffer, RHIResourceState::Present);
+            // Export back to Present state for display
             m_renderGraph->SetExportState(m_viewData.colorTarget, RHIResourceState::Present);
         }
     }
 
-    // Create depth buffer if needed
-    if (!m_viewData.depthTarget.IsValid() && m_viewData.viewportWidth > 0 && m_viewData.viewportHeight > 0)
+    // Ensure we have a depth buffer and import it into the RenderGraph
+    EnsureDepthBuffer(m_viewData.viewportWidth, m_viewData.viewportHeight);
+    if (m_depthTexture)
     {
-        RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
-            m_viewData.viewportWidth,
-            m_viewData.viewportHeight,
-            RHIFormat::D24_UNORM_S8_UINT);
-        depthDesc.debugName = "SceneDepth";
-        m_viewData.depthTarget = m_renderGraph->CreateTexture(depthDesc);
+        // Import the existing depth buffer so RenderGraph can manage its barriers
+        m_viewData.depthTarget = m_renderGraph->ImportTexture(
+            m_depthTexture.Get(), 
+            m_depthBufferState);
     }
 
-    // Call Setup on each render pass
+    // Register each render pass with the RenderGraph
+    // Passes are sorted by priority, so they will be added in correct order
     for (auto& pass : m_passes)
     {
         if (pass && pass->IsEnabled())
         {
-            // Note: Actual pass setup would use RenderGraphBuilder
-            // For now, passes will be integrated in Phase 4
+            // AddToGraph wraps Setup/Execute into RenderGraph callbacks
+            // This enables automatic barrier insertion, pass culling, and memory aliasing
+            pass->AddToGraph(*m_renderGraph, m_viewData);
         }
     }
 }

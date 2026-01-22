@@ -27,11 +27,29 @@ target_sources(RVX_Render PRIVATE
     Private/Renderer/SceneRenderer.cpp
     # Passes
     Private/Passes/OpaquePass.cpp
+    Private/Passes/DepthPrepass.cpp
+    Private/Passes/TransparentPass.cpp
+    Private/Passes/SkyboxPass.cpp
+    Private/Passes/ShadowPass.cpp
     # Graph (merged from RenderGraph module)
     Private/Graph/RenderGraph.cpp
     Private/Graph/RenderGraphCompiler.cpp
     Private/Graph/RenderGraphExecutor.cpp
     Private/Graph/FrameResourceManager.cpp
+    Private/Graph/TransientResourcePool.cpp
+    Private/Graph/ResourceViewCache.cpp
+    # Material
+    Private/Material/MaterialBinder.cpp
+    # Lighting
+    Private/Lighting/LightManager.cpp
+    # PostProcess
+    Private/PostProcess/PostProcessStack.cpp
+    Private/PostProcess/ToneMapping.cpp
+    Private/PostProcess/Bloom.cpp
+    Private/PostProcess/FXAA.cpp
+    # Debug
+    Private/Debug/DebugRenderer.cpp
+    Private/Debug/GPUProfiler.cpp
 )
 
 target_include_directories(RVX_Render PUBLIC

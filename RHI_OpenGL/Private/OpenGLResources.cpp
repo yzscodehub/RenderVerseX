@@ -94,12 +94,20 @@ namespace RVX
             ++OpenGLDebug::Get().GetStats().buffersDestroyed;
             OpenGLDebug::Get().GetStats().totalBufferMemory -= m_desc.size;
 
-            // Queue for deferred deletion
-            // Note: In a real implementation, we'd use the device's deletion queue
-            glDeleteBuffers(1, &m_buffer);
-            GL_DEBUG_UNTRACK(m_buffer, GLResourceType::Buffer);
+            // Queue for deferred deletion to avoid GPU race conditions
+            if (m_device)
+            {
+                m_device->GetDeletionQueue().QueueBuffer(m_buffer, m_device->GetTotalFrameIndex(), 
+                                                         GetDebugName().c_str());
+            }
+            else
+            {
+                // Fallback: immediate deletion if device is already gone
+                glDeleteBuffers(1, &m_buffer);
+                GL_DEBUG_UNTRACK(m_buffer, GLResourceType::Buffer);
+            }
 
-            RVX_RHI_DEBUG("Destroyed OpenGL Buffer #{} '{}'", m_buffer, GetDebugName());
+            RVX_RHI_DEBUG("Queued OpenGL Buffer #{} '{}' for deletion", m_buffer, GetDebugName());
             m_buffer = 0;
         }
     }
@@ -279,10 +287,22 @@ namespace RVX
         {
             ++OpenGLDebug::Get().GetStats().texturesDestroyed;
             
-            glDeleteTextures(1, &m_texture);
-            GL_DEBUG_UNTRACK(m_texture, GLResourceType::Texture);
+            // Queue for deferred deletion to avoid GPU race conditions
+            if (m_device)
+            {
+                // Also invalidate any FBOs that reference this texture
+                m_device->GetFBOCache().InvalidateTexture(m_texture);
+                m_device->GetDeletionQueue().QueueTexture(m_texture, m_device->GetTotalFrameIndex(),
+                                                          GetDebugName().c_str());
+            }
+            else
+            {
+                // Fallback: immediate deletion if device is already gone
+                glDeleteTextures(1, &m_texture);
+                GL_DEBUG_UNTRACK(m_texture, GLResourceType::Texture);
+            }
 
-            RVX_RHI_DEBUG("Destroyed OpenGL Texture #{} '{}'", m_texture, GetDebugName());
+            RVX_RHI_DEBUG("Queued OpenGL Texture #{} '{}' for deletion", m_texture, GetDebugName());
             m_texture = 0;
         }
     }
@@ -367,8 +387,18 @@ namespace RVX
     {
         if (m_textureView != 0 && m_ownsView)
         {
-            glDeleteTextures(1, &m_textureView);
-            RVX_RHI_DEBUG("Destroyed OpenGL TextureView #{}", m_textureView);
+            // Queue for deferred deletion to avoid GPU race conditions
+            if (m_device)
+            {
+                m_device->GetDeletionQueue().QueueTexture(m_textureView, m_device->GetTotalFrameIndex(),
+                                                          GetDebugName().c_str());
+            }
+            else
+            {
+                // Fallback: immediate deletion if device is already gone
+                glDeleteTextures(1, &m_textureView);
+            }
+            RVX_RHI_DEBUG("Queued OpenGL TextureView #{} for deletion", m_textureView);
             m_textureView = 0;
         }
     }
@@ -442,10 +472,20 @@ namespace RVX
     {
         if (m_sampler != 0)
         {
-            glDeleteSamplers(1, &m_sampler);
-            GL_DEBUG_UNTRACK(m_sampler, GLResourceType::Sampler);
+            // Queue for deferred deletion to avoid GPU race conditions
+            if (m_device)
+            {
+                m_device->GetDeletionQueue().QueueSampler(m_sampler, m_device->GetTotalFrameIndex(),
+                                                          GetDebugName().c_str());
+            }
+            else
+            {
+                // Fallback: immediate deletion if device is already gone
+                glDeleteSamplers(1, &m_sampler);
+                GL_DEBUG_UNTRACK(m_sampler, GLResourceType::Sampler);
+            }
 
-            RVX_RHI_DEBUG("Destroyed OpenGL Sampler #{} '{}'", m_sampler, GetDebugName());
+            RVX_RHI_DEBUG("Queued OpenGL Sampler #{} '{}' for deletion", m_sampler, GetDebugName());
             m_sampler = 0;
         }
     }

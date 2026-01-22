@@ -3,6 +3,9 @@
 #include "DX11Common.h"
 #include "RHI/RHISwapChain.h"
 
+#include <memory>
+#include <vector>
+
 namespace RVX
 {
     class DX11Device;
@@ -39,6 +42,7 @@ namespace RVX
         bool CreateSwapChain(const RHISwapChainDesc& desc);
         void CreateBackBufferViews();
         void ReleaseBackBuffers();
+        bool CheckTearingSupport();
 
         DX11Device* m_device = nullptr;
 
@@ -53,7 +57,8 @@ namespace RVX
         RHIFormat m_format = RHIFormat::RGBA8_UNORM;
         RHIFormat m_requestedFormat = RHIFormat::RGBA8_UNORM;  // Original requested format (may be SRGB)
         bool m_vsyncEnabled = true;
-        bool m_isFlipModel = false;  // Whether using FLIP swap effect
+        bool m_isFlipModel = false;        // Whether using FLIP swap effect
+        bool m_tearingSupported = false;   // Whether tearing (variable refresh rate) is supported
     };
 
 } // namespace RVX

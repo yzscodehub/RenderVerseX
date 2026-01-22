@@ -141,12 +141,69 @@ namespace RVX
     {
         switch (format)
         {
-            case VK_FORMAT_B8G8R8A8_UNORM:  return RHIFormat::BGRA8_UNORM;
-            case VK_FORMAT_B8G8R8A8_SRGB:   return RHIFormat::BGRA8_UNORM_SRGB;
-            case VK_FORMAT_R8G8B8A8_UNORM:  return RHIFormat::RGBA8_UNORM;
-            case VK_FORMAT_R8G8B8A8_SRGB:   return RHIFormat::RGBA8_UNORM_SRGB;
+            case VK_FORMAT_UNDEFINED:           return RHIFormat::Unknown;
+            // 8-bit formats
+            case VK_FORMAT_R8_UNORM:            return RHIFormat::R8_UNORM;
+            case VK_FORMAT_R8_SNORM:            return RHIFormat::R8_SNORM;
+            case VK_FORMAT_R8_UINT:             return RHIFormat::R8_UINT;
+            case VK_FORMAT_R8_SINT:             return RHIFormat::R8_SINT;
+            case VK_FORMAT_R8G8_UNORM:          return RHIFormat::RG8_UNORM;
+            case VK_FORMAT_R8G8_SNORM:          return RHIFormat::RG8_SNORM;
+            case VK_FORMAT_R8G8_UINT:           return RHIFormat::RG8_UINT;
+            case VK_FORMAT_R8G8_SINT:           return RHIFormat::RG8_SINT;
+            case VK_FORMAT_R8G8B8A8_UNORM:      return RHIFormat::RGBA8_UNORM;
+            case VK_FORMAT_R8G8B8A8_SNORM:      return RHIFormat::RGBA8_SNORM;
+            case VK_FORMAT_R8G8B8A8_UINT:       return RHIFormat::RGBA8_UINT;
+            case VK_FORMAT_R8G8B8A8_SINT:       return RHIFormat::RGBA8_SINT;
+            case VK_FORMAT_R8G8B8A8_SRGB:       return RHIFormat::RGBA8_UNORM_SRGB;
+            case VK_FORMAT_B8G8R8A8_UNORM:      return RHIFormat::BGRA8_UNORM;
+            case VK_FORMAT_B8G8R8A8_SRGB:       return RHIFormat::BGRA8_UNORM_SRGB;
+            // 16-bit formats
+            case VK_FORMAT_R16_UNORM:           return RHIFormat::R16_UNORM;
+            case VK_FORMAT_R16_UINT:            return RHIFormat::R16_UINT;
+            case VK_FORMAT_R16_SINT:            return RHIFormat::R16_SINT;
+            case VK_FORMAT_R16_SFLOAT:          return RHIFormat::R16_FLOAT;
+            case VK_FORMAT_R16G16_UNORM:        return RHIFormat::RG16_UNORM;
+            case VK_FORMAT_R16G16_UINT:         return RHIFormat::RG16_UINT;
+            case VK_FORMAT_R16G16_SINT:         return RHIFormat::RG16_SINT;
+            case VK_FORMAT_R16G16_SFLOAT:       return RHIFormat::RG16_FLOAT;
+            case VK_FORMAT_R16G16B16A16_UNORM:  return RHIFormat::RGBA16_UNORM;
+            case VK_FORMAT_R16G16B16A16_UINT:   return RHIFormat::RGBA16_UINT;
+            case VK_FORMAT_R16G16B16A16_SINT:   return RHIFormat::RGBA16_SINT;
             case VK_FORMAT_R16G16B16A16_SFLOAT: return RHIFormat::RGBA16_FLOAT;
+            // 32-bit formats
+            case VK_FORMAT_R32_UINT:            return RHIFormat::R32_UINT;
+            case VK_FORMAT_R32_SINT:            return RHIFormat::R32_SINT;
+            case VK_FORMAT_R32_SFLOAT:          return RHIFormat::R32_FLOAT;
+            case VK_FORMAT_R32G32_UINT:         return RHIFormat::RG32_UINT;
+            case VK_FORMAT_R32G32_SINT:         return RHIFormat::RG32_SINT;
+            case VK_FORMAT_R32G32_SFLOAT:       return RHIFormat::RG32_FLOAT;
+            case VK_FORMAT_R32G32B32_SFLOAT:    return RHIFormat::RGB32_FLOAT;
+            case VK_FORMAT_R32G32B32A32_UINT:   return RHIFormat::RGBA32_UINT;
+            case VK_FORMAT_R32G32B32A32_SINT:   return RHIFormat::RGBA32_SINT;
+            case VK_FORMAT_R32G32B32A32_SFLOAT: return RHIFormat::RGBA32_FLOAT;
+            // Packed formats
             case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return RHIFormat::RGB10A2_UNORM;
+            // Depth formats
+            case VK_FORMAT_D16_UNORM:           return RHIFormat::D16_UNORM;
+            case VK_FORMAT_D24_UNORM_S8_UINT:   return RHIFormat::D24_UNORM_S8_UINT;
+            case VK_FORMAT_D32_SFLOAT:          return RHIFormat::D32_FLOAT;
+            case VK_FORMAT_D32_SFLOAT_S8_UINT:  return RHIFormat::D32_FLOAT_S8_UINT;
+            // Compressed formats
+            case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: return RHIFormat::BC1_UNORM;
+            case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:  return RHIFormat::BC1_UNORM_SRGB;
+            case VK_FORMAT_BC2_UNORM_BLOCK:      return RHIFormat::BC2_UNORM;
+            case VK_FORMAT_BC2_SRGB_BLOCK:       return RHIFormat::BC2_UNORM_SRGB;
+            case VK_FORMAT_BC3_UNORM_BLOCK:      return RHIFormat::BC3_UNORM;
+            case VK_FORMAT_BC3_SRGB_BLOCK:       return RHIFormat::BC3_UNORM_SRGB;
+            case VK_FORMAT_BC4_UNORM_BLOCK:      return RHIFormat::BC4_UNORM;
+            case VK_FORMAT_BC4_SNORM_BLOCK:      return RHIFormat::BC4_SNORM;
+            case VK_FORMAT_BC5_UNORM_BLOCK:      return RHIFormat::BC5_UNORM;
+            case VK_FORMAT_BC5_SNORM_BLOCK:      return RHIFormat::BC5_SNORM;
+            case VK_FORMAT_BC6H_UFLOAT_BLOCK:    return RHIFormat::BC6H_UF16;
+            case VK_FORMAT_BC6H_SFLOAT_BLOCK:    return RHIFormat::BC6H_SF16;
+            case VK_FORMAT_BC7_UNORM_BLOCK:      return RHIFormat::BC7_UNORM;
+            case VK_FORMAT_BC7_SRGB_BLOCK:       return RHIFormat::BC7_UNORM_SRGB;
             default: return RHIFormat::Unknown;
         }
     }

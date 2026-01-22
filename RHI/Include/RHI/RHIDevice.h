@@ -11,6 +11,7 @@
 #include "RHI/RHISynchronization.h"
 #include "RHI/RHICapabilities.h"
 #include "RHI/RHIHeap.h"
+#include "RHI/RHIQuery.h"
 
 namespace RVX
 {
@@ -70,6 +71,11 @@ namespace RVX
         // Descriptor Set
         // =========================================================================
         virtual RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) = 0;
+
+        // =========================================================================
+        // Query Pool
+        // =========================================================================
+        virtual RHIQueryPoolRef CreateQueryPool(const RHIQueryPoolDesc& desc) = 0;
 
         // =========================================================================
         // Command Context

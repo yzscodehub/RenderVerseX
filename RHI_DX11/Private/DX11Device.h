@@ -2,8 +2,11 @@
 
 #include "DX11Common.h"
 #include "DX11Debug.h"
+#include "DX11StateCache.h"
 #include "RHI/RHIDevice.h"
 #include "RHI/RHICapabilities.h"
+
+#include <memory>
 
 namespace RVX
 {
@@ -52,6 +55,9 @@ namespace RVX
         // Descriptor Set
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) override;
 
+        // Query Pool
+        RHIQueryPoolRef CreateQueryPool(const RHIQueryPoolDesc& desc) override;
+
         // Command Context
         RHICommandContextRef CreateCommandContext(RHICommandQueueType type) override;
         void SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence) override;
@@ -94,6 +100,9 @@ namespace RVX
         // Create deferred context for multi-threaded command recording
         ComPtr<ID3D11DeviceContext> CreateDeferredContext();
 
+        // State cache for pipeline state objects
+        DX11StateCache* GetStateCache() { return m_stateCache.get(); }
+
     private:
         bool CreateFactory();
         bool SelectAdapter(uint32 preferredIndex);
@@ -121,6 +130,9 @@ namespace RVX
         RHICapabilities m_capabilities;
         bool m_debugLayerEnabled = false;
         bool m_initialized = false;
+
+        // State cache
+        std::unique_ptr<DX11StateCache> m_stateCache;
     };
 
 } // namespace RVX

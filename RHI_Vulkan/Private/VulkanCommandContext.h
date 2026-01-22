@@ -60,6 +60,13 @@ namespace RVX
         void CopyBufferToTexture(RHIBuffer* src, RHITexture* dst, const RHIBufferTextureCopyDesc& desc) override;
         void CopyTextureToBuffer(RHITexture* src, RHIBuffer* dst, const RHIBufferTextureCopyDesc& desc) override;
 
+        void BeginQuery(RHIQueryPool* pool, uint32 index) override;
+        void EndQuery(RHIQueryPool* pool, uint32 index) override;
+        void WriteTimestamp(RHIQueryPool* pool, uint32 index) override;
+        void ResolveQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount,
+                           RHIBuffer* destBuffer, uint64 destOffset) override;
+        void ResetQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount) override;
+
         VkCommandBuffer GetCommandBuffer() const { return m_commandBuffer; }
         RHICommandQueueType GetQueueType() const { return m_queueType; }
 

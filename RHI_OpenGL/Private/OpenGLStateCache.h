@@ -127,12 +127,29 @@ namespace RVX
         float depthBiasConstant = 0.0f;
         float depthBiasSlope = 0.0f;
         float lineWidth = 1.0f;
+        bool polygonOffsetEnabled = false;
 
         bool operator==(const GLRasterizerState& other) const
         {
             return cullMode == other.cullMode && frontFace == other.frontFace &&
                    polygonMode == other.polygonMode && cullEnabled == other.cullEnabled &&
-                   scissorEnabled == other.scissorEnabled;
+                   scissorEnabled == other.scissorEnabled && depthClampEnabled == other.depthClampEnabled &&
+                   depthBiasConstant == other.depthBiasConstant && depthBiasSlope == other.depthBiasSlope &&
+                   lineWidth == other.lineWidth && polygonOffsetEnabled == other.polygonOffsetEnabled;
+        }
+    };
+
+    // =============================================================================
+    // Sample Shading State
+    // =============================================================================
+    struct GLSampleShadingState
+    {
+        bool enabled = false;
+        float minSampleShading = 0.0f;
+
+        bool operator==(const GLSampleShadingState& other) const
+        {
+            return enabled == other.enabled && minSampleShading == other.minSampleShading;
         }
     };
 
@@ -199,12 +216,16 @@ namespace RVX
         void SetDepthState(const GLDepthState& state);
         void SetStencilState(const GLStencilState& state);
         void SetRasterizerState(const GLRasterizerState& state);
+        void SetSampleShadingState(const GLSampleShadingState& state);
+        void SetLineWidth(float width);
+        void SetPolygonOffset(float factor, float units);
         void SetPrimitiveTopology(GLenum mode);
 
         const GLViewportState& GetViewport() const { return m_viewport; }
         const GLScissorState& GetScissor() const { return m_scissor; }
         const GLDepthState& GetDepthState() const { return m_depthState; }
         GLenum GetPrimitiveTopology() const { return m_primitiveMode; }
+        float GetLineWidth() const { return m_lineWidth; }
 
     private:
         // Binding state
@@ -250,7 +271,13 @@ namespace RVX
         GLDepthState m_depthState;
         GLStencilState m_stencilState;
         GLRasterizerState m_rasterizerState;
+        GLSampleShadingState m_sampleShadingState;
         GLenum m_primitiveMode = GL_TRIANGLES;
+
+        // Additional cached state
+        float m_lineWidth = 1.0f;
+        float m_polygonOffsetFactor = 0.0f;
+        float m_polygonOffsetUnits = 0.0f;
 
         // Active texture slot for legacy binding
         uint32 m_activeTextureSlot = 0;

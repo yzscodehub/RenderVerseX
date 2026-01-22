@@ -103,6 +103,9 @@ namespace RVX
 
         QueryCapabilities();
 
+        // Initialize state cache
+        m_stateCache = std::make_unique<DX11StateCache>(this);
+
         m_initialized = true;
         RVX_RHI_INFO("DX11 Device initialized successfully");
         RVX_RHI_INFO("  Adapter: {}", m_capabilities.adapterName);
@@ -117,6 +120,13 @@ namespace RVX
         if (!m_initialized) return;
 
         WaitIdle();
+
+        // Clear state cache before releasing device
+        if (m_stateCache)
+        {
+            m_stateCache->Clear();
+            m_stateCache.reset();
+        }
 
         DX11Debug::Get().Shutdown();
 
@@ -514,6 +524,14 @@ namespace RVX
     RHIDescriptorSetRef DX11Device::CreateDescriptorSet(const RHIDescriptorSetDesc& desc)
     {
         return MakeRef<DX11DescriptorSet>(this, desc);
+    }
+
+    // =============================================================================
+    // Query Pool
+    // =============================================================================
+    RHIQueryPoolRef DX11Device::CreateQueryPool(const RHIQueryPoolDesc& desc)
+    {
+        return MakeRef<DX11QueryPool>(this, desc);
     }
 
     // =============================================================================

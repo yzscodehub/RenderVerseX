@@ -36,7 +36,11 @@ namespace RVX
         m_depthState = {};
         m_stencilState = {};
         m_rasterizerState = {};
+        m_sampleShadingState = {};
         m_primitiveMode = GL_TRIANGLES;
+        m_lineWidth = 1.0f;
+        m_polygonOffsetFactor = 0.0f;
+        m_polygonOffsetUnits = 0.0f;
 
         RVX_RHI_DEBUG("OpenGL State Cache invalidated");
     }
@@ -304,84 +308,212 @@ namespace RVX
 
     void OpenGLStateCache::SetStencilState(const GLStencilState& state)
     {
+        bool anyChange = false;
+
+        // Enable/disable stencil test
         if (state.enabled != m_stencilState.enabled)
         {
             if (state.enabled)
                 GL_CHECK(glEnable(GL_STENCIL_TEST));
             else
                 GL_CHECK(glDisable(GL_STENCIL_TEST));
+            anyChange = true;
         }
 
         if (state.enabled)
         {
-            // Front face
-            GL_CHECK(glStencilFuncSeparate(GL_FRONT, 
-                state.front.compareFunc, state.front.reference, state.front.compareMask));
-            GL_CHECK(glStencilOpSeparate(GL_FRONT, 
-                state.front.failOp, state.front.depthFailOp, state.front.passOp));
-            GL_CHECK(glStencilMaskSeparate(GL_FRONT, state.front.writeMask));
+            // Front face - only update what changed
+            if (state.front.compareFunc != m_stencilState.front.compareFunc ||
+                state.front.reference != m_stencilState.front.reference ||
+                state.front.compareMask != m_stencilState.front.compareMask)
+            {
+                GL_CHECK(glStencilFuncSeparate(GL_FRONT, 
+                    state.front.compareFunc, state.front.reference, state.front.compareMask));
+                anyChange = true;
+            }
 
-            // Back face
-            GL_CHECK(glStencilFuncSeparate(GL_BACK, 
-                state.back.compareFunc, state.back.reference, state.back.compareMask));
-            GL_CHECK(glStencilOpSeparate(GL_BACK, 
-                state.back.failOp, state.back.depthFailOp, state.back.passOp));
-            GL_CHECK(glStencilMaskSeparate(GL_BACK, state.back.writeMask));
+            if (state.front.failOp != m_stencilState.front.failOp ||
+                state.front.depthFailOp != m_stencilState.front.depthFailOp ||
+                state.front.passOp != m_stencilState.front.passOp)
+            {
+                GL_CHECK(glStencilOpSeparate(GL_FRONT, 
+                    state.front.failOp, state.front.depthFailOp, state.front.passOp));
+                anyChange = true;
+            }
+
+            if (state.front.writeMask != m_stencilState.front.writeMask)
+            {
+                GL_CHECK(glStencilMaskSeparate(GL_FRONT, state.front.writeMask));
+                anyChange = true;
+            }
+
+            // Back face - only update what changed
+            if (state.back.compareFunc != m_stencilState.back.compareFunc ||
+                state.back.reference != m_stencilState.back.reference ||
+                state.back.compareMask != m_stencilState.back.compareMask)
+            {
+                GL_CHECK(glStencilFuncSeparate(GL_BACK, 
+                    state.back.compareFunc, state.back.reference, state.back.compareMask));
+                anyChange = true;
+            }
+
+            if (state.back.failOp != m_stencilState.back.failOp ||
+                state.back.depthFailOp != m_stencilState.back.depthFailOp ||
+                state.back.passOp != m_stencilState.back.passOp)
+            {
+                GL_CHECK(glStencilOpSeparate(GL_BACK, 
+                    state.back.failOp, state.back.depthFailOp, state.back.passOp));
+                anyChange = true;
+            }
+
+            if (state.back.writeMask != m_stencilState.back.writeMask)
+            {
+                GL_CHECK(glStencilMaskSeparate(GL_BACK, state.back.writeMask));
+                anyChange = true;
+            }
         }
 
         m_stencilState = state;
-        GL_DEBUG_STAT_INC(stateChanges);
+        if (anyChange)
+        {
+            GL_DEBUG_STAT_INC(stateChanges);
+        }
     }
 
     void OpenGLStateCache::SetRasterizerState(const GLRasterizerState& state)
     {
-        if (!(m_rasterizerState == state))
+        bool anyChange = false;
+
+        // Cull mode
+        if (state.cullEnabled != m_rasterizerState.cullEnabled)
         {
-            // Cull mode
-            if (state.cullEnabled != m_rasterizerState.cullEnabled)
+            if (state.cullEnabled)
+                GL_CHECK(glEnable(GL_CULL_FACE));
+            else
+                GL_CHECK(glDisable(GL_CULL_FACE));
+            anyChange = true;
+        }
+
+        if (state.cullEnabled && state.cullMode != m_rasterizerState.cullMode)
+        {
+            GL_CHECK(glCullFace(state.cullMode));
+            anyChange = true;
+        }
+
+        // Front face
+        if (state.frontFace != m_rasterizerState.frontFace)
+        {
+            GL_CHECK(glFrontFace(state.frontFace));
+            anyChange = true;
+        }
+
+        // Polygon mode
+        if (state.polygonMode != m_rasterizerState.polygonMode)
+        {
+            GL_CHECK(glPolygonMode(GL_FRONT_AND_BACK, state.polygonMode));
+            anyChange = true;
+        }
+
+        // Scissor test
+        if (state.scissorEnabled != m_rasterizerState.scissorEnabled)
+        {
+            if (state.scissorEnabled)
+                GL_CHECK(glEnable(GL_SCISSOR_TEST));
+            else
+                GL_CHECK(glDisable(GL_SCISSOR_TEST));
+            anyChange = true;
+        }
+
+        // Depth clamp
+        if (state.depthClampEnabled != m_rasterizerState.depthClampEnabled)
+        {
+            if (state.depthClampEnabled)
+                GL_CHECK(glEnable(GL_DEPTH_CLAMP));
+            else
+                GL_CHECK(glDisable(GL_DEPTH_CLAMP));
+            anyChange = true;
+        }
+
+        // Line width
+        if (state.lineWidth != m_rasterizerState.lineWidth)
+        {
+            GL_CHECK(glLineWidth(state.lineWidth));
+            m_lineWidth = state.lineWidth;
+            anyChange = true;
+        }
+
+        // Polygon offset
+        if (state.polygonOffsetEnabled != m_rasterizerState.polygonOffsetEnabled)
+        {
+            if (state.polygonOffsetEnabled)
             {
-                if (state.cullEnabled)
-                    GL_CHECK(glEnable(GL_CULL_FACE));
+                GL_CHECK(glEnable(GL_POLYGON_OFFSET_FILL));
+                GL_CHECK(glEnable(GL_POLYGON_OFFSET_LINE));
+            }
+            else
+            {
+                GL_CHECK(glDisable(GL_POLYGON_OFFSET_FILL));
+                GL_CHECK(glDisable(GL_POLYGON_OFFSET_LINE));
+            }
+            anyChange = true;
+        }
+
+        if (state.polygonOffsetEnabled && 
+            (state.depthBiasConstant != m_rasterizerState.depthBiasConstant ||
+             state.depthBiasSlope != m_rasterizerState.depthBiasSlope))
+        {
+            GL_CHECK(glPolygonOffset(state.depthBiasSlope, state.depthBiasConstant));
+            m_polygonOffsetFactor = state.depthBiasSlope;
+            m_polygonOffsetUnits = state.depthBiasConstant;
+            anyChange = true;
+        }
+
+        m_rasterizerState = state;
+        if (anyChange)
+        {
+            GL_DEBUG_STAT_INC(stateChanges);
+        }
+    }
+
+    void OpenGLStateCache::SetSampleShadingState(const GLSampleShadingState& state)
+    {
+        if (!(m_sampleShadingState == state))
+        {
+            if (state.enabled != m_sampleShadingState.enabled)
+            {
+                if (state.enabled)
+                    GL_CHECK(glEnable(GL_SAMPLE_SHADING));
                 else
-                    GL_CHECK(glDisable(GL_CULL_FACE));
+                    GL_CHECK(glDisable(GL_SAMPLE_SHADING));
             }
 
-            if (state.cullEnabled && state.cullMode != m_rasterizerState.cullMode)
+            if (state.enabled && state.minSampleShading != m_sampleShadingState.minSampleShading)
             {
-                GL_CHECK(glCullFace(state.cullMode));
+                GL_CHECK(glMinSampleShading(state.minSampleShading));
             }
 
-            // Front face
-            if (state.frontFace != m_rasterizerState.frontFace)
-            {
-                GL_CHECK(glFrontFace(state.frontFace));
-            }
+            m_sampleShadingState = state;
+            GL_DEBUG_STAT_INC(stateChanges);
+        }
+    }
 
-            // Polygon mode
-            if (state.polygonMode != m_rasterizerState.polygonMode)
-            {
-                GL_CHECK(glPolygonMode(GL_FRONT_AND_BACK, state.polygonMode));
-            }
+    void OpenGLStateCache::SetLineWidth(float width)
+    {
+        if (m_lineWidth != width)
+        {
+            GL_CHECK(glLineWidth(width));
+            m_lineWidth = width;
+            GL_DEBUG_STAT_INC(stateChanges);
+        }
+    }
 
-            // Scissor test
-            if (state.scissorEnabled != m_rasterizerState.scissorEnabled)
-            {
-                if (state.scissorEnabled)
-                    GL_CHECK(glEnable(GL_SCISSOR_TEST));
-                else
-                    GL_CHECK(glDisable(GL_SCISSOR_TEST));
-            }
-
-            // Depth clamp
-            if (state.depthClampEnabled != m_rasterizerState.depthClampEnabled)
-            {
-                if (state.depthClampEnabled)
-                    GL_CHECK(glEnable(GL_DEPTH_CLAMP));
-                else
-                    GL_CHECK(glDisable(GL_DEPTH_CLAMP));
-            }
-
-            m_rasterizerState = state;
+    void OpenGLStateCache::SetPolygonOffset(float factor, float units)
+    {
+        if (m_polygonOffsetFactor != factor || m_polygonOffsetUnits != units)
+        {
+            GL_CHECK(glPolygonOffset(factor, units));
+            m_polygonOffsetFactor = factor;
+            m_polygonOffsetUnits = units;
             GL_DEBUG_STAT_INC(stateChanges);
         }
     }

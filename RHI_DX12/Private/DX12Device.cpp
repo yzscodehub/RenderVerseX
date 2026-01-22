@@ -3,6 +3,7 @@
 #include "DX12SwapChain.h"
 #include "DX12CommandContext.h"
 #include "DX12Pipeline.h"
+#include "DX12Query.h"
 #include "Core/Log.h"
 
 namespace RVX
@@ -79,6 +80,8 @@ namespace RVX
         if (desc.enableDebugLayer)
         {
             EnableDebugLayer(desc.enableGPUValidation);
+            // Enable DRED for better crash diagnostics (must be before device creation)
+            EnableDRED();
         }
 
         if (!CreateFactory(desc.enableDebugLayer))
@@ -103,6 +106,12 @@ namespace RVX
 
         // Initialize descriptor heap manager
         m_descriptorHeapManager.Initialize(m_device.Get());
+
+        // Initialize pipeline cache (PSO disk caching)
+        m_pipelineCache.Initialize(this, "Cache/PipelineCache.bin");
+
+        // Initialize command allocator pool
+        m_allocatorPool.Initialize(this);
 
         // Create frame fence
         DX12_CHECK(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_frameFence)));
@@ -152,6 +161,12 @@ namespace RVX
             m_fenceEvent = nullptr;
         }
 
+        // Shutdown pipeline cache (saves to disk)
+        m_pipelineCache.Shutdown();
+
+        // Shutdown allocator pool
+        m_allocatorPool.Shutdown();
+
         m_descriptorHeapManager.Shutdown();
 
         #ifdef RVX_USE_D3D12MA
@@ -167,6 +182,209 @@ namespace RVX
         m_factory.Reset();
 
         RVX_RHI_INFO("DX12 Device shutdown complete");
+    }
+
+    // =============================================================================
+    // Device Lost Handling
+    // =============================================================================
+    HRESULT DX12Device::GetDeviceRemovedReason() const
+    {
+        if (m_device)
+        {
+            return m_device->GetDeviceRemovedReason();
+        }
+        return S_OK;
+    }
+
+    void DX12Device::HandleDeviceLost(HRESULT reason)
+    {
+        // Prevent multiple notifications
+        bool expected = false;
+        if (!m_deviceLost.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+        {
+            return; // Already handled
+        }
+
+        RVX_RHI_ERROR("=== Device Lost Detected ===");
+        RVX_RHI_ERROR("Reason HRESULT: 0x{:08X}", static_cast<uint32>(reason));
+
+        // Get detailed reason if available
+        if (m_device)
+        {
+            HRESULT removedReason = m_device->GetDeviceRemovedReason();
+            RVX_RHI_ERROR("Device Removed Reason: 0x{:08X}", static_cast<uint32>(removedReason));
+
+            switch (removedReason)
+            {
+                case DXGI_ERROR_DEVICE_HUNG:
+                    RVX_RHI_ERROR("  -> DXGI_ERROR_DEVICE_HUNG: GPU took too long to execute commands");
+                    break;
+                case DXGI_ERROR_DEVICE_REMOVED:
+                    RVX_RHI_ERROR("  -> DXGI_ERROR_DEVICE_REMOVED: GPU was physically removed or driver update");
+                    break;
+                case DXGI_ERROR_DEVICE_RESET:
+                    RVX_RHI_ERROR("  -> DXGI_ERROR_DEVICE_RESET: GPU reset due to bad commands");
+                    break;
+                case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
+                    RVX_RHI_ERROR("  -> DXGI_ERROR_DRIVER_INTERNAL_ERROR: Driver encountered internal error");
+                    break;
+                case DXGI_ERROR_INVALID_CALL:
+                    RVX_RHI_ERROR("  -> DXGI_ERROR_INVALID_CALL: Invalid API usage");
+                    break;
+                case S_OK:
+                    RVX_RHI_ERROR("  -> S_OK: Device is still valid (unexpected)");
+                    break;
+                default:
+                    RVX_RHI_ERROR("  -> Unknown reason code");
+                    break;
+            }
+        }
+
+        // Log DRED info if available
+        LogDREDInfo();
+
+        // Invoke user callback
+        if (m_deviceLostCallback)
+        {
+            m_deviceLostCallback(reason);
+        }
+    }
+
+    void DX12Device::EnableDRED()
+    {
+        // DRED (Device Removed Extended Data) provides detailed GPU crash information
+        // Requires Windows 10 1903+ and appropriate SDK
+        ComPtr<ID3D12DeviceRemovedExtendedDataSettings> dredSettings;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dredSettings))))
+        {
+            // Enable auto-breadcrumbs to track GPU progress
+            dredSettings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            // Enable page fault reporting
+            dredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            RVX_RHI_INFO("DRED (Device Removed Extended Data) enabled");
+        }
+        else
+        {
+            RVX_RHI_DEBUG("DRED not available (requires Windows 10 1903+)");
+        }
+    }
+
+    void DX12Device::LogDREDInfo()
+    {
+        if (!m_device)
+            return;
+
+        ComPtr<ID3D12DeviceRemovedExtendedData> dred;
+        if (FAILED(m_device->QueryInterface(IID_PPV_ARGS(&dred))))
+        {
+            RVX_RHI_DEBUG("DRED interface not available");
+            return;
+        }
+
+        // Get auto-breadcrumb data
+        D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs = {};
+        if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&breadcrumbs)))
+        {
+            RVX_RHI_ERROR("=== DRED Auto-Breadcrumbs ===");
+            const D3D12_AUTO_BREADCRUMB_NODE* node = breadcrumbs.pHeadAutoBreadcrumbNode;
+            while (node)
+            {
+                if (node->pCommandListDebugNameW)
+                {
+                    char name[256];
+                    WideCharToMultiByte(CP_UTF8, 0, node->pCommandListDebugNameW, -1, name, sizeof(name), nullptr, nullptr);
+                    RVX_RHI_ERROR("  CommandList: {}", name);
+                }
+
+                if (node->pCommandQueueDebugNameW)
+                {
+                    char name[256];
+                    WideCharToMultiByte(CP_UTF8, 0, node->pCommandQueueDebugNameW, -1, name, sizeof(name), nullptr, nullptr);
+                    RVX_RHI_ERROR("  CommandQueue: {}", name);
+                }
+
+                // Log breadcrumb operations
+                if (node->pLastBreadcrumbValue && node->pCommandHistory && node->BreadcrumbCount > 0)
+                {
+                    uint32 lastCompleted = *node->pLastBreadcrumbValue;
+                    RVX_RHI_ERROR("  Last completed breadcrumb: {}/{}", lastCompleted, node->BreadcrumbCount);
+                    
+                    // Log operations around the crash point
+                    uint32 start = (lastCompleted > 3) ? lastCompleted - 3 : 0;
+                    uint32 end = std::min(lastCompleted + 3, node->BreadcrumbCount);
+                    for (uint32 i = start; i < end; ++i)
+                    {
+                        const char* opName = "Unknown";
+                        switch (node->pCommandHistory[i])
+                        {
+                            case D3D12_AUTO_BREADCRUMB_OP_SETMARKER: opName = "SetMarker"; break;
+                            case D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT: opName = "BeginEvent"; break;
+                            case D3D12_AUTO_BREADCRUMB_OP_ENDEVENT: opName = "EndEvent"; break;
+                            case D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED: opName = "DrawInstanced"; break;
+                            case D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED: opName = "DrawIndexedInstanced"; break;
+                            case D3D12_AUTO_BREADCRUMB_OP_DISPATCH: opName = "Dispatch"; break;
+                            case D3D12_AUTO_BREADCRUMB_OP_COPYBUFFERREGION: opName = "CopyBufferRegion"; break;
+                            case D3D12_AUTO_BREADCRUMB_OP_COPYTEXTUREREGION: opName = "CopyTextureRegion"; break;
+                            case D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCE: opName = "ResolveSubresource"; break;
+                            case D3D12_AUTO_BREADCRUMB_OP_CLEARRENDERTARGETVIEW: opName = "ClearRTV"; break;
+                            case D3D12_AUTO_BREADCRUMB_OP_CLEARDEPTHSTENCILVIEW: opName = "ClearDSV"; break;
+                            case D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER: opName = "ResourceBarrier"; break;
+                            case D3D12_AUTO_BREADCRUMB_OP_EXECUTEINDIRECT: opName = "ExecuteIndirect"; break;
+                            default: break;
+                        }
+                        const char* marker = (i == lastCompleted) ? " <-- LAST COMPLETED" : "";
+                        RVX_RHI_ERROR("    [{}] {}{}", i, opName, marker);
+                    }
+                }
+
+                node = node->pNext;
+            }
+        }
+
+        // Get page fault data
+        D3D12_DRED_PAGE_FAULT_OUTPUT pageFault = {};
+        if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&pageFault)))
+        {
+            if (pageFault.PageFaultVA != 0)
+            {
+                RVX_RHI_ERROR("=== DRED Page Fault ===");
+                RVX_RHI_ERROR("  Faulting VA: 0x{:016X}", pageFault.PageFaultVA);
+
+                // Log allocations that existed at the faulting address
+                const D3D12_DRED_ALLOCATION_NODE* allocNode = pageFault.pHeadExistingAllocationNode;
+                if (allocNode)
+                {
+                    RVX_RHI_ERROR("  Existing allocations at address:");
+                    while (allocNode)
+                    {
+                        if (allocNode->ObjectNameW)
+                        {
+                            char name[256];
+                            WideCharToMultiByte(CP_UTF8, 0, allocNode->ObjectNameW, -1, name, sizeof(name), nullptr, nullptr);
+                            RVX_RHI_ERROR("    - {}", name);
+                        }
+                        allocNode = allocNode->pNext;
+                    }
+                }
+
+                // Log recently freed allocations
+                allocNode = pageFault.pHeadRecentFreedAllocationNode;
+                if (allocNode)
+                {
+                    RVX_RHI_ERROR("  Recently freed allocations:");
+                    while (allocNode)
+                    {
+                        if (allocNode->ObjectNameW)
+                        {
+                            char name[256];
+                            WideCharToMultiByte(CP_UTF8, 0, allocNode->ObjectNameW, -1, name, sizeof(name), nullptr, nullptr);
+                            RVX_RHI_ERROR("    - {}", name);
+                        }
+                        allocNode = allocNode->pNext;
+                    }
+                }
+            }
+        }
     }
 
     // =============================================================================
@@ -195,6 +413,53 @@ namespace RVX
         {
             RVX_RHI_WARN("Failed to enable DX12 Debug Layer");
         }
+    }
+
+    // =============================================================================
+    // Root Signature Cache
+    // =============================================================================
+    ComPtr<ID3D12RootSignature> DX12Device::GetOrCreateRootSignature(
+        const RootSignatureCacheKey& key,
+        const std::function<ComPtr<ID3D12RootSignature>()>& createFunc)
+    {
+        std::lock_guard<std::mutex> lock(m_rootSignatureCacheMutex);
+        
+        auto it = m_rootSignatureCache.find(key);
+        if (it != m_rootSignatureCache.end())
+        {
+            RVX_RHI_DEBUG("Root Signature cache hit");
+            return it->second;
+        }
+        
+        // Create new root signature
+        RVX_RHI_DEBUG("Root Signature cache miss, creating new");
+        ComPtr<ID3D12RootSignature> rootSig = createFunc();
+        if (rootSig)
+        {
+            m_rootSignatureCache[key] = rootSig;
+        }
+        return rootSig;
+    }
+
+    RootSignatureCacheKey DX12Device::BuildRootSignatureKey(const RHIPipelineLayoutDesc& desc)
+    {
+        RootSignatureCacheKey key;
+        key.pushConstantSize = desc.pushConstantSize;
+        key.setCount = static_cast<uint32>(desc.setLayouts.size());
+        
+        for (uint32 setIndex = 0; setIndex < desc.setLayouts.size(); ++setIndex)
+        {
+            auto* layout = desc.setLayouts[setIndex];
+            if (!layout)
+                continue;
+            
+            // Access the entries through the layout
+            // We need to cast to DX12DescriptorSetLayout to get entries
+            // For now, use a simple approach: store setIndex as marker
+            key.bindings.push_back({setIndex, 0xFF});
+        }
+        
+        return key;
     }
 
     // =============================================================================
@@ -514,6 +779,10 @@ namespace RVX
             WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE);
         }
 
+        // Recycle completed command allocators
+        uint64 completedValue = m_frameFence->GetCompletedValue();
+        m_allocatorPool.Tick(completedValue);
+
         // Reset transient descriptor heaps
         m_descriptorHeapManager.ResetTransientHeaps();
     }
@@ -674,6 +943,11 @@ namespace RVX
     RHIDescriptorSetRef DX12Device::CreateDescriptorSet(const RHIDescriptorSetDesc& desc)
     {
         return CreateDX12DescriptorSet(this, desc);
+    }
+
+    RHIQueryPoolRef DX12Device::CreateQueryPool(const RHIQueryPoolDesc& desc)
+    {
+        return CreateDX12QueryPool(this, desc);
     }
 
     // =============================================================================

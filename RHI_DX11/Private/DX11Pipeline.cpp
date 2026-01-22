@@ -5,6 +5,8 @@
 #include "DX11StateCache.h"
 #include "DX11BindingRemapper.h"
 
+#include <span>
+
 namespace RVX
 {
     // =============================================================================
@@ -88,11 +90,19 @@ namespace RVX
         m_bindings = bindings;
     }
 
-    void DX11DescriptorSet::Apply(ID3D11DeviceContext* context, RHIShaderStage stages) const
+    void DX11DescriptorSet::Apply(ID3D11DeviceContext* context, RHIShaderStage stages, uint32 setIndex,
+                                   std::span<const uint32> dynamicOffsets) const
     {
         if (!context || !m_layout) return;
 
         const auto& entries = m_layout->GetEntries();
+        auto& remapper = DX11BindingRemapper::Get();
+
+        // Try to get ID3D11DeviceContext1 for dynamic offset support
+        ComPtr<ID3D11DeviceContext1> context1;
+        context->QueryInterface(IID_PPV_ARGS(&context1));
+
+        uint32 dynamicOffsetIndex = 0;
 
         for (const auto& binding : m_bindings)
         {
@@ -118,20 +128,61 @@ namespace RVX
                     {
                         auto* dx11Buffer = static_cast<DX11Buffer*>(binding.buffer);
                         ID3D11Buffer* cb = dx11Buffer->GetBuffer();
-                        UINT slot = binding.binding;
+                        UINT slot = remapper.GetCBSlot(setIndex, binding.binding);
+                        if (slot == UINT32_MAX) slot = binding.binding; // Fallback
 
-                        if (HasFlag(stages, RHIShaderStage::Vertex))
-                            context->VSSetConstantBuffers(slot, 1, &cb);
-                        if (HasFlag(stages, RHIShaderStage::Pixel))
-                            context->PSSetConstantBuffers(slot, 1, &cb);
-                        if (HasFlag(stages, RHIShaderStage::Geometry))
-                            context->GSSetConstantBuffers(slot, 1, &cb);
-                        if (HasFlag(stages, RHIShaderStage::Hull))
-                            context->HSSetConstantBuffers(slot, 1, &cb);
-                        if (HasFlag(stages, RHIShaderStage::Domain))
-                            context->DSSetConstantBuffers(slot, 1, &cb);
-                        if (HasFlag(stages, RHIShaderStage::Compute))
-                            context->CSSetConstantBuffers(slot, 1, &cb);
+                        // Check if this is a dynamic buffer with offset
+                        bool useDynamicOffset = (entry->type == RHIBindingType::DynamicUniformBuffer) &&
+                                               (dynamicOffsetIndex < dynamicOffsets.size()) &&
+                                               (context1 != nullptr);
+
+                        if (useDynamicOffset)
+                        {
+                            // Use *SetConstantBuffers1 with offset
+                            // Offset is in bytes, but DX11 requires 16-byte aligned offset in units of 16 bytes
+                            UINT offsetIn16Bytes = dynamicOffsets[dynamicOffsetIndex] / 16;
+                            UINT bufferSizeIn16Bytes = static_cast<UINT>(dx11Buffer->GetSize() / 16);
+                            
+                            // Ensure the remaining size doesn't exceed buffer
+                            UINT numConstants = bufferSizeIn16Bytes - offsetIn16Bytes;
+
+                            if (HasFlag(stages, RHIShaderStage::Vertex))
+                                context1->VSSetConstantBuffers1(slot, 1, &cb, &offsetIn16Bytes, &numConstants);
+                            if (HasFlag(stages, RHIShaderStage::Pixel))
+                                context1->PSSetConstantBuffers1(slot, 1, &cb, &offsetIn16Bytes, &numConstants);
+                            if (HasFlag(stages, RHIShaderStage::Geometry))
+                                context1->GSSetConstantBuffers1(slot, 1, &cb, &offsetIn16Bytes, &numConstants);
+                            if (HasFlag(stages, RHIShaderStage::Hull))
+                                context1->HSSetConstantBuffers1(slot, 1, &cb, &offsetIn16Bytes, &numConstants);
+                            if (HasFlag(stages, RHIShaderStage::Domain))
+                                context1->DSSetConstantBuffers1(slot, 1, &cb, &offsetIn16Bytes, &numConstants);
+                            if (HasFlag(stages, RHIShaderStage::Compute))
+                                context1->CSSetConstantBuffers1(slot, 1, &cb, &offsetIn16Bytes, &numConstants);
+
+                            dynamicOffsetIndex++;
+                        }
+                        else
+                        {
+                            // Standard binding without offset
+                            if (HasFlag(stages, RHIShaderStage::Vertex))
+                                context->VSSetConstantBuffers(slot, 1, &cb);
+                            if (HasFlag(stages, RHIShaderStage::Pixel))
+                                context->PSSetConstantBuffers(slot, 1, &cb);
+                            if (HasFlag(stages, RHIShaderStage::Geometry))
+                                context->GSSetConstantBuffers(slot, 1, &cb);
+                            if (HasFlag(stages, RHIShaderStage::Hull))
+                                context->HSSetConstantBuffers(slot, 1, &cb);
+                            if (HasFlag(stages, RHIShaderStage::Domain))
+                                context->DSSetConstantBuffers(slot, 1, &cb);
+                            if (HasFlag(stages, RHIShaderStage::Compute))
+                                context->CSSetConstantBuffers(slot, 1, &cb);
+                            
+                            // Consume dynamic offset even if we couldn't use it
+                            if (entry->type == RHIBindingType::DynamicUniformBuffer)
+                            {
+                                dynamicOffsetIndex++;
+                            }
+                        }
                     }
                     break;
                 }
@@ -142,11 +193,13 @@ namespace RVX
                     if (binding.buffer)
                     {
                         auto* dx11Buffer = static_cast<DX11Buffer*>(binding.buffer);
-                        UINT slot = binding.binding;
 
                         // Storage buffers use SRV or UAV depending on usage
                         if (dx11Buffer->GetUAV())
                         {
+                            UINT slot = remapper.GetUAVSlot(setIndex, binding.binding);
+                            if (slot == UINT32_MAX) slot = binding.binding;
+
                             ID3D11UnorderedAccessView* uav = dx11Buffer->GetUAV();
                             if (HasFlag(stages, RHIShaderStage::Compute))
                             {
@@ -156,6 +209,9 @@ namespace RVX
                         }
                         else if (dx11Buffer->GetSRV())
                         {
+                            UINT slot = remapper.GetSRVSlot(setIndex, binding.binding);
+                            if (slot == UINT32_MAX) slot = binding.binding;
+
                             ID3D11ShaderResourceView* srv = dx11Buffer->GetSRV();
                             if (HasFlag(stages, RHIShaderStage::Vertex))
                                 context->VSSetShaderResources(slot, 1, &srv);
@@ -174,7 +230,8 @@ namespace RVX
                     {
                         auto* dx11View = static_cast<DX11TextureView*>(binding.textureView);
                         ID3D11ShaderResourceView* srv = dx11View->GetSRV();
-                        UINT slot = binding.binding;
+                        UINT slot = remapper.GetSRVSlot(setIndex, binding.binding);
+                        if (slot == UINT32_MAX) slot = binding.binding;
 
                         if (HasFlag(stages, RHIShaderStage::Vertex))
                             context->VSSetShaderResources(slot, 1, &srv);
@@ -192,7 +249,8 @@ namespace RVX
                     {
                         auto* dx11View = static_cast<DX11TextureView*>(binding.textureView);
                         ID3D11UnorderedAccessView* uav = dx11View->GetUAV();
-                        UINT slot = binding.binding;
+                        UINT slot = remapper.GetUAVSlot(setIndex, binding.binding);
+                        if (slot == UINT32_MAX) slot = binding.binding;
 
                         if (HasFlag(stages, RHIShaderStage::Compute))
                         {
@@ -209,7 +267,8 @@ namespace RVX
                     {
                         auto* dx11Sampler = static_cast<DX11Sampler*>(binding.sampler);
                         ID3D11SamplerState* sampler = dx11Sampler->GetSampler();
-                        UINT slot = binding.binding;
+                        UINT slot = remapper.GetSamplerSlot(setIndex, binding.binding);
+                        if (slot == UINT32_MAX) slot = binding.binding;
 
                         if (HasFlag(stages, RHIShaderStage::Vertex))
                             context->VSSetSamplers(slot, 1, &sampler);
@@ -223,7 +282,10 @@ namespace RVX
 
                 case RHIBindingType::CombinedTextureSampler:
                 {
-                    UINT slot = binding.binding;
+                    UINT srvSlot = remapper.GetSRVSlot(setIndex, binding.binding);
+                    UINT samplerSlot = remapper.GetSamplerSlot(setIndex, binding.binding);
+                    if (srvSlot == UINT32_MAX) srvSlot = binding.binding;
+                    if (samplerSlot == UINT32_MAX) samplerSlot = binding.binding;
                     
                     if (binding.textureView)
                     {
@@ -231,11 +293,11 @@ namespace RVX
                         ID3D11ShaderResourceView* srv = dx11View->GetSRV();
 
                         if (HasFlag(stages, RHIShaderStage::Vertex))
-                            context->VSSetShaderResources(slot, 1, &srv);
+                            context->VSSetShaderResources(srvSlot, 1, &srv);
                         if (HasFlag(stages, RHIShaderStage::Pixel))
-                            context->PSSetShaderResources(slot, 1, &srv);
+                            context->PSSetShaderResources(srvSlot, 1, &srv);
                         if (HasFlag(stages, RHIShaderStage::Compute))
-                            context->CSSetShaderResources(slot, 1, &srv);
+                            context->CSSetShaderResources(srvSlot, 1, &srv);
                     }
 
                     if (binding.sampler)
@@ -244,11 +306,11 @@ namespace RVX
                         ID3D11SamplerState* sampler = dx11Sampler->GetSampler();
 
                         if (HasFlag(stages, RHIShaderStage::Vertex))
-                            context->VSSetSamplers(slot, 1, &sampler);
+                            context->VSSetSamplers(samplerSlot, 1, &sampler);
                         if (HasFlag(stages, RHIShaderStage::Pixel))
-                            context->PSSetSamplers(slot, 1, &sampler);
+                            context->PSSetSamplers(samplerSlot, 1, &sampler);
                         if (HasFlag(stages, RHIShaderStage::Compute))
-                            context->CSSetSamplers(slot, 1, &sampler);
+                            context->CSSetSamplers(samplerSlot, 1, &sampler);
                     }
                     break;
                 }
@@ -292,101 +354,92 @@ namespace RVX
 
         m_topology = ToD3D11PrimitiveTopology(desc.primitiveTopology);
 
-        // Create rasterizer state
-        D3D11_RASTERIZER_DESC rasterDesc = {};
-        rasterDesc.FillMode = ToD3D11FillMode(desc.rasterizerState.fillMode);
-        rasterDesc.CullMode = ToD3D11CullMode(desc.rasterizerState.cullMode);
-        rasterDesc.FrontCounterClockwise = (desc.rasterizerState.frontFace == RHIFrontFace::CounterClockwise);
-        rasterDesc.DepthBias = static_cast<INT>(desc.rasterizerState.depthBias);
-        rasterDesc.DepthBiasClamp = desc.rasterizerState.depthBiasClamp;
-        rasterDesc.SlopeScaledDepthBias = desc.rasterizerState.slopeScaledDepthBias;
-        rasterDesc.DepthClipEnable = desc.rasterizerState.depthClipEnable;
-        rasterDesc.ScissorEnable = TRUE;
-        rasterDesc.MultisampleEnable = desc.rasterizerState.multisampleEnable;
-        rasterDesc.AntialiasedLineEnable = desc.rasterizerState.antialiasedLineEnable;
-
-        device->GetD3DDevice()->CreateRasterizerState(&rasterDesc, &m_rasterizerState);
-
-        // Create depth stencil state
-        D3D11_DEPTH_STENCIL_DESC dsDesc = {};
-        dsDesc.DepthEnable = desc.depthStencilState.depthTestEnable;
-        dsDesc.DepthWriteMask = desc.depthStencilState.depthWriteEnable ? 
-            D3D11_DEPTH_WRITE_MASK_ALL : D3D11_DEPTH_WRITE_MASK_ZERO;
-        dsDesc.DepthFunc = ToD3D11ComparisonFunc(desc.depthStencilState.depthCompareOp);
-        dsDesc.StencilEnable = desc.depthStencilState.stencilTestEnable;
-        dsDesc.StencilReadMask = desc.depthStencilState.stencilReadMask;
-        dsDesc.StencilWriteMask = desc.depthStencilState.stencilWriteMask;
-
-        dsDesc.FrontFace.StencilFailOp = ToD3D11StencilOp(desc.depthStencilState.frontFace.failOp);
-        dsDesc.FrontFace.StencilDepthFailOp = ToD3D11StencilOp(desc.depthStencilState.frontFace.depthFailOp);
-        dsDesc.FrontFace.StencilPassOp = ToD3D11StencilOp(desc.depthStencilState.frontFace.passOp);
-        dsDesc.FrontFace.StencilFunc = ToD3D11ComparisonFunc(desc.depthStencilState.frontFace.compareOp);
-
-        dsDesc.BackFace.StencilFailOp = ToD3D11StencilOp(desc.depthStencilState.backFace.failOp);
-        dsDesc.BackFace.StencilDepthFailOp = ToD3D11StencilOp(desc.depthStencilState.backFace.depthFailOp);
-        dsDesc.BackFace.StencilPassOp = ToD3D11StencilOp(desc.depthStencilState.backFace.passOp);
-        dsDesc.BackFace.StencilFunc = ToD3D11ComparisonFunc(desc.depthStencilState.backFace.compareOp);
-
-        device->GetD3DDevice()->CreateDepthStencilState(&dsDesc, &m_depthStencilState);
-
-        // Create blend state
-        D3D11_BLEND_DESC blendDesc = {};
-        blendDesc.AlphaToCoverageEnable = desc.blendState.alphaToCoverageEnable;
-        blendDesc.IndependentBlendEnable = desc.blendState.independentBlendEnable;
-
-        for (uint32 i = 0; i < RVX_MAX_RENDER_TARGETS; ++i)
+        // Use StateCache for state objects
+        DX11StateCache* stateCache = device->GetStateCache();
+        if (stateCache)
         {
-            const auto& rt = desc.blendState.renderTargets[i];
-            blendDesc.RenderTarget[i].BlendEnable = rt.blendEnable;
-            blendDesc.RenderTarget[i].SrcBlend = ToD3D11Blend(rt.srcColorBlend);
-            blendDesc.RenderTarget[i].DestBlend = ToD3D11Blend(rt.dstColorBlend);
-            blendDesc.RenderTarget[i].BlendOp = ToD3D11BlendOp(rt.colorBlendOp);
-            blendDesc.RenderTarget[i].SrcBlendAlpha = ToD3D11Blend(rt.srcAlphaBlend);
-            blendDesc.RenderTarget[i].DestBlendAlpha = ToD3D11Blend(rt.dstAlphaBlend);
-            blendDesc.RenderTarget[i].BlendOpAlpha = ToD3D11BlendOp(rt.alphaBlendOp);
-            blendDesc.RenderTarget[i].RenderTargetWriteMask = rt.colorWriteMask;
+            // Get cached rasterizer state
+            m_rasterizerState = stateCache->GetRasterizerState(desc.rasterizerState);
+
+            // Get cached depth stencil state
+            m_depthStencilState = stateCache->GetDepthStencilState(desc.depthStencilState);
+
+            // Get cached blend state
+            m_blendState = stateCache->GetBlendState(desc.blendState);
+        }
+        else
+        {
+            RVX_RHI_WARN("DX11: StateCache not available, creating state objects directly");
+            
+            // Fallback: create directly (not recommended)
+            D3D11_RASTERIZER_DESC rasterDesc = {};
+            rasterDesc.FillMode = ToD3D11FillMode(desc.rasterizerState.fillMode);
+            rasterDesc.CullMode = ToD3D11CullMode(desc.rasterizerState.cullMode);
+            rasterDesc.FrontCounterClockwise = (desc.rasterizerState.frontFace == RHIFrontFace::CounterClockwise);
+            rasterDesc.DepthBias = static_cast<INT>(desc.rasterizerState.depthBias);
+            rasterDesc.DepthBiasClamp = desc.rasterizerState.depthBiasClamp;
+            rasterDesc.SlopeScaledDepthBias = desc.rasterizerState.slopeScaledDepthBias;
+            rasterDesc.DepthClipEnable = desc.rasterizerState.depthClipEnable;
+            rasterDesc.ScissorEnable = TRUE;
+            rasterDesc.MultisampleEnable = desc.rasterizerState.multisampleEnable;
+            rasterDesc.AntialiasedLineEnable = desc.rasterizerState.antialiasedLineEnable;
+            
+            ComPtr<ID3D11RasterizerState> rasterizerState;
+            device->GetD3DDevice()->CreateRasterizerState(&rasterDesc, &rasterizerState);
+            m_rasterizerState = rasterizerState.Get();
         }
 
-        device->GetD3DDevice()->CreateBlendState(&blendDesc, &m_blendState);
-
-        // Create input layout
+        // Create input layout using StateCache
         if (desc.vertexShader && !desc.inputLayout.elements.empty())
         {
             auto* dx11Shader = static_cast<DX11Shader*>(desc.vertexShader);
             const auto& bytecode = dx11Shader->GetBytecode();
 
-            std::vector<D3D11_INPUT_ELEMENT_DESC> inputElements;
-            uint32 currentOffset[16] = {};  // Track offset per slot
-
-            for (const auto& elem : desc.inputLayout.elements)
+            if (stateCache)
             {
-                D3D11_INPUT_ELEMENT_DESC d3dElem = {};
-                d3dElem.SemanticName = elem.semanticName;
-                d3dElem.SemanticIndex = elem.semanticIndex;
-                d3dElem.Format = ToDXGIFormat(elem.format);
-                d3dElem.InputSlot = elem.inputSlot;
-                d3dElem.AlignedByteOffset = (elem.alignedByteOffset == 0xFFFFFFFF) 
-                    ? D3D11_APPEND_ALIGNED_ELEMENT 
-                    : elem.alignedByteOffset;
-                d3dElem.InputSlotClass = elem.perInstance 
-                    ? D3D11_INPUT_PER_INSTANCE_DATA 
-                    : D3D11_INPUT_PER_VERTEX_DATA;
-                d3dElem.InstanceDataStepRate = elem.instanceDataStepRate;
-
-                inputElements.push_back(d3dElem);
+                m_inputLayout = stateCache->GetInputLayout(
+                    desc.inputLayout.elements,
+                    bytecode.data(),
+                    bytecode.size()
+                );
             }
-
-            HRESULT hr = device->GetD3DDevice()->CreateInputLayout(
-                inputElements.data(),
-                static_cast<UINT>(inputElements.size()),
-                bytecode.data(),
-                bytecode.size(),
-                &m_inputLayout
-            );
-
-            if (FAILED(hr))
+            else
             {
-                RVX_RHI_ERROR("DX11: Failed to create input layout: {}", HRESULTToString(hr));
+                // Fallback: create directly
+                std::vector<D3D11_INPUT_ELEMENT_DESC> inputElements;
+
+                for (const auto& elem : desc.inputLayout.elements)
+                {
+                    D3D11_INPUT_ELEMENT_DESC d3dElem = {};
+                    d3dElem.SemanticName = elem.semanticName;
+                    d3dElem.SemanticIndex = elem.semanticIndex;
+                    d3dElem.Format = ToDXGIFormat(elem.format);
+                    d3dElem.InputSlot = elem.inputSlot;
+                    d3dElem.AlignedByteOffset = (elem.alignedByteOffset == 0xFFFFFFFF) 
+                        ? D3D11_APPEND_ALIGNED_ELEMENT 
+                        : elem.alignedByteOffset;
+                    d3dElem.InputSlotClass = elem.perInstance 
+                        ? D3D11_INPUT_PER_INSTANCE_DATA 
+                        : D3D11_INPUT_PER_VERTEX_DATA;
+                    d3dElem.InstanceDataStepRate = elem.instanceDataStepRate;
+
+                    inputElements.push_back(d3dElem);
+                }
+
+                ComPtr<ID3D11InputLayout> inputLayout;
+                HRESULT hr = device->GetD3DDevice()->CreateInputLayout(
+                    inputElements.data(),
+                    static_cast<UINT>(inputElements.size()),
+                    bytecode.data(),
+                    bytecode.size(),
+                    &inputLayout
+                );
+
+                if (FAILED(hr))
+                {
+                    RVX_RHI_ERROR("DX11: Failed to create input layout: {}", HRESULTToString(hr));
+                }
+                m_inputLayout = inputLayout.Get();
             }
         }
 
@@ -406,22 +459,44 @@ namespace RVX
     {
         if (!context) return;
 
-        // Set shaders
+        // Set required shaders (VS/PS are typically always needed)
         context->VSSetShader(m_vertexShader.Get(), nullptr, 0);
         context->PSSetShader(m_pixelShader.Get(), nullptr, 0);
-        context->GSSetShader(m_geometryShader.Get(), nullptr, 0);
-        context->HSSetShader(m_hullShader.Get(), nullptr, 0);
-        context->DSSetShader(m_domainShader.Get(), nullptr, 0);
 
-        // Set state objects
-        context->RSSetState(m_rasterizerState.Get());
-        context->OMSetDepthStencilState(m_depthStencilState.Get(), 0);
+        // Only set optional shaders if they exist (avoid unnecessary API calls)
+        // Note: We still need to unbind if previously bound, so we set nullptr explicitly
+        if (m_geometryShader)
+            context->GSSetShader(m_geometryShader.Get(), nullptr, 0);
+        else
+            context->GSSetShader(nullptr, nullptr, 0);
+
+        if (m_hullShader)
+            context->HSSetShader(m_hullShader.Get(), nullptr, 0);
+        else
+            context->HSSetShader(nullptr, nullptr, 0);
+
+        if (m_domainShader)
+            context->DSSetShader(m_domainShader.Get(), nullptr, 0);
+        else
+            context->DSSetShader(nullptr, nullptr, 0);
+
+        // Set state objects (raw pointers from StateCache)
+        if (m_rasterizerState)
+            context->RSSetState(m_rasterizerState);
         
-        float blendFactor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-        context->OMSetBlendState(m_blendState.Get(), blendFactor, 0xFFFFFFFF);
+        if (m_depthStencilState)
+            context->OMSetDepthStencilState(m_depthStencilState, 0);
+        
+        if (m_blendState)
+        {
+            float blendFactor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+            context->OMSetBlendState(m_blendState, blendFactor, 0xFFFFFFFF);
+        }
 
         // Set input layout and topology
-        context->IASetInputLayout(m_inputLayout.Get());
+        if (m_inputLayout)
+            context->IASetInputLayout(m_inputLayout);
+        
         context->IASetPrimitiveTopology(m_topology);
     }
 

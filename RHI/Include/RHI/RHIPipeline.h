@@ -144,6 +144,9 @@ namespace RVX
         RHIShader* hullShader = nullptr;
         RHIShader* domainShader = nullptr;
 
+        // Tessellation settings
+        uint32 tessellationControlPoints = 3;  // Patch control point count (e.g., 3 for triangles)
+
         // Fixed-function state
         RHIInputLayoutDesc inputLayout;
         RHIRasterizerState rasterizerState;

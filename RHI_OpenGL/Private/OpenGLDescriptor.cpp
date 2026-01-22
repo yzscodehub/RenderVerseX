@@ -4,6 +4,7 @@
 #include "OpenGLResources.h"
 #include "OpenGLStateCache.h"
 #include "Core/Log.h"
+#include <algorithm>
 
 namespace RVX
 {
@@ -161,10 +162,30 @@ namespace RVX
                 
                 glEntry.texture = glView->GetHandle();
                 glEntry.imageFormat = glTexture->GetGLFormat().internalFormat;
-                glEntry.imageAccess = GL_READ_WRITE;  // TODO: Get from desc
-                glEntry.imageLevel = 0;
-                glEntry.imageLayered = GL_FALSE;
-                glEntry.imageLayer = 0;
+                
+                // Infer access mode from texture usage flags
+                // If texture has both UnorderedAccess and ShaderResource, it supports read-write
+                // If only UnorderedAccess, default to read-write for maximum compatibility
+                const auto usage = glTexture->GetUsage();
+                bool canRead = HasFlag(usage, RHITextureUsage::ShaderResource) || 
+                               HasFlag(usage, RHITextureUsage::UnorderedAccess);
+                bool canWrite = HasFlag(usage, RHITextureUsage::UnorderedAccess);
+                
+                if (canRead && canWrite)
+                    glEntry.imageAccess = GL_READ_WRITE;
+                else if (canWrite)
+                    glEntry.imageAccess = GL_WRITE_ONLY;
+                else if (canRead)
+                    glEntry.imageAccess = GL_READ_ONLY;
+                else
+                    glEntry.imageAccess = GL_READ_WRITE;  // Fallback
+                
+                // Get subresource info from view
+                const auto& sr = glView->GetSubresourceRange();
+                glEntry.imageLevel = static_cast<GLint>(sr.baseMipLevel);
+                glEntry.imageLayered = (sr.arrayLayerCount > 1 || sr.arrayLayerCount == RVX_ALL_LAYERS) 
+                                       ? GL_TRUE : GL_FALSE;
+                glEntry.imageLayer = static_cast<GLint>(sr.baseArrayLayer);
                 break;
             }
         }
@@ -172,20 +193,28 @@ namespace RVX
         m_bindings.push_back(glEntry);
     }
 
-    void OpenGLDescriptorSet::Bind(OpenGLStateCache& stateCache, uint32 setIndex)
+    void OpenGLDescriptorSet::Bind(OpenGLStateCache& stateCache, uint32 setIndex,
+                                   std::span<const uint32> dynamicOffsets)
     {
         GL_DEBUG_SCOPE("BindDescriptorSet");
 
+        // Track which dynamic offset to use next
+        size_t dynamicOffsetIndex = 0;
+
+        // Check if multi-bind is available for batch optimizations
+        bool useMultiBind = m_device && m_device->GetCapabilities().opengl.hasMultiBind;
+
+        // Collect texture and sampler bindings for potential batch binding
+        std::vector<std::pair<uint32, GLuint>> textureBindings;  // <slot, texture>
+        std::vector<std::pair<uint32, GLuint>> samplerBindings;  // <slot, sampler>
+
         for (const auto& entry : m_bindings)
         {
-            // Calculate global binding point (incorporating set offset)
-            // For simplicity, we use a flat binding space
             uint32 globalBinding = entry.glBinding;
 
             switch (entry.type)
             {
                 case RHIBindingType::UniformBuffer:
-                case RHIBindingType::DynamicUniformBuffer:
                     if (entry.buffer != 0)
                     {
                         stateCache.BindUniformBuffer(globalBinding, entry.buffer, 
@@ -193,8 +222,19 @@ namespace RVX
                     }
                     break;
 
+                case RHIBindingType::DynamicUniformBuffer:
+                    if (entry.buffer != 0)
+                    {
+                        GLintptr offset = entry.offset;
+                        if (dynamicOffsetIndex < dynamicOffsets.size())
+                        {
+                            offset += static_cast<GLintptr>(dynamicOffsets[dynamicOffsetIndex++]);
+                        }
+                        stateCache.BindUniformBuffer(globalBinding, entry.buffer, offset, entry.size);
+                    }
+                    break;
+
                 case RHIBindingType::StorageBuffer:
-                case RHIBindingType::DynamicStorageBuffer:
                     if (entry.buffer != 0)
                     {
                         stateCache.BindStorageBuffer(globalBinding, entry.buffer,
@@ -202,28 +242,68 @@ namespace RVX
                     }
                     break;
 
+                case RHIBindingType::DynamicStorageBuffer:
+                    if (entry.buffer != 0)
+                    {
+                        GLintptr offset = entry.offset;
+                        if (dynamicOffsetIndex < dynamicOffsets.size())
+                        {
+                            offset += static_cast<GLintptr>(dynamicOffsets[dynamicOffsetIndex++]);
+                        }
+                        stateCache.BindStorageBuffer(globalBinding, entry.buffer, offset, entry.size);
+                    }
+                    break;
+
                 case RHIBindingType::SampledTexture:
                     if (entry.texture != 0)
                     {
-                        stateCache.BindTexture(globalBinding, entry.textureTarget, entry.texture);
+                        if (useMultiBind)
+                        {
+                            textureBindings.emplace_back(globalBinding, entry.texture);
+                        }
+                        else
+                        {
+                            stateCache.BindTexture(globalBinding, entry.textureTarget, entry.texture);
+                        }
                     }
                     break;
 
                 case RHIBindingType::CombinedTextureSampler:
                     if (entry.texture != 0)
                     {
-                        stateCache.BindTexture(globalBinding, entry.textureTarget, entry.texture);
+                        if (useMultiBind)
+                        {
+                            textureBindings.emplace_back(globalBinding, entry.texture);
+                        }
+                        else
+                        {
+                            stateCache.BindTexture(globalBinding, entry.textureTarget, entry.texture);
+                        }
                     }
                     if (entry.sampler != 0)
                     {
-                        stateCache.BindSampler(globalBinding, entry.sampler);
+                        if (useMultiBind)
+                        {
+                            samplerBindings.emplace_back(globalBinding, entry.sampler);
+                        }
+                        else
+                        {
+                            stateCache.BindSampler(globalBinding, entry.sampler);
+                        }
                     }
                     break;
 
                 case RHIBindingType::Sampler:
                     if (entry.sampler != 0)
                     {
-                        stateCache.BindSampler(globalBinding, entry.sampler);
+                        if (useMultiBind)
+                        {
+                            samplerBindings.emplace_back(globalBinding, entry.sampler);
+                        }
+                        else
+                        {
+                            stateCache.BindSampler(globalBinding, entry.sampler);
+                        }
                     }
                     break;
 
@@ -236,6 +316,100 @@ namespace RVX
                                                    entry.imageFormat);
                     }
                     break;
+            }
+        }
+
+        // Batch bind textures if using multi-bind and we have multiple textures
+        if (useMultiBind && textureBindings.size() > 1)
+        {
+            // Sort by binding slot for contiguous binding
+            std::sort(textureBindings.begin(), textureBindings.end(),
+                [](const auto& a, const auto& b) { return a.first < b.first; });
+
+            // Find contiguous ranges and batch bind them
+            size_t i = 0;
+            while (i < textureBindings.size())
+            {
+                uint32 startSlot = textureBindings[i].first;
+                size_t rangeStart = i;
+                
+                // Find contiguous range
+                while (i + 1 < textureBindings.size() && 
+                       textureBindings[i + 1].first == textureBindings[i].first + 1)
+                {
+                    ++i;
+                }
+                
+                size_t count = i - rangeStart + 1;
+                
+                if (count > 1)
+                {
+                    // Batch bind contiguous textures
+                    std::vector<GLuint> textures(count);
+                    for (size_t j = 0; j < count; ++j)
+                    {
+                        textures[j] = textureBindings[rangeStart + j].second;
+                    }
+                    GL_CHECK(glBindTextures(startSlot, static_cast<GLsizei>(count), textures.data()));
+                }
+                else
+                {
+                    // Single texture, use normal bind
+                    stateCache.BindTexture(startSlot, GL_TEXTURE_2D, textureBindings[rangeStart].second);
+                }
+                ++i;
+            }
+        }
+        else if (useMultiBind)
+        {
+            // Single texture or none - use normal path
+            for (const auto& [slot, texture] : textureBindings)
+            {
+                stateCache.BindTexture(slot, GL_TEXTURE_2D, texture);
+            }
+        }
+
+        // Batch bind samplers if using multi-bind and we have multiple samplers
+        if (useMultiBind && samplerBindings.size() > 1)
+        {
+            std::sort(samplerBindings.begin(), samplerBindings.end(),
+                [](const auto& a, const auto& b) { return a.first < b.first; });
+
+            size_t i = 0;
+            while (i < samplerBindings.size())
+            {
+                uint32 startSlot = samplerBindings[i].first;
+                size_t rangeStart = i;
+                
+                while (i + 1 < samplerBindings.size() && 
+                       samplerBindings[i + 1].first == samplerBindings[i].first + 1)
+                {
+                    ++i;
+                }
+                
+                size_t count = i - rangeStart + 1;
+                
+                if (count > 1)
+                {
+                    std::vector<GLuint> samplers(count);
+                    for (size_t j = 0; j < count; ++j)
+                    {
+                        samplers[j] = samplerBindings[rangeStart + j].second;
+                    }
+                    GL_CHECK(glBindSamplers(startSlot, static_cast<GLsizei>(count), samplers.data()));
+                }
+                else
+                {
+                    stateCache.BindSampler(startSlot, samplerBindings[rangeStart].second);
+                }
+                ++i;
+            }
+        }
+        else if (useMultiBind)
+        {
+            for (const auto& [slot, sampler] : samplerBindings)
+            {
+                stateCache.BindSampler(slot, sampler);
             }
         }
     }

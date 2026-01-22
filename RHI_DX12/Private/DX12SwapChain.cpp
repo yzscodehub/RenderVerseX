@@ -162,8 +162,8 @@ namespace RVX
 
         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
         {
-            RVX_RHI_ERROR("Device lost during Present! HRESULT: 0x{:08X}", static_cast<uint32>(hr));
-            // TODO: Handle device lost
+            m_device->HandleDeviceLost(hr);
+            return;
         }
 
         m_currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();

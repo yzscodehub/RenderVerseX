@@ -2,6 +2,7 @@
 
 #include "RHI/RHIResources.h"
 #include "RHI/RHIRenderPass.h"
+#include "RHI/RHIQuery.h"
 #include <span>
 
 namespace RVX
@@ -149,6 +150,50 @@ namespace RVX
         virtual void CopyTexture(RHITexture* src, RHITexture* dst, const RHITextureCopyDesc& desc = {}) = 0;
         virtual void CopyBufferToTexture(RHIBuffer* src, RHITexture* dst, const RHIBufferTextureCopyDesc& desc) = 0;
         virtual void CopyTextureToBuffer(RHITexture* src, RHIBuffer* dst, const RHIBufferTextureCopyDesc& desc) = 0;
+
+        // =========================================================================
+        // Query Commands
+        // =========================================================================
+        
+        /**
+         * @brief Begin a query (for occlusion/pipeline stats)
+         * @param pool The query pool
+         * @param index Query index within the pool
+         */
+        virtual void BeginQuery(RHIQueryPool* pool, uint32 index) = 0;
+        
+        /**
+         * @brief End a query
+         * @param pool The query pool
+         * @param index Query index within the pool
+         */
+        virtual void EndQuery(RHIQueryPool* pool, uint32 index) = 0;
+        
+        /**
+         * @brief Write a GPU timestamp
+         * @param pool The timestamp query pool
+         * @param index Query index within the pool
+         */
+        virtual void WriteTimestamp(RHIQueryPool* pool, uint32 index) = 0;
+        
+        /**
+         * @brief Resolve query results to a buffer
+         * @param pool The query pool
+         * @param firstQuery First query index
+         * @param queryCount Number of queries to resolve
+         * @param destBuffer Destination buffer
+         * @param destOffset Offset in destination buffer
+         */
+        virtual void ResolveQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount,
+                                    RHIBuffer* destBuffer, uint64 destOffset) = 0;
+        
+        /**
+         * @brief Reset queries before use
+         * @param pool The query pool
+         * @param firstQuery First query index
+         * @param queryCount Number of queries to reset
+         */
+        virtual void ResetQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount) = 0;
     };
 
 } // namespace RVX

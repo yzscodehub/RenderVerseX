@@ -192,6 +192,7 @@ namespace RVX
         // RHIFence interface
         uint64 GetCompletedValue() const override;
         void Signal(uint64 value) override;
+        void SignalOnQueue(uint64 value, RHICommandQueueType queueType) override;
         void Wait(uint64 value, uint64 timeoutNs) override;
 
         // DX12 Specific

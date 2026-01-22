@@ -53,45 +53,82 @@ namespace RVX
         // Store the requested format for RTV creation
         m_requestedFormat = desc.format;
         
-        // For DISCARD mode, we can use SRGB format directly
-        // For FLIP model, we would need non-SRGB format for the buffer
-        DXGI_FORMAT bufferFormat = ToDXGIFormat(desc.format);
-        
+        HWND hwnd = reinterpret_cast<HWND>(desc.windowHandle);
+
+        // Check tearing support for variable refresh rate displays
+        m_tearingSupported = CheckTearingSupport();
+
+        // Try FLIP_DISCARD first (Windows 10+, better performance)
         DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
         swapChainDesc.Width = desc.width;
         swapChainDesc.Height = desc.height;
-        swapChainDesc.Format = bufferFormat;
         swapChainDesc.Stereo = FALSE;
         swapChainDesc.SampleDesc.Count = 1;
         swapChainDesc.SampleDesc.Quality = 0;
         swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        // DISCARD mode requires BufferCount = 1, FLIP mode requires >= 2
-        swapChainDesc.BufferCount = 1;
         swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
-        // Use legacy DISCARD mode instead of FLIP_DISCARD for better compatibility
-        // FLIP model has issues with buffer management in some scenarios
-        swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
         swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
-        swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
 
-        HWND hwnd = reinterpret_cast<HWND>(desc.windowHandle);
+        HRESULT hr = E_FAIL;
 
-        HRESULT hr = m_device->GetDXGIFactory()->CreateSwapChainForHwnd(
-            m_device->GetD3DDevice(),
-            hwnd,
-            &swapChainDesc,
-            nullptr,  // No fullscreen desc
-            nullptr,  // No restrict output
-            &m_swapChain
-        );
-
-        // Using legacy DISCARD mode with single buffer
-        m_isFlipModel = false;
-        m_backBufferCount = 1;  // DISCARD mode only uses 1 buffer
-        
-        if (SUCCEEDED(hr))
+        // Try FLIP_DISCARD model first (requires Windows 10, DXGI 1.4+)
         {
-            RVX_RHI_DEBUG("DX11 SwapChain using DISCARD model");
+            // FLIP model requires non-SRGB format for the buffer
+            swapChainDesc.Format = GetSwapChainBufferFormat(desc.format);
+            swapChainDesc.BufferCount = std::max(2u, desc.bufferCount);  // FLIP requires at least 2 buffers
+            swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+            swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+
+            // Enable tearing if supported
+            if (m_tearingSupported)
+            {
+                swapChainDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+            }
+
+            hr = m_device->GetDXGIFactory()->CreateSwapChainForHwnd(
+                m_device->GetD3DDevice(),
+                hwnd,
+                &swapChainDesc,
+                nullptr,
+                nullptr,
+                &m_swapChain
+            );
+
+            if (SUCCEEDED(hr))
+            {
+                m_isFlipModel = true;
+                m_backBufferCount = swapChainDesc.BufferCount;
+                RVX_RHI_INFO("DX11 SwapChain using FLIP_DISCARD model (tearing: {})", 
+                    m_tearingSupported ? "enabled" : "disabled");
+            }
+        }
+
+        // Fallback to legacy DISCARD mode if FLIP failed
+        if (FAILED(hr))
+        {
+            RVX_RHI_DEBUG("FLIP_DISCARD not available, falling back to DISCARD mode");
+
+            swapChainDesc.Format = ToDXGIFormat(desc.format);  // DISCARD supports SRGB directly
+            swapChainDesc.BufferCount = 1;  // DISCARD mode only needs 1 buffer
+            swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+            swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+            m_tearingSupported = false;  // Tearing not supported with DISCARD
+
+            hr = m_device->GetDXGIFactory()->CreateSwapChainForHwnd(
+                m_device->GetD3DDevice(),
+                hwnd,
+                &swapChainDesc,
+                nullptr,
+                nullptr,
+                &m_swapChain
+            );
+
+            if (SUCCEEDED(hr))
+            {
+                m_isFlipModel = false;
+                m_backBufferCount = 1;
+                RVX_RHI_INFO("DX11 SwapChain using DISCARD model");
+            }
         }
 
         if (FAILED(hr))
@@ -105,10 +142,28 @@ namespace RVX
 
         CreateBackBufferViews();
 
-        RVX_RHI_INFO("DX11 SwapChain created: {}x{}, {} buffers",
-            m_width, m_height, m_backBufferCount);
+        RVX_RHI_INFO("DX11 SwapChain created: {}x{}, {} buffers, flip: {}", 
+            m_width, m_height, m_backBufferCount, m_isFlipModel);
 
         return true;
+    }
+
+    bool DX11SwapChain::CheckTearingSupport()
+    {
+        // Check for tearing support (DXGI 1.5+ feature)
+        ComPtr<IDXGIFactory5> factory5;
+        if (SUCCEEDED(m_device->GetDXGIFactory()->QueryInterface(IID_PPV_ARGS(&factory5))))
+        {
+            BOOL allowTearing = FALSE;
+            if (SUCCEEDED(factory5->CheckFeatureSupport(
+                DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                &allowTearing,
+                sizeof(allowTearing))))
+            {
+                return allowTearing == TRUE;
+            }
+        }
+        return false;
     }
 
     void DX11SwapChain::CreateBackBufferViews()
@@ -171,13 +226,20 @@ namespace RVX
         // Release back buffers before resize
         ReleaseBackBuffers();
 
+        // Preserve swap chain flags
+        UINT flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+        if (m_tearingSupported && m_isFlipModel)
+        {
+            flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+        }
+
         // Resize swap chain (use 0 for buffer count to keep existing count)
         HRESULT hr = m_swapChain->ResizeBuffers(
             0,
             width,
             height,
             DXGI_FORMAT_UNKNOWN,  // Keep existing format
-            DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH
+            flags
         );
 
         if (FAILED(hr))
@@ -218,8 +280,12 @@ namespace RVX
         UINT syncInterval = m_vsyncEnabled ? 1 : 0;
         UINT presentFlags = 0;
 
-        // Note: DXGI_PRESENT_ALLOW_TEARING requires DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
-        // which is not set during swap chain creation, so we don't use tearing for now
+        // Use tearing for variable refresh rate displays when vsync is disabled
+        if (m_tearingSupported && !m_vsyncEnabled)
+        {
+            syncInterval = 0;
+            presentFlags = DXGI_PRESENT_ALLOW_TEARING;
+        }
 
         HRESULT hr = m_swapChain->Present(syncInterval, presentFlags);
 

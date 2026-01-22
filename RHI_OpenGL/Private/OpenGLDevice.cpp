@@ -440,6 +440,13 @@ namespace RVX
         return MakeRef<OpenGLDescriptorSet>(this, desc);
     }
 
+    RHIQueryPoolRef OpenGLDevice::CreateQueryPool(const RHIQueryPoolDesc& /*desc*/)
+    {
+        // TODO: Implement OpenGL query pool support
+        RVX_RHI_WARN("OpenGL query pools not yet implemented");
+        return nullptr;
+    }
+
     // =============================================================================
     // Command Context
     // =============================================================================

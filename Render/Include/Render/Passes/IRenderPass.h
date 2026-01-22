@@ -3,14 +3,19 @@
 /**
  * @file IRenderPass.h
  * @brief Render pass interface - base class for all render passes
+ * 
+ * IRenderPass integrates with RenderGraph for automatic resource state
+ * tracking, barrier insertion, and memory aliasing.
  */
 
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
+#include "Render/Graph/RenderGraph.h"
 
 namespace RVX
 {
     class RenderGraphBuilder;
+    class RenderGraph;
     struct ViewData;
 
     /**
@@ -105,6 +110,47 @@ namespace RVX
          * @brief Called when the pass is removed from the renderer
          */
         virtual void OnRemove() {}
+
+        /**
+         * @brief Get the RenderGraph pass type
+         * @return Pass type (Graphics, Compute, or Copy)
+         */
+        virtual RenderGraphPassType GetPassType() const { return RenderGraphPassType::Graphics; }
+
+        /**
+         * @brief Register this pass with a RenderGraph
+         * @param graph The render graph to register with
+         * @param view The current view data
+         * 
+         * This method wraps Setup and Execute into a RenderGraph pass, enabling
+         * automatic barrier management, pass culling, and memory aliasing.
+         * 
+         * Override this method for custom pass data types or special behavior.
+         */
+        virtual void AddToGraph(RenderGraph& graph, const ViewData& view)
+        {
+            // Default implementation captures 'this' and 'view' to bridge
+            // the IRenderPass interface with RenderGraph's callback system
+            struct PassData
+            {
+                IRenderPass* pass;
+                const ViewData* viewData;
+            };
+
+            graph.AddPass<PassData>(
+                GetName(),
+                GetPassType(),
+                [this, &view](RenderGraphBuilder& builder, PassData& data)
+                {
+                    data.pass = this;
+                    data.viewData = &view;
+                    this->Setup(builder, view);
+                },
+                [](const PassData& data, RHICommandContext& ctx)
+                {
+                    data.pass->Execute(ctx, *data.viewData);
+                });
+        }
     };
 
     // Standard pass priorities
@@ -116,6 +162,7 @@ namespace RVX
         constexpr int32_t Skybox          = 400;
         constexpr int32_t Transparent     = 500;
         constexpr int32_t PostProcess     = 1000;
+        constexpr int32_t Debug           = 2000;
     }
 
 } // namespace RVX

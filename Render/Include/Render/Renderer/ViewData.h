@@ -12,6 +12,7 @@
 namespace RVX
 {
     class Camera;
+    class ResourceViewCache;
 
     /**
      * @brief View data collected for rendering a single view/camera
@@ -79,6 +80,18 @@ namespace RVX
         
         /// Depth target
         RGTextureHandle depthTarget;
+
+        // =====================================================================
+        // RenderGraph Reference
+        // =====================================================================
+
+        /// Pointer to the render graph (set during BuildRenderGraph)
+        /// Allows passes to access actual RHI resources from handles during execution
+        RenderGraph* renderGraph = nullptr;
+
+        /// Pointer to the resource view cache (set during BuildRenderGraph)
+        /// Allows passes to get cached texture/buffer views
+        ResourceViewCache* viewCache = nullptr;
 
         // =====================================================================
         // Frame Info

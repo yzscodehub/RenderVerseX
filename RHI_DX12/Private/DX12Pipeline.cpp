@@ -478,21 +478,35 @@ namespace RVX
         }
 
         // Input layout
+        // Track offset per input slot for correct auto-offset calculation
         std::vector<D3D12_INPUT_ELEMENT_DESC> inputElements;
-        uint32 offset = 0;
+        std::unordered_map<uint32, uint32> slotOffsets;
         for (const auto& elem : desc.inputLayout.elements)
         {
+            uint32 slot = elem.inputSlot;
+            
+            // Initialize offset for new slots
+            if (slotOffsets.find(slot) == slotOffsets.end())
+            {
+                slotOffsets[slot] = 0;
+            }
+
             D3D12_INPUT_ELEMENT_DESC d3dElem = {};
             d3dElem.SemanticName = elem.semanticName;
             d3dElem.SemanticIndex = elem.semanticIndex;
             d3dElem.Format = ToDXGIFormat(elem.format);
-            d3dElem.InputSlot = elem.inputSlot;
-            d3dElem.AlignedByteOffset = (elem.alignedByteOffset == 0xFFFFFFFF) ? offset : elem.alignedByteOffset;
-            d3dElem.InputSlotClass = elem.perInstance ? D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA : D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+            d3dElem.InputSlot = slot;
+            // Use explicit offset if provided, otherwise use auto-calculated per-slot offset
+            d3dElem.AlignedByteOffset = (elem.alignedByteOffset == 0xFFFFFFFF) 
+                ? slotOffsets[slot] : elem.alignedByteOffset;
+            d3dElem.InputSlotClass = elem.perInstance 
+                ? D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA 
+                : D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
             d3dElem.InstanceDataStepRate = elem.instanceDataStepRate;
 
             inputElements.push_back(d3dElem);
-            offset = d3dElem.AlignedByteOffset + GetFormatBytesPerPixel(elem.format);
+            // Update offset for this slot
+            slotOffsets[slot] = d3dElem.AlignedByteOffset + GetFormatBytesPerPixel(elem.format);
         }
 
         psoDesc.InputLayout.pInputElementDescs = inputElements.data();
@@ -689,68 +703,125 @@ namespace RVX
             return;
         }
 
+        // Update all bindings immediately
+        for (const auto& binding : m_bindings)
+        {
+            UpdateBindingInternal(binding);
+        }
+        
+        m_dirtyBindings.reset();
+        m_hasPendingUpdates = false;
+    }
+
+    void DX12DescriptorSet::UpdateSingle(uint32 bindingIndex, const RHIDescriptorBinding& binding)
+    {
+        if (!m_layout)
+            return;
+
+        // Update the binding in our cached list
+        bool found = false;
+        for (auto& existing : m_bindings)
+        {
+            if (existing.binding == binding.binding)
+            {
+                existing = binding;
+                found = true;
+                break;
+            }
+        }
+        
+        if (!found)
+        {
+            m_bindings.push_back(binding);
+        }
+
+        // Mark as dirty for deferred update, or update immediately
+        if (bindingIndex < 64)
+        {
+            m_dirtyBindings.set(bindingIndex);
+            m_hasPendingUpdates = true;
+        }
+        
+        // For now, update immediately (can be deferred later)
+        UpdateBindingInternal(binding);
+    }
+
+    void DX12DescriptorSet::FlushUpdates()
+    {
+        if (!m_hasPendingUpdates || !m_layout)
+            return;
+
+        // Update only dirty bindings
+        for (size_t i = 0; i < m_bindings.size() && i < 64; ++i)
+        {
+            if (m_dirtyBindings.test(i))
+            {
+                UpdateBindingInternal(m_bindings[i]);
+            }
+        }
+
+        m_dirtyBindings.reset();
+        m_hasPendingUpdates = false;
+    }
+
+    void DX12DescriptorSet::UpdateBindingInternal(const RHIDescriptorBinding& binding)
+    {
         auto d3dDevice = m_device->GetD3DDevice();
         auto& heapManager = m_device->GetDescriptorHeapManager();
 
         const uint32 cbvSrvUavSize = heapManager.GetCbvSrvUavDescriptorSize();
         const uint32 samplerSize = heapManager.GetSamplerDescriptorSize();
 
-        // Process bindings based on what resources are actually set,
-        // rather than relying on layout entry type (which may conflict when
-        // texture and sampler share the same binding number in different register spaces)
-        for (const auto& binding : m_bindings)
+        // Handle texture view (SRV) - copy to CBV_SRV_UAV heap
+        if (binding.textureView && m_cbvSrvUavHandle.IsValid())
         {
-            // Handle texture view (SRV) - copy to CBV_SRV_UAV heap
-            if (binding.textureView && m_cbvSrvUavHandle.IsValid())
+            auto* dx12View = static_cast<DX12TextureView*>(binding.textureView);
+            const DX12DescriptorHandle& srcHandle = dx12View->GetSRVHandle();
+            if (srcHandle.IsValid())
             {
-                auto* dx12View = static_cast<DX12TextureView*>(binding.textureView);
-                const DX12DescriptorHandle& srcHandle = dx12View->GetSRVHandle();
-                if (srcHandle.IsValid())
+                uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
+                if (dstIndex != UINT32_MAX)
                 {
-                    uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
-                    if (dstIndex != UINT32_MAX)
-                    {
-                        D3D12_CPU_DESCRIPTOR_HANDLE dst = m_cbvSrvUavHandle.cpuHandle;
-                        dst.ptr += static_cast<SIZE_T>(dstIndex) * cbvSrvUavSize;
-                        d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-                    }
+                    D3D12_CPU_DESCRIPTOR_HANDLE dst = m_cbvSrvUavHandle.cpuHandle;
+                    dst.ptr += static_cast<SIZE_T>(dstIndex) * cbvSrvUavSize;
+                    d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
                 }
             }
+        }
 
-            // Handle sampler - copy to Sampler heap
-            if (binding.sampler && m_samplerHandle.IsValid())
+        // Handle sampler - copy to Sampler heap
+        if (binding.sampler && m_samplerHandle.IsValid())
+        {
+            auto* dx12Sampler = static_cast<DX12Sampler*>(binding.sampler);
+            const DX12DescriptorHandle& srcHandle = dx12Sampler->GetHandle();
+            if (srcHandle.IsValid())
             {
-                auto* dx12Sampler = static_cast<DX12Sampler*>(binding.sampler);
-                const DX12DescriptorHandle& srcHandle = dx12Sampler->GetHandle();
-                if (srcHandle.IsValid())
+                uint32 dstIndex = m_layout->GetSamplerIndex(binding.binding);
+                if (dstIndex != UINT32_MAX)
                 {
-                    uint32 dstIndex = m_layout->GetSamplerIndex(binding.binding);
-                    if (dstIndex != UINT32_MAX)
-                    {
-                        D3D12_CPU_DESCRIPTOR_HANDLE dst = m_samplerHandle.cpuHandle;
-                        dst.ptr += static_cast<SIZE_T>(dstIndex) * samplerSize;
-                        d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
-                    }
+                    D3D12_CPU_DESCRIPTOR_HANDLE dst = m_samplerHandle.cpuHandle;
+                    dst.ptr += static_cast<SIZE_T>(dstIndex) * samplerSize;
+                    d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
                 }
             }
+        }
 
-            // Handle buffer (storage/uniform buffer)
-            if (binding.buffer && m_cbvSrvUavHandle.IsValid())
+        // Handle buffer (storage/uniform buffer)
+        if (binding.buffer && m_cbvSrvUavHandle.IsValid())
+        {
+            auto* dx12Buffer = static_cast<DX12Buffer*>(binding.buffer);
+            // Prefer UAV if available, otherwise use SRV
+            const DX12DescriptorHandle& srcHandle =
+                dx12Buffer->GetUAVHandle().IsValid() ? dx12Buffer->GetUAVHandle() : dx12Buffer->GetSRVHandle();
+
+            if (srcHandle.IsValid())
             {
-                auto* dx12Buffer = static_cast<DX12Buffer*>(binding.buffer);
-                // Prefer UAV if available, otherwise use SRV
-                const DX12DescriptorHandle& srcHandle =
-                    dx12Buffer->GetUAVHandle().IsValid() ? dx12Buffer->GetUAVHandle() : dx12Buffer->GetSRVHandle();
-
-                if (srcHandle.IsValid())
+                uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
+                if (dstIndex != UINT32_MAX)
                 {
-                    uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
-                    if (dstIndex != UINT32_MAX)
-                    {
-                        D3D12_CPU_DESCRIPTOR_HANDLE dst = m_cbvSrvUavHandle.cpuHandle;
-                        dst.ptr += static_cast<SIZE_T>(dstIndex) * cbvSrvUavSize;
-                        d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-                    }
+                    D3D12_CPU_DESCRIPTOR_HANDLE dst = m_cbvSrvUavHandle.cpuHandle;
+                    dst.ptr += static_cast<SIZE_T>(dstIndex) * cbvSrvUavSize;
+                    d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
                 }
             }
         }

@@ -3,12 +3,16 @@
 #include "DX11Common.h"
 #include "RHI/RHICommandContext.h"
 
+#include <array>
+#include <vector>
+
 namespace RVX
 {
     class DX11Device;
     class DX11GraphicsPipeline;
     class DX11ComputePipeline;
     class DX11DescriptorSet;
+    class DX11PipelineLayout;
 
     // =============================================================================
     // DX11 Command Context (Phase 4)
@@ -75,6 +79,14 @@ namespace RVX
         void CopyBufferToTexture(RHIBuffer* src, RHITexture* dst, const RHIBufferTextureCopyDesc& desc) override;
         void CopyTextureToBuffer(RHITexture* src, RHIBuffer* dst, const RHIBufferTextureCopyDesc& desc) override;
 
+        // Query Operations
+        void BeginQuery(RHIQueryPool* pool, uint32 index) override;
+        void EndQuery(RHIQueryPool* pool, uint32 index) override;
+        void WriteTimestamp(RHIQueryPool* pool, uint32 index) override;
+        void ResolveQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount,
+                           RHIBuffer* destBuffer, uint64 destOffset) override;
+        void ResetQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount) override;
+
         // =========================================================================
         // DX11 Specific
         // =========================================================================
@@ -99,9 +111,11 @@ namespace RVX
         // Current state
         DX11GraphicsPipeline* m_currentGraphicsPipeline = nullptr;
         DX11ComputePipeline* m_currentComputePipeline = nullptr;
+        DX11PipelineLayout* m_currentPipelineLayout = nullptr;
 
         // Descriptor sets
         std::array<DX11DescriptorSet*, 4> m_descriptorSets = {};
+        std::array<std::vector<uint32>, 4> m_dynamicOffsets = {};
         bool m_descriptorSetsDirty = false;
 
         // Current render targets

@@ -6,6 +6,7 @@
 
 #include <set>
 #include <algorithm>
+#include <cstdio>
 
 namespace RVX
 {
@@ -133,6 +134,12 @@ namespace RVX
             return;
         }
 
+        if (!CreatePipelineCache())
+        {
+            RVX_RHI_ERROR("Failed to create pipeline cache");
+            // Non-fatal - continue without caching
+        }
+
         // Create per-frame sync objects
         VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
@@ -194,6 +201,14 @@ namespace RVX
         m_graphicsCommandPool = VK_NULL_HANDLE;
         m_computeCommandPool = VK_NULL_HANDLE;
         m_transferCommandPool = VK_NULL_HANDLE;
+
+        // Save and destroy pipeline cache
+        SavePipelineCache();
+        if (m_pipelineCache)
+        {
+            vkDestroyPipelineCache(m_device, m_pipelineCache, nullptr);
+            m_pipelineCache = VK_NULL_HANDLE;
+        }
 
         if (m_allocator)
             vmaDestroyAllocator(m_allocator);
@@ -548,12 +563,49 @@ namespace RVX
     // =============================================================================
     bool VulkanDevice::CreateAllocator()
     {
+        // Set up Vulkan function pointers for VMA
+        VmaVulkanFunctions vulkanFunctions = {};
+        vulkanFunctions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+        vulkanFunctions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
+        vulkanFunctions.vkGetPhysicalDeviceProperties = vkGetPhysicalDeviceProperties;
+        vulkanFunctions.vkGetPhysicalDeviceMemoryProperties = vkGetPhysicalDeviceMemoryProperties;
+        vulkanFunctions.vkAllocateMemory = vkAllocateMemory;
+        vulkanFunctions.vkFreeMemory = vkFreeMemory;
+        vulkanFunctions.vkMapMemory = vkMapMemory;
+        vulkanFunctions.vkUnmapMemory = vkUnmapMemory;
+        vulkanFunctions.vkFlushMappedMemoryRanges = vkFlushMappedMemoryRanges;
+        vulkanFunctions.vkInvalidateMappedMemoryRanges = vkInvalidateMappedMemoryRanges;
+        vulkanFunctions.vkBindBufferMemory = vkBindBufferMemory;
+        vulkanFunctions.vkBindImageMemory = vkBindImageMemory;
+        vulkanFunctions.vkGetBufferMemoryRequirements = vkGetBufferMemoryRequirements;
+        vulkanFunctions.vkGetImageMemoryRequirements = vkGetImageMemoryRequirements;
+        vulkanFunctions.vkCreateBuffer = vkCreateBuffer;
+        vulkanFunctions.vkDestroyBuffer = vkDestroyBuffer;
+        vulkanFunctions.vkCreateImage = vkCreateImage;
+        vulkanFunctions.vkDestroyImage = vkDestroyImage;
+        vulkanFunctions.vkCmdCopyBuffer = vkCmdCopyBuffer;
+        // Vulkan 1.1+ functions
+        vulkanFunctions.vkGetBufferMemoryRequirements2KHR = vkGetBufferMemoryRequirements2;
+        vulkanFunctions.vkGetImageMemoryRequirements2KHR = vkGetImageMemoryRequirements2;
+        vulkanFunctions.vkBindBufferMemory2KHR = vkBindBufferMemory2;
+        vulkanFunctions.vkBindImageMemory2KHR = vkBindImageMemory2;
+        vulkanFunctions.vkGetPhysicalDeviceMemoryProperties2KHR = vkGetPhysicalDeviceMemoryProperties2;
+        // Vulkan 1.3 functions
+        vulkanFunctions.vkGetDeviceBufferMemoryRequirements = vkGetDeviceBufferMemoryRequirements;
+        vulkanFunctions.vkGetDeviceImageMemoryRequirements = vkGetDeviceImageMemoryRequirements;
+
         VmaAllocatorCreateInfo allocatorInfo = {};
         allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_3;
         allocatorInfo.physicalDevice = m_physicalDevice;
         allocatorInfo.device = m_device;
         allocatorInfo.instance = m_instance;
+        allocatorInfo.pVulkanFunctions = &vulkanFunctions;
+        
+        // Enable buffer device address for bindless/raytracing
         allocatorInfo.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+        
+        // Enable memory budget extension for better memory tracking (if available)
+        allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
 
         VkResult result = vmaCreateAllocator(&allocatorInfo, &m_allocator);
         if (result != VK_SUCCESS)
@@ -640,6 +692,98 @@ namespace RVX
     }
 
     // =============================================================================
+    // Pipeline Cache
+    // =============================================================================
+    static const char* s_pipelineCacheFilename = "vulkan_pipeline_cache.bin";
+
+    bool VulkanDevice::CreatePipelineCache()
+    {
+        VkPipelineCacheCreateInfo cacheInfo = {VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+        cacheInfo.initialDataSize = 0;
+        cacheInfo.pInitialData = nullptr;
+
+        // Try to load existing cache from disk
+        std::vector<uint8> cacheData;
+        FILE* cacheFile = fopen(s_pipelineCacheFilename, "rb");
+        if (cacheFile)
+        {
+            fseek(cacheFile, 0, SEEK_END);
+            size_t fileSize = ftell(cacheFile);
+            fseek(cacheFile, 0, SEEK_SET);
+
+            if (fileSize > 0)
+            {
+                cacheData.resize(fileSize);
+                size_t readSize = fread(cacheData.data(), 1, fileSize, cacheFile);
+                if (readSize == fileSize)
+                {
+                    // Validate cache header
+                    if (fileSize >= sizeof(uint32) * 4)
+                    {
+                        const uint32* header = reinterpret_cast<const uint32*>(cacheData.data());
+                        // Check header length and header version
+                        if (header[0] >= 16 && header[1] == VK_PIPELINE_CACHE_HEADER_VERSION_ONE)
+                        {
+                            cacheInfo.initialDataSize = fileSize;
+                            cacheInfo.pInitialData = cacheData.data();
+                            RVX_RHI_INFO("Loaded pipeline cache: {} bytes", fileSize);
+                        }
+                        else
+                        {
+                            RVX_RHI_WARN("Pipeline cache header invalid, creating new cache");
+                        }
+                    }
+                }
+            }
+            fclose(cacheFile);
+        }
+
+        VkResult result = vkCreatePipelineCache(m_device, &cacheInfo, nullptr, &m_pipelineCache);
+        if (result != VK_SUCCESS)
+        {
+            RVX_RHI_ERROR("Failed to create pipeline cache: {}", VkResultToString(result));
+            return false;
+        }
+
+        RVX_RHI_DEBUG("Pipeline cache created successfully");
+        return true;
+    }
+
+    void VulkanDevice::SavePipelineCache()
+    {
+        if (!m_pipelineCache)
+            return;
+
+        size_t cacheSize = 0;
+        VkResult result = vkGetPipelineCacheData(m_device, m_pipelineCache, &cacheSize, nullptr);
+        if (result != VK_SUCCESS || cacheSize == 0)
+        {
+            RVX_RHI_DEBUG("No pipeline cache data to save");
+            return;
+        }
+
+        std::vector<uint8> cacheData(cacheSize);
+        result = vkGetPipelineCacheData(m_device, m_pipelineCache, &cacheSize, cacheData.data());
+        if (result != VK_SUCCESS)
+        {
+            RVX_RHI_ERROR("Failed to get pipeline cache data: {}", VkResultToString(result));
+            return;
+        }
+
+        FILE* cacheFile = fopen(s_pipelineCacheFilename, "wb");
+        if (cacheFile)
+        {
+            fwrite(cacheData.data(), 1, cacheSize, cacheFile);
+            fclose(cacheFile);
+            RVX_RHI_INFO("Saved pipeline cache: {} bytes", cacheSize);
+        }
+        else
+        {
+            RVX_RHI_WARN("Failed to save pipeline cache to file");
+        }
+    }
+
+    // =============================================================================
     // Capabilities Query
     // =============================================================================
     // =============================================================================
@@ -691,6 +835,21 @@ namespace RVX
             }
         }
 
+        // Query available device extensions for capability detection
+        uint32 extensionCount = 0;
+        vkEnumerateDeviceExtensionProperties(m_physicalDevice, nullptr, &extensionCount, nullptr);
+        std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+        vkEnumerateDeviceExtensionProperties(m_physicalDevice, nullptr, &extensionCount, availableExtensions.data());
+
+        auto hasExtension = [&availableExtensions](const char* extensionName) {
+            for (const auto& ext : availableExtensions)
+            {
+                if (strcmp(ext.extensionName, extensionName) == 0)
+                    return true;
+            }
+            return false;
+        };
+
         // Feature support
         VkPhysicalDeviceFeatures2 features2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         VkPhysicalDeviceVulkan12Features vulkan12Features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
@@ -698,9 +857,23 @@ namespace RVX
         vkGetPhysicalDeviceFeatures2(m_physicalDevice, &features2);
 
         m_capabilities.supportsBindless = vulkan12Features.descriptorIndexing;
-        m_capabilities.supportsRaytracing = false;  // Would need to check VK_KHR_ray_tracing_pipeline
-        m_capabilities.supportsMeshShaders = false;  // Would need to check VK_EXT_mesh_shader
-        m_capabilities.supportsVariableRateShading = false;
+
+        // Check for raytracing support (VK_KHR_ray_tracing_pipeline + VK_KHR_acceleration_structure)
+        m_capabilities.supportsRaytracing = 
+            hasExtension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) &&
+            hasExtension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+            hasExtension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+
+        // Check for mesh shader support (VK_EXT_mesh_shader)
+        m_capabilities.supportsMeshShaders = hasExtension(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+
+        // Check for variable rate shading support (VK_KHR_fragment_shading_rate)
+        m_capabilities.supportsVariableRateShading = hasExtension(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
+
+        RVX_RHI_DEBUG("Vulkan Capabilities: Raytracing={}, MeshShaders={}, VRS={}", 
+            m_capabilities.supportsRaytracing, 
+            m_capabilities.supportsMeshShaders, 
+            m_capabilities.supportsVariableRateShading);
 
         // Limits
         m_capabilities.maxTextureSize = props.limits.maxImageDimension2D;
@@ -930,6 +1103,13 @@ namespace RVX
     RHIDescriptorSetRef VulkanDevice::CreateDescriptorSet(const RHIDescriptorSetDesc& desc)
     {
         return CreateVulkanDescriptorSet(this, desc);
+    }
+
+    RHIQueryPoolRef VulkanDevice::CreateQueryPool(const RHIQueryPoolDesc& /*desc*/)
+    {
+        // TODO: Implement Vulkan query pool support
+        RVX_RHI_WARN("Vulkan query pools not yet implemented");
+        return nullptr;
     }
 
     RHICommandContextRef VulkanDevice::CreateCommandContext(RHICommandQueueType type)

@@ -134,6 +134,12 @@ namespace RVX
         m_completedValue.store(value);
     }
 
+    void OpenGLFence::SignalOnQueue(uint64 value, RHICommandQueueType /*queueType*/)
+    {
+        // OpenGL has only one queue, so this is the same as Signal
+        Signal(value);
+    }
+
     void OpenGLFence::InsertSyncPoint(uint64 value)
     {
         Signal(value);

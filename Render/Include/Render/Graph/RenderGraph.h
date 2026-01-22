@@ -107,6 +107,14 @@ namespace RVX
         void SetExportState(RGTextureHandle texture, RHIResourceState finalState);
         void SetExportState(RGBufferHandle buffer, RHIResourceState finalState);
 
+        // Get actual RHI resources from handles (valid after Compile)
+        RHITexture* GetTexture(RGTextureHandle handle) const;
+        RHIBuffer* GetBuffer(RGBufferHandle handle) const;
+
+        // Get resource descriptions
+        const RHITextureDesc* GetTextureDesc(RGTextureHandle handle) const;
+        const RHIBufferDesc* GetBufferDesc(RGBufferHandle handle) const;
+
         // Add passes
         template<typename Data>
         void AddPass(
@@ -118,8 +126,21 @@ namespace RVX
         // Compile the graph
         void Compile();
 
-        // Execute the graph
+        // Execute the graph (graphics only)
         void Execute(RHICommandContext& ctx);
+
+        /**
+         * @brief Execute the graph with async compute support
+         * @param graphicsCtx Graphics command context
+         * @param computeCtx Compute command context (can be nullptr to run compute on graphics)
+         * @param computeFence Fence for graphics-compute synchronization
+         * 
+         * When computeCtx is provided, compute passes run asynchronously on the compute queue.
+         * Fences are automatically inserted to synchronize resource access between queues.
+         */
+        void ExecuteAsync(RHICommandContext& graphicsCtx, 
+                          RHICommandContext* computeCtx,
+                          RHIFence* computeFence);
 
         struct CompileStats
         {

@@ -130,6 +130,34 @@ namespace RVX
         m_impl->buffers[buffer.index].exportState = finalState;
     }
 
+    RHITexture* RenderGraph::GetTexture(RGTextureHandle handle) const
+    {
+        if (!handle.IsValid() || handle.index >= m_impl->textures.size())
+            return nullptr;
+        return m_impl->textures[handle.index].GetTexture();
+    }
+
+    RHIBuffer* RenderGraph::GetBuffer(RGBufferHandle handle) const
+    {
+        if (!handle.IsValid() || handle.index >= m_impl->buffers.size())
+            return nullptr;
+        return m_impl->buffers[handle.index].GetBuffer();
+    }
+
+    const RHITextureDesc* RenderGraph::GetTextureDesc(RGTextureHandle handle) const
+    {
+        if (!handle.IsValid() || handle.index >= m_impl->textures.size())
+            return nullptr;
+        return &m_impl->textures[handle.index].desc;
+    }
+
+    const RHIBufferDesc* RenderGraph::GetBufferDesc(RGBufferHandle handle) const
+    {
+        if (!handle.IsValid() || handle.index >= m_impl->buffers.size())
+            return nullptr;
+        return &m_impl->buffers[handle.index].desc;
+    }
+
     void RenderGraph::AddPassInternal(
         const char* name,
         RenderGraphPassType type,
@@ -298,6 +326,13 @@ namespace RVX
     void RenderGraph::Execute(RHICommandContext& ctx)
     {
         ExecuteRenderGraph(*m_impl, ctx);
+    }
+
+    void RenderGraph::ExecuteAsync(RHICommandContext& graphicsCtx, 
+                                   RHICommandContext* computeCtx,
+                                   RHIFence* computeFence)
+    {
+        ExecuteRenderGraphAsync(*m_impl, graphicsCtx, computeCtx, computeFence);
     }
 
     const RenderGraph::CompileStats& RenderGraph::GetCompileStats() const

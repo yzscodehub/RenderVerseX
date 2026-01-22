@@ -163,6 +163,10 @@ namespace RVX
 
     void CompileRenderGraph(RenderGraphImpl& graph);
     void ExecuteRenderGraph(RenderGraphImpl& graph, RHICommandContext& ctx);
+    void ExecuteRenderGraphAsync(RenderGraphImpl& graph, 
+                                  RHICommandContext& graphicsCtx,
+                                  RHICommandContext* computeCtx,
+                                  RHIFence* computeFence);
     
     // Memory aliasing functions
     void CalculateResourceLifetimes(RenderGraphImpl& graph);

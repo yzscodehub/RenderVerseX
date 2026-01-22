@@ -54,6 +54,10 @@ bool RenderContext::Initialize(const RenderContextConfig& config)
     // Create command contexts
     CreateCommandContexts();
 
+    // Check async compute support
+    m_supportsAsyncCompute = m_device->GetCapabilities().supportsAsyncCompute;
+    RVX_CORE_INFO("RenderContext: Async compute support: {}", m_supportsAsyncCompute ? "yes" : "no");
+
     m_initialized = true;
     m_frameIndex = 0;
     m_frameNumber = 0;
@@ -238,6 +242,13 @@ RHICommandContext* RenderContext::GetGraphicsContext() const
     return m_graphicsContexts[m_frameIndex].Get();
 }
 
+RHICommandContext* RenderContext::GetComputeContext() const
+{
+    if (!m_supportsAsyncCompute || m_frameIndex >= RVX_MAX_FRAME_COUNT)
+        return nullptr;
+    return m_computeContexts[m_frameIndex].Get();
+}
+
 RHITexture* RenderContext::GetCurrentBackBuffer() const
 {
     if (!m_swapChain)
@@ -260,10 +271,29 @@ void RenderContext::CreateCommandContexts()
     uint32_t frameCount = m_frameSynchronizer.GetFrameCount();
     for (uint32_t i = 0; i < frameCount; ++i)
     {
+        // Create graphics context
         m_graphicsContexts[i] = m_device->CreateCommandContext(RHICommandQueueType::Graphics);
         if (!m_graphicsContexts[i])
         {
-            RVX_CORE_ERROR("RenderContext: Failed to create command context for frame {}", i);
+            RVX_CORE_ERROR("RenderContext: Failed to create graphics context for frame {}", i);
+        }
+
+        // Create compute context if async compute is supported
+        if (m_device->GetCapabilities().supportsAsyncCompute)
+        {
+            m_computeContexts[i] = m_device->CreateCommandContext(RHICommandQueueType::Compute);
+            if (!m_computeContexts[i])
+            {
+                RVX_CORE_WARN("RenderContext: Failed to create compute context for frame {}", i);
+            }
+
+            // Create fence for graphics-compute synchronization
+            m_computeFences[i] = m_device->CreateFence(0);
+            if (!m_computeFences[i])
+            {
+                RVX_CORE_WARN("RenderContext: Failed to create compute fence for frame {}", i);
+            }
+            m_computeFenceValues[i] = 0;
         }
     }
 }
@@ -273,6 +303,9 @@ void RenderContext::DestroyCommandContexts()
     for (uint32_t i = 0; i < RVX_MAX_FRAME_COUNT; ++i)
     {
         m_graphicsContexts[i].Reset();
+        m_computeContexts[i].Reset();
+        m_computeFences[i].Reset();
+        m_computeFenceValues[i] = 0;
     }
 }
 

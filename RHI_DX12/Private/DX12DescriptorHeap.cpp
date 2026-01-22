@@ -255,13 +255,16 @@ namespace RVX
 
     DX12DescriptorHandle DX12DescriptorHeapManager::AllocateTransientCbvSrvUav(uint32 count)
     {
-        return m_transientHeaps[m_currentFrameIndex].Allocate(count);
+        uint32 frameIndex = m_currentFrameIndex.load(std::memory_order_acquire);
+        return m_transientHeaps[frameIndex].Allocate(count);
     }
 
     void DX12DescriptorHeapManager::ResetTransientHeaps()
     {
-        m_currentFrameIndex = (m_currentFrameIndex + 1) % RVX_MAX_FRAME_COUNT;
-        m_transientHeaps[m_currentFrameIndex].Reset();
+        // Atomically advance to next frame index
+        uint32 newIndex = (m_currentFrameIndex.load(std::memory_order_relaxed) + 1) % RVX_MAX_FRAME_COUNT;
+        m_currentFrameIndex.store(newIndex, std::memory_order_release);
+        m_transientHeaps[newIndex].Reset();
     }
 
 } // namespace RVX

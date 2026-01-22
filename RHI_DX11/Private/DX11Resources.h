@@ -5,7 +5,10 @@
 #include "RHI/RHITexture.h"
 #include "RHI/RHISampler.h"
 #include "RHI/RHIShader.h"
+#include "RHI/RHIQuery.h"
 #include "RHI/RHISynchronization.h"
+
+#include <vector>
 
 namespace RVX
 {
@@ -173,6 +176,34 @@ namespace RVX
     // =============================================================================
     // DX11 Fence (Phase 2)
     // =============================================================================
+    // DX11 Query Pool
+    // =============================================================================
+    class DX11QueryPool : public RHIQueryPool
+    {
+    public:
+        DX11QueryPool(DX11Device* device, const RHIQueryPoolDesc& desc);
+        ~DX11QueryPool() override;
+
+        // RHIQueryPool interface
+        RHIQueryType GetType() const override { return m_type; }
+        uint32 GetCount() const override { return m_count; }
+        uint64 GetTimestampFrequency() const override { return m_timestampFrequency; }
+
+        // DX11 Specific
+        ID3D11Query* GetQuery(uint32 index) const;
+        ID3D11Predicate* GetPredicate(uint32 index) const;
+
+    private:
+        DX11Device* m_device = nullptr;
+        RHIQueryType m_type = RHIQueryType::Occlusion;
+        uint32 m_count = 0;
+        uint64 m_timestampFrequency = 0;
+        std::vector<ComPtr<ID3D11Query>> m_queries;
+    };
+
+    // =============================================================================
+    // DX11 Fence
+    // =============================================================================
     class DX11Fence : public RHIFence
     {
     public:
@@ -182,6 +213,7 @@ namespace RVX
         // RHIFence interface
         uint64 GetCompletedValue() const override;
         void Signal(uint64 value) override;
+        void SignalOnQueue(uint64 value, RHICommandQueueType queueType) override;
         void Wait(uint64 value, uint64 timeoutNs) override;
 
         // DX11 Specific

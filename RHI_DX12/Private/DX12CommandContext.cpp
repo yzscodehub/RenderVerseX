@@ -2,6 +2,7 @@
 #include "DX12Device.h"
 #include "DX12Resources.h"
 #include "DX12Pipeline.h"
+#include "DX12Query.h"
 
 namespace RVX
 {
@@ -828,6 +829,84 @@ namespace RVX
             uint64 value = dx12Fence->GetCompletedValue() + 1;
             queue->Signal(dx12Fence->GetFence(), value);
         }
+    }
+
+    // =============================================================================
+    // Query Commands
+    // =============================================================================
+    void DX12CommandContext::BeginQuery(RHIQueryPool* pool, uint32 index)
+    {
+        if (!pool)
+            return;
+
+        auto* dx12Pool = static_cast<DX12QueryPool*>(pool);
+        D3D12_QUERY_TYPE queryType = dx12Pool->GetD3D12QueryType();
+        
+        // Timestamp queries don't have Begin/End, only WriteTimestamp
+        if (queryType == D3D12_QUERY_TYPE_TIMESTAMP)
+        {
+            RVX_RHI_WARN("Timestamp queries don't support BeginQuery, use WriteTimestamp");
+            return;
+        }
+        
+        m_commandList->BeginQuery(dx12Pool->GetHeap(), queryType, index);
+    }
+
+    void DX12CommandContext::EndQuery(RHIQueryPool* pool, uint32 index)
+    {
+        if (!pool)
+            return;
+
+        auto* dx12Pool = static_cast<DX12QueryPool*>(pool);
+        D3D12_QUERY_TYPE queryType = dx12Pool->GetD3D12QueryType();
+        
+        // Timestamp queries don't have Begin/End, only WriteTimestamp
+        if (queryType == D3D12_QUERY_TYPE_TIMESTAMP)
+        {
+            RVX_RHI_WARN("Timestamp queries don't support EndQuery, use WriteTimestamp");
+            return;
+        }
+        
+        m_commandList->EndQuery(dx12Pool->GetHeap(), queryType, index);
+    }
+
+    void DX12CommandContext::WriteTimestamp(RHIQueryPool* pool, uint32 index)
+    {
+        if (!pool)
+            return;
+
+        auto* dx12Pool = static_cast<DX12QueryPool*>(pool);
+        
+        // In DX12, timestamps are written using EndQuery with TIMESTAMP type
+        m_commandList->EndQuery(dx12Pool->GetHeap(), D3D12_QUERY_TYPE_TIMESTAMP, index);
+    }
+
+    void DX12CommandContext::ResolveQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount,
+                                            RHIBuffer* destBuffer, uint64 destOffset)
+    {
+        if (!pool || !destBuffer)
+            return;
+
+        auto* dx12Pool = static_cast<DX12QueryPool*>(pool);
+        auto* dx12Buffer = static_cast<DX12Buffer*>(destBuffer);
+        
+        m_commandList->ResolveQueryData(
+            dx12Pool->GetHeap(),
+            dx12Pool->GetD3D12QueryType(),
+            firstQuery,
+            queryCount,
+            dx12Buffer->GetResource(),
+            destOffset);
+    }
+
+    void DX12CommandContext::ResetQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount)
+    {
+        // D3D12 queries don't need explicit reset like Vulkan
+        // The ResolveQueryData operation handles this implicitly
+        // This function is provided for API compatibility
+        (void)pool;
+        (void)firstQuery;
+        (void)queryCount;
     }
 
 } // namespace RVX

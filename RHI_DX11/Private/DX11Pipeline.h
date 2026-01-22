@@ -4,6 +4,9 @@
 #include "RHI/RHIPipeline.h"
 #include "RHI/RHIDescriptor.h"
 
+#include <span>
+#include <vector>
+
 namespace RVX
 {
     class DX11Device;
@@ -54,7 +57,10 @@ namespace RVX
         void Update(const std::vector<RHIDescriptorBinding>& bindings) override;
 
         // Apply bindings to context
-        void Apply(ID3D11DeviceContext* context, RHIShaderStage stages) const;
+        // setIndex is used for slot remapping when using multiple descriptor sets
+        // dynamicOffsets are applied to DynamicUniformBuffer/DynamicStorageBuffer bindings
+        void Apply(ID3D11DeviceContext* context, RHIShaderStage stages, uint32 setIndex = 0,
+                   std::span<const uint32> dynamicOffsets = {}) const;
 
     private:
         DX11Device* m_device = nullptr;
@@ -76,6 +82,9 @@ namespace RVX
         // Apply pipeline state to context
         void Apply(ID3D11DeviceContext* context) const;
 
+        // Accessors
+        DX11PipelineLayout* GetLayout() const { return m_layout; }
+
     private:
         DX11Device* m_device = nullptr;
         DX11PipelineLayout* m_layout = nullptr;
@@ -87,11 +96,11 @@ namespace RVX
         ComPtr<ID3D11HullShader> m_hullShader;
         ComPtr<ID3D11DomainShader> m_domainShader;
 
-        // State objects
-        ComPtr<ID3D11RasterizerState> m_rasterizerState;
-        ComPtr<ID3D11DepthStencilState> m_depthStencilState;
-        ComPtr<ID3D11BlendState> m_blendState;
-        ComPtr<ID3D11InputLayout> m_inputLayout;
+        // State objects (owned by DX11StateCache, raw pointers are safe)
+        ID3D11RasterizerState* m_rasterizerState = nullptr;
+        ID3D11DepthStencilState* m_depthStencilState = nullptr;
+        ID3D11BlendState* m_blendState = nullptr;
+        ID3D11InputLayout* m_inputLayout = nullptr;
 
         D3D11_PRIMITIVE_TOPOLOGY m_topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     };
@@ -108,6 +117,9 @@ namespace RVX
         bool IsCompute() const override { return true; }
 
         void Apply(ID3D11DeviceContext* context) const;
+
+        // Accessors
+        DX11PipelineLayout* GetLayout() const { return m_layout; }
 
     private:
         DX11Device* m_device = nullptr;

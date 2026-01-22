@@ -160,6 +160,12 @@ namespace RVX
         /// Get the current frame's graphics command context
         RHICommandContext* GetGraphicsContext() const;
 
+        /// Get the current frame's compute command context (for async compute)
+        RHICommandContext* GetComputeContext() const;
+
+        /// Check if async compute is supported
+        bool SupportsAsyncCompute() const { return m_supportsAsyncCompute; }
+
         /// Get the current frame index (0 to frameBuffering-1)
         uint32_t GetFrameIndex() const { return m_frameIndex; }
 
@@ -189,11 +195,17 @@ namespace RVX
         
         // Per-frame command contexts
         std::array<RHICommandContextRef, RVX_MAX_FRAME_COUNT> m_graphicsContexts;
+        std::array<RHICommandContextRef, RVX_MAX_FRAME_COUNT> m_computeContexts;
+        
+        // Async compute fences for graphics-compute synchronization
+        std::array<RHIFenceRef, RVX_MAX_FRAME_COUNT> m_computeFences;
+        std::array<uint64_t, RVX_MAX_FRAME_COUNT> m_computeFenceValues = {};
         
         // Frame synchronization
         FrameSynchronizer m_frameSynchronizer;
         uint32_t m_frameIndex = 0;
         uint64_t m_frameNumber = 0;
+        bool m_supportsAsyncCompute = false;
     };
 
 } // namespace RVX

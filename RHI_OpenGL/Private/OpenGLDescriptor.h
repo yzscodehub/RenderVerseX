@@ -60,7 +60,9 @@ namespace RVX
         OpenGLDescriptorSetLayout* GetLayout() const { return m_layout; }
 
         // Apply all bindings to the current OpenGL state
-        void Bind(class OpenGLStateCache& stateCache, uint32 setIndex);
+        // dynamicOffsets: offsets for DynamicUniformBuffer and DynamicStorageBuffer bindings (in order of appearance)
+        void Bind(class OpenGLStateCache& stateCache, uint32 setIndex, 
+                  std::span<const uint32> dynamicOffsets = {});
 
     private:
         void ResolveBinding(const RHIDescriptorBinding& binding);

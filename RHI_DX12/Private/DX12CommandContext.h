@@ -96,6 +96,16 @@ namespace RVX
         void CopyTextureToBuffer(RHITexture* src, RHIBuffer* dst, const RHIBufferTextureCopyDesc& desc) override;
 
         // =========================================================================
+        // Query Commands
+        // =========================================================================
+        void BeginQuery(RHIQueryPool* pool, uint32 index) override;
+        void EndQuery(RHIQueryPool* pool, uint32 index) override;
+        void WriteTimestamp(RHIQueryPool* pool, uint32 index) override;
+        void ResolveQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount,
+                            RHIBuffer* destBuffer, uint64 destOffset) override;
+        void ResetQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount) override;
+
+        // =========================================================================
         // DX12 Specific
         // =========================================================================
         ID3D12GraphicsCommandList* GetCommandList() const { return m_commandList.Get(); }

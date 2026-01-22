@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DX12Common.h"
+#include <atomic>
 #include <mutex>
 #include <vector>
 #include <queue>
@@ -156,7 +157,7 @@ namespace RVX
 
         // Ring buffer for transient descriptors
         std::array<DX12RingDescriptorHeap, RVX_MAX_FRAME_COUNT> m_transientHeaps;
-        uint32 m_currentFrameIndex = 0;
+        std::atomic<uint32> m_currentFrameIndex{0};
     };
 
 } // namespace RVX

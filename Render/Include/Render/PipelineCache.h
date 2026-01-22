@@ -93,6 +93,13 @@ namespace RVX
         RHIPipeline* GetOpaquePipeline() const { return m_opaquePipeline.Get(); }
 
         /**
+         * @brief Get the depth-only pipeline for depth prepass
+         * @return Depth-only pipeline or nullptr if not available
+         * @note Currently returns nullptr - depth-only pipeline not yet implemented
+         */
+        RHIPipeline* GetDepthOnlyPipeline() const { return m_depthOnlyPipeline.Get(); }
+
+        /**
          * @brief Get the default pipeline layout
          */
         RHIPipelineLayout* GetDefaultLayout() const { return m_pipelineLayout.Get(); }
@@ -151,8 +158,9 @@ namespace RVX
         std::vector<RHIDescriptorSetLayoutRef> m_setLayouts;
         RHIPipelineLayoutRef m_pipelineLayout;
 
-        // Graphics pipeline
+        // Graphics pipelines
         RHIPipelineRef m_opaquePipeline;
+        RHIPipelineRef m_depthOnlyPipeline;  // For depth prepass
 
         // View constants
         RHIBufferRef m_viewConstantBuffer;

@@ -155,6 +155,7 @@ namespace RVX
 
         uint64 GetCompletedValue() const override;
         void Signal(uint64 value) override;
+        void SignalOnQueue(uint64 value, RHICommandQueueType queueType) override;
         void Wait(uint64 value, uint64 timeoutNs = UINT64_MAX) override;
 
         VkSemaphore GetSemaphore() const { return m_semaphore; }

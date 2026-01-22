@@ -40,6 +40,8 @@ namespace RVX
 
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) override;
 
+        RHIQueryPoolRef CreateQueryPool(const RHIQueryPoolDesc& desc) override;
+
         RHICommandContextRef CreateCommandContext(RHICommandQueueType type) override;
         void SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence) override;
         void SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence) override;
@@ -75,6 +77,7 @@ namespace RVX
 
         VkCommandPool GetCommandPool(RHICommandQueueType type);
         VkDescriptorPool GetDescriptorPool() const { return m_descriptorPool; }
+        VkPipelineCache GetPipelineCache() const { return m_pipelineCache; }
 
         VkSemaphore GetImageAvailableSemaphore() const { return m_imageAvailableSemaphores[m_currentFrameIndex]; }
         VkSemaphore GetRenderFinishedSemaphore() const;
@@ -92,6 +95,19 @@ namespace RVX
 
         bool HasDebugUtils() const { return m_validationEnabled && vkCmdBeginDebugUtilsLabel != nullptr; }
 
+        // Helper to set debug object names for RenderDoc/validation layers
+        void SetObjectName(VkObjectType objectType, uint64 objectHandle, const char* name)
+        {
+            if (!name || !vkSetDebugUtilsObjectName)
+                return;
+
+            VkDebugUtilsObjectNameInfoEXT nameInfo = {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
+            nameInfo.objectType = objectType;
+            nameInfo.objectHandle = objectHandle;
+            nameInfo.pObjectName = name;
+            vkSetDebugUtilsObjectName(m_device, &nameInfo);
+        }
+
     private:
         void LoadDebugUtilsFunctions();
         bool CreateInstance(bool enableValidation);
@@ -100,6 +116,8 @@ namespace RVX
         bool CreateAllocator();
         bool CreateCommandPools();
         bool CreateDescriptorPool();
+        bool CreatePipelineCache();
+        void SavePipelineCache();
 
         QueueFamilyIndices FindQueueFamilies(VkPhysicalDevice device);
         bool CheckDeviceExtensionSupport(VkPhysicalDevice device);
@@ -125,6 +143,9 @@ namespace RVX
 
         // Descriptor pool
         VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
+
+        // Pipeline cache for faster pipeline creation
+        VkPipelineCache m_pipelineCache = VK_NULL_HANDLE;
 
         // Per-frame synchronization
         std::array<VkFence, RVX_MAX_FRAME_COUNT> m_frameFences = {};

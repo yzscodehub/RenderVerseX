@@ -35,15 +35,17 @@ namespace RVX
         m_inRenderPass = false;
         m_currentFBO = 0;
         m_currentVAO = 0;
+        m_vaoKeyDirty = true;
 
         for (auto& vb : m_vertexBuffers)
         {
             vb.buffer = nullptr;
             vb.offset = 0;
         }
-        for (auto& ds : m_descriptorSets)
+        for (auto& dsb : m_descriptorSetBindings)
         {
-            ds = nullptr;
+            dsb.set = nullptr;
+            dsb.dynamicOffsets.clear();
         }
     }
 
@@ -83,28 +85,131 @@ namespace RVX
     }
 
     // =========================================================================
-    // Resource Barriers (OpenGL handles synchronization automatically)
+    // Resource Barriers
     // =========================================================================
 
-    void OpenGLCommandContext::BufferBarrier(const RHIBufferBarrier& /*barrier*/)
+    // Helper to map RHIResourceState to GL memory barrier bits for buffers
+    static GLbitfield GetBufferBarrierBits(RHIResourceState stateBefore, RHIResourceState stateAfter)
     {
-        // OpenGL handles synchronization implicitly
-        // For compute shaders, we might need glMemoryBarrier
+        GLbitfield bits = 0;
+
+        // Barrier needed when transitioning FROM UAV (after compute writes)
+        if (stateBefore == RHIResourceState::UnorderedAccess)
+        {
+            bits |= GL_SHADER_STORAGE_BARRIER_BIT;
+        }
+
+        // Barrier needed based on destination state
+        switch (stateAfter)
+        {
+            case RHIResourceState::VertexBuffer:
+                bits |= GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT;
+                break;
+            case RHIResourceState::IndexBuffer:
+                bits |= GL_ELEMENT_ARRAY_BARRIER_BIT;
+                break;
+            case RHIResourceState::ConstantBuffer:
+                bits |= GL_UNIFORM_BARRIER_BIT;
+                break;
+            case RHIResourceState::ShaderResource:
+                bits |= GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT;
+                break;
+            case RHIResourceState::UnorderedAccess:
+                bits |= GL_SHADER_STORAGE_BARRIER_BIT;
+                break;
+            case RHIResourceState::IndirectArgument:
+                bits |= GL_COMMAND_BARRIER_BIT;
+                break;
+            case RHIResourceState::CopyDest:
+            case RHIResourceState::CopySource:
+                bits |= GL_BUFFER_UPDATE_BARRIER_BIT;
+                break;
+            default:
+                break;
+        }
+
+        return bits;
     }
 
-    void OpenGLCommandContext::TextureBarrier(const RHITextureBarrier& /*barrier*/)
+    // Helper to map RHIResourceState to GL memory barrier bits for textures
+    static GLbitfield GetTextureBarrierBits(RHIResourceState stateBefore, RHIResourceState stateAfter)
     {
-        // OpenGL handles synchronization implicitly
+        GLbitfield bits = 0;
+
+        // Barrier needed when transitioning FROM UAV (after compute image writes)
+        if (stateBefore == RHIResourceState::UnorderedAccess)
+        {
+            bits |= GL_SHADER_IMAGE_ACCESS_BARRIER_BIT;
+        }
+
+        // Barrier needed based on destination state
+        switch (stateAfter)
+        {
+            case RHIResourceState::ShaderResource:
+                bits |= GL_TEXTURE_FETCH_BARRIER_BIT;
+                break;
+            case RHIResourceState::UnorderedAccess:
+                bits |= GL_SHADER_IMAGE_ACCESS_BARRIER_BIT;
+                break;
+            case RHIResourceState::RenderTarget:
+            case RHIResourceState::DepthWrite:
+            case RHIResourceState::DepthRead:
+                bits |= GL_FRAMEBUFFER_BARRIER_BIT;
+                break;
+            case RHIResourceState::CopyDest:
+            case RHIResourceState::CopySource:
+                bits |= GL_TEXTURE_UPDATE_BARRIER_BIT;
+                break;
+            case RHIResourceState::Present:
+                bits |= GL_FRAMEBUFFER_BARRIER_BIT;
+                break;
+            default:
+                break;
+        }
+
+        return bits;
+    }
+
+    void OpenGLCommandContext::BufferBarrier(const RHIBufferBarrier& barrier)
+    {
+        GLbitfield bits = GetBufferBarrierBits(barrier.stateBefore, barrier.stateAfter);
+        if (bits != 0)
+        {
+            GL_CHECK(glMemoryBarrier(bits));
+        }
+    }
+
+    void OpenGLCommandContext::TextureBarrier(const RHITextureBarrier& barrier)
+    {
+        GLbitfield bits = GetTextureBarrierBits(barrier.stateBefore, barrier.stateAfter);
+        if (bits != 0)
+        {
+            GL_CHECK(glMemoryBarrier(bits));
+        }
     }
 
     void OpenGLCommandContext::Barriers(
-        std::span<const RHIBufferBarrier> /*bufferBarriers*/,
-        std::span<const RHITextureBarrier> /*textureBarriers*/)
+        std::span<const RHIBufferBarrier> bufferBarriers,
+        std::span<const RHITextureBarrier> textureBarriers)
     {
-        // For compute shaders, issue a full memory barrier
-        if (m_currentComputePipeline)
+        GLbitfield combinedBits = 0;
+
+        // Accumulate barrier bits for all buffer transitions
+        for (const auto& barrier : bufferBarriers)
         {
-            GL_CHECK(glMemoryBarrier(GL_ALL_BARRIER_BITS));
+            combinedBits |= GetBufferBarrierBits(barrier.stateBefore, barrier.stateAfter);
+        }
+
+        // Accumulate barrier bits for all texture transitions
+        for (const auto& barrier : textureBarriers)
+        {
+            combinedBits |= GetTextureBarrierBits(barrier.stateBefore, barrier.stateAfter);
+        }
+
+        // Issue a single combined memory barrier
+        if (combinedBits != 0)
+        {
+            GL_CHECK(glMemoryBarrier(combinedBits));
         }
     }
 
@@ -282,7 +387,12 @@ namespace RVX
         }
         else
         {
-            m_currentGraphicsPipeline = static_cast<OpenGLGraphicsPipeline*>(pipeline);
+            auto* newPipeline = static_cast<OpenGLGraphicsPipeline*>(pipeline);
+            if (m_currentGraphicsPipeline != newPipeline)
+            {
+                m_currentGraphicsPipeline = newPipeline;
+                m_vaoKeyDirty = true;  // Input layout may have changed
+            }
             m_currentComputePipeline = nullptr;
         }
 
@@ -301,9 +411,13 @@ namespace RVX
             return;
         }
 
-        m_vertexBuffers[slot].buffer = buffer;
-        m_vertexBuffers[slot].offset = offset;
-        m_vertexBuffersDirty = true;
+        if (m_vertexBuffers[slot].buffer != buffer || m_vertexBuffers[slot].offset != offset)
+        {
+            m_vertexBuffers[slot].buffer = buffer;
+            m_vertexBuffers[slot].offset = offset;
+            m_vertexBuffersDirty = true;
+            m_vaoKeyDirty = true;  // VAO needs to be rebuilt
+        }
     }
 
     void OpenGLCommandContext::SetVertexBuffers(uint32 startSlot, std::span<RHIBuffer* const> buffers,
@@ -318,10 +432,14 @@ namespace RVX
 
     void OpenGLCommandContext::SetIndexBuffer(RHIBuffer* buffer, RHIFormat format, uint64 offset)
     {
-        m_indexBuffer = buffer;
-        m_indexFormat = format;
-        m_indexBufferOffset = offset;
-        m_vertexBuffersDirty = true;
+        if (m_indexBuffer != buffer || m_indexFormat != format || m_indexBufferOffset != offset)
+        {
+            m_indexBuffer = buffer;
+            m_indexFormat = format;
+            m_indexBufferOffset = offset;
+            m_vertexBuffersDirty = true;
+            m_vaoKeyDirty = true;  // VAO includes index buffer
+        }
     }
 
     // =========================================================================
@@ -329,21 +447,23 @@ namespace RVX
     // =========================================================================
 
     void OpenGLCommandContext::SetDescriptorSet(uint32 slot, RHIDescriptorSet* set,
-                                                std::span<const uint32> /*dynamicOffsets*/)
+                                                std::span<const uint32> dynamicOffsets)
     {
-        if (slot >= m_descriptorSets.size())
+        if (slot >= m_descriptorSetBindings.size())
         {
             RVX_RHI_ERROR("Descriptor set slot {} exceeds maximum", slot);
             return;
         }
 
-        m_descriptorSets[slot] = static_cast<OpenGLDescriptorSet*>(set);
+        m_descriptorSetBindings[slot].set = static_cast<OpenGLDescriptorSet*>(set);
+        m_descriptorSetBindings[slot].dynamicOffsets.assign(dynamicOffsets.begin(), dynamicOffsets.end());
         m_descriptorSetsDirty = true;
     }
 
     void OpenGLCommandContext::SetPushConstants(const void* data, uint32 size, uint32 offset)
     {
         m_pushConstantBuffer.Update(data, size, offset);
+        m_pushConstantsDirty = true;
     }
 
     // =========================================================================
@@ -364,10 +484,35 @@ namespace RVX
 
     void OpenGLCommandContext::SetViewports(std::span<const RHIViewport> viewports)
     {
-        if (!viewports.empty())
+        if (viewports.empty())
+        {
+            return;
+        }
+
+        if (viewports.size() == 1)
         {
             SetViewport(viewports[0]);
+            return;
         }
+
+        // Multi-viewport support using glViewportArrayv (OpenGL 4.1+)
+        // Pack viewport data: x, y, width, height for each viewport
+        std::vector<float> viewportData(viewports.size() * 4);
+        std::vector<double> depthRanges(viewports.size() * 2);
+
+        for (size_t i = 0; i < viewports.size(); ++i)
+        {
+            viewportData[i * 4 + 0] = viewports[i].x;
+            viewportData[i * 4 + 1] = viewports[i].y;
+            viewportData[i * 4 + 2] = viewports[i].width;
+            viewportData[i * 4 + 3] = viewports[i].height;
+
+            depthRanges[i * 2 + 0] = static_cast<double>(viewports[i].minDepth);
+            depthRanges[i * 2 + 1] = static_cast<double>(viewports[i].maxDepth);
+        }
+
+        GL_CHECK(glViewportArrayv(0, static_cast<GLsizei>(viewports.size()), viewportData.data()));
+        GL_CHECK(glDepthRangeArrayv(0, static_cast<GLsizei>(viewports.size()), depthRanges.data()));
     }
 
     void OpenGLCommandContext::SetScissor(const RHIRect& scissor)
@@ -382,10 +527,30 @@ namespace RVX
 
     void OpenGLCommandContext::SetScissors(std::span<const RHIRect> scissors)
     {
-        if (!scissors.empty())
+        if (scissors.empty())
+        {
+            return;
+        }
+
+        if (scissors.size() == 1)
         {
             SetScissor(scissors[0]);
+            return;
         }
+
+        // Multi-scissor support using glScissorArrayv (OpenGL 4.1+)
+        // Pack scissor data: x, y, width, height for each scissor
+        std::vector<GLint> scissorData(scissors.size() * 4);
+
+        for (size_t i = 0; i < scissors.size(); ++i)
+        {
+            scissorData[i * 4 + 0] = scissors[i].x;
+            scissorData[i * 4 + 1] = scissors[i].y;
+            scissorData[i * 4 + 2] = static_cast<GLint>(scissors[i].width);
+            scissorData[i * 4 + 3] = static_cast<GLint>(scissors[i].height);
+        }
+
+        GL_CHECK(glScissorArrayv(0, static_cast<GLsizei>(scissors.size()), scissorData.data()));
     }
 
     // =========================================================================
@@ -410,16 +575,22 @@ namespace RVX
             m_pipelineStateDirty = false;
         }
 
+        // Bind push constants if dirty
+        if (m_pushConstantsDirty)
+        {
+            m_pushConstantBuffer.Bind();
+            m_pushConstantsDirty = false;
+        }
+
         // Bind descriptor sets if dirty
         if (m_descriptorSetsDirty)
         {
-            m_pushConstantBuffer.Bind();
-
-            for (uint32 i = 0; i < m_descriptorSets.size(); ++i)
+            for (uint32 i = 0; i < m_descriptorSetBindings.size(); ++i)
             {
-                if (m_descriptorSets[i])
+                auto& binding = m_descriptorSetBindings[i];
+                if (binding.set)
                 {
-                    m_descriptorSets[i]->Bind(m_device->GetStateCache(), i);
+                    binding.set->Bind(m_device->GetStateCache(), i, binding.dynamicOffsets);
                 }
             }
             m_descriptorSetsDirty = false;
@@ -452,17 +623,25 @@ namespace RVX
         depthState.compareFunc = ToGLCompareFunc(depth.depthCompareOp);
         m_device->GetStateCache().SetDepthState(depthState);
 
-        // Blend state (for first render target)
-        GLBlendState blendState;
-        blendState.enabled = blend.renderTargets[0].blendEnable;
-        blendState.srcRGB = ToGLBlendFactor(blend.renderTargets[0].srcColorBlend);
-        blendState.dstRGB = ToGLBlendFactor(blend.renderTargets[0].dstColorBlend);
-        blendState.srcAlpha = ToGLBlendFactor(blend.renderTargets[0].srcAlphaBlend);
-        blendState.dstAlpha = ToGLBlendFactor(blend.renderTargets[0].dstAlphaBlend);
-        blendState.opRGB = ToGLBlendOp(blend.renderTargets[0].colorBlendOp);
-        blendState.opAlpha = ToGLBlendOp(blend.renderTargets[0].alphaBlendOp);
-        blendState.writeMask = blend.renderTargets[0].colorWriteMask;
-        m_device->GetStateCache().SetBlendState(0, blendState);
+        // Apply blend state to all render targets
+        // If independentBlendEnable is false, RT[0] settings apply to all
+        for (uint32 i = 0; i < RVX_MAX_RENDER_TARGETS; ++i)
+        {
+            // Use RT[0] settings for all if independent blend is disabled
+            uint32 rtIndex = blend.independentBlendEnable ? i : 0;
+            const auto& rtBlend = blend.renderTargets[rtIndex];
+
+            GLBlendState blendState;
+            blendState.enabled = rtBlend.blendEnable;
+            blendState.srcRGB = ToGLBlendFactor(rtBlend.srcColorBlend);
+            blendState.dstRGB = ToGLBlendFactor(rtBlend.dstColorBlend);
+            blendState.srcAlpha = ToGLBlendFactor(rtBlend.srcAlphaBlend);
+            blendState.dstAlpha = ToGLBlendFactor(rtBlend.dstAlphaBlend);
+            blendState.opRGB = ToGLBlendOp(rtBlend.colorBlendOp);
+            blendState.opAlpha = ToGLBlendOp(rtBlend.alphaBlendOp);
+            blendState.writeMask = rtBlend.colorWriteMask;
+            m_device->GetStateCache().SetBlendState(i, blendState);
+        }
 
         // Primitive topology
         m_device->GetStateCache().SetPrimitiveTopology(m_currentGraphicsPipeline->GetPrimitiveMode());
@@ -470,79 +649,89 @@ namespace RVX
 
     GLuint OpenGLCommandContext::GetOrCreateVAO()
     {
-        const auto& inputLayout = m_currentGraphicsPipeline->GetInputLayout();
-
-        // Build VAO cache key
-        VAOCacheKey vaoKey;
-        vaoKey.pipelineLayoutHash = m_currentGraphicsPipeline->GetInputLayoutHash();
-        
-        // Set up vertex buffer bindings in key
-        uint32 maxSlot = 0;
-        for (const auto& elem : inputLayout.elements)
+        // Only rebuild the VAO key if something changed
+        if (m_vaoKeyDirty)
         {
-            maxSlot = std::max(maxSlot, elem.inputSlot + 1);
-        }
+            const auto& inputLayout = m_currentGraphicsPipeline->GetInputLayout();
 
-        vaoKey.vertexBufferCount = 0;
-        for (uint32 slot = 0; slot < maxSlot && slot < m_vertexBuffers.size(); ++slot)
-        {
-            if (m_vertexBuffers[slot].buffer)
+            // Reset and build VAO cache key
+            m_cachedVaoKey = VAOCacheKey{};
+            m_cachedVaoKey.pipelineLayoutHash = m_currentGraphicsPipeline->GetInputLayoutHash();
+            
+            // Set up vertex buffer bindings in key
+            uint32 maxSlot = 0;
+            for (const auto& elem : inputLayout.elements)
             {
-                auto* glBuffer = static_cast<OpenGLBuffer*>(m_vertexBuffers[slot].buffer);
-                
-                // Calculate stride for this slot
-                GLsizei stride = 0;
-                for (const auto& e : inputLayout.elements)
+                maxSlot = std::max(maxSlot, elem.inputSlot + 1);
+            }
+
+            m_cachedVaoKey.vertexBufferCount = 0;
+            for (uint32 slot = 0; slot < maxSlot && slot < m_vertexBuffers.size(); ++slot)
+            {
+                if (m_vertexBuffers[slot].buffer)
                 {
-                    if (e.inputSlot == slot)
+                    auto* glBuffer = static_cast<OpenGLBuffer*>(m_vertexBuffers[slot].buffer);
+                    
+                    // Calculate stride for this slot
+                    GLsizei stride = 0;
+                    for (const auto& e : inputLayout.elements)
                     {
-                        stride += ToGLVertexFormat(e.format).size;
+                        if (e.inputSlot == slot)
+                        {
+                            stride += ToGLVertexFormat(e.format).size;
+                        }
                     }
+
+                    m_cachedVaoKey.vertexBuffers[slot].buffer = glBuffer->GetHandle();
+                    m_cachedVaoKey.vertexBuffers[slot].stride = stride;
+                    m_cachedVaoKey.vertexBuffers[slot].offset = static_cast<GLintptr>(m_vertexBuffers[slot].offset);
+                    m_cachedVaoKey.vertexBuffers[slot].divisor = 0;  // Updated below if per-instance
+                    m_cachedVaoKey.vertexBufferCount = slot + 1;
+                }
+            }
+
+            // Set up vertex attributes in key
+            uint32 currentOffset = 0;
+            m_cachedVaoKey.attributeCount = static_cast<uint32>(inputLayout.elements.size());
+            for (size_t i = 0; i < inputLayout.elements.size(); ++i)
+            {
+                const auto& elem = inputLayout.elements[i];
+                auto vertexFormat = ToGLVertexFormat(elem.format);
+
+                uint32 offset = (elem.alignedByteOffset == 0xFFFFFFFF) ? currentOffset : elem.alignedByteOffset;
+
+                m_cachedVaoKey.attributes[i].location = static_cast<uint32>(i);
+                m_cachedVaoKey.attributes[i].binding = elem.inputSlot;
+                m_cachedVaoKey.attributes[i].type = vertexFormat.type;
+                m_cachedVaoKey.attributes[i].components = vertexFormat.components;
+                m_cachedVaoKey.attributes[i].normalized = vertexFormat.normalized;
+                m_cachedVaoKey.attributes[i].offset = offset;
+
+                if (elem.perInstance)
+                {
+                    m_cachedVaoKey.vertexBuffers[elem.inputSlot].divisor = elem.instanceDataStepRate;
                 }
 
-                vaoKey.vertexBuffers[slot].buffer = glBuffer->GetHandle();
-                vaoKey.vertexBuffers[slot].stride = stride;
-                vaoKey.vertexBuffers[slot].offset = static_cast<GLintptr>(m_vertexBuffers[slot].offset);
-                vaoKey.vertexBuffers[slot].divisor = 0;  // Updated below if per-instance
-                vaoKey.vertexBufferCount = slot + 1;
+                currentOffset = offset + vertexFormat.size;
             }
-        }
 
-        // Set up vertex attributes in key
-        uint32 currentOffset = 0;
-        vaoKey.attributeCount = static_cast<uint32>(inputLayout.elements.size());
-        for (size_t i = 0; i < inputLayout.elements.size(); ++i)
-        {
-            const auto& elem = inputLayout.elements[i];
-            auto vertexFormat = ToGLVertexFormat(elem.format);
-
-            uint32 offset = (elem.alignedByteOffset == 0xFFFFFFFF) ? currentOffset : elem.alignedByteOffset;
-
-            vaoKey.attributes[i].location = static_cast<uint32>(i);
-            vaoKey.attributes[i].binding = elem.inputSlot;
-            vaoKey.attributes[i].type = vertexFormat.type;
-            vaoKey.attributes[i].components = vertexFormat.components;
-            vaoKey.attributes[i].normalized = vertexFormat.normalized;
-            vaoKey.attributes[i].offset = offset;
-
-            if (elem.perInstance)
+            // Index buffer
+            if (m_indexBuffer)
             {
-                vaoKey.vertexBuffers[elem.inputSlot].divisor = elem.instanceDataStepRate;
+                auto* glBuffer = static_cast<OpenGLBuffer*>(m_indexBuffer);
+                m_cachedVaoKey.indexBuffer = glBuffer->GetHandle();
+            }
+            else
+            {
+                m_cachedVaoKey.indexBuffer = 0;
             }
 
-            currentOffset = offset + vertexFormat.size;
+            m_vaoKeyDirty = false;
         }
 
-        // Index buffer
-        if (m_indexBuffer)
-        {
-            auto* glBuffer = static_cast<OpenGLBuffer*>(m_indexBuffer);
-            vaoKey.indexBuffer = glBuffer->GetHandle();
-        }
-
-        // Get or create VAO from cache
+        // Get or create VAO from cache using the cached key
         m_currentVAO = m_device->GetVAOCache().GetOrCreateVAO(
-            vaoKey, m_device->GetTotalFrameIndex(), "DrawVAO");
+            m_cachedVaoKey, m_device->GetTotalFrameIndex(), "DrawVAO");
         
         return m_currentVAO;
     }
@@ -641,16 +830,22 @@ namespace RVX
 
         m_device->GetStateCache().BindProgram(m_currentComputePipeline->GetProgramHandle());
 
+        // Bind push constants if dirty
+        if (m_pushConstantsDirty)
+        {
+            m_pushConstantBuffer.Bind();
+            m_pushConstantsDirty = false;
+        }
+
         // Bind descriptor sets
         if (m_descriptorSetsDirty)
         {
-            m_pushConstantBuffer.Bind();
-
-            for (uint32 i = 0; i < m_descriptorSets.size(); ++i)
+            for (uint32 i = 0; i < m_descriptorSetBindings.size(); ++i)
             {
-                if (m_descriptorSets[i])
+                auto& binding = m_descriptorSetBindings[i];
+                if (binding.set)
                 {
-                    m_descriptorSets[i]->Bind(m_device->GetStateCache(), i);
+                    binding.set->Bind(m_device->GetStateCache(), i, binding.dynamicOffsets);
                 }
             }
             m_descriptorSetsDirty = false;
@@ -695,13 +890,25 @@ namespace RVX
         auto* srcGL = static_cast<OpenGLTexture*>(src);
         auto* dstGL = static_cast<OpenGLTexture*>(dst);
 
-        uint32 width = desc.width > 0 ? desc.width : srcGL->GetWidth();
-        uint32 height = desc.height > 0 ? desc.height : srcGL->GetHeight();
-        uint32 depth = desc.depth > 0 ? desc.depth : srcGL->GetDepth();
+        // Extract mip level from subresource index
+        // Subresource = mipLevel + (arrayLayer * mipLevels)
+        uint32 srcMipLevel = desc.srcSubresource % srcGL->GetMipLevels();
+        uint32 dstMipLevel = desc.dstSubresource % dstGL->GetMipLevels();
+
+        // Calculate dimensions at the specified mip level if not provided
+        uint32 srcMipWidth = std::max(1u, srcGL->GetWidth() >> srcMipLevel);
+        uint32 srcMipHeight = std::max(1u, srcGL->GetHeight() >> srcMipLevel);
+        uint32 srcMipDepth = std::max(1u, srcGL->GetDepth() >> srcMipLevel);
+
+        uint32 width = desc.width > 0 ? desc.width : srcMipWidth;
+        uint32 height = desc.height > 0 ? desc.height : srcMipHeight;
+        uint32 depth = desc.depth > 0 ? desc.depth : srcMipDepth;
 
         GL_CHECK(glCopyImageSubData(
-            srcGL->GetHandle(), srcGL->GetTarget(), 0, desc.srcX, desc.srcY, desc.srcZ,
-            dstGL->GetHandle(), dstGL->GetTarget(), 0, desc.dstX, desc.dstY, desc.dstZ,
+            srcGL->GetHandle(), srcGL->GetTarget(), static_cast<GLint>(srcMipLevel), 
+            desc.srcX, desc.srcY, desc.srcZ,
+            dstGL->GetHandle(), dstGL->GetTarget(), static_cast<GLint>(dstMipLevel), 
+            desc.dstX, desc.dstY, desc.dstZ,
             width, height, depth));
     }
 
@@ -750,6 +957,42 @@ namespace RVX
             reinterpret_cast<void*>(desc.bufferOffset)));
 
         GL_CHECK(glBindBuffer(GL_PIXEL_PACK_BUFFER, 0));
+    }
+
+    // =========================================================================
+    // Query Commands (OpenGL stubs - queries not yet implemented)
+    // =========================================================================
+
+    void OpenGLCommandContext::BeginQuery(RHIQueryPool* /*pool*/, uint32 /*index*/)
+    {
+        // TODO: Implement OpenGL query support using glBeginQuery
+        RVX_RHI_WARN("OpenGLCommandContext::BeginQuery not yet implemented");
+    }
+
+    void OpenGLCommandContext::EndQuery(RHIQueryPool* /*pool*/, uint32 /*index*/)
+    {
+        // TODO: Implement OpenGL query support using glEndQuery
+        RVX_RHI_WARN("OpenGLCommandContext::EndQuery not yet implemented");
+    }
+
+    void OpenGLCommandContext::WriteTimestamp(RHIQueryPool* /*pool*/, uint32 /*index*/)
+    {
+        // TODO: Implement OpenGL timestamp queries using glQueryCounter
+        RVX_RHI_WARN("OpenGLCommandContext::WriteTimestamp not yet implemented");
+    }
+
+    void OpenGLCommandContext::ResolveQueries(RHIQueryPool* /*pool*/, uint32 /*firstQuery*/, 
+                                              uint32 /*queryCount*/, RHIBuffer* /*destBuffer*/, 
+                                              uint64 /*destOffset*/)
+    {
+        // TODO: Implement query result retrieval using glGetQueryObjectui64v
+        RVX_RHI_WARN("OpenGLCommandContext::ResolveQueries not yet implemented");
+    }
+
+    void OpenGLCommandContext::ResetQueries(RHIQueryPool* /*pool*/, uint32 /*firstQuery*/, 
+                                            uint32 /*queryCount*/)
+    {
+        // OpenGL queries don't require explicit reset
     }
 
 } // namespace RVX

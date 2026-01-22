@@ -6,9 +6,11 @@ add_library(RVX_RHI_Vulkan STATIC)
 target_sources(RVX_RHI_Vulkan PRIVATE
     Private/VulkanDevice.cpp
     Private/VulkanCommandContext.cpp
+    Private/VulkanCommandBufferPool.cpp
     Private/VulkanResources.cpp
     Private/VulkanPipeline.cpp
     Private/VulkanDescriptorPool.cpp
+    Private/VulkanDescriptorAllocator.cpp
     Private/VulkanSwapChain.cpp
     Private/VulkanMemoryAllocator.cpp
 )

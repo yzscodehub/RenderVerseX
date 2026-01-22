@@ -875,6 +875,19 @@ namespace RVX
         m_device->GetGraphicsQueue()->Signal(m_fence.Get(), value);
     }
 
+    void DX12Fence::SignalOnQueue(uint64 value, RHICommandQueueType queueType)
+    {
+        ID3D12CommandQueue* queue = m_device->GetQueue(queueType);
+        if (queue)
+        {
+            queue->Signal(m_fence.Get(), value);
+        }
+        else
+        {
+            RVX_RHI_WARN("SignalOnQueue: Invalid queue type {}", static_cast<int>(queueType));
+        }
+    }
+
     void DX12Fence::Wait(uint64 value, uint64 timeoutNs)
     {
         if (m_fence->GetCompletedValue() < value)

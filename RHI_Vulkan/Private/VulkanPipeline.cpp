@@ -34,6 +34,12 @@ namespace RVX
         layoutInfo.pBindings = bindings.data();
 
         VK_CHECK(vkCreateDescriptorSetLayout(device->GetDevice(), &layoutInfo, nullptr, &m_layout));
+
+        // Set debug name for RenderDoc/validation layers
+        if (desc.debugName)
+        {
+            m_device->SetObjectName(VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, reinterpret_cast<uint64>(m_layout), desc.debugName);
+        }
     }
 
     VulkanDescriptorSetLayout::~VulkanDescriptorSetLayout()
@@ -88,6 +94,12 @@ namespace RVX
         }
 
         VK_CHECK(vkCreatePipelineLayout(device->GetDevice(), &layoutInfo, nullptr, &m_layout));
+
+        // Set debug name for RenderDoc/validation layers
+        if (desc.debugName)
+        {
+            m_device->SetObjectName(VK_OBJECT_TYPE_PIPELINE_LAYOUT, reinterpret_cast<uint64>(m_layout), desc.debugName);
+        }
     }
 
     VulkanPipelineLayout::~VulkanPipelineLayout()
@@ -169,6 +181,29 @@ namespace RVX
             stageInfo.pName = vkShader->GetEntryPoint();
             shaderStages.push_back(stageInfo);
         }
+        if (desc.hullShader)
+        {
+            auto* vkShader = static_cast<VulkanShader*>(desc.hullShader);
+            VkPipelineShaderStageCreateInfo stageInfo = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+            stageInfo.stage = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+            stageInfo.module = vkShader->GetShaderModule();
+            stageInfo.pName = vkShader->GetEntryPoint();
+            shaderStages.push_back(stageInfo);
+        }
+        if (desc.domainShader)
+        {
+            auto* vkShader = static_cast<VulkanShader*>(desc.domainShader);
+            VkPipelineShaderStageCreateInfo stageInfo = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+            stageInfo.stage = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+            stageInfo.module = vkShader->GetShaderModule();
+            stageInfo.pName = vkShader->GetEntryPoint();
+            shaderStages.push_back(stageInfo);
+        }
+
+        // Tessellation state (required when using tessellation shaders)
+        VkPipelineTessellationStateCreateInfo tessellationState = {VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO};
+        tessellationState.patchControlPoints = desc.tessellationControlPoints;
+        bool hasTessellation = desc.hullShader != nullptr && desc.domainShader != nullptr;
 
         // Vertex input
         std::vector<VkVertexInputBindingDescription> bindingDescs;
@@ -316,7 +351,9 @@ namespace RVX
         renderingInfo.colorAttachmentCount = desc.numRenderTargets;
         renderingInfo.pColorAttachmentFormats = colorFormats.data();
         renderingInfo.depthAttachmentFormat = ToVkFormat(desc.depthStencilFormat);
-        renderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+        // Set stencil format for depth-stencil formats (D24S8, D32S8)
+        renderingInfo.stencilAttachmentFormat = IsStencilFormat(desc.depthStencilFormat) ? 
+            ToVkFormat(desc.depthStencilFormat) : VK_FORMAT_UNDEFINED;
 
         // Create pipeline
         VkGraphicsPipelineCreateInfo pipelineInfo = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -325,6 +362,7 @@ namespace RVX
         pipelineInfo.pStages = shaderStages.data();
         pipelineInfo.pVertexInputState = &vertexInputInfo;
         pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pTessellationState = hasTessellation ? &tessellationState : nullptr;
         pipelineInfo.pViewportState = &viewportState;
         pipelineInfo.pRasterizationState = &rasterizer;
         pipelineInfo.pMultisampleState = &multisampling;
@@ -335,12 +373,18 @@ namespace RVX
         pipelineInfo.renderPass = VK_NULL_HANDLE;  // Using dynamic rendering
         pipelineInfo.subpass = 0;
 
-        VkResult result = vkCreateGraphicsPipelines(m_device->GetDevice(), VK_NULL_HANDLE, 1, 
+        VkResult result = vkCreateGraphicsPipelines(m_device->GetDevice(), m_device->GetPipelineCache(), 1, 
             &pipelineInfo, nullptr, &m_pipeline);
         
         if (result != VK_SUCCESS)
         {
             RVX_RHI_ERROR("Failed to create Vulkan graphics pipeline: {}", VkResultToString(result));
+        }
+
+        // Set debug name for RenderDoc/validation layers
+        if (desc.debugName && m_pipeline != VK_NULL_HANDLE)
+        {
+            m_device->SetObjectName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64>(m_pipeline), desc.debugName);
         }
     }
 
@@ -364,8 +408,14 @@ namespace RVX
         pipelineInfo.stage = stageInfo;
         pipelineInfo.layout = m_pipelineLayout;
 
-        VK_CHECK(vkCreateComputePipelines(m_device->GetDevice(), VK_NULL_HANDLE, 1,
+        VK_CHECK(vkCreateComputePipelines(m_device->GetDevice(), m_device->GetPipelineCache(), 1,
             &pipelineInfo, nullptr, &m_pipeline));
+
+        // Set debug name for RenderDoc/validation layers
+        if (desc.debugName)
+        {
+            m_device->SetObjectName(VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64>(m_pipeline), desc.debugName);
+        }
     }
 
     // =============================================================================
@@ -388,6 +438,12 @@ namespace RVX
         allocInfo.pSetLayouts = &m_layout;
 
         VK_CHECK(vkAllocateDescriptorSets(device->GetDevice(), &allocInfo, &m_descriptorSet));
+
+        // Set debug name for RenderDoc/validation layers
+        if (desc.debugName)
+        {
+            m_device->SetObjectName(VK_OBJECT_TYPE_DESCRIPTOR_SET, reinterpret_cast<uint64>(m_descriptorSet), desc.debugName);
+        }
 
         // Initial update
         Update(desc.bindings);

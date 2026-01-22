@@ -2,9 +2,15 @@
 
 #include "DX12Common.h"
 #include "DX12DescriptorHeap.h"
+#include "DX12PipelineCache.h"
+#include "DX12CommandAllocatorPool.h"
 #include "RHI/RHIDevice.h"
 #include "RHI/RHICapabilities.h"
 #include <array>
+#include <functional>
+#include <atomic>
+#include <mutex>
+#include <unordered_map>
 
 namespace RVX
 {
@@ -14,6 +20,35 @@ namespace RVX
     class DX12SwapChain;
     class DX12CommandContext;
     class DX12Fence;
+    
+    // Root Signature cache key
+    struct RootSignatureCacheKey
+    {
+        std::vector<std::pair<uint32, uint8>> bindings;  // (binding, type) pairs per set
+        uint32 pushConstantSize = 0;
+        uint32 setCount = 0;
+        
+        bool operator==(const RootSignatureCacheKey& other) const
+        {
+            return pushConstantSize == other.pushConstantSize 
+                && setCount == other.setCount 
+                && bindings == other.bindings;
+        }
+    };
+    
+    struct RootSignatureCacheKeyHash
+    {
+        size_t operator()(const RootSignatureCacheKey& key) const
+        {
+            size_t hash = std::hash<uint32>{}(key.pushConstantSize);
+            hash ^= std::hash<uint32>{}(key.setCount) << 1;
+            for (const auto& binding : key.bindings)
+            {
+                hash ^= (std::hash<uint32>{}(binding.first) ^ (std::hash<uint8>{}(binding.second) << 16)) << 1;
+            }
+            return hash;
+        }
+    };
 
     // =============================================================================
     // DX12 Device Implementation
@@ -54,6 +89,9 @@ namespace RVX
         // Descriptor Set
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) override;
 
+        // Query Pool
+        RHIQueryPoolRef CreateQueryPool(const RHIQueryPoolDesc& desc) override;
+
         // Command Context
         RHICommandContextRef CreateCommandContext(RHICommandQueueType type) override;
         void SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence) override;
@@ -86,6 +124,8 @@ namespace RVX
         ID3D12CommandQueue* GetCopyQueue() const { return m_copyQueue.Get(); }
         
         DX12DescriptorHeapManager& GetDescriptorHeapManager() { return m_descriptorHeapManager; }
+        DX12PipelineCache& GetPipelineCache() { return m_pipelineCache; }
+        DX12CommandAllocatorPool& GetAllocatorPool() { return m_allocatorPool; }
         
         ID3D12CommandQueue* GetQueue(RHICommandQueueType type) const;
 
@@ -96,6 +136,25 @@ namespace RVX
         #ifdef RVX_USE_D3D12MA
         D3D12MA::Allocator* GetMemoryAllocator() const { return m_memoryAllocator.Get(); }
         #endif
+
+        // =========================================================================
+        // Device Lost Handling
+        // =========================================================================
+        using DeviceLostCallback = std::function<void(HRESULT reason)>;
+        
+        void SetDeviceLostCallback(DeviceLostCallback callback) { m_deviceLostCallback = std::move(callback); }
+        bool IsDeviceLost() const { return m_deviceLost.load(std::memory_order_acquire); }
+        HRESULT GetDeviceRemovedReason() const;
+        void HandleDeviceLost(HRESULT reason);
+
+        // =========================================================================
+        // Root Signature Cache
+        // =========================================================================
+        ComPtr<ID3D12RootSignature> GetOrCreateRootSignature(
+            const RootSignatureCacheKey& key,
+            const std::function<ComPtr<ID3D12RootSignature>()>& createFunc);
+        
+        static RootSignatureCacheKey BuildRootSignatureKey(const RHIPipelineLayoutDesc& desc);
 
     private:
         bool CreateFactory(bool enableDebugLayer);
@@ -134,11 +193,27 @@ namespace RVX
         // Descriptor Heaps
         DX12DescriptorHeapManager m_descriptorHeapManager;
 
+        // Pipeline Cache
+        DX12PipelineCache m_pipelineCache;
+
+        // Command Allocator Pool
+        DX12CommandAllocatorPool m_allocatorPool;
+
         // Capabilities
         RHICapabilities m_capabilities;
 
         // Debug
         bool m_debugLayerEnabled = false;
+
+        // Device Lost Handling
+        std::atomic<bool> m_deviceLost{false};
+        DeviceLostCallback m_deviceLostCallback;
+        void EnableDRED();  // Device Removed Extended Data
+        void LogDREDInfo(); // Log DRED breadcrumbs and page fault info
+
+        // Root Signature Cache
+        std::unordered_map<RootSignatureCacheKey, ComPtr<ID3D12RootSignature>, RootSignatureCacheKeyHash> m_rootSignatureCache;
+        std::mutex m_rootSignatureCacheMutex;
     };
 
 } // namespace RVX

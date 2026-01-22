@@ -1056,4 +1056,88 @@ namespace RVX
         }
     }
 
+    void DX11Fence::SignalOnQueue(uint64 value, RHICommandQueueType queueType)
+    {
+        (void)queueType;  // DX11 only has one queue
+        Signal(value);
+    }
+
+    // =============================================================================
+    // DX11 Query Pool Implementation
+    // =============================================================================
+    DX11QueryPool::DX11QueryPool(DX11Device* device, const RHIQueryPoolDesc& desc)
+        : m_device(device)
+        , m_type(desc.type)
+        , m_count(desc.count)
+    {
+        // Get timestamp frequency for timestamp queries
+        if (m_type == RHIQueryType::Timestamp)
+        {
+            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjointData = {};
+            // Note: Frequency is obtained during query execution, use a common value
+            m_timestampFrequency = 1000000000;  // 1 GHz default, actual value depends on GPU
+        }
+
+        // Create query objects
+        m_queries.resize(m_count);
+        D3D11_QUERY_DESC queryDesc = {};
+
+        switch (m_type)
+        {
+            case RHIQueryType::Occlusion:
+                queryDesc.Query = D3D11_QUERY_OCCLUSION;
+                break;
+            case RHIQueryType::BinaryOcclusion:
+                queryDesc.Query = D3D11_QUERY_OCCLUSION_PREDICATE;
+                break;
+            case RHIQueryType::Timestamp:
+                queryDesc.Query = D3D11_QUERY_TIMESTAMP;
+                break;
+            case RHIQueryType::PipelineStatistics:
+                queryDesc.Query = D3D11_QUERY_PIPELINE_STATISTICS;
+                break;
+            default:
+                RVX_RHI_ERROR("DX11: Unsupported query type");
+                return;
+        }
+
+        for (uint32 i = 0; i < m_count; ++i)
+        {
+            HRESULT hr = device->GetD3DDevice()->CreateQuery(&queryDesc, &m_queries[i]);
+            if (FAILED(hr))
+            {
+                RVX_RHI_ERROR("DX11: Failed to create query {}: {}", i, HRESULTToString(hr));
+            }
+        }
+
+        RVX_RHI_DEBUG("DX11: Created query pool with {} queries", m_count);
+    }
+
+    DX11QueryPool::~DX11QueryPool()
+    {
+    }
+
+    ID3D11Query* DX11QueryPool::GetQuery(uint32 index) const
+    {
+        if (index < m_queries.size())
+        {
+            return m_queries[index].Get();
+        }
+        return nullptr;
+    }
+
+    ID3D11Predicate* DX11QueryPool::GetPredicate(uint32 index) const
+    {
+        if (m_type == RHIQueryType::BinaryOcclusion && index < m_queries.size())
+        {
+            // Predicate is a Query, cast is safe for OCCLUSION_PREDICATE type
+            ComPtr<ID3D11Predicate> predicate;
+            if (SUCCEEDED(m_queries[index].As(&predicate)))
+            {
+                return predicate.Get();
+            }
+        }
+        return nullptr;
+    }
+
 } // namespace RVX

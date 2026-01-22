@@ -113,6 +113,16 @@ namespace RVX
                                 const RHIBufferTextureCopyDesc& desc) override;
 
         // =========================================================================
+        // Query Commands
+        // =========================================================================
+        void BeginQuery(RHIQueryPool* pool, uint32 index) override;
+        void EndQuery(RHIQueryPool* pool, uint32 index) override;
+        void WriteTimestamp(RHIQueryPool* pool, uint32 index) override;
+        void ResolveQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount,
+                           RHIBuffer* destBuffer, uint64 destOffset) override;
+        void ResetQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount) override;
+
+        // =========================================================================
         // OpenGL Specific
         // =========================================================================
         RHICommandQueueType GetQueueType() const { return m_queueType; }
@@ -143,12 +153,18 @@ namespace RVX
         uint64 m_indexBufferOffset = 0;
         bool m_vertexBuffersDirty = true;
 
-        // Descriptor sets
-        std::array<OpenGLDescriptorSet*, 4> m_descriptorSets = {};
+        // Descriptor sets with dynamic offsets
+        struct DescriptorSetBinding
+        {
+            OpenGLDescriptorSet* set = nullptr;
+            std::vector<uint32> dynamicOffsets;
+        };
+        std::array<DescriptorSetBinding, 4> m_descriptorSetBindings = {};
         bool m_descriptorSetsDirty = true;
 
         // Push constants
         OpenGLPushConstantBuffer m_pushConstantBuffer;
+        bool m_pushConstantsDirty = false;
 
         // Render pass state
         bool m_inRenderPass = false;
@@ -158,6 +174,8 @@ namespace RVX
 
         // Cached VAO for current pipeline + vertex buffers
         GLuint m_currentVAO = 0;
+        VAOCacheKey m_cachedVaoKey;
+        bool m_vaoKeyDirty = true;
     };
 
 } // namespace RVX

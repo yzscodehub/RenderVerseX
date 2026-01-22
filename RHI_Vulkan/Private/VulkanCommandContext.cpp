@@ -549,6 +549,42 @@ namespace RVX
     }
 
     // =============================================================================
+    // Query Commands (Vulkan stubs - queries not yet implemented)
+    // =============================================================================
+    void VulkanCommandContext::BeginQuery(RHIQueryPool* /*pool*/, uint32 /*index*/)
+    {
+        // TODO: Implement Vulkan query support using vkCmdBeginQuery
+        RVX_RHI_WARN("VulkanCommandContext::BeginQuery not yet implemented");
+    }
+
+    void VulkanCommandContext::EndQuery(RHIQueryPool* /*pool*/, uint32 /*index*/)
+    {
+        // TODO: Implement Vulkan query support using vkCmdEndQuery
+        RVX_RHI_WARN("VulkanCommandContext::EndQuery not yet implemented");
+    }
+
+    void VulkanCommandContext::WriteTimestamp(RHIQueryPool* /*pool*/, uint32 /*index*/)
+    {
+        // TODO: Implement Vulkan timestamp queries using vkCmdWriteTimestamp
+        RVX_RHI_WARN("VulkanCommandContext::WriteTimestamp not yet implemented");
+    }
+
+    void VulkanCommandContext::ResolveQueries(RHIQueryPool* /*pool*/, uint32 /*firstQuery*/,
+                                              uint32 /*queryCount*/, RHIBuffer* /*destBuffer*/,
+                                              uint64 /*destOffset*/)
+    {
+        // TODO: Implement query result retrieval using vkCmdCopyQueryPoolResults
+        RVX_RHI_WARN("VulkanCommandContext::ResolveQueries not yet implemented");
+    }
+
+    void VulkanCommandContext::ResetQueries(RHIQueryPool* /*pool*/, uint32 /*firstQuery*/,
+                                            uint32 /*queryCount*/)
+    {
+        // TODO: Implement query reset using vkCmdResetQueryPool
+        RVX_RHI_WARN("VulkanCommandContext::ResetQueries not yet implemented");
+    }
+
+    // =============================================================================
     // Factory and Submit
     // =============================================================================
     RHICommandContextRef CreateVulkanCommandContext(VulkanDevice* device, RHICommandQueueType type)
@@ -661,55 +697,126 @@ namespace RVX
             }
         }
 
-        // Submit copy commands first (no sync needed usually)
+        // Cross-queue synchronization semaphores (created on-demand)
+        VkSemaphore copyToComputeSemaphore = VK_NULL_HANDLE;
+        VkSemaphore copyToGraphicsSemaphore = VK_NULL_HANDLE;
+        VkSemaphore computeToGraphicsSemaphore = VK_NULL_HANDLE;
+
+        VkSemaphoreCreateInfo semaphoreInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+
+        // Determine if we need cross-queue sync
+        bool needCopyToComputeSync = !copyCmdBuffers.empty() && !computeCmdBuffers.empty();
+        bool needCopyToGraphicsSync = !copyCmdBuffers.empty() && !computeCmdBuffers.empty() && graphicsCmdBuffers.empty();
+        bool needComputeToGraphicsSync = !computeCmdBuffers.empty() && !graphicsCmdBuffers.empty();
+
+        // Create synchronization semaphores as needed
+        if (needCopyToComputeSync)
+        {
+            vkCreateSemaphore(device->GetDevice(), &semaphoreInfo, nullptr, &copyToComputeSemaphore);
+        }
+        if (needCopyToGraphicsSync)
+        {
+            vkCreateSemaphore(device->GetDevice(), &semaphoreInfo, nullptr, &copyToGraphicsSemaphore);
+        }
+        if (needComputeToGraphicsSync)
+        {
+            vkCreateSemaphore(device->GetDevice(), &semaphoreInfo, nullptr, &computeToGraphicsSemaphore);
+        }
+
+        // Submit copy commands first
         if (!copyCmdBuffers.empty())
         {
+            std::vector<VkSemaphore> signalSemaphores;
+            if (copyToComputeSemaphore != VK_NULL_HANDLE)
+                signalSemaphores.push_back(copyToComputeSemaphore);
+            if (copyToGraphicsSemaphore != VK_NULL_HANDLE)
+                signalSemaphores.push_back(copyToGraphicsSemaphore);
+
             VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
             submitInfo.commandBufferCount = static_cast<uint32>(copyCmdBuffers.size());
             submitInfo.pCommandBuffers = copyCmdBuffers.data();
+            submitInfo.signalSemaphoreCount = static_cast<uint32>(signalSemaphores.size());
+            submitInfo.pSignalSemaphores = signalSemaphores.empty() ? nullptr : signalSemaphores.data();
             VK_CHECK(vkQueueSubmit(device->GetTransferQueue(), 1, &submitInfo, VK_NULL_HANDLE));
         }
 
-        // Submit compute commands
+        // Submit compute commands (wait for copy if needed)
         if (!computeCmdBuffers.empty())
         {
+            std::vector<VkSemaphore> waitSemaphores;
+            std::vector<VkPipelineStageFlags> waitStages;
+            std::vector<VkSemaphore> signalSemaphores;
+
+            if (copyToComputeSemaphore != VK_NULL_HANDLE)
+            {
+                waitSemaphores.push_back(copyToComputeSemaphore);
+                waitStages.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+            }
+            if (computeToGraphicsSemaphore != VK_NULL_HANDLE)
+            {
+                signalSemaphores.push_back(computeToGraphicsSemaphore);
+            }
+
             VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            submitInfo.waitSemaphoreCount = static_cast<uint32>(waitSemaphores.size());
+            submitInfo.pWaitSemaphores = waitSemaphores.empty() ? nullptr : waitSemaphores.data();
+            submitInfo.pWaitDstStageMask = waitStages.empty() ? nullptr : waitStages.data();
             submitInfo.commandBufferCount = static_cast<uint32>(computeCmdBuffers.size());
             submitInfo.pCommandBuffers = computeCmdBuffers.data();
+            submitInfo.signalSemaphoreCount = static_cast<uint32>(signalSemaphores.size());
+            submitInfo.pSignalSemaphores = signalSemaphores.empty() ? nullptr : signalSemaphores.data();
             VK_CHECK(vkQueueSubmit(device->GetComputeQueue(), 1, &submitInfo, VK_NULL_HANDLE));
         }
 
         // Submit graphics commands with swapchain sync
         if (!graphicsCmdBuffers.empty())
         {
-            VkSemaphore waitSemaphore = device->GetImageAvailableSemaphore();
-            VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            VkSemaphore signalSemaphore = device->GetRenderFinishedSemaphore();
+            std::vector<VkSemaphore> waitSemaphores;
+            std::vector<VkPipelineStageFlags> waitStages;
+            std::vector<uint64> waitValues;
 
-            std::vector<VkSemaphore> signalSemaphores = {signalSemaphore};
+            // Wait for swapchain image
+            waitSemaphores.push_back(device->GetImageAvailableSemaphore());
+            waitStages.push_back(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+            waitValues.push_back(0);  // Binary semaphore
+
+            // Wait for compute if needed
+            if (computeToGraphicsSemaphore != VK_NULL_HANDLE)
+            {
+                waitSemaphores.push_back(computeToGraphicsSemaphore);
+                waitStages.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+                waitValues.push_back(0);  // Binary semaphore
+            }
+
+            // Wait for copy if needed (only if no compute)
+            if (copyToGraphicsSemaphore != VK_NULL_HANDLE)
+            {
+                waitSemaphores.push_back(copyToGraphicsSemaphore);
+                waitStages.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+                waitValues.push_back(0);  // Binary semaphore
+            }
+
+            std::vector<VkSemaphore> signalSemaphores = {device->GetRenderFinishedSemaphore()};
             std::vector<uint64> signalValues = {0};  // Binary semaphore
 
-            uint64 signalFenceValue = 0;
             if (signalFence)
             {
                 auto* vkFence = static_cast<VulkanFence*>(signalFence);
                 signalSemaphores.push_back(vkFence->GetSemaphore());
-                signalFenceValue = vkFence->GetCompletedValue() + 1;
-                signalValues.push_back(signalFenceValue);
+                signalValues.push_back(vkFence->GetCompletedValue() + 1);
             }
 
             VkTimelineSemaphoreSubmitInfo timelineInfo = {VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
-            uint64 waitValue = 0;
-            timelineInfo.waitSemaphoreValueCount = 1;
-            timelineInfo.pWaitSemaphoreValues = &waitValue;
+            timelineInfo.waitSemaphoreValueCount = static_cast<uint32>(waitValues.size());
+            timelineInfo.pWaitSemaphoreValues = waitValues.data();
             timelineInfo.signalSemaphoreValueCount = static_cast<uint32>(signalValues.size());
             timelineInfo.pSignalSemaphoreValues = signalValues.data();
 
             VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
             submitInfo.pNext = signalFence ? &timelineInfo : nullptr;
-            submitInfo.waitSemaphoreCount = 1;
-            submitInfo.pWaitSemaphores = &waitSemaphore;
-            submitInfo.pWaitDstStageMask = &waitStage;
+            submitInfo.waitSemaphoreCount = static_cast<uint32>(waitSemaphores.size());
+            submitInfo.pWaitSemaphores = waitSemaphores.data();
+            submitInfo.pWaitDstStageMask = waitStages.data();
             submitInfo.commandBufferCount = static_cast<uint32>(graphicsCmdBuffers.size());
             submitInfo.pCommandBuffers = graphicsCmdBuffers.data();
             submitInfo.signalSemaphoreCount = static_cast<uint32>(signalSemaphores.size());
@@ -720,7 +827,6 @@ namespace RVX
         else if (signalFence)
         {
             // No graphics commands but we need to signal the fence
-            // Submit an empty batch to signal the timeline semaphore
             auto* vkFence = static_cast<VulkanFence*>(signalFence);
             uint64 signalValue = vkFence->GetCompletedValue() + 1;
 
@@ -735,6 +841,28 @@ namespace RVX
             submitInfo.pSignalSemaphores = &signalSemaphore;
 
             VK_CHECK(vkQueueSubmit(device->GetGraphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE));
+        }
+
+        // Clean up temporary semaphores (will be destroyed after GPU is done with them)
+        // Note: In a production engine, these would be pooled and reused
+        // For now, we wait for idle before destroying (safe but not optimal)
+        if (copyToComputeSemaphore != VK_NULL_HANDLE || 
+            copyToGraphicsSemaphore != VK_NULL_HANDLE || 
+            computeToGraphicsSemaphore != VK_NULL_HANDLE)
+        {
+            // Queue these for deferred deletion (after fence signals)
+            // For simplicity, we'll rely on the frame sync to clean up
+            // A proper implementation would use a deletion queue
+            
+            // Immediate cleanup (safe because we're in a locked mutex and 
+            // the semaphores were signaled before queue submit returned)
+            device->WaitIdle();
+            if (copyToComputeSemaphore != VK_NULL_HANDLE)
+                vkDestroySemaphore(device->GetDevice(), copyToComputeSemaphore, nullptr);
+            if (copyToGraphicsSemaphore != VK_NULL_HANDLE)
+                vkDestroySemaphore(device->GetDevice(), copyToGraphicsSemaphore, nullptr);
+            if (computeToGraphicsSemaphore != VK_NULL_HANDLE)
+                vkDestroySemaphore(device->GetDevice(), computeToGraphicsSemaphore, nullptr);
         }
     }
 

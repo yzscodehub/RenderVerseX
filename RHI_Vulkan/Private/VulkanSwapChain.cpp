@@ -341,6 +341,14 @@ namespace RVX
 
     void VulkanSwapChain::Resize(uint32 width, uint32 height)
     {
+        // Skip resize when window is minimized (zero size)
+        // This prevents creating invalid swapchains
+        if (width == 0 || height == 0)
+        {
+            RVX_RHI_DEBUG("Vulkan SwapChain resize skipped (window minimized): {}x{}", width, height);
+            return;
+        }
+
         m_width = width;
         m_height = height;
 
@@ -357,7 +365,15 @@ namespace RVX
     {
         if (!m_hasAcquiredImage)
         {
-            AcquireNextImage();
+            if (!AcquireNextImage())
+            {
+                // Swapchain not ready (e.g., window minimized)
+                return m_backBuffers.empty() ? nullptr : m_backBuffers[0].Get();
+            }
+        }
+        if (m_currentImageIndex >= m_backBuffers.size())
+        {
+            return nullptr;
         }
         return m_backBuffers[m_currentImageIndex].Get();
     }
@@ -366,7 +382,15 @@ namespace RVX
     {
         if (!m_hasAcquiredImage)
         {
-            AcquireNextImage();
+            if (!AcquireNextImage())
+            {
+                // Swapchain not ready (e.g., window minimized)
+                return m_backBufferViews.empty() ? nullptr : m_backBufferViews[0].Get();
+            }
+        }
+        if (m_currentImageIndex >= m_backBufferViews.size())
+        {
+            return nullptr;
         }
         return m_backBufferViews[m_currentImageIndex].Get();
     }

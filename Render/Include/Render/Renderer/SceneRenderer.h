@@ -8,6 +8,8 @@
 #include "Render/Renderer/ViewData.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Graph/RenderGraph.h"
+#include "Render/Graph/TransientResourcePool.h"
+#include "Render/Graph/ResourceViewCache.h"
 #include "Render/Context/RenderContext.h"
 #include "Render/GPUResourceManager.h"
 #include "Render/PipelineCache.h"
@@ -156,6 +158,12 @@ namespace RVX
         /// Get the pipeline cache
         PipelineCache* GetPipelineCache() { return m_pipelineCache.get(); }
 
+        /// Get the transient resource pool
+        TransientResourcePool* GetTransientResourcePool() { return m_transientResourcePool.get(); }
+
+        /// Get the resource view cache
+        ResourceViewCache* GetResourceViewCache() { return m_resourceViewCache.get(); }
+
         /// Get visible object indices
         const std::vector<uint32_t>& GetVisibleObjectIndices() const { return m_visibleObjectIndices; }
 
@@ -173,6 +181,8 @@ namespace RVX
         std::unique_ptr<RenderGraph> m_renderGraph;
         std::unique_ptr<GPUResourceManager> m_gpuResourceManager;
         std::unique_ptr<PipelineCache> m_pipelineCache;
+        std::unique_ptr<TransientResourcePool> m_transientResourcePool;
+        std::unique_ptr<ResourceViewCache> m_resourceViewCache;
         std::vector<std::unique_ptr<IRenderPass>> m_passes;
         
         ViewData m_viewData;

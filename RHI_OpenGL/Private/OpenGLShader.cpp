@@ -67,9 +67,19 @@ namespace RVX
     {
         if (m_shader != 0)
         {
-            glDeleteShader(m_shader);
-            GL_DEBUG_UNTRACK(m_shader, GLResourceType::Shader);
-            RVX_RHI_DEBUG("Destroyed OpenGL Shader #{} '{}'", m_shader, GetDebugName());
+            // Queue for deferred deletion to avoid GPU race conditions
+            if (m_device)
+            {
+                m_device->GetDeletionQueue().QueueShader(m_shader, m_device->GetTotalFrameIndex(),
+                                                         GetDebugName().c_str());
+            }
+            else
+            {
+                // Fallback: immediate deletion if device is already gone
+                glDeleteShader(m_shader);
+                GL_DEBUG_UNTRACK(m_shader, GLResourceType::Shader);
+            }
+            RVX_RHI_DEBUG("Queued OpenGL Shader #{} '{}' for deletion", m_shader, GetDebugName());
             m_shader = 0;
         }
     }
@@ -214,9 +224,19 @@ namespace RVX
     {
         if (m_program != 0)
         {
-            glDeleteProgram(m_program);
-            GL_DEBUG_UNTRACK(m_program, GLResourceType::Program);
-            RVX_RHI_DEBUG("Destroyed OpenGL Program #{} '{}'", m_program, m_debugName);
+            // Queue for deferred deletion to avoid GPU race conditions
+            if (m_device)
+            {
+                m_device->GetDeletionQueue().QueueProgram(m_program, m_device->GetTotalFrameIndex(),
+                                                          m_debugName.c_str());
+            }
+            else
+            {
+                // Fallback: immediate deletion if device is already gone
+                glDeleteProgram(m_program);
+                GL_DEBUG_UNTRACK(m_program, GLResourceType::Program);
+            }
+            RVX_RHI_DEBUG("Queued OpenGL Program #{} '{}' for deletion", m_program, m_debugName);
             m_program = 0;
         }
     }

@@ -74,13 +74,10 @@ namespace RVX
         addressInfo.buffer = m_buffer;
         m_deviceAddress = vkGetBufferDeviceAddress(device->GetDevice(), &addressInfo);
 
+        // Set debug name for RenderDoc/validation layers
         if (desc.debugName)
         {
-            VkDebugUtilsObjectNameInfoEXT nameInfo = {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
-            nameInfo.objectType = VK_OBJECT_TYPE_BUFFER;
-            nameInfo.objectHandle = reinterpret_cast<uint64>(m_buffer);
-            nameInfo.pObjectName = desc.debugName;
-            // vkSetDebugUtilsObjectNameEXT would need to be loaded dynamically
+            m_device->SetObjectName(VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64>(m_buffer), desc.debugName);
         }
     }
 
@@ -263,6 +260,12 @@ namespace RVX
             &m_image, &m_allocation, nullptr));
 
         m_currentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        // Set debug name for RenderDoc/validation layers
+        if (desc.debugName)
+        {
+            m_device->SetObjectName(VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64>(m_image), desc.debugName);
+        }
     }
 
     VulkanTexture::VulkanTexture(VulkanDevice* device, VkImage image, const RHITextureDesc& desc, bool ownsImage)
@@ -276,6 +279,7 @@ namespace RVX
         if (desc.debugName)
         {
             SetDebugName(desc.debugName);
+            m_device->SetObjectName(VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64>(m_image), desc.debugName);
         }
     }
 
@@ -364,6 +368,12 @@ namespace RVX
         viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
 
         VK_CHECK(vkCreateImageView(device->GetDevice(), &viewInfo, nullptr, &m_imageView));
+
+        // Set debug name for RenderDoc/validation layers
+        if (desc.debugName)
+        {
+            m_device->SetObjectName(VK_OBJECT_TYPE_IMAGE_VIEW, reinterpret_cast<uint64>(m_imageView), desc.debugName);
+        }
     }
 
     VulkanTextureView::~VulkanTextureView()
@@ -428,6 +438,12 @@ namespace RVX
         samplerInfo.borderColor = ToVkBorderColor(desc.borderColor);
 
         VK_CHECK(vkCreateSampler(device->GetDevice(), &samplerInfo, nullptr, &m_sampler));
+
+        // Set debug name for RenderDoc/validation layers
+        if (desc.debugName)
+        {
+            m_device->SetObjectName(VK_OBJECT_TYPE_SAMPLER, reinterpret_cast<uint64>(m_sampler), desc.debugName);
+        }
     }
 
     VulkanSampler::~VulkanSampler()
@@ -460,6 +476,12 @@ namespace RVX
         createInfo.pCode = reinterpret_cast<const uint32*>(desc.bytecode);
 
         VK_CHECK(vkCreateShaderModule(device->GetDevice(), &createInfo, nullptr, &m_shaderModule));
+
+        // Set debug name for RenderDoc/validation layers
+        if (desc.debugName)
+        {
+            m_device->SetObjectName(VK_OBJECT_TYPE_SHADER_MODULE, reinterpret_cast<uint64>(m_shaderModule), desc.debugName);
+        }
     }
 
     VulkanShader::~VulkanShader()
@@ -507,6 +529,31 @@ namespace RVX
         signalInfo.semaphore = m_semaphore;
         signalInfo.value = value;
         VK_CHECK(vkSignalSemaphore(m_device->GetDevice(), &signalInfo));
+    }
+
+    void VulkanFence::SignalOnQueue(uint64 value, RHICommandQueueType queueType)
+    {
+        // Get the queue for the specified type
+        VkQueue queue = nullptr;
+        switch (queueType)
+        {
+            case RHICommandQueueType::Graphics: queue = m_device->GetGraphicsQueue(); break;
+            case RHICommandQueueType::Compute:  queue = m_device->GetComputeQueue(); break;
+            case RHICommandQueueType::Copy:     queue = m_device->GetTransferQueue(); break;
+            default: queue = m_device->GetGraphicsQueue(); break;
+        }
+
+        // Submit a signal operation on the queue
+        VkTimelineSemaphoreSubmitInfo timelineInfo = {VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+        timelineInfo.signalSemaphoreValueCount = 1;
+        timelineInfo.pSignalSemaphoreValues = &value;
+
+        VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submitInfo.pNext = &timelineInfo;
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = &m_semaphore;
+
+        VK_CHECK(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
     }
 
     void VulkanFence::Wait(uint64 value, uint64 timeoutNs)
