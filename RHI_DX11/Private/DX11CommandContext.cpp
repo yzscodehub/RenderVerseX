@@ -928,4 +928,82 @@ namespace RVX
         (void)queryCount;
     }
 
+    // =============================================================================
+    // Dynamic Render State
+    // =============================================================================
+    void DX11CommandContext::SetStencilReference(uint32 reference)
+    {
+        // DX11 requires recreating the depth-stencil state with the new reference
+        // For now, we use OMSetDepthStencilState with current state and new ref
+        // The actual depth stencil state is bound when pipeline is set
+        if (m_currentGraphicsPipeline)
+        {
+            m_context->OMSetDepthStencilState(nullptr, reference);
+        }
+    }
+
+    void DX11CommandContext::SetBlendConstants(const float constants[4])
+    {
+        m_context->OMSetBlendState(nullptr, constants, 0xFFFFFFFF);
+    }
+
+    void DX11CommandContext::SetDepthBias(float constantFactor, float slopeFactor, float clamp)
+    {
+        // DX11 depth bias is baked into rasterizer state
+        // Dynamic depth bias requires creating a new rasterizer state
+        // For now, this is a no-op - depth bias should be set in pipeline state
+        (void)constantFactor;
+        (void)slopeFactor;
+        (void)clamp;
+        RVX_RHI_WARN("DX11: SetDepthBias is not fully supported - use pipeline state instead");
+    }
+
+    void DX11CommandContext::SetDepthBounds(float minDepth, float maxDepth)
+    {
+        // DX11 doesn't support depth bounds testing
+        (void)minDepth;
+        (void)maxDepth;
+    }
+
+    void DX11CommandContext::SetStencilReferenceSeparate(uint32 frontRef, uint32 backRef)
+    {
+        // DX11 doesn't support separate front/back stencil reference values
+        // Use the front value for both
+        (void)backRef;
+        SetStencilReference(frontRef);
+    }
+
+    void DX11CommandContext::SetLineWidth(float width)
+    {
+        // DX11 doesn't support line width (always 1.0)
+        (void)width;
+    }
+
+    // =============================================================================
+    // Split Barriers (no-op for DX11)
+    // =============================================================================
+    void DX11CommandContext::BeginBarrier(const RHIBufferBarrier& barrier)
+    {
+        // DX11 doesn't support split barriers - ignore begin, do full barrier in end
+        (void)barrier;
+    }
+
+    void DX11CommandContext::BeginBarrier(const RHITextureBarrier& barrier)
+    {
+        // DX11 doesn't support split barriers
+        (void)barrier;
+    }
+
+    void DX11CommandContext::EndBarrier(const RHIBufferBarrier& barrier)
+    {
+        // DX11 doesn't need explicit barriers - no-op
+        (void)barrier;
+    }
+
+    void DX11CommandContext::EndBarrier(const RHITextureBarrier& barrier)
+    {
+        // DX11 doesn't need explicit barriers - no-op
+        (void)barrier;
+    }
+
 } // namespace RVX

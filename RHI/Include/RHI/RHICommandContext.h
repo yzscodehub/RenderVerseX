@@ -98,6 +98,43 @@ namespace RVX
         }
 
         // =========================================================================
+        // Split Barriers (for hiding synchronization latency)
+        // =========================================================================
+        
+        /**
+         * @brief Begin a resource state transition (asynchronous)
+         * 
+         * After calling this, the resource is in an intermediate state and must
+         * have EndBarrier called before use. Backends that don't support split
+         * barriers will ignore this call and perform full transition in EndBarrier.
+         * 
+         * @param barrier Buffer barrier description
+         */
+        virtual void BeginBarrier(const RHIBufferBarrier& barrier) = 0;
+
+        /**
+         * @brief Begin a resource state transition (asynchronous)
+         * @param barrier Texture barrier description
+         */
+        virtual void BeginBarrier(const RHITextureBarrier& barrier) = 0;
+
+        /**
+         * @brief Complete a resource state transition
+         * 
+         * If BeginBarrier was called earlier, this completes the transition.
+         * Otherwise, performs a full transition.
+         * 
+         * @param barrier Buffer barrier description
+         */
+        virtual void EndBarrier(const RHIBufferBarrier& barrier) = 0;
+
+        /**
+         * @brief Complete a resource state transition
+         * @param barrier Texture barrier description
+         */
+        virtual void EndBarrier(const RHITextureBarrier& barrier) = 0;
+
+        // =========================================================================
         // Render Pass
         // =========================================================================
         virtual void BeginRenderPass(const RHIRenderPassDesc& desc) = 0;
@@ -194,6 +231,52 @@ namespace RVX
          * @param queryCount Number of queries to reset
          */
         virtual void ResetQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount) = 0;
+
+        // =========================================================================
+        // Dynamic Render State
+        // =========================================================================
+        
+        /**
+         * @brief Set stencil reference value
+         * @param reference Reference value (0-255)
+         */
+        virtual void SetStencilReference(uint32 reference) = 0;
+
+        /**
+         * @brief Set blend constant color
+         * @param constants RGBA constant values [0.0, 1.0]
+         */
+        virtual void SetBlendConstants(const float constants[4]) = 0;
+
+        /**
+         * @brief Set depth bias for shadow mapping / decals to prevent Z-fighting
+         * @param constantFactor Constant depth offset
+         * @param slopeFactor Slope-based depth offset
+         * @param clamp Maximum depth bias (0 = no clamp)
+         */
+        virtual void SetDepthBias(float constantFactor, float slopeFactor, float clamp = 0.0f) = 0;
+
+        /**
+         * @brief Set depth bounds test range (requires caps.supportsDepthBounds)
+         * @param minDepth Minimum depth [0.0, 1.0]
+         * @param maxDepth Maximum depth [0.0, 1.0]
+         * @note No-op on backends that don't support depth bounds (DX11, OpenGL, Metal)
+         */
+        virtual void SetDepthBounds(float minDepth, float maxDepth) = 0;
+
+        /**
+         * @brief Set separate stencil reference values for front and back faces
+         * @param frontRef Front face reference value
+         * @param backRef Back face reference value
+         */
+        virtual void SetStencilReferenceSeparate(uint32 frontRef, uint32 backRef) = 0;
+
+        /**
+         * @brief Set line width for line primitives (OpenGL/Vulkan only)
+         * @param width Line width in pixels
+         * @note No-op on DX11/DX12/Metal (always 1.0)
+         */
+        virtual void SetLineWidth(float width) = 0;
     };
 
 } // namespace RVX

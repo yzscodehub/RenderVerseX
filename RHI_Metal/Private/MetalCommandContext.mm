@@ -686,6 +686,122 @@ namespace RVX
     }
 
     // =============================================================================
+    // Query Commands
+    // =============================================================================
+    void MetalCommandContext::BeginQuery(RHIQueryPool* /*pool*/, uint32 /*index*/)
+    {
+        // TODO: Implement Metal query support using visibility result buffer
+        RVX_RHI_WARN("MetalCommandContext::BeginQuery not yet implemented");
+    }
+
+    void MetalCommandContext::EndQuery(RHIQueryPool* /*pool*/, uint32 /*index*/)
+    {
+        // TODO: Implement Metal query support
+        RVX_RHI_WARN("MetalCommandContext::EndQuery not yet implemented");
+    }
+
+    void MetalCommandContext::WriteTimestamp(RHIQueryPool* /*pool*/, uint32 /*index*/)
+    {
+        // TODO: Implement Metal GPU timestamps using sampleCountersInBuffer
+        RVX_RHI_WARN("MetalCommandContext::WriteTimestamp not yet implemented");
+    }
+
+    void MetalCommandContext::ResolveQueries(RHIQueryPool* /*pool*/, uint32 /*firstQuery*/,
+                                             uint32 /*queryCount*/, RHIBuffer* /*destBuffer*/,
+                                             uint64 /*destOffset*/)
+    {
+        // TODO: Implement query result resolution for Metal
+        RVX_RHI_WARN("MetalCommandContext::ResolveQueries not yet implemented");
+    }
+
+    void MetalCommandContext::ResetQueries(RHIQueryPool* /*pool*/, uint32 /*firstQuery*/,
+                                           uint32 /*queryCount*/)
+    {
+        // Metal queries don't require explicit reset
+    }
+
+    // =============================================================================
+    // Dynamic Render State
+    // =============================================================================
+    void MetalCommandContext::SetStencilReference(uint32 reference)
+    {
+        if (m_renderEncoder)
+        {
+            [m_renderEncoder setStencilReferenceValue:reference];
+        }
+    }
+
+    void MetalCommandContext::SetBlendConstants(const float constants[4])
+    {
+        if (m_renderEncoder)
+        {
+            [m_renderEncoder setBlendColorRed:constants[0]
+                                        green:constants[1]
+                                         blue:constants[2]
+                                        alpha:constants[3]];
+        }
+    }
+
+    void MetalCommandContext::SetDepthBias(float constantFactor, float slopeFactor, float clamp)
+    {
+        if (m_renderEncoder)
+        {
+            [m_renderEncoder setDepthBias:constantFactor
+                               slopeScale:slopeFactor
+                                    clamp:clamp];
+        }
+    }
+
+    void MetalCommandContext::SetDepthBounds(float minDepth, float maxDepth)
+    {
+        // Metal doesn't support depth bounds testing
+        (void)minDepth;
+        (void)maxDepth;
+    }
+
+    void MetalCommandContext::SetStencilReferenceSeparate(uint32 frontRef, uint32 backRef)
+    {
+        if (m_renderEncoder)
+        {
+            [m_renderEncoder setStencilFrontReferenceValue:frontRef
+                                        backReferenceValue:backRef];
+        }
+    }
+
+    void MetalCommandContext::SetLineWidth(float width)
+    {
+        // Metal doesn't support line width (always 1.0)
+        (void)width;
+    }
+
+    // =============================================================================
+    // Split Barriers (no-op for Metal - automatic barriers)
+    // =============================================================================
+    void MetalCommandContext::BeginBarrier(const RHIBufferBarrier& barrier)
+    {
+        // Metal handles resource tracking automatically
+        (void)barrier;
+    }
+
+    void MetalCommandContext::BeginBarrier(const RHITextureBarrier& barrier)
+    {
+        // Metal handles resource tracking automatically
+        (void)barrier;
+    }
+
+    void MetalCommandContext::EndBarrier(const RHIBufferBarrier& barrier)
+    {
+        // Metal handles resource tracking automatically
+        (void)barrier;
+    }
+
+    void MetalCommandContext::EndBarrier(const RHITextureBarrier& barrier)
+    {
+        // Metal handles resource tracking automatically
+        (void)barrier;
+    }
+
+    // =============================================================================
     // Submission
     // =============================================================================
     void MetalCommandContext::Submit(RHIFence* signalFence)

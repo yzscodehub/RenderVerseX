@@ -12,9 +12,30 @@
 #include "RHI/RHICapabilities.h"
 #include "RHI/RHIHeap.h"
 #include "RHI/RHIQuery.h"
+#include "RHI/RHIUpload.h"
 
 namespace RVX
 {
+    // =============================================================================
+    // Memory Statistics
+    // =============================================================================
+    struct RHIMemoryStats
+    {
+        // Total statistics
+        uint64 totalAllocated = 0;       // Total allocated bytes
+        uint64 totalUsed = 0;            // Actually used bytes
+        uint64 peakUsage = 0;            // Peak usage bytes
+        uint32 allocationCount = 0;      // Number of allocations
+
+        // Per-type statistics
+        uint64 bufferMemory = 0;         // Buffer memory usage
+        uint64 textureMemory = 0;        // Texture memory usage
+        uint64 renderTargetMemory = 0;   // Render target/depth stencil usage
+
+        // Budget info (requires supportsMemoryBudgetQuery)
+        uint64 budgetBytes = 0;          // GPU memory budget
+        uint64 currentUsageBytes = 0;    // Current usage
+    };
     // =============================================================================
     // Device Description
     // =============================================================================
@@ -102,6 +123,50 @@ namespace RVX
         virtual void BeginFrame() = 0;
         virtual void EndFrame() = 0;
         virtual uint32 GetCurrentFrameIndex() const = 0;
+
+        // =========================================================================
+        // Upload Resources
+        // =========================================================================
+        
+        /**
+         * @brief Create a staging buffer for CPU->GPU data transfer
+         * @param desc Staging buffer description
+         * @return Staging buffer, nullptr on failure
+         */
+        virtual RHIStagingBufferRef CreateStagingBuffer(const RHIStagingBufferDesc& desc) = 0;
+
+        /**
+         * @brief Create a ring buffer for per-frame temporary data
+         * @param desc Ring buffer description
+         * @return Ring buffer, nullptr on failure
+         */
+        virtual RHIRingBufferRef CreateRingBuffer(const RHIRingBufferDesc& desc) = 0;
+
+        // =========================================================================
+        // Memory Statistics
+        // =========================================================================
+        
+        /**
+         * @brief Get current GPU memory statistics
+         * @return Memory statistics structure
+         */
+        virtual RHIMemoryStats GetMemoryStats() const = 0;
+
+        // =========================================================================
+        // Debug Resource Groups
+        // =========================================================================
+        
+        /**
+         * @brief Begin a resource creation group for debug tools (PIX/RenderDoc)
+         * Resources created in this group will be shown together
+         * @param name Group name
+         */
+        virtual void BeginResourceGroup(const char* name) = 0;
+
+        /**
+         * @brief End the current resource creation group
+         */
+        virtual void EndResourceGroup() = 0;
 
         // =========================================================================
         // Capabilities

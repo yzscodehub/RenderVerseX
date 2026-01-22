@@ -866,4 +866,70 @@ namespace RVX
         }
     }
 
+    // =============================================================================
+    // Dynamic Render State
+    // =============================================================================
+    void VulkanCommandContext::SetStencilReference(uint32 reference)
+    {
+        vkCmdSetStencilReference(m_commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, reference);
+    }
+
+    void VulkanCommandContext::SetBlendConstants(const float constants[4])
+    {
+        vkCmdSetBlendConstants(m_commandBuffer, constants);
+    }
+
+    void VulkanCommandContext::SetDepthBias(float constantFactor, float slopeFactor, float clamp)
+    {
+        vkCmdSetDepthBias(m_commandBuffer, constantFactor, clamp, slopeFactor);
+    }
+
+    void VulkanCommandContext::SetDepthBounds(float minDepth, float maxDepth)
+    {
+        vkCmdSetDepthBounds(m_commandBuffer, minDepth, maxDepth);
+    }
+
+    void VulkanCommandContext::SetStencilReferenceSeparate(uint32 frontRef, uint32 backRef)
+    {
+        vkCmdSetStencilReference(m_commandBuffer, VK_STENCIL_FACE_FRONT_BIT, frontRef);
+        vkCmdSetStencilReference(m_commandBuffer, VK_STENCIL_FACE_BACK_BIT, backRef);
+    }
+
+    void VulkanCommandContext::SetLineWidth(float width)
+    {
+        vkCmdSetLineWidth(m_commandBuffer, width);
+    }
+
+    // =============================================================================
+    // Split Barriers
+    // =============================================================================
+    void VulkanCommandContext::BeginBarrier(const RHIBufferBarrier& barrier)
+    {
+        // Vulkan split barriers work by specifying srcStageMask in the begin
+        // and dstStageMask in the end. For simplicity, we add to pending barriers
+        // and they will be flushed together. The actual split is handled by
+        // the barrier batching system.
+        // TODO: Implement proper split barrier with separate dependency tracking
+        BufferBarrier(barrier);
+    }
+
+    void VulkanCommandContext::BeginBarrier(const RHITextureBarrier& barrier)
+    {
+        // Same as buffer - add to pending barriers
+        TextureBarrier(barrier);
+    }
+
+    void VulkanCommandContext::EndBarrier(const RHIBufferBarrier& barrier)
+    {
+        // For now, this is a no-op since we did full barrier in BeginBarrier
+        // TODO: Implement proper split barrier with END_ONLY semantics
+        (void)barrier;
+    }
+
+    void VulkanCommandContext::EndBarrier(const RHITextureBarrier& barrier)
+    {
+        // No-op - barrier was done in BeginBarrier
+        (void)barrier;
+    }
+
 } // namespace RVX

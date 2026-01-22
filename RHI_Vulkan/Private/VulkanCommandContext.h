@@ -30,6 +30,12 @@ namespace RVX
         void Barriers(std::span<const RHIBufferBarrier> bufferBarriers,
                       std::span<const RHITextureBarrier> textureBarriers) override;
 
+        // Split Barriers
+        void BeginBarrier(const RHIBufferBarrier& barrier) override;
+        void BeginBarrier(const RHITextureBarrier& barrier) override;
+        void EndBarrier(const RHIBufferBarrier& barrier) override;
+        void EndBarrier(const RHITextureBarrier& barrier) override;
+
         void BeginRenderPass(const RHIRenderPassDesc& desc) override;
         void EndRenderPass() override;
 
@@ -66,6 +72,14 @@ namespace RVX
         void ResolveQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount,
                            RHIBuffer* destBuffer, uint64 destOffset) override;
         void ResetQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount) override;
+
+        // Dynamic Render State
+        void SetStencilReference(uint32 reference) override;
+        void SetBlendConstants(const float constants[4]) override;
+        void SetDepthBias(float constantFactor, float slopeFactor, float clamp) override;
+        void SetDepthBounds(float minDepth, float maxDepth) override;
+        void SetStencilReferenceSeparate(uint32 frontRef, uint32 backRef) override;
+        void SetLineWidth(float width) override;
 
         VkCommandBuffer GetCommandBuffer() const { return m_commandBuffer; }
         RHICommandQueueType GetQueueType() const { return m_queueType; }

@@ -337,9 +337,6 @@ namespace RVX
         m_capabilities.maxComputeWorkGroupSize[0] = 1024;
         m_capabilities.maxComputeWorkGroupSize[1] = 1024;
         m_capabilities.maxComputeWorkGroupSize[2] = 64;
-        m_capabilities.maxComputeWorkGroupSizeX = 1024;
-        m_capabilities.maxComputeWorkGroupSizeY = 1024;
-        m_capabilities.maxComputeWorkGroupSizeZ = 64;
         m_capabilities.maxComputeWorkGroupCount = 65535;
 
         // DX11 doesn't support these advanced features
@@ -348,6 +345,15 @@ namespace RVX
         m_capabilities.supportsMeshShaders = false;
         m_capabilities.supportsVariableRateShading = false;
         m_capabilities.supportsAsyncCompute = false;  // Single queue
+
+        // Dynamic state and advanced features
+        m_capabilities.supportsDepthBounds = false;             // DX11 doesn't support depth bounds
+        m_capabilities.supportsDynamicLineWidth = false;        // DX11 doesn't support dynamic line width
+        m_capabilities.supportsSeparateStencilRef = false;      // DX11 doesn't support separate stencil refs
+        m_capabilities.supportsSplitBarrier = false;            // DX11 doesn't have explicit barriers
+        m_capabilities.supportsSecondaryCommandBuffer = false;  // DX11 uses deferred context instead
+        m_capabilities.supportsMemoryBudgetQuery = false;       // DX11 doesn't support memory budget
+        m_capabilities.supportsPersistentMapping = false;       // DX11 doesn't support persistent mapping
 
         // Set threading mode
         m_capabilities.dx11.threadingMode = DX11ThreadingMode::SingleThreaded;
@@ -602,6 +608,50 @@ namespace RVX
         {
             fence->Wait(value, UINT64_MAX);
         }
+    }
+
+    // =============================================================================
+    // Upload Resources
+    // =============================================================================
+    RHIStagingBufferRef DX11Device::CreateStagingBuffer(const RHIStagingBufferDesc& desc)
+    {
+        // DX11 uses dynamic/staging buffers directly
+        // TODO: Create proper DX11StagingBuffer wrapper
+        RVX_RHI_WARN("DX11: CreateStagingBuffer not yet fully implemented");
+        return nullptr;
+    }
+
+    RHIRingBufferRef DX11Device::CreateRingBuffer(const RHIRingBufferDesc& desc)
+    {
+        // TODO: Create proper DX11RingBuffer implementation
+        RVX_RHI_WARN("DX11: CreateRingBuffer not yet fully implemented");
+        return nullptr;
+    }
+
+    // =============================================================================
+    // Memory Statistics
+    // =============================================================================
+    RHIMemoryStats DX11Device::GetMemoryStats() const
+    {
+        RHIMemoryStats stats = {};
+        // DX11 doesn't provide detailed memory statistics
+        // Return capabilities-based estimates
+        stats.budgetBytes = m_capabilities.dedicatedVideoMemory;
+        return stats;
+    }
+
+    // =============================================================================
+    // Debug Resource Groups
+    // =============================================================================
+    void DX11Device::BeginResourceGroup(const char* name)
+    {
+        (void)name;
+        // DX11 doesn't have native resource grouping
+    }
+
+    void DX11Device::EndResourceGroup()
+    {
+        // No-op for DX11
     }
 
 } // namespace RVX

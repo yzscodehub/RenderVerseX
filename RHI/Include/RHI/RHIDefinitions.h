@@ -40,8 +40,7 @@ namespace RVX
     inline RHIBackendType SelectBestBackend()
     {
 #if defined(_WIN32)
-        return RHIBackendType::Vulkan;
-        return RHIBackendType::DX12;
+        return RHIBackendType::DX12;  // Windows优先DX12
 #elif defined(__APPLE__)
         return RHIBackendType::Metal;
 #else

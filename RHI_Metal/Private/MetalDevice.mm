@@ -82,9 +82,9 @@ namespace RVX
         m_capabilities.maxColorAttachments = 8;
 
         // Compute limits
-        m_capabilities.maxComputeWorkGroupSizeX = 1024;
-        m_capabilities.maxComputeWorkGroupSizeY = 1024;
-        m_capabilities.maxComputeWorkGroupSizeZ = 1024;
+        m_capabilities.maxComputeWorkGroupSize[0] = 1024;
+        m_capabilities.maxComputeWorkGroupSize[1] = 1024;
+        m_capabilities.maxComputeWorkGroupSize[2] = 1024;
 
         // Feature detection
         m_capabilities.supportsAsyncCompute = true;
@@ -94,6 +94,15 @@ namespace RVX
         {
             m_capabilities.supportsRaytracing = [m_device supportsRaytracing];
         }
+
+        // Dynamic state and advanced features
+        m_capabilities.supportsDepthBounds = false;             // Metal doesn't support depth bounds
+        m_capabilities.supportsDynamicLineWidth = false;        // Metal doesn't support dynamic line width
+        m_capabilities.supportsSeparateStencilRef = true;       // Metal supports separate stencil refs
+        m_capabilities.supportsSplitBarrier = false;            // Metal uses automatic barriers
+        m_capabilities.supportsSecondaryCommandBuffer = true;   // Metal supports parallel encoders
+        m_capabilities.supportsMemoryBudgetQuery = true;        // Metal supports memory budget
+        m_capabilities.supportsPersistentMapping = true;        // Metal supports persistent mapping
 
         RVX_RHI_INFO("Metal Capabilities:");
         RVX_RHI_INFO("  Adapter: {}", m_capabilities.adapterName);
@@ -353,6 +362,63 @@ namespace RVX
         // This is done via addCompletedHandler in SubmitCommandContext
         m_currentFrameIndex = (m_currentFrameIndex + 1) % kMetalMaxFramesInFlight;
         m_frameInFlight = false;
+    }
+
+    // =============================================================================
+    // Upload Resources
+    // =============================================================================
+    RHIStagingBufferRef MetalDevice::CreateStagingBuffer(const RHIStagingBufferDesc& desc)
+    {
+        // Metal uses shared storage mode buffers for staging
+        // TODO: Create proper MetalStagingBuffer wrapper
+        RVX_RHI_WARN("Metal: CreateStagingBuffer not yet fully implemented");
+        return nullptr;
+    }
+
+    RHIRingBufferRef MetalDevice::CreateRingBuffer(const RHIRingBufferDesc& desc)
+    {
+        // TODO: Create proper MetalRingBuffer implementation
+        RVX_RHI_WARN("Metal: CreateRingBuffer not yet fully implemented");
+        return nullptr;
+    }
+
+    // =============================================================================
+    // Memory Statistics
+    // =============================================================================
+    RHIMemoryStats MetalDevice::GetMemoryStats() const
+    {
+        RHIMemoryStats stats = {};
+
+        // Query Metal device memory info
+        if (@available(macOS 10.13, iOS 11.0, *))
+        {
+            stats.currentUsageBytes = [m_device currentAllocatedSize];
+        }
+
+        // Metal doesn't provide explicit budget, use recommended working set
+        if (@available(macOS 10.13, iOS 11.0, *))
+        {
+            stats.budgetBytes = [m_device recommendedMaxWorkingSetSize];
+        }
+
+        stats.totalAllocated = stats.currentUsageBytes;
+        stats.totalUsed = stats.currentUsageBytes;
+
+        return stats;
+    }
+
+    // =============================================================================
+    // Debug Resource Groups
+    // =============================================================================
+    void MetalDevice::BeginResourceGroup(const char* name)
+    {
+        (void)name;
+        // Metal doesn't have native resource grouping
+    }
+
+    void MetalDevice::EndResourceGroup()
+    {
+        // No-op for Metal
     }
 
 } // namespace RVX

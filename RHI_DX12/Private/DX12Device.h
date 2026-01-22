@@ -114,6 +114,17 @@ namespace RVX
         const RHICapabilities& GetCapabilities() const override { return m_capabilities; }
         RHIBackendType GetBackendType() const override { return RHIBackendType::DX12; }
 
+        // Upload Resources
+        RHIStagingBufferRef CreateStagingBuffer(const RHIStagingBufferDesc& desc) override;
+        RHIRingBufferRef CreateRingBuffer(const RHIRingBufferDesc& desc) override;
+
+        // Memory Statistics
+        RHIMemoryStats GetMemoryStats() const override;
+
+        // Debug Resource Groups
+        void BeginResourceGroup(const char* name) override;
+        void EndResourceGroup() override;
+
         // =========================================================================
         // DX12 Specific Accessors
         // =========================================================================

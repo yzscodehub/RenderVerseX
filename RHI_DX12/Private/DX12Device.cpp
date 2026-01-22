@@ -763,6 +763,15 @@ namespace RVX
             m_capabilities.supportsVariableRateShading = (options6.VariableShadingRateTier >= D3D12_VARIABLE_SHADING_RATE_TIER_1);
         }
 
+        // Dynamic state and advanced features
+        m_capabilities.supportsDepthBounds = true;              // DX12 supports depth bounds
+        m_capabilities.supportsDynamicLineWidth = false;        // DX12 doesn't support dynamic line width
+        m_capabilities.supportsSeparateStencilRef = false;      // DX12 doesn't support separate stencil refs
+        m_capabilities.supportsSplitBarrier = true;             // DX12 supports split barriers
+        m_capabilities.supportsSecondaryCommandBuffer = true;   // DX12 supports bundles
+        m_capabilities.supportsMemoryBudgetQuery = true;        // DXGI supports memory budget
+        m_capabilities.supportsPersistentMapping = true;        // DX12 supports persistent mapping
+
         return true;
     }
 
@@ -987,6 +996,72 @@ namespace RVX
     void DX12Device::WaitForFence(RHIFence* fence, uint64 value)
     {
         WaitForDX12Fence(this, fence, value);
+    }
+
+    // =============================================================================
+    // Upload Resources
+    // =============================================================================
+    RHIStagingBufferRef DX12Device::CreateStagingBuffer(const RHIStagingBufferDesc& desc)
+    {
+        // Create an upload buffer for staging
+        RHIBufferDesc bufferDesc;
+        bufferDesc.size = desc.size;
+        bufferDesc.usage = RHIBufferUsage::CopySrc;
+        bufferDesc.memoryType = RHIMemoryType::Upload;
+        bufferDesc.debugName = desc.debugName;
+
+        // TODO: Create proper DX12StagingBuffer wrapper
+        // For now, return nullptr (not yet implemented)
+        RVX_RHI_WARN("DX12: CreateStagingBuffer not yet fully implemented");
+        return nullptr;
+    }
+
+    RHIRingBufferRef DX12Device::CreateRingBuffer(const RHIRingBufferDesc& desc)
+    {
+        // TODO: Create proper DX12RingBuffer implementation
+        RVX_RHI_WARN("DX12: CreateRingBuffer not yet fully implemented");
+        return nullptr;
+    }
+
+    // =============================================================================
+    // Memory Statistics
+    // =============================================================================
+    RHIMemoryStats DX12Device::GetMemoryStats() const
+    {
+        RHIMemoryStats stats = {};
+
+        // Query DXGI adapter memory info
+        DXGI_QUERY_VIDEO_MEMORY_INFO localMemoryInfo = {};
+        DXGI_QUERY_VIDEO_MEMORY_INFO nonLocalMemoryInfo = {};
+
+        ComPtr<IDXGIAdapter3> adapter3;
+        if (m_adapter && SUCCEEDED(m_adapter.As(&adapter3)))
+        {
+            adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &localMemoryInfo);
+            adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonLocalMemoryInfo);
+        }
+
+        stats.budgetBytes = localMemoryInfo.Budget;
+        stats.currentUsageBytes = localMemoryInfo.CurrentUsage;
+        stats.totalAllocated = localMemoryInfo.CurrentUsage + nonLocalMemoryInfo.CurrentUsage;
+        stats.totalUsed = stats.totalAllocated;
+
+        return stats;
+    }
+
+    // =============================================================================
+    // Debug Resource Groups
+    // =============================================================================
+    void DX12Device::BeginResourceGroup(const char* name)
+    {
+        // PIX markers for resource grouping
+        // Note: This is primarily useful during resource creation capture
+        (void)name;
+    }
+
+    void DX12Device::EndResourceGroup()
+    {
+        // End PIX resource group
     }
 
 } // namespace RVX

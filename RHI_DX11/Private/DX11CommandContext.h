@@ -43,6 +43,12 @@ namespace RVX
         void Barriers(std::span<const RHIBufferBarrier> bufferBarriers,
                      std::span<const RHITextureBarrier> textureBarriers) override;
 
+        // Split Barriers (no-op for DX11)
+        void BeginBarrier(const RHIBufferBarrier& barrier) override;
+        void BeginBarrier(const RHITextureBarrier& barrier) override;
+        void EndBarrier(const RHIBufferBarrier& barrier) override;
+        void EndBarrier(const RHITextureBarrier& barrier) override;
+
         // Render Pass
         void BeginRenderPass(const RHIRenderPassDesc& desc) override;
         void EndRenderPass() override;
@@ -86,6 +92,14 @@ namespace RVX
         void ResolveQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount,
                            RHIBuffer* destBuffer, uint64 destOffset) override;
         void ResetQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount) override;
+
+        // Dynamic Render State
+        void SetStencilReference(uint32 reference) override;
+        void SetBlendConstants(const float constants[4]) override;
+        void SetDepthBias(float constantFactor, float slopeFactor, float clamp) override;
+        void SetDepthBounds(float minDepth, float maxDepth) override;
+        void SetStencilReferenceSeparate(uint32 frontRef, uint32 backRef) override;
+        void SetLineWidth(float width) override;
 
         // =========================================================================
         // DX11 Specific

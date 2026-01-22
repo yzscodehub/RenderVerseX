@@ -278,31 +278,23 @@ void SceneRenderer::Render()
 
 void SceneRenderer::ExecutePasses(RHICommandContext& ctx)
 {
-    // Per-frame log disabled to reduce spam
-    // RVX_CORE_DEBUG("SceneRenderer: Executing {} passes", m_passes.size());
+    // NOTE: This is a legacy path for manual pass execution without RenderGraph.
+    // The preferred path is Render() -> BuildRenderGraph() -> RenderGraph::Execute()
+    // which handles barrier management automatically.
     
-    // Get swap chain info
     RHISwapChain* swapChain = m_renderContext->GetSwapChain();
     if (!swapChain)
         return;
     
-    // Check if swap chain was resized and reset state tracking
-    uint32_t currentWidth = swapChain->GetWidth();
-    uint32_t currentHeight = swapChain->GetHeight();
+    // Get current back buffer and its tracked state
+    // State tracking is managed by BuildRenderGraph(), but if called standalone,
+    // ensure we have valid state tracking
     uint32_t bufferCount = swapChain->GetBufferCount();
-    
-    if (m_backBufferStates.size() != bufferCount ||
-        m_lastSwapChainWidth != currentWidth ||
-        m_lastSwapChainHeight != currentHeight)
+    if (m_backBufferStates.size() != bufferCount)
     {
-        // Swap chain was recreated, reset all buffer states to Undefined
         m_backBufferStates.assign(bufferCount, RHIResourceState::Undefined);
-        m_depthBufferState = RHIResourceState::Undefined;  // Depth buffer also recreated on resize
-        m_lastSwapChainWidth = currentWidth;
-        m_lastSwapChainHeight = currentHeight;
     }
     
-    // Get current back buffer and its state
     uint32_t backBufferIndex = swapChain->GetCurrentBackBufferIndex();
     RHITexture* backBuffer = m_renderContext->GetCurrentBackBuffer();
     RHIResourceState& backBufferState = m_backBufferStates[backBufferIndex];
@@ -325,7 +317,6 @@ void SceneRenderer::ExecutePasses(RHICommandContext& ctx)
     {
         if (pass && pass->IsEnabled())
         {
-            // RVX_CORE_DEBUG("SceneRenderer: Executing pass '{}'", pass->GetName());
             pass->Execute(ctx, m_viewData);
         }
     }
@@ -415,15 +406,39 @@ void SceneRenderer::BuildRenderGraph()
     m_viewData.viewCache = m_resourceViewCache.get();
 
     // Import back buffer from swap chain
-    if (m_renderContext->GetSwapChain())
+    RHISwapChain* swapChain = m_renderContext->GetSwapChain();
+    if (swapChain)
     {
+        // Track swapchain state - reset if resized or recreated
+        uint32_t currentWidth = swapChain->GetWidth();
+        uint32_t currentHeight = swapChain->GetHeight();
+        uint32_t bufferCount = swapChain->GetBufferCount();
+        
+        if (m_backBufferStates.size() != bufferCount ||
+            m_lastSwapChainWidth != currentWidth ||
+            m_lastSwapChainHeight != currentHeight)
+        {
+            // Swap chain was recreated, reset all buffer states to Undefined
+            m_backBufferStates.assign(bufferCount, RHIResourceState::Undefined);
+            m_lastSwapChainWidth = currentWidth;
+            m_lastSwapChainHeight = currentHeight;
+        }
+        
         RHITexture* backBuffer = m_renderContext->GetCurrentBackBuffer();
         if (backBuffer)
         {
-            // Import with current state (may be Present or Undefined depending on frame)
-            m_viewData.colorTarget = m_renderGraph->ImportTexture(backBuffer, RHIResourceState::Present);
+            // Get the current state for this back buffer
+            // First use: Undefined, subsequent uses: Present (after presentation)
+            uint32_t backBufferIndex = swapChain->GetCurrentBackBufferIndex();
+            RHIResourceState currentState = m_backBufferStates[backBufferIndex];
+            
+            // Import with actual current state (Undefined on first use, Present after presentation)
+            m_viewData.colorTarget = m_renderGraph->ImportTexture(backBuffer, currentState);
             // Export back to Present state for display
             m_renderGraph->SetExportState(m_viewData.colorTarget, RHIResourceState::Present);
+            
+            // After RenderGraph executes, the back buffer will be in Present state
+            m_backBufferStates[backBufferIndex] = RHIResourceState::Present;
         }
     }
 

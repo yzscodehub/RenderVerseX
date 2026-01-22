@@ -909,4 +909,122 @@ namespace RVX
         (void)queryCount;
     }
 
+    // =============================================================================
+    // Dynamic Render State
+    // =============================================================================
+    void DX12CommandContext::SetStencilReference(uint32 reference)
+    {
+        m_commandList->OMSetStencilRef(reference);
+    }
+
+    void DX12CommandContext::SetBlendConstants(const float constants[4])
+    {
+        m_commandList->OMSetBlendFactor(constants);
+    }
+
+    void DX12CommandContext::SetDepthBias(float constantFactor, float slopeFactor, float clamp)
+    {
+        // DX12 depth bias is baked into pipeline state (D3D12_RASTERIZER_DESC)
+        // Dynamic depth bias is not directly supported in the same way as Vulkan
+        // This is a no-op - depth bias should be set in pipeline state
+        (void)constantFactor;
+        (void)slopeFactor;
+        (void)clamp;
+    }
+
+    void DX12CommandContext::SetDepthBounds(float minDepth, float maxDepth)
+    {
+        // OMSetDepthBounds requires ID3D12GraphicsCommandList1
+        ComPtr<ID3D12GraphicsCommandList1> cmdList1;
+        if (SUCCEEDED(m_commandList.As(&cmdList1)))
+        {
+            cmdList1->OMSetDepthBounds(minDepth, maxDepth);
+        }
+    }
+
+    void DX12CommandContext::SetStencilReferenceSeparate(uint32 frontRef, uint32 backRef)
+    {
+        // DX12 doesn't support separate front/back stencil reference values
+        // Use the front value for both (same as single reference)
+        (void)backRef;
+        m_commandList->OMSetStencilRef(frontRef);
+    }
+
+    void DX12CommandContext::SetLineWidth(float width)
+    {
+        // DX12 doesn't support line width (always 1.0)
+        (void)width;
+    }
+
+    // =============================================================================
+    // Split Barriers
+    // =============================================================================
+    void DX12CommandContext::BeginBarrier(const RHIBufferBarrier& barrier)
+    {
+        auto* dx12Buffer = static_cast<DX12Buffer*>(barrier.buffer);
+        if (!dx12Buffer)
+            return;
+
+        D3D12_RESOURCE_BARRIER d3dBarrier = {};
+        d3dBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        d3dBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_BEGIN_ONLY;  // Split barrier - begin
+        d3dBarrier.Transition.pResource = dx12Buffer->GetResource();
+        d3dBarrier.Transition.StateBefore = ToD3D12ResourceState(barrier.stateBefore);
+        d3dBarrier.Transition.StateAfter = ToD3D12ResourceState(barrier.stateAfter);
+        d3dBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+        m_pendingBarriers.push_back(d3dBarrier);
+    }
+
+    void DX12CommandContext::BeginBarrier(const RHITextureBarrier& barrier)
+    {
+        auto* dx12Texture = static_cast<DX12Texture*>(barrier.texture);
+        if (!dx12Texture)
+            return;
+
+        D3D12_RESOURCE_BARRIER d3dBarrier = {};
+        d3dBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        d3dBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_BEGIN_ONLY;  // Split barrier - begin
+        d3dBarrier.Transition.pResource = dx12Texture->GetResource();
+        d3dBarrier.Transition.StateBefore = ToD3D12ResourceState(barrier.stateBefore);
+        d3dBarrier.Transition.StateAfter = ToD3D12ResourceState(barrier.stateAfter);
+        d3dBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+        m_pendingBarriers.push_back(d3dBarrier);
+    }
+
+    void DX12CommandContext::EndBarrier(const RHIBufferBarrier& barrier)
+    {
+        auto* dx12Buffer = static_cast<DX12Buffer*>(barrier.buffer);
+        if (!dx12Buffer)
+            return;
+
+        D3D12_RESOURCE_BARRIER d3dBarrier = {};
+        d3dBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        d3dBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_END_ONLY;  // Split barrier - end
+        d3dBarrier.Transition.pResource = dx12Buffer->GetResource();
+        d3dBarrier.Transition.StateBefore = ToD3D12ResourceState(barrier.stateBefore);
+        d3dBarrier.Transition.StateAfter = ToD3D12ResourceState(barrier.stateAfter);
+        d3dBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+        m_pendingBarriers.push_back(d3dBarrier);
+    }
+
+    void DX12CommandContext::EndBarrier(const RHITextureBarrier& barrier)
+    {
+        auto* dx12Texture = static_cast<DX12Texture*>(barrier.texture);
+        if (!dx12Texture)
+            return;
+
+        D3D12_RESOURCE_BARRIER d3dBarrier = {};
+        d3dBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        d3dBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_END_ONLY;  // Split barrier - end
+        d3dBarrier.Transition.pResource = dx12Texture->GetResource();
+        d3dBarrier.Transition.StateBefore = ToD3D12ResourceState(barrier.stateBefore);
+        d3dBarrier.Transition.StateAfter = ToD3D12ResourceState(barrier.stateAfter);
+        d3dBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+        m_pendingBarriers.push_back(d3dBarrier);
+    }
+
 } // namespace RVX

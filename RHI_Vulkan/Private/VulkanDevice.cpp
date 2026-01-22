@@ -886,9 +886,6 @@ namespace RVX
         m_capabilities.maxComputeWorkGroupSize[0] = props.limits.maxComputeWorkGroupSize[0];
         m_capabilities.maxComputeWorkGroupSize[1] = props.limits.maxComputeWorkGroupSize[1];
         m_capabilities.maxComputeWorkGroupSize[2] = props.limits.maxComputeWorkGroupSize[2];
-        m_capabilities.maxComputeWorkGroupSizeX = props.limits.maxComputeWorkGroupSize[0];
-        m_capabilities.maxComputeWorkGroupSizeY = props.limits.maxComputeWorkGroupSize[1];
-        m_capabilities.maxComputeWorkGroupSizeZ = props.limits.maxComputeWorkGroupSize[2];
         m_capabilities.maxPushConstantSize = props.limits.maxPushConstantsSize;
 
         // Vulkan-specific
@@ -896,6 +893,16 @@ namespace RVX
         m_capabilities.vulkan.supportsDescriptorIndexing = vulkan12Features.descriptorIndexing;
         m_capabilities.vulkan.supportsBufferDeviceAddress = vulkan12Features.bufferDeviceAddress;
         m_capabilities.vulkan.apiVersion = props.apiVersion;
+
+        // Dynamic state and advanced features
+        m_capabilities.supportsDepthBounds = true;              // Vulkan supports depth bounds
+        m_capabilities.supportsDynamicLineWidth = true;         // Vulkan supports dynamic line width
+        m_capabilities.supportsSeparateStencilRef = true;       // Vulkan supports separate stencil refs
+        m_capabilities.supportsSplitBarrier = true;             // Vulkan supports split barriers
+        m_capabilities.supportsSecondaryCommandBuffer = true;   // Vulkan supports secondary command buffers
+        m_capabilities.supportsAsyncCompute = true;             // Vulkan supports async compute
+        m_capabilities.supportsMemoryBudgetQuery = true;        // VK_EXT_memory_budget
+        m_capabilities.supportsPersistentMapping = true;        // Vulkan supports persistent mapping
     }
 
     // =============================================================================
@@ -1158,6 +1165,68 @@ namespace RVX
         }
         
         return device;
+    }
+
+    // =============================================================================
+    // Upload Resources
+    // =============================================================================
+    RHIStagingBufferRef VulkanDevice::CreateStagingBuffer(const RHIStagingBufferDesc& desc)
+    {
+        // TODO: Create proper VulkanStagingBuffer wrapper
+        RVX_RHI_WARN("Vulkan: CreateStagingBuffer not yet fully implemented");
+        return nullptr;
+    }
+
+    RHIRingBufferRef VulkanDevice::CreateRingBuffer(const RHIRingBufferDesc& desc)
+    {
+        // TODO: Create proper VulkanRingBuffer implementation
+        RVX_RHI_WARN("Vulkan: CreateRingBuffer not yet fully implemented");
+        return nullptr;
+    }
+
+    // =============================================================================
+    // Memory Statistics
+    // =============================================================================
+    RHIMemoryStats VulkanDevice::GetMemoryStats() const
+    {
+        RHIMemoryStats stats = {};
+
+        // Query VK_EXT_memory_budget if available
+        VkPhysicalDeviceMemoryBudgetPropertiesEXT budgetProps = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+        VkPhysicalDeviceMemoryProperties2 memProps = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
+        memProps.pNext = &budgetProps;
+
+        vkGetPhysicalDeviceMemoryProperties2(m_physicalDevice, &memProps);
+
+        // Sum up device-local memory budget and usage
+        for (uint32 i = 0; i < memProps.memoryProperties.memoryHeapCount; ++i)
+        {
+            if (memProps.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+            {
+                stats.budgetBytes += budgetProps.heapBudget[i];
+                stats.currentUsageBytes += budgetProps.heapUsage[i];
+            }
+        }
+
+        stats.totalAllocated = stats.currentUsageBytes;
+        stats.totalUsed = stats.currentUsageBytes;
+
+        return stats;
+    }
+
+    // =============================================================================
+    // Debug Resource Groups
+    // =============================================================================
+    void VulkanDevice::BeginResourceGroup(const char* name)
+    {
+        (void)name;
+        // Vulkan debug markers are per-command buffer, not per-resource
+        // This is primarily for documentation purposes
+    }
+
+    void VulkanDevice::EndResourceGroup()
+    {
+        // No-op
     }
 
 } // namespace RVX

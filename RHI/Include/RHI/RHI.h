@@ -17,4 +17,5 @@
 #include "RHI/RHISwapChain.h"
 #include "RHI/RHISynchronization.h"
 #include "RHI/RHICapabilities.h"
+#include "RHI/RHIUpload.h"
 #include "RHI/RHIDevice.h"

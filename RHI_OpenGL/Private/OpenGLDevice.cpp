@@ -206,10 +206,9 @@ namespace RVX
         glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, reinterpret_cast<GLint*>(&m_capabilities.opengl.maxSSBOSize));
         
         // Compute shader limits
-        glGetIntegerv(GL_MAX_COMPUTE_WORK_GROUP_SIZE, reinterpret_cast<GLint*>(&m_capabilities.maxComputeWorkGroupSizeX));
-        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 0, reinterpret_cast<GLint*>(&m_capabilities.maxComputeWorkGroupSizeX));
-        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 1, reinterpret_cast<GLint*>(&m_capabilities.maxComputeWorkGroupSizeY));
-        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 2, reinterpret_cast<GLint*>(&m_capabilities.maxComputeWorkGroupSizeZ));
+        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 0, reinterpret_cast<GLint*>(&m_capabilities.maxComputeWorkGroupSize[0]));
+        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 1, reinterpret_cast<GLint*>(&m_capabilities.maxComputeWorkGroupSize[1]));
+        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 2, reinterpret_cast<GLint*>(&m_capabilities.maxComputeWorkGroupSize[2]));
         glGetIntegerv(GL_MAX_COMPUTE_SHARED_MEMORY_SIZE, reinterpret_cast<GLint*>(&m_capabilities.opengl.maxComputeSharedMemorySize));
         
         // Feature detection
@@ -223,6 +222,16 @@ namespace RVX
         
         // Push constant size (simulated via UBO)
         m_capabilities.maxPushConstantSize = 256;
+
+        // Dynamic state and advanced features
+        m_capabilities.supportsDepthBounds = false;             // OpenGL doesn't support depth bounds (only via extension)
+        m_capabilities.supportsDynamicLineWidth = true;         // OpenGL supports glLineWidth
+        m_capabilities.supportsSeparateStencilRef = true;       // OpenGL supports glStencilFuncSeparate
+        m_capabilities.supportsSplitBarrier = false;            // OpenGL doesn't support split barriers
+        m_capabilities.supportsSecondaryCommandBuffer = false;  // OpenGL is immediate mode
+        m_capabilities.supportsAsyncCompute = false;            // OpenGL single queue
+        m_capabilities.supportsMemoryBudgetQuery = false;       // OpenGL doesn't support memory budget
+        m_capabilities.supportsPersistentMapping = m_capabilities.opengl.hasBufferStorage;
     }
 
     void OpenGLDevice::LoadExtensions()
@@ -564,6 +573,49 @@ namespace RVX
             return nullptr;
         }
         return device;
+    }
+
+    // =============================================================================
+    // Upload Resources
+    // =============================================================================
+    RHIStagingBufferRef OpenGLDevice::CreateStagingBuffer(const RHIStagingBufferDesc& desc)
+    {
+        // OpenGL uses buffer mapping directly
+        // TODO: Create proper OpenGLStagingBuffer wrapper
+        RVX_RHI_WARN("OpenGL: CreateStagingBuffer not yet fully implemented");
+        return nullptr;
+    }
+
+    RHIRingBufferRef OpenGLDevice::CreateRingBuffer(const RHIRingBufferDesc& desc)
+    {
+        // TODO: Create proper OpenGLRingBuffer implementation
+        RVX_RHI_WARN("OpenGL: CreateRingBuffer not yet fully implemented");
+        return nullptr;
+    }
+
+    // =============================================================================
+    // Memory Statistics
+    // =============================================================================
+    RHIMemoryStats OpenGLDevice::GetMemoryStats() const
+    {
+        RHIMemoryStats stats = {};
+        // OpenGL doesn't provide detailed memory statistics
+        // Some extensions like GL_NVX_gpu_memory_info exist but are vendor-specific
+        return stats;
+    }
+
+    // =============================================================================
+    // Debug Resource Groups
+    // =============================================================================
+    void OpenGLDevice::BeginResourceGroup(const char* name)
+    {
+        (void)name;
+        // OpenGL doesn't have native resource grouping
+    }
+
+    void OpenGLDevice::EndResourceGroup()
+    {
+        // No-op for OpenGL
     }
 
 } // namespace RVX

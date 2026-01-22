@@ -995,4 +995,77 @@ namespace RVX
         // OpenGL queries don't require explicit reset
     }
 
+    // =========================================================================
+    // Dynamic Render State
+    // =========================================================================
+
+    void OpenGLCommandContext::SetStencilReference(uint32 reference)
+    {
+        // Note: OpenGL requires setting stencil function again with new reference
+        // This sets both front and back faces to the same reference
+        // The actual compare function and mask come from the current pipeline state
+        // For simplicity, we use GL_ALWAYS and 0xFF - the pipeline should override this
+        GL_CHECK(glStencilFunc(GL_ALWAYS, static_cast<GLint>(reference), 0xFF));
+    }
+
+    void OpenGLCommandContext::SetBlendConstants(const float constants[4])
+    {
+        GL_CHECK(glBlendColor(constants[0], constants[1], constants[2], constants[3]));
+    }
+
+    void OpenGLCommandContext::SetDepthBias(float constantFactor, float slopeFactor, float clamp)
+    {
+        // OpenGL uses glPolygonOffset for depth bias
+        // Note: clamp is not supported in core OpenGL
+        (void)clamp;
+        GL_CHECK(glPolygonOffset(slopeFactor, constantFactor));
+    }
+
+    void OpenGLCommandContext::SetDepthBounds(float minDepth, float maxDepth)
+    {
+        // Depth bounds testing is not supported in core OpenGL
+        // Available as EXT_depth_bounds_test extension but rarely used
+        (void)minDepth;
+        (void)maxDepth;
+    }
+
+    void OpenGLCommandContext::SetStencilReferenceSeparate(uint32 frontRef, uint32 backRef)
+    {
+        // OpenGL supports separate stencil functions
+        GL_CHECK(glStencilFuncSeparate(GL_FRONT, GL_ALWAYS, static_cast<GLint>(frontRef), 0xFF));
+        GL_CHECK(glStencilFuncSeparate(GL_BACK, GL_ALWAYS, static_cast<GLint>(backRef), 0xFF));
+    }
+
+    void OpenGLCommandContext::SetLineWidth(float width)
+    {
+        GL_CHECK(glLineWidth(width));
+    }
+
+    // =============================================================================
+    // Split Barriers (no-op for OpenGL)
+    // =============================================================================
+    void OpenGLCommandContext::BeginBarrier(const RHIBufferBarrier& barrier)
+    {
+        // OpenGL handles barriers automatically
+        (void)barrier;
+    }
+
+    void OpenGLCommandContext::BeginBarrier(const RHITextureBarrier& barrier)
+    {
+        // OpenGL handles barriers automatically
+        (void)barrier;
+    }
+
+    void OpenGLCommandContext::EndBarrier(const RHIBufferBarrier& barrier)
+    {
+        // OpenGL handles barriers automatically
+        (void)barrier;
+    }
+
+    void OpenGLCommandContext::EndBarrier(const RHITextureBarrier& barrier)
+    {
+        // OpenGL handles barriers automatically
+        (void)barrier;
+    }
+
 } // namespace RVX

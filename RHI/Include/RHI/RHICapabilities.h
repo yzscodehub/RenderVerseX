@@ -37,9 +37,6 @@ namespace RVX
         uint32 maxTextureLayers = 2048;
         uint32 maxColorAttachments = 8;
         uint32 maxComputeWorkGroupSize[3] = {1024, 1024, 64};
-        uint32 maxComputeWorkGroupSizeX = 1024;
-        uint32 maxComputeWorkGroupSizeY = 1024;
-        uint32 maxComputeWorkGroupSizeZ = 64;
         uint32 maxComputeWorkGroupCount = 65535;
         uint32 maxPushConstantSize = 128;
 
@@ -55,6 +52,19 @@ namespace RVX
         bool supportsVariableRateShading = false;
         bool supportsAsyncCompute = false;
         bool supportsConservativeRasterization = false;
+
+        // Dynamic state support
+        bool supportsDepthBounds = false;           // DX12/Vulkan only
+        bool supportsDynamicLineWidth = false;      // Vulkan/OpenGL only
+        bool supportsSeparateStencilRef = false;    // All modern APIs
+
+        // Advanced rendering features
+        bool supportsSplitBarrier = false;          // DX12/Vulkan only
+        bool supportsSecondaryCommandBuffer = false;// DX12/Vulkan/Metal
+
+        // Memory features
+        bool supportsMemoryBudgetQuery = false;     // DX12(DXGI)/Vulkan(VK_EXT_memory_budget)
+        bool supportsPersistentMapping = false;     // Vulkan/DX12/OpenGL4.4+
 
         // DX11-specific
         struct DX11Specific
