@@ -14,9 +14,9 @@ namespace RVX
     // Construction
     // =========================================================================
 
-    ScriptEngine::ScriptEngine() = default;
+    ScriptingSubsystem::ScriptingSubsystem() = default;
 
-    ScriptEngine::~ScriptEngine()
+    ScriptingSubsystem::~ScriptingSubsystem()
     {
         Deinitialize();
     }
@@ -25,14 +25,14 @@ namespace RVX
     // ISubsystem Implementation
     // =========================================================================
 
-    void ScriptEngine::Initialize()
+    void ScriptingSubsystem::Initialize()
     {
-        RVX_CORE_INFO("ScriptEngine::Initialize");
+        RVX_CORE_INFO("ScriptingSubsystem::Initialize");
 
         // Initialize Lua state
         if (!m_luaState.Initialize(m_config.luaConfig))
         {
-            RVX_CORE_ERROR("ScriptEngine - Failed to initialize Lua state");
+            RVX_CORE_ERROR("ScriptingSubsystem - Failed to initialize Lua state");
             return;
         }
 
@@ -42,13 +42,13 @@ namespace RVX
         // Register all bindings
         RegisterBindings();
 
-        RVX_CORE_INFO("ScriptEngine initialized with scripts directory: {}", 
+        RVX_CORE_INFO("ScriptingSubsystem initialized with scripts directory: {}", 
                       m_config.scriptsDirectory.string());
     }
 
-    void ScriptEngine::Deinitialize()
+    void ScriptingSubsystem::Deinitialize()
     {
-        RVX_CORE_INFO("ScriptEngine::Deinitialize");
+        RVX_CORE_INFO("ScriptingSubsystem::Deinitialize");
 
         // Clear all cached scripts
         m_scripts.clear();
@@ -61,7 +61,7 @@ namespace RVX
         m_luaState.Shutdown();
     }
 
-    void ScriptEngine::Tick(float deltaTime)
+    void ScriptingSubsystem::Tick(float deltaTime)
     {
         if (!m_config.enableHotReload)
         {
@@ -80,7 +80,7 @@ namespace RVX
     // Configuration
     // =========================================================================
 
-    void ScriptEngine::Configure(const ScriptEngineConfig& config)
+    void ScriptingSubsystem::Configure(const ScriptingSubsystemConfig& config)
     {
         m_config = config;
     }
@@ -89,7 +89,7 @@ namespace RVX
     // Script Loading
     // =========================================================================
 
-    ScriptHandle ScriptEngine::LoadScript(const std::filesystem::path& relativePath)
+    ScriptHandle ScriptingSubsystem::LoadScript(const std::filesystem::path& relativePath)
     {
         std::string pathKey = relativePath.string();
 
@@ -105,7 +105,7 @@ namespace RVX
         
         if (!std::filesystem::exists(fullPath))
         {
-            RVX_CORE_ERROR("ScriptEngine::LoadScript - File not found: {}", fullPath.string());
+            RVX_CORE_ERROR("ScriptingSubsystem::LoadScript - File not found: {}", fullPath.string());
             return InvalidScriptHandle;
         }
 
@@ -113,7 +113,7 @@ namespace RVX
         std::ifstream file(fullPath);
         if (!file.is_open())
         {
-            RVX_CORE_ERROR("ScriptEngine::LoadScript - Failed to open: {}", fullPath.string());
+            RVX_CORE_ERROR("ScriptingSubsystem::LoadScript - Failed to open: {}", fullPath.string());
             return InvalidScriptHandle;
         }
 
@@ -132,11 +132,11 @@ namespace RVX
 
         m_pathToHandle[pathKey] = handle;
 
-        RVX_CORE_INFO("ScriptEngine::LoadScript - Loaded: {}", relativePath.string());
+        RVX_CORE_INFO("ScriptingSubsystem::LoadScript - Loaded: {}", relativePath.string());
         return handle;
     }
 
-    ScriptHandle ScriptEngine::LoadScriptString(const std::string& source, const std::string& name)
+    ScriptHandle ScriptingSubsystem::LoadScriptString(const std::string& source, const std::string& name)
     {
         ScriptHandle handle = AllocateHandle();
         CachedScript& script = m_scripts[handle];
@@ -148,7 +148,7 @@ namespace RVX
         return handle;
     }
 
-    ScriptResult ScriptEngine::ExecuteScript(ScriptHandle handle)
+    ScriptResult ScriptingSubsystem::ExecuteScript(ScriptHandle handle)
     {
         auto it = m_scripts.find(handle);
         if (it == m_scripts.end())
@@ -165,7 +165,7 @@ namespace RVX
         return m_luaState.ExecuteString(script.source, script.filePath.string());
     }
 
-    bool ScriptEngine::ReloadScript(ScriptHandle handle)
+    bool ScriptingSubsystem::ReloadScript(ScriptHandle handle)
     {
         auto it = m_scripts.find(handle);
         if (it == m_scripts.end())
@@ -192,11 +192,11 @@ namespace RVX
         script.lastModified = std::filesystem::last_write_time(script.filePath);
         script.isValid = true;
 
-        RVX_CORE_INFO("ScriptEngine::ReloadScript - Reloaded: {}", script.filePath.string());
+        RVX_CORE_INFO("ScriptingSubsystem::ReloadScript - Reloaded: {}", script.filePath.string());
         return true;
     }
 
-    void ScriptEngine::UnloadScript(ScriptHandle handle)
+    void ScriptingSubsystem::UnloadScript(ScriptHandle handle)
     {
         auto it = m_scripts.find(handle);
         if (it != m_scripts.end())
@@ -210,7 +210,7 @@ namespace RVX
         }
     }
 
-    const CachedScript* ScriptEngine::GetScript(ScriptHandle handle) const
+    const CachedScript* ScriptingSubsystem::GetScript(ScriptHandle handle) const
     {
         auto it = m_scripts.find(handle);
         return it != m_scripts.end() ? &it->second : nullptr;
@@ -220,12 +220,12 @@ namespace RVX
     // Direct Execution
     // =========================================================================
 
-    ScriptResult ScriptEngine::ExecuteString(std::string_view script)
+    ScriptResult ScriptingSubsystem::ExecuteString(std::string_view script)
     {
         return m_luaState.ExecuteString(script);
     }
 
-    ScriptResult ScriptEngine::ExecuteFile(const std::filesystem::path& filePath)
+    ScriptResult ScriptingSubsystem::ExecuteFile(const std::filesystem::path& filePath)
     {
         return m_luaState.ExecuteFile(filePath);
     }
@@ -234,7 +234,7 @@ namespace RVX
     // Function Calls
     // =========================================================================
 
-    bool ScriptEngine::HasGlobalFunction(const std::string& functionName) const
+    bool ScriptingSubsystem::HasGlobalFunction(const std::string& functionName) const
     {
         return m_luaState.HasFunction(functionName);
     }
@@ -243,9 +243,9 @@ namespace RVX
     // Binding Registration
     // =========================================================================
 
-    void ScriptEngine::RegisterBindings()
+    void ScriptingSubsystem::RegisterBindings()
     {
-        RVX_CORE_INFO("ScriptEngine::RegisterBindings - Registering engine bindings");
+        RVX_CORE_INFO("ScriptingSubsystem::RegisterBindings - Registering engine bindings");
 
         // Register core bindings
         Bindings::RegisterCoreBindings(m_luaState);
@@ -259,10 +259,10 @@ namespace RVX
         // Register input bindings
         Bindings::RegisterInputBindings(m_luaState);
 
-        RVX_CORE_INFO("ScriptEngine::RegisterBindings - All bindings registered");
+        RVX_CORE_INFO("ScriptingSubsystem::RegisterBindings - All bindings registered");
     }
 
-    sol::table ScriptEngine::GetOrCreateNamespace(const std::string& name)
+    sol::table ScriptingSubsystem::GetOrCreateNamespace(const std::string& name)
     {
         return m_luaState.GetOrCreateNamespace(name);
     }
@@ -271,7 +271,7 @@ namespace RVX
     // Component Management
     // =========================================================================
 
-    void ScriptEngine::RegisterComponent(ScriptComponent* component)
+    void ScriptingSubsystem::RegisterComponent(ScriptComponent* component)
     {
         if (component && std::find(m_components.begin(), m_components.end(), component) == m_components.end())
         {
@@ -279,7 +279,7 @@ namespace RVX
         }
     }
 
-    void ScriptEngine::UnregisterComponent(ScriptComponent* component)
+    void ScriptingSubsystem::UnregisterComponent(ScriptComponent* component)
     {
         auto it = std::find(m_components.begin(), m_components.end(), component);
         if (it != m_components.end())
@@ -292,7 +292,7 @@ namespace RVX
     // Private Methods
     // =========================================================================
 
-    void ScriptEngine::CheckForHotReload()
+    void ScriptingSubsystem::CheckForHotReload()
     {
         for (auto& [handle, script] : m_scripts)
         {
@@ -304,7 +304,7 @@ namespace RVX
             auto currentModTime = std::filesystem::last_write_time(script.filePath);
             if (currentModTime > script.lastModified)
             {
-                RVX_CORE_INFO("ScriptEngine - Hot reload detected: {}", script.filePath.string());
+                RVX_CORE_INFO("ScriptingSubsystem - Hot reload detected: {}", script.filePath.string());
                 
                 if (ReloadScript(handle))
                 {
@@ -312,8 +312,7 @@ namespace RVX
                     auto result = ExecuteScript(handle);
                     if (!result)
                     {
-                        RVX_CORE_ERROR("ScriptEngine - Hot reload execution failed: {}", 
-                                      result.errorMessage);
+                        RVX_CORE_ERROR("ScriptingSubsystem - Hot reload execution failed: {}", result.errorMessage);
                     }
 
                     // Notify components that use this script
@@ -329,7 +328,7 @@ namespace RVX
         }
     }
 
-    ScriptHandle ScriptEngine::AllocateHandle()
+    ScriptHandle ScriptingSubsystem::AllocateHandle()
     {
         return m_nextHandle++;
     }

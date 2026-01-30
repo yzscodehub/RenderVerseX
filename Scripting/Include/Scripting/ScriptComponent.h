@@ -21,7 +21,7 @@
 namespace RVX
 {
     // Forward declarations
-    class ScriptEngine;
+    class ScriptingSubsystem;
 
     /**
      * @brief Component for attaching Lua scripts to entities
@@ -190,7 +190,7 @@ namespace RVX
         const sol::table& GetInstance() const { return m_instance; }
 
     private:
-        ScriptEngine* m_engine = nullptr;
+        ScriptingSubsystem* m_engine = nullptr;
         std::filesystem::path m_scriptPath;
         ScriptHandle m_scriptHandle = InvalidScriptHandle;
         

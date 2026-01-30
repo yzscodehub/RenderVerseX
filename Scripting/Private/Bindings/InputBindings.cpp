@@ -14,7 +14,7 @@ namespace RVX::Bindings
     namespace
     {
         // =====================================================================
-        // Input State Cache (updated each frame by ScriptEngine)
+        // Input State Cache (updated each frame by ScriptingSubsystem)
         // =====================================================================
         
         struct InputStateCache

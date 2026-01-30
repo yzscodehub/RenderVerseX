@@ -157,12 +157,12 @@ namespace RVX::Bindings
     }
 
     // =========================================================================
-    // Time Update (called by ScriptEngine)
+    // Time Update (called by ScriptingSubsystem)
     // =========================================================================
 
     namespace
     {
-        // These can be called from ScriptEngine to update time values
+        // These can be called from ScriptingSubsystem to update time values
     }
 
 } // namespace RVX::Bindings

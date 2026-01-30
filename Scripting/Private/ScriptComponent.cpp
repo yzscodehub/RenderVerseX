@@ -29,7 +29,7 @@ namespace RVX
     void ScriptComponent::OnAttach()
     {
         // Try to get ScriptEngine from services
-        m_engine = Services::Get<ScriptEngine>();
+        m_engine = Services::Get<ScriptingSubsystem>();
         
         if (m_engine)
         {
@@ -43,7 +43,7 @@ namespace RVX
         }
         else
         {
-            RVX_CORE_WARN("ScriptComponent::OnAttach - ScriptEngine not available");
+            RVX_CORE_WARN("ScriptComponent::OnAttach - ScriptingSubsystem not available");
         }
     }
 
@@ -81,7 +81,7 @@ namespace RVX
     {
         if (!m_engine)
         {
-            RVX_CORE_ERROR("ScriptComponent::SetScript - No ScriptEngine available");
+            RVX_CORE_ERROR("ScriptComponent::SetScript - No ScriptingSubsystem available");
             return false;
         }
 
@@ -119,7 +119,7 @@ namespace RVX
     {
         if (!m_engine)
         {
-            RVX_CORE_ERROR("ScriptComponent::SetScriptString - No ScriptEngine available");
+            RVX_CORE_ERROR("ScriptComponent::SetScriptString - No ScriptingSubsystem available");
             return false;
         }
 

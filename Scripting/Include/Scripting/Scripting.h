@@ -6,7 +6,7 @@
  * 
  * Include this file to access all scripting functionality:
  * - LuaState (Lua VM wrapper)
- * - ScriptEngine (engine subsystem for script management)
+ * - ScriptingSubsystem (engine subsystem for script management)
  * - ScriptComponent (component for attaching scripts to entities)
  * - Bindings (C++ to Lua type bindings)
  */

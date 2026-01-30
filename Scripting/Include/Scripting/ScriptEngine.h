@@ -2,9 +2,9 @@
 
 /**
  * @file ScriptEngine.h
- * @brief Script engine subsystem for managing Lua scripts
- * 
- * The ScriptEngine is an EngineSubsystem that:
+ * @brief Scripting subsystem for managing Lua scripts
+ *
+ * The ScriptingSubsystem is an EngineSubsystem that:
  * - Manages the global Lua state
  * - Handles script loading and caching
  * - Provides C++ to Lua bindings
@@ -42,9 +42,9 @@ namespace RVX
     };
 
     /**
-     * @brief Script engine configuration
+     * @brief Scripting subsystem configuration
      */
-    struct ScriptEngineConfig
+    struct ScriptingSubsystemConfig
     {
         LuaStateConfig luaConfig;
         std::filesystem::path scriptsDirectory = "Scripts";
@@ -54,35 +54,35 @@ namespace RVX
 
     /**
      * @brief Engine subsystem for script management
-     * 
+     *
      * Usage:
      * @code
      * // Get from engine
-     * auto* scriptEngine = engine.GetSubsystem<ScriptEngine>();
-     * 
+     * auto* scriptingSubsystem = engine.GetSubsystem<ScriptingSubsystem>();
+     *
      * // Load and execute a script
-     * ScriptHandle handle = scriptEngine->LoadScript("game.lua");
-     * scriptEngine->ExecuteScript(handle);
-     * 
+     * ScriptHandle handle = scriptingSubsystem->LoadScript("game.lua");
+     * scriptingSubsystem->ExecuteScript(handle);
+     *
      * // Call a Lua function
-     * scriptEngine->CallGlobalFunction<void>("OnGameStart");
+     * scriptingSubsystem->CallGlobalFunction<void>("OnGameStart");
      * @endcode
      */
-    class ScriptEngine : public EngineSubsystem
+    class ScriptingSubsystem : public EngineSubsystem
     {
     public:
         // =====================================================================
         // Construction
         // =====================================================================
 
-        ScriptEngine();
-        ~ScriptEngine() override;
+        ScriptingSubsystem();
+        ~ScriptingSubsystem() override;
 
         // =====================================================================
         // ISubsystem Implementation
         // =====================================================================
 
-        const char* GetName() const override { return "ScriptEngine"; }
+        const char* GetName() const override { return "ScriptingSubsystem"; }
         void Initialize() override;
         void Deinitialize() override;
         void Tick(float deltaTime) override;
@@ -94,15 +94,15 @@ namespace RVX
         // =====================================================================
 
         /**
-         * @brief Configure the script engine (call before Initialize)
+         * @brief Configure the scripting subsystem (call before Initialize)
          * @param config Configuration options
          */
-        void Configure(const ScriptEngineConfig& config);
+        void Configure(const ScriptingSubsystemConfig& config);
 
         /**
          * @brief Get current configuration
          */
-        const ScriptEngineConfig& GetConfig() const { return m_config; }
+        const ScriptingSubsystemConfig& GetConfig() const { return m_config; }
 
         // =====================================================================
         // Script Loading
@@ -228,7 +228,7 @@ namespace RVX
 
         /**
          * @brief Register all engine bindings
-         * 
+         *
          * Called automatically during Initialize, but can be called
          * again if you need to re-register after modifying state.
          */
@@ -288,7 +288,7 @@ namespace RVX
 
     private:
         LuaState m_luaState;
-        ScriptEngineConfig m_config;
+        ScriptingSubsystemConfig m_config;
 
         // Script cache
         std::unordered_map<ScriptHandle, CachedScript> m_scripts;
@@ -310,31 +310,31 @@ namespace RVX
     // =========================================================================
 
     template<typename Ret, typename... Args>
-    std::optional<Ret> ScriptEngine::CallGlobalFunction(const std::string& functionName, Args&&... args)
+    std::optional<Ret> ScriptingSubsystem::CallGlobalFunction(const std::string& functionName, Args&&... args)
     {
         return m_luaState.Call<Ret>(functionName, std::forward<Args>(args)...);
     }
 
     template<typename... Args>
-    ScriptResult ScriptEngine::CallGlobalFunctionVoid(const std::string& functionName, Args&&... args)
+    ScriptResult ScriptingSubsystem::CallGlobalFunctionVoid(const std::string& functionName, Args&&... args)
     {
         return m_luaState.CallVoid(functionName, std::forward<Args>(args)...);
     }
 
     template<typename T>
-    std::optional<T> ScriptEngine::GetGlobal(const std::string& name) const
+    std::optional<T> ScriptingSubsystem::GetGlobal(const std::string& name) const
     {
         return m_luaState.Get<T>(name);
     }
 
     template<typename T>
-    void ScriptEngine::SetGlobal(const std::string& name, T&& value)
+    void ScriptingSubsystem::SetGlobal(const std::string& name, T&& value)
     {
         m_luaState.Set(name, std::forward<T>(value));
     }
 
     template<typename T, typename... Args>
-    sol::usertype<T> ScriptEngine::RegisterType(const std::string& name, Args&&... args)
+    sol::usertype<T> ScriptingSubsystem::RegisterType(const std::string& name, Args&&... args)
     {
         return m_luaState.RegisterType<T>(name, std::forward<Args>(args)...);
     }
