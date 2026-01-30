@@ -1,26 +1,20 @@
 # AGENTS.md - RenderVerseX Development Guide
 
-This document provides guidelines for AI coding agents working on RenderVerseX, a cross-platform multi-backend graphics rendering engine written in C++ 20.
+This document provides guidelines for AI coding agents working on RenderVerseX, a cross-platform multi-backend graphics rendering engine written in C++20.
 
 ## Project Overview
 
-- **Language**: C++ 20
-- **Build System**: CMake 3.21+
-- **Package Manager**: vcpkg
+- **Language**: C++20 | **Build System**: CMake 3.21+ | **Package Manager**: vcpkg
 - **Platforms**: Windows (DX11/DX12/Vulkan), Linux (Vulkan/OpenGL), macOS/iOS (Metal)
 
 ## Build Commands
-
-### Configure and Build
 
 ```bash
 # Configure with vcpkg toolchain
 cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=[vcpkg-root]/scripts/buildsystems/vcpkg.cmake
 
-# Build (Release)
+# Build Release/Debug
 cmake --build build --config Release
-
-# Build (Debug)
 cmake --build build --config Debug
 
 # Build specific target
@@ -29,30 +23,27 @@ cmake --build build --config Release --target ModelViewer
 
 ### Build Options
 
-```bash
--DRVX_ENABLE_DX11=ON/OFF      # DirectX 11 backend (Windows only)
--DRVX_ENABLE_DX12=ON/OFF      # DirectX 12 backend (Windows only)
--DRVX_ENABLE_VULKAN=ON/OFF    # Vulkan backend
--DRVX_ENABLE_METAL=ON/OFF     # Metal backend (macOS/iOS only)
--DRVX_ENABLE_OPENGL=ON/OFF    # OpenGL backend (Linux fallback)
--DRVX_BUILD_SAMPLES=ON/OFF    # Build sample applications
--DRVX_BUILD_TESTS=ON/OFF      # Build validation tests
-```
+| Option | Description |
+|--------|-------------|
+| `-DRVX_ENABLE_DX11=ON/OFF` | DirectX 11 backend (Windows only) |
+| `-DRVX_ENABLE_DX12=ON/OFF` | DirectX 12 backend (Windows only) |
+| `-DRVX_ENABLE_VULKAN=ON/OFF` | Vulkan backend |
+| `-DRVX_ENABLE_METAL=ON/OFF` | Metal backend (macOS/iOS only) |
+| `-DRVX_ENABLE_OPENGL=ON/OFF` | OpenGL backend (Linux fallback) |
+| `-DRVX_BUILD_SAMPLES=ON/OFF` | Build sample applications |
+| `-DRVX_BUILD_TESTS=ON/OFF` | Build validation tests |
 
 ## Test Commands
 
-Tests are standalone executables, not using a test framework like GoogleTest.
+Tests are standalone executables (no GoogleTest framework).
 
 ```bash
-# Run all validation tests (after building)
+# Run a single validation test
 ./build/Tests/Release/RenderGraphValidation.exe
 ./build/Tests/Release/DX12Validation.exe
 ./build/Tests/Release/VulkanValidation.exe
 ./build/Tests/Release/DX11Validation.exe
 ./build/Tests/Release/SystemIntegrationTest.exe
-
-# Run a single test (example)
-./build/Tests/Release/RenderGraphValidation.exe
 
 # Cross-backend validation (requires DX12 and Vulkan)
 ./build/Tests/Release/CrossBackendValidation.exe
@@ -60,28 +51,19 @@ Tests are standalone executables, not using a test framework like GoogleTest.
 
 ## Code Style Guidelines
 
-### Namespace
-
-All code resides in the `RVX` namespace:
+### Namespace & Header Guards
 
 ```cpp
+#pragma once                    // Always use pragma once, no traditional guards
+#include "Core/Types.h"
+
 namespace RVX
 {
-    // code here
-} // namespace RVX
+    // All code in RVX namespace
+} // namespace RVX             // Always add closing comment
 ```
 
-### Header Guards
-
-Use `#pragma once` (no traditional include guards):
-
-```cpp
-#pragma once
-
-#include "Core/Types.h"
-```
-
-### Include Order
+### Include Order (grouped, each group alphabetized)
 
 1. Corresponding header (for .cpp files)
 2. Project headers with `"quotes"`
@@ -89,9 +71,10 @@ Use `#pragma once` (no traditional include guards):
 4. Standard library headers with `<angle brackets>`
 
 ```cpp
-#include "Core/Log.h"              // Project headers first
-#include <spdlog/spdlog.h>         // External libraries
-#include <vector>                   // Standard library
+#include "Scene/SceneEntity.h"  // Corresponding header first
+#include "Core/Log.h"           // Project headers
+#include <glm/glm.hpp>          // External libraries
+#include <vector>               // Standard library
 ```
 
 ### Naming Conventions
@@ -104,48 +87,27 @@ Use `#pragma once` (no traditional include guards):
 | Member variables | `m_` prefix + camelCase | `m_device`, `m_position` |
 | Static members | `s_` prefix + camelCase | `s_nextHandle`, `s_coreLogger` |
 | Local variables | camelCase | `bufferDesc`, `devicePtr` |
-| Constants | `RVX_` prefix + SCREAMING_SNAKE | `RVX_INVALID_INDEX`, `RVX_MAX_FRAME_COUNT` |
+| Constants | `RVX_` prefix + SCREAMING_SNAKE | `RVX_INVALID_INDEX` |
 | Enums | `enum class` PascalCase | `RHIBackendType::Vulkan` |
-| Typedefs | PascalCase or lowercase | `uint32`, `RHIBufferRef` |
 | Smart pointer aliases | `Ref` suffix | `RHIBufferRef`, `RHITextureRef` |
 
-### Type Definitions
-
-Use project type aliases from `Core/Types.h`:
+### Type Definitions (use from `Core/Types.h`)
 
 ```cpp
-using int8   = std::int8_t;
-using int16  = std::int16_t;
-using int32  = std::int32_t;
-using int64  = std::int64_t;
-using uint8  = std::uint8_t;
-using uint16 = std::uint16_t;
-using uint32 = std::uint32_t;
-using uint64 = std::uint64_t;
-using float32 = float;
-using float64 = double;
+using int8 = std::int8_t;       using uint8  = std::uint8_t;
+using int16 = std::int16_t;     using uint16 = std::uint16_t;
+using int32 = std::int32_t;     using uint32 = std::uint32_t;
+using int64 = std::int64_t;     using uint64 = std::uint64_t;
+using float32 = float;          using float64 = double;
 ```
 
-### Enum Classes
-
-Always use `enum class` with explicit underlying type:
+### Enums - Always use `enum class` with explicit underlying type
 
 ```cpp
-enum class RHIBackendType : uint8
-{
-    None = 0,
-    Auto,
-    DX11,
-    DX12,
-    Vulkan,
-    Metal,
-    OpenGL
-};
+enum class RHIBackendType : uint8 { None = 0, Auto, DX11, DX12, Vulkan, Metal, OpenGL };
 ```
 
-### Class Structure
-
-Use comment section separators for organization:
+### Class Structure (use comment separators)
 
 ```cpp
 class MyClass
@@ -163,95 +125,58 @@ public:
     void DoSomething();
 
 private:
-    // Member variables
-    uint32 m_value = 0;
+    uint32 m_value = 0;        // Always initialize members
     std::string m_name;
 };
 ```
 
-### Documentation
-
-Use Doxygen-style comments for files and public APIs:
+### Documentation (Doxygen-style)
 
 ```cpp
-/**
- * @file RenderGraph.h
- * @brief Frame graph and automatic resource management
- */
+/** @file RenderGraph.h  @brief Frame graph and automatic resource management */
 
-/**
- * @brief Create a new buffer resource
- * @param desc Buffer description
- * @return Handle to created buffer
- */
+/** @brief Create a buffer  @param desc Buffer description  @return Handle */
 RHIBufferRef CreateBuffer(const RHIBufferDesc& desc);
 ```
 
-### Error Handling
-
-Use logging macros with module prefixes:
+### Error Handling & Logging
 
 ```cpp
-// Module-specific logging
+// Module-specific logging (RVX_CORE_, RVX_RHI_, RVX_RENDER_, RVX_SCENE_, etc.)
 RVX_CORE_INFO("Initializing engine");
 RVX_RHI_ERROR("Failed to create device: {}", errorMsg);
-RVX_RENDER_WARN("Shader compilation warning");
 
 // Assertions
-RVX_ASSERT(condition);
-RVX_ASSERT_MSG(condition, "Error message: {}", value);
-RVX_VERIFY(condition, "Non-fatal check failed");
-
-// Debug-only assertions
-RVX_DEBUG_ASSERT(expensiveCheck());
+RVX_ASSERT(condition);                              // Fatal, always active
+RVX_ASSERT_MSG(condition, "Error: {}", value);      // Fatal with message
+RVX_VERIFY(condition, "Check failed");              // Non-fatal, logs error
+RVX_DEBUG_ASSERT(expensiveCheck());                 // Debug-only, stripped in Release
+RVX_UNREACHABLE();                                  // Mark unreachable code
 ```
 
 ### Memory Management
 
 - Use smart pointers (`std::unique_ptr`, `std::shared_ptr`)
-- Use `Ref` type aliases for RHI resources
+- Use `Ref` type aliases for RHI resources: `RHIBufferRef buffer = device->CreateBuffer(desc);`
 - Inherit from `NonCopyable` or `NonMovable` when appropriate
 
-```cpp
-class MyResource : public NonCopyable
-{
-    // Cannot be copied
-};
-
-RHIBufferRef buffer = device->CreateBuffer(desc);
-```
-
-### Forward Declarations
-
-Prefer forward declarations in headers to reduce compile times:
+### Forward Declarations - Prefer in headers to reduce compile times
 
 ```cpp
-namespace RVX
-{
-    // Forward declarations
-    class GPUResourceManager;
-    class PipelineCache;
-    class RenderScene;
-    
-    class OpaquePass : public IRenderPass { /* ... */ };
-}
+namespace RVX { class GPUResourceManager; class PipelineCache; }
 ```
 
 ## Module Structure
-
-Each module follows this directory layout:
 
 ```
 ModuleName/
   Include/ModuleName/     # Public headers
     ModuleName.h          # Main module header
-    SubComponent.h
-  Private/                # Implementation files
-    SubComponent.cpp
+  Private/                # Implementation files (.cpp)
   CMakeLists.txt
 ```
 
-## Key Modules
+### Key Modules
 
 | Module | Purpose |
 |--------|---------|
@@ -276,3 +201,4 @@ ModuleName/
 - Use `RVX_INVALID_INDEX` for invalid handle checks
 - Member variables must be initialized (use in-class initialization)
 - Close namespace with `} // namespace RVX` comment
+- Use `#pragma once` (not traditional include guards)

@@ -3,7 +3,7 @@
 # =============================================================================
 # Provides engine subsystems for:
 # - Window management (WindowSubsystem)
-# - Input handling (InputSubsystem)
+# - Input handling (InputSubsystem, InputActionMap, Gamepad, Touch, Gestures)
 # - Time/clock utilities
 # - Camera (to be migrated)
 # =============================================================================
@@ -15,6 +15,9 @@ target_sources(RVX_Runtime PRIVATE
     Private/Window/WindowSubsystem.cpp
     # Input
     Private/Input/InputSubsystem.cpp
+    Private/Input/InputActionMap.cpp
+    Private/Input/GestureRecognizer.cpp
+    Private/Input/VirtualJoystick.cpp
     # Time
     Private/Time/Time.cpp
     Private/Time/TimeSubsystem.cpp
@@ -34,5 +37,10 @@ target_link_libraries(RVX_Runtime PUBLIC
     RVX_Core
     RVX_HAL
 )
+
+# Windows-specific: Link XInput for gamepad vibration
+if(WIN32)
+    target_link_libraries(RVX_Runtime PRIVATE xinput)
+endif()
 
 add_library(RVX::Runtime ALIAS RVX_Runtime)

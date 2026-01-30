@@ -111,6 +111,11 @@ namespace RVX
     // Pointer access
     using glm::value_ptr;
     
+    // Quaternion-matrix conversion
+    using glm::mat4_cast;
+    using glm::mat3_cast;
+    using glm::quat_cast;
+    
     // =========================================================================
     // Quaternion Operations
     // =========================================================================

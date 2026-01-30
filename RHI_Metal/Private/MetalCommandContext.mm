@@ -5,6 +5,7 @@
 #include "MetalSwapChain.h"
 #include "MetalSynchronization.h"
 #include "MetalConversions.h"
+#include "MetalQuery.h"
 
 namespace RVX
 {
@@ -387,20 +388,66 @@ namespace RVX
 
         auto* metalSet = static_cast<MetalDescriptorSet*>(set);
         const auto& bindings = metalSet->GetBindings();
+        const auto& desc = metalSet->GetDesc();
 
-        // Direct binding approach - constant buffers use indices 0-29
+        // Calculate slot offset based on set index (each set gets a range of binding points)
+        // Set 0: indices 0-15, Set 1: indices 16-31, etc.
+        constexpr uint32 BINDINGS_PER_SET = 16;
+        uint32 slotOffset = slot * BINDINGS_PER_SET;
+
+        // Track dynamic offset index for dynamic buffers
+        size_t dynamicOffsetIndex = 0;
+
+        // Direct binding approach - bind each resource at its designated slot
         for (size_t i = 0; i < bindings.size(); ++i)
         {
             const auto& binding = bindings[i];
-            uint32 bindingIndex = static_cast<uint32>(i);
+            
+            // Skip empty bindings
+            if (!binding.buffer && !binding.texture && !binding.sampler)
+            {
+                continue;
+            }
+
+            // Calculate the final binding index
+            uint32 bindingIndex = slotOffset + static_cast<uint32>(i);
+
+            // Calculate effective offset (base offset + dynamic offset if applicable)
+            uint64 effectiveOffset = binding.offset;
+            
+            // Check if this is a dynamic buffer (from layout info if available)
+            bool isDynamicBuffer = false;
+            if (desc.layout)
+            {
+                auto* metalLayout = static_cast<MetalDescriptorSetLayout*>(desc.layout);
+                const auto& layoutDesc = metalLayout->GetDesc();
+                for (const auto& entry : layoutDesc.entries)
+                {
+                    if (entry.binding == static_cast<uint32>(i))
+                    {
+                        isDynamicBuffer = (entry.type == RHIBindingType::DynamicUniformBuffer ||
+                                          entry.type == RHIBindingType::DynamicStorageBuffer);
+                        break;
+                    }
+                }
+            }
+
+            if (isDynamicBuffer && dynamicOffsetIndex < dynamicOffsets.size())
+            {
+                effectiveOffset += dynamicOffsets[dynamicOffsetIndex++];
+            }
 
             if (m_renderEncoder)
             {
                 if (binding.buffer)
                 {
-                    // Bind to vertex stage at index matching shader's [[buffer(N)]]
-                    [m_renderEncoder setVertexBuffer:binding.buffer offset:binding.offset atIndex:bindingIndex];
-                    [m_renderEncoder setFragmentBuffer:binding.buffer offset:binding.offset atIndex:bindingIndex];
+                    // Bind to both vertex and fragment stages
+                    [m_renderEncoder setVertexBuffer:binding.buffer 
+                                              offset:static_cast<NSUInteger>(effectiveOffset) 
+                                             atIndex:bindingIndex];
+                    [m_renderEncoder setFragmentBuffer:binding.buffer 
+                                                offset:static_cast<NSUInteger>(effectiveOffset) 
+                                               atIndex:bindingIndex];
                 }
                 if (binding.texture)
                 {
@@ -417,7 +464,9 @@ namespace RVX
             {
                 if (binding.buffer)
                 {
-                    [m_computeEncoder setBuffer:binding.buffer offset:binding.offset atIndex:bindingIndex];
+                    [m_computeEncoder setBuffer:binding.buffer 
+                                         offset:static_cast<NSUInteger>(effectiveOffset) 
+                                        atIndex:bindingIndex];
                 }
                 if (binding.texture)
                 {
@@ -688,36 +737,160 @@ namespace RVX
     // =============================================================================
     // Query Commands
     // =============================================================================
-    void MetalCommandContext::BeginQuery(RHIQueryPool* /*pool*/, uint32 /*index*/)
+    void MetalCommandContext::BeginQuery(RHIQueryPool* pool, uint32 index)
     {
-        // TODO: Implement Metal query support using visibility result buffer
-        RVX_RHI_WARN("MetalCommandContext::BeginQuery not yet implemented");
+        if (!pool) return;
+
+        auto* metalPool = static_cast<MetalQueryPool*>(pool);
+        
+        if (!metalPool->IsSupported())
+        {
+            RVX_RHI_WARN("MetalCommandContext::BeginQuery - query pool not supported");
+            return;
+        }
+
+        // Timestamp queries should use WriteTimestamp instead
+        if (metalPool->GetType() == RHIQueryType::Timestamp)
+        {
+            RVX_RHI_WARN("MetalCommandContext::BeginQuery - use WriteTimestamp for timestamp queries");
+            return;
+        }
+
+        // For occlusion queries, set up visibility result buffer
+        if (metalPool->GetType() == RHIQueryType::Occlusion ||
+            metalPool->GetType() == RHIQueryType::BinaryOcclusion)
+        {
+            if (m_renderEncoder)
+            {
+                id<MTLBuffer> visibilityBuffer = metalPool->GetVisibilityBuffer();
+                if (visibilityBuffer)
+                {
+                    NSUInteger offset = metalPool->GetResultOffset(index);
+                    [m_renderEncoder setVisibilityResultMode:MTLVisibilityResultModeCounting 
+                                                      offset:offset];
+                }
+            }
+            else
+            {
+                RVX_RHI_WARN("MetalCommandContext::BeginQuery - occlusion queries require active render encoder");
+            }
+        }
     }
 
-    void MetalCommandContext::EndQuery(RHIQueryPool* /*pool*/, uint32 /*index*/)
+    void MetalCommandContext::EndQuery(RHIQueryPool* pool, uint32 index)
     {
-        // TODO: Implement Metal query support
-        RVX_RHI_WARN("MetalCommandContext::EndQuery not yet implemented");
+        if (!pool) return;
+
+        auto* metalPool = static_cast<MetalQueryPool*>(pool);
+        
+        // Timestamp queries don't use End
+        if (metalPool->GetType() == RHIQueryType::Timestamp)
+        {
+            return;
+        }
+
+        // For occlusion queries, disable visibility result mode
+        if (metalPool->GetType() == RHIQueryType::Occlusion ||
+            metalPool->GetType() == RHIQueryType::BinaryOcclusion)
+        {
+            if (m_renderEncoder)
+            {
+                [m_renderEncoder setVisibilityResultMode:MTLVisibilityResultModeDisabled 
+                                                  offset:0];
+            }
+        }
+        
+        (void)index;  // Index is tracked implicitly from BeginQuery
     }
 
-    void MetalCommandContext::WriteTimestamp(RHIQueryPool* /*pool*/, uint32 /*index*/)
+    void MetalCommandContext::WriteTimestamp(RHIQueryPool* pool, uint32 index)
     {
-        // TODO: Implement Metal GPU timestamps using sampleCountersInBuffer
-        RVX_RHI_WARN("MetalCommandContext::WriteTimestamp not yet implemented");
+        if (!pool) return;
+
+        auto* metalPool = static_cast<MetalQueryPool*>(pool);
+        
+        if (!metalPool->IsSupported())
+        {
+            RVX_RHI_WARN("MetalCommandContext::WriteTimestamp - query pool not supported");
+            return;
+        }
+
+        if (metalPool->GetType() != RHIQueryType::Timestamp)
+        {
+            RVX_RHI_WARN("MetalCommandContext::WriteTimestamp - not a timestamp query pool");
+            return;
+        }
+
+        // Sample counter at current location
+        if (@available(macOS 10.15, iOS 14.0, *))
+        {
+            id<MTLCounterSampleBuffer> counterBuffer = metalPool->GetCounterSampleBuffer();
+            if (counterBuffer)
+            {
+                // End current encoder to capture timestamp at this point
+                EndCurrentEncoder();
+                
+                // For accurate timestamps, we need to encode a sample command
+                // This is done via sampleCountersInBuffer on blit encoder
+                EnsureBlitEncoder();
+                
+                if (m_blitEncoder)
+                {
+                    // Sample counters into the buffer
+                    [m_blitEncoder sampleCountersInBuffer:counterBuffer 
+                                            atSampleIndex:index 
+                                              withBarrier:YES];
+                }
+            }
+        }
+        else
+        {
+            RVX_RHI_WARN("MetalCommandContext::WriteTimestamp - requires macOS 10.15+ or iOS 14+");
+        }
     }
 
-    void MetalCommandContext::ResolveQueries(RHIQueryPool* /*pool*/, uint32 /*firstQuery*/,
-                                             uint32 /*queryCount*/, RHIBuffer* /*destBuffer*/,
-                                             uint64 /*destOffset*/)
+    void MetalCommandContext::ResolveQueries(RHIQueryPool* pool, uint32 firstQuery,
+                                             uint32 queryCount, RHIBuffer* destBuffer,
+                                             uint64 destOffset)
     {
-        // TODO: Implement query result resolution for Metal
-        RVX_RHI_WARN("MetalCommandContext::ResolveQueries not yet implemented");
+        if (!pool || !destBuffer) return;
+
+        auto* metalPool = static_cast<MetalQueryPool*>(pool);
+        auto* metalBuffer = static_cast<MetalBuffer*>(destBuffer);
+        
+        if (!metalPool->IsSupported())
+        {
+            return;
+        }
+
+        // First, resolve query results to the pool's result buffer
+        metalPool->ResolveResults(firstQuery, queryCount);
+
+        // Then copy to destination buffer
+        EnsureBlitEncoder();
+        
+        if (m_blitEncoder)
+        {
+            id<MTLBuffer> srcBuffer = metalPool->GetResultBuffer();
+            if (srcBuffer)
+            {
+                NSUInteger srcOffset = metalPool->GetResultOffset(firstQuery);
+                NSUInteger copySize = queryCount * sizeof(uint64);
+                
+                [m_blitEncoder copyFromBuffer:srcBuffer 
+                                 sourceOffset:srcOffset 
+                                     toBuffer:metalBuffer->GetMTLBuffer()
+                            destinationOffset:destOffset 
+                                         size:copySize];
+            }
+        }
     }
 
     void MetalCommandContext::ResetQueries(RHIQueryPool* /*pool*/, uint32 /*firstQuery*/,
                                            uint32 /*queryCount*/)
     {
         // Metal queries don't require explicit reset
+        // Query objects are implicitly reset when used
     }
 
     // =============================================================================

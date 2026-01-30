@@ -3,6 +3,7 @@
 #include "OpenGLResources.h"
 #include "OpenGLDescriptor.h"
 #include "OpenGLConversions.h"
+#include "OpenGLQuery.h"
 #include "Core/Log.h"
 #include <algorithm>
 
@@ -960,39 +961,105 @@ namespace RVX
     }
 
     // =========================================================================
-    // Query Commands (OpenGL stubs - queries not yet implemented)
+    // Query Commands
     // =========================================================================
 
-    void OpenGLCommandContext::BeginQuery(RHIQueryPool* /*pool*/, uint32 /*index*/)
+    void OpenGLCommandContext::BeginQuery(RHIQueryPool* pool, uint32 index)
     {
-        // TODO: Implement OpenGL query support using glBeginQuery
-        RVX_RHI_WARN("OpenGLCommandContext::BeginQuery not yet implemented");
+        if (!pool) return;
+
+        auto* glPool = static_cast<OpenGLQueryPool*>(pool);
+        GLuint query = glPool->GetQuery(index);
+        
+        if (query == 0)
+        {
+            RVX_RHI_WARN("OpenGLCommandContext::BeginQuery - invalid query index {}", index);
+            return;
+        }
+
+        // Timestamp queries should use WriteTimestamp instead
+        if (glPool->GetType() == RHIQueryType::Timestamp)
+        {
+            RVX_RHI_WARN("OpenGLCommandContext::BeginQuery - use WriteTimestamp for timestamp queries");
+            return;
+        }
+
+        GL_CHECK(glBeginQuery(glPool->GetGLQueryTarget(), query));
     }
 
-    void OpenGLCommandContext::EndQuery(RHIQueryPool* /*pool*/, uint32 /*index*/)
+    void OpenGLCommandContext::EndQuery(RHIQueryPool* pool, uint32 index)
     {
-        // TODO: Implement OpenGL query support using glEndQuery
-        RVX_RHI_WARN("OpenGLCommandContext::EndQuery not yet implemented");
+        if (!pool) return;
+
+        auto* glPool = static_cast<OpenGLQueryPool*>(pool);
+        
+        // Timestamp queries should use WriteTimestamp instead
+        if (glPool->GetType() == RHIQueryType::Timestamp)
+        {
+            RVX_RHI_WARN("OpenGLCommandContext::EndQuery - timestamp queries don't use Begin/End");
+            return;
+        }
+
+        GL_CHECK(glEndQuery(glPool->GetGLQueryTarget()));
+        (void)index;  // Index is implicit from glBeginQuery
     }
 
-    void OpenGLCommandContext::WriteTimestamp(RHIQueryPool* /*pool*/, uint32 /*index*/)
+    void OpenGLCommandContext::WriteTimestamp(RHIQueryPool* pool, uint32 index)
     {
-        // TODO: Implement OpenGL timestamp queries using glQueryCounter
-        RVX_RHI_WARN("OpenGLCommandContext::WriteTimestamp not yet implemented");
+        if (!pool) return;
+
+        auto* glPool = static_cast<OpenGLQueryPool*>(pool);
+        
+        if (glPool->GetType() != RHIQueryType::Timestamp)
+        {
+            RVX_RHI_WARN("OpenGLCommandContext::WriteTimestamp - not a timestamp query pool");
+            return;
+        }
+
+        GLuint query = glPool->GetQuery(index);
+        if (query == 0)
+        {
+            RVX_RHI_WARN("OpenGLCommandContext::WriteTimestamp - invalid query index {}", index);
+            return;
+        }
+
+        GL_CHECK(glQueryCounter(query, GL_TIMESTAMP));
     }
 
-    void OpenGLCommandContext::ResolveQueries(RHIQueryPool* /*pool*/, uint32 /*firstQuery*/, 
-                                              uint32 /*queryCount*/, RHIBuffer* /*destBuffer*/, 
-                                              uint64 /*destOffset*/)
+    void OpenGLCommandContext::ResolveQueries(RHIQueryPool* pool, uint32 firstQuery, 
+                                              uint32 queryCount, RHIBuffer* destBuffer, 
+                                              uint64 destOffset)
     {
-        // TODO: Implement query result retrieval using glGetQueryObjectui64v
-        RVX_RHI_WARN("OpenGLCommandContext::ResolveQueries not yet implemented");
+        if (!pool || !destBuffer) return;
+
+        auto* glPool = static_cast<OpenGLQueryPool*>(pool);
+        auto* glBuffer = static_cast<OpenGLBuffer*>(destBuffer);
+
+        // Map the destination buffer
+        void* mapped = glBuffer->Map();
+        if (!mapped)
+        {
+            RVX_RHI_ERROR("OpenGLCommandContext::ResolveQueries - failed to map destination buffer");
+            return;
+        }
+
+        uint8* dst = static_cast<uint8*>(mapped) + destOffset;
+
+        // Copy query results to buffer
+        for (uint32 i = 0; i < queryCount; ++i)
+        {
+            uint64 result = glPool->GetResult(firstQuery + i);
+            memcpy(dst + i * sizeof(uint64), &result, sizeof(uint64));
+        }
+
+        glBuffer->Unmap();
     }
 
     void OpenGLCommandContext::ResetQueries(RHIQueryPool* /*pool*/, uint32 /*firstQuery*/, 
                                             uint32 /*queryCount*/)
     {
         // OpenGL queries don't require explicit reset
+        // Query objects are implicitly reset when glBeginQuery/glQueryCounter is called
     }
 
     // =========================================================================

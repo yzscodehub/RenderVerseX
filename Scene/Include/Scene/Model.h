@@ -8,7 +8,7 @@
  */
 
 #include "Scene/Node.h"
-#include "Scene/BoundingBox.h"
+#include "Core/Math/AABB.h"
 #include <vector>
 #include <memory>
 #include <string>

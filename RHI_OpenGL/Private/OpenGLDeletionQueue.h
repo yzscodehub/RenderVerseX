@@ -46,6 +46,10 @@ namespace RVX
         void QueueVAO(GLuint vao, uint64 currentFrame, const char* debugName = nullptr);
         void QueueFBO(GLuint fbo, uint64 currentFrame, const char* debugName = nullptr);
         void QueueSync(GLsync sync, uint64 currentFrame);
+        void QueueQuery(GLuint query, uint64 currentFrame, const char* debugName = nullptr);
+
+        // Queue multiple queries for deletion (batch)
+        void DeleteQueries(const std::vector<GLuint>& queries);
 
         // Queue a custom deletion operation
         void QueueCustomDeletion(std::function<void()> deleter, uint64 currentFrame, const char* debugName = nullptr);

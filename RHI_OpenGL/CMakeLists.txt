@@ -14,6 +14,7 @@ target_sources(RVX_RHI_OpenGL PRIVATE
     
     # Resources
     Private/OpenGLResources.cpp
+    Private/OpenGLQuery.cpp
     
     # Shader & Pipeline
     Private/OpenGLShader.cpp

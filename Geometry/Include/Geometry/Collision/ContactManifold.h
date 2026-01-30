@@ -9,22 +9,75 @@
 #include "Geometry/Constants.h"
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 namespace RVX::Geometry
 {
+
+/**
+ * @brief Feature ID for persistent contact identification
+ * 
+ * Used to match contacts across frames for warm-starting.
+ * Encodes which features of two shapes are in contact.
+ */
+struct ContactFeatureID
+{
+    uint8_t indexA = 0;     ///< Feature index on shape A (vertex/edge/face)
+    uint8_t indexB = 0;     ///< Feature index on shape B (vertex/edge/face)
+    uint8_t typeA = 0;      ///< Feature type on A: 0=vertex, 1=edge, 2=face
+    uint8_t typeB = 0;      ///< Feature type on B: 0=vertex, 1=edge, 2=face
+
+    ContactFeatureID() = default;
+
+    ContactFeatureID(uint8_t idxA, uint8_t idxB, uint8_t tA = 0, uint8_t tB = 0)
+        : indexA(idxA), indexB(idxB), typeA(tA), typeB(tB) {}
+
+    bool operator==(const ContactFeatureID& other) const
+    {
+        return indexA == other.indexA && indexB == other.indexB &&
+               typeA == other.typeA && typeB == other.typeB;
+    }
+
+    bool operator!=(const ContactFeatureID& other) const
+    {
+        return !(*this == other);
+    }
+
+    /// Generate a hash value for use in containers
+    uint32_t Hash() const
+    {
+        return static_cast<uint32_t>(indexA) |
+               (static_cast<uint32_t>(indexB) << 8) |
+               (static_cast<uint32_t>(typeA) << 16) |
+               (static_cast<uint32_t>(typeB) << 24);
+    }
+
+    /// Invalid/unset feature ID
+    static ContactFeatureID Invalid()
+    {
+        return ContactFeatureID(0xFF, 0xFF, 0xFF, 0xFF);
+    }
+
+    bool IsValid() const
+    {
+        return typeA != 0xFF;
+    }
+};
 
 /**
  * @brief Single contact point
  */
 struct ContactPoint
 {
-    Vec3 pointA{0};     ///< Contact point on shape A (world space)
-    Vec3 pointB{0};     ///< Contact point on shape B (world space)
-    Vec3 normal{0, 1, 0}; ///< Contact normal (from A to B)
-    float depth = 0.0f;  ///< Penetration depth (positive = penetrating)
-    float normalImpulse = 0.0f;  ///< Accumulated normal impulse (for warm starting)
+    Vec3 pointA{0};          ///< Contact point on shape A (world space)
+    Vec3 pointB{0};          ///< Contact point on shape B (world space)
+    Vec3 normal{0, 1, 0};    ///< Contact normal (from A to B)
+    float depth = 0.0f;      ///< Penetration depth (positive = penetrating)
+    float normalImpulse = 0.0f;   ///< Accumulated normal impulse (for warm starting)
     float tangentImpulse1 = 0.0f; ///< Accumulated tangent impulse 1
     float tangentImpulse2 = 0.0f; ///< Accumulated tangent impulse 2
+    ContactFeatureID featureID;   ///< Feature ID for persistent matching
+    uint32_t lifespan = 0;        ///< Number of frames this contact has existed
 
     /// Get the contact point in world space (average of A and B)
     Vec3 GetWorldPoint() const
@@ -42,6 +95,14 @@ struct ContactPoint
     Vec3 GetRelativeB(const Vec3& centerB) const
     {
         return pointB - centerB;
+    }
+
+    /// Reset accumulated impulses
+    void ResetImpulses()
+    {
+        normalImpulse = 0.0f;
+        tangentImpulse1 = 0.0f;
+        tangentImpulse2 = 0.0f;
     }
 };
 
@@ -95,6 +156,19 @@ struct ContactManifold
         cp.pointB = pointOnB;
         cp.normal = norm;
         cp.depth = penetration;
+        Add(cp);
+    }
+
+    /// Add a contact with feature ID for persistent tracking
+    void Add(const Vec3& pointOnA, const Vec3& pointOnB, const Vec3& norm, 
+             float penetration, const ContactFeatureID& featureId)
+    {
+        ContactPoint cp;
+        cp.pointA = pointOnA;
+        cp.pointB = pointOnB;
+        cp.normal = norm;
+        cp.depth = penetration;
+        cp.featureID = featureId;
         Add(cp);
     }
 
@@ -188,7 +262,7 @@ struct ContactManifold
         count = keptCount;
     }
 
-    /// Update contacts for persistent manifold
+    /// Update contacts for persistent manifold (legacy version)
     void Update(const Vec3& deltaA, const Vec3& deltaB, float breakingThreshold = 0.02f)
     {
         // Move contact points
@@ -201,6 +275,8 @@ struct ContactManifold
             contacts[i].depth = glm::dot(
                 contacts[i].pointB - contacts[i].pointA,
                 contacts[i].normal);
+            
+            contacts[i].lifespan++;
         }
 
         // Remove separated contacts
@@ -211,6 +287,185 @@ struct ContactManifold
                 // Remove by swapping with last
                 contacts[i] = contacts[--count];
             }
+        }
+    }
+
+    /**
+     * @brief Merge with a new manifold, preserving impulses for matching contacts
+     * 
+     * This is the main entry point for persistent contact caching.
+     * Matches contacts by feature ID or position proximity.
+     * 
+     * @param newManifold The newly computed manifold
+     * @param positionThreshold Distance threshold for position-based matching
+     */
+    void MergeWith(const ContactManifold& newManifold, float positionThreshold = 0.01f)
+    {
+        float thresholdSq = positionThreshold * positionThreshold;
+
+        // For each new contact, try to find a matching old contact
+        ContactPoint mergedContacts[MAX_CONTACTS];
+        int mergedCount = 0;
+
+        for (int newIdx = 0; newIdx < newManifold.count && mergedCount < MAX_CONTACTS; ++newIdx)
+        {
+            const ContactPoint& newContact = newManifold.contacts[newIdx];
+            int matchIdx = FindMatchingContact(newContact, thresholdSq);
+
+            if (matchIdx >= 0)
+            {
+                // Found a match - copy new positions but preserve impulses
+                mergedContacts[mergedCount] = newContact;
+                mergedContacts[mergedCount].normalImpulse = contacts[matchIdx].normalImpulse;
+                mergedContacts[mergedCount].tangentImpulse1 = contacts[matchIdx].tangentImpulse1;
+                mergedContacts[mergedCount].tangentImpulse2 = contacts[matchIdx].tangentImpulse2;
+                mergedContacts[mergedCount].lifespan = contacts[matchIdx].lifespan + 1;
+            }
+            else
+            {
+                // New contact
+                mergedContacts[mergedCount] = newContact;
+                mergedContacts[mergedCount].lifespan = 0;
+            }
+            mergedCount++;
+        }
+
+        // Update this manifold with merged contacts
+        for (int i = 0; i < mergedCount; ++i)
+        {
+            contacts[i] = mergedContacts[i];
+        }
+        count = mergedCount;
+        normal = newManifold.normal;
+    }
+
+    /**
+     * @brief Find a contact matching by feature ID or position
+     * @return Index of matching contact, or -1 if not found
+     */
+    int FindMatchingContact(const ContactPoint& query, float posThresholdSq) const
+    {
+        // First try to match by feature ID
+        if (query.featureID.IsValid())
+        {
+            for (int i = 0; i < count; ++i)
+            {
+                if (contacts[i].featureID == query.featureID)
+                {
+                    return i;
+                }
+            }
+        }
+
+        // Fall back to position-based matching
+        int bestMatch = -1;
+        float bestDistSq = posThresholdSq;
+
+        for (int i = 0; i < count; ++i)
+        {
+            Vec3 diff = contacts[i].pointA - query.pointA;
+            float distSq = glm::dot(diff, diff);
+            if (distSq < bestDistSq)
+            {
+                bestDistSq = distSq;
+                bestMatch = i;
+            }
+        }
+
+        return bestMatch;
+    }
+
+    /**
+     * @brief Age out old contacts and remove stale ones
+     * @param maxAge Maximum lifespan before removal
+     */
+    void PruneStaleContacts(uint32_t maxAge = 60)
+    {
+        for (int i = count - 1; i >= 0; --i)
+        {
+            if (contacts[i].lifespan > maxAge)
+            {
+                contacts[i] = contacts[--count];
+            }
+        }
+    }
+
+    /**
+     * @brief Validate contacts against current transforms
+     * 
+     * Removes contacts that are no longer valid (separated or drifted too far).
+     * 
+     * @param transformA Current transform of shape A
+     * @param transformB Current transform of shape B
+     * @param breakingThreshold Separation distance to remove contact
+     * @param driftThreshold Tangential drift distance to remove contact
+     */
+    void ValidateContacts(
+        const Mat4& transformA,
+        const Mat4& transformB,
+        float breakingThreshold = 0.02f,
+        float driftThreshold = 0.05f)
+    {
+        float driftThresholdSq = driftThreshold * driftThreshold;
+
+        for (int i = count - 1; i >= 0; --i)
+        {
+            ContactPoint& cp = contacts[i];
+
+            // Transform local contact points to world space
+            Vec3 worldA = Vec3(transformA * Vec4(cp.pointA, 1.0f));
+            Vec3 worldB = Vec3(transformB * Vec4(cp.pointB, 1.0f));
+
+            // Check separation
+            Vec3 diff = worldB - worldA;
+            float separation = glm::dot(diff, cp.normal);
+
+            if (separation < -breakingThreshold)
+            {
+                // Contact is separating
+                contacts[i] = contacts[--count];
+                continue;
+            }
+
+            // Check tangential drift
+            Vec3 tangent = diff - cp.normal * separation;
+            float driftSq = glm::dot(tangent, tangent);
+
+            if (driftSq > driftThresholdSq)
+            {
+                // Contact has drifted too far
+                contacts[i] = contacts[--count];
+                continue;
+            }
+
+            // Update contact positions
+            cp.pointA = worldA;
+            cp.pointB = worldB;
+            cp.depth = -separation;  // Positive depth = penetrating
+        }
+    }
+
+    /**
+     * @brief Get the total accumulated normal impulse
+     */
+    float GetTotalNormalImpulse() const
+    {
+        float total = 0.0f;
+        for (int i = 0; i < count; ++i)
+        {
+            total += contacts[i].normalImpulse;
+        }
+        return total;
+    }
+
+    /**
+     * @brief Reset all accumulated impulses (call when manifold is invalidated)
+     */
+    void ResetImpulses()
+    {
+        for (int i = 0; i < count; ++i)
+        {
+            contacts[i].ResetImpulses();
         }
     }
 

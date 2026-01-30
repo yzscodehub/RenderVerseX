@@ -11,7 +11,6 @@
 #include "Scene/Node.h"
 #include "Scene/SceneEntity.h"
 #include "Scene/Component.h"
-#include "Resource/Types/ModelResource.h"
 #include <functional>
 #include <unordered_map>
 #include <string>

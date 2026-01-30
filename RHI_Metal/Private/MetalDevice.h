@@ -40,6 +40,8 @@ namespace RVX
 
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) override;
 
+        RHIQueryPoolRef CreateQueryPool(const RHIQueryPoolDesc& desc) override;
+
         RHICommandContextRef CreateCommandContext(RHICommandQueueType type) override;
         void SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence) override;
         void SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence) override;

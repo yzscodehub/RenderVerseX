@@ -11,6 +11,7 @@
 #include "Geometry/Batch/SIMDTypes.h"
 #include "Core/Math/Ray.h"
 #include "Core/Math/AABB.h"
+#include "Core/Math/Sphere.h"
 #include "Geometry/Primitives/Triangle.h"
 
 namespace RVX::Geometry::SIMD
@@ -357,6 +358,262 @@ inline uint32_t RayBatchTriangleIntersect(
     outV = v;
 
     return static_cast<uint32_t>(validMask.MoveMask()) & 0xF;
+}
+
+// ============================================================================
+// Batch Sphere Structures
+// ============================================================================
+
+/**
+ * @brief 4 spheres in SOA layout for batch testing
+ */
+struct BatchSphere4
+{
+    Float4 centerX, centerY, centerZ;
+    Float4 radius;
+
+    BatchSphere4() = default;
+
+    /// Load from 4 separate spheres
+    void Load(const Sphere& s0, const Sphere& s1, const Sphere& s2, const Sphere& s3)
+    {
+        centerX = Float4(s0.GetCenter().x, s1.GetCenter().x, s2.GetCenter().x, s3.GetCenter().x);
+        centerY = Float4(s0.GetCenter().y, s1.GetCenter().y, s2.GetCenter().y, s3.GetCenter().y);
+        centerZ = Float4(s0.GetCenter().z, s1.GetCenter().z, s2.GetCenter().z, s3.GetCenter().z);
+        radius = Float4(s0.GetRadius(), s1.GetRadius(), s2.GetRadius(), s3.GetRadius());
+    }
+
+    /// Load from array of spheres
+    void Load(const Sphere* spheres, int count)
+    {
+        float cx[4] = {0, 0, 0, 0};
+        float cy[4] = {0, 0, 0, 0};
+        float cz[4] = {0, 0, 0, 0};
+        float r[4] = {0, 0, 0, 0};
+
+        for (int i = 0; i < count && i < 4; ++i)
+        {
+            cx[i] = spheres[i].GetCenter().x;
+            cy[i] = spheres[i].GetCenter().y;
+            cz[i] = spheres[i].GetCenter().z;
+            r[i] = spheres[i].GetRadius();
+        }
+
+        centerX = Float4(cx[0], cx[1], cx[2], cx[3]);
+        centerY = Float4(cy[0], cy[1], cy[2], cy[3]);
+        centerZ = Float4(cz[0], cz[1], cz[2], cz[3]);
+        radius = Float4(r[0], r[1], r[2], r[3]);
+    }
+
+    /// Splat a single sphere to all 4 slots
+    void Splat(const Sphere& s)
+    {
+        centerX = Float4::Splat(s.GetCenter().x);
+        centerY = Float4::Splat(s.GetCenter().y);
+        centerZ = Float4::Splat(s.GetCenter().z);
+        radius = Float4::Splat(s.GetRadius());
+    }
+};
+
+// ============================================================================
+// Sphere-Sphere Batch Intersection
+// ============================================================================
+
+/**
+ * @brief Test 1 sphere against 4 spheres
+ * 
+ * @param sphere The single sphere to test
+ * @param batch 4 spheres in SOA layout
+ * @param outDistSq Output: squared distances between sphere centers
+ * @return Bitmask of hits (bit i set if sphere i intersects)
+ */
+inline uint32_t SphereBatchSphereIntersect(
+    const Sphere& sphere,
+    const BatchSphere4& batch,
+    Float4& outDistSq)
+{
+    Vec3 center = sphere.GetCenter();
+    float rad = sphere.GetRadius();
+
+    // Compute delta vectors
+    Float4 dx = batch.centerX - Float4::Splat(center.x);
+    Float4 dy = batch.centerY - Float4::Splat(center.y);
+    Float4 dz = batch.centerZ - Float4::Splat(center.z);
+
+    // Squared distance between centers
+    Float4 distSq = dx * dx + dy * dy + dz * dz;
+    outDistSq = distSq;
+
+    // Sum of radii
+    Float4 radiusSum = batch.radius + Float4::Splat(rad);
+    Float4 radiusSumSq = radiusSum * radiusSum;
+
+    // Intersection if distSq <= radiusSumSq
+    Float4 hitMask = distSq <= radiusSumSq;
+    return static_cast<uint32_t>(hitMask.MoveMask()) & 0xF;
+}
+
+/**
+ * @brief Test 1 sphere against 4 spheres (simplified version)
+ * @return Bitmask of hits
+ */
+inline uint32_t SphereBatchSphereTest(const Sphere& sphere, const BatchSphere4& batch)
+{
+    Float4 distSq;
+    return SphereBatchSphereIntersect(sphere, batch, distSq);
+}
+
+/**
+ * @brief Test 4 spheres against 4 spheres (pairwise)
+ * 
+ * Tests spheres[i] from A against spheres[i] from B.
+ * This is NOT a full N*M test, just 4 pairwise tests.
+ * 
+ * @param spheresA First batch of 4 spheres
+ * @param spheresB Second batch of 4 spheres
+ * @param outDistSq Output: squared distances
+ * @return Bitmask of hits (bit i set if pair i intersects)
+ */
+inline uint32_t BatchSpherePairwiseIntersect(
+    const BatchSphere4& spheresA,
+    const BatchSphere4& spheresB,
+    Float4& outDistSq)
+{
+    Float4 dx = spheresB.centerX - spheresA.centerX;
+    Float4 dy = spheresB.centerY - spheresA.centerY;
+    Float4 dz = spheresB.centerZ - spheresA.centerZ;
+
+    Float4 distSq = dx * dx + dy * dy + dz * dz;
+    outDistSq = distSq;
+
+    Float4 radiusSum = spheresA.radius + spheresB.radius;
+    Float4 radiusSumSq = radiusSum * radiusSum;
+
+    Float4 hitMask = distSq <= radiusSumSq;
+    return static_cast<uint32_t>(hitMask.MoveMask()) & 0xF;
+}
+
+/**
+ * @brief Test 4 spheres against 4 spheres (all-pairs: 16 tests)
+ * 
+ * Returns a 16-bit mask where bit (i*4 + j) indicates if spheres_a[i]
+ * intersects with spheres_b[j].
+ * 
+ * @param spheresA First batch of 4 spheres
+ * @param spheresB Second batch of 4 spheres
+ * @return 16-bit mask of intersections
+ */
+inline uint32_t BatchSphereAllPairsTest(
+    const BatchSphere4& spheresA,
+    const BatchSphere4& spheresB)
+{
+    uint32_t result = 0;
+
+    // For each sphere in A, test against all 4 in B
+    for (int i = 0; i < 4; ++i)
+    {
+        // Extract sphere i from A
+        Sphere sA(
+            Vec3(spheresA.centerX[i], spheresA.centerY[i], spheresA.centerZ[i]),
+            spheresA.radius[i]
+        );
+
+        // Test against all of B
+        uint32_t mask = SphereBatchSphereTest(sA, spheresB);
+        result |= (mask << (i * 4));
+    }
+
+    return result;
+}
+
+// ============================================================================
+// Ray-Sphere Batch Intersection
+// ============================================================================
+
+/**
+ * @brief Test 1 ray against 4 spheres
+ * 
+ * @param ray The ray to test
+ * @param spheres 4 spheres in SOA layout
+ * @param outT Output: hit distances (for closest intersection point)
+ * @return Bitmask of hits
+ */
+inline uint32_t RayBatchSphereIntersect(
+    const Ray& ray,
+    const BatchSphere4& spheres,
+    Float4& outT)
+{
+    // Vector from ray origin to sphere centers
+    Float4 ocX = Float4::Splat(ray.origin.x) - spheres.centerX;
+    Float4 ocY = Float4::Splat(ray.origin.y) - spheres.centerY;
+    Float4 ocZ = Float4::Splat(ray.origin.z) - spheres.centerZ;
+
+    // Ray direction (already normalized)
+    Float4 dirX = Float4::Splat(ray.direction.x);
+    Float4 dirY = Float4::Splat(ray.direction.y);
+    Float4 dirZ = Float4::Splat(ray.direction.z);
+
+    // Quadratic coefficients: at^2 + bt + c = 0
+    // a = dot(d, d) = 1 (assuming normalized direction)
+    Float4 b = (ocX * dirX + ocY * dirY + ocZ * dirZ) * Float4::Splat(2.0f);
+    Float4 c = ocX * ocX + ocY * ocY + ocZ * ocZ - spheres.radius * spheres.radius;
+
+    // Discriminant
+    Float4 disc = b * b - Float4::Splat(4.0f) * c;
+
+    // Check for real solutions
+    Float4 validMask = disc >= Float4::Zero();
+
+    // Compute t = (-b - sqrt(disc)) / 2
+    Float4 sqrtDisc = disc.Max(Float4::Zero()).Sqrt();
+    Float4 t = ((-b) - sqrtDisc) * Float4::Splat(0.5f);
+
+    // If t < tMin, try the far intersection
+    Float4 tMin = Float4::Splat(ray.tMin);
+    Float4 tMax = Float4::Splat(ray.tMax);
+
+    Float4 tFar = ((-b) + sqrtDisc) * Float4::Splat(0.5f);
+    Float4 useNear = t >= tMin;
+    t = useNear.Select(t, tFar);
+
+    // Check bounds
+    validMask = validMask.And(t >= tMin).And(t <= tMax);
+
+    outT = t;
+    return static_cast<uint32_t>(validMask.MoveMask()) & 0xF;
+}
+
+// ============================================================================
+// Sphere-AABB Batch Intersection
+// ============================================================================
+
+/**
+ * @brief Test 1 sphere against 4 AABBs
+ * 
+ * @param sphere The sphere to test
+ * @param boxes 4 AABBs in SOA layout
+ * @return Bitmask of hits
+ */
+inline uint32_t SphereBatchAABBTest(const Sphere& sphere, const BatchAABB4& boxes)
+{
+    Vec3 center = sphere.GetCenter();
+    float rad = sphere.GetRadius();
+
+    // Find closest point on each AABB to sphere center
+    Float4 closestX = Float4::Splat(center.x).Max(boxes.minX).Min(boxes.maxX);
+    Float4 closestY = Float4::Splat(center.y).Max(boxes.minY).Min(boxes.maxY);
+    Float4 closestZ = Float4::Splat(center.z).Max(boxes.minZ).Min(boxes.maxZ);
+
+    // Distance from closest point to sphere center
+    Float4 dx = closestX - Float4::Splat(center.x);
+    Float4 dy = closestY - Float4::Splat(center.y);
+    Float4 dz = closestZ - Float4::Splat(center.z);
+
+    Float4 distSq = dx * dx + dy * dy + dz * dz;
+    Float4 radiusSq = Float4::Splat(rad * rad);
+
+    Float4 hitMask = distSq <= radiusSq;
+    return static_cast<uint32_t>(hitMask.MoveMask()) & 0xF;
 }
 
 } // namespace RVX::Geometry::SIMD

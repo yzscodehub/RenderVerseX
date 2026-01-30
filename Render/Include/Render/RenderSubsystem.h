@@ -7,6 +7,7 @@
 
 #include "Core/Subsystem/EngineSubsystem.h"
 #include "RHI/RHI.h"
+#include "Runtime/Window/WindowSubsystem.h"
 #include <memory>
 
 namespace RVX
@@ -64,13 +65,8 @@ namespace RVX
         const char* GetName() const override { return "RenderSubsystem"; }
         bool ShouldTick() const override { return false; }
 
-        /// Dependencies - requires WindowSubsystem
-        const char** GetDependencies(int& outCount) const override
-        {
-            static const char* deps[] = { "WindowSubsystem" };
-            outCount = 1;
-            return deps;
-        }
+        /// Dependencies - requires WindowSubsystem (type-safe)
+        RVX_SUBSYSTEM_DEPENDENCIES(WindowSubsystem)
 
         void Initialize() override;
         void Deinitialize() override;

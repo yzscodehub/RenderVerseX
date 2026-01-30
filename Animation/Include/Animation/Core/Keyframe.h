@@ -60,6 +60,8 @@ struct ScalarTangentData
 template<typename T>
 struct Keyframe
 {
+    using value_type = T;
+    
     TimeUs time{0};
     T value{};
     InterpolationMode interpolation{InterpolationMode::Linear};
@@ -104,6 +106,16 @@ struct KeyframeVec3 : Keyframe<Vec3>
     {
         tangent = TangentData(inTan, outTan);
     }
+};
+
+/**
+ * @brief Vec4 keyframe with vector tangent support
+ */
+struct KeyframeVec4 : Keyframe<Vec4>
+{
+    KeyframeVec4() = default;
+    KeyframeVec4(TimeUs t, const Vec4& v, InterpolationMode interp = InterpolationMode::Linear)
+        : Keyframe<Vec4>(t, v, interp) {}
 };
 
 /**

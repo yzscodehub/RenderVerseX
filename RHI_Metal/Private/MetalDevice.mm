@@ -5,6 +5,8 @@
 #include "MetalPipeline.h"
 #include "MetalSwapChain.h"
 #include "MetalSynchronization.h"
+#include "MetalQuery.h"
+#include "MetalUpload.h"
 
 namespace RVX
 {
@@ -272,6 +274,21 @@ namespace RVX
     }
 
     // =============================================================================
+    // Query Pool
+    // =============================================================================
+    RHIQueryPoolRef MetalDevice::CreateQueryPool(const RHIQueryPoolDesc& desc)
+    {
+        auto queryPool = MakeRef<MetalQueryPool>(m_device, desc);
+        if (!queryPool->IsSupported())
+        {
+            RVX_RHI_WARN("Metal: Query pool type {} not supported on this device", 
+                        static_cast<int>(desc.type));
+            return nullptr;
+        }
+        return queryPool;
+    }
+
+    // =============================================================================
     // Command Context
     // =============================================================================
     RHICommandContextRef MetalDevice::CreateCommandContext(RHICommandQueueType type)
@@ -369,17 +386,24 @@ namespace RVX
     // =============================================================================
     RHIStagingBufferRef MetalDevice::CreateStagingBuffer(const RHIStagingBufferDesc& desc)
     {
-        // Metal uses shared storage mode buffers for staging
-        // TODO: Create proper MetalStagingBuffer wrapper
-        RVX_RHI_WARN("Metal: CreateStagingBuffer not yet fully implemented");
-        return nullptr;
+        auto stagingBuffer = MakeRef<MetalStagingBuffer>(m_device, desc);
+        if (!stagingBuffer->GetMTLBuffer())
+        {
+            RVX_RHI_ERROR("Metal: Failed to create staging buffer");
+            return nullptr;
+        }
+        return stagingBuffer;
     }
 
     RHIRingBufferRef MetalDevice::CreateRingBuffer(const RHIRingBufferDesc& desc)
     {
-        // TODO: Create proper MetalRingBuffer implementation
-        RVX_RHI_WARN("Metal: CreateRingBuffer not yet fully implemented");
-        return nullptr;
+        auto ringBuffer = MakeRef<MetalRingBuffer>(m_device, desc);
+        if (!ringBuffer->GetMTLBuffer())
+        {
+            RVX_RHI_ERROR("Metal: Failed to create ring buffer");
+            return nullptr;
+        }
+        return ringBuffer;
     }
 
     // =============================================================================

@@ -4,6 +4,7 @@
 add_library(RVX_Scene STATIC)
 
 target_sources(RVX_Scene PRIVATE
+    # Core scene files
     Private/VertexAttribute.cpp
     Private/Mesh.cpp
     Private/Material.cpp
@@ -13,8 +14,22 @@ target_sources(RVX_Scene PRIVATE
     Private/SceneManager.cpp
     Private/Component.cpp
     Private/ComponentFactory.cpp
+    Private/Prefab.cpp
+
+    # Components
     Private/Components/MeshRendererComponent.cpp
     Private/Components/LightComponent.cpp
+    Private/Components/AudioComponent.cpp
+    Private/Components/CameraComponent.cpp
+    Private/Components/ColliderComponent.cpp
+    Private/Components/RigidBodyComponent.cpp
+    Private/Components/AnimatorComponent.cpp
+    Private/Components/SkeletonComponent.cpp
+    Private/Components/SkyboxComponent.cpp
+    Private/Components/ReflectionProbeComponent.cpp
+    Private/Components/LightProbeComponent.cpp
+    Private/Components/DecalComponent.cpp
+    Private/Components/LODComponent.cpp
 )
 
 target_include_directories(RVX_Scene PUBLIC
@@ -27,10 +42,13 @@ target_link_libraries(RVX_Scene PUBLIC
     Spatial
 )
 
-# Include Resource headers for components that use ResourceHandle
-# Using PRIVATE to avoid circular dependency (Resource links to Scene)
+# Include headers for components that use external resources
+# Using PRIVATE to avoid circular dependency (Resource/Physics/Animation link to Scene)
 target_include_directories(RVX_Scene PRIVATE
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Resource/Include>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Audio/Include>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Physics/Include>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Animation/Include>
 )
 
 # Alias for cleaner target names

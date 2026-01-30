@@ -15,6 +15,14 @@ target_sources(RVX_Core PRIVATE
     # Job System
     Private/Job/ThreadPool.cpp
     Private/Job/JobSystem.cpp
+    Private/Job/JobGraph.cpp
+    
+    # Memory Allocators
+    Private/Memory/Allocators.cpp
+    
+    # Serialization
+    Private/Serialization/Serialization.cpp
+    Private/Serialization/PropertyReflection.cpp
 )
 
 target_include_directories(RVX_Core PUBLIC

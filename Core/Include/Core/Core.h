@@ -16,6 +16,9 @@
 #include "Core/Event/EventHandle.h"
 #include "Core/Event/EventBus.h"
 
+// Service Locator
+#include "Core/Services.h"
+
 // Subsystem Framework
 #include "Core/Subsystem/ISubsystem.h"
 #include "Core/Subsystem/EngineSubsystem.h"

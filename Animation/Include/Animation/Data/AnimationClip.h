@@ -9,6 +9,7 @@
 
 #include "Animation/Core/Types.h"
 #include "Animation/Core/Keyframe.h"
+#include "Animation/Core/AnimationEvent.h"
 #include "Animation/Data/AnimationTrack.h"
 #include "Animation/Data/Skeleton.h"
 #include <memory>
@@ -82,6 +83,22 @@ struct AnimationClip
     std::vector<BlendShapeTrack> blendShapeTracks;
     std::vector<PropertyTrack> propertyTracks;
     std::vector<VisibilityTrack> visibilityTracks;
+
+    // ========================================================================
+    // Event Track
+    // ========================================================================
+
+    AnimationEventTrack eventTrack;
+
+    // ========================================================================
+    // Root Motion Settings
+    // ========================================================================
+
+    /// Whether this clip has root motion data
+    bool hasRootMotion = false;
+
+    /// Name of the root bone for root motion extraction
+    std::string rootMotionBoneName;
 
     // ========================================================================
     // Optional Skeleton Reference
@@ -192,6 +209,26 @@ struct AnimationClip
     bool HasBlendShapeAnimation() const { return !blendShapeTracks.empty(); }
     bool HasPropertyAnimation() const { return !propertyTracks.empty(); }
     bool HasVisibilityAnimation() const { return !visibilityTracks.empty(); }
+    bool HasEvents() const { return !eventTrack.IsEmpty(); }
+
+    // ========================================================================
+    // Event Management
+    // ========================================================================
+
+    void AddEvent(const AnimationEvent& event) { eventTrack.AddEvent(event); }
+    void AddEvent(const std::string& name, TimeUs time) { eventTrack.AddEvent(name, time); }
+    void AddEvent(const std::string& name, double timeSeconds)
+    {
+        eventTrack.AddEvent(name, SecondsToTimeUs(timeSeconds));
+    }
+    
+    size_t GetEventCount() const { return eventTrack.GetEventCount(); }
+    const AnimationEvent* GetEvent(size_t index) const { return eventTrack.GetEvent(index); }
+    
+    std::vector<const AnimationEvent*> GetEventsInRange(TimeUs start, TimeUs end) const
+    {
+        return eventTrack.FindEventsInRange(start, end);
+    }
 
     // ========================================================================
     // Validation

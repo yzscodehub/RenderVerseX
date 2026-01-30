@@ -18,6 +18,7 @@ namespace RVX
     public:
         MetalBuffer(id<MTLDevice> device, const RHIBufferDesc& desc);
         MetalBuffer(id<MTLHeap> heap, uint64 offset, const RHIBufferDesc& desc); // Placed buffer
+        MetalBuffer(id<MTLBuffer> existingBuffer, const RHIBufferDesc& desc);    // Wrapper for existing buffer
         ~MetalBuffer() override;
 
         uint64 GetSize() const override { return m_size; }

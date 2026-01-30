@@ -69,6 +69,21 @@ namespace RVX
         RVX_RHI_DEBUG("Queued GLsync for deletion (frame {})", currentFrame);
     }
 
+    void OpenGLDeletionQueue::QueueQuery(GLuint query, uint64 currentFrame, const char* debugName)
+    {
+        QueueDeletion(GLResourceType::Query, query, currentFrame, debugName);
+    }
+
+    void OpenGLDeletionQueue::DeleteQueries(const std::vector<GLuint>& queries)
+    {
+        if (queries.empty()) return;
+
+        // For immediate deletion without frame delay (used during cleanup)
+        GL_CHECK(glDeleteQueries(static_cast<GLsizei>(queries.size()), queries.data()));
+        
+        RVX_RHI_DEBUG("Deleted {} queries immediately", queries.size());
+    }
+
     void OpenGLDeletionQueue::QueueCustomDeletion(std::function<void()> deleter, uint64 currentFrame, const char* debugName)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -242,6 +257,18 @@ namespace RVX
                 else
                 {
                     RVX_RHI_WARN("Attempted to delete invalid FBO #{}", entry.handle);
+                }
+                break;
+
+            case GLResourceType::Query:
+                if (glIsQuery(entry.handle))
+                {
+                    GL_CHECK(glDeleteQueries(1, &entry.handle));
+                    RVX_RHI_DEBUG("Deleted Query #{} '{}'", entry.handle, entry.debugName);
+                }
+                else
+                {
+                    RVX_RHI_WARN("Attempted to delete invalid Query #{}", entry.handle);
                 }
                 break;
 

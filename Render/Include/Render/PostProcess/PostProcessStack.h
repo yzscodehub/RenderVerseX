@@ -22,30 +22,94 @@ namespace RVX
      */
     struct PostProcessSettings
     {
+        // =========================================================================
         // Tone mapping
+        // =========================================================================
         bool enableToneMapping = true;
         float exposure = 1.0f;
         float gamma = 2.2f;
 
+        // =========================================================================
         // Bloom
+        // =========================================================================
         bool enableBloom = true;
         float bloomThreshold = 1.0f;
         float bloomIntensity = 1.0f;
         float bloomRadius = 0.5f;
 
+        // =========================================================================
         // Anti-aliasing
+        // =========================================================================
         bool enableFXAA = true;
         float fxaaQuality = 0.75f;
 
-        // Color grading
+        // =========================================================================
+        // Depth of Field
+        // =========================================================================
+        bool enableDOF = false;
+        float dofFocusDistance = 10.0f;     ///< Focus distance in meters
+        float dofAperture = 5.6f;           ///< f-stop (lower = more blur)
+        float dofFocalLength = 50.0f;       ///< Lens focal length in mm
+
+        // =========================================================================
+        // Motion Blur
+        // =========================================================================
+        bool enableMotionBlur = false;
+        float motionBlurIntensity = 1.0f;
+        float motionBlurMaxVelocity = 32.0f;
+
+        // =========================================================================
+        // Color Grading
+        // =========================================================================
+        bool enableColorGrading = true;
         float contrast = 1.0f;
         float saturation = 1.0f;
         float brightness = 0.0f;
 
+        // =========================================================================
         // Vignette
+        // =========================================================================
         bool enableVignette = false;
         float vignetteIntensity = 0.3f;
         float vignetteRadius = 0.8f;
+
+        // =========================================================================
+        // Chromatic Aberration
+        // =========================================================================
+        bool enableChromaticAberration = false;
+        float chromaticAberrationIntensity = 0.1f;
+
+        // =========================================================================
+        // Film Grain
+        // =========================================================================
+        bool enableFilmGrain = false;
+        float filmGrainIntensity = 0.2f;
+
+        // =========================================================================
+        // Volumetric Lighting
+        // =========================================================================
+        bool enableVolumetricLighting = false;
+        float volumetricIntensity = 1.0f;
+
+        // =========================================================================
+        // SSAO
+        // =========================================================================
+        bool enableSSAO = true;
+        float ssaoRadius = 0.5f;
+        float ssaoIntensity = 1.0f;
+
+        // =========================================================================
+        // SSR
+        // =========================================================================
+        bool enableSSR = false;
+        float ssrMaxDistance = 50.0f;
+        float ssrThickness = 0.1f;
+
+        // =========================================================================
+        // TAA
+        // =========================================================================
+        bool enableTAA = true;
+        float taaJitterScale = 1.0f;
     };
 
     /**

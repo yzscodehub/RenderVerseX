@@ -9,10 +9,11 @@
 #include <dxcapi.h>
 #include <d3d12shader.h>
 #include <d3dcompiler.h>
-#include <spirv_reflect.h>
+// Use spirv-reflect subdirectory to avoid include path issues
+#include <spirv-reflect/spirv_reflect.h>
 #define HAS_SPIRV_REFLECT 1
 #elif defined(__linux__)
-#include <spirv_reflect.h>
+#include <spirv-reflect/spirv_reflect.h>
 #define HAS_SPIRV_REFLECT 1
 #else
 // macOS: spirv-reflect not available via vcpkg, skip SPIR-V reflection

@@ -6,6 +6,7 @@
 #include "OpenGLCommandContext.h"
 #include "OpenGLSwapChain.h"
 #include "OpenGLSync.h"
+#include "OpenGLQuery.h"
 #include "OpenGL/OpenGLDevice.h"
 #include "Core/Log.h"
 
@@ -449,11 +450,17 @@ namespace RVX
         return MakeRef<OpenGLDescriptorSet>(this, desc);
     }
 
-    RHIQueryPoolRef OpenGLDevice::CreateQueryPool(const RHIQueryPoolDesc& /*desc*/)
+    RHIQueryPoolRef OpenGLDevice::CreateQueryPool(const RHIQueryPoolDesc& desc)
     {
-        // TODO: Implement OpenGL query pool support
-        RVX_RHI_WARN("OpenGL query pools not yet implemented");
-        return nullptr;
+        GL_DEBUG_SCOPE("CreateQueryPool");
+        
+        auto queryPool = MakeRef<OpenGLQueryPool>(this, desc);
+        if (queryPool->GetCount() == 0)
+        {
+            RVX_RHI_ERROR("Failed to create query pool '{}'", desc.debugName ? desc.debugName : "");
+            return nullptr;
+        }
+        return queryPool;
     }
 
     // =============================================================================

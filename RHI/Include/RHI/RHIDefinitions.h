@@ -258,15 +258,17 @@ namespace RVX
     // =============================================================================
     enum class RHIShaderStage : uint32
     {
-        None     = 0,
-        Vertex   = 1 << 0,
-        Hull     = 1 << 1,
-        Domain   = 1 << 2,
-        Geometry = 1 << 3,
-        Pixel    = 1 << 4,
-        Compute  = 1 << 5,
+        None         = 0,
+        Vertex       = 1 << 0,
+        Hull         = 1 << 1,
+        Domain       = 1 << 2,
+        Geometry     = 1 << 3,
+        Pixel        = 1 << 4,
+        Compute      = 1 << 5,
+        Mesh         = 1 << 6,  // DX12 Mesh Shader
+        Amplification = 1 << 7,  // DX12 Amplification Shader
 
-        AllGraphics = Vertex | Hull | Domain | Geometry | Pixel,
+        AllGraphics = Vertex | Hull | Domain | Geometry | Pixel | Mesh | Amplification,
         All         = AllGraphics | Compute,
     };
 

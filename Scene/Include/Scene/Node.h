@@ -10,7 +10,7 @@
 #include "Core/MathTypes.h"
 #include "Scene/Mesh.h"
 #include "Scene/Material.h"
-#include "Scene/BoundingBox.h"
+#include "Core/Math/AABB.h"
 #include <vector>
 #include <memory>
 #include <string>

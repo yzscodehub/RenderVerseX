@@ -2,12 +2,28 @@
   "name": "renderversex",
   "version": "0.1.0",
   "description": "A cross-platform rendering framework with DX11/DX12/Vulkan/Metal/OpenGL backends",
+  "overrides": [
+    {
+      "name": "lua",
+      "version": "5.4.7"
+    }
+  ],
   "dependencies": [
     "spdlog",
     "glfw3",
     "glm",
     "tinygltf",
     "stb",
+    "asio",
+    "tinyexr",
+    "miniz",
+    {
+      "name": "imgui",
+      "features": ["docking-experimental", "glfw-binding", "opengl3-binding", "vulkan-binding"]
+    },
+    "imguizmo",
+    "lua",
+    "sol2",
     {
       "name": "vulkan",
       "platform": "windows | linux"
@@ -18,6 +34,10 @@
     },
     {
       "name": "spirv-reflect",
+      "platform": "windows | linux"
+    },
+    {
+      "name": "spirv-headers",
       "platform": "windows | linux"
     },
     {
@@ -43,6 +63,15 @@
     {
       "name": "glad",
       "platform": "linux | windows"
-    }
+    },
+    {
+      "name": "joltphysics",
+      "platform": "windows | linux | osx"
+    },
+    {
+      "name": "recastnavigation",
+      "platform": "windows | linux | osx"
+    },
+    "miniaudio"
   ]
 }

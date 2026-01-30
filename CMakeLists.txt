@@ -183,6 +183,18 @@ endif()
 
 add_subdirectory(Render)       # Render module (includes RenderGraph)
 add_subdirectory(Resource)   # Resource module (canonical resource management)
+add_subdirectory(Particle)   # GPU-driven particle system
+add_subdirectory(AI)         # AI module (Navigation, BehaviorTree, Perception)
+add_subdirectory(Networking) # Network communication and replication
+add_subdirectory(Debug)      # Debug module (profiling, console, stats)
+add_subdirectory(Scripting)  # Lua scripting system
+add_subdirectory(Audio)      # Audio subsystem
+add_subdirectory(Tools)      # Asset pipeline and tools
+add_subdirectory(UI)         # UI framework
+add_subdirectory(Physics)    # Physics subsystem
+add_subdirectory(Terrain)    # Terrain module (heightmap terrain rendering)
+add_subdirectory(Water)      # Water module (water surface and effects)
+add_subdirectory(Editor)     # Editor application with ImGui
 
 if(RVX_BUILD_SAMPLES)
     add_subdirectory(Samples)

@@ -1073,9 +1073,37 @@ namespace RVX
         // Get timestamp frequency for timestamp queries
         if (m_type == RHIQueryType::Timestamp)
         {
-            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjointData = {};
-            // Note: Frequency is obtained during query execution, use a common value
-            m_timestampFrequency = 1000000000;  // 1 GHz default, actual value depends on GPU
+            // Create a disjoint query to get the actual GPU timestamp frequency
+            D3D11_QUERY_DESC disjointDesc = {};
+            disjointDesc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
+            
+            ComPtr<ID3D11Query> disjointQuery;
+            HRESULT hr = device->GetD3DDevice()->CreateQuery(&disjointDesc, &disjointQuery);
+            
+            if (SUCCEEDED(hr))
+            {
+                // Execute the disjoint query to get frequency
+                auto* ctx = device->GetImmediateContext();
+                ctx->Begin(disjointQuery.Get());
+                ctx->End(disjointQuery.Get());
+                
+                // Wait for data and get frequency
+                D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjointData = {};
+                while (ctx->GetData(disjointQuery.Get(), &disjointData, sizeof(disjointData), 0) == S_FALSE)
+                {
+                    std::this_thread::yield();
+                }
+                
+                m_timestampFrequency = disjointData.Frequency;
+                RVX_RHI_DEBUG("DX11: GPU timestamp frequency: {} Hz ({:.2f} GHz)", 
+                             m_timestampFrequency, m_timestampFrequency / 1e9);
+            }
+            else
+            {
+                // Fallback to a reasonable default
+                m_timestampFrequency = 1000000000;  // 1 GHz default
+                RVX_RHI_WARN("DX11: Failed to query timestamp frequency, using 1 GHz default");
+            }
         }
 
         // Create query objects

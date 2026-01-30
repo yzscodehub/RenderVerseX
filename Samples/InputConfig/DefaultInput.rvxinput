@@ -1,0 +1,138 @@
+# RenderVerseX Input Action Map
+# Format: [Action:Name] followed by key=value pairs
+#
+# Binding format:
+#   Keyboard:KeyName                     - Keyboard key
+#   KeyboardAxis:KeyName:Direction       - Keyboard axis (Direction: 1 or -1)
+#   Mouse:ButtonIndex                    - Mouse button (0=Left, 1=Right, 2=Middle)
+#   Gamepad:ButtonName:PadIndex          - Gamepad button
+#   GamepadAxis:AxisName:Scale:PadIndex  - Gamepad axis
+#
+# Action types: Button, Axis1D, Axis2D
+# Trigger modes: Pressed, Released, Held, Tap, Hold
+
+# =============================================================================
+# Movement Actions
+# =============================================================================
+
+[Action:Move]
+type=Axis2D
+trigger=Held
+deadzone=0.15
+binding=KeyboardAxis:W:1
+binding=KeyboardAxis:S:-1
+binding=KeyboardAxis:A:-1
+binding=KeyboardAxis:D:1
+binding=GamepadAxis:LeftX:1.0:0
+binding=GamepadAxis:LeftY:1.0:0
+
+[Action:Look]
+type=Axis2D
+trigger=Held
+deadzone=0.1
+binding=GamepadAxis:RightX:1.0:0
+binding=GamepadAxis:RightY:1.0:0
+
+# =============================================================================
+# Common Actions
+# =============================================================================
+
+[Action:Jump]
+type=Button
+trigger=Pressed
+binding=Keyboard:Space
+binding=Gamepad:A:0
+
+[Action:Crouch]
+type=Button
+trigger=Pressed
+binding=Keyboard:LeftControl
+binding=Gamepad:B:0
+
+[Action:Sprint]
+type=Button
+trigger=Held
+binding=Keyboard:LeftShift
+binding=Gamepad:LeftThumb:0
+
+[Action:Interact]
+type=Button
+trigger=Pressed
+binding=Keyboard:E
+binding=Gamepad:X:0
+
+# =============================================================================
+# Combat Actions
+# =============================================================================
+
+[Action:Fire]
+type=Button
+trigger=Held
+binding=Mouse:0
+binding=GamepadAxis:RightTrigger:1.0:0
+
+[Action:Aim]
+type=Button
+trigger=Held
+binding=Mouse:1
+binding=GamepadAxis:LeftTrigger:1.0:0
+
+[Action:Reload]
+type=Button
+trigger=Pressed
+binding=Keyboard:R
+binding=Gamepad:X:0
+
+[Action:MeleeAttack]
+type=Button
+trigger=Pressed
+binding=Keyboard:V
+binding=Gamepad:RightThumb:0
+
+# =============================================================================
+# UI Actions
+# =============================================================================
+
+[Action:Pause]
+type=Button
+trigger=Pressed
+binding=Keyboard:Escape
+binding=Gamepad:Start:0
+
+[Action:Inventory]
+type=Button
+trigger=Pressed
+binding=Keyboard:Tab
+binding=Gamepad:Back:0
+
+[Action:Map]
+type=Button
+trigger=Pressed
+binding=Keyboard:M
+binding=Gamepad:Guide:0
+
+# =============================================================================
+# Vehicle Actions (Example)
+# =============================================================================
+
+[Action:Accelerate]
+type=Axis1D
+trigger=Held
+deadzone=0.05
+binding=Keyboard:W
+binding=GamepadAxis:RightTrigger:1.0:0
+
+[Action:Brake]
+type=Axis1D
+trigger=Held
+deadzone=0.05
+binding=Keyboard:S
+binding=GamepadAxis:LeftTrigger:1.0:0
+
+[Action:Steer]
+type=Axis1D
+trigger=Held
+deadzone=0.1
+binding=KeyboardAxis:A:-1
+binding=KeyboardAxis:D:1
+binding=GamepadAxis:LeftX:1.0:0

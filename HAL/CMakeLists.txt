@@ -4,6 +4,7 @@
 # Provides platform-independent abstractions for:
 # - Window management
 # - Input handling (low-level backend)
+# - Gamepad support
 # - File system access
 # - Timer/Clock utilities
 # =============================================================================
@@ -13,6 +14,7 @@ target_sources(RVX_HAL PRIVATE
     # GLFW implementations
     Private/GLFW/GLFWWindow.cpp
     Private/GLFW/GLFWInputBackend.cpp
+    Private/GLFW/GLFWGamepadBackend.cpp
     # Input
     Private/Input.cpp
     Private/Input/Input.cpp
@@ -28,5 +30,10 @@ target_link_libraries(RVX_HAL PUBLIC
     RVX_Core
     glfw
 )
+
+# Windows-specific: Link XInput for gamepad vibration
+if(WIN32)
+    target_link_libraries(RVX_HAL PRIVATE xinput)
+endif()
 
 add_library(RVX::HAL ALIAS RVX_HAL)

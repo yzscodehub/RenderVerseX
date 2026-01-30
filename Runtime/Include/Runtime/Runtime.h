@@ -6,7 +6,7 @@
  * 
  * Runtime provides engine subsystems for:
  * - Window management (WindowSubsystem)
- * - Input handling (InputSubsystem)
+ * - Input handling (InputSubsystem, InputActionMap, Gamepad, Touch, Gestures)
  * - Time/clock utilities (Time, TimeSubsystem)
  * - Camera and controllers
  */
@@ -16,6 +16,9 @@
 
 // Input
 #include "Runtime/Input/InputSubsystem.h"
+#include "Runtime/Input/InputActionMap.h"
+#include "Runtime/Input/GestureRecognizer.h"
+#include "Runtime/Input/VirtualJoystick.h"
 
 // Time
 #include "Runtime/Time/Time.h"

@@ -98,6 +98,20 @@ namespace RVX
         }
     }
 
+    MetalBuffer::MetalBuffer(id<MTLBuffer> existingBuffer, const RHIBufferDesc& desc)
+        : m_buffer(existingBuffer)
+        , m_size(desc.size)
+        , m_usage(desc.usage)
+        , m_memoryType(desc.memoryType)
+        , m_stride(desc.stride)
+    {
+        // Wrapper constructor - takes ownership of existing buffer
+        if (desc.debugName)
+        {
+            SetDebugName(desc.debugName);
+        }
+    }
+
     MetalBuffer::~MetalBuffer()
     {
         m_buffer = nil;

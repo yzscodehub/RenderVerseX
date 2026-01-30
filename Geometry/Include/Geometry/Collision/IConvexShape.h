@@ -6,6 +6,9 @@
 #pragma once
 
 #include "Core/MathTypes.h"
+#include <vector>
+#include <span>
+#include <limits>
 
 namespace RVX::Geometry
 {
@@ -174,6 +177,194 @@ public:
     }
 
     Vec3 GetCenter() const override { return (a + b) * 0.5f; }
+};
+
+/**
+ * @brief Convex shape wrapper for convex hull (point cloud)
+ * 
+ * Represents a convex hull defined by a set of vertices.
+ * The vertices should form the convex hull - internal points are ignored
+ * but waste computation time.
+ */
+class ConvexHull : public IConvexShape
+{
+public:
+    std::vector<Vec3> vertices;
+    Vec3 cachedCenter{0};
+
+    ConvexHull() = default;
+
+    ConvexHull(std::span<const Vec3> verts)
+        : vertices(verts.begin(), verts.end())
+    {
+        ComputeCenter();
+    }
+
+    ConvexHull(std::initializer_list<Vec3> verts)
+        : vertices(verts)
+    {
+        ComputeCenter();
+    }
+
+    /**
+     * @brief Set vertices and recompute center
+     */
+    void SetVertices(std::span<const Vec3> verts)
+    {
+        vertices.assign(verts.begin(), verts.end());
+        ComputeCenter();
+    }
+
+    /**
+     * @brief Add a vertex to the hull
+     */
+    void AddVertex(const Vec3& v)
+    {
+        vertices.push_back(v);
+        ComputeCenter();
+    }
+
+    /**
+     * @brief Clear all vertices
+     */
+    void Clear()
+    {
+        vertices.clear();
+        cachedCenter = Vec3(0);
+    }
+
+    Vec3 Support(const Vec3& direction) const override
+    {
+        if (vertices.empty())
+            return Vec3(0);
+
+        float maxDot = -std::numeric_limits<float>::max();
+        Vec3 support = vertices[0];
+
+        for (const auto& v : vertices)
+        {
+            float d = glm::dot(v, direction);
+            if (d > maxDot)
+            {
+                maxDot = d;
+                support = v;
+            }
+        }
+
+        return support;
+    }
+
+    Vec3 GetCenter() const override
+    {
+        return cachedCenter;
+    }
+
+    /**
+     * @brief Transform all vertices by a matrix
+     */
+    ConvexHull Transformed(const Mat4& transform) const
+    {
+        ConvexHull result;
+        result.vertices.reserve(vertices.size());
+
+        for (const auto& v : vertices)
+        {
+            result.vertices.push_back(Vec3(transform * Vec4(v, 1.0f)));
+        }
+        result.ComputeCenter();
+
+        return result;
+    }
+
+    /**
+     * @brief Get axis-aligned bounding box
+     */
+    void GetBounds(Vec3& outMin, Vec3& outMax) const
+    {
+        if (vertices.empty())
+        {
+            outMin = outMax = Vec3(0);
+            return;
+        }
+
+        outMin = outMax = vertices[0];
+        for (size_t i = 1; i < vertices.size(); ++i)
+        {
+            outMin = glm::min(outMin, vertices[i]);
+            outMax = glm::max(outMax, vertices[i]);
+        }
+    }
+
+private:
+    void ComputeCenter()
+    {
+        if (vertices.empty())
+        {
+            cachedCenter = Vec3(0);
+            return;
+        }
+
+        Vec3 sum(0);
+        for (const auto& v : vertices)
+        {
+            sum += v;
+        }
+        cachedCenter = sum / static_cast<float>(vertices.size());
+    }
+};
+
+/**
+ * @brief Convex shape wrapper for a Box (AABB treated as convex shape)
+ */
+class ConvexBox : public IConvexShape
+{
+public:
+    Vec3 center{0};
+    Vec3 halfExtents{1};
+
+    ConvexBox() = default;
+    ConvexBox(const Vec3& c, const Vec3& extents)
+        : center(c), halfExtents(extents) {}
+
+    Vec3 Support(const Vec3& direction) const override
+    {
+        return center + Vec3(
+            direction.x >= 0.0f ? halfExtents.x : -halfExtents.x,
+            direction.y >= 0.0f ? halfExtents.y : -halfExtents.y,
+            direction.z >= 0.0f ? halfExtents.z : -halfExtents.z
+        );
+    }
+
+    Vec3 GetCenter() const override { return center; }
+};
+
+/**
+ * @brief Convex shape wrapper for a Triangle
+ */
+class ConvexTriangle : public IConvexShape
+{
+public:
+    Vec3 v0{0}, v1{1, 0, 0}, v2{0, 1, 0};
+
+    ConvexTriangle() = default;
+    ConvexTriangle(const Vec3& a, const Vec3& b, const Vec3& c)
+        : v0(a), v1(b), v2(c) {}
+
+    Vec3 Support(const Vec3& direction) const override
+    {
+        float d0 = glm::dot(v0, direction);
+        float d1 = glm::dot(v1, direction);
+        float d2 = glm::dot(v2, direction);
+
+        if (d0 >= d1 && d0 >= d2) return v0;
+        if (d1 >= d0 && d1 >= d2) return v1;
+        return v2;
+    }
+
+    Vec3 GetCenter() const override
+    {
+        return (v0 + v1 + v2) / 3.0f;
+    }
 };
 
 } // namespace RVX::Geometry

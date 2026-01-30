@@ -40,16 +40,35 @@ target_sources(RVX_Render PRIVATE
     Private/Graph/ResourceViewCache.cpp
     # Material
     Private/Material/MaterialBinder.cpp
+    Private/Material/MaterialTemplate.cpp
+    Private/Material/MaterialInstance.cpp
     # Lighting
     Private/Lighting/LightManager.cpp
+    Private/Lighting/ClusteredLighting.cpp
     # PostProcess
     Private/PostProcess/PostProcessStack.cpp
     Private/PostProcess/ToneMapping.cpp
     Private/PostProcess/Bloom.cpp
     Private/PostProcess/FXAA.cpp
+    Private/PostProcess/SSAO.cpp
+    Private/PostProcess/SSR.cpp
+    Private/PostProcess/TAA.cpp
+    Private/PostProcess/DOF.cpp
+    Private/PostProcess/MotionBlur.cpp
+    Private/PostProcess/ColorGrading.cpp
+    Private/PostProcess/Vignette.cpp
+    Private/PostProcess/ChromaticAberration.cpp
+    Private/PostProcess/FilmGrain.cpp
+    Private/PostProcess/VolumetricLighting.cpp
+    # Decal
+    Private/Decal/DecalRenderer.cpp
+    # Sky
+    Private/Sky/AtmosphericScattering.cpp
     # Debug
     Private/Debug/DebugRenderer.cpp
     Private/Debug/GPUProfiler.cpp
+    # GPU Driven
+    Private/GPUDriven/GPUCulling.cpp
 )
 
 target_include_directories(RVX_Render PUBLIC

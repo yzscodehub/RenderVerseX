@@ -104,6 +104,7 @@ target_link_libraries(SystemIntegrationTest PRIVATE
     Spatial
     RVX::Scene
     RVX::Resource
+    RVX::Audio
 )
 target_compile_features(SystemIntegrationTest PRIVATE cxx_std_20)
 

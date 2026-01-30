@@ -8,7 +8,7 @@
  */
 
 #include "Scene/VertexAttribute.h"
-#include "Scene/BoundingBox.h"
+#include "Core/Math/AABB.h"
 #include <unordered_map>
 #include <vector>
 #include <memory>

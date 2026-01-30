@@ -92,7 +92,7 @@ namespace RVX::HAL
 } // namespace RVX::HAL
 
 // Backward compatibility - expose HAL types in RVX namespace
-// Note: RVX::WindowResizeEvent already defined in Core/Event/Event.h
+// Note: RVX::WindowResizeEvent and RVX::WindowFocusEvent already defined in Core/Event/Event.h
 namespace RVX
 {
     using HAL::WindowEventType;
@@ -101,5 +101,5 @@ namespace RVX
     using HAL::WindowDpiEvent;
     using HAL::WindowResizedEvent;
     using HAL::WindowClosedEvent;
-    using HAL::WindowFocusEvent;
+    // WindowFocusEvent already in RVX namespace from Core/Event/Event.h
 }
