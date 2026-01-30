@@ -31,6 +31,26 @@ RenderVerseX is a modern graphics engine designed for flexibility and performanc
   - Windows: Windows 10 SDK (for DX12)
   - Vulkan SDK (when enabling Vulkan backend)
 
+## CMake Presets
+
+The project includes CMakePresets.json for simplified cross-platform configuration. Presets automatically configure appropriate rendering backends for each platform:
+
+### Available Presets
+- `debug` - Windows Debug build (DX11/DX12/Vulkan/OpenGL enabled)
+- `release` - Windows Release build
+- `macos-debug` - macOS Debug build (Metal enabled)
+- `macos-release` - macOS Release build
+
+### Environment Setup
+Presets expect the `VCPKG_ROOT` environment variable:
+```bash
+# Windows
+set VCPKG_ROOT=E:/WorkSpace/vcpkg
+
+# Linux/macOS
+export VCPKG_ROOT=/path/to/vcpkg
+```
+
 ## Platform Support
 
 | Platform | DX11 | DX12 | Vulkan | Metal | OpenGL |
@@ -90,6 +110,25 @@ vcpkg install spdlog glfw3 glm spirv-cross spirv-cross-glsl spirv-cross-hlsl spi
 
 ### 3. Configure and Build
 
+#### Using CMake Presets (Recommended)
+The project includes CMakePresets.json for easy cross-platform configuration:
+
+```bash
+# Configure and build using presets
+cmake --preset debug      # Debug configuration
+cmake --preset release    # Release configuration
+
+# macOS presets
+cmake --preset macos-debug   # Debug on macOS
+cmake --preset macos-release # Release on macOS
+
+# Build specific targets
+cmake --build --preset debug --target ModelViewer
+cmake --build --preset debug --target Triangle
+cmake --build --preset debug --target Cube3D
+```
+
+#### Manual Configuration
 ```bash
 # Configure with vcpkg toolchain
 cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=[vcpkg-root]/scripts/buildsystems/vcpkg.cmake
