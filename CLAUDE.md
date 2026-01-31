@@ -81,13 +81,26 @@ cmake --build build --config Release --target Cube3D
 cmake --build build --config Debug
 ```
 
+### Build Options
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-DRVX_ENABLE_DX11=ON/OFF` | ON | DirectX 11 backend (Windows only) |
+| `-DRVX_ENABLE_DX12=ON/OFF` | ON | DirectX 12 backend (Windows only) |
+| `-DRVX_ENABLE_VULKAN=ON/OFF` | ON | Vulkan backend |
+| `-DRVX_ENABLE_METAL=ON/OFF` | OFF | Metal backend (macOS/iOS only) |
+| `-DRVX_ENABLE_OPENGL=ON/OFF` | OFF | OpenGL backend (Linux fallback) |
+| `-DRVX_BUILD_SAMPLES=ON/OFF` | ON | Build sample applications |
+| `-DRVX_BUILD_TESTS=ON/OFF` | ON | Build validation tests |
+
 ### Running Tests
 Tests are standalone executables (no GoogleTest framework):
+
 ```bash
 # Run individual validation tests
 ./build/Tests/Release/RenderGraphValidation.exe
 ./build/Tests/Release/DX12Validation.exe
 ./build/Tests/Release/VulkanValidation.exe
+./build/Tests/Release/DX11Validation.exe
 ./build/Tests/Release/SystemIntegrationTest.exe
 
 # Cross-backend validation (requires DX12 and Vulkan)
@@ -252,3 +265,90 @@ RVX_ASSERT(handle != RVX_INVALID_INDEX);
 - Use `RenderGraphValidation` for frame graph issues
 - Test cross-backend compatibility when changing RHI code
 - Validation tests are in `Tests/` directory
+
+## Platform Support Matrix
+
+| Platform | DX11 | DX12 | Vulkan | Metal | OpenGL |
+|----------|------|------|--------|-------|--------|
+| Windows  | ✓    | ✓    | ✓      | ✗     | ✓      |
+| Linux    | ✗    | ✗    | ✓      | ✗     | ✓      |
+| macOS    | ✗    | ✗    | ✗      | ✓     | ✗      |
+| iOS      | ✗    | ✗    | ✗      | ✓     | ✗      |
+
+## Key Features
+
+- Multi-backend RHI abstraction (DX11/DX12/Vulkan/Metal/OpenGL)
+- Frame graph system with automatic resource management
+- Entity-Component architecture with spatial queries
+- GPU-driven particle system
+- Terrain & water rendering
+- Jolt Physics integration
+- Lua scripting via Sol2
+- Asio-based networking
+- MiniAudio for cross-platform audio
+- ImGui-based UI framework
+
+## Project Structure
+
+```
+RenderVerseX/
+├── Core/              # Core utilities (Types, Log, Assert, Math, Job System)
+├── Geometry/          # Geometry primitives, spatial queries
+├── HAL/               # Hardware Abstraction Layer (Window, Input)
+├── Spatial/           # Spatial partitioning and queries
+├── Scene/             # Entity-Component system, scene management
+├── Animation/         # Animation system
+├── Runtime/           # Runtime subsystems (Camera, etc.)
+├── Picking/           # Object picking and raycasting
+├── World/             # World management (integrates Scene, Spatial, Picking)
+├── Engine/            # Engine initialization and main loop
+├── RHI/               # Rendering Hardware Interface abstraction
+├── RHI_DX11/          # DirectX 11 backend
+├── RHI_DX12/          # DirectX 12 backend
+├── RHI_Vulkan/        # Vulkan backend
+├── RHI_Metal/         # Metal backend (macOS/iOS)
+├── RHI_OpenGL/        # OpenGL backend (Linux fallback)
+├── ShaderCompiler/    # HLSL compilation and cross-compilation
+├── Render/            # High-level rendering (RenderGraph, Passes, SceneRenderer)
+├── Resource/          # Asset loading and resource management
+├── Particle/          # GPU-driven particle system
+├── AI/                # AI systems (Navigation, BehaviorTree, Perception)
+├── Networking/        # Network communication and replication
+├── Debug/             # Debug tools (profiling, console, stats)
+├── Scripting/         # Lua scripting system with Sol2 bindings
+├── Audio/             # Audio subsystem (MiniAudio)
+├── Tools/             # Asset pipeline and importers
+├── UI/                # UI framework with widgets
+├── Physics/           # Physics subsystem (Jolt Physics)
+├── Terrain/           # Heightmap terrain rendering
+├── Water/             # Water simulation and effects
+└── Editor/            # Editor application with ImGui
+
+Samples/               # Sample applications
+Tests/                 # Validation tests
+Docs/                  # Design documents and plans
+```
+
+## Dependencies (vcpkg)
+
+Key dependencies managed via vcpkg:
+- spdlog - Logging framework
+- glfw3 - Window and input handling
+- glm - Math library
+- vulkan/vulkan-memory-allocator - Vulkan backend
+- spirv-reflect/spirv-headers - Vulkan SPIR-V support
+- directx-dxc/directx12-agility/d3d12-memory-allocator - DirectX 12 backend
+- spirv-cross - Shader cross-compilation
+- glad - OpenGL backend
+- tinygltf - glTF model loading
+- stb - Image loading
+- asio - Networking
+- lua/sol2 - Scripting
+- imgui/imguizmo - Editor UI
+- joltphysics - Physics simulation
+- recastnavigation - AI pathfinding
+- miniaudio - Audio playback
+- tinyexr - EXR image support
+- miniz - Compression utilities
+
+See [vcpkg.json](vcpkg.json) for complete dependency list.
