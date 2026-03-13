@@ -39,6 +39,36 @@ namespace RVX::Bindings
         InputStateCache s_inputCache;
 
         // =====================================================================
+        // Sync Input Cache (called by ScriptEngine each frame)
+        // =====================================================================
+
+        void SyncInputCache(const InputSubsystem* input)
+        {
+            if (!input) return;
+
+            // Sync keyboard state
+            for (int i = 0; i < 512; ++i)
+            {
+                s_inputCache.keys[i] = input->IsKeyDown(i);
+                s_inputCache.keysPressed[i] = input->IsKeyPressed(i);
+                s_inputCache.keysReleased[i] = input->IsKeyReleased(i);
+            }
+
+            // Sync mouse position
+            input->GetMousePosition(s_inputCache.mouseX, s_inputCache.mouseY);
+            input->GetMouseDelta(s_inputCache.mouseDeltaX, s_inputCache.mouseDeltaY);
+            input->GetScrollDelta(s_inputCache.scrollX, s_inputCache.scrollY);
+
+            // Sync mouse buttons
+            for (int i = 0; i < 8; ++i)
+            {
+                s_inputCache.mouseButtons[i] = input->IsMouseButtonDown(i);
+                s_inputCache.mouseButtonsPressed[i] = input->IsMouseButtonPressed(i);
+                s_inputCache.mouseButtonsReleased[i] = input->IsMouseButtonReleased(i);
+            }
+        }
+
+        // =====================================================================
         // Common Key Codes (matching GLFW)
         // =====================================================================
         
@@ -365,6 +395,9 @@ namespace RVX::Bindings
         rvx["Input"] = input;
         rvx["Key"] = state["Key"];
         rvx["MouseButton"] = state["MouseButton"];
+
+        // Sync function (for internal use by ScriptEngine)
+        rvx["_SyncInputCache"] = &SyncInputCache;
 
         RVX_CORE_INFO("InputBindings registered");
     }

@@ -6,6 +6,8 @@
 #include "Physics/RigidBody.h"
 #include "Physics/Shapes/CollisionShape.h"
 
+#include <limits>
+
 namespace RVX::Physics
 {
 
@@ -205,6 +207,57 @@ void RigidBody::SetAllowSleep(bool allow)
 {
     m_allowSleep = allow;
     if (!allow) WakeUp();
+}
+
+RigidBody::AABB RigidBody::GetAABB() const
+{
+    AABB result;
+
+    if (m_shapes.empty())
+    {
+        // No shapes, return point AABB at body position
+        result.min = m_position - Vec3(0.01f);
+        result.max = m_position + Vec3(0.01f);
+        return result;
+    }
+
+    // Start with large negative/positive bounds
+    result.min = Vec3(std::numeric_limits<float>::max());
+    result.max = Vec3(std::numeric_limits<float>::lowest());
+
+    // Get world transform
+    Mat4 worldMat = GetTransform();
+
+    // Compute AABB from all shapes
+    for (const auto& instance : m_shapes)
+    {
+        Vec3 localMin, localMax;
+        instance.shape->GetLocalBounds(localMin, localMax);
+
+        // Transform all 8 corners to world space
+        Vec3 corners[8] = {
+            Vec3(localMin.x, localMin.y, localMin.z),
+            Vec3(localMax.x, localMin.y, localMin.z),
+            Vec3(localMin.x, localMax.y, localMin.z),
+            Vec3(localMax.x, localMax.y, localMin.z),
+            Vec3(localMin.x, localMin.y, localMax.z),
+            Vec3(localMax.x, localMin.y, localMax.z),
+            Vec3(localMin.x, localMax.y, localMax.z),
+            Vec3(localMax.x, localMax.y, localMax.z)
+        };
+
+        for (const auto& corner : corners)
+        {
+            // Apply rotation offset
+            Vec3 rotated = glm::rotate(instance.rotation, corner - instance.offset) + instance.offset;
+            // Apply world transform
+            Vec3 worldPos = Vec3(worldMat * Vec4(rotated, 1.0f));
+            result.min = glm::min(result.min, worldPos);
+            result.max = glm::max(result.max, worldPos);
+        }
+    }
+
+    return result;
 }
 
 } // namespace RVX::Physics

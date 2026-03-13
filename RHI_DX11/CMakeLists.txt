@@ -94,4 +94,5 @@ source_group("Private\\Sources" FILES
     Private/DX11StateCache.cpp
     Private/DX11CommandContext.cpp
     Private/DX11SwapChain.cpp
+    Private/DX11Upload.cpp
 )

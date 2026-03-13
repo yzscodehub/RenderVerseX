@@ -31,6 +31,7 @@ target_sources(RVX_Render PRIVATE
     Private/Passes/TransparentPass.cpp
     Private/Passes/SkyboxPass.cpp
     Private/Passes/ShadowPass.cpp
+    Private/Passes/GBufferPass.cpp
     # Graph (merged from RenderGraph module)
     Private/Graph/RenderGraph.cpp
     Private/Graph/RenderGraphCompiler.cpp

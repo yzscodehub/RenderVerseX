@@ -5,6 +5,9 @@
 #include "Scripting/Bindings/SceneBindings.h"
 #include "Scripting/Bindings/InputBindings.h"
 
+#include "Runtime/Input/InputSubsystem.h"
+#include "Runtime/Time/TimeSubsystem.h"
+
 #include <fstream>
 #include <sstream>
 
@@ -63,16 +66,42 @@ namespace RVX
 
     void ScriptingSubsystem::Tick(float deltaTime)
     {
-        if (!m_config.enableHotReload)
+        // Get total time from TimeSubsystem if available
+        float totalTime = 0.0f;
+        auto* timeSys = Services::Get<TimeSubsystem>();
+        if (timeSys)
         {
-            return;
+            totalTime = timeSys->GetTotalTime();
         }
 
-        m_timeSinceLastCheck += deltaTime;
-        if (m_timeSinceLastCheck >= m_config.hotReloadInterval)
+        // Update time bindings for Lua scripts
+        Bindings::UpdateTime(deltaTime, totalTime);
+
+        // Sync input state from InputSubsystem
+        auto* inputSys = Services::Get<InputSubsystem>();
+        if (inputSys)
         {
-            m_timeSinceLastCheck = 0.0f;
-            CheckForHotReload();
+            Bindings::SyncInputCache(inputSys);
+        }
+
+        // Update registered script components
+        for (ScriptComponent* comp : m_components)
+        {
+            if (comp)
+            {
+                comp->OnTick(deltaTime);
+            }
+        }
+
+        // Check for hot reload
+        if (m_config.enableHotReload)
+        {
+            m_timeSinceLastCheck += deltaTime;
+            if (m_timeSinceLastCheck >= m_config.hotReloadInterval)
+            {
+                m_timeSinceLastCheck = 0.0f;
+                CheckForHotReload();
+            }
         }
     }
 

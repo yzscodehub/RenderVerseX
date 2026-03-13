@@ -108,6 +108,7 @@ namespace RVX
         uint32 index = RVX_INVALID_INDEX;
         RHIResourceState desiredState = RHIResourceState::Common;
         RGAccessType access = RGAccessType::Read;
+        RHIShaderStage stages = RHIShaderStage::AllGraphics;  // Shader stages that will access this resource
         RHISubresourceRange subresourceRange = RHISubresourceRange::All();
         bool hasSubresourceRange = false;
         uint64 offset = 0;

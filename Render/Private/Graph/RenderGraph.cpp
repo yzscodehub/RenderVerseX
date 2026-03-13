@@ -185,7 +185,6 @@ namespace RVX
 
     RGTextureHandle RenderGraphBuilder::Read(RGTextureHandle texture, RHIShaderStage stages)
     {
-        (void)stages;
         if (!m_impl || !m_impl->pass || !texture.IsValid())
             return texture;
 
@@ -194,6 +193,7 @@ namespace RVX
         usage.index = texture.index;
         usage.desiredState = RHIResourceState::ShaderResource;
         usage.access = RGAccessType::Read;
+        usage.stages = stages;  // Use the stages parameter for fine-grained barrier optimization
         usage.hasSubresourceRange = texture.hasSubresourceRange;
         if (texture.hasSubresourceRange)
             usage.subresourceRange = texture.subresourceRange;
@@ -203,7 +203,6 @@ namespace RVX
 
     RGBufferHandle RenderGraphBuilder::Read(RGBufferHandle buffer, RHIShaderStage stages)
     {
-        (void)stages;
         if (!m_impl || !m_impl->pass || !buffer.IsValid())
             return buffer;
 
@@ -212,6 +211,7 @@ namespace RVX
         usage.index = buffer.index;
         usage.desiredState = RHIResourceState::ShaderResource;
         usage.access = RGAccessType::Read;
+        usage.stages = stages;  // Use the stages parameter for fine-grained barrier optimization
         usage.hasRange = buffer.hasRange;
         if (buffer.hasRange)
         {

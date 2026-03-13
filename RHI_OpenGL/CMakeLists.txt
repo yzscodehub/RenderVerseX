@@ -27,6 +27,7 @@ target_sources(RVX_RHI_OpenGL PRIVATE
     # SwapChain & Sync
     Private/OpenGLSwapChain.cpp
     Private/OpenGLSync.cpp
+    Private/OpenGLUpload.cpp
 )
 
 target_include_directories(RVX_RHI_OpenGL PUBLIC

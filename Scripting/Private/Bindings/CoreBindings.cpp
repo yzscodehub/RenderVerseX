@@ -84,6 +84,12 @@ namespace RVX::Bindings
         float GetDeltaTime() { return s_deltaTime; }
         float GetTotalTime() { return s_totalTime; }
 
+        void UpdateTime(float deltaTime, float totalTime)
+        {
+            s_deltaTime = deltaTime;
+            s_totalTime = totalTime;
+        }
+
     } // anonymous namespace
 
     // =========================================================================
@@ -116,6 +122,7 @@ namespace RVX::Bindings
         sol::table time = state.create_table();
         time["GetDeltaTime"] = &GetDeltaTime;
         time["GetTotalTime"] = &GetTotalTime;
+        time["UpdateTime"] = &UpdateTime;
         rvx["Time"] = time;
 
         // =====================================================================

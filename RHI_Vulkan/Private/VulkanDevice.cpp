@@ -3,6 +3,7 @@
 #include "VulkanSwapChain.h"
 #include "VulkanCommandContext.h"
 #include "VulkanPipeline.h"
+#include "VulkanUpload.h"
 
 #include <set>
 #include <algorithm>
@@ -1172,16 +1173,12 @@ namespace RVX
     // =============================================================================
     RHIStagingBufferRef VulkanDevice::CreateStagingBuffer(const RHIStagingBufferDesc& desc)
     {
-        // TODO: Create proper VulkanStagingBuffer wrapper
-        RVX_RHI_WARN("Vulkan: CreateStagingBuffer not yet fully implemented");
-        return nullptr;
+        return CreateVulkanStagingBuffer(this, desc);
     }
 
     RHIRingBufferRef VulkanDevice::CreateRingBuffer(const RHIRingBufferDesc& desc)
     {
-        // TODO: Create proper VulkanRingBuffer implementation
-        RVX_RHI_WARN("Vulkan: CreateRingBuffer not yet fully implemented");
-        return nullptr;
+        return CreateVulkanRingBuffer(this, desc);
     }
 
     // =============================================================================

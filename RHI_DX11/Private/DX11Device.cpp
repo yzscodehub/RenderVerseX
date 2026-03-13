@@ -3,7 +3,7 @@
 #include "DX11Pipeline.h"
 #include "DX11CommandContext.h"
 #include "DX11SwapChain.h"
-#include "DX11/DX11Device.h"
+#include "DX11Upload.h"
 
 namespace RVX
 {
@@ -615,17 +615,12 @@ namespace RVX
     // =============================================================================
     RHIStagingBufferRef DX11Device::CreateStagingBuffer(const RHIStagingBufferDesc& desc)
     {
-        // DX11 uses dynamic/staging buffers directly
-        // TODO: Create proper DX11StagingBuffer wrapper
-        RVX_RHI_WARN("DX11: CreateStagingBuffer not yet fully implemented");
-        return nullptr;
+        return CreateDX11StagingBuffer(this, desc);
     }
 
     RHIRingBufferRef DX11Device::CreateRingBuffer(const RHIRingBufferDesc& desc)
     {
-        // TODO: Create proper DX11RingBuffer implementation
-        RVX_RHI_WARN("DX11: CreateRingBuffer not yet fully implemented");
-        return nullptr;
+        return CreateDX11RingBuffer(this, desc);
     }
 
     // =============================================================================

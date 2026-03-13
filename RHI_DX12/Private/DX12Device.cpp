@@ -4,6 +4,7 @@
 #include "DX12CommandContext.h"
 #include "DX12Pipeline.h"
 #include "DX12Query.h"
+#include "DX12Upload.h"
 #include "Core/Log.h"
 
 namespace RVX
@@ -1003,24 +1004,12 @@ namespace RVX
     // =============================================================================
     RHIStagingBufferRef DX12Device::CreateStagingBuffer(const RHIStagingBufferDesc& desc)
     {
-        // Create an upload buffer for staging
-        RHIBufferDesc bufferDesc;
-        bufferDesc.size = desc.size;
-        bufferDesc.usage = RHIBufferUsage::CopySrc;
-        bufferDesc.memoryType = RHIMemoryType::Upload;
-        bufferDesc.debugName = desc.debugName;
-
-        // TODO: Create proper DX12StagingBuffer wrapper
-        // For now, return nullptr (not yet implemented)
-        RVX_RHI_WARN("DX12: CreateStagingBuffer not yet fully implemented");
-        return nullptr;
+        return CreateDX12StagingBuffer(this, desc);
     }
 
     RHIRingBufferRef DX12Device::CreateRingBuffer(const RHIRingBufferDesc& desc)
     {
-        // TODO: Create proper DX12RingBuffer implementation
-        RVX_RHI_WARN("DX12: CreateRingBuffer not yet fully implemented");
-        return nullptr;
+        return CreateDX12RingBuffer(this, desc);
     }
 
     // =============================================================================
