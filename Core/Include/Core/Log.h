@@ -3,6 +3,8 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/fmt/fmt.h>
 #include <memory>
+#include <string>
+#include <array>
 
 namespace RVX
 {
@@ -12,8 +14,26 @@ namespace RVX
     class Log
     {
     public:
-        static void Initialize();
+        /// Configuration for log initialization
+        struct Config
+        {
+            bool enableRotation = true;
+            size_t maxFileSizeMB = 10;
+            size_t maxFiles = 5;
+            std::string logFileName = "RenderVerseX.log";
+        };
+
+        static void Initialize(const Config& config = Config{});
         static void Shutdown();
+
+        /// Set global log level for all loggers
+        static void SetLevel(spdlog::level::level_enum level);
+
+        /// Set log level for specific module
+        static void SetModuleLevel(const std::string& module, spdlog::level::level_enum level);
+
+        /// Get log level for specific module
+        static spdlog::level::level_enum GetModuleLevel(const std::string& module);
 
         // Module loggers
         static std::shared_ptr<spdlog::logger>& GetCoreLogger()    { return s_coreLogger; }

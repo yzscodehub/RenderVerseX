@@ -497,6 +497,7 @@ namespace RVX
     // =============================================================================
     VulkanFence::VulkanFence(VulkanDevice* device, uint64 initialValue)
         : m_device(device)
+        , m_nextSignalValue(initialValue + 1)
     {
         VkSemaphoreTypeCreateInfo timelineInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
         timelineInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
@@ -525,6 +526,8 @@ namespace RVX
 
     void VulkanFence::Signal(uint64 value)
     {
+        TrackSubmittedValue(value);
+
         VkSemaphoreSignalInfo signalInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO};
         signalInfo.semaphore = m_semaphore;
         signalInfo.value = value;
@@ -533,6 +536,8 @@ namespace RVX
 
     void VulkanFence::SignalOnQueue(uint64 value, RHICommandQueueType queueType)
     {
+        TrackSubmittedValue(value);
+
         // Get the queue for the specified type
         VkQueue queue = nullptr;
         switch (queueType)
@@ -554,6 +559,22 @@ namespace RVX
         submitInfo.pSignalSemaphores = &m_semaphore;
 
         VK_CHECK(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
+    }
+
+    uint64 VulkanFence::AllocateSignalValue()
+    {
+        return m_nextSignalValue.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void VulkanFence::TrackSubmittedValue(uint64 value)
+    {
+        uint64 expected = m_nextSignalValue.load(std::memory_order_relaxed);
+        while (expected <= value &&
+               !m_nextSignalValue.compare_exchange_weak(expected, value + 1,
+                                                        std::memory_order_relaxed,
+                                                        std::memory_order_relaxed))
+        {
+        }
     }
 
     void VulkanFence::Wait(uint64 value, uint64 timeoutNs)

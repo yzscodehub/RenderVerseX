@@ -74,23 +74,23 @@ namespace RVX::Bindings
             RVX_CORE_DEBUG("[Lua] {}", FormatLuaArgs(va));
         }
 
-        // =====================================================================
-        // Time Variables (updated by ScriptEngine each frame)
-        // =====================================================================
-
-        float s_deltaTime = 0.0f;
-        float s_totalTime = 0.0f;
-
-        float GetDeltaTime() { return s_deltaTime; }
-        float GetTotalTime() { return s_totalTime; }
-
-        void UpdateTime(float deltaTime, float totalTime)
-        {
-            s_deltaTime = deltaTime;
-            s_totalTime = totalTime;
-        }
-
     } // anonymous namespace
+
+    // =========================================================================
+    // Time API (exposed to ScriptEngine)
+    // =========================================================================
+
+    float s_deltaTime = 0.0f;
+    float s_totalTime = 0.0f;
+
+    float GetDeltaTime() { return s_deltaTime; }
+    float GetTotalTime() { return s_totalTime; }
+
+    void UpdateTime(float deltaTime, float totalTime)
+    {
+        s_deltaTime = deltaTime;
+        s_totalTime = totalTime;
+    }
 
     // =========================================================================
     // Public API

@@ -4,6 +4,8 @@
 #include "VulkanPipeline.h"
 #include "VulkanSwapChain.h"
 
+#include <utility>
+
 namespace RVX
 {
     VulkanCommandContext::VulkanCommandContext(VulkanDevice* device, RHICommandQueueType type)
@@ -641,7 +643,7 @@ namespace RVX
         {
             auto* vkFence = static_cast<VulkanFence*>(signalFence);
             signalSemaphores.push_back(vkFence->GetSemaphore());
-            signalFenceValue = vkFence->GetCompletedValue() + 1;
+            signalFenceValue = vkFence->AllocateSignalValue();
             signalValues.push_back(signalFenceValue);
         }
 
@@ -706,8 +708,11 @@ namespace RVX
 
         // Determine if we need cross-queue sync
         bool needCopyToComputeSync = !copyCmdBuffers.empty() && !computeCmdBuffers.empty();
-        bool needCopyToGraphicsSync = !copyCmdBuffers.empty() && !computeCmdBuffers.empty() && graphicsCmdBuffers.empty();
+        bool needCopyToGraphicsSync = !copyCmdBuffers.empty() && !graphicsCmdBuffers.empty() && computeCmdBuffers.empty();
         bool needComputeToGraphicsSync = !computeCmdBuffers.empty() && !graphicsCmdBuffers.empty();
+
+        VulkanFence* vkSignalFence = signalFence ? static_cast<VulkanFence*>(signalFence) : nullptr;
+        const uint64 signalFenceValue = vkSignalFence ? vkSignalFence->AllocateSignalValue() : 0;
 
         // Create synchronization semaphores as needed
         if (needCopyToComputeSync)
@@ -727,12 +732,29 @@ namespace RVX
         if (!copyCmdBuffers.empty())
         {
             std::vector<VkSemaphore> signalSemaphores;
+            std::vector<uint64> signalValues;
             if (copyToComputeSemaphore != VK_NULL_HANDLE)
+            {
                 signalSemaphores.push_back(copyToComputeSemaphore);
+                signalValues.push_back(0);
+            }
             if (copyToGraphicsSemaphore != VK_NULL_HANDLE)
+            {
                 signalSemaphores.push_back(copyToGraphicsSemaphore);
+                signalValues.push_back(0);
+            }
+            if (vkSignalFence && computeCmdBuffers.empty() && graphicsCmdBuffers.empty())
+            {
+                signalSemaphores.push_back(vkSignalFence->GetSemaphore());
+                signalValues.push_back(signalFenceValue);
+            }
+
+            VkTimelineSemaphoreSubmitInfo timelineInfo = {VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+            timelineInfo.signalSemaphoreValueCount = static_cast<uint32>(signalValues.size());
+            timelineInfo.pSignalSemaphoreValues = signalValues.data();
 
             VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            submitInfo.pNext = (vkSignalFence && computeCmdBuffers.empty() && graphicsCmdBuffers.empty()) ? &timelineInfo : nullptr;
             submitInfo.commandBufferCount = static_cast<uint32>(copyCmdBuffers.size());
             submitInfo.pCommandBuffers = copyCmdBuffers.data();
             submitInfo.signalSemaphoreCount = static_cast<uint32>(signalSemaphores.size());
@@ -745,19 +767,35 @@ namespace RVX
         {
             std::vector<VkSemaphore> waitSemaphores;
             std::vector<VkPipelineStageFlags> waitStages;
+            std::vector<uint64> waitValues;
             std::vector<VkSemaphore> signalSemaphores;
+            std::vector<uint64> signalValues;
 
             if (copyToComputeSemaphore != VK_NULL_HANDLE)
             {
                 waitSemaphores.push_back(copyToComputeSemaphore);
                 waitStages.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+                waitValues.push_back(0);
             }
             if (computeToGraphicsSemaphore != VK_NULL_HANDLE)
             {
                 signalSemaphores.push_back(computeToGraphicsSemaphore);
+                signalValues.push_back(0);
+            }
+            if (vkSignalFence && graphicsCmdBuffers.empty())
+            {
+                signalSemaphores.push_back(vkSignalFence->GetSemaphore());
+                signalValues.push_back(signalFenceValue);
             }
 
+            VkTimelineSemaphoreSubmitInfo timelineInfo = {VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+            timelineInfo.waitSemaphoreValueCount = static_cast<uint32>(waitValues.size());
+            timelineInfo.pWaitSemaphoreValues = waitValues.data();
+            timelineInfo.signalSemaphoreValueCount = static_cast<uint32>(signalValues.size());
+            timelineInfo.pSignalSemaphoreValues = signalValues.data();
+
             VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            submitInfo.pNext = (vkSignalFence && graphicsCmdBuffers.empty()) ? &timelineInfo : nullptr;
             submitInfo.waitSemaphoreCount = static_cast<uint32>(waitSemaphores.size());
             submitInfo.pWaitSemaphores = waitSemaphores.empty() ? nullptr : waitSemaphores.data();
             submitInfo.pWaitDstStageMask = waitStages.empty() ? nullptr : waitStages.data();
@@ -799,11 +837,10 @@ namespace RVX
             std::vector<VkSemaphore> signalSemaphores = {device->GetRenderFinishedSemaphore()};
             std::vector<uint64> signalValues = {0};  // Binary semaphore
 
-            if (signalFence)
+            if (vkSignalFence)
             {
-                auto* vkFence = static_cast<VulkanFence*>(signalFence);
-                signalSemaphores.push_back(vkFence->GetSemaphore());
-                signalValues.push_back(vkFence->GetCompletedValue() + 1);
+                signalSemaphores.push_back(vkSignalFence->GetSemaphore());
+                signalValues.push_back(signalFenceValue);
             }
 
             VkTimelineSemaphoreSubmitInfo timelineInfo = {VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
@@ -813,7 +850,7 @@ namespace RVX
             timelineInfo.pSignalSemaphoreValues = signalValues.data();
 
             VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-            submitInfo.pNext = signalFence ? &timelineInfo : nullptr;
+            submitInfo.pNext = vkSignalFence ? &timelineInfo : nullptr;
             submitInfo.waitSemaphoreCount = static_cast<uint32>(waitSemaphores.size());
             submitInfo.pWaitSemaphores = waitSemaphores.data();
             submitInfo.pWaitDstStageMask = waitStages.data();
@@ -824,17 +861,16 @@ namespace RVX
 
             VK_CHECK(vkQueueSubmit(device->GetGraphicsQueue(), 1, &submitInfo, device->GetCurrentFrameFence()));
         }
-        else if (signalFence)
+        else if (vkSignalFence && copyCmdBuffers.empty() && computeCmdBuffers.empty())
         {
             // No graphics commands but we need to signal the fence
-            auto* vkFence = static_cast<VulkanFence*>(signalFence);
-            uint64 signalValue = vkFence->GetCompletedValue() + 1;
+            uint64 signalValue = signalFenceValue;
 
             VkTimelineSemaphoreSubmitInfo timelineInfo = {VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
             timelineInfo.signalSemaphoreValueCount = 1;
             timelineInfo.pSignalSemaphoreValues = &signalValue;
 
-            VkSemaphore signalSemaphore = vkFence->GetSemaphore();
+            VkSemaphore signalSemaphore = vkSignalFence->GetSemaphore();
             VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
             submitInfo.pNext = &timelineInfo;
             submitInfo.signalSemaphoreCount = 1;
@@ -843,26 +879,25 @@ namespace RVX
             VK_CHECK(vkQueueSubmit(device->GetGraphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE));
         }
 
-        // Clean up temporary semaphores (will be destroyed after GPU is done with them)
-        // Note: In a production engine, these would be pooled and reused
-        // For now, we wait for idle before destroying (safe but not optimal)
         if (copyToComputeSemaphore != VK_NULL_HANDLE || 
             copyToGraphicsSemaphore != VK_NULL_HANDLE || 
             computeToGraphicsSemaphore != VK_NULL_HANDLE)
         {
-            // Queue these for deferred deletion (after fence signals)
-            // For simplicity, we'll rely on the frame sync to clean up
-            // A proper implementation would use a deletion queue
-            
-            // Immediate cleanup (safe because we're in a locked mutex and 
-            // the semaphores were signaled before queue submit returned)
-            device->WaitIdle();
+            std::vector<VkSemaphore> semaphoresToDestroy;
             if (copyToComputeSemaphore != VK_NULL_HANDLE)
-                vkDestroySemaphore(device->GetDevice(), copyToComputeSemaphore, nullptr);
+                semaphoresToDestroy.push_back(copyToComputeSemaphore);
             if (copyToGraphicsSemaphore != VK_NULL_HANDLE)
-                vkDestroySemaphore(device->GetDevice(), copyToGraphicsSemaphore, nullptr);
+                semaphoresToDestroy.push_back(copyToGraphicsSemaphore);
             if (computeToGraphicsSemaphore != VK_NULL_HANDLE)
-                vkDestroySemaphore(device->GetDevice(), computeToGraphicsSemaphore, nullptr);
+                semaphoresToDestroy.push_back(computeToGraphicsSemaphore);
+
+            VkQueue finalQueue = device->GetTransferQueue();
+            if (!graphicsCmdBuffers.empty())
+                finalQueue = device->GetGraphicsQueue();
+            else if (!computeCmdBuffers.empty())
+                finalQueue = device->GetComputeQueue();
+
+            device->EnqueueDeferredSemaphoreDestroy(std::move(semaphoresToDestroy), finalQueue);
         }
     }
 
@@ -898,6 +933,26 @@ namespace RVX
     void VulkanCommandContext::SetLineWidth(float width)
     {
         vkCmdSetLineWidth(m_commandBuffer, width);
+    }
+
+    // =============================================================================
+    // Synchronization
+    // =============================================================================
+    void VulkanCommandContext::SignalFence(RHIFence* fence, uint64 value)
+    {
+        if (fence)
+        {
+            fence->Signal(value);
+        }
+    }
+
+    void VulkanCommandContext::WaitFence(RHIFence* fence, uint64 value)
+    {
+        if (fence)
+        {
+            // CPU wait for fence - this will block the calling thread
+            fence->Wait(value);
+        }
     }
 
     // =============================================================================

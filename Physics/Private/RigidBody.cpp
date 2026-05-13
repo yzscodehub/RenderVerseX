@@ -248,8 +248,8 @@ RigidBody::AABB RigidBody::GetAABB() const
 
         for (const auto& corner : corners)
         {
-            // Apply rotation offset
-            Vec3 rotated = glm::rotate(instance.rotation, corner - instance.offset) + instance.offset;
+            // Apply rotation using quaternion
+            Vec3 rotated = instance.rotation * (corner - instance.offset) + instance.offset;
             // Apply world transform
             Vec3 worldPos = Vec3(worldMat * Vec4(rotated, 1.0f));
             result.min = glm::min(result.min, worldPos);

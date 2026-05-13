@@ -10,9 +10,15 @@
 #include "Resource/ResourceRegistry.h"
 #include "Resource/ResourceCache.h"
 #include "Resource/DependencyGraph.h"
+#include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <future>
 #include <functional>
+#include <thread>
+#include <vector>
 
 namespace RVX::Resource
 {
@@ -203,6 +209,12 @@ namespace RVX::Resource
         std::string ResolvePath(const std::string& path) const;
 
     private:
+        struct PendingAsyncCallback
+        {
+            std::function<bool()> isReady;
+            std::function<void()> dispatch;
+        };
+
         bool m_initialized = false;
         ResourceManagerConfig m_config;
 
@@ -214,12 +226,28 @@ namespace RVX::Resource
 
         std::function<void(ResourceId, IResource*)> m_reloadCallback;
 
+        mutable std::recursive_mutex m_loadMutex;
+
+        std::vector<std::thread> m_asyncWorkers;
+        std::deque<std::function<void()>> m_asyncJobs;
+        mutable std::mutex m_asyncMutex;
+        std::condition_variable m_asyncCondition;
+        bool m_asyncStopping = false;
+
+        std::vector<PendingAsyncCallback> m_pendingCallbacks;
+        mutable std::mutex m_pendingCallbacksMutex;
+
         // Internal loading
         IResource* LoadInternal(const std::string& path, ResourceType type);
         void LoadDependencies(IResource* resource);
 
         // Register default loaders (ModelLoader, TextureLoader)
         void RegisterDefaultLoaders();
+
+        void StartAsyncWorkers();
+        void StopAsyncWorkers();
+        void EnqueueAsyncJob(std::function<void()> job);
+        void AsyncWorkerLoop();
     };
 
     /**
@@ -264,18 +292,45 @@ namespace RVX::Resource
     template<typename T>
     std::future<ResourceHandle<T>> ResourceManager::LoadAsync(const std::string& path)
     {
-        return std::async(std::launch::async, [this, path]() {
+        auto task = std::make_shared<std::packaged_task<ResourceHandle<T>()>>([this, path]() {
             return Load<T>(path);
         });
+
+        auto future = task->get_future();
+        EnqueueAsyncJob([task]() {
+            (*task)();
+        });
+
+        return future;
     }
 
     template<typename T>
     void ResourceManager::LoadAsync(const std::string& path, std::function<void(ResourceHandle<T>)> callback)
     {
-        std::thread([this, path, callback]() {
-            auto handle = Load<T>(path);
-            callback(handle);
-        }).detach();
+        auto task = std::make_shared<std::packaged_task<ResourceHandle<T>()>>([this, path]() {
+            return Load<T>(path);
+        });
+        auto future = std::make_shared<std::future<ResourceHandle<T>>>(task->get_future());
+
+        {
+            std::lock_guard<std::mutex> lock(m_pendingCallbacksMutex);
+            m_pendingCallbacks.push_back(PendingAsyncCallback{
+                [future]() {
+                    return future->wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+                },
+                [future, callback = std::move(callback)]() mutable {
+                    auto handle = future->get();
+                    if (callback)
+                    {
+                        callback(handle);
+                    }
+                }
+            });
+        }
+
+        EnqueueAsyncJob([task]() {
+            (*task)();
+        });
     }
 
 } // namespace RVX::Resource

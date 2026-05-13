@@ -14,20 +14,24 @@
 namespace RVX
 {
     class LuaState;
+    class InputSubsystem;
 
     namespace Bindings
     {
         /**
          * @brief Register input bindings
-         * 
+         *
          * Registers:
          * - RVX.Input namespace with polling functions
          * - Key enum with all key codes
          * - MouseButton enum
-         * 
+         *
          * @param lua LuaState to register to
          */
         void RegisterInputBindings(LuaState& lua);
+
+        // Input Sync API (exposed to ScriptEngine)
+        void SyncInputCache(const InputSubsystem* input);
 
     } // namespace Bindings
 

@@ -52,7 +52,7 @@ void ThreadPool::SubmitDetached(std::function<void()> task)
         {
             return;
         }
-        m_tasks.emplace(std::move(task));
+        m_tasks.emplace(Task{std::move(task), 0});
     }
     m_condition.notify_one();
 }
@@ -75,7 +75,7 @@ void ThreadPool::WorkerLoop()
 {
     while (true)
     {
-        std::function<void()> task;
+        Task taskWrapper;
 
         {
             std::unique_lock<std::mutex> lock(m_mutex);
@@ -88,12 +88,17 @@ void ThreadPool::WorkerLoop()
                 return;
             }
 
-            task = std::move(m_tasks.front());
+            // priority_queue uses top() instead of front()
+            taskWrapper = std::move(const_cast<Task&>(m_tasks.top()));
             m_tasks.pop();
             ++m_activeTasks;
         }
 
-        task();
+        // Execute the task
+        if (taskWrapper.func)
+        {
+            taskWrapper.func();
+        }
 
         {
             std::lock_guard<std::mutex> lock(m_mutex);

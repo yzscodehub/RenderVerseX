@@ -7,6 +7,7 @@
 
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Graph/RenderGraph.h"
+#include <cstdint>
 #include <vector>
 
 namespace RVX
@@ -85,6 +86,7 @@ namespace RVX
 
         // Device reference
         IRHIDevice* m_device = nullptr;
+
     };
 
 } // namespace RVX

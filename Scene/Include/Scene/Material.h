@@ -17,7 +17,7 @@
 
 namespace RVX
 {
-    /**
+    /**  
      * @brief Material workflow type
      */
     enum class MaterialWorkflow
@@ -25,6 +25,7 @@ namespace RVX
         MetallicRoughness,      // Metallic/Roughness workflow (modern PBR standard)
         SpecularGlossiness,     // Specular/Glossiness workflow (traditional)
         Unlit                   // Unlit material
+
     };
 
     /**

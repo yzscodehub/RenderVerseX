@@ -138,6 +138,10 @@ namespace RVX
         void SetStencilReferenceSeparate(uint32 frontRef, uint32 backRef) override;
         void SetLineWidth(float width) override;
 
+        // Synchronization
+        void SignalFence(RHIFence* fence, uint64 value) override;
+        void WaitFence(RHIFence* fence, uint64 value) override;
+
         // =========================================================================
         // OpenGL Specific
         // =========================================================================

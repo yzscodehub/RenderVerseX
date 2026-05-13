@@ -1109,6 +1109,25 @@ namespace RVX
     }
 
     // =============================================================================
+    // Synchronization (no-op for OpenGL - inherently synchronous)
+    // =============================================================================
+    void OpenGLCommandContext::SignalFence(RHIFence* fence, uint64 value)
+    {
+        // OpenGL is inherently synchronous - all operations complete before returning
+        // No fence signaling needed as the API serializes all work
+        (void)fence;
+        (void)value;
+    }
+
+    void OpenGLCommandContext::WaitFence(RHIFence* fence, uint64 value)
+    {
+        // OpenGL is inherently synchronous - all operations complete before returning
+        // No fence waiting needed as the API serializes all work
+        (void)fence;
+        (void)value;
+    }
+
+    // =============================================================================
     // Split Barriers (no-op for OpenGL)
     // =============================================================================
     void OpenGLCommandContext::BeginBarrier(const RHIBufferBarrier& barrier)

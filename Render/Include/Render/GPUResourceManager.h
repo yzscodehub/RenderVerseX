@@ -12,16 +12,23 @@
  */
 
 #include "Resource/IResource.h"
+#include "Resource/ResourceHandle.h"
+#include "Render/GPUUploadService.h"
 #include "RHI/RHIBuffer.h"
 #include "RHI/RHITexture.h"
 #include "RHI/RHIDevice.h"
-#include <unordered_map>
-#include <queue>
-#include <vector>
+#include <functional>
 #include <memory>
+#include <queue>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace RVX
 {
+    class RHICommandContext;
+
     // Forward declarations
     namespace Resource
     {
@@ -38,6 +45,19 @@ namespace RVX
         Normal = 1,
         High = 2,
         Immediate = 3
+    };
+
+    /**
+     * @brief CPU-to-GPU residency lifecycle for render resources.
+     */
+    enum class GPUResourceState : uint8_t
+    {
+        Unloaded = 0,
+        CPUReady,
+        UploadQueued,
+        Uploading,
+        GPUReady,
+        Failed
     };
 
     /**
@@ -85,6 +105,7 @@ namespace RVX
         RHIBufferRef indexBuffer;
         
         std::vector<SubmeshGPUInfo> submeshes;
+        std::vector<uint64> pendingUploadIds;
         uint64_t lastUsedFrame = 0;
         size_t gpuMemorySize = 0;
         bool isResident = false;
@@ -101,8 +122,10 @@ namespace RVX
     struct TextureGPUData
     {
         RHITextureRef texture;
+        std::vector<uint64> pendingUploadIds;
         uint64_t lastUsedFrame = 0;
         size_t gpuMemorySize = 0;
+        RHIResourceState currentState = RHIResourceState::Common;
         bool isResident = false;
     };
 
@@ -166,6 +189,18 @@ namespace RVX
         /// Upload a texture immediately (blocking)
         void UploadImmediate(Resource::TextureResource* texture);
 
+        /**
+         * @brief Called before a resident GPU texture object is released or replaced.
+         *
+         * Render-side caches that hold RHITextureView pointers must invalidate views
+         * derived from the texture before the texture reference is dropped.
+         */
+        using TextureInvalidatedCallback = std::function<void(RHITexture*)>;
+        void SetTextureInvalidatedCallback(TextureInvalidatedCallback callback)
+        {
+            m_textureInvalidatedCallback = std::move(callback);
+        }
+
         // =====================================================================
         // Resource Query
         // =====================================================================
@@ -176,8 +211,17 @@ namespace RVX
         /// Get GPU texture (returns nullptr if not resident)
         RHITexture* GetTexture(Resource::ResourceId textureId) const;
 
+        /// Transition a resident texture to the requested state if needed
+        bool TransitionTexture(Resource::ResourceId textureId, RHICommandContext& ctx, RHIResourceState desiredState);
+
         /// Check if a resource is GPU-resident
         bool IsResident(Resource::ResourceId id) const;
+
+        /// Get the resource upload/residency state
+        GPUResourceState GetResourceState(Resource::ResourceId id) const;
+
+        /// Check if a resource is ready for rendering
+        bool IsGPUReady(Resource::ResourceId id) const { return GetResourceState(id) == GPUResourceState::GPUReady; }
 
         // =====================================================================
         // Per-Frame Processing
@@ -220,6 +264,9 @@ namespace RVX
             size_t residentMeshCount = 0;
             size_t residentTextureCount = 0;
             size_t pendingUploadCount = 0;
+            size_t queuedUploadCount = 0;
+            size_t uploadingCount = 0;
+            size_t failedUploadCount = 0;
             size_t usedMemory = 0;
             size_t memoryBudget = 0;
         };
@@ -231,17 +278,21 @@ namespace RVX
         {
             Resource::ResourceId id;
             UploadPriority priority;
-            Resource::IResource* resource;
+            Resource::ResourceHandle<Resource::IResource> retainedResource;
 
             bool operator<(const PendingUpload& other) const
             {
-                // Lower priority value = higher priority in queue
+                // std::priority_queue is a max-heap, so larger priority values run first.
                 return static_cast<int>(priority) < static_cast<int>(other.priority);
             }
         };
 
         void UploadMesh(Resource::MeshResource* mesh);
         void UploadTexture(Resource::TextureResource* texture);
+        void UpdateCompletedResourceUploads();
+        void AbandonUploadIds(const std::vector<uint64>& uploadIds);
+        void NotifyTextureInvalidated(RHITexture* texture);
+        void SetResourceState(Resource::ResourceId id, GPUResourceState state);
 
         IRHIDevice* m_device = nullptr;
 
@@ -251,6 +302,11 @@ namespace RVX
         // Resident resources
         std::unordered_map<Resource::ResourceId, MeshGPUData> m_meshGPUData;
         std::unordered_map<Resource::ResourceId, TextureGPUData> m_textureGPUData;
+        std::unordered_map<Resource::ResourceId, GPUResourceState> m_resourceStates;
+        std::unordered_set<Resource::ResourceId> m_pendingMeshUploadCompletions;
+        std::unordered_set<Resource::ResourceId> m_pendingTextureUploadCompletions;
+        std::unique_ptr<GPUUploadService> m_uploadService;
+        TextureInvalidatedCallback m_textureInvalidatedCallback;
 
         // Memory tracking
         size_t m_usedMemory = 0;

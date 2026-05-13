@@ -11,10 +11,11 @@
  * - View constants buffer management
  */
 
+#include "Core/Assert.h"
 #include "Core/MathTypes.h"
 #include "RHI/RHI.h"
-#include "ShaderCompiler/ShaderManager.h"
-#include "ShaderCompiler/ShaderLayout.h"
+#include <array>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -22,6 +23,8 @@
 namespace RVX
 {
     // Forward declarations
+    class ShaderManager;
+    struct ShaderCompileResult;
     struct ViewData;
 
     /**
@@ -45,6 +48,14 @@ namespace RVX
     };
 
     /**
+     * @brief Material constants structure (matches HLSL cbuffer)
+     */
+    struct MaterialConstants
+    {
+        Vec4 baseColorFactor{1.0f, 1.0f, 1.0f, 1.0f};
+    };
+
+    /**
      * @brief Pipeline cache for graphics pipelines
      * 
      * Uses shader reflection to automatically generate pipeline layouts.
@@ -53,7 +64,7 @@ namespace RVX
     class PipelineCache
     {
     public:
-        PipelineCache() = default;
+        PipelineCache();
         ~PipelineCache();
 
         // Non-copyable
@@ -109,9 +120,48 @@ namespace RVX
         // =====================================================================
 
         /**
+         * @brief Reset transient per-draw constant slots for a new frame
+         */
+        void BeginFrame();
+
+        /**
          * @brief Get the view constants descriptor set
          */
-        RHIDescriptorSet* GetViewDescriptorSet() const { return m_viewDescriptorSet.Get(); }
+        RHIDescriptorSet* GetViewDescriptorSet();
+
+        /**
+         * @brief Get a descriptor set for view/object constants and a base color texture
+         * @param baseColorView Texture view for the material base color, or nullptr for default white
+         */
+        RHIDescriptorSet* GetMaterialDescriptorSet(RHITextureView* baseColorView);
+
+        /**
+         * @brief Get a descriptor set and synchronize cached texture-view generation
+         * @param baseColorView Texture view for the material base color, or nullptr for default white
+         * @param textureViewGeneration Generation from the ResourceViewCache that produced baseColorView
+         */
+        RHIDescriptorSet* GetMaterialDescriptorSet(RHITextureView* baseColorView, uint64 textureViewGeneration);
+
+        /**
+         * @brief Get dynamic constant-buffer offsets for the current object/material slots
+         */
+        std::array<uint32, 2> GetCurrentConstantDynamicOffsets() const;
+
+        /**
+         * @brief Build dynamic offsets in the pipeline layout order: object constants, then material constants
+         */
+        static std::array<uint32, 2> BuildConstantDynamicOffsets(uint64 objectOffset, uint64 materialOffset)
+        {
+            return {
+                ToRHIConstantDynamicOffset(objectOffset),
+                ToRHIConstantDynamicOffset(materialOffset)
+            };
+        }
+
+        /**
+         * @brief Clear descriptor sets that reference externally cached texture views
+         */
+        void ClearMaterialDescriptorSets();
 
         /**
          * @brief Update view constants from ViewData
@@ -125,6 +175,12 @@ namespace RVX
          */
         void UpdateObjectConstants(const Mat4& worldMatrix);
 
+        /**
+         * @brief Update per-material constants
+         * @param baseColorFactor Material base color multiplier
+         */
+        void UpdateMaterialConstants(const Vec4& baseColorFactor);
+
         // =====================================================================
         // Render Target Format
         // =====================================================================
@@ -135,11 +191,48 @@ namespace RVX
         void SetRenderTargetFormat(RHIFormat format) { m_renderTargetFormat = format; }
 
     private:
+        static uint32 ToRHIConstantDynamicOffset(uint64 offset)
+        {
+            constexpr uint64 maxDynamicOffset = static_cast<uint64>(std::numeric_limits<uint32>::max());
+            if (offset > maxDynamicOffset)
+            {
+                RVX_VERIFY(false, "PipelineCache: dynamic constant offset {} exceeds the RHI uint32 offset limit",
+                           offset);
+                return std::numeric_limits<uint32>::max();
+            }
+
+            return static_cast<uint32>(offset);
+        }
+
         bool CompileShaders();
         bool CreatePipelineLayout();
         bool CreatePipeline();
+        bool CreateDefaultMaterialResources();
         bool CreateViewConstantBuffer();
         bool CreateObjectConstantBuffer();
+        bool CreateMaterialConstantBuffer();
+        RHIDescriptorSetRef CreateMaterialDescriptorSet(RHITextureView* baseColorView);
+        RHIDescriptorSet* GetMaterialDescriptorSetInternal(RHITextureView* baseColorView);
+        uint64 AllocateObjectConstantSlot();
+        uint64 AllocateMaterialConstantSlot();
+
+        struct MaterialDescriptorKey
+        {
+            RHITextureView* textureView = nullptr;
+
+            bool operator==(const MaterialDescriptorKey& other) const
+            {
+                return textureView == other.textureView;
+            }
+        };
+
+        struct MaterialDescriptorKeyHash
+        {
+            size_t operator()(const MaterialDescriptorKey& key) const
+            {
+                return std::hash<RHITextureView*>{}(key.textureView);
+            }
+        };
 
         IRHIDevice* m_device = nullptr;
         std::string m_shaderDir;
@@ -151,8 +244,8 @@ namespace RVX
         // Shaders
         RHIShaderRef m_vertexShader;
         RHIShaderRef m_pixelShader;
-        ShaderCompileResult m_vsCompileResult;
-        ShaderCompileResult m_psCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_vsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_psCompileResult;
 
         // Pipeline layout (from reflection)
         std::vector<RHIDescriptorSetLayoutRef> m_setLayouts;
@@ -165,7 +258,19 @@ namespace RVX
         // View constants
         RHIBufferRef m_viewConstantBuffer;
         RHIBufferRef m_objectConstantBuffer;
+        RHIBufferRef m_materialConstantBuffer;
         RHIDescriptorSetRef m_viewDescriptorSet;
+        RHITextureRef m_defaultWhiteTexture;
+        RHITextureViewRef m_defaultWhiteTextureView;
+        RHISamplerRef m_defaultSampler;
+        std::unordered_map<MaterialDescriptorKey, RHIDescriptorSetRef, MaterialDescriptorKeyHash> m_materialDescriptorSets;
+        uint64 m_objectConstantStride = 0;
+        uint64 m_materialConstantStride = 0;
+        uint64 m_objectConstantCursor = 0;
+        uint64 m_materialConstantCursor = 0;
+        uint64 m_currentObjectConstantOffset = 0;
+        uint64 m_currentMaterialConstantOffset = 0;
+        uint64 m_materialDescriptorCacheGeneration = ~uint64{0};
 
         // Render target format
         RHIFormat m_renderTargetFormat = RHIFormat::RGBA8_UNORM;

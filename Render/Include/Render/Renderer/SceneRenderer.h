@@ -21,7 +21,10 @@ namespace RVX
     class World;
     class Camera;
     class IRenderPass;
+    class DepthPrepass;
     class OpaquePass;
+    class RenderPassRegistry;
+    class SkyboxPass;
 
     /**
      * @brief Scene renderer - orchestrates rendering of a scene
@@ -44,7 +47,7 @@ namespace RVX
     class SceneRenderer
     {
     public:
-        SceneRenderer() = default;
+        SceneRenderer();
         ~SceneRenderer();
 
         // Non-copyable
@@ -131,7 +134,7 @@ namespace RVX
         /**
          * @brief Get number of registered passes
          */
-        size_t GetPassCount() const { return m_passes.size(); }
+        size_t GetPassCount() const;
 
         // =====================================================================
         // Accessors
@@ -183,14 +186,16 @@ namespace RVX
         std::unique_ptr<PipelineCache> m_pipelineCache;
         std::unique_ptr<TransientResourcePool> m_transientResourcePool;
         std::unique_ptr<ResourceViewCache> m_resourceViewCache;
-        std::vector<std::unique_ptr<IRenderPass>> m_passes;
+        std::unique_ptr<RenderPassRegistry> m_passRegistry;
         
         ViewData m_viewData;
         RenderScene m_renderScene;
         std::vector<uint32_t> m_visibleObjectIndices;
         
         std::string m_shaderDir;
+        DepthPrepass* m_depthPrepass = nullptr;  // Cached pointer to optional depth prepass
         OpaquePass* m_opaquePass = nullptr;  // Cached pointer to opaque pass
+        SkyboxPass* m_skyboxPass = nullptr;  // Cached pointer to skybox pass
         
         // Depth buffer
         RHITextureRef m_depthTexture;

@@ -4,15 +4,76 @@
  */
 
 #include "Render/Passes/OpaquePass.h"
-#include "Render/Renderer/ViewData.h"
-#include "Render/Renderer/RenderScene.h"
-#include "Render/GPUResourceManager.h"
-#include "Render/PipelineCache.h"
-#include "RHI/RHIRenderPass.h"
 #include "Core/Log.h"
+#include "Render/GPUResourceManager.h"
+#include "Render/Graph/ResourceViewCache.h"
+#include "Render/PipelineCache.h"
+#include "Render/Renderer/RenderScene.h"
+#include "Render/Renderer/ViewData.h"
+#include "Resource/Types/MaterialResource.h"
+#include "Resource/Types/TextureResource.h"
+#include "RHI/RHIRenderPass.h"
 
 namespace RVX
 {
+
+namespace
+{
+    RHITextureView* ResolveBaseColorTextureView(const RenderObject& obj, size_t submeshIndex,
+                                                GPUResourceManager& gpuResources, ResourceViewCache* viewCache)
+    {
+        if (!viewCache || submeshIndex >= obj.materialResources.size())
+            return nullptr;
+
+        const Resource::MaterialResource* material = obj.materialResources[submeshIndex];
+        if (!material)
+            return nullptr;
+
+        Resource::ResourceHandle<Resource::TextureResource> albedoTexture = material->GetAlbedoTexture();
+        Resource::TextureResource* textureResource = albedoTexture.Get();
+        if (!textureResource || !gpuResources.IsGPUReady(textureResource->GetId()))
+            return nullptr;
+
+        RHITexture* texture = gpuResources.GetTexture(textureResource->GetId());
+        if (!texture)
+            return nullptr;
+
+        return viewCache->GetDefaultSRV(texture);
+    }
+
+    Vec4 ResolveBaseColorFactor(const RenderObject& obj, size_t submeshIndex)
+    {
+        if (submeshIndex >= obj.materialResources.size())
+            return Vec4(1.0f, 1.0f, 1.0f, 1.0f);
+
+        const Resource::MaterialResource* materialResource = obj.materialResources[submeshIndex];
+        if (!materialResource || !materialResource->GetMaterial())
+            return Vec4(1.0f, 1.0f, 1.0f, 1.0f);
+
+        return materialResource->GetMaterial()->GetBaseColor();
+    }
+
+    void TransitionVisibleMaterialTextures(const RenderScene& renderScene, const std::vector<uint32_t>& visibleIndices,
+                                           GPUResourceManager& gpuResources, RHICommandContext& ctx)
+    {
+        for (uint32_t idx : visibleIndices)
+        {
+            const RenderObject& obj = renderScene.GetObject(idx);
+            for (const Resource::MaterialResource* material : obj.materialResources)
+            {
+                if (!material)
+                    continue;
+
+                Resource::ResourceHandle<Resource::TextureResource> albedoTexture = material->GetAlbedoTexture();
+                Resource::TextureResource* textureResource = albedoTexture.Get();
+                if (!textureResource || !gpuResources.IsGPUReady(textureResource->GetId()))
+                    continue;
+
+                gpuResources.TransitionTexture(textureResource->GetId(), ctx, RHIResourceState::ShaderResource);
+            }
+        }
+    }
+} // namespace
 
 void OpaquePass::OnAdd(IRHIDevice* device)
 {
@@ -66,37 +127,6 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 
 void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
 {
-    static bool firstFrame = true;
-    if (firstFrame)
-    {
-        RVX_CORE_INFO("OpaquePass::Execute - First frame diagnostics:");
-        RVX_CORE_INFO("  m_pipelineCache: {}", m_pipelineCache ? "valid" : "null");
-        RVX_CORE_INFO("  m_gpuResources: {}", m_gpuResources ? "valid" : "null");
-        RVX_CORE_INFO("  m_renderScene: {}", m_renderScene ? "valid" : "null");
-        RVX_CORE_INFO("  m_visibleIndices: {}", m_visibleIndices ? "valid" : "null");
-        RVX_CORE_INFO("  m_colorTargetView: {}", m_colorTargetView ? "valid" : "null");
-        RVX_CORE_INFO("  m_depthTargetView: {}", m_depthTargetView ? "valid" : "null");
-        
-        if (m_pipelineCache)
-        {
-            RVX_CORE_INFO("  PipelineCache initialized: {}", m_pipelineCache->IsInitialized());
-            RVX_CORE_INFO("  OpaquePipeline: {}", m_pipelineCache->GetOpaquePipeline() ? "valid" : "null");
-        }
-        
-        if (m_renderScene)
-        {
-            RVX_CORE_INFO("  RenderScene object count: {}", m_renderScene->GetObjectCount());
-        }
-        
-        if (m_visibleIndices)
-        {
-            RVX_CORE_INFO("  Visible indices count: {}", m_visibleIndices->size());
-        }
-        
-        RVX_CORE_INFO("  Viewport: {}x{}", view.viewportWidth, view.viewportHeight);
-        firstFrame = false;
-    }
-
     // Validate dependencies
     if (!m_pipelineCache || !m_pipelineCache->IsInitialized())
     {
@@ -109,6 +139,11 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     {
         RVX_CORE_WARN("OpaquePass: No color target view set");
         return;
+    }
+
+    if (m_renderScene && m_visibleIndices && m_gpuResources)
+    {
+        TransitionVisibleMaterialTextures(*m_renderScene, *m_visibleIndices, *m_gpuResources, ctx);
     }
 
     // 1. Begin render pass using builder pattern
@@ -142,15 +177,13 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     RHIDescriptorSet* viewSet = m_pipelineCache->GetViewDescriptorSet();
     if (viewSet)
     {
-        ctx.SetDescriptorSet(0, viewSet);
+        const auto dynamicOffsets = m_pipelineCache->GetCurrentConstantDynamicOffsets();
+        ctx.SetDescriptorSet(0, viewSet, dynamicOffsets);
     }
 
     // 5. Draw each visible object
     if (m_renderScene && m_visibleIndices && m_gpuResources)
     {
-        uint32_t drawCalls = 0;
-        uint32_t skippedNotResident = 0;
-        
         for (uint32_t idx : *m_visibleIndices)
         {
             const RenderObject& obj = m_renderScene->GetObject(idx);
@@ -159,7 +192,6 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
             MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(obj.meshId);
             if (!buffers.IsValid())
             {
-                skippedNotResident++;
                 continue;  // Mesh not uploaded yet
             }
 
@@ -183,19 +215,25 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
             ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
 
             // Draw each submesh
-            for (const SubmeshGPUInfo& submesh : buffers.submeshes)
+            for (size_t submeshIndex = 0; submeshIndex < buffers.submeshes.size(); ++submeshIndex)
             {
+                const SubmeshGPUInfo& submesh = buffers.submeshes[submeshIndex];
+                m_pipelineCache->UpdateMaterialConstants(ResolveBaseColorFactor(obj, submeshIndex));
+
+                RHITextureView* baseColorView = ResolveBaseColorTextureView(obj, submeshIndex, *m_gpuResources, view.viewCache);
+                RHIDescriptorSet* materialSet = view.viewCache
+                    ? m_pipelineCache->GetMaterialDescriptorSet(baseColorView, view.viewCache->GetGeneration())
+                    : m_pipelineCache->GetMaterialDescriptorSet(baseColorView);
+                if (materialSet)
+                {
+                    const auto dynamicOffsets = m_pipelineCache->GetCurrentConstantDynamicOffsets();
+                    ctx.SetDescriptorSet(0, materialSet, dynamicOffsets);
+                }
+
                 ctx.DrawIndexed(submesh.indexCount, 1, 
                                submesh.indexOffset, submesh.baseVertex, 0);
-                drawCalls++;
             }
         }
-
-        // Per-frame stats (disabled to reduce log spam)
-        // RVX_CORE_DEBUG("OpaquePass: {} draw calls, {} skipped (not resident)", 
-        //               drawCalls, skippedNotResident);
-        (void)drawCalls;
-        (void)skippedNotResident;
     }
     else
     {

@@ -277,6 +277,26 @@ namespace RVX
          * @note No-op on DX11/DX12/Metal (always 1.0)
          */
         virtual void SetLineWidth(float width) = 0;
+
+        // =========================================================================
+        // Synchronization (for cross-queue synchronization)
+        // =========================================================================
+
+        /**
+         * @brief Signal a fence after all commands in this context complete
+         * @param fence The fence to signal
+         * @param value The fence value to signal
+         * @note This signals on the queue this context will be submitted to
+         */
+        virtual void SignalFence(RHIFence* fence, uint64 value) = 0;
+
+        /**
+         * @brief Wait for a fence to reach a value before proceeding
+         * @param fence The fence to wait on
+         * @param value The fence value to wait for
+         * @note This inserts a wait in the command buffer
+         */
+        virtual void WaitFence(RHIFence* fence, uint64 value) = 0;
     };
 
 } // namespace RVX

@@ -17,10 +17,10 @@ namespace RVX
         bufferDesc.MiscFlags = 0;
         bufferDesc.StructureByteStride = 0;
 
-        HRESULT hr = device->GetDevice()->CreateBuffer(&bufferDesc, nullptr, &m_buffer);
+        HRESULT hr = device->GetD3DDevice()->CreateBuffer(&bufferDesc, nullptr, &m_buffer);
         if (FAILED(hr))
         {
-            RVX_RHI_ERROR("DX11StagingBuffer: Failed to create buffer: {}", hr);
+            RVX_RHI_ERROR("DX11StagingBuffer: Failed to create buffer: 0x{:08X}", static_cast<uint32>(hr));
             return;
         }
 
@@ -40,25 +40,27 @@ namespace RVX
 
     void* DX11StagingBuffer::Map(uint64 offset, uint64 size)
     {
+        (void)size;
+
         if (m_isMapped)
         {
-            return m_mappedData;
+            return static_cast<uint8*>(m_mappedData) + offset;
         }
 
         D3D11_MAPPED_SUBRESOURCE mapped = {};
         UINT subresource = 0;
         D3D11_MAP mapType = D3D11_MAP_WRITE;
 
-        HRESULT hr = m_device->GetDeviceContext()->Map(m_buffer.Get(), subresource, mapType, 0, &mapped);
+        HRESULT hr = m_device->GetImmediateContext()->Map(m_buffer.Get(), subresource, mapType, 0, &mapped);
         if (FAILED(hr))
         {
-            RVX_RHI_ERROR("DX11StagingBuffer: Failed to map buffer: {}", hr);
+            RVX_RHI_ERROR("DX11StagingBuffer: Failed to map buffer: 0x{:08X}", static_cast<uint32>(hr));
             return nullptr;
         }
 
         m_mappedData = mapped.pData;
         m_isMapped = true;
-        return m_mappedData;
+        return static_cast<uint8*>(m_mappedData) + offset;
     }
 
     void DX11StagingBuffer::Unmap()
@@ -68,7 +70,7 @@ namespace RVX
             return;
         }
 
-        m_device->GetDeviceContext()->Unmap(m_buffer.Get(), 0);
+        m_device->GetImmediateContext()->Unmap(m_buffer.Get(), 0);
         m_mappedData = nullptr;
         m_isMapped = false;
     }
@@ -81,9 +83,9 @@ namespace RVX
             desc.size = m_size;
             desc.usage = RHIBufferUsage::CopySrc;
             desc.memoryType = RHIMemoryType::Upload;
-            m_wrapperBuffer = CreateDX11Buffer(m_device, desc);
+            m_wrapperBuffer = m_device->CreateBuffer(desc);
         }
-        return m_wrapperBuffer.get();
+        return m_wrapperBuffer.Get();
     }
 
     // =============================================================================
@@ -103,20 +105,20 @@ namespace RVX
         // Create double buffers
         for (uint32 i = 0; i < 2; ++i)
         {
-            HRESULT hr = device->GetDevice()->CreateBuffer(&bufferDesc, nullptr, &m_buffers[i]);
+            HRESULT hr = device->GetD3DDevice()->CreateBuffer(&bufferDesc, nullptr, &m_buffers[i]);
             if (FAILED(hr))
             {
-                RVX_RHI_ERROR("DX11RingBuffer: Failed to create buffer {}: {}", i, hr);
+                RVX_RHI_ERROR("DX11RingBuffer: Failed to create buffer {}: 0x{:08X}", i, static_cast<uint32>(hr));
             }
         }
 
         // Initial mapping
         D3D11_MAPPED_SUBRESOURCE mapped = {};
-        HRESULT hr = m_device->GetDeviceContext()->Map(m_buffers[0].Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        HRESULT hr = m_device->GetImmediateContext()->Map(m_buffers[0].Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
         if (SUCCEEDED(hr))
         {
             m_mappedData = mapped.pData;
-            m_device->GetDeviceContext()->Unmap(m_buffers[0].Get(), 0);
+            m_device->GetImmediateContext()->Unmap(m_buffers[0].Get(), 0);
         }
 
         if (desc.debugName)
@@ -136,7 +138,8 @@ namespace RVX
     RHIRingAllocation DX11RingBuffer::Allocate(uint64 size)
     {
         // Align the allocation size
-        uint64 alignedSize = (size + m_alignment - 1) & ~(m_alignment - 1);
+        const uint64 alignment = static_cast<uint64>(m_alignment);
+        uint64 alignedSize = (size + alignment - 1) & ~(alignment - 1);
 
         std::lock_guard<std::mutex> lock(m_mutex);
 
@@ -148,11 +151,11 @@ namespace RVX
             m_currentOffset = 0;
 
             D3D11_MAPPED_SUBRESOURCE mapped = {};
-            HRESULT hr = m_device->GetDeviceContext()->Map(m_buffers[m_currentBuffer].Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+            HRESULT hr = m_device->GetImmediateContext()->Map(m_buffers[m_currentBuffer].Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
             if (SUCCEEDED(hr))
             {
                 m_mappedData = mapped.pData;
-                m_device->GetDeviceContext()->Unmap(m_buffers[m_currentBuffer].Get(), 0);
+                m_device->GetImmediateContext()->Unmap(m_buffers[m_currentBuffer].Get(), 0);
             }
         }
 
@@ -160,7 +163,7 @@ namespace RVX
         alloc.cpuAddress = static_cast<uint8*>(m_mappedData) + m_currentOffset;
         alloc.gpuOffset = m_currentOffset;
         alloc.size = alignedSize;
-        alloc.buffer = m_wrapperBuffer.get();
+        alloc.buffer = GetBuffer();
 
         m_currentOffset += alignedSize;
         return alloc;
@@ -178,11 +181,11 @@ namespace RVX
             m_currentOffset = 0;
 
             D3D11_MAPPED_SUBRESOURCE mapped = {};
-            HRESULT hr = m_device->GetDeviceContext()->Map(m_buffers[m_currentBuffer].Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+            HRESULT hr = m_device->GetImmediateContext()->Map(m_buffers[m_currentBuffer].Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
             if (SUCCEEDED(hr))
             {
                 m_mappedData = mapped.pData;
-                m_device->GetDeviceContext()->Unmap(m_buffers[m_currentBuffer].Get(), 0);
+                m_device->GetImmediateContext()->Unmap(m_buffers[m_currentBuffer].Get(), 0);
             }
         }
         else
@@ -199,10 +202,10 @@ namespace RVX
             RHIBufferDesc desc = {};
             desc.size = m_totalSize;
             desc.usage = RHIBufferUsage::Vertex | RHIBufferUsage::Constant;
-            desc.memoryType = RHIMemoryType::Dynamic;
-            m_wrapperBuffer = CreateDX11Buffer(m_device, desc);
+            desc.memoryType = RHIMemoryType::Upload;
+            m_wrapperBuffer = m_device->CreateBuffer(desc);
         }
-        return m_wrapperBuffer.get();
+        return m_wrapperBuffer.Get();
     }
 
     // =============================================================================
@@ -210,12 +213,12 @@ namespace RVX
     // =============================================================================
     RHIStagingBufferRef CreateDX11StagingBuffer(DX11Device* device, const RHIStagingBufferDesc& desc)
     {
-        return new DX11StagingBuffer(device, desc);
+        return RHIStagingBufferRef(new DX11StagingBuffer(device, desc));
     }
 
     RHIRingBufferRef CreateDX11RingBuffer(DX11Device* device, const RHIRingBufferDesc& desc)
     {
-        return new DX11RingBuffer(device, desc);
+        return RHIRingBufferRef(new DX11RingBuffer(device, desc));
     }
 
 } // namespace RVX

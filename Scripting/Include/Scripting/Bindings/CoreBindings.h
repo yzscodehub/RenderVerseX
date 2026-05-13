@@ -18,15 +18,18 @@ namespace RVX
     {
         /**
          * @brief Register core bindings
-         * 
+         *
          * Registers:
          * - RVX.Log.Info/Warn/Error/Debug
          * - RVX.Time.GetDeltaTime/GetTotalTime
          * - print (redirected to logging)
-         * 
+         *
          * @param lua LuaState to register to
          */
         void RegisterCoreBindings(LuaState& lua);
+
+        // Time API (exposed to ScriptEngine)
+        void UpdateTime(float deltaTime, float totalTime);
 
     } // namespace Bindings
 

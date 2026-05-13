@@ -5,8 +5,9 @@
 #include "Scripting/Bindings/SceneBindings.h"
 #include "Scripting/Bindings/InputBindings.h"
 
+#include "Core/Services.h"
 #include "Runtime/Input/InputSubsystem.h"
-#include "Runtime/Time/TimeSubsystem.h"
+#include "Runtime/Time/Time.h"
 
 #include <fstream>
 #include <sstream>
@@ -66,13 +67,8 @@ namespace RVX
 
     void ScriptingSubsystem::Tick(float deltaTime)
     {
-        // Get total time from TimeSubsystem if available
-        float totalTime = 0.0f;
-        auto* timeSys = Services::Get<TimeSubsystem>();
-        if (timeSys)
-        {
-            totalTime = timeSys->GetTotalTime();
-        }
+        // Get total time from Time class
+        float totalTime = static_cast<float>(Time::ElapsedTime());
 
         // Update time bindings for Lua scripts
         Bindings::UpdateTime(deltaTime, totalTime);
@@ -89,7 +85,7 @@ namespace RVX
         {
             if (comp)
             {
-                comp->OnTick(deltaTime);
+                comp->Tick(deltaTime);
             }
         }
 

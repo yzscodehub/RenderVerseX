@@ -14,6 +14,11 @@ namespace RVX
 {
     class World;
     class Camera;
+    namespace Resource
+    {
+        class MaterialResource;
+        class MeshResource;
+    }
 
     /**
      * @brief Renderable object data
@@ -31,9 +36,15 @@ namespace RVX
         
         /// Mesh resource ID (0 = invalid)
         uint64_t meshId = 0;
+
+        /// Source CPU mesh resource, used to request GPU residency.
+        Resource::MeshResource* meshResource = nullptr;
         
         /// Material resource IDs (one per submesh)
         std::vector<uint64_t> materialIds;
+
+        /// Source CPU material resources, used to request texture residency.
+        std::vector<Resource::MaterialResource*> materialResources;
         
         /// Entity handle for picking/identification
         uint64_t entityId = 0;
@@ -129,9 +140,6 @@ namespace RVX
         const RenderLight& GetLight(size_t index) const { return m_lights[index]; }
 
     private:
-        /// Recursive helper for collecting from entity hierarchy
-        void CollectFromEntity(class SceneEntity* entity, const Mat4& parentMatrix);
-
         std::vector<RenderObject> m_objects;
         std::vector<RenderLight> m_lights;
     };

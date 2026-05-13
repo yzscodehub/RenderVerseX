@@ -16,6 +16,7 @@ target_sources(RVX_Render PRIVATE
     Private/RenderService.cpp
     Private/SwapChainManager.cpp
     Private/RenderSubsystem.cpp
+    Private/GPUUploadService.cpp
     Private/GPUResourceManager.cpp
     Private/PipelineCache.cpp
     # Context
@@ -24,6 +25,9 @@ target_sources(RVX_Render PRIVATE
     # Renderer
     Private/Renderer/ViewData.cpp
     Private/Renderer/RenderScene.cpp
+    Private/Renderer/RenderSceneCollector.cpp
+    Private/Renderer/RenderFrameResourceBinder.cpp
+    Private/Renderer/RenderPassRegistry.cpp
     Private/Renderer/SceneRenderer.cpp
     # Passes
     Private/Passes/OpaquePass.cpp

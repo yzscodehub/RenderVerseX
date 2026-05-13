@@ -134,19 +134,28 @@ namespace RVX
          * @param graphicsCtx Graphics command context
          * @param computeCtx Compute command context (can be nullptr to run compute on graphics)
          * @param computeFence Fence for graphics-compute synchronization
-         * 
+         * @param frameIndex Frame index used for fence value generation
+         *
          * When computeCtx is provided, compute passes run asynchronously on the compute queue.
          * Fences are automatically inserted to synchronize resource access between queues.
          */
-        void ExecuteAsync(RHICommandContext& graphicsCtx, 
+        void ExecuteAsync(RHICommandContext& graphicsCtx,
                           RHICommandContext* computeCtx,
-                          RHIFence* computeFence);
+                          RHIFence* computeFence,
+                          uint64 frameIndex = 0);
 
         struct CompileStats
         {
             // Pass statistics
             uint32 totalPasses = 0;
             uint32 culledPasses = 0;
+
+            // Validation statistics
+            uint32 validationWarningCount = 0;
+            uint32 validationErrorCount = 0;
+            uint32 emptyPassUsageCount = 0;
+            uint32 invalidResourceUsageCount = 0;
+            uint32 incompatibleStateUsageCount = 0;
             
             // Barrier statistics
             uint32 barrierCount = 0;

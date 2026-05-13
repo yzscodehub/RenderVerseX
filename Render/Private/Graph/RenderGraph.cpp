@@ -328,11 +328,12 @@ namespace RVX
         ExecuteRenderGraph(*m_impl, ctx);
     }
 
-    void RenderGraph::ExecuteAsync(RHICommandContext& graphicsCtx, 
+    void RenderGraph::ExecuteAsync(RHICommandContext& graphicsCtx,
                                    RHICommandContext* computeCtx,
-                                   RHIFence* computeFence)
+                                   RHIFence* computeFence,
+                                   uint64 frameIndex)
     {
-        ExecuteRenderGraphAsync(*m_impl, graphicsCtx, computeCtx, computeFence);
+        ExecuteRenderGraphAsync(*m_impl, graphicsCtx, computeCtx, computeFence, frameIndex);
     }
 
     const RenderGraph::CompileStats& RenderGraph::GetCompileStats() const

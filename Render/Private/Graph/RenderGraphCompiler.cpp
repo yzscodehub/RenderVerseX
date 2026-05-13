@@ -336,6 +336,12 @@ namespace RVX
 
             for (const auto& barrier : barriers)
             {
+                if (!IsAllRange(barrier.subresourceRange))
+                {
+                    filtered.push_back(barrier);
+                    continue;
+                }
+
                 auto it = prevStates.find(barrier.texture);
                 if (it == prevStates.end())
                 {
@@ -366,6 +372,12 @@ namespace RVX
 
             for (const auto& barrier : barriers)
             {
+                if (!IsAllBufferRange(barrier))
+                {
+                    filtered.push_back(barrier);
+                    continue;
+                }
+
                 auto it = prevStates.find(barrier.buffer);
                 if (it == prevStates.end())
                 {
@@ -423,6 +435,77 @@ namespace RVX
         {
             if (!a.isUsed || !b.isUsed) return false;
             return !(a.lastUsePass < b.firstUsePass || b.lastUsePass < a.firstUsePass);
+        }
+
+        void ValidatePassUsages(RenderGraphImpl& graph)
+        {
+            for (uint32 passIndex = 0; passIndex < graph.passes.size(); ++passIndex)
+            {
+                const auto& pass = graph.passes[passIndex];
+
+                if (pass.usages.empty())
+                {
+                    graph.stats.emptyPassUsageCount++;
+                    graph.stats.validationWarningCount++;
+                    RVX_CORE_WARN("RenderGraph pass '{}' declares no resource usage and may be culled", pass.name);
+                }
+
+                for (const auto& usage : pass.usages)
+                {
+                    if (usage.type == ResourceType::Texture)
+                    {
+                        if (usage.index >= graph.textures.size())
+                        {
+                            graph.stats.invalidResourceUsageCount++;
+                            graph.stats.validationErrorCount++;
+                            RVX_CORE_ERROR("RenderGraph pass '{}' references invalid texture handle {}",
+                                           pass.name, usage.index);
+                        }
+                    }
+                    else
+                    {
+                        if (usage.index >= graph.buffers.size())
+                        {
+                            graph.stats.invalidResourceUsageCount++;
+                            graph.stats.validationErrorCount++;
+                            RVX_CORE_ERROR("RenderGraph pass '{}' references invalid buffer handle {}",
+                                           pass.name, usage.index);
+                        }
+                    }
+
+                    if (!IsStateAllowedForPass(pass.type, usage.desiredState))
+                    {
+                        graph.stats.incompatibleStateUsageCount++;
+                        graph.stats.validationErrorCount++;
+                        RVX_CORE_ERROR("RenderGraph pass '{}' requests state {} that is incompatible with pass type {}",
+                                       pass.name,
+                                       static_cast<int>(usage.desiredState),
+                                       static_cast<int>(pass.type));
+                    }
+                }
+            }
+        }
+
+        bool ContainsIndex(const std::vector<uint32>& values, uint32 target)
+        {
+            return std::find(values.begin(), values.end(), target) != values.end();
+        }
+
+        void AddDependencyEdge(
+            std::vector<std::vector<uint32>>& adjacency,
+            std::vector<uint32>& indegree,
+            uint32 beforePass,
+            uint32 afterPass)
+        {
+            if (beforePass == afterPass)
+                return;
+
+            auto& edges = adjacency[beforePass];
+            if (std::find(edges.begin(), edges.end(), afterPass) != edges.end())
+                return;
+
+            edges.push_back(afterPass);
+            indegree[afterPass]++;
         }
     }
 
@@ -930,6 +1013,8 @@ namespace RVX
         graph.aliasedTextureCount = 0;
         graph.aliasedBufferCount = 0;
 
+        ValidatePassUsages(graph);
+
         std::vector<std::vector<uint32>> textureWriters(graph.textures.size());
         std::vector<std::vector<uint32>> bufferWriters(graph.buffers.size());
 
@@ -951,6 +1036,9 @@ namespace RVX
             {
                 if (usage.type == ResourceType::Texture)
                 {
+                    if (usage.index >= graph.textures.size())
+                        continue;
+
                     if (usage.access == RGAccessType::Read || usage.access == RGAccessType::ReadWrite)
                     {
                         if (std::find(pass.readTextures.begin(), pass.readTextures.end(), usage.index) == pass.readTextures.end())
@@ -969,6 +1057,9 @@ namespace RVX
                 }
                 else
                 {
+                    if (usage.index >= graph.buffers.size())
+                        continue;
+
                     if (usage.access == RGAccessType::Read || usage.access == RGAccessType::ReadWrite)
                     {
                         if (std::find(pass.readBuffers.begin(), pass.readBuffers.end(), usage.index) == pass.readBuffers.end())
@@ -1056,6 +1147,8 @@ namespace RVX
         std::vector<uint32> indegree(graph.passes.size(), 0);
         std::vector<int32> lastWriterTex(graph.textures.size(), -1);
         std::vector<int32> lastWriterBuf(graph.buffers.size(), -1);
+        std::vector<std::vector<uint32>> lastReadersTex(graph.textures.size());
+        std::vector<std::vector<uint32>> lastReadersBuf(graph.buffers.size());
 
         for (uint32 passIndex = 0; passIndex < graph.passes.size(); ++passIndex)
         {
@@ -1066,26 +1159,60 @@ namespace RVX
             for (uint32 texIndex : pass.readTextures)
             {
                 int32 writer = lastWriterTex[texIndex];
-                if (writer >= 0 && static_cast<uint32>(writer) != passIndex)
+                if (writer >= 0)
                 {
-                    adjacency[static_cast<uint32>(writer)].push_back(passIndex);
-                    indegree[passIndex]++;
+                    AddDependencyEdge(adjacency, indegree, static_cast<uint32>(writer), passIndex);
+                }
+
+                if (!ContainsIndex(pass.writeTextures, texIndex) &&
+                    !ContainsIndex(lastReadersTex[texIndex], passIndex))
+                {
+                    lastReadersTex[texIndex].push_back(passIndex);
                 }
             }
             for (uint32 bufIndex : pass.readBuffers)
             {
                 int32 writer = lastWriterBuf[bufIndex];
-                if (writer >= 0 && static_cast<uint32>(writer) != passIndex)
+                if (writer >= 0)
                 {
-                    adjacency[static_cast<uint32>(writer)].push_back(passIndex);
-                    indegree[passIndex]++;
+                    AddDependencyEdge(adjacency, indegree, static_cast<uint32>(writer), passIndex);
+                }
+
+                if (!ContainsIndex(pass.writeBuffers, bufIndex) &&
+                    !ContainsIndex(lastReadersBuf[bufIndex], passIndex))
+                {
+                    lastReadersBuf[bufIndex].push_back(passIndex);
                 }
             }
 
             for (uint32 texIndex : pass.writeTextures)
+            {
+                int32 writer = lastWriterTex[texIndex];
+                if (writer >= 0)
+                {
+                    AddDependencyEdge(adjacency, indegree, static_cast<uint32>(writer), passIndex);
+                }
+                for (uint32 reader : lastReadersTex[texIndex])
+                {
+                    AddDependencyEdge(adjacency, indegree, reader, passIndex);
+                }
+                lastReadersTex[texIndex].clear();
                 lastWriterTex[texIndex] = static_cast<int32>(passIndex);
+            }
             for (uint32 bufIndex : pass.writeBuffers)
+            {
+                int32 writer = lastWriterBuf[bufIndex];
+                if (writer >= 0)
+                {
+                    AddDependencyEdge(adjacency, indegree, static_cast<uint32>(writer), passIndex);
+                }
+                for (uint32 reader : lastReadersBuf[bufIndex])
+                {
+                    AddDependencyEdge(adjacency, indegree, reader, passIndex);
+                }
+                lastReadersBuf[bufIndex].clear();
                 lastWriterBuf[bufIndex] = static_cast<int32>(passIndex);
+            }
         }
 
         graph.executionOrder.clear();
@@ -1142,10 +1269,10 @@ namespace RVX
         // Compute aliasing barriers for resources that share memory
         ComputeAliasingBarriers(graph);
 
-        for (auto& pass : graph.passes)
+        auto generatePassBarriers = [&](Pass& pass)
         {
             if (pass.culled)
-                continue;
+                return;
 
             for (const auto& usage : pass.usages)
             {
@@ -1244,22 +1371,68 @@ namespace RVX
             graph.stats.mergedBarrierCount += mergedTex + mergedBuf;
             graph.stats.textureBarrierCount += static_cast<uint32>(pass.textureBarriers.size());
             graph.stats.bufferBarrierCount += static_cast<uint32>(pass.bufferBarriers.size());
+        };
+
+        if (!graph.executionOrder.empty())
+        {
+            for (uint32 passIndex : graph.executionOrder)
+            {
+                if (passIndex < graph.passes.size())
+                {
+                    generatePassBarriers(graph.passes[passIndex]);
+                }
+            }
+        }
+        else
+        {
+            for (auto& pass : graph.passes)
+            {
+                generatePassBarriers(pass);
+            }
         }
 
         std::unordered_map<RHITexture*, RHIResourceState> lastTextureState;
         std::unordered_map<RHIBuffer*, RHIResourceState> lastBufferState;
-        for (auto& pass : graph.passes)
+        auto applyCrossPassBarrierFiltering = [&](Pass& pass)
         {
             if (pass.culled)
-                continue;
+                return;
 
             graph.stats.crossPassMergedBarrierCount += RemoveRedundantTextureBarriers(lastTextureState, pass.textureBarriers);
             graph.stats.crossPassMergedBarrierCount += RemoveRedundantBufferBarriers(lastBufferState, pass.bufferBarriers);
 
             for (const auto& barrier : pass.textureBarriers)
-                lastTextureState[barrier.texture] = barrier.stateAfter;
+            {
+                if (IsAllRange(barrier.subresourceRange))
+                {
+                    lastTextureState[barrier.texture] = barrier.stateAfter;
+                }
+            }
             for (const auto& barrier : pass.bufferBarriers)
-                lastBufferState[barrier.buffer] = barrier.stateAfter;
+            {
+                if (IsAllBufferRange(barrier))
+                {
+                    lastBufferState[barrier.buffer] = barrier.stateAfter;
+                }
+            }
+        };
+
+        if (!graph.executionOrder.empty())
+        {
+            for (uint32 passIndex : graph.executionOrder)
+            {
+                if (passIndex < graph.passes.size())
+                {
+                    applyCrossPassBarrierFiltering(graph.passes[passIndex]);
+                }
+            }
+        }
+        else
+        {
+            for (auto& pass : graph.passes)
+            {
+                applyCrossPassBarrierFiltering(pass);
+            }
         }
 
         graph.stats.textureBarrierCount = 0;

@@ -3,6 +3,7 @@
 #include "VulkanCommon.h"
 #include "RHI/RHIDevice.h"
 #include <mutex>
+#include <vector>
 
 namespace RVX
 {
@@ -94,6 +95,7 @@ namespace RVX
         VkSemaphore GetRenderFinishedSemaphore() const;
         VkFence GetCurrentFrameFence() const { return m_frameFences[m_currentFrameIndex]; }
         std::mutex& GetSubmitMutex() { return m_submitMutex; }
+        void EnqueueDeferredSemaphoreDestroy(std::vector<VkSemaphore> semaphores, VkQueue signalQueue);
 
         void SetPrimarySwapChain(VulkanSwapChain* swapChain) { m_primarySwapChain = swapChain; }
         VulkanSwapChain* GetPrimarySwapChain() const { return m_primarySwapChain; }
@@ -129,6 +131,7 @@ namespace RVX
         bool CreateDescriptorPool();
         bool CreatePipelineCache();
         void SavePipelineCache();
+        void ProcessDeferredSemaphoreDestroys(bool force);
 
         QueueFamilyIndices FindQueueFamilies(VkPhysicalDevice device);
         bool CheckDeviceExtensionSupport(VkPhysicalDevice device);
@@ -170,6 +173,14 @@ namespace RVX
 
         // Thread safety
         std::mutex m_submitMutex;
+
+        struct DeferredSemaphoreDestroy
+        {
+            std::vector<VkSemaphore> semaphores;
+            VkFence fence = VK_NULL_HANDLE;
+        };
+        std::vector<DeferredSemaphoreDestroy> m_deferredSemaphoreDestroys;
+        std::mutex m_deferredSemaphoreMutex;
 
         // Optional primary swapchain for per-image sync
         VulkanSwapChain* m_primarySwapChain = nullptr;

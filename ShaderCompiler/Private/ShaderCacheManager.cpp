@@ -204,7 +204,6 @@ namespace RVX
             return;
         }
 
-        uint64 currentTime = GetCurrentTimestamp();
         std::error_code ec;
 
         for (const auto& entry : std::filesystem::directory_iterator(m_config.cacheDirectory, ec))

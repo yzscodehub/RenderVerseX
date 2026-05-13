@@ -3,6 +3,28 @@
 
 namespace RVX
 {
+    namespace
+    {
+        uint32 FindMemoryType(VkPhysicalDevice physicalDevice, uint32 typeFilter, VkMemoryPropertyFlags properties)
+        {
+            VkPhysicalDeviceMemoryProperties memProperties = {};
+            vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+            for (uint32 i = 0; i < memProperties.memoryTypeCount; ++i)
+            {
+                const bool typeMatches = (typeFilter & (1u << i)) != 0;
+                const bool propertiesMatch = (memProperties.memoryTypes[i].propertyFlags & properties) == properties;
+                if (typeMatches && propertiesMatch)
+                {
+                    return i;
+                }
+            }
+
+            RVX_RHI_ERROR("VulkanUpload: Failed to find suitable memory type");
+            return 0;
+        }
+    } // namespace
+
     // =============================================================================
     // Vulkan Staging Buffer
     // =============================================================================
@@ -18,7 +40,7 @@ namespace RVX
         VkResult result = vkCreateBuffer(device->GetDevice(), &bufferInfo, nullptr, &m_buffer);
         if (result != VK_SUCCESS)
         {
-            RVX_RHI_ERROR("VulkanStagingBuffer: Failed to create buffer: {}", result);
+            RVX_RHI_ERROR("VulkanStagingBuffer: Failed to create buffer: {}", static_cast<int32>(result));
             return;
         }
 
@@ -29,14 +51,15 @@ namespace RVX
         VkMemoryAllocateInfo allocInfo = {};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = device->FindMemoryType(
+        allocInfo.memoryTypeIndex = FindMemoryType(
+            device->GetPhysicalDevice(),
             memRequirements.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
         result = vkAllocateMemory(device->GetDevice(), &allocInfo, nullptr, &m_memory);
         if (result != VK_SUCCESS)
         {
-            RVX_RHI_ERROR("VulkanStagingBuffer: Failed to allocate memory: {}", result);
+            RVX_RHI_ERROR("VulkanStagingBuffer: Failed to allocate memory: {}", static_cast<int32>(result));
             vkDestroyBuffer(device->GetDevice(), m_buffer, nullptr);
             m_buffer = VK_NULL_HANDLE;
             return;
@@ -45,12 +68,12 @@ namespace RVX
         result = vkBindBufferMemory(device->GetDevice(), m_buffer, m_memory, 0);
         if (result != VK_SUCCESS)
         {
-            RVX_RHI_ERROR("VulkanStagingBuffer: Failed to bind memory: {}", result);
+            RVX_RHI_ERROR("VulkanStagingBuffer: Failed to bind memory: {}", static_cast<int32>(result));
         }
 
         if (desc.debugName)
         {
-            device->SetDebugName(VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64>(m_buffer), desc.debugName);
+            device->SetObjectName(VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64>(m_buffer), desc.debugName);
         }
     }
 
@@ -78,7 +101,7 @@ namespace RVX
         VkResult result = vkMapMemory(m_device->GetDevice(), m_memory, offset, mapSize, 0, &data);
         if (result != VK_SUCCESS)
         {
-            RVX_RHI_ERROR("VulkanStagingBuffer: Failed to map memory: {}", result);
+            RVX_RHI_ERROR("VulkanStagingBuffer: Failed to map memory: {}", static_cast<int32>(result));
             return nullptr;
         }
 
@@ -109,7 +132,7 @@ namespace RVX
             desc.memoryType = RHIMemoryType::Upload;
             m_wrapperBuffer = CreateVulkanBuffer(m_device, desc);
         }
-        return m_wrapperBuffer.get();
+        return m_wrapperBuffer.Get();
     }
 
     // =============================================================================
@@ -127,7 +150,7 @@ namespace RVX
         VkResult result = vkCreateBuffer(device->GetDevice(), &bufferInfo, nullptr, &m_buffer);
         if (result != VK_SUCCESS)
         {
-            RVX_RHI_ERROR("VulkanRingBuffer: Failed to create buffer: {}", result);
+            RVX_RHI_ERROR("VulkanRingBuffer: Failed to create buffer: {}", static_cast<int32>(result));
             return;
         }
 
@@ -137,14 +160,15 @@ namespace RVX
         VkMemoryAllocateInfo allocInfo = {};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = device->FindMemoryType(
+        allocInfo.memoryTypeIndex = FindMemoryType(
+            device->GetPhysicalDevice(),
             memRequirements.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
         result = vkAllocateMemory(device->GetDevice(), &allocInfo, nullptr, &m_memory);
         if (result != VK_SUCCESS)
         {
-            RVX_RHI_ERROR("VulkanRingBuffer: Failed to allocate memory: {}", result);
+            RVX_RHI_ERROR("VulkanRingBuffer: Failed to allocate memory: {}", static_cast<int32>(result));
             vkDestroyBuffer(device->GetDevice(), m_buffer, nullptr);
             m_buffer = VK_NULL_HANDLE;
             return;
@@ -153,7 +177,7 @@ namespace RVX
         result = vkBindBufferMemory(device->GetDevice(), m_buffer, m_memory, 0);
         if (result != VK_SUCCESS)
         {
-            RVX_RHI_ERROR("VulkanRingBuffer: Failed to bind memory: {}", result);
+            RVX_RHI_ERROR("VulkanRingBuffer: Failed to bind memory: {}", static_cast<int32>(result));
         }
 
         // Persistent mapping
@@ -161,7 +185,7 @@ namespace RVX
 
         if (desc.debugName)
         {
-            device->SetDebugName(VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64>(m_buffer), desc.debugName);
+            device->SetObjectName(VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64>(m_buffer), desc.debugName);
         }
     }
 
@@ -184,7 +208,8 @@ namespace RVX
     RHIRingAllocation VulkanRingBuffer::Allocate(uint64 size)
     {
         // Align the allocation size
-        uint64 alignedSize = (size + m_alignment - 1) & ~(m_alignment - 1);
+        const uint64 alignment = static_cast<uint64>(m_alignment);
+        uint64 alignedSize = (size + alignment - 1) & ~(alignment - 1);
 
         uint64 currentHead = m_head.load(std::memory_order_acquire);
 
@@ -215,7 +240,7 @@ namespace RVX
                 alloc.cpuAddress = static_cast<uint8*>(m_mappedData) + currentHead;
                 alloc.gpuOffset = currentHead;
                 alloc.size = alignedSize;
-                alloc.buffer = m_wrapperBuffer.get();
+                alloc.buffer = GetBuffer();
                 return alloc;
             }
         }
@@ -253,11 +278,11 @@ namespace RVX
         {
             RHIBufferDesc desc = {};
             desc.size = m_totalSize;
-            desc.usage = RHIBufferUsage::CopySrc | RHIBufferUsage::Uniform;
+            desc.usage = RHIBufferUsage::CopySrc | RHIBufferUsage::Constant;
             desc.memoryType = RHIMemoryType::Upload;
             m_wrapperBuffer = CreateVulkanBuffer(m_device, desc);
         }
-        return m_wrapperBuffer.get();
+        return m_wrapperBuffer.Get();
     }
 
     // =============================================================================
@@ -265,12 +290,12 @@ namespace RVX
     // =============================================================================
     RHIStagingBufferRef CreateVulkanStagingBuffer(VulkanDevice* device, const RHIStagingBufferDesc& desc)
     {
-        return new VulkanStagingBuffer(device, desc);
+        return RHIStagingBufferRef(new VulkanStagingBuffer(device, desc));
     }
 
     RHIRingBufferRef CreateVulkanRingBuffer(VulkanDevice* device, const RHIRingBufferDesc& desc)
     {
-        return new VulkanRingBuffer(device, desc);
+        return RHIRingBufferRef(new VulkanRingBuffer(device, desc));
     }
 
 } // namespace RVX

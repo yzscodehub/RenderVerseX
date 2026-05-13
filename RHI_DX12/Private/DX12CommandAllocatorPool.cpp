@@ -6,6 +6,17 @@ namespace RVX
     void DX12CommandAllocatorPool::Initialize(DX12Device* device)
     {
         m_device = device;
+        m_nextFenceValues = {};
+
+        auto d3dDevice = m_device ? m_device->GetD3DDevice() : nullptr;
+        if (d3dDevice)
+        {
+            for (auto& fence : m_fences)
+            {
+                DX12_CHECK(d3dDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
+            }
+        }
+
         RVX_RHI_DEBUG("Command Allocator Pool initialized");
     }
 
@@ -20,7 +31,11 @@ namespace RVX
             {
                 m_pendingAllocators[i].pop();
             }
+            m_fences[i].Reset();
+            m_nextFenceValues[i] = 0;
         }
+
+        m_device = nullptr;
         
         RVX_RHI_DEBUG("Command Allocator Pool shutdown");
     }
@@ -31,7 +46,8 @@ namespace RVX
         
         uint32 index = TypeToIndex(type);
         
-        // Check if there's an available allocator
+        RecycleCompletedLocked(index);
+
         if (!m_availableAllocators[index].empty())
         {
             ComPtr<ID3D12CommandAllocator> allocator = m_availableAllocators[index].back();
@@ -68,40 +84,61 @@ namespace RVX
     void DX12CommandAllocatorPool::Release(
         ComPtr<ID3D12CommandAllocator> allocator,
         D3D12_COMMAND_LIST_TYPE type,
-        uint64 fenceValue)
+        ID3D12CommandQueue* queue)
     {
         if (!allocator)
             return;
-        
+
         std::lock_guard<std::mutex> lock(m_mutex);
-        
+
         uint32 index = TypeToIndex(type);
+        if (!queue || !m_fences[index])
+        {
+            RVX_RHI_WARN("Command allocator released without a valid queue/fence, discarding allocator");
+            return;
+        }
+
+        const uint64 fenceValue = ++m_nextFenceValues[index];
+        HRESULT hr = queue->Signal(m_fences[index].Get(), fenceValue);
+        if (FAILED(hr))
+        {
+            RVX_RHI_ERROR("Failed to signal command allocator fence: 0x{:08X}", static_cast<uint32>(hr));
+            return;
+        }
+
         m_pendingAllocators[index].push({std::move(allocator), fenceValue});
     }
 
-    void DX12CommandAllocatorPool::Tick(uint64 completedFenceValue)
+    void DX12CommandAllocatorPool::Tick()
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        
+
         for (uint32 i = 0; i < TYPE_COUNT; ++i)
         {
-            auto& pending = m_pendingAllocators[i];
-            auto& available = m_availableAllocators[i];
-            
-            // Move completed allocators to available pool
-            while (!pending.empty())
+            RecycleCompletedLocked(i);
+        }
+    }
+
+    void DX12CommandAllocatorPool::RecycleCompletedLocked(uint32 index)
+    {
+        if (!m_fences[index])
+            return;
+
+        const uint64 completedFenceValue = m_fences[index]->GetCompletedValue();
+        auto& pending = m_pendingAllocators[index];
+        auto& available = m_availableAllocators[index];
+
+        while (!pending.empty())
+        {
+            auto& front = pending.front();
+            if (front.fenceValue <= completedFenceValue)
             {
-                auto& front = pending.front();
-                if (front.fenceValue <= completedFenceValue)
-                {
-                    available.push_back(std::move(front.allocator));
-                    pending.pop();
-                }
-                else
-                {
-                    // Pending queue is ordered, so we can stop here
-                    break;
-                }
+                available.push_back(std::move(front.allocator));
+                pending.pop();
+            }
+            else
+            {
+                break;
             }
         }
     }

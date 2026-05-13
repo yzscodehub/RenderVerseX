@@ -980,6 +980,25 @@ namespace RVX
     }
 
     // =============================================================================
+    // Synchronization (no-op for DX11 - inherently synchronous)
+    // =============================================================================
+    void DX11CommandContext::SignalFence(RHIFence* fence, uint64 value)
+    {
+        // DX11 is inherently synchronous - all operations complete before returning
+        // No fence signaling needed as the API serializes all work
+        (void)fence;
+        (void)value;
+    }
+
+    void DX11CommandContext::WaitFence(RHIFence* fence, uint64 value)
+    {
+        // DX11 is inherently synchronous - all operations complete before returning
+        // No fence waiting needed as the API serializes all work
+        (void)fence;
+        (void)value;
+    }
+
+    // =============================================================================
     // Split Barriers (no-op for DX11)
     // =============================================================================
     void DX11CommandContext::BeginBarrier(const RHIBufferBarrier& barrier)

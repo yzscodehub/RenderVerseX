@@ -29,7 +29,7 @@ namespace RVX
         // Configure heap properties for upload (CPU-writable, GPU-readable)
         D3D12_HEAP_PROPERTIES heapProps = {};
         heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-        heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE;
+        heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
         heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
         heapProps.CreationNodeMask = 0;
         heapProps.VisibleNodeMask = 0;
@@ -143,12 +143,12 @@ namespace RVX
         {
             RHIBufferDesc bufferDesc = {};
             bufferDesc.size = m_size;
-            bufferDesc.usage = RHIBufferUsage::TransferSrc;
+            bufferDesc.usage = RHIBufferUsage::CopySrc;
             bufferDesc.memoryType = RHIMemoryType::Upload;
-            bufferDesc.debugName = GetDebugName();
+            bufferDesc.debugName = GetDebugName().c_str();
 
             // Wrap our existing staging buffer resource - don't let buffer own it
-            m_wrapperBuffer = new DX12Buffer(m_device, m_resource, bufferDesc, false);
+            m_wrapperBuffer = RHIBufferRef(new DX12Buffer(m_device, m_resource, bufferDesc, false));
         }
         return m_wrapperBuffer.Get();
     }
@@ -178,7 +178,7 @@ namespace RVX
         // Configure heap properties for upload
         D3D12_HEAP_PROPERTIES heapProps = {};
         heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-        heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE;
+        heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
         heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
         heapProps.CreationNodeMask = 0;
         heapProps.VisibleNodeMask = 0;
@@ -349,12 +349,12 @@ namespace RVX
         {
             RHIBufferDesc bufferDesc = {};
             bufferDesc.size = m_totalSize;
-            bufferDesc.usage = RHIBufferUsage::Constant | RHIBufferUsage::TransferSrc;
+            bufferDesc.usage = RHIBufferUsage::Constant | RHIBufferUsage::CopySrc;
             bufferDesc.memoryType = RHIMemoryType::Upload;
-            bufferDesc.debugName = GetDebugName();
+            bufferDesc.debugName = GetDebugName().c_str();
 
             // Wrap our existing ring buffer resource - don't let buffer own it
-            m_wrapperBuffer = new DX12Buffer(m_device, m_resource, bufferDesc, false);
+            m_wrapperBuffer = RHIBufferRef(new DX12Buffer(m_device, m_resource, bufferDesc, false));
         }
         return m_wrapperBuffer.Get();
     }
@@ -365,12 +365,12 @@ namespace RVX
 
     RHIStagingBufferRef CreateDX12StagingBuffer(DX12Device* device, const RHIStagingBufferDesc& desc)
     {
-        return new DX12StagingBuffer(device, desc);
+        return RHIStagingBufferRef(new DX12StagingBuffer(device, desc));
     }
 
     RHIRingBufferRef CreateDX12RingBuffer(DX12Device* device, const RHIRingBufferDesc& desc)
     {
-        return new DX12RingBuffer(device, desc);
+        return RHIRingBufferRef(new DX12RingBuffer(device, desc));
     }
 
 } // namespace RVX

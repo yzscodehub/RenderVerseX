@@ -7,6 +7,8 @@
 #include "Physics/Shapes/CollisionShape.h"
 #include "Physics/Constraints/IConstraint.h"
 #include "Core/Math/Intersection.h"
+#include "Core/Math/Ray.h"
+#include "Core/Math/AABB.h"
 #include <algorithm>
 #include <cmath>
 
@@ -320,18 +322,20 @@ bool PhysicsWorld::Raycast(const Vec3& origin, const Vec3& direction, float maxD
 
         // Get body AABB
         RigidBody::AABB aabb = body->GetAABB();
+        AABB box(aabb.min, aabb.max);
 
         // Ray-AABB intersection test
-        float t = 0.0f;
-        if (RayAABBIntersect(origin, dir, aabb, t))
+        float tMin = 0.0f, tMax = 0.0f;
+        Ray ray(origin, dir);
+        if (RayAABBIntersect(ray, box, tMin, tMax))
         {
-            if (t < closestDist && t >= 0.0f)
+            if (tMin < closestDist && tMin >= 0.0f)
             {
-                closestDist = t;
+                closestDist = tMin;
                 foundHit = true;
                 hit.hit = true;
-                hit.distance = t;
-                hit.point = origin + dir * t;
+                hit.distance = tMin;
+                hit.point = origin + dir * tMin;
                 hit.bodyId = body->GetId();
                 // Simplified normal calculation - point towards ray origin
                 hit.normal = -dir;
@@ -355,16 +359,18 @@ size_t PhysicsWorld::RaycastAll(const Vec3& origin, const Vec3& direction, float
         if (!(body->GetLayer() & layerMask)) continue;
 
         RigidBody::AABB aabb = body->GetAABB();
+        AABB box(aabb.min, aabb.max);
 
-        float t = 0.0f;
-        if (RayAABBIntersect(origin, dir, aabb, t))
+        float tMin = 0.0f, tMax = 0.0f;
+        Ray ray(origin, dir);
+        if (RayAABBIntersect(ray, box, tMin, tMax))
         {
-            if (t < maxDistance && t >= 0.0f)
+            if (tMin < maxDistance && tMin >= 0.0f)
             {
                 RaycastHit hit;
                 hit.hit = true;
-                hit.distance = t;
-                hit.point = origin + dir * t;
+                hit.distance = tMin;
+                hit.point = origin + dir * tMin;
                 hit.bodyId = body->GetId();
                 hit.normal = -dir;
                 hits.push_back(hit);
@@ -395,22 +401,24 @@ bool PhysicsWorld::SphereCast(const Vec3& origin, float radius, const Vec3& dire
         if (!body) continue;
         if (!(body->GetLayer() & layerMask)) continue;
 
-        RigidBody::AABB aabb = body->GetAABB();
+        RigidBody::AABB bodyAABB = body->GetAABB();
 
         // Expand AABB by radius
-        aabb.min -= Vec3(radius);
-        aabb.max += Vec3(radius);
+        Vec3 expandedMin = bodyAABB.min - Vec3(radius);
+        Vec3 expandedMax = bodyAABB.max + Vec3(radius);
+        AABB expandedBox(expandedMin, expandedMax);
 
-        float t = 0.0f;
-        if (RayAABBIntersect(origin, dir, aabb, t))
+        float tMin = 0.0f, tMax = 0.0f;
+        Ray ray(origin, dir);
+        if (RayAABBIntersect(ray, expandedBox, tMin, tMax))
         {
-            if (t < closestDist && t >= 0.0f)
+            if (tMin < closestDist && tMin >= 0.0f)
             {
-                closestDist = t;
+                closestDist = tMin;
                 foundHit = true;
                 hit.hit = true;
-                hit.fraction = t / maxDistance;
-                hit.point = origin + dir * t;
+                hit.fraction = tMin / maxDistance;
+                hit.point = origin + dir * tMin;
                 hit.bodyId = body->GetId();
                 hit.normal = -dir;
             }

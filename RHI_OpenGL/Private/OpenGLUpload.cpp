@@ -1,6 +1,7 @@
 #include "OpenGLUpload.h"
+#include "OpenGLDevice.h"
 #include "OpenGLResources.h"
-#include "Core/Logger.h"
+#include "Core/Log.h"
 
 namespace RVX
 {
@@ -78,9 +79,9 @@ namespace RVX
             desc.size = m_size;
             desc.usage = RHIBufferUsage::CopySrc;
             desc.memoryType = RHIMemoryType::Upload;
-            m_wrapperBuffer = CreateOpenGLBuffer(m_device, desc);
+            m_wrapperBuffer = m_device->CreateBuffer(desc);
         }
-        return m_wrapperBuffer.get();
+        return m_wrapperBuffer.Get();
     }
 
     // =============================================================================
@@ -122,7 +123,8 @@ namespace RVX
 
     RHIRingAllocation OpenGLRingBuffer::Allocate(uint64 size)
     {
-        uint64 alignedSize = (size + m_alignment - 1) & ~(m_alignment - 1);
+        const uint64 alignment = static_cast<uint64>(m_alignment);
+        uint64 alignedSize = (size + alignment - 1) & ~(alignment - 1);
 
         std::lock_guard<std::mutex> lock(m_mutex);
 
@@ -150,7 +152,7 @@ namespace RVX
         alloc.cpuAddress = static_cast<uint8*>(m_mappedData) + m_currentOffset;
         alloc.gpuOffset = m_currentOffset;
         alloc.size = alignedSize;
-        alloc.buffer = m_wrapperBuffer.get();
+        alloc.buffer = GetBuffer();
 
         m_currentOffset += alignedSize;
         return alloc;
@@ -190,11 +192,11 @@ namespace RVX
         {
             RHIBufferDesc desc = {};
             desc.size = m_totalSize;
-            desc.usage = RHIBufferUsage::Vertex | RHIBufferUsage::Uniform;
-            desc.memoryType = RHIMemoryType::Dynamic;
-            m_wrapperBuffer = CreateOpenGLBuffer(m_device, desc);
+            desc.usage = RHIBufferUsage::Vertex | RHIBufferUsage::Constant;
+            desc.memoryType = RHIMemoryType::Upload;
+            m_wrapperBuffer = m_device->CreateBuffer(desc);
         }
-        return m_wrapperBuffer.get();
+        return m_wrapperBuffer.Get();
     }
 
     // =============================================================================
@@ -202,12 +204,12 @@ namespace RVX
     // =============================================================================
     RHIStagingBufferRef CreateOpenGLStagingBuffer(OpenGLDevice* device, const RHIStagingBufferDesc& desc)
     {
-        return new OpenGLStagingBuffer(device, desc);
+        return RHIStagingBufferRef(new OpenGLStagingBuffer(device, desc));
     }
 
     RHIRingBufferRef CreateOpenGLRingBuffer(OpenGLDevice* device, const RHIRingBufferDesc& desc)
     {
-        return new OpenGLRingBuffer(device, desc);
+        return RHIRingBufferRef(new OpenGLRingBuffer(device, desc));
     }
 
 } // namespace RVX

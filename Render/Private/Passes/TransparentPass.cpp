@@ -100,13 +100,6 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
     }
     ctx.SetPipeline(pipeline);
 
-    // Bind view constants descriptor set
-    RHIDescriptorSet* viewSet = m_pipelineCache->GetViewDescriptorSet();
-    if (viewSet)
-    {
-        ctx.SetDescriptorSet(0, viewSet);
-    }
-
     // Draw transparent objects in back-to-front order
     // (Caller is responsible for sorting m_transparentIndices)
     if (m_renderScene && m_gpuResources)
@@ -127,6 +120,14 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
 
             // Update per-object constants (world matrix)
             m_pipelineCache->UpdateObjectConstants(obj.worldMatrix);
+            m_pipelineCache->UpdateMaterialConstants(Vec4(1.0f, 1.0f, 1.0f, 1.0f));
+
+            RHIDescriptorSet* materialSet = m_pipelineCache->GetMaterialDescriptorSet(nullptr);
+            if (materialSet)
+            {
+                const auto dynamicOffsets = m_pipelineCache->GetCurrentConstantDynamicOffsets();
+                ctx.SetDescriptorSet(0, materialSet, dynamicOffsets);
+            }
 
             // Bind vertex buffers
             ctx.SetVertexBuffer(0, buffers.positionBuffer);

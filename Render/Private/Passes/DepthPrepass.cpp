@@ -75,13 +75,6 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
     // Bind depth-only pipeline
     ctx.SetPipeline(depthPipeline);
 
-    // Bind view constants descriptor set
-    RHIDescriptorSet* viewSet = m_pipelineCache->GetViewDescriptorSet();
-    if (viewSet)
-    {
-        ctx.SetDescriptorSet(0, viewSet);
-    }
-
     // Draw all visible opaque objects with depth-only shader
     if (m_gpuResources)
     {
@@ -101,6 +94,13 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
 
             // Update per-object constants (world matrix)
             m_pipelineCache->UpdateObjectConstants(obj.worldMatrix);
+
+            RHIDescriptorSet* viewSet = m_pipelineCache->GetViewDescriptorSet();
+            if (viewSet)
+            {
+                const auto dynamicOffsets = m_pipelineCache->GetCurrentConstantDynamicOffsets();
+                ctx.SetDescriptorSet(0, viewSet, dynamicOffsets);
+            }
 
             // Bind vertex buffers - only position is needed for depth
             ctx.SetVertexBuffer(0, buffers.positionBuffer);  // Slot 0: Position

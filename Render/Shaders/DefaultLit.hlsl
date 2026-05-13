@@ -31,6 +31,16 @@ cbuffer ObjectConstants : register(b1)
     float4x4 World;
 };
 
+cbuffer MaterialConstants : register(b4)
+{
+    float4 BaseColorFactor;
+};
+
+// Default material resources. The renderer currently binds a white fallback
+// texture here; per-material texture binding can override this path later.
+Texture2D BaseColorTexture : register(t2);
+SamplerState BaseColorSampler : register(s3);
+
 // =============================================================================
 // Vertex Shader Input/Output
 // =============================================================================
@@ -96,8 +106,8 @@ float4 PSMain(PSInput input) : SV_TARGET
     float diffuse = NdotL * 0.85;
     float lighting = ambient + diffuse;
     
-    // Base color (white for now - will add texture sampling later)
-    float3 baseColor = float3(0.8, 0.8, 0.8);
+    // Base color
+    float3 baseColor = BaseColorTexture.Sample(BaseColorSampler, input.TexCoord).rgb * BaseColorFactor.rgb;
     
     // Final color
     float3 finalColor = baseColor * lighting;
