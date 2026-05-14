@@ -12,7 +12,9 @@
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Context/RenderContext.h"
 #include "Render/GPUResourceManager.h"
+#include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
+#include "Render/Renderer/RenderDrawItem.h"
 #include <memory>
 #include <vector>
 
@@ -25,6 +27,7 @@ namespace RVX
     class OpaquePass;
     class RenderPassRegistry;
     class SkyboxPass;
+    class TransparentPass;
 
     /**
      * @brief Scene renderer - orchestrates rendering of a scene
@@ -161,6 +164,9 @@ namespace RVX
         /// Get the pipeline cache
         PipelineCache* GetPipelineCache() { return m_pipelineCache.get(); }
 
+        /// Get the material system
+        MaterialSystem* GetMaterialSystem() { return m_materialSystem.get(); }
+
         /// Get the transient resource pool
         TransientResourcePool* GetTransientResourcePool() { return m_transientResourcePool.get(); }
 
@@ -170,11 +176,17 @@ namespace RVX
         /// Get visible object indices
         const std::vector<uint32_t>& GetVisibleObjectIndices() const { return m_visibleObjectIndices; }
 
+        /// Get draw items for material-aware passes
+        const std::vector<RenderDrawItem>& GetOpaqueDrawItems() const { return m_opaqueDrawItems; }
+        const std::vector<RenderDrawItem>& GetMaskedDrawItems() const { return m_maskedDrawItems; }
+        const std::vector<RenderDrawItem>& GetTransparentDrawItems() const { return m_transparentDrawItems; }
+
         /// Set shader directory (must be set before Initialize)
         void SetShaderDirectory(const std::string& dir) { m_shaderDir = dir; }
 
     private:
         void BuildRenderGraph();
+        void BuildMaterialDrawLists();
         void SetupDefaultPasses();
         void UpdatePassResources();
         void ExecutePasses(RHICommandContext& ctx);
@@ -184,6 +196,7 @@ namespace RVX
         std::unique_ptr<RenderGraph> m_renderGraph;
         std::unique_ptr<GPUResourceManager> m_gpuResourceManager;
         std::unique_ptr<PipelineCache> m_pipelineCache;
+        std::unique_ptr<MaterialSystem> m_materialSystem;
         std::unique_ptr<TransientResourcePool> m_transientResourcePool;
         std::unique_ptr<ResourceViewCache> m_resourceViewCache;
         std::unique_ptr<RenderPassRegistry> m_passRegistry;
@@ -191,10 +204,14 @@ namespace RVX
         ViewData m_viewData;
         RenderScene m_renderScene;
         std::vector<uint32_t> m_visibleObjectIndices;
+        std::vector<RenderDrawItem> m_opaqueDrawItems;
+        std::vector<RenderDrawItem> m_maskedDrawItems;
+        std::vector<RenderDrawItem> m_transparentDrawItems;
         
         std::string m_shaderDir;
         DepthPrepass* m_depthPrepass = nullptr;  // Cached pointer to optional depth prepass
         OpaquePass* m_opaquePass = nullptr;  // Cached pointer to opaque pass
+        TransparentPass* m_transparentPass = nullptr;  // Cached pointer to transparent pass
         SkyboxPass* m_skyboxPass = nullptr;  // Cached pointer to skybox pass
         
         // Depth buffer

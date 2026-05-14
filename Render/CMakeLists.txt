@@ -26,6 +26,7 @@ target_sources(RVX_Render PRIVATE
     Private/Renderer/ViewData.cpp
     Private/Renderer/RenderScene.cpp
     Private/Renderer/RenderSceneCollector.cpp
+    Private/Renderer/RenderDrawItem.cpp
     Private/Renderer/RenderFrameResourceBinder.cpp
     Private/Renderer/RenderPassRegistry.cpp
     Private/Renderer/SceneRenderer.cpp
@@ -45,6 +46,8 @@ target_sources(RVX_Render PRIVATE
     Private/Graph/ResourceViewCache.cpp
     # Material
     Private/Material/MaterialBinder.cpp
+    Private/Material/MaterialClassification.cpp
+    Private/Material/MaterialSystem.cpp
     Private/Material/MaterialTemplate.cpp
     Private/Material/MaterialInstance.cpp
     # Lighting

@@ -6,6 +6,7 @@
 #include "Render/Passes/DepthPrepass.h"
 #include "Render/Renderer/ViewData.h"
 #include "Render/Renderer/RenderScene.h"
+#include "Render/Renderer/RenderDrawItem.h"
 #include "Render/GPUResourceManager.h"
 #include "Render/PipelineCache.h"
 #include "RHI/RHIRenderPass.h"
@@ -26,10 +27,13 @@ void DepthPrepass::SetResources(GPUResourceManager* gpuResources, PipelineCache*
     m_pipelineCache = pipelineCache;
 }
 
-void DepthPrepass::SetRenderScene(const RenderScene* scene, const std::vector<uint32_t>* visibleIndices)
+void DepthPrepass::SetRenderScene(const RenderScene* scene,
+                                  const std::vector<RenderDrawItem>* opaqueDrawItems,
+                                  const std::vector<RenderDrawItem>* maskedDrawItems)
 {
     m_renderScene = scene;
-    m_visibleIndices = visibleIndices;
+    m_opaqueDrawItems = opaqueDrawItems;
+    m_maskedDrawItems = maskedDrawItems;
 }
 
 void DepthPrepass::SetDepthTarget(RHITextureView* depthView)
@@ -48,7 +52,7 @@ void DepthPrepass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 
 void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
 {
-    if (!m_pipelineCache || !m_renderScene || !m_visibleIndices || !m_depthTargetView)
+    if (!m_pipelineCache || !m_renderScene || (!m_opaqueDrawItems && !m_maskedDrawItems) || !m_depthTargetView)
     {
         return;
     }
@@ -78,28 +82,34 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
     // Draw all visible opaque objects with depth-only shader
     if (m_gpuResources)
     {
-        for (uint32_t idx : *m_visibleIndices)
+        const auto drawItem = [&](const RenderDrawItem& item)
         {
-            if (idx >= m_renderScene->GetObjectCount())
-                continue;
+            if (item.objectIndex >= m_renderScene->GetObjectCount())
+                return;
 
-            const RenderObject& obj = m_renderScene->GetObject(idx);
+            const RenderObject& obj = m_renderScene->GetObject(item.objectIndex);
 
             // Get GPU buffers for this mesh
             MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(obj.meshId);
             if (!buffers.IsValid())
             {
-                continue;  // Mesh not uploaded yet
+                return;  // Mesh not uploaded yet
             }
 
             // Update per-object constants (world matrix)
             m_pipelineCache->UpdateObjectConstants(obj.worldMatrix);
 
-            RHIDescriptorSet* viewSet = m_pipelineCache->GetViewDescriptorSet();
-            if (viewSet)
+            RHIDescriptorSet* frameSet = m_pipelineCache->GetFrameDescriptorSet();
+            if (frameSet)
             {
-                const auto dynamicOffsets = m_pipelineCache->GetCurrentConstantDynamicOffsets();
-                ctx.SetDescriptorSet(0, viewSet, dynamicOffsets);
+                ctx.SetDescriptorSet(0, frameSet);
+            }
+
+            RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
+            if (objectSet)
+            {
+                const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
+                ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
             }
 
             // Bind vertex buffers - only position is needed for depth
@@ -108,11 +118,29 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
             // Bind index buffer
             ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
 
-            // Draw each submesh
-            for (const SubmeshGPUInfo& submesh : buffers.submeshes)
+            if (item.submeshIndex >= buffers.submeshes.size())
             {
-                ctx.DrawIndexed(submesh.indexCount, 1, 
-                               submesh.indexOffset, submesh.baseVertex, 0);
+                return;
+            }
+
+            const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
+            ctx.DrawIndexed(submesh.indexCount, 1,
+                            submesh.indexOffset, submesh.baseVertex, 0);
+        };
+
+        if (m_opaqueDrawItems)
+        {
+            for (const RenderDrawItem& item : *m_opaqueDrawItems)
+            {
+                drawItem(item);
+            }
+        }
+
+        if (m_maskedDrawItems)
+        {
+            for (const RenderDrawItem& item : *m_maskedDrawItems)
+            {
+                drawItem(item);
             }
         }
     }

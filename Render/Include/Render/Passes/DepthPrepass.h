@@ -11,6 +11,7 @@
 #include "Render/Passes/IRenderPass.h"
 #include "Render/GPUResourceManager.h"
 #include "Render/PipelineCache.h"
+#include "Render/Renderer/RenderDrawItem.h"
 
 namespace RVX
 {
@@ -61,9 +62,12 @@ namespace RVX
         /**
          * @brief Set render scene and visible objects
          * @param scene The render scene
-         * @param visibleIndices Indices of visible objects
+         * @param opaqueDrawItems Opaque draw items
+         * @param maskedDrawItems Alpha-masked draw items
          */
-        void SetRenderScene(const RenderScene* scene, const std::vector<uint32_t>* visibleIndices);
+        void SetRenderScene(const RenderScene* scene,
+                            const std::vector<RenderDrawItem>* opaqueDrawItems,
+                            const std::vector<RenderDrawItem>* maskedDrawItems);
 
         /**
          * @brief Set the depth target view
@@ -83,7 +87,8 @@ namespace RVX
         GPUResourceManager* m_gpuResources = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         const RenderScene* m_renderScene = nullptr;
-        const std::vector<uint32_t>* m_visibleIndices = nullptr;
+        const std::vector<RenderDrawItem>* m_opaqueDrawItems = nullptr;
+        const std::vector<RenderDrawItem>* m_maskedDrawItems = nullptr;
         RHITextureView* m_depthTargetView = nullptr;
     };
 

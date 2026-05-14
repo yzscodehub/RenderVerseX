@@ -2,23 +2,24 @@
 
 /**
  * @file PipelineCache.h
- * @brief Pipeline cache for managing graphics pipelines
- * 
+ * @brief Pipeline cache for managing graphics pipelines and frame/object sets
+ *
  * PipelineCache handles:
  * - Shader compilation with ShaderManager
- * - Pipeline layout creation using shader reflection
+ * - Stable frame/object/material descriptor set layouts
  * - Graphics pipeline creation and caching
- * - View constants buffer management
+ * - Frame and object constant buffer management
  */
 
 #include "Core/Assert.h"
 #include "Core/MathTypes.h"
+#include "Render/Material/MaterialClassification.h"
 #include "RHI/RHI.h"
+
 #include <array>
 #include <limits>
 #include <memory>
 #include <string>
-#include <unordered_map>
 
 namespace RVX
 {
@@ -48,18 +49,10 @@ namespace RVX
     };
 
     /**
-     * @brief Material constants structure (matches HLSL cbuffer)
-     */
-    struct MaterialConstants
-    {
-        Vec4 baseColorFactor{1.0f, 1.0f, 1.0f, 1.0f};
-    };
-
-    /**
      * @brief Pipeline cache for graphics pipelines
-     * 
-     * Uses shader reflection to automatically generate pipeline layouts.
-     * Manages default shaders and pipelines for scene rendering.
+     *
+     * The default material pipeline uses three descriptor sets:
+     * set 0 = frame, set 1 = object, set 2 = material.
      */
     class PipelineCache
     {
@@ -67,7 +60,6 @@ namespace RVX
         PipelineCache();
         ~PipelineCache();
 
-        // Non-copyable
         PipelineCache(const PipelineCache&) = delete;
         PipelineCache& operator=(const PipelineCache&) = delete;
 
@@ -104,6 +96,23 @@ namespace RVX
         RHIPipeline* GetOpaquePipeline() const { return m_opaquePipeline.Get(); }
 
         /**
+         * @brief Get the alpha-masked pipeline
+         * @return Graphics pipeline or nullptr if not available
+         */
+        RHIPipeline* GetMaskedPipeline() const { return m_maskedPipeline.Get(); }
+
+        /**
+         * @brief Get the alpha-blended transparent pipeline
+         * @return Graphics pipeline or nullptr if not available
+         */
+        RHIPipeline* GetTransparentPipeline() const { return m_transparentPipeline.Get(); }
+
+        /**
+         * @brief Get a pipeline for a material variant
+         */
+        RHIPipeline* GetPipelineForVariant(MaterialPipelineVariant variant) const;
+
+        /**
          * @brief Get the depth-only pipeline for depth prepass
          * @return Depth-only pipeline or nullptr if not available
          * @note Currently returns nullptr - depth-only pipeline not yet implemented
@@ -125,43 +134,37 @@ namespace RVX
         void BeginFrame();
 
         /**
-         * @brief Get the view constants descriptor set
+         * @brief Get the frame constants descriptor set (set 0)
          */
-        RHIDescriptorSet* GetViewDescriptorSet();
+        RHIDescriptorSet* GetFrameDescriptorSet();
 
         /**
-         * @brief Get a descriptor set for view/object constants and a base color texture
-         * @param baseColorView Texture view for the material base color, or nullptr for default white
+         * @brief Backward-compatible alias for frame constants
          */
-        RHIDescriptorSet* GetMaterialDescriptorSet(RHITextureView* baseColorView);
+        RHIDescriptorSet* GetViewDescriptorSet() { return GetFrameDescriptorSet(); }
 
         /**
-         * @brief Get a descriptor set and synchronize cached texture-view generation
-         * @param baseColorView Texture view for the material base color, or nullptr for default white
-         * @param textureViewGeneration Generation from the ResourceViewCache that produced baseColorView
+         * @brief Get the object constants descriptor set (set 1)
          */
-        RHIDescriptorSet* GetMaterialDescriptorSet(RHITextureView* baseColorView, uint64 textureViewGeneration);
+        RHIDescriptorSet* GetObjectDescriptorSet();
 
         /**
-         * @brief Get dynamic constant-buffer offsets for the current object/material slots
+         * @brief Get the material descriptor set layout (set 2)
          */
-        std::array<uint32, 2> GetCurrentConstantDynamicOffsets() const;
+        RHIDescriptorSetLayout* GetMaterialSetLayout() const;
 
         /**
-         * @brief Build dynamic offsets in the pipeline layout order: object constants, then material constants
+         * @brief Get dynamic constant-buffer offset for the current object slot
          */
-        static std::array<uint32, 2> BuildConstantDynamicOffsets(uint64 objectOffset, uint64 materialOffset)
+        std::array<uint32, 1> GetCurrentObjectDynamicOffset() const;
+
+        /**
+         * @brief Build a single dynamic offset span for descriptor sets with one dynamic binding
+         */
+        static std::array<uint32, 1> BuildSingleDynamicOffset(uint64 offset)
         {
-            return {
-                ToRHIConstantDynamicOffset(objectOffset),
-                ToRHIConstantDynamicOffset(materialOffset)
-            };
+            return {ToRHIConstantDynamicOffset(offset)};
         }
-
-        /**
-         * @brief Clear descriptor sets that reference externally cached texture views
-         */
-        void ClearMaterialDescriptorSets();
 
         /**
          * @brief Update view constants from ViewData
@@ -174,12 +177,6 @@ namespace RVX
          * @param worldMatrix The object's world matrix
          */
         void UpdateObjectConstants(const Mat4& worldMatrix);
-
-        /**
-         * @brief Update per-material constants
-         * @param baseColorFactor Material base color multiplier
-         */
-        void UpdateMaterialConstants(const Vec4& baseColorFactor);
 
         // =====================================================================
         // Render Target Format
@@ -198,7 +195,7 @@ namespace RVX
             {
                 RVX_VERIFY(false, "PipelineCache: dynamic constant offset {} exceeds the RHI uint32 offset limit",
                            offset);
-                return std::numeric_limits<uint32>::max();
+                return 0;
             }
 
             return static_cast<uint32>(offset);
@@ -207,32 +204,14 @@ namespace RVX
         bool CompileShaders();
         bool CreatePipelineLayout();
         bool CreatePipeline();
-        bool CreateDefaultMaterialResources();
+        RHIPipelineRef CreateDefaultLitPipeline(const char* debugName,
+                                                const RHIDepthStencilState& depthStencilState,
+                                                const RHIBlendState& blendState);
         bool CreateViewConstantBuffer();
         bool CreateObjectConstantBuffer();
-        bool CreateMaterialConstantBuffer();
-        RHIDescriptorSetRef CreateMaterialDescriptorSet(RHITextureView* baseColorView);
-        RHIDescriptorSet* GetMaterialDescriptorSetInternal(RHITextureView* baseColorView);
+        RHIDescriptorSetRef CreateFrameDescriptorSet();
+        RHIDescriptorSetRef CreateObjectDescriptorSet();
         uint64 AllocateObjectConstantSlot();
-        uint64 AllocateMaterialConstantSlot();
-
-        struct MaterialDescriptorKey
-        {
-            RHITextureView* textureView = nullptr;
-
-            bool operator==(const MaterialDescriptorKey& other) const
-            {
-                return textureView == other.textureView;
-            }
-        };
-
-        struct MaterialDescriptorKeyHash
-        {
-            size_t operator()(const MaterialDescriptorKey& key) const
-            {
-                return std::hash<RHITextureView*>{}(key.textureView);
-            }
-        };
 
         IRHIDevice* m_device = nullptr;
         std::string m_shaderDir;
@@ -247,30 +226,24 @@ namespace RVX
         std::unique_ptr<ShaderCompileResult> m_vsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_psCompileResult;
 
-        // Pipeline layout (from reflection)
+        // Descriptor set layouts and pipeline layout
         std::vector<RHIDescriptorSetLayoutRef> m_setLayouts;
         RHIPipelineLayoutRef m_pipelineLayout;
 
         // Graphics pipelines
         RHIPipelineRef m_opaquePipeline;
-        RHIPipelineRef m_depthOnlyPipeline;  // For depth prepass
+        RHIPipelineRef m_maskedPipeline;
+        RHIPipelineRef m_transparentPipeline;
+        RHIPipelineRef m_depthOnlyPipeline;
 
-        // View constants
+        // Frame and object constants
         RHIBufferRef m_viewConstantBuffer;
         RHIBufferRef m_objectConstantBuffer;
-        RHIBufferRef m_materialConstantBuffer;
-        RHIDescriptorSetRef m_viewDescriptorSet;
-        RHITextureRef m_defaultWhiteTexture;
-        RHITextureViewRef m_defaultWhiteTextureView;
-        RHISamplerRef m_defaultSampler;
-        std::unordered_map<MaterialDescriptorKey, RHIDescriptorSetRef, MaterialDescriptorKeyHash> m_materialDescriptorSets;
+        RHIDescriptorSetRef m_frameDescriptorSet;
+        RHIDescriptorSetRef m_objectDescriptorSet;
         uint64 m_objectConstantStride = 0;
-        uint64 m_materialConstantStride = 0;
         uint64 m_objectConstantCursor = 0;
-        uint64 m_materialConstantCursor = 0;
         uint64 m_currentObjectConstantOffset = 0;
-        uint64 m_currentMaterialConstantOffset = 0;
-        uint64 m_materialDescriptorCacheGeneration = ~uint64{0};
 
         // Render target format
         RHIFormat m_renderTargetFormat = RHIFormat::RGBA8_UNORM;

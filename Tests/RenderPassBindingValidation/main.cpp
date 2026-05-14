@@ -22,37 +22,48 @@ namespace
         return stream.str();
     }
 
-    bool Test_TransparentPassRebindsDescriptorAfterObjectConstants()
+    bool Test_TransparentPassUsesSplitDescriptorSets()
     {
         const std::filesystem::path sourcePath =
             std::filesystem::path(RVX_SOURCE_DIR) / "Render" / "Private" / "Passes" / "TransparentPass.cpp";
         const std::string source = LoadSourceFile(sourcePath);
 
         TEST_ASSERT_TRUE(!source.empty());
+        TEST_ASSERT_TRUE(source.find("m_pipelineCache->GetMaterialDescriptorSet") == std::string::npos);
+        TEST_ASSERT_TRUE(source.find("m_pipelineCache->GetCurrentConstantDynamicOffsets") == std::string::npos);
 
         const size_t updateObjectPos = source.find("m_pipelineCache->UpdateObjectConstants");
-        const size_t updateMaterialPos = source.find("m_pipelineCache->UpdateMaterialConstants", updateObjectPos);
-        const size_t descriptorPos = source.find("m_pipelineCache->GetMaterialDescriptorSet", updateObjectPos);
-        const size_t offsetsPos = source.find("m_pipelineCache->GetCurrentConstantDynamicOffsets", descriptorPos);
-        const size_t bindPos = source.find("ctx.SetDescriptorSet(0, materialSet, dynamicOffsets)", offsetsPos);
-        const size_t drawPos = source.find("ctx.DrawIndexed", bindPos);
+        const size_t objectSetPos = source.find("m_pipelineCache->GetObjectDescriptorSet", updateObjectPos);
+        const size_t objectOffsetPos = source.find("m_pipelineCache->GetCurrentObjectDynamicOffset", objectSetPos);
+        const size_t objectBindPos = source.find("ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets)", objectOffsetPos);
+        const size_t materialUpdatePos = source.find("m_materialSystem->UpdateMaterialConstants", objectBindPos);
+        const size_t materialSetPos = source.find("m_materialSystem->GetOrCreateMaterialSet", materialUpdatePos);
+        const size_t materialOffsetPos = source.find("m_materialSystem->GetCurrentMaterialDynamicOffset", materialSetPos);
+        const size_t materialBindPos = source.find("ctx.SetDescriptorSet(2, materialSet, materialDynamicOffsets)", materialOffsetPos);
+        const size_t drawPos = source.find("ctx.DrawIndexed", materialBindPos);
 
         TEST_ASSERT_TRUE(updateObjectPos != std::string::npos);
-        TEST_ASSERT_TRUE(updateMaterialPos != std::string::npos);
-        TEST_ASSERT_TRUE(descriptorPos != std::string::npos);
-        TEST_ASSERT_TRUE(offsetsPos != std::string::npos);
-        TEST_ASSERT_TRUE(bindPos != std::string::npos);
+        TEST_ASSERT_TRUE(objectSetPos != std::string::npos);
+        TEST_ASSERT_TRUE(objectOffsetPos != std::string::npos);
+        TEST_ASSERT_TRUE(objectBindPos != std::string::npos);
+        TEST_ASSERT_TRUE(materialUpdatePos != std::string::npos);
+        TEST_ASSERT_TRUE(materialSetPos != std::string::npos);
+        TEST_ASSERT_TRUE(materialOffsetPos != std::string::npos);
+        TEST_ASSERT_TRUE(materialBindPos != std::string::npos);
         TEST_ASSERT_TRUE(drawPos != std::string::npos);
-        TEST_ASSERT_TRUE(updateObjectPos < updateMaterialPos);
-        TEST_ASSERT_TRUE(updateMaterialPos < descriptorPos);
-        TEST_ASSERT_TRUE(descriptorPos < offsetsPos);
-        TEST_ASSERT_TRUE(offsetsPos < bindPos);
-        TEST_ASSERT_TRUE(bindPos < drawPos);
+        TEST_ASSERT_TRUE(updateObjectPos < objectSetPos);
+        TEST_ASSERT_TRUE(objectSetPos < objectOffsetPos);
+        TEST_ASSERT_TRUE(objectOffsetPos < objectBindPos);
+        TEST_ASSERT_TRUE(objectBindPos < materialUpdatePos);
+        TEST_ASSERT_TRUE(materialUpdatePos < materialSetPos);
+        TEST_ASSERT_TRUE(materialSetPos < materialOffsetPos);
+        TEST_ASSERT_TRUE(materialOffsetPos < materialBindPos);
+        TEST_ASSERT_TRUE(materialBindPos < drawPos);
 
         return true;
     }
 
-    bool Test_PipelineCacheUsesDynamicConstantOffsets()
+    bool Test_PipelineCacheUsesSplitDescriptorSetLayouts()
     {
         const std::filesystem::path sourcePath =
             std::filesystem::path(RVX_SOURCE_DIR) / "Render" / "Private" / "PipelineCache.cpp";
@@ -64,61 +75,105 @@ namespace
 
         TEST_ASSERT_TRUE(!source.empty());
         TEST_ASSERT_TRUE(!header.empty());
-        TEST_ASSERT_TRUE(source.find("entry.type = RHIBindingType::DynamicUniformBuffer") != std::string::npos);
-        TEST_ASSERT_TRUE(source.find("entry.isDynamic = true") != std::string::npos);
-        TEST_ASSERT_TRUE(source.find("ClearMaterialDescriptorSets();\n}") == std::string::npos);
-        TEST_ASSERT_TRUE(source.find("GetMaterialDescriptorSet(RHITextureView* baseColorView, uint64 textureViewGeneration)") != std::string::npos);
-        TEST_ASSERT_TRUE(source.find("descSetDesc.BindBuffer(1, m_objectConstantBuffer.Get(), 0, m_objectConstantStride)") != std::string::npos);
-        TEST_ASSERT_TRUE(source.find("descSetDesc.BindBuffer(4, m_materialConstantBuffer.Get(), 0, m_materialConstantStride)") != std::string::npos);
-
-        const size_t keyStart = header.find("struct MaterialDescriptorKey");
-        const size_t keyEnd = header.find("struct MaterialDescriptorKeyHash", keyStart);
-        TEST_ASSERT_TRUE(keyStart != std::string::npos);
-        TEST_ASSERT_TRUE(keyEnd != std::string::npos);
-        const std::string keyBlock = header.substr(keyStart, keyEnd - keyStart);
-        TEST_ASSERT_TRUE(keyBlock.find("objectOffset") == std::string::npos);
-        TEST_ASSERT_TRUE(keyBlock.find("materialOffset") == std::string::npos);
-
-        TEST_ASSERT_TRUE(header.find("m_materialDescriptorCacheGeneration") != std::string::npos);
-        TEST_ASSERT_TRUE(header.find("GetCurrentConstantDynamicOffsets") != std::string::npos);
+        TEST_ASSERT_TRUE(header.find("GetFrameDescriptorSet") != std::string::npos);
+        TEST_ASSERT_TRUE(header.find("GetObjectDescriptorSet") != std::string::npos);
+        TEST_ASSERT_TRUE(header.find("GetMaterialSetLayout") != std::string::npos);
+        TEST_ASSERT_TRUE(header.find("GetMaterialDescriptorSet") == std::string::npos);
+        TEST_ASSERT_TRUE(header.find("m_materialDescriptorSets") == std::string::npos);
+        TEST_ASSERT_TRUE(header.find("m_materialConstantBuffer") == std::string::npos);
+        TEST_ASSERT_TRUE(header.find("GetCurrentConstantDynamicOffsets") == std::string::npos);
+        TEST_ASSERT_TRUE(source.find("CreateFrameDescriptorSet") != std::string::npos);
+        TEST_ASSERT_TRUE(source.find("CreateObjectDescriptorSet") != std::string::npos);
+        TEST_ASSERT_TRUE(source.find("m_setLayouts.resize(3)") != std::string::npos);
+        TEST_ASSERT_TRUE(source.find("m_setLayouts[0] = m_device->CreateDescriptorSetLayout(frameLayoutDesc)") != std::string::npos);
+        TEST_ASSERT_TRUE(source.find("m_setLayouts[1] = m_device->CreateDescriptorSetLayout(objectLayoutDesc)") != std::string::npos);
+        TEST_ASSERT_TRUE(source.find("m_setLayouts[2] = m_device->CreateDescriptorSetLayout(materialLayoutDesc)") != std::string::npos);
+        TEST_ASSERT_TRUE(source.find("objectEntry.type = RHIBindingType::DynamicUniformBuffer") != std::string::npos);
+        TEST_ASSERT_TRUE(source.find("materialEntry.type = RHIBindingType::DynamicUniformBuffer") != std::string::npos);
 
         return true;
     }
 
-    bool Test_OpaquePassSynchronizesMaterialDescriptorGeneration()
+    bool Test_OpaquePassUsesSplitDescriptorSets()
     {
         const std::filesystem::path sourcePath =
             std::filesystem::path(RVX_SOURCE_DIR) / "Render" / "Private" / "Passes" / "OpaquePass.cpp";
         const std::string source = LoadSourceFile(sourcePath);
 
         TEST_ASSERT_TRUE(!source.empty());
-        TEST_ASSERT_TRUE(source.find("m_pipelineCache->ClearMaterialDescriptorSets") == std::string::npos);
+        TEST_ASSERT_TRUE(source.find("m_pipelineCache->GetMaterialDescriptorSet") == std::string::npos);
+        TEST_ASSERT_TRUE(source.find("m_pipelineCache->GetCurrentConstantDynamicOffsets") == std::string::npos);
 
-        const size_t baseColorPos = source.find("ResolveBaseColorTextureView");
-        const size_t descriptorPos = source.find("m_pipelineCache->GetMaterialDescriptorSet(baseColorView, view.viewCache->GetGeneration())",
-                                                 baseColorPos);
-        const size_t fallbackDescriptorPos = source.find("m_pipelineCache->GetMaterialDescriptorSet(baseColorView)",
-                                                         descriptorPos);
-        const size_t offsetsPos = source.find("m_pipelineCache->GetCurrentConstantDynamicOffsets", descriptorPos);
-        const size_t bindPos = source.find("ctx.SetDescriptorSet(0, materialSet, dynamicOffsets)", offsetsPos);
+        const size_t frameSetPos = source.find("m_pipelineCache->GetFrameDescriptorSet");
+        const size_t frameBindPos = source.find("ctx.SetDescriptorSet(0, frameSet)", frameSetPos);
+        const size_t updateObjectPos = source.find("m_pipelineCache->UpdateObjectConstants", frameBindPos);
+        const size_t objectSetPos = source.find("m_pipelineCache->GetObjectDescriptorSet", updateObjectPos);
+        const size_t objectOffsetPos = source.find("m_pipelineCache->GetCurrentObjectDynamicOffset", objectSetPos);
+        const size_t objectBindPos = source.find("ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets)", objectOffsetPos);
+        const size_t materialUpdatePos = source.find("m_materialSystem->UpdateMaterialConstants", objectBindPos);
+        const size_t materialSetPos = source.find("m_materialSystem->GetOrCreateMaterialSet", materialUpdatePos);
+        const size_t materialOffsetPos = source.find("m_materialSystem->GetCurrentMaterialDynamicOffset", materialSetPos);
+        const size_t materialBindPos = source.find("ctx.SetDescriptorSet(2, materialSet, materialDynamicOffsets)", materialOffsetPos);
 
-        TEST_ASSERT_TRUE(baseColorPos != std::string::npos);
-        TEST_ASSERT_TRUE(descriptorPos != std::string::npos);
-        TEST_ASSERT_TRUE(fallbackDescriptorPos != std::string::npos);
-        TEST_ASSERT_TRUE(offsetsPos != std::string::npos);
-        TEST_ASSERT_TRUE(bindPos != std::string::npos);
-        TEST_ASSERT_TRUE(baseColorPos < descriptorPos);
-        TEST_ASSERT_TRUE(descriptorPos < offsetsPos);
-        TEST_ASSERT_TRUE(offsetsPos < bindPos);
+        TEST_ASSERT_TRUE(frameSetPos != std::string::npos);
+        TEST_ASSERT_TRUE(frameBindPos != std::string::npos);
+        TEST_ASSERT_TRUE(updateObjectPos != std::string::npos);
+        TEST_ASSERT_TRUE(objectSetPos != std::string::npos);
+        TEST_ASSERT_TRUE(objectOffsetPos != std::string::npos);
+        TEST_ASSERT_TRUE(objectBindPos != std::string::npos);
+        TEST_ASSERT_TRUE(materialUpdatePos != std::string::npos);
+        TEST_ASSERT_TRUE(materialSetPos != std::string::npos);
+        TEST_ASSERT_TRUE(materialOffsetPos != std::string::npos);
+        TEST_ASSERT_TRUE(materialBindPos != std::string::npos);
+        TEST_ASSERT_TRUE(frameSetPos < frameBindPos);
+        TEST_ASSERT_TRUE(frameBindPos < updateObjectPos);
+        TEST_ASSERT_TRUE(updateObjectPos < objectSetPos);
+        TEST_ASSERT_TRUE(objectSetPos < objectOffsetPos);
+        TEST_ASSERT_TRUE(objectOffsetPos < objectBindPos);
+        TEST_ASSERT_TRUE(objectBindPos < materialUpdatePos);
+        TEST_ASSERT_TRUE(materialUpdatePos < materialSetPos);
+        TEST_ASSERT_TRUE(materialSetPos < materialOffsetPos);
+        TEST_ASSERT_TRUE(materialOffsetPos < materialBindPos);
 
         return true;
     }
 
-    bool Test_PipelineCacheDynamicOffsetsRuntime()
+    bool Test_DefaultLitUsesDescriptorSetSpaces()
     {
-        auto offsets = RVX::PipelineCache::BuildConstantDynamicOffsets(256, 512);
-        TEST_ASSERT_EQ(offsets[0], 256u);
-        TEST_ASSERT_EQ(offsets[1], 512u);
+        const std::filesystem::path sourcePath =
+            std::filesystem::path(RVX_SOURCE_DIR) / "Render" / "Shaders" / "DefaultLit.hlsl";
+        const std::string source = LoadSourceFile(sourcePath);
+
+        TEST_ASSERT_TRUE(!source.empty());
+        TEST_ASSERT_TRUE(source.find("cbuffer ViewConstants : register(b0, space0)") != std::string::npos);
+        TEST_ASSERT_TRUE(source.find("cbuffer ObjectConstants : register(b0, space1)") != std::string::npos);
+        TEST_ASSERT_TRUE(source.find("cbuffer MaterialConstants : register(b0, space2)") != std::string::npos);
+        TEST_ASSERT_TRUE(source.find("Texture2D BaseColorTexture : register(t1, space2)") != std::string::npos);
+        TEST_ASSERT_TRUE(source.find("Texture2D NormalTexture : register(t2, space2)") != std::string::npos);
+        TEST_ASSERT_TRUE(source.find("Texture2D MetallicRoughnessTexture : register(t3, space2)") != std::string::npos);
+        TEST_ASSERT_TRUE(source.find("Texture2D OcclusionTexture : register(t4, space2)") != std::string::npos);
+        TEST_ASSERT_TRUE(source.find("Texture2D EmissiveTexture : register(t5, space2)") != std::string::npos);
+        TEST_ASSERT_TRUE(source.find("SamplerState MaterialSampler : register(s6, space2)") != std::string::npos);
+
+        return true;
+    }
+
+    bool Test_DynamicConstantSlotsDoNotWrapWithinFrame()
+    {
+        const std::filesystem::path pipelineSourcePath =
+            std::filesystem::path(RVX_SOURCE_DIR) / "Render" / "Private" / "PipelineCache.cpp";
+        const std::filesystem::path materialSourcePath =
+            std::filesystem::path(RVX_SOURCE_DIR) / "Render" / "Private" / "Material" / "MaterialSystem.cpp";
+
+        const std::string pipelineSource = LoadSourceFile(pipelineSourcePath);
+        const std::string materialSource = LoadSourceFile(materialSourcePath);
+
+        TEST_ASSERT_TRUE(!pipelineSource.empty());
+        TEST_ASSERT_TRUE(!materialSource.empty());
+        TEST_ASSERT_TRUE(pipelineSource.find("% RVX_MAX_DRAW_CONSTANTS_PER_FRAME") == std::string::npos);
+        TEST_ASSERT_TRUE(materialSource.find("% RVX_MAX_MATERIAL_CONSTANTS_PER_FRAME") == std::string::npos);
+        TEST_ASSERT_TRUE(pipelineSource.find("Object constant buffer exhausted") != std::string::npos);
+        TEST_ASSERT_TRUE(materialSource.find("Material constant buffer exhausted") != std::string::npos);
 
         return true;
     }
@@ -130,14 +185,16 @@ int main()
     RVX_CORE_INFO("Render Pass Binding Validation Tests");
 
     TestSuite suite;
-    suite.AddTest("TransparentPassRebindsDescriptorAfterObjectConstants",
-                  Test_TransparentPassRebindsDescriptorAfterObjectConstants);
-    suite.AddTest("PipelineCacheUsesDynamicConstantOffsets",
-                  Test_PipelineCacheUsesDynamicConstantOffsets);
-    suite.AddTest("PipelineCacheDynamicOffsetsRuntime",
-                  Test_PipelineCacheDynamicOffsetsRuntime);
-    suite.AddTest("OpaquePassSynchronizesMaterialDescriptorGeneration",
-                  Test_OpaquePassSynchronizesMaterialDescriptorGeneration);
+    suite.AddTest("TransparentPassUsesSplitDescriptorSets",
+                  Test_TransparentPassUsesSplitDescriptorSets);
+    suite.AddTest("PipelineCacheUsesSplitDescriptorSetLayouts",
+                  Test_PipelineCacheUsesSplitDescriptorSetLayouts);
+    suite.AddTest("OpaquePassUsesSplitDescriptorSets",
+                  Test_OpaquePassUsesSplitDescriptorSets);
+    suite.AddTest("DefaultLitUsesDescriptorSetSpaces",
+                  Test_DefaultLitUsesDescriptorSetSpaces);
+    suite.AddTest("DynamicConstantSlotsDoNotWrapWithinFrame",
+                  Test_DynamicConstantSlotsDoNotWrapWithinFrame);
 
     auto results = suite.Run();
     suite.PrintResults(results);

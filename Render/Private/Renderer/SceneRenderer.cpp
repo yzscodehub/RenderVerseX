@@ -8,12 +8,15 @@
 #include "Render/Passes/DepthPrepass.h"
 #include "Render/Passes/OpaquePass.h"
 #include "Render/Passes/SkyboxPass.h"
+#include "Render/Passes/TransparentPass.h"
+#include "Render/Material/MaterialClassification.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/TextureResource.h"
 #include "Renderer/RenderFrameResourceBinder.h"
 #include "Renderer/RenderPassRegistry.h"
 #include "Runtime/Camera/Camera.h"
 #include "Core/Log.h"
+#include <algorithm>
 #include <filesystem>
 
 namespace RVX
@@ -53,6 +56,9 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
 
     // Create pipeline cache with shader reflection
     m_pipelineCache = std::make_unique<PipelineCache>();
+
+    // Create material system after pipeline layouts are available.
+    m_materialSystem = std::make_unique<MaterialSystem>();
 
     // Create transient resource pool for RenderGraph
     m_transientResourcePool = std::make_unique<TransientResourcePool>();
@@ -130,6 +136,15 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
         RVX_CORE_ERROR("  shaderDir was: '{}'", shaderDir);
     }
 
+    if (m_pipelineCache && m_pipelineCache->IsInitialized() && m_materialSystem)
+    {
+        if (!m_materialSystem->Initialize(m_renderContext->GetDevice(), m_gpuResourceManager.get(),
+                                          m_pipelineCache->GetMaterialSetLayout()))
+        {
+            RVX_CORE_ERROR("SceneRenderer: MaterialSystem failed to initialize");
+        }
+    }
+
     // Setup default passes (can be customized later)
     SetupDefaultPasses();
 
@@ -145,8 +160,15 @@ void SceneRenderer::Shutdown()
     ClearPasses();
     m_depthPrepass = nullptr;
     m_opaquePass = nullptr;
+    m_transparentPass = nullptr;
     m_skyboxPass = nullptr;
     
+    if (m_materialSystem)
+    {
+        m_materialSystem->Shutdown();
+        m_materialSystem.reset();
+    }
+
     if (m_pipelineCache)
     {
         m_pipelineCache->Shutdown();
@@ -205,6 +227,7 @@ void SceneRenderer::SetupView(const Camera& camera, World* world)
 
     // Sort visible objects for optimal rendering
     m_renderScene.SortVisibleObjects(m_visibleObjectIndices, m_viewData.cameraPosition);
+    BuildMaterialDrawLists();
 
     // Mark visible meshes as used for GPU resource management
     if (m_gpuResourceManager)
@@ -223,21 +246,86 @@ void SceneRenderer::SetupView(const Camera& camera, World* world)
                 if (!material)
                     continue;
 
-                auto textureHandle = material->GetAlbedoTexture();
-                auto* texture = textureHandle.Get();
-                if (!texture)
+                const auto requestTexture = [this](Resource::ResourceHandle<Resource::TextureResource> textureHandle)
                 {
-                    continue;
-                }
+                    auto* texture = textureHandle.Get();
+                    if (!texture)
+                        return;
 
-                if (!m_gpuResourceManager->IsResident(texture->GetId()))
-                {
-                    m_gpuResourceManager->RequestUpload(texture, UploadPriority::High);
-                }
-                m_gpuResourceManager->MarkUsed(texture->GetId());
+                    if (!m_gpuResourceManager->IsResident(texture->GetId()))
+                    {
+                        m_gpuResourceManager->RequestUpload(texture, UploadPriority::High);
+                    }
+                    m_gpuResourceManager->MarkUsed(texture->GetId());
+                };
+
+                requestTexture(material->GetAlbedoTexture());
+                requestTexture(material->GetNormalTexture());
+                requestTexture(material->GetMetallicRoughnessTexture());
+                requestTexture(material->GetAOTexture());
+                requestTexture(material->GetEmissiveTexture());
             }
         }
     }
+}
+
+void SceneRenderer::BuildMaterialDrawLists()
+{
+    m_opaqueDrawItems.clear();
+    m_maskedDrawItems.clear();
+    m_transparentDrawItems.clear();
+
+    for (uint32_t objectIndex : m_visibleObjectIndices)
+    {
+        const RenderObject& obj = m_renderScene.GetObject(objectIndex);
+        const size_t submeshCount = obj.materialResources.empty() ? 1 : obj.materialResources.size();
+
+        for (size_t submeshIndex = 0; submeshIndex < submeshCount; ++submeshIndex)
+        {
+            Resource::MaterialResource* materialResource =
+                submeshIndex < obj.materialResources.size() ? obj.materialResources[submeshIndex] : nullptr;
+            const Material* material = materialResource ? materialResource->GetMaterial().get() : nullptr;
+            const MaterialRenderMode mode = ClassifyMaterialRenderMode(material);
+
+            RenderDrawItem item;
+            item.objectIndex = objectIndex;
+            item.submeshIndex = static_cast<uint32>(submeshIndex);
+            item.meshId = obj.meshId;
+            item.materialId = submeshIndex < obj.materialIds.size() ? obj.materialIds[submeshIndex] : 0;
+            item.materialResource = materialResource;
+            item.renderMode = mode;
+            item.depthFromCamera = length(Vec3(obj.worldMatrix[3]) - m_viewData.cameraPosition);
+
+            if (mode == MaterialRenderMode::Transparent)
+            {
+                item.sortKey = BuildTransparentDrawSortKey(item);
+                m_transparentDrawItems.push_back(item);
+            }
+            else if (mode == MaterialRenderMode::Masked)
+            {
+                item.sortKey = BuildOpaqueDrawSortKey(item);
+                m_maskedDrawItems.push_back(item);
+            }
+            else
+            {
+                item.sortKey = BuildOpaqueDrawSortKey(item);
+                m_opaqueDrawItems.push_back(item);
+            }
+        }
+    }
+
+    const auto sortFrontToBack = [](const RenderDrawItem& lhs, const RenderDrawItem& rhs)
+    {
+        return lhs.sortKey < rhs.sortKey;
+    };
+    std::sort(m_opaqueDrawItems.begin(), m_opaqueDrawItems.end(), sortFrontToBack);
+    std::sort(m_maskedDrawItems.begin(), m_maskedDrawItems.end(), sortFrontToBack);
+
+    std::sort(m_transparentDrawItems.begin(), m_transparentDrawItems.end(),
+              [](const RenderDrawItem& lhs, const RenderDrawItem& rhs)
+              {
+                  return lhs.depthFromCamera > rhs.depthFromCamera;
+              });
 }
 
 void SceneRenderer::Render()
@@ -259,6 +347,11 @@ void SceneRenderer::Render()
     if (m_pipelineCache && m_pipelineCache->IsInitialized())
     {
         m_pipelineCache->BeginFrame();
+    }
+
+    if (m_materialSystem && m_materialSystem->IsInitialized())
+    {
+        m_materialSystem->BeginFrame();
     }
 
     // Process pending GPU uploads with time budget
@@ -387,10 +480,13 @@ void SceneRenderer::UpdatePassResources()
     RenderFrameResourceBinder::BindScenePassResources(
         *m_renderContext,
         m_renderScene,
-        m_visibleObjectIndices,
+        m_opaqueDrawItems,
+        m_maskedDrawItems,
+        m_transparentDrawItems,
         m_depthTextureView.Get(),
         m_depthPrepass,
         m_opaquePass,
+        m_transparentPass,
         m_skyboxPass);
 }
 
@@ -551,7 +647,7 @@ void SceneRenderer::SetupDefaultPasses()
     AddPass(std::move(depthPrepass));
 
     auto opaquePass = std::make_unique<OpaquePass>();
-    opaquePass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get());
+    opaquePass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get(), m_materialSystem.get());
     m_opaquePass = opaquePass.get();
     AddPass(std::move(opaquePass));
 
@@ -559,6 +655,11 @@ void SceneRenderer::SetupDefaultPasses()
     skyboxPass->SetResources(m_pipelineCache.get());
     m_skyboxPass = skyboxPass.get();
     AddPass(std::move(skyboxPass));
+
+    auto transparentPass = std::make_unique<TransparentPass>();
+    transparentPass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get(), m_materialSystem.get());
+    m_transparentPass = transparentPass.get();
+    AddPass(std::move(transparentPass));
 
     RVX_CORE_DEBUG("SceneRenderer: Default passes setup complete");
 }

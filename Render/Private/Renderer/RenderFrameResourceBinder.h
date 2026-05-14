@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Render/Renderer/RenderDrawItem.h"
 #include "RHI/RHITexture.h"
 
 #include <vector>
@@ -11,6 +12,7 @@ namespace RVX
     class RenderContext;
     class RenderScene;
     class SkyboxPass;
+    class TransparentPass;
 
     class RenderFrameResourceBinder
     {
@@ -18,10 +20,13 @@ namespace RVX
         static void BindScenePassResources(
             RenderContext& renderContext,
             RenderScene& renderScene,
-            const std::vector<uint32_t>& visibleObjectIndices,
+            const std::vector<RenderDrawItem>& opaqueDrawItems,
+            const std::vector<RenderDrawItem>& maskedDrawItems,
+            const std::vector<RenderDrawItem>& transparentDrawItems,
             RHITextureView* depthTargetView,
             DepthPrepass* depthPrepass,
             OpaquePass* opaquePass,
+            TransparentPass* transparentPass,
             SkyboxPass* skyboxPass);
     };
 

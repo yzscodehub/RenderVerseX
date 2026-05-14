@@ -153,6 +153,24 @@ target_link_libraries(RenderPassBindingValidation PRIVATE
 )
 target_compile_features(RenderPassBindingValidation PRIVATE cxx_std_20)
 
+# Material system validation tests
+add_executable(MaterialSystemValidation
+    MaterialSystemValidation/main.cpp
+)
+target_compile_definitions(MaterialSystemValidation PRIVATE
+    RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+target_include_directories(MaterialSystemValidation PRIVATE
+    ${CMAKE_SOURCE_DIR}/Render/Include
+    ${CMAKE_SOURCE_DIR}/Scene/Include
+)
+target_link_libraries(MaterialSystemValidation PRIVATE
+    RVX_TestFramework
+    RVX::Render
+    RVX::Scene
+)
+target_compile_features(MaterialSystemValidation PRIVATE cxx_std_20)
+
 # Resource view cache validation tests
 add_executable(ResourceViewCacheValidation
     ResourceViewCacheValidation/main.cpp

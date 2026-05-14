@@ -7,6 +7,7 @@
 
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Graph/RenderGraph.h"
+#include "Render/Renderer/RenderDrawItem.h"
 #include <cstdint>
 #include <vector>
 
@@ -14,6 +15,7 @@ namespace RVX
 {
     // Forward declarations
     class GPUResourceManager;
+    class MaterialSystem;
     class PipelineCache;
     class RenderScene;
 
@@ -52,14 +54,17 @@ namespace RVX
          * @param gpuMgr GPU resource manager for mesh buffers
          * @param pipelines Pipeline cache for shaders and pipelines
          */
-        void SetResources(GPUResourceManager* gpuMgr, PipelineCache* pipelines);
+        void SetResources(GPUResourceManager* gpuMgr, PipelineCache* pipelines, MaterialSystem* materialSystem);
 
         /**
          * @brief Set render scene data for this frame
          * @param scene The render scene containing objects
-         * @param visibleIndices Indices of visible objects (after culling)
+         * @param opaqueDrawItems Opaque submesh draw items
+         * @param maskedDrawItems Alpha-masked submesh draw items
          */
-        void SetRenderScene(const RenderScene* scene, const std::vector<uint32_t>* visibleIndices);
+        void SetRenderScene(const RenderScene* scene,
+                            const std::vector<RenderDrawItem>* opaqueDrawItems,
+                            const std::vector<RenderDrawItem>* maskedDrawItems);
 
         // =====================================================================
         // Render Targets
@@ -77,8 +82,10 @@ namespace RVX
         // Resource dependencies
         GPUResourceManager* m_gpuResources = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
+        MaterialSystem* m_materialSystem = nullptr;
         const RenderScene* m_renderScene = nullptr;
-        const std::vector<uint32_t>* m_visibleIndices = nullptr;
+        const std::vector<RenderDrawItem>* m_opaqueDrawItems = nullptr;
+        const std::vector<RenderDrawItem>* m_maskedDrawItems = nullptr;
 
         // Render target views
         RHITextureView* m_colorTargetView = nullptr;
