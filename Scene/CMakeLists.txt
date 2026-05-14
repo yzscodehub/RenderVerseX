@@ -10,9 +10,15 @@ target_sources(RVX_Scene PRIVATE
     Private/Material.cpp
     Private/Node.cpp
     Private/Model.cpp
+    Private/Actor.cpp
+    Private/ActorComponent.cpp
+    Private/ActorFactory.cpp
+    Private/SceneComponent.cpp
+    Private/PrimitiveComponent.cpp
     Private/SceneEntity.cpp
     Private/SceneManager.cpp
     Private/Component.cpp
+    Private/ComponentClassFactory.cpp
     Private/ComponentFactory.cpp
     Private/Prefab.cpp
 

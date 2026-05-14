@@ -7,17 +7,19 @@
  * SceneEntity implements ISpatialEntity for spatial indexing integration.
  */
 
-#include "Core/MathTypes.h"
 #include "Core/Math/AABB.h"
-#include "Spatial/Index/ISpatialEntity.h"
+#include "Core/MathTypes.h"
+#include "Scene/Actor.h"
 #include "Scene/Component.h"
-#include <string>
-#include <memory>
+#include "Spatial/Index/ISpatialEntity.h"
+
 #include <atomic>
-#include <vector>
-#include <unordered_map>
+#include <memory>
+#include <string>
 #include <typeindex>
 #include <type_traits>
+#include <unordered_map>
+#include <vector>
 
 namespace RVX
 {
@@ -47,7 +49,7 @@ namespace RVX
      * Implements ISpatialEntity for integration with spatial indexing.
      * All renderable objects in the scene should derive from this class.
      */
-    class SceneEntity : public Spatial::ISpatialEntity
+    class SceneEntity : public Actor, public Spatial::ISpatialEntity
     {
     public:
         using Handle = Spatial::EntityHandle;
@@ -296,6 +298,7 @@ namespace RVX
 
         // Set owner and call OnAttach
         component->SetOwner(this);
+        component->OnComponentCreated();
         component->OnAttach();
 
         // Store component
@@ -341,6 +344,8 @@ namespace RVX
         {
             // Call OnDetach before removal
             it->second->OnDetach();
+            it->second->OnComponentDestroyed();
+            it->second->SetOwner(nullptr);
             m_components.erase(it);
 
             // Notify bounds may have changed

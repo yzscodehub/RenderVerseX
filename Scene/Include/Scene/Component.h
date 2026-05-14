@@ -9,6 +9,8 @@
  */
 
 #include "Core/Math/AABB.h"
+#include "Scene/ActorComponent.h"
+
 #include <string>
 
 namespace RVX
@@ -33,11 +35,11 @@ namespace RVX
      * };
      * @endcode
      */
-    class Component
+    class Component : public ActorComponent
     {
     public:
         Component() = default;
-        virtual ~Component() = default;
+        ~Component() override = default;
 
         // Non-copyable
         Component(const Component&) = delete;
@@ -49,6 +51,9 @@ namespace RVX
 
         /// Get the component type name (for debugging/serialization)
         virtual const char* GetTypeName() const = 0;
+
+        /// Bridge UE-style metadata to the legacy type name.
+        const char* GetClassName() const override { return GetTypeName(); }
 
         // =====================================================================
         // Lifecycle
@@ -63,18 +68,15 @@ namespace RVX
         /// Called every frame (if enabled)
         virtual void Tick(float deltaTime) { (void)deltaTime; }
 
+        /// Forward UE-style ticking into the legacy tick hook.
+        void TickComponent(float deltaTime) override { Tick(deltaTime); }
+
         // =====================================================================
         // State
         // =====================================================================
 
         /// Get the owning entity
         SceneEntity* GetOwner() const { return m_owner; }
-
-        /// Check if component is enabled
-        bool IsEnabled() const { return m_enabled; }
-
-        /// Enable/disable the component
-        void SetEnabled(bool enabled) { m_enabled = enabled; }
 
         // =====================================================================
         // Spatial Bounds (Optional - for hybrid bounds system)
@@ -97,10 +99,9 @@ namespace RVX
         friend class SceneEntity;
 
         /// Set by SceneEntity when attached
-        void SetOwner(SceneEntity* owner) { m_owner = owner; }
+        void SetOwner(SceneEntity* owner);
 
         SceneEntity* m_owner = nullptr;
-        bool m_enabled = true;
         bool m_needsTick = false;
     };
 

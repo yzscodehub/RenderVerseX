@@ -171,6 +171,16 @@ target_link_libraries(MaterialSystemValidation PRIVATE
 )
 target_compile_features(MaterialSystemValidation PRIVATE cxx_std_20)
 
+# Actor component validation tests
+add_executable(ActorComponentValidation
+    ActorComponentValidation/main.cpp
+)
+target_link_libraries(ActorComponentValidation PRIVATE
+    RVX_TestFramework
+    RVX::Scene
+)
+target_compile_features(ActorComponentValidation PRIVATE cxx_std_20)
+
 # Resource view cache validation tests
 add_executable(ResourceViewCacheValidation
     ResourceViewCacheValidation/main.cpp

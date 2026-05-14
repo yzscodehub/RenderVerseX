@@ -8,13 +8,17 @@
  * during ModelResource::Instantiate().
  */
 
+#include "Scene/ActorComponent.h"
+#include "Scene/Component.h"
 #include "Scene/Node.h"
 #include "Scene/SceneEntity.h"
-#include "Scene/Component.h"
+
 #include <functional>
-#include <unordered_map>
-#include <string>
 #include <memory>
+#include <string>
+#include <type_traits>
+#include <unordered_map>
+#include <vector>
 
 namespace RVX
 {
@@ -57,6 +61,7 @@ namespace RVX
          * @return Created component (or nullptr if not applicable)
          */
         using Creator = std::function<Component*(SceneEntity*, const Node*, const Resource::ModelResource*)>;
+        using ClassCreator = std::function<std::unique_ptr<ActorComponent>()>;
 
         // =====================================================================
         // Registration
@@ -86,6 +91,22 @@ namespace RVX
          * Call this during engine initialization.
          */
         static void RegisterDefaults();
+
+        /**
+         * @brief Register an actor component class for generic construction
+         */
+        template<typename T>
+        static void RegisterComponentClass(const std::string& typeName);
+
+        /**
+         * @brief Register a generic actor component creator
+         */
+        static void RegisterComponentClass(const std::string& typeName, ClassCreator creator);
+
+        /**
+         * @brief Clear generic actor component class creators
+         */
+        static void ClearComponentClasses();
 
         // =====================================================================
         // Component Creation
@@ -119,6 +140,11 @@ namespace RVX
                                            const Node* node,
                                            const Resource::ModelResource* model);
 
+        /**
+         * @brief Create an actor component by registered class name
+         */
+        static std::unique_ptr<ActorComponent> CreateComponentByClassName(const std::string& typeName);
+
         // =====================================================================
         // Query
         // =====================================================================
@@ -135,6 +161,17 @@ namespace RVX
 
     private:
         static std::unordered_map<std::string, Creator>& GetCreators();
+        static std::unordered_map<std::string, ClassCreator>& GetComponentClassCreators();
     };
+
+    template<typename T>
+    void ComponentFactory::RegisterComponentClass(const std::string& typeName)
+    {
+        static_assert(std::is_base_of_v<ActorComponent, T>, "T must derive from ActorComponent");
+
+        RegisterComponentClass(typeName, []() {
+            return std::make_unique<T>();
+        });
+    }
 
 } // namespace RVX

@@ -1,8 +1,11 @@
 #include "Scene/ComponentFactory.h"
-#include "Scene/Components/MeshRendererComponent.h"
-#include "Resource/Types/ModelResource.h"
-#include "Resource/Types/MeshResource.h"
+
 #include "Resource/Types/MaterialResource.h"
+#include "Resource/Types/MeshResource.h"
+#include "Resource/Types/ModelResource.h"
+#include "Scene/Components/MeshRendererComponent.h"
+
+#include <utility>
 
 namespace RVX
 {

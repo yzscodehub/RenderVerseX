@@ -4,6 +4,12 @@
 namespace RVX
 {
 
+void Component::SetOwner(SceneEntity* owner)
+{
+    m_owner = owner;
+    SetOwnerActor(owner);
+}
+
 void Component::NotifyBoundsChanged()
 {
     if (m_owner)

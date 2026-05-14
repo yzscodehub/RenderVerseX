@@ -13,7 +13,8 @@ SceneEntity::Handle SceneEntity::GenerateHandle()
 }
 
 SceneEntity::SceneEntity(const std::string& name)
-    : m_handle(GenerateHandle())
+    : Actor(name)
+    , m_handle(GenerateHandle())
     , m_name(name)
 {
 }
@@ -26,6 +27,8 @@ SceneEntity::~SceneEntity()
         if (component)
         {
             component->OnDetach();
+            component->OnComponentDestroyed();
+            component->SetOwner(nullptr);
         }
     }
     m_components.clear();
