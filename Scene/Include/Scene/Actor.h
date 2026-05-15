@@ -5,6 +5,7 @@
  * @brief UE-style object that owns actor components
  */
 
+#include "Core/MathTypes.h"
 #include "Scene/ActorComponent.h"
 #include "Spatial/Index/ISpatialEntity.h"
 
@@ -87,7 +88,21 @@ namespace RVX
         // =====================================================================
 
         SceneComponent* GetRootComponent() const { return m_rootComponent; }
-        void SetRootComponent(SceneComponent* rootComponent);
+        virtual void SetRootComponent(SceneComponent* rootComponent);
+
+        // =====================================================================
+        // Transform Forwarding
+        // =====================================================================
+
+        virtual Vec3 GetWorldPosition() const;
+        virtual Quat GetWorldRotation() const;
+        virtual Vec3 GetWorldScale() const;
+        virtual Mat4 GetWorldMatrix() const;
+
+        virtual void SetPosition(const Vec3& position);
+        virtual void SetRotation(const Quat& rotation);
+        virtual void SetScale(const Vec3& scale);
+        virtual void Translate(const Vec3& delta);
 
         // =====================================================================
         // Lifecycle

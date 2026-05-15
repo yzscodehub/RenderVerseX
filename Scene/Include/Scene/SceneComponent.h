@@ -43,10 +43,14 @@ namespace RVX
 
         const Vec3& GetRelativeScale() const { return m_relativeScale; }
         void SetRelativeScale(const Vec3& scale);
+        const Vec3& GetRelativeScale3D() const { return m_relativeScale; }
+        void SetRelativeScale3D(const Vec3& scale) { SetRelativeScale(scale); }
 
         Mat4 GetRelativeTransform() const;
         const Mat4& GetWorldTransform() const;
         Vec3 GetWorldLocation() const;
+        Quat GetWorldRotation() const;
+        Vec3 GetWorldScale() const;
 
         // =====================================================================
         // Attachment

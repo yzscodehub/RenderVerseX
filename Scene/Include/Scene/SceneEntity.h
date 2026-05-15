@@ -11,6 +11,7 @@
 #include "Core/MathTypes.h"
 #include "Scene/Actor.h"
 #include "Scene/Component.h"
+#include "Scene/SceneComponent.h"
 #include "Spatial/Index/ISpatialEntity.h"
 
 #include <atomic>
@@ -65,11 +66,12 @@ namespace RVX
         explicit SceneEntity(const std::string& name = "Entity");
         ~SceneEntity() override;
 
-        // Non-copyable, movable
+        // Non-copyable, non-movable. SceneEntity identity is address-stable for
+        // component owner pointers, parent/child links, and spatial index users.
         SceneEntity(const SceneEntity&) = delete;
         SceneEntity& operator=(const SceneEntity&) = delete;
-        SceneEntity(SceneEntity&&) = default;
-        SceneEntity& operator=(SceneEntity&&) = default;
+        SceneEntity(SceneEntity&&) = delete;
+        SceneEntity& operator=(SceneEntity&&) = delete;
 
         // =====================================================================
         // ISpatialEntity Implementation
@@ -107,31 +109,31 @@ namespace RVX
         // Transform (Local - relative to parent)
         // =====================================================================
 
-        const Vec3& GetPosition() const { return m_position; }
-        void SetPosition(const Vec3& position);
+        const Vec3& GetPosition() const;
+        void SetPosition(const Vec3& position) override;
 
-        const Quat& GetRotation() const { return m_rotation; }
-        void SetRotation(const Quat& rotation);
+        const Quat& GetRotation() const;
+        void SetRotation(const Quat& rotation) override;
 
-        const Vec3& GetScale() const { return m_scale; }
-        void SetScale(const Vec3& scale);
+        const Vec3& GetScale() const;
+        void SetScale(const Vec3& scale) override;
 
         /// Get local transform matrix (relative to parent)
         Mat4 GetLocalMatrix() const;
 
         /// Get world transform matrix (includes parent transforms)
-        Mat4 GetWorldMatrix() const;
+        Mat4 GetWorldMatrix() const override;
 
         /// Get world position (includes parent transforms)
-        Vec3 GetWorldPosition() const;
+        Vec3 GetWorldPosition() const override;
 
         /// Get world rotation (includes parent transforms)
-        Quat GetWorldRotation() const;
+        Quat GetWorldRotation() const override;
 
         /// Get world scale (includes parent transforms)
-        Vec3 GetWorldScale() const;
+        Vec3 GetWorldScale() const override;
 
-        void Translate(const Vec3& delta);
+        void Translate(const Vec3& delta) override;
         void Rotate(const Quat& delta);
         void RotateAround(const Vec3& axis, float angle);
 
@@ -223,6 +225,9 @@ namespace RVX
         /// Tick all components
         void TickComponents(float deltaTime);
 
+        void SetRootComponent(SceneComponent* rootComponent) override;
+        void NotifySceneComponentTransformChanged(SceneComponent* component);
+
     protected:
         void MarkSpatialDirty() { m_spatialDirty = true; }
         void MarkTransformDirty();  // Also marks children as dirty
@@ -265,6 +270,7 @@ namespace RVX
 
         // Components
         std::unordered_map<std::type_index, std::unique_ptr<Component>> m_components;
+        SceneComponent* m_compatRootComponent = nullptr;
 
         // Helper to mark all children's transforms as dirty
         void MarkChildrenTransformDirty();

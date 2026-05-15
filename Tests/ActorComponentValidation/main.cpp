@@ -9,6 +9,7 @@
 #include "Scene/SceneEntity.h"
 #include "TestFramework/TestRunner.h"
 
+#include <memory>
 #include <string>
 #include <type_traits>
 
@@ -175,6 +176,221 @@ namespace
         TEST_ASSERT_EQ(std::string("SceneComponent"), std::string(component->GetClassName()));
         return true;
     }
+
+    bool Test_ActorTransformForwardsToRootComponent()
+    {
+        RVX::Actor actor("RootTransformActor");
+        auto* root = actor.AddComponent<RVX::SceneComponent>();
+        actor.SetRootComponent(root);
+
+        actor.SetPosition(RVX::Vec3(3.0f, 4.0f, 5.0f));
+        actor.SetScale(RVX::Vec3(2.0f, 3.0f, 4.0f));
+
+        TEST_ASSERT_EQ(RVX::Vec3(3.0f, 4.0f, 5.0f), root->GetRelativeLocation());
+        TEST_ASSERT_EQ(RVX::Vec3(3.0f, 4.0f, 5.0f), actor.GetWorldPosition());
+        TEST_ASSERT_EQ(RVX::Vec3(2.0f, 3.0f, 4.0f), root->GetRelativeScale3D());
+        TEST_ASSERT_EQ(RVX::Vec3(2.0f, 3.0f, 4.0f), actor.GetWorldScale());
+        TEST_ASSERT_EQ(root->GetWorldTransform(), actor.GetWorldMatrix());
+        return true;
+    }
+
+    bool Test_SceneEntityCreatesRootAndForwardsTransform()
+    {
+        RVX::SceneEntity entity("CompatTransformEntity");
+        auto* root = entity.GetRootComponent();
+        TEST_ASSERT_NOT_NULL(root);
+
+        entity.SetPosition(RVX::Vec3(7.0f, 8.0f, 9.0f));
+        entity.SetScale(RVX::Vec3(2.0f, 2.0f, 2.0f));
+
+        TEST_ASSERT_EQ(RVX::Vec3(7.0f, 8.0f, 9.0f), entity.GetPosition());
+        TEST_ASSERT_EQ(RVX::Vec3(7.0f, 8.0f, 9.0f), root->GetRelativeLocation());
+        TEST_ASSERT_EQ(RVX::Vec3(7.0f, 8.0f, 9.0f), entity.GetWorldPosition());
+        TEST_ASSERT_EQ(RVX::Vec3(2.0f, 2.0f, 2.0f), entity.GetScale());
+        TEST_ASSERT_EQ(root->GetWorldTransform(), entity.GetWorldMatrix());
+        return true;
+    }
+
+    bool Test_SceneEntityHierarchyAttachesRootComponents()
+    {
+        RVX::SceneEntity parent("ParentEntity");
+        RVX::SceneEntity child("ChildEntity");
+
+        parent.SetPosition(RVX::Vec3(10.0f, 0.0f, 0.0f));
+        child.SetPosition(RVX::Vec3(2.0f, 0.0f, 0.0f));
+
+        parent.AddChild(&child);
+
+        TEST_ASSERT_EQ(parent.GetRootComponent(), child.GetRootComponent()->GetAttachParent());
+        TEST_ASSERT_EQ(RVX::Vec3(12.0f, 0.0f, 0.0f), child.GetWorldPosition());
+
+        parent.SetPosition(RVX::Vec3(20.0f, 0.0f, 0.0f));
+        TEST_ASSERT_EQ(RVX::Vec3(22.0f, 0.0f, 0.0f), child.GetWorldPosition());
+
+        TEST_ASSERT_TRUE(parent.RemoveChild(&child));
+        TEST_ASSERT_EQ(nullptr, child.GetRootComponent()->GetAttachParent());
+        TEST_ASSERT_EQ(RVX::Vec3(2.0f, 0.0f, 0.0f), child.GetWorldPosition());
+        return true;
+    }
+
+    bool Test_SceneEntityTransformStaysSyncedThroughActorAndRootPaths()
+    {
+        RVX::SceneEntity entity("SyncEntity");
+        RVX::Actor* actor = &entity;
+
+        actor->SetPosition(RVX::Vec3(3.0f, 0.0f, 0.0f));
+        entity.Translate(RVX::Vec3(2.0f, 0.0f, 0.0f));
+        TEST_ASSERT_EQ(RVX::Vec3(5.0f, 0.0f, 0.0f), entity.GetPosition());
+
+        entity.GetRootComponent()->SetRelativeLocation(RVX::Vec3(4.0f, 0.0f, 0.0f));
+        entity.Translate(RVX::Vec3(1.0f, 0.0f, 0.0f));
+        TEST_ASSERT_EQ(RVX::Vec3(5.0f, 0.0f, 0.0f), entity.GetPosition());
+
+        entity.GetRootComponent()->SetRelativeLocation(RVX::Vec3(9.0f, 0.0f, 0.0f));
+        entity.SetPosition(RVX::Vec3(5.0f, 0.0f, 0.0f));
+        TEST_ASSERT_EQ(RVX::Vec3(5.0f, 0.0f, 0.0f), entity.GetRootComponent()->GetRelativeLocation());
+        return true;
+    }
+
+    bool Test_SceneEntityDestructionMaintainsHierarchy()
+    {
+        RVX::SceneEntity parent("PersistentParent");
+        {
+            auto child = std::make_unique<RVX::SceneEntity>("TemporaryChild");
+            parent.AddChild(child.get());
+            TEST_ASSERT_EQ(static_cast<size_t>(1), parent.GetChildCount());
+        }
+        TEST_ASSERT_EQ(static_cast<size_t>(0), parent.GetChildCount());
+
+        auto child = std::make_unique<RVX::SceneEntity>("PersistentChild");
+        {
+            auto temporaryParent = std::make_unique<RVX::SceneEntity>("TemporaryParent");
+            temporaryParent->AddChild(child.get());
+            TEST_ASSERT_EQ(temporaryParent.get(), child->GetParent());
+        }
+
+        TEST_ASSERT_EQ(nullptr, child->GetParent());
+        TEST_ASSERT_EQ(nullptr, child->GetRootComponent()->GetAttachParent());
+        return true;
+    }
+
+    bool Test_SceneEntityCompatRootCannotBeRemovedThroughActorAPI()
+    {
+        RVX::SceneEntity entity("RootProtectedEntity");
+        RVX::Actor* actor = &entity;
+        auto* root = entity.GetRootComponent();
+
+        TEST_ASSERT_NOT_NULL(root);
+        TEST_ASSERT_FALSE(actor->RemoveComponent<RVX::SceneComponent>());
+        TEST_ASSERT_EQ(root, entity.GetRootComponent());
+
+        entity.SetPosition(RVX::Vec3(6.0f, 0.0f, 0.0f));
+        TEST_ASSERT_EQ(RVX::Vec3(6.0f, 0.0f, 0.0f), entity.GetWorldPosition());
+        return true;
+    }
+
+    bool Test_SceneEntityRootReplacementKeepsCompatibility()
+    {
+        RVX::SceneEntity parent("ReplacementParent");
+        RVX::SceneEntity child("ReplacementChild");
+        RVX::Actor* childActor = &child;
+
+        parent.SetPosition(RVX::Vec3(10.0f, 0.0f, 0.0f));
+        child.SetPosition(RVX::Vec3(2.0f, 0.0f, 0.0f));
+        parent.AddChild(&child);
+
+        auto* originalRoot = child.GetRootComponent();
+        childActor->SetRootComponent(nullptr);
+        TEST_ASSERT_EQ(originalRoot, child.GetRootComponent());
+
+        auto* replacementRoot = childActor->AddComponent<RVX::SceneComponent>();
+        replacementRoot->SetRelativeLocation(RVX::Vec3(3.0f, 0.0f, 0.0f));
+
+        childActor->SetRootComponent(replacementRoot);
+
+        TEST_ASSERT_EQ(replacementRoot, child.GetRootComponent());
+        TEST_ASSERT_EQ(parent.GetRootComponent(), replacementRoot->GetAttachParent());
+        TEST_ASSERT_EQ(RVX::Vec3(3.0f, 0.0f, 0.0f), child.GetPosition());
+        TEST_ASSERT_EQ(RVX::Vec3(13.0f, 0.0f, 0.0f), child.GetWorldPosition());
+        return true;
+    }
+
+    bool Test_RootComponentTransformMarksSceneEntityDirty()
+    {
+        RVX::SceneEntity entity("RootDirtyEntity");
+        entity.SetLocalBounds(RVX::AABB(RVX::Vec3(-1.0f), RVX::Vec3(1.0f)));
+
+        auto initialBounds = entity.GetWorldBounds();
+        TEST_ASSERT_EQ(RVX::Vec3(0.0f), initialBounds.GetCenter());
+
+        entity.ClearSpatialDirty();
+        TEST_ASSERT_FALSE(entity.IsSpatialDirty());
+
+        entity.GetRootComponent()->SetRelativeLocation(RVX::Vec3(10.0f, 0.0f, 0.0f));
+
+        TEST_ASSERT_TRUE(entity.IsSpatialDirty());
+        auto updatedBounds = entity.GetWorldBounds();
+        TEST_ASSERT_EQ(RVX::Vec3(10.0f, 0.0f, 0.0f), updatedBounds.GetCenter());
+        return true;
+    }
+
+    bool Test_SceneEntityRootReplacementRejectsInvalidAttachment()
+    {
+        RVX::SceneEntity parent("CycleParent");
+        RVX::SceneEntity child("CycleChild");
+        RVX::Actor* childActor = &child;
+
+        parent.AddChild(&child);
+        auto* originalRoot = child.GetRootComponent();
+        auto* replacementRoot = childActor->AddComponent<RVX::SceneComponent>();
+
+        TEST_ASSERT_TRUE(parent.GetRootComponent()->AttachToComponent(replacementRoot));
+
+        childActor->SetRootComponent(replacementRoot);
+
+        TEST_ASSERT_EQ(originalRoot, child.GetRootComponent());
+        TEST_ASSERT_EQ(parent.GetRootComponent(), originalRoot->GetAttachParent());
+
+        parent.GetRootComponent()->DetachFromComponent();
+        return true;
+    }
+
+    bool Test_SceneEntityRootReplacementDetachesExternalParentWhenRootEntity()
+    {
+        RVX::SceneEntity externalParent("ExternalParent");
+        RVX::SceneEntity entity("RootReplacementEntity");
+        RVX::Actor* actor = &entity;
+
+        externalParent.SetPosition(RVX::Vec3(100.0f, 0.0f, 0.0f));
+        auto* replacementRoot = actor->AddComponent<RVX::SceneComponent>();
+        replacementRoot->SetRelativeLocation(RVX::Vec3(5.0f, 0.0f, 0.0f));
+
+        TEST_ASSERT_TRUE(replacementRoot->AttachToComponent(externalParent.GetRootComponent()));
+
+        actor->SetRootComponent(replacementRoot);
+
+        TEST_ASSERT_EQ(replacementRoot, entity.GetRootComponent());
+        TEST_ASSERT_EQ(nullptr, replacementRoot->GetAttachParent());
+        TEST_ASSERT_EQ(RVX::Vec3(5.0f, 0.0f, 0.0f), entity.GetWorldPosition());
+        return true;
+    }
+
+    bool Test_SceneEntityAddChildRejectsInconsistentComponentCycle()
+    {
+        RVX::SceneEntity parent("CycleAttachmentParent");
+        RVX::SceneEntity child("CycleAttachmentChild");
+
+        TEST_ASSERT_TRUE(parent.GetRootComponent()->AttachToComponent(child.GetRootComponent()));
+
+        parent.AddChild(&child);
+
+        TEST_ASSERT_EQ(nullptr, child.GetParent());
+        TEST_ASSERT_EQ(static_cast<size_t>(0), parent.GetChildCount());
+        TEST_ASSERT_EQ(child.GetRootComponent(), parent.GetRootComponent()->GetAttachParent());
+
+        parent.GetRootComponent()->DetachFromComponent();
+        return true;
+    }
 } // namespace
 
 int main()
@@ -194,6 +410,28 @@ int main()
                   Test_SceneEntityAndComponentAreActorCompatible);
     suite.AddTest("ActorAndComponentFactoriesCreateRegisteredTypes",
                   Test_ActorAndComponentFactoriesCreateRegisteredTypes);
+    suite.AddTest("ActorTransformForwardsToRootComponent",
+                  Test_ActorTransformForwardsToRootComponent);
+    suite.AddTest("SceneEntityCreatesRootAndForwardsTransform",
+                  Test_SceneEntityCreatesRootAndForwardsTransform);
+    suite.AddTest("SceneEntityHierarchyAttachesRootComponents",
+                  Test_SceneEntityHierarchyAttachesRootComponents);
+    suite.AddTest("SceneEntityTransformStaysSyncedThroughActorAndRootPaths",
+                  Test_SceneEntityTransformStaysSyncedThroughActorAndRootPaths);
+    suite.AddTest("SceneEntityDestructionMaintainsHierarchy",
+                  Test_SceneEntityDestructionMaintainsHierarchy);
+    suite.AddTest("SceneEntityCompatRootCannotBeRemovedThroughActorAPI",
+                  Test_SceneEntityCompatRootCannotBeRemovedThroughActorAPI);
+    suite.AddTest("SceneEntityRootReplacementKeepsCompatibility",
+                  Test_SceneEntityRootReplacementKeepsCompatibility);
+    suite.AddTest("RootComponentTransformMarksSceneEntityDirty",
+                  Test_RootComponentTransformMarksSceneEntityDirty);
+    suite.AddTest("SceneEntityRootReplacementRejectsInvalidAttachment",
+                  Test_SceneEntityRootReplacementRejectsInvalidAttachment);
+    suite.AddTest("SceneEntityRootReplacementDetachesExternalParentWhenRootEntity",
+                  Test_SceneEntityRootReplacementDetachesExternalParentWhenRootEntity);
+    suite.AddTest("SceneEntityAddChildRejectsInconsistentComponentCycle",
+                  Test_SceneEntityAddChildRejectsInconsistentComponentCycle);
 
     auto results = suite.Run();
     suite.PrintResults(results);

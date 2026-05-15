@@ -1,5 +1,7 @@
 #include "Scene/SceneEntity.h"
+
 #include <glm/gtc/matrix_transform.hpp>
+
 #include <algorithm>
 
 namespace RVX
@@ -17,10 +19,33 @@ SceneEntity::SceneEntity(const std::string& name)
     , m_handle(GenerateHandle())
     , m_name(name)
 {
+    m_compatRootComponent = Actor::AddComponent<SceneComponent>();
+    SetRootComponent(m_compatRootComponent);
 }
 
 SceneEntity::~SceneEntity()
 {
+    if (m_parent)
+    {
+        m_parent->RemoveChild(this);
+    }
+
+    for (SceneEntity* child : m_children)
+    {
+        if (!child)
+            continue;
+
+        if (m_compatRootComponent && child->m_compatRootComponent &&
+            child->m_compatRootComponent->GetAttachParent() == m_compatRootComponent)
+        {
+            child->m_compatRootComponent->DetachFromComponent();
+        }
+
+        child->m_parent = nullptr;
+        child->MarkTransformDirty();
+    }
+    m_children.clear();
+
     // Detach all components
     for (auto& [typeId, component] : m_components)
     {
@@ -47,6 +72,15 @@ void SceneEntity::AddChild(SceneEntity* child)
     if (child->IsAncestorOf(this))
         return;
 
+    if (child->m_parent == this)
+        return;
+
+    if (m_compatRootComponent && child->m_compatRootComponent &&
+        !child->m_compatRootComponent->AttachToComponent(m_compatRootComponent))
+    {
+        return;
+    }
+
     // Remove from previous parent
     if (child->m_parent)
     {
@@ -69,6 +103,12 @@ bool SceneEntity::RemoveChild(SceneEntity* child)
     auto it = std::find(m_children.begin(), m_children.end(), child);
     if (it != m_children.end())
     {
+        if (m_compatRootComponent && child->m_compatRootComponent &&
+            child->m_compatRootComponent->GetAttachParent() == m_compatRootComponent)
+        {
+            child->m_compatRootComponent->DetachFromComponent();
+        }
+
         child->m_parent = nullptr;
         m_children.erase(it);
         child->MarkTransformDirty();
@@ -230,36 +270,77 @@ AABB SceneEntity::ComputeBoundsFromComponents() const
     return combined;
 }
 
+const Vec3& SceneEntity::GetPosition() const
+{
+    return m_compatRootComponent ? m_compatRootComponent->GetRelativeLocation() : m_position;
+}
+
+const Quat& SceneEntity::GetRotation() const
+{
+    return m_compatRootComponent ? m_compatRootComponent->GetRelativeRotation() : m_rotation;
+}
+
+const Vec3& SceneEntity::GetScale() const
+{
+    return m_compatRootComponent ? m_compatRootComponent->GetRelativeScale() : m_scale;
+}
+
 void SceneEntity::SetPosition(const Vec3& position)
 {
-    if (m_position != position)
+    const bool transformChanged = GetPosition() != position;
+
+    m_position = position;
+    if (m_compatRootComponent)
     {
-        m_position = position;
+        m_compatRootComponent->SetRelativeLocation(position);
+    }
+
+    if (transformChanged)
+    {
         MarkTransformDirty();
     }
 }
 
 void SceneEntity::SetRotation(const Quat& rotation)
 {
-    if (m_rotation != rotation)
+    const bool transformChanged = GetRotation() != rotation;
+
+    m_rotation = rotation;
+    if (m_compatRootComponent)
     {
-        m_rotation = rotation;
+        m_compatRootComponent->SetRelativeRotation(rotation);
+    }
+
+    if (transformChanged)
+    {
         MarkTransformDirty();
     }
 }
 
 void SceneEntity::SetScale(const Vec3& scale)
 {
-    if (m_scale != scale)
+    const bool transformChanged = GetScale() != scale;
+
+    m_scale = scale;
+    if (m_compatRootComponent)
     {
-        m_scale = scale;
+        m_compatRootComponent->SetRelativeScale(scale);
+    }
+
+    if (transformChanged)
+    {
         MarkTransformDirty();
     }
 }
 
 Mat4 SceneEntity::GetLocalMatrix() const
 {
-    Mat4 localMatrix = Mat4(1.0f);
+    if (m_compatRootComponent)
+    {
+        return m_compatRootComponent->GetRelativeTransform();
+    }
+
+    Mat4 localMatrix(1.0f);
     localMatrix = glm::translate(localMatrix, m_position);
     localMatrix *= glm::mat4_cast(m_rotation);
     localMatrix = glm::scale(localMatrix, m_scale);
@@ -268,59 +349,60 @@ Mat4 SceneEntity::GetLocalMatrix() const
 
 Mat4 SceneEntity::GetWorldMatrix() const
 {
+    if (m_compatRootComponent)
+    {
+        m_worldMatrix = m_compatRootComponent->GetWorldTransform();
+        m_transformDirty = false;
+        return m_worldMatrix;
+    }
+
     if (m_transformDirty)
     {
         Mat4 localMatrix = GetLocalMatrix();
-        
-        if (m_parent)
-        {
-            m_worldMatrix = m_parent->GetWorldMatrix() * localMatrix;
-        }
-        else
-        {
-            m_worldMatrix = localMatrix;
-        }
+        m_worldMatrix = m_parent ? m_parent->GetWorldMatrix() * localMatrix : localMatrix;
         m_transformDirty = false;
     }
+
     return m_worldMatrix;
 }
 
 Vec3 SceneEntity::GetWorldPosition() const
 {
-    if (m_parent)
+    if (m_compatRootComponent)
     {
-        Mat4 worldMatrix = GetWorldMatrix();
-        return Vec3(worldMatrix[3]);
+        return m_compatRootComponent->GetWorldLocation();
     }
-    return m_position;
+
+    Mat4 worldMatrix = GetWorldMatrix();
+    return Vec3(worldMatrix[3]);
 }
 
 Quat SceneEntity::GetWorldRotation() const
 {
-    if (m_parent)
+    if (m_compatRootComponent)
     {
-        return m_parent->GetWorldRotation() * m_rotation;
+        return m_compatRootComponent->GetWorldRotation();
     }
     return m_rotation;
 }
 
 Vec3 SceneEntity::GetWorldScale() const
 {
-    if (m_parent)
+    if (m_compatRootComponent)
     {
-        return m_parent->GetWorldScale() * m_scale;
+        return m_compatRootComponent->GetWorldScale();
     }
     return m_scale;
 }
 
 void SceneEntity::Translate(const Vec3& delta)
 {
-    SetPosition(m_position + delta);
+    SetPosition(GetPosition() + delta);
 }
 
 void SceneEntity::Rotate(const Quat& delta)
 {
-    SetRotation(delta * m_rotation);
+    SetRotation(delta * GetRotation());
 }
 
 void SceneEntity::RotateAround(const Vec3& axis, float angle)
@@ -348,6 +430,51 @@ void SceneEntity::TickComponents(float deltaTime)
             component->Tick(deltaTime);
         }
     }
+}
+
+void SceneEntity::SetRootComponent(SceneComponent* rootComponent)
+{
+    if (!rootComponent)
+        return;
+
+    if (rootComponent->GetOwner() != this)
+        return;
+
+    SceneComponent* parentRoot = m_parent ? m_parent->m_compatRootComponent : nullptr;
+    if (parentRoot && rootComponent->GetAttachParent() != parentRoot)
+    {
+        if (!rootComponent->AttachToComponent(parentRoot))
+        {
+            return;
+        }
+    }
+    else if (!parentRoot && rootComponent->GetAttachParent())
+    {
+        rootComponent->DetachFromComponent();
+    }
+
+    Actor::SetRootComponent(rootComponent);
+    if (GetRootComponent() != rootComponent)
+        return;
+
+    m_compatRootComponent = rootComponent;
+    m_position = rootComponent->GetRelativeLocation();
+    m_rotation = rootComponent->GetRelativeRotation();
+    m_scale = rootComponent->GetRelativeScale();
+
+    MarkTransformDirty();
+}
+
+void SceneEntity::NotifySceneComponentTransformChanged(SceneComponent* component)
+{
+    if (component == m_compatRootComponent)
+    {
+        m_position = component->GetRelativeLocation();
+        m_rotation = component->GetRelativeRotation();
+        m_scale = component->GetRelativeScale();
+    }
+
+    MarkTransformDirty();
 }
 
 } // namespace RVX

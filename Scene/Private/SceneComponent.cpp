@@ -1,4 +1,5 @@
 #include "Scene/SceneComponent.h"
+#include "Scene/SceneEntity.h"
 
 #include <algorithm>
 
@@ -78,6 +79,24 @@ Vec3 SceneComponent::GetWorldLocation() const
     return Vec3(GetWorldTransform()[3]);
 }
 
+Quat SceneComponent::GetWorldRotation() const
+{
+    if (m_attachParent)
+    {
+        return m_attachParent->GetWorldRotation() * m_relativeRotation;
+    }
+    return m_relativeRotation;
+}
+
+Vec3 SceneComponent::GetWorldScale() const
+{
+    if (m_attachParent)
+    {
+        return m_attachParent->GetWorldScale() * m_relativeScale;
+    }
+    return m_relativeScale;
+}
+
 bool SceneComponent::AttachToComponent(SceneComponent* parent)
 {
     if (!parent || parent == this || WouldCreateCycle(parent))
@@ -108,6 +127,11 @@ void SceneComponent::MarkTransformDirty()
 {
     m_transformDirty = true;
     OnTransformChanged();
+
+    if (auto* entity = dynamic_cast<SceneEntity*>(GetOwner()))
+    {
+        entity->NotifySceneComponentTransformChanged(this);
+    }
 
     for (SceneComponent* child : m_attachChildren)
     {

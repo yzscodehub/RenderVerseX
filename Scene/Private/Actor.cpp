@@ -26,9 +26,69 @@ Actor::~Actor()
 
 void Actor::SetRootComponent(SceneComponent* rootComponent)
 {
-    if (!rootComponent || rootComponent->GetOwner() == this)
+    if (rootComponent && rootComponent->GetOwner() != this)
+        return;
+
+    if (m_rootComponent == rootComponent)
+        return;
+
+    if (m_rootComponent)
     {
-        m_rootComponent = rootComponent;
+        m_rootComponent->DetachFromComponent();
+    }
+
+    m_rootComponent = rootComponent;
+}
+
+Vec3 Actor::GetWorldPosition() const
+{
+    return m_rootComponent ? m_rootComponent->GetWorldLocation() : Vec3(0.0f);
+}
+
+Quat Actor::GetWorldRotation() const
+{
+    return m_rootComponent ? m_rootComponent->GetWorldRotation() : Quat(1.0f, 0.0f, 0.0f, 0.0f);
+}
+
+Vec3 Actor::GetWorldScale() const
+{
+    return m_rootComponent ? m_rootComponent->GetWorldScale() : Vec3(1.0f);
+}
+
+Mat4 Actor::GetWorldMatrix() const
+{
+    return m_rootComponent ? m_rootComponent->GetWorldTransform() : Mat4(1.0f);
+}
+
+void Actor::SetPosition(const Vec3& position)
+{
+    if (m_rootComponent)
+    {
+        m_rootComponent->SetRelativeLocation(position);
+    }
+}
+
+void Actor::SetRotation(const Quat& rotation)
+{
+    if (m_rootComponent)
+    {
+        m_rootComponent->SetRelativeRotation(rotation);
+    }
+}
+
+void Actor::SetScale(const Vec3& scale)
+{
+    if (m_rootComponent)
+    {
+        m_rootComponent->SetRelativeScale(scale);
+    }
+}
+
+void Actor::Translate(const Vec3& delta)
+{
+    if (m_rootComponent)
+    {
+        m_rootComponent->SetRelativeLocation(m_rootComponent->GetRelativeLocation() + delta);
     }
 }
 
@@ -118,6 +178,9 @@ bool Actor::RemoveComponentInstance(ActorComponent* component)
     if (it == m_components.end())
         return false;
 
+    if (component == static_cast<ActorComponent*>(m_rootComponent))
+        return false;
+
     if (component->HasBegunPlay())
     {
         component->EndPlay();
@@ -128,11 +191,6 @@ bool Actor::RemoveComponentInstance(ActorComponent* component)
         component->OnUnregister();
         component->SetRegistered(false);
     }
-    if (component == static_cast<ActorComponent*>(m_rootComponent))
-    {
-        m_rootComponent = nullptr;
-    }
-
     component->OnComponentDestroyed();
     component->SetOwnerActor(nullptr);
     m_components.erase(it);
