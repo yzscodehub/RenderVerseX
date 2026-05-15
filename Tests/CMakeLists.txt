@@ -203,6 +203,18 @@ target_link_libraries(SpatialComponentValidation PRIVATE
 )
 target_compile_features(SpatialComponentValidation PRIVATE cxx_std_20)
 
+# Resource instantiation validation tests
+add_executable(ResourceInstantiationValidation
+    ResourceInstantiationValidation/main.cpp
+)
+target_link_libraries(ResourceInstantiationValidation PRIVATE
+    RVX_TestFramework
+    RVX::Resource
+    RVX::Scene
+    RVX::World
+)
+target_compile_features(ResourceInstantiationValidation PRIVATE cxx_std_20)
+
 # Resource view cache validation tests
 add_executable(ResourceViewCacheValidation
     ResourceViewCacheValidation/main.cpp

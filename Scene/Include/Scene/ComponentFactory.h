@@ -2,9 +2,9 @@
 
 /**
  * @file ComponentFactory.h
- * @brief Factory for creating ECS components from Node data
+ * @brief Factory for creating actor components from model Node data
  * 
- * Provides a unified way to convert Node indices to ECS Components
+ * Provides a unified way to convert Node indices to actor components
  * during ModelResource::Instantiate().
  */
 
@@ -31,11 +31,11 @@ namespace RVX
     }
 
     /**
-     * @brief Factory for creating ECS components from Node data
+     * @brief Factory for creating actor components from model Node data
      * 
      * ComponentFactory provides a registry-based system for converting
-     * Node indices (meshIndex, materialIndices, etc.) into proper ECS
-     * Component instances during model instantiation.
+     * Node indices (meshIndex, materialIndices, etc.) into actor component
+     * instances during model instantiation.
      * 
      * Usage:
      * @code
@@ -53,14 +53,14 @@ namespace RVX
     {
     public:
         /**
-         * @brief Component creator function signature
+         * @brief Model-node component creator function signature
          * 
          * @param entity The SceneEntity to attach the component to
          * @param node The source Node containing index data
          * @param model The ModelResource containing resource arrays
-         * @return Created component (or nullptr if not applicable)
+         * @return Created actor component (or nullptr if not applicable)
          */
-        using Creator = std::function<Component*(SceneEntity*, const Node*, const Resource::ModelResource*)>;
+        using Creator = std::function<ActorComponent*(SceneEntity*, const Node*, const Resource::ModelResource*)>;
         using ClassCreator = std::function<std::unique_ptr<ActorComponent>()>;
 
         // =====================================================================
@@ -86,7 +86,7 @@ namespace RVX
         static void ClearAll();
 
         /**
-         * @brief Register default component creators (MeshRenderer, etc.)
+         * @brief Register default model-node component creators.
          * 
          * Call this during engine initialization.
          */
@@ -113,7 +113,7 @@ namespace RVX
         // =====================================================================
 
         /**
-         * @brief Create all applicable components for an entity from a node
+         * @brief Create all applicable model-node actor components for an entity.
          * 
          * Iterates through all registered creators and calls each one.
          * Each creator decides whether to create a component based on
@@ -127,18 +127,18 @@ namespace RVX
                                        const Resource::ModelResource* model);
 
         /**
-         * @brief Create a specific component type
+         * @brief Create a specific model-node component type
          * 
          * @param typeName The registered type name
          * @param entity The SceneEntity to attach to
          * @param node The source Node
          * @param model The ModelResource
-         * @return Created component or nullptr
+         * @return Created actor component or nullptr
          */
-        static Component* CreateComponent(const std::string& typeName,
-                                           SceneEntity* entity,
-                                           const Node* node,
-                                           const Resource::ModelResource* model);
+        static ActorComponent* CreateComponent(const std::string& typeName,
+                                               SceneEntity* entity,
+                                               const Node* node,
+                                               const Resource::ModelResource* model);
 
         /**
          * @brief Create an actor component by registered class name

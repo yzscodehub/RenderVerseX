@@ -1,4 +1,5 @@
 #include "Scene/Actor.h"
+#include "Scene/Component.h"
 #include "Scene/SceneComponent.h"
 
 #include <algorithm>
@@ -90,6 +91,35 @@ void Actor::Translate(const Vec3& delta)
     {
         m_rootComponent->SetRelativeLocation(m_rootComponent->GetRelativeLocation() + delta);
     }
+}
+
+ActorComponent* Actor::AddOwnedComponent(std::unique_ptr<ActorComponent> component)
+{
+    if (!component)
+        return nullptr;
+
+    // Legacy Component subclasses must enter through SceneEntity so their
+    // SceneEntity owner and legacy component map remain coherent.
+    if (dynamic_cast<Component*>(component.get()))
+        return nullptr;
+
+    ActorComponent* ptr = component.get();
+    ptr->SetOwnerActor(this);
+    m_components.push_back(std::move(component));
+    ptr->OnComponentCreated();
+
+    if (ShouldAutoRegisterComponent(ptr))
+    {
+        ptr->SetRegistered(true);
+        ptr->OnRegister();
+        if (!ptr->IsInitialized())
+        {
+            ptr->InitializeComponent();
+            ptr->SetInitialized(true);
+        }
+    }
+
+    return ptr;
 }
 
 void Actor::RegisterAllComponents()

@@ -1,6 +1,9 @@
 #include "Scene/Prefab.h"
-#include "Scene/SceneManager.h"
+#include "Scene/Actor.h"
 #include "Scene/Component.h"
+#include "Scene/ComponentFactory.h"
+#include "Scene/SceneComponent.h"
+#include "Scene/SceneManager.h"
 
 namespace RVX
 {
@@ -22,6 +25,10 @@ size_t Prefab::GetMemoryUsage() const
         for (const auto& [type, data] : entity.componentData)
         {
             size += type.capacity() + data.capacity();
+        }
+        for (const auto& component : entity.actorComponentData)
+        {
+            size += component.className.capacity() + component.serializedData.capacity();
         }
     }
     
@@ -222,6 +229,20 @@ void Prefab::SerializeEntity(const SceneEntity* entity, int32_t parentIndex)
         data.componentData[component->GetTypeName()] = "";
     }
 
+    for (const auto& actorComponent : entity->GetActorComponents())
+    {
+        if (!actorComponent)
+            continue;
+
+        const std::string className = actorComponent->GetClassName();
+        if (className == "SceneComponent" || className == "PrefabInstance")
+            continue;
+        if (dynamic_cast<Component*>(actorComponent.get()))
+            continue;
+
+        data.actorComponentData.push_back({className, ""});
+    }
+
     int32_t currentIndex = static_cast<int32_t>(m_entities.size());
     m_entities.push_back(std::move(data));
 
@@ -234,11 +255,27 @@ void Prefab::SerializeEntity(const SceneEntity* entity, int32_t parentIndex)
 
 void Prefab::CreateComponents(SceneEntity* entity, const PrefabEntityData& data) const
 {
-    // TODO: Implement component deserialization using ComponentFactory
-    // This would parse the serialized component data and create components
-    
-    (void)entity;
-    (void)data;
+    if (!entity)
+        return;
+
+    for (const auto& componentData : data.actorComponentData)
+    {
+        (void)componentData.serializedData;
+
+        auto component = ComponentFactory::CreateComponentByClassName(componentData.className);
+        if (!component)
+            continue;
+
+        auto* raw = component.get();
+        ActorComponent* inserted = static_cast<Actor*>(entity)->AddOwnedComponent(std::move(component));
+        if (!inserted)
+            continue;
+
+        if (auto* sceneComponent = dynamic_cast<SceneComponent*>(raw))
+        {
+            sceneComponent->AttachToComponent(entity->GetRootComponent());
+        }
+    }
 }
 
 // =========================================================================

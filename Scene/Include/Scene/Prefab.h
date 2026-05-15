@@ -46,6 +46,15 @@ struct PropertyOverride
 };
 
 /**
+ * @brief Serialized actor component class record.
+ */
+struct PrefabActorComponentData
+{
+    std::string className;
+    std::string serializedData;
+};
+
+/**
  * @brief Prefab entity data for serialization
  */
 struct PrefabEntityData
@@ -60,6 +69,9 @@ struct PrefabEntityData
     
     // Components (serialized data per component type)
     std::unordered_map<std::string, std::string> componentData;
+
+    // Actor components in creation order. Allows duplicate component classes.
+    std::vector<PrefabActorComponentData> actorComponentData;
     
     // Layer mask
     uint32_t layerMask = ~0u;

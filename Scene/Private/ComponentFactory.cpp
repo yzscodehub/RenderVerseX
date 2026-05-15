@@ -3,7 +3,8 @@
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/ModelResource.h"
-#include "Scene/Components/MeshRendererComponent.h"
+#include "Scene/Actor.h"
+#include "Scene/Components/StaticMeshComponent.h"
 
 #include <utility>
 
@@ -40,52 +41,39 @@ namespace RVX
 
     void ComponentFactory::RegisterDefaults()
     {
-        // MeshRenderer creator
-        Register("MeshRenderer", [](SceneEntity* entity, const Node* node,
-                                     const Resource::ModelResource* model) -> Component* {
-            // Skip if no mesh index
-            if (!node || node->GetMeshIndex() < 0)
-            {
+        Register("StaticMesh", [](SceneEntity* entity, const Node* node,
+                                    const Resource::ModelResource* model) -> ActorComponent* {
+            if (!entity || !node || !model || node->GetMeshIndex() < 0)
                 return nullptr;
-            }
 
-            // Get the mesh from the model
-            int meshIndex = node->GetMeshIndex();
+            const int meshIndex = node->GetMeshIndex();
             if (meshIndex < 0 || static_cast<size_t>(meshIndex) >= model->GetMeshCount())
-            {
                 return nullptr;
-            }
 
             auto meshHandle = model->GetMesh(static_cast<size_t>(meshIndex));
             if (!meshHandle.IsValid())
-            {
                 return nullptr;
-            }
 
-            // Create the MeshRendererComponent
-            auto* renderer = entity->AddComponent<MeshRendererComponent>();
-            renderer->SetMesh(meshHandle);
+            auto* primitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
+            primitive->AttachToComponent(entity->GetRootComponent());
+            primitive->SetMesh(meshHandle);
 
-            // Set materials for each submesh
             const auto& materialIndices = node->GetMaterialIndices();
             for (size_t i = 0; i < materialIndices.size(); ++i)
             {
-                int matIndex = materialIndices[i];
+                const int matIndex = materialIndices[i];
                 if (matIndex >= 0 && static_cast<size_t>(matIndex) < model->GetMaterialCount())
                 {
-                    auto matHandle = model->GetMaterial(static_cast<size_t>(matIndex));
-                    if (matHandle.IsValid())
+                    auto material = model->GetMaterial(static_cast<size_t>(matIndex));
+                    if (material.IsValid())
                     {
-                        renderer->SetMaterial(i, matHandle);
+                        primitive->SetMaterial(i, material);
                     }
                 }
             }
 
-            return renderer;
+            return primitive;
         });
-
-        // Additional component creators can be registered here
-        // e.g., LightComponent, CameraComponent, etc.
     }
 
     // =========================================================================
@@ -107,10 +95,10 @@ namespace RVX
         }
     }
 
-    Component* ComponentFactory::CreateComponent(const std::string& typeName,
-                                                   SceneEntity* entity,
-                                                   const Node* node,
-                                                   const Resource::ModelResource* model)
+    ActorComponent* ComponentFactory::CreateComponent(const std::string& typeName,
+                                                      SceneEntity* entity,
+                                                      const Node* node,
+                                                      const Resource::ModelResource* model)
     {
         auto& creators = GetCreators();
         auto it = creators.find(typeName);

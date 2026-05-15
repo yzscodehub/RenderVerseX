@@ -70,6 +70,10 @@ namespace RVX
         template<typename T, typename... Args>
         T* AddComponent(Args&&... args);
 
+        /// Add an already-created pure actor component and transfer ownership.
+        /// Legacy Component subclasses must use SceneEntity::AddComponent<T>().
+        ActorComponent* AddOwnedComponent(std::unique_ptr<ActorComponent> component);
+
         template<typename T>
         T* GetComponent() const;
 
