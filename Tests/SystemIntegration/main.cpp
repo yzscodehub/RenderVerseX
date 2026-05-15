@@ -181,6 +181,8 @@ bool TestSceneModule()
         bool didHit = manager.Raycast(ray, hit);
         assert(didHit);
         assert(hit.entity == entity1);
+        assert(hit.actor == static_cast<Actor*>(hit.entity));
+        assert(hit.component == nullptr);
 
         // Destroy entity
         manager.DestroyEntity(handle1);
@@ -347,6 +349,8 @@ bool TestIntegration()
         RaycastHit hit;
         bool didHit = sceneManager.Raycast(ray, hit);
         assert(didHit);
+        assert(hit.actor == static_cast<Actor*>(hit.entity));
+        assert(hit.component == nullptr);
         LOG_INFO("  Raycast hit: {}", hit.entity->GetName());
 
         // Get stats

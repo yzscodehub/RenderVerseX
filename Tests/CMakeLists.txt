@@ -191,6 +191,18 @@ target_link_libraries(ActorComponentValidation PRIVATE
 )
 target_compile_features(ActorComponentValidation PRIVATE cxx_std_20)
 
+# Spatial component validation tests
+add_executable(SpatialComponentValidation
+    SpatialComponentValidation/main.cpp
+)
+target_link_libraries(SpatialComponentValidation PRIVATE
+    RVX_TestFramework
+    RVX::World
+    RVX::Scene
+    RVX::Resource
+)
+target_compile_features(SpatialComponentValidation PRIVATE cxx_std_20)
+
 # Resource view cache validation tests
 add_executable(ResourceViewCacheValidation
     ResourceViewCacheValidation/main.cpp

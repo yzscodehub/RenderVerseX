@@ -20,6 +20,7 @@ namespace RVX
     // Forward declarations for Asset integration
     namespace Asset { class SceneAsset; class ModelAsset; class PrefabAsset; }
 
+    class Actor;
     class Camera;
     class Node;
     class PrimitiveComponent;
@@ -45,11 +46,25 @@ namespace RVX
     struct RaycastHit
     {
         SceneEntity* entity = nullptr;
+        Actor* actor = nullptr;
+        PrimitiveComponent* component = nullptr;
         float distance = 0.0f;
         Vec3 hitPoint{0.0f};
         Vec3 hitNormal{0.0f, 1.0f, 0.0f};
 
-        bool IsValid() const { return entity != nullptr; }
+        bool IsValid() const { return actor != nullptr || entity != nullptr; }
+    };
+
+    /**
+     * @brief Resolved target for raw spatial query results.
+     */
+    struct SpatialQueryTarget
+    {
+        SceneEntity* entity = nullptr;
+        Actor* actor = nullptr;
+        PrimitiveComponent* component = nullptr;
+
+        bool IsValid() const { return actor != nullptr || entity != nullptr; }
     };
 
     /**
@@ -148,9 +163,18 @@ namespace RVX
         void QueryVisible(const Frustum& frustum, std::vector<SceneEntity*>& outEntities);
 
         /// Query visible entities using frustum with filter
-        void QueryVisible(const Frustum& frustum, 
+        void QueryVisible(const Frustum& frustum,
                          const Spatial::QueryFilter& filter,
                          std::vector<SceneEntity*>& outEntities);
+
+        /// Query visible primitive components using frustum
+        void QueryVisiblePrimitives(const Frustum& frustum,
+                                    std::vector<PrimitiveComponent*>& outPrimitives);
+
+        /// Query visible primitive components using frustum with filter
+        void QueryVisiblePrimitives(const Frustum& frustum,
+                                    const Spatial::QueryFilter& filter,
+                                    std::vector<PrimitiveComponent*>& outPrimitives);
 
         /// Raycast - find nearest intersection
         bool Raycast(const Ray& ray, RaycastHit& outHit);
@@ -166,8 +190,22 @@ namespace RVX
         /// Query entities within a sphere
         void QuerySphere(const Vec3& center, float radius, std::vector<SceneEntity*>& outEntities);
 
+        /// Query primitive components within a sphere
+        void QuerySpherePrimitives(const Vec3& center,
+                                   float radius,
+                                   std::vector<PrimitiveComponent*>& outPrimitives);
+
         /// Query entities within a box
         void QueryBox(const AABB& box, std::vector<SceneEntity*>& outEntities);
+
+        /// Query primitive components within a box
+        void QueryBoxPrimitives(const AABB& box, std::vector<PrimitiveComponent*>& outPrimitives);
+
+        /// Collect spatial entities for external spatial subsystems
+        void CollectSpatialEntities(std::vector<Spatial::ISpatialEntity*>& outEntities) const;
+
+        /// Resolve a raw spatial query result to actor/entity/component metadata
+        SpatialQueryTarget ResolveSpatialQueryTarget(const Spatial::QueryResult& result) const;
 
         // =====================================================================
         // Update
@@ -212,6 +250,10 @@ namespace RVX
         Stats GetStats() const;
 
     private:
+        class PrimitiveSpatialProxy;
+
+        static constexpr Spatial::EntityHandle s_primitiveSpatialHandleStart = 0x80000000u;
+
         bool m_initialized = false;
         SceneConfig m_config;
 
@@ -221,6 +263,10 @@ namespace RVX
         // UE-style renderable primitive registry
         std::vector<PrimitiveComponent*> m_primitives;
         std::unordered_set<PrimitiveComponent*> m_registeredPrimitives;
+        std::unordered_map<PrimitiveComponent*, std::unique_ptr<PrimitiveSpatialProxy>> m_primitiveSpatialProxies;
+        std::unordered_map<Spatial::EntityHandle, PrimitiveSpatialProxy*> m_spatialProxyByHandle;
+        std::vector<std::unique_ptr<PrimitiveSpatialProxy>> m_retiredPrimitiveSpatialProxies;
+        Spatial::EntityHandle m_nextPrimitiveSpatialHandle = s_primitiveSpatialHandleStart;
 
         // Spatial indexing
         Spatial::SpatialIndexPtr m_spatialIndex;
@@ -228,6 +274,15 @@ namespace RVX
         bool m_indexNeedsRebuild = false;
 
         // Helper for building spatial index
+        Spatial::EntityHandle AllocatePrimitiveSpatialHandle();
+        PrimitiveSpatialProxy* GetPrimitiveSpatialProxy(PrimitiveComponent* primitive) const;
+        bool IsPrimitiveSpatiallyIndexable(const PrimitiveComponent* primitive) const;
+        bool HasDirtyPrimitiveSpatialProxy() const;
+        void AppendUniqueEntity(const SpatialQueryTarget& target,
+                                std::vector<SceneEntity*>& outEntities) const;
+        void AppendUniquePrimitive(const SpatialQueryTarget& target,
+                                   std::vector<PrimitiveComponent*>& outPrimitives) const;
+        RaycastHit MakeRaycastHit(const Spatial::QueryResult& result, const Ray& ray) const;
         void UpdateDirtyEntities();
         void CollectDirtyEntities();
     };

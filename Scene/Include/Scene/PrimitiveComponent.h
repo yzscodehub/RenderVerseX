@@ -34,9 +34,13 @@ namespace RVX
 
         bool IsVisible() const { return m_visible; }
         void SetVisible(bool visible) { m_visible = visible; }
+        void SetEnabled(bool enabled) override;
 
         uint32 GetLayerMask() const { return m_layerMask; }
-        void SetLayerMask(uint32 layerMask) { m_layerMask = layerMask; }
+        void SetLayerMask(uint32 layerMask);
+
+        bool IsSpatialDirty() const { return m_spatialDirty; }
+        void ClearSpatialDirty() { m_spatialDirty = false; }
 
         // =====================================================================
         // Bounds
@@ -58,11 +62,14 @@ namespace RVX
         void OnTransformChanged() override;
 
     private:
+        void MarkSpatialDirty();
+
         bool m_visible = true;
         uint32 m_layerMask = ~0u;
         AABB m_localBounds;
         mutable AABB m_cachedWorldBounds;
         mutable bool m_boundsDirty = true;
+        bool m_spatialDirty = true;
     };
 
 } // namespace RVX

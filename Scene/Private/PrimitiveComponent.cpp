@@ -23,10 +23,29 @@ void PrimitiveComponent::OnUnregister()
     entity->GetSceneManager()->UnregisterPrimitive(this);
 }
 
+void PrimitiveComponent::SetEnabled(bool enabled)
+{
+    if (IsEnabled() == enabled)
+        return;
+
+    ActorComponent::SetEnabled(enabled);
+    MarkSpatialDirty();
+}
+
+void PrimitiveComponent::SetLayerMask(uint32 layerMask)
+{
+    if (m_layerMask == layerMask)
+        return;
+
+    m_layerMask = layerMask;
+    MarkSpatialDirty();
+}
+
 void PrimitiveComponent::SetLocalBounds(const AABB& bounds)
 {
     m_localBounds = bounds;
     m_boundsDirty = true;
+    MarkSpatialDirty();
 }
 
 AABB PrimitiveComponent::GetWorldBounds() const
@@ -42,6 +61,18 @@ AABB PrimitiveComponent::GetWorldBounds() const
 void PrimitiveComponent::OnTransformChanged()
 {
     m_boundsDirty = true;
+    MarkSpatialDirty();
+}
+
+void PrimitiveComponent::MarkSpatialDirty()
+{
+    m_spatialDirty = true;
+
+    auto* entity = dynamic_cast<SceneEntity*>(GetOwner());
+    if (entity)
+    {
+        entity->MarkBoundsDirty();
+    }
 }
 
 } // namespace RVX

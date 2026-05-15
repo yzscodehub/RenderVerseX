@@ -11,6 +11,8 @@
 #include "Spatial/Index/SpatialFactory.h"
 #include "Core/Log.h"
 
+#include <unordered_set>
+
 namespace RVX
 {
 
@@ -62,13 +64,9 @@ void SpatialSubsystem::RebuildIndex()
     if (!scene)
         return;
 
-    // Collect all entities
     std::vector<Spatial::ISpatialEntity*> entities;
-    scene->ForEachActiveEntity([&entities](SceneEntity* entity) {
-        entities.push_back(entity);
-    });
+    scene->CollectSpatialEntities(entities);
 
-    // Build index
     m_index->Build(entities);
 }
 
@@ -89,7 +87,9 @@ void SpatialSubsystem::QueryVisible(const Frustum& frustum,
                                     const Spatial::QueryFilter& filter,
                                     std::vector<SceneEntity*>& outEntities)
 {
-    if (!m_index)
+    World* world = GetWorld();
+    auto* scene = world ? world->GetSceneManager() : nullptr;
+    if (!m_index || !scene)
         return;
 
     std::vector<Spatial::QueryResult> results;
@@ -97,11 +97,13 @@ void SpatialSubsystem::QueryVisible(const Frustum& frustum,
 
     outEntities.clear();
     outEntities.reserve(results.size());
+    std::unordered_set<SceneEntity*> seenEntities;
     for (const auto& result : results)
     {
-        if (result.userData)
+        auto target = scene->ResolveSpatialQueryTarget(result);
+        if (target.entity && seenEntities.insert(target.entity).second)
         {
-            outEntities.push_back(static_cast<SceneEntity*>(result.userData));
+            outEntities.push_back(target.entity);
         }
     }
 }
@@ -115,16 +117,21 @@ bool SpatialSubsystem::Raycast(const Ray& ray,
                                const Spatial::QueryFilter& filter,
                                RaycastHit& outHit)
 {
-    if (!m_index)
+    World* world = GetWorld();
+    auto* scene = world ? world->GetSceneManager() : nullptr;
+    if (!m_index || !scene)
         return false;
 
     Spatial::QueryResult result;
     if (m_index->QueryRay(ray, filter, result))
     {
-        outHit.entity = static_cast<SceneEntity*>(result.userData);
+        auto target = scene->ResolveSpatialQueryTarget(result);
+        outHit.entity = target.entity;
+        outHit.actor = target.actor;
+        outHit.component = target.component;
         outHit.distance = result.distance;
-        // Additional hit info would come from more detailed intersection
-        return true;
+        outHit.hitPoint = ray.At(result.distance);
+        return outHit.IsValid();
     }
     return false;
 }
@@ -138,7 +145,9 @@ void SpatialSubsystem::RaycastAll(const Ray& ray,
                                   const Spatial::QueryFilter& filter,
                                   std::vector<RaycastHit>& outHits)
 {
-    if (!m_index)
+    World* world = GetWorld();
+    auto* scene = world ? world->GetSceneManager() : nullptr;
+    if (!m_index || !scene)
         return;
 
     std::vector<Spatial::QueryResult> results;
@@ -148,10 +157,17 @@ void SpatialSubsystem::RaycastAll(const Ray& ray,
     outHits.reserve(results.size());
     for (const auto& result : results)
     {
+        auto target = scene->ResolveSpatialQueryTarget(result);
         RaycastHit hit;
-        hit.entity = static_cast<SceneEntity*>(result.userData);
+        hit.entity = target.entity;
+        hit.actor = target.actor;
+        hit.component = target.component;
         hit.distance = result.distance;
-        outHits.push_back(hit);
+        hit.hitPoint = ray.At(result.distance);
+        if (hit.IsValid())
+        {
+            outHits.push_back(hit);
+        }
     }
 }
 
@@ -191,7 +207,9 @@ bool SpatialSubsystem::PickScreen(const Camera& camera,
 void SpatialSubsystem::QuerySphere(const Vec3& center, float radius,
                                    std::vector<SceneEntity*>& outEntities)
 {
-    if (!m_index)
+    World* world = GetWorld();
+    auto* scene = world ? world->GetSceneManager() : nullptr;
+    if (!m_index || !scene)
         return;
 
     std::vector<Spatial::QueryResult> results;
@@ -199,18 +217,22 @@ void SpatialSubsystem::QuerySphere(const Vec3& center, float radius,
 
     outEntities.clear();
     outEntities.reserve(results.size());
+    std::unordered_set<SceneEntity*> seenEntities;
     for (const auto& result : results)
     {
-        if (result.userData)
+        auto target = scene->ResolveSpatialQueryTarget(result);
+        if (target.entity && seenEntities.insert(target.entity).second)
         {
-            outEntities.push_back(static_cast<SceneEntity*>(result.userData));
+            outEntities.push_back(target.entity);
         }
     }
 }
 
 void SpatialSubsystem::QueryBox(const AABB& box, std::vector<SceneEntity*>& outEntities)
 {
-    if (!m_index)
+    World* world = GetWorld();
+    auto* scene = world ? world->GetSceneManager() : nullptr;
+    if (!m_index || !scene)
         return;
 
     std::vector<Spatial::QueryResult> results;
@@ -218,11 +240,13 @@ void SpatialSubsystem::QueryBox(const AABB& box, std::vector<SceneEntity*>& outE
 
     outEntities.clear();
     outEntities.reserve(results.size());
+    std::unordered_set<SceneEntity*> seenEntities;
     for (const auto& result : results)
     {
-        if (result.userData)
+        auto target = scene->ResolveSpatialQueryTarget(result);
+        if (target.entity && seenEntities.insert(target.entity).second)
         {
-            outEntities.push_back(static_cast<SceneEntity*>(result.userData));
+            outEntities.push_back(target.entity);
         }
     }
 }

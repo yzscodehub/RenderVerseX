@@ -44,7 +44,7 @@ namespace RVX
         bool IsRegistered() const { return m_registered; }
         bool HasBegunPlay() const { return m_hasBegunPlay; }
         bool IsEnabled() const { return m_enabled; }
-        void SetEnabled(bool enabled) { m_enabled = enabled; }
+        virtual void SetEnabled(bool enabled) { m_enabled = enabled; }
 
         bool CanEverTick() const { return m_canEverTick; }
         void SetCanEverTick(bool canEverTick);
