@@ -2,6 +2,8 @@
 #include "Scene/Node.h"
 #include "Core/Log.h"
 
+#include <algorithm>
+
 namespace RVX
 {
 
@@ -34,8 +36,20 @@ void SceneManager::Shutdown()
 {
     if (!m_initialized) return;
 
+    for (auto& [handle, entity] : m_entities)
+    {
+        (void)handle;
+        if (entity)
+        {
+            entity->UnregisterAllComponents();
+            entity->SetSceneManager(nullptr);
+        }
+    }
+
     // Clear all entities
     m_entities.clear();
+    m_primitives.clear();
+    m_registeredPrimitives.clear();
     m_dirtyEntities.clear();
     m_spatialIndex.reset();
 
@@ -54,10 +68,16 @@ SceneEntity* SceneManager::AddEntity(SceneEntity::Ptr entity)
 {
     if (!entity) return nullptr;
 
+    if (entity->GetSceneManager() && entity->GetSceneManager() != this)
+    {
+        entity->UnregisterAllComponents();
+    }
+
     entity->SetSceneManager(this);
     
     SceneEntity::Handle handle = entity->GetHandle();
     m_entities[handle] = entity;
+    entity->RegisterAllComponents();
     m_dirtyEntities.push_back(entity.get());
     m_indexNeedsRebuild = true;
 
@@ -69,10 +89,33 @@ void SceneManager::DestroyEntity(SceneEntity::Handle handle)
     auto it = m_entities.find(handle);
     if (it != m_entities.end())
     {
+        it->second->UnregisterAllComponents();
         it->second->SetSceneManager(nullptr);
         m_entities.erase(it);
         m_indexNeedsRebuild = true;
     }
+}
+
+void SceneManager::RegisterPrimitive(PrimitiveComponent* primitive)
+{
+    if (!primitive)
+        return;
+
+    if (!m_registeredPrimitives.insert(primitive).second)
+        return;
+
+    m_primitives.push_back(primitive);
+}
+
+void SceneManager::UnregisterPrimitive(PrimitiveComponent* primitive)
+{
+    if (!primitive)
+        return;
+
+    if (m_registeredPrimitives.erase(primitive) == 0)
+        return;
+
+    m_primitives.erase(std::remove(m_primitives.begin(), m_primitives.end(), primitive), m_primitives.end());
 }
 
 SceneEntity* SceneManager::GetEntity(SceneEntity::Handle handle)

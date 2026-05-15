@@ -6,11 +6,14 @@
  */
 
 #include "Core/MathTypes.h"
+#include "Scene/SceneEntity.h"
+
+#include <unordered_set>
 
 namespace RVX
 {
     class RenderScene;
-    class SceneEntity;
+    class SceneManager;
     class World;
 
     /**
@@ -22,7 +25,13 @@ namespace RVX
         static void Collect(RenderScene& outScene, World* world);
 
     private:
-        static void CollectEntity(RenderScene& outScene, SceneEntity* entity, const Mat4& parentMatrix);
+        static std::unordered_set<SceneEntity::Handle> CollectRegisteredPrimitives(
+            RenderScene& outScene,
+            SceneManager* sceneManager);
+        static void CollectEntity(RenderScene& outScene,
+                                  SceneEntity* entity,
+                                  const Mat4& parentMatrix,
+                                  const std::unordered_set<SceneEntity::Handle>& primitiveControlledEntities);
     };
 
 } // namespace RVX

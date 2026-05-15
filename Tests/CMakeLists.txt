@@ -123,16 +123,22 @@ target_compile_features(GPUUploadServiceValidation PRIVATE cxx_std_20)
 # Render Scene Validation Tests
 add_executable(RenderSceneValidation
     RenderSceneValidation/main.cpp
-    RenderSceneValidation/RenderSceneCollectorStub.cpp
     ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderScene.cpp
+    ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderSceneCollector.cpp
 )
 target_include_directories(RenderSceneValidation PRIVATE
     ${CMAKE_SOURCE_DIR}/Render/Include
     ${CMAKE_SOURCE_DIR}/Render/Private/Renderer
+    ${CMAKE_SOURCE_DIR}/Resource/Include
+    ${CMAKE_SOURCE_DIR}/Scene/Include
+    ${CMAKE_SOURCE_DIR}/World/Include
 )
 target_link_libraries(RenderSceneValidation PRIVATE
     RVX_TestFramework
     RVX::Runtime
+    RVX::World
+    RVX::Resource
+    RVX::Scene
 )
 target_compile_features(RenderSceneValidation PRIVATE cxx_std_20)
 
@@ -175,9 +181,13 @@ target_compile_features(MaterialSystemValidation PRIVATE cxx_std_20)
 add_executable(ActorComponentValidation
     ActorComponentValidation/main.cpp
 )
+target_include_directories(ActorComponentValidation PRIVATE
+    ${CMAKE_SOURCE_DIR}/Resource/Include
+)
 target_link_libraries(ActorComponentValidation PRIVATE
     RVX_TestFramework
     RVX::Scene
+    RVX::Resource
 )
 target_compile_features(ActorComponentValidation PRIVATE cxx_std_20)
 

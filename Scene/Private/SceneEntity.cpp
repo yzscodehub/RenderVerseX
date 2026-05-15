@@ -432,6 +432,12 @@ void SceneEntity::TickComponents(float deltaTime)
     }
 }
 
+bool SceneEntity::ShouldAutoRegisterComponent(ActorComponent* component) const
+{
+    (void)component;
+    return m_sceneManager != nullptr;
+}
+
 void SceneEntity::SetRootComponent(SceneComponent* rootComponent)
 {
     if (!rootComponent)

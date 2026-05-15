@@ -1,7 +1,27 @@
 #include "Scene/PrimitiveComponent.h"
+#include "Scene/SceneEntity.h"
+#include "Scene/SceneManager.h"
 
 namespace RVX
 {
+
+void PrimitiveComponent::OnRegister()
+{
+    auto* entity = dynamic_cast<SceneEntity*>(GetOwner());
+    if (!entity || !entity->GetSceneManager())
+        return;
+
+    entity->GetSceneManager()->RegisterPrimitive(this);
+}
+
+void PrimitiveComponent::OnUnregister()
+{
+    auto* entity = dynamic_cast<SceneEntity*>(GetOwner());
+    if (!entity || !entity->GetSceneManager())
+        return;
+
+    entity->GetSceneManager()->UnregisterPrimitive(this);
+}
 
 void PrimitiveComponent::SetLocalBounds(const AABB& bounds)
 {

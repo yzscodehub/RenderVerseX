@@ -4,9 +4,11 @@
 #include "Scene/ActorFactory.h"
 #include "Scene/Component.h"
 #include "Scene/ComponentFactory.h"
+#include "Scene/Components/StaticMeshComponent.h"
 #include "Scene/PrimitiveComponent.h"
 #include "Scene/SceneComponent.h"
 #include "Scene/SceneEntity.h"
+#include "Scene/SceneManager.h"
 #include "TestFramework/TestRunner.h"
 
 #include <memory>
@@ -137,6 +139,83 @@ namespace
         TEST_ASSERT_EQ(static_cast<RVX::uint32>(0x04), primitive.GetLayerMask());
         TEST_ASSERT_TRUE(primitive.GetLocalBounds().IsValid());
         TEST_ASSERT_TRUE(primitive.GetWorldBounds().IsValid());
+        return true;
+    }
+
+    bool Test_StaticMeshComponentIsPrimitiveSceneComponent()
+    {
+        TEST_ASSERT_TRUE((std::is_base_of_v<RVX::PrimitiveComponent, RVX::StaticMeshComponent>));
+
+        RVX::StaticMeshComponent component;
+        TEST_ASSERT_EQ(std::string("StaticMeshComponent"), std::string(component.GetClassName()));
+        TEST_ASSERT_FALSE(component.HasRenderData());
+        TEST_ASSERT_FALSE(component.HasValidMesh());
+        TEST_ASSERT_TRUE(component.IsVisible());
+        return true;
+    }
+
+    bool Test_StaticMeshComponentRegistersWithSceneManager()
+    {
+        RVX::SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        auto entity = std::make_shared<RVX::SceneEntity>("PreOwnedPrimitive");
+        auto* primitive = static_cast<RVX::Actor*>(entity.get())->AddComponent<RVX::StaticMeshComponent>();
+        TEST_ASSERT_NOT_NULL(primitive);
+        TEST_ASSERT_FALSE(primitive->IsRegistered());
+
+        const auto handle = entity->GetHandle();
+        sceneManager.AddEntity(entity);
+
+        TEST_ASSERT_TRUE(primitive->IsRegistered());
+        TEST_ASSERT_EQ(static_cast<size_t>(1), sceneManager.GetPrimitives().size());
+        TEST_ASSERT_EQ(primitive, sceneManager.GetPrimitives()[0]);
+
+        sceneManager.DestroyEntity(handle);
+
+        TEST_ASSERT_FALSE(primitive->IsRegistered());
+        TEST_ASSERT_TRUE(sceneManager.GetPrimitives().empty());
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_RuntimeStaticMeshComponentRemovalUnregistersPrimitive()
+    {
+        RVX::SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        const auto handle = sceneManager.CreateEntity("RuntimePrimitive");
+        auto* entity = sceneManager.GetEntity(handle);
+        TEST_ASSERT_NOT_NULL(entity);
+
+        auto* primitive = static_cast<RVX::Actor*>(entity)->AddComponent<RVX::StaticMeshComponent>();
+        TEST_ASSERT_NOT_NULL(primitive);
+        TEST_ASSERT_TRUE(primitive->IsRegistered());
+        TEST_ASSERT_EQ(static_cast<size_t>(1), sceneManager.GetPrimitives().size());
+
+        TEST_ASSERT_TRUE(static_cast<RVX::Actor*>(entity)->RemoveComponent<RVX::StaticMeshComponent>());
+        TEST_ASSERT_TRUE(sceneManager.GetPrimitives().empty());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_SceneEntityAddComponentAutoRegistersStaticMeshPrimitive()
+    {
+        RVX::SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        const auto handle = sceneManager.CreateEntity("LegacyAddComponentPrimitive");
+        auto* entity = sceneManager.GetEntity(handle);
+        TEST_ASSERT_NOT_NULL(entity);
+
+        auto* primitive = entity->AddComponent<RVX::StaticMeshComponent>();
+        TEST_ASSERT_NOT_NULL(primitive);
+        TEST_ASSERT_TRUE(primitive->IsRegistered());
+        TEST_ASSERT_EQ(static_cast<size_t>(1), sceneManager.GetPrimitives().size());
+        TEST_ASSERT_EQ(primitive, sceneManager.GetPrimitives()[0]);
+
+        sceneManager.Shutdown();
         return true;
     }
 
@@ -406,6 +485,14 @@ int main()
                   Test_SceneComponentAttachmentComputesWorldTransform);
     suite.AddTest("PrimitiveComponentTracksVisibilityLayerAndBounds",
                   Test_PrimitiveComponentTracksVisibilityLayerAndBounds);
+    suite.AddTest("StaticMeshComponentIsPrimitiveSceneComponent",
+                  Test_StaticMeshComponentIsPrimitiveSceneComponent);
+    suite.AddTest("StaticMeshComponentRegistersWithSceneManager",
+                  Test_StaticMeshComponentRegistersWithSceneManager);
+    suite.AddTest("RuntimeStaticMeshComponentRemovalUnregistersPrimitive",
+                  Test_RuntimeStaticMeshComponentRemovalUnregistersPrimitive);
+    suite.AddTest("SceneEntityAddComponentAutoRegistersStaticMeshPrimitive",
+                  Test_SceneEntityAddComponentAutoRegistersStaticMeshPrimitive);
     suite.AddTest("SceneEntityAndComponentAreActorCompatible",
                   Test_SceneEntityAndComponentAreActorCompatible);
     suite.AddTest("ActorAndComponentFactoriesCreateRegisteredTypes",

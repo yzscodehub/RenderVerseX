@@ -8,6 +8,8 @@
 #include "Render/Renderer/RenderScene.h"
 #include "Scene/Components/LightComponent.h"
 #include "Scene/Components/MeshRendererComponent.h"
+#include "Scene/Components/StaticMeshComponent.h"
+#include "Scene/PrimitiveComponent.h"
 #include "Scene/SceneEntity.h"
 #include "Scene/SceneManager.h"
 #include "World/World.h"
@@ -28,51 +30,90 @@ void RenderSceneCollector::Collect(RenderScene& outScene, World* world)
     if (!sceneManager)
         return;
 
+    const auto primitiveControlledEntities = CollectRegisteredPrimitives(outScene, sceneManager);
+
     const auto& entities = sceneManager->GetEntities();
     for (const auto& [handle, entity] : entities)
     {
         (void)handle;
         if (entity && entity->IsRoot())
         {
-            CollectEntity(outScene, entity.get(), Mat4Identity());
+            CollectEntity(outScene, entity.get(), Mat4Identity(), primitiveControlledEntities);
         }
     }
 }
 
-void RenderSceneCollector::CollectEntity(RenderScene& outScene, SceneEntity* entity, const Mat4& parentMatrix)
+std::unordered_set<SceneEntity::Handle> RenderSceneCollector::CollectRegisteredPrimitives(
+    RenderScene& outScene,
+    SceneManager* sceneManager)
+{
+    std::unordered_set<SceneEntity::Handle> primitiveControlledEntities;
+    if (!sceneManager)
+        return primitiveControlledEntities;
+
+    for (PrimitiveComponent* primitive : sceneManager->GetPrimitives())
+    {
+        if (!primitive || !primitive->HasRenderData())
+            continue;
+
+        auto* entity = dynamic_cast<SceneEntity*>(primitive->GetOwner());
+        if (!entity || !entity->IsActive())
+            continue;
+
+        primitiveControlledEntities.insert(entity->GetHandle());
+
+        if (!primitive->IsEnabled() || !primitive->IsVisible())
+        {
+            continue;
+        }
+
+        primitive->CollectRenderData(outScene);
+    }
+
+    return primitiveControlledEntities;
+}
+
+void RenderSceneCollector::CollectEntity(
+    RenderScene& outScene,
+    SceneEntity* entity,
+    const Mat4& parentMatrix,
+    const std::unordered_set<SceneEntity::Handle>& primitiveControlledEntities)
 {
     if (!entity || !entity->IsActive())
         return;
 
     Mat4 worldMatrix = parentMatrix * entity->GetLocalMatrix();
 
-    if (auto* renderer = entity->GetComponent<MeshRendererComponent>())
+    if (primitiveControlledEntities.find(entity->GetHandle()) == primitiveControlledEntities.end())
     {
-        if (renderer->IsEnabled() && renderer->IsVisible() && renderer->HasValidMesh())
+        if (auto* renderer = entity->GetComponent<MeshRendererComponent>())
         {
-            RenderObject obj;
-            obj.worldMatrix = worldMatrix;
-            obj.normalMatrix = glm::inverseTranspose(Mat4(Mat3(worldMatrix)));
-            obj.bounds = entity->GetWorldBounds();
-            obj.meshResource = renderer->GetMesh().Get();
-            obj.meshId = renderer->GetMesh().GetId();
-            obj.entityId = entity->GetHandle();
-            obj.castsShadow = renderer->CastsShadow();
-            obj.receivesShadow = renderer->ReceivesShadow();
-            obj.visible = true;
-
-            size_t submeshCount = renderer->GetSubmeshCount();
-            obj.materialIds.resize(submeshCount);
-            obj.materialResources.resize(submeshCount);
-            for (size_t i = 0; i < submeshCount; ++i)
+            if (renderer->IsEnabled() && renderer->IsVisible() && renderer->HasValidMesh())
             {
-                auto material = renderer->GetMaterial(i);
-                obj.materialIds[i] = material.IsValid() ? material.GetId() : 0;
-                obj.materialResources[i] = material.Get();
-            }
+                RenderObject obj;
+                obj.worldMatrix = worldMatrix;
+                obj.normalMatrix = glm::inverseTranspose(Mat4(Mat3(worldMatrix)));
+                obj.bounds = entity->GetWorldBounds();
+                obj.meshResource = renderer->GetMesh().Get();
+                obj.meshId = renderer->GetMesh().GetId();
+                obj.entityId = entity->GetHandle();
+                obj.castsShadow = renderer->CastsShadow();
+                obj.receivesShadow = renderer->ReceivesShadow();
+                obj.visible = true;
 
-            obj.sortKey = obj.materialIds.empty() ? 0 : obj.materialIds[0];
-            outScene.AddObject(obj);
+                size_t submeshCount = renderer->GetSubmeshCount();
+                obj.materialIds.resize(submeshCount);
+                obj.materialResources.resize(submeshCount);
+                for (size_t i = 0; i < submeshCount; ++i)
+                {
+                    auto material = renderer->GetMaterial(i);
+                    obj.materialIds[i] = material.IsValid() ? material.GetId() : 0;
+                    obj.materialResources[i] = material.Get();
+                }
+
+                obj.sortKey = obj.materialIds.empty() ? 0 : obj.materialIds[0];
+                outScene.AddObject(obj);
+            }
         }
     }
 
@@ -113,7 +154,7 @@ void RenderSceneCollector::CollectEntity(RenderScene& outScene, SceneEntity* ent
 
     for (auto* child : entity->GetChildren())
     {
-        CollectEntity(outScene, child, worldMatrix);
+        CollectEntity(outScene, child, worldMatrix, primitiveControlledEntities);
     }
 }
 

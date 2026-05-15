@@ -29,6 +29,9 @@ namespace RVX
         // Render State
         // =====================================================================
 
+        void OnRegister() override;
+        void OnUnregister() override;
+
         bool IsVisible() const { return m_visible; }
         void SetVisible(bool visible) { m_visible = visible; }
 

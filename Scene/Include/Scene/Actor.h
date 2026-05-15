@@ -114,6 +114,9 @@ namespace RVX
         void Tick(float deltaTime);
         void EndPlay();
 
+    protected:
+        virtual bool ShouldAutoRegisterComponent(ActorComponent* component) const;
+
     private:
         bool RemoveComponentInstance(ActorComponent* component);
         void DestroyAllComponents();
@@ -143,6 +146,18 @@ namespace RVX
         ptr->SetOwnerActor(this);
         m_components.push_back(std::move(component));
         ptr->OnComponentCreated();
+
+        if (ShouldAutoRegisterComponent(ptr))
+        {
+            ptr->SetRegistered(true);
+            ptr->OnRegister();
+            if (!ptr->IsInitialized())
+            {
+                ptr->InitializeComponent();
+                ptr->SetInitialized(true);
+            }
+        }
+
         return ptr;
     }
 

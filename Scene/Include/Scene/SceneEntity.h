@@ -229,6 +229,7 @@ namespace RVX
         void NotifySceneComponentTransformChanged(SceneComponent* component);
 
     protected:
+        bool ShouldAutoRegisterComponent(ActorComponent* component) const override;
         void MarkSpatialDirty() { m_spatialDirty = true; }
         void MarkTransformDirty();  // Also marks children as dirty
 
@@ -287,78 +288,106 @@ namespace RVX
     template<typename T, typename... Args>
     T* SceneEntity::AddComponent(Args&&... args)
     {
-        static_assert(std::is_base_of_v<Component, T>, "T must derive from Component");
+        static_assert(std::is_base_of_v<ActorComponent, T>, "T must derive from ActorComponent");
 
-        std::type_index typeIndex(typeid(T));
-
-        // Check if component already exists
-        auto it = m_components.find(typeIndex);
-        if (it != m_components.end())
+        if constexpr (std::is_base_of_v<Component, T>)
         {
-            return static_cast<T*>(it->second.get());
+            std::type_index typeIndex(typeid(T));
+
+            // Check if component already exists
+            auto it = m_components.find(typeIndex);
+            if (it != m_components.end())
+            {
+                return static_cast<T*>(it->second.get());
+            }
+
+            // Create new component
+            auto component = std::make_unique<T>(std::forward<Args>(args)...);
+            T* ptr = component.get();
+
+            // Set owner and call OnAttach
+            component->SetOwner(this);
+            component->OnComponentCreated();
+            component->OnAttach();
+
+            // Store component
+            m_components[typeIndex] = std::move(component);
+
+            // Notify bounds may have changed
+            MarkBoundsDirty();
+
+            return ptr;
         }
-
-        // Create new component
-        auto component = std::make_unique<T>(std::forward<Args>(args)...);
-        T* ptr = component.get();
-
-        // Set owner and call OnAttach
-        component->SetOwner(this);
-        component->OnComponentCreated();
-        component->OnAttach();
-
-        // Store component
-        m_components[typeIndex] = std::move(component);
-
-        // Notify bounds may have changed
-        MarkBoundsDirty();
-
-        return ptr;
+        else
+        {
+            return Actor::AddComponent<T>(std::forward<Args>(args)...);
+        }
     }
 
     template<typename T>
     T* SceneEntity::GetComponent() const
     {
-        static_assert(std::is_base_of_v<Component, T>, "T must derive from Component");
+        static_assert(std::is_base_of_v<ActorComponent, T>, "T must derive from ActorComponent");
 
-        std::type_index typeIndex(typeid(T));
-        auto it = m_components.find(typeIndex);
-        if (it != m_components.end())
+        if constexpr (std::is_base_of_v<Component, T>)
         {
-            return static_cast<T*>(it->second.get());
+            std::type_index typeIndex(typeid(T));
+            auto it = m_components.find(typeIndex);
+            if (it != m_components.end())
+            {
+                return static_cast<T*>(it->second.get());
+            }
+            return nullptr;
         }
-        return nullptr;
+        else
+        {
+            return Actor::GetComponent<T>();
+        }
     }
 
     template<typename T>
     bool SceneEntity::HasComponent() const
     {
-        static_assert(std::is_base_of_v<Component, T>, "T must derive from Component");
+        static_assert(std::is_base_of_v<ActorComponent, T>, "T must derive from ActorComponent");
 
-        std::type_index typeIndex(typeid(T));
-        return m_components.find(typeIndex) != m_components.end();
+        if constexpr (std::is_base_of_v<Component, T>)
+        {
+            std::type_index typeIndex(typeid(T));
+            return m_components.find(typeIndex) != m_components.end();
+        }
+        else
+        {
+            return Actor::GetComponent<T>() != nullptr;
+        }
     }
 
     template<typename T>
     bool SceneEntity::RemoveComponent()
     {
-        static_assert(std::is_base_of_v<Component, T>, "T must derive from Component");
+        static_assert(std::is_base_of_v<ActorComponent, T>, "T must derive from ActorComponent");
 
-        std::type_index typeIndex(typeid(T));
-        auto it = m_components.find(typeIndex);
-        if (it != m_components.end())
+        if constexpr (std::is_base_of_v<Component, T>)
         {
-            // Call OnDetach before removal
-            it->second->OnDetach();
-            it->second->OnComponentDestroyed();
-            it->second->SetOwner(nullptr);
-            m_components.erase(it);
+            std::type_index typeIndex(typeid(T));
+            auto it = m_components.find(typeIndex);
+            if (it != m_components.end())
+            {
+                // Call OnDetach before removal
+                it->second->OnDetach();
+                it->second->OnComponentDestroyed();
+                it->second->SetOwner(nullptr);
+                m_components.erase(it);
 
-            // Notify bounds may have changed
-            MarkBoundsDirty();
-            return true;
+                // Notify bounds may have changed
+                MarkBoundsDirty();
+                return true;
+            }
+            return false;
         }
-        return false;
+        else
+        {
+            return Actor::RemoveComponent<T>();
+        }
     }
 
 } // namespace RVX

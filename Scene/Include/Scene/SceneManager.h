@@ -10,6 +10,7 @@
 #include "Spatial/Index/ISpatialIndex.h"
 #include "Spatial/Index/SpatialFactory.h"
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <memory>
 #include <functional>
@@ -21,6 +22,7 @@ namespace RVX
 
     class Camera;
     class Node;
+    class PrimitiveComponent;
 
     /**
      * @brief Configuration for SceneManager
@@ -108,6 +110,14 @@ namespace RVX
 
         /// Get entity count
         size_t GetEntityCount() const { return m_entities.size(); }
+
+        // =====================================================================
+        // Primitive Component Registry
+        // =====================================================================
+
+        void RegisterPrimitive(PrimitiveComponent* primitive);
+        void UnregisterPrimitive(PrimitiveComponent* primitive);
+        const std::vector<PrimitiveComponent*>& GetPrimitives() const { return m_primitives; }
 
         // =====================================================================
         // Asset Integration (for future Asset module)
@@ -207,6 +217,10 @@ namespace RVX
 
         // Entity storage
         std::unordered_map<SceneEntity::Handle, SceneEntity::Ptr> m_entities;
+
+        // UE-style renderable primitive registry
+        std::vector<PrimitiveComponent*> m_primitives;
+        std::unordered_set<PrimitiveComponent*> m_registeredPrimitives;
 
         // Spatial indexing
         Spatial::SpatialIndexPtr m_spatialIndex;

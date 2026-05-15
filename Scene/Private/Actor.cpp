@@ -169,6 +169,12 @@ void Actor::EndPlay()
     m_hasBegunPlay = false;
 }
 
+bool Actor::ShouldAutoRegisterComponent(ActorComponent* component) const
+{
+    (void)component;
+    return false;
+}
+
 bool Actor::RemoveComponentInstance(ActorComponent* component)
 {
     auto it = std::find_if(m_components.begin(), m_components.end(), [component](const auto& ownedComponent) {
