@@ -273,6 +273,10 @@ namespace RVX
         std::vector<SceneEntity*> m_dirtyEntities;
         bool m_indexNeedsRebuild = false;
 
+        // Runtime lifecycle dispatch
+        bool m_isDispatchingLifecycles = false;
+        std::vector<SceneEntity::Handle> m_pendingDestroyEntities;
+
         // Helper for building spatial index
         Spatial::EntityHandle AllocatePrimitiveSpatialHandle();
         PrimitiveSpatialProxy* GetPrimitiveSpatialProxy(PrimitiveComponent* primitive) const;
@@ -283,6 +287,10 @@ namespace RVX
         void AppendUniquePrimitive(const SpatialQueryTarget& target,
                                    std::vector<PrimitiveComponent*>& outPrimitives) const;
         RaycastHit MakeRaycastHit(const Spatial::QueryResult& result, const Ray& ray) const;
+        void UpdateEntityLifecycles(float deltaTime);
+        void QueuePendingDestroy(SceneEntity::Handle handle);
+        void FlushPendingDestroyEntities();
+        void DestroyEntityImmediate(SceneEntity::Handle handle);
         void UpdateDirtyEntities();
         void CollectDirtyEntities();
     };

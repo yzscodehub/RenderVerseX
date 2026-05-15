@@ -154,10 +154,11 @@ void Actor::UnregisterAllComponents()
 
 void Actor::BeginPlay()
 {
-    if (m_hasBegunPlay)
-        return;
+    if (!m_hasBegunPlay)
+    {
+        m_hasBegunPlay = true;
+    }
 
-    m_hasBegunPlay = true;
     for (auto& component : m_components)
     {
         if (component && component->IsEnabled() && !component->HasBegunPlay())
@@ -170,7 +171,7 @@ void Actor::BeginPlay()
 
 void Actor::Tick(float deltaTime)
 {
-    if (!m_active)
+    if (!IsActive())
         return;
 
     for (auto& component : m_components)

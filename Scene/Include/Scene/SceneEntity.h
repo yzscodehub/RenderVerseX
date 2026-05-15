@@ -89,13 +89,21 @@ namespace RVX
         // Basic Properties
         // =====================================================================
 
-        const std::string& GetName() const { return m_name; }
-        void SetName(const std::string& name) { m_name = name; }
+        const std::string& GetName() const override { return m_name; }
+        void SetName(const std::string& name) override
+        {
+            Actor::SetName(name);
+            m_name = name;
+        }
 
         virtual EntityType GetEntityType() const { return EntityType::Node; }
 
-        bool IsActive() const { return m_active; }
-        void SetActive(bool active) { m_active = active; }
+        bool IsActive() const override { return m_active; }
+        void SetActive(bool active) override
+        {
+            Actor::SetActive(active);
+            m_active = active;
+        }
 
         void SetLayerMask(uint32_t mask) { m_layerMask = mask; }
         void SetLayer(uint32_t layer) { m_layerMask = 1u << layer; }

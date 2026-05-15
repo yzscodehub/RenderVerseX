@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <unordered_set>
+#include <utility>
 
 namespace RVX
 {
@@ -101,11 +102,15 @@ void SceneManager::Shutdown()
 {
     if (!m_initialized) return;
 
+    m_isDispatchingLifecycles = false;
+    m_pendingDestroyEntities.clear();
+
     for (auto& [handle, entity] : m_entities)
     {
         (void)handle;
         if (entity)
         {
+            entity->EndPlay();
             entity->UnregisterAllComponents();
             entity->SetSceneManager(nullptr);
         }
@@ -155,9 +160,21 @@ SceneEntity* SceneManager::AddEntity(SceneEntity::Ptr entity)
 
 void SceneManager::DestroyEntity(SceneEntity::Handle handle)
 {
+    if (m_isDispatchingLifecycles)
+    {
+        QueuePendingDestroy(handle);
+        return;
+    }
+
+    DestroyEntityImmediate(handle);
+}
+
+void SceneManager::DestroyEntityImmediate(SceneEntity::Handle handle)
+{
     auto it = m_entities.find(handle);
     if (it != m_entities.end())
     {
+        it->second->EndPlay();
         it->second->UnregisterAllComponents();
         it->second->SetSceneManager(nullptr);
         m_entities.erase(it);
@@ -167,6 +184,34 @@ void SceneManager::DestroyEntity(SceneEntity::Handle handle)
         {
             RebuildSpatialIndex();
         }
+    }
+}
+
+void SceneManager::QueuePendingDestroy(SceneEntity::Handle handle)
+{
+    if (m_entities.find(handle) == m_entities.end())
+        return;
+
+    if (std::find(m_pendingDestroyEntities.begin(), m_pendingDestroyEntities.end(), handle) !=
+        m_pendingDestroyEntities.end())
+    {
+        return;
+    }
+
+    m_pendingDestroyEntities.push_back(handle);
+}
+
+void SceneManager::FlushPendingDestroyEntities()
+{
+    if (m_pendingDestroyEntities.empty())
+        return;
+
+    auto pending = std::move(m_pendingDestroyEntities);
+    m_pendingDestroyEntities.clear();
+
+    for (SceneEntity::Handle handle : pending)
+    {
+        DestroyEntityImmediate(handle);
     }
 }
 
@@ -554,11 +599,12 @@ void SceneManager::QueryBoxPrimitives(const AABB& box, std::vector<PrimitiveComp
 
 void SceneManager::Update(float deltaTime)
 {
-    (void)deltaTime;
-
     if (!m_initialized) return;
 
-    // Collect dirty entities
+    UpdateEntityLifecycles(deltaTime);
+
+    // Collect dirty entities after gameplay/component ticks so transform
+    // changes made during the frame are visible to the spatial index update.
     CollectDirtyEntities();
 
     // Update spatial index if needed
@@ -566,6 +612,52 @@ void SceneManager::Update(float deltaTime)
     {
         UpdateDirtyEntities();
     }
+}
+
+void SceneManager::UpdateEntityLifecycles(float deltaTime)
+{
+    const auto isDestroyPending = [this](SceneEntity::Handle handle) {
+        return std::find(m_pendingDestroyEntities.begin(), m_pendingDestroyEntities.end(), handle) !=
+               m_pendingDestroyEntities.end();
+    };
+
+    std::vector<SceneEntity::Handle> entityHandles;
+    entityHandles.reserve(m_entities.size());
+    for (const auto& [handle, entity] : m_entities)
+    {
+        if (entity)
+        {
+            entityHandles.push_back(handle);
+        }
+    }
+
+    m_isDispatchingLifecycles = true;
+    for (SceneEntity::Handle handle : entityHandles)
+    {
+        auto it = m_entities.find(handle);
+        if (it == m_entities.end() || !it->second || !it->second->IsActive() || isDestroyPending(handle))
+            continue;
+
+        SceneEntity* entity = it->second.get();
+        entity->BeginPlay();
+
+        it = m_entities.find(handle);
+        if (it == m_entities.end() || !it->second || !it->second->IsActive() || isDestroyPending(handle))
+            continue;
+
+        entity = it->second.get();
+        entity->Tick(deltaTime);
+
+        it = m_entities.find(handle);
+        if (it == m_entities.end() || !it->second || !it->second->IsActive() || isDestroyPending(handle))
+            continue;
+
+        entity = it->second.get();
+        entity->TickComponents(deltaTime);
+    }
+    m_isDispatchingLifecycles = false;
+
+    FlushPendingDestroyEntities();
 }
 
 void SceneManager::RebuildSpatialIndex()

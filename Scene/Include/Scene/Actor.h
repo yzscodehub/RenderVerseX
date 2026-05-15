@@ -114,6 +114,7 @@ namespace RVX
 
         void RegisterAllComponents();
         void UnregisterAllComponents();
+        bool HasBegunPlay() const { return m_hasBegunPlay; }
         void BeginPlay();
         void Tick(float deltaTime);
         void EndPlay();
