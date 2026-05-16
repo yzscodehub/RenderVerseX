@@ -38,7 +38,7 @@
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ResourceInstantiationValidation\main.cpp`
 
-- [ ] **Step 1: Add actor component payload property revert test**
+- [x] **Step 1: Add actor component payload property revert test**
 
 Add this test after `Test_PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty`:
 
@@ -89,7 +89,7 @@ Add this test after `Test_PrefabInstanceRevertPropertyRestoresOnlyRequestedEntit
     }
 ```
 
-- [ ] **Step 2: Add legacy component payload property revert test**
+- [x] **Step 2: Add legacy component payload property revert test**
 
 Add this test after the actor component payload property revert test:
 
@@ -140,7 +140,7 @@ Add this test after the actor component payload property revert test:
     }
 ```
 
-- [ ] **Step 3: Add missing component payload property revert test**
+- [x] **Step 3: Add missing component payload property revert test**
 
 Add this test after the legacy component payload property revert test:
 
@@ -166,12 +166,12 @@ Add this test after the legacy component payload property revert test:
         TEST_ASSERT_NOT_NULL(prefabInstance);
 
         TEST_ASSERT_TRUE(static_cast<Actor*>(instance)->RemoveComponent<PrefabPayloadComponent>());
-        TEST_ASSERT_NULL(static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>());
+        TEST_ASSERT_TRUE(static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>() == nullptr);
         prefabInstance->AddOverride({"PrefabPayloadComponent", "serializedData", std::string("ammo=99")});
 
         prefabInstance->RevertProperty("PrefabPayloadComponent", "serializedData");
 
-        TEST_ASSERT_NULL(static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>());
+        TEST_ASSERT_TRUE(static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>() == nullptr);
         TEST_ASSERT_TRUE(prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData"));
         TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
 
@@ -180,7 +180,7 @@ Add this test after the legacy component payload property revert test:
     }
 ```
 
-- [ ] **Step 4: Register the three tests**
+- [x] **Step 4: Register the three tests**
 
 Register them in `main()` after `PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty`:
 
@@ -193,7 +193,7 @@ Register them in `main()` after `PrefabInstanceRevertPropertyRestoresOnlyRequest
                   Test_PrefabInstanceRevertPropertyKeepsPayloadOverrideWhenComponentMissing);
 ```
 
-- [ ] **Step 5: Build and confirm RED**
+- [x] **Step 5: Build and confirm RED**
 
 Run:
 
@@ -211,7 +211,7 @@ Expected before implementation: the two payload property revert tests fail becau
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\Prefab.cpp`
 
-- [ ] **Step 1: Add actor component payload lookup helper**
+- [x] **Step 1: Add actor component payload lookup helper**
 
 Add this helper after `ApplyPrefabEntityComponentPayloads(...)`:
 
@@ -252,7 +252,7 @@ Add this helper after `ApplyPrefabEntityComponentPayloads(...)`:
     }
 ```
 
-- [ ] **Step 2: Extend `PrefabInstance::RevertProperty(...)`**
+- [x] **Step 2: Extend `PrefabInstance::RevertProperty(...)`**
 
 Replace the unsupported-target early return block with component payload handling:
 
@@ -270,7 +270,7 @@ Replace the unsupported-target early return block with component payload handlin
 
 Keep the existing root entity property logic unchanged below this block.
 
-- [ ] **Step 3: Build and run focused validation**
+- [x] **Step 3: Build and run focused validation**
 
 Run:
 
@@ -288,7 +288,7 @@ Expected result: all `ResourceInstantiationValidation` tests pass, including the
 **Files:**
 - No additional source files.
 
-- [ ] **Step 1: Run whitespace check**
+- [x] **Step 1: Run whitespace check**
 
 ```powershell
 git diff --check
@@ -296,7 +296,7 @@ git diff --check
 
 Expected result: exit code 0. Line-ending warnings are acceptable if no whitespace-error lines are reported.
 
-- [ ] **Step 2: Build all validation targets and ModelViewer sequentially**
+- [x] **Step 2: Build all validation targets and ModelViewer sequentially**
 
 ```powershell
 foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','ResourceInstantiationValidation','RenderSceneValidation','SystemIntegrationTest','MaterialSystemValidation','RenderPassBindingValidation','ModelViewer')) {
@@ -308,7 +308,7 @@ foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','R
 
 Expected result: every target builds.
 
-- [ ] **Step 3: Run validation executables**
+- [x] **Step 3: Run validation executables**
 
 ```powershell
 $tests = @(
@@ -329,7 +329,7 @@ foreach ($test in $tests) {
 
 Expected result: every executable returns exit code 0 and reports all tests passing.
 
-- [ ] **Step 4: Run ModelViewer smoke**
+- [x] **Step 4: Run ModelViewer smoke**
 
 ```powershell
 $stdout = "build_codex\phase22_modelviewer_stdout.log"
@@ -346,7 +346,7 @@ Get-Content -Path $stderr
 
 Expected result: stdout includes model loaded, model instantiated, scene entity ready, GPU mesh upload, and render graph stats; stderr is empty.
 
-- [ ] **Step 5: Request exactly one code review using Dalton**
+- [x] **Step 5: Request exactly one code review using Dalton**
 
 Use this review context:
 
@@ -364,15 +364,15 @@ Requirements:
 Please report only Critical and Important issues, with file/line references.
 ```
 
-- [ ] **Step 6: Fix any Critical or Important review findings**
+- [x] **Step 6: Fix any Critical or Important review findings**
 
 If Dalton reports no Critical or Important findings, record that no fix was required and continue.
 
-- [ ] **Step 7: Update every completed checkbox in this plan**
+- [x] **Step 7: Update every completed checkbox in this plan**
 
 Mark every completed `- [ ]` as `- [x]` before committing.
 
-- [ ] **Step 8: Commit the implementation**
+- [x] **Step 8: Commit the implementation**
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-15-ue-style-actor-component-phase22-prefab-component-property-revert.md Scene\Private\Prefab.cpp Tests\ResourceInstantiationValidation\main.cpp

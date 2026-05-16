@@ -994,6 +994,130 @@ namespace
         return true;
     }
 
+    bool Test_PrefabInstanceRevertPropertyRestoresActorComponentPayload()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
+            "PrefabPayloadComponent");
+        ComponentFactory::RegisterComponentClass<PrefabLegacyPayloadComponent>(
+            "PrefabLegacyPayloadComponent");
+
+        PrefabEntityData data;
+        data.name = "RevertPropertyActorPayloadRoot";
+        data.actorComponentData.push_back({"PrefabPayloadComponent", "ammo=12;mode=burst"});
+        data.componentData["PrefabLegacyPayloadComponent"] = "legacy=enabled";
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(instance);
+        auto* prefabInstance = instance->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        auto* actorComponent = static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>();
+        TEST_ASSERT_NOT_NULL(actorComponent);
+        auto* legacyComponent = instance->GetComponent<PrefabLegacyPayloadComponent>();
+        TEST_ASSERT_NOT_NULL(legacyComponent);
+
+        actorComponent->payload = "ammo=1;mode=single";
+        legacyComponent->payload = "legacy=disabled";
+        prefabInstance->AddOverride({"PrefabPayloadComponent", "serializedData", actorComponent->payload});
+        prefabInstance->AddOverride({"PrefabLegacyPayloadComponent", "serializedData", legacyComponent->payload});
+
+        prefabInstance->RevertProperty("PrefabPayloadComponent", "serializedData");
+
+        TEST_ASSERT_EQ(std::string("ammo=12;mode=burst"), actorComponent->payload);
+        TEST_ASSERT_EQ(std::string("legacy=disabled"), legacyComponent->payload);
+        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData"));
+        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("PrefabLegacyPayloadComponent", "serializedData"));
+        TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertPropertyRestoresLegacyComponentPayload()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
+            "PrefabPayloadComponent");
+        ComponentFactory::RegisterComponentClass<PrefabLegacyPayloadComponent>(
+            "PrefabLegacyPayloadComponent");
+
+        PrefabEntityData data;
+        data.name = "RevertPropertyLegacyPayloadRoot";
+        data.actorComponentData.push_back({"PrefabPayloadComponent", "ammo=12"});
+        data.componentData["PrefabLegacyPayloadComponent"] = "legacy=enabled";
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(instance);
+        auto* prefabInstance = instance->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        auto* actorComponent = static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>();
+        TEST_ASSERT_NOT_NULL(actorComponent);
+        auto* legacyComponent = instance->GetComponent<PrefabLegacyPayloadComponent>();
+        TEST_ASSERT_NOT_NULL(legacyComponent);
+
+        actorComponent->payload = "ammo=99";
+        legacyComponent->payload = "legacy=disabled";
+        prefabInstance->AddOverride({"PrefabPayloadComponent", "serializedData", actorComponent->payload});
+        prefabInstance->AddOverride({"PrefabLegacyPayloadComponent", "serializedData", legacyComponent->payload});
+
+        prefabInstance->RevertProperty("PrefabLegacyPayloadComponent", "serializedData");
+
+        TEST_ASSERT_EQ(std::string("ammo=99"), actorComponent->payload);
+        TEST_ASSERT_EQ(std::string("legacy=enabled"), legacyComponent->payload);
+        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData"));
+        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("PrefabLegacyPayloadComponent", "serializedData"));
+        TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertPropertyKeepsPayloadOverrideWhenComponentMissing()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
+            "PrefabPayloadComponent");
+
+        PrefabEntityData data;
+        data.name = "MissingPayloadComponentRoot";
+        data.actorComponentData.push_back({"PrefabPayloadComponent", "ammo=12"});
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(instance);
+        auto* prefabInstance = instance->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        TEST_ASSERT_TRUE(static_cast<Actor*>(instance)->RemoveComponent<PrefabPayloadComponent>());
+        TEST_ASSERT_TRUE(static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>() == nullptr);
+        prefabInstance->AddOverride({"PrefabPayloadComponent", "serializedData", std::string("ammo=99")});
+
+        prefabInstance->RevertProperty("PrefabPayloadComponent", "serializedData");
+
+        TEST_ASSERT_TRUE(static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>() == nullptr);
+        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData"));
+        TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_PrefabInstanceRevertPropertyAcceptsEmptyRootTarget()
     {
         PrefabEntityData data;
@@ -1409,6 +1533,12 @@ int main()
                   Test_PrefabInstanceRevertAllRestoresLegacyComponentPayload);
     suite.AddTest("PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty",
                   Test_PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty);
+    suite.AddTest("PrefabInstanceRevertPropertyRestoresActorComponentPayload",
+                  Test_PrefabInstanceRevertPropertyRestoresActorComponentPayload);
+    suite.AddTest("PrefabInstanceRevertPropertyRestoresLegacyComponentPayload",
+                  Test_PrefabInstanceRevertPropertyRestoresLegacyComponentPayload);
+    suite.AddTest("PrefabInstanceRevertPropertyKeepsPayloadOverrideWhenComponentMissing",
+                  Test_PrefabInstanceRevertPropertyKeepsPayloadOverrideWhenComponentMissing);
     suite.AddTest("PrefabInstanceRevertPropertyAcceptsEmptyRootTarget",
                   Test_PrefabInstanceRevertPropertyAcceptsEmptyRootTarget);
     suite.AddTest("PrefabInstanceRevertPropertyClearsRootTargetAliases",

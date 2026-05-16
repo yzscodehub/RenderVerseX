@@ -237,6 +237,41 @@ namespace
             ++consumed;
         }
     }
+
+    bool ApplyPrefabEntityComponentPayload(SceneEntity& owner,
+                                           const PrefabEntityData& data,
+                                           const std::string& componentType)
+    {
+        auto legacyIt = data.componentData.find(componentType);
+        if (legacyIt != data.componentData.end())
+        {
+            if (Component* component = FindLegacyComponentByTypeName(owner, componentType))
+            {
+                component->DeserializePrefabData(legacyIt->second);
+                return true;
+            }
+            return false;
+        }
+
+        for (const auto& componentData : data.actorComponentData)
+        {
+            if (componentData.className != componentType)
+            {
+                continue;
+            }
+
+            auto matches = FindActorComponentsByClassName(owner, componentType);
+            if (matches.empty())
+            {
+                return false;
+            }
+
+            matches[0]->DeserializePrefabData(componentData.serializedData);
+            return true;
+        }
+
+        return false;
+    }
 } // namespace
 
 // =========================================================================
@@ -622,6 +657,11 @@ void PrefabInstance::RevertProperty(const std::string& componentType, const std:
 
     if (!IsPrefabEntityOverrideTarget(componentType))
     {
+        if (propertyPath == "serializedData" &&
+            ApplyPrefabEntityComponentPayload(*owner, *rootData, componentType))
+        {
+            RemoveOverride(componentType, propertyPath);
+        }
         return;
     }
 
