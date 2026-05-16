@@ -215,7 +215,7 @@ void Actor::EndPlay()
 bool Actor::ShouldAutoRegisterComponent(ActorComponent* component) const
 {
     (void)component;
-    return false;
+    return m_autoRegisterComponents;
 }
 
 bool Actor::RemoveComponentInstance(ActorComponent* component)

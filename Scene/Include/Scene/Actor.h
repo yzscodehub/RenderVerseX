@@ -87,6 +87,8 @@ namespace RVX
         }
 
         size_t GetActorComponentCount() const { return m_components.size(); }
+        void SetAutoRegisterComponents(bool enabled) { m_autoRegisterComponents = enabled; }
+        bool ShouldAutoRegisterComponents() const { return m_autoRegisterComponents; }
 
         // =====================================================================
         // Root Component
@@ -144,6 +146,7 @@ namespace RVX
         std::string m_name;
         bool m_active = true;
         bool m_hasBegunPlay = false;
+        bool m_autoRegisterComponents = false;
         SceneComponent* m_rootComponent = nullptr;
         std::vector<std::unique_ptr<ActorComponent>> m_components;
         int32 m_componentDispatchDepth = 0;

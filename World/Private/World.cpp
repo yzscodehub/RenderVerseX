@@ -9,6 +9,8 @@
 #include "Runtime/Camera/Camera.h"
 #include "Core/Log.h"
 
+#include <algorithm>
+
 namespace RVX
 {
 
@@ -61,7 +63,9 @@ void World::Load(const std::string& path)
 void World::Unload()
 {
     RVX_CORE_INFO("Unloading world: {}", m_config.name);
-    
+
+    ClearPureActors();
+
     // Clear scene
     if (m_sceneManager)
     {
@@ -74,6 +78,8 @@ void World::Tick(float deltaTime)
 {
     if (!m_initialized)
         return;
+
+    UpdatePureActorLifecycles(deltaTime);
 
     // Update scene
     if (m_sceneManager)
@@ -95,6 +101,8 @@ void World::Shutdown()
     // Clear cameras
     m_activeCamera = nullptr;
     m_cameras.clear();
+
+    ClearPureActors();
 
     // Shutdown subsystems
     m_subsystems.DeinitializeAll();
@@ -126,10 +134,163 @@ SceneEntity* World::SpawnActor(const ActorSpawnParams& params)
 
 bool World::DestroyActor(Actor* actor)
 {
-    if (!m_initialized || !m_sceneManager)
+    if (!m_initialized || !actor)
         return false;
 
-    return m_sceneManager->DestroyActor(actor);
+    if (auto* entity = dynamic_cast<SceneEntity*>(actor))
+    {
+        return m_sceneManager ? m_sceneManager->DestroyActor(entity) : false;
+    }
+
+    const auto handle = actor->GetHandle();
+    auto it = m_actors.find(handle);
+    if (it == m_actors.end() || it->second.get() != actor || IsActorDestroyPending(handle))
+        return false;
+
+    if (m_isDispatchingActorLifecycles)
+    {
+        QueuePendingActorDestroy(handle);
+        return true;
+    }
+
+    DestroyPureActorImmediate(handle);
+    return true;
+}
+
+Actor* World::GetActor(Actor::Handle handle) const
+{
+    auto it = m_actors.find(handle);
+    if (it != m_actors.end())
+    {
+        return it->second.get();
+    }
+
+    return m_sceneManager ? static_cast<Actor*>(m_sceneManager->GetEntity(handle)) : nullptr;
+}
+
+void World::ForEachActor(const std::function<void(Actor*)>& callback)
+{
+    if (!callback)
+        return;
+
+    for (auto& [handle, actor] : m_actors)
+    {
+        (void)handle;
+        callback(actor.get());
+    }
+
+    if (!m_sceneManager)
+        return;
+
+    for (const auto& [handle, entity] : m_sceneManager->GetEntities())
+    {
+        (void)handle;
+        callback(entity.get());
+    }
+}
+
+bool World::IsActorDestroyPending(Actor::Handle handle) const
+{
+    return std::find(m_pendingDestroyActors.begin(), m_pendingDestroyActors.end(), handle) !=
+           m_pendingDestroyActors.end();
+}
+
+void World::QueuePendingActorDestroy(Actor::Handle handle)
+{
+    auto it = m_actors.find(handle);
+    if (it == m_actors.end() || IsActorDestroyPending(handle))
+        return;
+
+    m_pendingDestroyActors.push_back(handle);
+}
+
+void World::FlushPendingActorDestroys()
+{
+    if (m_pendingDestroyActors.empty())
+        return;
+
+    auto pending = std::move(m_pendingDestroyActors);
+    m_pendingDestroyActors.clear();
+
+    for (Actor::Handle handle : pending)
+    {
+        DestroyPureActorImmediate(handle);
+    }
+}
+
+void World::DestroyPureActorImmediate(Actor::Handle handle)
+{
+    auto it = m_actors.find(handle);
+    if (it == m_actors.end())
+        return;
+
+    auto actor = std::move(it->second);
+    m_actors.erase(it);
+
+    if (actor)
+    {
+        actor->EndPlay();
+        actor->UnregisterAllComponents();
+    }
+}
+
+void World::UpdatePureActorLifecycles(float deltaTime)
+{
+    std::vector<Actor::Handle> actorHandles;
+    actorHandles.reserve(m_actors.size());
+    for (const auto& [handle, actor] : m_actors)
+    {
+        if (actor)
+        {
+            actorHandles.push_back(handle);
+        }
+    }
+
+    m_isDispatchingActorLifecycles = true;
+    for (Actor::Handle handle : actorHandles)
+    {
+        auto it = m_actors.find(handle);
+        if (it == m_actors.end() || !it->second || !it->second->IsActive() ||
+            IsActorDestroyPending(handle))
+        {
+            continue;
+        }
+
+        Actor* actor = it->second.get();
+        actor->BeginPlay();
+
+        it = m_actors.find(handle);
+        if (it == m_actors.end() || !it->second || !it->second->IsActive() ||
+            IsActorDestroyPending(handle))
+        {
+            continue;
+        }
+
+        actor = it->second.get();
+        actor->Tick(deltaTime);
+    }
+    m_isDispatchingActorLifecycles = false;
+
+    FlushPendingActorDestroys();
+}
+
+void World::ClearPureActors()
+{
+    m_isDispatchingActorLifecycles = false;
+    m_pendingDestroyActors.clear();
+
+    auto actors = std::move(m_actors);
+    m_actors.clear();
+
+    for (auto& [handle, actor] : actors)
+    {
+        (void)handle;
+        if (actor)
+        {
+            actor->EndPlay();
+            actor->UnregisterAllComponents();
+        }
+    }
 }
 
 bool World::Pick(const Ray& ray, RaycastHit& outResult)

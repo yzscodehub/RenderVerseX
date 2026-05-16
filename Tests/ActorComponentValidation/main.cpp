@@ -265,6 +265,90 @@ namespace
         bool m_hasTicked = false;
     };
 
+    class WorldManagedPureActor : public RVX::Actor
+    {
+    public:
+        explicit WorldManagedPureActor(const std::string& name)
+            : Actor(name)
+        {
+            auto* root = AddComponent<RVX::SceneComponent>();
+            SetRootComponent(root);
+        }
+
+        const char* GetClassName() const override { return "WorldManagedPureActor"; }
+    };
+
+    struct WorldActorLifecycleCounters
+    {
+        int registered = 0;
+        int initialized = 0;
+        int beganPlay = 0;
+        int ticked = 0;
+        int endedPlay = 0;
+        int unregistered = 0;
+        int destroyed = 0;
+    };
+
+    class WorldActorLifecycleComponent : public RVX::ActorComponent
+    {
+    public:
+        explicit WorldActorLifecycleComponent(WorldActorLifecycleCounters* counters)
+            : m_counters(counters)
+        {
+            SetCanEverTick(true);
+            SetTickEnabled(true);
+        }
+
+        const char* GetClassName() const override { return "WorldActorLifecycleComponent"; }
+        void OnRegister() override { if (m_counters) ++m_counters->registered; }
+        void InitializeComponent() override { if (m_counters) ++m_counters->initialized; }
+        void BeginPlay() override { if (m_counters) ++m_counters->beganPlay; }
+        void TickComponent(float) override { if (m_counters) ++m_counters->ticked; }
+        void EndPlay() override { if (m_counters) ++m_counters->endedPlay; }
+        void OnUnregister() override { if (m_counters) ++m_counters->unregistered; }
+        void OnComponentDestroyed() override { if (m_counters) ++m_counters->destroyed; }
+
+    private:
+        WorldActorLifecycleCounters* m_counters = nullptr;
+    };
+
+    class WorldActorSelfDestroyComponent : public RVX::ActorComponent
+    {
+    public:
+        WorldActorSelfDestroyComponent(RVX::World* world, bool* firstResult, bool* secondResult = nullptr)
+            : m_world(world)
+            , m_firstResult(firstResult)
+            , m_secondResult(secondResult)
+        {
+            SetCanEverTick(true);
+            SetTickEnabled(true);
+        }
+
+        const char* GetClassName() const override { return "WorldActorSelfDestroyComponent"; }
+
+        void TickComponent(float) override
+        {
+            if (m_hasTicked || !m_world)
+                return;
+
+            m_hasTicked = true;
+            if (m_firstResult)
+            {
+                *m_firstResult = m_world->DestroyActor(GetOwner());
+            }
+            if (m_secondResult)
+            {
+                *m_secondResult = m_world->DestroyActor(GetOwner());
+            }
+        }
+
+    private:
+        RVX::World* m_world = nullptr;
+        bool* m_firstResult = nullptr;
+        bool* m_secondResult = nullptr;
+        bool m_hasTicked = false;
+    };
+
     class TickCounterComponent : public RVX::ActorComponent
     {
     public:
@@ -1550,6 +1634,171 @@ namespace
         foreignScene.Shutdown();
         return true;
     }
+
+    bool Test_WorldSpawnPureActorOwnsAndLooksUpActor()
+    {
+        RVX::World world;
+        world.Initialize();
+
+        RVX::ActorSpawnParams params;
+        params.name = "PureActor";
+        params.localPosition = RVX::Vec3(3.0f, 4.0f, 5.0f);
+        params.localRotation = RVX::Quat(0.9238795f, 0.0f, 0.3826834f, 0.0f);
+        params.localScale = RVX::Vec3(2.0f, 3.0f, 4.0f);
+
+        auto* actor = world.SpawnActor<WorldManagedPureActor>(params);
+        TEST_ASSERT_NOT_NULL(actor);
+        TEST_ASSERT_EQ(actor, world.GetActor(actor->GetHandle()));
+        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetActorCount());
+        TEST_ASSERT_NOT_NULL(world.GetSceneManager());
+        TEST_ASSERT_EQ(nullptr, world.GetSceneManager()->GetEntity(actor->GetHandle()));
+        TEST_ASSERT_EQ(params.localPosition, actor->GetWorldPosition());
+        TEST_ASSERT_EQ(params.localScale, actor->GetWorldScale());
+
+        world.Shutdown();
+        return true;
+    }
+
+    bool Test_WorldSpawnSceneEntityStillDelegatesToSceneManager()
+    {
+        RVX::World world;
+        world.Initialize();
+
+        RVX::ActorSpawnParams params;
+        params.name = "SceneActorThroughWorld";
+        auto* actor = world.SpawnActor<SpawnableSceneActor>(params);
+        TEST_ASSERT_NOT_NULL(actor);
+        TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetActorCount());
+        TEST_ASSERT_NOT_NULL(world.GetSceneManager());
+        TEST_ASSERT_EQ(actor, world.GetSceneManager()->GetEntity(actor->GetHandle()));
+        TEST_ASSERT_EQ(static_cast<RVX::Actor*>(actor), world.GetActor(actor->GetHandle()));
+
+        world.Shutdown();
+        return true;
+    }
+
+    bool Test_WorldPureActorLifecycleBeginsTicksAndDestroys()
+    {
+        RVX::World world;
+        world.Initialize();
+
+        WorldActorLifecycleCounters counters;
+        RVX::ActorSpawnParams params;
+        params.name = "LifecyclePureActor";
+        auto* actor = world.SpawnActor<WorldManagedPureActor>(params);
+        TEST_ASSERT_NOT_NULL(actor);
+        actor->AddComponent<WorldActorLifecycleComponent>(&counters);
+
+        world.Tick(0.016f);
+
+        TEST_ASSERT_EQ(1, counters.registered);
+        TEST_ASSERT_EQ(1, counters.initialized);
+        TEST_ASSERT_EQ(1, counters.beganPlay);
+        TEST_ASSERT_EQ(1, counters.ticked);
+
+        TEST_ASSERT_TRUE(world.DestroyActor(actor));
+        TEST_ASSERT_EQ(1, counters.endedPlay);
+        TEST_ASSERT_EQ(1, counters.unregistered);
+        TEST_ASSERT_EQ(1, counters.destroyed);
+        TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetActorCount());
+
+        world.Shutdown();
+        return true;
+    }
+
+    bool Test_WorldDestroyPureActorDefersDuringLifecycleDispatch()
+    {
+        RVX::World world;
+        world.Initialize();
+
+        bool destroyAccepted = false;
+        RVX::ActorSpawnParams params;
+        params.name = "DeferredPureDestroy";
+        auto* actor = world.SpawnActor<WorldManagedPureActor>(params);
+        TEST_ASSERT_NOT_NULL(actor);
+        const auto handle = actor->GetHandle();
+        actor->AddComponent<WorldActorSelfDestroyComponent>(&world, &destroyAccepted);
+
+        world.Tick(0.016f);
+
+        TEST_ASSERT_TRUE(destroyAccepted);
+        TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetActorCount());
+        TEST_ASSERT_EQ(nullptr, world.GetActor(handle));
+
+        world.Shutdown();
+        return true;
+    }
+
+    bool Test_WorldDestroyPureActorRejectsDuplicatePendingDestroy()
+    {
+        RVX::World world;
+        world.Initialize();
+
+        bool firstDestroy = false;
+        bool secondDestroy = true;
+        RVX::ActorSpawnParams params;
+        params.name = "DuplicatePureDestroy";
+        auto* actor = world.SpawnActor<WorldManagedPureActor>(params);
+        TEST_ASSERT_NOT_NULL(actor);
+        actor->AddComponent<WorldActorSelfDestroyComponent>(&world, &firstDestroy, &secondDestroy);
+
+        world.Tick(0.016f);
+
+        TEST_ASSERT_TRUE(firstDestroy);
+        TEST_ASSERT_FALSE(secondDestroy);
+        TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetActorCount());
+
+        world.Shutdown();
+        return true;
+    }
+
+    bool Test_WorldPureActorRejectsSceneParent()
+    {
+        RVX::World world;
+        world.Initialize();
+
+        RVX::ActorSpawnParams sceneParams;
+        sceneParams.name = "SceneParent";
+        auto* parent = world.SpawnActor<SpawnableSceneActor>(sceneParams);
+        TEST_ASSERT_NOT_NULL(parent);
+
+        RVX::ActorSpawnParams pureParams;
+        pureParams.name = "RejectedPureChild";
+        pureParams.parent = parent;
+        TEST_ASSERT_EQ(nullptr, world.SpawnActor<WorldManagedPureActor>(pureParams));
+        TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetActorCount());
+
+        world.Shutdown();
+        return true;
+    }
+
+    bool Test_WorldUnloadClearsPureActorsAndSceneActors()
+    {
+        RVX::World world;
+        world.Initialize();
+
+        RVX::ActorSpawnParams pureParams;
+        pureParams.name = "UnloadPureActor";
+        auto* pureActor = world.SpawnActor<WorldManagedPureActor>(pureParams);
+        TEST_ASSERT_NOT_NULL(pureActor);
+
+        RVX::ActorSpawnParams sceneParams;
+        sceneParams.name = "UnloadSceneActor";
+        auto* sceneActor = world.SpawnActor<SpawnableSceneActor>(sceneParams);
+        TEST_ASSERT_NOT_NULL(sceneActor);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetActorCount());
+        TEST_ASSERT_NOT_NULL(world.GetSceneManager());
+        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetSceneManager()->GetEntityCount());
+
+        world.Unload();
+
+        TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetActorCount());
+        TEST_ASSERT_NOT_NULL(world.GetSceneManager());
+        TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetSceneManager()->GetEntityCount());
+
+        world.Shutdown();
+        return true;
+    }
 } // namespace
 
 int main()
@@ -1653,6 +1902,20 @@ int main()
                   Test_WorldSpawnActorRejectsWhenUninitialized);
     suite.AddTest("DestroyActorRejectsForeignOrPureActor",
                   Test_DestroyActorRejectsForeignOrPureActor);
+    suite.AddTest("WorldSpawnPureActorOwnsAndLooksUpActor",
+                  Test_WorldSpawnPureActorOwnsAndLooksUpActor);
+    suite.AddTest("WorldSpawnSceneEntityStillDelegatesToSceneManager",
+                  Test_WorldSpawnSceneEntityStillDelegatesToSceneManager);
+    suite.AddTest("WorldPureActorLifecycleBeginsTicksAndDestroys",
+                  Test_WorldPureActorLifecycleBeginsTicksAndDestroys);
+    suite.AddTest("WorldDestroyPureActorDefersDuringLifecycleDispatch",
+                  Test_WorldDestroyPureActorDefersDuringLifecycleDispatch);
+    suite.AddTest("WorldDestroyPureActorRejectsDuplicatePendingDestroy",
+                  Test_WorldDestroyPureActorRejectsDuplicatePendingDestroy);
+    suite.AddTest("WorldPureActorRejectsSceneParent",
+                  Test_WorldPureActorRejectsSceneParent);
+    suite.AddTest("WorldUnloadClearsPureActorsAndSceneActors",
+                  Test_WorldUnloadClearsPureActorsAndSceneActors);
 
     auto results = suite.Run();
     suite.PrintResults(results);

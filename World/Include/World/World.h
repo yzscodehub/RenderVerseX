@@ -13,10 +13,14 @@
 #include "Core/Subsystem/SubsystemCollection.h"
 #include "Core/Subsystem/WorldSubsystem.h"
 #include "Core/Math/Geometry.h"
+#include "Scene/Actor.h"
 #include "Scene/SceneManager.h"
+#include <functional>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
+#include <vector>
 
 namespace RVX
 {
@@ -136,18 +140,36 @@ namespace RVX
         /// Spawn a scene-owned actor.
         SceneEntity* SpawnActor(const ActorSpawnParams& params = {});
 
-        /// Spawn a typed scene-owned actor.
+        /// Spawn a typed actor.
         template<typename T = SceneEntity>
         T* SpawnActor(const ActorSpawnParams& params = {})
         {
-            if (!m_initialized || !m_sceneManager)
+            static_assert(std::is_base_of_v<Actor, T>, "T must derive from Actor");
+
+            if (!m_initialized)
                 return nullptr;
 
-            return m_sceneManager->SpawnActor<T>(params);
+            if constexpr (std::is_base_of_v<SceneEntity, T>)
+            {
+                return m_sceneManager ? m_sceneManager->SpawnActor<T>(params) : nullptr;
+            }
+            else
+            {
+                return SpawnPureActor<T>(params);
+            }
         }
 
         /// Destroy a scene-owned actor.
         bool DestroyActor(Actor* actor);
+
+        /// Get a world actor by handle.
+        Actor* GetActor(Actor::Handle handle) const;
+
+        /// Get non-spatial actor count owned directly by the world.
+        size_t GetActorCount() const { return m_actors.size(); }
+
+        /// Iterate over pure world actors and scene-owned actors.
+        void ForEachActor(const std::function<void(Actor*)>& callback);
 
         /// Get the spatial subsystem
         SpatialSubsystem* GetSpatial() const;
@@ -209,14 +231,46 @@ namespace RVX
         const WorldConfig& GetConfig() const { return m_config; }
 
     private:
+        template<typename T>
+        T* SpawnPureActor(const ActorSpawnParams& params)
+        {
+            static_assert(std::is_base_of_v<Actor, T>, "T must derive from Actor");
+            static_assert(!std::is_base_of_v<SceneEntity, T>, "SceneEntity actors must use SceneManager");
+
+            if (params.parent)
+                return nullptr;
+
+            auto actor = std::make_unique<T>(params.name);
+            auto* spawned = actor.get();
+            spawned->SetAutoRegisterComponents(true);
+            spawned->RegisterAllComponents();
+            spawned->SetPosition(params.localPosition);
+            spawned->SetRotation(params.localRotation);
+            spawned->SetScale(params.localScale);
+
+            const auto handle = spawned->GetHandle();
+            m_actors[handle] = std::move(actor);
+            return spawned;
+        }
+
+        bool IsActorDestroyPending(Actor::Handle handle) const;
+        void QueuePendingActorDestroy(Actor::Handle handle);
+        void FlushPendingActorDestroys();
+        void DestroyPureActorImmediate(Actor::Handle handle);
+        void UpdatePureActorLifecycles(float deltaTime);
+        void ClearPureActors();
+
         WorldConfig m_config;
         SubsystemCollection<WorldSubsystem> m_subsystems;
         std::unique_ptr<SceneManager> m_sceneManager;
+        std::unordered_map<Actor::Handle, std::unique_ptr<Actor>> m_actors;
+        std::vector<Actor::Handle> m_pendingDestroyActors;
 
         // Camera management
         std::unordered_map<std::string, std::unique_ptr<Camera>> m_cameras;
         Camera* m_activeCamera = nullptr;
 
+        bool m_isDispatchingActorLifecycles = false;
         bool m_initialized = false;
     };
 
