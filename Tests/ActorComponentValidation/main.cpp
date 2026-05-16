@@ -5,6 +5,7 @@
 #include "Scene/Component.h"
 #include "Scene/ComponentFactory.h"
 #include "Scene/Components/StaticMeshComponent.h"
+#include "Scene/Node.h"
 #include "Scene/PrimitiveComponent.h"
 #include "Scene/SceneComponent.h"
 #include "Scene/SceneEntity.h"
@@ -1517,6 +1518,112 @@ namespace
         return true;
     }
 
+    bool Test_SceneManagerAddHierarchyIgnoresNullRoot()
+    {
+        RVX::SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        sceneManager.AddHierarchy(nullptr);
+
+        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_SceneManagerAddHierarchySpawnsNodeTree()
+    {
+        RVX::SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        auto root = std::make_shared<RVX::Node>("HierarchyRoot");
+        const RVX::Quat rootRotation(0.9238795f, 0.0f, 0.3826834f, 0.0f);
+        root->GetLocalTransform().SetPosition(RVX::Vec3(1.0f, 2.0f, 3.0f));
+        root->GetLocalTransform().SetRotation(rootRotation);
+        root->GetLocalTransform().SetScale(RVX::Vec3(2.0f, 2.0f, 2.0f));
+
+        auto child = std::make_shared<RVX::Node>("HierarchyChild");
+        child->SetActive(false);
+        child->GetLocalTransform().SetPosition(RVX::Vec3(4.0f, 5.0f, 6.0f));
+
+        auto grandChild = std::make_shared<RVX::Node>("HierarchyGrandChild");
+        grandChild->GetLocalTransform().SetScale(RVX::Vec3(0.5f, 0.5f, 0.5f));
+
+        child->AddChild(grandChild);
+        root->AddChild(child);
+
+        sceneManager.AddHierarchy(root);
+
+        RVX::SceneEntity* rootEntity = nullptr;
+        sceneManager.ForEachEntity([&](RVX::SceneEntity* entity) {
+            if (entity && !entity->GetParent())
+            {
+                rootEntity = entity;
+            }
+        });
+
+        TEST_ASSERT_EQ(static_cast<size_t>(3), sceneManager.GetEntityCount());
+        TEST_ASSERT_NOT_NULL(rootEntity);
+        TEST_ASSERT_EQ(std::string("HierarchyRoot"), rootEntity->GetName());
+        TEST_ASSERT_EQ(RVX::Vec3(1.0f, 2.0f, 3.0f), rootEntity->GetPosition());
+        TEST_ASSERT_EQ(rootRotation, rootEntity->GetRotation());
+        TEST_ASSERT_EQ(RVX::Vec3(2.0f, 2.0f, 2.0f), rootEntity->GetScale());
+        TEST_ASSERT_EQ(static_cast<size_t>(1), rootEntity->GetChildren().size());
+
+        RVX::SceneEntity* childEntity = rootEntity->GetChildren()[0];
+        TEST_ASSERT_NOT_NULL(childEntity);
+        TEST_ASSERT_EQ(std::string("HierarchyChild"), childEntity->GetName());
+        TEST_ASSERT_EQ(rootEntity, childEntity->GetParent());
+        TEST_ASSERT_EQ(RVX::Vec3(4.0f, 5.0f, 6.0f), childEntity->GetPosition());
+        TEST_ASSERT_FALSE(childEntity->IsActive());
+        TEST_ASSERT_EQ(static_cast<size_t>(1), childEntity->GetChildren().size());
+
+        RVX::SceneEntity* grandChildEntity = childEntity->GetChildren()[0];
+        TEST_ASSERT_NOT_NULL(grandChildEntity);
+        TEST_ASSERT_EQ(std::string("HierarchyGrandChild"), grandChildEntity->GetName());
+        TEST_ASSERT_EQ(childEntity, grandChildEntity->GetParent());
+        TEST_ASSERT_EQ(RVX::Vec3(0.5f, 0.5f, 0.5f), grandChildEntity->GetScale());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_SceneManagerAddHierarchySkipsNodeCycles()
+    {
+        RVX::SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        auto root = std::make_shared<RVX::Node>("CycleRoot");
+        auto child = std::make_shared<RVX::Node>("CycleChild");
+
+        root->AddChild(child);
+        child->AddChild(root);
+
+        sceneManager.AddHierarchy(root);
+
+        RVX::SceneEntity* rootEntity = nullptr;
+        sceneManager.ForEachEntity([&](RVX::SceneEntity* entity) {
+            if (entity && !entity->GetParent())
+            {
+                rootEntity = entity;
+            }
+        });
+
+        TEST_ASSERT_EQ(static_cast<size_t>(2), sceneManager.GetEntityCount());
+        TEST_ASSERT_NOT_NULL(rootEntity);
+        TEST_ASSERT_EQ(std::string("CycleRoot"), rootEntity->GetName());
+        TEST_ASSERT_EQ(static_cast<size_t>(1), rootEntity->GetChildren().size());
+
+        RVX::SceneEntity* childEntity = rootEntity->GetChildren()[0];
+        TEST_ASSERT_NOT_NULL(childEntity);
+        TEST_ASSERT_EQ(std::string("CycleChild"), childEntity->GetName());
+        TEST_ASSERT_EQ(rootEntity, childEntity->GetParent());
+        TEST_ASSERT_EQ(static_cast<size_t>(0), childEntity->GetChildren().size());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_SceneManagerDestroyActorUsesActorPointer()
     {
         RVX::SceneManager sceneManager;
@@ -2017,6 +2124,12 @@ int main()
                   Test_SceneManagerSpawnActorAttachesParent);
     suite.AddTest("SceneManagerSpawnActorRejectsForeignParent",
                   Test_SceneManagerSpawnActorRejectsForeignParent);
+    suite.AddTest("SceneManagerAddHierarchyIgnoresNullRoot",
+                  Test_SceneManagerAddHierarchyIgnoresNullRoot);
+    suite.AddTest("SceneManagerAddHierarchySpawnsNodeTree",
+                  Test_SceneManagerAddHierarchySpawnsNodeTree);
+    suite.AddTest("SceneManagerAddHierarchySkipsNodeCycles",
+                  Test_SceneManagerAddHierarchySkipsNodeCycles);
     suite.AddTest("SceneManagerDestroyActorUsesActorPointer",
                   Test_SceneManagerDestroyActorUsesActorPointer);
     suite.AddTest("SceneManagerDestroyActorDefersDuringLifecycleDispatch",

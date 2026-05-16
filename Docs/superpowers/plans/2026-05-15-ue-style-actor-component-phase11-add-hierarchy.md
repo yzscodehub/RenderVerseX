@@ -35,13 +35,13 @@
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ActorComponentValidation\main.cpp`
 
-- [ ] Add `#include "Scene/Node.h"` near the existing Scene includes:
+- [x] Add `#include "Scene/Node.h"` near the existing Scene includes:
 
 ```cpp
 #include "Scene/Node.h"
 ```
 
-- [ ] Add `Test_SceneManagerAddHierarchyIgnoresNullRoot` near the existing `SceneManager` actor tests:
+- [x] Add `Test_SceneManagerAddHierarchyIgnoresNullRoot` near the existing `SceneManager` actor tests:
 
 ```cpp
 bool Test_SceneManagerAddHierarchyIgnoresNullRoot()
@@ -58,7 +58,7 @@ bool Test_SceneManagerAddHierarchyIgnoresNullRoot()
 }
 ```
 
-- [ ] Add `Test_SceneManagerAddHierarchySpawnsNodeTree` near the existing `SceneManager` actor tests:
+- [x] Add `Test_SceneManagerAddHierarchySpawnsNodeTree` near the existing `SceneManager` actor tests:
 
 ```cpp
 bool Test_SceneManagerAddHierarchySpawnsNodeTree()
@@ -119,7 +119,9 @@ bool Test_SceneManagerAddHierarchySpawnsNodeTree()
 }
 ```
 
-- [ ] Register both tests in `main()` after `SceneManagerSpawnActorRejectsForeignParent`:
+- [x] Add `Test_SceneManagerAddHierarchySkipsNodeCycles` to cover cyclic `Node` graphs and verify `visitedNodes` prevents duplicate entity spawning.
+
+- [x] Register the hierarchy tests in `main()` after `SceneManagerSpawnActorRejectsForeignParent`:
 
 ```cpp
 suite.AddTest("SceneManagerAddHierarchyIgnoresNullRoot",
@@ -128,7 +130,7 @@ suite.AddTest("SceneManagerAddHierarchySpawnsNodeTree",
               Test_SceneManagerAddHierarchySpawnsNodeTree);
 ```
 
-- [ ] Build and run the focused validation:
+- [x] Build and run the focused validation:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ActorComponentValidation
@@ -137,7 +139,7 @@ cmake --build build\Debug --config Debug --target ActorComponentValidation
 
 Expected result before implementation: `SceneManagerAddHierarchySpawnsNodeTree` fails because the current `AddHierarchy()` only logs and does not create entities.
 
-- [ ] Run this static guard and confirm it fails before implementation:
+- [x] Run this static guard and confirm it fails before implementation:
 
 ```powershell
 rg -n "Node -> SceneEntity conversion|AddHierarchy: Added node" Scene\Private\SceneManager.cpp
@@ -152,7 +154,7 @@ Expected result before implementation: matches in `SceneManager::AddHierarchy()`
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\SceneManager.cpp`
 
-- [ ] Replace the `AddHierarchy()` stub with this implementation:
+- [x] Replace the `AddHierarchy()` stub with this implementation:
 
 ```cpp
 void SceneManager::AddHierarchy(std::shared_ptr<Node> rootNode)
@@ -197,7 +199,7 @@ void SceneManager::AddHierarchy(std::shared_ptr<Node> rootNode)
 }
 ```
 
-- [ ] Re-run the static guard:
+- [x] Re-run the static guard:
 
 ```powershell
 rg -n "Node -> SceneEntity conversion|AddHierarchy: Added node" Scene\Private\SceneManager.cpp
@@ -205,7 +207,7 @@ rg -n "Node -> SceneEntity conversion|AddHierarchy: Added node" Scene\Private\Sc
 
 Expected result after implementation: command exits with code 1 and prints no matches.
 
-- [ ] Build and run the focused validation:
+- [x] Build and run the focused validation:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ActorComponentValidation
@@ -221,7 +223,7 @@ Expected result after implementation: all actor component tests pass.
 **Files:**
 - No additional source files.
 
-- [ ] Build validation targets and ModelViewer:
+- [x] Build validation targets and ModelViewer:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ActorComponentValidation SpatialComponentValidation ResourceInstantiationValidation RenderSceneValidation SystemIntegrationTest MaterialSystemValidation RenderPassBindingValidation ModelViewer
@@ -229,7 +231,7 @@ cmake --build build\Debug --config Debug --target ActorComponentValidation Spati
 
 Expected result: build succeeds.
 
-- [ ] Run validation executables:
+- [x] Run validation executables:
 
 ```powershell
 .\build\Debug\Tests\Debug\ActorComponentValidation.exe
@@ -243,7 +245,7 @@ Expected result: build succeeds.
 
 Expected result: every executable returns exit code 0 and reports all tests passing.
 
-- [ ] Run ModelViewer smoke:
+- [x] Run ModelViewer smoke:
 
 ```powershell
 $stdout = "build_codex\phase11_modelviewer_stdout.log"
@@ -259,7 +261,7 @@ Get-Content -Path $stderr
 
 Expected result: stdout includes model loaded, model instantiated, scene entity ready, GPU mesh upload, and render graph stats; stderr is empty.
 
-- [ ] Request exactly one code review using Dalton with this context:
+- [x] Request exactly one code review using Dalton with this context:
 
 ```text
 Review Phase 11 of the UE-style Actor Component framework.
@@ -274,11 +276,11 @@ Requirements:
 Please report Critical and Important issues first, with file/line references.
 ```
 
-- [ ] Fix any Critical or Important review findings before committing.
+- [x] Fix any Critical or Important review findings before committing.
 
-- [ ] Update every checkbox in this plan that was completed.
+- [x] Update every checkbox in this plan that was completed.
 
-- [ ] Commit the implementation:
+- [x] Commit the implementation:
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-15-ue-style-actor-component-phase11-add-hierarchy.md Scene\Private\SceneManager.cpp Tests\ActorComponentValidation\main.cpp

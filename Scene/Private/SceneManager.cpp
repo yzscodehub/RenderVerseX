@@ -413,12 +413,43 @@ const SceneEntity* SceneManager::GetEntity(SceneEntity::Handle handle) const
 
 void SceneManager::AddHierarchy(std::shared_ptr<Node> rootNode)
 {
-    if (!rootNode) return;
+    if (!rootNode)
+        return;
 
-    // Traverse hierarchy and add entities
-    // For now, we just add the root as a note
-    // TODO: Implement proper Node -> SceneEntity conversion
-    RVX_SCENE_INFO("AddHierarchy: Added node '{}'", rootNode->GetName());
+    std::unordered_set<const Node*> visitedNodes;
+
+    auto spawnNode = [this, &visitedNodes](const Node* node, SceneEntity* parent,
+                                           auto&& spawnNodeRef) -> void {
+        if (!node)
+            return;
+
+        if (visitedNodes.find(node) != visitedNodes.end())
+            return;
+
+        visitedNodes.insert(node);
+
+        const Transform& transform = node->GetLocalTransform();
+
+        ActorSpawnParams params;
+        params.name = node->GetName();
+        params.localPosition = transform.GetPosition();
+        params.localRotation = transform.GetRotation();
+        params.localScale = transform.GetScale();
+        params.parent = parent;
+
+        SceneEntity* entity = SpawnActor(params);
+        if (!entity)
+            return;
+
+        entity->SetActive(node->IsActive());
+
+        for (const auto& child : node->GetChildren())
+        {
+            spawnNodeRef(child.get(), entity, spawnNodeRef);
+        }
+    };
+
+    spawnNode(rootNode.get(), nullptr, spawnNode);
 }
 
 void SceneManager::CollectSpatialEntities(std::vector<Spatial::ISpatialEntity*>& outEntities) const
