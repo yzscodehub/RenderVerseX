@@ -173,19 +173,45 @@ void World::ForEachActor(const std::function<void(Actor*)>& callback)
     if (!callback)
         return;
 
-    for (auto& [handle, actor] : m_actors)
+    std::vector<Actor::Handle> pureActorHandles;
+    pureActorHandles.reserve(m_actors.size());
+    for (const auto& [handle, actor] : m_actors)
     {
-        (void)handle;
-        callback(actor.get());
+        if (actor)
+        {
+            pureActorHandles.push_back(handle);
+        }
+    }
+
+    for (Actor::Handle handle : pureActorHandles)
+    {
+        Actor* actor = GetActor(handle);
+        if (actor && m_actors.find(handle) != m_actors.end() && !IsActorDestroyPending(handle))
+        {
+            callback(actor);
+        }
     }
 
     if (!m_sceneManager)
         return;
 
+    std::vector<SceneEntity::Handle> sceneActorHandles;
+    sceneActorHandles.reserve(m_sceneManager->GetEntityCount());
     for (const auto& [handle, entity] : m_sceneManager->GetEntities())
     {
-        (void)handle;
-        callback(entity.get());
+        if (entity)
+        {
+            sceneActorHandles.push_back(handle);
+        }
+    }
+
+    for (SceneEntity::Handle handle : sceneActorHandles)
+    {
+        SceneEntity* entity = m_sceneManager->GetEntity(handle);
+        if (entity && !m_sceneManager->IsDestroyPending(handle))
+        {
+            callback(static_cast<Actor*>(entity));
+        }
     }
 }
 

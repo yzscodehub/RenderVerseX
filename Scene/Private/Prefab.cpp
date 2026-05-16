@@ -139,8 +139,10 @@ SceneEntity* Prefab::InstantiateInternal(SceneManager& sceneManager, const Vec3&
 
     for (const auto& entityData : m_entities)
     {
-        SceneEntity::Handle handle = sceneManager.CreateEntity(entityData.name);
-        SceneEntity* entity = sceneManager.GetEntity(handle);
+        ActorSpawnParams params;
+        params.name = entityData.name;
+
+        SceneEntity* entity = sceneManager.SpawnActor(params);
         if (!entity)
         {
             // Cleanup on failure
@@ -152,7 +154,7 @@ SceneEntity* Prefab::InstantiateInternal(SceneManager& sceneManager, const Vec3&
         }
         
         createdEntities.push_back(entity);
-        createdHandles.push_back(handle);
+        createdHandles.push_back(entity->GetHandle());
     }
 
     // Set up hierarchy and properties

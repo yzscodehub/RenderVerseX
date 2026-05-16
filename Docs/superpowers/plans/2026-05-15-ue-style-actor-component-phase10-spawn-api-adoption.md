@@ -1,6 +1,6 @@
 # UE-Style Actor Component Phase 10 Spawn API Adoption Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Make `SpawnActor` the preferred runtime actor creation path for model, prefab, and ModelViewer fallback instantiation, while hardening mixed pure/scene actor iteration.
 
@@ -50,13 +50,13 @@ This phase intentionally changes only runtime instantiation call sites and `Worl
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ActorComponentValidation\main.cpp`
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ResourceInstantiationValidation\main.cpp`
 
-- [ ] Add this helper include to `Tests\ActorComponentValidation\main.cpp` if it is not already present:
+- [x] Add this helper include to `Tests\ActorComponentValidation\main.cpp` if it is not already present:
 
 ```cpp
 #include <algorithm>
 ```
 
-- [ ] Add `Test_WorldForEachActorVisitsPureAndSceneActors` near the existing world actor tests:
+- [x] Add `Test_WorldForEachActorVisitsPureAndSceneActors` near the existing world actor tests:
 
 ```cpp
 bool Test_WorldForEachActorVisitsPureAndSceneActors()
@@ -91,7 +91,7 @@ bool Test_WorldForEachActorVisitsPureAndSceneActors()
 }
 ```
 
-- [ ] Add `Test_WorldForEachActorIgnoresEmptyCallback` near the existing world actor tests:
+- [x] Add `Test_WorldForEachActorIgnoresEmptyCallback` near the existing world actor tests:
 
 ```cpp
 bool Test_WorldForEachActorIgnoresEmptyCallback()
@@ -112,7 +112,7 @@ bool Test_WorldForEachActorIgnoresEmptyCallback()
 }
 ```
 
-- [ ] Add `Test_WorldForEachActorAllowsPureActorDestroyDuringCallback` near the existing world actor tests:
+- [x] Add `Test_WorldForEachActorAllowsPureActorDestroyDuringCallback` near the existing world actor tests:
 
 ```cpp
 bool Test_WorldForEachActorAllowsPureActorDestroyDuringCallback()
@@ -155,7 +155,7 @@ bool Test_WorldForEachActorAllowsPureActorDestroyDuringCallback()
 }
 ```
 
-- [ ] Add `Test_WorldForEachActorAllowsSceneActorDestroyDuringCallback` near the existing world actor tests:
+- [x] Add `Test_WorldForEachActorAllowsSceneActorDestroyDuringCallback` near the existing world actor tests:
 
 ```cpp
 bool Test_WorldForEachActorAllowsSceneActorDestroyDuringCallback()
@@ -198,7 +198,7 @@ bool Test_WorldForEachActorAllowsSceneActorDestroyDuringCallback()
 }
 ```
 
-- [ ] Register all four iteration tests in `main()` after `WorldUnloadClearsPureActorsAndSceneActors`:
+- [x] Register all four iteration tests in `main()` after `WorldUnloadClearsPureActorsAndSceneActors`:
 
 ```cpp
 suite.AddTest("WorldForEachActorVisitsPureAndSceneActors",
@@ -211,7 +211,7 @@ suite.AddTest("WorldForEachActorAllowsSceneActorDestroyDuringCallback",
               Test_WorldForEachActorAllowsSceneActorDestroyDuringCallback);
 ```
 
-- [ ] Add `FillHierarchicalIndexedModel()` to `Tests\ResourceInstantiationValidation\main.cpp` after `FillIndexedModel()`:
+- [x] Add `FillHierarchicalIndexedModel()` to `Tests\ResourceInstantiationValidation\main.cpp` after `FillIndexedModel()`:
 
 ```cpp
 void FillHierarchicalIndexedModel(ModelResource& model)
@@ -232,7 +232,7 @@ void FillHierarchicalIndexedModel(ModelResource& model)
 }
 ```
 
-- [ ] Add `Test_ModelResourceInstantiateActorBuildsSpawnedHierarchy` after `Test_LegacyInstantiateDelegatesToActorPath`:
+- [x] Add `Test_ModelResourceInstantiateActorBuildsSpawnedHierarchy` after `Test_LegacyInstantiateDelegatesToActorPath`:
 
 ```cpp
 bool Test_ModelResourceInstantiateActorBuildsSpawnedHierarchy()
@@ -267,7 +267,7 @@ bool Test_ModelResourceInstantiateActorBuildsSpawnedHierarchy()
 }
 ```
 
-- [ ] Add `Test_PrefabInstantiateAsChildBuildsSpawnedHierarchy` after `Test_PrefabInstantiatesRegisteredActorComponentClasses`:
+- [x] Add `Test_PrefabInstantiateAsChildBuildsSpawnedHierarchy` after `Test_PrefabInstantiatesRegisteredActorComponentClasses`:
 
 ```cpp
 bool Test_PrefabInstantiateAsChildBuildsSpawnedHierarchy()
@@ -313,7 +313,7 @@ bool Test_PrefabInstantiateAsChildBuildsSpawnedHierarchy()
 }
 ```
 
-- [ ] Register both resource tests in `main()`:
+- [x] Register both resource tests in `main()`:
 
 ```cpp
 suite.AddTest("ModelResourceInstantiateActorBuildsSpawnedHierarchy",
@@ -322,7 +322,7 @@ suite.AddTest("PrefabInstantiateAsChildBuildsSpawnedHierarchy",
               Test_PrefabInstantiateAsChildBuildsSpawnedHierarchy);
 ```
 
-- [ ] Run the focused build and test to verify the mutation-safety tests expose the current direct-iteration risk before implementation:
+- [x] Run the focused build and test to verify the mutation-safety tests expose the current direct-iteration risk before implementation:
 
 ```powershell
 cmake --build build --config Debug --target ActorComponentValidation
@@ -331,7 +331,7 @@ cmake --build build --config Debug --target ActorComponentValidation
 
 Expected result before production changes: the empty-callback regression should pass, while at least one callback-side destroy test may fail or the executable may terminate because the current implementation erases from `m_actors` or `SceneManager::GetEntities()` while iterating directly.
 
-- [ ] Run the focused resource build and test:
+- [x] Run the focused resource build and test:
 
 ```powershell
 cmake --build build --config Debug --target ResourceInstantiationValidation
@@ -340,7 +340,7 @@ cmake --build build --config Debug --target ResourceInstantiationValidation
 
 Expected result before production changes: new resource tests may pass because they assert existing behavior, and they protect the migration from changing hierarchy/component semantics.
 
-- [ ] Run this static migration guard and confirm it fails before production changes:
+- [x] Run this static migration guard and confirm it fails before production changes:
 
 ```powershell
 rg -n "CreateEntity" Resource\Private\Types\ModelResource.cpp Scene\Private\Prefab.cpp Samples\ModelViewer\main.cpp
@@ -348,7 +348,7 @@ rg -n "CreateEntity" Resource\Private\Types\ModelResource.cpp Scene\Private\Pref
 
 Expected result before production changes: matches in all three runtime files.
 
-- [ ] Run this static iteration-safety guard and confirm it fails before production changes:
+- [x] Run this static iteration-safety guard and confirm it fails before production changes:
 
 ```powershell
 rg -n "for \\(auto& \\[handle, actor\\] : m_actors\\)|callback\\(entity\\.get\\(\\)\\)" World\Private\World.cpp
@@ -364,16 +364,16 @@ Expected result before production changes: matches in `World::ForEachActor()` sh
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Include\Scene\SceneManager.h`
 - Modify: `E:\WorkSpace\RenderVerseX\World\Private\World.cpp`
 
-- [ ] In `SceneManager.h`, move `IsDestroyPending(SceneEntity::Handle handle) const` from `private` to the public Entity Management section:
+- [x] In `SceneManager.h`, move `IsDestroyPending(SceneEntity::Handle handle) const` from `private` to the public Entity Management section:
 
 ```cpp
 /// Check whether an entity is queued for deferred destruction.
 bool IsDestroyPending(SceneEntity::Handle handle) const;
 ```
 
-- [ ] Remove the old private declaration of `IsDestroyPending(SceneEntity::Handle handle) const` from the helper list in `SceneManager.h` so the class has one declaration.
+- [x] Remove the old private declaration of `IsDestroyPending(SceneEntity::Handle handle) const` from the helper list in `SceneManager.h` so the class has one declaration.
 
-- [ ] Update `World::ForEachActor()` to keep the empty callback guard and snapshot handles before invoking user callbacks:
+- [x] Update `World::ForEachActor()` to keep the empty callback guard and snapshot handles before invoking user callbacks:
 
 ```cpp
 void World::ForEachActor(const std::function<void(Actor*)>& callback)
@@ -424,7 +424,7 @@ void World::ForEachActor(const std::function<void(Actor*)>& callback)
 }
 ```
 
-- [ ] Re-run the focused actor validation:
+- [x] Re-run the focused actor validation:
 
 ```powershell
 cmake --build build --config Debug --target ActorComponentValidation
@@ -433,7 +433,7 @@ cmake --build build --config Debug --target ActorComponentValidation
 
 Expected result: all `ActorComponentValidation` tests pass.
 
-- [ ] Re-run the static iteration-safety guard and confirm it now passes with no matches:
+- [x] Re-run the static iteration-safety guard and confirm it now passes with no matches:
 
 ```powershell
 rg -n "for \\(auto& \\[handle, actor\\] : m_actors\\)|callback\\(entity\\.get\\(\\)\\)" World\Private\World.cpp
@@ -450,7 +450,7 @@ Expected result after production changes: command exits with code 1 and prints n
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\Prefab.cpp`
 - Modify: `E:\WorkSpace\RenderVerseX\Samples\ModelViewer\main.cpp`
 
-- [ ] In `ModelResource::InstantiateActorNode()`, replace direct entity creation and manual parent attachment with `ActorSpawnParams`:
+- [x] In `ModelResource::InstantiateActorNode()`, replace direct entity creation and manual parent attachment with `ActorSpawnParams`:
 
 ```cpp
 const auto& transform = node->GetLocalTransform();
@@ -467,7 +467,7 @@ if (!entity)
     return nullptr;
 ```
 
-- [ ] Remove the subsequent manual transform assignment and this manual parent block from `ModelResource::InstantiateActorNode()`:
+- [x] Remove the subsequent manual transform assignment and this manual parent block from `ModelResource::InstantiateActorNode()`:
 
 ```cpp
 if (parent)
@@ -476,7 +476,7 @@ if (parent)
 }
 ```
 
-- [ ] In `Prefab::InstantiateInternal()`, replace the creation loop with name-only spawn calls while keeping the existing second pass for hierarchy, transform, layer, active state, and component creation:
+- [x] In `Prefab::InstantiateInternal()`, replace the creation loop with name-only spawn calls while keeping the existing second pass for hierarchy, transform, layer, active state, and component creation:
 
 ```cpp
 for (const auto& entityData : m_entities)
@@ -499,7 +499,7 @@ for (const auto& entityData : m_entities)
 }
 ```
 
-- [ ] In `Samples\ModelViewer\main.cpp`, replace fallback `CreateEntity()` usage with `SpawnActor()`:
+- [x] In `Samples\ModelViewer\main.cpp`, replace fallback `CreateEntity()` usage with `SpawnActor()`:
 
 ```cpp
 ActorSpawnParams fallbackParams;
@@ -507,7 +507,7 @@ fallbackParams.name = "FallbackEntity";
 modelEntity = sceneManager->SpawnActor(fallbackParams);
 ```
 
-- [ ] Run the static migration guard and confirm it now passes with no matches:
+- [x] Run the static migration guard and confirm it now passes with no matches:
 
 ```powershell
 rg -n "CreateEntity" Resource\Private\Types\ModelResource.cpp Scene\Private\Prefab.cpp Samples\ModelViewer\main.cpp
@@ -515,7 +515,7 @@ rg -n "CreateEntity" Resource\Private\Types\ModelResource.cpp Scene\Private\Pref
 
 Expected result after production changes: command exits with code 1 and prints no matches.
 
-- [ ] Run focused resource validation:
+- [x] Run focused resource validation:
 
 ```powershell
 cmake --build build --config Debug --target ResourceInstantiationValidation
@@ -531,7 +531,7 @@ Expected result: all resource instantiation tests pass.
 **Files:**
 - No new source files.
 
-- [ ] Build validation targets and ModelViewer:
+- [x] Build validation targets and ModelViewer:
 
 ```powershell
 cmake --build build --config Debug --target ActorComponentValidation SpatialComponentValidation ResourceInstantiationValidation RenderSceneValidation SystemIntegrationTest MaterialSystemValidation RenderPassBindingValidation ModelViewer
@@ -539,7 +539,7 @@ cmake --build build --config Debug --target ActorComponentValidation SpatialComp
 
 Expected result: build succeeds.
 
-- [ ] Run validation executables:
+- [x] Run validation executables:
 
 ```powershell
 .\build\Tests\Debug\ActorComponentValidation.exe
@@ -553,7 +553,7 @@ Expected result: build succeeds.
 
 Expected result: every executable returns exit code 0 and reports all tests passing.
 
-- [ ] Run ModelViewer smoke with the known sample model and stop it after several seconds:
+- [x] Run ModelViewer smoke with the known sample model and stop it after several seconds:
 
 ```powershell
 $stdout = "build_codex\phase10_modelviewer_stdout.log"
@@ -569,7 +569,7 @@ Get-Content -Path $stderr
 
 Expected result: stdout includes model loaded, model instantiated, scene entity ready, GPU mesh upload, and render graph stats; stderr is empty.
 
-- [ ] Request exactly one code review using Dalton with this context:
+- [x] Request exactly one code review using Dalton with this context:
 
 ```text
 Review Phase 10 of the UE-style Actor Component framework.
@@ -584,11 +584,11 @@ Requirements:
 Please report Critical and Important issues first, with file/line references.
 ```
 
-- [ ] Fix any Critical or Important review findings before continuing.
+- [x] Fix any Critical or Important review findings before continuing.
 
-- [ ] Update every checkbox in this plan that was completed.
+- [x] Update every checkbox in this plan that was completed.
 
-- [ ] Commit the plan and implementation:
+- [x] Commit the plan and implementation:
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-15-ue-style-actor-component-phase10-spawn-api-adoption.md Scene\Include\Scene\SceneManager.h World\Private\World.cpp Resource\Private\Types\ModelResource.cpp Scene\Private\Prefab.cpp Samples\ModelViewer\main.cpp Tests\ActorComponentValidation\main.cpp Tests\ResourceInstantiationValidation\main.cpp

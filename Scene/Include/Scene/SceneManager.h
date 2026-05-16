@@ -161,6 +161,9 @@ namespace RVX
         /// Destroy a scene-owned actor.
         bool DestroyActor(Actor* actor);
 
+        /// Check whether an entity is queued for deferred destruction.
+        bool IsDestroyPending(SceneEntity::Handle handle) const;
+
         /// Get entity by handle
         SceneEntity* GetEntity(SceneEntity::Handle handle);
         const SceneEntity* GetEntity(SceneEntity::Handle handle) const;
@@ -333,7 +336,6 @@ namespace RVX
                                    std::vector<PrimitiveComponent*>& outPrimitives) const;
         RaycastHit MakeRaycastHit(const Spatial::QueryResult& result, const Ray& ray) const;
         void UpdateEntityLifecycles(float deltaTime);
-        bool IsDestroyPending(SceneEntity::Handle handle) const;
         void QueuePendingDestroy(SceneEntity::Handle handle);
         void FlushPendingDestroyEntities();
         void DestroyEntityImmediate(SceneEntity::Handle handle);

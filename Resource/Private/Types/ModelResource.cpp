@@ -153,17 +153,18 @@ SceneEntity* ModelResource::InstantiateActorNode(const Node* node, SceneManager*
     if (!node)
         return nullptr;
     
-    // Create entity
-    SceneEntity::Handle handle = scene->CreateEntity(node->GetName());
-    SceneEntity* entity = scene->GetEntity(handle);
+    const auto& transform = node->GetLocalTransform();
+
+    ActorSpawnParams params;
+    params.name = node->GetName();
+    params.localPosition = transform.GetPosition();
+    params.localRotation = transform.GetRotation();
+    params.localScale = transform.GetScale();
+    params.parent = parent;
+
+    SceneEntity* entity = scene->SpawnActor<SceneEntity>(params);
     if (!entity)
         return nullptr;
-    
-    // Set transform from node
-    const auto& transform = node->GetLocalTransform();
-    entity->SetPosition(transform.GetPosition());
-    entity->SetRotation(transform.GetRotation());
-    entity->SetScale(transform.GetScale());
     
     // Use ComponentFactory if node uses index mode (preferred new approach)
     if (node->UsesIndexMode())
@@ -214,13 +215,7 @@ SceneEntity* ModelResource::InstantiateActorNode(const Node* node, SceneManager*
             primitive->SetReceivesShadow(meshComp->ReceivesShadows());
         }
     }
-    
-    // Set parent relationship
-    if (parent)
-    {
-        parent->AddChild(entity);
-    }
-    
+
     // Recursively instantiate children
     for (const auto& child : node->GetChildren())
     {

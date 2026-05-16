@@ -12,6 +12,7 @@
 #include "TestFramework/TestRunner.h"
 #include "World/World.h"
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <string>
@@ -1799,6 +1800,132 @@ namespace
         world.Shutdown();
         return true;
     }
+
+    bool Test_WorldForEachActorVisitsPureAndSceneActors()
+    {
+        RVX::World world;
+        world.Initialize();
+
+        RVX::ActorSpawnParams pureParams;
+        pureParams.name = "PureIterated";
+        auto* pureActor = world.SpawnActor<WorldManagedPureActor>(pureParams);
+        TEST_ASSERT_NOT_NULL(pureActor);
+
+        RVX::ActorSpawnParams sceneParams;
+        sceneParams.name = "SceneIterated";
+        auto* sceneActor = world.SpawnActor<SpawnableSceneActor>(sceneParams);
+        TEST_ASSERT_NOT_NULL(sceneActor);
+
+        std::vector<RVX::Actor::Handle> visited;
+        world.ForEachActor([&](RVX::Actor* actor) {
+            if (actor)
+            {
+                visited.push_back(actor->GetHandle());
+            }
+        });
+
+        TEST_ASSERT_EQ(static_cast<size_t>(2), visited.size());
+        TEST_ASSERT_TRUE(std::find(visited.begin(), visited.end(), pureActor->GetHandle()) != visited.end());
+        TEST_ASSERT_TRUE(std::find(visited.begin(), visited.end(), sceneActor->GetHandle()) != visited.end());
+
+        world.Shutdown();
+        return true;
+    }
+
+    bool Test_WorldForEachActorIgnoresEmptyCallback()
+    {
+        RVX::World world;
+        world.Initialize();
+
+        RVX::ActorSpawnParams params;
+        params.name = "EmptyCallbackPureActor";
+        auto* actor = world.SpawnActor<WorldManagedPureActor>(params);
+        TEST_ASSERT_NOT_NULL(actor);
+
+        world.ForEachActor({});
+        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetActorCount());
+
+        world.Shutdown();
+        return true;
+    }
+
+    bool Test_WorldForEachActorAllowsPureActorDestroyDuringCallback()
+    {
+        RVX::World world;
+        world.Initialize();
+
+        RVX::ActorSpawnParams firstParams;
+        firstParams.name = "DestroyPureDuringIteration";
+        auto* first = world.SpawnActor<WorldManagedPureActor>(firstParams);
+        TEST_ASSERT_NOT_NULL(first);
+        const auto firstHandle = first->GetHandle();
+
+        RVX::ActorSpawnParams secondParams;
+        secondParams.name = "SurvivePureIteration";
+        auto* second = world.SpawnActor<WorldManagedPureActor>(secondParams);
+        TEST_ASSERT_NOT_NULL(second);
+        const auto secondHandle = second->GetHandle();
+
+        bool destroyAccepted = false;
+        size_t visitCount = 0;
+        world.ForEachActor([&](RVX::Actor* actor) {
+            if (!actor)
+                return;
+
+            ++visitCount;
+            if (actor->GetHandle() == firstHandle)
+            {
+                destroyAccepted = world.DestroyActor(actor);
+            }
+        });
+
+        TEST_ASSERT_TRUE(destroyAccepted);
+        TEST_ASSERT_EQ(nullptr, world.GetActor(firstHandle));
+        TEST_ASSERT_EQ(second, world.GetActor(secondHandle));
+        TEST_ASSERT_TRUE(visitCount >= static_cast<size_t>(1));
+
+        world.Shutdown();
+        return true;
+    }
+
+    bool Test_WorldForEachActorAllowsSceneActorDestroyDuringCallback()
+    {
+        RVX::World world;
+        world.Initialize();
+
+        RVX::ActorSpawnParams firstParams;
+        firstParams.name = "DestroySceneDuringIteration";
+        auto* first = world.SpawnActor<SpawnableSceneActor>(firstParams);
+        TEST_ASSERT_NOT_NULL(first);
+        const auto firstHandle = first->GetHandle();
+
+        RVX::ActorSpawnParams secondParams;
+        secondParams.name = "SurviveSceneIteration";
+        auto* second = world.SpawnActor<SpawnableSceneActor>(secondParams);
+        TEST_ASSERT_NOT_NULL(second);
+        const auto secondHandle = second->GetHandle();
+
+        bool destroyAccepted = false;
+        size_t visitCount = 0;
+        world.ForEachActor([&](RVX::Actor* actor) {
+            if (!actor)
+                return;
+
+            ++visitCount;
+            if (actor->GetHandle() == firstHandle)
+            {
+                destroyAccepted = world.DestroyActor(actor);
+            }
+        });
+
+        TEST_ASSERT_TRUE(destroyAccepted);
+        TEST_ASSERT_EQ(nullptr, world.GetActor(firstHandle));
+        TEST_ASSERT_EQ(second, world.GetActor(secondHandle));
+        TEST_ASSERT_TRUE(visitCount >= static_cast<size_t>(1));
+
+        world.Shutdown();
+        return true;
+    }
 } // namespace
 
 int main()
@@ -1916,6 +2043,14 @@ int main()
                   Test_WorldPureActorRejectsSceneParent);
     suite.AddTest("WorldUnloadClearsPureActorsAndSceneActors",
                   Test_WorldUnloadClearsPureActorsAndSceneActors);
+    suite.AddTest("WorldForEachActorVisitsPureAndSceneActors",
+                  Test_WorldForEachActorVisitsPureAndSceneActors);
+    suite.AddTest("WorldForEachActorIgnoresEmptyCallback",
+                  Test_WorldForEachActorIgnoresEmptyCallback);
+    suite.AddTest("WorldForEachActorAllowsPureActorDestroyDuringCallback",
+                  Test_WorldForEachActorAllowsPureActorDestroyDuringCallback);
+    suite.AddTest("WorldForEachActorAllowsSceneActorDestroyDuringCallback",
+                  Test_WorldForEachActorAllowsSceneActorDestroyDuringCallback);
 
     auto results = suite.Run();
     suite.PrintResults(results);

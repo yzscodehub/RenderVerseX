@@ -67,6 +67,23 @@ namespace
         model.SetRootNode(root);
     }
 
+    void FillHierarchicalIndexedModel(ModelResource& model)
+    {
+        model.AddMesh(MakeMeshResource(1101));
+        model.AddMaterial(MakeMaterialResource(2101));
+
+        auto root = std::make_shared<Node>("RootNode");
+        root->GetLocalTransform().SetPosition(Vec3(1.0f, 2.0f, 3.0f));
+
+        auto child = std::make_shared<Node>("ChildNode");
+        child->SetMeshIndex(0);
+        child->SetMaterialIndices({0});
+        child->GetLocalTransform().SetPosition(Vec3(4.0f, 5.0f, 6.0f));
+        root->AddChild(child);
+
+        model.SetRootNode(root);
+    }
+
     bool Test_ActorAddOwnedComponentUsesNormalLifecycle()
     {
         class OwnedLifecycleComponent : public ActorComponent
@@ -186,6 +203,37 @@ namespace
         return true;
     }
 
+    bool Test_ModelResourceInstantiateActorBuildsSpawnedHierarchy()
+    {
+        ComponentFactory::RegisterDefaults();
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        ModelResource model;
+        FillHierarchicalIndexedModel(model);
+
+        Actor* actor = model.InstantiateActor(&sceneManager);
+        TEST_ASSERT_NOT_NULL(actor);
+
+        auto* root = dynamic_cast<SceneEntity*>(actor);
+        TEST_ASSERT_NOT_NULL(root);
+        TEST_ASSERT_EQ(std::string("RootNode"), root->GetName());
+        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), root->GetPosition());
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        TEST_ASSERT_EQ(static_cast<size_t>(2), sceneManager.GetEntityCount());
+
+        auto* child = root->GetChildren()[0];
+        TEST_ASSERT_NOT_NULL(child);
+        TEST_ASSERT_EQ(std::string("ChildNode"), child->GetName());
+        TEST_ASSERT_EQ(root, child->GetParent());
+        TEST_ASSERT_EQ(Vec3(4.0f, 5.0f, 6.0f), child->GetPosition());
+        TEST_ASSERT_NOT_NULL(static_cast<Actor*>(child)->GetComponent<StaticMeshComponent>());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_ComponentFactoryDefaultCreatesStaticMeshComponent()
     {
         ComponentFactory::ClearAll();
@@ -296,6 +344,48 @@ namespace
         sceneManager.Shutdown();
         return true;
     }
+
+    bool Test_PrefabInstantiateAsChildBuildsSpawnedHierarchy()
+    {
+        ComponentFactory::ClearComponentClasses();
+        ComponentFactory::RegisterComponentClass<StaticMeshComponent>("StaticMeshComponent");
+
+        PrefabEntityData rootData;
+        rootData.name = "PrefabRoot";
+        rootData.position = Vec3(1.0f, 0.0f, 0.0f);
+        rootData.actorComponentData.push_back({"StaticMeshComponent", ""});
+
+        PrefabEntityData childData;
+        childData.name = "PrefabChild";
+        childData.parentIndex = 0;
+        childData.position = Vec3(0.0f, 2.0f, 0.0f);
+
+        auto prefab = Prefab::CreateFromData({rootData, childData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        ActorSpawnParams parentParams;
+        parentParams.name = "PrefabParent";
+        auto* parent = sceneManager.SpawnActor(parentParams);
+        TEST_ASSERT_NOT_NULL(parent);
+
+        SceneEntity* root = prefab->InstantiateAsChild(parent);
+        TEST_ASSERT_NOT_NULL(root);
+        TEST_ASSERT_EQ(parent, root->GetParent());
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        TEST_ASSERT_EQ(static_cast<size_t>(3), sceneManager.GetEntityCount());
+        TEST_ASSERT_NOT_NULL(static_cast<Actor*>(root)->GetComponent<StaticMeshComponent>());
+
+        auto* child = root->GetChildren()[0];
+        TEST_ASSERT_NOT_NULL(child);
+        TEST_ASSERT_EQ(std::string("PrefabChild"), child->GetName());
+        TEST_ASSERT_EQ(root, child->GetParent());
+        TEST_ASSERT_EQ(Vec3(0.0f, 2.0f, 0.0f), child->GetPosition());
+
+        sceneManager.Shutdown();
+        return true;
+    }
 } // namespace
 
 int main()
@@ -312,6 +402,8 @@ int main()
                   Test_AddOwnedComponentRejectsLegacyComponentToAvoidContainerSplit);
     suite.AddTest("LegacyInstantiateDelegatesToActorPath",
                   Test_LegacyInstantiateDelegatesToActorPath);
+    suite.AddTest("ModelResourceInstantiateActorBuildsSpawnedHierarchy",
+                  Test_ModelResourceInstantiateActorBuildsSpawnedHierarchy);
     suite.AddTest("ComponentFactoryDefaultCreatesStaticMeshComponent",
                   Test_ComponentFactoryDefaultCreatesStaticMeshComponent);
     suite.AddTest("ComponentFactoryRegisterDefaultsPreservesCustomCreators",
@@ -320,6 +412,8 @@ int main()
                   Test_PrefabSerializesActorComponentClassNames);
     suite.AddTest("PrefabInstantiatesRegisteredActorComponentClasses",
                   Test_PrefabInstantiatesRegisteredActorComponentClasses);
+    suite.AddTest("PrefabInstantiateAsChildBuildsSpawnedHierarchy",
+                  Test_PrefabInstantiateAsChildBuildsSpawnedHierarchy);
 
     auto results = suite.Run();
     suite.PrintResults(results);

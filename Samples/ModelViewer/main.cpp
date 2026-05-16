@@ -236,8 +236,9 @@ int main(int argc, char* argv[])
     {
         RVX_CORE_INFO("Creating fallback entity (no model loaded)");
         
-        SceneEntity::Handle entityHandle = sceneManager->CreateEntity("FallbackEntity");
-        modelEntity = sceneManager->GetEntity(entityHandle);
+        ActorSpawnParams fallbackParams;
+        fallbackParams.name = "FallbackEntity";
+        modelEntity = sceneManager->SpawnActor(fallbackParams);
         
         if (modelEntity)
         {
