@@ -35,7 +35,7 @@
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ResourceInstantiationValidation\main.cpp`
 
-- [ ] Add `Test_PrefabInstanceRevertAllRestoresRootEntityState` after `Test_PrefabInstantiateAsChildBuildsSpawnedHierarchy`:
+- [x] Add `Test_PrefabInstanceRevertAllRestoresRootEntityState` after `Test_PrefabInstantiateAsChildBuildsSpawnedHierarchy`:
 
 ```cpp
     bool Test_PrefabInstanceRevertAllRestoresRootEntityState()
@@ -80,7 +80,7 @@
     }
 ```
 
-- [ ] Add `Test_PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty` after the previous test:
+- [x] Add `Test_PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty` after the previous test:
 
 ```cpp
     bool Test_PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty()
@@ -118,7 +118,11 @@
     }
 ```
 
-- [ ] Add `Test_PrefabInstanceRevertPropertyKeepsUnsupportedOverride` after the previous test:
+- [x] Add `Test_PrefabInstanceRevertPropertyAcceptsEmptyRootTarget` after the previous test to cover the empty-string root target alias.
+
+- [x] Add `Test_PrefabInstanceRevertPropertyClearsRootTargetAliases` after the previous test to cover `Actor` root-target alias cleanup.
+
+- [x] Add `Test_PrefabInstanceRevertPropertyKeepsUnsupportedOverride` after the previous test:
 
 ```cpp
     bool Test_PrefabInstanceRevertPropertyKeepsUnsupportedOverride()
@@ -148,7 +152,7 @@
     }
 ```
 
-- [ ] Register the three tests in `main()` after `PrefabInstantiateAsChildBuildsSpawnedHierarchy`:
+- [x] Register the revert tests in `main()` after `PrefabInstantiateAsChildBuildsSpawnedHierarchy`:
 
 ```cpp
     suite.AddTest("PrefabInstanceRevertAllRestoresRootEntityState",
@@ -159,7 +163,7 @@
                   Test_PrefabInstanceRevertPropertyKeepsUnsupportedOverride);
 ```
 
-- [ ] Build the focused target and confirm RED:
+- [x] Build the focused target and confirm RED:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -175,7 +179,7 @@ Expected result before implementation: the executable builds, but at least the f
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\Prefab.cpp`
 
-- [ ] Add these helper functions inside an anonymous namespace after `namespace RVX`:
+- [x] Add these helper functions inside an anonymous namespace after `namespace RVX`:
 
 ```cpp
 namespace
@@ -233,7 +237,7 @@ namespace
 } // namespace
 ```
 
-- [ ] Build the focused target:
+- [x] Build the focused target:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -248,7 +252,7 @@ Expected result: target builds; tests still fail until `PrefabInstance` methods 
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\Prefab.cpp`
 
-- [ ] Replace `PrefabInstance::RevertAll()` with:
+- [x] Replace `PrefabInstance::RevertAll()` with:
 
 ```cpp
 void PrefabInstance::RevertAll()
@@ -270,7 +274,7 @@ void PrefabInstance::RevertAll()
 }
 ```
 
-- [ ] Replace `PrefabInstance::RevertProperty(...)` with:
+- [x] Replace `PrefabInstance::RevertProperty(...)` with:
 
 ```cpp
 void PrefabInstance::RevertProperty(const std::string& componentType, const std::string& propertyPath)
@@ -299,7 +303,7 @@ void PrefabInstance::RevertProperty(const std::string& componentType, const std:
 }
 ```
 
-- [ ] Build and run focused validation:
+- [x] Build and run focused validation:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -315,7 +319,7 @@ Expected result: all resource instantiation tests pass, including the three new 
 **Files:**
 - No additional source files.
 
-- [ ] Run whitespace check:
+- [x] Run whitespace check:
 
 ```powershell
 git diff --check
@@ -323,7 +327,7 @@ git diff --check
 
 Expected result: exit code 0. Line-ending warnings are acceptable if no whitespace-error lines are reported.
 
-- [ ] Build all validation targets and ModelViewer sequentially:
+- [x] Build all validation targets and ModelViewer sequentially:
 
 ```powershell
 foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','ResourceInstantiationValidation','RenderSceneValidation','SystemIntegrationTest','MaterialSystemValidation','RenderPassBindingValidation','ModelViewer')) {
@@ -334,7 +338,7 @@ foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','R
 
 Expected result: every target builds.
 
-- [ ] Run validation executables:
+- [x] Run validation executables:
 
 ```powershell
 .\build\Debug\Tests\Debug\ActorComponentValidation.exe
@@ -348,7 +352,7 @@ Expected result: every target builds.
 
 Expected result: every executable returns exit code 0 and reports all tests passing.
 
-- [ ] Run ModelViewer smoke:
+- [x] Run ModelViewer smoke:
 
 ```powershell
 $stdout = "build_codex\phase17_modelviewer_stdout.log"
@@ -365,7 +369,7 @@ Get-Content -Path $stderr
 
 Expected result: stdout includes model loaded, model instantiated, scene entity ready, GPU mesh upload, and render graph stats; stderr is empty.
 
-- [ ] Request exactly one code review using Dalton with this context:
+- [x] Request exactly one code review using Dalton with this context:
 
 ```text
 Review Phase 17 of the UE-style Actor Component framework.
@@ -381,11 +385,11 @@ Requirements:
 Please report Critical and Important issues first, with file/line references.
 ```
 
-- [ ] Fix any Critical or Important review findings before committing.
+- [x] Fix any Critical or Important review findings before committing.
 
-- [ ] Update every checkbox in this plan that was completed.
+- [x] Update every checkbox in this plan that was completed.
 
-- [ ] Commit the implementation:
+- [x] Commit the implementation:
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-15-ue-style-actor-component-phase17-prefab-instance-revert.md Scene\Private\Prefab.cpp Tests\ResourceInstantiationValidation\main.cpp

@@ -8,6 +8,73 @@
 namespace RVX
 {
 
+namespace
+{
+    bool IsPrefabEntityOverrideTarget(const std::string& componentType)
+    {
+        return componentType.empty() || componentType == "SceneEntity" || componentType == "Actor";
+    }
+
+    void RemovePrefabEntityPropertyOverrides(std::vector<PropertyOverride>& overrides,
+                                             const std::string& propertyPath)
+    {
+        overrides.erase(
+            std::remove_if(overrides.begin(), overrides.end(),
+                [&](const PropertyOverride& override) {
+                    return IsPrefabEntityOverrideTarget(override.componentType) &&
+                           override.propertyPath == propertyPath;
+                }),
+            overrides.end()
+        );
+    }
+
+    void ApplyAllPrefabEntityProperties(SceneEntity* owner, const PrefabEntityData& data)
+    {
+        owner->SetPosition(data.position);
+        owner->SetRotation(data.rotation);
+        owner->SetScale(data.scale);
+        owner->SetLayerMask(data.layerMask);
+        owner->SetActive(data.isActive);
+    }
+
+    bool ApplyPrefabEntityProperty(SceneEntity* owner,
+                                   const PrefabEntityData& data,
+                                   const std::string& propertyPath)
+    {
+        if (propertyPath == "position")
+        {
+            owner->SetPosition(data.position);
+            return true;
+        }
+
+        if (propertyPath == "rotation")
+        {
+            owner->SetRotation(data.rotation);
+            return true;
+        }
+
+        if (propertyPath == "scale")
+        {
+            owner->SetScale(data.scale);
+            return true;
+        }
+
+        if (propertyPath == "layerMask")
+        {
+            owner->SetLayerMask(data.layerMask);
+            return true;
+        }
+
+        if (propertyPath == "isActive")
+        {
+            owner->SetActive(data.isActive);
+            return true;
+        }
+
+        return false;
+    }
+} // namespace
+
 // =========================================================================
 // Prefab Implementation
 // =========================================================================
@@ -360,9 +427,14 @@ void PrefabInstance::RevertAll()
         return;
     }
 
-    // TODO: Restore all values from prefab
-    // This requires the property system to set values by path
+    SceneEntity* owner = GetOwner();
+    const PrefabEntityData* rootData = m_prefab->GetRootData();
+    if (!owner || !rootData)
+    {
+        return;
+    }
 
+    ApplyAllPrefabEntityProperties(owner, *rootData);
     m_overrides.clear();
 }
 
@@ -373,9 +445,22 @@ void PrefabInstance::RevertProperty(const std::string& componentType, const std:
         return;
     }
 
-    // TODO: Restore specific property from prefab
+    SceneEntity* owner = GetOwner();
+    const PrefabEntityData* rootData = m_prefab->GetRootData();
+    if (!owner || !rootData)
+    {
+        return;
+    }
 
-    RemoveOverride(componentType, propertyPath);
+    if (!IsPrefabEntityOverrideTarget(componentType))
+    {
+        return;
+    }
+
+    if (ApplyPrefabEntityProperty(owner, *rootData, propertyPath))
+    {
+        RemovePrefabEntityPropertyOverrides(m_overrides, propertyPath);
+    }
 }
 
 void PrefabInstance::ApplyToPrefab()

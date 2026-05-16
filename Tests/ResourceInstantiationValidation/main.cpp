@@ -736,6 +736,165 @@ namespace
         return true;
     }
 
+    bool Test_PrefabInstanceRevertAllRestoresRootEntityState()
+    {
+        PrefabEntityData data;
+        data.name = "RevertAllRoot";
+        data.position = Vec3(1.0f, 2.0f, 3.0f);
+        data.rotation = Quat(0.7071068f, 0.0f, 0.7071068f, 0.0f);
+        data.scale = Vec3(2.0f, 3.0f, 4.0f);
+        data.layerMask = 0x5u;
+        data.isActive = false;
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(instance);
+        auto* prefabInstance = instance->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        instance->SetPosition(Vec3(9.0f, 9.0f, 9.0f));
+        instance->SetRotation(Quat(1.0f, 0.0f, 0.0f, 0.0f));
+        instance->SetScale(Vec3(8.0f, 8.0f, 8.0f));
+        instance->SetLayerMask(0xFu);
+        instance->SetActive(true);
+        prefabInstance->AddOverride({"SceneEntity", "position", Vec3(9.0f, 9.0f, 9.0f)});
+        prefabInstance->AddOverride({"SceneEntity", "scale", Vec3(8.0f, 8.0f, 8.0f)});
+
+        prefabInstance->RevertAll();
+
+        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), instance->GetPosition());
+        TEST_ASSERT_EQ(Quat(0.7071068f, 0.0f, 0.7071068f, 0.0f), instance->GetRotation());
+        TEST_ASSERT_EQ(Vec3(2.0f, 3.0f, 4.0f), instance->GetScale());
+        TEST_ASSERT_EQ(static_cast<uint32_t>(0x5u), instance->GetLayerMask());
+        TEST_ASSERT_FALSE(instance->IsActive());
+        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty()
+    {
+        PrefabEntityData data;
+        data.name = "RevertPropertyRoot";
+        data.position = Vec3(1.0f, 2.0f, 3.0f);
+        data.scale = Vec3(2.0f, 2.0f, 2.0f);
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(instance);
+        auto* prefabInstance = instance->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        instance->SetPosition(Vec3(9.0f, 9.0f, 9.0f));
+        instance->SetScale(Vec3(8.0f, 8.0f, 8.0f));
+        prefabInstance->AddOverride({"SceneEntity", "position", Vec3(9.0f, 9.0f, 9.0f)});
+        prefabInstance->AddOverride({"SceneEntity", "scale", Vec3(8.0f, 8.0f, 8.0f)});
+
+        prefabInstance->RevertProperty("SceneEntity", "position");
+
+        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), instance->GetPosition());
+        TEST_ASSERT_EQ(Vec3(8.0f, 8.0f, 8.0f), instance->GetScale());
+        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position"));
+        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("SceneEntity", "scale"));
+        TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertPropertyAcceptsEmptyRootTarget()
+    {
+        PrefabEntityData data;
+        data.name = "EmptyRootTarget";
+        data.position = Vec3(1.0f, 2.0f, 3.0f);
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(instance);
+        auto* prefabInstance = instance->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        instance->SetPosition(Vec3(9.0f, 9.0f, 9.0f));
+        prefabInstance->AddOverride({"", "position", Vec3(9.0f, 9.0f, 9.0f)});
+
+        prefabInstance->RevertProperty("", "position");
+
+        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), instance->GetPosition());
+        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("", "position"));
+        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertPropertyClearsRootTargetAliases()
+    {
+        PrefabEntityData data;
+        data.name = "AliasRootTarget";
+        data.position = Vec3(1.0f, 2.0f, 3.0f);
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(instance);
+        auto* prefabInstance = instance->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        instance->SetPosition(Vec3(9.0f, 9.0f, 9.0f));
+        prefabInstance->AddOverride({"SceneEntity", "position", Vec3(9.0f, 9.0f, 9.0f)});
+
+        prefabInstance->RevertProperty("Actor", "position");
+
+        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), instance->GetPosition());
+        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position"));
+        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertPropertyKeepsUnsupportedOverride()
+    {
+        PrefabEntityData data;
+        data.name = "UnsupportedOverrideRoot";
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(instance);
+        auto* prefabInstance = instance->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        prefabInstance->AddOverride({"UnknownComponent", "payload", std::string("custom")});
+
+        prefabInstance->RevertProperty("UnknownComponent", "payload");
+
+        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("UnknownComponent", "payload"));
+        TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_WorldLoadModelResourceReplacesSceneContent()
     {
         ResourceManagerTestGuard resourceGuard(true);
@@ -855,6 +1014,16 @@ int main()
                   Test_PrefabInstantiatesActorComponentPayloads);
     suite.AddTest("PrefabInstantiateAsChildBuildsSpawnedHierarchy",
                   Test_PrefabInstantiateAsChildBuildsSpawnedHierarchy);
+    suite.AddTest("PrefabInstanceRevertAllRestoresRootEntityState",
+                  Test_PrefabInstanceRevertAllRestoresRootEntityState);
+    suite.AddTest("PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty",
+                  Test_PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty);
+    suite.AddTest("PrefabInstanceRevertPropertyAcceptsEmptyRootTarget",
+                  Test_PrefabInstanceRevertPropertyAcceptsEmptyRootTarget);
+    suite.AddTest("PrefabInstanceRevertPropertyClearsRootTargetAliases",
+                  Test_PrefabInstanceRevertPropertyClearsRootTargetAliases);
+    suite.AddTest("PrefabInstanceRevertPropertyKeepsUnsupportedOverride",
+                  Test_PrefabInstanceRevertPropertyKeepsUnsupportedOverride);
     suite.AddTest("WorldLoadModelResourceReplacesSceneContent",
                   Test_WorldLoadModelResourceReplacesSceneContent);
     suite.AddTest("WorldLoadInvalidRequestKeepsExistingContent",
