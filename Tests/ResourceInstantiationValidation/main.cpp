@@ -1,4 +1,5 @@
 #include "Core/Core.h"
+#include "Resource/ResourceManager.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/ModelResource.h"
@@ -13,10 +14,12 @@
 #include "Scene/Prefab.h"
 #include "Scene/SceneManager.h"
 #include "TestFramework/TestRunner.h"
+#include "World/World.h"
 
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <vector>
 
 using namespace RVX;
 using namespace RVX::Resource;
@@ -46,6 +49,89 @@ namespace
 
         const char* GetClassName() const override { return "PrefabCustomSceneActor"; }
     };
+
+    class WorldLoadModelLoader : public IResourceLoader
+    {
+    public:
+        ResourceType GetResourceType() const override { return ResourceType::Model; }
+
+        std::vector<std::string> GetSupportedExtensions() const override
+        {
+            return {".model"};
+        }
+
+        IResource* Load(const std::string&) override
+        {
+            auto* model = new ModelResource();
+
+            auto root = std::make_shared<Node>("LoadedWorldRoot");
+            root->GetLocalTransform().SetPosition(Vec3(1.0f, 2.0f, 3.0f));
+
+            auto child = std::make_shared<Node>("LoadedWorldChild");
+            child->GetLocalTransform().SetPosition(Vec3(4.0f, 5.0f, 6.0f));
+            root->AddChild(child);
+
+            model->SetRootNode(root);
+            return model;
+        }
+    };
+
+    class WorldLoadEmptyModelLoader : public IResourceLoader
+    {
+    public:
+        ResourceType GetResourceType() const override { return ResourceType::Model; }
+
+        std::vector<std::string> GetSupportedExtensions() const override
+        {
+            return {".model"};
+        }
+
+        IResource* Load(const std::string&) override
+        {
+            return new ModelResource();
+        }
+    };
+
+    class ResourceManagerTestGuard
+    {
+    public:
+        explicit ResourceManagerTestGuard(bool initialize)
+        {
+            auto& resourceManager = ResourceManager::Get();
+            if (resourceManager.IsInitialized())
+            {
+                resourceManager.Shutdown();
+            }
+
+            if (initialize)
+            {
+                ResourceManagerConfig config;
+                config.asyncThreadCount = 0;
+                resourceManager.Initialize(config);
+            }
+        }
+
+        ~ResourceManagerTestGuard()
+        {
+            auto& resourceManager = ResourceManager::Get();
+            if (resourceManager.IsInitialized())
+            {
+                resourceManager.Shutdown();
+            }
+        }
+    };
+
+    SceneEntity* FindEntityByName(SceneManager& sceneManager, const std::string& name)
+    {
+        SceneEntity* found = nullptr;
+        sceneManager.ForEachEntity([&](SceneEntity* entity) {
+            if (entity && entity->GetName() == name)
+            {
+                found = entity;
+            }
+        });
+        return found;
+    }
 
     ResourceHandle<MeshResource> MakeMeshResource(ResourceId id)
     {
@@ -495,6 +581,84 @@ namespace
         sceneManager.Shutdown();
         return true;
     }
+
+    bool Test_WorldLoadModelResourceReplacesSceneContent()
+    {
+        ResourceManagerTestGuard resourceGuard(true);
+        auto& resourceManager = ResourceManager::Get();
+        resourceManager.RegisterLoader(ResourceType::Model, std::make_unique<WorldLoadModelLoader>());
+
+        World world;
+        world.Initialize();
+
+        ActorSpawnParams existingParams;
+        existingParams.name = "ExistingActor";
+        TEST_ASSERT_NOT_NULL(world.SpawnActor(existingParams));
+        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetSceneManager()->GetEntityCount());
+
+        world.Load("fixture.model");
+
+        SceneManager* sceneManager = world.GetSceneManager();
+        TEST_ASSERT_NOT_NULL(sceneManager);
+        TEST_ASSERT_EQ(static_cast<size_t>(2), sceneManager->GetEntityCount());
+
+        auto* root = FindEntityByName(*sceneManager, "LoadedWorldRoot");
+        auto* child = FindEntityByName(*sceneManager, "LoadedWorldChild");
+        TEST_ASSERT_NOT_NULL(root);
+        TEST_ASSERT_NOT_NULL(child);
+        TEST_ASSERT_EQ(nullptr, FindEntityByName(*sceneManager, "ExistingActor"));
+        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), root->GetPosition());
+        TEST_ASSERT_EQ(root, child->GetParent());
+        TEST_ASSERT_EQ(Vec3(4.0f, 5.0f, 6.0f), child->GetPosition());
+        TEST_ASSERT_EQ(static_cast<Actor*>(root), world.GetActor(root->GetHandle()));
+
+        world.Shutdown();
+        return true;
+    }
+
+    bool Test_WorldLoadInvalidRequestKeepsExistingContent()
+    {
+        ResourceManagerTestGuard resourceGuard(false);
+
+        World world;
+        world.Initialize();
+
+        ActorSpawnParams params;
+        params.name = "PersistentActor";
+        SceneEntity* existing = world.SpawnActor(params);
+        TEST_ASSERT_NOT_NULL(existing);
+
+        world.Load("missing.model");
+
+        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetSceneManager()->GetEntityCount());
+        TEST_ASSERT_EQ(existing, FindEntityByName(*world.GetSceneManager(), "PersistentActor"));
+
+        world.Shutdown();
+        return true;
+    }
+
+    bool Test_WorldLoadEmptyModelKeepsExistingContent()
+    {
+        ResourceManagerTestGuard resourceGuard(true);
+        auto& resourceManager = ResourceManager::Get();
+        resourceManager.RegisterLoader(ResourceType::Model, std::make_unique<WorldLoadEmptyModelLoader>());
+
+        World world;
+        world.Initialize();
+
+        ActorSpawnParams params;
+        params.name = "PersistentActor";
+        SceneEntity* existing = world.SpawnActor(params);
+        TEST_ASSERT_NOT_NULL(existing);
+
+        world.Load("empty.model");
+
+        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetSceneManager()->GetEntityCount());
+        TEST_ASSERT_EQ(existing, FindEntityByName(*world.GetSceneManager(), "PersistentActor"));
+
+        world.Shutdown();
+        return true;
+    }
 } // namespace
 
 int main()
@@ -529,6 +693,12 @@ int main()
                   Test_PrefabInstantiatesRegisteredActorComponentClasses);
     suite.AddTest("PrefabInstantiateAsChildBuildsSpawnedHierarchy",
                   Test_PrefabInstantiateAsChildBuildsSpawnedHierarchy);
+    suite.AddTest("WorldLoadModelResourceReplacesSceneContent",
+                  Test_WorldLoadModelResourceReplacesSceneContent);
+    suite.AddTest("WorldLoadInvalidRequestKeepsExistingContent",
+                  Test_WorldLoadInvalidRequestKeepsExistingContent);
+    suite.AddTest("WorldLoadEmptyModelKeepsExistingContent",
+                  Test_WorldLoadEmptyModelKeepsExistingContent);
 
     auto results = suite.Run();
     suite.PrintResults(results);

@@ -6,6 +6,8 @@
 #include "World/World.h"
 
 #include "Core/Log.h"
+#include "Resource/ResourceManager.h"
+#include "Resource/Types/ModelResource.h"
 #include "Runtime/Camera/Camera.h"
 #include "Scene/ActorFactory.h"
 #include "Scene/SceneManager.h"
@@ -59,7 +61,53 @@ void World::Initialize(const WorldConfig& config)
 void World::Load(const std::string& path)
 {
     RVX_CORE_INFO("Loading world from: {}", path);
-    // TODO: Implement world loading from asset
+
+    if (!m_initialized || !m_sceneManager)
+    {
+        RVX_CORE_WARN("Cannot load world content before World is initialized");
+        return;
+    }
+
+    if (path.empty())
+    {
+        RVX_CORE_WARN("Cannot load world content from an empty path");
+        return;
+    }
+
+    auto& resourceManager = Resource::ResourceManager::Get();
+    if (!resourceManager.IsInitialized())
+    {
+        RVX_CORE_WARN("Cannot load world content because ResourceManager is not initialized");
+        return;
+    }
+
+    Resource::IResource* resource = resourceManager.LoadResource(path);
+    auto* model = dynamic_cast<Resource::ModelResource*>(resource);
+    if (!model)
+    {
+        RVX_CORE_WARN("World::Load only supports ModelResource paths in this phase: {}", path);
+        return;
+    }
+
+    auto newSceneManager = std::make_unique<SceneManager>();
+    newSceneManager->Initialize();
+
+    Actor* rootActor = model->InstantiateActor(newSceneManager.get());
+    if (!rootActor)
+    {
+        newSceneManager->Shutdown();
+        RVX_CORE_WARN("World::Load loaded a model but failed to instantiate it: {}", path);
+        return;
+    }
+
+    ClearPureActors();
+    if (m_sceneManager)
+    {
+        m_sceneManager->Shutdown();
+    }
+    m_sceneManager = std::move(newSceneManager);
+
+    RVX_CORE_INFO("Loaded world model root actor: {}", rootActor->GetName());
 }
 
 void World::Unload()

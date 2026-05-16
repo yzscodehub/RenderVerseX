@@ -22,6 +22,7 @@ target_include_directories(RVX_World PUBLIC
 target_link_libraries(RVX_World PUBLIC
     RVX_Core
     RVX_Scene
+    RVX_Resource
     Spatial
     RVX_Runtime
 )

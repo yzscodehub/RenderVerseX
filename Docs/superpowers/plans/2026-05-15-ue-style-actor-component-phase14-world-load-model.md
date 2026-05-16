@@ -42,14 +42,14 @@
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ResourceInstantiationValidation\main.cpp`
 
-- [ ] Add includes near existing includes:
+- [x] Add includes near existing includes:
 
 ```cpp
 #include "Resource/ResourceManager.h"
 #include "World/World.h"
 ```
 
-- [ ] Add this test loader inside the anonymous namespace near `PrefabCustomSceneActor`:
+- [x] Add this test loader inside the anonymous namespace near `PrefabCustomSceneActor`:
 
 ```cpp
 class WorldLoadModelLoader : public IResourceLoader
@@ -79,7 +79,7 @@ public:
 };
 ```
 
-- [ ] Add this empty model loader after `WorldLoadModelLoader`:
+- [x] Add this empty model loader after `WorldLoadModelLoader`:
 
 ```cpp
 class WorldLoadEmptyModelLoader : public IResourceLoader
@@ -99,7 +99,7 @@ public:
 };
 ```
 
-- [ ] Add this ResourceManager guard near the loaders. It shuts down any existing singleton state at construction and destruction, so fake loaders cannot leak between tests even if an assertion returns early:
+- [x] Add this ResourceManager guard near the loaders. It shuts down any existing singleton state at construction and destruction, so fake loaders cannot leak between tests even if an assertion returns early:
 
 ```cpp
 class ResourceManagerTestGuard
@@ -132,7 +132,7 @@ public:
 };
 ```
 
-- [ ] Add this helper near the loaders:
+- [x] Add this helper near the loaders:
 
 ```cpp
 SceneEntity* FindEntityByName(SceneManager& sceneManager, const std::string& name)
@@ -148,7 +148,7 @@ SceneEntity* FindEntityByName(SceneManager& sceneManager, const std::string& nam
 }
 ```
 
-- [ ] Add `Test_WorldLoadModelResourceReplacesSceneContent` near other prefab/model tests:
+- [x] Add `Test_WorldLoadModelResourceReplacesSceneContent` near other prefab/model tests:
 
 ```cpp
 bool Test_WorldLoadModelResourceReplacesSceneContent()
@@ -186,7 +186,7 @@ bool Test_WorldLoadModelResourceReplacesSceneContent()
 }
 ```
 
-- [ ] Add `Test_WorldLoadInvalidRequestKeepsExistingContent` after the previous test:
+- [x] Add `Test_WorldLoadInvalidRequestKeepsExistingContent` after the previous test:
 
 ```cpp
 bool Test_WorldLoadInvalidRequestKeepsExistingContent()
@@ -211,7 +211,7 @@ bool Test_WorldLoadInvalidRequestKeepsExistingContent()
 }
 ```
 
-- [ ] Add `Test_WorldLoadEmptyModelKeepsExistingContent` after the previous test:
+- [x] Add `Test_WorldLoadEmptyModelKeepsExistingContent` after the previous test:
 
 ```cpp
 bool Test_WorldLoadEmptyModelKeepsExistingContent()
@@ -238,7 +238,7 @@ bool Test_WorldLoadEmptyModelKeepsExistingContent()
 }
 ```
 
-- [ ] Register the three tests in `main()`:
+- [x] Register the three tests in `main()`:
 
 ```cpp
 suite.AddTest("WorldLoadModelResourceReplacesSceneContent",
@@ -249,7 +249,7 @@ suite.AddTest("WorldLoadEmptyModelKeepsExistingContent",
               Test_WorldLoadEmptyModelKeepsExistingContent);
 ```
 
-- [ ] Build the focused target and confirm RED:
+- [x] Build the focused target and confirm RED:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -266,7 +266,7 @@ Expected result before implementation: the executable builds, but `WorldLoadMode
 - Modify: `E:\WorkSpace\RenderVerseX\World\Private\World.cpp`
 - Modify: `E:\WorkSpace\RenderVerseX\World\CMakeLists.txt`
 
-- [ ] In `World\CMakeLists.txt`, add `RVX::Resource` to `target_link_libraries(RVX_World ...)`:
+- [x] In `World\CMakeLists.txt`, add `RVX::Resource` to `target_link_libraries(RVX_World ...)`:
 
 ```cmake
 target_link_libraries(RVX_World
@@ -279,14 +279,14 @@ target_link_libraries(RVX_World
 )
 ```
 
-- [ ] In `World.cpp`, add includes after `Core/Log.h`:
+- [x] In `World.cpp`, add includes after `Core/Log.h`:
 
 ```cpp
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/ModelResource.h"
 ```
 
-- [ ] Replace `World::Load` with:
+- [x] Replace `World::Load` with:
 
 ```cpp
 void World::Load(const std::string& path)
@@ -342,7 +342,7 @@ void World::Load(const std::string& path)
 }
 ```
 
-- [ ] Build and run focused validation:
+- [x] Build and run focused validation:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -358,7 +358,7 @@ Expected result: all resource instantiation tests pass.
 **Files:**
 - No additional source files.
 
-- [ ] Build all validation targets and ModelViewer sequentially:
+- [x] Build all validation targets and ModelViewer sequentially:
 
 ```powershell
 foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','ResourceInstantiationValidation','RenderSceneValidation','SystemIntegrationTest','MaterialSystemValidation','RenderPassBindingValidation','ModelViewer')) {
@@ -369,7 +369,7 @@ foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','R
 
 Expected result: every target builds.
 
-- [ ] Run validation executables:
+- [x] Run validation executables:
 
 ```powershell
 .\build\Debug\Tests\Debug\ActorComponentValidation.exe
@@ -383,7 +383,7 @@ Expected result: every target builds.
 
 Expected result: every executable returns exit code 0 and reports all tests passing.
 
-- [ ] Run ModelViewer smoke:
+- [x] Run ModelViewer smoke:
 
 ```powershell
 $stdout = "build_codex\phase14_modelviewer_stdout.log"
@@ -400,7 +400,7 @@ Get-Content -Path $stderr
 
 Expected result: stdout includes model loaded, model instantiated, scene entity ready, GPU mesh upload, and render graph stats; stderr is empty.
 
-- [ ] Request exactly one code review using Dalton with this context:
+- [x] Request exactly one code review using Dalton with this context:
 
 ```text
 Review Phase 14 of the UE-style Actor Component framework.
@@ -417,11 +417,11 @@ Requirements:
 Please report Critical and Important issues first, with file/line references.
 ```
 
-- [ ] Fix any Critical or Important review findings before committing.
+- [x] Fix any Critical or Important review findings before committing.
 
-- [ ] Update every checkbox in this plan that was completed.
+- [x] Update every checkbox in this plan that was completed.
 
-- [ ] Commit the implementation:
+- [x] Commit the implementation:
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-15-ue-style-actor-component-phase14-world-load-model.md World\CMakeLists.txt World\Private\World.cpp Tests\ResourceInstantiationValidation\main.cpp
