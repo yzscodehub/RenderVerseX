@@ -80,6 +80,12 @@ namespace
         std::string payloadObservedOnInitialize;
     };
 
+    class PrefabLegacyPayloadComponent : public Component
+    {
+    public:
+        const char* GetTypeName() const override { return "PrefabLegacyPayloadComponent"; }
+    };
+
     class WorldLoadModelLoader : public IResourceLoader
     {
     public:
@@ -148,6 +154,20 @@ namespace
             {
                 resourceManager.Shutdown();
             }
+        }
+    };
+
+    class ComponentFactoryClassGuard
+    {
+    public:
+        ComponentFactoryClassGuard()
+        {
+            ComponentFactory::ClearComponentClasses();
+        }
+
+        ~ComponentFactoryClassGuard()
+        {
+            ComponentFactory::ClearComponentClasses();
         }
     };
 
@@ -562,6 +582,50 @@ namespace
         return true;
     }
 
+    bool Test_PrefabInstantiateFailsForMissingActorComponentClassAndCleansUp()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+
+        PrefabEntityData data;
+        data.name = "MissingComponentActor";
+        data.actorComponentData.push_back({"MissingActorComponentClass", ""});
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_EQ(nullptr, instance);
+        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstantiateFailsForRejectedActorComponentAndCleansUp()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabLegacyPayloadComponent>(
+            "PrefabLegacyPayloadComponent");
+
+        PrefabEntityData data;
+        data.name = "RejectedComponentActor";
+        data.actorComponentData.push_back({"PrefabLegacyPayloadComponent", ""});
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_EQ(nullptr, instance);
+        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_PrefabInstantiatesRegisteredActorComponentClasses()
     {
         ComponentFactory::ClearComponentClasses();
@@ -781,6 +845,10 @@ int main()
                   Test_PrefabInstantiatesRegisteredActorClasses);
     suite.AddTest("PrefabInstantiateFailsForMissingActorClassAndCleansUp",
                   Test_PrefabInstantiateFailsForMissingActorClassAndCleansUp);
+    suite.AddTest("PrefabInstantiateFailsForMissingActorComponentClassAndCleansUp",
+                  Test_PrefabInstantiateFailsForMissingActorComponentClassAndCleansUp);
+    suite.AddTest("PrefabInstantiateFailsForRejectedActorComponentAndCleansUp",
+                  Test_PrefabInstantiateFailsForRejectedActorComponentAndCleansUp);
     suite.AddTest("PrefabInstantiatesRegisteredActorComponentClasses",
                   Test_PrefabInstantiatesRegisteredActorComponentClasses);
     suite.AddTest("PrefabInstantiatesActorComponentPayloads",

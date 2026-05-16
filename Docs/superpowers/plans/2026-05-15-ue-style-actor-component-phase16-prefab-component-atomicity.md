@@ -39,7 +39,7 @@
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ResourceInstantiationValidation\main.cpp`
 
-- [ ] Add this legacy component test double after `PrefabPayloadComponent`:
+- [x] Add this legacy component test double after `PrefabPayloadComponent`:
 
 ```cpp
     class PrefabLegacyPayloadComponent : public Component
@@ -49,7 +49,7 @@
     };
 ```
 
-- [ ] Add this component class registry guard near the existing test guards:
+- [x] Add this component class registry guard near the existing test guards:
 
 ```cpp
     class ComponentFactoryClassGuard
@@ -67,7 +67,7 @@
     };
 ```
 
-- [ ] Add `Test_PrefabInstantiateFailsForMissingActorComponentClassAndCleansUp` after `Test_PrefabInstantiateFailsForMissingActorClassAndCleansUp`:
+- [x] Add `Test_PrefabInstantiateFailsForMissingActorComponentClassAndCleansUp` after `Test_PrefabInstantiateFailsForMissingActorClassAndCleansUp`:
 
 ```cpp
     bool Test_PrefabInstantiateFailsForMissingActorComponentClassAndCleansUp()
@@ -92,7 +92,7 @@
     }
 ```
 
-- [ ] Add `Test_PrefabInstantiateFailsForRejectedActorComponentAndCleansUp` after the previous test:
+- [x] Add `Test_PrefabInstantiateFailsForRejectedActorComponentAndCleansUp` after the previous test:
 
 ```cpp
     bool Test_PrefabInstantiateFailsForRejectedActorComponentAndCleansUp()
@@ -119,7 +119,7 @@
     }
 ```
 
-- [ ] Register both tests in `main()` near the existing prefab failure tests:
+- [x] Register both tests in `main()` near the existing prefab failure tests:
 
 ```cpp
     suite.AddTest("PrefabInstantiateFailsForMissingActorComponentClassAndCleansUp",
@@ -128,7 +128,7 @@
                   Test_PrefabInstantiateFailsForRejectedActorComponentAndCleansUp);
 ```
 
-- [ ] Build the focused target and confirm RED:
+- [x] Build the focused target and confirm RED:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -145,7 +145,7 @@ Expected result before implementation: the executable builds, but both new tests
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Include\Scene\Prefab.h`
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\Prefab.cpp`
 
-- [ ] In `Prefab.h`, replace:
+- [x] In `Prefab.h`, replace:
 
 ```cpp
     void CreateComponents(SceneEntity* entity, const PrefabEntityData& data) const;
@@ -157,7 +157,7 @@ with:
     bool CreateComponents(SceneEntity* entity, const PrefabEntityData& data) const;
 ```
 
-- [ ] In `Prefab.cpp`, replace the whole `CreateComponents` function with:
+- [x] In `Prefab.cpp`, replace the whole `CreateComponents` function with:
 
 ```cpp
 bool Prefab::CreateComponents(SceneEntity* entity, const PrefabEntityData& data) const
@@ -188,7 +188,7 @@ bool Prefab::CreateComponents(SceneEntity* entity, const PrefabEntityData& data)
 }
 ```
 
-- [ ] Build and run focused validation:
+- [x] Build and run focused validation:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -204,7 +204,7 @@ Expected result after only this task: the two new tests still fail because `Inst
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\Prefab.cpp`
 
-- [ ] In `Prefab::InstantiateInternal`, replace:
+- [x] In `Prefab::InstantiateInternal`, replace:
 
 ```cpp
         // Create components
@@ -225,7 +225,7 @@ with:
         }
 ```
 
-- [ ] Build and run focused validation:
+- [x] Build and run focused validation:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -241,7 +241,7 @@ Expected result: all resource instantiation tests pass, including missing and re
 **Files:**
 - No additional source files.
 
-- [ ] Run whitespace check:
+- [x] Run whitespace check:
 
 ```powershell
 git diff --check
@@ -249,7 +249,7 @@ git diff --check
 
 Expected result: exit code 0. Line-ending warnings are acceptable if no whitespace-error lines are reported.
 
-- [ ] Build all validation targets and ModelViewer sequentially:
+- [x] Build all validation targets and ModelViewer sequentially:
 
 ```powershell
 foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','ResourceInstantiationValidation','RenderSceneValidation','SystemIntegrationTest','MaterialSystemValidation','RenderPassBindingValidation','ModelViewer')) {
@@ -260,7 +260,7 @@ foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','R
 
 Expected result: every target builds.
 
-- [ ] Run validation executables:
+- [x] Run validation executables:
 
 ```powershell
 .\build\Debug\Tests\Debug\ActorComponentValidation.exe
@@ -274,7 +274,7 @@ Expected result: every target builds.
 
 Expected result: every executable returns exit code 0 and reports all tests passing.
 
-- [ ] Run ModelViewer smoke:
+- [x] Run ModelViewer smoke:
 
 ```powershell
 $stdout = "build_codex\phase16_modelviewer_stdout.log"
@@ -291,7 +291,7 @@ Get-Content -Path $stderr
 
 Expected result: stdout includes model loaded, model instantiated, scene entity ready, GPU mesh upload, and render graph stats; stderr is empty.
 
-- [ ] Request exactly one code review using Dalton with this context:
+- [x] Request exactly one code review using Dalton with this context:
 
 ```text
 Review Phase 16 of the UE-style Actor Component framework.
@@ -307,11 +307,11 @@ Requirements:
 Please report Critical and Important issues first, with file/line references.
 ```
 
-- [ ] Fix any Critical or Important review findings before committing.
+- [x] Fix any Critical or Important review findings before committing.
 
-- [ ] Update every checkbox in this plan that was completed.
+- [x] Update every checkbox in this plan that was completed.
 
-- [ ] Commit the implementation:
+- [x] Commit the implementation:
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-15-ue-style-actor-component-phase16-prefab-component-atomicity.md Scene\Include\Scene\Prefab.h Scene\Private\Prefab.cpp Tests\ResourceInstantiationValidation\main.cpp

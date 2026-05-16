@@ -203,7 +203,14 @@ SceneEntity* Prefab::InstantiateInternal(SceneManager& sceneManager, const Vec3&
         entity->SetActive(entityData.isActive);
 
         // Create components
-        CreateComponents(entity, entityData);
+        if (!CreateComponents(entity, entityData))
+        {
+            for (auto h : createdHandles)
+            {
+                sceneManager.DestroyEntity(h);
+            }
+            return nullptr;
+        }
     }
 
     // Add PrefabInstance component to root
@@ -266,29 +273,31 @@ void Prefab::SerializeEntity(const SceneEntity* entity, int32_t parentIndex)
     }
 }
 
-void Prefab::CreateComponents(SceneEntity* entity, const PrefabEntityData& data) const
+bool Prefab::CreateComponents(SceneEntity* entity, const PrefabEntityData& data) const
 {
     if (!entity)
-        return;
+        return false;
 
     for (const auto& componentData : data.actorComponentData)
     {
         auto component = ComponentFactory::CreateComponentByClassName(componentData.className);
         if (!component)
-            continue;
+            return false;
 
         component->DeserializePrefabData(componentData.serializedData);
 
         auto* raw = component.get();
         ActorComponent* inserted = static_cast<Actor*>(entity)->AddOwnedComponent(std::move(component));
         if (!inserted)
-            continue;
+            return false;
 
         if (auto* sceneComponent = dynamic_cast<SceneComponent*>(raw))
         {
             sceneComponent->AttachToComponent(entity->GetRootComponent());
         }
     }
+
+    return true;
 }
 
 // =========================================================================

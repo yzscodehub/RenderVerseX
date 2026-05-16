@@ -182,7 +182,7 @@ private:
     SceneEntity* InstantiateInternal(SceneManager& sceneManager, const Vec3& position, 
                                       const Quat& rotation, SceneEntity* parent) const;
     void SerializeEntity(const SceneEntity* entity, int32_t parentIndex);
-    void CreateComponents(SceneEntity* entity, const PrefabEntityData& data) const;
+    bool CreateComponents(SceneEntity* entity, const PrefabEntityData& data) const;
 
     std::string m_name;
     std::string m_sourcePath;
