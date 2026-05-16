@@ -6,6 +6,7 @@
  */
 
 #include "Core/MathTypes.h"
+#include "Core/Types.h"
 #include "Scene/ActorComponent.h"
 #include "Spatial/Index/ISpatialEntity.h"
 
@@ -123,7 +124,20 @@ namespace RVX
         virtual bool ShouldAutoRegisterComponent(ActorComponent* component) const;
 
     private:
+        struct PendingComponentRemoval
+        {
+            ActorComponent* component = nullptr;
+            bool dispatchEndPlay = false;
+        };
+
         bool RemoveComponentInstance(ActorComponent* component);
+        bool RemoveComponentInstanceNow(ActorComponent* component);
+        bool IsComponentRemovalPending(const ActorComponent* component) const;
+        void QueuePendingComponentRemoval(ActorComponent* component);
+        void FlushPendingComponentRemovals();
+        std::vector<ActorComponent*> MakeComponentSnapshot() const;
+        void BeginComponentDispatch(bool dispatchingEndPlay = false);
+        void EndComponentDispatch(bool dispatchingEndPlay = false);
         void DestroyAllComponents();
 
         Handle m_handle = InvalidHandle;
@@ -132,6 +146,9 @@ namespace RVX
         bool m_hasBegunPlay = false;
         SceneComponent* m_rootComponent = nullptr;
         std::vector<std::unique_ptr<ActorComponent>> m_components;
+        int32 m_componentDispatchDepth = 0;
+        int32 m_componentEndPlayDispatchDepth = 0;
+        std::vector<PendingComponentRemoval> m_pendingRemoveComponents;
 
         static Handle GenerateHandle();
         static std::atomic<Handle> s_nextHandle;

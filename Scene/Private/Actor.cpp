@@ -3,6 +3,7 @@
 #include "Scene/SceneComponent.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace RVX
 {
@@ -159,14 +160,18 @@ void Actor::BeginPlay()
         m_hasBegunPlay = true;
     }
 
-    for (auto& component : m_components)
+    auto snapshot = MakeComponentSnapshot();
+    BeginComponentDispatch();
+    for (ActorComponent* component : snapshot)
     {
-        if (component && component->IsEnabled() && !component->HasBegunPlay())
+        if (component && !IsComponentRemovalPending(component) &&
+            component->IsEnabled() && !component->HasBegunPlay())
         {
             component->SetHasBegunPlay(true);
             component->BeginPlay();
         }
     }
+    EndComponentDispatch();
 }
 
 void Actor::Tick(float deltaTime)
@@ -174,13 +179,17 @@ void Actor::Tick(float deltaTime)
     if (!IsActive())
         return;
 
-    for (auto& component : m_components)
+    auto snapshot = MakeComponentSnapshot();
+    BeginComponentDispatch();
+    for (ActorComponent* component : snapshot)
     {
-        if (component && component->IsEnabled() && component->CanEverTick() && component->IsTickEnabled())
+        if (component && !IsComponentRemovalPending(component) &&
+            component->IsEnabled() && component->CanEverTick() && component->IsTickEnabled())
         {
             component->TickComponent(deltaTime);
         }
     }
+    EndComponentDispatch();
 }
 
 void Actor::EndPlay()
@@ -188,15 +197,18 @@ void Actor::EndPlay()
     if (!m_hasBegunPlay)
         return;
 
-    for (auto it = m_components.rbegin(); it != m_components.rend(); ++it)
+    auto snapshot = MakeComponentSnapshot();
+    BeginComponentDispatch(true);
+    for (auto it = snapshot.rbegin(); it != snapshot.rend(); ++it)
     {
-        ActorComponent* component = it->get();
-        if (component && component->HasBegunPlay())
+        ActorComponent* component = *it;
+        if (component && !IsComponentRemovalPending(component) && component->HasBegunPlay())
         {
             component->EndPlay();
             component->SetHasBegunPlay(false);
         }
     }
+    EndComponentDispatch(true);
     m_hasBegunPlay = false;
 }
 
@@ -208,6 +220,30 @@ bool Actor::ShouldAutoRegisterComponent(ActorComponent* component) const
 
 bool Actor::RemoveComponentInstance(ActorComponent* component)
 {
+    if (!component)
+        return false;
+
+    if (component == static_cast<ActorComponent*>(m_rootComponent))
+        return false;
+
+    auto it = std::find_if(m_components.begin(), m_components.end(), [component](const auto& ownedComponent) {
+        return ownedComponent.get() == component;
+    });
+
+    if (it == m_components.end())
+        return false;
+
+    if (m_componentDispatchDepth > 0)
+    {
+        QueuePendingComponentRemoval(component);
+        return IsComponentRemovalPending(component);
+    }
+
+    return RemoveComponentInstanceNow(component);
+}
+
+bool Actor::RemoveComponentInstanceNow(ActorComponent* component)
+{
     auto it = std::find_if(m_components.begin(), m_components.end(), [component](const auto& ownedComponent) {
         return ownedComponent.get() == component;
     });
@@ -218,26 +254,128 @@ bool Actor::RemoveComponentInstance(ActorComponent* component)
     if (component == static_cast<ActorComponent*>(m_rootComponent))
         return false;
 
-    if (component->HasBegunPlay())
-    {
-        component->EndPlay();
-        component->SetHasBegunPlay(false);
-    }
-    if (component->IsRegistered())
-    {
-        component->OnUnregister();
-        component->SetRegistered(false);
-    }
-    component->OnComponentDestroyed();
-    component->SetOwnerActor(nullptr);
+    std::unique_ptr<ActorComponent> removedComponent = std::move(*it);
     m_components.erase(it);
+
+    ActorComponent* removed = removedComponent.get();
+    if (removed->HasBegunPlay())
+    {
+        removed->SetHasBegunPlay(false);
+        removed->EndPlay();
+    }
+    if (removed->IsRegistered())
+    {
+        removed->OnUnregister();
+        removed->SetRegistered(false);
+    }
+    removed->OnComponentDestroyed();
+    removed->SetOwnerActor(nullptr);
     return true;
+}
+
+bool Actor::IsComponentRemovalPending(const ActorComponent* component) const
+{
+    return std::find_if(m_pendingRemoveComponents.begin(),
+                        m_pendingRemoveComponents.end(),
+                        [component](const PendingComponentRemoval& pending) {
+                            return pending.component == component;
+                        }) != m_pendingRemoveComponents.end();
+}
+
+void Actor::QueuePendingComponentRemoval(ActorComponent* component)
+{
+    if (!component)
+        return;
+
+    if (component == static_cast<ActorComponent*>(m_rootComponent))
+        return;
+
+    const bool dispatchEndPlay =
+        component->HasBegunPlay() && m_componentEndPlayDispatchDepth == 0 && m_hasBegunPlay;
+    auto it = std::find_if(m_pendingRemoveComponents.begin(),
+                           m_pendingRemoveComponents.end(),
+                           [component](const PendingComponentRemoval& pending) {
+                               return pending.component == component;
+                           });
+    if (it != m_pendingRemoveComponents.end())
+    {
+        it->dispatchEndPlay = it->dispatchEndPlay || dispatchEndPlay;
+        return;
+    }
+
+    m_pendingRemoveComponents.push_back({ component, dispatchEndPlay });
+}
+
+void Actor::FlushPendingComponentRemovals()
+{
+    if (m_pendingRemoveComponents.empty())
+        return;
+
+    auto pending = std::move(m_pendingRemoveComponents);
+    m_pendingRemoveComponents.clear();
+
+    for (const PendingComponentRemoval& removal : pending)
+    {
+        ActorComponent* component = removal.component;
+        if (component && component->HasBegunPlay())
+        {
+            if (!removal.dispatchEndPlay)
+            {
+                component->SetHasBegunPlay(false);
+            }
+        }
+        RemoveComponentInstanceNow(component);
+    }
+}
+
+std::vector<ActorComponent*> Actor::MakeComponentSnapshot() const
+{
+    std::vector<ActorComponent*> snapshot;
+    snapshot.reserve(m_components.size());
+    for (const auto& component : m_components)
+    {
+        if (component)
+        {
+            snapshot.push_back(component.get());
+        }
+    }
+    return snapshot;
+}
+
+void Actor::BeginComponentDispatch(bool dispatchingEndPlay)
+{
+    ++m_componentDispatchDepth;
+    if (dispatchingEndPlay)
+    {
+        ++m_componentEndPlayDispatchDepth;
+    }
+}
+
+void Actor::EndComponentDispatch(bool dispatchingEndPlay)
+{
+    if (m_componentDispatchDepth <= 0)
+        return;
+
+    if (dispatchingEndPlay && m_componentEndPlayDispatchDepth > 0)
+    {
+        --m_componentEndPlayDispatchDepth;
+    }
+
+    --m_componentDispatchDepth;
+    if (m_componentDispatchDepth == 0)
+    {
+        FlushPendingComponentRemovals();
+    }
 }
 
 void Actor::DestroyAllComponents()
 {
     EndPlay();
     UnregisterAllComponents();
+
+    m_pendingRemoveComponents.clear();
+    m_componentDispatchDepth = 0;
+    m_componentEndPlayDispatchDepth = 0;
 
     for (auto it = m_components.rbegin(); it != m_components.rend(); ++it)
     {

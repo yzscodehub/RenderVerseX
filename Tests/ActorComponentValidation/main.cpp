@@ -214,6 +214,344 @@ namespace
         int* m_tickCount = nullptr;
     };
 
+    class TickCounterComponent : public RVX::ActorComponent
+    {
+    public:
+        explicit TickCounterComponent(int* tickCount = nullptr)
+            : m_tickCount(tickCount)
+        {
+            SetCanEverTick(true);
+            SetTickEnabled(true);
+        }
+
+        const char* GetClassName() const override { return "TickCounterComponent"; }
+
+        void BeginPlay() override
+        {
+            if (beginCount)
+            {
+                ++(*beginCount);
+            }
+        }
+
+        void TickComponent(float) override
+        {
+            if (m_tickCount)
+            {
+                ++(*m_tickCount);
+            }
+        }
+
+        int* beginCount = nullptr;
+
+    private:
+        int* m_tickCount = nullptr;
+    };
+
+    class AddComponentDuringTickComponent : public RVX::ActorComponent
+    {
+    public:
+        explicit AddComponentDuringTickComponent(int* addedTickCount)
+            : m_addedTickCount(addedTickCount)
+        {
+            SetCanEverTick(true);
+            SetTickEnabled(true);
+        }
+
+        const char* GetClassName() const override { return "AddComponentDuringTickComponent"; }
+
+        void TickComponent(float) override
+        {
+            if (!m_added && GetOwner())
+            {
+                GetOwner()->AddComponent<TickCounterComponent>(m_addedTickCount);
+                m_added = true;
+            }
+        }
+
+    private:
+        int* m_addedTickCount = nullptr;
+        bool m_added = false;
+    };
+
+    class AddComponentDuringBeginPlayComponent : public RVX::ActorComponent
+    {
+    public:
+        explicit AddComponentDuringBeginPlayComponent(int* addedBeginCount)
+            : m_addedBeginCount(addedBeginCount)
+        {
+        }
+
+        const char* GetClassName() const override { return "AddComponentDuringBeginPlayComponent"; }
+
+        void BeginPlay() override
+        {
+            if (!m_added && GetOwner())
+            {
+                auto* added = GetOwner()->AddComponent<TickCounterComponent>();
+                added->beginCount = m_addedBeginCount;
+                m_added = true;
+            }
+        }
+
+    private:
+        int* m_addedBeginCount = nullptr;
+        bool m_added = false;
+    };
+
+    class SelfRemovingTickComponent : public RVX::ActorComponent
+    {
+    public:
+        explicit SelfRemovingTickComponent(int* tickCount, int* endPlayCount = nullptr)
+            : m_tickCount(tickCount)
+            , m_endPlayCount(endPlayCount)
+        {
+            SetCanEverTick(true);
+            SetTickEnabled(true);
+        }
+
+        const char* GetClassName() const override { return "SelfRemovingTickComponent"; }
+
+        void TickComponent(float) override
+        {
+            if (m_tickCount)
+            {
+                ++(*m_tickCount);
+            }
+            if (GetOwner())
+            {
+                GetOwner()->RemoveComponent<SelfRemovingTickComponent>();
+            }
+        }
+
+        void EndPlay() override
+        {
+            if (m_endPlayCount)
+            {
+                ++(*m_endPlayCount);
+            }
+        }
+
+    private:
+        int* m_tickCount = nullptr;
+        int* m_endPlayCount = nullptr;
+    };
+
+    class VictimTickComponent : public RVX::ActorComponent
+    {
+    public:
+        explicit VictimTickComponent(int* tickCount)
+            : m_tickCount(tickCount)
+        {
+            SetCanEverTick(true);
+            SetTickEnabled(true);
+        }
+
+        const char* GetClassName() const override { return "VictimTickComponent"; }
+
+        void TickComponent(float) override
+        {
+            if (m_tickCount)
+            {
+                ++(*m_tickCount);
+            }
+        }
+
+    private:
+        int* m_tickCount = nullptr;
+    };
+
+    class RemoveVictimDuringTickComponent : public RVX::ActorComponent
+    {
+    public:
+        RemoveVictimDuringTickComponent()
+        {
+            SetCanEverTick(true);
+            SetTickEnabled(true);
+        }
+
+        const char* GetClassName() const override { return "RemoveVictimDuringTickComponent"; }
+
+        void TickComponent(float) override
+        {
+            if (GetOwner())
+            {
+                GetOwner()->RemoveComponent<VictimTickComponent>();
+            }
+        }
+    };
+
+    struct EndPlayMutationCounters
+    {
+        int removerEndPlay = 0;
+        int victimEndPlay = 0;
+        int victimDestroyed = 0;
+    };
+
+    class EndPlayVictimComponent : public RVX::ActorComponent
+    {
+    public:
+        explicit EndPlayVictimComponent(EndPlayMutationCounters* counters)
+            : m_counters(counters)
+        {
+        }
+
+        const char* GetClassName() const override { return "EndPlayVictimComponent"; }
+
+        void EndPlay() override
+        {
+            if (m_counters)
+            {
+                ++m_counters->victimEndPlay;
+            }
+        }
+
+        void OnComponentDestroyed() override
+        {
+            if (m_counters)
+            {
+                ++m_counters->victimDestroyed;
+            }
+        }
+
+    private:
+        EndPlayMutationCounters* m_counters = nullptr;
+    };
+
+    class SelfRemovingEndPlayComponent : public RVX::ActorComponent
+    {
+    public:
+        explicit SelfRemovingEndPlayComponent(int* endPlayCount)
+            : m_endPlayCount(endPlayCount)
+        {
+        }
+
+        const char* GetClassName() const override { return "SelfRemovingEndPlayComponent"; }
+
+        void EndPlay() override
+        {
+            if (m_endPlayCount)
+            {
+                ++(*m_endPlayCount);
+            }
+            if (GetOwner())
+            {
+                GetOwner()->RemoveComponent<SelfRemovingEndPlayComponent>();
+            }
+        }
+
+    private:
+        int* m_endPlayCount = nullptr;
+    };
+
+    class RemoveVictimDuringEndPlayComponent : public RVX::ActorComponent
+    {
+    public:
+        explicit RemoveVictimDuringEndPlayComponent(EndPlayMutationCounters* counters)
+            : m_counters(counters)
+        {
+        }
+
+        const char* GetClassName() const override { return "RemoveVictimDuringEndPlayComponent"; }
+
+        void EndPlay() override
+        {
+            if (m_counters)
+            {
+                ++m_counters->removerEndPlay;
+            }
+            if (GetOwner())
+            {
+                GetOwner()->RemoveComponent<EndPlayVictimComponent>();
+            }
+        }
+
+    private:
+        EndPlayMutationCounters* m_counters = nullptr;
+    };
+
+    class EndPlayThenRemoveVictimDuringTickComponent : public RVX::ActorComponent
+    {
+    public:
+        EndPlayThenRemoveVictimDuringTickComponent()
+        {
+            SetCanEverTick(true);
+            SetTickEnabled(true);
+        }
+
+        const char* GetClassName() const override { return "EndPlayThenRemoveVictimDuringTickComponent"; }
+
+        void TickComponent(float) override
+        {
+            if (!m_ran && GetOwner())
+            {
+                m_ran = true;
+                GetOwner()->EndPlay();
+                GetOwner()->RemoveComponent<EndPlayVictimComponent>();
+            }
+        }
+
+    private:
+        bool m_ran = false;
+    };
+
+    class QueueVictimThenEndPlayDuringTickComponent : public RVX::ActorComponent
+    {
+    public:
+        QueueVictimThenEndPlayDuringTickComponent()
+        {
+            SetCanEverTick(true);
+            SetTickEnabled(true);
+        }
+
+        const char* GetClassName() const override { return "QueueVictimThenEndPlayDuringTickComponent"; }
+
+        void TickComponent(float) override
+        {
+            if (!m_ran && GetOwner())
+            {
+                m_ran = true;
+                GetOwner()->RemoveComponent<EndPlayVictimComponent>();
+                GetOwner()->EndPlay();
+            }
+        }
+
+    private:
+        bool m_ran = false;
+    };
+
+    class DestructionPendingRemovalComponent : public RVX::ActorComponent
+    {
+    public:
+        explicit DestructionPendingRemovalComponent(int* destroyedCount)
+            : m_destroyedCount(destroyedCount)
+        {
+            SetCanEverTick(true);
+            SetTickEnabled(true);
+        }
+
+        const char* GetClassName() const override { return "DestructionPendingRemovalComponent"; }
+
+        void TickComponent(float) override
+        {
+            if (GetOwner())
+            {
+                GetOwner()->RemoveComponent<DestructionPendingRemovalComponent>();
+            }
+        }
+
+        void OnComponentDestroyed() override
+        {
+            if (m_destroyedCount)
+            {
+                ++(*m_destroyedCount);
+            }
+        }
+
+    private:
+        int* m_destroyedCount = nullptr;
+    };
+
     bool Test_ActorOwnsComponentsAndDispatchesLifecycle()
     {
         RVX::Actor actor("LifecycleActor");
@@ -424,6 +762,176 @@ namespace
         TEST_ASSERT_EQ(0, counters.endedPlay);
         TEST_ASSERT_EQ(1, counters.unregistered);
         sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_ActorTickSnapshotsComponentsAddedDuringTick()
+    {
+        RVX::Actor actor("AddDuringTickActor");
+        int addedTickCount = 0;
+        actor.AddComponent<AddComponentDuringTickComponent>(&addedTickCount);
+
+        actor.Tick(0.016f);
+        TEST_ASSERT_EQ(0, addedTickCount);
+        TEST_ASSERT_EQ(static_cast<size_t>(2), actor.GetActorComponentCount());
+
+        actor.Tick(0.016f);
+        TEST_ASSERT_EQ(1, addedTickCount);
+        return true;
+    }
+
+    bool Test_ActorDefersSelfRemovalDuringTick()
+    {
+        RVX::Actor actor("SelfRemoveActor");
+        int tickCount = 0;
+        actor.AddComponent<SelfRemovingTickComponent>(&tickCount);
+
+        actor.Tick(0.016f);
+
+        TEST_ASSERT_EQ(1, tickCount);
+        TEST_ASSERT_EQ(static_cast<size_t>(0), actor.GetActorComponentCount());
+
+        actor.Tick(0.016f);
+        TEST_ASSERT_EQ(1, tickCount);
+        return true;
+    }
+
+    bool Test_ActorDispatchesEndPlayForBegunComponentRemovedDuringTick()
+    {
+        RVX::Actor actor("BegunSelfRemoveActor");
+        int tickCount = 0;
+        int endPlayCount = 0;
+        actor.AddComponent<SelfRemovingTickComponent>(&tickCount, &endPlayCount);
+
+        actor.BeginPlay();
+        actor.Tick(0.016f);
+
+        TEST_ASSERT_EQ(1, tickCount);
+        TEST_ASSERT_EQ(1, endPlayCount);
+        TEST_ASSERT_EQ(static_cast<size_t>(0), actor.GetActorComponentCount());
+        return true;
+    }
+
+    bool Test_ActorSkipsComponentRemovedEarlierInTick()
+    {
+        RVX::Actor actor("RemoveOtherActor");
+        int victimTickCount = 0;
+        actor.AddComponent<RemoveVictimDuringTickComponent>();
+        actor.AddComponent<VictimTickComponent>(&victimTickCount);
+
+        actor.Tick(0.016f);
+
+        TEST_ASSERT_EQ(0, victimTickCount);
+        TEST_ASSERT_EQ(nullptr, actor.GetComponent<VictimTickComponent>());
+        return true;
+    }
+
+    bool Test_ActorBeginPlaySnapshotsComponentsAddedDuringBeginPlay()
+    {
+        RVX::Actor actor("AddDuringBeginPlayActor");
+        int addedBeginCount = 0;
+        actor.AddComponent<AddComponentDuringBeginPlayComponent>(&addedBeginCount);
+
+        actor.BeginPlay();
+        TEST_ASSERT_EQ(0, addedBeginCount);
+        TEST_ASSERT_EQ(static_cast<size_t>(2), actor.GetActorComponentCount());
+
+        actor.BeginPlay();
+        TEST_ASSERT_EQ(1, addedBeginCount);
+        return true;
+    }
+
+    bool Test_ActorDefersSelfRemovalDuringEndPlay()
+    {
+        RVX::Actor actor("SelfRemoveEndPlayActor");
+        int endPlayCount = 0;
+        actor.AddComponent<SelfRemovingEndPlayComponent>(&endPlayCount);
+
+        actor.BeginPlay();
+        actor.EndPlay();
+
+        TEST_ASSERT_EQ(1, endPlayCount);
+        TEST_ASSERT_EQ(static_cast<size_t>(0), actor.GetActorComponentCount());
+        return true;
+    }
+
+    bool Test_ActorDirectRemovalHandlesSelfRemovalDuringEndPlay()
+    {
+        RVX::Actor actor("DirectSelfRemoveEndPlayActor");
+        int endPlayCount = 0;
+        actor.AddComponent<SelfRemovingEndPlayComponent>(&endPlayCount);
+
+        actor.BeginPlay();
+        TEST_ASSERT_TRUE(actor.RemoveComponent<SelfRemovingEndPlayComponent>());
+
+        TEST_ASSERT_EQ(1, endPlayCount);
+        TEST_ASSERT_EQ(static_cast<size_t>(0), actor.GetActorComponentCount());
+        return true;
+    }
+
+    bool Test_ActorSkipsComponentRemovedEarlierInEndPlay()
+    {
+        RVX::Actor actor("RemoveOtherEndPlayActor");
+        EndPlayMutationCounters counters;
+        actor.AddComponent<EndPlayVictimComponent>(&counters);
+        actor.AddComponent<RemoveVictimDuringEndPlayComponent>(&counters);
+
+        actor.BeginPlay();
+        actor.EndPlay();
+
+        TEST_ASSERT_EQ(1, counters.removerEndPlay);
+        TEST_ASSERT_EQ(0, counters.victimEndPlay);
+        TEST_ASSERT_EQ(1, counters.victimDestroyed);
+        TEST_ASSERT_EQ(nullptr, actor.GetComponent<EndPlayVictimComponent>());
+        return true;
+    }
+
+    bool Test_ActorKeepsEndPlaySuppressedAfterNestedEndPlayReturnsToTick()
+    {
+        RVX::Actor actor("NestedEndPlayRemoveActor");
+        EndPlayMutationCounters counters;
+        actor.AddComponent<EndPlayVictimComponent>(&counters);
+        actor.AddComponent<RemoveVictimDuringEndPlayComponent>(&counters);
+        actor.AddComponent<EndPlayThenRemoveVictimDuringTickComponent>();
+
+        actor.BeginPlay();
+        actor.Tick(0.016f);
+
+        TEST_ASSERT_EQ(1, counters.removerEndPlay);
+        TEST_ASSERT_EQ(0, counters.victimEndPlay);
+        TEST_ASSERT_EQ(1, counters.victimDestroyed);
+        TEST_ASSERT_EQ(nullptr, actor.GetComponent<EndPlayVictimComponent>());
+        return true;
+    }
+
+    bool Test_ActorDispatchesEndPlayForComponentQueuedBeforeNestedEndPlay()
+    {
+        RVX::Actor actor("QueueBeforeNestedEndPlayActor");
+        EndPlayMutationCounters counters;
+        actor.AddComponent<EndPlayVictimComponent>(&counters);
+        actor.AddComponent<RemoveVictimDuringEndPlayComponent>(&counters);
+        actor.AddComponent<QueueVictimThenEndPlayDuringTickComponent>();
+
+        actor.BeginPlay();
+        actor.Tick(0.016f);
+
+        TEST_ASSERT_EQ(1, counters.removerEndPlay);
+        TEST_ASSERT_EQ(1, counters.victimEndPlay);
+        TEST_ASSERT_EQ(1, counters.victimDestroyed);
+        TEST_ASSERT_EQ(nullptr, actor.GetComponent<EndPlayVictimComponent>());
+        return true;
+    }
+
+    bool Test_ActorDestructionClearsPendingRemovalWithoutDoubleDestroy()
+    {
+        int destroyedCount = 0;
+        {
+            RVX::Actor actor("DestroyPendingRemovalActor");
+            actor.AddComponent<DestructionPendingRemovalComponent>(&destroyedCount);
+            actor.Tick(0.016f);
+        }
+
+        TEST_ASSERT_EQ(1, destroyedCount);
         return true;
     }
 
@@ -811,6 +1319,28 @@ int main()
                   Test_SceneManagerDestroyEntityDispatchesEndPlayBeforeUnregister);
     suite.AddTest("SceneManagerDestroyEntityBeforeBeginPlayDoesNotDispatchEndPlay",
                   Test_SceneManagerDestroyEntityBeforeBeginPlayDoesNotDispatchEndPlay);
+    suite.AddTest("ActorTickSnapshotsComponentsAddedDuringTick",
+                  Test_ActorTickSnapshotsComponentsAddedDuringTick);
+    suite.AddTest("ActorDefersSelfRemovalDuringTick",
+                  Test_ActorDefersSelfRemovalDuringTick);
+    suite.AddTest("ActorDispatchesEndPlayForBegunComponentRemovedDuringTick",
+                  Test_ActorDispatchesEndPlayForBegunComponentRemovedDuringTick);
+    suite.AddTest("ActorSkipsComponentRemovedEarlierInTick",
+                  Test_ActorSkipsComponentRemovedEarlierInTick);
+    suite.AddTest("ActorBeginPlaySnapshotsComponentsAddedDuringBeginPlay",
+                  Test_ActorBeginPlaySnapshotsComponentsAddedDuringBeginPlay);
+    suite.AddTest("ActorDefersSelfRemovalDuringEndPlay",
+                  Test_ActorDefersSelfRemovalDuringEndPlay);
+    suite.AddTest("ActorDirectRemovalHandlesSelfRemovalDuringEndPlay",
+                  Test_ActorDirectRemovalHandlesSelfRemovalDuringEndPlay);
+    suite.AddTest("ActorSkipsComponentRemovedEarlierInEndPlay",
+                  Test_ActorSkipsComponentRemovedEarlierInEndPlay);
+    suite.AddTest("ActorKeepsEndPlaySuppressedAfterNestedEndPlayReturnsToTick",
+                  Test_ActorKeepsEndPlaySuppressedAfterNestedEndPlayReturnsToTick);
+    suite.AddTest("ActorDispatchesEndPlayForComponentQueuedBeforeNestedEndPlay",
+                  Test_ActorDispatchesEndPlayForComponentQueuedBeforeNestedEndPlay);
+    suite.AddTest("ActorDestructionClearsPendingRemovalWithoutDoubleDestroy",
+                  Test_ActorDestructionClearsPendingRemovalWithoutDoubleDestroy);
     suite.AddTest("SceneComponentAttachmentComputesWorldTransform",
                   Test_SceneComponentAttachmentComputesWorldTransform);
     suite.AddTest("PrimitiveComponentTracksVisibilityLayerAndBounds",
