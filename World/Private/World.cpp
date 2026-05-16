@@ -116,6 +116,22 @@ SpatialSubsystem* World::GetSpatial() const
     return m_subsystems.GetSubsystem<SpatialSubsystem>();
 }
 
+SceneEntity* World::SpawnActor(const ActorSpawnParams& params)
+{
+    if (!m_initialized || !m_sceneManager)
+        return nullptr;
+
+    return m_sceneManager->SpawnActor(params);
+}
+
+bool World::DestroyActor(Actor* actor)
+{
+    if (!m_initialized || !m_sceneManager)
+        return false;
+
+    return m_sceneManager->DestroyActor(actor);
+}
+
 bool World::Pick(const Ray& ray, RaycastHit& outResult)
 {
     auto* spatial = GetSpatial();

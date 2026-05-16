@@ -13,6 +13,7 @@
 #include "Core/Subsystem/SubsystemCollection.h"
 #include "Core/Subsystem/WorldSubsystem.h"
 #include "Core/Math/Geometry.h"
+#include "Scene/SceneManager.h"
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -20,7 +21,6 @@
 namespace RVX
 {
     // Forward declarations
-    class SceneManager;
     class Camera;
     struct RaycastHit;
 
@@ -132,6 +132,22 @@ namespace RVX
 
         /// Get the scene manager
         SceneManager* GetSceneManager() const { return m_sceneManager.get(); }
+
+        /// Spawn a scene-owned actor.
+        SceneEntity* SpawnActor(const ActorSpawnParams& params = {});
+
+        /// Spawn a typed scene-owned actor.
+        template<typename T = SceneEntity>
+        T* SpawnActor(const ActorSpawnParams& params = {})
+        {
+            if (!m_initialized || !m_sceneManager)
+                return nullptr;
+
+            return m_sceneManager->SpawnActor<T>(params);
+        }
+
+        /// Destroy a scene-owned actor.
+        bool DestroyActor(Actor* actor);
 
         /// Get the spatial subsystem
         SpatialSubsystem* GetSpatial() const;

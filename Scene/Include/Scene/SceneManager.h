@@ -9,11 +9,13 @@
 #include "Core/Math/Geometry.h"
 #include "Spatial/Index/ISpatialIndex.h"
 #include "Spatial/Index/SpatialFactory.h"
+#include <functional>
+#include <memory>
+#include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <memory>
-#include <functional>
 
 namespace RVX
 {
@@ -38,6 +40,18 @@ namespace RVX
 
         /// Threshold for triggering index rebuild
         float rebuildThreshold = 0.1f; // 10% dirty entities
+    };
+
+    /**
+     * @brief Parameters used by UE-style actor spawning.
+     */
+    struct ActorSpawnParams
+    {
+        std::string name = "Actor";
+        Vec3 localPosition{0.0f};
+        Quat localRotation{1.0f, 0.0f, 0.0f, 0.0f};
+        Vec3 localScale{1.0f};
+        SceneEntity* parent = nullptr;
     };
 
     /**
@@ -110,11 +124,42 @@ namespace RVX
             return static_cast<T*>(AddEntity(entity));
         }
 
+        /// Spawn a scene-owned actor using UE-style parameters.
+        SceneEntity* SpawnActor(const ActorSpawnParams& params = {});
+
+        /// Spawn a typed scene-owned actor.
+        template<typename T = SceneEntity>
+        T* SpawnActor(const ActorSpawnParams& params = {})
+        {
+            static_assert(std::is_base_of_v<SceneEntity, T>, "T must derive from SceneEntity");
+
+            if (params.parent && GetEntity(params.parent->GetHandle()) != params.parent)
+                return nullptr;
+
+            auto actor = std::make_shared<T>(params.name);
+            auto* spawned = static_cast<T*>(AddEntity(actor));
+            if (!spawned)
+                return nullptr;
+
+            if (params.parent)
+            {
+                params.parent->AddChild(spawned);
+            }
+
+            spawned->SetPosition(params.localPosition);
+            spawned->SetRotation(params.localRotation);
+            spawned->SetScale(params.localScale);
+            return spawned;
+        }
+
         /// Add an existing entity
         SceneEntity* AddEntity(SceneEntity::Ptr entity);
 
         /// Destroy an entity by handle
         void DestroyEntity(SceneEntity::Handle handle);
+
+        /// Destroy a scene-owned actor.
+        bool DestroyActor(Actor* actor);
 
         /// Get entity by handle
         SceneEntity* GetEntity(SceneEntity::Handle handle);
@@ -288,6 +333,7 @@ namespace RVX
                                    std::vector<PrimitiveComponent*>& outPrimitives) const;
         RaycastHit MakeRaycastHit(const Spatial::QueryResult& result, const Ray& ray) const;
         void UpdateEntityLifecycles(float deltaTime);
+        bool IsDestroyPending(SceneEntity::Handle handle) const;
         void QueuePendingDestroy(SceneEntity::Handle handle);
         void FlushPendingDestroyEntities();
         void DestroyEntityImmediate(SceneEntity::Handle handle);

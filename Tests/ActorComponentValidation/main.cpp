@@ -10,6 +10,7 @@
 #include "Scene/SceneEntity.h"
 #include "Scene/SceneManager.h"
 #include "TestFramework/TestRunner.h"
+#include "World/World.h"
 
 #include <cmath>
 #include <memory>
@@ -212,6 +213,56 @@ namespace
         RVX::SceneManager* m_sceneManager = nullptr;
         RVX::SceneEntity::Handle m_ownerHandle = RVX::SceneEntity::InvalidHandle;
         int* m_tickCount = nullptr;
+    };
+
+    class SpawnableSceneActor : public RVX::SceneEntity
+    {
+    public:
+        explicit SpawnableSceneActor(const std::string& name)
+            : SceneEntity(name)
+        {
+        }
+
+        const char* GetClassName() const override { return "SpawnableSceneActor"; }
+    };
+
+    class DestroyOwnerActorComponent : public RVX::ActorComponent
+    {
+    public:
+        DestroyOwnerActorComponent(RVX::SceneManager* sceneManager,
+                                   bool* firstResult,
+                                   bool* secondResult = nullptr)
+            : m_sceneManager(sceneManager)
+            , m_firstResult(firstResult)
+            , m_secondResult(secondResult)
+        {
+            SetCanEverTick(true);
+            SetTickEnabled(true);
+        }
+
+        const char* GetClassName() const override { return "DestroyOwnerActorComponent"; }
+
+        void TickComponent(float) override
+        {
+            if (m_hasTicked || !m_sceneManager)
+                return;
+
+            m_hasTicked = true;
+            if (m_firstResult)
+            {
+                *m_firstResult = m_sceneManager->DestroyActor(GetOwner());
+            }
+            if (m_secondResult)
+            {
+                *m_secondResult = m_sceneManager->DestroyActor(GetOwner());
+            }
+        }
+
+    private:
+        RVX::SceneManager* m_sceneManager = nullptr;
+        bool* m_firstResult = nullptr;
+        bool* m_secondResult = nullptr;
+        bool m_hasTicked = false;
     };
 
     class TickCounterComponent : public RVX::ActorComponent
@@ -1294,6 +1345,211 @@ namespace
         parent.GetRootComponent()->DetachFromComponent();
         return true;
     }
+
+    bool Test_SceneManagerSpawnActorCreatesSceneOwnedActor()
+    {
+        RVX::SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        RVX::ActorSpawnParams params;
+        params.name = "SpawnedActor";
+        params.localPosition = RVX::Vec3(3.0f, 4.0f, 5.0f);
+        params.localScale = RVX::Vec3(2.0f, 3.0f, 4.0f);
+
+        auto* actor = sceneManager.SpawnActor<SpawnableSceneActor>(params);
+        TEST_ASSERT_NOT_NULL(actor);
+        TEST_ASSERT_EQ(actor, sceneManager.GetEntity(actor->GetHandle()));
+        TEST_ASSERT_EQ(std::string("SpawnedActor"), actor->GetName());
+        TEST_ASSERT_EQ(params.localPosition, actor->GetPosition());
+        TEST_ASSERT_EQ(params.localPosition, actor->GetWorldPosition());
+        TEST_ASSERT_EQ(params.localScale, actor->GetScale());
+        TEST_ASSERT_EQ(params.localScale, actor->GetWorldScale());
+        TEST_ASSERT_EQ(static_cast<size_t>(1), sceneManager.GetEntityCount());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_SceneManagerSpawnActorAttachesParent()
+    {
+        RVX::SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        RVX::ActorSpawnParams parentParams;
+        parentParams.name = "SpawnParent";
+        parentParams.localPosition = RVX::Vec3(10.0f, 2.0f, 0.0f);
+        parentParams.localRotation = RVX::Quat(0.9238795f, 0.0f, 0.3826834f, 0.0f);
+        parentParams.localScale = RVX::Vec3(2.0f, 2.0f, 2.0f);
+        auto* parent = sceneManager.SpawnActor<SpawnableSceneActor>(parentParams);
+        TEST_ASSERT_NOT_NULL(parent);
+
+        RVX::ActorSpawnParams childParams;
+        childParams.name = "SpawnChild";
+        childParams.localPosition = RVX::Vec3(1.0f, 2.0f, 3.0f);
+        childParams.localRotation = RVX::Quat(0.9659258f, 0.2588190f, 0.0f, 0.0f);
+        childParams.localScale = RVX::Vec3(0.5f, 0.75f, 1.25f);
+        childParams.parent = parent;
+
+        auto* child = sceneManager.SpawnActor<SpawnableSceneActor>(childParams);
+        TEST_ASSERT_NOT_NULL(child);
+        TEST_ASSERT_EQ(parent, child->GetParent());
+        TEST_ASSERT_EQ(static_cast<size_t>(1), parent->GetChildCount());
+        TEST_ASSERT_EQ(parent->GetRootComponent(), child->GetRootComponent()->GetAttachParent());
+        TEST_ASSERT_EQ(childParams.localPosition, child->GetPosition());
+        TEST_ASSERT_EQ(childParams.localScale, child->GetScale());
+        TEST_ASSERT_EQ(parent->GetWorldMatrix() * child->GetLocalMatrix(), child->GetWorldMatrix());
+        TEST_ASSERT_EQ(static_cast<size_t>(2), sceneManager.GetEntityCount());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_SceneManagerSpawnActorRejectsForeignParent()
+    {
+        RVX::SceneManager sourceScene;
+        RVX::SceneManager targetScene;
+        sourceScene.Initialize();
+        targetScene.Initialize();
+
+        RVX::ActorSpawnParams parentParams;
+        parentParams.name = "ForeignParent";
+        auto* foreignParent = sourceScene.SpawnActor<SpawnableSceneActor>(parentParams);
+        TEST_ASSERT_NOT_NULL(foreignParent);
+
+        RVX::ActorSpawnParams childParams;
+        childParams.name = "RejectedChild";
+        childParams.parent = foreignParent;
+        TEST_ASSERT_EQ(nullptr, targetScene.SpawnActor<SpawnableSceneActor>(childParams));
+        TEST_ASSERT_EQ(static_cast<size_t>(0), targetScene.GetEntityCount());
+
+        RVX::SceneEntity stackParent("StackParent");
+        childParams.parent = &stackParent;
+        TEST_ASSERT_EQ(nullptr, targetScene.SpawnActor<SpawnableSceneActor>(childParams));
+        TEST_ASSERT_EQ(static_cast<size_t>(0), targetScene.GetEntityCount());
+
+        sourceScene.Shutdown();
+        targetScene.Shutdown();
+        return true;
+    }
+
+    bool Test_SceneManagerDestroyActorUsesActorPointer()
+    {
+        RVX::SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        RVX::ActorSpawnParams params;
+        params.name = "DestroyMe";
+        auto* actor = sceneManager.SpawnActor<SpawnableSceneActor>(params);
+        TEST_ASSERT_NOT_NULL(actor);
+        const auto handle = actor->GetHandle();
+
+        TEST_ASSERT_TRUE(sceneManager.DestroyActor(static_cast<RVX::Actor*>(actor)));
+        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+        TEST_ASSERT_EQ(nullptr, sceneManager.GetEntity(handle));
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_SceneManagerDestroyActorDefersDuringLifecycleDispatch()
+    {
+        RVX::SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        bool destroyAccepted = false;
+        RVX::ActorSpawnParams params;
+        params.name = "DeferredDestroy";
+        auto* actor = sceneManager.SpawnActor<SpawnableSceneActor>(params);
+        TEST_ASSERT_NOT_NULL(actor);
+        actor->AddComponent<DestroyOwnerActorComponent>(&sceneManager, &destroyAccepted);
+
+        sceneManager.Update(0.016f);
+
+        TEST_ASSERT_TRUE(destroyAccepted);
+        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_SceneManagerDestroyActorRejectsDuplicatePendingDestroy()
+    {
+        RVX::SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        bool firstDestroy = false;
+        bool secondDestroy = true;
+        RVX::ActorSpawnParams params;
+        params.name = "DuplicateDestroy";
+        auto* actor = sceneManager.SpawnActor<SpawnableSceneActor>(params);
+        TEST_ASSERT_NOT_NULL(actor);
+        actor->AddComponent<DestroyOwnerActorComponent>(&sceneManager, &firstDestroy, &secondDestroy);
+
+        sceneManager.Update(0.016f);
+
+        TEST_ASSERT_TRUE(firstDestroy);
+        TEST_ASSERT_FALSE(secondDestroy);
+        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_WorldSpawnActorDelegatesToSceneManager()
+    {
+        RVX::World world;
+        world.Initialize();
+
+        RVX::ActorSpawnParams params;
+        params.name = "WorldSpawned";
+        auto* actor = world.SpawnActor<SpawnableSceneActor>(params);
+        TEST_ASSERT_NOT_NULL(actor);
+        TEST_ASSERT_NOT_NULL(world.GetSceneManager());
+        TEST_ASSERT_EQ(actor, world.GetSceneManager()->GetEntity(actor->GetHandle()));
+        TEST_ASSERT_TRUE(world.DestroyActor(actor));
+        TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetSceneManager()->GetEntityCount());
+
+        world.Shutdown();
+        return true;
+    }
+
+    bool Test_WorldSpawnActorRejectsWhenUninitialized()
+    {
+        RVX::World world;
+        RVX::ActorSpawnParams params;
+        params.name = "RejectedWorldSpawn";
+        RVX::Actor actor("StackActor");
+
+        TEST_ASSERT_EQ(nullptr, world.SpawnActor<SpawnableSceneActor>(params));
+        TEST_ASSERT_FALSE(world.DestroyActor(&actor));
+        return true;
+    }
+
+    bool Test_DestroyActorRejectsForeignOrPureActor()
+    {
+        RVX::SceneManager sceneManager;
+        RVX::SceneManager foreignScene;
+        sceneManager.Initialize();
+        foreignScene.Initialize();
+
+        RVX::Actor pureActor("PureActor");
+        RVX::SceneEntity stackEntity("StackEntity");
+        RVX::ActorSpawnParams params;
+        params.name = "ForeignActor";
+        auto* foreignActor = foreignScene.SpawnActor<SpawnableSceneActor>(params);
+        TEST_ASSERT_NOT_NULL(foreignActor);
+
+        TEST_ASSERT_FALSE(sceneManager.DestroyActor(nullptr));
+        TEST_ASSERT_FALSE(sceneManager.DestroyActor(&pureActor));
+        TEST_ASSERT_FALSE(sceneManager.DestroyActor(&stackEntity));
+        TEST_ASSERT_FALSE(sceneManager.DestroyActor(foreignActor));
+        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+        TEST_ASSERT_EQ(static_cast<size_t>(1), foreignScene.GetEntityCount());
+
+        sceneManager.Shutdown();
+        foreignScene.Shutdown();
+        return true;
+    }
 } // namespace
 
 int main()
@@ -1379,6 +1635,24 @@ int main()
                   Test_SceneEntityRootReplacementDetachesExternalParentWhenRootEntity);
     suite.AddTest("SceneEntityAddChildRejectsInconsistentComponentCycle",
                   Test_SceneEntityAddChildRejectsInconsistentComponentCycle);
+    suite.AddTest("SceneManagerSpawnActorCreatesSceneOwnedActor",
+                  Test_SceneManagerSpawnActorCreatesSceneOwnedActor);
+    suite.AddTest("SceneManagerSpawnActorAttachesParent",
+                  Test_SceneManagerSpawnActorAttachesParent);
+    suite.AddTest("SceneManagerSpawnActorRejectsForeignParent",
+                  Test_SceneManagerSpawnActorRejectsForeignParent);
+    suite.AddTest("SceneManagerDestroyActorUsesActorPointer",
+                  Test_SceneManagerDestroyActorUsesActorPointer);
+    suite.AddTest("SceneManagerDestroyActorDefersDuringLifecycleDispatch",
+                  Test_SceneManagerDestroyActorDefersDuringLifecycleDispatch);
+    suite.AddTest("SceneManagerDestroyActorRejectsDuplicatePendingDestroy",
+                  Test_SceneManagerDestroyActorRejectsDuplicatePendingDestroy);
+    suite.AddTest("WorldSpawnActorDelegatesToSceneManager",
+                  Test_WorldSpawnActorDelegatesToSceneManager);
+    suite.AddTest("WorldSpawnActorRejectsWhenUninitialized",
+                  Test_WorldSpawnActorRejectsWhenUninitialized);
+    suite.AddTest("DestroyActorRejectsForeignOrPureActor",
+                  Test_DestroyActorRejectsForeignOrPureActor);
 
     auto results = suite.Run();
     suite.PrintResults(results);

@@ -138,6 +138,11 @@ SceneEntity::Handle SceneManager::CreateEntity(const std::string& name)
     return entity->GetHandle();
 }
 
+SceneEntity* SceneManager::SpawnActor(const ActorSpawnParams& params)
+{
+    return SpawnActor<SceneEntity>(params);
+}
+
 SceneEntity* SceneManager::AddEntity(SceneEntity::Ptr entity)
 {
     if (!entity) return nullptr;
@@ -156,6 +161,23 @@ SceneEntity* SceneManager::AddEntity(SceneEntity::Ptr entity)
     m_indexNeedsRebuild = true;
 
     return entity.get();
+}
+
+bool SceneManager::DestroyActor(Actor* actor)
+{
+    if (!actor)
+        return false;
+
+    auto* entity = dynamic_cast<SceneEntity*>(actor);
+    if (!entity)
+        return false;
+
+    const auto handle = entity->GetHandle();
+    if (GetEntity(handle) != entity || IsDestroyPending(handle))
+        return false;
+
+    DestroyEntity(handle);
+    return true;
 }
 
 void SceneManager::DestroyEntity(SceneEntity::Handle handle)
@@ -187,13 +209,18 @@ void SceneManager::DestroyEntityImmediate(SceneEntity::Handle handle)
     }
 }
 
+bool SceneManager::IsDestroyPending(SceneEntity::Handle handle) const
+{
+    return std::find(m_pendingDestroyEntities.begin(), m_pendingDestroyEntities.end(), handle) !=
+           m_pendingDestroyEntities.end();
+}
+
 void SceneManager::QueuePendingDestroy(SceneEntity::Handle handle)
 {
     if (m_entities.find(handle) == m_entities.end())
         return;
 
-    if (std::find(m_pendingDestroyEntities.begin(), m_pendingDestroyEntities.end(), handle) !=
-        m_pendingDestroyEntities.end())
+    if (IsDestroyPending(handle))
     {
         return;
     }
@@ -616,11 +643,6 @@ void SceneManager::Update(float deltaTime)
 
 void SceneManager::UpdateEntityLifecycles(float deltaTime)
 {
-    const auto isDestroyPending = [this](SceneEntity::Handle handle) {
-        return std::find(m_pendingDestroyEntities.begin(), m_pendingDestroyEntities.end(), handle) !=
-               m_pendingDestroyEntities.end();
-    };
-
     std::vector<SceneEntity::Handle> entityHandles;
     entityHandles.reserve(m_entities.size());
     for (const auto& [handle, entity] : m_entities)
@@ -635,21 +657,21 @@ void SceneManager::UpdateEntityLifecycles(float deltaTime)
     for (SceneEntity::Handle handle : entityHandles)
     {
         auto it = m_entities.find(handle);
-        if (it == m_entities.end() || !it->second || !it->second->IsActive() || isDestroyPending(handle))
+        if (it == m_entities.end() || !it->second || !it->second->IsActive() || IsDestroyPending(handle))
             continue;
 
         SceneEntity* entity = it->second.get();
         entity->BeginPlay();
 
         it = m_entities.find(handle);
-        if (it == m_entities.end() || !it->second || !it->second->IsActive() || isDestroyPending(handle))
+        if (it == m_entities.end() || !it->second || !it->second->IsActive() || IsDestroyPending(handle))
             continue;
 
         entity = it->second.get();
         entity->Tick(deltaTime);
 
         it = m_entities.find(handle);
-        if (it == m_entities.end() || !it->second || !it->second->IsActive() || isDestroyPending(handle))
+        if (it == m_entities.end() || !it->second || !it->second->IsActive() || IsDestroyPending(handle))
             continue;
 
         entity = it->second.get();

@@ -188,6 +188,7 @@ target_link_libraries(ActorComponentValidation PRIVATE
     RVX_TestFramework
     RVX::Scene
     RVX::Resource
+    RVX::World
 )
 target_compile_features(ActorComponentValidation PRIVATE cxx_std_20)
 

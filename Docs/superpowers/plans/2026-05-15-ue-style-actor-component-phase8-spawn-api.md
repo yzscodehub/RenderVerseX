@@ -51,33 +51,33 @@
 **Files:**
 - Modify: `Tests/ActorComponentValidation/main.cpp`
 
-- [ ] Add a custom `SpawnableSceneActor : public RVX::SceneEntity` helper that can be created from a name.
-- [ ] Add `Test_SceneManagerSpawnActorCreatesSceneOwnedActor`:
+- [x] Add a custom `SpawnableSceneActor : public RVX::SceneEntity` helper that can be created from a name.
+- [x] Add `Test_SceneManagerSpawnActorCreatesSceneOwnedActor`:
   - `SceneManager::SpawnActor<SpawnableSceneActor>({ .name = "Spawned", ... })`
   - Assert returned pointer is non-null, `GetEntity(handle)` returns the same object, name and local/world transform match params, and entity count is 1.
-- [ ] Add `Test_SceneManagerSpawnActorAttachesParent`:
+- [x] Add `Test_SceneManagerSpawnActorAttachesParent`:
   - Create a parent actor with non-zero position, rotation, and scale, spawn child with parent in `ActorSpawnParams`, assert parent/child hierarchy is established.
   - Assert spawn params are interpreted as local transform: child local transform matches params and child world transform matches parent world transform applied to the local transform.
-- [ ] Add `Test_SceneManagerSpawnActorRejectsForeignParent`:
+- [x] Add `Test_SceneManagerSpawnActorRejectsForeignParent`:
   - Create one `SceneManager` with a parent actor and another `SceneManager` for spawning.
   - Spawn with the foreign parent, assert null and no entity count change.
   - Also pass a stack-only `SceneEntity` as parent and assert null.
-- [ ] Add `Test_SceneManagerDestroyActorUsesActorPointer`:
+- [x] Add `Test_SceneManagerDestroyActorUsesActorPointer`:
   - Spawn actor, destroy via `DestroyActor(static_cast<Actor*>(actor))`, assert entity count becomes 0 and lookup by handle is null.
-- [ ] Add `Test_SceneManagerDestroyActorDefersDuringLifecycleDispatch`:
+- [x] Add `Test_SceneManagerDestroyActorDefersDuringLifecycleDispatch`:
   - Spawn an actor with a component that calls `DestroyActor(owner)` during tick.
   - Run `SceneManager::Update()`, assert `DestroyActor` returned true from inside the callback and entity count is 0 after pending destroy flush.
-- [ ] Add `Test_SceneManagerDestroyActorRejectsDuplicatePendingDestroy`:
+- [x] Add `Test_SceneManagerDestroyActorRejectsDuplicatePendingDestroy`:
   - During lifecycle dispatch call `DestroyActor(owner)` twice.
   - Assert the first call returns true, the second returns false if the handle is already pending, and the actor is destroyed once after update.
-- [ ] Add `Test_WorldSpawnActorDelegatesToSceneManager`:
+- [x] Add `Test_WorldSpawnActorDelegatesToSceneManager`:
   - Initialize `World`, spawn actor via world wrapper, assert it is present in the world's scene manager, then destroy through world wrapper.
-- [ ] Add `Test_WorldSpawnActorRejectsWhenUninitialized`:
+- [x] Add `Test_WorldSpawnActorRejectsWhenUninitialized`:
   - Use an uninitialized `World`, assert `SpawnActor` returns null and `DestroyActor` returns false.
-- [ ] Add `Test_DestroyActorRejectsForeignOrPureActor`:
+- [x] Add `Test_DestroyActorRejectsForeignOrPureActor`:
   - Call `DestroyActor(nullptr)`, a stack `Actor`, and a stack `SceneEntity` not owned by the scene; all should return false and not mutate scene ownership.
-- [ ] Register the new tests in `main()`.
-- [ ] Run `ActorComponentValidation` and confirm the new tests fail to compile before API implementation.
+- [x] Register the new tests in `main()`.
+- [x] Run `ActorComponentValidation` and confirm the new tests fail to compile before API implementation.
 
 ---
 
@@ -87,7 +87,7 @@
 - Modify: `Scene/Include/Scene/SceneManager.h`
 - Modify: `Scene/Private/SceneManager.cpp`
 
-- [ ] Add `ActorSpawnParams` near the entity-management public API:
+- [x] Add `ActorSpawnParams` near the entity-management public API:
 
 ```cpp
 struct ActorSpawnParams
@@ -100,20 +100,20 @@ struct ActorSpawnParams
 };
 ```
 
-- [ ] Add template `SpawnActor<T = SceneEntity>(const ActorSpawnParams& params = {})`.
-- [ ] Constrain `SpawnActor<T>()` with `static_assert(std::is_base_of_v<SceneEntity, T>)`.
-- [ ] Construct with `params.name`, add via `AddEntity`, then apply parent and transform.
-- [ ] Before construction, reject `params.parent` when `GetEntity(params.parent->GetHandle()) != params.parent`.
-- [ ] Construct with `params.name`, add via `AddEntity`, then attach parent first, then apply local transform.
-- [ ] Add non-template `SceneEntity* SpawnActor(const ActorSpawnParams& params = {})` forwarding to `SpawnActor<SceneEntity>()`.
-- [ ] Add `bool DestroyActor(Actor* actor)`:
+- [x] Add template `SpawnActor<T = SceneEntity>(const ActorSpawnParams& params = {})`.
+- [x] Constrain `SpawnActor<T>()` with `static_assert(std::is_base_of_v<SceneEntity, T>)`.
+- [x] Construct with `params.name`, add via `AddEntity`, then apply parent and transform.
+- [x] Before construction, reject `params.parent` when `GetEntity(params.parent->GetHandle()) != params.parent`.
+- [x] Construct with `params.name`, add via `AddEntity`, then attach parent first, then apply local transform.
+- [x] Add non-template `SceneEntity* SpawnActor(const ActorSpawnParams& params = {})` forwarding to `SpawnActor<SceneEntity>()`.
+- [x] Add `bool DestroyActor(Actor* actor)`:
   - Reject null.
   - `dynamic_cast<SceneEntity*>`.
   - Reject non-`SceneEntity` actors.
   - Verify the scene owns the handle before calling `DestroyEntity(handle)`.
   - Return false if the actor is already pending destroy.
   - Return true only when a destroy request is accepted.
-- [ ] Add a private `bool IsDestroyPending(SceneEntity::Handle handle) const` helper so `DestroyActor` and lifecycle update share the same pending-destroy semantics without duplicating scans.
+- [x] Add a private `bool IsDestroyPending(SceneEntity::Handle handle) const` helper so `DestroyActor` and lifecycle update share the same pending-destroy semantics without duplicating scans.
 
 ---
 
@@ -124,12 +124,12 @@ struct ActorSpawnParams
 - Modify: `World/Private/World.cpp`
 - Modify: `Tests/CMakeLists.txt`
 
-- [ ] Include the minimum Scene headers needed for template wrappers.
-- [ ] Add `template<typename T = SceneEntity> T* SpawnActor(const ActorSpawnParams& params = {})`.
-- [ ] Add `SceneEntity* SpawnActor(const ActorSpawnParams& params = {})`.
-- [ ] Add `bool DestroyActor(Actor* actor)`.
-- [ ] Return null/false when `World` is not initialized or `m_sceneManager` is null.
-- [ ] Add `RVX::World` to the `ActorComponentValidation` target link libraries.
+- [x] Include the minimum Scene headers needed for template wrappers.
+- [x] Add `template<typename T = SceneEntity> T* SpawnActor(const ActorSpawnParams& params = {})`.
+- [x] Add `SceneEntity* SpawnActor(const ActorSpawnParams& params = {})`.
+- [x] Add `bool DestroyActor(Actor* actor)`.
+- [x] Return null/false when `World` is not initialized or `m_sceneManager` is null.
+- [x] Add `RVX::World` to the `ActorComponentValidation` target link libraries.
 
 ---
 
@@ -138,19 +138,19 @@ struct ActorSpawnParams
 **Files:**
 - No source edits unless validation exposes issues.
 
-- [ ] Build:
+- [x] Build:
   - `cmake --build build\Debug --config Debug --target ActorComponentValidation SpatialComponentValidation ResourceInstantiationValidation RenderSceneValidation SystemIntegrationTest ModelViewer`
-- [ ] Run:
+- [x] Run:
   - `.\build\Debug\Tests\Debug\ActorComponentValidation.exe`
   - `.\build\Debug\Tests\Debug\SpatialComponentValidation.exe`
   - `.\build\Debug\Tests\Debug\ResourceInstantiationValidation.exe`
   - `.\build\Debug\Tests\Debug\RenderSceneValidation.exe`
   - `.\build\Debug\Tests\Debug\SystemIntegrationTest.exe`
-- [ ] Run ModelViewer smoke with `C:\Users\yinzs\Desktop\DamagedHelmet.glb`; confirm model loaded, instantiated, uploaded to GPU, RenderGraph stats emitted, stderr empty, and no error/critical/assert.
+- [x] Run ModelViewer smoke with `C:\Users\yinzs\Desktop\DamagedHelmet.glb`; confirm model loaded, instantiated, uploaded to GPU, RenderGraph stats emitted, stderr empty, and no error/critical/assert.
 
 ---
 
 ## Review Checkpoints
 
-- [ ] Before implementation, run one GPT-5.3-Codex-Spark review of this plan. Fix any Critical/Important plan issues before coding.
-- [ ] After implementation and validation, run one GPT-5.3-Codex-Spark code review. Fix any Critical/Important findings before committing.
+- [x] Before implementation, run one GPT-5.3-Codex-Spark review of this plan. Fix any Critical/Important plan issues before coding.
+- [x] After implementation and validation, run one GPT-5.3-Codex-Spark code review. Fix any Critical/Important findings before committing.
