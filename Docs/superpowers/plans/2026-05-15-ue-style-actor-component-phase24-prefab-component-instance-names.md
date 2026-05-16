@@ -41,7 +41,7 @@
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ResourceInstantiationValidation\main.cpp`
 
-- [ ] **Step 1: Add prefab serialization test for actor component names**
+- [x] **Step 1: Add prefab serialization test for actor component names**
 
 Add a test near `Test_PrefabSerializesActorComponentPayloads` that creates a `SceneEntity`, adds a `PrefabPayloadComponent`, sets its name to `PrimaryPayload`, creates a prefab, and asserts:
 
@@ -49,7 +49,7 @@ Add a test near `Test_PrefabSerializesActorComponentPayloads` that creates a `Sc
 TEST_ASSERT_EQ(std::string("PrimaryPayload"), data->actorComponentData[0].name);
 ```
 
-- [ ] **Step 2: Add prefab instantiation test for actor component names**
+- [x] **Step 2: Add prefab instantiation test for actor component names**
 
 Add a test near `Test_PrefabInstantiatesActorComponentPayloads` using:
 
@@ -61,7 +61,7 @@ data.actorComponentData.push_back({"PrefabPayloadComponent", "ammo=12", "Primary
 
 Register `PrefabPayloadComponent`, instantiate, and assert the live component name is `PrimaryPayload`.
 
-- [ ] **Step 3: Add named duplicate payload restore test**
+- [x] **Step 3: Add named duplicate payload restore test**
 
 Add a test near `Test_PrefabInstanceRevertAllRestoresActorComponentPayload` with two same-class actor component records:
 
@@ -72,7 +72,7 @@ data.actorComponentData.push_back({"PrefabPayloadComponent", "slot=secondary", "
 
 After instantiation, temporarily swap the live component names and payloads, call `RevertAll()`, and assert the payloads were restored to the components matching the prefab names, not merely by class order.
 
-- [ ] **Step 4: Add uniquified runtime name binding test**
+- [x] **Step 4: Add uniquified runtime name binding test**
 
 Add a test with a registered actor class that creates an existing `PrefabPayloadComponent` named `PrimaryPayload` in its constructor. Instantiate prefab data whose actor class is that class and whose prefab component record also requests `PrimaryPayload`.
 
@@ -82,15 +82,15 @@ Assert:
 - The prefab-created component is uniquified to `PrimaryPayload_1`.
 - `PrefabInstance::RevertAll()` restores the prefab-created component payload through the binding instead of looking only for the original prefab name.
 
-- [ ] **Step 5: Document class-only `RevertProperty` limitation in tests**
+- [x] **Step 5: Document class-only `RevertProperty` limitation in tests**
 
 Add a focused assertion or test comment near the named duplicate tests that this phase intentionally keeps `RevertProperty(componentType, "serializedData")` class-only. Named single-property override targets are a later phase.
 
-- [ ] **Step 6: Register the new tests**
+- [x] **Step 6: Register the new tests**
 
 Register the new tests in `main()` close to the related prefab serialization/instantiation/revert tests.
 
-- [ ] **Step 7: Build and confirm RED**
+- [x] **Step 7: Build and confirm RED**
 
 Run:
 
@@ -108,7 +108,7 @@ Expected before implementation: the target fails to compile because `PrefabActor
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Include\Scene\Prefab.h`
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\Prefab.cpp`
 
-- [ ] **Step 1: Extend `PrefabActorComponentData`**
+- [x] **Step 1: Extend `PrefabActorComponentData`**
 
 Append this field after `serializedData`:
 
@@ -118,7 +118,7 @@ std::string name;
 
 Do not insert it before `serializedData`; existing two-field aggregate initializers must keep working.
 
-- [ ] **Step 2: Capture actor component names**
+- [x] **Step 2: Capture actor component names**
 
 In `CapturePrefabEntityComponents(...)`, change the actor component push to store:
 
@@ -126,7 +126,7 @@ In `CapturePrefabEntityComponents(...)`, change the actor component push to stor
 {className, actorComponent->SerializePrefabData(), actorComponent->GetName()}
 ```
 
-- [ ] **Step 3: Restore actor component names on instantiate**
+- [x] **Step 3: Restore actor component names on instantiate**
 
 In `Prefab::CreateComponents(...)`, before `component->DeserializePrefabData(...)`, set the requested name when non-empty:
 
@@ -139,7 +139,7 @@ if (!componentData.name.empty())
 
 Keep `Actor::AddOwnedComponent(...)` responsible for final owner-unique collision handling.
 
-- [ ] **Step 4: Record final runtime component name bindings**
+- [x] **Step 4: Record final runtime component name bindings**
 
 Add a small transient binding structure to `PrefabInstance` and an internal setter used by `Prefab::InstantiateInternal(...)` after the root `PrefabInstance` component is created.
 
@@ -152,11 +152,11 @@ Each binding should include:
 
 Update `Prefab::CreateComponents(...)` to optionally output bindings for actor components it creates.
 
-- [ ] **Step 5: Account for name memory**
+- [x] **Step 5: Account for name memory**
 
 In `Prefab::GetMemoryUsage()`, include `component.name.capacity()` for every actor component data entry.
 
-- [ ] **Step 6: Match actor component payloads by binding or name when available**
+- [x] **Step 6: Match actor component payloads by binding or name when available**
 
 Add helpers in `Prefab.cpp` to find pure actor components by `(className, name)`. Update `ApplyPrefabEntityComponentPayloads(...)` to:
 
@@ -167,7 +167,7 @@ Add helpers in `Prefab.cpp` to find pure actor components by `(className, name)`
 
 Keep `ApplyPrefabEntityComponentPayload(...)` class-only for this phase.
 
-- [ ] **Step 7: Build and run focused validation**
+- [x] **Step 7: Build and run focused validation**
 
 Run:
 
@@ -185,7 +185,7 @@ Expected result: all `ResourceInstantiationValidation` tests pass, including the
 **Files:**
 - No additional source files.
 
-- [ ] **Step 1: Run whitespace check**
+- [x] **Step 1: Run whitespace check**
 
 ```powershell
 git diff --check
@@ -193,7 +193,7 @@ git diff --check
 
 Expected result: exit code 0. Line-ending warnings are acceptable if no whitespace-error lines are reported.
 
-- [ ] **Step 2: Build all validation targets and ModelViewer sequentially**
+- [x] **Step 2: Build all validation targets and ModelViewer sequentially**
 
 ```powershell
 foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','ResourceInstantiationValidation','RenderSceneValidation','SystemIntegrationTest','MaterialSystemValidation','RenderPassBindingValidation','ModelViewer')) {
@@ -205,7 +205,7 @@ foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','R
 
 Expected result: every target builds.
 
-- [ ] **Step 3: Run validation executables**
+- [x] **Step 3: Run validation executables**
 
 ```powershell
 $tests = @(
@@ -226,7 +226,7 @@ foreach ($test in $tests) {
 
 Expected result: every executable returns exit code 0 and reports all tests passing.
 
-- [ ] **Step 4: Run ModelViewer smoke**
+- [x] **Step 4: Run ModelViewer smoke**
 
 ```powershell
 $stdout = "build_codex\phase24_modelviewer_stdout.log"
@@ -243,19 +243,19 @@ Get-Content -Path $stderr
 
 Expected result: stdout includes model loaded, model instantiated, scene entity ready, GPU mesh upload, and render graph stats; stderr is empty.
 
-- [ ] **Step 5: Request exactly one Dalton code review**
+- [x] **Step 5: Request exactly one Dalton code review**
 
 Ask Dalton to review only Critical and Important issues for this phase.
 
-- [ ] **Step 6: Fix any Critical or Important review findings**
+- [x] **Step 6: Fix any Critical or Important review findings**
 
 If Dalton reports no Critical or Important findings, record that no fix was required and continue.
 
-- [ ] **Step 7: Update every completed checkbox in this plan**
+- [x] **Step 7: Update every completed checkbox in this plan**
 
 Mark every completed `- [ ]` as `- [x]` before committing.
 
-- [ ] **Step 8: Commit the implementation**
+- [x] **Step 8: Commit the implementation**
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-15-ue-style-actor-component-phase24-prefab-component-instance-names.md Scene\Include\Scene\Prefab.h Scene\Private\Prefab.cpp Tests\ResourceInstantiationValidation\main.cpp

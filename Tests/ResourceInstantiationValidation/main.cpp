@@ -80,6 +80,20 @@ namespace
         std::string payloadObservedOnInitialize;
     };
 
+    class PrefabNameCollisionActor : public SceneEntity
+    {
+    public:
+        PrefabNameCollisionActor()
+            : SceneEntity("PrefabNameCollisionActorDefault")
+        {
+            auto* component = AddComponent<PrefabPayloadComponent>();
+            component->SetName("PrimaryPayload");
+            component->payload = "constructor";
+        }
+
+        const char* GetClassName() const override { return "PrefabNameCollisionActor"; }
+    };
+
     class PrefabLegacyPayloadComponent : public Component
     {
     public:
@@ -219,6 +233,20 @@ namespace
         resource->SetName("TestMaterial");
         resource->MarkLoaded();
         return ResourceHandle<MaterialResource>(resource);
+    }
+
+    PrefabPayloadComponent* FindPrefabPayloadComponentByName(Actor& actor, const std::string& name)
+    {
+        for (const auto& component : actor.GetActorComponents())
+        {
+            auto* payloadComponent = dynamic_cast<PrefabPayloadComponent*>(component.get());
+            if (payloadComponent && payloadComponent->GetName() == name)
+            {
+                return payloadComponent;
+            }
+        }
+
+        return nullptr;
     }
 
     void FillIndexedModel(ModelResource& model)
@@ -503,6 +531,32 @@ namespace
         return true;
     }
 
+    bool Test_PrefabSerializesActorComponentNames()
+    {
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        ActorSpawnParams params;
+        params.name = "NamedPayloadSource";
+        SceneEntity* entity = sceneManager.SpawnActor(params);
+        TEST_ASSERT_NOT_NULL(entity);
+
+        auto* component = static_cast<Actor*>(entity)->AddComponent<PrefabPayloadComponent>();
+        TEST_ASSERT_NOT_NULL(component);
+        component->SetName("PrimaryPayload");
+        component->payload = "health=75;tag=elite";
+
+        auto prefab = Prefab::CreateFromEntity(entity);
+        TEST_ASSERT_NOT_NULL(prefab);
+        const PrefabEntityData* data = prefab->GetRootData();
+        TEST_ASSERT_NOT_NULL(data);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), data->actorComponentData.size());
+        TEST_ASSERT_EQ(std::string("PrimaryPayload"), data->actorComponentData[0].name);
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_PrefabSerializesLegacyComponentPayloads()
     {
         SceneManager sceneManager;
@@ -782,6 +836,33 @@ namespace
         return true;
     }
 
+    bool Test_PrefabInstantiatesActorComponentNames()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
+            "PrefabPayloadComponent");
+
+        PrefabEntityData data;
+        data.name = "NamedComponentPrefabRoot";
+        data.actorComponentData.push_back({"PrefabPayloadComponent", "ammo=12", "PrimaryPayload"});
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(instance);
+
+        auto* component = static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>();
+        TEST_ASSERT_NOT_NULL(component);
+        TEST_ASSERT_EQ(std::string("PrimaryPayload"), component->GetName());
+        TEST_ASSERT_EQ(std::string("ammo=12"), component->payload);
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_PrefabInstantiatesRegisteredLegacyComponentPayloads()
     {
         ComponentFactoryClassGuard componentFactoryGuard;
@@ -923,6 +1004,100 @@ namespace
         TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertAllRestoresNamedDuplicateActorComponentPayloads()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
+            "PrefabPayloadComponent");
+
+        PrefabEntityData data;
+        data.name = "NamedDuplicatePayloadRoot";
+        data.actorComponentData.push_back({"PrefabPayloadComponent", "slot=primary", "PrimaryPayload"});
+        data.actorComponentData.push_back({"PrefabPayloadComponent", "slot=secondary", "SecondaryPayload"});
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(instance);
+        auto* prefabInstance = instance->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        auto* primary = FindPrefabPayloadComponentByName(*static_cast<Actor*>(instance),
+                                                         "PrimaryPayload");
+        auto* secondary = FindPrefabPayloadComponentByName(*static_cast<Actor*>(instance),
+                                                           "SecondaryPayload");
+        TEST_ASSERT_NOT_NULL(primary);
+        TEST_ASSERT_NOT_NULL(secondary);
+
+        primary->SetName("TemporaryPayloadName");
+        secondary->SetName("PrimaryPayload");
+        primary->SetName("SecondaryPayload");
+        primary->payload = "dirty-secondary";
+        secondary->payload = "dirty-primary";
+        // Named single-property targets are intentionally deferred; this phase
+        // only guarantees name-aware full payload restoration through RevertAll.
+        prefabInstance->AddOverride({"PrefabPayloadComponent", "serializedData", std::string("dirty")});
+
+        prefabInstance->RevertAll();
+
+        TEST_ASSERT_EQ(std::string("slot=secondary"), primary->payload);
+        TEST_ASSERT_EQ(std::string("slot=primary"), secondary->payload);
+        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertAllUsesRuntimeNameBindingAfterUniquify()
+    {
+        ActorFactory::ClearAll();
+        ActorFactory::Register<PrefabNameCollisionActor>("PrefabNameCollisionActor");
+
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
+            "PrefabPayloadComponent");
+
+        PrefabEntityData data;
+        data.name = "RuntimeBindingPayloadRoot";
+        data.actorClassName = "PrefabNameCollisionActor";
+        data.actorComponentData.push_back({"PrefabPayloadComponent", "slot=prefab", "PrimaryPayload"});
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(instance);
+        auto* prefabInstance = instance->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        auto* actor = static_cast<Actor*>(instance);
+        auto* constructorComponent = FindPrefabPayloadComponentByName(*actor, "PrimaryPayload");
+        auto* prefabComponent = FindPrefabPayloadComponentByName(*actor, "PrimaryPayload_1");
+        TEST_ASSERT_NOT_NULL(constructorComponent);
+        TEST_ASSERT_NOT_NULL(prefabComponent);
+        TEST_ASSERT_EQ(std::string("constructor"), constructorComponent->payload);
+        TEST_ASSERT_EQ(std::string("slot=prefab"), prefabComponent->payload);
+
+        constructorComponent->payload = "constructor-dirty";
+        prefabComponent->payload = "prefab-dirty";
+        prefabInstance->AddOverride({"PrefabPayloadComponent", "serializedData", std::string("prefab-dirty")});
+
+        prefabInstance->RevertAll();
+
+        TEST_ASSERT_EQ(std::string("constructor-dirty"), constructorComponent->payload);
+        TEST_ASSERT_EQ(std::string("slot=prefab"), prefabComponent->payload);
+        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+
+        sceneManager.Shutdown();
+        ActorFactory::ClearAll();
         return true;
     }
 
@@ -1501,6 +1676,8 @@ int main()
                   Test_PrefabSerializesActorComponentClassNames);
     suite.AddTest("PrefabSerializesActorComponentPayloads",
                   Test_PrefabSerializesActorComponentPayloads);
+    suite.AddTest("PrefabSerializesActorComponentNames",
+                  Test_PrefabSerializesActorComponentNames);
     suite.AddTest("PrefabSerializesLegacyComponentPayloads",
                   Test_PrefabSerializesLegacyComponentPayloads);
     suite.AddTest("PrefabSerializesActorClassNames",
@@ -1521,6 +1698,8 @@ int main()
                   Test_PrefabInstantiatesRegisteredActorComponentClasses);
     suite.AddTest("PrefabInstantiatesActorComponentPayloads",
                   Test_PrefabInstantiatesActorComponentPayloads);
+    suite.AddTest("PrefabInstantiatesActorComponentNames",
+                  Test_PrefabInstantiatesActorComponentNames);
     suite.AddTest("PrefabInstantiatesRegisteredLegacyComponentPayloads",
                   Test_PrefabInstantiatesRegisteredLegacyComponentPayloads);
     suite.AddTest("PrefabInstantiateAsChildBuildsSpawnedHierarchy",
@@ -1529,6 +1708,10 @@ int main()
                   Test_PrefabInstanceRevertAllRestoresRootEntityState);
     suite.AddTest("PrefabInstanceRevertAllRestoresActorComponentPayload",
                   Test_PrefabInstanceRevertAllRestoresActorComponentPayload);
+    suite.AddTest("PrefabInstanceRevertAllRestoresNamedDuplicateActorComponentPayloads",
+                  Test_PrefabInstanceRevertAllRestoresNamedDuplicateActorComponentPayloads);
+    suite.AddTest("PrefabInstanceRevertAllUsesRuntimeNameBindingAfterUniquify",
+                  Test_PrefabInstanceRevertAllUsesRuntimeNameBindingAfterUniquify);
     suite.AddTest("PrefabInstanceRevertAllRestoresLegacyComponentPayload",
                   Test_PrefabInstanceRevertAllRestoresLegacyComponentPayload);
     suite.AddTest("PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty",

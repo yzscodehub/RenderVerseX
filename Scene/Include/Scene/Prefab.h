@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -52,6 +53,18 @@ struct PrefabActorComponentData
 {
     std::string className;
     std::string serializedData;
+    std::string name;
+};
+
+/**
+ * @brief Transient mapping from prefab component identity to runtime component name.
+ */
+struct PrefabActorComponentNameBinding
+{
+    std::string className;
+    std::string prefabName;
+    size_t ordinal = 0;
+    std::string instanceName;
 };
 
 /**
@@ -185,7 +198,9 @@ private:
     SceneEntity* InstantiateInternal(SceneManager& sceneManager, const Vec3& position, 
                                       const Quat& rotation, SceneEntity* parent) const;
     void SerializeEntity(const SceneEntity* entity, int32_t parentIndex);
-    bool CreateComponents(SceneEntity* entity, const PrefabEntityData& data) const;
+    bool CreateComponents(SceneEntity* entity,
+                          const PrefabEntityData& data,
+                          std::vector<PrefabActorComponentNameBinding>* nameBindings = nullptr) const;
 
     std::string m_name;
     std::string m_sourcePath;
@@ -257,7 +272,15 @@ public:
     void Unpack();
 
 private:
+    friend class Prefab;
+
+    void SetComponentNameBindings(std::vector<PrefabActorComponentNameBinding> bindings)
+    {
+        m_componentNameBindings = std::move(bindings);
+    }
+
     Prefab::Ptr m_prefab;
+    std::vector<PrefabActorComponentNameBinding> m_componentNameBindings;
     std::vector<PropertyOverride> m_overrides;
 };
 
