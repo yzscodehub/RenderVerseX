@@ -4,10 +4,12 @@
  */
 
 #include "World/World.h"
-#include "World/SpatialSubsystem.h"
-#include "Scene/SceneManager.h"
-#include "Runtime/Camera/Camera.h"
+
 #include "Core/Log.h"
+#include "Runtime/Camera/Camera.h"
+#include "Scene/ActorFactory.h"
+#include "Scene/SceneManager.h"
+#include "World/SpatialSubsystem.h"
 
 #include <algorithm>
 
@@ -130,6 +132,58 @@ SceneEntity* World::SpawnActor(const ActorSpawnParams& params)
         return nullptr;
 
     return m_sceneManager->SpawnActor(params);
+}
+
+Actor* World::SpawnActorByClassName(const std::string& className,
+                                    const ActorSpawnParams& params)
+{
+    if (!m_initialized || className.empty())
+        return nullptr;
+
+    auto actor = ActorFactory::Create(className);
+    if (!actor)
+        return nullptr;
+
+    if (auto* sceneEntity = dynamic_cast<SceneEntity*>(actor.get()))
+    {
+        if (!m_sceneManager)
+            return nullptr;
+
+        if (params.parent && m_sceneManager->GetEntity(params.parent->GetHandle()) != params.parent)
+            return nullptr;
+
+        actor.release();
+        SceneEntity::Ptr entity(sceneEntity);
+        sceneEntity->SetName(params.name);
+
+        SceneEntity* spawned = m_sceneManager->AddEntity(std::move(entity));
+        if (!spawned)
+            return nullptr;
+
+        if (params.parent)
+        {
+            params.parent->AddChild(spawned);
+        }
+
+        spawned->SetPosition(params.localPosition);
+        spawned->SetRotation(params.localRotation);
+        spawned->SetScale(params.localScale);
+        return static_cast<Actor*>(spawned);
+    }
+
+    if (params.parent)
+        return nullptr;
+
+    actor->SetName(params.name);
+    actor->SetAutoRegisterComponents(true);
+    actor->RegisterAllComponents();
+    actor->SetPosition(params.localPosition);
+    actor->SetRotation(params.localRotation);
+    actor->SetScale(params.localScale);
+
+    Actor* spawned = actor.get();
+    m_actors[spawned->GetHandle()] = std::move(actor);
+    return spawned;
 }
 
 bool World::DestroyActor(Actor* actor)

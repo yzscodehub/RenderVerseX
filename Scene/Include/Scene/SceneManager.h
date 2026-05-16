@@ -127,6 +127,10 @@ namespace RVX
         /// Spawn a scene-owned actor using UE-style parameters.
         SceneEntity* SpawnActor(const ActorSpawnParams& params = {});
 
+        /// Spawn a scene-owned actor by registered ActorFactory class name.
+        SceneEntity* SpawnActorByClassName(const std::string& className,
+                                           const ActorSpawnParams& params = {});
+
         /// Spawn a typed scene-owned actor.
         template<typename T = SceneEntity>
         T* SpawnActor(const ActorSpawnParams& params = {})

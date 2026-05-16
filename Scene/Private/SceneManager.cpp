@@ -1,7 +1,9 @@
 #include "Scene/SceneManager.h"
+
+#include "Core/Log.h"
+#include "Scene/ActorFactory.h"
 #include "Scene/Node.h"
 #include "Scene/PrimitiveComponent.h"
-#include "Core/Log.h"
 
 #include <algorithm>
 #include <unordered_set>
@@ -141,6 +143,42 @@ SceneEntity::Handle SceneManager::CreateEntity(const std::string& name)
 SceneEntity* SceneManager::SpawnActor(const ActorSpawnParams& params)
 {
     return SpawnActor<SceneEntity>(params);
+}
+
+SceneEntity* SceneManager::SpawnActorByClassName(const std::string& className,
+                                                 const ActorSpawnParams& params)
+{
+    if (className.empty())
+        return nullptr;
+
+    if (params.parent && GetEntity(params.parent->GetHandle()) != params.parent)
+        return nullptr;
+
+    auto actor = ActorFactory::Create(className);
+    if (!actor)
+        return nullptr;
+
+    auto* sceneActor = dynamic_cast<SceneEntity*>(actor.get());
+    if (!sceneActor)
+        return nullptr;
+
+    actor.release();
+    SceneEntity::Ptr entity(sceneActor);
+    sceneActor->SetName(params.name);
+
+    SceneEntity* spawned = AddEntity(std::move(entity));
+    if (!spawned)
+        return nullptr;
+
+    if (params.parent)
+    {
+        params.parent->AddChild(spawned);
+    }
+
+    spawned->SetPosition(params.localPosition);
+    spawned->SetRotation(params.localRotation);
+    spawned->SetScale(params.localScale);
+    return spawned;
 }
 
 SceneEntity* SceneManager::AddEntity(SceneEntity::Ptr entity)

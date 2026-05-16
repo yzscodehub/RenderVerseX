@@ -280,6 +280,67 @@ namespace
         const char* GetClassName() const override { return "WorldManagedPureActor"; }
     };
 
+    struct FactoryLifecycleCounters
+    {
+        static inline int registered = 0;
+        static inline int initialized = 0;
+        static inline int beganPlay = 0;
+        static inline int ticked = 0;
+        static inline int unregistered = 0;
+
+        static void Reset()
+        {
+            registered = 0;
+            initialized = 0;
+            beganPlay = 0;
+            ticked = 0;
+            unregistered = 0;
+        }
+    };
+
+    class FactoryLifecycleComponent : public RVX::ActorComponent
+    {
+    public:
+        FactoryLifecycleComponent()
+        {
+            SetCanEverTick(true);
+            SetTickEnabled(true);
+        }
+
+        const char* GetClassName() const override { return "FactoryLifecycleComponent"; }
+        void OnRegister() override { ++FactoryLifecycleCounters::registered; }
+        void InitializeComponent() override { ++FactoryLifecycleCounters::initialized; }
+        void BeginPlay() override { ++FactoryLifecycleCounters::beganPlay; }
+        void TickComponent(float) override { ++FactoryLifecycleCounters::ticked; }
+        void OnUnregister() override { ++FactoryLifecycleCounters::unregistered; }
+    };
+
+    class FactorySpawnSceneActor : public RVX::SceneEntity
+    {
+    public:
+        FactorySpawnSceneActor()
+            : SceneEntity("FactorySpawnSceneActorDefault")
+        {
+            AddComponent<FactoryLifecycleComponent>();
+        }
+
+        const char* GetClassName() const override { return "FactorySpawnSceneActor"; }
+    };
+
+    class FactorySpawnPureActor : public RVX::Actor
+    {
+    public:
+        FactorySpawnPureActor()
+            : Actor("FactorySpawnPureActorDefault")
+        {
+            auto* root = AddComponent<RVX::SceneComponent>();
+            SetRootComponent(root);
+            AddComponent<FactoryLifecycleComponent>();
+        }
+
+        const char* GetClassName() const override { return "FactorySpawnPureActor"; }
+    };
+
     struct WorldActorLifecycleCounters
     {
         int registered = 0;
@@ -1518,6 +1579,88 @@ namespace
         return true;
     }
 
+    bool Test_SceneManagerSpawnActorByClassNameCreatesSceneOwnedActor()
+    {
+        RVX::ActorFactory::ClearAll();
+        RVX::ActorFactory::Register("FactorySpawnSceneActor", []() {
+            return std::make_unique<FactorySpawnSceneActor>();
+        });
+        FactoryLifecycleCounters::Reset();
+
+        RVX::SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        RVX::ActorSpawnParams parentParams;
+        parentParams.name = "FactoryParent";
+        RVX::SceneEntity* parent = sceneManager.SpawnActor(parentParams);
+        TEST_ASSERT_NOT_NULL(parent);
+
+        RVX::ActorSpawnParams params;
+        params.name = "FactorySceneSpawn";
+        params.localPosition = RVX::Vec3(3.0f, 4.0f, 5.0f);
+        params.localRotation = RVX::Quat(0.9238795f, 0.0f, 0.3826834f, 0.0f);
+        params.localScale = RVX::Vec3(2.0f, 2.0f, 2.0f);
+        params.parent = parent;
+
+        RVX::SceneEntity* spawned = sceneManager.SpawnActorByClassName("FactorySpawnSceneActor", params);
+
+        TEST_ASSERT_NOT_NULL(spawned);
+        TEST_ASSERT_NOT_NULL(dynamic_cast<FactorySpawnSceneActor*>(spawned));
+        TEST_ASSERT_EQ(std::string("FactorySceneSpawn"), spawned->GetName());
+        TEST_ASSERT_EQ(parent, spawned->GetParent());
+        TEST_ASSERT_EQ(RVX::Vec3(3.0f, 4.0f, 5.0f), spawned->GetPosition());
+        TEST_ASSERT_EQ(RVX::Quat(0.9238795f, 0.0f, 0.3826834f, 0.0f), spawned->GetRotation());
+        TEST_ASSERT_EQ(RVX::Vec3(2.0f, 2.0f, 2.0f), spawned->GetScale());
+        TEST_ASSERT_EQ(spawned, sceneManager.GetEntity(spawned->GetHandle()));
+        TEST_ASSERT_EQ(static_cast<size_t>(2), sceneManager.GetEntityCount());
+        TEST_ASSERT_EQ(1, FactoryLifecycleCounters::registered);
+        TEST_ASSERT_EQ(1, FactoryLifecycleCounters::initialized);
+
+        sceneManager.Update(0.016f);
+        TEST_ASSERT_EQ(1, FactoryLifecycleCounters::beganPlay);
+        TEST_ASSERT_EQ(1, FactoryLifecycleCounters::ticked);
+
+        sceneManager.Shutdown();
+        TEST_ASSERT_EQ(1, FactoryLifecycleCounters::unregistered);
+        RVX::ActorFactory::ClearAll();
+        return true;
+    }
+
+    bool Test_SceneManagerSpawnActorByClassNameRejectsInvalidClasses()
+    {
+        RVX::ActorFactory::ClearAll();
+        RVX::ActorFactory::Register("FactorySpawnPureActor", []() {
+            return std::make_unique<FactorySpawnPureActor>();
+        });
+        RVX::ActorFactory::Register("FactorySpawnSceneActor", []() {
+            return std::make_unique<FactorySpawnSceneActor>();
+        });
+
+        RVX::SceneManager sceneManager;
+        sceneManager.Initialize();
+        RVX::SceneManager foreignSceneManager;
+        foreignSceneManager.Initialize();
+
+        RVX::ActorSpawnParams foreignParentParams;
+        foreignParentParams.name = "ForeignParent";
+        RVX::SceneEntity* foreignParent = foreignSceneManager.SpawnActor(foreignParentParams);
+        TEST_ASSERT_NOT_NULL(foreignParent);
+
+        TEST_ASSERT_EQ(nullptr, sceneManager.SpawnActorByClassName("MissingActor", {}));
+        TEST_ASSERT_EQ(nullptr, sceneManager.SpawnActorByClassName("FactorySpawnPureActor", {}));
+
+        RVX::ActorSpawnParams childParams;
+        childParams.name = "RejectedChild";
+        childParams.parent = foreignParent;
+        TEST_ASSERT_EQ(nullptr, sceneManager.SpawnActorByClassName("FactorySpawnSceneActor", childParams));
+        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+
+        foreignSceneManager.Shutdown();
+        sceneManager.Shutdown();
+        RVX::ActorFactory::ClearAll();
+        return true;
+    }
+
     bool Test_SceneManagerAddHierarchyIgnoresNullRoot()
     {
         RVX::SceneManager sceneManager;
@@ -1702,6 +1845,79 @@ namespace
         TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetSceneManager()->GetEntityCount());
 
         world.Shutdown();
+        return true;
+    }
+
+    bool Test_WorldSpawnActorByClassNameRoutesSceneAndPureActors()
+    {
+        RVX::ActorFactory::ClearAll();
+        RVX::ActorFactory::Register("FactorySpawnSceneActor", []() {
+            return std::make_unique<FactorySpawnSceneActor>();
+        });
+        RVX::ActorFactory::Register("FactorySpawnPureActor", []() {
+            return std::make_unique<FactorySpawnPureActor>();
+        });
+
+        RVX::World world;
+        world.Initialize();
+        FactoryLifecycleCounters::Reset();
+
+        RVX::ActorSpawnParams sceneParams;
+        sceneParams.name = "WorldSceneFactoryActor";
+        sceneParams.localRotation = RVX::Quat(0.9807853f, 0.1950903f, 0.0f, 0.0f);
+        RVX::Actor* sceneActor = world.SpawnActorByClassName("FactorySpawnSceneActor", sceneParams);
+        TEST_ASSERT_NOT_NULL(sceneActor);
+        TEST_ASSERT_NOT_NULL(dynamic_cast<FactorySpawnSceneActor*>(sceneActor));
+        TEST_ASSERT_EQ(sceneActor, world.GetActor(sceneActor->GetHandle()));
+        auto* sceneEntity = dynamic_cast<RVX::SceneEntity*>(sceneActor);
+        TEST_ASSERT_NOT_NULL(sceneEntity);
+        TEST_ASSERT_EQ(sceneEntity, world.GetSceneManager()->GetEntity(sceneEntity->GetHandle()));
+        TEST_ASSERT_EQ(RVX::Quat(0.9807853f, 0.1950903f, 0.0f, 0.0f), sceneEntity->GetRotation());
+        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetSceneManager()->GetEntityCount());
+
+        RVX::ActorSpawnParams pureParams;
+        pureParams.name = "WorldPureFactoryActor";
+        pureParams.localPosition = RVX::Vec3(7.0f, 8.0f, 9.0f);
+        pureParams.localRotation = RVX::Quat(0.9659258f, 0.0f, 0.2588190f, 0.0f);
+        RVX::Actor* pureActor = world.SpawnActorByClassName("FactorySpawnPureActor", pureParams);
+        TEST_ASSERT_NOT_NULL(pureActor);
+        TEST_ASSERT_NOT_NULL(dynamic_cast<FactorySpawnPureActor*>(pureActor));
+        TEST_ASSERT_EQ(std::string("WorldPureFactoryActor"), pureActor->GetName());
+        TEST_ASSERT_EQ(RVX::Vec3(7.0f, 8.0f, 9.0f), pureActor->GetWorldPosition());
+        TEST_ASSERT_EQ(RVX::Quat(0.9659258f, 0.0f, 0.2588190f, 0.0f), pureActor->GetWorldRotation());
+        TEST_ASSERT_EQ(pureActor, world.GetActor(pureActor->GetHandle()));
+        TEST_ASSERT_EQ(nullptr, world.GetSceneManager()->GetEntity(pureActor->GetHandle()));
+        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetActorCount());
+        TEST_ASSERT_EQ(2, FactoryLifecycleCounters::registered);
+        TEST_ASSERT_EQ(2, FactoryLifecycleCounters::initialized);
+
+        world.Tick(0.016f);
+        TEST_ASSERT_EQ(2, FactoryLifecycleCounters::beganPlay);
+        TEST_ASSERT_EQ(2, FactoryLifecycleCounters::ticked);
+
+        RVX::ActorSpawnParams parentedPureParams;
+        parentedPureParams.name = "RejectedPureFactoryActor";
+        parentedPureParams.parent = sceneEntity;
+        TEST_ASSERT_EQ(nullptr, world.SpawnActorByClassName("FactorySpawnPureActor", parentedPureParams));
+
+        RVX::SceneManager foreignSceneManager;
+        foreignSceneManager.Initialize();
+        RVX::ActorSpawnParams foreignParentParams;
+        foreignParentParams.name = "ForeignWorldParent";
+        RVX::SceneEntity* foreignParent = foreignSceneManager.SpawnActor(foreignParentParams);
+        TEST_ASSERT_NOT_NULL(foreignParent);
+
+        RVX::ActorSpawnParams foreignChildParams;
+        foreignChildParams.name = "RejectedWorldSceneFactoryActor";
+        foreignChildParams.parent = foreignParent;
+        TEST_ASSERT_EQ(nullptr, world.SpawnActorByClassName("FactorySpawnSceneActor", foreignChildParams));
+
+        TEST_ASSERT_EQ(nullptr, world.SpawnActorByClassName("MissingActor", {}));
+
+        foreignSceneManager.Shutdown();
+        world.Shutdown();
+        TEST_ASSERT_EQ(2, FactoryLifecycleCounters::unregistered);
+        RVX::ActorFactory::ClearAll();
         return true;
     }
 
@@ -2124,6 +2340,10 @@ int main()
                   Test_SceneManagerSpawnActorAttachesParent);
     suite.AddTest("SceneManagerSpawnActorRejectsForeignParent",
                   Test_SceneManagerSpawnActorRejectsForeignParent);
+    suite.AddTest("SceneManagerSpawnActorByClassNameCreatesSceneOwnedActor",
+                  Test_SceneManagerSpawnActorByClassNameCreatesSceneOwnedActor);
+    suite.AddTest("SceneManagerSpawnActorByClassNameRejectsInvalidClasses",
+                  Test_SceneManagerSpawnActorByClassNameRejectsInvalidClasses);
     suite.AddTest("SceneManagerAddHierarchyIgnoresNullRoot",
                   Test_SceneManagerAddHierarchyIgnoresNullRoot);
     suite.AddTest("SceneManagerAddHierarchySpawnsNodeTree",
@@ -2138,6 +2358,8 @@ int main()
                   Test_SceneManagerDestroyActorRejectsDuplicatePendingDestroy);
     suite.AddTest("WorldSpawnActorDelegatesToSceneManager",
                   Test_WorldSpawnActorDelegatesToSceneManager);
+    suite.AddTest("WorldSpawnActorByClassNameRoutesSceneAndPureActors",
+                  Test_WorldSpawnActorByClassNameRoutesSceneAndPureActors);
     suite.AddTest("WorldSpawnActorRejectsWhenUninitialized",
                   Test_WorldSpawnActorRejectsWhenUninitialized);
     suite.AddTest("DestroyActorRejectsForeignOrPureActor",

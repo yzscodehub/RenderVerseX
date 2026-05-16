@@ -1,6 +1,6 @@
 # UE-Style Actor Component Phase 12 Class-Name Spawn Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Connect `ActorFactory` to `SceneManager` and `World` so registered actor classes can be spawned by class name through the same ownership, transform, parent, and lifecycle paths as typed `SpawnActor<T>()`.
 
@@ -44,7 +44,7 @@
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ActorComponentValidation\main.cpp`
 
-- [ ] Add these default-constructible factory test actors near the existing `SpawnableSceneActor` and `WorldManagedPureActor` test classes:
+- [x] Add these default-constructible factory test actors near the existing `SpawnableSceneActor` and `WorldManagedPureActor` test classes:
 
 ```cpp
 struct FactoryLifecycleCounters
@@ -109,7 +109,7 @@ public:
 };
 ```
 
-- [ ] Add `Test_SceneManagerSpawnActorByClassNameCreatesSceneOwnedActor` after the existing `SceneManagerSpawnActorRejectsForeignParent` test:
+- [x] Add `Test_SceneManagerSpawnActorByClassNameCreatesSceneOwnedActor` after the existing `SceneManagerSpawnActorRejectsForeignParent` test:
 
 ```cpp
 bool Test_SceneManagerSpawnActorByClassNameCreatesSceneOwnedActor()
@@ -154,7 +154,7 @@ bool Test_SceneManagerSpawnActorByClassNameCreatesSceneOwnedActor()
 }
 ```
 
-- [ ] Add `Test_SceneManagerSpawnActorByClassNameRejectsInvalidClasses` after the previous test:
+- [x] Add `Test_SceneManagerSpawnActorByClassNameRejectsInvalidClasses` after the previous test:
 
 ```cpp
 bool Test_SceneManagerSpawnActorByClassNameRejectsInvalidClasses()
@@ -177,13 +177,13 @@ bool Test_SceneManagerSpawnActorByClassNameRejectsInvalidClasses()
     RVX::SceneEntity* foreignParent = foreignSceneManager.SpawnActor(foreignParentParams);
     TEST_ASSERT_NOT_NULL(foreignParent);
 
-    TEST_ASSERT_NULL(sceneManager.SpawnActorByClassName("MissingActor", {}));
-    TEST_ASSERT_NULL(sceneManager.SpawnActorByClassName("FactorySpawnPureActor", {}));
+    TEST_ASSERT_EQ(nullptr, sceneManager.SpawnActorByClassName("MissingActor", {}));
+    TEST_ASSERT_EQ(nullptr, sceneManager.SpawnActorByClassName("FactorySpawnPureActor", {}));
 
     RVX::ActorSpawnParams childParams;
     childParams.name = "RejectedChild";
     childParams.parent = foreignParent;
-    TEST_ASSERT_NULL(sceneManager.SpawnActorByClassName("FactorySpawnSceneActor", childParams));
+    TEST_ASSERT_EQ(nullptr, sceneManager.SpawnActorByClassName("FactorySpawnSceneActor", childParams));
     TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
 
     foreignSceneManager.Shutdown();
@@ -193,7 +193,7 @@ bool Test_SceneManagerSpawnActorByClassNameRejectsInvalidClasses()
 }
 ```
 
-- [ ] Add `Test_WorldSpawnActorByClassNameRoutesSceneAndPureActors` near the existing world spawn tests:
+- [x] Add `Test_WorldSpawnActorByClassNameRoutesSceneAndPureActors` near the existing world spawn tests:
 
 ```cpp
 bool Test_WorldSpawnActorByClassNameRoutesSceneAndPureActors()
@@ -230,7 +230,7 @@ bool Test_WorldSpawnActorByClassNameRoutesSceneAndPureActors()
     TEST_ASSERT_EQ(std::string("WorldPureFactoryActor"), pureActor->GetName());
     TEST_ASSERT_EQ(RVX::Vec3(7.0f, 8.0f, 9.0f), pureActor->GetWorldPosition());
     TEST_ASSERT_EQ(pureActor, world.GetActor(pureActor->GetHandle()));
-    TEST_ASSERT_NULL(world.GetSceneManager()->GetEntity(pureActor->GetHandle()));
+    TEST_ASSERT_EQ(nullptr, world.GetSceneManager()->GetEntity(pureActor->GetHandle()));
     TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetActorCount());
     TEST_ASSERT_EQ(2, FactoryLifecycleCounters::registered);
     TEST_ASSERT_EQ(2, FactoryLifecycleCounters::initialized);
@@ -242,7 +242,7 @@ bool Test_WorldSpawnActorByClassNameRoutesSceneAndPureActors()
     RVX::ActorSpawnParams parentedPureParams;
     parentedPureParams.name = "RejectedPureFactoryActor";
     parentedPureParams.parent = sceneEntity;
-    TEST_ASSERT_NULL(world.SpawnActorByClassName("FactorySpawnPureActor", parentedPureParams));
+    TEST_ASSERT_EQ(nullptr, world.SpawnActorByClassName("FactorySpawnPureActor", parentedPureParams));
 
     RVX::SceneManager foreignSceneManager;
     foreignSceneManager.Initialize();
@@ -254,9 +254,9 @@ bool Test_WorldSpawnActorByClassNameRoutesSceneAndPureActors()
     RVX::ActorSpawnParams foreignChildParams;
     foreignChildParams.name = "RejectedWorldSceneFactoryActor";
     foreignChildParams.parent = foreignParent;
-    TEST_ASSERT_NULL(world.SpawnActorByClassName("FactorySpawnSceneActor", foreignChildParams));
+    TEST_ASSERT_EQ(nullptr, world.SpawnActorByClassName("FactorySpawnSceneActor", foreignChildParams));
 
-    TEST_ASSERT_NULL(world.SpawnActorByClassName("MissingActor", {}));
+    TEST_ASSERT_EQ(nullptr, world.SpawnActorByClassName("MissingActor", {}));
 
     foreignSceneManager.Shutdown();
     world.Shutdown();
@@ -266,7 +266,7 @@ bool Test_WorldSpawnActorByClassNameRoutesSceneAndPureActors()
 }
 ```
 
-- [ ] Register the three tests in `main()`:
+- [x] Register the three tests in `main()`:
 
 ```cpp
 suite.AddTest("SceneManagerSpawnActorByClassNameCreatesSceneOwnedActor",
@@ -277,7 +277,7 @@ suite.AddTest("WorldSpawnActorByClassNameRoutesSceneAndPureActors",
               Test_WorldSpawnActorByClassNameRoutesSceneAndPureActors);
 ```
 
-- [ ] Build the focused target and confirm the RED failure is a compile failure caused by missing APIs:
+- [x] Build the focused target and confirm the RED failure is a compile failure caused by missing APIs:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ActorComponentValidation
@@ -293,7 +293,7 @@ Expected result before implementation: build fails with missing `SpawnActorByCla
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Include\Scene\SceneManager.h`
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\SceneManager.cpp`
 
-- [ ] In `SceneManager.h`, declare the method immediately after non-template `SpawnActor`:
+- [x] In `SceneManager.h`, declare the method immediately after non-template `SpawnActor`:
 
 ```cpp
 /// Spawn a scene-owned actor by registered ActorFactory class name.
@@ -301,13 +301,13 @@ SceneEntity* SpawnActorByClassName(const std::string& className,
                                    const ActorSpawnParams& params = {});
 ```
 
-- [ ] In `SceneManager.cpp`, add the include:
+- [x] In `SceneManager.cpp`, add the include:
 
 ```cpp
 #include "Scene/ActorFactory.h"
 ```
 
-- [ ] In `SceneManager.cpp`, implement the method immediately after `SceneManager::SpawnActor`:
+- [x] In `SceneManager.cpp`, implement the method immediately after `SceneManager::SpawnActor`:
 
 ```cpp
 SceneEntity* SceneManager::SpawnActorByClassName(const std::string& className,
@@ -355,7 +355,7 @@ SceneEntity* SceneManager::SpawnActorByClassName(const std::string& className,
 - Modify: `E:\WorkSpace\RenderVerseX\World\Include\World\World.h`
 - Modify: `E:\WorkSpace\RenderVerseX\World\Private\World.cpp`
 
-- [ ] In `World.h`, declare the method immediately after non-template `SpawnActor`:
+- [x] In `World.h`, declare the method immediately after non-template `SpawnActor`:
 
 ```cpp
 /// Spawn an actor by registered ActorFactory class name.
@@ -363,13 +363,13 @@ Actor* SpawnActorByClassName(const std::string& className,
                              const ActorSpawnParams& params = {});
 ```
 
-- [ ] In `World.cpp`, add the include:
+- [x] In `World.cpp`, add the include:
 
 ```cpp
 #include "Scene/ActorFactory.h"
 ```
 
-- [ ] In `World.cpp`, implement the method immediately after `World::SpawnActor`:
+- [x] In `World.cpp`, implement the method immediately after `World::SpawnActor`:
 
 ```cpp
 Actor* World::SpawnActorByClassName(const std::string& className,
@@ -432,7 +432,7 @@ Actor* World::SpawnActorByClassName(const std::string& className,
 **Files:**
 - No additional source files.
 
-- [ ] Build and run the focused validation:
+- [x] Build and run the focused validation:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ActorComponentValidation
@@ -441,7 +441,7 @@ cmake --build build\Debug --config Debug --target ActorComponentValidation
 
 Expected result: all actor component tests pass.
 
-- [ ] Build validation targets and ModelViewer:
+- [x] Build validation targets and ModelViewer:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ActorComponentValidation SpatialComponentValidation ResourceInstantiationValidation RenderSceneValidation SystemIntegrationTest MaterialSystemValidation RenderPassBindingValidation ModelViewer
@@ -449,7 +449,7 @@ cmake --build build\Debug --config Debug --target ActorComponentValidation Spati
 
 Expected result: build succeeds.
 
-- [ ] Run validation executables:
+- [x] Run validation executables:
 
 ```powershell
 .\build\Debug\Tests\Debug\ActorComponentValidation.exe
@@ -463,7 +463,7 @@ Expected result: build succeeds.
 
 Expected result: every executable returns exit code 0 and reports all tests passing.
 
-- [ ] Run ModelViewer smoke:
+- [x] Run ModelViewer smoke:
 
 ```powershell
 $stdout = "build_codex\phase12_modelviewer_stdout.log"
@@ -479,7 +479,7 @@ Get-Content -Path $stderr
 
 Expected result: stdout includes model loaded, model instantiated, scene entity ready, GPU mesh upload, and render graph stats; stderr is empty.
 
-- [ ] Request exactly one code review using Dalton with this context:
+- [x] Request exactly one code review using Dalton with this context:
 
 ```text
 Review Phase 12 of the UE-style Actor Component framework.
@@ -495,11 +495,11 @@ Requirements:
 Please report Critical and Important issues first, with file/line references.
 ```
 
-- [ ] Fix any Critical or Important review findings before committing.
+- [x] Fix any Critical or Important review findings before committing.
 
-- [ ] Update every checkbox in this plan that was completed.
+- [x] Update every checkbox in this plan that was completed.
 
-- [ ] Commit the implementation:
+- [x] Commit the implementation:
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-15-ue-style-actor-component-phase12-class-name-spawn.md Scene\Include\Scene\SceneManager.h Scene\Private\SceneManager.cpp World\Include\World\World.h World\Private\World.cpp Tests\ActorComponentValidation\main.cpp
