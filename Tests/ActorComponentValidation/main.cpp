@@ -183,6 +183,92 @@ namespace
         int* m_externalTickCount = nullptr;
     };
 
+    class AddLegacyDuringTickComponent : public RVX::Component
+    {
+    public:
+        explicit AddLegacyDuringTickComponent(int* addedTickCount)
+            : m_addedTickCount(addedTickCount)
+        {
+        }
+
+        const char* GetTypeName() const override { return "AddLegacyDuringTickComponent"; }
+
+        void Tick(float) override
+        {
+            if (!m_added && GetOwner())
+            {
+                GetOwner()->AddComponent<SceneManagedLegacyTickComponent>(m_addedTickCount);
+                m_added = true;
+            }
+        }
+
+    private:
+        int* m_addedTickCount = nullptr;
+        bool m_added = false;
+    };
+
+    class SelfRemovingLegacyTickComponent : public RVX::Component
+    {
+    public:
+        explicit SelfRemovingLegacyTickComponent(int* tickCount)
+            : m_tickCount(tickCount)
+        {
+        }
+
+        const char* GetTypeName() const override { return "SelfRemovingLegacyTickComponent"; }
+
+        void Tick(float) override
+        {
+            if (m_tickCount)
+            {
+                ++(*m_tickCount);
+            }
+            if (GetOwner())
+            {
+                GetOwner()->RemoveComponent<SelfRemovingLegacyTickComponent>();
+            }
+        }
+
+    private:
+        int* m_tickCount = nullptr;
+    };
+
+    class VictimLegacyTickComponent : public RVX::Component
+    {
+    public:
+        explicit VictimLegacyTickComponent(int* tickCount)
+            : m_tickCount(tickCount)
+        {
+        }
+
+        const char* GetTypeName() const override { return "VictimLegacyTickComponent"; }
+
+        void Tick(float) override
+        {
+            if (m_tickCount)
+            {
+                ++(*m_tickCount);
+            }
+        }
+
+    private:
+        int* m_tickCount = nullptr;
+    };
+
+    class RemoveVictimLegacyDuringTickComponent : public RVX::Component
+    {
+    public:
+        const char* GetTypeName() const override { return "RemoveVictimLegacyDuringTickComponent"; }
+
+        void Tick(float) override
+        {
+            if (GetOwner())
+            {
+                GetOwner()->RemoveComponent<VictimLegacyTickComponent>();
+            }
+        }
+    };
+
     class SelfDestroyingActorComponent : public RVX::ActorComponent
     {
     public:
@@ -865,6 +951,58 @@ namespace
         TEST_ASSERT_TRUE(IsNear(0.25f, component->lastDeltaTime));
 
         sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_SceneEntityLegacyTickSnapshotsComponentsAddedDuringTick()
+    {
+        RVX::SceneEntity entity("LegacyAddDuringTickEntity");
+        int addedTickCount = 0;
+
+        auto* spawner = entity.AddComponent<AddLegacyDuringTickComponent>(&addedTickCount);
+        TEST_ASSERT_NOT_NULL(spawner);
+
+        entity.TickComponents(0.016f);
+        TEST_ASSERT_EQ(0, addedTickCount);
+        TEST_ASSERT_EQ(static_cast<size_t>(2), entity.GetComponentCount());
+
+        entity.TickComponents(0.016f);
+        TEST_ASSERT_EQ(1, addedTickCount);
+        return true;
+    }
+
+    bool Test_SceneEntityLegacyDefersSelfRemovalDuringTick()
+    {
+        RVX::SceneEntity entity("LegacySelfRemoveEntity");
+        int tickCount = 0;
+
+        auto* component = entity.AddComponent<SelfRemovingLegacyTickComponent>(&tickCount);
+        TEST_ASSERT_NOT_NULL(component);
+
+        entity.TickComponents(0.016f);
+
+        TEST_ASSERT_EQ(1, tickCount);
+        TEST_ASSERT_EQ(static_cast<size_t>(0), entity.GetComponentCount());
+
+        entity.TickComponents(0.016f);
+        TEST_ASSERT_EQ(1, tickCount);
+        return true;
+    }
+
+    bool Test_SceneEntityLegacySkipsComponentRemovedEarlierInTick()
+    {
+        RVX::SceneEntity entity("LegacyRemoveOtherEntity");
+        int victimTickCount = 0;
+
+        auto* remover = entity.AddComponent<RemoveVictimLegacyDuringTickComponent>();
+        TEST_ASSERT_NOT_NULL(remover);
+        auto* victim = entity.AddComponent<VictimLegacyTickComponent>(&victimTickCount);
+        TEST_ASSERT_NOT_NULL(victim);
+
+        entity.TickComponents(0.016f);
+
+        TEST_ASSERT_EQ(0, victimTickCount);
+        TEST_ASSERT_EQ(nullptr, entity.GetComponent<VictimLegacyTickComponent>());
         return true;
     }
 
@@ -2266,6 +2404,12 @@ int main()
                   Test_SceneManagerBeginsComponentsAddedAfterActorBeginsPlay);
     suite.AddTest("SceneManagerUpdateKeepsLegacyComponentTicking",
                   Test_SceneManagerUpdateKeepsLegacyComponentTicking);
+    suite.AddTest("SceneEntityLegacyTickSnapshotsComponentsAddedDuringTick",
+                  Test_SceneEntityLegacyTickSnapshotsComponentsAddedDuringTick);
+    suite.AddTest("SceneEntityLegacyDefersSelfRemovalDuringTick",
+                  Test_SceneEntityLegacyDefersSelfRemovalDuringTick);
+    suite.AddTest("SceneEntityLegacySkipsComponentRemovedEarlierInTick",
+                  Test_SceneEntityLegacySkipsComponentRemovedEarlierInTick);
     suite.AddTest("SceneEntityActiveStateControlsActorTickThroughActorPointer",
                   Test_SceneEntityActiveStateControlsActorTickThroughActorPointer);
     suite.AddTest("SceneManagerDefersDestroyRequestsDuringLifecycleDispatch",

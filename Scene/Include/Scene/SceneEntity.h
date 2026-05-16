@@ -284,9 +284,20 @@ namespace RVX
         // Components
         std::unordered_map<std::type_index, std::unique_ptr<Component>> m_components;
         SceneComponent* m_compatRootComponent = nullptr;
+        std::vector<std::type_index> m_legacyComponentOrder;
+        int32 m_legacyComponentDispatchDepth = 0;
+        std::vector<std::type_index> m_pendingRemoveLegacyComponents;
 
         // Helper to mark all children's transforms as dirty
         void MarkChildrenTransformDirty();
+
+        bool RemoveLegacyComponentByType(std::type_index typeIndex);
+        bool IsLegacyComponentRemovalPending(std::type_index typeIndex) const;
+        void QueuePendingLegacyComponentRemoval(std::type_index typeIndex);
+        void FlushPendingLegacyComponentRemovals();
+        std::vector<Component*> MakeLegacyComponentSnapshot() const;
+        void BeginLegacyComponentDispatch();
+        void EndLegacyComponentDispatch();
 
         // Handle generation
         static Handle GenerateHandle();
@@ -323,6 +334,7 @@ namespace RVX
             component->OnAttach();
 
             // Store component
+            m_legacyComponentOrder.push_back(typeIndex);
             m_components[typeIndex] = std::move(component);
 
             // Notify bounds may have changed
@@ -381,20 +393,18 @@ namespace RVX
         if constexpr (std::is_base_of_v<Component, T>)
         {
             std::type_index typeIndex(typeid(T));
-            auto it = m_components.find(typeIndex);
-            if (it != m_components.end())
+            if (m_components.find(typeIndex) == m_components.end())
             {
-                // Call OnDetach before removal
-                it->second->OnDetach();
-                it->second->OnComponentDestroyed();
-                it->second->SetOwner(nullptr);
-                m_components.erase(it);
-
-                // Notify bounds may have changed
-                MarkBoundsDirty();
-                return true;
+                return false;
             }
-            return false;
+
+            if (m_legacyComponentDispatchDepth > 0)
+            {
+                QueuePendingLegacyComponentRemoval(typeIndex);
+                return IsLegacyComponentRemovalPending(typeIndex);
+            }
+
+            return RemoveLegacyComponentByType(typeIndex);
         }
         else
         {

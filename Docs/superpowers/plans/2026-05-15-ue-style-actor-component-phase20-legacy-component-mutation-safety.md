@@ -4,7 +4,7 @@
 
 **Goal:** Make legacy `SceneEntity::m_components` tick dispatch safe when legacy `Component` instances add or remove legacy components during `Tick()`.
 
-**Architecture:** Mirror the already-hardened `Actor` component dispatch pattern for the legacy compatibility container: take a raw-pointer snapshot before ticking, defer removals requested during legacy component dispatch, skip entries already queued for removal, and flush removals after the outermost dispatch returns. Keep legacy components out of `Actor::m_components` so they do not double tick or enter UE-style `BeginPlay()`/registration lifecycle by accident.
+**Architecture:** Mirror the already-hardened `Actor` component dispatch pattern for the legacy compatibility container: maintain insertion order for deterministic ticking, take a raw-pointer snapshot before ticking, defer removals requested during legacy component dispatch, skip entries already queued for removal, and flush removals after the outermost dispatch returns. Keep legacy components out of `Actor::m_components` so they do not double tick or enter UE-style `BeginPlay()`/registration lifecycle by accident.
 
 **Tech Stack:** C++20, RenderVerseX Scene module, standalone `ActorComponentValidation`.
 
@@ -13,6 +13,7 @@
 ## Scope
 
 - Harden `SceneEntity::TickComponents()` against legacy component add/remove mutation during tick.
+- Preserve deterministic insertion-order ticking for legacy components instead of relying on `unordered_map` traversal order.
 - Preserve immediate `SceneEntity::AddComponent<T>()` behavior for legacy components.
 - Preserve immediate `SceneEntity::RemoveComponent<T>()` behavior outside legacy component dispatch.
 - Keep legacy `Component` ownership in `SceneEntity::m_components`; do not move legacy components into `Actor::m_components`.
@@ -23,7 +24,7 @@
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ActorComponentValidation\main.cpp`
   - Add failing tests for add-during-tick, self-remove-during-tick, and remove-other-before-turn on legacy `Component`.
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Include\Scene\SceneEntity.h`
-  - Add private dispatch helpers/state for legacy component snapshots and deferred removals.
+  - Add private insertion-order and dispatch helpers/state for legacy component snapshots and deferred removals.
   - Route legacy `RemoveComponent<T>()` through the deferred path while dispatching.
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\SceneEntity.cpp`
   - Implement snapshot dispatch helpers and update `TickComponents()`.
@@ -37,7 +38,7 @@
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ActorComponentValidation\main.cpp`
 
-- [ ] **Step 1: Add legacy mutation helper components**
+- [x] **Step 1: Add legacy mutation helper components**
 
 Add these helper classes inside the anonymous namespace after `SceneManagedLegacyTickComponent`:
 
@@ -129,7 +130,7 @@ Add these helper classes inside the anonymous namespace after `SceneManagedLegac
     };
 ```
 
-- [ ] **Step 2: Add add-during-tick test**
+- [x] **Step 2: Add add-during-tick test**
 
 Add this test after `Test_SceneManagerUpdateKeepsLegacyComponentTicking`:
 
@@ -152,7 +153,7 @@ Add this test after `Test_SceneManagerUpdateKeepsLegacyComponentTicking`:
     }
 ```
 
-- [ ] **Step 3: Add self-remove-during-tick test**
+- [x] **Step 3: Add self-remove-during-tick test**
 
 Add this test after the add-during-tick test:
 
@@ -176,7 +177,7 @@ Add this test after the add-during-tick test:
     }
 ```
 
-- [ ] **Step 4: Add remove-other-before-turn test**
+- [x] **Step 4: Add remove-other-before-turn test**
 
 Add this test after the self-remove test:
 
@@ -199,7 +200,7 @@ Add this test after the self-remove test:
     }
 ```
 
-- [ ] **Step 5: Register the three tests**
+- [x] **Step 5: Register the three tests**
 
 Register these tests in `main()` immediately after `SceneManagerUpdateKeepsLegacyComponentTicking`:
 
@@ -212,7 +213,7 @@ Register these tests in `main()` immediately after `SceneManagerUpdateKeepsLegac
                   Test_SceneEntityLegacySkipsComponentRemovedEarlierInTick);
 ```
 
-- [ ] **Step 6: Build and confirm RED**
+- [x] **Step 6: Build and confirm RED**
 
 Run:
 
@@ -231,7 +232,7 @@ Expected before implementation: at least one of the three new legacy mutation te
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Include\Scene\SceneEntity.h`
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\SceneEntity.cpp`
 
-- [ ] **Step 1: Add private helper declarations and state**
+- [x] **Step 1: Add private helper declarations and state**
 
 In `SceneEntity.h`, add these private helper declarations near `MarkChildrenTransformDirty()`:
 
@@ -248,11 +249,19 @@ In `SceneEntity.h`, add these private helper declarations near `MarkChildrenTran
 Add these private members near `m_components`:
 
 ```cpp
+        std::vector<std::type_index> m_legacyComponentOrder;
         int32 m_legacyComponentDispatchDepth = 0;
         std::vector<std::type_index> m_pendingRemoveLegacyComponents;
 ```
 
-- [ ] **Step 2: Update legacy `RemoveComponent<T>()`**
+- [x] **Step 2: Update legacy `AddComponent<T>()` and `RemoveComponent<T>()`**
+
+In `SceneEntity::AddComponent<T>()`, record insertion order before storing a newly-created legacy component:
+
+```cpp
+            m_legacyComponentOrder.push_back(typeIndex);
+            m_components[typeIndex] = std::move(component);
+```
 
 Replace the legacy branch in `SceneEntity::RemoveComponent<T>()` with this code:
 
@@ -275,7 +284,7 @@ Replace the legacy branch in `SceneEntity::RemoveComponent<T>()` with this code:
         }
 ```
 
-- [ ] **Step 3: Clear pending legacy removals during destruction**
+- [x] **Step 3: Clear pending legacy removals during destruction**
 
 In `SceneEntity::~SceneEntity()`, before iterating `m_components`, add:
 
@@ -284,7 +293,7 @@ In `SceneEntity::~SceneEntity()`, before iterating `m_components`, add:
     m_legacyComponentDispatchDepth = 0;
 ```
 
-- [ ] **Step 4: Implement legacy dispatch helpers**
+- [x] **Step 4: Implement legacy dispatch helpers**
 
 Add these implementations in `SceneEntity.cpp` near the `Components` section before `TickComponents(...)`:
 
@@ -306,6 +315,9 @@ bool SceneEntity::RemoveLegacyComponentByType(std::type_index typeIndex)
     }
 
     MarkBoundsDirty();
+    m_legacyComponentOrder.erase(
+        std::remove(m_legacyComponentOrder.begin(), m_legacyComponentOrder.end(), typeIndex),
+        m_legacyComponentOrder.end());
     return true;
 }
 
@@ -345,12 +357,12 @@ std::vector<Component*> SceneEntity::MakeLegacyComponentSnapshot() const
 {
     std::vector<Component*> snapshot;
     snapshot.reserve(m_components.size());
-    for (const auto& [typeId, component] : m_components)
+    for (std::type_index typeIndex : m_legacyComponentOrder)
     {
-        (void)typeId;
-        if (component)
+        auto it = m_components.find(typeIndex);
+        if (it != m_components.end() && it->second)
         {
-            snapshot.push_back(component.get());
+            snapshot.push_back(it->second.get());
         }
     }
     return snapshot;
@@ -374,7 +386,7 @@ void SceneEntity::EndLegacyComponentDispatch()
 }
 ```
 
-- [ ] **Step 5: Update `TickComponents(...)` to use snapshot dispatch**
+- [x] **Step 5: Update `TickComponents(...)` to use snapshot dispatch**
 
 Replace `SceneEntity::TickComponents(float deltaTime)` with:
 
@@ -397,7 +409,7 @@ void SceneEntity::TickComponents(float deltaTime)
 }
 ```
 
-- [ ] **Step 6: Build and run focused validation**
+- [x] **Step 6: Build and run focused validation**
 
 Run:
 
@@ -415,7 +427,7 @@ Expected result: all `ActorComponentValidation` tests pass, including the three 
 **Files:**
 - No additional source files.
 
-- [ ] **Step 1: Run whitespace check**
+- [x] **Step 1: Run whitespace check**
 
 ```powershell
 git diff --check
@@ -423,7 +435,7 @@ git diff --check
 
 Expected result: exit code 0. Line-ending warnings are acceptable if no whitespace-error lines are reported.
 
-- [ ] **Step 2: Build all validation targets and ModelViewer sequentially**
+- [x] **Step 2: Build all validation targets and ModelViewer sequentially**
 
 ```powershell
 foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','ResourceInstantiationValidation','RenderSceneValidation','SystemIntegrationTest','MaterialSystemValidation','RenderPassBindingValidation','ModelViewer')) {
@@ -435,7 +447,7 @@ foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','R
 
 Expected result: every target builds.
 
-- [ ] **Step 3: Run validation executables**
+- [x] **Step 3: Run validation executables**
 
 ```powershell
 $tests = @(
@@ -456,7 +468,7 @@ foreach ($test in $tests) {
 
 Expected result: every executable returns exit code 0 and reports all tests passing.
 
-- [ ] **Step 4: Run ModelViewer smoke**
+- [x] **Step 4: Run ModelViewer smoke**
 
 ```powershell
 $stdout = "build_codex\phase20_modelviewer_stdout.log"
@@ -473,7 +485,7 @@ Get-Content -Path $stderr
 
 Expected result: stdout includes model loaded, model instantiated, scene entity ready, GPU mesh upload, and render graph stats; stderr is empty.
 
-- [ ] **Step 5: Request exactly one code review using Dalton**
+- [x] **Step 5: Request exactly one code review using Dalton**
 
 Use this review context:
 
@@ -491,15 +503,15 @@ Requirements:
 Please report only Critical and Important issues, with file/line references.
 ```
 
-- [ ] **Step 6: Fix any Critical or Important review findings**
+- [x] **Step 6: Fix any Critical or Important review findings**
 
 If Dalton reports no Critical or Important findings, record that no fix was required and continue.
 
-- [ ] **Step 7: Update every completed checkbox in this plan**
+- [x] **Step 7: Update every completed checkbox in this plan**
 
 Mark every completed `- [ ]` as `- [x]` before committing.
 
-- [ ] **Step 8: Commit the implementation**
+- [x] **Step 8: Commit the implementation**
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-15-ue-style-actor-component-phase20-legacy-component-mutation-safety.md Scene\Include\Scene\SceneEntity.h Scene\Private\SceneEntity.cpp Tests\ActorComponentValidation\main.cpp
@@ -512,5 +524,5 @@ git commit -m "Harden legacy component mutation during tick"
 
 - Spec coverage: This plan closes the explicit Phase 7 compatibility gap where legacy `SceneEntity::m_components` mutation remained unsafe while `Actor::m_components` was already snapshot-based.
 - Placeholder scan: All code-changing steps name exact files and include concrete code blocks; all validation steps include exact commands and expected results.
-- Type consistency: `std::type_index`, `Component*`, `SceneEntity::m_components`, `SceneEntity::TickComponents`, and `SceneEntity::RemoveComponent<T>()` match current codebase types and ownership model.
+- Type consistency: `std::type_index`, `Component*`, `SceneEntity::m_components`, `SceneEntity::m_legacyComponentOrder`, `SceneEntity::TickComponents`, and `SceneEntity::RemoveComponent<T>()` match current codebase types and ownership model.
 - Risk check: The plan intentionally keeps legacy components out of `Actor::m_components`, avoiding double ticking and accidental UE-style lifecycle callbacks while still making the compatibility tick path safe.

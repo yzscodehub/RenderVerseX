@@ -46,6 +46,9 @@ SceneEntity::~SceneEntity()
     }
     m_children.clear();
 
+    m_pendingRemoveLegacyComponents.clear();
+    m_legacyComponentDispatchDepth = 0;
+
     // Detach all components
     for (auto& [typeId, component] : m_components)
     {
@@ -57,6 +60,7 @@ SceneEntity::~SceneEntity()
         }
     }
     m_components.clear();
+    m_legacyComponentOrder.clear();
 }
 
 Component* SceneEntity::AddOwnedComponent(std::unique_ptr<Component> component)
@@ -73,6 +77,7 @@ Component* SceneEntity::AddOwnedComponent(std::unique_ptr<Component> component)
     ptr->OnComponentCreated();
     ptr->OnAttach();
 
+    m_legacyComponentOrder.push_back(typeIndex);
     m_components[typeIndex] = std::move(component);
     MarkBoundsDirty();
 
@@ -441,15 +446,108 @@ void SceneEntity::SetLocalBounds(const AABB& bounds)
 // Components
 // =============================================================================
 
+bool SceneEntity::RemoveLegacyComponentByType(std::type_index typeIndex)
+{
+    auto it = m_components.find(typeIndex);
+    if (it == m_components.end())
+        return false;
+
+    std::unique_ptr<Component> removedComponent = std::move(it->second);
+    m_components.erase(it);
+
+    if (removedComponent)
+    {
+        removedComponent->OnDetach();
+        removedComponent->OnComponentDestroyed();
+        removedComponent->SetOwner(nullptr);
+    }
+
+    MarkBoundsDirty();
+    m_legacyComponentOrder.erase(
+        std::remove(m_legacyComponentOrder.begin(), m_legacyComponentOrder.end(), typeIndex),
+        m_legacyComponentOrder.end());
+    return true;
+}
+
+bool SceneEntity::IsLegacyComponentRemovalPending(std::type_index typeIndex) const
+{
+    return std::find(m_pendingRemoveLegacyComponents.begin(),
+                     m_pendingRemoveLegacyComponents.end(),
+                     typeIndex) != m_pendingRemoveLegacyComponents.end();
+}
+
+void SceneEntity::QueuePendingLegacyComponentRemoval(std::type_index typeIndex)
+{
+    if (m_components.find(typeIndex) == m_components.end())
+        return;
+
+    if (IsLegacyComponentRemovalPending(typeIndex))
+        return;
+
+    m_pendingRemoveLegacyComponents.push_back(typeIndex);
+}
+
+void SceneEntity::FlushPendingLegacyComponentRemovals()
+{
+    if (m_pendingRemoveLegacyComponents.empty())
+        return;
+
+    auto pending = std::move(m_pendingRemoveLegacyComponents);
+    m_pendingRemoveLegacyComponents.clear();
+
+    for (std::type_index typeIndex : pending)
+    {
+        RemoveLegacyComponentByType(typeIndex);
+    }
+}
+
+std::vector<Component*> SceneEntity::MakeLegacyComponentSnapshot() const
+{
+    std::vector<Component*> snapshot;
+    snapshot.reserve(m_components.size());
+    for (std::type_index typeIndex : m_legacyComponentOrder)
+    {
+        auto it = m_components.find(typeIndex);
+        if (it != m_components.end() && it->second)
+        {
+            snapshot.push_back(it->second.get());
+        }
+    }
+    return snapshot;
+}
+
+void SceneEntity::BeginLegacyComponentDispatch()
+{
+    ++m_legacyComponentDispatchDepth;
+}
+
+void SceneEntity::EndLegacyComponentDispatch()
+{
+    if (m_legacyComponentDispatchDepth <= 0)
+        return;
+
+    --m_legacyComponentDispatchDepth;
+    if (m_legacyComponentDispatchDepth == 0)
+    {
+        FlushPendingLegacyComponentRemovals();
+    }
+}
+
 void SceneEntity::TickComponents(float deltaTime)
 {
-    for (auto& [typeId, component] : m_components)
+    auto snapshot = MakeLegacyComponentSnapshot();
+    BeginLegacyComponentDispatch();
+    for (Component* component : snapshot)
     {
-        if (component && component->IsEnabled())
+        if (!component || IsLegacyComponentRemovalPending(std::type_index(typeid(*component))))
+            continue;
+
+        if (component->IsEnabled())
         {
             component->Tick(deltaTime);
         }
     }
+    EndLegacyComponentDispatch();
 }
 
 bool SceneEntity::ShouldAutoRegisterComponent(ActorComponent* component) const
