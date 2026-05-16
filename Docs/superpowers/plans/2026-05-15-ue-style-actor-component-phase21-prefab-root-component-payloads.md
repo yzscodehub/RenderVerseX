@@ -42,7 +42,7 @@
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ResourceInstantiationValidation\main.cpp`
 
-- [ ] **Step 1: Add `RevertAll()` actor component payload test**
+- [x] **Step 1: Add `RevertAll()` actor component payload test**
 
 Add this test after `Test_PrefabInstanceRevertAllRestoresRootEntityState`:
 
@@ -82,7 +82,7 @@ Add this test after `Test_PrefabInstanceRevertAllRestoresRootEntityState`:
     }
 ```
 
-- [ ] **Step 2: Add `RevertAll()` legacy component payload test**
+- [x] **Step 2: Add `RevertAll()` legacy component payload test**
 
 Add this test after the actor payload revert test:
 
@@ -122,7 +122,7 @@ Add this test after the actor payload revert test:
     }
 ```
 
-- [ ] **Step 3: Add `ApplyToPrefab()` component payload test**
+- [x] **Step 3: Add `ApplyToPrefab()` component payload test**
 
 Add this test after `Test_PrefabInstanceApplyToPrefabWritesRootEntityState`:
 
@@ -185,7 +185,7 @@ Add this test after `Test_PrefabInstanceApplyToPrefabWritesRootEntityState`:
     }
 ```
 
-- [ ] **Step 4: Register the three tests**
+- [x] **Step 4: Register the three tests**
 
 Register them in `main()` near the existing prefab instance tests:
 
@@ -198,7 +198,7 @@ Register them in `main()` near the existing prefab instance tests:
                   Test_PrefabInstanceApplyToPrefabWritesRootComponentPayloads);
 ```
 
-- [ ] **Step 5: Build and confirm RED**
+- [x] **Step 5: Build and confirm RED**
 
 Run:
 
@@ -216,7 +216,7 @@ Expected before implementation: the new revert/apply component payload tests fai
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\Prefab.cpp`
 
-- [ ] **Step 1: Add component capture helper**
+- [x] **Step 1: Add component capture helper**
 
 Add this helper in the anonymous namespace after `CapturePrefabEntityProperties(...)`:
 
@@ -255,7 +255,7 @@ Add this helper in the anonymous namespace after `CapturePrefabEntityProperties(
     }
 ```
 
-- [ ] **Step 2: Add payload apply helpers**
+- [x] **Step 2: Add payload apply helpers**
 
 Add these helpers after the capture helper:
 
@@ -317,7 +317,7 @@ Add these helpers after the capture helper:
     }
 ```
 
-- [ ] **Step 3: Add override cleanup helper**
+- [x] **Step 3: Add override cleanup helper**
 
 Add this helper after `RemoveSupportedPrefabEntityPropertyOverrides(...)`:
 
@@ -349,7 +349,7 @@ Add this helper after `RemoveSupportedPrefabEntityPropertyOverrides(...)`:
     }
 ```
 
-- [ ] **Step 4: Reuse component capture in `SerializeEntity(...)`**
+- [x] **Step 4: Reuse component capture in `SerializeEntity(...)`**
 
 Replace the legacy and actor component serialization loops in `Prefab::SerializeEntity(...)` with:
 
@@ -357,7 +357,7 @@ Replace the legacy and actor component serialization loops in `Prefab::Serialize
     CapturePrefabEntityComponents(data, *entity);
 ```
 
-- [ ] **Step 5: Extend `Prefab::UpdateRootEntityStateFrom(...)`**
+- [x] **Step 5: Extend `Prefab::UpdateRootEntityStateFrom(...)`**
 
 Update the method body to capture component payloads:
 
@@ -375,7 +375,7 @@ bool Prefab::UpdateRootEntityStateFrom(const SceneEntity& entity)
 }
 ```
 
-- [ ] **Step 6: Extend `PrefabInstance::RevertAll()`**
+- [x] **Step 6: Extend `PrefabInstance::RevertAll()`**
 
 After `ApplyAllPrefabEntityProperties(owner, *rootData);`, add:
 
@@ -385,7 +385,7 @@ After `ApplyAllPrefabEntityProperties(owner, *rootData);`, add:
 
 Keep `m_overrides.clear();` after both root state and component payloads are reverted.
 
-- [ ] **Step 7: Extend `PrefabInstance::ApplyToPrefab()`**
+- [x] **Step 7: Extend `PrefabInstance::ApplyToPrefab()`**
 
 Replace the current `if` body with:
 
@@ -401,7 +401,7 @@ Replace the current `if` body with:
     }
 ```
 
-- [ ] **Step 8: Build and run focused validation**
+- [x] **Step 8: Build and run focused validation**
 
 Run:
 
@@ -419,7 +419,7 @@ Expected result: all `ResourceInstantiationValidation` tests pass, including the
 **Files:**
 - No additional source files.
 
-- [ ] **Step 1: Run whitespace check**
+- [x] **Step 1: Run whitespace check**
 
 ```powershell
 git diff --check
@@ -427,7 +427,7 @@ git diff --check
 
 Expected result: exit code 0. Line-ending warnings are acceptable if no whitespace-error lines are reported.
 
-- [ ] **Step 2: Build all validation targets and ModelViewer sequentially**
+- [x] **Step 2: Build all validation targets and ModelViewer sequentially**
 
 ```powershell
 foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','ResourceInstantiationValidation','RenderSceneValidation','SystemIntegrationTest','MaterialSystemValidation','RenderPassBindingValidation','ModelViewer')) {
@@ -439,7 +439,7 @@ foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','R
 
 Expected result: every target builds.
 
-- [ ] **Step 3: Run validation executables**
+- [x] **Step 3: Run validation executables**
 
 ```powershell
 $tests = @(
@@ -460,7 +460,7 @@ foreach ($test in $tests) {
 
 Expected result: every executable returns exit code 0 and reports all tests passing.
 
-- [ ] **Step 4: Run ModelViewer smoke**
+- [x] **Step 4: Run ModelViewer smoke**
 
 ```powershell
 $stdout = "build_codex\phase21_modelviewer_stdout.log"
@@ -477,7 +477,7 @@ Get-Content -Path $stderr
 
 Expected result: stdout includes model loaded, model instantiated, scene entity ready, GPU mesh upload, and render graph stats; stderr is empty.
 
-- [ ] **Step 5: Request exactly one code review using Dalton**
+- [x] **Step 5: Request exactly one code review using Dalton**
 
 Use this review context:
 
@@ -495,15 +495,15 @@ Requirements:
 Please report only Critical and Important issues, with file/line references.
 ```
 
-- [ ] **Step 6: Fix any Critical or Important review findings**
+- [x] **Step 6: Fix any Critical or Important review findings**
 
 If Dalton reports no Critical or Important findings, record that no fix was required and continue.
 
-- [ ] **Step 7: Update every completed checkbox in this plan**
+- [x] **Step 7: Update every completed checkbox in this plan**
 
 Mark every completed `- [ ]` as `- [x]` before committing.
 
-- [ ] **Step 8: Commit the implementation**
+- [x] **Step 8: Commit the implementation**
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-15-ue-style-actor-component-phase21-prefab-root-component-payloads.md Scene\Private\Prefab.cpp Tests\ResourceInstantiationValidation\main.cpp

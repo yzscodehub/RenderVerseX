@@ -5,6 +5,9 @@
 #include "Scene/SceneComponent.h"
 #include "Scene/SceneManager.h"
 
+#include <algorithm>
+#include <unordered_map>
+
 namespace RVX
 {
 
@@ -44,6 +47,32 @@ namespace
                 [&](const PropertyOverride& override) {
                     return IsPrefabEntityOverrideTarget(override.componentType) &&
                            IsSupportedPrefabEntityProperty(override.propertyPath);
+                }),
+            overrides.end()
+        );
+    }
+
+    bool HasPrefabRootComponentPayload(const PrefabEntityData& data, const std::string& componentType)
+    {
+        if (data.componentData.find(componentType) != data.componentData.end())
+        {
+            return true;
+        }
+
+        return std::any_of(data.actorComponentData.begin(), data.actorComponentData.end(),
+            [&](const PrefabActorComponentData& componentData) {
+                return componentData.className == componentType;
+            });
+    }
+
+    void RemoveSupportedRootComponentPayloadOverrides(std::vector<PropertyOverride>& overrides,
+                                                      const PrefabEntityData& data)
+    {
+        overrides.erase(
+            std::remove_if(overrides.begin(), overrides.end(),
+                [&](const PropertyOverride& override) {
+                    return override.propertyPath == "serializedData" &&
+                           HasPrefabRootComponentPayload(data, override.componentType);
                 }),
             overrides.end()
         );
@@ -102,6 +131,111 @@ namespace
         data.scale = entity.GetScale();
         data.layerMask = entity.GetLayerMask();
         data.isActive = entity.IsActive();
+    }
+
+    void CapturePrefabEntityComponents(PrefabEntityData& data, const SceneEntity& entity)
+    {
+        data.componentData.clear();
+        data.actorComponentData.clear();
+
+        for (const auto& [typeIndex, component] : entity.GetComponents())
+        {
+            (void)typeIndex;
+            if (!component)
+            {
+                continue;
+            }
+
+            if (std::string(component->GetTypeName()) == "PrefabInstance")
+            {
+                continue;
+            }
+
+            data.componentData[component->GetTypeName()] = component->SerializePrefabData();
+        }
+
+        for (const auto& actorComponent : entity.GetActorComponents())
+        {
+            if (!actorComponent)
+            {
+                continue;
+            }
+
+            const std::string className = actorComponent->GetClassName();
+            if (className == "SceneComponent" || className == "PrefabInstance")
+            {
+                continue;
+            }
+
+            if (dynamic_cast<Component*>(actorComponent.get()))
+            {
+                continue;
+            }
+
+            data.actorComponentData.push_back({className, actorComponent->SerializePrefabData()});
+        }
+    }
+
+    Component* FindLegacyComponentByTypeName(SceneEntity& owner, const std::string& typeName)
+    {
+        for (const auto& [typeIndex, component] : owner.GetComponents())
+        {
+            (void)typeIndex;
+            if (component && std::string(component->GetTypeName()) == typeName)
+            {
+                return component.get();
+            }
+        }
+
+        return nullptr;
+    }
+
+    std::vector<ActorComponent*> FindActorComponentsByClassName(SceneEntity& owner,
+                                                                 const std::string& className)
+    {
+        std::vector<ActorComponent*> matches;
+        for (const auto& component : owner.GetActorComponents())
+        {
+            if (!component)
+            {
+                continue;
+            }
+
+            if (dynamic_cast<Component*>(component.get()))
+            {
+                continue;
+            }
+
+            if (component->GetClassName() == className)
+            {
+                matches.push_back(component.get());
+            }
+        }
+
+        return matches;
+    }
+
+    void ApplyPrefabEntityComponentPayloads(SceneEntity& owner, const PrefabEntityData& data)
+    {
+        for (const auto& [typeName, serializedData] : data.componentData)
+        {
+            if (Component* component = FindLegacyComponentByTypeName(owner, typeName))
+            {
+                component->DeserializePrefabData(serializedData);
+            }
+        }
+
+        std::unordered_map<std::string, size_t> consumedActorComponents;
+        for (const auto& componentData : data.actorComponentData)
+        {
+            auto matches = FindActorComponentsByClassName(owner, componentData.className);
+            size_t& consumed = consumedActorComponents[componentData.className];
+            if (consumed < matches.size())
+            {
+                matches[consumed]->DeserializePrefabData(componentData.serializedData);
+            }
+            ++consumed;
+        }
     }
 } // namespace
 
@@ -218,6 +352,7 @@ bool Prefab::UpdateRootEntityStateFrom(const SceneEntity& entity)
     }
 
     CapturePrefabEntityProperties(m_entities[0], entity);
+    CapturePrefabEntityComponents(m_entities[0], entity);
     return true;
 }
 
@@ -342,32 +477,7 @@ void Prefab::SerializeEntity(const SceneEntity* entity, int32_t parentIndex)
     data.scale = entity->GetScale();
     data.layerMask = entity->GetLayerMask();
     data.isActive = entity->IsActive();
-
-    // Serialize components
-    for (const auto& [typeIndex, component] : entity->GetComponents())
-    {
-        // Skip PrefabInstance component
-        if (std::string(component->GetTypeName()) == "PrefabInstance")
-        {
-            continue;
-        }
-
-        data.componentData[component->GetTypeName()] = component->SerializePrefabData();
-    }
-
-    for (const auto& actorComponent : entity->GetActorComponents())
-    {
-        if (!actorComponent)
-            continue;
-
-        const std::string className = actorComponent->GetClassName();
-        if (className == "SceneComponent" || className == "PrefabInstance")
-            continue;
-        if (dynamic_cast<Component*>(actorComponent.get()))
-            continue;
-
-        data.actorComponentData.push_back({className, actorComponent->SerializePrefabData()});
-    }
+    CapturePrefabEntityComponents(data, *entity);
 
     int32_t currentIndex = static_cast<int32_t>(m_entities.size());
     m_entities.push_back(std::move(data));
@@ -492,6 +602,7 @@ void PrefabInstance::RevertAll()
     }
 
     ApplyAllPrefabEntityProperties(owner, *rootData);
+    ApplyPrefabEntityComponentPayloads(*owner, *rootData);
     m_overrides.clear();
 }
 
@@ -535,7 +646,12 @@ void PrefabInstance::ApplyToPrefab()
 
     if (m_prefab->UpdateRootEntityStateFrom(*owner))
     {
+        const PrefabEntityData* rootData = m_prefab->GetRootData();
         RemoveSupportedPrefabEntityPropertyOverrides(m_overrides);
+        if (rootData)
+        {
+            RemoveSupportedRootComponentPayloadOverrides(m_overrides, *rootData);
+        }
     }
 }
 
