@@ -84,6 +84,24 @@ namespace
     {
     public:
         const char* GetTypeName() const override { return "PrefabLegacyPayloadComponent"; }
+
+        std::string SerializePrefabData() const override
+        {
+            return payload;
+        }
+
+        void DeserializePrefabData(const std::string& data) override
+        {
+            payload = data;
+        }
+
+        void OnAttach() override
+        {
+            payloadObservedOnAttach = payload;
+        }
+
+        std::string payload;
+        std::string payloadObservedOnAttach;
     };
 
     class WorldLoadModelLoader : public IResourceLoader
@@ -485,6 +503,32 @@ namespace
         return true;
     }
 
+    bool Test_PrefabSerializesLegacyComponentPayloads()
+    {
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        const auto handle = sceneManager.CreateEntity("LegacyPayloadSource");
+        SceneEntity* entity = sceneManager.GetEntity(handle);
+        TEST_ASSERT_NOT_NULL(entity);
+
+        auto* component = entity->AddComponent<PrefabLegacyPayloadComponent>();
+        TEST_ASSERT_NOT_NULL(component);
+        component->payload = "legacy=enabled";
+
+        auto prefab = Prefab::CreateFromEntity(entity);
+        TEST_ASSERT_NOT_NULL(prefab);
+
+        const PrefabEntityData* rootData = prefab->GetRootData();
+        TEST_ASSERT_NOT_NULL(rootData);
+        auto it = rootData->componentData.find("PrefabLegacyPayloadComponent");
+        TEST_ASSERT_TRUE(it != rootData->componentData.end());
+        TEST_ASSERT_EQ(std::string("legacy=enabled"), it->second);
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_PrefabSerializesActorClassNames()
     {
         SceneManager sceneManager;
@@ -603,6 +647,50 @@ namespace
         return true;
     }
 
+    bool Test_PrefabInstantiateFailsForMissingLegacyComponentClassAndCleansUp()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+
+        PrefabEntityData data;
+        data.name = "MissingLegacyComponentActor";
+        data.componentData["MissingLegacyComponentClass"] = "";
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_EQ(nullptr, instance);
+        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstantiateFailsForActorOnlyComponentDataAndCleansUp()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
+            "PrefabPayloadComponent");
+
+        PrefabEntityData data;
+        data.name = "ActorOnlyComponentData";
+        data.componentData["PrefabPayloadComponent"] = "";
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_EQ(nullptr, instance);
+        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_PrefabInstantiateFailsForRejectedActorComponentAndCleansUp()
     {
         ComponentFactoryClassGuard componentFactoryGuard;
@@ -691,6 +779,33 @@ namespace
 
         sceneManager.Shutdown();
         ComponentFactory::ClearComponentClasses();
+        return true;
+    }
+
+    bool Test_PrefabInstantiatesRegisteredLegacyComponentPayloads()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabLegacyPayloadComponent>(
+            "PrefabLegacyPayloadComponent");
+
+        PrefabEntityData data;
+        data.name = "LegacyPayloadPrefab";
+        data.componentData["PrefabLegacyPayloadComponent"] = "legacy=enabled";
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(instance);
+
+        auto* component = instance->GetComponent<PrefabLegacyPayloadComponent>();
+        TEST_ASSERT_NOT_NULL(component);
+        TEST_ASSERT_EQ(std::string("legacy=enabled"), component->payload);
+        TEST_ASSERT_EQ(std::string("legacy=enabled"), component->payloadObservedOnAttach);
+
+        sceneManager.Shutdown();
         return true;
     }
 
@@ -1137,6 +1252,8 @@ int main()
                   Test_PrefabSerializesActorComponentClassNames);
     suite.AddTest("PrefabSerializesActorComponentPayloads",
                   Test_PrefabSerializesActorComponentPayloads);
+    suite.AddTest("PrefabSerializesLegacyComponentPayloads",
+                  Test_PrefabSerializesLegacyComponentPayloads);
     suite.AddTest("PrefabSerializesActorClassNames",
                   Test_PrefabSerializesActorClassNames);
     suite.AddTest("PrefabInstantiatesRegisteredActorClasses",
@@ -1145,12 +1262,18 @@ int main()
                   Test_PrefabInstantiateFailsForMissingActorClassAndCleansUp);
     suite.AddTest("PrefabInstantiateFailsForMissingActorComponentClassAndCleansUp",
                   Test_PrefabInstantiateFailsForMissingActorComponentClassAndCleansUp);
+    suite.AddTest("PrefabInstantiateFailsForMissingLegacyComponentClassAndCleansUp",
+                  Test_PrefabInstantiateFailsForMissingLegacyComponentClassAndCleansUp);
+    suite.AddTest("PrefabInstantiateFailsForActorOnlyComponentDataAndCleansUp",
+                  Test_PrefabInstantiateFailsForActorOnlyComponentDataAndCleansUp);
     suite.AddTest("PrefabInstantiateFailsForRejectedActorComponentAndCleansUp",
                   Test_PrefabInstantiateFailsForRejectedActorComponentAndCleansUp);
     suite.AddTest("PrefabInstantiatesRegisteredActorComponentClasses",
                   Test_PrefabInstantiatesRegisteredActorComponentClasses);
     suite.AddTest("PrefabInstantiatesActorComponentPayloads",
                   Test_PrefabInstantiatesActorComponentPayloads);
+    suite.AddTest("PrefabInstantiatesRegisteredLegacyComponentPayloads",
+                  Test_PrefabInstantiatesRegisteredLegacyComponentPayloads);
     suite.AddTest("PrefabInstantiateAsChildBuildsSpawnedHierarchy",
                   Test_PrefabInstantiateAsChildBuildsSpawnedHierarchy);
     suite.AddTest("PrefabInstanceRevertAllRestoresRootEntityState",

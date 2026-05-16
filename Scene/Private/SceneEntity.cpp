@@ -59,6 +59,26 @@ SceneEntity::~SceneEntity()
     m_components.clear();
 }
 
+Component* SceneEntity::AddOwnedComponent(std::unique_ptr<Component> component)
+{
+    if (!component)
+        return nullptr;
+
+    std::type_index typeIndex(typeid(*component));
+    if (m_components.find(typeIndex) != m_components.end())
+        return nullptr;
+
+    Component* ptr = component.get();
+    ptr->SetOwner(this);
+    ptr->OnComponentCreated();
+    ptr->OnAttach();
+
+    m_components[typeIndex] = std::move(component);
+    MarkBoundsDirty();
+
+    return ptr;
+}
+
 // =============================================================================
 // Hierarchy
 // =============================================================================

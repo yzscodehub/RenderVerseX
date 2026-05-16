@@ -210,6 +210,9 @@ namespace RVX
         template<typename T, typename... Args>
         T* AddComponent(Args&&... args);
 
+        /// Add an already-created legacy component and transfer ownership.
+        Component* AddOwnedComponent(std::unique_ptr<Component> component);
+
         /// Get a component of type T (returns nullptr if not found)
         template<typename T>
         T* GetComponent() const;

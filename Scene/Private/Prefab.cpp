@@ -352,9 +352,7 @@ void Prefab::SerializeEntity(const SceneEntity* entity, int32_t parentIndex)
             continue;
         }
 
-        // TODO: Implement proper component serialization
-        // For now, just store the type name
-        data.componentData[component->GetTypeName()] = "";
+        data.componentData[component->GetTypeName()] = component->SerializePrefabData();
     }
 
     for (const auto& actorComponent : entity->GetActorComponents())
@@ -385,6 +383,24 @@ bool Prefab::CreateComponents(SceneEntity* entity, const PrefabEntityData& data)
 {
     if (!entity)
         return false;
+
+    for (const auto& [className, serializedData] : data.componentData)
+    {
+        auto component = ComponentFactory::CreateComponentByClassName(className);
+        if (!component)
+            return false;
+
+        auto* legacyComponent = dynamic_cast<Component*>(component.get());
+        if (!legacyComponent)
+            return false;
+
+        legacyComponent->DeserializePrefabData(serializedData);
+        component.release();
+
+        std::unique_ptr<Component> ownedComponent(legacyComponent);
+        if (!entity->AddOwnedComponent(std::move(ownedComponent)))
+            return false;
+    }
 
     for (const auto& componentData : data.actorComponentData)
     {

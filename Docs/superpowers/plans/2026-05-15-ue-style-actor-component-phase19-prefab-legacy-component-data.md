@@ -40,7 +40,7 @@
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ResourceInstantiationValidation\main.cpp`
 
-- [ ] Replace the existing `PrefabLegacyPayloadComponent` test class with:
+- [x] Replace the existing `PrefabLegacyPayloadComponent` test class with:
 
 ```cpp
     class PrefabLegacyPayloadComponent : public Component
@@ -68,7 +68,7 @@
     };
 ```
 
-- [ ] Add `Test_PrefabSerializesLegacyComponentPayloads` after `Test_PrefabSerializesActorComponentPayloads`:
+- [x] Add `Test_PrefabSerializesLegacyComponentPayloads` after `Test_PrefabSerializesActorComponentPayloads`:
 
 ```cpp
     bool Test_PrefabSerializesLegacyComponentPayloads()
@@ -98,7 +98,7 @@
     }
 ```
 
-- [ ] Add `Test_PrefabInstantiatesRegisteredLegacyComponentPayloads` after `Test_PrefabInstantiatesActorComponentPayloads`:
+- [x] Add `Test_PrefabInstantiatesRegisteredLegacyComponentPayloads` after `Test_PrefabInstantiatesActorComponentPayloads`:
 
 ```cpp
     bool Test_PrefabInstantiatesRegisteredLegacyComponentPayloads()
@@ -129,7 +129,7 @@
     }
 ```
 
-- [ ] Add `Test_PrefabInstantiateFailsForMissingLegacyComponentClassAndCleansUp` after `Test_PrefabInstantiateFailsForMissingActorComponentClassAndCleansUp`:
+- [x] Add `Test_PrefabInstantiateFailsForMissingLegacyComponentClassAndCleansUp` after `Test_PrefabInstantiateFailsForMissingActorComponentClassAndCleansUp`:
 
 ```cpp
     bool Test_PrefabInstantiateFailsForMissingLegacyComponentClassAndCleansUp()
@@ -154,7 +154,7 @@
     }
 ```
 
-- [ ] Add `Test_PrefabInstantiateFailsForActorOnlyComponentDataAndCleansUp` after the previous test:
+- [x] Add `Test_PrefabInstantiateFailsForActorOnlyComponentDataAndCleansUp` after the previous test:
 
 ```cpp
     bool Test_PrefabInstantiateFailsForActorOnlyComponentDataAndCleansUp()
@@ -181,7 +181,7 @@
     }
 ```
 
-- [ ] Register the four tests in `main()`:
+- [x] Register the four tests in `main()`:
 
 ```cpp
     suite.AddTest("PrefabSerializesLegacyComponentPayloads",
@@ -194,7 +194,7 @@
                   Test_PrefabInstantiatesRegisteredLegacyComponentPayloads);
 ```
 
-- [ ] Build the focused target and confirm RED:
+- [x] Build the focused target and confirm RED:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -211,14 +211,14 @@ Expected result before implementation: all four new tests fail. The current code
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Include\Scene\SceneEntity.h`
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\SceneEntity.cpp`
 
-- [ ] Add this public method declaration after `AddComponent(...)` in `SceneEntity.h`:
+- [x] Add this public method declaration after `AddComponent(...)` in `SceneEntity.h`:
 
 ```cpp
         /// Add an already-created legacy component and transfer ownership.
         Component* AddOwnedComponent(std::unique_ptr<Component> component);
 ```
 
-- [ ] Add this implementation in `SceneEntity.cpp` after the constructor:
+- [x] Add this implementation in `SceneEntity.cpp` after the constructor:
 
 ```cpp
 Component* SceneEntity::AddOwnedComponent(std::unique_ptr<Component> component)
@@ -244,7 +244,7 @@ Component* SceneEntity::AddOwnedComponent(std::unique_ptr<Component> component)
 }
 ```
 
-- [ ] Build the focused target:
+- [x] Build the focused target:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -259,7 +259,7 @@ Expected result: target builds; registered legacy component instantiation still 
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\Prefab.cpp`
 
-- [ ] Replace the legacy component serialization block in `Prefab::SerializeEntity(...)` with:
+- [x] Replace the legacy component serialization block in `Prefab::SerializeEntity(...)` with:
 
 ```cpp
     for (const auto& [typeIndex, component] : entity->GetComponents())
@@ -273,7 +273,7 @@ Expected result: target builds; registered legacy component instantiation still 
     }
 ```
 
-- [ ] Add this `componentData` reconstruction block at the start of `Prefab::CreateComponents(...)`, before `actorComponentData` is processed:
+- [x] Add this `componentData` reconstruction block at the start of `Prefab::CreateComponents(...)`, before `actorComponentData` is processed:
 
 ```cpp
     for (const auto& [className, serializedData] : data.componentData)
@@ -301,7 +301,7 @@ Expected result: target builds; registered legacy component instantiation still 
     }
 ```
 
-- [ ] Build and run focused validation:
+- [x] Build and run focused validation:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -317,7 +317,7 @@ Expected result: all resource instantiation tests pass, including the four new l
 **Files:**
 - No additional source files.
 
-- [ ] Run whitespace check:
+- [x] Run whitespace check:
 
 ```powershell
 git diff --check
@@ -325,7 +325,7 @@ git diff --check
 
 Expected result: exit code 0. Line-ending warnings are acceptable if no whitespace-error lines are reported.
 
-- [ ] Build all validation targets and ModelViewer sequentially:
+- [x] Build all validation targets and ModelViewer sequentially:
 
 ```powershell
 foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','ResourceInstantiationValidation','RenderSceneValidation','SystemIntegrationTest','MaterialSystemValidation','RenderPassBindingValidation','ModelViewer')) {
@@ -336,7 +336,7 @@ foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','R
 
 Expected result: every target builds.
 
-- [ ] Run validation executables:
+- [x] Run validation executables:
 
 ```powershell
 .\build\Debug\Tests\Debug\ActorComponentValidation.exe
@@ -350,7 +350,7 @@ Expected result: every target builds.
 
 Expected result: every executable returns exit code 0 and reports all tests passing.
 
-- [ ] Run ModelViewer smoke:
+- [x] Run ModelViewer smoke:
 
 ```powershell
 $stdout = "build_codex\phase19_modelviewer_stdout.log"
@@ -367,7 +367,7 @@ Get-Content -Path $stderr
 
 Expected result: stdout includes model loaded, model instantiated, scene entity ready, GPU mesh upload, and render graph stats; stderr is empty.
 
-- [ ] Request exactly one code review using Dalton with this context:
+- [x] Request exactly one code review using Dalton with this context:
 
 ```text
 Review Phase 19 of the UE-style Actor Component framework.
@@ -384,11 +384,11 @@ Requirements:
 Please report Critical and Important issues first, with file/line references.
 ```
 
-- [ ] Fix any Critical or Important review findings before committing.
+- [x] Fix any Critical or Important review findings before committing.
 
-- [ ] Update every checkbox in this plan that was completed.
+- [x] Update every checkbox in this plan that was completed.
 
-- [ ] Commit the implementation:
+- [x] Commit the implementation:
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-15-ue-style-actor-component-phase19-prefab-legacy-component-data.md Scene\Include\Scene\SceneEntity.h Scene\Private\SceneEntity.cpp Scene\Private\Prefab.cpp Tests\ResourceInstantiationValidation\main.cpp
