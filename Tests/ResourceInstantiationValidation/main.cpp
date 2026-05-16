@@ -50,6 +50,36 @@ namespace
         const char* GetClassName() const override { return "PrefabCustomSceneActor"; }
     };
 
+    class PrefabPayloadComponent : public ActorComponent
+    {
+    public:
+        const char* GetClassName() const override { return "PrefabPayloadComponent"; }
+
+        std::string SerializePrefabData() const override
+        {
+            return payload;
+        }
+
+        void DeserializePrefabData(const std::string& data) override
+        {
+            payload = data;
+        }
+
+        void OnRegister() override
+        {
+            payloadObservedOnRegister = payload;
+        }
+
+        void InitializeComponent() override
+        {
+            payloadObservedOnInitialize = payload;
+        }
+
+        std::string payload;
+        std::string payloadObservedOnRegister;
+        std::string payloadObservedOnInitialize;
+    };
+
     class WorldLoadModelLoader : public IResourceLoader
     {
     public:
@@ -407,6 +437,34 @@ namespace
         return true;
     }
 
+    bool Test_PrefabSerializesActorComponentPayloads()
+    {
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        ActorSpawnParams params;
+        params.name = "PayloadSource";
+        SceneEntity* entity = sceneManager.SpawnActor(params);
+        TEST_ASSERT_NOT_NULL(entity);
+
+        auto* component = static_cast<Actor*>(entity)->AddComponent<PrefabPayloadComponent>();
+        TEST_ASSERT_NOT_NULL(component);
+        component->payload = "health=75;tag=elite";
+
+        auto prefab = Prefab::CreateFromEntity(entity);
+        TEST_ASSERT_NOT_NULL(prefab);
+        const PrefabEntityData* data = prefab->GetRootData();
+        TEST_ASSERT_NOT_NULL(data);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), data->actorComponentData.size());
+        TEST_ASSERT_EQ(std::string("PrefabPayloadComponent"),
+                       data->actorComponentData[0].className);
+        TEST_ASSERT_EQ(std::string("health=75;tag=elite"),
+                       data->actorComponentData[0].serializedData);
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_PrefabSerializesActorClassNames()
     {
         SceneManager sceneManager;
@@ -537,6 +595,38 @@ namespace
         TEST_ASSERT_EQ(static_cast<size_t>(2), sceneManager.GetPrimitives().size());
 
         sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstantiatesActorComponentPayloads()
+    {
+        ComponentFactory::ClearComponentClasses();
+        ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>("PrefabPayloadComponent");
+
+        PrefabEntityData data;
+        data.name = "PayloadPrefab";
+        data.actorComponentData.push_back({"PrefabPayloadComponent", "ammo=12;mode=burst"});
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(instance);
+
+        auto* component = static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>();
+        TEST_ASSERT_NOT_NULL(component);
+        TEST_ASSERT_EQ(std::string("ammo=12;mode=burst"), component->payload);
+        TEST_ASSERT_EQ(std::string("ammo=12;mode=burst"),
+                       component->payloadObservedOnRegister);
+        TEST_ASSERT_EQ(std::string("ammo=12;mode=burst"),
+                       component->payloadObservedOnInitialize);
+        TEST_ASSERT_TRUE(component->IsRegistered());
+        TEST_ASSERT_TRUE(component->IsInitialized());
+
+        sceneManager.Shutdown();
+        ComponentFactory::ClearComponentClasses();
         return true;
     }
 
@@ -683,6 +773,8 @@ int main()
                   Test_ComponentFactoryRegisterDefaultsPreservesCustomCreators);
     suite.AddTest("PrefabSerializesActorComponentClassNames",
                   Test_PrefabSerializesActorComponentClassNames);
+    suite.AddTest("PrefabSerializesActorComponentPayloads",
+                  Test_PrefabSerializesActorComponentPayloads);
     suite.AddTest("PrefabSerializesActorClassNames",
                   Test_PrefabSerializesActorClassNames);
     suite.AddTest("PrefabInstantiatesRegisteredActorClasses",
@@ -691,6 +783,8 @@ int main()
                   Test_PrefabInstantiateFailsForMissingActorClassAndCleansUp);
     suite.AddTest("PrefabInstantiatesRegisteredActorComponentClasses",
                   Test_PrefabInstantiatesRegisteredActorComponentClasses);
+    suite.AddTest("PrefabInstantiatesActorComponentPayloads",
+                  Test_PrefabInstantiatesActorComponentPayloads);
     suite.AddTest("PrefabInstantiateAsChildBuildsSpawnedHierarchy",
                   Test_PrefabInstantiateAsChildBuildsSpawnedHierarchy);
     suite.AddTest("WorldLoadModelResourceReplacesSceneContent",

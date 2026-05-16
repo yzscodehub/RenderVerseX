@@ -253,7 +253,7 @@ void Prefab::SerializeEntity(const SceneEntity* entity, int32_t parentIndex)
         if (dynamic_cast<Component*>(actorComponent.get()))
             continue;
 
-        data.actorComponentData.push_back({className, ""});
+        data.actorComponentData.push_back({className, actorComponent->SerializePrefabData()});
     }
 
     int32_t currentIndex = static_cast<int32_t>(m_entities.size());
@@ -273,11 +273,11 @@ void Prefab::CreateComponents(SceneEntity* entity, const PrefabEntityData& data)
 
     for (const auto& componentData : data.actorComponentData)
     {
-        (void)componentData.serializedData;
-
         auto component = ComponentFactory::CreateComponentByClassName(componentData.className);
         if (!component)
             continue;
+
+        component->DeserializePrefabData(componentData.serializedData);
 
         auto* raw = component.get();
         ActorComponent* inserted = static_cast<Actor*>(entity)->AddOwnedComponent(std::move(component));

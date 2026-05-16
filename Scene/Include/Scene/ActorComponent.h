@@ -5,6 +5,8 @@
  * @brief UE-style base class for actor-owned components
  */
 
+#include <string>
+
 namespace RVX
 {
     class Actor;
@@ -33,6 +35,13 @@ namespace RVX
         // =====================================================================
 
         virtual const char* GetClassName() const { return "ActorComponent"; }
+
+        // =====================================================================
+        // Prefab Serialization
+        // =====================================================================
+
+        virtual std::string SerializePrefabData() const { return {}; }
+        virtual void DeserializePrefabData(const std::string& data) { (void)data; }
 
         // =====================================================================
         // Owner and State

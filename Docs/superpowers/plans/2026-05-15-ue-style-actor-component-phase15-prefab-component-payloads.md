@@ -40,7 +40,7 @@
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ResourceInstantiationValidation\main.cpp`
 
-- [ ] Add this test component inside the anonymous namespace after `PrefabCustomSceneActor`:
+- [x] Add this test component inside the anonymous namespace after `PrefabCustomSceneActor`:
 
 ```cpp
     class PrefabPayloadComponent : public ActorComponent
@@ -74,7 +74,7 @@
     };
 ```
 
-- [ ] Add `Test_PrefabSerializesActorComponentPayloads` after `Test_PrefabSerializesActorComponentClassNames`:
+- [x] Add `Test_PrefabSerializesActorComponentPayloads` after `Test_PrefabSerializesActorComponentClassNames`:
 
 ```cpp
     bool Test_PrefabSerializesActorComponentPayloads()
@@ -106,7 +106,7 @@
     }
 ```
 
-- [ ] Add `Test_PrefabInstantiatesActorComponentPayloads` after `Test_PrefabInstantiatesRegisteredActorComponentClasses`:
+- [x] Add `Test_PrefabInstantiatesActorComponentPayloads` after `Test_PrefabInstantiatesRegisteredActorComponentClasses`:
 
 ```cpp
     bool Test_PrefabInstantiatesActorComponentPayloads()
@@ -142,7 +142,7 @@
     }
 ```
 
-- [ ] Register the two tests in `main()` near the existing prefab actor-component tests:
+- [x] Register the two tests in `main()` near the existing prefab actor-component tests:
 
 ```cpp
     suite.AddTest("PrefabSerializesActorComponentPayloads",
@@ -151,7 +151,7 @@
                   Test_PrefabInstantiatesActorComponentPayloads);
 ```
 
-- [ ] Build the focused target and confirm RED:
+- [x] Build the focused target and confirm RED:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -167,13 +167,13 @@ Expected result before implementation: the target fails to compile because `Acto
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Include\Scene\ActorComponent.h`
 
-- [ ] Add the standard library include after `#pragma once` and the file comment:
+- [x] Add the standard library include after `#pragma once` and the file comment:
 
 ```cpp
 #include <string>
 ```
 
-- [ ] Add this public section after `GetClassName()`:
+- [x] Add this public section after `GetClassName()`:
 
 ```cpp
         // =====================================================================
@@ -184,7 +184,7 @@ Expected result before implementation: the target fails to compile because `Acto
         virtual void DeserializePrefabData(const std::string& data) { (void)data; }
 ```
 
-- [ ] Build the focused target and confirm the tests now compile but payload behavior still fails:
+- [x] Build the focused target and confirm the tests now compile but payload behavior still fails:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -200,7 +200,7 @@ Expected result after only this task: the executable builds, but at least one ne
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\Prefab.cpp`
 
-- [ ] In `Prefab::SerializeEntity`, replace:
+- [x] In `Prefab::SerializeEntity`, replace:
 
 ```cpp
         data.actorComponentData.push_back({className, ""});
@@ -212,7 +212,7 @@ with:
         data.actorComponentData.push_back({className, actorComponent->SerializePrefabData()});
 ```
 
-- [ ] In `Prefab::CreateComponents`, replace the unused serialized-data cast and move payload replay before insertion:
+- [x] In `Prefab::CreateComponents`, replace the unused serialized-data cast and move payload replay before insertion:
 
 ```cpp
     for (const auto& componentData : data.actorComponentData)
@@ -242,7 +242,7 @@ with:
         ActorComponent* inserted = static_cast<Actor*>(entity)->AddOwnedComponent(std::move(component));
 ```
 
-- [ ] Build and run focused validation:
+- [x] Build and run focused validation:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -258,7 +258,7 @@ Expected result: all resource instantiation tests pass, including the two new pa
 **Files:**
 - No additional source files.
 
-- [ ] Run whitespace check:
+- [x] Run whitespace check:
 
 ```powershell
 git diff --check
@@ -266,7 +266,7 @@ git diff --check
 
 Expected result: exit code 0. Line-ending warnings are acceptable if no whitespace-error lines are reported.
 
-- [ ] Build all validation targets and ModelViewer sequentially:
+- [x] Build all validation targets and ModelViewer sequentially:
 
 ```powershell
 foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','ResourceInstantiationValidation','RenderSceneValidation','SystemIntegrationTest','MaterialSystemValidation','RenderPassBindingValidation','ModelViewer')) {
@@ -277,7 +277,7 @@ foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','R
 
 Expected result: every target builds.
 
-- [ ] Run validation executables:
+- [x] Run validation executables:
 
 ```powershell
 .\build\Debug\Tests\Debug\ActorComponentValidation.exe
@@ -291,7 +291,7 @@ Expected result: every target builds.
 
 Expected result: every executable returns exit code 0 and reports all tests passing.
 
-- [ ] Run ModelViewer smoke:
+- [x] Run ModelViewer smoke:
 
 ```powershell
 $stdout = "build_codex\phase15_modelviewer_stdout.log"
@@ -308,7 +308,7 @@ Get-Content -Path $stderr
 
 Expected result: stdout includes model loaded, model instantiated, scene entity ready, GPU mesh upload, and render graph stats; stderr is empty.
 
-- [ ] Request exactly one code review using Dalton with this context:
+- [x] Request exactly one code review using Dalton with this context:
 
 ```text
 Review Phase 15 of the UE-style Actor Component framework.
@@ -324,11 +324,11 @@ Requirements:
 Please report Critical and Important issues first, with file/line references.
 ```
 
-- [ ] Fix any Critical or Important review findings before committing.
+- [x] Fix any Critical or Important review findings before committing.
 
-- [ ] Update every checkbox in this plan that was completed.
+- [x] Update every checkbox in this plan that was completed.
 
-- [ ] Commit the implementation:
+- [x] Commit the implementation:
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-15-ue-style-actor-component-phase15-prefab-component-payloads.md Scene\Include\Scene\ActorComponent.h Scene\Private\Prefab.cpp Tests\ResourceInstantiationValidation\main.cpp
