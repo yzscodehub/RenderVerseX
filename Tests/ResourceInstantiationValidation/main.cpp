@@ -3,6 +3,7 @@
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/ModelResource.h"
 #include "Scene/Actor.h"
+#include "Scene/ActorFactory.h"
 #include "Scene/Component.h"
 #include "Scene/ComponentFactory.h"
 #include "Scene/Components/MeshRendererComponent.h"
@@ -33,6 +34,17 @@ namespace
     {
     public:
         void MarkLoaded() { SetState(ResourceState::Loaded); }
+    };
+
+    class PrefabCustomSceneActor : public SceneEntity
+    {
+    public:
+        explicit PrefabCustomSceneActor(const std::string& name = "PrefabCustomSceneActorDefault")
+            : SceneEntity(name)
+        {
+        }
+
+        const char* GetClassName() const override { return "PrefabCustomSceneActor"; }
     };
 
     ResourceHandle<MeshResource> MakeMeshResource(ResourceId id)
@@ -309,6 +321,103 @@ namespace
         return true;
     }
 
+    bool Test_PrefabSerializesActorClassNames()
+    {
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        ActorSpawnParams rootParams;
+        rootParams.name = "CustomPrefabRoot";
+        auto* root = sceneManager.SpawnActor<PrefabCustomSceneActor>(rootParams);
+        TEST_ASSERT_NOT_NULL(root);
+
+        ActorSpawnParams childParams;
+        childParams.name = "CustomPrefabChild";
+        childParams.parent = root;
+        auto* child = sceneManager.SpawnActor<PrefabCustomSceneActor>(childParams);
+        TEST_ASSERT_NOT_NULL(child);
+
+        auto prefab = Prefab::CreateFromEntity(root);
+        TEST_ASSERT_NOT_NULL(prefab.get());
+        TEST_ASSERT_EQ(static_cast<size_t>(2), prefab->GetEntityCount());
+
+        const auto* rootData = prefab->GetEntityData(0);
+        const auto* childData = prefab->GetEntityData(1);
+        TEST_ASSERT_NOT_NULL(rootData);
+        TEST_ASSERT_NOT_NULL(childData);
+        TEST_ASSERT_EQ(std::string("PrefabCustomSceneActor"), rootData->actorClassName);
+        TEST_ASSERT_EQ(std::string("PrefabCustomSceneActor"), childData->actorClassName);
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstantiatesRegisteredActorClasses()
+    {
+        ActorFactory::ClearAll();
+        ActorFactory::Register<PrefabCustomSceneActor>("PrefabCustomSceneActor");
+
+        PrefabEntityData rootData;
+        rootData.name = "RegisteredPrefabRoot";
+        rootData.actorClassName = "PrefabCustomSceneActor";
+        rootData.position = Vec3(1.0f, 2.0f, 3.0f);
+
+        PrefabEntityData childData;
+        childData.name = "RegisteredPrefabChild";
+        childData.actorClassName = "PrefabCustomSceneActor";
+        childData.parentIndex = 0;
+        childData.position = Vec3(4.0f, 5.0f, 6.0f);
+
+        auto prefab = Prefab::CreateFromData({rootData, childData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        TEST_ASSERT_NOT_NULL(dynamic_cast<PrefabCustomSceneActor*>(root));
+        TEST_ASSERT_EQ(std::string("RegisteredPrefabRoot"), root->GetName());
+        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), root->GetPosition());
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        TEST_ASSERT_EQ(static_cast<size_t>(2), sceneManager.GetEntityCount());
+
+        SceneEntity* child = root->GetChildren()[0];
+        TEST_ASSERT_NOT_NULL(child);
+        TEST_ASSERT_NOT_NULL(dynamic_cast<PrefabCustomSceneActor*>(child));
+        TEST_ASSERT_EQ(root, child->GetParent());
+        TEST_ASSERT_EQ(std::string("RegisteredPrefabChild"), child->GetName());
+        TEST_ASSERT_EQ(Vec3(4.0f, 5.0f, 6.0f), child->GetPosition());
+
+        sceneManager.Shutdown();
+        ActorFactory::ClearAll();
+        return true;
+    }
+
+    bool Test_PrefabInstantiateFailsForMissingActorClassAndCleansUp()
+    {
+        ActorFactory::ClearAll();
+
+        PrefabEntityData rootData;
+        rootData.name = "PlainRootBeforeMissingChild";
+
+        PrefabEntityData childData;
+        childData.name = "MissingClassChild";
+        childData.actorClassName = "MissingPrefabActorClass";
+        childData.parentIndex = 0;
+
+        auto prefab = Prefab::CreateFromData({rootData, childData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_EQ(nullptr, root);
+        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_PrefabInstantiatesRegisteredActorComponentClasses()
     {
         ComponentFactory::ClearComponentClasses();
@@ -410,6 +519,12 @@ int main()
                   Test_ComponentFactoryRegisterDefaultsPreservesCustomCreators);
     suite.AddTest("PrefabSerializesActorComponentClassNames",
                   Test_PrefabSerializesActorComponentClassNames);
+    suite.AddTest("PrefabSerializesActorClassNames",
+                  Test_PrefabSerializesActorClassNames);
+    suite.AddTest("PrefabInstantiatesRegisteredActorClasses",
+                  Test_PrefabInstantiatesRegisteredActorClasses);
+    suite.AddTest("PrefabInstantiateFailsForMissingActorClassAndCleansUp",
+                  Test_PrefabInstantiateFailsForMissingActorClassAndCleansUp);
     suite.AddTest("PrefabInstantiatesRegisteredActorComponentClasses",
                   Test_PrefabInstantiatesRegisteredActorComponentClasses);
     suite.AddTest("PrefabInstantiateAsChildBuildsSpawnedHierarchy",

@@ -60,6 +60,7 @@ struct PrefabActorComponentData
 struct PrefabEntityData
 {
     std::string name;
+    std::string actorClassName;
     int32_t parentIndex = -1;  // -1 = root
     
     // Transform

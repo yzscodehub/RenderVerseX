@@ -96,6 +96,7 @@ namespace RVX
             m_name = name;
         }
 
+        const char* GetClassName() const override { return "SceneEntity"; }
         virtual EntityType GetEntityType() const { return EntityType::Node; }
 
         bool IsActive() const override { return m_active; }

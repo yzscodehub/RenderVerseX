@@ -1,6 +1,6 @@
 # UE-Style Actor Component Phase 13 Prefab Actor Classes Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Preserve actor subclass identity when creating and instantiating prefabs so registered `SceneEntity` subclasses do not collapse back into plain `SceneEntity` instances.
 
@@ -43,13 +43,13 @@
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ResourceInstantiationValidation\main.cpp`
 
-- [ ] Add the ActorFactory include near other Scene includes:
+- [x] Add the ActorFactory include near other Scene includes:
 
 ```cpp
 #include "Scene/ActorFactory.h"
 ```
 
-- [ ] Add this default-constructible actor class inside the anonymous namespace near `TestMaterialResource`:
+- [x] Add this default-constructible actor class inside the anonymous namespace near `TestMaterialResource`:
 
 ```cpp
 class PrefabCustomSceneActor : public SceneEntity
@@ -64,7 +64,7 @@ public:
 };
 ```
 
-- [ ] Add `Test_PrefabSerializesActorClassNames` after `Test_PrefabSerializesActorComponentClassNames`:
+- [x] Add `Test_PrefabSerializesActorClassNames` after `Test_PrefabSerializesActorComponentClassNames`:
 
 ```cpp
 bool Test_PrefabSerializesActorClassNames()
@@ -99,7 +99,7 @@ bool Test_PrefabSerializesActorClassNames()
 }
 ```
 
-- [ ] Add `Test_PrefabInstantiatesRegisteredActorClasses` after the previous test:
+- [x] Add `Test_PrefabInstantiatesRegisteredActorClasses` after the previous test:
 
 ```cpp
 bool Test_PrefabInstantiatesRegisteredActorClasses()
@@ -144,7 +144,7 @@ bool Test_PrefabInstantiatesRegisteredActorClasses()
 }
 ```
 
-- [ ] Add `Test_PrefabInstantiateFailsForMissingActorClassAndCleansUp` after the previous test:
+- [x] Add `Test_PrefabInstantiateFailsForMissingActorClassAndCleansUp` after the previous test:
 
 ```cpp
 bool Test_PrefabInstantiateFailsForMissingActorClassAndCleansUp()
@@ -173,7 +173,7 @@ bool Test_PrefabInstantiateFailsForMissingActorClassAndCleansUp()
 }
 ```
 
-- [ ] Register the three tests in `main()` after the current prefab tests:
+- [x] Register the three tests in `main()` after the current prefab tests:
 
 ```cpp
 suite.AddTest("PrefabSerializesActorClassNames",
@@ -184,7 +184,7 @@ suite.AddTest("PrefabInstantiateFailsForMissingActorClassAndCleansUp",
               Test_PrefabInstantiateFailsForMissingActorClassAndCleansUp);
 ```
 
-- [ ] Build the focused target and confirm RED:
+- [x] Build the focused target and confirm RED:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -201,26 +201,26 @@ Expected result before implementation: build fails because `PrefabEntityData` ha
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Include\Scene\Prefab.h`
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\Prefab.cpp`
 
-- [ ] In `SceneEntity.h`, add this override in the public class interface near other type methods:
+- [x] In `SceneEntity.h`, add this override in the public class interface near other type methods:
 
 ```cpp
 const char* GetClassName() const override { return "SceneEntity"; }
 ```
 
-- [ ] In `Prefab.h`, add this field near the top of `PrefabEntityData`, immediately after `name`:
+- [x] In `Prefab.h`, add this field near the top of `PrefabEntityData`, immediately after `name`:
 
 ```cpp
 std::string actorClassName;
 ```
 
-- [ ] In `Prefab.cpp`, update `GetMemoryUsage()` inside the entity loop:
+- [x] In `Prefab.cpp`, update `GetMemoryUsage()` inside the entity loop:
 
 ```cpp
 size += entity.name.capacity();
 size += entity.actorClassName.capacity();
 ```
 
-- [ ] In `Prefab::SerializeEntity`, record the entity actor class immediately after the name:
+- [x] In `Prefab::SerializeEntity`, record the entity actor class immediately after the name:
 
 ```cpp
 data.name = entity->GetName();
@@ -234,7 +234,7 @@ data.actorClassName = entity->GetClassName();
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\Prefab.cpp`
 
-- [ ] In `Prefab::InstantiateInternal`, replace the entity creation block inside the first loop with class-aware creation:
+- [x] In `Prefab::InstantiateInternal`, replace the entity creation block inside the first loop with class-aware creation:
 
 ```cpp
 ActorSpawnParams params;
@@ -260,9 +260,9 @@ if (!entity)
 }
 ```
 
-- [ ] Keep the second pass unchanged for transform, hierarchy, layer mask, active state, and component reconstruction.
+- [x] Keep the second pass unchanged for transform, hierarchy, layer mask, active state, and component reconstruction.
 
-- [ ] Build and run focused validation:
+- [x] Build and run focused validation:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -278,7 +278,7 @@ Expected result: all resource instantiation tests pass, including the new prefab
 **Files:**
 - No additional source files.
 
-- [ ] Build all validation targets and ModelViewer sequentially:
+- [x] Build all validation targets and ModelViewer sequentially:
 
 ```powershell
 foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','ResourceInstantiationValidation','RenderSceneValidation','SystemIntegrationTest','MaterialSystemValidation','RenderPassBindingValidation','ModelViewer')) {
@@ -289,7 +289,7 @@ foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','R
 
 Expected result: every target builds. If the single multi-target `cmake --build ... --target A B C` command hits `LNK1163`, use this sequential form; the current build tree has shown intermittent MSVC incremental linker COMDAT errors only in the combined target invocation.
 
-- [ ] Run validation executables:
+- [x] Run validation executables:
 
 ```powershell
 .\build\Debug\Tests\Debug\ActorComponentValidation.exe
@@ -303,7 +303,7 @@ Expected result: every target builds. If the single multi-target `cmake --build 
 
 Expected result: every executable returns exit code 0 and reports all tests passing.
 
-- [ ] Run ModelViewer smoke:
+- [x] Run ModelViewer smoke:
 
 ```powershell
 $stdout = "build_codex\phase13_modelviewer_stdout.log"
@@ -320,7 +320,7 @@ Get-Content -Path $stderr
 
 Expected result: stdout includes model loaded, model instantiated, scene entity ready, GPU mesh upload, and render graph stats; stderr is empty.
 
-- [ ] Request exactly one code review using Dalton with this context:
+- [x] Request exactly one code review using Dalton with this context:
 
 ```text
 Review Phase 13 of the UE-style Actor Component framework.
@@ -335,11 +335,11 @@ Requirements:
 Please report Critical and Important issues first, with file/line references.
 ```
 
-- [ ] Fix any Critical or Important review findings before committing.
+- [x] Fix any Critical or Important review findings before committing.
 
-- [ ] Update every checkbox in this plan that was completed.
+- [x] Update every checkbox in this plan that was completed.
 
-- [ ] Commit the implementation:
+- [x] Commit the implementation:
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-15-ue-style-actor-component-phase13-prefab-actor-classes.md Scene\Include\Scene\SceneEntity.h Scene\Include\Scene\Prefab.h Scene\Private\Prefab.cpp Tests\ResourceInstantiationValidation\main.cpp

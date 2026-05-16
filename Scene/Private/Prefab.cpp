@@ -22,6 +22,7 @@ size_t Prefab::GetMemoryUsage() const
     {
         size += sizeof(PrefabEntityData);
         size += entity.name.capacity();
+        size += entity.actorClassName.capacity();
         for (const auto& [type, data] : entity.componentData)
         {
             size += type.capacity() + data.capacity();
@@ -142,7 +143,16 @@ SceneEntity* Prefab::InstantiateInternal(SceneManager& sceneManager, const Vec3&
         ActorSpawnParams params;
         params.name = entityData.name;
 
-        SceneEntity* entity = sceneManager.SpawnActor(params);
+        SceneEntity* entity = nullptr;
+        if (entityData.actorClassName.empty() || entityData.actorClassName == "SceneEntity")
+        {
+            entity = sceneManager.SpawnActor(params);
+        }
+        else
+        {
+            entity = sceneManager.SpawnActorByClassName(entityData.actorClassName, params);
+        }
+
         if (!entity)
         {
             // Cleanup on failure
@@ -210,6 +220,7 @@ void Prefab::SerializeEntity(const SceneEntity* entity, int32_t parentIndex)
 {
     PrefabEntityData data;
     data.name = entity->GetName();
+    data.actorClassName = entity->GetClassName();
     data.parentIndex = parentIndex;
     data.position = entity->GetPosition();
     data.rotation = entity->GetRotation();
