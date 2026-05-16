@@ -39,7 +39,7 @@
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ResourceInstantiationValidation\main.cpp`
 
-- [ ] Add `Test_PrefabInstanceApplyToPrefabWritesRootEntityState` after `Test_PrefabInstanceRevertPropertyKeepsUnsupportedOverride`:
+- [x] Add `Test_PrefabInstanceApplyToPrefabWritesRootEntityState` after `Test_PrefabInstanceRevertPropertyKeepsUnsupportedOverride`:
 
 ```cpp
     bool Test_PrefabInstanceApplyToPrefabWritesRootEntityState()
@@ -86,7 +86,7 @@
     }
 ```
 
-- [ ] Add `Test_PrefabInstanceApplyToPrefabClearsRootAliasOverrides` after the previous test:
+- [x] Add `Test_PrefabInstanceApplyToPrefabClearsRootAliasOverrides` after the previous test:
 
 ```cpp
     bool Test_PrefabInstanceApplyToPrefabClearsRootAliasOverrides()
@@ -127,7 +127,7 @@
     }
 ```
 
-- [ ] Add `Test_PrefabInstanceApplyToPrefabPreservesUnsupportedOverrides` after the previous test:
+- [x] Add `Test_PrefabInstanceApplyToPrefabPreservesUnsupportedOverrides` after the previous test:
 
 ```cpp
     bool Test_PrefabInstanceApplyToPrefabPreservesUnsupportedOverrides()
@@ -167,7 +167,7 @@
     }
 ```
 
-- [ ] Add `Test_PrefabInstanceApplyToPrefabWithoutPrefabKeepsOverrides` after the previous test:
+- [x] Add `Test_PrefabInstanceApplyToPrefabWithoutPrefabKeepsOverrides` after the previous test:
 
 ```cpp
     bool Test_PrefabInstanceApplyToPrefabWithoutPrefabKeepsOverrides()
@@ -194,7 +194,7 @@
     }
 ```
 
-- [ ] Register the four tests in `main()` after `PrefabInstanceRevertPropertyKeepsUnsupportedOverride`:
+- [x] Register the four tests in `main()` after `PrefabInstanceRevertPropertyKeepsUnsupportedOverride`:
 
 ```cpp
     suite.AddTest("PrefabInstanceApplyToPrefabWritesRootEntityState",
@@ -207,7 +207,7 @@
                   Test_PrefabInstanceApplyToPrefabWithoutPrefabKeepsOverrides);
 ```
 
-- [ ] Build the focused target and confirm RED:
+- [x] Build the focused target and confirm RED:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -224,14 +224,14 @@ Expected result before implementation: the executable builds, and at least the r
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Include\Scene\Prefab.h`
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\Prefab.cpp`
 
-- [ ] Add this public method declaration after `GetRootData()` in `Prefab.h`:
+- [x] Add this public method declaration after `GetRootData()` in `Prefab.h`:
 
 ```cpp
     /// Update root entity data from a live entity. Returns false when the prefab has no root.
     bool UpdateRootEntityStateFrom(const SceneEntity& entity);
 ```
 
-- [ ] Add this helper inside the anonymous namespace in `Prefab.cpp`:
+- [x] Add this helper inside the anonymous namespace in `Prefab.cpp`:
 
 ```cpp
     void CapturePrefabEntityProperties(PrefabEntityData& data, const SceneEntity& entity)
@@ -244,7 +244,7 @@ Expected result before implementation: the executable builds, and at least the r
     }
 ```
 
-- [ ] Add this implementation after `Prefab::GetRootData()`:
+- [x] Add this implementation after `Prefab::GetRootData()`:
 
 ```cpp
 bool Prefab::UpdateRootEntityStateFrom(const SceneEntity& entity)
@@ -259,7 +259,7 @@ bool Prefab::UpdateRootEntityStateFrom(const SceneEntity& entity)
 }
 ```
 
-- [ ] Build and run focused validation:
+- [x] Build and run focused validation:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -275,7 +275,7 @@ Expected result: target builds, but apply tests still fail until `PrefabInstance
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\Prefab.cpp`
 
-- [ ] Add this helper in the anonymous namespace:
+- [x] Add this helper in the anonymous namespace:
 
 ```cpp
     bool IsSupportedPrefabEntityProperty(const std::string& propertyPath)
@@ -288,9 +288,9 @@ Expected result: target builds, but apply tests still fail until `PrefabInstance
     }
 ```
 
-- [ ] Leave the existing `ApplyPrefabEntityProperty(...)` setter branches unchanged. Use `IsSupportedPrefabEntityProperty(...)` only from the cleanup helper below.
+- [x] Leave the existing `ApplyPrefabEntityProperty(...)` setter branches unchanged. Use `IsSupportedPrefabEntityProperty(...)` only from the cleanup helper below.
 
-- [ ] Add this helper in the anonymous namespace:
+- [x] Add this helper in the anonymous namespace:
 
 ```cpp
     void RemoveSupportedPrefabEntityPropertyOverrides(std::vector<PropertyOverride>& overrides)
@@ -306,7 +306,7 @@ Expected result: target builds, but apply tests still fail until `PrefabInstance
     }
 ```
 
-- [ ] Replace `PrefabInstance::ApplyToPrefab()` with:
+- [x] Replace `PrefabInstance::ApplyToPrefab()` with:
 
 ```cpp
 void PrefabInstance::ApplyToPrefab()
@@ -329,7 +329,7 @@ void PrefabInstance::ApplyToPrefab()
 }
 ```
 
-- [ ] Build and run focused validation:
+- [x] Build and run focused validation:
 
 ```powershell
 cmake --build build\Debug --config Debug --target ResourceInstantiationValidation
@@ -345,7 +345,7 @@ Expected result: all resource instantiation tests pass, including the four new a
 **Files:**
 - No additional source files.
 
-- [ ] Run whitespace check:
+- [x] Run whitespace check:
 
 ```powershell
 git diff --check
@@ -353,7 +353,7 @@ git diff --check
 
 Expected result: exit code 0. Line-ending warnings are acceptable if no whitespace-error lines are reported.
 
-- [ ] Build all validation targets and ModelViewer sequentially:
+- [x] Build all validation targets and ModelViewer sequentially:
 
 ```powershell
 foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','ResourceInstantiationValidation','RenderSceneValidation','SystemIntegrationTest','MaterialSystemValidation','RenderPassBindingValidation','ModelViewer')) {
@@ -364,7 +364,7 @@ foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','R
 
 Expected result: every target builds.
 
-- [ ] Run validation executables:
+- [x] Run validation executables:
 
 ```powershell
 .\build\Debug\Tests\Debug\ActorComponentValidation.exe
@@ -378,7 +378,7 @@ Expected result: every target builds.
 
 Expected result: every executable returns exit code 0 and reports all tests passing.
 
-- [ ] Run ModelViewer smoke:
+- [x] Run ModelViewer smoke:
 
 ```powershell
 $stdout = "build_codex\phase18_modelviewer_stdout.log"
@@ -395,7 +395,7 @@ Get-Content -Path $stderr
 
 Expected result: stdout includes model loaded, model instantiated, scene entity ready, GPU mesh upload, and render graph stats; stderr is empty.
 
-- [ ] Request exactly one code review using Dalton with this context:
+- [x] Request exactly one code review using Dalton with this context:
 
 ```text
 Review Phase 18 of the UE-style Actor Component framework.
@@ -411,11 +411,11 @@ Requirements:
 Please report Critical and Important issues first, with file/line references.
 ```
 
-- [ ] Fix any Critical or Important review findings before committing.
+- [x] Fix any Critical or Important review findings before committing.
 
-- [ ] Update every checkbox in this plan that was completed.
+- [x] Update every checkbox in this plan that was completed.
 
-- [ ] Commit the implementation:
+- [x] Commit the implementation:
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-15-ue-style-actor-component-phase18-prefab-apply-root-state.md Scene\Include\Scene\Prefab.h Scene\Private\Prefab.cpp Tests\ResourceInstantiationValidation\main.cpp

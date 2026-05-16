@@ -160,6 +160,9 @@ public:
     /// Get the root entity data
     const PrefabEntityData* GetRootData() const;
 
+    /// Update root entity data from a live entity. Returns false when the prefab has no root.
+    bool UpdateRootEntityStateFrom(const SceneEntity& entity);
+
     /// Add entity data to the prefab
     void AddEntityData(PrefabEntityData data);
 

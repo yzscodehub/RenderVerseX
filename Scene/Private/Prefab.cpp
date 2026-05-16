@@ -15,6 +15,15 @@ namespace
         return componentType.empty() || componentType == "SceneEntity" || componentType == "Actor";
     }
 
+    bool IsSupportedPrefabEntityProperty(const std::string& propertyPath)
+    {
+        return propertyPath == "position" ||
+               propertyPath == "rotation" ||
+               propertyPath == "scale" ||
+               propertyPath == "layerMask" ||
+               propertyPath == "isActive";
+    }
+
     void RemovePrefabEntityPropertyOverrides(std::vector<PropertyOverride>& overrides,
                                              const std::string& propertyPath)
     {
@@ -23,6 +32,18 @@ namespace
                 [&](const PropertyOverride& override) {
                     return IsPrefabEntityOverrideTarget(override.componentType) &&
                            override.propertyPath == propertyPath;
+                }),
+            overrides.end()
+        );
+    }
+
+    void RemoveSupportedPrefabEntityPropertyOverrides(std::vector<PropertyOverride>& overrides)
+    {
+        overrides.erase(
+            std::remove_if(overrides.begin(), overrides.end(),
+                [&](const PropertyOverride& override) {
+                    return IsPrefabEntityOverrideTarget(override.componentType) &&
+                           IsSupportedPrefabEntityProperty(override.propertyPath);
                 }),
             overrides.end()
         );
@@ -72,6 +93,15 @@ namespace
         }
 
         return false;
+    }
+
+    void CapturePrefabEntityProperties(PrefabEntityData& data, const SceneEntity& entity)
+    {
+        data.position = entity.GetPosition();
+        data.rotation = entity.GetRotation();
+        data.scale = entity.GetScale();
+        data.layerMask = entity.GetLayerMask();
+        data.isActive = entity.IsActive();
     }
 } // namespace
 
@@ -178,6 +208,17 @@ const PrefabEntityData* Prefab::GetRootData() const
         return &m_entities[0];
     }
     return nullptr;
+}
+
+bool Prefab::UpdateRootEntityStateFrom(const SceneEntity& entity)
+{
+    if (m_entities.empty())
+    {
+        return false;
+    }
+
+    CapturePrefabEntityProperties(m_entities[0], entity);
+    return true;
 }
 
 void Prefab::AddEntityData(PrefabEntityData data)
@@ -470,8 +511,16 @@ void PrefabInstance::ApplyToPrefab()
         return;
     }
 
-    // TODO: Update prefab with current instance values
-    // This requires write access to the prefab and proper serialization
+    SceneEntity* owner = GetOwner();
+    if (!owner)
+    {
+        return;
+    }
+
+    if (m_prefab->UpdateRootEntityStateFrom(*owner))
+    {
+        RemoveSupportedPrefabEntityPropertyOverrides(m_overrides);
+    }
 }
 
 void PrefabInstance::Unpack()
