@@ -124,6 +124,11 @@ namespace RVX
 
     protected:
         virtual bool ShouldAutoRegisterComponent(ActorComponent* component) const;
+        void AssignComponentName(ActorComponent* component);
+        std::string MakeUniqueComponentName(const std::string& baseName,
+                                            const ActorComponent* ignoredComponent = nullptr) const;
+        bool IsComponentNameInUse(const std::string& name,
+                                  const ActorComponent* ignoredComponent = nullptr) const;
 
     private:
         struct PendingComponentRemoval
@@ -168,6 +173,7 @@ namespace RVX
 
         auto component = std::make_unique<T>(std::forward<Args>(args)...);
         T* ptr = component.get();
+        AssignComponentName(ptr);
         ptr->SetOwnerActor(this);
         m_components.push_back(std::move(component));
         ptr->OnComponentCreated();

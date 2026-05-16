@@ -42,7 +42,7 @@
 **Files:**
 - Modify: `E:\WorkSpace\RenderVerseX\Tests\ActorComponentValidation\main.cpp`
 
-- [ ] **Step 1: Add default and duplicate component name test**
+- [x] **Step 1: Add default and duplicate component name test**
 
 Add this test after `Test_ActorComponentLifecycleDefaults`:
 
@@ -62,7 +62,7 @@ Add this test after `Test_ActorComponentLifecycleDefaults`:
     }
 ```
 
-- [ ] **Step 2: Add explicit component name collision test**
+- [x] **Step 2: Add explicit component name collision test**
 
 Add this test after the default name test:
 
@@ -89,7 +89,7 @@ Add this test after the default name test:
     }
 ```
 
-- [ ] **Step 3: Add SceneEntity compatibility root name test**
+- [x] **Step 3: Add SceneEntity compatibility root name test**
 
 Add this test after the explicit name test:
 
@@ -104,7 +104,7 @@ Add this test after the explicit name test:
     }
 ```
 
-- [ ] **Step 4: Register the three tests**
+- [x] **Step 4: Register the three tests**
 
 Register them in `main()` immediately after `ActorComponentLifecycleDefaults`:
 
@@ -117,7 +117,7 @@ Register them in `main()` immediately after `ActorComponentLifecycleDefaults`:
                   Test_SceneEntityCompatibilityRootGetsDefaultComponentName);
 ```
 
-- [ ] **Step 5: Build and confirm RED**
+- [x] **Step 5: Build and confirm RED**
 
 Run:
 
@@ -136,7 +136,7 @@ Expected before implementation: the target fails to compile because `ActorCompon
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Include\Scene\Actor.h`
 - Modify: `E:\WorkSpace\RenderVerseX\Scene\Private\Actor.cpp`
 
-- [ ] **Step 1: Add `ActorComponent` name API**
+- [x] **Step 1: Add `ActorComponent` name API**
 
 In `ActorComponent.h`, add `<utility>` to the standard includes:
 
@@ -158,7 +158,7 @@ Add this private member before `m_owner`:
         std::string m_name;
 ```
 
-- [ ] **Step 2: Declare Actor naming helpers**
+- [x] **Step 2: Declare Actor naming helpers**
 
 In `Actor.h`, add these protected methods before the private section:
 
@@ -171,7 +171,7 @@ In `Actor.h`, add these protected methods before the private section:
                                   const ActorComponent* ignoredComponent = nullptr) const;
 ```
 
-- [ ] **Step 3: Call naming helper from `Actor::AddComponent<T>()`**
+- [x] **Step 3: Call naming helper from `Actor::AddComponent<T>()`**
 
 In `Actor.h`, inside `Actor::AddComponent<T>()`, after `ptr` is assigned and before `ptr->SetOwnerActor(this);`, add:
 
@@ -179,7 +179,7 @@ In `Actor.h`, inside `Actor::AddComponent<T>()`, after `ptr` is assigned and bef
         AssignComponentName(ptr);
 ```
 
-- [ ] **Step 4: Implement naming helpers in Actor.cpp**
+- [x] **Step 4: Implement naming helpers in Actor.cpp**
 
 In `Actor.cpp`, add this implementation after `Actor::~Actor()`:
 
@@ -232,7 +232,7 @@ void Actor::AssignComponentName(ActorComponent* component)
 }
 ```
 
-- [ ] **Step 5: Call naming helper from `Actor::AddOwnedComponent(...)`**
+- [x] **Step 5: Call naming helper from `Actor::AddOwnedComponent(...)`**
 
 In `Actor.cpp`, inside `Actor::AddOwnedComponent(...)`, after `ptr` is assigned and before `ptr->SetOwnerActor(this);`, add:
 
@@ -240,7 +240,7 @@ In `Actor.cpp`, inside `Actor::AddOwnedComponent(...)`, after `ptr` is assigned 
     AssignComponentName(ptr);
 ```
 
-- [ ] **Step 6: Build and run focused validation**
+- [x] **Step 6: Build and run focused validation**
 
 Run:
 
@@ -258,7 +258,7 @@ Expected result: all `ActorComponentValidation` tests pass, including the three 
 **Files:**
 - No additional source files.
 
-- [ ] **Step 1: Run whitespace check**
+- [x] **Step 1: Run whitespace check**
 
 ```powershell
 git diff --check
@@ -266,7 +266,7 @@ git diff --check
 
 Expected result: exit code 0. Line-ending warnings are acceptable if no whitespace-error lines are reported.
 
-- [ ] **Step 2: Build all validation targets and ModelViewer sequentially**
+- [x] **Step 2: Build all validation targets and ModelViewer sequentially**
 
 ```powershell
 foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','ResourceInstantiationValidation','RenderSceneValidation','SystemIntegrationTest','MaterialSystemValidation','RenderPassBindingValidation','ModelViewer')) {
@@ -278,7 +278,7 @@ foreach ($target in @('ActorComponentValidation','SpatialComponentValidation','R
 
 Expected result: every target builds.
 
-- [ ] **Step 3: Run validation executables**
+- [x] **Step 3: Run validation executables**
 
 ```powershell
 $tests = @(
@@ -299,7 +299,7 @@ foreach ($test in $tests) {
 
 Expected result: every executable returns exit code 0 and reports all tests passing.
 
-- [ ] **Step 4: Run ModelViewer smoke**
+- [x] **Step 4: Run ModelViewer smoke**
 
 ```powershell
 $stdout = "build_codex\phase23_modelviewer_stdout.log"
@@ -316,7 +316,7 @@ Get-Content -Path $stderr
 
 Expected result: stdout includes model loaded, model instantiated, scene entity ready, GPU mesh upload, and render graph stats; stderr is empty.
 
-- [ ] **Step 5: Request exactly one code review using Dalton**
+- [x] **Step 5: Request exactly one code review using Dalton**
 
 Use this review context:
 
@@ -335,15 +335,15 @@ Requirements:
 Please report only Critical and Important issues, with file/line references.
 ```
 
-- [ ] **Step 6: Fix any Critical or Important review findings**
+- [x] **Step 6: Fix any Critical or Important review findings**
 
 If Dalton reports no Critical or Important findings, record that no fix was required and continue.
 
-- [ ] **Step 7: Update every completed checkbox in this plan**
+- [x] **Step 7: Update every completed checkbox in this plan**
 
 Mark every completed `- [ ]` as `- [x]` before committing.
 
-- [ ] **Step 8: Commit the implementation**
+- [x] **Step 8: Commit the implementation**
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-15-ue-style-actor-component-phase23-component-instance-names.md Scene\Include\Scene\ActorComponent.h Scene\Include\Scene\Actor.h Scene\Private\Actor.cpp Tests\ActorComponentValidation\main.cpp

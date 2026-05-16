@@ -65,6 +65,50 @@ namespace
         return true;
     }
 
+    bool Test_ActorAssignsUniqueDefaultComponentNames()
+    {
+        RVX::Actor actor("NamedActor");
+
+        auto* first = actor.AddComponent<TestComponent>();
+        auto* second = actor.AddComponent<TestComponent>();
+
+        TEST_ASSERT_NOT_NULL(first);
+        TEST_ASSERT_NOT_NULL(second);
+        TEST_ASSERT_EQ(std::string("TestComponent"), first->GetName());
+        TEST_ASSERT_EQ(std::string("TestComponent_1"), second->GetName());
+        return true;
+    }
+
+    bool Test_ActorAddOwnedComponentUniquifiesExplicitComponentNames()
+    {
+        RVX::Actor actor("ExplicitNameActor");
+
+        auto firstComponent = std::make_unique<TestComponent>();
+        firstComponent->SetName("SharedName");
+        auto* first = static_cast<TestComponent*>(
+            actor.AddOwnedComponent(std::move(firstComponent)));
+
+        auto secondComponent = std::make_unique<TestComponent>();
+        secondComponent->SetName("SharedName");
+        auto* second = static_cast<TestComponent*>(
+            actor.AddOwnedComponent(std::move(secondComponent)));
+
+        TEST_ASSERT_NOT_NULL(first);
+        TEST_ASSERT_NOT_NULL(second);
+        TEST_ASSERT_EQ(std::string("SharedName"), first->GetName());
+        TEST_ASSERT_EQ(std::string("SharedName_1"), second->GetName());
+        return true;
+    }
+
+    bool Test_SceneEntityCompatibilityRootGetsDefaultComponentName()
+    {
+        RVX::SceneEntity entity("NamedSceneEntity");
+
+        TEST_ASSERT_NOT_NULL(entity.GetRootComponent());
+        TEST_ASSERT_EQ(std::string("SceneComponent"), entity.GetRootComponent()->GetName());
+        return true;
+    }
+
     class CountingComponent : public RVX::ActorComponent
     {
     public:
@@ -2396,6 +2440,12 @@ int main()
 
     TestSuite suite;
     suite.AddTest("ActorComponentLifecycleDefaults", Test_ActorComponentLifecycleDefaults);
+    suite.AddTest("ActorAssignsUniqueDefaultComponentNames",
+                  Test_ActorAssignsUniqueDefaultComponentNames);
+    suite.AddTest("ActorAddOwnedComponentUniquifiesExplicitComponentNames",
+                  Test_ActorAddOwnedComponentUniquifiesExplicitComponentNames);
+    suite.AddTest("SceneEntityCompatibilityRootGetsDefaultComponentName",
+                  Test_SceneEntityCompatibilityRootGetsDefaultComponentName);
     suite.AddTest("ActorOwnsComponentsAndDispatchesLifecycle",
                   Test_ActorOwnsComponentsAndDispatchesLifecycle);
     suite.AddTest("SceneManagerUpdateDispatchesActorComponentLifecycle",

@@ -6,6 +6,7 @@
  */
 
 #include <string>
+#include <utility>
 
 namespace RVX
 {
@@ -47,6 +48,9 @@ namespace RVX
         // Owner and State
         // =====================================================================
 
+        const std::string& GetName() const { return m_name; }
+        void SetName(std::string name) { m_name = std::move(name); }
+
         Actor* GetOwner() const { return m_owner; }
 
         bool IsInitialized() const { return m_initialized; }
@@ -83,6 +87,7 @@ namespace RVX
     private:
         friend class Actor;
 
+        std::string m_name;
         Actor* m_owner = nullptr;
         bool m_enabled = true;
         bool m_initialized = false;

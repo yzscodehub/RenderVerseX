@@ -26,6 +26,53 @@ Actor::~Actor()
     DestroyAllComponents();
 }
 
+bool Actor::IsComponentNameInUse(const std::string& name,
+                                 const ActorComponent* ignoredComponent) const
+{
+    for (const auto& component : m_components)
+    {
+        if (!component || component.get() == ignoredComponent)
+        {
+            continue;
+        }
+
+        if (component->GetName() == name)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::string Actor::MakeUniqueComponentName(const std::string& baseName,
+                                           const ActorComponent* ignoredComponent) const
+{
+    const std::string resolvedBaseName = baseName.empty() ? "ActorComponent" : baseName;
+    std::string candidate = resolvedBaseName;
+    size_t suffix = 1;
+
+    while (IsComponentNameInUse(candidate, ignoredComponent))
+    {
+        candidate = resolvedBaseName + "_" + std::to_string(suffix);
+        ++suffix;
+    }
+
+    return candidate;
+}
+
+void Actor::AssignComponentName(ActorComponent* component)
+{
+    if (!component)
+    {
+        return;
+    }
+
+    const std::string baseName =
+        component->GetName().empty() ? component->GetClassName() : component->GetName();
+    component->SetName(MakeUniqueComponentName(baseName, component));
+}
+
 void Actor::SetRootComponent(SceneComponent* rootComponent)
 {
     if (rootComponent && rootComponent->GetOwner() != this)
@@ -105,6 +152,7 @@ ActorComponent* Actor::AddOwnedComponent(std::unique_ptr<ActorComponent> compone
         return nullptr;
 
     ActorComponent* ptr = component.get();
+    AssignComponentName(ptr);
     ptr->SetOwnerActor(this);
     m_components.push_back(std::move(component));
     ptr->OnComponentCreated();
