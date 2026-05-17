@@ -33,7 +33,7 @@
 
 ## Task 1: Add Minimal Failing Named Override Coverage
 
-- [ ] **Step 1: Add named duplicate `RevertProperty` test**
+- [x] **Step 1: Add named duplicate `RevertProperty` test**
 
 In `Tests\ResourceInstantiationValidation\main.cpp`, add one focused test near the existing named duplicate `RevertAll` tests:
 
@@ -45,7 +45,7 @@ In `Tests\ResourceInstantiationValidation\main.cpp`, add one focused test near t
 - Assert only `SecondaryPayload` is restored.
 - Assert `IsOverridden(..., "PrimaryPayload")` remains true and `IsOverridden(..., "SecondaryPayload")` is false.
 
-- [ ] **Step 2: Add named duplicate `RemoveOverride` test**
+- [x] **Step 2: Add named duplicate `RemoveOverride` test**
 
 Add one tiny API-level test:
 
@@ -54,7 +54,7 @@ Add one tiny API-level test:
 - Call `RemoveOverride("PrefabPayloadComponent", "serializedData", "SecondaryPayload")`.
 - Assert only the secondary override is removed and the primary override remains.
 
-- [ ] **Step 3: Add named `ApplyToPrefab` cleanup test**
+- [x] **Step 3: Add named `ApplyToPrefab` cleanup test**
 
 Add one tiny persistence cleanup test:
 
@@ -65,7 +65,7 @@ Add one tiny persistence cleanup test:
 - Call `ApplyToPrefab()`.
 - Assert the override matching a captured root component class/name is cleared and an unrelated named override is preserved.
 
-- [ ] **Step 4: Add uniquified runtime name `RevertProperty` test**
+- [x] **Step 4: Add uniquified runtime name `RevertProperty` test**
 
 Reuse the existing `PrefabNameCollisionActor` fixture:
 
@@ -76,11 +76,11 @@ Reuse the existing `PrefabNameCollisionActor` fixture:
 - Call `RevertProperty("PrefabPayloadComponent", "serializedData", "PrimaryPayload_1")`.
 - Assert only the prefab-created component is restored through the binding.
 
-- [ ] **Step 5: Register the tests**
+- [x] **Step 5: Register the tests**
 
 Register the tests close to the existing prefab revert property tests.
 
-- [ ] **Step 6: Confirm RED**
+- [x] **Step 6: Confirm RED**
 
 Run:
 
@@ -94,7 +94,7 @@ Expected before implementation: compile fails because `PropertyOverride` has no 
 
 ## Task 2: Implement Named Override Targeting
 
-- [ ] **Step 1: Extend `PropertyOverride`**
+- [x] **Step 1: Extend `PropertyOverride`**
 
 Append:
 
@@ -104,7 +104,7 @@ std::string componentName;
 
 after `value`.
 
-- [ ] **Step 2: Extend public prefab instance methods**
+- [x] **Step 2: Extend public prefab instance methods**
 
 Update declarations and definitions:
 
@@ -122,11 +122,11 @@ void RevertProperty(const std::string& componentType,
                     const std::string& componentName = "");
 ```
 
-- [ ] **Step 3: Include component name in override identity**
+- [x] **Step 3: Include component name in override identity**
 
 `AddOverride(...)`, `RemoveOverride(...)`, and `IsOverridden(...)` must compare all three identity fields.
 
-- [ ] **Step 4: Add named actor component payload helper**
+- [x] **Step 4: Add named actor component payload helper**
 
 Extend or add an internal helper for `"serializedData"` actor component payloads that:
 
@@ -136,11 +136,11 @@ Extend or add an internal helper for `"serializedData"` actor component payloads
 - Applies the prefab payload only to the live component with the requested runtime name.
 - Returns false if no exact named target exists.
 
-- [ ] **Step 5: Clear named component overrides on apply**
+- [x] **Step 5: Clear named component overrides on apply**
 
 Update `RemoveSupportedRootComponentPayloadOverrides(...)` so `ApplyToPrefab()` clears named component payload overrides only when the captured root data contains the matching component class/name. Existing unnamed class-only clearing remains unchanged.
 
-- [ ] **Step 6: Focused validation**
+- [x] **Step 6: Focused validation**
 
 Run:
 
@@ -155,13 +155,13 @@ Expected result: all tests pass.
 
 ## Task 3: Validate, Review, And Commit
 
-- [ ] **Step 1: Run whitespace check**
+- [x] **Step 1: Run whitespace check**
 
 ```powershell
 git diff --check
 ```
 
-- [ ] **Step 2: Build required targets**
+- [x] **Step 2: Build required targets**
 
 At minimum build:
 
@@ -172,7 +172,7 @@ foreach ($target in @('ActorComponentValidation','ResourceInstantiationValidatio
 }
 ```
 
-- [ ] **Step 3: Run validation executables**
+- [x] **Step 3: Run validation executables**
 
 Run:
 
@@ -182,23 +182,23 @@ Run:
 .\build\Debug\Tests\Debug\RenderSceneValidation.exe
 ```
 
-- [ ] **Step 4: Run ModelViewer smoke**
+- [x] **Step 4: Run ModelViewer smoke**
 
 Run `ModelViewer.exe` with `C:\Users\yinzs\Desktop\DamagedHelmet.glb` and confirm the usual load/upload/render graph log lines with empty stderr.
 
-- [ ] **Step 5: Request exactly one code review agent**
+- [x] **Step 5: Request exactly one code review agent**
 
 Ask Dalton to report only Critical and Important issues.
 
-- [ ] **Step 6: Fix any Critical or Important review findings**
+- [x] **Step 6: Fix any Critical or Important review findings**
 
 If there are none, continue.
 
-- [ ] **Step 7: Update this plan checkboxes**
+- [x] **Step 7: Update this plan checkboxes**
 
 Mark completed items.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-17-ue-style-actor-component-phase25-named-component-overrides.md Scene\Include\Scene\Prefab.h Scene\Private\Prefab.cpp Tests\ResourceInstantiationValidation\main.cpp

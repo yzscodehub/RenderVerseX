@@ -44,6 +44,7 @@ struct PropertyOverride
     std::string componentType;  // Component type name
     std::string propertyPath;   // Property path (e.g., "position.x")
     PropertyValue value;        // Override value
+    std::string componentName;  // Optional actor component instance name
 };
 
 /**
@@ -244,7 +245,9 @@ public:
     void AddOverride(const PropertyOverride& override);
 
     /// Remove an override
-    void RemoveOverride(const std::string& componentType, const std::string& propertyPath);
+    void RemoveOverride(const std::string& componentType,
+                        const std::string& propertyPath,
+                        const std::string& componentName = "");
 
     /// Get all overrides
     const std::vector<PropertyOverride>& GetOverrides() const { return m_overrides; }
@@ -253,7 +256,9 @@ public:
     void ClearOverrides() { m_overrides.clear(); }
 
     /// Check if a property is overridden
-    bool IsOverridden(const std::string& componentType, const std::string& propertyPath) const;
+    bool IsOverridden(const std::string& componentType,
+                      const std::string& propertyPath,
+                      const std::string& componentName = "") const;
 
     // =========================================================================
     // Prefab Operations
@@ -263,7 +268,9 @@ public:
     void RevertAll();
 
     /// Revert a specific property to prefab value
-    void RevertProperty(const std::string& componentType, const std::string& propertyPath);
+    void RevertProperty(const std::string& componentType,
+                        const std::string& propertyPath,
+                        const std::string& componentName = "");
 
     /// Apply current values back to prefab (requires write access)
     void ApplyToPrefab();

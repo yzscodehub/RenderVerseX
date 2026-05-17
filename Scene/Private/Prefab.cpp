@@ -52,8 +52,19 @@ namespace
         );
     }
 
-    bool HasPrefabRootComponentPayload(const PrefabEntityData& data, const std::string& componentType)
+    bool HasPrefabRootComponentPayload(const PrefabEntityData& data,
+                                       const std::string& componentType,
+                                       const std::string& componentName)
     {
+        if (!componentName.empty())
+        {
+            return std::any_of(data.actorComponentData.begin(), data.actorComponentData.end(),
+                [&](const PrefabActorComponentData& componentData) {
+                    return componentData.className == componentType &&
+                           componentData.name == componentName;
+                });
+        }
+
         if (data.componentData.find(componentType) != data.componentData.end())
         {
             return true;
@@ -72,7 +83,9 @@ namespace
             std::remove_if(overrides.begin(), overrides.end(),
                 [&](const PropertyOverride& override) {
                     return override.propertyPath == "serializedData" &&
-                           HasPrefabRootComponentPayload(data, override.componentType);
+                           HasPrefabRootComponentPayload(data,
+                                                         override.componentType,
+                                                         override.componentName);
                 }),
             overrides.end()
         );
@@ -250,6 +263,75 @@ namespace
         return nullptr;
     }
 
+    const PrefabActorComponentNameBinding* FindActorComponentNameBindingByInstanceName(
+        const std::vector<PrefabActorComponentNameBinding>& bindings,
+        const std::string& className,
+        const std::string& instanceName)
+    {
+        for (const auto& binding : bindings)
+        {
+            if (binding.className == className && binding.instanceName == instanceName)
+            {
+                return &binding;
+            }
+        }
+
+        return nullptr;
+    }
+
+    const PrefabActorComponentData* FindActorComponentDataByPrefabIdentity(
+        const PrefabEntityData& data,
+        const std::string& className,
+        const std::string& prefabName,
+        size_t ordinal)
+    {
+        size_t currentOrdinal = 0;
+        for (const auto& componentData : data.actorComponentData)
+        {
+            if (componentData.className != className)
+            {
+                continue;
+            }
+
+            if (currentOrdinal == ordinal && componentData.name == prefabName)
+            {
+                return &componentData;
+            }
+
+            ++currentOrdinal;
+        }
+
+        return nullptr;
+    }
+
+    const PrefabActorComponentData* FindActorComponentDataByRuntimeName(
+        const PrefabEntityData& data,
+        const std::vector<PrefabActorComponentNameBinding>& nameBindings,
+        const std::string& className,
+        const std::string& runtimeName)
+    {
+        if (const PrefabActorComponentNameBinding* binding =
+                FindActorComponentNameBindingByInstanceName(nameBindings, className, runtimeName))
+        {
+            if (const PrefabActorComponentData* componentData =
+                    FindActorComponentDataByPrefabIdentity(
+                        data, binding->className, binding->prefabName, binding->ordinal))
+            {
+                return componentData;
+            }
+        }
+
+        for (const auto& componentData : data.actorComponentData)
+        {
+            if (componentData.className == className && componentData.name == runtimeName)
+            {
+                return &componentData;
+            }
+        }
+
+        return nullptr;
+    }
+
     void ApplyPrefabEntityComponentPayloads(
         SceneEntity& owner,
         const PrefabEntityData& data,
@@ -296,8 +378,30 @@ namespace
 
     bool ApplyPrefabEntityComponentPayload(SceneEntity& owner,
                                            const PrefabEntityData& data,
-                                           const std::string& componentType)
+                                           const std::string& componentType,
+                                           const std::string& componentName,
+                                           const std::vector<PrefabActorComponentNameBinding>& nameBindings)
     {
+        if (!componentName.empty())
+        {
+            const PrefabActorComponentData* componentData =
+                FindActorComponentDataByRuntimeName(data, nameBindings, componentType, componentName);
+            if (!componentData)
+            {
+                return false;
+            }
+
+            ActorComponent* component =
+                FindActorComponentByClassNameAndName(owner, componentType, componentName);
+            if (!component)
+            {
+                return false;
+            }
+
+            component->DeserializePrefabData(componentData->serializedData);
+            return true;
+        }
+
         auto legacyIt = data.componentData.find(componentType);
         if (legacyIt != data.componentData.end())
         {
@@ -666,7 +770,8 @@ void PrefabInstance::AddOverride(const PropertyOverride& override)
     for (auto& existing : m_overrides)
     {
         if (existing.componentType == override.componentType &&
-            existing.propertyPath == override.propertyPath)
+            existing.propertyPath == override.propertyPath &&
+            existing.componentName == override.componentName)
         {
             existing.value = override.value;
             return;
@@ -676,22 +781,30 @@ void PrefabInstance::AddOverride(const PropertyOverride& override)
     m_overrides.push_back(override);
 }
 
-void PrefabInstance::RemoveOverride(const std::string& componentType, const std::string& propertyPath)
+void PrefabInstance::RemoveOverride(const std::string& componentType,
+                                    const std::string& propertyPath,
+                                    const std::string& componentName)
 {
     m_overrides.erase(
         std::remove_if(m_overrides.begin(), m_overrides.end(),
             [&](const PropertyOverride& o) {
-                return o.componentType == componentType && o.propertyPath == propertyPath;
+                return o.componentType == componentType &&
+                       o.propertyPath == propertyPath &&
+                       o.componentName == componentName;
             }),
         m_overrides.end()
     );
 }
 
-bool PrefabInstance::IsOverridden(const std::string& componentType, const std::string& propertyPath) const
+bool PrefabInstance::IsOverridden(const std::string& componentType,
+                                  const std::string& propertyPath,
+                                  const std::string& componentName) const
 {
     for (const auto& override : m_overrides)
     {
-        if (override.componentType == componentType && override.propertyPath == propertyPath)
+        if (override.componentType == componentType &&
+            override.propertyPath == propertyPath &&
+            override.componentName == componentName)
         {
             return true;
         }
@@ -718,7 +831,9 @@ void PrefabInstance::RevertAll()
     m_overrides.clear();
 }
 
-void PrefabInstance::RevertProperty(const std::string& componentType, const std::string& propertyPath)
+void PrefabInstance::RevertProperty(const std::string& componentType,
+                                    const std::string& propertyPath,
+                                    const std::string& componentName)
 {
     if (!m_prefab)
     {
@@ -735,9 +850,10 @@ void PrefabInstance::RevertProperty(const std::string& componentType, const std:
     if (!IsPrefabEntityOverrideTarget(componentType))
     {
         if (propertyPath == "serializedData" &&
-            ApplyPrefabEntityComponentPayload(*owner, *rootData, componentType))
+            ApplyPrefabEntityComponentPayload(
+                *owner, *rootData, componentType, componentName, m_componentNameBindings))
         {
-            RemoveOverride(componentType, propertyPath);
+            RemoveOverride(componentType, propertyPath, componentName);
         }
         return;
     }
