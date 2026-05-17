@@ -1239,6 +1239,46 @@ namespace
         return true;
     }
 
+    bool Test_PrefabInstanceRevertAllRestoresRenamedChildEntityByRuntimeBinding()
+    {
+        PrefabEntityData rootData;
+        rootData.name = "RuntimeBindingRoot";
+
+        PrefabEntityData childData;
+        childData.name = "Child";
+        childData.parentIndex = 0;
+        childData.position = Vec3(1.0f, 2.0f, 3.0f);
+
+        auto prefab = Prefab::CreateFromData({rootData, childData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+
+        SceneEntity* child = root->GetChildren()[0];
+        child->SetName("RenamedChild");
+        child->SetPosition(Vec3(9.0f, 9.0f, 9.0f));
+        prefabInstance->AddOverride(
+            {"SceneEntity", "position", child->GetPosition(), "", "Child"});
+
+        prefabInstance->RevertAll();
+
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        TEST_ASSERT_EQ(child, root->GetChildren()[0]);
+        TEST_ASSERT_EQ(std::string("Child"), child->GetName());
+        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), child->GetPosition());
+        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_PrefabInstanceRevertAllRecreatesMissingChildActorComponent()
     {
         ComponentFactoryClassGuard componentFactoryGuard;
@@ -1790,6 +1830,47 @@ namespace
         TEST_ASSERT_EQ(Vec3(0.0f, 2.0f, 0.0f), child->GetPosition());
         TEST_ASSERT_TRUE(prefabInstance->IsOverridden("SceneEntity", "position"));
         TEST_ASSERT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child"));
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertPropertyRestoresRenamedChildEntityByRuntimeBinding()
+    {
+        PrefabEntityData rootData;
+        rootData.name = "RuntimeBindingPropertyRoot";
+
+        PrefabEntityData childData;
+        childData.name = "Child";
+        childData.parentIndex = 0;
+        childData.position = Vec3(2.0f, 3.0f, 4.0f);
+
+        auto prefab = Prefab::CreateFromData({rootData, childData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+
+        SceneEntity* child = root->GetChildren()[0];
+        child->SetName("RenamedChild");
+        child->SetPosition(Vec3(8.0f, 8.0f, 8.0f));
+        prefabInstance->AddOverride(
+            {"SceneEntity", "position", child->GetPosition(), "", "Child"});
+
+        prefabInstance->RevertProperty("SceneEntity", "position", "", "Child");
+
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        TEST_ASSERT_EQ(child, root->GetChildren()[0]);
+        TEST_ASSERT_EQ(std::string("RenamedChild"), child->GetName());
+        TEST_ASSERT_EQ(Vec3(2.0f, 3.0f, 4.0f), child->GetPosition());
+        TEST_ASSERT_FALSE(prefabInstance->IsOverridden(
+            "SceneEntity", "position", "", "Child"));
 
         sceneManager.Shutdown();
         return true;
@@ -2475,6 +2556,47 @@ namespace
         return true;
     }
 
+    bool Test_PrefabInstanceApplyToPrefabRebuildsRuntimeEntityBindings()
+    {
+        PrefabEntityData rootData;
+        rootData.name = "ApplyRebindRoot";
+
+        PrefabEntityData childData;
+        childData.name = "Child";
+        childData.parentIndex = 0;
+        childData.position = Vec3(1.0f, 2.0f, 3.0f);
+
+        auto prefab = Prefab::CreateFromData({rootData, childData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+
+        SceneEntity* child = root->GetChildren()[0];
+        prefabInstance->ApplyToPrefab();
+
+        child->SetName("RenamedAfterApply");
+        child->SetPosition(Vec3(9.0f, 9.0f, 9.0f));
+        prefabInstance->AddOverride(
+            {"SceneEntity", "position", child->GetPosition(), "", "Child"});
+
+        prefabInstance->RevertAll();
+
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        TEST_ASSERT_EQ(child, root->GetChildren()[0]);
+        TEST_ASSERT_EQ(std::string("Child"), child->GetName());
+        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), child->GetPosition());
+        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_PrefabInstanceApplyToPrefabAddsLiveChildEntity()
     {
         ComponentFactoryClassGuard componentFactoryGuard;
@@ -2877,6 +2999,8 @@ int main()
                   Test_PrefabInstanceRevertAllUsesRuntimeNameBindingAfterUniquify);
     suite.AddTest("PrefabInstanceRevertAllRestoresChildEntityStateAndPayload",
                   Test_PrefabInstanceRevertAllRestoresChildEntityStateAndPayload);
+    suite.AddTest("PrefabInstanceRevertAllRestoresRenamedChildEntityByRuntimeBinding",
+                  Test_PrefabInstanceRevertAllRestoresRenamedChildEntityByRuntimeBinding);
     suite.AddTest("PrefabInstanceRevertAllRecreatesMissingChildActorComponent",
                   Test_PrefabInstanceRevertAllRecreatesMissingChildActorComponent);
     suite.AddTest("PrefabInstanceRevertAllRecreatesMissingChildEntity",
@@ -2901,6 +3025,8 @@ int main()
                   Test_PrefabInstanceRootEntityPathNormalizesForOverrideIdentity);
     suite.AddTest("PrefabInstanceRevertPropertyRestoresChildEntityProperty",
                   Test_PrefabInstanceRevertPropertyRestoresChildEntityProperty);
+    suite.AddTest("PrefabInstanceRevertPropertyRestoresRenamedChildEntityByRuntimeBinding",
+                  Test_PrefabInstanceRevertPropertyRestoresRenamedChildEntityByRuntimeBinding);
     suite.AddTest("PrefabInstanceRevertPropertyUsesSiblingOrdinalEntityPath",
                   Test_PrefabInstanceRevertPropertyUsesSiblingOrdinalEntityPath);
     suite.AddTest("PrefabInstanceRevertPropertyKeepsAmbiguousDuplicateSiblingPath",
@@ -2935,6 +3061,8 @@ int main()
                   Test_PrefabInstanceApplyToPrefabClearsOnlyMatchingNamedPayloadOverride);
     suite.AddTest("PrefabInstanceApplyToPrefabWritesChildEntityStateAndPayload",
                   Test_PrefabInstanceApplyToPrefabWritesChildEntityStateAndPayload);
+    suite.AddTest("PrefabInstanceApplyToPrefabRebuildsRuntimeEntityBindings",
+                  Test_PrefabInstanceApplyToPrefabRebuildsRuntimeEntityBindings);
     suite.AddTest("PrefabInstanceApplyToPrefabAddsLiveChildEntity",
                   Test_PrefabInstanceApplyToPrefabAddsLiveChildEntity);
     suite.AddTest("PrefabInstanceApplyToPrefabRemovesDeletedChildEntityAndOverrides",

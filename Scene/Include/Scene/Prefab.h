@@ -71,6 +71,16 @@ struct PrefabActorComponentNameBinding
 };
 
 /**
+ * @brief Transient mapping from prefab entity identity to runtime entity handle.
+ */
+struct PrefabEntityRuntimeBinding
+{
+    uint64 prefabEntityId = 0;
+    SceneEntity::Handle instanceHandle = SceneEntity::InvalidHandle;
+    std::string entityPath;
+};
+
+/**
  * @brief Captured component payload identity used to clear applied overrides.
  */
 struct PrefabComponentPayloadKey
@@ -114,6 +124,9 @@ struct PrefabEntityData
     
     // Active state
     bool isActive = true;
+
+    // Stable identity within this prefab resource.
+    uint64 prefabEntityId = 0;
 };
 
 /**
@@ -206,7 +219,8 @@ public:
 
     /// Restore serialized prefab hierarchy state into an existing root entity.
     bool RestoreHierarchyStateTo(SceneEntity& rootEntity,
-                                 std::vector<PrefabActorComponentNameBinding>& nameBindings) const;
+                                 std::vector<PrefabActorComponentNameBinding>& nameBindings,
+                                 std::vector<PrefabEntityRuntimeBinding>& entityBindings) const;
 
     /// Add entity data to the prefab
     void AddEntityData(PrefabEntityData data);
@@ -230,6 +244,8 @@ private:
     SceneEntity* InstantiateInternal(SceneManager& sceneManager, const Vec3& position, 
                                       const Quat& rotation, SceneEntity* parent) const;
     void SerializeEntity(const SceneEntity* entity, int32_t parentIndex);
+    uint64 AllocateEntityId();
+    void EnsureEntityIds();
     bool CreateComponents(SceneEntity* entity,
                           const PrefabEntityData& data,
                           std::vector<PrefabActorComponentNameBinding>* nameBindings = nullptr,
@@ -238,6 +254,7 @@ private:
     std::string m_name;
     std::string m_sourcePath;
     std::vector<PrefabEntityData> m_entities;
+    uint64 m_nextEntityId = 1;
 };
 
 /**
@@ -321,8 +338,14 @@ private:
         m_componentNameBindings = std::move(bindings);
     }
 
+    void SetEntityRuntimeBindings(std::vector<PrefabEntityRuntimeBinding> bindings)
+    {
+        m_entityBindings = std::move(bindings);
+    }
+
     Prefab::Ptr m_prefab;
     std::vector<PrefabActorComponentNameBinding> m_componentNameBindings;
+    std::vector<PrefabEntityRuntimeBinding> m_entityBindings;
     std::vector<PropertyOverride> m_overrides;
 };
 

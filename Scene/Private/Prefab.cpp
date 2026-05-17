@@ -448,6 +448,113 @@ namespace
         return FindLiveEntityByPathImpl(root, entityPath);
     }
 
+    bool IsEntityInsidePrefabRoot(const SceneEntity& root, const SceneEntity& candidate)
+    {
+        return &candidate == &root || candidate.IsDescendantOf(&root);
+    }
+
+    SceneEntity* FindBoundPrefabEntity(
+        SceneManager& sceneManager,
+        SceneEntity& rootEntity,
+        const std::vector<PrefabEntityRuntimeBinding>& bindings,
+        const PrefabEntityData& entityData)
+    {
+        if (entityData.prefabEntityId == 0)
+        {
+            return nullptr;
+        }
+
+        for (const auto& binding : bindings)
+        {
+            if (binding.prefabEntityId != entityData.prefabEntityId)
+            {
+                continue;
+            }
+
+            SceneEntity* entity = sceneManager.GetEntity(binding.instanceHandle);
+            if (entity && IsEntityInsidePrefabRoot(rootEntity, *entity))
+            {
+                return entity;
+            }
+        }
+
+        return nullptr;
+    }
+
+    SceneEntity* FindPrefabEntityForRestore(
+        SceneManager& sceneManager,
+        SceneEntity& rootEntity,
+        const std::vector<PrefabEntityRuntimeBinding>& bindings,
+        const PrefabEntityData& entityData,
+        const std::string& entityPath)
+    {
+        if (SceneEntity* entity =
+                FindBoundPrefabEntity(sceneManager, rootEntity, bindings, entityData))
+        {
+            return entity;
+        }
+
+        return FindLiveEntityByPath(rootEntity, entityPath);
+    }
+
+    void UpsertPrefabEntityRuntimeBinding(
+        std::vector<PrefabEntityRuntimeBinding>& bindings,
+        uint64 prefabEntityId,
+        SceneEntity::Handle instanceHandle,
+        const std::string& entityPath)
+    {
+        if (prefabEntityId == 0)
+        {
+            return;
+        }
+
+        const std::string normalizedPath = NormalizeEntityPath(entityPath);
+        for (auto& binding : bindings)
+        {
+            if (binding.prefabEntityId == prefabEntityId)
+            {
+                binding.instanceHandle = instanceHandle;
+                binding.entityPath = normalizedPath;
+                return;
+            }
+        }
+
+        bindings.push_back({prefabEntityId, instanceHandle, normalizedPath});
+    }
+
+    std::vector<PrefabEntityRuntimeBinding> BuildPrefabEntityRuntimeBindings(
+        const Prefab& prefab,
+        SceneEntity& rootEntity)
+    {
+        std::vector<PrefabEntityRuntimeBinding> bindings;
+        const std::vector<std::string> entityPaths = BuildPrefabEntityPaths(prefab);
+        bindings.reserve(entityPaths.size());
+
+        for (size_t i = 0; i < prefab.GetEntityCount(); ++i)
+        {
+            const PrefabEntityData* entityData = prefab.GetEntityData(i);
+            if (!entityData || entityData->prefabEntityId == 0)
+            {
+                continue;
+            }
+
+            const std::string entityPath =
+                i < entityPaths.size() ? entityPaths[i] : std::string();
+            SceneEntity* entity = i == 0
+                ? &rootEntity
+                : FindLiveEntityByPath(rootEntity, entityPath);
+            if (!entity)
+            {
+                continue;
+            }
+
+            bindings.push_back(
+                {entityData->prefabEntityId, entity->GetHandle(), NormalizeEntityPath(entityPath)});
+        }
+
+        return bindings;
+    }
+
     size_t CountChildrenNamed(const SceneEntity& parent, const std::string& name)
     {
         size_t count = 0;
@@ -922,23 +1029,26 @@ namespace
     }
 
     bool CanRestoreExistingEntityMissingComponents(
+        SceneManager& sceneManager,
         SceneEntity& rootEntity,
         const std::vector<PrefabEntityData>& entities,
         const std::vector<std::string>& entityPaths,
-        const std::vector<PrefabActorComponentNameBinding>& nameBindings)
+        const std::vector<PrefabActorComponentNameBinding>& nameBindings,
+        const std::vector<PrefabEntityRuntimeBinding>& entityBindings)
     {
         for (size_t i = 0; i < entities.size(); ++i)
         {
+            const std::string entityPath =
+                i < entityPaths.size() ? entityPaths[i] : std::string();
             SceneEntity* entity = i == 0
                 ? &rootEntity
-                : FindLiveEntityByPath(
-                    rootEntity, i < entityPaths.size() ? entityPaths[i] : std::string());
+                : FindPrefabEntityForRestore(
+                    sceneManager, rootEntity, entityBindings, entities[i], entityPath);
             if (!entity)
             {
                 continue;
             }
 
-            const std::string entityPath = i < entityPaths.size() ? entityPaths[i] : std::string();
             if (!CanCreateMissingPrefabComponents(*entity, entities[i], nameBindings, entityPath))
             {
                 return false;
@@ -1151,6 +1261,39 @@ Prefab::Ptr Prefab::Create()
     return std::make_shared<Prefab>();
 }
 
+uint64 Prefab::AllocateEntityId()
+{
+    return m_nextEntityId++;
+}
+
+void Prefab::EnsureEntityIds()
+{
+    std::unordered_set<uint64> usedIds;
+    uint64 nextId = 1;
+
+    for (auto& entity : m_entities)
+    {
+        if (entity.prefabEntityId != 0 &&
+            usedIds.find(entity.prefabEntityId) == usedIds.end())
+        {
+            usedIds.insert(entity.prefabEntityId);
+            nextId = std::max(nextId, entity.prefabEntityId + 1);
+            continue;
+        }
+
+        while (usedIds.find(nextId) != usedIds.end())
+        {
+            ++nextId;
+        }
+
+        entity.prefabEntityId = nextId;
+        usedIds.insert(nextId);
+        ++nextId;
+    }
+
+    m_nextEntityId = nextId;
+}
+
 Prefab::Ptr Prefab::CreateFromEntity(const SceneEntity* rootEntity)
 {
     if (!rootEntity)
@@ -1171,6 +1314,7 @@ Prefab::Ptr Prefab::CreateFromData(std::vector<PrefabEntityData> entityData)
 {
     auto prefab = Create();
     prefab->m_entities = std::move(entityData);
+    prefab->EnsureEntityIds();
     
     if (!prefab->m_entities.empty())
     {
@@ -1264,18 +1408,40 @@ PrefabApplyCaptureReport Prefab::UpdateHierarchyStateFrom(const SceneEntity& roo
 PrefabApplyCaptureReport Prefab::RebuildHierarchyStateFrom(const SceneEntity& rootEntity)
 {
     m_entities.clear();
+    m_nextEntityId = 1;
     SerializeEntity(&rootEntity, -1);
     return BuildCaptureReportForPrefab(*this);
 }
 
 void Prefab::AddEntityData(PrefabEntityData data)
 {
+    bool idAlreadyUsed = false;
+    if (data.prefabEntityId != 0)
+    {
+        idAlreadyUsed = std::any_of(
+            m_entities.begin(),
+            m_entities.end(),
+            [&](const PrefabEntityData& entity) {
+                return entity.prefabEntityId == data.prefabEntityId;
+            });
+    }
+
+    if (data.prefabEntityId == 0 || idAlreadyUsed)
+    {
+        data.prefabEntityId = AllocateEntityId();
+    }
+    else
+    {
+        m_nextEntityId = std::max(m_nextEntityId, data.prefabEntityId + 1);
+    }
+
     m_entities.push_back(std::move(data));
 }
 
 void Prefab::Clear()
 {
     m_entities.clear();
+    m_nextEntityId = 1;
 }
 
 SceneEntity* Prefab::InstantiateInternal(SceneManager& sceneManager, const Vec3& position,
@@ -1293,6 +1459,8 @@ SceneEntity* Prefab::InstantiateInternal(SceneManager& sceneManager, const Vec3&
     createdEntities.reserve(m_entities.size());
     createdHandles.reserve(m_entities.size());
     std::vector<PrefabActorComponentNameBinding> componentNameBindings;
+    std::vector<PrefabEntityRuntimeBinding> entityBindings;
+    entityBindings.reserve(m_entities.size());
     const std::vector<std::string> entityPaths = BuildPrefabEntityPaths(*this);
 
     for (const auto& entityData : m_entities)
@@ -1361,6 +1529,8 @@ SceneEntity* Prefab::InstantiateInternal(SceneManager& sceneManager, const Vec3&
 
         // Create components
         const std::string entityPath = i < entityPaths.size() ? entityPaths[i] : std::string();
+        entityBindings.push_back(
+            {entityData.prefabEntityId, entity->GetHandle(), NormalizeEntityPath(entityPath)});
         if (!CreateComponents(entity, entityData, &componentNameBindings, entityPath))
         {
             for (auto h : createdHandles)
@@ -1378,13 +1548,15 @@ SceneEntity* Prefab::InstantiateInternal(SceneManager& sceneManager, const Vec3&
         std::static_pointer_cast<const Prefab>(shared_from_this())
     ));
     prefabInstance->SetComponentNameBindings(std::move(componentNameBindings));
+    prefabInstance->SetEntityRuntimeBindings(std::move(entityBindings));
 
     return root;
 }
 
 bool Prefab::RestoreHierarchyStateTo(
     SceneEntity& rootEntity,
-    std::vector<PrefabActorComponentNameBinding>& nameBindings) const
+    std::vector<PrefabActorComponentNameBinding>& nameBindings,
+    std::vector<PrefabEntityRuntimeBinding>& entityBindings) const
 {
     SceneManager* sceneManager = rootEntity.GetSceneManager();
     if (!sceneManager || m_entities.empty())
@@ -1394,7 +1566,7 @@ bool Prefab::RestoreHierarchyStateTo(
 
     const std::vector<std::string> entityPaths = BuildPrefabEntityPaths(*this);
     if (!CanRestoreExistingEntityMissingComponents(
-        rootEntity, m_entities, entityPaths, nameBindings))
+        *sceneManager, rootEntity, m_entities, entityPaths, nameBindings, entityBindings))
     {
         return false;
     }
@@ -1415,7 +1587,8 @@ bool Prefab::RestoreHierarchyStateTo(
         }
         else
         {
-            entity = FindLiveEntityByPath(rootEntity, entityPath);
+            entity = FindPrefabEntityForRestore(
+                *sceneManager, rootEntity, entityBindings, entityData, entityPath);
             if (!entity)
             {
                 const int32_t parentIndex = entityData.parentIndex;
@@ -1456,6 +1629,8 @@ bool Prefab::RestoreHierarchyStateTo(
         }
 
         restoredEntities[i] = entity;
+        UpsertPrefabEntityRuntimeBinding(
+            entityBindings, entityData.prefabEntityId, entity->GetHandle(), entityPath);
         if (!EnsurePrefabEntityComponents(*entity, entityData, nameBindings, entityPath))
         {
             if (createdEntityThisCall)
@@ -1464,6 +1639,7 @@ bool Prefab::RestoreHierarchyStateTo(
             }
             return false;
         }
+        entity->SetName(entityData.name);
         ApplyAllPrefabEntityProperties(entity, entityData);
         ApplyPrefabEntityComponentPayloads(*entity, entityData, nameBindings, entityPath);
     }
@@ -1482,6 +1658,7 @@ void Prefab::SerializeEntity(const SceneEntity* entity, int32_t parentIndex)
     data.scale = entity->GetScale();
     data.layerMask = entity->GetLayerMask();
     data.isActive = entity->IsActive();
+    data.prefabEntityId = AllocateEntityId();
     CapturePrefabEntityComponents(data, *entity);
 
     int32_t currentIndex = static_cast<int32_t>(m_entities.size());
@@ -1610,9 +1787,11 @@ void PrefabInstance::RevertAll()
     }
 
     std::vector<PrefabActorComponentNameBinding> restoredBindings = m_componentNameBindings;
-    if (m_prefab->RestoreHierarchyStateTo(*owner, restoredBindings))
+    std::vector<PrefabEntityRuntimeBinding> restoredEntityBindings = m_entityBindings;
+    if (m_prefab->RestoreHierarchyStateTo(*owner, restoredBindings, restoredEntityBindings))
     {
         m_componentNameBindings = std::move(restoredBindings);
+        m_entityBindings = std::move(restoredEntityBindings);
         m_overrides.clear();
     }
 }
@@ -1635,7 +1814,17 @@ void PrefabInstance::RevertProperty(const std::string& componentType,
 
     const std::string normalizedPath = NormalizeEntityPath(entityPath);
     const PrefabEntityData* targetData = FindPrefabEntityDataByPath(*m_prefab, normalizedPath);
-    SceneEntity* targetEntity = FindLiveEntityByPath(*owner, normalizedPath);
+    SceneManager* sceneManager = owner->GetSceneManager();
+    SceneEntity* targetEntity = nullptr;
+    if (targetData && sceneManager)
+    {
+        targetEntity = FindPrefabEntityForRestore(
+            *sceneManager, *owner, m_entityBindings, *targetData, normalizedPath);
+    }
+    else
+    {
+        targetEntity = FindLiveEntityByPath(*owner, normalizedPath);
+    }
     if (!targetData || !targetEntity)
     {
         return;
@@ -1680,6 +1869,7 @@ void PrefabInstance::ApplyToPrefab()
     if (!report.capturedEntityPaths.empty())
     {
         m_componentNameBindings.clear();
+        m_entityBindings = BuildPrefabEntityRuntimeBindings(*m_prefab, *owner);
         RemoveOverridesOutsideCapturedEntityPaths(m_overrides, report);
         RemoveSupportedPrefabEntityPropertyOverrides(m_overrides, report);
         RemoveSupportedComponentPayloadOverrides(m_overrides, report);
@@ -1690,6 +1880,7 @@ void PrefabInstance::Unpack()
 {
     // Clear prefab reference and overrides
     m_prefab.reset();
+    m_entityBindings.clear();
     m_overrides.clear();
 
     // Remove this component from the entity
