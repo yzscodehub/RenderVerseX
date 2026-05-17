@@ -1,6 +1,6 @@
 # UE-Style Actor Component Phase 27 Prefab Apply Structural Sync Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Make `PrefabInstance::ApplyToPrefab()` write live hierarchy structure back into the prefab, including added, removed, and nested child entities.
 
@@ -33,7 +33,7 @@
 
 ## Task 1: Add Minimal Failing Structural Apply Coverage
 
-- [ ] **Step 1: Add live child addition apply test**
+- [x] **Step 1: Add live child addition apply test**
 
 In `Tests\ResourceInstantiationValidation\main.cpp`, add this test near the existing `ApplyToPrefab` tests:
 
@@ -89,7 +89,7 @@ bool Test_PrefabInstanceApplyToPrefabAddsLiveChildEntity()
 }
 ```
 
-- [ ] **Step 2: Replace missing-live-child preservation test with deletion apply test**
+- [x] **Step 2: Replace missing-live-child preservation test with deletion apply test**
 
 In `Tests\ResourceInstantiationValidation\main.cpp`, replace the existing
 `Test_PrefabInstanceApplyToPrefabPreservesChildOverrideWhenLiveChildMissing`
@@ -135,7 +135,7 @@ bool Test_PrefabInstanceApplyToPrefabRemovesDeletedChildEntityAndOverrides()
 }
 ```
 
-- [ ] **Step 3: Add nested hierarchy parent-index apply test**
+- [x] **Step 3: Add nested hierarchy parent-index apply test**
 
 Add this test near the new structural apply tests:
 
@@ -186,7 +186,7 @@ bool Test_PrefabInstanceApplyToPrefabPreservesNestedParentIndices()
 }
 ```
 
-- [ ] **Step 4: Add unsupported override preservation test for existing path**
+- [x] **Step 4: Add unsupported override preservation test for existing path**
 
 Add a guard that structural rebuild does not clear unsupported overrides on paths that still exist:
 
@@ -223,7 +223,7 @@ bool Test_PrefabInstanceApplyToPrefabPreservesUnsupportedOverrideOnExistingChild
 }
 ```
 
-- [ ] **Step 5: Register the tests**
+- [x] **Step 5: Register the tests**
 
 Register the four tests in `main()` near the existing `ApplyToPrefab` group,
 and replace the old registration:
@@ -246,7 +246,7 @@ suite.AddTest("PrefabInstanceApplyToPrefabPreservesUnsupportedOverrideOnExisting
               Test_PrefabInstanceApplyToPrefabPreservesUnsupportedOverrideOnExistingChild);
 ```
 
-- [ ] **Step 6: Confirm RED**
+- [x] **Step 6: Confirm RED**
 
 Run:
 
@@ -261,7 +261,7 @@ Expected before implementation: the build succeeds, but the new structural apply
 
 ## Task 2: Add Structural Capture API
 
-- [ ] **Step 1: Declare structural rebuild API**
+- [x] **Step 1: Declare structural rebuild API**
 
 In `Scene\Include\Scene\Prefab.h`, add a new method immediately after `UpdateHierarchyStateFrom(...)`:
 
@@ -270,7 +270,7 @@ In `Scene\Include\Scene\Prefab.h`, add a new method immediately after `UpdateHie
 PrefabApplyCaptureReport RebuildHierarchyStateFrom(const SceneEntity& rootEntity);
 ```
 
-- [ ] **Step 2: Add per-entity capture report helper**
+- [x] **Step 2: Add per-entity capture report helper**
 
 In `Scene\Private\Prefab.cpp`, add this helper in the anonymous namespace after
 `HasCapturedComponentPayload(...)`. This helper appends one already-captured
@@ -303,7 +303,7 @@ void AppendEntityCaptureToReport(PrefabApplyCaptureReport& report,
 }
 ```
 
-- [ ] **Step 3: Add full-prefab capture report helper**
+- [x] **Step 3: Add full-prefab capture report helper**
 
 Add this helper after `AppendEntityCaptureToReport(...)`. It must only be used
 after a full structural rebuild or in other places that intentionally report all
@@ -330,7 +330,7 @@ PrefabApplyCaptureReport BuildCaptureReportForPrefab(const Prefab& prefab)
 }
 ```
 
-- [ ] **Step 4: Use the per-entity helper in existing hierarchy update**
+- [x] **Step 4: Use the per-entity helper in existing hierarchy update**
 
 Replace the manual report-building body inside `Prefab::UpdateHierarchyStateFrom(...)`
 with `AppendEntityCaptureToReport(report, entityPath, m_entities[i])` immediately
@@ -340,7 +340,7 @@ Do not call `BuildCaptureReportForPrefab(...)` from `UpdateHierarchyStateFrom(..
 because that would report missing live paths as captured and would break the
 Phase 26 partial-update semantics.
 
-- [ ] **Step 5: Implement full rebuild method**
+- [x] **Step 5: Implement full rebuild method**
 
 Add this method in `Scene\Private\Prefab.cpp` after `UpdateHierarchyStateFrom(...)`:
 
@@ -357,7 +357,7 @@ PrefabApplyCaptureReport Prefab::RebuildHierarchyStateFrom(const SceneEntity& ro
 
 ## Task 3: Remove Obsolete Path Overrides After Structural Apply
 
-- [ ] **Step 1: Include unordered set support**
+- [x] **Step 1: Include unordered set support**
 
 In `Scene\Private\Prefab.cpp`, add:
 
@@ -365,7 +365,7 @@ In `Scene\Private\Prefab.cpp`, add:
 #include <unordered_set>
 ```
 
-- [ ] **Step 2: Add captured path lookup helper**
+- [x] **Step 2: Add captured path lookup helper**
 
 In the anonymous namespace near other override helpers, add:
 
@@ -381,7 +381,7 @@ std::unordered_set<std::string> MakeCapturedEntityPathSet(const PrefabApplyCaptu
 }
 ```
 
-- [ ] **Step 3: Add obsolete override removal helper**
+- [x] **Step 3: Add obsolete override removal helper**
 
 Add this helper near `RemoveSupportedComponentPayloadOverrides(...)`:
 
@@ -400,7 +400,7 @@ void RemoveOverridesOutsideCapturedEntityPaths(std::vector<PropertyOverride>& ov
 }
 ```
 
-- [ ] **Step 4: Switch `ApplyToPrefab()` to structural rebuild**
+- [x] **Step 4: Switch `ApplyToPrefab()` to structural rebuild**
 
 In `PrefabInstance::ApplyToPrefab()`, replace:
 
@@ -426,7 +426,7 @@ The final cleanup block should clear transient component name bindings, remove o
 
 ## Task 4: Validate, Review, And Commit
 
-- [ ] **Step 1: Focused validation**
+- [x] **Step 1: Focused validation**
 
 Run:
 
@@ -435,7 +435,7 @@ cmake --build build\Debug --config Debug --target ResourceInstantiationValidatio
 .\build\Debug\Tests\Debug\ResourceInstantiationValidation.exe
 ```
 
-- [ ] **Step 2: Required build/test validation**
+- [x] **Step 2: Required build/test validation**
 
 Run:
 
@@ -450,23 +450,23 @@ foreach ($target in @('ActorComponentValidation','ResourceInstantiationValidatio
 .\build\Debug\Tests\Debug\RenderSceneValidation.exe
 ```
 
-- [ ] **Step 3: ModelViewer smoke**
+- [x] **Step 3: ModelViewer smoke**
 
 Run `ModelViewer.exe C:\Users\yinzs\Desktop\DamagedHelmet.glb` for several seconds. Confirm DamagedHelmet loads, mesh/texture upload starts, RenderGraph stats appear, and stderr is empty.
 
-- [ ] **Step 4: Request exactly one code review agent**
+- [x] **Step 4: Request exactly one code review agent**
 
 Ask for Critical and Important issues only.
 
-- [ ] **Step 5: Fix any Critical or Important findings**
+- [x] **Step 5: Fix any Critical or Important findings**
 
 If there are none, continue.
 
-- [ ] **Step 6: Update this plan checklist**
+- [x] **Step 6: Update this plan checklist**
 
 Mark completed items.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-17-ue-style-actor-component-phase27-prefab-apply-structural-sync.md Scene\Include\Scene\Prefab.h Scene\Private\Prefab.cpp Tests\ResourceInstantiationValidation\main.cpp

@@ -201,6 +201,9 @@ public:
     /// Update existing prefab entity data from matching live hierarchy paths.
     PrefabApplyCaptureReport UpdateHierarchyStateFrom(const SceneEntity& rootEntity);
 
+    /// Rebuild prefab entity data from a live hierarchy and report captured paths.
+    PrefabApplyCaptureReport RebuildHierarchyStateFrom(const SceneEntity& rootEntity);
+
     /// Add entity data to the prefab
     void AddEntityData(PrefabEntityData data);
 

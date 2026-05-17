@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace RVX
 {
@@ -475,6 +476,75 @@ namespace
             });
     }
 
+    void AppendEntityCaptureToReport(PrefabApplyCaptureReport& report,
+                                     const std::string& entityPath,
+                                     const PrefabEntityData& entityData)
+    {
+        const std::string normalizedPath = NormalizeEntityPath(entityPath);
+        report.capturedEntityPaths.push_back(normalizedPath);
+
+        for (const auto& [componentType, serializedData] : entityData.componentData)
+        {
+            (void)serializedData;
+            report.capturedComponentPayloads.push_back({normalizedPath, componentType, ""});
+        }
+
+        for (const auto& componentData : entityData.actorComponentData)
+        {
+            report.capturedComponentPayloads.push_back({normalizedPath, componentData.className, ""});
+            if (!componentData.name.empty())
+            {
+                report.capturedComponentPayloads.push_back(
+                    {normalizedPath, componentData.className, componentData.name});
+            }
+        }
+    }
+
+    PrefabApplyCaptureReport BuildCaptureReportForPrefab(const Prefab& prefab)
+    {
+        PrefabApplyCaptureReport report;
+        const auto paths = BuildPrefabEntityPaths(prefab);
+        for (size_t i = 0; i < prefab.GetEntityCount(); ++i)
+        {
+            const PrefabEntityData* entityData = prefab.GetEntityData(i);
+            if (!entityData)
+            {
+                continue;
+            }
+
+            const std::string entityPath = i < paths.size() ? NormalizeEntityPath(paths[i]) : std::string();
+            AppendEntityCaptureToReport(report, entityPath, *entityData);
+        }
+
+        return report;
+    }
+
+    std::unordered_set<std::string> MakeCapturedEntityPathSet(
+        const PrefabApplyCaptureReport& report)
+    {
+        std::unordered_set<std::string> paths;
+        for (const std::string& path : report.capturedEntityPaths)
+        {
+            paths.insert(NormalizeEntityPath(path));
+        }
+        return paths;
+    }
+
+    void RemoveOverridesOutsideCapturedEntityPaths(std::vector<PropertyOverride>& overrides,
+                                                   const PrefabApplyCaptureReport& report)
+    {
+        const std::unordered_set<std::string> capturedPaths =
+            MakeCapturedEntityPathSet(report);
+        overrides.erase(
+            std::remove_if(overrides.begin(), overrides.end(),
+                [&](const PropertyOverride& override) {
+                    return capturedPaths.find(NormalizeEntityPath(override.entityPath)) ==
+                           capturedPaths.end();
+                }),
+            overrides.end()
+        );
+    }
+
     Component* FindLegacyComponentByTypeName(SceneEntity& owner, const std::string& typeName)
     {
         for (const auto& [typeIndex, component] : owner.GetComponents())
@@ -870,26 +940,17 @@ PrefabApplyCaptureReport Prefab::UpdateHierarchyStateFrom(const SceneEntity& roo
 
         CapturePrefabEntityProperties(m_entities[i], *liveEntity);
         CapturePrefabEntityComponents(m_entities[i], *liveEntity);
-        report.capturedEntityPaths.push_back(entityPath);
-
-        for (const auto& [componentType, serializedData] : m_entities[i].componentData)
-        {
-            (void)serializedData;
-            report.capturedComponentPayloads.push_back({entityPath, componentType, ""});
-        }
-
-        for (const auto& componentData : m_entities[i].actorComponentData)
-        {
-            report.capturedComponentPayloads.push_back({entityPath, componentData.className, ""});
-            if (!componentData.name.empty())
-            {
-                report.capturedComponentPayloads.push_back(
-                    {entityPath, componentData.className, componentData.name});
-            }
-        }
+        AppendEntityCaptureToReport(report, entityPath, m_entities[i]);
     }
 
     return report;
+}
+
+PrefabApplyCaptureReport Prefab::RebuildHierarchyStateFrom(const SceneEntity& rootEntity)
+{
+    m_entities.clear();
+    SerializeEntity(&rootEntity, -1);
+    return BuildCaptureReportForPrefab(*this);
 }
 
 void Prefab::AddEntityData(PrefabEntityData data)
@@ -1262,10 +1323,11 @@ void PrefabInstance::ApplyToPrefab()
         return;
     }
 
-    const PrefabApplyCaptureReport report = m_prefab->UpdateHierarchyStateFrom(*owner);
+    const PrefabApplyCaptureReport report = m_prefab->RebuildHierarchyStateFrom(*owner);
     if (!report.capturedEntityPaths.empty())
     {
         m_componentNameBindings.clear();
+        RemoveOverridesOutsideCapturedEntityPaths(m_overrides, report);
         RemoveSupportedPrefabEntityPropertyOverrides(m_overrides, report);
         RemoveSupportedComponentPayloadOverrides(m_overrides, report);
     }

@@ -1999,10 +1999,60 @@ namespace
         return true;
     }
 
-    bool Test_PrefabInstanceApplyToPrefabPreservesChildOverrideWhenLiveChildMissing()
+    bool Test_PrefabInstanceApplyToPrefabAddsLiveChildEntity()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
+            "PrefabPayloadComponent");
+
+        PrefabEntityData rootData;
+        rootData.name = "ApplyAddsChildRoot";
+
+        auto prefab = Prefab::CreateFromData({rootData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        ActorSpawnParams childParams;
+        childParams.name = "AddedChild";
+        childParams.parent = root;
+        SceneEntity* child = sceneManager.SpawnActor(childParams);
+        TEST_ASSERT_NOT_NULL(child);
+        child->SetPosition(Vec3(4.0f, 5.0f, 6.0f));
+        auto* payload = child->AddComponent<PrefabPayloadComponent>();
+        TEST_ASSERT_NOT_NULL(payload);
+        payload->SetName("AddedPayload");
+        payload->payload = "slot=added";
+
+        prefabInstance->ApplyToPrefab();
+
+        TEST_ASSERT_EQ(static_cast<size_t>(2), prefab->GetEntityCount());
+        const PrefabEntityData* addedData = prefab->GetEntityData(1);
+        TEST_ASSERT_NOT_NULL(addedData);
+        TEST_ASSERT_EQ(std::string("AddedChild"), addedData->name);
+        TEST_ASSERT_EQ(static_cast<int32_t>(0), addedData->parentIndex);
+        TEST_ASSERT_EQ(Vec3(4.0f, 5.0f, 6.0f), addedData->position);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), addedData->actorComponentData.size());
+        TEST_ASSERT_EQ(std::string("PrefabPayloadComponent"),
+                       addedData->actorComponentData[0].className);
+        TEST_ASSERT_EQ(std::string("AddedPayload"),
+                       addedData->actorComponentData[0].name);
+        TEST_ASSERT_EQ(std::string("slot=added"),
+                       addedData->actorComponentData[0].serializedData);
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceApplyToPrefabRemovesDeletedChildEntityAndOverrides()
     {
         PrefabEntityData rootData;
-        rootData.name = "MissingApplyRoot";
+        rootData.name = "ApplyRemovesChildRoot";
 
         PrefabEntityData childData;
         childData.name = "Child";
@@ -2027,7 +2077,84 @@ namespace
 
         prefabInstance->ApplyToPrefab();
 
-        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child"));
+        TEST_ASSERT_EQ(static_cast<size_t>(1), prefab->GetEntityCount());
+        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child"));
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceApplyToPrefabPreservesNestedParentIndices()
+    {
+        PrefabEntityData rootData;
+        rootData.name = "ApplyNestedRoot";
+
+        auto prefab = Prefab::CreateFromData({rootData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        ActorSpawnParams branchParams;
+        branchParams.name = "Branch";
+        branchParams.parent = root;
+        SceneEntity* branch = sceneManager.SpawnActor(branchParams);
+        TEST_ASSERT_NOT_NULL(branch);
+
+        ActorSpawnParams leafParams;
+        leafParams.name = "Leaf";
+        leafParams.parent = branch;
+        SceneEntity* leaf = sceneManager.SpawnActor(leafParams);
+        TEST_ASSERT_NOT_NULL(leaf);
+        leaf->SetScale(Vec3(2.0f, 3.0f, 4.0f));
+
+        prefabInstance->ApplyToPrefab();
+
+        TEST_ASSERT_EQ(static_cast<size_t>(3), prefab->GetEntityCount());
+        const PrefabEntityData* branchData = prefab->GetEntityData(1);
+        const PrefabEntityData* leafData = prefab->GetEntityData(2);
+        TEST_ASSERT_NOT_NULL(branchData);
+        TEST_ASSERT_NOT_NULL(leafData);
+        TEST_ASSERT_EQ(std::string("Branch"), branchData->name);
+        TEST_ASSERT_EQ(static_cast<int32_t>(0), branchData->parentIndex);
+        TEST_ASSERT_EQ(std::string("Leaf"), leafData->name);
+        TEST_ASSERT_EQ(static_cast<int32_t>(1), leafData->parentIndex);
+        TEST_ASSERT_EQ(Vec3(2.0f, 3.0f, 4.0f), leafData->scale);
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceApplyToPrefabPreservesUnsupportedOverrideOnExistingChild()
+    {
+        PrefabEntityData rootData;
+        rootData.name = "ApplyKeepsUnsupportedRoot";
+
+        PrefabEntityData childData;
+        childData.name = "Child";
+        childData.parentIndex = 0;
+
+        auto prefab = Prefab::CreateFromData({rootData, childData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        prefabInstance->AddOverride(
+            {"CustomComponent", "customField", std::string("value"), "", "Child"});
+
+        prefabInstance->ApplyToPrefab();
+
+        TEST_ASSERT_TRUE(prefabInstance->IsOverridden(
+            "CustomComponent", "customField", "", "Child"));
 
         sceneManager.Shutdown();
         return true;
@@ -2312,8 +2439,14 @@ int main()
                   Test_PrefabInstanceApplyToPrefabClearsOnlyMatchingNamedPayloadOverride);
     suite.AddTest("PrefabInstanceApplyToPrefabWritesChildEntityStateAndPayload",
                   Test_PrefabInstanceApplyToPrefabWritesChildEntityStateAndPayload);
-    suite.AddTest("PrefabInstanceApplyToPrefabPreservesChildOverrideWhenLiveChildMissing",
-                  Test_PrefabInstanceApplyToPrefabPreservesChildOverrideWhenLiveChildMissing);
+    suite.AddTest("PrefabInstanceApplyToPrefabAddsLiveChildEntity",
+                  Test_PrefabInstanceApplyToPrefabAddsLiveChildEntity);
+    suite.AddTest("PrefabInstanceApplyToPrefabRemovesDeletedChildEntityAndOverrides",
+                  Test_PrefabInstanceApplyToPrefabRemovesDeletedChildEntityAndOverrides);
+    suite.AddTest("PrefabInstanceApplyToPrefabPreservesNestedParentIndices",
+                  Test_PrefabInstanceApplyToPrefabPreservesNestedParentIndices);
+    suite.AddTest("PrefabInstanceApplyToPrefabPreservesUnsupportedOverrideOnExistingChild",
+                  Test_PrefabInstanceApplyToPrefabPreservesUnsupportedOverrideOnExistingChild);
     suite.AddTest("PrefabInstanceApplyToPrefabClearsRootAliasOverrides",
                   Test_PrefabInstanceApplyToPrefabClearsRootAliasOverrides);
     suite.AddTest("PrefabInstanceApplyToPrefabPreservesUnsupportedOverrides",
