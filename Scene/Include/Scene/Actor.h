@@ -8,6 +8,7 @@
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
 #include "Scene/ActorComponent.h"
+#include "Scene/Component.h"
 #include "Spatial/Index/ISpatialEntity.h"
 
 #include <algorithm>
@@ -171,25 +172,32 @@ namespace RVX
     {
         static_assert(std::is_base_of_v<ActorComponent, T>, "T must derive from ActorComponent");
 
-        auto component = std::make_unique<T>(std::forward<Args>(args)...);
-        T* ptr = component.get();
-        AssignComponentName(ptr);
-        ptr->SetOwnerActor(this);
-        m_components.push_back(std::move(component));
-        ptr->OnComponentCreated();
-
-        if (ShouldAutoRegisterComponent(ptr))
+        if constexpr (std::is_base_of_v<Component, T>)
         {
-            ptr->SetRegistered(true);
-            ptr->OnRegister();
-            if (!ptr->IsInitialized())
-            {
-                ptr->InitializeComponent();
-                ptr->SetInitialized(true);
-            }
+            return nullptr;
         }
+        else
+        {
+            auto component = std::make_unique<T>(std::forward<Args>(args)...);
+            T* ptr = component.get();
+            AssignComponentName(ptr);
+            ptr->SetOwnerActor(this);
+            m_components.push_back(std::move(component));
+            ptr->OnComponentCreated();
 
-        return ptr;
+            if (ShouldAutoRegisterComponent(ptr))
+            {
+                ptr->SetRegistered(true);
+                ptr->OnRegister();
+                if (!ptr->IsInitialized())
+                {
+                    ptr->InitializeComponent();
+                    ptr->SetInitialized(true);
+                }
+            }
+
+            return ptr;
+        }
     }
 
     template<typename T>

@@ -1668,6 +1668,21 @@ namespace
         return true;
     }
 
+    bool Test_ActorAddComponentRejectsLegacyComponentToAvoidContainerSplit()
+    {
+        RVX::SceneEntity entity("ActorLegacyAddGuardEntity");
+        RVX::Actor* actor = &entity;
+        const size_t initialActorComponents = actor->GetActorComponentCount();
+
+        auto* component = actor->AddComponent<TestLegacyComponent>();
+
+        TEST_ASSERT_EQ(nullptr, component);
+        TEST_ASSERT_EQ(initialActorComponents, actor->GetActorComponentCount());
+        TEST_ASSERT_EQ(static_cast<size_t>(0), entity.GetComponentCount());
+        TEST_ASSERT_EQ(nullptr, entity.GetComponent<TestLegacyComponent>());
+        return true;
+    }
+
     bool Test_ActorAndComponentFactoriesCreateRegisteredTypes()
     {
         RVX::ActorFactory::ClearAll();
@@ -2736,6 +2751,8 @@ int main()
                   Test_SceneEntityAddComponentAutoRegistersStaticMeshPrimitive);
     suite.AddTest("SceneEntityAndComponentAreActorCompatible",
                   Test_SceneEntityAndComponentAreActorCompatible);
+    suite.AddTest("ActorAddComponentRejectsLegacyComponentToAvoidContainerSplit",
+                  Test_ActorAddComponentRejectsLegacyComponentToAvoidContainerSplit);
     suite.AddTest("ActorAndComponentFactoriesCreateRegisteredTypes",
                   Test_ActorAndComponentFactoriesCreateRegisteredTypes);
     suite.AddTest("ActorTransformForwardsToRootComponent",
