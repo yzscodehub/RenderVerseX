@@ -1128,8 +1128,8 @@ namespace
         primary->SetName("SecondaryPayload");
         primary->payload = "dirty-secondary";
         secondary->payload = "dirty-primary";
-        // Named single-property targets are intentionally deferred; this phase
-        // only guarantees name-aware full payload restoration through RevertAll.
+        // RevertAll must restore each named duplicate through runtime name binding
+        // even when multiple components share the same class.
         prefabInstance->AddOverride({"PrefabPayloadComponent", "serializedData", std::string("dirty")});
 
         prefabInstance->RevertAll();
