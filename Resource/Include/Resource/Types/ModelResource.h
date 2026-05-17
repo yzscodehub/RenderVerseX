@@ -21,6 +21,7 @@
 namespace RVX
 {
     // Forward declarations
+    class Actor;
     class SceneManager;
     class SceneEntity;
     class Skeleton;
@@ -132,12 +133,16 @@ namespace RVX::Resource
         // =====================================================================
 
         /// Instantiate the model into the scene
-        /// Creates a SceneEntity tree with MeshRendererComponents attached
+        /// Creates a SceneEntity tree with StaticMeshComponents attached
         SceneEntity* Instantiate(SceneManager* scene) const;
+
+        /// Instantiate the model into the scene and return the actor view.
+        /// Compatibility implementation currently creates SceneEntity instances.
+        Actor* InstantiateActor(SceneManager* scene) const;
 
     private:
         /// Recursive helper for instantiation
-        SceneEntity* InstantiateNode(const Node* node, SceneManager* scene, SceneEntity* parent) const;
+        SceneEntity* InstantiateActorNode(const Node* node, SceneManager* scene, SceneEntity* parent) const;
 
         /// Count nodes recursively
         size_t CountNodes(const Node* node) const;

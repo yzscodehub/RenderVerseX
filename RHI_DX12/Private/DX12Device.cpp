@@ -4,6 +4,7 @@
 #include "DX12CommandContext.h"
 #include "DX12Pipeline.h"
 #include "DX12Query.h"
+#include "DX12Upload.h"
 #include "Core/Log.h"
 
 namespace RVX
@@ -789,8 +790,7 @@ namespace RVX
         }
 
         // Recycle completed command allocators
-        uint64 completedValue = m_frameFence->GetCompletedValue();
-        m_allocatorPool.Tick(completedValue);
+        m_allocatorPool.Tick();
 
         // Reset transient descriptor heaps
         m_descriptorHeapManager.ResetTransientHeaps();
@@ -808,12 +808,21 @@ namespace RVX
 
     void DX12Device::WaitIdle()
     {
-        // Signal and wait for all queues
-        uint64 fenceValue = m_frameFence->GetCompletedValue() + 1;
+        auto waitForQueue = [&](ID3D12CommandQueue* queue)
+        {
+            if (!queue)
+                return;
 
-        m_graphicsQueue->Signal(m_frameFence.Get(), fenceValue);
-        m_frameFence->SetEventOnCompletion(fenceValue, m_fenceEvent);
-        WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE);
+            uint64 fenceValue = m_frameFence->GetCompletedValue() + 1;
+            queue->Signal(m_frameFence.Get(), fenceValue);
+            m_frameFence->SetEventOnCompletion(fenceValue, m_fenceEvent);
+            WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE);
+        };
+
+        waitForQueue(m_graphicsQueue.Get());
+        waitForQueue(m_computeQueue.Get());
+        waitForQueue(m_copyQueue.Get());
+        m_allocatorPool.Tick();
     }
 
     // =============================================================================
@@ -1003,24 +1012,12 @@ namespace RVX
     // =============================================================================
     RHIStagingBufferRef DX12Device::CreateStagingBuffer(const RHIStagingBufferDesc& desc)
     {
-        // Create an upload buffer for staging
-        RHIBufferDesc bufferDesc;
-        bufferDesc.size = desc.size;
-        bufferDesc.usage = RHIBufferUsage::CopySrc;
-        bufferDesc.memoryType = RHIMemoryType::Upload;
-        bufferDesc.debugName = desc.debugName;
-
-        // TODO: Create proper DX12StagingBuffer wrapper
-        // For now, return nullptr (not yet implemented)
-        RVX_RHI_WARN("DX12: CreateStagingBuffer not yet fully implemented");
-        return nullptr;
+        return CreateDX12StagingBuffer(this, desc);
     }
 
     RHIRingBufferRef DX12Device::CreateRingBuffer(const RHIRingBufferDesc& desc)
     {
-        // TODO: Create proper DX12RingBuffer implementation
-        RVX_RHI_WARN("DX12: CreateRingBuffer not yet fully implemented");
-        return nullptr;
+        return CreateDX12RingBuffer(this, desc);
     }
 
     // =============================================================================

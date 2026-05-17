@@ -11,9 +11,11 @@
 #include "Render/Passes/IRenderPass.h"
 #include "Render/GPUResourceManager.h"
 #include "Render/PipelineCache.h"
+#include "Render/Renderer/RenderDrawItem.h"
 
 namespace RVX
 {
+    class MaterialSystem;
     class RenderScene;
 
     /**
@@ -53,14 +55,15 @@ namespace RVX
         /**
          * @brief Set resources needed for rendering
          */
-        void SetResources(GPUResourceManager* gpuResources, PipelineCache* pipelineCache);
+        void SetResources(GPUResourceManager* gpuResources, PipelineCache* pipelineCache,
+                          MaterialSystem* materialSystem);
 
         /**
          * @brief Set render scene and visible transparent objects
          * @param scene The render scene
-         * @param transparentIndices Indices of visible transparent objects (pre-sorted back-to-front)
+         * @param transparentDrawItems Visible transparent submesh draw items (pre-sorted back-to-front)
          */
-        void SetRenderScene(const RenderScene* scene, const std::vector<uint32_t>* transparentIndices);
+        void SetRenderScene(const RenderScene* scene, const std::vector<RenderDrawItem>* transparentDrawItems);
 
         /**
          * @brief Set the render targets
@@ -80,8 +83,9 @@ namespace RVX
         bool m_enabled = true;
         GPUResourceManager* m_gpuResources = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
+        MaterialSystem* m_materialSystem = nullptr;
         const RenderScene* m_renderScene = nullptr;
-        const std::vector<uint32_t>* m_transparentIndices = nullptr;
+        const std::vector<RenderDrawItem>* m_transparentDrawItems = nullptr;
         RHITextureView* m_colorTargetView = nullptr;
         RHITextureView* m_depthTargetView = nullptr;
 

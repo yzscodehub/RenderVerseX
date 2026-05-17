@@ -7,6 +7,7 @@
 #include "RHI/RHIShader.h"
 #include "RHI/RHISynchronization.h"
 #include "RHI/RHIHeap.h"
+#include <atomic>
 
 namespace RVX
 {
@@ -159,10 +160,14 @@ namespace RVX
         void Wait(uint64 value, uint64 timeoutNs = UINT64_MAX) override;
 
         VkSemaphore GetSemaphore() const { return m_semaphore; }
+        uint64 AllocateSignalValue();
 
     private:
+        void TrackSubmittedValue(uint64 value);
+
         VulkanDevice* m_device;
         VkSemaphore m_semaphore = VK_NULL_HANDLE;
+        std::atomic<uint64> m_nextSignalValue{1};
     };
 
     // =============================================================================

@@ -948,6 +948,27 @@ namespace RVX
     }
 
     // =============================================================================
+    // Synchronization
+    // =============================================================================
+    void MetalCommandContext::SignalFence(RHIFence* fence, uint64 value)
+    {
+        if (fence)
+        {
+            // Signal the fence from CPU - actual GPU signal happens at command buffer completion
+            fence->Signal(value);
+        }
+    }
+
+    void MetalCommandContext::WaitFence(RHIFence* fence, uint64 value)
+    {
+        if (fence)
+        {
+            // CPU wait for fence - this will block the calling thread
+            fence->Wait(value);
+        }
+    }
+
+    // =============================================================================
     // Split Barriers (no-op for Metal - automatic barriers)
     // =============================================================================
     void MetalCommandContext::BeginBarrier(const RHIBufferBarrier& barrier)

@@ -4,15 +4,78 @@
  */
 
 #include "Render/Passes/OpaquePass.h"
-#include "Render/Renderer/ViewData.h"
-#include "Render/Renderer/RenderScene.h"
-#include "Render/GPUResourceManager.h"
-#include "Render/PipelineCache.h"
-#include "RHI/RHIRenderPass.h"
 #include "Core/Log.h"
+#include "Render/GPUResourceManager.h"
+#include "Render/Material/MaterialSystem.h"
+#include "Render/PipelineCache.h"
+#include "Render/Renderer/RenderScene.h"
+#include "Render/Renderer/ViewData.h"
+#include "Resource/Types/MaterialResource.h"
+#include "Resource/Types/TextureResource.h"
+#include "RHI/RHIRenderPass.h"
 
 namespace RVX
 {
+
+namespace
+{
+    const Resource::MaterialResource* ResolveMaterialResource(const RenderObject& obj, size_t submeshIndex)
+    {
+        if (submeshIndex >= obj.materialResources.size())
+            return nullptr;
+
+        return obj.materialResources[submeshIndex];
+    }
+
+    void TransitionVisibleMaterialTextures(const std::vector<RenderDrawItem>& drawItems,
+                                           GPUResourceManager& gpuResources, RHICommandContext& ctx)
+    {
+        const auto transitionTexture = [&gpuResources, &ctx](
+                                           Resource::ResourceHandle<Resource::TextureResource> textureHandle)
+        {
+            Resource::TextureResource* textureResource = textureHandle.Get();
+            if (!textureResource || !gpuResources.IsGPUReady(textureResource->GetId()))
+                return;
+
+            gpuResources.TransitionTexture(textureResource->GetId(), ctx, RHIResourceState::ShaderResource);
+        };
+
+        for (const RenderDrawItem& item : drawItems)
+        {
+            const Resource::MaterialResource* material = item.materialResource;
+            if (!material)
+                continue;
+
+            transitionTexture(material->GetAlbedoTexture());
+            transitionTexture(material->GetNormalTexture());
+            transitionTexture(material->GetMetallicRoughnessTexture());
+            transitionTexture(material->GetAOTexture());
+            transitionTexture(material->GetEmissiveTexture());
+        }
+    }
+
+    template <typename DrawFunc>
+    void ForEachOpaqueDrawItem(const std::vector<RenderDrawItem>* opaqueDrawItems,
+                               const std::vector<RenderDrawItem>* maskedDrawItems,
+                               DrawFunc&& drawFunc)
+    {
+        if (opaqueDrawItems)
+        {
+            for (const RenderDrawItem& item : *opaqueDrawItems)
+            {
+                drawFunc(item);
+            }
+        }
+
+        if (maskedDrawItems)
+        {
+            for (const RenderDrawItem& item : *maskedDrawItems)
+            {
+                drawFunc(item);
+            }
+        }
+    }
+} // namespace
 
 void OpaquePass::OnAdd(IRHIDevice* device)
 {
@@ -26,20 +89,26 @@ void OpaquePass::OnRemove()
     m_device = nullptr;
     m_gpuResources = nullptr;
     m_pipelineCache = nullptr;
+    m_materialSystem = nullptr;
     m_renderScene = nullptr;
-    m_visibleIndices = nullptr;
+    m_opaqueDrawItems = nullptr;
+    m_maskedDrawItems = nullptr;
 }
 
-void OpaquePass::SetResources(GPUResourceManager* gpuMgr, PipelineCache* pipelines)
+void OpaquePass::SetResources(GPUResourceManager* gpuMgr, PipelineCache* pipelines, MaterialSystem* materialSystem)
 {
     m_gpuResources = gpuMgr;
     m_pipelineCache = pipelines;
+    m_materialSystem = materialSystem;
 }
 
-void OpaquePass::SetRenderScene(const RenderScene* scene, const std::vector<uint32_t>* visibleIndices)
+void OpaquePass::SetRenderScene(const RenderScene* scene,
+                                const std::vector<RenderDrawItem>* opaqueDrawItems,
+                                const std::vector<RenderDrawItem>* maskedDrawItems)
 {
     m_renderScene = scene;
-    m_visibleIndices = visibleIndices;
+    m_opaqueDrawItems = opaqueDrawItems;
+    m_maskedDrawItems = maskedDrawItems;
 }
 
 void OpaquePass::SetRenderTargets(RHITextureView* colorTargetView, RHITextureView* depthTargetView)
@@ -66,42 +135,17 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 
 void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
 {
-    static bool firstFrame = true;
-    if (firstFrame)
-    {
-        RVX_CORE_INFO("OpaquePass::Execute - First frame diagnostics:");
-        RVX_CORE_INFO("  m_pipelineCache: {}", m_pipelineCache ? "valid" : "null");
-        RVX_CORE_INFO("  m_gpuResources: {}", m_gpuResources ? "valid" : "null");
-        RVX_CORE_INFO("  m_renderScene: {}", m_renderScene ? "valid" : "null");
-        RVX_CORE_INFO("  m_visibleIndices: {}", m_visibleIndices ? "valid" : "null");
-        RVX_CORE_INFO("  m_colorTargetView: {}", m_colorTargetView ? "valid" : "null");
-        RVX_CORE_INFO("  m_depthTargetView: {}", m_depthTargetView ? "valid" : "null");
-        
-        if (m_pipelineCache)
-        {
-            RVX_CORE_INFO("  PipelineCache initialized: {}", m_pipelineCache->IsInitialized());
-            RVX_CORE_INFO("  OpaquePipeline: {}", m_pipelineCache->GetOpaquePipeline() ? "valid" : "null");
-        }
-        
-        if (m_renderScene)
-        {
-            RVX_CORE_INFO("  RenderScene object count: {}", m_renderScene->GetObjectCount());
-        }
-        
-        if (m_visibleIndices)
-        {
-            RVX_CORE_INFO("  Visible indices count: {}", m_visibleIndices->size());
-        }
-        
-        RVX_CORE_INFO("  Viewport: {}x{}", view.viewportWidth, view.viewportHeight);
-        firstFrame = false;
-    }
-
     // Validate dependencies
     if (!m_pipelineCache || !m_pipelineCache->IsInitialized())
     {
-        RVX_CORE_WARN("OpaquePass: PipelineCache not available (initialized: {})", 
+        RVX_CORE_WARN("OpaquePass: PipelineCache not available (initialized: {})",
                       m_pipelineCache ? m_pipelineCache->IsInitialized() : false);
+        return;
+    }
+
+    if (!m_materialSystem || !m_materialSystem->IsInitialized())
+    {
+        RVX_CORE_WARN("OpaquePass: MaterialSystem not available");
         return;
     }
 
@@ -109,6 +153,14 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     {
         RVX_CORE_WARN("OpaquePass: No color target view set");
         return;
+    }
+
+    if (m_gpuResources)
+    {
+        if (m_opaqueDrawItems)
+            TransitionVisibleMaterialTextures(*m_opaqueDrawItems, *m_gpuResources, ctx);
+        if (m_maskedDrawItems)
+            TransitionVisibleMaterialTextures(*m_maskedDrawItems, *m_gpuResources, ctx);
     }
 
     // 1. Begin render pass using builder pattern
@@ -138,33 +190,40 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     }
     ctx.SetPipeline(pipeline);
 
-    // 4. Bind view/object constants descriptor set
-    RHIDescriptorSet* viewSet = m_pipelineCache->GetViewDescriptorSet();
-    if (viewSet)
+    // 4. Bind frame constants descriptor set
+    RHIDescriptorSet* frameSet = m_pipelineCache->GetFrameDescriptorSet();
+    if (frameSet)
     {
-        ctx.SetDescriptorSet(0, viewSet);
+        ctx.SetDescriptorSet(0, frameSet);
     }
 
     // 5. Draw each visible object
-    if (m_renderScene && m_visibleIndices && m_gpuResources)
+    if (m_renderScene && m_gpuResources)
     {
-        uint32_t drawCalls = 0;
-        uint32_t skippedNotResident = 0;
-        
-        for (uint32_t idx : *m_visibleIndices)
+        ForEachOpaqueDrawItem(
+            m_opaqueDrawItems, m_maskedDrawItems,
+            [&](const RenderDrawItem& item)
         {
-            const RenderObject& obj = m_renderScene->GetObject(idx);
-            
+            if (item.objectIndex >= m_renderScene->GetObjectCount())
+                return;
+
+            const RenderObject& obj = m_renderScene->GetObject(item.objectIndex);
+
             // Get GPU buffers for this mesh
             MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(obj.meshId);
             if (!buffers.IsValid())
             {
-                skippedNotResident++;
-                continue;  // Mesh not uploaded yet
+                return;  // Mesh not uploaded yet
             }
 
             // Update per-object constants (world matrix)
             m_pipelineCache->UpdateObjectConstants(obj.worldMatrix);
+            RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
+            if (objectSet)
+            {
+                const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
+                ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
+            }
 
             // Bind SEPARATE vertex buffers to different slots
             ctx.SetVertexBuffer(0, buffers.positionBuffer);  // Slot 0: Position
@@ -179,29 +238,40 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                 ctx.SetVertexBuffer(2, buffers.uvBuffer);  // Slot 2: UV
             }
 
+            if (buffers.tangentBuffer)
+            {
+                ctx.SetVertexBuffer(3, buffers.tangentBuffer);  // Slot 3: Tangent
+            }
+
             // Bind index buffer
             ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
 
-            // Draw each submesh
-            for (const SubmeshGPUInfo& submesh : buffers.submeshes)
+            if (item.submeshIndex >= buffers.submeshes.size())
             {
-                ctx.DrawIndexed(submesh.indexCount, 1, 
-                               submesh.indexOffset, submesh.baseVertex, 0);
-                drawCalls++;
+                return;
             }
-        }
 
-        // Per-frame stats (disabled to reduce log spam)
-        // RVX_CORE_DEBUG("OpaquePass: {} draw calls, {} skipped (not resident)", 
-        //               drawCalls, skippedNotResident);
-        (void)drawCalls;
-        (void)skippedNotResident;
+            const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
+            const Resource::MaterialResource* materialResource =
+                item.materialResource ? item.materialResource : ResolveMaterialResource(obj, item.submeshIndex);
+            m_materialSystem->UpdateMaterialConstants(materialResource, view.viewCache);
+
+            RHIDescriptorSet* materialSet = m_materialSystem->GetOrCreateMaterialSet(materialResource, view.viewCache);
+            if (materialSet)
+            {
+                const auto materialDynamicOffsets = m_materialSystem->GetCurrentMaterialDynamicOffset();
+                ctx.SetDescriptorSet(2, materialSet, materialDynamicOffsets);
+            }
+
+            ctx.DrawIndexed(submesh.indexCount, 1,
+                            submesh.indexOffset, submesh.baseVertex, 0);
+        });
     }
     else
     {
         // Log why we're not drawing
         if (!m_renderScene) RVX_CORE_DEBUG("OpaquePass: No render scene");
-        if (!m_visibleIndices) RVX_CORE_DEBUG("OpaquePass: No visible indices");
+        if (!m_opaqueDrawItems && !m_maskedDrawItems) RVX_CORE_DEBUG("OpaquePass: No draw items");
         if (!m_gpuResources) RVX_CORE_DEBUG("OpaquePass: No GPU resources");
     }
 

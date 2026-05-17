@@ -7,6 +7,7 @@
 #include "Core/Log.h"
 #include <cstring>
 #include <algorithm>
+#include <new>
 
 #ifdef _WIN32
 #include <malloc.h>  // For _aligned_malloc/_aligned_free on Windows
@@ -305,20 +306,27 @@ MemoryTracker& MemoryTracker::Get()
     return instance;
 }
 
-void MemoryTracker::TrackAllocation(void* ptr, size_t size, const char* file, int line)
+void* MemoryTracker::TrackAllocation(size_t size, const char* file, int line)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    
+
+    void* ptr = ::operator new(size);
+
+    // Track the allocation
     m_allocations[ptr] = {size, file, line};
     m_totalAllocated += size;
     m_allocationCount++;
     m_peakAllocated = std::max(m_peakAllocated, m_totalAllocated);
+
+    return ptr;
 }
 
 void MemoryTracker::TrackDeallocation(void* ptr)
 {
+    if (!ptr) return;
+
     std::lock_guard<std::mutex> lock(m_mutex);
-    
+
     auto it = m_allocations.find(ptr);
     if (it != m_allocations.end())
     {

@@ -4,10 +4,13 @@
  */
 
 #include "Render/Passes/TransparentPass.h"
+#include "Render/Material/MaterialSystem.h"
 #include "Render/Renderer/ViewData.h"
 #include "Render/Renderer/RenderScene.h"
+#include "Render/Renderer/RenderDrawItem.h"
 #include "Render/GPUResourceManager.h"
 #include "Render/PipelineCache.h"
+#include "Resource/Types/MaterialResource.h"
 #include "RHI/RHIRenderPass.h"
 #include "Core/Log.h"
 
@@ -19,16 +22,28 @@ TransparentPass::TransparentPass()
     // Transparent pass is enabled by default but requires transparent objects to render
 }
 
-void TransparentPass::SetResources(GPUResourceManager* gpuResources, PipelineCache* pipelineCache)
+namespace
+{
+    const Resource::MaterialResource* ResolveMaterialResource(const RenderObject& obj, size_t submeshIndex)
+    {
+        if (submeshIndex >= obj.materialResources.size())
+            return nullptr;
+
+        return obj.materialResources[submeshIndex];
+    }
+} // namespace
+
+void TransparentPass::SetResources(GPUResourceManager* gpuResources, PipelineCache* pipelineCache,
+                                   MaterialSystem* materialSystem)
 {
     m_gpuResources = gpuResources;
     m_pipelineCache = pipelineCache;
+    m_materialSystem = materialSystem;
 }
-
-void TransparentPass::SetRenderScene(const RenderScene* scene, const std::vector<uint32_t>* transparentIndices)
+void TransparentPass::SetRenderScene(const RenderScene* scene, const std::vector<RenderDrawItem>* transparentDrawItems)
 {
     m_renderScene = scene;
-    m_transparentIndices = transparentIndices;
+    m_transparentDrawItems = transparentDrawItems;
 }
 
 void TransparentPass::SetRenderTargets(RHITextureView* colorTargetView, RHITextureView* depthTargetView)
@@ -56,12 +71,12 @@ void TransparentPass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
 {
     // Skip if no transparent objects
-    if (!m_transparentIndices || m_transparentIndices->empty())
+    if (!m_transparentDrawItems || m_transparentDrawItems->empty())
     {
         return;
     }
 
-    if (!m_pipelineCache || !m_pipelineCache->IsInitialized())
+    if (!m_pipelineCache || !m_pipelineCache->IsInitialized() || !m_materialSystem || !m_materialSystem->IsInitialized())
     {
         return;
     }
@@ -88,11 +103,7 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
     ctx.SetViewport(view.GetRHIViewport());
     ctx.SetScissor(view.GetRHIScissor());
 
-    // Bind transparent pipeline (should have alpha blending enabled)
-    // For now, use opaque pipeline - transparent pipeline would have:
-    // - BlendState: SrcAlpha, InvSrcAlpha
-    // - DepthWrite: false
-    RHIPipeline* pipeline = m_pipelineCache->GetOpaquePipeline();
+    RHIPipeline* pipeline = m_pipelineCache->GetTransparentPipeline();
     if (!pipeline)
     {
         ctx.EndRenderPass();
@@ -100,23 +111,21 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
     }
     ctx.SetPipeline(pipeline);
 
-    // Bind view constants descriptor set
-    RHIDescriptorSet* viewSet = m_pipelineCache->GetViewDescriptorSet();
-    if (viewSet)
+    RHIDescriptorSet* frameSet = m_pipelineCache->GetFrameDescriptorSet();
+    if (frameSet)
     {
-        ctx.SetDescriptorSet(0, viewSet);
+        ctx.SetDescriptorSet(0, frameSet);
     }
 
-    // Draw transparent objects in back-to-front order
-    // (Caller is responsible for sorting m_transparentIndices)
+    // Draw transparent submeshes in back-to-front order.
     if (m_renderScene && m_gpuResources)
     {
-        for (uint32_t idx : *m_transparentIndices)
+        for (const RenderDrawItem& item : *m_transparentDrawItems)
         {
-            if (idx >= m_renderScene->GetObjectCount())
+            if (item.objectIndex >= m_renderScene->GetObjectCount())
                 continue;
 
-            const RenderObject& obj = m_renderScene->GetObject(idx);
+            const RenderObject& obj = m_renderScene->GetObject(item.objectIndex);
 
             // Get GPU buffers for this mesh
             MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(obj.meshId);
@@ -127,6 +136,12 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
 
             // Update per-object constants (world matrix)
             m_pipelineCache->UpdateObjectConstants(obj.worldMatrix);
+            RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
+            if (objectSet)
+            {
+                const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
+                ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
+            }
 
             // Bind vertex buffers
             ctx.SetVertexBuffer(0, buffers.positionBuffer);
@@ -141,15 +156,33 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
                 ctx.SetVertexBuffer(2, buffers.uvBuffer);
             }
 
+            if (buffers.tangentBuffer)
+            {
+                ctx.SetVertexBuffer(3, buffers.tangentBuffer);
+            }
+
             // Bind index buffer
             ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
 
-            // Draw each submesh
-            for (const SubmeshGPUInfo& submesh : buffers.submeshes)
+            if (item.submeshIndex >= buffers.submeshes.size())
             {
-                ctx.DrawIndexed(submesh.indexCount, 1, 
-                               submesh.indexOffset, submesh.baseVertex, 0);
+                continue;
             }
+
+            const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
+            const Resource::MaterialResource* materialResource =
+                item.materialResource ? item.materialResource : ResolveMaterialResource(obj, item.submeshIndex);
+            m_materialSystem->UpdateMaterialConstants(materialResource, view.viewCache);
+
+            RHIDescriptorSet* materialSet = m_materialSystem->GetOrCreateMaterialSet(materialResource, view.viewCache);
+            if (materialSet)
+            {
+                const auto materialDynamicOffsets = m_materialSystem->GetCurrentMaterialDynamicOffset();
+                ctx.SetDescriptorSet(2, materialSet, materialDynamicOffsets);
+            }
+
+            ctx.DrawIndexed(submesh.indexCount, 1,
+                            submesh.indexOffset, submesh.baseVertex, 0);
         }
     }
 

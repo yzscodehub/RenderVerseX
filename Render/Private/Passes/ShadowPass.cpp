@@ -86,11 +86,6 @@ void ShadowPass::CalculateCascades(const ViewData& view)
     // Simplified: Create a basic orthographic light projection centered on view
     for (uint32_t i = 0; i < m_cascades.size(); ++i)
     {
-        float cascadeExtent = (i + 1) * 50.0f;  // Increase extent per cascade
-
-        // Light view matrix (looking down light direction)
-        Vec3 up = (std::abs(lightDir.y) < 0.99f) ? Vec3{0.0f, 1.0f, 0.0f} : Vec3{1.0f, 0.0f, 0.0f};
-        
         // Simple orthographic projection for directional light
         // A full implementation would calculate proper bounds from frustum corners
         m_cascades[i].viewProjection = Mat4Identity();  // Placeholder
@@ -99,6 +94,8 @@ void ShadowPass::CalculateCascades(const ViewData& view)
 
 void ShadowPass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
+    (void)builder;
+
     // Shadow pass creates its own render targets (shadow maps)
     // These would be transient textures in a full RenderGraph implementation
     CalculateCascades(view);
@@ -106,6 +103,8 @@ void ShadowPass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 
 void ShadowPass::Execute(RHICommandContext& ctx, const ViewData& view)
 {
+    (void)view;
+
     if (!m_pipelineCache || !m_renderScene || !m_gpuResources)
     {
         return;

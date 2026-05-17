@@ -3,6 +3,16 @@
 
 namespace RVX
 {
+    namespace
+    {
+        constexpr uint64 RVX_DX12_MAX_CBV_SIZE = D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16ull;
+
+        uint64 AlignCBVSize(uint64 size)
+        {
+            return (size + 255ull) & ~255ull;
+        }
+    } // namespace
+
     // =============================================================================
     // DX12 Buffer Implementation
     // =============================================================================
@@ -178,13 +188,25 @@ namespace RVX
         // CBV
         if (HasFlag(m_desc.usage, RHIBufferUsage::Constant))
         {
-            m_cbvHandle = heapManager.AllocateCbvSrvUav();
+            const uint64 cbvSize = AlignCBVSize(m_desc.size);
+            if (m_desc.size <= RVX_DX12_MAX_CBV_SIZE && cbvSize <= RVX_DX12_MAX_CBV_SIZE)
+            {
+                m_cbvHandle = heapManager.AllocateCbvSrvUav();
 
-            D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
-            cbvDesc.BufferLocation = m_resource->GetGPUVirtualAddress();
-            cbvDesc.SizeInBytes = static_cast<UINT>((m_desc.size + 255) & ~255);  // Align to 256 bytes
+                D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+                cbvDesc.BufferLocation = m_resource->GetGPUVirtualAddress();
+                cbvDesc.SizeInBytes = static_cast<UINT>(cbvSize);
 
-            d3dDevice->CreateConstantBufferView(&cbvDesc, m_cbvHandle.cpuHandle);
+                d3dDevice->CreateConstantBufferView(&cbvDesc, m_cbvHandle.cpuHandle);
+            }
+            else
+            {
+                // Large dynamic constant buffers are bound through root CBVs with
+                // GPU virtual address offsets. Creating a descriptor CBV for the
+                // entire backing buffer would violate D3D12's 64KB CBV limit.
+                RVX_RHI_DEBUG("Skipping CBV descriptor for oversized constant buffer '{}' ({} bytes)",
+                              GetDebugName(), m_desc.size);
+            }
         }
 
         // SRV (for structured/typed buffers)

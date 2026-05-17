@@ -6,6 +6,7 @@
 #pragma once
 
 #include "Physics/PhysicsTypes.h"
+#include "Core/MathTypes.h"
 #include <memory>
 #include <vector>
 
@@ -165,6 +166,16 @@ public:
                   const Quat& rotation = Quat(1,0,0,0));
 
     size_t GetShapeCount() const { return m_shapes.size(); }
+
+    /**
+     * @brief Get world-space axis-aligned bounding box
+     */
+    struct AABB
+    {
+        Vec3 min;
+        Vec3 max;
+    };
+    AABB GetAABB() const;
 
     // =========================================================================
     // Sleep

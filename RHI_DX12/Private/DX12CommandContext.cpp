@@ -15,17 +15,17 @@ namespace RVX
     {
         auto d3dDevice = device->GetD3DDevice();
 
-        D3D12_COMMAND_LIST_TYPE listType;
         switch (type)
         {
-            case RHICommandQueueType::Graphics: listType = D3D12_COMMAND_LIST_TYPE_DIRECT; break;
-            case RHICommandQueueType::Compute:  listType = D3D12_COMMAND_LIST_TYPE_COMPUTE; break;
-            case RHICommandQueueType::Copy:     listType = D3D12_COMMAND_LIST_TYPE_COPY; break;
-            default: listType = D3D12_COMMAND_LIST_TYPE_DIRECT; break;
+            case RHICommandQueueType::Graphics: m_listType = D3D12_COMMAND_LIST_TYPE_DIRECT; break;
+            case RHICommandQueueType::Compute:  m_listType = D3D12_COMMAND_LIST_TYPE_COMPUTE; break;
+            case RHICommandQueueType::Copy:     m_listType = D3D12_COMMAND_LIST_TYPE_COPY; break;
+            default: m_listType = D3D12_COMMAND_LIST_TYPE_DIRECT; break;
         }
 
-        DX12_CHECK(d3dDevice->CreateCommandAllocator(listType, IID_PPV_ARGS(&m_commandAllocator)));
-        DX12_CHECK(d3dDevice->CreateCommandList(0, listType, m_commandAllocator.Get(), nullptr, IID_PPV_ARGS(&m_commandList)));
+        m_commandAllocator = device->GetAllocatorPool().Acquire(m_listType);
+        RVX_ASSERT_MSG(m_commandAllocator, "DX12CommandContext: Failed to acquire command allocator");
+        DX12_CHECK(d3dDevice->CreateCommandList(0, m_listType, m_commandAllocator.Get(), nullptr, IID_PPV_ARGS(&m_commandList)));
 
         // Command list starts in recording state, close it
         m_commandList->Close();
@@ -47,18 +47,30 @@ namespace RVX
             return;
         }
 
+        if (!m_commandAllocator)
+        {
+            m_commandAllocator = m_device->GetAllocatorPool().Acquire(m_listType);
+            RVX_ASSERT_MSG(m_commandAllocator, "DX12CommandContext::Begin failed to acquire command allocator");
+            if (!m_commandAllocator)
+            {
+                return;
+            }
+        }
+
         DX12_CHECK(m_commandAllocator->Reset());
         DX12_CHECK(m_commandList->Reset(m_commandAllocator.Get(), nullptr));
 
         m_isRecording = true;
         m_currentPipeline = nullptr;
 
-        // Set descriptor heaps
-        ID3D12DescriptorHeap* heaps[] = {
-            m_device->GetDescriptorHeapManager().GetCbvSrvUavHeap(),
-            m_device->GetDescriptorHeapManager().GetSamplerHeap()
-        };
-        m_commandList->SetDescriptorHeaps(2, heaps);
+        if (m_queueType != RHICommandQueueType::Copy)
+        {
+            ID3D12DescriptorHeap* heaps[] = {
+                m_device->GetDescriptorHeapManager().GetCbvSrvUavHeap(),
+                m_device->GetDescriptorHeapManager().GetSamplerHeap()
+            };
+            m_commandList->SetDescriptorHeaps(2, heaps);
+        }
     }
 
     void DX12CommandContext::End()
@@ -111,6 +123,13 @@ namespace RVX
         {
             End();
         }
+    }
+
+    ComPtr<ID3D12CommandAllocator> DX12CommandContext::DetachCommandAllocator()
+    {
+        ComPtr<ID3D12CommandAllocator> allocator = m_commandAllocator;
+        m_commandAllocator.Reset();
+        return allocator;
     }
 
     // =============================================================================
@@ -802,6 +821,10 @@ namespace RVX
             uint64 value = dx12Fence->GetCompletedValue() + 1;
             queue->Signal(dx12Fence->GetFence(), value);
         }
+
+        device->GetAllocatorPool().Release(dx12Context->DetachCommandAllocator(),
+                                           dx12Context->GetD3DListType(),
+                                           queue);
     }
 
     void SubmitDX12CommandContexts(DX12Device* device, std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
@@ -812,15 +835,27 @@ namespace RVX
         std::vector<ID3D12CommandList*> cmdLists;
         cmdLists.reserve(contexts.size());
 
-        RHICommandQueueType queueType = RHICommandQueueType::Graphics;
+        auto* firstContext = static_cast<DX12CommandContext*>(contexts.front());
+        RHICommandQueueType queueType = firstContext->GetQueueType();
         for (auto* context : contexts)
         {
             auto* dx12Context = static_cast<DX12CommandContext*>(context);
+            if (dx12Context->GetQueueType() != queueType)
+            {
+                RVX_RHI_ERROR("SubmitDX12CommandContexts requires all contexts to use the same command queue type");
+                return;
+            }
+
             cmdLists.push_back(dx12Context->GetCommandList());
-            queueType = dx12Context->GetQueueType();
         }
 
         auto* queue = device->GetQueue(queueType);
+        if (!queue)
+        {
+            RVX_RHI_ERROR("SubmitDX12CommandContexts: invalid command queue");
+            return;
+        }
+
         queue->ExecuteCommandLists(static_cast<UINT>(cmdLists.size()), cmdLists.data());
 
         if (signalFence)
@@ -828,6 +863,14 @@ namespace RVX
             auto* dx12Fence = static_cast<DX12Fence*>(signalFence);
             uint64 value = dx12Fence->GetCompletedValue() + 1;
             queue->Signal(dx12Fence->GetFence(), value);
+        }
+
+        for (auto* context : contexts)
+        {
+            auto* dx12Context = static_cast<DX12CommandContext*>(context);
+            device->GetAllocatorPool().Release(dx12Context->DetachCommandAllocator(),
+                                               dx12Context->GetD3DListType(),
+                                               queue);
         }
     }
 
@@ -954,6 +997,31 @@ namespace RVX
     {
         // DX12 doesn't support line width (always 1.0)
         (void)width;
+    }
+
+    // =============================================================================
+    // Synchronization
+    // =============================================================================
+    void DX12CommandContext::SignalFence(RHIFence* fence, uint64 value)
+    {
+        if (fence && m_device)
+        {
+            auto* dx12Fence = static_cast<DX12Fence*>(fence);
+            auto* queue = m_device->GetQueue(m_queueType);
+            if (queue)
+            {
+                queue->Signal(dx12Fence->GetFence(), value);
+            }
+        }
+    }
+
+    void DX12CommandContext::WaitFence(RHIFence* fence, uint64 value)
+    {
+        if (fence)
+        {
+            // CPU wait for fence - this will block the calling thread
+            fence->Wait(value);
+        }
     }
 
     // =============================================================================

@@ -89,6 +89,8 @@ namespace RVX::Particle
 
     private:
         uint32 MakePipelineKey(ParticleRenderMode mode, ParticleBlendMode blend, bool soft);
+        RHIPipeline* CreatePipelineIfNeeded(ParticleRenderMode mode, ParticleBlendMode blend, bool soft);
+        const char* GetShaderNameForMode(ParticleRenderMode mode) const;
         void CreateQuadBuffers();
         void UploadRenderConstants(const ViewData& view, const SoftParticleConfig& softConfig);
 

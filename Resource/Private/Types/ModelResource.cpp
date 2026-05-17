@@ -1,9 +1,10 @@
 #include "Resource/Types/ModelResource.h"
-#include "Scene/SceneManager.h"
-#include "Scene/SceneEntity.h"
-#include "Scene/Components/MeshRendererComponent.h"
+#include "Scene/Actor.h"
 #include "Scene/ComponentFactory.h"
+#include "Scene/Components/StaticMeshComponent.h"
 #include "Scene/Node.h"
+#include "Scene/SceneEntity.h"
+#include "Scene/SceneManager.h"
 
 namespace RVX::Resource
 {
@@ -134,30 +135,36 @@ void ModelResource::SetMaterials(std::vector<ResourceHandle<MaterialResource>> m
 
 SceneEntity* ModelResource::Instantiate(SceneManager* scene) const
 {
+    return dynamic_cast<SceneEntity*>(InstantiateActor(scene));
+}
+
+Actor* ModelResource::InstantiateActor(SceneManager* scene) const
+{
     if (!m_rootNode || !scene)
     {
         return nullptr;
     }
     
-    return InstantiateNode(m_rootNode.get(), scene, nullptr);
+    return InstantiateActorNode(m_rootNode.get(), scene, nullptr);
 }
 
-SceneEntity* ModelResource::InstantiateNode(const Node* node, SceneManager* scene, SceneEntity* parent) const
+SceneEntity* ModelResource::InstantiateActorNode(const Node* node, SceneManager* scene, SceneEntity* parent) const
 {
     if (!node)
         return nullptr;
     
-    // Create entity
-    SceneEntity::Handle handle = scene->CreateEntity(node->GetName());
-    SceneEntity* entity = scene->GetEntity(handle);
+    const auto& transform = node->GetLocalTransform();
+
+    ActorSpawnParams params;
+    params.name = node->GetName();
+    params.localPosition = transform.GetPosition();
+    params.localRotation = transform.GetRotation();
+    params.localScale = transform.GetScale();
+    params.parent = parent;
+
+    SceneEntity* entity = scene->SpawnActor<SceneEntity>(params);
     if (!entity)
         return nullptr;
-    
-    // Set transform from node
-    const auto& transform = node->GetLocalTransform();
-    entity->SetPosition(transform.GetPosition());
-    entity->SetRotation(transform.GetRotation());
-    entity->SetScale(transform.GetScale());
     
     // Use ComponentFactory if node uses index mode (preferred new approach)
     if (node->UsesIndexMode())
@@ -183,9 +190,9 @@ SceneEntity* ModelResource::InstantiateNode(const Node* node, SceneManager* scen
         
         if (meshHandle.IsValid())
         {
-            // Add MeshRendererComponent
-            auto* renderer = entity->AddComponent<MeshRendererComponent>();
-            renderer->SetMesh(meshHandle);
+            auto* primitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
+            primitive->AttachToComponent(entity->GetRootComponent());
+            primitive->SetMesh(meshHandle);
             
             // Set materials for each submesh
             auto* mesh = nodeMesh.get();
@@ -197,27 +204,22 @@ SceneEntity* ModelResource::InstantiateNode(const Node* node, SceneManager* scen
                     uint32_t matIndex = submeshes[i].materialId;
                     if (matIndex < m_materials.size() && m_materials[matIndex].IsValid())
                     {
-                        renderer->SetMaterial(i, m_materials[matIndex]);
+                        primitive->SetMaterial(i, m_materials[matIndex]);
                     }
                 }
             }
             
             // Copy visibility settings
-            renderer->SetVisible(meshComp->IsVisible());
-            renderer->SetCastsShadow(meshComp->CastsShadows());
+            primitive->SetVisible(meshComp->IsVisible());
+            primitive->SetCastsShadow(meshComp->CastsShadows());
+            primitive->SetReceivesShadow(meshComp->ReceivesShadows());
         }
     }
-    
-    // Set parent relationship
-    if (parent)
-    {
-        parent->AddChild(entity);
-    }
-    
+
     // Recursively instantiate children
     for (const auto& child : node->GetChildren())
     {
-        InstantiateNode(child.get(), scene, entity);
+        InstantiateActorNode(child.get(), scene, entity);
     }
     
     return entity;

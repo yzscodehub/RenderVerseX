@@ -13,8 +13,6 @@
 #include "Runtime/Window/WindowSubsystem.h"
 #include "World/World.h"
 #include "Runtime/Camera/Camera.h"
-#include "Resource/ResourceManager.h"
-#include "Resource/Types/MeshResource.h"
 #include "Core/Log.h"
 #include "Core/Event/EventBus.h"
 #include "HAL/Window/WindowEvents.h"
@@ -146,8 +144,8 @@ void RenderSubsystem::Render(World* world, Camera* camera)
     // Setup view and collect scene data
     m_sceneRenderer->SetupView(*camera, world);
 
-    // Ensure visible meshes are GPU-resident before rendering
-    EnsureVisibleResourcesResident();
+    // SceneRenderer::SetupView() requests uploads for visible resources.
+    // Rendering skips objects whose GPU resources are not ready yet.
 
     // Execute render graph
     m_sceneRenderer->Render();
@@ -166,20 +164,23 @@ void RenderSubsystem::EnsureVisibleResourcesResident()
     {
         const auto& obj = renderScene.GetObject(idx);
         
-        if (!gpuMgr->IsResident(obj.meshId))
+        if (gpuMgr->IsResident(obj.meshId))
         {
-            // Get mesh resource from cache and upload immediately
-            Resource::ResourceHandle<Resource::MeshResource> meshHandle = 
-                Resource::ResourceManager::Get().Load<Resource::MeshResource>(obj.meshId);
-            if (meshHandle.IsValid())
-            {
-                RVX_CORE_INFO("RenderSubsystem: Uploading mesh {} to GPU", obj.meshId);
-                gpuMgr->UploadImmediate(meshHandle.Get());
-            }
-            else
-            {
-                RVX_CORE_WARN("RenderSubsystem: Mesh {} not found in ResourceManager", obj.meshId);
-            }
+            gpuMgr->MarkUsed(obj.meshId);
+            continue;
+        }
+
+        GPUResourceState state = gpuMgr->GetResourceState(obj.meshId);
+        if (state == GPUResourceState::UploadQueued || state == GPUResourceState::Uploading)
+            continue;
+
+        if (obj.meshResource)
+        {
+            gpuMgr->RequestUpload(obj.meshResource, UploadPriority::High);
+        }
+        else
+        {
+            RVX_CORE_WARN("RenderSubsystem: Mesh {} has no CPU resource for async upload", obj.meshId);
         }
     }
 }

@@ -13,6 +13,7 @@ target_sources(RVX_RHI_DX12 PRIVATE
     Private/DX12Query.cpp
     Private/DX12DescriptorHeap.cpp
     Private/DX12SwapChain.cpp
+    Private/DX12Upload.cpp
 )
 
 target_include_directories(RVX_RHI_DX12 PUBLIC

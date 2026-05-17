@@ -7,8 +7,7 @@
 #include "OpenGLSwapChain.h"
 #include "OpenGLSync.h"
 #include "OpenGLQuery.h"
-#include "OpenGL/OpenGLDevice.h"
-#include "Core/Log.h"
+#include "OpenGLUpload.h"
 
 namespace RVX
 {
@@ -587,17 +586,12 @@ namespace RVX
     // =============================================================================
     RHIStagingBufferRef OpenGLDevice::CreateStagingBuffer(const RHIStagingBufferDesc& desc)
     {
-        // OpenGL uses buffer mapping directly
-        // TODO: Create proper OpenGLStagingBuffer wrapper
-        RVX_RHI_WARN("OpenGL: CreateStagingBuffer not yet fully implemented");
-        return nullptr;
+        return CreateOpenGLStagingBuffer(this, desc);
     }
 
     RHIRingBufferRef OpenGLDevice::CreateRingBuffer(const RHIRingBufferDesc& desc)
     {
-        // TODO: Create proper OpenGLRingBuffer implementation
-        RVX_RHI_WARN("OpenGL: CreateRingBuffer not yet fully implemented");
-        return nullptr;
+        return CreateOpenGLRingBuffer(this, desc);
     }
 
     // =============================================================================

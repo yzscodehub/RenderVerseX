@@ -24,6 +24,7 @@ void ResourceViewCache::Initialize(IRHIDevice* device)
 
     m_device = device;
     m_currentFrame = 0;
+    m_generation = 0;
     m_stats = {};
 
     RVX_CORE_DEBUG("ResourceViewCache: Initialized");
@@ -45,10 +46,10 @@ RHITextureView* ResourceViewCache::GetTextureView(RHITexture* texture, const RHI
     if (!m_device || !texture)
         return nullptr;
 
-    uint64 hash = HashTextureViewKey(texture, desc);
+    TextureViewKey key = MakeTextureViewKey(texture, desc);
 
     // Check cache
-    auto it = m_textureViews.find(hash);
+    auto it = m_textureViews.find(key);
     if (it != m_textureViews.end())
     {
         it->second.lastUsedFrame = m_currentFrame;
@@ -70,7 +71,7 @@ RHITextureView* ResourceViewCache::GetTextureView(RHITexture* texture, const RHI
     cached.lastUsedFrame = m_currentFrame;
 
     RHITextureView* result = cached.view.Get();
-    m_textureViews[hash] = std::move(cached);
+    m_textureViews.emplace(key, std::move(cached));
 
     m_stats.cacheMisses++;
     m_stats.textureViewCount++;
@@ -151,12 +152,15 @@ void ResourceViewCache::InvalidateTexture(RHITexture* texture)
     if (!texture)
         return;
 
+    bool invalidated = false;
+
     // Remove all views associated with this texture
     for (auto it = m_textureViews.begin(); it != m_textureViews.end(); )
     {
         if (it->second.texture == texture)
         {
             it = m_textureViews.erase(it);
+            invalidated = true;
             if (m_stats.textureViewCount > 0)
                 m_stats.textureViewCount--;
         }
@@ -165,11 +169,20 @@ void ResourceViewCache::InvalidateTexture(RHITexture* texture)
             ++it;
         }
     }
+
+    if (invalidated)
+    {
+        ++m_generation;
+    }
 }
 
 void ResourceViewCache::Clear()
 {
-    m_textureViews.clear();
+    if (!m_textureViews.empty())
+    {
+        ++m_generation;
+        m_textureViews.clear();
+    }
     m_stats.textureViewCount = 0;
 }
 
@@ -184,21 +197,31 @@ void ResourceViewCache::ResetFrameStats()
     m_stats.cacheMisses = 0;
 }
 
-uint64 ResourceViewCache::HashTextureViewKey(RHITexture* texture, const RHITextureViewDesc& desc)
+ResourceViewCache::TextureViewKey ResourceViewCache::MakeTextureViewKey(RHITexture* texture, const RHITextureViewDesc& desc)
 {
-    uint64 hash = reinterpret_cast<uint64>(texture);
-    
-    auto hashCombine = [&hash](uint64 value) {
-        hash ^= value + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+    TextureViewKey key;
+    key.texture = texture;
+    key.format = desc.format;
+    key.dimension = desc.dimension;
+    key.subresourceRange = desc.subresourceRange;
+    return key;
+}
+
+size_t ResourceViewCache::TextureViewKeyHash::operator()(const TextureViewKey& key) const
+{
+    size_t hash = std::hash<RHITexture*>{}(key.texture);
+
+    auto hashCombine = [&hash](size_t value) {
+        hash ^= value + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
     };
 
-    hashCombine(static_cast<uint64>(desc.format));
-    hashCombine(static_cast<uint64>(desc.dimension));
-    hashCombine(desc.subresourceRange.baseMipLevel);
-    hashCombine(desc.subresourceRange.mipLevelCount);
-    hashCombine(desc.subresourceRange.baseArrayLayer);
-    hashCombine(desc.subresourceRange.arrayLayerCount);
-    hashCombine(static_cast<uint64>(desc.subresourceRange.aspect));
+    hashCombine(std::hash<uint32>{}(static_cast<uint32>(key.format)));
+    hashCombine(std::hash<uint32>{}(static_cast<uint32>(key.dimension)));
+    hashCombine(std::hash<uint32>{}(key.subresourceRange.baseMipLevel));
+    hashCombine(std::hash<uint32>{}(key.subresourceRange.mipLevelCount));
+    hashCombine(std::hash<uint32>{}(key.subresourceRange.baseArrayLayer));
+    hashCombine(std::hash<uint32>{}(key.subresourceRange.arrayLayerCount));
+    hashCombine(std::hash<uint32>{}(static_cast<uint32>(key.subresourceRange.aspect)));
 
     return hash;
 }

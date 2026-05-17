@@ -108,6 +108,7 @@ namespace RVX
         uint32 index = RVX_INVALID_INDEX;
         RHIResourceState desiredState = RHIResourceState::Common;
         RGAccessType access = RGAccessType::Read;
+        RHIShaderStage stages = RHIShaderStage::AllGraphics;  // Shader stages that will access this resource
         RHISubresourceRange subresourceRange = RHISubresourceRange::All();
         bool hasSubresourceRange = false;
         uint64 offset = 0;
@@ -163,10 +164,11 @@ namespace RVX
 
     void CompileRenderGraph(RenderGraphImpl& graph);
     void ExecuteRenderGraph(RenderGraphImpl& graph, RHICommandContext& ctx);
-    void ExecuteRenderGraphAsync(RenderGraphImpl& graph, 
+    void ExecuteRenderGraphAsync(RenderGraphImpl& graph,
                                   RHICommandContext& graphicsCtx,
                                   RHICommandContext* computeCtx,
-                                  RHIFence* computeFence);
+                                  RHIFence* computeFence,
+                                  uint64 frameIndex = 0);
     
     // Memory aliasing functions
     void CalculateResourceLifetimes(RenderGraphImpl& graph);

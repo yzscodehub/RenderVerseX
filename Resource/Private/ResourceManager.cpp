@@ -4,6 +4,7 @@
 #include "Scene/ComponentFactory.h"
 #include "Core/Log.h"
 #include <algorithm>
+#include <exception>
 #include <filesystem>
 
 // Logging macros
@@ -55,6 +56,7 @@ void ResourceManager::Initialize(const ResourceManagerConfig& config)
     ComponentFactory::RegisterDefaults();
 
     m_initialized = true;
+    StartAsyncWorkers();
     RVX_RESOURCE_INFO("ResourceManager initialized");
 }
 
@@ -75,6 +77,15 @@ void ResourceManager::Shutdown()
 {
     if (!m_initialized) return;
 
+    StopAsyncWorkers();
+    ProcessCompletedLoads();
+
+    {
+        std::lock_guard<std::mutex> lock(m_pendingCallbacksMutex);
+        m_pendingCallbacks.clear();
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
     m_loaders.clear();
     m_cache->Clear();
     m_registry->Clear();
@@ -86,6 +97,8 @@ void ResourceManager::Shutdown()
 
 IResource* ResourceManager::LoadResource(const std::string& path)
 {
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+
     if (!m_initialized)
     {
         RVX_RESOURCE_ERROR("ResourceManager not initialized");
@@ -111,6 +124,8 @@ IResource* ResourceManager::LoadResource(const std::string& path)
 
 IResource* ResourceManager::LoadResource(ResourceId id)
 {
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+
     if (!m_initialized) return nullptr;
 
     // Check cache first
@@ -232,6 +247,8 @@ void ResourceManager::Unload(const std::string& path)
 
 void ResourceManager::Unload(ResourceId id)
 {
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+
     if (m_cache) m_cache->Remove(id);
     if (m_registry) m_registry->Unregister(id);
     if (m_dependencyGraph) m_dependencyGraph->RemoveResource(id);
@@ -247,6 +264,8 @@ void ResourceManager::UnloadUnused()
 
 void ResourceManager::Clear()
 {
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+
     if (m_cache) m_cache->Clear();
     if (m_registry) m_registry->Clear();
     if (m_dependencyGraph) m_dependencyGraph->Clear();
@@ -286,22 +305,59 @@ void ResourceManager::ClearCache()
 
 void ResourceManager::RegisterLoader(ResourceType type, std::unique_ptr<IResourceLoader> loader)
 {
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
     m_loaders[type] = std::move(loader);
 }
 
 IResourceLoader* ResourceManager::GetLoader(ResourceType type)
 {
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
     auto it = m_loaders.find(type);
     return it != m_loaders.end() ? it->second.get() : nullptr;
 }
 
 void ResourceManager::ProcessCompletedLoads()
 {
-    // TODO: Process async load completions
+    std::vector<PendingAsyncCallback> readyCallbacks;
+
+    {
+        std::lock_guard<std::mutex> lock(m_pendingCallbacksMutex);
+
+        auto it = m_pendingCallbacks.begin();
+        while (it != m_pendingCallbacks.end())
+        {
+            if (it->isReady && it->isReady())
+            {
+                readyCallbacks.push_back(std::move(*it));
+                it = m_pendingCallbacks.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+    }
+
+    for (auto& callback : readyCallbacks)
+    {
+        try
+        {
+            if (callback.dispatch)
+            {
+                callback.dispatch();
+            }
+        }
+        catch (const std::exception& e)
+        {
+            RVX_RESOURCE_ERROR("Async resource callback failed: {}", e.what());
+        }
+    }
 }
 
 ResourceManager::Stats ResourceManager::GetStats() const
 {
+    std::lock_guard<std::recursive_mutex> loadLock(m_loadMutex);
+
     Stats stats;
 
     if (m_registry)
@@ -315,6 +371,16 @@ ResourceManager::Stats ResourceManager::GetStats() const
         stats.loadedCount = cacheStats.totalResources;
         stats.cpuMemory = cacheStats.memoryUsage;
         stats.gpuMemory = cacheStats.gpuMemoryUsage;
+    }
+
+    {
+        std::lock_guard<std::mutex> asyncLock(m_asyncMutex);
+        stats.pendingLoads += m_asyncJobs.size();
+    }
+
+    {
+        std::lock_guard<std::mutex> callbacksLock(m_pendingCallbacksMutex);
+        stats.pendingLoads += m_pendingCallbacks.size();
     }
 
     return stats;
@@ -377,6 +443,106 @@ std::string ResourceManager::ResolvePath(const std::string& path) const
     }
 
     return (basePath / resourcePath).string();
+}
+
+void ResourceManager::StartAsyncWorkers()
+{
+    StopAsyncWorkers();
+
+    {
+        std::lock_guard<std::mutex> lock(m_asyncMutex);
+        m_asyncStopping = false;
+    }
+
+    const int requestedCount = m_config.asyncThreadCount;
+    if (requestedCount <= 0)
+    {
+        RVX_RESOURCE_INFO("ResourceManager async loading workers disabled");
+        return;
+    }
+
+    m_asyncWorkers.reserve(static_cast<size_t>(requestedCount));
+    for (int i = 0; i < requestedCount; ++i)
+    {
+        m_asyncWorkers.emplace_back(&ResourceManager::AsyncWorkerLoop, this);
+    }
+
+    RVX_RESOURCE_INFO("ResourceManager started {} async loading worker(s)", requestedCount);
+}
+
+void ResourceManager::StopAsyncWorkers()
+{
+    {
+        std::lock_guard<std::mutex> lock(m_asyncMutex);
+        m_asyncStopping = true;
+    }
+
+    m_asyncCondition.notify_all();
+
+    for (auto& worker : m_asyncWorkers)
+    {
+        if (worker.joinable())
+        {
+            worker.join();
+        }
+    }
+    m_asyncWorkers.clear();
+}
+
+void ResourceManager::EnqueueAsyncJob(std::function<void()> job)
+{
+    if (!job)
+    {
+        return;
+    }
+
+    bool runInline = false;
+
+    {
+        std::lock_guard<std::mutex> lock(m_asyncMutex);
+        runInline = m_asyncWorkers.empty() || m_asyncStopping;
+
+        if (!runInline && !m_asyncStopping)
+        {
+            m_asyncJobs.push_back(std::move(job));
+        }
+    }
+
+    if (runInline)
+    {
+        job();
+        return;
+    }
+
+    m_asyncCondition.notify_one();
+}
+
+void ResourceManager::AsyncWorkerLoop()
+{
+    while (true)
+    {
+        std::function<void()> job;
+
+        {
+            std::unique_lock<std::mutex> lock(m_asyncMutex);
+            m_asyncCondition.wait(lock, [this]() {
+                return m_asyncStopping || !m_asyncJobs.empty();
+            });
+
+            if (m_asyncStopping && m_asyncJobs.empty())
+            {
+                return;
+            }
+
+            job = std::move(m_asyncJobs.front());
+            m_asyncJobs.pop_front();
+        }
+
+        if (job)
+        {
+            job();
+        }
+    }
 }
 
 // IResourceLoader implementation

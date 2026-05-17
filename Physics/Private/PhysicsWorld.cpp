@@ -6,6 +6,9 @@
 #include "Physics/PhysicsWorld.h"
 #include "Physics/Shapes/CollisionShape.h"
 #include "Physics/Constraints/IConstraint.h"
+#include "Core/Math/Intersection.h"
+#include "Core/Math/Ray.h"
+#include "Core/Math/AABB.h"
 #include <algorithm>
 #include <cmath>
 
@@ -303,36 +306,151 @@ bool PhysicsWorld::Raycast(const Vec3& origin, const Vec3& direction, float maxD
                            RaycastHit& hit, uint32 layerMask) const
 {
     hit = RaycastHit{};
-    
-    // TODO: Implement raycast using Jolt backend
-    // JPH::RayCast ray(ToJolt(origin), ToJolt(direction) * maxDistance);
-    // ...
 
-    return false;
+    float closestDist = maxDistance;
+    bool foundHit = false;
+
+    // Normalize direction
+    Vec3 dir = glm::normalize(direction);
+
+    for (auto& body : m_bodies)
+    {
+        if (!body) continue;
+
+        // Check layer mask
+        if (!(body->GetLayer() & layerMask)) continue;
+
+        // Get body AABB
+        RigidBody::AABB aabb = body->GetAABB();
+        AABB box(aabb.min, aabb.max);
+
+        // Ray-AABB intersection test
+        float tMin = 0.0f, tMax = 0.0f;
+        Ray ray(origin, dir);
+        if (RayAABBIntersect(ray, box, tMin, tMax))
+        {
+            if (tMin < closestDist && tMin >= 0.0f)
+            {
+                closestDist = tMin;
+                foundHit = true;
+                hit.hit = true;
+                hit.distance = tMin;
+                hit.point = origin + dir * tMin;
+                hit.bodyId = body->GetId();
+                // Simplified normal calculation - point towards ray origin
+                hit.normal = -dir;
+            }
+        }
+    }
+
+    return foundHit;
 }
 
 size_t PhysicsWorld::RaycastAll(const Vec3& origin, const Vec3& direction, float maxDistance,
                                 std::vector<RaycastHit>& hits, uint32 layerMask) const
 {
     hits.clear();
-    // TODO: Implement multi-hit raycast
-    return 0;
+
+    Vec3 dir = glm::normalize(direction);
+
+    for (auto& body : m_bodies)
+    {
+        if (!body) continue;
+        if (!(body->GetLayer() & layerMask)) continue;
+
+        RigidBody::AABB aabb = body->GetAABB();
+        AABB box(aabb.min, aabb.max);
+
+        float tMin = 0.0f, tMax = 0.0f;
+        Ray ray(origin, dir);
+        if (RayAABBIntersect(ray, box, tMin, tMax))
+        {
+            if (tMin < maxDistance && tMin >= 0.0f)
+            {
+                RaycastHit hit;
+                hit.hit = true;
+                hit.distance = tMin;
+                hit.point = origin + dir * tMin;
+                hit.bodyId = body->GetId();
+                hit.normal = -dir;
+                hits.push_back(hit);
+            }
+        }
+    }
+
+    // Sort by distance
+    std::sort(hits.begin(), hits.end(), [](const RaycastHit& a, const RaycastHit& b) {
+        return a.distance < b.distance;
+    });
+
+    return hits.size();
 }
 
 bool PhysicsWorld::SphereCast(const Vec3& origin, float radius, const Vec3& direction,
                               float maxDistance, ShapeCastHit& hit, uint32 layerMask) const
 {
     hit = ShapeCastHit{};
-    // TODO: Implement sphere cast
-    return false;
+
+    float closestDist = maxDistance;
+    bool foundHit = false;
+
+    Vec3 dir = glm::normalize(direction);
+
+    for (auto& body : m_bodies)
+    {
+        if (!body) continue;
+        if (!(body->GetLayer() & layerMask)) continue;
+
+        RigidBody::AABB bodyAABB = body->GetAABB();
+
+        // Expand AABB by radius
+        Vec3 expandedMin = bodyAABB.min - Vec3(radius);
+        Vec3 expandedMax = bodyAABB.max + Vec3(radius);
+        AABB expandedBox(expandedMin, expandedMax);
+
+        float tMin = 0.0f, tMax = 0.0f;
+        Ray ray(origin, dir);
+        if (RayAABBIntersect(ray, expandedBox, tMin, tMax))
+        {
+            if (tMin < closestDist && tMin >= 0.0f)
+            {
+                closestDist = tMin;
+                foundHit = true;
+                hit.hit = true;
+                hit.fraction = tMin / maxDistance;
+                hit.point = origin + dir * tMin;
+                hit.bodyId = body->GetId();
+                hit.normal = -dir;
+            }
+        }
+    }
+
+    return foundHit;
 }
 
 size_t PhysicsWorld::OverlapSphere(const Vec3& center, float radius,
                                    std::vector<BodyHandle>& bodies, uint32 layerMask) const
 {
     bodies.clear();
-    // TODO: Implement overlap query
-    return 0;
+
+    for (auto& body : m_bodies)
+    {
+        if (!body) continue;
+        if (!(body->GetLayer() & layerMask)) continue;
+
+        RigidBody::AABB aabb = body->GetAABB();
+
+        // Check if sphere intersects AABB
+        Vec3 closestPoint = glm::clamp(center, aabb.min, aabb.max);
+        float dist = glm::length(closestPoint - center);
+
+        if (dist < radius)
+        {
+            bodies.push_back(body->GetHandle());
+        }
+    }
+
+    return bodies.size();
 }
 
 void PhysicsWorld::GetDebugDrawData(std::vector<Vec3>& lines, std::vector<Vec4>& colors,

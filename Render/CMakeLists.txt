@@ -16,6 +16,7 @@ target_sources(RVX_Render PRIVATE
     Private/RenderService.cpp
     Private/SwapChainManager.cpp
     Private/RenderSubsystem.cpp
+    Private/GPUUploadService.cpp
     Private/GPUResourceManager.cpp
     Private/PipelineCache.cpp
     # Context
@@ -24,6 +25,10 @@ target_sources(RVX_Render PRIVATE
     # Renderer
     Private/Renderer/ViewData.cpp
     Private/Renderer/RenderScene.cpp
+    Private/Renderer/RenderSceneCollector.cpp
+    Private/Renderer/RenderDrawItem.cpp
+    Private/Renderer/RenderFrameResourceBinder.cpp
+    Private/Renderer/RenderPassRegistry.cpp
     Private/Renderer/SceneRenderer.cpp
     # Passes
     Private/Passes/OpaquePass.cpp
@@ -31,6 +36,7 @@ target_sources(RVX_Render PRIVATE
     Private/Passes/TransparentPass.cpp
     Private/Passes/SkyboxPass.cpp
     Private/Passes/ShadowPass.cpp
+    Private/Passes/GBufferPass.cpp
     # Graph (merged from RenderGraph module)
     Private/Graph/RenderGraph.cpp
     Private/Graph/RenderGraphCompiler.cpp
@@ -40,6 +46,8 @@ target_sources(RVX_Render PRIVATE
     Private/Graph/ResourceViewCache.cpp
     # Material
     Private/Material/MaterialBinder.cpp
+    Private/Material/MaterialClassification.cpp
+    Private/Material/MaterialSystem.cpp
     Private/Material/MaterialTemplate.cpp
     Private/Material/MaterialInstance.cpp
     # Lighting

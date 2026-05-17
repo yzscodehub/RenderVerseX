@@ -11,6 +11,7 @@
  * - Material (PBR material system)
  * - Node (scene graph with component system)
  * - Model (container for scene hierarchy)
+ * - Actor (UE-style component owner)
  * - SceneEntity (base class for spatial entities)
  * - SceneManager (central scene management)
  * - Prefab (reusable entity templates)
@@ -19,16 +20,23 @@
 
 // Core scene types
 #include "Core/Math/AABB.h"
-#include "Scene/VertexAttribute.h"
-#include "Scene/Mesh.h"
+#include "Scene/Actor.h"
+#include "Scene/ActorComponent.h"
+#include "Scene/ActorFactory.h"
+#include "Scene/ComponentFactory.h"
 #include "Scene/Material.h"
-#include "Scene/Node.h"
+#include "Scene/Mesh.h"
 #include "Scene/Model.h"
+#include "Scene/Node.h"
+#include "Scene/Prefab.h"
+#include "Scene/PrimitiveComponent.h"
+#include "Scene/SceneComponent.h"
 #include "Scene/SceneEntity.h"
 #include "Scene/SceneManager.h"
-#include "Scene/Prefab.h"
+#include "Scene/VertexAttribute.h"
 
 // Components
+#include "Scene/Components/StaticMeshComponent.h"
 #include "Scene/Components/MeshRendererComponent.h"
 #include "Scene/Components/LightComponent.h"
 #include "Scene/Components/CameraComponent.h"

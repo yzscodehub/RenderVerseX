@@ -10,13 +10,20 @@ target_sources(RVX_Scene PRIVATE
     Private/Material.cpp
     Private/Node.cpp
     Private/Model.cpp
+    Private/Actor.cpp
+    Private/ActorComponent.cpp
+    Private/ActorFactory.cpp
+    Private/SceneComponent.cpp
+    Private/PrimitiveComponent.cpp
     Private/SceneEntity.cpp
     Private/SceneManager.cpp
     Private/Component.cpp
+    Private/ComponentClassFactory.cpp
     Private/ComponentFactory.cpp
     Private/Prefab.cpp
 
     # Components
+    Private/Components/StaticMeshComponent.cpp
     Private/Components/MeshRendererComponent.cpp
     Private/Components/LightComponent.cpp
     Private/Components/AudioComponent.cpp
@@ -45,6 +52,7 @@ target_link_libraries(RVX_Scene PUBLIC
 # Include headers for components that use external resources
 # Using PRIVATE to avoid circular dependency (Resource/Physics/Animation link to Scene)
 target_include_directories(RVX_Scene PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Render/Include>
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Resource/Include>
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Audio/Include>
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Physics/Include>

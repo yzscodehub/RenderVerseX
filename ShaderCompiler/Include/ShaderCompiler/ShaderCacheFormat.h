@@ -2,6 +2,7 @@
 
 #include "Core/Types.h"
 #include "RHI/RHIDefinitions.h"
+#include <cstddef>
 
 namespace RVX
 {
@@ -87,19 +88,15 @@ namespace RVX
     };
     #pragma pack(pop)
 
-    // Print actual size for debugging
-    #ifdef _MSC_VER
-    #pragma message("ShaderCacheHeader size: " __FILE__ "(" __STRINGIZE(__LINE__) "): " __STRINGIZE(sizeof(ShaderCacheHeader)) " bytes")
-    #endif
-
-    // Static assert temporarily removed to investigate actual size
-    // Original expected size: 118 bytes with #pragma pack(push, 1)
-    // static_assert(sizeof(ShaderCacheHeader) == 118, "ShaderCacheHeader size mismatch");
+    constexpr uint32 RVX_SHADER_CACHE_HEADER_SIZE =
+        static_cast<uint32>(offsetof(ShaderCacheHeader, reserved) + sizeof(ShaderCacheHeader::reserved));
+    static_assert(sizeof(ShaderCacheHeader) == RVX_SHADER_CACHE_HEADER_SIZE,
+                  "ShaderCacheHeader contains unexpected padding");
 
     // =========================================================================
     // File Layout
     // =========================================================================
-    // [ShaderCacheHeader - 128 bytes]
+    // [ShaderCacheHeader - RVX_SHADER_CACHE_HEADER_SIZE bytes]
     // [Bytecode - variable]
     // [Reflection - variable, serialized]
     // [SourceInfo - variable, serialized]

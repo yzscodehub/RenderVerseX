@@ -52,15 +52,15 @@ namespace RVX
          * @param type The command list type
          * @param fenceValue The fence value that signals when this allocator's work is complete
          */
-        void Release(ComPtr<ID3D12CommandAllocator> allocator, 
-                     D3D12_COMMAND_LIST_TYPE type, 
-                     uint64 fenceValue);
+        void Release(ComPtr<ID3D12CommandAllocator> allocator,
+                     D3D12_COMMAND_LIST_TYPE type,
+                     ID3D12CommandQueue* queue);
         
         /**
          * @brief Recycle allocators whose work has completed
          * @param completedFenceValue Current completed fence value
          */
-        void Tick(uint64 completedFenceValue);
+        void Tick();
 
         /**
          * @brief Get pool statistics
@@ -93,7 +93,11 @@ namespace RVX
             uint64 fenceValue;
         };
 
+        void RecycleCompletedLocked(uint32 index);
+
         DX12Device* m_device = nullptr;
+        std::array<ComPtr<ID3D12Fence>, TYPE_COUNT> m_fences;
+        std::array<uint64, TYPE_COUNT> m_nextFenceValues = {};
         
         std::array<std::vector<ComPtr<ID3D12CommandAllocator>>, TYPE_COUNT> m_availableAllocators;
         std::array<std::queue<PendingAllocator>, TYPE_COUNT> m_pendingAllocators;

@@ -5,6 +5,120 @@
 using namespace RVX;
 using namespace RVX::Test;
 
+namespace
+{
+    class FakeTexture final : public RHITexture
+    {
+    public:
+        explicit FakeTexture(const RHITextureDesc& desc)
+            : m_desc(desc)
+        {
+        }
+
+        uint32 GetWidth() const override { return m_desc.width; }
+        uint32 GetHeight() const override { return m_desc.height; }
+        uint32 GetDepth() const override { return m_desc.depth; }
+        uint32 GetMipLevels() const override { return m_desc.mipLevels; }
+        uint32 GetArraySize() const override { return m_desc.arraySize; }
+        RHIFormat GetFormat() const override { return m_desc.format; }
+        RHITextureUsage GetUsage() const override { return m_desc.usage; }
+        RHITextureDimension GetDimension() const override { return m_desc.dimension; }
+        RHISampleCount GetSampleCount() const override { return m_desc.sampleCount; }
+
+    private:
+        RHITextureDesc m_desc;
+    };
+
+    class FakeBuffer final : public RHIBuffer
+    {
+    public:
+        explicit FakeBuffer(const RHIBufferDesc& desc)
+            : m_desc(desc)
+        {
+        }
+
+        uint64 GetSize() const override { return m_desc.size; }
+        RHIBufferUsage GetUsage() const override { return m_desc.usage; }
+        RHIMemoryType GetMemoryType() const override { return m_desc.memoryType; }
+        uint32 GetStride() const override { return m_desc.stride; }
+        void* Map() override { return nullptr; }
+        void Unmap() override {}
+
+    private:
+        RHIBufferDesc m_desc;
+    };
+
+    class FakeCommandContext final : public RHICommandContext
+    {
+    public:
+        void Begin() override {}
+        void End() override {}
+        void Reset() override {}
+        void BeginEvent(const char*, uint32 = 0) override {}
+        void EndEvent() override {}
+        void SetMarker(const char*, uint32 = 0) override {}
+        void BufferBarrier(const RHIBufferBarrier&) override {}
+        void TextureBarrier(const RHITextureBarrier&) override {}
+        void Barriers(std::span<const RHIBufferBarrier>, std::span<const RHITextureBarrier>) override {}
+        void BeginBarrier(const RHIBufferBarrier&) override {}
+        void BeginBarrier(const RHITextureBarrier&) override {}
+        void EndBarrier(const RHIBufferBarrier&) override {}
+        void EndBarrier(const RHITextureBarrier&) override {}
+        void BeginRenderPass(const RHIRenderPassDesc&) override {}
+        void EndRenderPass() override {}
+        void SetPipeline(RHIPipeline*) override {}
+        void SetVertexBuffer(uint32, RHIBuffer*, uint64 = 0) override {}
+        void SetVertexBuffers(uint32, std::span<RHIBuffer* const>, std::span<const uint64> = {}) override {}
+        void SetIndexBuffer(RHIBuffer*, RHIFormat, uint64 = 0) override {}
+        void SetDescriptorSet(uint32, RHIDescriptorSet*, std::span<const uint32> = {}) override {}
+        void SetPushConstants(const void*, uint32, uint32 = 0) override {}
+        void SetViewport(const RHIViewport&) override {}
+        void SetViewports(std::span<const RHIViewport>) override {}
+        void SetScissor(const RHIRect&) override {}
+        void SetScissors(std::span<const RHIRect>) override {}
+        void Draw(uint32, uint32 = 1, uint32 = 0, uint32 = 0) override {}
+        void DrawIndexed(uint32, uint32 = 1, uint32 = 0, int32 = 0, uint32 = 0) override {}
+        void DrawIndirect(RHIBuffer*, uint64, uint32, uint32) override {}
+        void DrawIndexedIndirect(RHIBuffer*, uint64, uint32, uint32) override {}
+        void Dispatch(uint32, uint32, uint32) override {}
+        void DispatchIndirect(RHIBuffer*, uint64) override {}
+        void CopyBuffer(RHIBuffer*, RHIBuffer*, uint64, uint64, uint64) override {}
+        void CopyTexture(RHITexture*, RHITexture*, const RHITextureCopyDesc& = {}) override {}
+        void CopyBufferToTexture(RHIBuffer*, RHITexture*, const RHIBufferTextureCopyDesc&) override {}
+        void CopyTextureToBuffer(RHITexture*, RHIBuffer*, const RHIBufferTextureCopyDesc&) override {}
+        void BeginQuery(RHIQueryPool*, uint32) override {}
+        void EndQuery(RHIQueryPool*, uint32) override {}
+        void WriteTimestamp(RHIQueryPool*, uint32) override {}
+        void ResolveQueries(RHIQueryPool*, uint32, uint32, RHIBuffer*, uint64) override {}
+        void ResetQueries(RHIQueryPool*, uint32, uint32) override {}
+        void SetStencilReference(uint32) override {}
+        void SetBlendConstants(const float[4]) override {}
+        void SetDepthBias(float, float, float = 0.0f) override {}
+        void SetDepthBounds(float, float) override {}
+        void SetStencilReferenceSeparate(uint32, uint32) override {}
+        void SetLineWidth(float) override {}
+        void SignalFence(RHIFence*, uint64) override {}
+        void WaitFence(RHIFence*, uint64) override {}
+    };
+
+    class FakeFence final : public RHIFence
+    {
+    public:
+        explicit FakeFence(uint64 initialValue = 0)
+            : m_completedValue(initialValue)
+        {
+        }
+
+        uint64 GetCompletedValue() const override { return m_completedValue; }
+        void Signal(uint64 value) override { m_completedValue = value; }
+        void SignalOnQueue(uint64 value, RHICommandQueueType) override { m_completedValue = value; }
+        void Wait(uint64 value, uint64 = UINT64_MAX) override { m_completedValue = value; }
+
+    private:
+        uint64 m_completedValue = 0;
+    };
+} // namespace
+
 // =============================================================================
 // RenderGraph Validation Tests
 // =============================================================================
@@ -448,6 +562,217 @@ bool Test_BufferRanges()
     return true;
 }
 
+bool Test_CrossPassSubresourceBarriersAreNotDropped()
+{
+    RenderGraph graph;
+
+    RHITextureDesc texDesc;
+    texDesc.width = 256;
+    texDesc.height = 256;
+    texDesc.mipLevels = 2;
+    texDesc.format = RHIFormat::RGBA8_UNORM;
+    texDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    FakeTexture texture(texDesc);
+
+    auto imported = graph.ImportTexture(&texture, RHIResourceState::Common);
+
+    struct MipPassData
+    {
+        RGTextureHandle mip;
+    };
+
+    graph.AddPass<MipPassData>(
+        "WriteMip0",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, MipPassData& data)
+        {
+            data.mip = builder.WriteMip(imported, 0);
+        },
+        [](const MipPassData&, RHICommandContext&) {});
+
+    graph.AddPass<MipPassData>(
+        "WriteMip1",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, MipPassData& data)
+        {
+            data.mip = builder.WriteMip(imported, 1);
+        },
+        [](const MipPassData&, RHICommandContext&) {});
+
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    TEST_ASSERT_EQ(stats.totalPasses, 2u);
+    TEST_ASSERT_EQ(stats.textureBarrierCount, 2u);
+    TEST_ASSERT_EQ(stats.crossPassMergedBarrierCount, 0u);
+
+    return true;
+}
+
+bool Test_CrossPassBufferRangeBarriersAreNotDropped()
+{
+    RenderGraph graph;
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(bufferDesc);
+
+    auto imported = graph.ImportBuffer(&buffer, RHIResourceState::Common);
+
+    struct RangePassData
+    {
+        RGBufferHandle range;
+    };
+
+    graph.AddPass<RangePassData>(
+        "WriteFirstHalf",
+        RenderGraphPassType::Compute,
+        [&](RenderGraphBuilder& builder, RangePassData& data)
+        {
+            data.range = builder.Write(imported.Range(0, 512), RHIResourceState::UnorderedAccess);
+        },
+        [](const RangePassData&, RHICommandContext&) {});
+
+    graph.AddPass<RangePassData>(
+        "WriteSecondHalf",
+        RenderGraphPassType::Compute,
+        [&](RenderGraphBuilder& builder, RangePassData& data)
+        {
+            data.range = builder.Write(imported.Range(512, 512), RHIResourceState::UnorderedAccess);
+        },
+        [](const RangePassData&, RHICommandContext&) {});
+
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    TEST_ASSERT_EQ(stats.totalPasses, 2u);
+    TEST_ASSERT_EQ(stats.bufferBarrierCount, 2u);
+    TEST_ASSERT_EQ(stats.crossPassMergedBarrierCount, 0u);
+
+    return true;
+}
+
+bool Test_ReadBeforeWriteHazardPreservesExecutionOrder()
+{
+    RenderGraph graph;
+
+    RHITextureDesc texDesc = RHITextureDesc::RenderTarget(128, 128, RHIFormat::RGBA8_UNORM);
+    FakeTexture textureA(texDesc);
+    FakeTexture textureB(texDesc);
+    FakeTexture textureC(texDesc);
+
+    auto a = graph.ImportTexture(&textureA, RHIResourceState::ShaderResource);
+    auto b = graph.ImportTexture(&textureB, RHIResourceState::Common);
+    auto c = graph.ImportTexture(&textureC, RHIResourceState::Common);
+
+    std::vector<std::string> executed;
+
+    graph.AddPass<SimplePassData>(
+        "ProduceB",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, SimplePassData& data)
+        {
+            data.colorTarget = builder.Write(b, RHIResourceState::RenderTarget);
+        },
+        [&executed](const SimplePassData&, RHICommandContext&)
+        {
+            executed.push_back("ProduceB");
+        });
+
+    struct ReadAWriteCData
+    {
+        RGTextureHandle inputA;
+        RGTextureHandle inputB;
+        RGTextureHandle outputC;
+    };
+
+    graph.AddPass<ReadAWriteCData>(
+        "ReadAWriteC",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, ReadAWriteCData& data)
+        {
+            data.inputB = builder.Read(b);
+            data.inputA = builder.Read(a);
+            data.outputC = builder.Write(c, RHIResourceState::RenderTarget);
+        },
+        [&executed](const ReadAWriteCData&, RHICommandContext&)
+        {
+            executed.push_back("ReadAWriteC");
+        });
+
+    graph.AddPass<SimplePassData>(
+        "WriteA",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, SimplePassData& data)
+        {
+            data.colorTarget = builder.Write(a, RHIResourceState::RenderTarget);
+        },
+        [&executed](const SimplePassData&, RHICommandContext&)
+        {
+            executed.push_back("WriteA");
+        });
+
+    graph.SetExportState(c, RHIResourceState::ShaderResource);
+    graph.SetExportState(a, RHIResourceState::ShaderResource);
+    graph.Compile();
+
+    FakeCommandContext ctx;
+    graph.Execute(ctx);
+
+    TEST_ASSERT_EQ(executed.size(), static_cast<size_t>(3));
+    TEST_ASSERT_EQ(executed[0], std::string("ProduceB"));
+    TEST_ASSERT_EQ(executed[1], std::string("ReadAWriteC"));
+    TEST_ASSERT_EQ(executed[2], std::string("WriteA"));
+
+    return true;
+}
+
+bool Test_ExecuteAsyncFallsBackToGraphicsUntilQueueSchedulerExists()
+{
+    RenderGraph graph;
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(bufferDesc);
+
+    auto imported = graph.ImportBuffer(&buffer, RHIResourceState::Common);
+
+    FakeCommandContext graphicsCtx;
+    FakeCommandContext computeCtx;
+    FakeFence computeFence;
+    bool ranOnGraphicsContext = false;
+    bool ranOnComputeContext = false;
+
+    struct ComputeData
+    {
+        RGBufferHandle buffer;
+    };
+
+    graph.AddPass<ComputeData>(
+        "ComputeWork",
+        RenderGraphPassType::Compute,
+        [&](RenderGraphBuilder& builder, ComputeData& data)
+        {
+            data.buffer = builder.Write(imported, RHIResourceState::UnorderedAccess);
+        },
+        [&](const ComputeData&, RHICommandContext& ctx)
+        {
+            ranOnGraphicsContext = (&ctx == &graphicsCtx);
+            ranOnComputeContext = (&ctx == &computeCtx);
+        });
+
+    graph.SetExportState(imported, RHIResourceState::ShaderResource);
+    graph.Compile();
+    graph.ExecuteAsync(graphicsCtx, &computeCtx, &computeFence, 1);
+
+    TEST_ASSERT_TRUE(ranOnGraphicsContext);
+    TEST_ASSERT_FALSE(ranOnComputeContext);
+
+    return true;
+}
+
 bool Test_ClearAndRecompile()
 {
     RenderGraph graph;
@@ -504,6 +829,101 @@ bool Test_ClearAndRecompile()
     return true;
 }
 
+bool Test_InvalidTextureUsageIsReported()
+{
+    RenderGraph graph;
+
+    graph.AddPass<SimplePassData>(
+        "InvalidTextureUsage",
+        RenderGraphPassType::Graphics,
+        [](RenderGraphBuilder& builder, SimplePassData& data)
+        {
+            data.colorTarget = builder.Write(RGTextureHandle{777}, RHIResourceState::RenderTarget);
+        },
+        [](const SimplePassData&, RHICommandContext&) {});
+
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    TEST_ASSERT_EQ(stats.totalPasses, 1u);
+    TEST_ASSERT_EQ(stats.invalidResourceUsageCount, 1u);
+    TEST_ASSERT_EQ(stats.validationErrorCount, 1u);
+
+    return true;
+}
+
+bool Test_InvalidBufferUsageIsReported()
+{
+    RenderGraph graph;
+
+    struct InvalidBufferPassData
+    {
+        RGBufferHandle buffer;
+    };
+
+    graph.AddPass<InvalidBufferPassData>(
+        "InvalidBufferUsage",
+        RenderGraphPassType::Compute,
+        [](RenderGraphBuilder& builder, InvalidBufferPassData& data)
+        {
+            data.buffer = builder.Write(RGBufferHandle{888}, RHIResourceState::UnorderedAccess);
+        },
+        [](const InvalidBufferPassData&, RHICommandContext&) {});
+
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    TEST_ASSERT_EQ(stats.totalPasses, 1u);
+    TEST_ASSERT_EQ(stats.invalidResourceUsageCount, 1u);
+    TEST_ASSERT_EQ(stats.validationErrorCount, 1u);
+
+    return true;
+}
+
+bool Test_EmptyPassUsageIsReported()
+{
+    RenderGraph graph;
+
+    graph.AddPass<SimplePassData>(
+        "EmptyUsage",
+        RenderGraphPassType::Graphics,
+        [](RenderGraphBuilder&, SimplePassData&) {},
+        [](const SimplePassData&, RHICommandContext&) {});
+
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    TEST_ASSERT_EQ(stats.totalPasses, 1u);
+    TEST_ASSERT_EQ(stats.emptyPassUsageCount, 1u);
+    TEST_ASSERT_EQ(stats.validationWarningCount, 1u);
+
+    return true;
+}
+
+bool Test_IncompatiblePassStateIsReported()
+{
+    RenderGraph graph;
+
+    graph.AddPass<SimplePassData>(
+        "ComputeRenderTargetState",
+        RenderGraphPassType::Compute,
+        [](RenderGraphBuilder& builder, SimplePassData& data)
+        {
+            data.colorTarget = builder.Write(RGTextureHandle{999}, RHIResourceState::RenderTarget);
+        },
+        [](const SimplePassData&, RHICommandContext&) {});
+
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    TEST_ASSERT_EQ(stats.totalPasses, 1u);
+    TEST_ASSERT_EQ(stats.invalidResourceUsageCount, 1u);
+    TEST_ASSERT_EQ(stats.incompatibleStateUsageCount, 1u);
+    TEST_ASSERT_EQ(stats.validationErrorCount, 2u);
+
+    return true;
+}
+
 int main()
 {
     Log::Initialize();
@@ -528,7 +948,15 @@ int main()
     suite.AddTest("MemoryAliasing", Test_MemoryAliasing);
     suite.AddTest("SubresourceTracking", Test_SubresourceTracking);
     suite.AddTest("BufferRanges", Test_BufferRanges);
+    suite.AddTest("CrossPassSubresourceBarriersAreNotDropped", Test_CrossPassSubresourceBarriersAreNotDropped);
+    suite.AddTest("CrossPassBufferRangeBarriersAreNotDropped", Test_CrossPassBufferRangeBarriersAreNotDropped);
+    suite.AddTest("ReadBeforeWriteHazardPreservesExecutionOrder", Test_ReadBeforeWriteHazardPreservesExecutionOrder);
+    suite.AddTest("ExecuteAsyncFallsBackToGraphicsUntilQueueSchedulerExists", Test_ExecuteAsyncFallsBackToGraphicsUntilQueueSchedulerExists);
     suite.AddTest("ClearAndRecompile", Test_ClearAndRecompile);
+    suite.AddTest("InvalidTextureUsageIsReported", Test_InvalidTextureUsageIsReported);
+    suite.AddTest("InvalidBufferUsageIsReported", Test_InvalidBufferUsageIsReported);
+    suite.AddTest("EmptyPassUsageIsReported", Test_EmptyPassUsageIsReported);
+    suite.AddTest("IncompatiblePassStateIsReported", Test_IncompatiblePassStateIsReported);
     
     auto results = suite.Run();
     suite.PrintResults(results);

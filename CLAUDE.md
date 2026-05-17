@@ -326,7 +326,7 @@ RenderVerseX/
 
 Samples/               # Sample applications
 Tests/                 # Validation tests
-Docs/                  # Design documents and plans
+Docs/                 # Design documents and plans
 ```
 
 ## Dependencies (vcpkg)

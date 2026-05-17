@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -43,6 +44,59 @@ struct PropertyOverride
     std::string componentType;  // Component type name
     std::string propertyPath;   // Property path (e.g., "position.x")
     PropertyValue value;        // Override value
+    std::string componentName;  // Optional actor component instance name
+    std::string entityPath;     // Optional prefab-root-relative entity path
+};
+
+/**
+ * @brief Serialized actor component class record.
+ */
+struct PrefabActorComponentData
+{
+    std::string className;
+    std::string serializedData;
+    std::string name;
+};
+
+/**
+ * @brief Transient mapping from prefab component identity to runtime component name.
+ */
+struct PrefabActorComponentNameBinding
+{
+    std::string className;
+    std::string prefabName;
+    size_t ordinal = 0;
+    std::string instanceName;
+    std::string entityPath;
+};
+
+/**
+ * @brief Transient mapping from prefab entity identity to runtime entity handle.
+ */
+struct PrefabEntityRuntimeBinding
+{
+    uint64 prefabEntityId = 0;
+    SceneEntity::Handle instanceHandle = SceneEntity::InvalidHandle;
+    std::string entityPath;
+};
+
+/**
+ * @brief Captured component payload identity used to clear applied overrides.
+ */
+struct PrefabComponentPayloadKey
+{
+    std::string entityPath;
+    std::string componentType;
+    std::string componentName;
+};
+
+/**
+ * @brief Result of writing live hierarchy state back into prefab data.
+ */
+struct PrefabApplyCaptureReport
+{
+    std::vector<std::string> capturedEntityPaths;
+    std::vector<PrefabComponentPayloadKey> capturedComponentPayloads;
 };
 
 /**
@@ -51,6 +105,7 @@ struct PropertyOverride
 struct PrefabEntityData
 {
     std::string name;
+    std::string actorClassName;
     int32_t parentIndex = -1;  // -1 = root
     
     // Transform
@@ -60,12 +115,18 @@ struct PrefabEntityData
     
     // Components (serialized data per component type)
     std::unordered_map<std::string, std::string> componentData;
+
+    // Actor components in creation order. Allows duplicate component classes.
+    std::vector<PrefabActorComponentData> actorComponentData;
     
     // Layer mask
     uint32_t layerMask = ~0u;
     
     // Active state
     bool isActive = true;
+
+    // Stable identity within this prefab resource.
+    uint64 prefabEntityId = 0;
 };
 
 /**
@@ -147,6 +208,20 @@ public:
     /// Get the root entity data
     const PrefabEntityData* GetRootData() const;
 
+    /// Update root entity data from a live entity. Returns false when the prefab has no root.
+    bool UpdateRootEntityStateFrom(const SceneEntity& entity);
+
+    /// Update existing prefab entity data from matching live hierarchy paths.
+    PrefabApplyCaptureReport UpdateHierarchyStateFrom(const SceneEntity& rootEntity);
+
+    /// Rebuild prefab entity data from a live hierarchy and report captured paths.
+    PrefabApplyCaptureReport RebuildHierarchyStateFrom(const SceneEntity& rootEntity);
+
+    /// Restore serialized prefab hierarchy state into an existing root entity.
+    bool RestoreHierarchyStateTo(SceneEntity& rootEntity,
+                                 std::vector<PrefabActorComponentNameBinding>& nameBindings,
+                                 std::vector<PrefabEntityRuntimeBinding>& entityBindings) const;
+
     /// Add entity data to the prefab
     void AddEntityData(PrefabEntityData data);
 
@@ -169,11 +244,17 @@ private:
     SceneEntity* InstantiateInternal(SceneManager& sceneManager, const Vec3& position, 
                                       const Quat& rotation, SceneEntity* parent) const;
     void SerializeEntity(const SceneEntity* entity, int32_t parentIndex);
-    void CreateComponents(SceneEntity* entity, const PrefabEntityData& data) const;
+    uint64 AllocateEntityId();
+    void EnsureEntityIds();
+    bool CreateComponents(SceneEntity* entity,
+                          const PrefabEntityData& data,
+                          std::vector<PrefabActorComponentNameBinding>* nameBindings = nullptr,
+                          const std::string& entityPath = "") const;
 
     std::string m_name;
     std::string m_sourcePath;
     std::vector<PrefabEntityData> m_entities;
+    uint64 m_nextEntityId = 1;
 };
 
 /**
@@ -213,7 +294,10 @@ public:
     void AddOverride(const PropertyOverride& override);
 
     /// Remove an override
-    void RemoveOverride(const std::string& componentType, const std::string& propertyPath);
+    void RemoveOverride(const std::string& componentType,
+                        const std::string& propertyPath,
+                        const std::string& componentName = "",
+                        const std::string& entityPath = "");
 
     /// Get all overrides
     const std::vector<PropertyOverride>& GetOverrides() const { return m_overrides; }
@@ -222,7 +306,10 @@ public:
     void ClearOverrides() { m_overrides.clear(); }
 
     /// Check if a property is overridden
-    bool IsOverridden(const std::string& componentType, const std::string& propertyPath) const;
+    bool IsOverridden(const std::string& componentType,
+                      const std::string& propertyPath,
+                      const std::string& componentName = "",
+                      const std::string& entityPath = "") const;
 
     // =========================================================================
     // Prefab Operations
@@ -232,7 +319,10 @@ public:
     void RevertAll();
 
     /// Revert a specific property to prefab value
-    void RevertProperty(const std::string& componentType, const std::string& propertyPath);
+    void RevertProperty(const std::string& componentType,
+                        const std::string& propertyPath,
+                        const std::string& componentName = "",
+                        const std::string& entityPath = "");
 
     /// Apply current values back to prefab (requires write access)
     void ApplyToPrefab();
@@ -241,7 +331,21 @@ public:
     void Unpack();
 
 private:
+    friend class Prefab;
+
+    void SetComponentNameBindings(std::vector<PrefabActorComponentNameBinding> bindings)
+    {
+        m_componentNameBindings = std::move(bindings);
+    }
+
+    void SetEntityRuntimeBindings(std::vector<PrefabEntityRuntimeBinding> bindings)
+    {
+        m_entityBindings = std::move(bindings);
+    }
+
     Prefab::Ptr m_prefab;
+    std::vector<PrefabActorComponentNameBinding> m_componentNameBindings;
+    std::vector<PrefabEntityRuntimeBinding> m_entityBindings;
     std::vector<PropertyOverride> m_overrides;
 };
 

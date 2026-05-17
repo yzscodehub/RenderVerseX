@@ -5,7 +5,15 @@
 
 #include "Render/Renderer/SceneRenderer.h"
 #include "Render/Passes/IRenderPass.h"
+#include "Render/Passes/DepthPrepass.h"
 #include "Render/Passes/OpaquePass.h"
+#include "Render/Passes/SkyboxPass.h"
+#include "Render/Passes/TransparentPass.h"
+#include "Render/Material/MaterialClassification.h"
+#include "Resource/Types/MaterialResource.h"
+#include "Resource/Types/TextureResource.h"
+#include "Renderer/RenderFrameResourceBinder.h"
+#include "Renderer/RenderPassRegistry.h"
 #include "Runtime/Camera/Camera.h"
 #include "Core/Log.h"
 #include <algorithm>
@@ -13,6 +21,8 @@
 
 namespace RVX
 {
+
+SceneRenderer::SceneRenderer() = default;
 
 SceneRenderer::~SceneRenderer()
 {
@@ -34,6 +44,7 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
     }
 
     m_renderContext = renderContext;
+    m_passRegistry = std::make_unique<RenderPassRegistry>();
 
     // Create render graph
     m_renderGraph = std::make_unique<RenderGraph>();
@@ -46,6 +57,9 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
     // Create pipeline cache with shader reflection
     m_pipelineCache = std::make_unique<PipelineCache>();
 
+    // Create material system after pipeline layouts are available.
+    m_materialSystem = std::make_unique<MaterialSystem>();
+
     // Create transient resource pool for RenderGraph
     m_transientResourcePool = std::make_unique<TransientResourcePool>();
     m_transientResourcePool->Initialize(m_renderContext->GetDevice());
@@ -53,6 +67,14 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
     // Create resource view cache for automatic view management
     m_resourceViewCache = std::make_unique<ResourceViewCache>();
     m_resourceViewCache->Initialize(m_renderContext->GetDevice());
+    m_gpuResourceManager->SetTextureInvalidatedCallback(
+        [this](RHITexture* texture)
+        {
+            if (m_resourceViewCache)
+            {
+                m_resourceViewCache->InvalidateTexture(texture);
+            }
+        });
     
     RVX_CORE_INFO("SceneRenderer: Searching for shader directory...");
     RVX_CORE_INFO("  Current working directory: {}", std::filesystem::current_path().string());
@@ -114,6 +136,15 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
         RVX_CORE_ERROR("  shaderDir was: '{}'", shaderDir);
     }
 
+    if (m_pipelineCache && m_pipelineCache->IsInitialized() && m_materialSystem)
+    {
+        if (!m_materialSystem->Initialize(m_renderContext->GetDevice(), m_gpuResourceManager.get(),
+                                          m_pipelineCache->GetMaterialSetLayout()))
+        {
+            RVX_CORE_ERROR("SceneRenderer: MaterialSystem failed to initialize");
+        }
+    }
+
     // Setup default passes (can be customized later)
     SetupDefaultPasses();
 
@@ -127,8 +158,17 @@ void SceneRenderer::Shutdown()
         return;
 
     ClearPasses();
+    m_depthPrepass = nullptr;
     m_opaquePass = nullptr;
+    m_transparentPass = nullptr;
+    m_skyboxPass = nullptr;
     
+    if (m_materialSystem)
+    {
+        m_materialSystem->Shutdown();
+        m_materialSystem.reset();
+    }
+
     if (m_pipelineCache)
     {
         m_pipelineCache->Shutdown();
@@ -154,6 +194,7 @@ void SceneRenderer::Shutdown()
     }
     
     m_renderGraph.reset();
+    m_passRegistry.reset();
     m_renderContext = nullptr;
     m_initialized = false;
 
@@ -186,6 +227,7 @@ void SceneRenderer::SetupView(const Camera& camera, World* world)
 
     // Sort visible objects for optimal rendering
     m_renderScene.SortVisibleObjects(m_visibleObjectIndices, m_viewData.cameraPosition);
+    BuildMaterialDrawLists();
 
     // Mark visible meshes as used for GPU resource management
     if (m_gpuResourceManager)
@@ -193,9 +235,97 @@ void SceneRenderer::SetupView(const Camera& camera, World* world)
         for (uint32_t idx : m_visibleObjectIndices)
         {
             const auto& obj = m_renderScene.GetObject(idx);
+            if (!m_gpuResourceManager->IsResident(obj.meshId) && obj.meshResource)
+            {
+                m_gpuResourceManager->RequestUpload(obj.meshResource, UploadPriority::High);
+            }
             m_gpuResourceManager->MarkUsed(obj.meshId);
+
+            for (auto* material : obj.materialResources)
+            {
+                if (!material)
+                    continue;
+
+                const auto requestTexture = [this](Resource::ResourceHandle<Resource::TextureResource> textureHandle)
+                {
+                    auto* texture = textureHandle.Get();
+                    if (!texture)
+                        return;
+
+                    if (!m_gpuResourceManager->IsResident(texture->GetId()))
+                    {
+                        m_gpuResourceManager->RequestUpload(texture, UploadPriority::High);
+                    }
+                    m_gpuResourceManager->MarkUsed(texture->GetId());
+                };
+
+                requestTexture(material->GetAlbedoTexture());
+                requestTexture(material->GetNormalTexture());
+                requestTexture(material->GetMetallicRoughnessTexture());
+                requestTexture(material->GetAOTexture());
+                requestTexture(material->GetEmissiveTexture());
+            }
         }
     }
+}
+
+void SceneRenderer::BuildMaterialDrawLists()
+{
+    m_opaqueDrawItems.clear();
+    m_maskedDrawItems.clear();
+    m_transparentDrawItems.clear();
+
+    for (uint32_t objectIndex : m_visibleObjectIndices)
+    {
+        const RenderObject& obj = m_renderScene.GetObject(objectIndex);
+        const size_t submeshCount = obj.materialResources.empty() ? 1 : obj.materialResources.size();
+
+        for (size_t submeshIndex = 0; submeshIndex < submeshCount; ++submeshIndex)
+        {
+            Resource::MaterialResource* materialResource =
+                submeshIndex < obj.materialResources.size() ? obj.materialResources[submeshIndex] : nullptr;
+            const Material* material = materialResource ? materialResource->GetMaterial().get() : nullptr;
+            const MaterialRenderMode mode = ClassifyMaterialRenderMode(material);
+
+            RenderDrawItem item;
+            item.objectIndex = objectIndex;
+            item.submeshIndex = static_cast<uint32>(submeshIndex);
+            item.meshId = obj.meshId;
+            item.materialId = submeshIndex < obj.materialIds.size() ? obj.materialIds[submeshIndex] : 0;
+            item.materialResource = materialResource;
+            item.renderMode = mode;
+            item.depthFromCamera = length(Vec3(obj.worldMatrix[3]) - m_viewData.cameraPosition);
+
+            if (mode == MaterialRenderMode::Transparent)
+            {
+                item.sortKey = BuildTransparentDrawSortKey(item);
+                m_transparentDrawItems.push_back(item);
+            }
+            else if (mode == MaterialRenderMode::Masked)
+            {
+                item.sortKey = BuildOpaqueDrawSortKey(item);
+                m_maskedDrawItems.push_back(item);
+            }
+            else
+            {
+                item.sortKey = BuildOpaqueDrawSortKey(item);
+                m_opaqueDrawItems.push_back(item);
+            }
+        }
+    }
+
+    const auto sortFrontToBack = [](const RenderDrawItem& lhs, const RenderDrawItem& rhs)
+    {
+        return lhs.sortKey < rhs.sortKey;
+    };
+    std::sort(m_opaqueDrawItems.begin(), m_opaqueDrawItems.end(), sortFrontToBack);
+    std::sort(m_maskedDrawItems.begin(), m_maskedDrawItems.end(), sortFrontToBack);
+
+    std::sort(m_transparentDrawItems.begin(), m_transparentDrawItems.end(),
+              [](const RenderDrawItem& lhs, const RenderDrawItem& rhs)
+              {
+                  return lhs.depthFromCamera > rhs.depthFromCamera;
+              });
 }
 
 void SceneRenderer::Render()
@@ -212,6 +342,16 @@ void SceneRenderer::Render()
     if (m_resourceViewCache)
     {
         m_resourceViewCache->BeginFrame();
+    }
+
+    if (m_pipelineCache && m_pipelineCache->IsInitialized())
+    {
+        m_pipelineCache->BeginFrame();
+    }
+
+    if (m_materialSystem && m_materialSystem->IsInitialized())
+    {
+        m_materialSystem->BeginFrame();
     }
 
     // Process pending GPU uploads with time budget
@@ -313,7 +453,10 @@ void SceneRenderer::ExecutePasses(RHICommandContext& ctx)
         m_depthBufferState = RHIResourceState::DepthWrite;
     }
     
-    for (auto& pass : m_passes)
+    if (!m_passRegistry)
+        return;
+
+    for (auto& pass : m_passRegistry->GetPasses())
     {
         if (pass && pass->IsEnabled())
         {
@@ -331,16 +474,20 @@ void SceneRenderer::ExecutePasses(RHICommandContext& ctx)
 
 void SceneRenderer::UpdatePassResources()
 {
-    // Update OpaquePass with current frame data
-    if (m_opaquePass)
-    {
-        m_opaquePass->SetRenderScene(&m_renderScene, &m_visibleObjectIndices);
-        
-        // Set render target views
-        // Note: Depth buffer is created in BuildRenderGraph and imported into RenderGraph
-        RHITextureView* colorTargetView = m_renderContext->GetCurrentBackBufferView();
-        m_opaquePass->SetRenderTargets(colorTargetView, m_depthTextureView.Get());
-    }
+    if (!m_renderContext)
+        return;
+
+    RenderFrameResourceBinder::BindScenePassResources(
+        *m_renderContext,
+        m_renderScene,
+        m_opaqueDrawItems,
+        m_maskedDrawItems,
+        m_transparentDrawItems,
+        m_depthTextureView.Get(),
+        m_depthPrepass,
+        m_opaquePass,
+        m_transparentPass,
+        m_skyboxPass);
 }
 
 void SceneRenderer::EnsureDepthBuffer(uint32_t width, uint32_t height)
@@ -454,7 +601,10 @@ void SceneRenderer::BuildRenderGraph()
 
     // Register each render pass with the RenderGraph
     // Passes are sorted by priority, so they will be added in correct order
-    for (auto& pass : m_passes)
+    if (!m_passRegistry)
+        return;
+
+    for (auto& pass : m_passRegistry->GetPasses())
     {
         if (pass && pass->IsEnabled())
         {
@@ -467,57 +617,50 @@ void SceneRenderer::BuildRenderGraph()
 
 void SceneRenderer::AddPass(std::unique_ptr<IRenderPass> pass)
 {
-    if (!pass)
-        return;
+    if (!m_passRegistry)
+        m_passRegistry = std::make_unique<RenderPassRegistry>();
 
-    RVX_CORE_DEBUG("SceneRenderer: Adding pass '{}'", pass->GetName());
-    m_passes.push_back(std::move(pass));
-
-    // Re-sort passes by priority
-    std::stable_sort(m_passes.begin(), m_passes.end(),
-        [](const std::unique_ptr<IRenderPass>& a, const std::unique_ptr<IRenderPass>& b)
-        {
-            return a->GetPriority() < b->GetPriority();
-        });
+    m_passRegistry->AddPass(std::move(pass), m_renderContext ? m_renderContext->GetDevice() : nullptr);
 }
 
 bool SceneRenderer::RemovePass(const char* name)
 {
-    auto it = std::find_if(m_passes.begin(), m_passes.end(),
-        [name](const std::unique_ptr<IRenderPass>& pass)
-        {
-            return pass && strcmp(pass->GetName(), name) == 0;
-        });
-
-    if (it != m_passes.end())
-    {
-        RVX_CORE_DEBUG("SceneRenderer: Removing pass '{}'", name);
-        m_passes.erase(it);
-        return true;
-    }
-
-    return false;
+    return m_passRegistry ? m_passRegistry->RemovePass(name) : false;
 }
 
 void SceneRenderer::ClearPasses()
 {
-    m_passes.clear();
+    if (m_passRegistry)
+        m_passRegistry->Clear();
+}
+
+size_t SceneRenderer::GetPassCount() const
+{
+    return m_passRegistry ? m_passRegistry->GetPassCount() : 0;
 }
 
 void SceneRenderer::SetupDefaultPasses()
 {
-    // Create opaque pass
+    auto depthPrepass = std::make_unique<DepthPrepass>();
+    depthPrepass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get());
+    m_depthPrepass = depthPrepass.get();
+    AddPass(std::move(depthPrepass));
+
     auto opaquePass = std::make_unique<OpaquePass>();
-    
-    // Set resource dependencies
-    opaquePass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get());
-    
-    // Store raw pointer for quick access
+    opaquePass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get(), m_materialSystem.get());
     m_opaquePass = opaquePass.get();
-    
-    // Add to pass list
     AddPass(std::move(opaquePass));
-    
+
+    auto skyboxPass = std::make_unique<SkyboxPass>();
+    skyboxPass->SetResources(m_pipelineCache.get());
+    m_skyboxPass = skyboxPass.get();
+    AddPass(std::move(skyboxPass));
+
+    auto transparentPass = std::make_unique<TransparentPass>();
+    transparentPass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get(), m_materialSystem.get());
+    m_transparentPass = transparentPass.get();
+    AddPass(std::move(transparentPass));
+
     RVX_CORE_DEBUG("SceneRenderer: Default passes setup complete");
 }
 

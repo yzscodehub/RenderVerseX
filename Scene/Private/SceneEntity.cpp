@@ -1,5 +1,8 @@
 #include "Scene/SceneEntity.h"
+#include "Scene/SceneManager.h"
+
 #include <glm/gtc/matrix_transform.hpp>
+
 #include <algorithm>
 
 namespace RVX
@@ -13,22 +16,81 @@ SceneEntity::Handle SceneEntity::GenerateHandle()
 }
 
 SceneEntity::SceneEntity(const std::string& name)
-    : m_handle(GenerateHandle())
+    : Actor(name)
+    , m_handle(GenerateHandle())
     , m_name(name)
 {
+    m_compatRootComponent = Actor::AddComponent<SceneComponent>();
+    SetRootComponent(m_compatRootComponent);
 }
 
 SceneEntity::~SceneEntity()
 {
+    EndPlay();
+    UnregisterAllComponents();
+
+    if (m_parent)
+    {
+        m_parent->RemoveChild(this);
+    }
+
+    for (SceneEntity* child : m_children)
+    {
+        if (!child)
+            continue;
+
+        if (m_compatRootComponent && child->m_compatRootComponent &&
+            child->m_compatRootComponent->GetAttachParent() == m_compatRootComponent)
+        {
+            child->m_compatRootComponent->DetachFromComponent();
+        }
+
+        child->m_parent = nullptr;
+        child->MarkTransformDirty();
+    }
+    m_children.clear();
+
+    m_pendingRemoveLegacyComponents.clear();
+    m_legacyComponentDispatchDepth = 0;
+
     // Detach all components
     for (auto& [typeId, component] : m_components)
     {
         if (component)
         {
+            (void)typeId;
             component->OnDetach();
+            component->OnComponentDestroyed();
+            component->SetOwner(nullptr);
         }
     }
     m_components.clear();
+    m_legacyComponentOrder.clear();
+}
+
+Component* SceneEntity::AddOwnedComponent(std::unique_ptr<Component> component)
+{
+    if (!component)
+        return nullptr;
+
+    std::type_index typeIndex(typeid(*component));
+    if (m_components.find(typeIndex) != m_components.end())
+        return nullptr;
+
+    Component* ptr = component.get();
+    ptr->SetOwner(this);
+    ptr->OnComponentCreated();
+    ptr->OnAttach();
+
+    m_legacyComponentOrder.push_back(typeIndex);
+    m_components[typeIndex] = std::move(component);
+    if (ShouldAutoRegisterComponent(ptr))
+    {
+        RegisterLegacyComponent(ptr);
+    }
+    MarkBoundsDirty();
+
+    return ptr;
 }
 
 // =============================================================================
@@ -43,6 +105,15 @@ void SceneEntity::AddChild(SceneEntity* child)
     // Prevent circular hierarchy
     if (child->IsAncestorOf(this))
         return;
+
+    if (child->m_parent == this)
+        return;
+
+    if (m_compatRootComponent && child->m_compatRootComponent &&
+        !child->m_compatRootComponent->AttachToComponent(m_compatRootComponent))
+    {
+        return;
+    }
 
     // Remove from previous parent
     if (child->m_parent)
@@ -66,6 +137,12 @@ bool SceneEntity::RemoveChild(SceneEntity* child)
     auto it = std::find(m_children.begin(), m_children.end(), child);
     if (it != m_children.end())
     {
+        if (m_compatRootComponent && child->m_compatRootComponent &&
+            child->m_compatRootComponent->GetAttachParent() == m_compatRootComponent)
+        {
+            child->m_compatRootComponent->DetachFromComponent();
+        }
+
         child->m_parent = nullptr;
         m_children.erase(it);
         child->MarkTransformDirty();
@@ -227,36 +304,77 @@ AABB SceneEntity::ComputeBoundsFromComponents() const
     return combined;
 }
 
+const Vec3& SceneEntity::GetPosition() const
+{
+    return m_compatRootComponent ? m_compatRootComponent->GetRelativeLocation() : m_position;
+}
+
+const Quat& SceneEntity::GetRotation() const
+{
+    return m_compatRootComponent ? m_compatRootComponent->GetRelativeRotation() : m_rotation;
+}
+
+const Vec3& SceneEntity::GetScale() const
+{
+    return m_compatRootComponent ? m_compatRootComponent->GetRelativeScale() : m_scale;
+}
+
 void SceneEntity::SetPosition(const Vec3& position)
 {
-    if (m_position != position)
+    const bool transformChanged = GetPosition() != position;
+
+    m_position = position;
+    if (m_compatRootComponent)
     {
-        m_position = position;
+        m_compatRootComponent->SetRelativeLocation(position);
+    }
+
+    if (transformChanged)
+    {
         MarkTransformDirty();
     }
 }
 
 void SceneEntity::SetRotation(const Quat& rotation)
 {
-    if (m_rotation != rotation)
+    const bool transformChanged = GetRotation() != rotation;
+
+    m_rotation = rotation;
+    if (m_compatRootComponent)
     {
-        m_rotation = rotation;
+        m_compatRootComponent->SetRelativeRotation(rotation);
+    }
+
+    if (transformChanged)
+    {
         MarkTransformDirty();
     }
 }
 
 void SceneEntity::SetScale(const Vec3& scale)
 {
-    if (m_scale != scale)
+    const bool transformChanged = GetScale() != scale;
+
+    m_scale = scale;
+    if (m_compatRootComponent)
     {
-        m_scale = scale;
+        m_compatRootComponent->SetRelativeScale(scale);
+    }
+
+    if (transformChanged)
+    {
         MarkTransformDirty();
     }
 }
 
 Mat4 SceneEntity::GetLocalMatrix() const
 {
-    Mat4 localMatrix = Mat4(1.0f);
+    if (m_compatRootComponent)
+    {
+        return m_compatRootComponent->GetRelativeTransform();
+    }
+
+    Mat4 localMatrix(1.0f);
     localMatrix = glm::translate(localMatrix, m_position);
     localMatrix *= glm::mat4_cast(m_rotation);
     localMatrix = glm::scale(localMatrix, m_scale);
@@ -265,59 +383,60 @@ Mat4 SceneEntity::GetLocalMatrix() const
 
 Mat4 SceneEntity::GetWorldMatrix() const
 {
+    if (m_compatRootComponent)
+    {
+        m_worldMatrix = m_compatRootComponent->GetWorldTransform();
+        m_transformDirty = false;
+        return m_worldMatrix;
+    }
+
     if (m_transformDirty)
     {
         Mat4 localMatrix = GetLocalMatrix();
-        
-        if (m_parent)
-        {
-            m_worldMatrix = m_parent->GetWorldMatrix() * localMatrix;
-        }
-        else
-        {
-            m_worldMatrix = localMatrix;
-        }
+        m_worldMatrix = m_parent ? m_parent->GetWorldMatrix() * localMatrix : localMatrix;
         m_transformDirty = false;
     }
+
     return m_worldMatrix;
 }
 
 Vec3 SceneEntity::GetWorldPosition() const
 {
-    if (m_parent)
+    if (m_compatRootComponent)
     {
-        Mat4 worldMatrix = GetWorldMatrix();
-        return Vec3(worldMatrix[3]);
+        return m_compatRootComponent->GetWorldLocation();
     }
-    return m_position;
+
+    Mat4 worldMatrix = GetWorldMatrix();
+    return Vec3(worldMatrix[3]);
 }
 
 Quat SceneEntity::GetWorldRotation() const
 {
-    if (m_parent)
+    if (m_compatRootComponent)
     {
-        return m_parent->GetWorldRotation() * m_rotation;
+        return m_compatRootComponent->GetWorldRotation();
     }
     return m_rotation;
 }
 
 Vec3 SceneEntity::GetWorldScale() const
 {
-    if (m_parent)
+    if (m_compatRootComponent)
     {
-        return m_parent->GetWorldScale() * m_scale;
+        return m_compatRootComponent->GetWorldScale();
     }
     return m_scale;
 }
 
 void SceneEntity::Translate(const Vec3& delta)
 {
-    SetPosition(m_position + delta);
+    SetPosition(GetPosition() + delta);
 }
 
 void SceneEntity::Rotate(const Quat& delta)
 {
-    SetRotation(delta * m_rotation);
+    SetRotation(delta * GetRotation());
 }
 
 void SceneEntity::RotateAround(const Vec3& axis, float angle)
@@ -336,15 +455,267 @@ void SceneEntity::SetLocalBounds(const AABB& bounds)
 // Components
 // =============================================================================
 
+bool SceneEntity::RemoveLegacyComponentByType(std::type_index typeIndex)
+{
+    auto it = m_components.find(typeIndex);
+    if (it == m_components.end())
+        return false;
+
+    std::unique_ptr<Component> removedComponent = std::move(it->second);
+    m_components.erase(it);
+
+    if (removedComponent)
+    {
+        removedComponent->EndPlayWithOwner();
+        removedComponent->UnregisterFromOwner();
+        removedComponent->OnDetach();
+        removedComponent->OnComponentDestroyed();
+        removedComponent->SetOwner(nullptr);
+    }
+
+    MarkBoundsDirty();
+    m_legacyComponentOrder.erase(
+        std::remove(m_legacyComponentOrder.begin(), m_legacyComponentOrder.end(), typeIndex),
+        m_legacyComponentOrder.end());
+    return true;
+}
+
+bool SceneEntity::IsLegacyComponentRemovalPending(std::type_index typeIndex) const
+{
+    return std::find(m_pendingRemoveLegacyComponents.begin(),
+                     m_pendingRemoveLegacyComponents.end(),
+                     typeIndex) != m_pendingRemoveLegacyComponents.end();
+}
+
+void SceneEntity::QueuePendingLegacyComponentRemoval(std::type_index typeIndex)
+{
+    if (m_components.find(typeIndex) == m_components.end())
+        return;
+
+    if (IsLegacyComponentRemovalPending(typeIndex))
+        return;
+
+    m_pendingRemoveLegacyComponents.push_back(typeIndex);
+}
+
+void SceneEntity::FlushPendingLegacyComponentRemovals()
+{
+    if (m_pendingRemoveLegacyComponents.empty())
+        return;
+
+    auto pending = std::move(m_pendingRemoveLegacyComponents);
+    m_pendingRemoveLegacyComponents.clear();
+
+    for (std::type_index typeIndex : pending)
+    {
+        RemoveLegacyComponentByType(typeIndex);
+    }
+}
+
+std::vector<Component*> SceneEntity::MakeLegacyComponentSnapshot() const
+{
+    std::vector<Component*> snapshot;
+    snapshot.reserve(m_components.size());
+    for (std::type_index typeIndex : m_legacyComponentOrder)
+    {
+        auto it = m_components.find(typeIndex);
+        if (it != m_components.end() && it->second)
+        {
+            snapshot.push_back(it->second.get());
+        }
+    }
+    return snapshot;
+}
+
+void SceneEntity::RegisterLegacyComponent(Component* component)
+{
+    if (!component)
+        return;
+
+    component->RegisterWithOwner();
+}
+
+void SceneEntity::UnregisterLegacyComponent(Component* component)
+{
+    if (!component)
+        return;
+
+    component->UnregisterFromOwner();
+}
+
+void SceneEntity::RegisterAllLegacyComponents()
+{
+    auto snapshot = MakeLegacyComponentSnapshot();
+    for (Component* component : snapshot)
+    {
+        if (!component || IsLegacyComponentRemovalPending(std::type_index(typeid(*component))))
+            continue;
+
+        RegisterLegacyComponent(component);
+    }
+}
+
+void SceneEntity::UnregisterAllLegacyComponents()
+{
+    auto snapshot = MakeLegacyComponentSnapshot();
+    for (auto it = snapshot.rbegin(); it != snapshot.rend(); ++it)
+    {
+        Component* component = *it;
+        if (!component || IsLegacyComponentRemovalPending(std::type_index(typeid(*component))))
+            continue;
+
+        UnregisterLegacyComponent(component);
+    }
+}
+
+void SceneEntity::BeginPlayLegacyComponents()
+{
+    auto snapshot = MakeLegacyComponentSnapshot();
+    BeginLegacyComponentDispatch();
+    for (Component* component : snapshot)
+    {
+        if (!component || IsLegacyComponentRemovalPending(std::type_index(typeid(*component))))
+            continue;
+
+        component->BeginPlayWithOwner();
+    }
+    EndLegacyComponentDispatch();
+}
+
+void SceneEntity::EndPlayLegacyComponents()
+{
+    auto snapshot = MakeLegacyComponentSnapshot();
+    BeginLegacyComponentDispatch();
+    for (auto it = snapshot.rbegin(); it != snapshot.rend(); ++it)
+    {
+        Component* component = *it;
+        if (!component || IsLegacyComponentRemovalPending(std::type_index(typeid(*component))))
+            continue;
+
+        component->EndPlayWithOwner();
+    }
+    EndLegacyComponentDispatch();
+}
+
+void SceneEntity::RegisterAllComponents()
+{
+    Actor::RegisterAllComponents();
+    RegisterAllLegacyComponents();
+}
+
+void SceneEntity::UnregisterAllComponents()
+{
+    UnregisterAllLegacyComponents();
+    Actor::UnregisterAllComponents();
+}
+
+void SceneEntity::BeginPlay()
+{
+    Actor::BeginPlay();
+    BeginPlayLegacyComponents();
+}
+
+void SceneEntity::Tick(float deltaTime)
+{
+    if (!IsActive())
+        return;
+
+    Actor::Tick(deltaTime);
+    if (!IsActive() || (m_sceneManager && m_sceneManager->IsDestroyPending(GetHandle())))
+        return;
+
+    TickComponents(deltaTime);
+}
+
+void SceneEntity::EndPlay()
+{
+    EndPlayLegacyComponents();
+    Actor::EndPlay();
+}
+
+void SceneEntity::BeginLegacyComponentDispatch()
+{
+    ++m_legacyComponentDispatchDepth;
+}
+
+void SceneEntity::EndLegacyComponentDispatch()
+{
+    if (m_legacyComponentDispatchDepth <= 0)
+        return;
+
+    --m_legacyComponentDispatchDepth;
+    if (m_legacyComponentDispatchDepth == 0)
+    {
+        FlushPendingLegacyComponentRemovals();
+    }
+}
+
 void SceneEntity::TickComponents(float deltaTime)
 {
-    for (auto& [typeId, component] : m_components)
+    auto snapshot = MakeLegacyComponentSnapshot();
+    BeginLegacyComponentDispatch();
+    for (Component* component : snapshot)
     {
-        if (component && component->IsEnabled())
+        if (!component || IsLegacyComponentRemovalPending(std::type_index(typeid(*component))))
+            continue;
+
+        if (component->IsEnabled())
         {
             component->Tick(deltaTime);
         }
     }
+    EndLegacyComponentDispatch();
+}
+
+bool SceneEntity::ShouldAutoRegisterComponent(ActorComponent* component) const
+{
+    (void)component;
+    return m_sceneManager != nullptr;
+}
+
+void SceneEntity::SetRootComponent(SceneComponent* rootComponent)
+{
+    if (!rootComponent)
+        return;
+
+    if (rootComponent->GetOwner() != this)
+        return;
+
+    SceneComponent* parentRoot = m_parent ? m_parent->m_compatRootComponent : nullptr;
+    if (parentRoot && rootComponent->GetAttachParent() != parentRoot)
+    {
+        if (!rootComponent->AttachToComponent(parentRoot))
+        {
+            return;
+        }
+    }
+    else if (!parentRoot && rootComponent->GetAttachParent())
+    {
+        rootComponent->DetachFromComponent();
+    }
+
+    Actor::SetRootComponent(rootComponent);
+    if (GetRootComponent() != rootComponent)
+        return;
+
+    m_compatRootComponent = rootComponent;
+    m_position = rootComponent->GetRelativeLocation();
+    m_rotation = rootComponent->GetRelativeRotation();
+    m_scale = rootComponent->GetRelativeScale();
+
+    MarkTransformDirty();
+}
+
+void SceneEntity::NotifySceneComponentTransformChanged(SceneComponent* component)
+{
+    if (component == m_compatRootComponent)
+    {
+        m_position = component->GetRelativeLocation();
+        m_rotation = component->GetRelativeRotation();
+        m_scale = component->GetRelativeScale();
+    }
+
+    MarkTransformDirty();
 }
 
 } // namespace RVX

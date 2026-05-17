@@ -122,16 +122,25 @@ namespace RVX
         void SetLineWidth(float width) override;
 
         // =========================================================================
+        // Synchronization
+        // =========================================================================
+        void SignalFence(RHIFence* fence, uint64 value) override;
+        void WaitFence(RHIFence* fence, uint64 value) override;
+
+        // =========================================================================
         // DX12 Specific
         // =========================================================================
         ID3D12GraphicsCommandList* GetCommandList() const { return m_commandList.Get(); }
         RHICommandQueueType GetQueueType() const { return m_queueType; }
+        D3D12_COMMAND_LIST_TYPE GetD3DListType() const { return m_listType; }
+        ComPtr<ID3D12CommandAllocator> DetachCommandAllocator();
 
     private:
         void FlushBarriers();
 
         DX12Device* m_device = nullptr;
         RHICommandQueueType m_queueType = RHICommandQueueType::Graphics;
+        D3D12_COMMAND_LIST_TYPE m_listType = D3D12_COMMAND_LIST_TYPE_DIRECT;
 
         ComPtr<ID3D12CommandAllocator> m_commandAllocator;
         ComPtr<ID3D12GraphicsCommandList> m_commandList;

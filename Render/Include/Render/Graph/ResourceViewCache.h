@@ -11,7 +11,6 @@
 
 #include "RHI/RHI.h"
 #include <unordered_map>
-#include <vector>
 
 namespace RVX
 {
@@ -50,6 +49,11 @@ namespace RVX
          * @brief Check if the cache is initialized
          */
         bool IsInitialized() const { return m_device != nullptr; }
+
+        /**
+         * @brief Monotonic version incremented when cached view pointers may be invalidated
+         */
+        uint64 GetGeneration() const { return m_generation; }
 
         // =========================================================================
         // View Acquisition
@@ -137,8 +141,34 @@ namespace RVX
         void ResetFrameStats();
 
     private:
-        // Hash function for view cache key
-        static uint64 HashTextureViewKey(RHITexture* texture, const RHITextureViewDesc& desc);
+        // Cache identity uses GPU-visible view parameters. debugName is intentionally
+        // excluded because it does not change the created view semantics.
+        struct TextureViewKey
+        {
+            RHITexture* texture = nullptr;
+            RHIFormat format = RHIFormat::Unknown;
+            RHITextureDimension dimension = RHITextureDimension::Texture2D;
+            RHISubresourceRange subresourceRange;
+
+            bool operator==(const TextureViewKey& other) const
+            {
+                return texture == other.texture &&
+                       format == other.format &&
+                       dimension == other.dimension &&
+                       subresourceRange.baseMipLevel == other.subresourceRange.baseMipLevel &&
+                       subresourceRange.mipLevelCount == other.subresourceRange.mipLevelCount &&
+                       subresourceRange.baseArrayLayer == other.subresourceRange.baseArrayLayer &&
+                       subresourceRange.arrayLayerCount == other.subresourceRange.arrayLayerCount &&
+                       subresourceRange.aspect == other.subresourceRange.aspect;
+            }
+        };
+
+        struct TextureViewKeyHash
+        {
+            size_t operator()(const TextureViewKey& key) const;
+        };
+
+        static TextureViewKey MakeTextureViewKey(RHITexture* texture, const RHITextureViewDesc& desc);
 
         struct CachedTextureView
         {
@@ -149,9 +179,10 @@ namespace RVX
 
         IRHIDevice* m_device = nullptr;
         uint32 m_currentFrame = 0;
+        uint64 m_generation = 0;
 
         // Cache maps: hash -> cached view
-        std::unordered_map<uint64, CachedTextureView> m_textureViews;
+        std::unordered_map<TextureViewKey, CachedTextureView, TextureViewKeyHash> m_textureViews;
 
         // Statistics
         mutable Stats m_stats;

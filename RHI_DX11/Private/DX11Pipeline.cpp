@@ -5,6 +5,7 @@
 #include "DX11StateCache.h"
 #include "DX11BindingRemapper.h"
 
+#include <algorithm>
 #include <span>
 
 namespace RVX
@@ -131,21 +132,59 @@ namespace RVX
                         UINT slot = remapper.GetCBSlot(setIndex, binding.binding);
                         if (slot == UINT32_MAX) slot = binding.binding; // Fallback
 
-                        // Check if this is a dynamic buffer with offset
-                        bool useDynamicOffset = (entry->type == RHIBindingType::DynamicUniformBuffer) &&
-                                               (dynamicOffsetIndex < dynamicOffsets.size()) &&
-                                               (context1 != nullptr);
-
-                        if (useDynamicOffset)
+                        const bool isDynamicUniform = entry->type == RHIBindingType::DynamicUniformBuffer;
+                        uint64 effectiveOffset = binding.offset;
+                        if (isDynamicUniform)
                         {
-                            // Use *SetConstantBuffers1 with offset
-                            // Offset is in bytes, but DX11 requires 16-byte aligned offset in units of 16 bytes
-                            UINT offsetIn16Bytes = dynamicOffsets[dynamicOffsetIndex] / 16;
-                            UINT bufferSizeIn16Bytes = static_cast<UINT>(dx11Buffer->GetSize() / 16);
-                            
-                            // Ensure the remaining size doesn't exceed buffer
-                            UINT numConstants = bufferSizeIn16Bytes - offsetIn16Bytes;
+                            if (dynamicOffsetIndex < dynamicOffsets.size())
+                            {
+                                effectiveOffset += dynamicOffsets[dynamicOffsetIndex];
+                            }
+                            dynamicOffsetIndex++;
+                        }
 
+                        uint64 effectiveRange = binding.range;
+                        if (effectiveRange == RVX_WHOLE_SIZE)
+                        {
+                            effectiveRange = effectiveOffset < dx11Buffer->GetSize()
+                                ? dx11Buffer->GetSize() - effectiveOffset
+                                : 0;
+                        }
+
+                        const bool needsOffsetBinding = effectiveOffset != 0 || effectiveRange != dx11Buffer->GetSize();
+                        if (needsOffsetBinding && context1)
+                        {
+                            if ((effectiveOffset % 16) != 0)
+                            {
+                                RVX_RHI_WARN("DX11: Constant buffer binding {} offset must be 16-byte aligned", binding.binding);
+                                break;
+                            }
+
+                            const uint64 bufferSizeIn16Bytes64 = dx11Buffer->GetSize() / 16;
+                            const uint64 offsetIn16Bytes64 = effectiveOffset / 16;
+                            if (offsetIn16Bytes64 >= bufferSizeIn16Bytes64)
+                            {
+                                RVX_RHI_WARN("DX11: Constant buffer binding {} offset is outside the buffer", binding.binding);
+                                break;
+                            }
+
+                            const uint64 requestedConstants64 = (effectiveRange + 15) / 16;
+                            const uint64 availableConstants64 = bufferSizeIn16Bytes64 - offsetIn16Bytes64;
+                            if (requestedConstants64 > availableConstants64)
+                            {
+                                RVX_RHI_WARN("DX11: Constant buffer binding {} range exceeds the buffer and will be clamped",
+                                             binding.binding);
+                            }
+
+                            const UINT offsetIn16Bytes = static_cast<UINT>(offsetIn16Bytes64);
+                            const UINT numConstants = static_cast<UINT>(std::min(requestedConstants64, availableConstants64));
+
+                            if (numConstants == 0)
+                            {
+                                break;
+                            }
+
+                            // DX11.1 exposes constant-buffer offset/range via *SetConstantBuffers1.
                             if (HasFlag(stages, RHIShaderStage::Vertex))
                                 context1->VSSetConstantBuffers1(slot, 1, &cb, &offsetIn16Bytes, &numConstants);
                             if (HasFlag(stages, RHIShaderStage::Pixel))
@@ -158,11 +197,30 @@ namespace RVX
                                 context1->DSSetConstantBuffers1(slot, 1, &cb, &offsetIn16Bytes, &numConstants);
                             if (HasFlag(stages, RHIShaderStage::Compute))
                                 context1->CSSetConstantBuffers1(slot, 1, &cb, &offsetIn16Bytes, &numConstants);
-
-                            dynamicOffsetIndex++;
                         }
                         else
                         {
+                            if (needsOffsetBinding)
+                            {
+                                RVX_RHI_WARN("DX11: ID3D11DeviceContext1 is required for constant buffer offset binding; unbinding slot {}",
+                                             slot);
+
+                                ID3D11Buffer* nullCB = nullptr;
+                                if (HasFlag(stages, RHIShaderStage::Vertex))
+                                    context->VSSetConstantBuffers(slot, 1, &nullCB);
+                                if (HasFlag(stages, RHIShaderStage::Pixel))
+                                    context->PSSetConstantBuffers(slot, 1, &nullCB);
+                                if (HasFlag(stages, RHIShaderStage::Geometry))
+                                    context->GSSetConstantBuffers(slot, 1, &nullCB);
+                                if (HasFlag(stages, RHIShaderStage::Hull))
+                                    context->HSSetConstantBuffers(slot, 1, &nullCB);
+                                if (HasFlag(stages, RHIShaderStage::Domain))
+                                    context->DSSetConstantBuffers(slot, 1, &nullCB);
+                                if (HasFlag(stages, RHIShaderStage::Compute))
+                                    context->CSSetConstantBuffers(slot, 1, &nullCB);
+                                break;
+                            }
+
                             // Standard binding without offset
                             if (HasFlag(stages, RHIShaderStage::Vertex))
                                 context->VSSetConstantBuffers(slot, 1, &cb);
@@ -176,12 +234,6 @@ namespace RVX
                                 context->DSSetConstantBuffers(slot, 1, &cb);
                             if (HasFlag(stages, RHIShaderStage::Compute))
                                 context->CSSetConstantBuffers(slot, 1, &cb);
-                            
-                            // Consume dynamic offset even if we couldn't use it
-                            if (entry->type == RHIBindingType::DynamicUniformBuffer)
-                            {
-                                dynamicOffsetIndex++;
-                            }
                         }
                     }
                     break;

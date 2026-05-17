@@ -292,10 +292,10 @@ namespace RVX
     public:
         static MemoryTracker& Get();
 
-        /// Track an allocation
-        void TrackAllocation(void* ptr, size_t size, const char* file, int line);
+        /// Track an allocation (returns pointer for placement new)
+        void* TrackAllocation(size_t size, const char* file, int line);
 
-        /// Track a deallocation
+        /// Remove an allocation from tracking. The caller remains responsible for destruction and deallocation.
         void TrackDeallocation(void* ptr);
 
         /// Get total allocated bytes
@@ -333,9 +333,8 @@ namespace RVX
 // Tracked allocation macros
 #ifdef RVX_TRACK_MEMORY
     #define RVX_NEW(Type, ...) \
-        (::RVX::MemoryTracker::Get().TrackAllocation( \
-            new Type(__VA_ARGS__), sizeof(Type), __FILE__, __LINE__), \
-         new Type(__VA_ARGS__))
+        new (::RVX::MemoryTracker::Get().TrackAllocation( \
+            sizeof(Type), __FILE__, __LINE__)) Type(__VA_ARGS__)
     #define RVX_DELETE(ptr) \
         (::RVX::MemoryTracker::Get().TrackDeallocation(ptr), delete ptr)
 #else

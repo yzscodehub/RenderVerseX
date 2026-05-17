@@ -16,6 +16,7 @@ set(DX11_HEADERS
     Private/DX11StateCache.h
     Private/DX11CommandContext.h
     Private/DX11SwapChain.h
+    Private/DX11Upload.h
 )
 
 # Source files
@@ -28,6 +29,7 @@ set(DX11_SOURCES
     Private/DX11StateCache.cpp
     Private/DX11CommandContext.cpp
     Private/DX11SwapChain.cpp
+    Private/DX11Upload.cpp
 )
 
 target_sources(RVX_RHI_DX11 PRIVATE
@@ -84,6 +86,7 @@ source_group("Private\\Headers" FILES
     Private/DX11StateCache.h
     Private/DX11CommandContext.h
     Private/DX11SwapChain.h
+    Private/DX11Upload.h
 )
 source_group("Private\\Sources" FILES
     Private/DX11Debug.cpp
@@ -94,4 +97,5 @@ source_group("Private\\Sources" FILES
     Private/DX11StateCache.cpp
     Private/DX11CommandContext.cpp
     Private/DX11SwapChain.cpp
+    Private/DX11Upload.cpp
 )

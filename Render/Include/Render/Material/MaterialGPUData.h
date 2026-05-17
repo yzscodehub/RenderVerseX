@@ -29,6 +29,20 @@ namespace RVX
         HasEmissive         = 0x10,
     };
 
+    enum class MaterialGPUAlphaMode : uint32
+    {
+        Opaque = 0,
+        Mask = 1,
+        Blend = 2,
+    };
+
+    enum class MaterialGPUWorkflow : uint32
+    {
+        MetallicRoughness = 0,
+        SpecularGlossiness = 1,
+        Unlit = 2,
+    };
+
     /**
      * @brief GPU constant buffer layout for PBR materials
      * 
@@ -53,12 +67,17 @@ namespace RVX
         Vec3 emissiveColor = {0.0f, 0.0f, 0.0f};
         float emissiveStrength = 1.0f;
         
-        // Texture flags
+        // Material state
         uint32 textureFlags = 0;
+        uint32 alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Opaque);
+        float alphaCutoff = 0.5f;
+        uint32 workflow = static_cast<uint32>(MaterialGPUWorkflow::MetallicRoughness);
+
+        uint32 doubleSided = 0;
         Vec3 padding = {0.0f, 0.0f, 0.0f};
     };
 
-    static_assert(sizeof(MaterialGPUConstants) == 64, 
-                  "MaterialGPUConstants must be 64 bytes for cbuffer alignment");
+    static_assert(sizeof(MaterialGPUConstants) == 80,
+                  "MaterialGPUConstants must match the HLSL cbuffer layout");
 
 } // namespace RVX

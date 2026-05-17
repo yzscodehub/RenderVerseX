@@ -3,6 +3,7 @@
 #include "VulkanSwapChain.h"
 #include "VulkanCommandContext.h"
 #include "VulkanPipeline.h"
+#include "VulkanUpload.h"
 
 #include <set>
 #include <algorithm>
@@ -913,6 +914,7 @@ namespace RVX
         // Wait for the frame's fence before reusing resources
         VK_CHECK(vkWaitForFences(m_device, 1, &m_frameFences[m_currentFrameIndex], VK_TRUE, UINT64_MAX));
         VK_CHECK(vkResetFences(m_device, 1, &m_frameFences[m_currentFrameIndex]));
+        ProcessDeferredSemaphoreDestroys(false);
     }
 
     void VulkanDevice::EndFrame()
@@ -938,6 +940,89 @@ namespace RVX
         if (m_device)
         {
             vkDeviceWaitIdle(m_device);
+            ProcessDeferredSemaphoreDestroys(true);
+        }
+    }
+
+    void VulkanDevice::EnqueueDeferredSemaphoreDestroy(std::vector<VkSemaphore> semaphores, VkQueue signalQueue)
+    {
+        if (semaphores.empty())
+            return;
+
+        if (!signalQueue)
+        {
+            RVX_RHI_WARN("Vulkan deferred semaphore destroy requested without a signal queue");
+            for (VkSemaphore semaphore : semaphores)
+            {
+                if (semaphore != VK_NULL_HANDLE)
+                    vkDestroySemaphore(m_device, semaphore, nullptr);
+            }
+            return;
+        }
+
+        VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        VkFence fence = VK_NULL_HANDLE;
+        VkResult result = vkCreateFence(m_device, &fenceInfo, nullptr, &fence);
+        if (result != VK_SUCCESS)
+        {
+            RVX_RHI_ERROR("Failed to create deferred semaphore destroy fence: {}", static_cast<int>(result));
+            vkQueueWaitIdle(signalQueue);
+            for (VkSemaphore semaphore : semaphores)
+            {
+                if (semaphore != VK_NULL_HANDLE)
+                    vkDestroySemaphore(m_device, semaphore, nullptr);
+            }
+            return;
+        }
+
+        VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        result = vkQueueSubmit(signalQueue, 1, &submitInfo, fence);
+        if (result != VK_SUCCESS)
+        {
+            RVX_RHI_ERROR("Failed to queue deferred semaphore destroy fence: {}", static_cast<int>(result));
+            vkDestroyFence(m_device, fence, nullptr);
+            vkQueueWaitIdle(signalQueue);
+            for (VkSemaphore semaphore : semaphores)
+            {
+                if (semaphore != VK_NULL_HANDLE)
+                    vkDestroySemaphore(m_device, semaphore, nullptr);
+            }
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(m_deferredSemaphoreMutex);
+        m_deferredSemaphoreDestroys.push_back({std::move(semaphores), fence});
+    }
+
+    void VulkanDevice::ProcessDeferredSemaphoreDestroys(bool force)
+    {
+        std::lock_guard<std::mutex> lock(m_deferredSemaphoreMutex);
+
+        auto it = m_deferredSemaphoreDestroys.begin();
+        while (it != m_deferredSemaphoreDestroys.end())
+        {
+            VkResult status = force ? VK_SUCCESS : vkGetFenceStatus(m_device, it->fence);
+            if (status == VK_NOT_READY)
+            {
+                ++it;
+                continue;
+            }
+
+            if (status != VK_SUCCESS)
+            {
+                RVX_RHI_WARN("Deferred semaphore destroy fence returned status {}", static_cast<int>(status));
+            }
+
+            for (VkSemaphore semaphore : it->semaphores)
+            {
+                if (semaphore != VK_NULL_HANDLE)
+                    vkDestroySemaphore(m_device, semaphore, nullptr);
+            }
+
+            if (it->fence != VK_NULL_HANDLE)
+                vkDestroyFence(m_device, it->fence, nullptr);
+
+            it = m_deferredSemaphoreDestroys.erase(it);
         }
     }
 
@@ -1167,21 +1252,19 @@ namespace RVX
         return device;
     }
 
+#include "VulkanUpload.h"
+
     // =============================================================================
     // Upload Resources
     // =============================================================================
     RHIStagingBufferRef VulkanDevice::CreateStagingBuffer(const RHIStagingBufferDesc& desc)
     {
-        // TODO: Create proper VulkanStagingBuffer wrapper
-        RVX_RHI_WARN("Vulkan: CreateStagingBuffer not yet fully implemented");
-        return nullptr;
+        return CreateVulkanStagingBuffer(this, desc);
     }
 
     RHIRingBufferRef VulkanDevice::CreateRingBuffer(const RHIRingBufferDesc& desc)
     {
-        // TODO: Create proper VulkanRingBuffer implementation
-        RVX_RHI_WARN("Vulkan: CreateRingBuffer not yet fully implemented");
-        return nullptr;
+        return CreateVulkanRingBuffer(this, desc);
     }
 
     // =============================================================================

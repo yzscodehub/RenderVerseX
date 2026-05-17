@@ -4,7 +4,7 @@
  * 
  * This sample shows how to:
  * 1. Load a glTF/GLB model using ResourceManager
- * 2. Instantiate it into the scene as SceneEntity with MeshRendererComponent
+ * 2. Instantiate it into the scene as SceneEntity with StaticMeshComponent
  * 3. Let the engine handle GPU upload and rendering automatically
  * 
  * Usage:
@@ -27,7 +27,6 @@
 #include "Scene/SceneManager.h"
 #include "Scene/SceneEntity.h"
 #include "Scene/ComponentFactory.h"
-#include "Scene/Components/MeshRendererComponent.h"
 #include "Resource/ResourceSubsystem.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/ModelResource.h"
@@ -211,7 +210,7 @@ int main(int argc, char* argv[])
             RVX_CORE_INFO("  - Nodes: {}", modelHandle->GetNodeCount());
             
             // Instantiate model into the scene
-            // This creates SceneEntity tree with MeshRendererComponents attached
+            // This creates a SceneEntity tree with StaticMeshComponents attached.
             modelEntity = modelHandle->Instantiate(sceneManager);
             
             if (modelEntity)
@@ -237,16 +236,13 @@ int main(int argc, char* argv[])
     {
         RVX_CORE_INFO("Creating fallback entity (no model loaded)");
         
-        SceneEntity::Handle entityHandle = sceneManager->CreateEntity("FallbackEntity");
-        modelEntity = sceneManager->GetEntity(entityHandle);
+        ActorSpawnParams fallbackParams;
+        fallbackParams.name = "FallbackEntity";
+        modelEntity = sceneManager->SpawnActor(fallbackParams);
         
         if (modelEntity)
         {
             modelEntity->SetPosition(Vec3(0.0f, 0.0f, 0.0f));
-            
-            // Add empty MeshRendererComponent for demonstration
-            auto* renderer = modelEntity->AddComponent<MeshRendererComponent>();
-            renderer->SetVisible(true);
         }
     }
 

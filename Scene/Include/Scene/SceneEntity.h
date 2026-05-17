@@ -7,17 +7,20 @@
  * SceneEntity implements ISpatialEntity for spatial indexing integration.
  */
 
-#include "Core/MathTypes.h"
 #include "Core/Math/AABB.h"
-#include "Spatial/Index/ISpatialEntity.h"
+#include "Core/MathTypes.h"
+#include "Scene/Actor.h"
 #include "Scene/Component.h"
-#include <string>
-#include <memory>
+#include "Scene/SceneComponent.h"
+#include "Spatial/Index/ISpatialEntity.h"
+
 #include <atomic>
-#include <vector>
-#include <unordered_map>
+#include <memory>
+#include <string>
 #include <typeindex>
 #include <type_traits>
+#include <unordered_map>
+#include <vector>
 
 namespace RVX
 {
@@ -47,7 +50,7 @@ namespace RVX
      * Implements ISpatialEntity for integration with spatial indexing.
      * All renderable objects in the scene should derive from this class.
      */
-    class SceneEntity : public Spatial::ISpatialEntity
+    class SceneEntity : public Actor, public Spatial::ISpatialEntity
     {
     public:
         using Handle = Spatial::EntityHandle;
@@ -63,11 +66,12 @@ namespace RVX
         explicit SceneEntity(const std::string& name = "Entity");
         ~SceneEntity() override;
 
-        // Non-copyable, movable
+        // Non-copyable, non-movable. SceneEntity identity is address-stable for
+        // component owner pointers, parent/child links, and spatial index users.
         SceneEntity(const SceneEntity&) = delete;
         SceneEntity& operator=(const SceneEntity&) = delete;
-        SceneEntity(SceneEntity&&) = default;
-        SceneEntity& operator=(SceneEntity&&) = default;
+        SceneEntity(SceneEntity&&) = delete;
+        SceneEntity& operator=(SceneEntity&&) = delete;
 
         // =====================================================================
         // ISpatialEntity Implementation
@@ -85,13 +89,22 @@ namespace RVX
         // Basic Properties
         // =====================================================================
 
-        const std::string& GetName() const { return m_name; }
-        void SetName(const std::string& name) { m_name = name; }
+        const std::string& GetName() const override { return m_name; }
+        void SetName(const std::string& name) override
+        {
+            Actor::SetName(name);
+            m_name = name;
+        }
 
+        const char* GetClassName() const override { return "SceneEntity"; }
         virtual EntityType GetEntityType() const { return EntityType::Node; }
 
-        bool IsActive() const { return m_active; }
-        void SetActive(bool active) { m_active = active; }
+        bool IsActive() const override { return m_active; }
+        void SetActive(bool active) override
+        {
+            Actor::SetActive(active);
+            m_active = active;
+        }
 
         void SetLayerMask(uint32_t mask) { m_layerMask = mask; }
         void SetLayer(uint32_t layer) { m_layerMask = 1u << layer; }
@@ -105,31 +118,31 @@ namespace RVX
         // Transform (Local - relative to parent)
         // =====================================================================
 
-        const Vec3& GetPosition() const { return m_position; }
-        void SetPosition(const Vec3& position);
+        const Vec3& GetPosition() const;
+        void SetPosition(const Vec3& position) override;
 
-        const Quat& GetRotation() const { return m_rotation; }
-        void SetRotation(const Quat& rotation);
+        const Quat& GetRotation() const;
+        void SetRotation(const Quat& rotation) override;
 
-        const Vec3& GetScale() const { return m_scale; }
-        void SetScale(const Vec3& scale);
+        const Vec3& GetScale() const;
+        void SetScale(const Vec3& scale) override;
 
         /// Get local transform matrix (relative to parent)
         Mat4 GetLocalMatrix() const;
 
         /// Get world transform matrix (includes parent transforms)
-        Mat4 GetWorldMatrix() const;
+        Mat4 GetWorldMatrix() const override;
 
         /// Get world position (includes parent transforms)
-        Vec3 GetWorldPosition() const;
+        Vec3 GetWorldPosition() const override;
 
         /// Get world rotation (includes parent transforms)
-        Quat GetWorldRotation() const;
+        Quat GetWorldRotation() const override;
 
         /// Get world scale (includes parent transforms)
-        Vec3 GetWorldScale() const;
+        Vec3 GetWorldScale() const override;
 
-        void Translate(const Vec3& delta);
+        void Translate(const Vec3& delta) override;
         void Rotate(const Quat& delta);
         void RotateAround(const Vec3& axis, float angle);
 
@@ -197,6 +210,9 @@ namespace RVX
         template<typename T, typename... Args>
         T* AddComponent(Args&&... args);
 
+        /// Add an already-created legacy component and transfer ownership.
+        Component* AddOwnedComponent(std::unique_ptr<Component> component);
+
         /// Get a component of type T (returns nullptr if not found)
         template<typename T>
         T* GetComponent() const;
@@ -218,10 +234,20 @@ namespace RVX
         /// Get component count
         size_t GetComponentCount() const { return m_components.size(); }
 
+        void RegisterAllComponents() override;
+        void UnregisterAllComponents() override;
+        void BeginPlay() override;
+        void Tick(float deltaTime) override;
+        void EndPlay() override;
+
         /// Tick all components
         void TickComponents(float deltaTime);
 
+        void SetRootComponent(SceneComponent* rootComponent) override;
+        void NotifySceneComponentTransformChanged(SceneComponent* component);
+
     protected:
+        bool ShouldAutoRegisterComponent(ActorComponent* component) const override;
         void MarkSpatialDirty() { m_spatialDirty = true; }
         void MarkTransformDirty();  // Also marks children as dirty
 
@@ -263,9 +289,27 @@ namespace RVX
 
         // Components
         std::unordered_map<std::type_index, std::unique_ptr<Component>> m_components;
+        SceneComponent* m_compatRootComponent = nullptr;
+        std::vector<std::type_index> m_legacyComponentOrder;
+        int32 m_legacyComponentDispatchDepth = 0;
+        std::vector<std::type_index> m_pendingRemoveLegacyComponents;
 
         // Helper to mark all children's transforms as dirty
         void MarkChildrenTransformDirty();
+
+        bool RemoveLegacyComponentByType(std::type_index typeIndex);
+        bool IsLegacyComponentRemovalPending(std::type_index typeIndex) const;
+        void QueuePendingLegacyComponentRemoval(std::type_index typeIndex);
+        void FlushPendingLegacyComponentRemovals();
+        std::vector<Component*> MakeLegacyComponentSnapshot() const;
+        void RegisterLegacyComponent(Component* component);
+        void UnregisterLegacyComponent(Component* component);
+        void RegisterAllLegacyComponents();
+        void UnregisterAllLegacyComponents();
+        void BeginPlayLegacyComponents();
+        void EndPlayLegacyComponents();
+        void BeginLegacyComponentDispatch();
+        void EndLegacyComponentDispatch();
 
         // Handle generation
         static Handle GenerateHandle();
@@ -279,75 +323,110 @@ namespace RVX
     template<typename T, typename... Args>
     T* SceneEntity::AddComponent(Args&&... args)
     {
-        static_assert(std::is_base_of_v<Component, T>, "T must derive from Component");
+        static_assert(std::is_base_of_v<ActorComponent, T>, "T must derive from ActorComponent");
 
-        std::type_index typeIndex(typeid(T));
-
-        // Check if component already exists
-        auto it = m_components.find(typeIndex);
-        if (it != m_components.end())
+        if constexpr (std::is_base_of_v<Component, T>)
         {
-            return static_cast<T*>(it->second.get());
+            std::type_index typeIndex(typeid(T));
+
+            // Check if component already exists
+            auto it = m_components.find(typeIndex);
+            if (it != m_components.end())
+            {
+                return static_cast<T*>(it->second.get());
+            }
+
+            // Create new component
+            auto component = std::make_unique<T>(std::forward<Args>(args)...);
+            T* ptr = component.get();
+
+            // Set owner and call OnAttach
+            component->SetOwner(this);
+            component->OnComponentCreated();
+            component->OnAttach();
+
+            // Store component
+            m_legacyComponentOrder.push_back(typeIndex);
+            m_components[typeIndex] = std::move(component);
+
+            if (ShouldAutoRegisterComponent(ptr))
+            {
+                RegisterLegacyComponent(ptr);
+            }
+
+            // Notify bounds may have changed
+            MarkBoundsDirty();
+
+            return ptr;
         }
-
-        // Create new component
-        auto component = std::make_unique<T>(std::forward<Args>(args)...);
-        T* ptr = component.get();
-
-        // Set owner and call OnAttach
-        component->SetOwner(this);
-        component->OnAttach();
-
-        // Store component
-        m_components[typeIndex] = std::move(component);
-
-        // Notify bounds may have changed
-        MarkBoundsDirty();
-
-        return ptr;
+        else
+        {
+            return Actor::AddComponent<T>(std::forward<Args>(args)...);
+        }
     }
 
     template<typename T>
     T* SceneEntity::GetComponent() const
     {
-        static_assert(std::is_base_of_v<Component, T>, "T must derive from Component");
+        static_assert(std::is_base_of_v<ActorComponent, T>, "T must derive from ActorComponent");
 
-        std::type_index typeIndex(typeid(T));
-        auto it = m_components.find(typeIndex);
-        if (it != m_components.end())
+        if constexpr (std::is_base_of_v<Component, T>)
         {
-            return static_cast<T*>(it->second.get());
+            std::type_index typeIndex(typeid(T));
+            auto it = m_components.find(typeIndex);
+            if (it != m_components.end())
+            {
+                return static_cast<T*>(it->second.get());
+            }
+            return nullptr;
         }
-        return nullptr;
+        else
+        {
+            return Actor::GetComponent<T>();
+        }
     }
 
     template<typename T>
     bool SceneEntity::HasComponent() const
     {
-        static_assert(std::is_base_of_v<Component, T>, "T must derive from Component");
+        static_assert(std::is_base_of_v<ActorComponent, T>, "T must derive from ActorComponent");
 
-        std::type_index typeIndex(typeid(T));
-        return m_components.find(typeIndex) != m_components.end();
+        if constexpr (std::is_base_of_v<Component, T>)
+        {
+            std::type_index typeIndex(typeid(T));
+            return m_components.find(typeIndex) != m_components.end();
+        }
+        else
+        {
+            return Actor::GetComponent<T>() != nullptr;
+        }
     }
 
     template<typename T>
     bool SceneEntity::RemoveComponent()
     {
-        static_assert(std::is_base_of_v<Component, T>, "T must derive from Component");
+        static_assert(std::is_base_of_v<ActorComponent, T>, "T must derive from ActorComponent");
 
-        std::type_index typeIndex(typeid(T));
-        auto it = m_components.find(typeIndex);
-        if (it != m_components.end())
+        if constexpr (std::is_base_of_v<Component, T>)
         {
-            // Call OnDetach before removal
-            it->second->OnDetach();
-            m_components.erase(it);
+            std::type_index typeIndex(typeid(T));
+            if (m_components.find(typeIndex) == m_components.end())
+            {
+                return false;
+            }
 
-            // Notify bounds may have changed
-            MarkBoundsDirty();
-            return true;
+            if (m_legacyComponentDispatchDepth > 0)
+            {
+                QueuePendingLegacyComponentRemoval(typeIndex);
+                return IsLegacyComponentRemovalPending(typeIndex);
+            }
+
+            return RemoveLegacyComponentByType(typeIndex);
         }
-        return false;
+        else
+        {
+            return Actor::RemoveComponent<T>();
+        }
     }
 
 } // namespace RVX

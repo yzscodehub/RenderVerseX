@@ -13,13 +13,14 @@ namespace RVX
 {
     /**
      * @brief Job priority levels
+     * Higher values = higher priority
      */
     enum class JobPriority
     {
-        Low,
-        Normal,
-        High,
-        Critical
+        Low = 0,
+        Normal = 1,
+        High = 2,
+        Critical = 3
     };
 
     /**
@@ -110,6 +111,18 @@ namespace RVX
         template<typename F>
         JobHandle Submit(F&& func)
         {
+            return Submit(std::forward<F>(func), JobPriority::Normal);
+        }
+
+        /**
+         * @brief Submit a job with priority
+         * @param func Function to execute
+         * @param priority Job priority
+         * @return Handle to track job completion
+         */
+        template<typename F>
+        JobHandle Submit(F&& func, JobPriority priority)
+        {
             if (!m_threadPool)
             {
                 // Execute synchronously if not initialized
@@ -118,11 +131,11 @@ namespace RVX
             }
 
             auto completed = std::make_shared<std::atomic<bool>>(false);
-            
+
             auto future = m_threadPool->Submit([func = std::forward<F>(func), completed]() {
                 func();
                 completed->store(true);
-            });
+            }, priority);
 
             JobHandle handle;
             handle.m_future = future.share();

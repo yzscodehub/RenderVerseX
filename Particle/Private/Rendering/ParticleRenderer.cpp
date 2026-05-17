@@ -212,41 +212,59 @@ uint32 ParticleRenderer::MakePipelineKey(ParticleRenderMode mode,
 
 RHIPipeline* ParticleRenderer::GetBillboardPipeline(ParticleBlendMode blend, bool softParticle)
 {
-    uint32 key = MakePipelineKey(ParticleRenderMode::Billboard, blend, softParticle);
-    auto it = m_pipelineCache.find(key);
-    if (it != m_pipelineCache.end())
-        return it->second.Get();
-    
-    // Pipeline creation would happen here
-    // For now, return nullptr - pipelines are set externally
-    return nullptr;
+    return CreatePipelineIfNeeded(ParticleRenderMode::Billboard, blend, softParticle);
 }
 
 RHIPipeline* ParticleRenderer::GetStretchedBillboardPipeline(ParticleBlendMode blend, bool softParticle)
 {
-    uint32 key = MakePipelineKey(ParticleRenderMode::StretchedBillboard, blend, softParticle);
-    auto it = m_pipelineCache.find(key);
-    if (it != m_pipelineCache.end())
-        return it->second.Get();
-    return nullptr;
+    return CreatePipelineIfNeeded(ParticleRenderMode::StretchedBillboard, blend, softParticle);
 }
 
 RHIPipeline* ParticleRenderer::GetMeshPipeline(ParticleBlendMode blend)
 {
-    uint32 key = MakePipelineKey(ParticleRenderMode::Mesh, blend, false);
-    auto it = m_pipelineCache.find(key);
-    if (it != m_pipelineCache.end())
-        return it->second.Get();
-    return nullptr;
+    return CreatePipelineIfNeeded(ParticleRenderMode::Mesh, blend, false);
 }
 
 RHIPipeline* ParticleRenderer::GetTrailPipeline(ParticleBlendMode blend, bool softParticle)
 {
-    uint32 key = MakePipelineKey(ParticleRenderMode::Trail, blend, softParticle);
+    return CreatePipelineIfNeeded(ParticleRenderMode::Trail, blend, softParticle);
+}
+
+RHIPipeline* ParticleRenderer::CreatePipelineIfNeeded(ParticleRenderMode mode,
+                                                      ParticleBlendMode blend,
+                                                      bool soft)
+{
+    uint32 key = MakePipelineKey(mode, blend, soft);
     auto it = m_pipelineCache.find(key);
     if (it != m_pipelineCache.end())
         return it->second.Get();
+
+    // Pipeline not found - log warning to help debugging
+    RVX_CORE_WARN("ParticleRenderer: Pipeline not found for mode={}, blend={}, soft={}",
+        static_cast<int>(mode), static_cast<int>(blend), soft);
+
+    // TODO: Implement full pipeline creation when shader system is ready
+    // This requires loading shaders and creating pipeline state
+    // For now, return nullptr
+
     return nullptr;
+}
+
+const char* ParticleRenderer::GetShaderNameForMode(ParticleRenderMode mode) const
+{
+    switch (mode)
+    {
+        case ParticleRenderMode::Billboard:
+            return "ParticleBillboard";
+        case ParticleRenderMode::StretchedBillboard:
+            return "ParticleStretchedBillboard";
+        case ParticleRenderMode::Mesh:
+            return "ParticleMesh";
+        case ParticleRenderMode::Trail:
+            return "ParticleTrail";
+        default:
+            return "ParticleBillboard";
+    }
 }
 
 RHIBuffer* ParticleRenderer::GetQuadVertexBuffer()
