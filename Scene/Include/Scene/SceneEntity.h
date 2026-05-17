@@ -234,6 +234,12 @@ namespace RVX
         /// Get component count
         size_t GetComponentCount() const { return m_components.size(); }
 
+        void RegisterAllComponents() override;
+        void UnregisterAllComponents() override;
+        void BeginPlay() override;
+        void Tick(float deltaTime) override;
+        void EndPlay() override;
+
         /// Tick all components
         void TickComponents(float deltaTime);
 
@@ -296,6 +302,12 @@ namespace RVX
         void QueuePendingLegacyComponentRemoval(std::type_index typeIndex);
         void FlushPendingLegacyComponentRemovals();
         std::vector<Component*> MakeLegacyComponentSnapshot() const;
+        void RegisterLegacyComponent(Component* component);
+        void UnregisterLegacyComponent(Component* component);
+        void RegisterAllLegacyComponents();
+        void UnregisterAllLegacyComponents();
+        void BeginPlayLegacyComponents();
+        void EndPlayLegacyComponents();
         void BeginLegacyComponentDispatch();
         void EndLegacyComponentDispatch();
 
@@ -336,6 +348,11 @@ namespace RVX
             // Store component
             m_legacyComponentOrder.push_back(typeIndex);
             m_components[typeIndex] = std::move(component);
+
+            if (ShouldAutoRegisterComponent(ptr))
+            {
+                RegisterLegacyComponent(ptr);
+            }
 
             // Notify bounds may have changed
             MarkBoundsDirty();

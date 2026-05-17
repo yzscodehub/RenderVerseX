@@ -148,6 +148,22 @@ namespace
         std::vector<std::string> events;
     };
 
+    struct LegacyLifecycleCounters
+    {
+        int created = 0;
+        int attached = 0;
+        int registered = 0;
+        int initialized = 0;
+        int beganPlay = 0;
+        int ticked = 0;
+        int endedPlay = 0;
+        int unregistered = 0;
+        int detached = 0;
+        int destroyed = 0;
+        float lastDeltaTime = 0.0f;
+        std::vector<std::string> events;
+    };
+
     class SceneManagedActorComponent : public RVX::ActorComponent
     {
     public:
@@ -225,6 +241,111 @@ namespace
 
     private:
         int* m_externalTickCount = nullptr;
+    };
+
+    class SceneManagedLegacyLifecycleComponent : public RVX::Component
+    {
+    public:
+        explicit SceneManagedLegacyLifecycleComponent(LegacyLifecycleCounters* counters)
+            : m_counters(counters)
+        {
+        }
+
+        const char* GetTypeName() const override { return "SceneManagedLegacyLifecycleComponent"; }
+
+        void OnComponentCreated() override
+        {
+            if (m_counters)
+            {
+                ++m_counters->created;
+                m_counters->events.push_back("Created");
+            }
+        }
+
+        void OnAttach() override
+        {
+            if (m_counters)
+            {
+                ++m_counters->attached;
+                m_counters->events.push_back("Attach");
+            }
+        }
+
+        void OnRegister() override
+        {
+            if (m_counters)
+            {
+                ++m_counters->registered;
+                m_counters->events.push_back("Register");
+            }
+        }
+
+        void InitializeComponent() override
+        {
+            if (m_counters)
+            {
+                ++m_counters->initialized;
+                m_counters->events.push_back("Initialize");
+            }
+        }
+
+        void BeginPlay() override
+        {
+            if (m_counters)
+            {
+                ++m_counters->beganPlay;
+                m_counters->events.push_back("BeginPlay");
+            }
+        }
+
+        void Tick(float deltaTime) override
+        {
+            if (m_counters)
+            {
+                ++m_counters->ticked;
+                m_counters->lastDeltaTime = deltaTime;
+                m_counters->events.push_back("Tick");
+            }
+        }
+
+        void EndPlay() override
+        {
+            if (m_counters)
+            {
+                ++m_counters->endedPlay;
+                m_counters->events.push_back("EndPlay");
+            }
+        }
+
+        void OnUnregister() override
+        {
+            if (m_counters)
+            {
+                ++m_counters->unregistered;
+                m_counters->events.push_back("Unregister");
+            }
+        }
+
+        void OnDetach() override
+        {
+            if (m_counters)
+            {
+                ++m_counters->detached;
+                m_counters->events.push_back("Detach");
+            }
+        }
+
+        void OnComponentDestroyed() override
+        {
+            if (m_counters)
+            {
+                ++m_counters->destroyed;
+                m_counters->events.push_back("Destroy");
+            }
+        }
+
+    private:
+        LegacyLifecycleCounters* m_counters = nullptr;
     };
 
     class AddLegacyDuringTickComponent : public RVX::Component
@@ -993,6 +1114,109 @@ namespace
         sceneManager.Update(0.25f);
         TEST_ASSERT_EQ(2, component->tickCount);
         TEST_ASSERT_TRUE(IsNear(0.25f, component->lastDeltaTime));
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_SceneManagerDispatchesLegacyComponentFullLifecycle()
+    {
+        RVX::SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        auto entity = std::make_shared<RVX::SceneEntity>("LegacyLifecycleEntity");
+        LegacyLifecycleCounters counters;
+        auto* component = entity->AddComponent<SceneManagedLegacyLifecycleComponent>(&counters);
+        TEST_ASSERT_NOT_NULL(component);
+
+        sceneManager.AddEntity(entity);
+        TEST_ASSERT_TRUE(component->IsRegistered());
+        TEST_ASSERT_TRUE(component->IsInitialized());
+        TEST_ASSERT_EQ(1, counters.registered);
+        TEST_ASSERT_EQ(1, counters.initialized);
+
+        sceneManager.Update(0.125f);
+        TEST_ASSERT_TRUE(component->HasBegunPlay());
+        TEST_ASSERT_EQ(1, counters.beganPlay);
+        TEST_ASSERT_EQ(1, counters.ticked);
+        TEST_ASSERT_TRUE(IsNear(0.125f, counters.lastDeltaTime));
+
+        sceneManager.DestroyEntity(entity->GetHandle());
+        TEST_ASSERT_EQ(1, counters.endedPlay);
+        TEST_ASSERT_EQ(1, counters.unregistered);
+
+        entity.reset();
+        TEST_ASSERT_EQ(1, counters.detached);
+        TEST_ASSERT_EQ(1, counters.destroyed);
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_SceneManagerBeginsLegacyComponentAddedAfterEntityBeginsPlay()
+    {
+        RVX::SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        const auto handle = sceneManager.CreateEntity("LateLegacyLifecycleEntity");
+        auto* entity = sceneManager.GetEntity(handle);
+        TEST_ASSERT_NOT_NULL(entity);
+
+        sceneManager.Update(0.016f);
+        TEST_ASSERT_TRUE(entity->HasBegunPlay());
+
+        LegacyLifecycleCounters counters;
+        auto* component = entity->AddComponent<SceneManagedLegacyLifecycleComponent>(&counters);
+        TEST_ASSERT_NOT_NULL(component);
+        TEST_ASSERT_TRUE(component->IsRegistered());
+        TEST_ASSERT_TRUE(component->IsInitialized());
+        TEST_ASSERT_FALSE(component->HasBegunPlay());
+
+        sceneManager.Update(0.033f);
+        TEST_ASSERT_TRUE(component->HasBegunPlay());
+        TEST_ASSERT_EQ(1, counters.beganPlay);
+        TEST_ASSERT_EQ(1, counters.ticked);
+        TEST_ASSERT_TRUE(IsNear(0.033f, counters.lastDeltaTime));
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_SceneEntityActorPointerTickDispatchesLegacyComponents()
+    {
+        RVX::SceneEntity entity("LegacyActorPointerTickEntity");
+        RVX::Actor* actor = &entity;
+
+        LegacyLifecycleCounters counters;
+        auto* component = entity.AddComponent<SceneManagedLegacyLifecycleComponent>(&counters);
+        TEST_ASSERT_NOT_NULL(component);
+
+        actor->Tick(0.5f);
+        TEST_ASSERT_EQ(1, counters.ticked);
+        TEST_ASSERT_TRUE(IsNear(0.5f, counters.lastDeltaTime));
+        return true;
+    }
+
+    bool Test_SceneEntityLegacyRemovalDispatchesLifecycleCleanup()
+    {
+        RVX::SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        const auto handle = sceneManager.CreateEntity("LegacyRemovalLifecycleEntity");
+        auto* entity = sceneManager.GetEntity(handle);
+        TEST_ASSERT_NOT_NULL(entity);
+
+        LegacyLifecycleCounters counters;
+        auto* component = entity->AddComponent<SceneManagedLegacyLifecycleComponent>(&counters);
+        TEST_ASSERT_NOT_NULL(component);
+        sceneManager.Update(0.016f);
+
+        TEST_ASSERT_TRUE(entity->RemoveComponent<SceneManagedLegacyLifecycleComponent>());
+        TEST_ASSERT_EQ(nullptr, entity->GetComponent<SceneManagedLegacyLifecycleComponent>());
+        TEST_ASSERT_EQ(1, counters.endedPlay);
+        TEST_ASSERT_EQ(1, counters.unregistered);
+        TEST_ASSERT_EQ(1, counters.detached);
+        TEST_ASSERT_EQ(1, counters.destroyed);
 
         sceneManager.Shutdown();
         return true;
@@ -2454,6 +2678,14 @@ int main()
                   Test_SceneManagerBeginsComponentsAddedAfterActorBeginsPlay);
     suite.AddTest("SceneManagerUpdateKeepsLegacyComponentTicking",
                   Test_SceneManagerUpdateKeepsLegacyComponentTicking);
+    suite.AddTest("SceneManagerDispatchesLegacyComponentFullLifecycle",
+                  Test_SceneManagerDispatchesLegacyComponentFullLifecycle);
+    suite.AddTest("SceneManagerBeginsLegacyComponentAddedAfterEntityBeginsPlay",
+                  Test_SceneManagerBeginsLegacyComponentAddedAfterEntityBeginsPlay);
+    suite.AddTest("SceneEntityActorPointerTickDispatchesLegacyComponents",
+                  Test_SceneEntityActorPointerTickDispatchesLegacyComponents);
+    suite.AddTest("SceneEntityLegacyRemovalDispatchesLifecycleCleanup",
+                  Test_SceneEntityLegacyRemovalDispatchesLifecycleCleanup);
     suite.AddTest("SceneEntityLegacyTickSnapshotsComponentsAddedDuringTick",
                   Test_SceneEntityLegacyTickSnapshotsComponentsAddedDuringTick);
     suite.AddTest("SceneEntityLegacyDefersSelfRemovalDuringTick",

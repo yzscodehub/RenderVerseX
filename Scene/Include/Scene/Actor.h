@@ -115,12 +115,12 @@ namespace RVX
         // Lifecycle
         // =====================================================================
 
-        void RegisterAllComponents();
-        void UnregisterAllComponents();
+        virtual void RegisterAllComponents();
+        virtual void UnregisterAllComponents();
         bool HasBegunPlay() const { return m_hasBegunPlay; }
-        void BeginPlay();
-        void Tick(float deltaTime);
-        void EndPlay();
+        virtual void BeginPlay();
+        virtual void Tick(float deltaTime);
+        virtual void EndPlay();
 
     protected:
         virtual bool ShouldAutoRegisterComponent(ActorComponent* component) const;

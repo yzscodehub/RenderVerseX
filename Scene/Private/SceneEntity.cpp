@@ -1,4 +1,5 @@
 #include "Scene/SceneEntity.h"
+#include "Scene/SceneManager.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -25,6 +26,9 @@ SceneEntity::SceneEntity(const std::string& name)
 
 SceneEntity::~SceneEntity()
 {
+    EndPlay();
+    UnregisterAllComponents();
+
     if (m_parent)
     {
         m_parent->RemoveChild(this);
@@ -54,6 +58,7 @@ SceneEntity::~SceneEntity()
     {
         if (component)
         {
+            (void)typeId;
             component->OnDetach();
             component->OnComponentDestroyed();
             component->SetOwner(nullptr);
@@ -79,6 +84,10 @@ Component* SceneEntity::AddOwnedComponent(std::unique_ptr<Component> component)
 
     m_legacyComponentOrder.push_back(typeIndex);
     m_components[typeIndex] = std::move(component);
+    if (ShouldAutoRegisterComponent(ptr))
+    {
+        RegisterLegacyComponent(ptr);
+    }
     MarkBoundsDirty();
 
     return ptr;
@@ -457,6 +466,8 @@ bool SceneEntity::RemoveLegacyComponentByType(std::type_index typeIndex)
 
     if (removedComponent)
     {
+        removedComponent->EndPlayWithOwner();
+        removedComponent->UnregisterFromOwner();
         removedComponent->OnDetach();
         removedComponent->OnComponentDestroyed();
         removedComponent->SetOwner(nullptr);
@@ -514,6 +525,112 @@ std::vector<Component*> SceneEntity::MakeLegacyComponentSnapshot() const
         }
     }
     return snapshot;
+}
+
+void SceneEntity::RegisterLegacyComponent(Component* component)
+{
+    if (!component)
+        return;
+
+    component->RegisterWithOwner();
+}
+
+void SceneEntity::UnregisterLegacyComponent(Component* component)
+{
+    if (!component)
+        return;
+
+    component->UnregisterFromOwner();
+}
+
+void SceneEntity::RegisterAllLegacyComponents()
+{
+    auto snapshot = MakeLegacyComponentSnapshot();
+    for (Component* component : snapshot)
+    {
+        if (!component || IsLegacyComponentRemovalPending(std::type_index(typeid(*component))))
+            continue;
+
+        RegisterLegacyComponent(component);
+    }
+}
+
+void SceneEntity::UnregisterAllLegacyComponents()
+{
+    auto snapshot = MakeLegacyComponentSnapshot();
+    for (auto it = snapshot.rbegin(); it != snapshot.rend(); ++it)
+    {
+        Component* component = *it;
+        if (!component || IsLegacyComponentRemovalPending(std::type_index(typeid(*component))))
+            continue;
+
+        UnregisterLegacyComponent(component);
+    }
+}
+
+void SceneEntity::BeginPlayLegacyComponents()
+{
+    auto snapshot = MakeLegacyComponentSnapshot();
+    BeginLegacyComponentDispatch();
+    for (Component* component : snapshot)
+    {
+        if (!component || IsLegacyComponentRemovalPending(std::type_index(typeid(*component))))
+            continue;
+
+        component->BeginPlayWithOwner();
+    }
+    EndLegacyComponentDispatch();
+}
+
+void SceneEntity::EndPlayLegacyComponents()
+{
+    auto snapshot = MakeLegacyComponentSnapshot();
+    BeginLegacyComponentDispatch();
+    for (auto it = snapshot.rbegin(); it != snapshot.rend(); ++it)
+    {
+        Component* component = *it;
+        if (!component || IsLegacyComponentRemovalPending(std::type_index(typeid(*component))))
+            continue;
+
+        component->EndPlayWithOwner();
+    }
+    EndLegacyComponentDispatch();
+}
+
+void SceneEntity::RegisterAllComponents()
+{
+    Actor::RegisterAllComponents();
+    RegisterAllLegacyComponents();
+}
+
+void SceneEntity::UnregisterAllComponents()
+{
+    UnregisterAllLegacyComponents();
+    Actor::UnregisterAllComponents();
+}
+
+void SceneEntity::BeginPlay()
+{
+    Actor::BeginPlay();
+    BeginPlayLegacyComponents();
+}
+
+void SceneEntity::Tick(float deltaTime)
+{
+    if (!IsActive())
+        return;
+
+    Actor::Tick(deltaTime);
+    if (!IsActive() || (m_sceneManager && m_sceneManager->IsDestroyPending(GetHandle())))
+        return;
+
+    TickComponents(deltaTime);
+}
+
+void SceneEntity::EndPlay()
+{
+    EndPlayLegacyComponents();
+    Actor::EndPlay();
 }
 
 void SceneEntity::BeginLegacyComponentDispatch()

@@ -100,6 +100,10 @@ namespace RVX
 
         /// Set by SceneEntity when attached
         void SetOwner(SceneEntity* owner);
+        void RegisterWithOwner();
+        void UnregisterFromOwner();
+        void BeginPlayWithOwner();
+        void EndPlayWithOwner();
 
         SceneEntity* m_owner = nullptr;
         bool m_needsTick = false;

@@ -738,13 +738,6 @@ void SceneManager::UpdateEntityLifecycles(float deltaTime)
 
         entity = it->second.get();
         entity->Tick(deltaTime);
-
-        it = m_entities.find(handle);
-        if (it == m_entities.end() || !it->second || !it->second->IsActive() || IsDestroyPending(handle))
-            continue;
-
-        entity = it->second.get();
-        entity->TickComponents(deltaTime);
     }
     m_isDispatchingLifecycles = false;
 
