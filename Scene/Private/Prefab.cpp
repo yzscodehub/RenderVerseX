@@ -555,6 +555,96 @@ namespace
         return bindings;
     }
 
+    void CollectEntitySubtreeHandlesPostOrder(
+        const SceneEntity& entity,
+        std::vector<SceneEntity::Handle>& handles)
+    {
+        const std::vector<SceneEntity*> children = entity.GetChildren();
+        for (const SceneEntity* child : children)
+        {
+            if (child)
+            {
+                CollectEntitySubtreeHandlesPostOrder(*child, handles);
+            }
+        }
+
+        handles.push_back(entity.GetHandle());
+    }
+
+    bool EntitySubtreeContainsAnyHandle(
+        const SceneEntity& entity,
+        const std::unordered_set<SceneEntity::Handle>& handles)
+    {
+        if (handles.find(entity.GetHandle()) != handles.end())
+        {
+            return true;
+        }
+
+        for (const SceneEntity* child : entity.GetChildren())
+        {
+            if (child && EntitySubtreeContainsAnyHandle(*child, handles))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    void CollectExtraLivePrefabEntityHandles(
+        const SceneEntity& entity,
+        const std::unordered_set<SceneEntity::Handle>& prefabEntityHandles,
+        std::vector<SceneEntity::Handle>& handlesToDestroy)
+    {
+        const std::vector<SceneEntity*> children = entity.GetChildren();
+        for (const SceneEntity* child : children)
+        {
+            if (!child)
+            {
+                continue;
+            }
+
+            if (prefabEntityHandles.find(child->GetHandle()) == prefabEntityHandles.end())
+            {
+                if (!EntitySubtreeContainsAnyHandle(*child, prefabEntityHandles))
+                {
+                    CollectEntitySubtreeHandlesPostOrder(*child, handlesToDestroy);
+                }
+                continue;
+            }
+
+            CollectExtraLivePrefabEntityHandles(*child, prefabEntityHandles, handlesToDestroy);
+        }
+    }
+
+    void PruneExtraLivePrefabEntities(
+        SceneManager& sceneManager,
+        SceneEntity& rootEntity,
+        const std::vector<SceneEntity*>& restoredEntities)
+    {
+        std::unordered_set<SceneEntity::Handle> prefabEntityHandles;
+        for (const SceneEntity* entity : restoredEntities)
+        {
+            if (!entity)
+            {
+                return;
+            }
+
+            prefabEntityHandles.insert(entity->GetHandle());
+        }
+
+        std::vector<SceneEntity::Handle> handlesToDestroy;
+        CollectExtraLivePrefabEntityHandles(rootEntity, prefabEntityHandles, handlesToDestroy);
+
+        for (SceneEntity::Handle handle : handlesToDestroy)
+        {
+            if (sceneManager.GetEntity(handle))
+            {
+                sceneManager.DestroyEntity(handle);
+            }
+        }
+    }
+
     size_t CountChildrenNamed(const SceneEntity& parent, const std::string& name)
     {
         size_t count = 0;
@@ -1644,6 +1734,7 @@ bool Prefab::RestoreHierarchyStateTo(
         ApplyPrefabEntityComponentPayloads(*entity, entityData, nameBindings, entityPath);
     }
 
+    PruneExtraLivePrefabEntities(*sceneManager, rootEntity, restoredEntities);
     return true;
 }
 

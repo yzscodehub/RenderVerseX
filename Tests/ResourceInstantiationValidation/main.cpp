@@ -1426,10 +1426,10 @@ namespace
         return true;
     }
 
-    bool Test_PrefabInstanceRevertAllPreservesExtraLiveChildEntity()
+    bool Test_PrefabInstanceRevertAllPrunesExtraLiveChildEntity()
     {
         PrefabEntityData rootData;
-        rootData.name = "PreserveExtraRoot";
+        rootData.name = "PruneExtraRoot";
 
         auto prefab = Prefab::CreateFromData({rootData});
 
@@ -1446,21 +1446,61 @@ namespace
         extraParams.parent = root;
         SceneEntity* extra = sceneManager.SpawnActor(extraParams);
         TEST_ASSERT_NOT_NULL(extra);
+        const SceneEntity::Handle extraHandle = extra->GetHandle();
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
-        TEST_ASSERT_EQ(extra, root->GetChildren()[0]);
-        TEST_ASSERT_EQ(root, extra->GetParent());
+        TEST_ASSERT_TRUE(root->GetChildren().empty());
+        TEST_ASSERT_TRUE(sceneManager.GetEntity(extraHandle) == nullptr);
 
         sceneManager.Shutdown();
         return true;
     }
 
-    bool Test_PrefabInstanceRevertAllDoesNotCreateWhenUniquePathIsAmbiguous()
+    bool Test_PrefabInstanceRevertAllPrunesNestedExtraLiveChildSubtree()
     {
         PrefabEntityData rootData;
-        rootData.name = "AmbiguousRestoreRoot";
+        rootData.name = "PruneNestedExtraRoot";
+
+        auto prefab = Prefab::CreateFromData({rootData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        ActorSpawnParams branchParams;
+        branchParams.name = "ExtraBranch";
+        branchParams.parent = root;
+        SceneEntity* branch = sceneManager.SpawnActor(branchParams);
+        TEST_ASSERT_NOT_NULL(branch);
+
+        ActorSpawnParams leafParams;
+        leafParams.name = "ExtraLeaf";
+        leafParams.parent = branch;
+        SceneEntity* leaf = sceneManager.SpawnActor(leafParams);
+        TEST_ASSERT_NOT_NULL(leaf);
+
+        const SceneEntity::Handle branchHandle = branch->GetHandle();
+        const SceneEntity::Handle leafHandle = leaf->GetHandle();
+
+        prefabInstance->RevertAll();
+
+        TEST_ASSERT_TRUE(root->GetChildren().empty());
+        TEST_ASSERT_TRUE(sceneManager.GetEntity(branchHandle) == nullptr);
+        TEST_ASSERT_TRUE(sceneManager.GetEntity(leafHandle) == nullptr);
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertAllPrunesDuplicateExtraChildAfterBoundRestore()
+    {
+        PrefabEntityData rootData;
+        rootData.name = "DuplicateExtraRestoreRoot";
 
         PrefabEntityData childData;
         childData.name = "Child";
@@ -1482,11 +1522,51 @@ namespace
         duplicateParams.parent = root;
         SceneEntity* duplicate = sceneManager.SpawnActor(duplicateParams);
         TEST_ASSERT_NOT_NULL(duplicate);
+        const SceneEntity::Handle duplicateHandle = duplicate->GetHandle();
         TEST_ASSERT_EQ(static_cast<size_t>(2), root->GetChildren().size());
 
         prefabInstance->RevertAll();
 
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        TEST_ASSERT_TRUE(sceneManager.GetEntity(duplicateHandle) == nullptr);
+        TEST_ASSERT_EQ(std::string("Child"), root->GetChildren()[0]->GetName());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabRestoreHierarchySkipsPruningWhenEntityBindingMissingAndPathAmbiguous()
+    {
+        PrefabEntityData rootData;
+        rootData.name = "MissingBindingAmbiguousRoot";
+
+        PrefabEntityData childData;
+        childData.name = "Child";
+        childData.parentIndex = 0;
+
+        auto prefab = Prefab::CreateFromData({rootData, childData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+
+        ActorSpawnParams duplicateParams;
+        duplicateParams.name = "Child";
+        duplicateParams.parent = root;
+        SceneEntity* duplicate = sceneManager.SpawnActor(duplicateParams);
+        TEST_ASSERT_NOT_NULL(duplicate);
+        const SceneEntity::Handle duplicateHandle = duplicate->GetHandle();
         TEST_ASSERT_EQ(static_cast<size_t>(2), root->GetChildren().size());
+
+        std::vector<PrefabActorComponentNameBinding> nameBindings;
+        std::vector<PrefabEntityRuntimeBinding> entityBindings;
+        TEST_ASSERT_TRUE(prefab->RestoreHierarchyStateTo(*root, nameBindings, entityBindings));
+
+        TEST_ASSERT_EQ(static_cast<size_t>(2), root->GetChildren().size());
+        TEST_ASSERT_NOT_NULL(sceneManager.GetEntity(duplicateHandle));
 
         sceneManager.Shutdown();
         return true;
@@ -3007,10 +3087,14 @@ int main()
                   Test_PrefabInstanceRevertAllRecreatesMissingChildEntity);
     suite.AddTest("PrefabInstanceRevertAllRecreatesNestedMissingDescendant",
                   Test_PrefabInstanceRevertAllRecreatesNestedMissingDescendant);
-    suite.AddTest("PrefabInstanceRevertAllPreservesExtraLiveChildEntity",
-                  Test_PrefabInstanceRevertAllPreservesExtraLiveChildEntity);
-    suite.AddTest("PrefabInstanceRevertAllDoesNotCreateWhenUniquePathIsAmbiguous",
-                  Test_PrefabInstanceRevertAllDoesNotCreateWhenUniquePathIsAmbiguous);
+    suite.AddTest("PrefabInstanceRevertAllPrunesExtraLiveChildEntity",
+                  Test_PrefabInstanceRevertAllPrunesExtraLiveChildEntity);
+    suite.AddTest("PrefabInstanceRevertAllPrunesNestedExtraLiveChildSubtree",
+                  Test_PrefabInstanceRevertAllPrunesNestedExtraLiveChildSubtree);
+    suite.AddTest("PrefabInstanceRevertAllPrunesDuplicateExtraChildAfterBoundRestore",
+                  Test_PrefabInstanceRevertAllPrunesDuplicateExtraChildAfterBoundRestore);
+    suite.AddTest("PrefabRestoreHierarchySkipsPruningWhenEntityBindingMissingAndPathAmbiguous",
+                  Test_PrefabRestoreHierarchySkipsPruningWhenEntityBindingMissingAndPathAmbiguous);
     suite.AddTest("PrefabInstanceRevertAllKeepsExistingNameBindingsWhenRecreatingChild",
                   Test_PrefabInstanceRevertAllKeepsExistingNameBindingsWhenRecreatingChild);
     suite.AddTest("PrefabInstanceRevertAllDropsStaleBindingsForRecreatedChild",
