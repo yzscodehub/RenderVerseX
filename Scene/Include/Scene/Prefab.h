@@ -45,6 +45,7 @@ struct PropertyOverride
     std::string propertyPath;   // Property path (e.g., "position.x")
     PropertyValue value;        // Override value
     std::string componentName;  // Optional actor component instance name
+    std::string entityPath;     // Optional prefab-root-relative entity path
 };
 
 /**
@@ -66,6 +67,26 @@ struct PrefabActorComponentNameBinding
     std::string prefabName;
     size_t ordinal = 0;
     std::string instanceName;
+    std::string entityPath;
+};
+
+/**
+ * @brief Captured component payload identity used to clear applied overrides.
+ */
+struct PrefabComponentPayloadKey
+{
+    std::string entityPath;
+    std::string componentType;
+    std::string componentName;
+};
+
+/**
+ * @brief Result of writing live hierarchy state back into prefab data.
+ */
+struct PrefabApplyCaptureReport
+{
+    std::vector<std::string> capturedEntityPaths;
+    std::vector<PrefabComponentPayloadKey> capturedComponentPayloads;
 };
 
 /**
@@ -177,6 +198,9 @@ public:
     /// Update root entity data from a live entity. Returns false when the prefab has no root.
     bool UpdateRootEntityStateFrom(const SceneEntity& entity);
 
+    /// Update existing prefab entity data from matching live hierarchy paths.
+    PrefabApplyCaptureReport UpdateHierarchyStateFrom(const SceneEntity& rootEntity);
+
     /// Add entity data to the prefab
     void AddEntityData(PrefabEntityData data);
 
@@ -201,7 +225,8 @@ private:
     void SerializeEntity(const SceneEntity* entity, int32_t parentIndex);
     bool CreateComponents(SceneEntity* entity,
                           const PrefabEntityData& data,
-                          std::vector<PrefabActorComponentNameBinding>* nameBindings = nullptr) const;
+                          std::vector<PrefabActorComponentNameBinding>* nameBindings = nullptr,
+                          const std::string& entityPath = "") const;
 
     std::string m_name;
     std::string m_sourcePath;
@@ -247,7 +272,8 @@ public:
     /// Remove an override
     void RemoveOverride(const std::string& componentType,
                         const std::string& propertyPath,
-                        const std::string& componentName = "");
+                        const std::string& componentName = "",
+                        const std::string& entityPath = "");
 
     /// Get all overrides
     const std::vector<PropertyOverride>& GetOverrides() const { return m_overrides; }
@@ -258,7 +284,8 @@ public:
     /// Check if a property is overridden
     bool IsOverridden(const std::string& componentType,
                       const std::string& propertyPath,
-                      const std::string& componentName = "") const;
+                      const std::string& componentName = "",
+                      const std::string& entityPath = "") const;
 
     // =========================================================================
     // Prefab Operations
@@ -270,7 +297,8 @@ public:
     /// Revert a specific property to prefab value
     void RevertProperty(const std::string& componentType,
                         const std::string& propertyPath,
-                        const std::string& componentName = "");
+                        const std::string& componentName = "",
+                        const std::string& entityPath = "");
 
     /// Apply current values back to prefab (requires write access)
     void ApplyToPrefab();

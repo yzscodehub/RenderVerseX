@@ -1101,6 +1101,56 @@ namespace
         return true;
     }
 
+    bool Test_PrefabInstanceRevertAllRestoresChildEntityStateAndPayload()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
+            "PrefabPayloadComponent");
+
+        PrefabEntityData rootData;
+        rootData.name = "HierarchyRevertRoot";
+
+        PrefabEntityData childData;
+        childData.name = "Child";
+        childData.parentIndex = 0;
+        childData.position = Vec3(1.0f, 2.0f, 3.0f);
+        childData.actorComponentData.push_back(
+            {"PrefabPayloadComponent", "slot=child", "ChildPayload"});
+
+        auto prefab = Prefab::CreateFromData({rootData, childData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+
+        SceneEntity* child = root->GetChildren()[0];
+        TEST_ASSERT_NOT_NULL(child);
+        auto* childPayload = FindPrefabPayloadComponentByName(
+            *static_cast<Actor*>(child), "ChildPayload");
+        TEST_ASSERT_NOT_NULL(childPayload);
+
+        child->SetPosition(Vec3(9.0f, 9.0f, 9.0f));
+        childPayload->payload = "dirty-child";
+        prefabInstance->AddOverride(
+            {"SceneEntity", "position", child->GetPosition(), "", "Child"});
+        prefabInstance->AddOverride(
+            {"PrefabPayloadComponent", "serializedData", childPayload->payload, "ChildPayload", "Child"});
+
+        prefabInstance->RevertAll();
+
+        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), child->GetPosition());
+        TEST_ASSERT_EQ(std::string("slot=child"), childPayload->payload);
+        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_PrefabInstanceRevertAllRestoresLegacyComponentPayload()
     {
         ComponentFactoryClassGuard componentFactoryGuard;
@@ -1209,6 +1259,147 @@ namespace
         TEST_ASSERT_FALSE(prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData"));
         TEST_ASSERT_TRUE(prefabInstance->IsOverridden("PrefabLegacyPayloadComponent", "serializedData"));
         TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRootEntityPathNormalizesForOverrideIdentity()
+    {
+        PrefabInstance prefabInstance;
+        prefabInstance.AddOverride({"SceneEntity", "position", Vec3(1.0f), "", "."});
+
+        TEST_ASSERT_TRUE(prefabInstance.IsOverridden("SceneEntity", "position"));
+        TEST_ASSERT_TRUE(prefabInstance.IsOverridden("SceneEntity", "position", "", "."));
+
+        prefabInstance.RemoveOverride("SceneEntity", "position");
+
+        TEST_ASSERT_FALSE(prefabInstance.IsOverridden("SceneEntity", "position", "", "."));
+        TEST_ASSERT_TRUE(prefabInstance.GetOverrides().empty());
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertPropertyRestoresChildEntityProperty()
+    {
+        PrefabEntityData rootData;
+        rootData.name = "ChildPropertyRoot";
+        rootData.position = Vec3(1.0f, 0.0f, 0.0f);
+
+        PrefabEntityData childData;
+        childData.name = "Child";
+        childData.parentIndex = 0;
+        childData.position = Vec3(0.0f, 2.0f, 0.0f);
+
+        auto prefab = Prefab::CreateFromData({rootData, childData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        SceneEntity* child = root->GetChildren()[0];
+
+        root->SetPosition(Vec3(7.0f, 0.0f, 0.0f));
+        child->SetPosition(Vec3(0.0f, 9.0f, 0.0f));
+        prefabInstance->AddOverride({"SceneEntity", "position", root->GetPosition()});
+        prefabInstance->AddOverride(
+            {"SceneEntity", "position", child->GetPosition(), "", "Child"});
+
+        prefabInstance->RevertProperty("SceneEntity", "position", "", "Child");
+
+        TEST_ASSERT_EQ(Vec3(7.0f, 0.0f, 0.0f), root->GetPosition());
+        TEST_ASSERT_EQ(Vec3(0.0f, 2.0f, 0.0f), child->GetPosition());
+        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("SceneEntity", "position"));
+        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child"));
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertPropertyUsesSiblingOrdinalEntityPath()
+    {
+        PrefabEntityData rootData;
+        rootData.name = "DuplicateChildRoot";
+
+        PrefabEntityData firstChildData;
+        firstChildData.name = "Child";
+        firstChildData.parentIndex = 0;
+        firstChildData.position = Vec3(1.0f, 0.0f, 0.0f);
+
+        PrefabEntityData secondChildData;
+        secondChildData.name = "Child";
+        secondChildData.parentIndex = 0;
+        secondChildData.position = Vec3(2.0f, 0.0f, 0.0f);
+
+        auto prefab = Prefab::CreateFromData({rootData, firstChildData, secondChildData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+        TEST_ASSERT_EQ(static_cast<size_t>(2), root->GetChildren().size());
+
+        SceneEntity* firstChild = root->GetChildren()[0];
+        SceneEntity* secondChild = root->GetChildren()[1];
+        firstChild->SetPosition(Vec3(9.0f, 0.0f, 0.0f));
+        secondChild->SetPosition(Vec3(8.0f, 0.0f, 0.0f));
+        prefabInstance->AddOverride(
+            {"SceneEntity", "position", secondChild->GetPosition(), "", "Child[1]"});
+
+        prefabInstance->RevertProperty("SceneEntity", "position", "", "Child[1]");
+
+        TEST_ASSERT_EQ(Vec3(9.0f, 0.0f, 0.0f), firstChild->GetPosition());
+        TEST_ASSERT_EQ(Vec3(2.0f, 0.0f, 0.0f), secondChild->GetPosition());
+        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child[1]"));
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertPropertyKeepsAmbiguousDuplicateSiblingPath()
+    {
+        PrefabEntityData rootData;
+        rootData.name = "AmbiguousDuplicateRoot";
+
+        PrefabEntityData firstChildData;
+        firstChildData.name = "Child";
+        firstChildData.parentIndex = 0;
+        firstChildData.position = Vec3(1.0f, 0.0f, 0.0f);
+
+        PrefabEntityData secondChildData;
+        secondChildData.name = "Child";
+        secondChildData.parentIndex = 0;
+        secondChildData.position = Vec3(2.0f, 0.0f, 0.0f);
+
+        auto prefab = Prefab::CreateFromData({rootData, firstChildData, secondChildData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+        TEST_ASSERT_EQ(static_cast<size_t>(2), root->GetChildren().size());
+
+        SceneEntity* firstChild = root->GetChildren()[0];
+        SceneEntity* secondChild = root->GetChildren()[1];
+        firstChild->SetPosition(Vec3(9.0f, 0.0f, 0.0f));
+        secondChild->SetPosition(Vec3(8.0f, 0.0f, 0.0f));
+        prefabInstance->AddOverride(
+            {"SceneEntity", "position", secondChild->GetPosition(), "", "Child"});
+
+        prefabInstance->RevertProperty("SceneEntity", "position", "", "Child");
+
+        TEST_ASSERT_EQ(Vec3(9.0f, 0.0f, 0.0f), firstChild->GetPosition());
+        TEST_ASSERT_EQ(Vec3(8.0f, 0.0f, 0.0f), secondChild->GetPosition());
+        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child"));
 
         sceneManager.Shutdown();
         return true;
@@ -1323,6 +1514,119 @@ namespace
         TEST_ASSERT_EQ(std::string("slot=prefab"), prefabComponent->payload);
         TEST_ASSERT_FALSE(
             prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData", "PrimaryPayload_1"));
+
+        sceneManager.Shutdown();
+        ActorFactory::ClearAll();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertPropertyRestoresChildNamedComponentPayload()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
+            "PrefabPayloadComponent");
+
+        PrefabEntityData rootData;
+        rootData.name = "ChildPayloadRoot";
+
+        PrefabEntityData childData;
+        childData.name = "Child";
+        childData.parentIndex = 0;
+        childData.actorComponentData.push_back(
+            {"PrefabPayloadComponent", "slot=primary", "PrimaryPayload"});
+        childData.actorComponentData.push_back(
+            {"PrefabPayloadComponent", "slot=secondary", "SecondaryPayload"});
+
+        auto prefab = Prefab::CreateFromData({rootData, childData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        SceneEntity* child = root->GetChildren()[0];
+
+        auto* primary = FindPrefabPayloadComponentByName(
+            *static_cast<Actor*>(child), "PrimaryPayload");
+        auto* secondary = FindPrefabPayloadComponentByName(
+            *static_cast<Actor*>(child), "SecondaryPayload");
+        TEST_ASSERT_NOT_NULL(primary);
+        TEST_ASSERT_NOT_NULL(secondary);
+
+        primary->payload = "dirty-primary";
+        secondary->payload = "dirty-secondary";
+        prefabInstance->AddOverride(
+            {"PrefabPayloadComponent", "serializedData", primary->payload, "PrimaryPayload", "Child"});
+        prefabInstance->AddOverride(
+            {"PrefabPayloadComponent", "serializedData", secondary->payload, "SecondaryPayload", "Child"});
+
+        prefabInstance->RevertProperty(
+            "PrefabPayloadComponent", "serializedData", "SecondaryPayload", "Child");
+
+        TEST_ASSERT_EQ(std::string("dirty-primary"), primary->payload);
+        TEST_ASSERT_EQ(std::string("slot=secondary"), secondary->payload);
+        TEST_ASSERT_TRUE(prefabInstance->IsOverridden(
+            "PrefabPayloadComponent", "serializedData", "PrimaryPayload", "Child"));
+        TEST_ASSERT_FALSE(prefabInstance->IsOverridden(
+            "PrefabPayloadComponent", "serializedData", "SecondaryPayload", "Child"));
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertPropertyScopesComponentBindingsByEntityPath()
+    {
+        ActorFactory::ClearAll();
+        ActorFactory::Register<PrefabNameCollisionActor>("PrefabNameCollisionActor");
+
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
+            "PrefabPayloadComponent");
+
+        PrefabEntityData rootData;
+        rootData.name = "BindingScopeRoot";
+        rootData.actorComponentData.push_back(
+            {"PrefabPayloadComponent", "slot=root", "PrimaryPayload_1"});
+
+        PrefabEntityData childData;
+        childData.name = "Child";
+        childData.parentIndex = 0;
+        childData.actorClassName = "PrefabNameCollisionActor";
+        childData.actorComponentData.push_back(
+            {"PrefabPayloadComponent", "slot=child", "PrimaryPayload"});
+
+        auto prefab = Prefab::CreateFromData({rootData, childData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        SceneEntity* child = root->GetChildren()[0];
+
+        auto* rootPayload = FindPrefabPayloadComponentByName(
+            *static_cast<Actor*>(root), "PrimaryPayload_1");
+        auto* childPayload = FindPrefabPayloadComponentByName(
+            *static_cast<Actor*>(child), "PrimaryPayload_1");
+        TEST_ASSERT_NOT_NULL(rootPayload);
+        TEST_ASSERT_NOT_NULL(childPayload);
+
+        rootPayload->payload = "dirty-root";
+        childPayload->payload = "dirty-child";
+        prefabInstance->AddOverride(
+            {"PrefabPayloadComponent", "serializedData", childPayload->payload, "PrimaryPayload_1", "Child"});
+
+        prefabInstance->RevertProperty(
+            "PrefabPayloadComponent", "serializedData", "PrimaryPayload_1", "Child");
+
+        TEST_ASSERT_EQ(std::string("dirty-root"), rootPayload->payload);
+        TEST_ASSERT_EQ(std::string("slot=child"), childPayload->payload);
 
         sceneManager.Shutdown();
         ActorFactory::ClearAll();
@@ -1641,6 +1945,94 @@ namespace
         return true;
     }
 
+    bool Test_PrefabInstanceApplyToPrefabWritesChildEntityStateAndPayload()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
+            "PrefabPayloadComponent");
+
+        PrefabEntityData rootData;
+        rootData.name = "ApplyChildRoot";
+
+        PrefabEntityData childData;
+        childData.name = "Child";
+        childData.parentIndex = 0;
+        childData.position = Vec3(0.0f, 2.0f, 0.0f);
+        childData.actorComponentData.push_back(
+            {"PrefabPayloadComponent", "slot=old", "ChildPayload"});
+
+        auto prefab = Prefab::CreateFromData({rootData, childData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        SceneEntity* child = root->GetChildren()[0];
+        auto* childPayload = FindPrefabPayloadComponentByName(
+            *static_cast<Actor*>(child), "ChildPayload");
+        TEST_ASSERT_NOT_NULL(childPayload);
+
+        child->SetPosition(Vec3(0.0f, 7.0f, 0.0f));
+        childPayload->payload = "slot=new";
+        prefabInstance->AddOverride(
+            {"SceneEntity", "position", child->GetPosition(), "", "Child"});
+        prefabInstance->AddOverride(
+            {"PrefabPayloadComponent", "serializedData", childPayload->payload, "ChildPayload", "Child"});
+
+        prefabInstance->ApplyToPrefab();
+
+        const PrefabEntityData* updatedChildData = prefab->GetEntityData(1);
+        TEST_ASSERT_NOT_NULL(updatedChildData);
+        TEST_ASSERT_EQ(Vec3(0.0f, 7.0f, 0.0f), updatedChildData->position);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), updatedChildData->actorComponentData.size());
+        TEST_ASSERT_EQ(std::string("slot=new"),
+                       updatedChildData->actorComponentData[0].serializedData);
+        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child"));
+        TEST_ASSERT_FALSE(prefabInstance->IsOverridden(
+            "PrefabPayloadComponent", "serializedData", "ChildPayload", "Child"));
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceApplyToPrefabPreservesChildOverrideWhenLiveChildMissing()
+    {
+        PrefabEntityData rootData;
+        rootData.name = "MissingApplyRoot";
+
+        PrefabEntityData childData;
+        childData.name = "Child";
+        childData.parentIndex = 0;
+        childData.position = Vec3(1.0f, 2.0f, 3.0f);
+
+        auto prefab = Prefab::CreateFromData({rootData, childData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+
+        SceneEntity* child = root->GetChildren()[0];
+        prefabInstance->AddOverride(
+            {"SceneEntity", "position", Vec3(9.0f, 9.0f, 9.0f), "", "Child"});
+        sceneManager.DestroyEntity(child->GetHandle());
+
+        prefabInstance->ApplyToPrefab();
+
+        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child"));
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_PrefabInstanceApplyToPrefabClearsRootAliasOverrides()
     {
         PrefabEntityData data;
@@ -1876,10 +2268,20 @@ int main()
                   Test_PrefabInstanceRevertAllRestoresNamedDuplicateActorComponentPayloads);
     suite.AddTest("PrefabInstanceRevertAllUsesRuntimeNameBindingAfterUniquify",
                   Test_PrefabInstanceRevertAllUsesRuntimeNameBindingAfterUniquify);
+    suite.AddTest("PrefabInstanceRevertAllRestoresChildEntityStateAndPayload",
+                  Test_PrefabInstanceRevertAllRestoresChildEntityStateAndPayload);
     suite.AddTest("PrefabInstanceRevertAllRestoresLegacyComponentPayload",
                   Test_PrefabInstanceRevertAllRestoresLegacyComponentPayload);
     suite.AddTest("PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty",
                   Test_PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty);
+    suite.AddTest("PrefabInstanceRootEntityPathNormalizesForOverrideIdentity",
+                  Test_PrefabInstanceRootEntityPathNormalizesForOverrideIdentity);
+    suite.AddTest("PrefabInstanceRevertPropertyRestoresChildEntityProperty",
+                  Test_PrefabInstanceRevertPropertyRestoresChildEntityProperty);
+    suite.AddTest("PrefabInstanceRevertPropertyUsesSiblingOrdinalEntityPath",
+                  Test_PrefabInstanceRevertPropertyUsesSiblingOrdinalEntityPath);
+    suite.AddTest("PrefabInstanceRevertPropertyKeepsAmbiguousDuplicateSiblingPath",
+                  Test_PrefabInstanceRevertPropertyKeepsAmbiguousDuplicateSiblingPath);
     suite.AddTest("PrefabInstanceRevertPropertyRestoresActorComponentPayload",
                   Test_PrefabInstanceRevertPropertyRestoresActorComponentPayload);
     suite.AddTest("PrefabInstanceRevertPropertyRestoresNamedDuplicateActorComponentPayload",
@@ -1888,6 +2290,10 @@ int main()
                   Test_PrefabInstanceRemoveOverrideTargetsComponentName);
     suite.AddTest("PrefabInstanceRevertPropertyUsesRuntimeNameBindingAfterUniquify",
                   Test_PrefabInstanceRevertPropertyUsesRuntimeNameBindingAfterUniquify);
+    suite.AddTest("PrefabInstanceRevertPropertyRestoresChildNamedComponentPayload",
+                  Test_PrefabInstanceRevertPropertyRestoresChildNamedComponentPayload);
+    suite.AddTest("PrefabInstanceRevertPropertyScopesComponentBindingsByEntityPath",
+                  Test_PrefabInstanceRevertPropertyScopesComponentBindingsByEntityPath);
     suite.AddTest("PrefabInstanceRevertPropertyRestoresLegacyComponentPayload",
                   Test_PrefabInstanceRevertPropertyRestoresLegacyComponentPayload);
     suite.AddTest("PrefabInstanceRevertPropertyKeepsPayloadOverrideWhenComponentMissing",
@@ -1904,6 +2310,10 @@ int main()
                   Test_PrefabInstanceApplyToPrefabWritesRootComponentPayloads);
     suite.AddTest("PrefabInstanceApplyToPrefabClearsOnlyMatchingNamedPayloadOverride",
                   Test_PrefabInstanceApplyToPrefabClearsOnlyMatchingNamedPayloadOverride);
+    suite.AddTest("PrefabInstanceApplyToPrefabWritesChildEntityStateAndPayload",
+                  Test_PrefabInstanceApplyToPrefabWritesChildEntityStateAndPayload);
+    suite.AddTest("PrefabInstanceApplyToPrefabPreservesChildOverrideWhenLiveChildMissing",
+                  Test_PrefabInstanceApplyToPrefabPreservesChildOverrideWhenLiveChildMissing);
     suite.AddTest("PrefabInstanceApplyToPrefabClearsRootAliasOverrides",
                   Test_PrefabInstanceApplyToPrefabClearsRootAliasOverrides);
     suite.AddTest("PrefabInstanceApplyToPrefabPreservesUnsupportedOverrides",

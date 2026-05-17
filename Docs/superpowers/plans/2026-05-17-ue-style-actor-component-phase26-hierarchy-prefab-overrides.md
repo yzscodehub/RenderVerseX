@@ -1,6 +1,6 @@
 # UE-Style Actor Component Phase 26 Hierarchy Prefab Overrides Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Make prefab revert/apply operations work on child entities and child actor components, not only the prefab root.
 
@@ -34,7 +34,7 @@
 
 ## Task 1: Add Minimal Failing Hierarchy Override Coverage
 
-- [ ] **Step 1: Add child `RevertAll` state/payload test**
+- [x] **Step 1: Add child `RevertAll` state/payload test**
 
 In `Tests\ResourceInstantiationValidation\main.cpp`, add a focused test near the existing `RevertAll` tests:
 
@@ -90,7 +90,7 @@ bool Test_PrefabInstanceRevertAllRestoresChildEntityStateAndPayload()
 }
 ```
 
-- [ ] **Step 2: Add child entity property `RevertProperty` test**
+- [x] **Step 2: Add child entity property `RevertProperty` test**
 
 Add this test near existing `RevertProperty` tests:
 
@@ -135,7 +135,7 @@ bool Test_PrefabInstanceRevertPropertyRestoresChildEntityProperty()
 }
 ```
 
-- [ ] **Step 3: Add child named component payload `RevertProperty` test**
+- [x] **Step 3: Add child named component payload `RevertProperty` test**
 
 Add this test near named component payload tests:
 
@@ -197,7 +197,7 @@ bool Test_PrefabInstanceRevertPropertyRestoresChildNamedComponentPayload()
 }
 ```
 
-- [ ] **Step 4: Add child `ApplyToPrefab` test**
+- [x] **Step 4: Add child `ApplyToPrefab` test**
 
 Add this test near existing `ApplyToPrefab` tests:
 
@@ -256,7 +256,7 @@ bool Test_PrefabInstanceApplyToPrefabWritesChildEntityStateAndPayload()
 }
 ```
 
-- [ ] **Step 5: Add root path normalization test**
+- [x] **Step 5: Add root path normalization test**
 
 Add one tiny API-level test:
 
@@ -277,7 +277,7 @@ bool Test_PrefabInstanceRootEntityPathNormalizesForOverrideIdentity()
 }
 ```
 
-- [ ] **Step 6: Add duplicate sibling path disambiguation test**
+- [x] **Step 6: Add duplicate sibling path disambiguation test**
 
 Add one focused test showing that `"Child[1]"` targets the second same-name child:
 
@@ -326,7 +326,7 @@ bool Test_PrefabInstanceRevertPropertyUsesSiblingOrdinalEntityPath()
 }
 ```
 
-- [ ] **Step 7: Add missing live child apply preservation test**
+- [x] **Step 7: Add missing live child apply preservation test**
 
 Add a focused apply cleanup guard:
 
@@ -366,7 +366,7 @@ bool Test_PrefabInstanceApplyToPrefabPreservesChildOverrideWhenLiveChildMissing(
 }
 ```
 
-- [ ] **Step 8: Add ambiguous duplicate sibling path no-match test**
+- [x] **Step 8: Add ambiguous duplicate sibling path no-match test**
 
 Add a focused guard that proves unqualified duplicate sibling names do not select the first match:
 
@@ -415,7 +415,7 @@ bool Test_PrefabInstanceRevertPropertyKeepsAmbiguousDuplicateSiblingPath()
 }
 ```
 
-- [ ] **Step 9: Add path-scoped runtime binding test**
+- [x] **Step 9: Add path-scoped runtime binding test**
 
 Add this test to ensure child path scoping prevents root binding collision. The root requests `PrimaryPayload_1` and gets runtime `PrimaryPayload_1`; the child is a `PrefabNameCollisionActor`, requests `PrimaryPayload`, and also gets runtime `PrimaryPayload_1`. Without entity-path-scoped binding lookup, the child lookup can pick the root binding and fail to map back to the child prefab data.
 
@@ -476,11 +476,11 @@ bool Test_PrefabInstanceRevertPropertyScopesComponentBindingsByEntityPath()
 }
 ```
 
-- [ ] **Step 10: Register the tests**
+- [x] **Step 10: Register the tests**
 
 Register the nine tests near their related existing groups in `main()`.
 
-- [ ] **Step 11: Confirm RED**
+- [x] **Step 11: Confirm RED**
 
 Run:
 
@@ -494,7 +494,7 @@ Expected before implementation: compile fails because `PropertyOverride` and `Pr
 
 ## Task 2: Implement Hierarchy-Aware Override Identity
 
-- [ ] **Step 1: Extend public data types**
+- [x] **Step 1: Extend public data types**
 
 In `Scene\Include\Scene\Prefab.h`:
 
@@ -518,7 +518,7 @@ struct PrefabActorComponentNameBinding
 };
 ```
 
-- [ ] **Step 2: Extend public prefab instance APIs**
+- [x] **Step 2: Extend public prefab instance APIs**
 
 Update declarations and definitions:
 
@@ -539,7 +539,7 @@ void RevertProperty(const std::string& componentType,
                     const std::string& entityPath = "");
 ```
 
-- [ ] **Step 3: Include entity path in override identity**
+- [x] **Step 3: Include entity path in override identity**
 
 `AddOverride(...)`, `RemoveOverride(...)`, and `IsOverridden(...)` must compare `componentType`, `propertyPath`, `componentName`, and normalized `entityPath`.
 
@@ -547,7 +547,7 @@ void RevertProperty(const std::string& componentType,
 
 ## Task 3: Implement Prefab/Live Entity Path Helpers
 
-- [ ] **Step 1: Add path normalization and splitting helpers**
+- [x] **Step 1: Add path normalization and splitting helpers**
 
 In `Scene\Private\Prefab.cpp`, add anonymous namespace helpers:
 
@@ -559,7 +559,7 @@ std::vector<std::string> SplitEntityPath(const std::string& entityPath);
 
 `NormalizeEntityPath("")` and `NormalizeEntityPath(".")` return `""`. Repeated slashes, empty segments, unqualified duplicate sibling paths, and names containing `/`, `[`, or `]` must fail lookup instead of matching the first child.
 
-- [ ] **Step 2: Add prefab entity path helpers**
+- [x] **Step 2: Add prefab entity path helpers**
 
 Add helpers that derive paths from `PrefabEntityData::parentIndex`, sibling names, and same-name sibling ordinals:
 
@@ -571,7 +571,7 @@ const PrefabEntityData* FindPrefabEntityDataByPath(const Prefab& prefab,
 
 Root path must be `""`. Unique child sibling names use `Name`; duplicate sibling names use `Name[0]`, `Name[1]`, etc. This makes path generation deterministic for the current `parentIndex/name` hierarchy.
 
-- [ ] **Step 3: Add live entity lookup helpers**
+- [x] **Step 3: Add live entity lookup helpers**
 
 Add:
 
@@ -587,17 +587,17 @@ If a segment lacks an ordinal and multiple siblings share the requested name, lo
 
 ## Task 4: Make Revert/Apply Hierarchy-Aware
 
-- [ ] **Step 1: Scope name bindings by entity path**
+- [x] **Step 1: Scope name bindings by entity path**
 
 Update `Prefab::CreateComponents(...)` to accept the current `entityPath`, and store it in each `PrefabActorComponentNameBinding`.
 
 In `Prefab::InstantiateInternal(...)`, build prefab entity paths once and pass each path into `CreateComponents(...)`. Store all entity bindings in the root `PrefabInstance`, not only root bindings.
 
-- [ ] **Step 2: Scope actor component payload lookup by entity path**
+- [x] **Step 2: Scope actor component payload lookup by entity path**
 
 Update `FindActorComponentNameBinding(...)`, `FindActorComponentNameBindingByInstanceName(...)`, `FindActorComponentDataByRuntimeName(...)`, `ApplyPrefabEntityComponentPayloads(...)`, and `ApplyPrefabEntityComponentPayload(...)` so bindings only match the requested `entityPath`.
 
-- [ ] **Step 3: Extend `RevertAll()`**
+- [x] **Step 3: Extend `RevertAll()`**
 
 For each prefab entity path:
 
@@ -606,11 +606,11 @@ For each prefab entity path:
 3. If present, apply all serialized component payloads using the same path-scoped name bindings.
 4. After the pass, clear overrides.
 
-- [ ] **Step 4: Extend `RevertProperty(...)`**
+- [x] **Step 4: Extend `RevertProperty(...)`**
 
 Resolve both target prefab data and live entity by `entityPath`. Apply entity properties or `"serializedData"` component payloads only to that target. Remove only matching overrides for the same `entityPath`.
 
-- [ ] **Step 5: Extend prefab apply**
+- [x] **Step 5: Extend prefab apply**
 
 Add `Prefab::UpdateHierarchyStateFrom(const SceneEntity& rootEntity)` to capture properties/components from each matching live entity path into its existing prefab entity data. Return a capture report containing:
 
@@ -643,7 +643,7 @@ Update `PrefabInstance::ApplyToPrefab()` to call `UpdateHierarchyStateFrom(...)`
 
 ## Task 5: Validate, Review, And Commit
 
-- [ ] **Step 1: Focused validation**
+- [x] **Step 1: Focused validation**
 
 Run:
 
@@ -652,7 +652,7 @@ cmake --build build\Debug --config Debug --target ResourceInstantiationValidatio
 .\build\Debug\Tests\Debug\ResourceInstantiationValidation.exe
 ```
 
-- [ ] **Step 2: Required build/test validation**
+- [x] **Step 2: Required build/test validation**
 
 Run:
 
@@ -667,23 +667,23 @@ foreach ($target in @('ActorComponentValidation','ResourceInstantiationValidatio
 .\build\Debug\Tests\Debug\RenderSceneValidation.exe
 ```
 
-- [ ] **Step 3: ModelViewer smoke**
+- [x] **Step 3: ModelViewer smoke**
 
 Run `ModelViewer.exe C:\Users\yinzs\Desktop\DamagedHelmet.glb` for several seconds. Confirm DamagedHelmet loads, mesh/texture upload starts, RenderGraph stats appear, and stderr is empty.
 
-- [ ] **Step 4: Request exactly one code review agent**
+- [x] **Step 4: Request exactly one code review agent**
 
 Ask for Critical and Important issues only.
 
-- [ ] **Step 5: Fix any Critical or Important findings**
+- [x] **Step 5: Fix any Critical or Important findings**
 
 If there are none, continue.
 
-- [ ] **Step 6: Update this plan checklist**
+- [x] **Step 6: Update this plan checklist**
 
 Mark completed items.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-17-ue-style-actor-component-phase26-hierarchy-prefab-overrides.md Scene\Include\Scene\Prefab.h Scene\Private\Prefab.cpp Tests\ResourceInstantiationValidation\main.cpp

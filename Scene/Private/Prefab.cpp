@@ -13,9 +13,123 @@ namespace RVX
 
 namespace
 {
+    static constexpr char RVX_INVALID_ENTITY_PATH_PREFIX = '\x1F';
+
     bool IsPrefabEntityOverrideTarget(const std::string& componentType)
     {
         return componentType.empty() || componentType == "SceneEntity" || componentType == "Actor";
+    }
+
+    bool IsRootEntityPath(const std::string& entityPath)
+    {
+        return entityPath.empty() || entityPath == ".";
+    }
+
+    std::string NormalizeEntityPath(const std::string& entityPath)
+    {
+        return IsRootEntityPath(entityPath) ? std::string() : entityPath;
+    }
+
+    bool IsPathableEntityName(const std::string& name)
+    {
+        return !name.empty() &&
+               name.find('/') == std::string::npos &&
+               name.find('[') == std::string::npos &&
+               name.find(']') == std::string::npos;
+    }
+
+    struct EntityPathSegment
+    {
+        std::string name;
+        size_t ordinal = 0;
+        bool hasOrdinal = false;
+        bool valid = false;
+    };
+
+    bool ParseOrdinal(const std::string& value, size_t& outOrdinal)
+    {
+        if (value.empty())
+        {
+            return false;
+        }
+
+        size_t parsed = 0;
+        for (char ch : value)
+        {
+            if (ch < '0' || ch > '9')
+            {
+                return false;
+            }
+            parsed = parsed * 10u + static_cast<size_t>(ch - '0');
+        }
+
+        outOrdinal = parsed;
+        return true;
+    }
+
+    EntityPathSegment ParseEntityPathSegment(const std::string& segment)
+    {
+        EntityPathSegment parsed;
+        if (segment.empty())
+        {
+            return parsed;
+        }
+
+        if (segment.back() == ']')
+        {
+            const size_t openBracket = segment.rfind('[');
+            if (openBracket == std::string::npos || openBracket == 0)
+            {
+                return parsed;
+            }
+
+            parsed.name = segment.substr(0, openBracket);
+            parsed.hasOrdinal = true;
+            if (!ParseOrdinal(segment.substr(openBracket + 1, segment.size() - openBracket - 2),
+                              parsed.ordinal))
+            {
+                return parsed;
+            }
+        }
+        else
+        {
+            parsed.name = segment;
+        }
+
+        parsed.valid = IsPathableEntityName(parsed.name);
+        return parsed;
+    }
+
+    std::vector<std::string> SplitEntityPath(const std::string& entityPath)
+    {
+        const std::string normalized = NormalizeEntityPath(entityPath);
+        std::vector<std::string> segments;
+        if (normalized.empty())
+        {
+            return segments;
+        }
+
+        size_t start = 0;
+        while (start <= normalized.size())
+        {
+            const size_t separator = normalized.find('/', start);
+            const size_t end = separator == std::string::npos ? normalized.size() : separator;
+            if (end == start)
+            {
+                segments.clear();
+                segments.push_back(std::string());
+                return segments;
+            }
+
+            segments.push_back(normalized.substr(start, end - start));
+            if (separator == std::string::npos)
+            {
+                break;
+            }
+            start = separator + 1;
+        }
+
+        return segments;
     }
 
     bool IsSupportedPrefabEntityProperty(const std::string& propertyPath)
@@ -27,65 +141,50 @@ namespace
                propertyPath == "isActive";
     }
 
+    bool ContainsCapturedEntityPath(const PrefabApplyCaptureReport& report,
+                                    const std::string& entityPath);
+
+    bool HasCapturedComponentPayload(const PrefabApplyCaptureReport& report,
+                                     const PropertyOverride& override);
+
     void RemovePrefabEntityPropertyOverrides(std::vector<PropertyOverride>& overrides,
-                                             const std::string& propertyPath)
+                                             const std::string& propertyPath,
+                                             const std::string& entityPath)
     {
+        const std::string normalizedPath = NormalizeEntityPath(entityPath);
         overrides.erase(
             std::remove_if(overrides.begin(), overrides.end(),
                 [&](const PropertyOverride& override) {
                     return IsPrefabEntityOverrideTarget(override.componentType) &&
-                           override.propertyPath == propertyPath;
+                           override.propertyPath == propertyPath &&
+                           NormalizeEntityPath(override.entityPath) == normalizedPath;
                 }),
             overrides.end()
         );
     }
 
-    void RemoveSupportedPrefabEntityPropertyOverrides(std::vector<PropertyOverride>& overrides)
+    void RemoveSupportedPrefabEntityPropertyOverrides(std::vector<PropertyOverride>& overrides,
+                                                      const PrefabApplyCaptureReport& report)
     {
         overrides.erase(
             std::remove_if(overrides.begin(), overrides.end(),
                 [&](const PropertyOverride& override) {
                     return IsPrefabEntityOverrideTarget(override.componentType) &&
-                           IsSupportedPrefabEntityProperty(override.propertyPath);
+                           IsSupportedPrefabEntityProperty(override.propertyPath) &&
+                           ContainsCapturedEntityPath(report, override.entityPath);
                 }),
             overrides.end()
         );
     }
 
-    bool HasPrefabRootComponentPayload(const PrefabEntityData& data,
-                                       const std::string& componentType,
-                                       const std::string& componentName)
-    {
-        if (!componentName.empty())
-        {
-            return std::any_of(data.actorComponentData.begin(), data.actorComponentData.end(),
-                [&](const PrefabActorComponentData& componentData) {
-                    return componentData.className == componentType &&
-                           componentData.name == componentName;
-                });
-        }
-
-        if (data.componentData.find(componentType) != data.componentData.end())
-        {
-            return true;
-        }
-
-        return std::any_of(data.actorComponentData.begin(), data.actorComponentData.end(),
-            [&](const PrefabActorComponentData& componentData) {
-                return componentData.className == componentType;
-            });
-    }
-
-    void RemoveSupportedRootComponentPayloadOverrides(std::vector<PropertyOverride>& overrides,
-                                                      const PrefabEntityData& data)
+    void RemoveSupportedComponentPayloadOverrides(std::vector<PropertyOverride>& overrides,
+                                                  const PrefabApplyCaptureReport& report)
     {
         overrides.erase(
             std::remove_if(overrides.begin(), overrides.end(),
                 [&](const PropertyOverride& override) {
                     return override.propertyPath == "serializedData" &&
-                           HasPrefabRootComponentPayload(data,
-                                                         override.componentType,
-                                                         override.componentName);
+                           HasCapturedComponentPayload(report, override);
                 }),
             overrides.end()
         );
@@ -190,6 +289,192 @@ namespace
         }
     }
 
+    std::string MakeEntityPathSegment(const std::vector<PrefabEntityData>& entities,
+                                      size_t entityIndex)
+    {
+        const PrefabEntityData& data = entities[entityIndex];
+        if (!IsPathableEntityName(data.name))
+        {
+            return std::string(1, RVX_INVALID_ENTITY_PATH_PREFIX) + std::to_string(entityIndex);
+        }
+
+        size_t matchingSiblingCount = 0;
+        size_t sameNameOrdinal = 0;
+        for (size_t i = 0; i < entities.size(); ++i)
+        {
+            if (i == 0)
+            {
+                continue;
+            }
+
+            if (entities[i].parentIndex == data.parentIndex && entities[i].name == data.name)
+            {
+                if (i < entityIndex)
+                {
+                    ++sameNameOrdinal;
+                }
+                ++matchingSiblingCount;
+            }
+        }
+
+        if (matchingSiblingCount <= 1)
+        {
+            return data.name;
+        }
+
+        return data.name + "[" + std::to_string(sameNameOrdinal) + "]";
+    }
+
+    std::vector<std::string> BuildPrefabEntityPaths(const Prefab& prefab)
+    {
+        std::vector<PrefabEntityData> entities;
+        entities.reserve(prefab.GetEntityCount());
+        for (size_t i = 0; i < prefab.GetEntityCount(); ++i)
+        {
+            const PrefabEntityData* data = prefab.GetEntityData(i);
+            if (data)
+            {
+                entities.push_back(*data);
+            }
+        }
+
+        std::vector<std::string> paths(entities.size());
+        if (entities.empty())
+        {
+            return paths;
+        }
+
+        paths[0] = "";
+        for (size_t i = 1; i < entities.size(); ++i)
+        {
+            const std::string segment = MakeEntityPathSegment(entities, i);
+            const int32 parentIndex = entities[i].parentIndex;
+            if (parentIndex < 0 || parentIndex >= static_cast<int32>(i))
+            {
+                paths[i] = std::string(1, RVX_INVALID_ENTITY_PATH_PREFIX) + std::to_string(i);
+                continue;
+            }
+
+            const std::string& parentPath = paths[static_cast<size_t>(parentIndex)];
+            paths[i] = parentPath.empty() ? segment : parentPath + "/" + segment;
+        }
+
+        return paths;
+    }
+
+    const PrefabEntityData* FindPrefabEntityDataByPath(const Prefab& prefab,
+                                                       const std::string& entityPath)
+    {
+        const std::string normalizedPath = NormalizeEntityPath(entityPath);
+        const auto paths = BuildPrefabEntityPaths(prefab);
+        for (size_t i = 0; i < paths.size(); ++i)
+        {
+            if (paths[i] == normalizedPath)
+            {
+                return prefab.GetEntityData(i);
+            }
+        }
+
+        return nullptr;
+    }
+
+    template <typename EntityT>
+    EntityT* FindLiveEntityByPathImpl(EntityT& root, const std::string& entityPath)
+    {
+        const std::string normalizedPath = NormalizeEntityPath(entityPath);
+        if (normalizedPath.empty())
+        {
+            return &root;
+        }
+
+        EntityT* current = &root;
+        for (const std::string& rawSegment : SplitEntityPath(normalizedPath))
+        {
+            const EntityPathSegment segment = ParseEntityPathSegment(rawSegment);
+            if (!segment.valid)
+            {
+                return nullptr;
+            }
+
+            EntityT* match = nullptr;
+            size_t sameNameCount = 0;
+            size_t sameNameOrdinal = 0;
+            for (SceneEntity* child : current->GetChildren())
+            {
+                if (!child || child->GetName() != segment.name)
+                {
+                    continue;
+                }
+
+                if (segment.hasOrdinal)
+                {
+                    if (sameNameOrdinal == segment.ordinal)
+                    {
+                        match = child;
+                    }
+                    ++sameNameOrdinal;
+                }
+                else
+                {
+                    match = child;
+                    ++sameNameCount;
+                }
+            }
+
+            if (!segment.hasOrdinal && sameNameCount != 1)
+            {
+                return nullptr;
+            }
+
+            if (!match)
+            {
+                return nullptr;
+            }
+
+            current = match;
+        }
+
+        return current;
+    }
+
+    SceneEntity* FindLiveEntityByPath(SceneEntity& root, const std::string& entityPath)
+    {
+        return FindLiveEntityByPathImpl(root, entityPath);
+    }
+
+    const SceneEntity* FindLiveEntityByPath(const SceneEntity& root, const std::string& entityPath)
+    {
+        return FindLiveEntityByPathImpl(root, entityPath);
+    }
+
+    bool ContainsCapturedEntityPath(const PrefabApplyCaptureReport& report,
+                                    const std::string& entityPath)
+    {
+        const std::string normalizedPath = NormalizeEntityPath(entityPath);
+        return std::any_of(report.capturedEntityPaths.begin(), report.capturedEntityPaths.end(),
+            [&](const std::string& capturedPath) {
+                return capturedPath == normalizedPath;
+            });
+    }
+
+    bool HasCapturedComponentPayload(const PrefabApplyCaptureReport& report,
+                                     const PropertyOverride& override)
+    {
+        const std::string normalizedPath = NormalizeEntityPath(override.entityPath);
+        return std::any_of(report.capturedComponentPayloads.begin(),
+                           report.capturedComponentPayloads.end(),
+            [&](const PrefabComponentPayloadKey& key) {
+                if (key.entityPath != normalizedPath ||
+                    key.componentType != override.componentType)
+                {
+                    return false;
+                }
+
+                return override.componentName.empty() ||
+                       key.componentName == override.componentName;
+            });
+    }
+
     Component* FindLegacyComponentByTypeName(SceneEntity& owner, const std::string& typeName)
     {
         for (const auto& [typeIndex, component] : owner.GetComponents())
@@ -248,13 +533,16 @@ namespace
         const std::vector<PrefabActorComponentNameBinding>& bindings,
         const std::string& className,
         const std::string& prefabName,
-        size_t ordinal)
+        size_t ordinal,
+        const std::string& entityPath)
     {
+        const std::string normalizedPath = NormalizeEntityPath(entityPath);
         for (const auto& binding : bindings)
         {
             if (binding.className == className &&
                 binding.prefabName == prefabName &&
-                binding.ordinal == ordinal)
+                binding.ordinal == ordinal &&
+                NormalizeEntityPath(binding.entityPath) == normalizedPath)
             {
                 return &binding;
             }
@@ -266,11 +554,15 @@ namespace
     const PrefabActorComponentNameBinding* FindActorComponentNameBindingByInstanceName(
         const std::vector<PrefabActorComponentNameBinding>& bindings,
         const std::string& className,
-        const std::string& instanceName)
+        const std::string& instanceName,
+        const std::string& entityPath)
     {
+        const std::string normalizedPath = NormalizeEntityPath(entityPath);
         for (const auto& binding : bindings)
         {
-            if (binding.className == className && binding.instanceName == instanceName)
+            if (binding.className == className &&
+                binding.instanceName == instanceName &&
+                NormalizeEntityPath(binding.entityPath) == normalizedPath)
             {
                 return &binding;
             }
@@ -308,10 +600,12 @@ namespace
         const PrefabEntityData& data,
         const std::vector<PrefabActorComponentNameBinding>& nameBindings,
         const std::string& className,
-        const std::string& runtimeName)
+        const std::string& runtimeName,
+        const std::string& entityPath)
     {
         if (const PrefabActorComponentNameBinding* binding =
-                FindActorComponentNameBindingByInstanceName(nameBindings, className, runtimeName))
+                FindActorComponentNameBindingByInstanceName(
+                    nameBindings, className, runtimeName, entityPath))
         {
             if (const PrefabActorComponentData* componentData =
                     FindActorComponentDataByPrefabIdentity(
@@ -335,7 +629,8 @@ namespace
     void ApplyPrefabEntityComponentPayloads(
         SceneEntity& owner,
         const PrefabEntityData& data,
-        const std::vector<PrefabActorComponentNameBinding>& nameBindings)
+        const std::vector<PrefabActorComponentNameBinding>& nameBindings,
+        const std::string& entityPath)
     {
         for (const auto& [typeName, serializedData] : data.componentData)
         {
@@ -354,7 +649,7 @@ namespace
             if (!componentData.name.empty())
             {
                 const PrefabActorComponentNameBinding* binding = FindActorComponentNameBinding(
-                    nameBindings, componentData.className, componentData.name, ordinal);
+                    nameBindings, componentData.className, componentData.name, ordinal, entityPath);
                 const std::string* targetName = binding ? &binding->instanceName : &componentData.name;
 
                 if (!targetName->empty())
@@ -380,12 +675,14 @@ namespace
                                            const PrefabEntityData& data,
                                            const std::string& componentType,
                                            const std::string& componentName,
-                                           const std::vector<PrefabActorComponentNameBinding>& nameBindings)
+                                           const std::vector<PrefabActorComponentNameBinding>& nameBindings,
+                                           const std::string& entityPath)
     {
         if (!componentName.empty())
         {
             const PrefabActorComponentData* componentData =
-                FindActorComponentDataByRuntimeName(data, nameBindings, componentType, componentName);
+                FindActorComponentDataByRuntimeName(
+                    data, nameBindings, componentType, componentName, entityPath);
             if (!componentData)
             {
                 return false;
@@ -553,6 +850,48 @@ bool Prefab::UpdateRootEntityStateFrom(const SceneEntity& entity)
     return true;
 }
 
+PrefabApplyCaptureReport Prefab::UpdateHierarchyStateFrom(const SceneEntity& rootEntity)
+{
+    PrefabApplyCaptureReport report;
+    if (m_entities.empty())
+    {
+        return report;
+    }
+
+    const auto paths = BuildPrefabEntityPaths(*this);
+    for (size_t i = 0; i < m_entities.size(); ++i)
+    {
+        const std::string entityPath = i < paths.size() ? NormalizeEntityPath(paths[i]) : std::string();
+        const SceneEntity* liveEntity = FindLiveEntityByPath(rootEntity, entityPath);
+        if (!liveEntity)
+        {
+            continue;
+        }
+
+        CapturePrefabEntityProperties(m_entities[i], *liveEntity);
+        CapturePrefabEntityComponents(m_entities[i], *liveEntity);
+        report.capturedEntityPaths.push_back(entityPath);
+
+        for (const auto& [componentType, serializedData] : m_entities[i].componentData)
+        {
+            (void)serializedData;
+            report.capturedComponentPayloads.push_back({entityPath, componentType, ""});
+        }
+
+        for (const auto& componentData : m_entities[i].actorComponentData)
+        {
+            report.capturedComponentPayloads.push_back({entityPath, componentData.className, ""});
+            if (!componentData.name.empty())
+            {
+                report.capturedComponentPayloads.push_back(
+                    {entityPath, componentData.className, componentData.name});
+            }
+        }
+    }
+
+    return report;
+}
+
 void Prefab::AddEntityData(PrefabEntityData data)
 {
     m_entities.push_back(std::move(data));
@@ -577,7 +916,8 @@ SceneEntity* Prefab::InstantiateInternal(SceneManager& sceneManager, const Vec3&
     std::vector<SceneEntity::Handle> createdHandles;
     createdEntities.reserve(m_entities.size());
     createdHandles.reserve(m_entities.size());
-    std::vector<PrefabActorComponentNameBinding> rootNameBindings;
+    std::vector<PrefabActorComponentNameBinding> componentNameBindings;
+    const std::vector<std::string> entityPaths = BuildPrefabEntityPaths(*this);
 
     for (const auto& entityData : m_entities)
     {
@@ -644,9 +984,8 @@ SceneEntity* Prefab::InstantiateInternal(SceneManager& sceneManager, const Vec3&
         entity->SetActive(entityData.isActive);
 
         // Create components
-        std::vector<PrefabActorComponentNameBinding>* nameBindings =
-            i == 0 ? &rootNameBindings : nullptr;
-        if (!CreateComponents(entity, entityData, nameBindings))
+        const std::string entityPath = i < entityPaths.size() ? entityPaths[i] : std::string();
+        if (!CreateComponents(entity, entityData, &componentNameBindings, entityPath))
         {
             for (auto h : createdHandles)
             {
@@ -662,7 +1001,7 @@ SceneEntity* Prefab::InstantiateInternal(SceneManager& sceneManager, const Vec3&
     prefabInstance->SetPrefab(std::const_pointer_cast<Prefab>(
         std::static_pointer_cast<const Prefab>(shared_from_this())
     ));
-    prefabInstance->SetComponentNameBindings(std::move(rootNameBindings));
+    prefabInstance->SetComponentNameBindings(std::move(componentNameBindings));
 
     return root;
 }
@@ -692,7 +1031,8 @@ void Prefab::SerializeEntity(const SceneEntity* entity, int32_t parentIndex)
 
 bool Prefab::CreateComponents(SceneEntity* entity,
                               const PrefabEntityData& data,
-                              std::vector<PrefabActorComponentNameBinding>* nameBindings) const
+                              std::vector<PrefabActorComponentNameBinding>* nameBindings,
+                              const std::string& entityPath) const
 {
     if (!entity)
         return false;
@@ -738,7 +1078,11 @@ bool Prefab::CreateComponents(SceneEntity* entity,
         if (nameBindings && !componentData.name.empty())
         {
             nameBindings->push_back(
-                {componentData.className, componentData.name, ordinal, inserted->GetName()});
+                {componentData.className,
+                 componentData.name,
+                 ordinal,
+                 inserted->GetName(),
+                 NormalizeEntityPath(entityPath)});
         }
 
         if (auto* sceneComponent = dynamic_cast<SceneComponent*>(raw))
@@ -766,31 +1110,39 @@ void PrefabInstance::OnDetach()
 
 void PrefabInstance::AddOverride(const PropertyOverride& override)
 {
+    PropertyOverride normalizedOverride = override;
+    normalizedOverride.entityPath = NormalizeEntityPath(normalizedOverride.entityPath);
+
     // Check if override already exists
     for (auto& existing : m_overrides)
     {
-        if (existing.componentType == override.componentType &&
-            existing.propertyPath == override.propertyPath &&
-            existing.componentName == override.componentName)
+        if (existing.componentType == normalizedOverride.componentType &&
+            existing.propertyPath == normalizedOverride.propertyPath &&
+            existing.componentName == normalizedOverride.componentName &&
+            NormalizeEntityPath(existing.entityPath) == normalizedOverride.entityPath)
         {
-            existing.value = override.value;
+            existing.value = normalizedOverride.value;
+            existing.entityPath = normalizedOverride.entityPath;
             return;
         }
     }
 
-    m_overrides.push_back(override);
+    m_overrides.push_back(std::move(normalizedOverride));
 }
 
 void PrefabInstance::RemoveOverride(const std::string& componentType,
                                     const std::string& propertyPath,
-                                    const std::string& componentName)
+                                    const std::string& componentName,
+                                    const std::string& entityPath)
 {
+    const std::string normalizedPath = NormalizeEntityPath(entityPath);
     m_overrides.erase(
         std::remove_if(m_overrides.begin(), m_overrides.end(),
             [&](const PropertyOverride& o) {
                 return o.componentType == componentType &&
                        o.propertyPath == propertyPath &&
-                       o.componentName == componentName;
+                       o.componentName == componentName &&
+                       NormalizeEntityPath(o.entityPath) == normalizedPath;
             }),
         m_overrides.end()
     );
@@ -798,13 +1150,16 @@ void PrefabInstance::RemoveOverride(const std::string& componentType,
 
 bool PrefabInstance::IsOverridden(const std::string& componentType,
                                   const std::string& propertyPath,
-                                  const std::string& componentName) const
+                                  const std::string& componentName,
+                                  const std::string& entityPath) const
 {
+    const std::string normalizedPath = NormalizeEntityPath(entityPath);
     for (const auto& override : m_overrides)
     {
         if (override.componentType == componentType &&
             override.propertyPath == propertyPath &&
-            override.componentName == componentName)
+            override.componentName == componentName &&
+            NormalizeEntityPath(override.entityPath) == normalizedPath)
         {
             return true;
         }
@@ -820,20 +1175,38 @@ void PrefabInstance::RevertAll()
     }
 
     SceneEntity* owner = GetOwner();
-    const PrefabEntityData* rootData = m_prefab->GetRootData();
-    if (!owner || !rootData)
+    if (!owner || !m_prefab->GetRootData())
     {
         return;
     }
 
-    ApplyAllPrefabEntityProperties(owner, *rootData);
-    ApplyPrefabEntityComponentPayloads(*owner, *rootData, m_componentNameBindings);
+    const auto paths = BuildPrefabEntityPaths(*m_prefab);
+    for (size_t i = 0; i < m_prefab->GetEntityCount(); ++i)
+    {
+        const PrefabEntityData* entityData = m_prefab->GetEntityData(i);
+        if (!entityData)
+        {
+            continue;
+        }
+
+        const std::string entityPath = i < paths.size() ? NormalizeEntityPath(paths[i]) : std::string();
+        SceneEntity* entity = FindLiveEntityByPath(*owner, entityPath);
+        if (!entity)
+        {
+            continue;
+        }
+
+        ApplyAllPrefabEntityProperties(entity, *entityData);
+        ApplyPrefabEntityComponentPayloads(
+            *entity, *entityData, m_componentNameBindings, entityPath);
+    }
     m_overrides.clear();
 }
 
 void PrefabInstance::RevertProperty(const std::string& componentType,
                                     const std::string& propertyPath,
-                                    const std::string& componentName)
+                                    const std::string& componentName,
+                                    const std::string& entityPath)
 {
     if (!m_prefab)
     {
@@ -841,8 +1214,15 @@ void PrefabInstance::RevertProperty(const std::string& componentType,
     }
 
     SceneEntity* owner = GetOwner();
-    const PrefabEntityData* rootData = m_prefab->GetRootData();
-    if (!owner || !rootData)
+    if (!owner)
+    {
+        return;
+    }
+
+    const std::string normalizedPath = NormalizeEntityPath(entityPath);
+    const PrefabEntityData* targetData = FindPrefabEntityDataByPath(*m_prefab, normalizedPath);
+    SceneEntity* targetEntity = FindLiveEntityByPath(*owner, normalizedPath);
+    if (!targetData || !targetEntity)
     {
         return;
     }
@@ -851,16 +1231,21 @@ void PrefabInstance::RevertProperty(const std::string& componentType,
     {
         if (propertyPath == "serializedData" &&
             ApplyPrefabEntityComponentPayload(
-                *owner, *rootData, componentType, componentName, m_componentNameBindings))
+                *targetEntity,
+                *targetData,
+                componentType,
+                componentName,
+                m_componentNameBindings,
+                normalizedPath))
         {
-            RemoveOverride(componentType, propertyPath, componentName);
+            RemoveOverride(componentType, propertyPath, componentName, normalizedPath);
         }
         return;
     }
 
-    if (ApplyPrefabEntityProperty(owner, *rootData, propertyPath))
+    if (ApplyPrefabEntityProperty(targetEntity, *targetData, propertyPath))
     {
-        RemovePrefabEntityPropertyOverrides(m_overrides, propertyPath);
+        RemovePrefabEntityPropertyOverrides(m_overrides, propertyPath, normalizedPath);
     }
 }
 
@@ -877,15 +1262,12 @@ void PrefabInstance::ApplyToPrefab()
         return;
     }
 
-    if (m_prefab->UpdateRootEntityStateFrom(*owner))
+    const PrefabApplyCaptureReport report = m_prefab->UpdateHierarchyStateFrom(*owner);
+    if (!report.capturedEntityPaths.empty())
     {
-        const PrefabEntityData* rootData = m_prefab->GetRootData();
         m_componentNameBindings.clear();
-        RemoveSupportedPrefabEntityPropertyOverrides(m_overrides);
-        if (rootData)
-        {
-            RemoveSupportedRootComponentPayloadOverrides(m_overrides, *rootData);
-        }
+        RemoveSupportedPrefabEntityPropertyOverrides(m_overrides, report);
+        RemoveSupportedComponentPayloadOverrides(m_overrides, report);
     }
 }
 
