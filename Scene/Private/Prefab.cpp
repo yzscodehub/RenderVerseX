@@ -645,6 +645,32 @@ namespace
         }
     }
 
+    void RestorePrefabEntityParent(SceneEntity& rootEntity,
+                                   SceneEntity& entity,
+                                   SceneEntity* prefabParent)
+    {
+        if (!prefabParent || &entity == &rootEntity || &entity == prefabParent)
+        {
+            return;
+        }
+
+        if (!IsEntityInsidePrefabRoot(rootEntity, entity) ||
+            !IsEntityInsidePrefabRoot(rootEntity, *prefabParent))
+        {
+            return;
+        }
+
+        if (prefabParent->IsDescendantOf(&entity))
+        {
+            return;
+        }
+
+        if (entity.GetParent() != prefabParent)
+        {
+            entity.SetParent(prefabParent);
+        }
+    }
+
     size_t CountChildrenNamed(const SceneEntity& parent, const std::string& name)
     {
         size_t count = 0;
@@ -1716,6 +1742,18 @@ bool Prefab::RestoreHierarchyStateTo(
         if (!entity)
         {
             continue;
+        }
+
+        if (i > 0)
+        {
+            const int32_t parentIndex = entityData.parentIndex;
+            if (parentIndex >= 0 &&
+                parentIndex < static_cast<int32_t>(restoredEntities.size()))
+            {
+                SceneEntity* prefabParent =
+                    restoredEntities[static_cast<size_t>(parentIndex)];
+                RestorePrefabEntityParent(rootEntity, *entity, prefabParent);
+            }
         }
 
         restoredEntities[i] = entity;

@@ -1535,6 +1535,111 @@ namespace
         return true;
     }
 
+    bool Test_PrefabInstanceRevertAllRestoresReparentedBoundChildAndPrunesExtraParent()
+    {
+        PrefabEntityData rootData;
+        rootData.name = "ReparentRoot";
+
+        PrefabEntityData childData;
+        childData.name = "Child";
+        childData.parentIndex = 0;
+        childData.position = Vec3(1.0f, 2.0f, 3.0f);
+
+        auto prefab = Prefab::CreateFromData({rootData, childData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+
+        SceneEntity* child = root->GetChildren()[0];
+        const SceneEntity::Handle childHandle = child->GetHandle();
+
+        ActorSpawnParams extraParams;
+        extraParams.name = "ExtraParent";
+        extraParams.parent = root;
+        SceneEntity* extraParent = sceneManager.SpawnActor(extraParams);
+        TEST_ASSERT_NOT_NULL(extraParent);
+        const SceneEntity::Handle extraParentHandle = extraParent->GetHandle();
+
+        child->SetParent(extraParent);
+        child->SetPosition(Vec3(9.0f, 9.0f, 9.0f));
+        prefabInstance->AddOverride(
+            {"SceneEntity", "position", child->GetPosition(), "", "Child"});
+
+        prefabInstance->RevertAll();
+
+        SceneEntity* restoredChild = sceneManager.GetEntity(childHandle);
+        TEST_ASSERT_NOT_NULL(restoredChild);
+        TEST_ASSERT_EQ(root, restoredChild->GetParent());
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        TEST_ASSERT_EQ(restoredChild, root->GetChildren()[0]);
+        TEST_ASSERT_TRUE(sceneManager.GetEntity(extraParentHandle) == nullptr);
+        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), restoredChild->GetPosition());
+        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertAllRestoresReparentedNestedBoundChild()
+    {
+        PrefabEntityData rootData;
+        rootData.name = "NestedReparentRoot";
+
+        PrefabEntityData branchData;
+        branchData.name = "Branch";
+        branchData.parentIndex = 0;
+
+        PrefabEntityData leafData;
+        leafData.name = "Leaf";
+        leafData.parentIndex = 1;
+        leafData.scale = Vec3(2.0f, 3.0f, 4.0f);
+
+        auto prefab = Prefab::CreateFromData({rootData, branchData, leafData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+
+        SceneEntity* branch = root->GetChildren()[0];
+        TEST_ASSERT_EQ(static_cast<size_t>(1), branch->GetChildren().size());
+        SceneEntity* leaf = branch->GetChildren()[0];
+        const SceneEntity::Handle leafHandle = leaf->GetHandle();
+
+        ActorSpawnParams extraParams;
+        extraParams.name = "ExtraNestedParent";
+        extraParams.parent = root;
+        SceneEntity* extraParent = sceneManager.SpawnActor(extraParams);
+        TEST_ASSERT_NOT_NULL(extraParent);
+        const SceneEntity::Handle extraParentHandle = extraParent->GetHandle();
+
+        leaf->SetParent(extraParent);
+        leaf->SetScale(Vec3(9.0f, 9.0f, 9.0f));
+
+        prefabInstance->RevertAll();
+
+        SceneEntity* restoredLeaf = sceneManager.GetEntity(leafHandle);
+        TEST_ASSERT_NOT_NULL(restoredLeaf);
+        TEST_ASSERT_EQ(branch, restoredLeaf->GetParent());
+        TEST_ASSERT_EQ(static_cast<size_t>(1), branch->GetChildren().size());
+        TEST_ASSERT_EQ(restoredLeaf, branch->GetChildren()[0]);
+        TEST_ASSERT_TRUE(sceneManager.GetEntity(extraParentHandle) == nullptr);
+        TEST_ASSERT_EQ(Vec3(2.0f, 3.0f, 4.0f), restoredLeaf->GetScale());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_PrefabRestoreHierarchySkipsPruningWhenEntityBindingMissingAndPathAmbiguous()
     {
         PrefabEntityData rootData;
@@ -3093,6 +3198,10 @@ int main()
                   Test_PrefabInstanceRevertAllPrunesNestedExtraLiveChildSubtree);
     suite.AddTest("PrefabInstanceRevertAllPrunesDuplicateExtraChildAfterBoundRestore",
                   Test_PrefabInstanceRevertAllPrunesDuplicateExtraChildAfterBoundRestore);
+    suite.AddTest("PrefabInstanceRevertAllRestoresReparentedBoundChildAndPrunesExtraParent",
+                  Test_PrefabInstanceRevertAllRestoresReparentedBoundChildAndPrunesExtraParent);
+    suite.AddTest("PrefabInstanceRevertAllRestoresReparentedNestedBoundChild",
+                  Test_PrefabInstanceRevertAllRestoresReparentedNestedBoundChild);
     suite.AddTest("PrefabRestoreHierarchySkipsPruningWhenEntityBindingMissingAndPathAmbiguous",
                   Test_PrefabRestoreHierarchySkipsPruningWhenEntityBindingMissingAndPathAmbiguous);
     suite.AddTest("PrefabInstanceRevertAllKeepsExistingNameBindingsWhenRecreatingChild",
