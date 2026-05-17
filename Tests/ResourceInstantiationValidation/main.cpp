@@ -1007,6 +1007,94 @@ namespace
         return true;
     }
 
+    bool Test_PrefabInstanceRevertAllRecreatesMissingActorComponent()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
+            "PrefabPayloadComponent");
+
+        PrefabEntityData data;
+        data.name = "RecreateMissingActorComponentRoot";
+        data.actorComponentData.push_back(
+            {"PrefabPayloadComponent", "ammo=12;mode=burst", "PrimaryPayload"});
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(instance);
+        auto* prefabInstance = instance->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        auto* actor = static_cast<Actor*>(instance);
+        auto* component = FindPrefabPayloadComponentByName(*actor, "PrimaryPayload");
+        TEST_ASSERT_NOT_NULL(component);
+        TEST_ASSERT_TRUE(actor->RemoveComponent<PrefabPayloadComponent>());
+        TEST_ASSERT_TRUE(FindPrefabPayloadComponentByName(*actor, "PrimaryPayload") == nullptr);
+
+        prefabInstance->AddOverride(
+            {"PrefabPayloadComponent",
+             "serializedData",
+             std::string("deleted"),
+             "PrimaryPayload"});
+
+        prefabInstance->RevertAll();
+
+        auto* restored = FindPrefabPayloadComponentByName(*actor, "PrimaryPayload");
+        TEST_ASSERT_NOT_NULL(restored);
+        TEST_ASSERT_EQ(std::string("ammo=12;mode=burst"), restored->payload);
+        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertAllKeepsOverrideWhenMissingActorComponentClassUnavailable()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
+            "PrefabPayloadComponent");
+
+        PrefabEntityData data;
+        data.name = "UnavailableMissingActorComponentRoot";
+        data.actorComponentData.push_back(
+            {"PrefabPayloadComponent", "ammo=12", "PrimaryPayload"});
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(instance);
+        auto* prefabInstance = instance->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        auto* actor = static_cast<Actor*>(instance);
+        TEST_ASSERT_NOT_NULL(FindPrefabPayloadComponentByName(*actor, "PrimaryPayload"));
+        TEST_ASSERT_TRUE(actor->RemoveComponent<PrefabPayloadComponent>());
+        TEST_ASSERT_TRUE(FindPrefabPayloadComponentByName(*actor, "PrimaryPayload") == nullptr);
+
+        ComponentFactory::ClearComponentClasses();
+        prefabInstance->AddOverride(
+            {"PrefabPayloadComponent",
+             "serializedData",
+             std::string("deleted"),
+             "PrimaryPayload"});
+
+        prefabInstance->RevertAll();
+
+        TEST_ASSERT_TRUE(FindPrefabPayloadComponentByName(*actor, "PrimaryPayload") == nullptr);
+        TEST_ASSERT_TRUE(prefabInstance->IsOverridden(
+            "PrefabPayloadComponent", "serializedData", "PrimaryPayload"));
+        TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
     bool Test_PrefabInstanceRevertAllRestoresNamedDuplicateActorComponentPayloads()
     {
         ComponentFactoryClassGuard componentFactoryGuard;
@@ -1145,6 +1233,56 @@ namespace
 
         TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), child->GetPosition());
         TEST_ASSERT_EQ(std::string("slot=child"), childPayload->payload);
+        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertAllRecreatesMissingChildActorComponent()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
+            "PrefabPayloadComponent");
+
+        PrefabEntityData rootData;
+        rootData.name = "RecreateMissingChildComponentRoot";
+
+        PrefabEntityData childData;
+        childData.name = "Child";
+        childData.parentIndex = 0;
+        childData.actorComponentData.push_back(
+            {"PrefabPayloadComponent", "slot=child", "ChildPayload"});
+
+        auto prefab = Prefab::CreateFromData({rootData, childData});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* root = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(root);
+        auto* prefabInstance = root->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+
+        SceneEntity* child = root->GetChildren()[0];
+        auto* childActor = static_cast<Actor*>(child);
+        TEST_ASSERT_NOT_NULL(FindPrefabPayloadComponentByName(*childActor, "ChildPayload"));
+        TEST_ASSERT_TRUE(childActor->RemoveComponent<PrefabPayloadComponent>());
+        TEST_ASSERT_TRUE(FindPrefabPayloadComponentByName(*childActor, "ChildPayload") == nullptr);
+
+        prefabInstance->AddOverride(
+            {"PrefabPayloadComponent",
+             "serializedData",
+             std::string("deleted"),
+             "ChildPayload",
+             "Child"});
+
+        prefabInstance->RevertAll();
+
+        auto* restored = FindPrefabPayloadComponentByName(*childActor, "ChildPayload");
+        TEST_ASSERT_NOT_NULL(restored);
+        TEST_ASSERT_EQ(std::string("slot=child"), restored->payload);
         TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
@@ -1479,6 +1617,44 @@ namespace
         prefabInstance->RevertAll();
 
         TEST_ASSERT_EQ(std::string("legacy=enabled"), component->payload);
+        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+
+        sceneManager.Shutdown();
+        return true;
+    }
+
+    bool Test_PrefabInstanceRevertAllRecreatesMissingLegacyComponent()
+    {
+        ComponentFactoryClassGuard componentFactoryGuard;
+        ComponentFactory::RegisterComponentClass<PrefabLegacyPayloadComponent>(
+            "PrefabLegacyPayloadComponent");
+
+        PrefabEntityData data;
+        data.name = "RecreateMissingLegacyComponentRoot";
+        data.componentData["PrefabLegacyPayloadComponent"] = "legacy=enabled";
+
+        auto prefab = Prefab::CreateFromData({data});
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        SceneEntity* instance = prefab->Instantiate(sceneManager);
+        TEST_ASSERT_NOT_NULL(instance);
+        auto* prefabInstance = instance->GetComponent<PrefabInstance>();
+        TEST_ASSERT_NOT_NULL(prefabInstance);
+
+        TEST_ASSERT_NOT_NULL(instance->GetComponent<PrefabLegacyPayloadComponent>());
+        TEST_ASSERT_TRUE(instance->RemoveComponent<PrefabLegacyPayloadComponent>());
+        TEST_ASSERT_TRUE(instance->GetComponent<PrefabLegacyPayloadComponent>() == nullptr);
+
+        prefabInstance->AddOverride(
+            {"PrefabLegacyPayloadComponent", "serializedData", std::string("deleted")});
+
+        prefabInstance->RevertAll();
+
+        auto* restored = instance->GetComponent<PrefabLegacyPayloadComponent>();
+        TEST_ASSERT_NOT_NULL(restored);
+        TEST_ASSERT_EQ(std::string("legacy=enabled"), restored->payload);
         TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
@@ -2691,12 +2867,18 @@ int main()
                   Test_PrefabInstanceRevertAllRestoresRootEntityState);
     suite.AddTest("PrefabInstanceRevertAllRestoresActorComponentPayload",
                   Test_PrefabInstanceRevertAllRestoresActorComponentPayload);
+    suite.AddTest("PrefabInstanceRevertAllRecreatesMissingActorComponent",
+                  Test_PrefabInstanceRevertAllRecreatesMissingActorComponent);
+    suite.AddTest("PrefabInstanceRevertAllKeepsOverrideWhenMissingActorComponentClassUnavailable",
+                  Test_PrefabInstanceRevertAllKeepsOverrideWhenMissingActorComponentClassUnavailable);
     suite.AddTest("PrefabInstanceRevertAllRestoresNamedDuplicateActorComponentPayloads",
                   Test_PrefabInstanceRevertAllRestoresNamedDuplicateActorComponentPayloads);
     suite.AddTest("PrefabInstanceRevertAllUsesRuntimeNameBindingAfterUniquify",
                   Test_PrefabInstanceRevertAllUsesRuntimeNameBindingAfterUniquify);
     suite.AddTest("PrefabInstanceRevertAllRestoresChildEntityStateAndPayload",
                   Test_PrefabInstanceRevertAllRestoresChildEntityStateAndPayload);
+    suite.AddTest("PrefabInstanceRevertAllRecreatesMissingChildActorComponent",
+                  Test_PrefabInstanceRevertAllRecreatesMissingChildActorComponent);
     suite.AddTest("PrefabInstanceRevertAllRecreatesMissingChildEntity",
                   Test_PrefabInstanceRevertAllRecreatesMissingChildEntity);
     suite.AddTest("PrefabInstanceRevertAllRecreatesNestedMissingDescendant",
@@ -2711,6 +2893,8 @@ int main()
                   Test_PrefabInstanceRevertAllDropsStaleBindingsForRecreatedChild);
     suite.AddTest("PrefabInstanceRevertAllRestoresLegacyComponentPayload",
                   Test_PrefabInstanceRevertAllRestoresLegacyComponentPayload);
+    suite.AddTest("PrefabInstanceRevertAllRecreatesMissingLegacyComponent",
+                  Test_PrefabInstanceRevertAllRecreatesMissingLegacyComponent);
     suite.AddTest("PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty",
                   Test_PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty);
     suite.AddTest("PrefabInstanceRootEntityPathNormalizesForOverrideIdentity",

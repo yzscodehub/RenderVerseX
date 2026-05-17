@@ -707,6 +707,110 @@ namespace
             bindings.end());
     }
 
+    void RemoveActorComponentNameBindingForIdentity(
+        std::vector<PrefabActorComponentNameBinding>& bindings,
+        const std::string& className,
+        const std::string& prefabName,
+        size_t ordinal,
+        const std::string& entityPath)
+    {
+        const std::string normalizedPath = NormalizeEntityPath(entityPath);
+        bindings.erase(
+            std::remove_if(bindings.begin(), bindings.end(),
+                [&](const PrefabActorComponentNameBinding& binding) {
+                    return binding.className == className &&
+                           binding.prefabName == prefabName &&
+                           binding.ordinal == ordinal &&
+                           NormalizeEntityPath(binding.entityPath) == normalizedPath;
+                }),
+            bindings.end());
+    }
+
+    bool CreateLegacyPrefabComponent(SceneEntity& owner,
+                                     const std::string& className,
+                                     const std::string& serializedData)
+    {
+        auto component = ComponentFactory::CreateComponentByClassName(className);
+        if (!component)
+        {
+            return false;
+        }
+
+        auto* legacyComponent = dynamic_cast<Component*>(component.get());
+        if (!legacyComponent)
+        {
+            return false;
+        }
+
+        legacyComponent->DeserializePrefabData(serializedData);
+        component.release();
+
+        std::unique_ptr<Component> ownedComponent(legacyComponent);
+        return owner.AddOwnedComponent(std::move(ownedComponent)) != nullptr;
+    }
+
+    ActorComponent* CreateActorPrefabComponent(
+        SceneEntity& owner,
+        const PrefabActorComponentData& componentData,
+        std::vector<PrefabActorComponentNameBinding>* nameBindings,
+        size_t ordinal,
+        const std::string& entityPath)
+    {
+        auto component = ComponentFactory::CreateComponentByClassName(componentData.className);
+        if (!component)
+        {
+            return nullptr;
+        }
+
+        if (!componentData.name.empty())
+        {
+            component->SetName(componentData.name);
+        }
+        component->DeserializePrefabData(componentData.serializedData);
+
+        auto* raw = component.get();
+        ActorComponent* inserted = static_cast<Actor&>(owner).AddOwnedComponent(std::move(component));
+        if (!inserted)
+        {
+            return nullptr;
+        }
+
+        if (nameBindings && !componentData.name.empty())
+        {
+            nameBindings->push_back(
+                {componentData.className,
+                 componentData.name,
+                 ordinal,
+                 inserted->GetName(),
+                 NormalizeEntityPath(entityPath)});
+        }
+
+        if (auto* sceneComponent = dynamic_cast<SceneComponent*>(raw))
+        {
+            sceneComponent->AttachToComponent(static_cast<Actor&>(owner).GetRootComponent());
+        }
+
+        return inserted;
+    }
+
+    enum class PrefabComponentKind : uint8
+    {
+        Legacy,
+        Actor
+    };
+
+    bool CanCreatePrefabComponentClass(const std::string& className, PrefabComponentKind kind)
+    {
+        auto component = ComponentFactory::CreateComponentByClassName(className);
+        if (!component)
+        {
+            return false;
+        }
+
+        const bool isLegacy = dynamic_cast<Component*>(component.get()) != nullptr;
+        return kind == PrefabComponentKind::Legacy ? isLegacy : !isLegacy;
+    }
+
     const PrefabActorComponentData* FindActorComponentDataByPrefabIdentity(
         const PrefabEntityData& data,
         const std::string& className,
@@ -760,6 +864,151 @@ namespace
         }
 
         return nullptr;
+    }
+
+    bool CanCreateMissingPrefabComponents(
+        SceneEntity& owner,
+        const PrefabEntityData& data,
+        const std::vector<PrefabActorComponentNameBinding>& nameBindings,
+        const std::string& entityPath)
+    {
+        for (const auto& [className, serializedData] : data.componentData)
+        {
+            (void)serializedData;
+            if (!FindLegacyComponentByTypeName(owner, className) &&
+                !CanCreatePrefabComponentClass(className, PrefabComponentKind::Legacy))
+            {
+                return false;
+            }
+        }
+
+        std::unordered_map<std::string, size_t> actorComponentOrdinals;
+        for (const auto& componentData : data.actorComponentData)
+        {
+            size_t& consumed = actorComponentOrdinals[componentData.className];
+            const size_t ordinal = consumed++;
+
+            if (!componentData.name.empty())
+            {
+                const PrefabActorComponentNameBinding* binding = FindActorComponentNameBinding(
+                    nameBindings, componentData.className, componentData.name, ordinal, entityPath);
+                const std::string* targetName = binding ? &binding->instanceName : &componentData.name;
+                if (targetName && !targetName->empty() &&
+                    FindActorComponentByClassNameAndName(owner, componentData.className, *targetName))
+                {
+                    continue;
+                }
+
+                if (!CanCreatePrefabComponentClass(componentData.className, PrefabComponentKind::Actor))
+                {
+                    return false;
+                }
+                continue;
+            }
+
+            auto matches = FindActorComponentsByClassName(owner, componentData.className);
+            if (ordinal < matches.size())
+            {
+                continue;
+            }
+
+            if (!CanCreatePrefabComponentClass(componentData.className, PrefabComponentKind::Actor))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    bool CanRestoreExistingEntityMissingComponents(
+        SceneEntity& rootEntity,
+        const std::vector<PrefabEntityData>& entities,
+        const std::vector<std::string>& entityPaths,
+        const std::vector<PrefabActorComponentNameBinding>& nameBindings)
+    {
+        for (size_t i = 0; i < entities.size(); ++i)
+        {
+            SceneEntity* entity = i == 0
+                ? &rootEntity
+                : FindLiveEntityByPath(
+                    rootEntity, i < entityPaths.size() ? entityPaths[i] : std::string());
+            if (!entity)
+            {
+                continue;
+            }
+
+            const std::string entityPath = i < entityPaths.size() ? entityPaths[i] : std::string();
+            if (!CanCreateMissingPrefabComponents(*entity, entities[i], nameBindings, entityPath))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    bool EnsurePrefabEntityComponents(SceneEntity& owner,
+                                      const PrefabEntityData& data,
+                                      std::vector<PrefabActorComponentNameBinding>& nameBindings,
+                                      const std::string& entityPath)
+    {
+        if (!CanCreateMissingPrefabComponents(owner, data, nameBindings, entityPath))
+        {
+            return false;
+        }
+
+        for (const auto& [className, serializedData] : data.componentData)
+        {
+            if (!FindLegacyComponentByTypeName(owner, className) &&
+                !CreateLegacyPrefabComponent(owner, className, serializedData))
+            {
+                return false;
+            }
+        }
+
+        std::unordered_map<std::string, size_t> actorComponentOrdinals;
+        for (const auto& componentData : data.actorComponentData)
+        {
+            size_t& consumed = actorComponentOrdinals[componentData.className];
+            const size_t ordinal = consumed++;
+
+            if (!componentData.name.empty())
+            {
+                const PrefabActorComponentNameBinding* binding = FindActorComponentNameBinding(
+                    nameBindings, componentData.className, componentData.name, ordinal, entityPath);
+                const std::string* targetName = binding ? &binding->instanceName : &componentData.name;
+                if (targetName && !targetName->empty() &&
+                    FindActorComponentByClassNameAndName(owner, componentData.className, *targetName))
+                {
+                    continue;
+                }
+
+                std::vector<PrefabActorComponentNameBinding> bindingsBeforeCreate = nameBindings;
+                RemoveActorComponentNameBindingForIdentity(
+                    nameBindings, componentData.className, componentData.name, ordinal, entityPath);
+                if (!CreateActorPrefabComponent(
+                    owner, componentData, &nameBindings, ordinal, entityPath))
+                {
+                    nameBindings = std::move(bindingsBeforeCreate);
+                    return false;
+                }
+                continue;
+            }
+
+            auto matches = FindActorComponentsByClassName(owner, componentData.className);
+            if (ordinal < matches.size())
+            {
+                continue;
+            }
+
+            if (!CreateActorPrefabComponent(owner, componentData, nullptr, ordinal, entityPath))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     void ApplyPrefabEntityComponentPayloads(
@@ -1144,6 +1393,12 @@ bool Prefab::RestoreHierarchyStateTo(
     }
 
     const std::vector<std::string> entityPaths = BuildPrefabEntityPaths(*this);
+    if (!CanRestoreExistingEntityMissingComponents(
+        rootEntity, m_entities, entityPaths, nameBindings))
+    {
+        return false;
+    }
+
     std::vector<SceneEntity*> restoredEntities(m_entities.size(), nullptr);
     restoredEntities[0] = &rootEntity;
 
@@ -1152,6 +1407,7 @@ bool Prefab::RestoreHierarchyStateTo(
         const PrefabEntityData& entityData = m_entities[i];
         const std::string entityPath = i < entityPaths.size() ? entityPaths[i] : std::string();
         SceneEntity* entity = nullptr;
+        bool createdEntityThisCall = false;
 
         if (i == 0)
         {
@@ -1180,6 +1436,7 @@ bool Prefab::RestoreHierarchyStateTo(
                 {
                     continue;
                 }
+                createdEntityThisCall = true;
 
                 const std::string normalizedPath = NormalizeEntityPath(entityPath);
                 RemoveActorComponentNameBindingsForEntityPath(nameBindings, normalizedPath);
@@ -1199,6 +1456,14 @@ bool Prefab::RestoreHierarchyStateTo(
         }
 
         restoredEntities[i] = entity;
+        if (!EnsurePrefabEntityComponents(*entity, entityData, nameBindings, entityPath))
+        {
+            if (createdEntityThisCall)
+            {
+                sceneManager->DestroyEntity(entity->GetHandle());
+            }
+            return false;
+        }
         ApplyAllPrefabEntityProperties(entity, entityData);
         ApplyPrefabEntityComponentPayloads(*entity, entityData, nameBindings, entityPath);
     }
@@ -1239,55 +1504,19 @@ bool Prefab::CreateComponents(SceneEntity* entity,
 
     for (const auto& [className, serializedData] : data.componentData)
     {
-        auto component = ComponentFactory::CreateComponentByClassName(className);
-        if (!component)
+        if (!CreateLegacyPrefabComponent(*entity, className, serializedData))
+        {
             return false;
-
-        auto* legacyComponent = dynamic_cast<Component*>(component.get());
-        if (!legacyComponent)
-            return false;
-
-        legacyComponent->DeserializePrefabData(serializedData);
-        component.release();
-
-        std::unique_ptr<Component> ownedComponent(legacyComponent);
-        if (!entity->AddOwnedComponent(std::move(ownedComponent)))
-            return false;
+        }
     }
 
     std::unordered_map<std::string, size_t> actorComponentOrdinals;
     for (const auto& componentData : data.actorComponentData)
     {
         const size_t ordinal = actorComponentOrdinals[componentData.className]++;
-
-        auto component = ComponentFactory::CreateComponentByClassName(componentData.className);
-        if (!component)
+        if (!CreateActorPrefabComponent(*entity, componentData, nameBindings, ordinal, entityPath))
+        {
             return false;
-
-        if (!componentData.name.empty())
-        {
-            component->SetName(componentData.name);
-        }
-        component->DeserializePrefabData(componentData.serializedData);
-
-        auto* raw = component.get();
-        ActorComponent* inserted = static_cast<Actor*>(entity)->AddOwnedComponent(std::move(component));
-        if (!inserted)
-            return false;
-
-        if (nameBindings && !componentData.name.empty())
-        {
-            nameBindings->push_back(
-                {componentData.className,
-                 componentData.name,
-                 ordinal,
-                 inserted->GetName(),
-                 NormalizeEntityPath(entityPath)});
-        }
-
-        if (auto* sceneComponent = dynamic_cast<SceneComponent*>(raw))
-        {
-            sceneComponent->AttachToComponent(entity->GetRootComponent());
         }
     }
 

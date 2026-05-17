@@ -1,6 +1,6 @@
 # Prefab Revert Missing Components Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Make `PrefabInstance::RevertAll()` restore prefab-owned components that were deleted from an existing live prefab entity.
 
@@ -15,7 +15,7 @@
 **Files:**
 - Modify: `Tests/ResourceInstantiationValidation/main.cpp`
 
-- [ ] **Step 1: Add a root actor component recreation test**
+- [x] **Step 1: Add a root actor component recreation test**
 
 Add this test near the other `PrefabInstanceRevertAll...` tests:
 
@@ -65,7 +65,7 @@ bool Test_PrefabInstanceRevertAllRecreatesMissingActorComponent()
 }
 ```
 
-- [ ] **Step 2: Add a legacy component recreation test**
+- [x] **Step 2: Add a legacy component recreation test**
 
 Add this test beside the actor component recreation test:
 
@@ -109,7 +109,7 @@ bool Test_PrefabInstanceRevertAllRecreatesMissingLegacyComponent()
 }
 ```
 
-- [ ] **Step 3: Add a child actor component recreation test**
+- [x] **Step 3: Add a child actor component recreation test**
 
 Add this test to prove entity-path-scoped component restoration works on existing child entities:
 
@@ -165,7 +165,7 @@ bool Test_PrefabInstanceRevertAllRecreatesMissingChildActorComponent()
 }
 ```
 
-- [ ] **Step 4: Add a failed recreation test that keeps overrides**
+- [x] **Step 4: Add a failed recreation test that keeps overrides**
 
 Add this test after the missing actor component recreation test:
 
@@ -215,7 +215,7 @@ bool Test_PrefabInstanceRevertAllKeepsOverrideWhenMissingActorComponentClassUnav
 }
 ```
 
-- [ ] **Step 5: Register the tests**
+- [x] **Step 5: Register the tests**
 
 Add these registrations near the other `RevertAll` registrations in `main()`:
 
@@ -230,7 +230,7 @@ suite.AddTest("PrefabInstanceRevertAllRecreatesMissingChildActorComponent",
               Test_PrefabInstanceRevertAllRecreatesMissingChildActorComponent);
 ```
 
-- [ ] **Step 6: Run the validation and confirm it fails**
+- [x] **Step 6: Run the validation and confirm it fails**
 
 Run:
 
@@ -248,7 +248,7 @@ Expected: build succeeds; the new tests fail because `RevertAll()` currently app
 **Files:**
 - Modify: `Scene/Private/Prefab.cpp`
 
-- [ ] **Step 1: Add name-binding cleanup for one component identity**
+- [x] **Step 1: Add name-binding cleanup for one component identity**
 
 Add this helper beside `RemoveActorComponentNameBindingsForEntityPath()`:
 
@@ -273,7 +273,7 @@ void RemoveActorComponentNameBindingForIdentity(
 }
 ```
 
-- [ ] **Step 2: Add reusable legacy component creation helper**
+- [x] **Step 2: Add reusable legacy component creation helper**
 
 Add this helper near the component payload helpers:
 
@@ -302,7 +302,7 @@ bool CreateLegacyPrefabComponent(SceneEntity& owner,
 }
 ```
 
-- [ ] **Step 3: Add reusable actor component creation helper**
+- [x] **Step 3: Add reusable actor component creation helper**
 
 Add this helper near `CreateLegacyPrefabComponent()`:
 
@@ -352,7 +352,7 @@ ActorComponent* CreateActorPrefabComponent(
 }
 ```
 
-- [ ] **Step 4: Refactor `Prefab::CreateComponents()` to use the new helpers**
+- [x] **Step 4: Refactor `Prefab::CreateComponents()` to use the new helpers**
 
 Replace direct component creation in `Prefab::CreateComponents()` with:
 
@@ -376,7 +376,7 @@ for (const auto& componentData : data.actorComponentData)
 }
 ```
 
-- [ ] **Step 5: Add missing component preflight helpers**
+- [x] **Step 5: Add missing component preflight helpers**
 
 Add these helpers after the creation helpers. They perform all predictable failure checks before mutating the live entity, because actor component removal by pointer is intentionally private and rollback after partial insertion is not available through the public API.
 
@@ -454,7 +454,7 @@ bool CanCreateMissingPrefabComponents(SceneEntity& owner,
 }
 ```
 
-- [ ] **Step 6: Add a restore-wide preflight**
+- [x] **Step 6: Add a restore-wide preflight**
 
 Add this helper after `CanCreateMissingPrefabComponents()`. It checks all currently resolvable live prefab entities before `RestoreHierarchyStateTo()` mutates properties, creates components, or updates name bindings. This prevents a later entity failure from discarding updated bindings for components already recreated earlier in the same revert.
 
@@ -495,7 +495,7 @@ if (!CanRestoreExistingEntityMissingComponents(rootEntity, m_entities, entityPat
 }
 ```
 
-- [ ] **Step 7: Add `EnsurePrefabEntityComponents()`**
+- [x] **Step 7: Add `EnsurePrefabEntityComponents()`**
 
 Add this helper after the creation helpers:
 
@@ -563,7 +563,7 @@ bool EnsurePrefabEntityComponents(SceneEntity& owner,
 }
 ```
 
-- [ ] **Step 8: Call the ensure helper from `RestoreHierarchyStateTo()`**
+- [x] **Step 8: Call the ensure helper from `RestoreHierarchyStateTo()`**
 
 In `Prefab::RestoreHierarchyStateTo()`, track whether the entity was created during this call. Define this flag inside the entity loop, immediately after `SceneEntity* entity = nullptr;`, so it resets for every prefab entity:
 
@@ -592,7 +592,7 @@ if (!EnsurePrefabEntityComponents(*entity, entityData, nameBindings, entityPath)
 
 Expected behavior: existing live entities keep existing prefab components; deleted prefab components are recreated and payloads are applied; unsupported missing component classes abort `RevertAll()` before clearing overrides. A newly spawned missing entity is destroyed if a later component-ensure invariant unexpectedly fails.
 
-- [ ] **Step 9: Run the validation and confirm it passes**
+- [x] **Step 9: Run the validation and confirm it passes**
 
 Run:
 
@@ -612,7 +612,7 @@ Expected: all `ResourceInstantiationValidation` tests pass.
 - Review: `Tests/ResourceInstantiationValidation/main.cpp`
 - Modify: this plan checklist
 
-- [ ] **Step 1: Request one code review**
+- [x] **Step 1: Request one code review**
 
 Use one review subagent with:
 
@@ -625,11 +625,11 @@ Head SHA: current working tree or implementation commit
 
 Expected: reviewer reports no Critical or Important issues before proceeding.
 
-- [ ] **Step 2: Fix Critical or Important review findings**
+- [x] **Step 2: Fix Critical or Important review findings**
 
 Apply only review findings that are technically valid. If a reviewer finding is wrong, document the reason in the implementation notes and keep the code unchanged.
 
-- [ ] **Step 3: Run required verification**
+- [x] **Step 3: Run required verification**
 
 Run:
 
@@ -646,7 +646,7 @@ cmake --build build --config Debug --target ModelViewer
 
 Expected: `git diff --check` exits 0; all three validation executables report 0 failed tests; `ModelViewer` target builds.
 
-- [ ] **Step 4: Commit the phase**
+- [x] **Step 4: Commit the phase**
 
 Run:
 
