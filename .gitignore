@@ -1,5 +1,6 @@
 # Build directories
 build/
+build_*/
 out/
 cmake-build-*/
 
@@ -27,6 +28,7 @@ vcpkg_installed/
 *.a
 
 # Shader cache
+ShaderCache/
 *.cso
 *.dxil
 *.spv
@@ -40,3 +42,8 @@ Thumbs.db
 
 # Cursor
 .cursorignore
+
+# Local agent/tool state
+.codex
+.claude/settings.local.json
+.claude/worktrees/

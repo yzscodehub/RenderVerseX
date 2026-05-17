@@ -1,0 +1,31 @@
+# Normalize text files in the repository so Windows Git and WSL/Linux Git
+# agree on content even when the working tree uses platform line endings.
+* text=auto
+
+# Keep binary assets out of text normalization.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.tga binary
+*.bmp binary
+*.ico binary
+*.dds binary
+*.ktx binary
+*.ktx2 binary
+*.hdr binary
+*.exr binary
+*.fbx binary
+*.glb binary
+*.gltf -diff
+*.wav binary
+*.mp3 binary
+*.ogg binary
+*.flac binary
+*.zip binary
+*.7z binary
+*.tar binary
+*.gz binary
+*.dll binary
+*.exe binary
+*.lib binary
+*.pdb binary
