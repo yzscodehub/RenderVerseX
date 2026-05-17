@@ -448,6 +448,59 @@ namespace
         return FindLiveEntityByPathImpl(root, entityPath);
     }
 
+    size_t CountChildrenNamed(const SceneEntity& parent, const std::string& name)
+    {
+        size_t count = 0;
+        for (const SceneEntity* child : parent.GetChildren())
+        {
+            if (child && child->GetName() == name)
+            {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    bool CanCreateMissingEntityForPath(const SceneEntity& parent,
+                                       const std::string& entityPath,
+                                       const PrefabEntityData& entityData)
+    {
+        const std::vector<std::string> segments = SplitEntityPath(entityPath);
+        if (segments.empty())
+        {
+            return false;
+        }
+
+        const EntityPathSegment segment = ParseEntityPathSegment(segments.back());
+        if (!segment.valid)
+        {
+            return false;
+        }
+
+        if (segment.hasOrdinal)
+        {
+            return true;
+        }
+
+        return CountChildrenNamed(parent, entityData.name) == 0;
+    }
+
+    SceneEntity* SpawnPrefabEntity(SceneManager& sceneManager,
+                                   const PrefabEntityData& entityData,
+                                   SceneEntity* parent)
+    {
+        ActorSpawnParams params;
+        params.name = entityData.name;
+        params.parent = parent;
+
+        if (entityData.actorClassName.empty() || entityData.actorClassName == "SceneEntity")
+        {
+            return sceneManager.SpawnActor(params);
+        }
+
+        return sceneManager.SpawnActorByClassName(entityData.actorClassName, params);
+    }
+
     bool ContainsCapturedEntityPath(const PrefabApplyCaptureReport& report,
                                     const std::string& entityPath)
     {
@@ -639,6 +692,19 @@ namespace
         }
 
         return nullptr;
+    }
+
+    void RemoveActorComponentNameBindingsForEntityPath(
+        std::vector<PrefabActorComponentNameBinding>& bindings,
+        const std::string& entityPath)
+    {
+        const std::string normalizedPath = NormalizeEntityPath(entityPath);
+        bindings.erase(
+            std::remove_if(bindings.begin(), bindings.end(),
+                [&](const PrefabActorComponentNameBinding& binding) {
+                    return NormalizeEntityPath(binding.entityPath) == normalizedPath;
+                }),
+            bindings.end());
     }
 
     const PrefabActorComponentData* FindActorComponentDataByPrefabIdentity(
@@ -1067,6 +1133,79 @@ SceneEntity* Prefab::InstantiateInternal(SceneManager& sceneManager, const Vec3&
     return root;
 }
 
+bool Prefab::RestoreHierarchyStateTo(
+    SceneEntity& rootEntity,
+    std::vector<PrefabActorComponentNameBinding>& nameBindings) const
+{
+    SceneManager* sceneManager = rootEntity.GetSceneManager();
+    if (!sceneManager || m_entities.empty())
+    {
+        return false;
+    }
+
+    const std::vector<std::string> entityPaths = BuildPrefabEntityPaths(*this);
+    std::vector<SceneEntity*> restoredEntities(m_entities.size(), nullptr);
+    restoredEntities[0] = &rootEntity;
+
+    for (size_t i = 0; i < m_entities.size(); ++i)
+    {
+        const PrefabEntityData& entityData = m_entities[i];
+        const std::string entityPath = i < entityPaths.size() ? entityPaths[i] : std::string();
+        SceneEntity* entity = nullptr;
+
+        if (i == 0)
+        {
+            entity = &rootEntity;
+        }
+        else
+        {
+            entity = FindLiveEntityByPath(rootEntity, entityPath);
+            if (!entity)
+            {
+                const int32_t parentIndex = entityData.parentIndex;
+                if (parentIndex < 0 ||
+                    parentIndex >= static_cast<int32_t>(restoredEntities.size()))
+                {
+                    continue;
+                }
+
+                SceneEntity* parent = restoredEntities[static_cast<size_t>(parentIndex)];
+                if (!parent || !CanCreateMissingEntityForPath(*parent, entityPath, entityData))
+                {
+                    continue;
+                }
+
+                entity = SpawnPrefabEntity(*sceneManager, entityData, parent);
+                if (!entity)
+                {
+                    continue;
+                }
+
+                const std::string normalizedPath = NormalizeEntityPath(entityPath);
+                RemoveActorComponentNameBindingsForEntityPath(nameBindings, normalizedPath);
+                const size_t bindingCountBeforeCreate = nameBindings.size();
+                if (!CreateComponents(entity, entityData, &nameBindings, normalizedPath))
+                {
+                    nameBindings.resize(bindingCountBeforeCreate);
+                    sceneManager->DestroyEntity(entity->GetHandle());
+                    continue;
+                }
+            }
+        }
+
+        if (!entity)
+        {
+            continue;
+        }
+
+        restoredEntities[i] = entity;
+        ApplyAllPrefabEntityProperties(entity, entityData);
+        ApplyPrefabEntityComponentPayloads(*entity, entityData, nameBindings, entityPath);
+    }
+
+    return true;
+}
+
 void Prefab::SerializeEntity(const SceneEntity* entity, int32_t parentIndex)
 {
     PrefabEntityData data;
@@ -1241,27 +1380,12 @@ void PrefabInstance::RevertAll()
         return;
     }
 
-    const auto paths = BuildPrefabEntityPaths(*m_prefab);
-    for (size_t i = 0; i < m_prefab->GetEntityCount(); ++i)
+    std::vector<PrefabActorComponentNameBinding> restoredBindings = m_componentNameBindings;
+    if (m_prefab->RestoreHierarchyStateTo(*owner, restoredBindings))
     {
-        const PrefabEntityData* entityData = m_prefab->GetEntityData(i);
-        if (!entityData)
-        {
-            continue;
-        }
-
-        const std::string entityPath = i < paths.size() ? NormalizeEntityPath(paths[i]) : std::string();
-        SceneEntity* entity = FindLiveEntityByPath(*owner, entityPath);
-        if (!entity)
-        {
-            continue;
-        }
-
-        ApplyAllPrefabEntityProperties(entity, *entityData);
-        ApplyPrefabEntityComponentPayloads(
-            *entity, *entityData, m_componentNameBindings, entityPath);
+        m_componentNameBindings = std::move(restoredBindings);
+        m_overrides.clear();
     }
-    m_overrides.clear();
 }
 
 void PrefabInstance::RevertProperty(const std::string& componentType,

@@ -34,7 +34,7 @@
 
 ## Task 1: Add Minimal Failing Structural Revert Coverage
 
-- [ ] **Step 1: Add missing child recreation test**
+- [x] **Step 1: Add missing child recreation test**
 
 In `Tests\ResourceInstantiationValidation\main.cpp`, add this test near the existing `RevertAll` tests:
 
@@ -93,7 +93,7 @@ bool Test_PrefabInstanceRevertAllRecreatesMissingChildEntity()
 }
 ```
 
-- [ ] **Step 2: Add nested missing descendant recreation test**
+- [x] **Step 2: Add nested missing descendant recreation test**
 
 Add this test near the previous one:
 
@@ -143,7 +143,7 @@ bool Test_PrefabInstanceRevertAllRecreatesNestedMissingDescendant()
 }
 ```
 
-- [ ] **Step 3: Add extra live child preservation test**
+- [x] **Step 3: Add extra live child preservation test**
 
 Add a guard that `RevertAll()` does not delete live children that are not part of the prefab:
 
@@ -180,7 +180,7 @@ bool Test_PrefabInstanceRevertAllPreservesExtraLiveChildEntity()
 }
 ```
 
-- [ ] **Step 4: Add ambiguous same-name live child no-create guard**
+- [x] **Step 4: Add ambiguous same-name live child no-create guard**
 
 Add this test to avoid duplicating a unique prefab child path when the live hierarchy already has ambiguous same-name children:
 
@@ -221,7 +221,7 @@ bool Test_PrefabInstanceRevertAllDoesNotCreateWhenUniquePathIsAmbiguous()
 }
 ```
 
-- [ ] **Step 5: Add binding preservation regression test**
+- [x] **Step 5: Add binding preservation regression test**
 
 Add this test near the previous `RevertAll` tests. It proves that recreating a
 missing child does not replace existing runtime name bindings needed by another
@@ -284,9 +284,19 @@ bool Test_PrefabInstanceRevertAllKeepsExistingNameBindingsWhenRecreatingChild()
 }
 ```
 
-- [ ] **Step 6: Register the tests**
+- [x] **Step 6: Add stale recreated-child binding regression test**
 
-Register the five tests near the existing `RevertAll` group:
+Add a test that first instantiates a child actor whose constructor forces the
+prefab component runtime name to be uniquified, deletes that child, re-registers
+the same actor class without the collision, then calls `RevertAll()`. After the
+child is recreated, add an extra component using the stale runtime name and call
+`RevertProperty(...)` for that stale name. The extra component must not receive
+the prefab payload, and the override must remain because the stale binding should
+have been dropped when the child was recreated.
+
+- [x] **Step 7: Register the tests**
+
+Register the six tests near the existing `RevertAll` group:
 
 ```cpp
 suite.AddTest("PrefabInstanceRevertAllRecreatesMissingChildEntity",
@@ -299,9 +309,11 @@ suite.AddTest("PrefabInstanceRevertAllDoesNotCreateWhenUniquePathIsAmbiguous",
               Test_PrefabInstanceRevertAllDoesNotCreateWhenUniquePathIsAmbiguous);
 suite.AddTest("PrefabInstanceRevertAllKeepsExistingNameBindingsWhenRecreatingChild",
               Test_PrefabInstanceRevertAllKeepsExistingNameBindingsWhenRecreatingChild);
+suite.AddTest("PrefabInstanceRevertAllDropsStaleBindingsForRecreatedChild",
+              Test_PrefabInstanceRevertAllDropsStaleBindingsForRecreatedChild);
 ```
 
-- [ ] **Step 7: Confirm RED**
+- [x] **Step 8: Confirm RED**
 
 Run:
 
@@ -316,7 +328,7 @@ Expected before implementation: the build succeeds, and the missing child / nest
 
 ## Task 2: Add Prefab Restore Helper API
 
-- [ ] **Step 1: Declare restore operation**
+- [x] **Step 1: Declare restore operation**
 
 In `Scene\Include\Scene\Prefab.h`, add a public method declaration immediately
 after `RebuildHierarchyStateFrom(...)`:
@@ -331,7 +343,7 @@ This method is public because `PrefabInstance` owns the operation entry point bu
 does not have access to `Prefab` private members. Keep `CreateComponents(...)`
 private; the restore operation internally uses it.
 
-- [ ] **Step 2: Add child-name counting helper**
+- [x] **Step 2: Add child-name counting helper**
 
 In `Scene\Private\Prefab.cpp`, add this helper in the anonymous namespace near `FindLiveEntityByPath(...)`:
 
@@ -350,7 +362,7 @@ size_t CountChildrenNamed(const SceneEntity& parent, const std::string& name)
 }
 ```
 
-- [ ] **Step 3: Add ambiguity-safe creation helper**
+- [x] **Step 3: Add ambiguity-safe creation helper**
 
 Add this helper near `CountChildrenNamed(...)`:
 
@@ -382,7 +394,7 @@ bool CanCreateMissingEntityForPath(const SceneEntity& parent,
 
 This preserves extra same-name live children instead of creating a third child when a unique prefab path became ambiguous.
 
-- [ ] **Step 4: Add actor creation helper**
+- [x] **Step 4: Add actor creation helper**
 
 Add this helper in the anonymous namespace after `CanCreateMissingEntityForPath(...)`:
 
@@ -404,11 +416,18 @@ SceneEntity* SpawnPrefabEntity(SceneManager& sceneManager,
 }
 ```
 
+- [x] **Step 5: Add entity-path binding cleanup helper**
+
+Add a helper that removes existing `PrefabActorComponentNameBinding` entries for
+an entity path. This is used only when the entity was missing and is being
+recreated, so old bindings for the deleted entity cannot shadow the fresh
+bindings produced by `CreateComponents(...)`.
+
 ---
 
 ## Task 3: Implement Structural Revert Restore
 
-- [ ] **Step 1: Implement `Prefab::RestoreHierarchyStateTo(...)`**
+- [x] **Step 1: Implement `Prefab::RestoreHierarchyStateTo(...)`**
 
 In `Scene\Private\Prefab.cpp`, add this method after `Prefab::InstantiateInternal(...)`:
 
@@ -462,8 +481,11 @@ bool Prefab::RestoreHierarchyStateTo(
                 }
 
                 const std::string normalizedPath = NormalizeEntityPath(entityPath);
+                RemoveActorComponentNameBindingsForEntityPath(nameBindings, normalizedPath);
+                const size_t bindingCountBeforeCreate = nameBindings.size();
                 if (!CreateComponents(entity, entityData, &nameBindings, normalizedPath))
                 {
+                    nameBindings.resize(bindingCountBeforeCreate);
                     sceneManager->DestroyEntity(entity->GetHandle());
                     continue;
                 }
@@ -485,33 +507,30 @@ bool Prefab::RestoreHierarchyStateTo(
 }
 ```
 
-- [ ] **Step 2: Use the restore helper from `PrefabInstance::RevertAll()`**
+- [x] **Step 2: Use the restore helper from `PrefabInstance::RevertAll()`**
 
 Replace the current loop in `PrefabInstance::RevertAll()` with:
 
 ```cpp
-std::vector<PrefabActorComponentNameBinding> recreatedBindings;
-if (m_prefab->RestoreHierarchyStateTo(*owner, recreatedBindings))
+std::vector<PrefabActorComponentNameBinding> restoredBindings = m_componentNameBindings;
+if (m_prefab->RestoreHierarchyStateTo(*owner, restoredBindings))
 {
-    if (!recreatedBindings.empty())
-    {
-        m_componentNameBindings.insert(m_componentNameBindings.end(),
-                                       recreatedBindings.begin(),
-                                       recreatedBindings.end());
-    }
+    m_componentNameBindings = std::move(restoredBindings);
     m_overrides.clear();
 }
 ```
 
-Keep the existing early returns for null prefab/root owner. Do not replace
-`m_componentNameBindings` wholesale here because existing live entities may still
-need their runtime name bindings.
+Keep the existing early returns for null prefab/root owner. Start the restore
+helper with a copy of the existing runtime name bindings so existing live
+entities can be restored during the same `RevertAll()` call. The restore helper
+may append new bindings for recreated entities, then the merged result becomes
+the instance binding list.
 
 ---
 
 ## Task 4: Validate, Review, And Commit
 
-- [ ] **Step 1: Focused validation**
+- [x] **Step 1: Focused validation**
 
 Run:
 
@@ -520,7 +539,7 @@ cmake --build build\Debug --config Debug --target ResourceInstantiationValidatio
 .\build\Debug\Tests\Debug\ResourceInstantiationValidation.exe
 ```
 
-- [ ] **Step 2: Required build/test validation**
+- [x] **Step 2: Required build/test validation**
 
 Run:
 
@@ -535,23 +554,23 @@ foreach ($target in @('ActorComponentValidation','ResourceInstantiationValidatio
 .\build\Debug\Tests\Debug\RenderSceneValidation.exe
 ```
 
-- [ ] **Step 3: ModelViewer smoke**
+- [x] **Step 3: ModelViewer smoke**
 
 Run `ModelViewer.exe C:\Users\yinzs\Desktop\DamagedHelmet.glb` for several seconds. Confirm DamagedHelmet loads, mesh/texture upload starts, RenderGraph stats appear, and stderr is empty.
 
-- [ ] **Step 4: Request exactly one code review agent**
+- [x] **Step 4: Request exactly one code review agent**
 
 Ask for Critical and Important issues only.
 
-- [ ] **Step 5: Fix any Critical or Important findings**
+- [x] **Step 5: Fix any Critical or Important findings**
 
 If there are none, continue.
 
-- [ ] **Step 6: Update this plan checklist**
+- [x] **Step 6: Update this plan checklist**
 
 Mark completed items.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add Docs\superpowers\plans\2026-05-17-ue-style-actor-component-phase28-prefab-revert-structural-restore.md Scene\Include\Scene\Prefab.h Scene\Private\Prefab.cpp Tests\ResourceInstantiationValidation\main.cpp

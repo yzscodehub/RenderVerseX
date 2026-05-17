@@ -204,6 +204,10 @@ public:
     /// Rebuild prefab entity data from a live hierarchy and report captured paths.
     PrefabApplyCaptureReport RebuildHierarchyStateFrom(const SceneEntity& rootEntity);
 
+    /// Restore serialized prefab hierarchy state into an existing root entity.
+    bool RestoreHierarchyStateTo(SceneEntity& rootEntity,
+                                 std::vector<PrefabActorComponentNameBinding>& nameBindings) const;
+
     /// Add entity data to the prefab
     void AddEntityData(PrefabEntityData data);
 
