@@ -50,7 +50,14 @@ namespace RVX
         RefCounted(const RefCounted&) = delete;
         RefCounted& operator=(const RefCounted&) = delete;
 
-        // Reference counting
+        // Reference counting.
+        // Memory-order contract (canonical lock-free intrusive refcount):
+        //  - AddRef uses relaxed: a caller incrementing the count must already
+        //    hold a live reference, so no ordering w.r.t. other data is needed.
+        //  - Release uses acq_rel: the acquire pairs with prior releases so the
+        //    thread that observes the count hit zero sees all writes made by
+        //    other owners before destroying the object (no UAF).
+        // See libc++/Boost intrusive_ptr for the same pattern.
         void AddRef() const
         {
             m_refCount.fetch_add(1, std::memory_order_relaxed);
