@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows (DX11/DX12/Vulkan)
+    runs-on: windows-latest
+    env:
+      VCPKG_ROOT: C:/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare vcpkg binary cache dir
+        run: mkdir -p ${{ github.workspace }}/.vcpkg-cache
+        shell: bash
+
+      - name: Cache vcpkg installed packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-windows-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-windows-
+
+      - name: Configure (release preset)
+        run: cmake --preset release
+
+      - name: Build
+        run: cmake --build --preset release
+
+      - name: Test (unit + lint, GPU tests skipped on headless runner)
+        run: ctest --test-dir build -L "unit|lint" --output-on-failure
+
+  linux:
+    name: Linux (Vulkan/OpenGL configure)
+    runs-on: ubuntu-latest
+    env:
+      VCPKG_ROOT: /usr/local/share/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps for vcpkg ports
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libx11-dev libxrandr-dev \
+            libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev autoconf libtool
+
+      - name: Prepare vcpkg binary cache dir
+        run: mkdir -p ${{ github.workspace }}/.vcpkg-cache
+
+      - name: Cache vcpkg installed packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-linux-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-linux-
+
+      - name: Configure
+        run: cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test (unit + lint)
+        run: ctest --test-dir build -L "unit|lint" --output-on-failure
