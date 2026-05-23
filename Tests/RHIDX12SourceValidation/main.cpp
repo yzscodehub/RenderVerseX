@@ -6,6 +6,15 @@
 #include <sstream>
 #include <string>
 
+// =============================================================================
+// SOURCE-PATTERN LINT — NOT A BEHAVIORAL TEST.
+// These checks grep the backend .cpp text for expected substrings. They prove
+// a pattern is *present in source*, not that the runtime behavior is correct,
+// and they go stale silently when a refactor preserves behavior but renames a
+// symbol. CTest label: "lint" (see Tests/CMakeLists.txt). Converting these into
+// real device/behavioral tests is tracked as a Phase 2 follow-on plan.
+// =============================================================================
+
 using namespace RVX::Test;
 
 namespace
