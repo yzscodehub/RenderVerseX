@@ -302,3 +302,55 @@ foreach(SHADER ${TEST_SHADERS})
     get_filename_component(SHADER_NAME ${SHADER} NAME)
     configure_file(${SHADER} ${CMAKE_CURRENT_BINARY_DIR}/Shaders/${SHADER_NAME} COPYONLY)
 endforeach()
+
+# =============================================================================
+# CTest registration (labels: unit | gpu | lint)
+#   unit -> CPU-only, the CI gate set      (ctest -L unit)
+#   gpu  -> needs a real device, headless-skip
+#   lint -> source-pattern checks, not behavioral (see Task 0.3)
+# =============================================================================
+
+# --- unit (CPU-only) ---
+add_test(NAME RenderGraphValidation         COMMAND RenderGraphValidation)
+add_test(NAME GPUResourceManagerValidation  COMMAND GPUResourceManagerValidation)
+add_test(NAME GPUUploadServiceValidation    COMMAND GPUUploadServiceValidation)
+add_test(NAME RenderSceneValidation         COMMAND RenderSceneValidation)
+add_test(NAME RenderPassBindingValidation   COMMAND RenderPassBindingValidation)
+add_test(NAME MaterialSystemValidation      COMMAND MaterialSystemValidation)
+add_test(NAME ActorComponentValidation      COMMAND ActorComponentValidation)
+add_test(NAME SpatialComponentValidation    COMMAND SpatialComponentValidation)
+add_test(NAME ResourceInstantiationValidation COMMAND ResourceInstantiationValidation)
+add_test(NAME ResourceViewCacheValidation   COMMAND ResourceViewCacheValidation)
+add_test(NAME SystemIntegrationTest         COMMAND SystemIntegrationTest)
+set_tests_properties(
+    RenderGraphValidation GPUResourceManagerValidation GPUUploadServiceValidation
+    RenderSceneValidation RenderPassBindingValidation MaterialSystemValidation
+    ActorComponentValidation SpatialComponentValidation ResourceInstantiationValidation
+    ResourceViewCacheValidation SystemIntegrationTest
+    PROPERTIES LABELS "unit" TIMEOUT 120)
+
+# --- lint (source-pattern checks; see Task 0.3) ---
+add_test(NAME RHIDX12SourceValidation   COMMAND RHIDX12SourceValidation)
+add_test(NAME RHIDX11SourceValidation   COMMAND RHIDX11SourceValidation)
+add_test(NAME RHIVulkanSourceValidation COMMAND RHIVulkanSourceValidation)
+set_tests_properties(
+    RHIDX12SourceValidation RHIDX11SourceValidation RHIVulkanSourceValidation
+    PROPERTIES LABELS "lint" TIMEOUT 60)
+
+# --- gpu (needs a real device; headless CI skips these) ---
+if(RVX_ENABLE_DX12)
+    add_test(NAME DX12Validation COMMAND DX12Validation)
+    set_tests_properties(DX12Validation PROPERTIES LABELS "gpu" TIMEOUT 120)
+endif()
+if(RVX_ENABLE_VULKAN)
+    add_test(NAME VulkanValidation COMMAND VulkanValidation)
+    set_tests_properties(VulkanValidation PROPERTIES LABELS "gpu" TIMEOUT 120)
+endif()
+if(RVX_ENABLE_DX11)
+    add_test(NAME DX11Validation COMMAND DX11Validation)
+    set_tests_properties(DX11Validation PROPERTIES LABELS "gpu" TIMEOUT 120)
+endif()
+if(RVX_ENABLE_DX12 AND RVX_ENABLE_VULKAN)
+    add_test(NAME CrossBackendValidation COMMAND CrossBackendValidation)
+    set_tests_properties(CrossBackendValidation PROPERTIES LABELS "gpu" TIMEOUT 180)
+endif()

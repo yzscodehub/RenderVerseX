@@ -201,6 +201,7 @@ if(RVX_BUILD_SAMPLES)
 endif()
 
 if(RVX_BUILD_TESTS)
+    enable_testing()
     add_subdirectory(Tests)
 endif()
 
