@@ -1,175 +1,161 @@
 #include "Core/Core.h"
 #include "RHI/RHI.h"
-#include "TestFramework/TestRunner.h"
+#include "Common/GpuTestUtils.h"
+
+#include <gtest/gtest.h>
+
+#include <cstring>
+#include <vector>
 
 using namespace RVX;
-using namespace RVX::Test;
 
 // =============================================================================
 // Vulkan Validation Tests
 // =============================================================================
 
-bool Test_DeviceCreation()
+TEST(VulkanValidation, DeviceCreation)
 {
     RHIDeviceDesc desc;
     desc.enableDebugLayer = true;
-    
+
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, desc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    TEST_ASSERT_EQ(device->GetBackendType(), RHIBackendType::Vulkan);
-    
-    return true;
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+    EXPECT_EQ(device->GetBackendType(), RHIBackendType::Vulkan);
 }
 
-bool Test_BufferCreation()
+TEST(VulkanValidation, BufferCreation)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 1024;
     bufferDesc.usage = RHIBufferUsage::Vertex;
     bufferDesc.memoryType = RHIMemoryType::Default;
     bufferDesc.debugName = "TestVertexBuffer";
-    
+
     auto buffer = device->CreateBuffer(bufferDesc);
-    TEST_ASSERT_NOT_NULL(buffer.Get());
-    TEST_ASSERT_EQ(buffer->GetSize(), 1024u);
-    
-    return true;
+    ASSERT_NE(nullptr, buffer.Get());
+    EXPECT_EQ(buffer->GetSize(), 1024u);
 }
 
-bool Test_UploadBuffer()
+TEST(VulkanValidation, UploadBuffer)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 256;
     bufferDesc.usage = RHIBufferUsage::Constant;
     bufferDesc.memoryType = RHIMemoryType::Upload;
     bufferDesc.debugName = "TestUploadBuffer";
-    
+
     auto buffer = device->CreateBuffer(bufferDesc);
-    TEST_ASSERT_NOT_NULL(buffer.Get());
-    
+    ASSERT_NE(nullptr, buffer.Get());
+
     void* mappedData = buffer->Map();
-    TEST_ASSERT_NOT_NULL(mappedData);
-    
+    ASSERT_NE(nullptr, mappedData);
+
     float testData[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     std::memcpy(mappedData, testData, sizeof(testData));
     buffer->Unmap();
-    
-    return true;
 }
 
-bool Test_TextureCreation()
+TEST(VulkanValidation, TextureCreation)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
     auto textureDesc = RHITextureDesc::Texture2D(512, 512, RHIFormat::RGBA8_UNORM);
     textureDesc.debugName = "TestTexture";
     auto texture = device->CreateTexture(textureDesc);
-    TEST_ASSERT_NOT_NULL(texture.Get());
-    TEST_ASSERT_EQ(texture->GetWidth(), 512u);
-    TEST_ASSERT_EQ(texture->GetHeight(), 512u);
-    
-    return true;
+    ASSERT_NE(nullptr, texture.Get());
+    EXPECT_EQ(texture->GetWidth(), 512u);
+    EXPECT_EQ(texture->GetHeight(), 512u);
 }
 
-bool Test_RenderTargetTexture()
+TEST(VulkanValidation, RenderTargetTexture)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
     auto textureDesc = RHITextureDesc::RenderTarget(1920, 1080, RHIFormat::RGBA16_FLOAT);
     textureDesc.debugName = "TestRenderTarget";
     auto texture = device->CreateTexture(textureDesc);
-    TEST_ASSERT_NOT_NULL(texture.Get());
-    TEST_ASSERT_TRUE(HasFlag(texture->GetUsage(), RHITextureUsage::RenderTarget));
-    
-    return true;
+    ASSERT_NE(nullptr, texture.Get());
+    EXPECT_TRUE(HasFlag(texture->GetUsage(), RHITextureUsage::RenderTarget));
 }
 
-bool Test_DepthStencilTexture()
+TEST(VulkanValidation, DepthStencilTexture)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
     auto textureDesc = RHITextureDesc::DepthStencil(1920, 1080, RHIFormat::D24_UNORM_S8_UINT);
     textureDesc.debugName = "TestDepthStencil";
     auto texture = device->CreateTexture(textureDesc);
-    TEST_ASSERT_NOT_NULL(texture.Get());
-    TEST_ASSERT_TRUE(HasFlag(texture->GetUsage(), RHITextureUsage::DepthStencil));
-    
-    return true;
+    ASSERT_NE(nullptr, texture.Get());
+    EXPECT_TRUE(HasFlag(texture->GetUsage(), RHITextureUsage::DepthStencil));
 }
 
-bool Test_TextureView()
+TEST(VulkanValidation, TextureView)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
     auto textureDesc = RHITextureDesc::Texture2D(256, 256, RHIFormat::RGBA8_UNORM);
     auto texture = device->CreateTexture(textureDesc);
-    TEST_ASSERT_NOT_NULL(texture.Get());
-    
+    ASSERT_NE(nullptr, texture.Get());
+
     RHITextureViewDesc viewDesc;
     viewDesc.format = RHIFormat::RGBA8_UNORM;
     auto view = device->CreateTextureView(texture.Get(), viewDesc);
-    TEST_ASSERT_NOT_NULL(view.Get());
-    
-    return true;
+    ASSERT_NE(nullptr, view.Get());
 }
 
-bool Test_Sampler()
+TEST(VulkanValidation, Sampler)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
     RHISamplerDesc samplerDesc;
     samplerDesc.magFilter = RHIFilterMode::Linear;
     samplerDesc.minFilter = RHIFilterMode::Linear;
     samplerDesc.debugName = "TestSampler";
-    
+
     auto sampler = device->CreateSampler(samplerDesc);
-    TEST_ASSERT_NOT_NULL(sampler.Get());
-    
-    return true;
+    ASSERT_NE(nullptr, sampler.Get());
 }
 
-bool Test_CommandContext()
+TEST(VulkanValidation, CommandContext)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
     auto ctx = device->CreateCommandContext(RHICommandQueueType::Graphics);
-    TEST_ASSERT_NOT_NULL(ctx.Get());
-    
+    ASSERT_NE(nullptr, ctx.Get());
+
     ctx->Begin();
     ctx->End();
-    
+
     device->SubmitCommandContext(ctx.Get(), nullptr);
     device->WaitIdle();
-    
-    return true;
 }
 
-bool Test_BarrierBatching()
+TEST(VulkanValidation, BarrierBatching)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
     // Create multiple textures
     std::vector<RHITextureRef> textures;
     for (int i = 0; i < 5; ++i)
@@ -177,211 +163,140 @@ bool Test_BarrierBatching()
         auto desc = RHITextureDesc::RenderTarget(256, 256, RHIFormat::RGBA8_UNORM);
         desc.debugName = "BarrierTestTexture";
         textures.push_back(device->CreateTexture(desc));
-        TEST_ASSERT_NOT_NULL(textures.back().Get());
+        ASSERT_NE(nullptr, textures.back().Get());
     }
-    
+
     auto ctx = device->CreateCommandContext(RHICommandQueueType::Graphics);
     ctx->Begin();
-    
+
     // Issue multiple barriers - should be batched internally
     for (auto& tex : textures)
     {
         ctx->TextureBarrier({tex.Get(), RHIResourceState::Undefined, RHIResourceState::RenderTarget});
     }
-    
+
     // More barriers
     for (auto& tex : textures)
     {
         ctx->TextureBarrier({tex.Get(), RHIResourceState::RenderTarget, RHIResourceState::ShaderResource});
     }
-    
+
     ctx->End();
-    
+
     device->SubmitCommandContext(ctx.Get(), nullptr);
     device->WaitIdle();
-    
-    return true;
 }
 
-bool Test_Fence()
+TEST(VulkanValidation, Fence)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
     auto fence = device->CreateFence(0);
-    TEST_ASSERT_NOT_NULL(fence.Get());
-    TEST_ASSERT_EQ(fence->GetCompletedValue(), 0u);
-    
+    ASSERT_NE(nullptr, fence.Get());
+    EXPECT_EQ(fence->GetCompletedValue(), 0u);
+
     fence->Signal(1);
     fence->Wait(1);
-    TEST_ASSERT_TRUE(fence->GetCompletedValue() >= 1u);
-    
-    return true;
+    EXPECT_TRUE(fence->GetCompletedValue() >= 1u);
 }
 
-bool Test_Heap()
+TEST(VulkanValidation, Heap)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
     RHIHeapDesc heapDesc;
     heapDesc.size = 64 * 1024 * 1024;
     heapDesc.type = RHIHeapType::Default;
     heapDesc.flags = RHIHeapFlags::AllowRenderTargets;
     heapDesc.debugName = "TestHeap";
-    
+
     auto heap = device->CreateHeap(heapDesc);
-    TEST_ASSERT_NOT_NULL(heap.Get());
-    TEST_ASSERT_EQ(heap->GetSize(), 64u * 1024u * 1024u);
-    
-    return true;
+    ASSERT_NE(nullptr, heap.Get());
+    EXPECT_EQ(heap->GetSize(), 64u * 1024u * 1024u);
 }
 
-bool Test_PlacedTexture()
+TEST(VulkanValidation, PlacedTexture)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
     RHIHeapDesc heapDesc;
     heapDesc.size = 64 * 1024 * 1024;
     heapDesc.type = RHIHeapType::Default;
     heapDesc.flags = RHIHeapFlags::AllowRenderTargets;
-    
+
     auto heap = device->CreateHeap(heapDesc);
-    TEST_ASSERT_NOT_NULL(heap.Get());
-    
+    ASSERT_NE(nullptr, heap.Get());
+
     auto textureDesc = RHITextureDesc::RenderTarget(1024, 1024, RHIFormat::RGBA16_FLOAT);
     textureDesc.debugName = "PlacedRenderTarget";
-    
+
     auto memReq = device->GetTextureMemoryRequirements(textureDesc);
-    TEST_ASSERT_TRUE(memReq.size > 0);
-    
+    EXPECT_TRUE(memReq.size > 0);
+
     auto texture = device->CreatePlacedTexture(heap.Get(), 0, textureDesc);
-    TEST_ASSERT_NOT_NULL(texture.Get());
-    
-    return true;
+    ASSERT_NE(nullptr, texture.Get());
 }
 
-bool Test_PlacedBuffer()
+TEST(VulkanValidation, PlacedBuffer)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
     RHIHeapDesc heapDesc;
     heapDesc.size = 16 * 1024 * 1024;
     heapDesc.type = RHIHeapType::Default;
     heapDesc.flags = RHIHeapFlags::AllowBuffers;
-    
+
     auto heap = device->CreateHeap(heapDesc);
-    TEST_ASSERT_NOT_NULL(heap.Get());
-    
+    ASSERT_NE(nullptr, heap.Get());
+
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 1024 * 1024;
     bufferDesc.usage = RHIBufferUsage::UnorderedAccess | RHIBufferUsage::Structured;
     bufferDesc.memoryType = RHIMemoryType::Default;
     bufferDesc.stride = 16;
     bufferDesc.debugName = "PlacedStructuredBuffer";
-    
+
     auto buffer = device->CreatePlacedBuffer(heap.Get(), 0, bufferDesc);
-    TEST_ASSERT_NOT_NULL(buffer.Get());
-    TEST_ASSERT_EQ(buffer->GetSize(), 1024u * 1024u);
-    
-    return true;
+    ASSERT_NE(nullptr, buffer.Get());
+    EXPECT_EQ(buffer->GetSize(), 1024u * 1024u);
 }
 
-bool Test_ComputeContext()
+TEST(VulkanValidation, ComputeContext)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
     auto ctx = device->CreateCommandContext(RHICommandQueueType::Compute);
-    TEST_ASSERT_NOT_NULL(ctx.Get());
-    
+    ASSERT_NE(nullptr, ctx.Get());
+
     ctx->Begin();
     ctx->End();
-    
+
     device->SubmitCommandContext(ctx.Get(), nullptr);
     device->WaitIdle();
-    
-    return true;
 }
 
-bool Test_CopyContext()
+TEST(VulkanValidation, CopyContext)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
     auto ctx = device->CreateCommandContext(RHICommandQueueType::Copy);
-    TEST_ASSERT_NOT_NULL(ctx.Get());
-    
+    ASSERT_NE(nullptr, ctx.Get());
+
     ctx->Begin();
     ctx->End();
-    
+
     device->SubmitCommandContext(ctx.Get(), nullptr);
     device->WaitIdle();
-    
-    return true;
-}
-
-int main()
-{
-    Log::Initialize();
-
-#if defined(__APPLE__)
-    // Vulkan is not enabled on macOS (using Metal instead)
-    RVX_CORE_INFO("Vulkan Validation Tests - SKIPPED (not available on macOS)");
-    Log::Shutdown();
-    return 0;
-#endif
-
-    RVX_CORE_INFO("Vulkan Validation Tests");
-    
-    TestSuite suite;
-    
-    // Device tests
-    suite.AddTest("DeviceCreation", Test_DeviceCreation);
-    
-    // Buffer tests
-    suite.AddTest("BufferCreation", Test_BufferCreation);
-    suite.AddTest("UploadBuffer", Test_UploadBuffer);
-    
-    // Texture tests
-    suite.AddTest("TextureCreation", Test_TextureCreation);
-    suite.AddTest("RenderTargetTexture", Test_RenderTargetTexture);
-    suite.AddTest("DepthStencilTexture", Test_DepthStencilTexture);
-    suite.AddTest("TextureView", Test_TextureView);
-    
-    // Other resources
-    suite.AddTest("Sampler", Test_Sampler);
-    suite.AddTest("Fence", Test_Fence);
-    
-    // Command context tests
-    suite.AddTest("CommandContext", Test_CommandContext);
-    suite.AddTest("ComputeContext", Test_ComputeContext);
-    suite.AddTest("CopyContext", Test_CopyContext);
-    suite.AddTest("BarrierBatching", Test_BarrierBatching);
-    
-    // Memory aliasing tests
-    suite.AddTest("Heap", Test_Heap);
-    suite.AddTest("PlacedTexture", Test_PlacedTexture);
-    suite.AddTest("PlacedBuffer", Test_PlacedBuffer);
-    
-    auto results = suite.Run();
-    suite.PrintResults(results);
-    
-    Log::Shutdown();
-    
-    for (const auto& result : results)
-    {
-        if (!result.passed)
-            return 1;
-    }
-    
-    return 0;
 }

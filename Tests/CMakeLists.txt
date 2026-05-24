@@ -100,43 +100,52 @@ rvx_add_gtest(
 
 # DX12 Validation Tests
 if(RVX_ENABLE_DX12)
-    add_executable(DX12Validation
-        DX12Validation/main.cpp
-    )
-    target_link_libraries(DX12Validation PRIVATE
-        RVX_TestFramework
-        RVX::RenderGraph
-        RVX::RHI
-        ${RVX_ALL_BACKENDS}
-        glfw
+    rvx_add_gtest(
+        NAME DX12Validation
+        SOURCES DX12Validation/main.cpp
+        LIBS
+            RVX::Core
+            RVX::RenderGraph
+            RVX::RHI
+            ${RVX_ALL_BACKENDS}
+            glfw
+        INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
+        LABELS gpu
+        TIMEOUT 120
     )
 endif()
 
 # Vulkan Validation Tests
 if(RVX_ENABLE_VULKAN)
-    add_executable(VulkanValidation
-        VulkanValidation/main.cpp
-    )
-    target_link_libraries(VulkanValidation PRIVATE
-        RVX_TestFramework
-        RVX::RenderGraph
-        RVX::RHI
-        ${RVX_ALL_BACKENDS}
-        glfw
+    rvx_add_gtest(
+        NAME VulkanValidation
+        SOURCES VulkanValidation/main.cpp
+        LIBS
+            RVX::Core
+            RVX::RenderGraph
+            RVX::RHI
+            ${RVX_ALL_BACKENDS}
+            glfw
+        INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
+        LABELS gpu
+        TIMEOUT 120
     )
 endif()
 
 # DX11 Validation Tests
 if(RVX_ENABLE_DX11)
-    add_executable(DX11Validation
-        DX11Validation/main.cpp
-    )
-    target_link_libraries(DX11Validation PRIVATE
-        RVX_TestFramework
-        RVX::RenderGraph
-        RVX::RHI
-        ${RVX_ALL_BACKENDS}
-        glfw
+    rvx_add_gtest(
+        NAME DX11Validation
+        SOURCES DX11Validation/main.cpp
+        LIBS
+            RVX::Core
+            RVX::RenderGraph
+            RVX::RHI
+            ${RVX_ALL_BACKENDS}
+            glfw
+        INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
+        LABELS gpu
+        TIMEOUT 120
     )
 endif()
 
@@ -283,15 +292,18 @@ rvx_add_gtest(
 
 # Cross-Backend Validation Tests (requires both DX12 and Vulkan)
 if(RVX_ENABLE_DX12 AND RVX_ENABLE_VULKAN)
-    add_executable(CrossBackendValidation
-        CrossBackendValidation/main.cpp
-    )
-    target_link_libraries(CrossBackendValidation PRIVATE
-        RVX_TestFramework
-        RVX::RenderGraph
-        RVX::RHI
-        ${RVX_ALL_BACKENDS}
-        glfw
+    rvx_add_gtest(
+        NAME CrossBackendValidation
+        SOURCES CrossBackendValidation/main.cpp
+        LIBS
+            RVX::Core
+            RVX::RenderGraph
+            RVX::RHI
+            ${RVX_ALL_BACKENDS}
+            glfw
+        INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
+        LABELS gpu
+        TIMEOUT 180
     )
 endif()
 
@@ -315,27 +327,3 @@ foreach(SHADER ${TEST_SHADERS})
     get_filename_component(SHADER_NAME ${SHADER} NAME)
     configure_file(${SHADER} ${CMAKE_CURRENT_BINARY_DIR}/Shaders/${SHADER_NAME} COPYONLY)
 endforeach()
-
-# =============================================================================
-# CTest registration (labels: unit | gpu)
-#   unit -> CPU-only, the CI gate set      (ctest -L unit)
-#   gpu  -> needs a real device, headless-skip
-# =============================================================================
-
-# --- gpu (needs a real device; headless CI skips these) ---
-if(RVX_ENABLE_DX12)
-    add_test(NAME DX12Validation COMMAND DX12Validation)
-    set_tests_properties(DX12Validation PROPERTIES LABELS "gpu" TIMEOUT 120)
-endif()
-if(RVX_ENABLE_VULKAN)
-    add_test(NAME VulkanValidation COMMAND VulkanValidation)
-    set_tests_properties(VulkanValidation PROPERTIES LABELS "gpu" TIMEOUT 120)
-endif()
-if(RVX_ENABLE_DX11)
-    add_test(NAME DX11Validation COMMAND DX11Validation)
-    set_tests_properties(DX11Validation PROPERTIES LABELS "gpu" TIMEOUT 120)
-endif()
-if(RVX_ENABLE_DX12 AND RVX_ENABLE_VULKAN)
-    add_test(NAME CrossBackendValidation COMMAND CrossBackendValidation)
-    set_tests_properties(CrossBackendValidation PROPERTIES LABELS "gpu" TIMEOUT 180)
-endif()
