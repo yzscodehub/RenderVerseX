@@ -158,21 +158,22 @@ rvx_add_gtest(
 )
 
 # GPU Resource Manager Validation Tests
-add_executable(GPUResourceManagerValidation
-    GPUResourceManagerValidation/main.cpp
-    ${CMAKE_SOURCE_DIR}/Render/Private/GPUResourceManager.cpp
-    ${CMAKE_SOURCE_DIR}/Render/Private/GPUUploadService.cpp
+rvx_add_gtest(
+    NAME GPUResourceManagerValidation
+    SOURCES
+        GPUResourceManagerValidation/main.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/GPUResourceManager.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/GPUUploadService.cpp
+    LIBS
+        RVX::Core
+        RVX::RHI
+        RVX::Resource
+        RVX::Scene
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Include
+    LABELS unit
+    TIMEOUT 120
 )
-target_include_directories(GPUResourceManagerValidation PRIVATE
-    ${CMAKE_SOURCE_DIR}/Render/Include
-)
-target_link_libraries(GPUResourceManagerValidation PRIVATE
-    RVX_TestFramework
-    RVX::RHI
-    RVX::Resource
-    RVX::Scene
-)
-target_compile_features(GPUResourceManagerValidation PRIVATE cxx_std_20)
 
 # GPU Upload Service Validation Tests
 rvx_add_gtest(
@@ -319,13 +320,11 @@ endforeach()
 # =============================================================================
 
 # --- unit (CPU-only) ---
-add_test(NAME GPUResourceManagerValidation  COMMAND GPUResourceManagerValidation)
 add_test(NAME RenderSceneValidation         COMMAND RenderSceneValidation)
 add_test(NAME ActorComponentValidation      COMMAND ActorComponentValidation)
 add_test(NAME SpatialComponentValidation    COMMAND SpatialComponentValidation)
 add_test(NAME ResourceInstantiationValidation COMMAND ResourceInstantiationValidation)
 set_tests_properties(
-    GPUResourceManagerValidation
     RenderSceneValidation
     ActorComponentValidation SpatialComponentValidation ResourceInstantiationValidation
     PROPERTIES LABELS "unit" TIMEOUT 120)
