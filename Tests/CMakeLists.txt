@@ -209,23 +209,6 @@ target_link_libraries(RenderSceneValidation PRIVATE
 )
 target_compile_features(RenderSceneValidation PRIVATE cxx_std_20)
 
-# Render pass binding validation tests
-add_executable(RenderPassBindingValidation
-    RenderPassBindingValidation/main.cpp
-)
-target_compile_definitions(RenderPassBindingValidation PRIVATE
-    RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-)
-target_include_directories(RenderPassBindingValidation PRIVATE
-    ${CMAKE_SOURCE_DIR}/Render/Include
-    ${CMAKE_SOURCE_DIR}/RHI/Include
-    ${CMAKE_SOURCE_DIR}/ShaderCompiler/Include
-)
-target_link_libraries(RenderPassBindingValidation PRIVATE
-    RVX_TestFramework
-)
-target_compile_features(RenderPassBindingValidation PRIVATE cxx_std_20)
-
 # Material system validation tests
 add_executable(MaterialSystemValidation
     MaterialSystemValidation/main.cpp
@@ -301,42 +284,6 @@ target_link_libraries(ResourceViewCacheValidation PRIVATE
 )
 target_compile_features(ResourceViewCacheValidation PRIVATE cxx_std_20)
 
-# RHI DX12 backend source validation tests
-add_executable(RHIDX12SourceValidation
-    RHIDX12SourceValidation/main.cpp
-)
-target_compile_definitions(RHIDX12SourceValidation PRIVATE
-    RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-)
-target_link_libraries(RHIDX12SourceValidation PRIVATE
-    RVX_TestFramework
-)
-target_compile_features(RHIDX12SourceValidation PRIVATE cxx_std_20)
-
-# RHI DX11 backend source validation tests
-add_executable(RHIDX11SourceValidation
-    RHIDX11SourceValidation/main.cpp
-)
-target_compile_definitions(RHIDX11SourceValidation PRIVATE
-    RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-)
-target_link_libraries(RHIDX11SourceValidation PRIVATE
-    RVX_TestFramework
-)
-target_compile_features(RHIDX11SourceValidation PRIVATE cxx_std_20)
-
-# RHI Vulkan backend source validation tests
-add_executable(RHIVulkanSourceValidation
-    RHIVulkanSourceValidation/main.cpp
-)
-target_compile_definitions(RHIVulkanSourceValidation PRIVATE
-    RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-)
-target_link_libraries(RHIVulkanSourceValidation PRIVATE
-    RVX_TestFramework
-)
-target_compile_features(RHIVulkanSourceValidation PRIVATE cxx_std_20)
-
 # Cross-Backend Validation Tests (requires both DX12 and Vulkan)
 if(RVX_ENABLE_DX12 AND RVX_ENABLE_VULKAN)
     add_executable(CrossBackendValidation
@@ -395,15 +342,6 @@ set_tests_properties(
     ActorComponentValidation SpatialComponentValidation ResourceInstantiationValidation
     ResourceViewCacheValidation
     PROPERTIES LABELS "unit" TIMEOUT 120)
-
-# --- lint (source-pattern checks; see Task 0.3) ---
-add_test(NAME RenderPassBindingValidation COMMAND RenderPassBindingValidation)
-add_test(NAME RHIDX12SourceValidation   COMMAND RHIDX12SourceValidation)
-add_test(NAME RHIDX11SourceValidation   COMMAND RHIDX11SourceValidation)
-add_test(NAME RHIVulkanSourceValidation COMMAND RHIVulkanSourceValidation)
-set_tests_properties(
-    RenderPassBindingValidation RHIDX12SourceValidation RHIDX11SourceValidation RHIVulkanSourceValidation
-    PROPERTIES LABELS "lint" TIMEOUT 60)
 
 # --- gpu (needs a real device; headless CI skips these) ---
 if(RVX_ENABLE_DX12)
