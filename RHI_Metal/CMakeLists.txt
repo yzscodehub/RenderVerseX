@@ -8,8 +8,10 @@ target_sources(RVX_RHI_Metal PRIVATE
     Private/MetalResources.mm
     Private/MetalCommandContext.mm
     Private/MetalPipeline.mm
+    Private/MetalQuery.mm
     Private/MetalSwapChain.mm
     Private/MetalSynchronization.mm
+    Private/MetalUpload.mm
 )
 
 target_include_directories(RVX_RHI_Metal PUBLIC
@@ -50,8 +52,10 @@ set_source_files_properties(
     Private/MetalResources.mm
     Private/MetalCommandContext.mm
     Private/MetalPipeline.mm
+    Private/MetalQuery.mm
     Private/MetalSwapChain.mm
     Private/MetalSynchronization.mm
+    Private/MetalUpload.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc"
 )
 
