@@ -240,16 +240,17 @@ target_link_libraries(ActorComponentValidation PRIVATE
 target_compile_features(ActorComponentValidation PRIVATE cxx_std_20)
 
 # Spatial component validation tests
-add_executable(SpatialComponentValidation
-    SpatialComponentValidation/main.cpp
+rvx_add_gtest(
+    NAME SpatialComponentValidation
+    SOURCES SpatialComponentValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::World
+        RVX::Scene
+        RVX::Resource
+    LABELS unit
+    TIMEOUT 120
 )
-target_link_libraries(SpatialComponentValidation PRIVATE
-    RVX_TestFramework
-    RVX::World
-    RVX::Scene
-    RVX::Resource
-)
-target_compile_features(SpatialComponentValidation PRIVATE cxx_std_20)
 
 # Resource instantiation validation tests
 add_executable(ResourceInstantiationValidation
@@ -322,10 +323,9 @@ endforeach()
 
 # --- unit (CPU-only) ---
 add_test(NAME ActorComponentValidation      COMMAND ActorComponentValidation)
-add_test(NAME SpatialComponentValidation    COMMAND SpatialComponentValidation)
 add_test(NAME ResourceInstantiationValidation COMMAND ResourceInstantiationValidation)
 set_tests_properties(
-    ActorComponentValidation SpatialComponentValidation ResourceInstantiationValidation
+    ActorComponentValidation ResourceInstantiationValidation
     PROPERTIES LABELS "unit" TIMEOUT 120)
 
 # --- gpu (needs a real device; headless CI skips these) ---

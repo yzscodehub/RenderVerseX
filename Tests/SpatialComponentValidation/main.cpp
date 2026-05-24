@@ -3,13 +3,15 @@
 #include "Scene/Components/StaticMeshComponent.h"
 #include "Scene/PrimitiveComponent.h"
 #include "Scene/SceneManager.h"
-#include "TestFramework/TestRunner.h"
 #include "World/PickingService.h"
 #include "World/SpatialSubsystem.h"
 #include "World/World.h"
 
+#include <gtest/gtest.h>
+
+#include <vector>
+
 using namespace RVX;
-using namespace RVX::Test;
 
 namespace
 {
@@ -34,7 +36,7 @@ namespace
         return {entity, primitive};
     }
 
-    bool Test_PrimitiveRaycastReturnsActorAndComponent()
+    TEST(SpatialComponentValidation, PrimitiveRaycastReturnsActorAndComponent)
     {
         SceneManager sceneManager;
         sceneManager.Initialize();
@@ -48,17 +50,16 @@ namespace
                                                      Vec3(0.0f, 0.0f, -1.0f)),
                                                  hit);
 
-        TEST_ASSERT_TRUE(didHit);
-        TEST_ASSERT_EQ(fixture.entity, hit.entity);
-        TEST_ASSERT_EQ(static_cast<Actor*>(fixture.entity), hit.actor);
-        TEST_ASSERT_EQ(static_cast<PrimitiveComponent*>(fixture.primitive), hit.component);
-        TEST_ASSERT_TRUE(hit.distance > 0.0f);
+        EXPECT_TRUE(didHit);
+        EXPECT_EQ(fixture.entity, hit.entity);
+        EXPECT_EQ(static_cast<Actor*>(fixture.entity), hit.actor);
+        EXPECT_EQ(static_cast<PrimitiveComponent*>(fixture.primitive), hit.component);
+        EXPECT_TRUE(hit.distance > 0.0f);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrimitiveBoxQueryReturnsPrimitiveAndDeduplicatedEntity()
+    TEST(SpatialComponentValidation, PrimitiveBoxQueryReturnsPrimitiveAndDeduplicatedEntity)
     {
         SceneManager sceneManager;
         sceneManager.Initialize();
@@ -70,19 +71,18 @@ namespace
 
         std::vector<PrimitiveComponent*> primitives;
         sceneManager.QueryBoxPrimitives(AABB(Vec3(-2.0f), Vec3(2.0f)), primitives);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), primitives.size());
-        TEST_ASSERT_EQ(static_cast<PrimitiveComponent*>(fixture.primitive), primitives[0]);
+        EXPECT_EQ(static_cast<size_t>(1), primitives.size());
+        EXPECT_EQ(static_cast<PrimitiveComponent*>(fixture.primitive), primitives[0]);
 
         std::vector<SceneEntity*> entities;
         sceneManager.QueryBox(AABB(Vec3(-2.0f), Vec3(2.0f)), entities);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), entities.size());
-        TEST_ASSERT_EQ(fixture.entity, entities[0]);
+        EXPECT_EQ(static_cast<size_t>(1), entities.size());
+        EXPECT_EQ(fixture.entity, entities[0]);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_LegacyEntitySpatialQueriesStillWork()
+    TEST(SpatialComponentValidation, LegacyEntitySpatialQueriesStillWork)
     {
         SceneManager sceneManager;
         sceneManager.Initialize();
@@ -98,16 +98,15 @@ namespace
                                                      Vec3(0.0f, 0.0f, -1.0f)),
                                                  hit);
 
-        TEST_ASSERT_TRUE(didHit);
-        TEST_ASSERT_EQ(entity, hit.entity);
-        TEST_ASSERT_EQ(static_cast<Actor*>(entity), hit.actor);
-        TEST_ASSERT_EQ(nullptr, hit.component);
+        EXPECT_TRUE(didHit);
+        EXPECT_EQ(entity, hit.entity);
+        EXPECT_EQ(static_cast<Actor*>(entity), hit.actor);
+        EXPECT_EQ(nullptr, hit.component);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrimitiveLayerFilterAffectsSpatialQueries()
+    TEST(SpatialComponentValidation, PrimitiveLayerFilterAffectsSpatialQueries)
     {
         SceneManager sceneManager;
         sceneManager.Initialize();
@@ -117,22 +116,21 @@ namespace
         sceneManager.RebuildSpatialIndex();
 
         RaycastHit hit;
-        TEST_ASSERT_FALSE(sceneManager.Raycast(Ray(Vec3(0.0f, 0.0f, 10.0f),
+        EXPECT_FALSE(sceneManager.Raycast(Ray(Vec3(0.0f, 0.0f, 10.0f),
                                                 Vec3(0.0f, 0.0f, -1.0f)),
                                             Spatial::QueryFilter::Layer(2),
                                             hit));
 
-        TEST_ASSERT_TRUE(sceneManager.Raycast(Ray(Vec3(0.0f, 0.0f, 10.0f),
+        EXPECT_TRUE(sceneManager.Raycast(Ray(Vec3(0.0f, 0.0f, 10.0f),
                                                Vec3(0.0f, 0.0f, -1.0f)),
                                            Spatial::QueryFilter::Layer(3),
                                            hit));
-        TEST_ASSERT_EQ(static_cast<PrimitiveComponent*>(fixture.primitive), hit.component);
+        EXPECT_EQ(static_cast<PrimitiveComponent*>(fixture.primitive), hit.component);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrimitiveCustomAndTypeFiltersUseSpatialEntityContract()
+    TEST(SpatialComponentValidation, PrimitiveCustomAndTypeFiltersUseSpatialEntityContract)
     {
         SceneManager sceneManager;
         sceneManager.Initialize();
@@ -148,18 +146,17 @@ namespace
         };
 
         RaycastHit hit;
-        TEST_ASSERT_TRUE(sceneManager.Raycast(Ray(Vec3(0.0f, 0.0f, 10.0f),
+        EXPECT_TRUE(sceneManager.Raycast(Ray(Vec3(0.0f, 0.0f, 10.0f),
                                                Vec3(0.0f, 0.0f, -1.0f)),
                                            filter,
                                            hit));
-        TEST_ASSERT_EQ(fixture.entity, hit.entity);
-        TEST_ASSERT_EQ(static_cast<PrimitiveComponent*>(fixture.primitive), hit.component);
+        EXPECT_EQ(fixture.entity, hit.entity);
+        EXPECT_EQ(static_cast<PrimitiveComponent*>(fixture.primitive), hit.component);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_NonIndexablePrimitiveFallsBackToLegacyEntityBounds()
+    TEST(SpatialComponentValidation, NonIndexablePrimitiveFallsBackToLegacyEntityBounds)
     {
         SceneManager sceneManager;
         sceneManager.Initialize();
@@ -172,21 +169,20 @@ namespace
 
         std::vector<PrimitiveComponent*> primitives;
         sceneManager.QueryBoxPrimitives(AABB(Vec3(-3.0f), Vec3(3.0f)), primitives);
-        TEST_ASSERT_TRUE(primitives.empty());
+        EXPECT_TRUE(primitives.empty());
 
         RaycastHit hit;
-        TEST_ASSERT_TRUE(sceneManager.Raycast(Ray(Vec3(0.0f, 0.0f, 10.0f),
+        EXPECT_TRUE(sceneManager.Raycast(Ray(Vec3(0.0f, 0.0f, 10.0f),
                                                Vec3(0.0f, 0.0f, -1.0f)),
                                            hit));
-        TEST_ASSERT_EQ(fixture.entity, hit.entity);
-        TEST_ASSERT_EQ(static_cast<Actor*>(fixture.entity), hit.actor);
-        TEST_ASSERT_EQ(nullptr, hit.component);
+        EXPECT_EQ(fixture.entity, hit.entity);
+        EXPECT_EQ(static_cast<Actor*>(fixture.entity), hit.actor);
+        EXPECT_EQ(nullptr, hit.component);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrimitiveDisableThroughBasePointerUpdatesSpatialIndex()
+    TEST(SpatialComponentValidation, PrimitiveDisableThroughBasePointerUpdatesSpatialIndex)
     {
         SceneManager sceneManager;
         sceneManager.Initialize();
@@ -202,18 +198,17 @@ namespace
 
         std::vector<PrimitiveComponent*> primitives;
         sceneManager.QueryBoxPrimitives(AABB(Vec3(-3.0f), Vec3(3.0f)), primitives);
-        TEST_ASSERT_TRUE(primitives.empty());
+        EXPECT_TRUE(primitives.empty());
 
         std::vector<SceneEntity*> entities;
         sceneManager.QueryBox(AABB(Vec3(-3.0f), Vec3(3.0f)), entities);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), entities.size());
-        TEST_ASSERT_EQ(fixture.entity, entities[0]);
+        EXPECT_EQ(static_cast<size_t>(1), entities.size());
+        EXPECT_EQ(fixture.entity, entities[0]);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrimitiveUnregisterImmediatelyFallsBackToEntityBounds()
+    TEST(SpatialComponentValidation, PrimitiveUnregisterImmediatelyFallsBackToEntityBounds)
     {
         SceneManager sceneManager;
         sceneManager.Initialize();
@@ -223,29 +218,28 @@ namespace
         sceneManager.Update(0.0f);
         sceneManager.RebuildSpatialIndex();
 
-        TEST_ASSERT_TRUE(static_cast<Actor*>(fixture.entity)->RemoveComponent<StaticMeshComponent>());
+        EXPECT_TRUE(static_cast<Actor*>(fixture.entity)->RemoveComponent<StaticMeshComponent>());
 
         std::vector<PrimitiveComponent*> primitives;
         sceneManager.QueryBoxPrimitives(AABB(Vec3(-3.0f), Vec3(3.0f)), primitives);
-        TEST_ASSERT_TRUE(primitives.empty());
+        EXPECT_TRUE(primitives.empty());
 
         std::vector<SceneEntity*> entities;
         sceneManager.QueryBox(AABB(Vec3(-3.0f), Vec3(3.0f)), entities);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), entities.size());
-        TEST_ASSERT_EQ(fixture.entity, entities[0]);
+        EXPECT_EQ(static_cast<size_t>(1), entities.size());
+        EXPECT_EQ(fixture.entity, entities[0]);
 
         RaycastHit hit;
-        TEST_ASSERT_TRUE(sceneManager.Raycast(Ray(Vec3(0.0f, 0.0f, 10.0f),
+        EXPECT_TRUE(sceneManager.Raycast(Ray(Vec3(0.0f, 0.0f, 10.0f),
                                                Vec3(0.0f, 0.0f, -1.0f)),
                                            hit));
-        TEST_ASSERT_EQ(fixture.entity, hit.entity);
-        TEST_ASSERT_EQ(nullptr, hit.component);
+        EXPECT_EQ(fixture.entity, hit.entity);
+        EXPECT_EQ(nullptr, hit.component);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_MultiplePrimitivesDeduplicateEntityQueries()
+    TEST(SpatialComponentValidation, MultiplePrimitivesDeduplicateEntityQueries)
     {
         SceneManager sceneManager;
         sceneManager.Initialize();
@@ -261,18 +255,17 @@ namespace
 
         std::vector<PrimitiveComponent*> primitives;
         sceneManager.QueryBoxPrimitives(AABB(Vec3(-2.0f), Vec3(5.0f)), primitives);
-        TEST_ASSERT_EQ(static_cast<size_t>(2), primitives.size());
+        EXPECT_EQ(static_cast<size_t>(2), primitives.size());
 
         std::vector<SceneEntity*> entities;
         sceneManager.QueryBox(AABB(Vec3(-2.0f), Vec3(5.0f)), entities);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), entities.size());
-        TEST_ASSERT_EQ(fixture.entity, entities[0]);
+        EXPECT_EQ(static_cast<size_t>(1), entities.size());
+        EXPECT_EQ(fixture.entity, entities[0]);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_WorldSpatialSubsystemAndPickingReturnComponentHit()
+    TEST(SpatialComponentValidation, WorldSpatialSubsystemAndPickingReturnComponentHit)
     {
         World world;
         world.Initialize();
@@ -281,27 +274,26 @@ namespace
         auto fixture = CreatePrimitive(*sceneManager, "WorldPrimitive", Vec3(0.0f));
 
         auto* spatial = world.GetSpatial();
-        TEST_ASSERT_NOT_NULL(spatial);
+        ASSERT_NE(nullptr, spatial);
         spatial->RebuildIndex();
 
         Ray ray(Vec3(0.0f, 0.0f, 10.0f), Vec3(0.0f, 0.0f, -1.0f));
         RaycastHit spatialHit;
-        TEST_ASSERT_TRUE(spatial->Raycast(ray, spatialHit));
-        TEST_ASSERT_EQ(fixture.entity, spatialHit.entity);
-        TEST_ASSERT_EQ(static_cast<Actor*>(fixture.entity), spatialHit.actor);
-        TEST_ASSERT_EQ(static_cast<PrimitiveComponent*>(fixture.primitive), spatialHit.component);
+        EXPECT_TRUE(spatial->Raycast(ray, spatialHit));
+        EXPECT_EQ(fixture.entity, spatialHit.entity);
+        EXPECT_EQ(static_cast<Actor*>(fixture.entity), spatialHit.actor);
+        EXPECT_EQ(static_cast<PrimitiveComponent*>(fixture.primitive), spatialHit.component);
 
         PickingService picking(&world);
         RaycastHit pickHit;
-        TEST_ASSERT_TRUE(picking.Pick(ray, pickHit));
-        TEST_ASSERT_EQ(fixture.entity, pickHit.entity);
-        TEST_ASSERT_EQ(static_cast<PrimitiveComponent*>(fixture.primitive), pickHit.component);
+        EXPECT_TRUE(picking.Pick(ray, pickHit));
+        EXPECT_EQ(fixture.entity, pickHit.entity);
+        EXPECT_EQ(static_cast<PrimitiveComponent*>(fixture.primitive), pickHit.component);
 
         world.Shutdown();
-        return true;
     }
 
-    bool Test_WorldSpatialSubsystemLegacyEntityDoesNotRequireUserData()
+    TEST(SpatialComponentValidation, WorldSpatialSubsystemLegacyEntityDoesNotRequireUserData)
     {
         World world;
         world.Initialize();
@@ -313,22 +305,21 @@ namespace
         entity->SetUserData(nullptr);
 
         auto* spatial = world.GetSpatial();
-        TEST_ASSERT_NOT_NULL(spatial);
+        ASSERT_NE(nullptr, spatial);
         spatial->RebuildIndex();
 
         RaycastHit hit;
-        TEST_ASSERT_TRUE(spatial->Raycast(Ray(Vec3(0.0f, 0.0f, 10.0f),
+        EXPECT_TRUE(spatial->Raycast(Ray(Vec3(0.0f, 0.0f, 10.0f),
                                              Vec3(0.0f, 0.0f, -1.0f)),
                                          hit));
-        TEST_ASSERT_EQ(entity, hit.entity);
-        TEST_ASSERT_EQ(static_cast<Actor*>(entity), hit.actor);
-        TEST_ASSERT_EQ(nullptr, hit.component);
+        EXPECT_EQ(entity, hit.entity);
+        EXPECT_EQ(static_cast<Actor*>(entity), hit.actor);
+        EXPECT_EQ(nullptr, hit.component);
 
         world.Shutdown();
-        return true;
     }
 
-    bool Test_WorldEntityQueriesDeduplicateMultiPrimitiveActors()
+    TEST(SpatialComponentValidation, WorldEntityQueriesDeduplicateMultiPrimitiveActors)
     {
         World world;
         world.Initialize();
@@ -341,19 +332,18 @@ namespace
         secondPrimitive->SetLocalBounds(AABB(Vec3(-1.0f), Vec3(1.0f)));
 
         auto* spatial = world.GetSpatial();
-        TEST_ASSERT_NOT_NULL(spatial);
+        ASSERT_NE(nullptr, spatial);
         spatial->RebuildIndex();
 
         std::vector<SceneEntity*> entities;
         spatial->QueryBox(AABB(Vec3(-2.0f), Vec3(5.0f)), entities);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), entities.size());
-        TEST_ASSERT_EQ(fixture.entity, entities[0]);
+        EXPECT_EQ(static_cast<size_t>(1), entities.size());
+        EXPECT_EQ(fixture.entity, entities[0]);
 
         world.Shutdown();
-        return true;
     }
 
-    bool Test_WorldRetiredPrimitiveProxyIsSafeUntilRebuild()
+    TEST(SpatialComponentValidation, WorldRetiredPrimitiveProxyIsSafeUntilRebuild)
     {
         World world;
         world.Initialize();
@@ -363,68 +353,38 @@ namespace
         fixture.entity->SetLocalBounds(AABB(Vec3(-2.0f), Vec3(2.0f)));
 
         auto* spatial = world.GetSpatial();
-        TEST_ASSERT_NOT_NULL(spatial);
+        ASSERT_NE(nullptr, spatial);
         spatial->RebuildIndex();
 
-        TEST_ASSERT_TRUE(static_cast<Actor*>(fixture.entity)->RemoveComponent<StaticMeshComponent>());
+        EXPECT_TRUE(static_cast<Actor*>(fixture.entity)->RemoveComponent<StaticMeshComponent>());
 
         std::vector<SceneEntity*> staleEntities;
         spatial->QueryBox(AABB(Vec3(-3.0f), Vec3(3.0f)), staleEntities);
-        TEST_ASSERT_TRUE(staleEntities.empty());
+        EXPECT_TRUE(staleEntities.empty());
 
         spatial->RebuildIndex();
         std::vector<SceneEntity*> rebuiltEntities;
         spatial->QueryBox(AABB(Vec3(-3.0f), Vec3(3.0f)), rebuiltEntities);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), rebuiltEntities.size());
-        TEST_ASSERT_EQ(fixture.entity, rebuiltEntities[0]);
+        EXPECT_EQ(static_cast<size_t>(1), rebuiltEntities.size());
+        EXPECT_EQ(fixture.entity, rebuiltEntities[0]);
 
         world.Shutdown();
-        return true;
     }
-} // namespace
 
-int main()
-{
-    Log::Initialize();
-    RVX_CORE_INFO("Spatial Component Validation Tests");
-
-    TestSuite suite;
-    suite.AddTest("PrimitiveRaycastReturnsActorAndComponent",
-                  Test_PrimitiveRaycastReturnsActorAndComponent);
-    suite.AddTest("PrimitiveBoxQueryReturnsPrimitiveAndDeduplicatedEntity",
-                  Test_PrimitiveBoxQueryReturnsPrimitiveAndDeduplicatedEntity);
-    suite.AddTest("LegacyEntitySpatialQueriesStillWork",
-                  Test_LegacyEntitySpatialQueriesStillWork);
-    suite.AddTest("PrimitiveLayerFilterAffectsSpatialQueries",
-                  Test_PrimitiveLayerFilterAffectsSpatialQueries);
-    suite.AddTest("PrimitiveCustomAndTypeFiltersUseSpatialEntityContract",
-                  Test_PrimitiveCustomAndTypeFiltersUseSpatialEntityContract);
-    suite.AddTest("NonIndexablePrimitiveFallsBackToLegacyEntityBounds",
-                  Test_NonIndexablePrimitiveFallsBackToLegacyEntityBounds);
-    suite.AddTest("PrimitiveDisableThroughBasePointerUpdatesSpatialIndex",
-                  Test_PrimitiveDisableThroughBasePointerUpdatesSpatialIndex);
-    suite.AddTest("PrimitiveUnregisterImmediatelyFallsBackToEntityBounds",
-                  Test_PrimitiveUnregisterImmediatelyFallsBackToEntityBounds);
-    suite.AddTest("MultiplePrimitivesDeduplicateEntityQueries",
-                  Test_MultiplePrimitivesDeduplicateEntityQueries);
-    suite.AddTest("WorldSpatialSubsystemAndPickingReturnComponentHit",
-                  Test_WorldSpatialSubsystemAndPickingReturnComponentHit);
-    suite.AddTest("WorldSpatialSubsystemLegacyEntityDoesNotRequireUserData",
-                  Test_WorldSpatialSubsystemLegacyEntityDoesNotRequireUserData);
-    suite.AddTest("WorldEntityQueriesDeduplicateMultiPrimitiveActors",
-                  Test_WorldEntityQueriesDeduplicateMultiPrimitiveActors);
-    suite.AddTest("WorldRetiredPrimitiveProxyIsSafeUntilRebuild",
-                  Test_WorldRetiredPrimitiveProxyIsSafeUntilRebuild);
-
-    auto results = suite.Run();
-    suite.PrintResults(results);
-
-    Log::Shutdown();
-
-    for (const auto& result : results)
+    class LogEnvironment final : public ::testing::Environment
     {
-        if (!result.passed)
-            return 1;
-    }
-    return 0;
-}
+    public:
+        void SetUp() override
+        {
+            Log::Initialize();
+        }
+
+        void TearDown() override
+        {
+            Log::Shutdown();
+        }
+    };
+
+    [[maybe_unused]] ::testing::Environment* const g_logEnvironment =
+        ::testing::AddGlobalTestEnvironment(new LogEnvironment());
+} // namespace
