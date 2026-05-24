@@ -329,7 +329,6 @@ add_test(NAME RenderGraphValidation         COMMAND RenderGraphValidation)
 add_test(NAME GPUResourceManagerValidation  COMMAND GPUResourceManagerValidation)
 add_test(NAME GPUUploadServiceValidation    COMMAND GPUUploadServiceValidation)
 add_test(NAME RenderSceneValidation         COMMAND RenderSceneValidation)
-add_test(NAME RenderPassBindingValidation   COMMAND RenderPassBindingValidation)
 add_test(NAME MaterialSystemValidation      COMMAND MaterialSystemValidation)
 add_test(NAME ActorComponentValidation      COMMAND ActorComponentValidation)
 add_test(NAME SpatialComponentValidation    COMMAND SpatialComponentValidation)
@@ -341,17 +340,18 @@ set_tests_properties(
     PROPERTIES LABELS "unit" TIMEOUT 30)
 set_tests_properties(
     RenderGraphValidation GPUResourceManagerValidation GPUUploadServiceValidation
-    RenderSceneValidation RenderPassBindingValidation MaterialSystemValidation
+    RenderSceneValidation MaterialSystemValidation
     ActorComponentValidation SpatialComponentValidation ResourceInstantiationValidation
     ResourceViewCacheValidation SystemIntegrationTest
     PROPERTIES LABELS "unit" TIMEOUT 120)
 
 # --- lint (source-pattern checks; see Task 0.3) ---
+add_test(NAME RenderPassBindingValidation COMMAND RenderPassBindingValidation)
 add_test(NAME RHIDX12SourceValidation   COMMAND RHIDX12SourceValidation)
 add_test(NAME RHIDX11SourceValidation   COMMAND RHIDX11SourceValidation)
 add_test(NAME RHIVulkanSourceValidation COMMAND RHIVulkanSourceValidation)
 set_tests_properties(
-    RHIDX12SourceValidation RHIDX11SourceValidation RHIVulkanSourceValidation
+    RenderPassBindingValidation RHIDX12SourceValidation RHIDX11SourceValidation RHIVulkanSourceValidation
     PROPERTIES LABELS "lint" TIMEOUT 60)
 
 # --- gpu (needs a real device; headless CI skips these) ---

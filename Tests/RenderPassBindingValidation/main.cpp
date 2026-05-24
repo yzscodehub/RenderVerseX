@@ -7,6 +7,13 @@
 #include <sstream>
 #include <string>
 
+// =============================================================================
+// SOURCE-PATTERN LINT - NOT A BEHAVIORAL TEST.
+// These checks grep source files for expected binding patterns. They prove that
+// strings are present in source, not that rendering behavior is correct.
+// CTest label: "lint".
+// =============================================================================
+
 using namespace RVX::Test;
 
 namespace
