@@ -260,22 +260,20 @@ target_link_libraries(ResourceInstantiationValidation PRIVATE
 target_compile_features(ResourceInstantiationValidation PRIVATE cxx_std_20)
 
 # Resource view cache validation tests
-add_executable(ResourceViewCacheValidation
-    ResourceViewCacheValidation/main.cpp
-    ${CMAKE_SOURCE_DIR}/Render/Private/Graph/ResourceViewCache.cpp
+rvx_add_gtest(
+    NAME ResourceViewCacheValidation
+    SOURCES
+        ResourceViewCacheValidation/main.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Graph/ResourceViewCache.cpp
+    LIBS
+        RVX::Core
+        RVX::RHI
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/RHI/Include
+    LABELS unit
+    TIMEOUT 120
 )
-target_compile_definitions(ResourceViewCacheValidation PRIVATE
-    RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-)
-target_include_directories(ResourceViewCacheValidation PRIVATE
-    ${CMAKE_SOURCE_DIR}/Render/Include
-    ${CMAKE_SOURCE_DIR}/RHI/Include
-)
-target_link_libraries(ResourceViewCacheValidation PRIVATE
-    RVX_TestFramework
-    RVX::RHI
-)
-target_compile_features(ResourceViewCacheValidation PRIVATE cxx_std_20)
 
 # Cross-Backend Validation Tests (requires both DX12 and Vulkan)
 if(RVX_ENABLE_DX12 AND RVX_ENABLE_VULKAN)
@@ -327,12 +325,10 @@ add_test(NAME RenderSceneValidation         COMMAND RenderSceneValidation)
 add_test(NAME ActorComponentValidation      COMMAND ActorComponentValidation)
 add_test(NAME SpatialComponentValidation    COMMAND SpatialComponentValidation)
 add_test(NAME ResourceInstantiationValidation COMMAND ResourceInstantiationValidation)
-add_test(NAME ResourceViewCacheValidation   COMMAND ResourceViewCacheValidation)
 set_tests_properties(
     RenderGraphValidation GPUResourceManagerValidation GPUUploadServiceValidation
     RenderSceneValidation
     ActorComponentValidation SpatialComponentValidation ResourceInstantiationValidation
-    ResourceViewCacheValidation
     PROPERTIES LABELS "unit" TIMEOUT 120)
 
 # --- gpu (needs a real device; headless CI skips these) ---

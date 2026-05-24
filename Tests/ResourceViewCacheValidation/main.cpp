@@ -1,6 +1,7 @@
 #include "Core/Core.h"
 #include "RHI/RHI.h"
-#include "TestFramework/TestRunner.h"
+
+#include <gtest/gtest.h>
 
 #include <unordered_map>
 
@@ -9,10 +10,26 @@
 #undef private
 
 using namespace RVX;
-using namespace RVX::Test;
 
 namespace
 {
+    class LogEnvironment final : public ::testing::Environment
+    {
+    public:
+        void SetUp() override
+        {
+            Log::Initialize();
+        }
+
+        void TearDown() override
+        {
+            Log::Shutdown();
+        }
+    };
+
+    [[maybe_unused]] ::testing::Environment* const g_logEnvironment =
+        ::testing::AddGlobalTestEnvironment(new LogEnvironment());
+
     class FakeTexture final : public RHITexture
     {
     public:
@@ -102,7 +119,7 @@ namespace
         RHICapabilities m_capabilities;
     };
 
-    bool Test_TextureViewKeyUsesFullDescriptorIdentity()
+    TEST(ResourceViewCacheValidation, TextureViewKeyUsesFullDescriptorIdentity)
     {
         auto* textureA = reinterpret_cast<RHITexture*>(0x1000);
         auto* textureB = reinterpret_cast<RHITexture*>(0x2000);
@@ -137,11 +154,11 @@ namespace
         const auto keyMip = makeKey(textureA, descMip);
         const auto keyLayer = makeKey(textureA, descLayer);
 
-        TEST_ASSERT_TRUE(keyA == keyA2);
-        TEST_ASSERT_TRUE(keyA == keyRenamed);
-        TEST_ASSERT_FALSE(keyA == keyTextureB);
-        TEST_ASSERT_FALSE(keyA == keyMip);
-        TEST_ASSERT_FALSE(keyA == keyLayer);
+        EXPECT_TRUE(keyA == keyA2);
+        EXPECT_TRUE(keyA == keyRenamed);
+        EXPECT_FALSE(keyA == keyTextureB);
+        EXPECT_FALSE(keyA == keyMip);
+        EXPECT_FALSE(keyA == keyLayer);
 
         std::unordered_map<ResourceViewCache::TextureViewKey, int, ResourceViewCache::TextureViewKeyHash> keys;
         keys[keyA] = 1;
@@ -149,13 +166,11 @@ namespace
         keys[keyLayer] = 3;
         keys[keyTextureB] = 4;
 
-        TEST_ASSERT_EQ(keys.size(), static_cast<size_t>(4));
-        TEST_ASSERT_EQ(keys[keyA2], 1);
-
-        return true;
+        EXPECT_EQ(static_cast<size_t>(4), keys.size());
+        EXPECT_EQ(1, keys[keyA2]);
     }
 
-    bool Test_TextureViewCacheInvalidationUpdatesGeneration()
+    TEST(ResourceViewCacheValidation, TextureViewCacheInvalidationUpdatesGeneration)
     {
         FakeDevice device;
         ResourceViewCache cache;
@@ -173,53 +188,29 @@ namespace
         RHITextureView* viewA = cache.GetTextureView(&textureA, viewDesc);
         RHITextureView* viewAHit = cache.GetTextureView(&textureA, viewDesc);
 
-        TEST_ASSERT_NOT_NULL(viewA);
-        TEST_ASSERT_EQ(viewA, viewAHit);
-        TEST_ASSERT_EQ(device.createdTextureViewCount, 1u);
-        TEST_ASSERT_EQ(cache.GetStats().textureViewCount, 1u);
+        ASSERT_NE(nullptr, viewA);
+        EXPECT_EQ(viewA, viewAHit);
+        EXPECT_EQ(1u, device.createdTextureViewCount);
+        EXPECT_EQ(1u, cache.GetStats().textureViewCount);
 
         const uint64 initialGeneration = cache.GetGeneration();
         cache.InvalidateTexture(&textureB);
-        TEST_ASSERT_EQ(cache.GetGeneration(), initialGeneration);
-        TEST_ASSERT_EQ(cache.GetStats().textureViewCount, 1u);
+        EXPECT_EQ(initialGeneration, cache.GetGeneration());
+        EXPECT_EQ(1u, cache.GetStats().textureViewCount);
 
         cache.InvalidateTexture(&textureA);
-        TEST_ASSERT_EQ(cache.GetGeneration(), initialGeneration + 1);
-        TEST_ASSERT_EQ(cache.GetStats().textureViewCount, 0u);
+        EXPECT_EQ(initialGeneration + 1, cache.GetGeneration());
+        EXPECT_EQ(0u, cache.GetStats().textureViewCount);
 
         RHITextureView* recreatedView = cache.GetTextureView(&textureA, viewDesc);
-        TEST_ASSERT_NOT_NULL(recreatedView);
-        TEST_ASSERT_EQ(device.createdTextureViewCount, 2u);
+        ASSERT_NE(nullptr, recreatedView);
+        EXPECT_EQ(2u, device.createdTextureViewCount);
 
         const uint64 generationAfterRecreate = cache.GetGeneration();
         cache.Clear();
-        TEST_ASSERT_EQ(cache.GetGeneration(), generationAfterRecreate + 1);
-        TEST_ASSERT_EQ(cache.GetStats().textureViewCount, 0u);
+        EXPECT_EQ(generationAfterRecreate + 1, cache.GetGeneration());
+        EXPECT_EQ(0u, cache.GetStats().textureViewCount);
 
         cache.Shutdown();
-        return true;
     }
 } // namespace
-
-int main()
-{
-    Log::Initialize();
-    RVX_CORE_INFO("Resource View Cache Validation Tests");
-
-    TestSuite suite;
-    suite.AddTest("TextureViewKeyUsesFullDescriptorIdentity", Test_TextureViewKeyUsesFullDescriptorIdentity);
-    suite.AddTest("TextureViewCacheInvalidationUpdatesGeneration", Test_TextureViewCacheInvalidationUpdatesGeneration);
-
-    auto results = suite.Run();
-    suite.PrintResults(results);
-
-    Log::Shutdown();
-
-    for (const auto& result : results)
-    {
-        if (!result.passed)
-            return 1;
-    }
-
-    return 0;
-}
