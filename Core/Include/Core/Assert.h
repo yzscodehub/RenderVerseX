@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Core/Log.h"
+
+#include <csignal>
 #include <cstdlib>
 
 // =============================================================================
@@ -8,9 +10,15 @@
 // =============================================================================
 
 #ifdef RVX_DEBUG
-    #define RVX_DEBUGBREAK() __debugbreak()
+    #if defined(_MSC_VER)
+        #define RVX_DEBUGBREAK() __debugbreak()
+    #elif defined(__clang__) || defined(__GNUC__)
+        #define RVX_DEBUGBREAK() __builtin_trap()
+    #else
+        #define RVX_DEBUGBREAK() std::raise(SIGTRAP)
+    #endif
 #else
-    #define RVX_DEBUGBREAK()
+    #define RVX_DEBUGBREAK() ((void)0)
 #endif
 
 #define RVX_ASSERT(condition)                                               \

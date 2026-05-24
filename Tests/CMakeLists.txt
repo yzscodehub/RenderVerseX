@@ -34,6 +34,19 @@ target_link_libraries(RVX_TestFramework PUBLIC
     RVX::Core
 )
 
+# Core debug configuration validation tests
+add_executable(CoreDebugConfigValidation
+    CoreDebugConfigValidation/main.cpp
+)
+target_link_libraries(CoreDebugConfigValidation PRIVATE
+    RVX_TestFramework
+    RVX::Core
+)
+target_compile_definitions(CoreDebugConfigValidation PRIVATE
+    $<$<CONFIG:Debug>:RVX_EXPECT_DEBUG_CONFIG=1>
+)
+target_compile_features(CoreDebugConfigValidation PRIVATE cxx_std_20)
+
 # DX12 Validation Tests
 if(RVX_ENABLE_DX12)
     add_executable(DX12Validation
@@ -311,6 +324,7 @@ endforeach()
 # =============================================================================
 
 # --- unit (CPU-only) ---
+add_test(NAME CoreDebugConfigValidation    COMMAND CoreDebugConfigValidation)
 add_test(NAME RenderGraphValidation         COMMAND RenderGraphValidation)
 add_test(NAME GPUResourceManagerValidation  COMMAND GPUResourceManagerValidation)
 add_test(NAME GPUUploadServiceValidation    COMMAND GPUUploadServiceValidation)
@@ -322,6 +336,9 @@ add_test(NAME SpatialComponentValidation    COMMAND SpatialComponentValidation)
 add_test(NAME ResourceInstantiationValidation COMMAND ResourceInstantiationValidation)
 add_test(NAME ResourceViewCacheValidation   COMMAND ResourceViewCacheValidation)
 add_test(NAME SystemIntegrationTest         COMMAND SystemIntegrationTest)
+set_tests_properties(
+    CoreDebugConfigValidation
+    PROPERTIES LABELS "unit" TIMEOUT 30)
 set_tests_properties(
     RenderGraphValidation GPUResourceManagerValidation GPUUploadServiceValidation
     RenderSceneValidation RenderPassBindingValidation MaterialSystemValidation
