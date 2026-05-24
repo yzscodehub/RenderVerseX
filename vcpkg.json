@@ -12,6 +12,7 @@
   "dependencies": [
     "spdlog",
     "glfw3",
+    "gtest",
     "glm",
     "tinygltf",
     "stb",

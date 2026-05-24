@@ -2,6 +2,9 @@
 # Tests - Validation test suites
 # =============================================================================
 
+find_package(GTest CONFIG REQUIRED)
+include(GoogleTest)
+
 # Collect all enabled backend libraries
 set(RVX_ALL_BACKENDS "")
 if(RVX_ENABLE_DX11)
@@ -34,18 +37,66 @@ target_link_libraries(RVX_TestFramework PUBLIC
     RVX::Core
 )
 
+function(rvx_add_gtest)
+    set(options "")
+    set(oneValueArgs NAME TIMEOUT)
+    set(multiValueArgs SOURCES LIBS INCLUDES DEFINES LABELS)
+    cmake_parse_arguments(RVX_GTEST
+        "${options}"
+        "${oneValueArgs}"
+        "${multiValueArgs}"
+        ${ARGN}
+    )
+
+    if(NOT RVX_GTEST_NAME)
+        message(FATAL_ERROR "rvx_add_gtest requires NAME")
+    endif()
+
+    if(NOT RVX_GTEST_SOURCES)
+        message(FATAL_ERROR "rvx_add_gtest(${RVX_GTEST_NAME}) requires SOURCES")
+    endif()
+
+    if(NOT RVX_GTEST_TIMEOUT)
+        set(RVX_GTEST_TIMEOUT 120)
+    endif()
+
+    add_executable(${RVX_GTEST_NAME}
+        ${RVX_GTEST_SOURCES}
+    )
+    target_link_libraries(${RVX_GTEST_NAME} PRIVATE
+        GTest::gtest_main
+        ${RVX_GTEST_LIBS}
+    )
+    target_compile_features(${RVX_GTEST_NAME} PRIVATE cxx_std_20)
+
+    if(RVX_GTEST_INCLUDES)
+        target_include_directories(${RVX_GTEST_NAME} PRIVATE
+            ${RVX_GTEST_INCLUDES}
+        )
+    endif()
+
+    if(RVX_GTEST_DEFINES)
+        target_compile_definitions(${RVX_GTEST_NAME} PRIVATE
+            ${RVX_GTEST_DEFINES}
+        )
+    endif()
+
+    gtest_discover_tests(${RVX_GTEST_NAME}
+        PROPERTIES
+            LABELS "${RVX_GTEST_LABELS}"
+            TIMEOUT ${RVX_GTEST_TIMEOUT}
+    )
+endfunction()
+
 # Core debug configuration validation tests
-add_executable(CoreDebugConfigValidation
-    CoreDebugConfigValidation/main.cpp
+rvx_add_gtest(
+    NAME CoreDebugConfigValidation
+    SOURCES CoreDebugConfigValidation/main.cpp
+    LIBS RVX::Core
+    DEFINES $<$<CONFIG:Debug>:RVX_EXPECT_DEBUG_CONFIG=1>
+    LABELS unit
+    TIMEOUT 30
 )
-target_link_libraries(CoreDebugConfigValidation PRIVATE
-    RVX_TestFramework
-    RVX::Core
-)
-target_compile_definitions(CoreDebugConfigValidation PRIVATE
-    $<$<CONFIG:Debug>:RVX_EXPECT_DEBUG_CONFIG=1>
-)
-target_compile_features(CoreDebugConfigValidation PRIVATE cxx_std_20)
 
 # DX12 Validation Tests
 if(RVX_ENABLE_DX12)
@@ -328,7 +379,6 @@ endforeach()
 # =============================================================================
 
 # --- unit (CPU-only) ---
-add_test(NAME CoreDebugConfigValidation    COMMAND CoreDebugConfigValidation)
 add_test(NAME RenderGraphValidation         COMMAND RenderGraphValidation)
 add_test(NAME GPUResourceManagerValidation  COMMAND GPUResourceManagerValidation)
 add_test(NAME GPUUploadServiceValidation    COMMAND GPUUploadServiceValidation)
@@ -339,9 +389,6 @@ add_test(NAME SpatialComponentValidation    COMMAND SpatialComponentValidation)
 add_test(NAME ResourceInstantiationValidation COMMAND ResourceInstantiationValidation)
 add_test(NAME ResourceViewCacheValidation   COMMAND ResourceViewCacheValidation)
 add_test(NAME SystemIntegrationTest         COMMAND SystemIntegrationTest)
-set_tests_properties(
-    CoreDebugConfigValidation
-    PROPERTIES LABELS "unit" TIMEOUT 30)
 set_tests_properties(
     RenderGraphValidation GPUResourceManagerValidation GPUUploadServiceValidation
     RenderSceneValidation MaterialSystemValidation
