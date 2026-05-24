@@ -39,8 +39,8 @@ target_link_libraries(RVX_TestFramework PUBLIC
 
 function(rvx_add_gtest)
     set(options "")
-    set(oneValueArgs NAME TIMEOUT)
-    set(multiValueArgs SOURCES LIBS INCLUDES DEFINES LABELS)
+    set(oneValueArgs NAME TIMEOUT LABELS)
+    set(multiValueArgs SOURCES LIBS INCLUDES DEFINES)
     cmake_parse_arguments(RVX_GTEST
         "${options}"
         "${oneValueArgs}"
@@ -352,17 +352,18 @@ if(RVX_ENABLE_DX12 AND RVX_ENABLE_VULKAN)
 endif()
 
 # System Integration Test (Spatial + Scene + Asset)
-add_executable(SystemIntegrationTest
-    SystemIntegration/main.cpp
+rvx_add_gtest(
+    NAME SystemIntegrationTest
+    SOURCES SystemIntegration/main.cpp
+    LIBS
+        RVX::Core
+        Spatial
+        RVX::Scene
+        RVX::Resource
+        RVX::Audio
+    LABELS unit
+    TIMEOUT 120
 )
-target_link_libraries(SystemIntegrationTest PRIVATE
-    RVX::Core
-    Spatial
-    RVX::Scene
-    RVX::Resource
-    RVX::Audio
-)
-target_compile_features(SystemIntegrationTest PRIVATE cxx_std_20)
 
 # Copy test shaders
 file(GLOB TEST_SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/*.hlsl")
@@ -388,12 +389,11 @@ add_test(NAME ActorComponentValidation      COMMAND ActorComponentValidation)
 add_test(NAME SpatialComponentValidation    COMMAND SpatialComponentValidation)
 add_test(NAME ResourceInstantiationValidation COMMAND ResourceInstantiationValidation)
 add_test(NAME ResourceViewCacheValidation   COMMAND ResourceViewCacheValidation)
-add_test(NAME SystemIntegrationTest         COMMAND SystemIntegrationTest)
 set_tests_properties(
     RenderGraphValidation GPUResourceManagerValidation GPUUploadServiceValidation
     RenderSceneValidation MaterialSystemValidation
     ActorComponentValidation SpatialComponentValidation ResourceInstantiationValidation
-    ResourceViewCacheValidation SystemIntegrationTest
+    ResourceViewCacheValidation
     PROPERTIES LABELS "unit" TIMEOUT 120)
 
 # --- lint (source-pattern checks; see Task 0.3) ---

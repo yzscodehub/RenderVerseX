@@ -1,279 +1,272 @@
 /**
  * @file main.cpp
- * @brief System Integration Test
- * 
- * Validates the integration of:
+ * @brief System integration validation
+ *
+ * Validates integration between:
  * - Spatial module (BoundingBox, Frustum, BVHIndex)
  * - Scene module (SceneEntity, SceneManager)
  * - Resource module (IResource, ResourceHandle, ResourceManager)
  */
 
-#include "Core/MathTypes.h"
 #include "Core/Log.h"
-
-// Spatial module
+#include "Core/MathTypes.h"
+#include "Resource/Resource.h"
+#include "Scene/Scene.h"
 #include "Spatial/Spatial.h"
 
-// Scene module
-#include "Scene/Scene.h"
+#include <gtest/gtest.h>
 
-// Resource module
-#include "Resource/Resource.h"
-
-#include <iostream>
-#include <cassert>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 using namespace RVX;
 
-// ============================================================================
-// Test: Spatial Module
-// ============================================================================
-
-bool TestSpatialModule()
+namespace
 {
-    LOG_INFO("=== Testing Spatial Module ===");
-
-    // Test AABB (BoundingBox)
+    class LogEnvironment final : public ::testing::Environment
     {
-        AABB box(Vec3(-1, -1, -1), Vec3(1, 1, 1));
-        assert(box.IsValid());
-        assert(box.GetCenter() == Vec3(0, 0, 0));
-        assert(box.GetSize() == Vec3(2, 2, 2));
-        assert(box.Contains(Vec3(0, 0, 0)));
-        assert(!box.Contains(Vec3(2, 0, 0)));
-        LOG_INFO("  AABB: PASS");
+    public:
+        void SetUp() override
+        {
+            RVX::Log::Initialize();
+        }
+
+        void TearDown() override
+        {
+            RVX::Log::Shutdown();
+        }
+    };
+
+    [[maybe_unused]] ::testing::Environment* g_logEnvironment =
+        ::testing::AddGlobalTestEnvironment(new LogEnvironment());
+
+    class TestSpatialEntity final : public Spatial::ISpatialEntity
+    {
+    public:
+        TestSpatialEntity(Spatial::EntityHandle handle, const AABB& bounds)
+            : m_handle(handle), m_bounds(bounds)
+        {
+        }
+
+        Spatial::EntityHandle GetHandle() const override { return m_handle; }
+        AABB GetWorldBounds() const override { return m_bounds; }
+        bool IsSpatialDirty() const override { return false; }
+        void ClearSpatialDirty() override {}
+
+    private:
+        Spatial::EntityHandle m_handle;
+        AABB m_bounds;
+    };
+
+    class ResourceManagerScope final
+    {
+    public:
+        ResourceManagerScope()
+            : m_manager(Resource::ResourceManager::Get())
+        {
+            m_manager.Initialize();
+        }
+
+        ~ResourceManagerScope()
+        {
+            m_manager.Shutdown();
+        }
+
+        Resource::ResourceManager& Get() { return m_manager; }
+
+    private:
+        Resource::ResourceManager& m_manager;
+    };
+
+    class SceneManagerScope final
+    {
+    public:
+        SceneManagerScope()
+        {
+            manager.Initialize();
+        }
+
+        ~SceneManagerScope()
+        {
+            manager.Shutdown();
+        }
+
+        SceneManager manager;
+    };
+} // namespace
+
+TEST(SystemIntegration, SpatialPrimitivesAndBvh)
+{
+    {
+        AABB box(Vec3(-1.0f, -1.0f, -1.0f), Vec3(1.0f, 1.0f, 1.0f));
+        EXPECT_TRUE(box.IsValid());
+        EXPECT_EQ(Vec3(0.0f, 0.0f, 0.0f), box.GetCenter());
+        EXPECT_EQ(Vec3(2.0f, 2.0f, 2.0f), box.GetSize());
+        EXPECT_TRUE(box.Contains(Vec3(0.0f, 0.0f, 0.0f)));
+        EXPECT_FALSE(box.Contains(Vec3(2.0f, 0.0f, 0.0f)));
     }
 
-    // Test Sphere (BoundingSphere)
     {
-        Sphere sphere(Vec3(0, 0, 0), 1.0f);
-        assert(sphere.IsValid());
-        assert(sphere.Contains(Vec3(0, 0, 0)));
-        assert(sphere.Contains(Vec3(0.5f, 0, 0)));
-        assert(!sphere.Contains(Vec3(2, 0, 0)));
-        LOG_INFO("  Sphere: PASS");
+        Sphere sphere(Vec3(0.0f, 0.0f, 0.0f), 1.0f);
+        EXPECT_TRUE(sphere.IsValid());
+        EXPECT_TRUE(sphere.Contains(Vec3(0.0f, 0.0f, 0.0f)));
+        EXPECT_TRUE(sphere.Contains(Vec3(0.5f, 0.0f, 0.0f)));
+        EXPECT_FALSE(sphere.Contains(Vec3(2.0f, 0.0f, 0.0f)));
     }
 
-    // Test Frustum
     {
         Frustum frustum;
         Mat4 viewProj = glm::perspective(glm::radians(60.0f), 1.0f, 0.1f, 100.0f) *
-                        glm::lookAt(Vec3(0, 0, 5), Vec3(0, 0, 0), Vec3(0, 1, 0));
+                        glm::lookAt(Vec3(0.0f, 0.0f, 5.0f),
+                                    Vec3(0.0f, 0.0f, 0.0f),
+                                    Vec3(0.0f, 1.0f, 0.0f));
         frustum.ExtractFromMatrix(viewProj);
-        
+
         AABB boxInside(Vec3(-0.5f, -0.5f, -0.5f), Vec3(0.5f, 0.5f, 0.5f));
-        assert(frustum.IsVisible(boxInside));
-        
-        AABB boxOutside(Vec3(100, 100, 100), Vec3(101, 101, 101));
-        assert(!frustum.IsVisible(boxOutside));
-        LOG_INFO("  Frustum: PASS");
+        EXPECT_TRUE(frustum.IsVisible(boxInside));
+
+        AABB boxOutside(Vec3(100.0f, 100.0f, 100.0f), Vec3(101.0f, 101.0f, 101.0f));
+        EXPECT_FALSE(frustum.IsVisible(boxOutside));
     }
 
-    // Test BVHIndex
     {
-        // Create a simple test entity
-        class TestEntity : public Spatial::ISpatialEntity
-        {
-        public:
-            TestEntity(Spatial::EntityHandle h, const AABB& b)
-                : m_handle(h), m_bounds(b) {}
-
-            Spatial::EntityHandle GetHandle() const override { return m_handle; }
-            AABB GetWorldBounds() const override { return m_bounds; }
-            bool IsSpatialDirty() const override { return false; }
-            void ClearSpatialDirty() override {}
-
-        private:
-            Spatial::EntityHandle m_handle;
-            AABB m_bounds;
-        };
-
-        TestEntity entity1(1, AABB(Vec3(-1, -1, -1), Vec3(0, 0, 0)));
-        TestEntity entity2(2, AABB(Vec3(0, 0, 0), Vec3(1, 1, 1)));
-        TestEntity entity3(3, AABB(Vec3(10, 10, 10), Vec3(11, 11, 11)));
+        TestSpatialEntity entity1(1, AABB(Vec3(-1.0f, -1.0f, -1.0f), Vec3(0.0f, 0.0f, 0.0f)));
+        TestSpatialEntity entity2(2, AABB(Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 1.0f)));
+        TestSpatialEntity entity3(3, AABB(Vec3(10.0f, 10.0f, 10.0f), Vec3(11.0f, 11.0f, 11.0f)));
 
         std::vector<Spatial::ISpatialEntity*> entities = {&entity1, &entity2, &entity3};
 
         Spatial::BVHIndex bvh;
         bvh.Build(entities);
 
-        assert(bvh.GetEntityCount() == 3);
+        EXPECT_EQ(3u, bvh.GetEntityCount());
 
-        // Query box
         std::vector<Spatial::QueryResult> results;
-        bvh.QueryBox(AABB(Vec3(-2, -2, -2), Vec3(2, 2, 2)), 
-                     Spatial::QueryFilter::All(), results);
-        assert(results.size() == 2); // entity1 and entity2
-
-        LOG_INFO("  BVHIndex: PASS");
+        bvh.QueryBox(AABB(Vec3(-2.0f, -2.0f, -2.0f), Vec3(2.0f, 2.0f, 2.0f)),
+                     Spatial::QueryFilter::All(),
+                     results);
+        EXPECT_EQ(static_cast<size_t>(2), results.size());
     }
-
-    LOG_INFO("Spatial Module: ALL TESTS PASSED");
-    return true;
 }
 
-// ============================================================================
-// Test: Scene Module
-// ============================================================================
-
-bool TestSceneModule()
+TEST(SystemIntegration, SceneEntityAndManager)
 {
-    LOG_INFO("=== Testing Scene Module ===");
-
-    // Test SceneEntity
     {
         SceneEntity entity("TestEntity");
-        assert(entity.GetHandle() != SceneEntity::InvalidHandle);
-        assert(entity.GetName() == "TestEntity");
-        assert(entity.IsActive());
-        
-        entity.SetPosition(Vec3(1, 2, 3));
-        assert(entity.GetPosition() == Vec3(1, 2, 3));
-        
-        entity.SetLocalBounds(AABB(Vec3(-1, -1, -1), Vec3(1, 1, 1)));
-        auto worldBounds = entity.GetWorldBounds();
-        assert(worldBounds.IsValid());
-        
-        LOG_INFO("  SceneEntity: PASS");
+        EXPECT_NE(SceneEntity::InvalidHandle, entity.GetHandle());
+        EXPECT_EQ(std::string("TestEntity"), entity.GetName());
+        EXPECT_TRUE(entity.IsActive());
+
+        entity.SetPosition(Vec3(1.0f, 2.0f, 3.0f));
+        EXPECT_EQ(Vec3(1.0f, 2.0f, 3.0f), entity.GetPosition());
+
+        entity.SetLocalBounds(AABB(Vec3(-1.0f, -1.0f, -1.0f), Vec3(1.0f, 1.0f, 1.0f)));
+        EXPECT_TRUE(entity.GetWorldBounds().IsValid());
     }
 
-    // Test SceneManager
-    {
-        SceneManager manager;
-        manager.Initialize();
-        
-        assert(manager.IsInitialized());
-        assert(manager.GetEntityCount() == 0);
+    SceneManagerScope scene;
+    SceneManager& manager = scene.manager;
 
-        // Create entities
-        auto handle1 = manager.CreateEntity("Entity1");
-        auto handle2 = manager.CreateEntity("Entity2");
-        
-        assert(manager.GetEntityCount() == 2);
-        
-        auto* entity1 = manager.GetEntity(handle1);
-        assert(entity1 != nullptr);
-        assert(entity1->GetName() == "Entity1");
+    ASSERT_TRUE(manager.IsInitialized());
+    EXPECT_EQ(static_cast<size_t>(0), manager.GetEntityCount());
 
-        // Set positions and bounds
-        entity1->SetPosition(Vec3(0, 0, 0));
-        entity1->SetLocalBounds(AABB(Vec3(-1, -1, -1), Vec3(1, 1, 1)));
+    auto handle1 = manager.CreateEntity("Entity1");
+    auto handle2 = manager.CreateEntity("Entity2");
 
-        auto* entity2 = manager.GetEntity(handle2);
-        entity2->SetPosition(Vec3(5, 0, 0));
-        entity2->SetLocalBounds(AABB(Vec3(-1, -1, -1), Vec3(1, 1, 1)));
+    EXPECT_EQ(static_cast<size_t>(2), manager.GetEntityCount());
 
-        // Update and rebuild spatial index
-        manager.Update(0.0f);
-        manager.RebuildSpatialIndex();
+    auto* entity1 = manager.GetEntity(handle1);
+    ASSERT_NE(nullptr, entity1);
+    EXPECT_EQ(std::string("Entity1"), entity1->GetName());
 
-        // Query visible entities
-        Mat4 viewProj = glm::perspective(glm::radians(60.0f), 1.0f, 0.1f, 100.0f) *
-                        glm::lookAt(Vec3(0, 0, 10), Vec3(0, 0, 0), Vec3(0, 1, 0));
-        
-        std::vector<SceneEntity*> visible;
-        manager.QueryVisible(viewProj, visible);
-        assert(visible.size() >= 1);
+    entity1->SetPosition(Vec3(0.0f, 0.0f, 0.0f));
+    entity1->SetLocalBounds(AABB(Vec3(-1.0f, -1.0f, -1.0f), Vec3(1.0f, 1.0f, 1.0f)));
 
-        // Raycast
-        Ray ray(Vec3(0, 0, 10), Vec3(0, 0, -1));
-        RaycastHit hit;
-        bool didHit = manager.Raycast(ray, hit);
-        assert(didHit);
-        assert(hit.entity == entity1);
-        assert(hit.actor == static_cast<Actor*>(hit.entity));
-        assert(hit.component == nullptr);
+    auto* entity2 = manager.GetEntity(handle2);
+    ASSERT_NE(nullptr, entity2);
+    entity2->SetPosition(Vec3(5.0f, 0.0f, 0.0f));
+    entity2->SetLocalBounds(AABB(Vec3(-1.0f, -1.0f, -1.0f), Vec3(1.0f, 1.0f, 1.0f)));
 
-        // Destroy entity
-        manager.DestroyEntity(handle1);
-        assert(manager.GetEntityCount() == 1);
+    manager.Update(0.0f);
+    manager.RebuildSpatialIndex();
 
-        manager.Shutdown();
-        LOG_INFO("  SceneManager: PASS");
-    }
+    Mat4 viewProj = glm::perspective(glm::radians(60.0f), 1.0f, 0.1f, 100.0f) *
+                    glm::lookAt(Vec3(0.0f, 0.0f, 10.0f),
+                                Vec3(0.0f, 0.0f, 0.0f),
+                                Vec3(0.0f, 1.0f, 0.0f));
 
-    LOG_INFO("Scene Module: ALL TESTS PASSED");
-    return true;
+    std::vector<SceneEntity*> visible;
+    manager.QueryVisible(viewProj, visible);
+    EXPECT_GE(visible.size(), static_cast<size_t>(1));
+
+    Ray ray(Vec3(0.0f, 0.0f, 10.0f), Vec3(0.0f, 0.0f, -1.0f));
+    RaycastHit hit;
+    ASSERT_TRUE(manager.Raycast(ray, hit));
+    EXPECT_EQ(entity1, hit.entity);
+    EXPECT_EQ(static_cast<Actor*>(hit.entity), hit.actor);
+    EXPECT_EQ(nullptr, hit.component);
+
+    manager.DestroyEntity(handle1);
+    EXPECT_EQ(static_cast<size_t>(1), manager.GetEntityCount());
 }
 
-// ============================================================================
-// Test: Resource Module
-// ============================================================================
-
-bool TestResourceModule()
+TEST(SystemIntegration, ResourceBasics)
 {
-    LOG_INFO("=== Testing Resource Module ===");
-
-    // Test Resource ID generation
     {
         Resource::ResourceId id1 = Resource::GenerateResourceId("path/to/resource.png");
         Resource::ResourceId id2 = Resource::GenerateResourceId("path/to/resource.png");
         Resource::ResourceId id3 = Resource::GenerateResourceId("path/to/other.png");
 
-        assert(id1 == id2);
-        assert(id1 != id3);
-        LOG_INFO("  ResourceId: PASS");
+        EXPECT_EQ(id1, id2);
+        EXPECT_NE(id1, id3);
     }
 
-    // Test MeshResource
     {
-        auto meshResource = new Resource::MeshResource();
+        auto meshResource = std::make_unique<Resource::MeshResource>();
         meshResource->SetId(Resource::GenerateResourceId("test/mesh.obj"));
         meshResource->SetPath("test/mesh.obj");
         meshResource->SetName("TestMesh");
 
-        assert(meshResource->GetType() == Resource::ResourceType::Mesh);
-        assert(meshResource->GetTypeName() == std::string("Mesh"));
+        EXPECT_EQ(Resource::ResourceType::Mesh, meshResource->GetType());
+        EXPECT_EQ(std::string("Mesh"), meshResource->GetTypeName());
 
         auto mesh = std::make_shared<Mesh>();
-        mesh->SetPositions({Vec3(0, 0, 0), Vec3(1, 0, 0), Vec3(0, 1, 0)});
-        mesh->SetIndices(std::vector<uint32_t>{0, 1, 2});
+        mesh->SetPositions({Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, 0.0f), Vec3(0.0f, 1.0f, 0.0f)});
+        mesh->SetIndices(std::vector<uint32>{0, 1, 2});
         meshResource->SetMesh(mesh);
 
-        assert(meshResource->GetMesh() != nullptr);
-        assert(meshResource->GetMemoryUsage() > 0);
-
-        delete meshResource;
-        LOG_INFO("  MeshResource: PASS");
+        EXPECT_NE(nullptr, meshResource->GetMesh());
+        EXPECT_GT(meshResource->GetMemoryUsage(), 0u);
     }
 
-    // Test ResourceHandle
     {
         auto* resource = new Resource::MeshResource();
         resource->SetId(1);
 
         Resource::ResourceHandle<Resource::MeshResource> handle1(resource);
-        assert(handle1.IsValid());
-        assert(handle1.GetId() == 1);
+        EXPECT_TRUE(handle1.IsValid());
+        EXPECT_EQ(1u, handle1.GetId());
 
-        // Copy
         Resource::ResourceHandle<Resource::MeshResource> handle2 = handle1;
-        assert(handle2.IsValid());
-        assert(handle2.Get() == handle1.Get());
+        EXPECT_TRUE(handle2.IsValid());
+        EXPECT_EQ(handle1.Get(), handle2.Get());
 
-        // Move
         Resource::ResourceHandle<Resource::MeshResource> handle3 = std::move(handle1);
-        assert(handle3.IsValid());
-        assert(!handle1.IsValid());
-
-        LOG_INFO("  ResourceHandle: PASS");
+        EXPECT_TRUE(handle3.IsValid());
+        EXPECT_FALSE(handle1.IsValid());
     }
 
-    // Test ResourceManager
     {
-        auto& rm = Resource::ResourceManager::Get();
-        rm.Initialize();
+        ResourceManagerScope resources;
+        auto& manager = resources.Get();
 
-        assert(rm.IsInitialized());
-
-        auto stats = rm.GetStats();
-        assert(stats.loadedCount == 0);
-
-        rm.Shutdown();
-        LOG_INFO("  ResourceManager: PASS");
+        ASSERT_TRUE(manager.IsInitialized());
+        auto stats = manager.GetStats();
+        EXPECT_EQ(0u, stats.loadedCount);
     }
 
-    // Test DependencyGraph
     {
         Resource::DependencyGraph graph;
 
@@ -283,124 +276,55 @@ bool TestResourceModule()
         graph.AddResource(4, {});
 
         auto deps = graph.GetDependencies(1);
-        assert(deps.size() == 2);
+        EXPECT_EQ(static_cast<size_t>(2), deps.size());
 
         auto allDeps = graph.GetAllDependencies(1);
-        assert(allDeps.size() >= 2); // At least 2, 3 (4 may or may not be counted depending on implementation)
+        EXPECT_GE(allDeps.size(), static_cast<size_t>(2));
 
         auto loadOrder = graph.GetLoadOrder(1);
-        assert(loadOrder.size() == 4);
-        // 4 should be loaded before 2 and 3, which should be loaded before 1
-
-        assert(!graph.HasCircularDependency(1));
-
-        LOG_INFO("  DependencyGraph: PASS");
+        EXPECT_EQ(static_cast<size_t>(4), loadOrder.size());
+        EXPECT_FALSE(graph.HasCircularDependency(1));
     }
-
-    LOG_INFO("Resource Module: ALL TESTS PASSED");
-    return true;
 }
 
-// ============================================================================
-// Test: Integration
-// ============================================================================
-
-bool TestIntegration()
+TEST(SystemIntegration, SceneResourceSpatialIntegration)
 {
-    LOG_INFO("=== Testing System Integration ===");
+    ResourceManagerScope resources;
+    SceneManagerScope scene;
+    SceneManager& sceneManager = scene.manager;
 
-    // Create a complete scene with resources
-    {
-        // Initialize ResourceManager
-        auto& rm = Resource::ResourceManager::Get();
-        rm.Initialize();
+    auto handle1 = sceneManager.CreateEntity("Cube");
+    auto* cube = sceneManager.GetEntity(handle1);
+    ASSERT_NE(nullptr, cube);
+    cube->SetPosition(Vec3(0.0f, 0.0f, 0.0f));
+    cube->SetLocalBounds(AABB(Vec3(-1.0f, -1.0f, -1.0f), Vec3(1.0f, 1.0f, 1.0f)));
 
-        // Initialize SceneManager
-        SceneManager sceneManager;
-        sceneManager.Initialize();
+    auto handle2 = sceneManager.CreateEntity("Sphere");
+    auto* sphereEntity = sceneManager.GetEntity(handle2);
+    ASSERT_NE(nullptr, sphereEntity);
+    sphereEntity->SetPosition(Vec3(5.0f, 0.0f, 0.0f));
+    sphereEntity->SetLocalBounds(AABB(Vec3(-1.0f, -1.0f, -1.0f), Vec3(1.0f, 1.0f, 1.0f)));
 
-        // Create some entities with mesh resources
-        auto handle1 = sceneManager.CreateEntity("Cube");
-        auto* cube = sceneManager.GetEntity(handle1);
-        cube->SetPosition(Vec3(0, 0, 0));
-        cube->SetLocalBounds(AABB(Vec3(-1, -1, -1), Vec3(1, 1, 1)));
+    sceneManager.Update(0.0f);
+    sceneManager.RebuildSpatialIndex();
 
-        auto handle2 = sceneManager.CreateEntity("Sphere");
-        auto* sphereEntity = sceneManager.GetEntity(handle2);
-        sphereEntity->SetPosition(Vec3(5, 0, 0));
-        sphereEntity->SetLocalBounds(AABB(Vec3(-1, -1, -1), Vec3(1, 1, 1)));
+    Mat4 viewProj = glm::perspective(glm::radians(60.0f), 1.0f, 0.1f, 100.0f) *
+                    glm::lookAt(Vec3(0.0f, 0.0f, 20.0f),
+                                Vec3(0.0f, 0.0f, 0.0f),
+                                Vec3(0.0f, 1.0f, 0.0f));
 
-        // Build spatial index
-        sceneManager.Update(0.0f);
-        sceneManager.RebuildSpatialIndex();
+    std::vector<SceneEntity*> visible;
+    sceneManager.QueryVisible(viewProj, visible);
+    EXPECT_EQ(static_cast<size_t>(2), visible.size());
 
-        // Perform visibility query
-        Mat4 viewProj = glm::perspective(glm::radians(60.0f), 1.0f, 0.1f, 100.0f) *
-                        glm::lookAt(Vec3(0, 0, 20), Vec3(0, 0, 0), Vec3(0, 1, 0));
+    Ray ray(Vec3(0.0f, 0.0f, 20.0f), Vec3(0.0f, 0.0f, -1.0f));
+    RaycastHit hit;
+    ASSERT_TRUE(sceneManager.Raycast(ray, hit));
+    ASSERT_NE(nullptr, hit.entity);
+    EXPECT_EQ(static_cast<Actor*>(hit.entity), hit.actor);
+    EXPECT_EQ(nullptr, hit.component);
 
-        std::vector<SceneEntity*> visible;
-        sceneManager.QueryVisible(viewProj, visible);
-
-        LOG_INFO("  Visible entities: {}", visible.size());
-        assert(visible.size() == 2);
-
-        // Perform raycast
-        Ray ray(Vec3(0, 0, 20), Vec3(0, 0, -1));
-        RaycastHit hit;
-        bool didHit = sceneManager.Raycast(ray, hit);
-        assert(didHit);
-        assert(hit.actor == static_cast<Actor*>(hit.entity));
-        assert(hit.component == nullptr);
-        LOG_INFO("  Raycast hit: {}", hit.entity->GetName());
-
-        // Get stats
-        auto stats = sceneManager.GetStats();
-        LOG_INFO("  Entity count: {}", stats.entityCount);
-        LOG_INFO("  Active entities: {}", stats.activeEntityCount);
-        LOG_INFO("  Spatial index nodes: {}", stats.spatialStats.nodeCount);
-
-        // Cleanup
-        sceneManager.Shutdown();
-        rm.Shutdown();
-
-        LOG_INFO("  Integration: PASS");
-    }
-
-    LOG_INFO("System Integration: ALL TESTS PASSED");
-    return true;
-}
-
-// ============================================================================
-// Main
-// ============================================================================
-
-int main()
-{
-    // Initialize logging system
-    RVX::Log::Initialize();
-
-    LOG_INFO("========================================");
-    LOG_INFO("RenderVerseX System Integration Tests");
-    LOG_INFO("========================================");
-
-    bool allPassed = true;
-
-    allPassed &= TestSpatialModule();
-    allPassed &= TestSceneModule();
-    allPassed &= TestResourceModule();
-    allPassed &= TestIntegration();
-
-    LOG_INFO("========================================");
-    if (allPassed)
-    {
-        LOG_INFO("ALL TESTS PASSED!");
-        RVX::Log::Shutdown();
-        return 0;
-    }
-    else
-    {
-        LOG_ERROR("SOME TESTS FAILED!");
-        RVX::Log::Shutdown();
-        return 1;
-    }
+    auto stats = sceneManager.GetStats();
+    EXPECT_EQ(static_cast<size_t>(2), stats.entityCount);
+    EXPECT_EQ(static_cast<size_t>(2), stats.activeEntityCount);
 }
