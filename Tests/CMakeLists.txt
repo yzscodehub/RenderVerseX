@@ -210,22 +210,15 @@ target_link_libraries(RenderSceneValidation PRIVATE
 target_compile_features(RenderSceneValidation PRIVATE cxx_std_20)
 
 # Material system validation tests
-add_executable(MaterialSystemValidation
-    MaterialSystemValidation/main.cpp
+rvx_add_gtest(
+    NAME MaterialSystemValidation
+    SOURCES MaterialSystemValidation/main.cpp
+    LIBS
+        RVX::Render
+        RVX::Scene
+    LABELS unit
+    TIMEOUT 120
 )
-target_compile_definitions(MaterialSystemValidation PRIVATE
-    RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-)
-target_include_directories(MaterialSystemValidation PRIVATE
-    ${CMAKE_SOURCE_DIR}/Render/Include
-    ${CMAKE_SOURCE_DIR}/Scene/Include
-)
-target_link_libraries(MaterialSystemValidation PRIVATE
-    RVX_TestFramework
-    RVX::Render
-    RVX::Scene
-)
-target_compile_features(MaterialSystemValidation PRIVATE cxx_std_20)
 
 # Actor component validation tests
 add_executable(ActorComponentValidation
@@ -331,14 +324,13 @@ add_test(NAME RenderGraphValidation         COMMAND RenderGraphValidation)
 add_test(NAME GPUResourceManagerValidation  COMMAND GPUResourceManagerValidation)
 add_test(NAME GPUUploadServiceValidation    COMMAND GPUUploadServiceValidation)
 add_test(NAME RenderSceneValidation         COMMAND RenderSceneValidation)
-add_test(NAME MaterialSystemValidation      COMMAND MaterialSystemValidation)
 add_test(NAME ActorComponentValidation      COMMAND ActorComponentValidation)
 add_test(NAME SpatialComponentValidation    COMMAND SpatialComponentValidation)
 add_test(NAME ResourceInstantiationValidation COMMAND ResourceInstantiationValidation)
 add_test(NAME ResourceViewCacheValidation   COMMAND ResourceViewCacheValidation)
 set_tests_properties(
     RenderGraphValidation GPUResourceManagerValidation GPUUploadServiceValidation
-    RenderSceneValidation MaterialSystemValidation
+    RenderSceneValidation
     ActorComponentValidation SpatialComponentValidation ResourceInstantiationValidation
     ResourceViewCacheValidation
     PROPERTIES LABELS "unit" TIMEOUT 120)
