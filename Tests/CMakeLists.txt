@@ -191,26 +191,27 @@ rvx_add_gtest(
 )
 
 # Render Scene Validation Tests
-add_executable(RenderSceneValidation
-    RenderSceneValidation/main.cpp
-    ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderScene.cpp
-    ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderSceneCollector.cpp
+rvx_add_gtest(
+    NAME RenderSceneValidation
+    SOURCES
+        RenderSceneValidation/main.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderScene.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderSceneCollector.cpp
+    LIBS
+        RVX::Core
+        RVX::Runtime
+        RVX::World
+        RVX::Resource
+        RVX::Scene
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer
+        ${CMAKE_SOURCE_DIR}/Resource/Include
+        ${CMAKE_SOURCE_DIR}/Scene/Include
+        ${CMAKE_SOURCE_DIR}/World/Include
+    LABELS unit
+    TIMEOUT 120
 )
-target_include_directories(RenderSceneValidation PRIVATE
-    ${CMAKE_SOURCE_DIR}/Render/Include
-    ${CMAKE_SOURCE_DIR}/Render/Private/Renderer
-    ${CMAKE_SOURCE_DIR}/Resource/Include
-    ${CMAKE_SOURCE_DIR}/Scene/Include
-    ${CMAKE_SOURCE_DIR}/World/Include
-)
-target_link_libraries(RenderSceneValidation PRIVATE
-    RVX_TestFramework
-    RVX::Runtime
-    RVX::World
-    RVX::Resource
-    RVX::Scene
-)
-target_compile_features(RenderSceneValidation PRIVATE cxx_std_20)
 
 # Material system validation tests
 rvx_add_gtest(
@@ -320,12 +321,10 @@ endforeach()
 # =============================================================================
 
 # --- unit (CPU-only) ---
-add_test(NAME RenderSceneValidation         COMMAND RenderSceneValidation)
 add_test(NAME ActorComponentValidation      COMMAND ActorComponentValidation)
 add_test(NAME SpatialComponentValidation    COMMAND SpatialComponentValidation)
 add_test(NAME ResourceInstantiationValidation COMMAND ResourceInstantiationValidation)
 set_tests_properties(
-    RenderSceneValidation
     ActorComponentValidation SpatialComponentValidation ResourceInstantiationValidation
     PROPERTIES LABELS "unit" TIMEOUT 120)
 
