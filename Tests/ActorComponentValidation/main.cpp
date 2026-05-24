@@ -10,8 +10,9 @@
 #include "Scene/SceneComponent.h"
 #include "Scene/SceneEntity.h"
 #include "Scene/SceneManager.h"
-#include "TestFramework/TestRunner.h"
 #include "World/World.h"
+
+#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cmath>
@@ -20,10 +21,26 @@
 #include <type_traits>
 #include <vector>
 
-using namespace RVX::Test;
-
 namespace
 {
+    class LogEnvironment : public ::testing::Environment
+    {
+    public:
+        void SetUp() override
+        {
+            RVX::Log::Initialize();
+            RVX_CORE_INFO("Actor Component Validation Tests");
+        }
+
+        void TearDown() override
+        {
+            RVX::Log::Shutdown();
+        }
+    };
+
+    [[maybe_unused]] const auto* g_logEnvironment =
+        ::testing::AddGlobalTestEnvironment(new LogEnvironment);
+
     class TestComponent : public RVX::ActorComponent
     {
     public:
@@ -49,37 +66,35 @@ namespace
         float lastDeltaTime = 0.0f;
     };
 
-    bool Test_ActorComponentLifecycleDefaults()
+    TEST(ActorComponentValidation, ActorComponentLifecycleDefaults)
     {
         TestComponent component;
-        TEST_ASSERT_TRUE(component.IsEnabled());
-        TEST_ASSERT_FALSE(component.IsRegistered());
-        TEST_ASSERT_FALSE(component.CanEverTick());
-        TEST_ASSERT_FALSE(component.IsTickEnabled());
+        EXPECT_TRUE(component.IsEnabled());
+        EXPECT_FALSE(component.IsRegistered());
+        EXPECT_FALSE(component.CanEverTick());
+        EXPECT_FALSE(component.IsTickEnabled());
 
         component.SetCanEverTick(true);
         component.SetTickEnabled(true);
-        TEST_ASSERT_TRUE(component.CanEverTick());
-        TEST_ASSERT_TRUE(component.IsTickEnabled());
-        TEST_ASSERT_EQ(std::string("TestComponent"), std::string(component.GetClassName()));
-        return true;
+        EXPECT_TRUE(component.CanEverTick());
+        EXPECT_TRUE(component.IsTickEnabled());
+        EXPECT_EQ(std::string("TestComponent"), std::string(component.GetClassName()));
     }
 
-    bool Test_ActorAssignsUniqueDefaultComponentNames()
+    TEST(ActorComponentValidation, ActorAssignsUniqueDefaultComponentNames)
     {
         RVX::Actor actor("NamedActor");
 
         auto* first = actor.AddComponent<TestComponent>();
         auto* second = actor.AddComponent<TestComponent>();
 
-        TEST_ASSERT_NOT_NULL(first);
-        TEST_ASSERT_NOT_NULL(second);
-        TEST_ASSERT_EQ(std::string("TestComponent"), first->GetName());
-        TEST_ASSERT_EQ(std::string("TestComponent_1"), second->GetName());
-        return true;
+        ASSERT_NE(nullptr, first);
+        ASSERT_NE(nullptr, second);
+        EXPECT_EQ(std::string("TestComponent"), first->GetName());
+        EXPECT_EQ(std::string("TestComponent_1"), second->GetName());
     }
 
-    bool Test_ActorAddOwnedComponentUniquifiesExplicitComponentNames()
+    TEST(ActorComponentValidation, ActorAddOwnedComponentUniquifiesExplicitComponentNames)
     {
         RVX::Actor actor("ExplicitNameActor");
 
@@ -93,20 +108,18 @@ namespace
         auto* second = static_cast<TestComponent*>(
             actor.AddOwnedComponent(std::move(secondComponent)));
 
-        TEST_ASSERT_NOT_NULL(first);
-        TEST_ASSERT_NOT_NULL(second);
-        TEST_ASSERT_EQ(std::string("SharedName"), first->GetName());
-        TEST_ASSERT_EQ(std::string("SharedName_1"), second->GetName());
-        return true;
+        ASSERT_NE(nullptr, first);
+        ASSERT_NE(nullptr, second);
+        EXPECT_EQ(std::string("SharedName"), first->GetName());
+        EXPECT_EQ(std::string("SharedName_1"), second->GetName());
     }
 
-    bool Test_SceneEntityCompatibilityRootGetsDefaultComponentName()
+    TEST(ActorComponentValidation, SceneEntityCompatibilityRootGetsDefaultComponentName)
     {
         RVX::SceneEntity entity("NamedSceneEntity");
 
-        TEST_ASSERT_NOT_NULL(entity.GetRootComponent());
-        TEST_ASSERT_EQ(std::string("SceneComponent"), entity.GetRootComponent()->GetName());
-        return true;
+        ASSERT_NE(nullptr, entity.GetRootComponent());
+        EXPECT_EQ(std::string("SceneComponent"), entity.GetRootComponent()->GetName());
     }
 
     class CountingComponent : public RVX::ActorComponent
@@ -1001,125 +1014,121 @@ namespace
         int* m_destroyedCount = nullptr;
     };
 
-    bool Test_ActorOwnsComponentsAndDispatchesLifecycle()
+    TEST(ActorComponentValidation, ActorOwnsComponentsAndDispatchesLifecycle)
     {
         RVX::Actor actor("LifecycleActor");
         auto* component = actor.AddComponent<CountingComponent>();
         component->SetCanEverTick(true);
         component->SetTickEnabled(true);
 
-        TEST_ASSERT_EQ(&actor, component->GetOwner());
-        TEST_ASSERT_EQ(1, component->created);
+        EXPECT_EQ(&actor, component->GetOwner());
+        EXPECT_EQ(1, component->created);
 
         actor.RegisterAllComponents();
-        TEST_ASSERT_TRUE(component->IsRegistered());
-        TEST_ASSERT_EQ(1, component->registered);
-        TEST_ASSERT_EQ(1, component->initialized);
+        EXPECT_TRUE(component->IsRegistered());
+        EXPECT_EQ(1, component->registered);
+        EXPECT_EQ(1, component->initialized);
 
         actor.BeginPlay();
         actor.Tick(0.25f);
         actor.EndPlay();
         actor.UnregisterAllComponents();
 
-        TEST_ASSERT_EQ(1, component->beganPlay);
-        TEST_ASSERT_EQ(1, component->ticked);
-        TEST_ASSERT_EQ(1, component->endedPlay);
-        TEST_ASSERT_EQ(1, component->unregistered);
-        return true;
+        EXPECT_EQ(1, component->beganPlay);
+        EXPECT_EQ(1, component->ticked);
+        EXPECT_EQ(1, component->endedPlay);
+        EXPECT_EQ(1, component->unregistered);
     }
 
-    bool Test_SceneManagerUpdateDispatchesActorComponentLifecycle()
+    TEST(ActorComponentValidation, SceneManagerUpdateDispatchesActorComponentLifecycle)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
 
         const auto handle = sceneManager.CreateEntity("RuntimeLifecycleEntity");
         auto* entity = sceneManager.GetEntity(handle);
-        TEST_ASSERT_NOT_NULL(entity);
+        ASSERT_NE(nullptr, entity);
 
         RuntimeLifecycleCounters counters;
         auto component = std::make_unique<SceneManagedActorComponent>(&counters);
         auto* raw = component.get();
-        TEST_ASSERT_EQ(raw, static_cast<RVX::Actor*>(entity)->AddOwnedComponent(std::move(component)));
+        EXPECT_EQ(raw, static_cast<RVX::Actor*>(entity)->AddOwnedComponent(std::move(component)));
 
         sceneManager.Update(0.5f);
         sceneManager.Update(0.25f);
 
-        TEST_ASSERT_TRUE(raw->HasBegunPlay());
-        TEST_ASSERT_EQ(1, counters.beganPlay);
-        TEST_ASSERT_EQ(2, counters.ticked);
-        TEST_ASSERT_TRUE(IsNear(0.25f, counters.lastDeltaTime));
-        TEST_ASSERT_EQ(static_cast<size_t>(3), counters.events.size());
-        TEST_ASSERT_EQ(std::string("BeginPlay"), counters.events[0]);
-        TEST_ASSERT_EQ(std::string("Tick"), counters.events[1]);
-        TEST_ASSERT_EQ(std::string("Tick"), counters.events[2]);
+        EXPECT_TRUE(raw->HasBegunPlay());
+        EXPECT_EQ(1, counters.beganPlay);
+        EXPECT_EQ(2, counters.ticked);
+        EXPECT_TRUE(IsNear(0.25f, counters.lastDeltaTime));
+        EXPECT_EQ(static_cast<size_t>(3), counters.events.size());
+        EXPECT_EQ(std::string("BeginPlay"), counters.events[0]);
+        EXPECT_EQ(std::string("Tick"), counters.events[1]);
+        EXPECT_EQ(std::string("Tick"), counters.events[2]);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_SceneManagerBeginsComponentsAddedAfterActorBeginsPlay()
+    TEST(ActorComponentValidation, SceneManagerBeginsComponentsAddedAfterActorBeginsPlay)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
 
         const auto handle = sceneManager.CreateEntity("LateComponentEntity");
         auto* entity = sceneManager.GetEntity(handle);
-        TEST_ASSERT_NOT_NULL(entity);
+        ASSERT_NE(nullptr, entity);
 
         sceneManager.Update(0.016f);
-        TEST_ASSERT_TRUE(static_cast<RVX::Actor*>(entity)->HasBegunPlay());
+        EXPECT_TRUE(static_cast<RVX::Actor*>(entity)->HasBegunPlay());
 
         RuntimeLifecycleCounters counters;
         auto component = std::make_unique<SceneManagedActorComponent>(&counters);
         auto* raw = component.get();
-        TEST_ASSERT_EQ(raw, static_cast<RVX::Actor*>(entity)->AddOwnedComponent(std::move(component)));
-        TEST_ASSERT_FALSE(raw->HasBegunPlay());
+        EXPECT_EQ(raw, static_cast<RVX::Actor*>(entity)->AddOwnedComponent(std::move(component)));
+        EXPECT_FALSE(raw->HasBegunPlay());
 
         sceneManager.Update(0.033f);
 
-        TEST_ASSERT_TRUE(raw->HasBegunPlay());
-        TEST_ASSERT_EQ(1, counters.beganPlay);
-        TEST_ASSERT_EQ(1, counters.ticked);
-        TEST_ASSERT_TRUE(IsNear(0.033f, counters.lastDeltaTime));
-        TEST_ASSERT_EQ(static_cast<size_t>(2), counters.events.size());
-        TEST_ASSERT_EQ(std::string("BeginPlay"), counters.events[0]);
-        TEST_ASSERT_EQ(std::string("Tick"), counters.events[1]);
+        EXPECT_TRUE(raw->HasBegunPlay());
+        EXPECT_EQ(1, counters.beganPlay);
+        EXPECT_EQ(1, counters.ticked);
+        EXPECT_TRUE(IsNear(0.033f, counters.lastDeltaTime));
+        EXPECT_EQ(static_cast<size_t>(2), counters.events.size());
+        EXPECT_EQ(std::string("BeginPlay"), counters.events[0]);
+        EXPECT_EQ(std::string("Tick"), counters.events[1]);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_SceneManagerUpdateKeepsLegacyComponentTicking()
+    TEST(ActorComponentValidation, SceneManagerUpdateKeepsLegacyComponentTicking)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
 
         const auto handle = sceneManager.CreateEntity("LegacyTickEntity");
         auto* entity = sceneManager.GetEntity(handle);
-        TEST_ASSERT_NOT_NULL(entity);
+        ASSERT_NE(nullptr, entity);
 
         auto* component = entity->AddComponent<SceneManagedLegacyTickComponent>();
-        TEST_ASSERT_NOT_NULL(component);
+        ASSERT_NE(nullptr, component);
 
         sceneManager.Update(0.125f);
-        TEST_ASSERT_EQ(1, component->tickCount);
-        TEST_ASSERT_TRUE(IsNear(0.125f, component->lastDeltaTime));
+        EXPECT_EQ(1, component->tickCount);
+        EXPECT_TRUE(IsNear(0.125f, component->lastDeltaTime));
 
         entity->SetActive(false);
         sceneManager.Update(0.5f);
-        TEST_ASSERT_EQ(1, component->tickCount);
+        EXPECT_EQ(1, component->tickCount);
 
         entity->SetActive(true);
         sceneManager.Update(0.25f);
-        TEST_ASSERT_EQ(2, component->tickCount);
-        TEST_ASSERT_TRUE(IsNear(0.25f, component->lastDeltaTime));
+        EXPECT_EQ(2, component->tickCount);
+        EXPECT_TRUE(IsNear(0.25f, component->lastDeltaTime));
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_SceneManagerDispatchesLegacyComponentFullLifecycle()
+    TEST(ActorComponentValidation, SceneManagerDispatchesLegacyComponentFullLifecycle)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
@@ -1127,154 +1136,147 @@ namespace
         auto entity = std::make_shared<RVX::SceneEntity>("LegacyLifecycleEntity");
         LegacyLifecycleCounters counters;
         auto* component = entity->AddComponent<SceneManagedLegacyLifecycleComponent>(&counters);
-        TEST_ASSERT_NOT_NULL(component);
+        ASSERT_NE(nullptr, component);
 
         sceneManager.AddEntity(entity);
-        TEST_ASSERT_TRUE(component->IsRegistered());
-        TEST_ASSERT_TRUE(component->IsInitialized());
-        TEST_ASSERT_EQ(1, counters.registered);
-        TEST_ASSERT_EQ(1, counters.initialized);
+        EXPECT_TRUE(component->IsRegistered());
+        EXPECT_TRUE(component->IsInitialized());
+        EXPECT_EQ(1, counters.registered);
+        EXPECT_EQ(1, counters.initialized);
 
         sceneManager.Update(0.125f);
-        TEST_ASSERT_TRUE(component->HasBegunPlay());
-        TEST_ASSERT_EQ(1, counters.beganPlay);
-        TEST_ASSERT_EQ(1, counters.ticked);
-        TEST_ASSERT_TRUE(IsNear(0.125f, counters.lastDeltaTime));
+        EXPECT_TRUE(component->HasBegunPlay());
+        EXPECT_EQ(1, counters.beganPlay);
+        EXPECT_EQ(1, counters.ticked);
+        EXPECT_TRUE(IsNear(0.125f, counters.lastDeltaTime));
 
         sceneManager.DestroyEntity(entity->GetHandle());
-        TEST_ASSERT_EQ(1, counters.endedPlay);
-        TEST_ASSERT_EQ(1, counters.unregistered);
+        EXPECT_EQ(1, counters.endedPlay);
+        EXPECT_EQ(1, counters.unregistered);
 
         entity.reset();
-        TEST_ASSERT_EQ(1, counters.detached);
-        TEST_ASSERT_EQ(1, counters.destroyed);
+        EXPECT_EQ(1, counters.detached);
+        EXPECT_EQ(1, counters.destroyed);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_SceneManagerBeginsLegacyComponentAddedAfterEntityBeginsPlay()
+    TEST(ActorComponentValidation, SceneManagerBeginsLegacyComponentAddedAfterEntityBeginsPlay)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
 
         const auto handle = sceneManager.CreateEntity("LateLegacyLifecycleEntity");
         auto* entity = sceneManager.GetEntity(handle);
-        TEST_ASSERT_NOT_NULL(entity);
+        ASSERT_NE(nullptr, entity);
 
         sceneManager.Update(0.016f);
-        TEST_ASSERT_TRUE(entity->HasBegunPlay());
+        EXPECT_TRUE(entity->HasBegunPlay());
 
         LegacyLifecycleCounters counters;
         auto* component = entity->AddComponent<SceneManagedLegacyLifecycleComponent>(&counters);
-        TEST_ASSERT_NOT_NULL(component);
-        TEST_ASSERT_TRUE(component->IsRegistered());
-        TEST_ASSERT_TRUE(component->IsInitialized());
-        TEST_ASSERT_FALSE(component->HasBegunPlay());
+        ASSERT_NE(nullptr, component);
+        EXPECT_TRUE(component->IsRegistered());
+        EXPECT_TRUE(component->IsInitialized());
+        EXPECT_FALSE(component->HasBegunPlay());
 
         sceneManager.Update(0.033f);
-        TEST_ASSERT_TRUE(component->HasBegunPlay());
-        TEST_ASSERT_EQ(1, counters.beganPlay);
-        TEST_ASSERT_EQ(1, counters.ticked);
-        TEST_ASSERT_TRUE(IsNear(0.033f, counters.lastDeltaTime));
+        EXPECT_TRUE(component->HasBegunPlay());
+        EXPECT_EQ(1, counters.beganPlay);
+        EXPECT_EQ(1, counters.ticked);
+        EXPECT_TRUE(IsNear(0.033f, counters.lastDeltaTime));
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_SceneEntityActorPointerTickDispatchesLegacyComponents()
+    TEST(ActorComponentValidation, SceneEntityActorPointerTickDispatchesLegacyComponents)
     {
         RVX::SceneEntity entity("LegacyActorPointerTickEntity");
         RVX::Actor* actor = &entity;
 
         LegacyLifecycleCounters counters;
         auto* component = entity.AddComponent<SceneManagedLegacyLifecycleComponent>(&counters);
-        TEST_ASSERT_NOT_NULL(component);
+        ASSERT_NE(nullptr, component);
 
         actor->Tick(0.5f);
-        TEST_ASSERT_EQ(1, counters.ticked);
-        TEST_ASSERT_TRUE(IsNear(0.5f, counters.lastDeltaTime));
-        return true;
+        EXPECT_EQ(1, counters.ticked);
+        EXPECT_TRUE(IsNear(0.5f, counters.lastDeltaTime));
     }
 
-    bool Test_SceneEntityLegacyRemovalDispatchesLifecycleCleanup()
+    TEST(ActorComponentValidation, SceneEntityLegacyRemovalDispatchesLifecycleCleanup)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
 
         const auto handle = sceneManager.CreateEntity("LegacyRemovalLifecycleEntity");
         auto* entity = sceneManager.GetEntity(handle);
-        TEST_ASSERT_NOT_NULL(entity);
+        ASSERT_NE(nullptr, entity);
 
         LegacyLifecycleCounters counters;
         auto* component = entity->AddComponent<SceneManagedLegacyLifecycleComponent>(&counters);
-        TEST_ASSERT_NOT_NULL(component);
+        ASSERT_NE(nullptr, component);
         sceneManager.Update(0.016f);
 
-        TEST_ASSERT_TRUE(entity->RemoveComponent<SceneManagedLegacyLifecycleComponent>());
-        TEST_ASSERT_EQ(nullptr, entity->GetComponent<SceneManagedLegacyLifecycleComponent>());
-        TEST_ASSERT_EQ(1, counters.endedPlay);
-        TEST_ASSERT_EQ(1, counters.unregistered);
-        TEST_ASSERT_EQ(1, counters.detached);
-        TEST_ASSERT_EQ(1, counters.destroyed);
+        EXPECT_TRUE(entity->RemoveComponent<SceneManagedLegacyLifecycleComponent>());
+        EXPECT_EQ(nullptr, entity->GetComponent<SceneManagedLegacyLifecycleComponent>());
+        EXPECT_EQ(1, counters.endedPlay);
+        EXPECT_EQ(1, counters.unregistered);
+        EXPECT_EQ(1, counters.detached);
+        EXPECT_EQ(1, counters.destroyed);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_SceneEntityLegacyTickSnapshotsComponentsAddedDuringTick()
+    TEST(ActorComponentValidation, SceneEntityLegacyTickSnapshotsComponentsAddedDuringTick)
     {
         RVX::SceneEntity entity("LegacyAddDuringTickEntity");
         int addedTickCount = 0;
 
         auto* spawner = entity.AddComponent<AddLegacyDuringTickComponent>(&addedTickCount);
-        TEST_ASSERT_NOT_NULL(spawner);
+        ASSERT_NE(nullptr, spawner);
 
         entity.TickComponents(0.016f);
-        TEST_ASSERT_EQ(0, addedTickCount);
-        TEST_ASSERT_EQ(static_cast<size_t>(2), entity.GetComponentCount());
+        EXPECT_EQ(0, addedTickCount);
+        EXPECT_EQ(static_cast<size_t>(2), entity.GetComponentCount());
 
         entity.TickComponents(0.016f);
-        TEST_ASSERT_EQ(1, addedTickCount);
-        return true;
+        EXPECT_EQ(1, addedTickCount);
     }
 
-    bool Test_SceneEntityLegacyDefersSelfRemovalDuringTick()
+    TEST(ActorComponentValidation, SceneEntityLegacyDefersSelfRemovalDuringTick)
     {
         RVX::SceneEntity entity("LegacySelfRemoveEntity");
         int tickCount = 0;
 
         auto* component = entity.AddComponent<SelfRemovingLegacyTickComponent>(&tickCount);
-        TEST_ASSERT_NOT_NULL(component);
+        ASSERT_NE(nullptr, component);
 
         entity.TickComponents(0.016f);
 
-        TEST_ASSERT_EQ(1, tickCount);
-        TEST_ASSERT_EQ(static_cast<size_t>(0), entity.GetComponentCount());
+        EXPECT_EQ(1, tickCount);
+        EXPECT_EQ(static_cast<size_t>(0), entity.GetComponentCount());
 
         entity.TickComponents(0.016f);
-        TEST_ASSERT_EQ(1, tickCount);
-        return true;
+        EXPECT_EQ(1, tickCount);
     }
 
-    bool Test_SceneEntityLegacySkipsComponentRemovedEarlierInTick()
+    TEST(ActorComponentValidation, SceneEntityLegacySkipsComponentRemovedEarlierInTick)
     {
         RVX::SceneEntity entity("LegacyRemoveOtherEntity");
         int victimTickCount = 0;
 
         auto* remover = entity.AddComponent<RemoveVictimLegacyDuringTickComponent>();
-        TEST_ASSERT_NOT_NULL(remover);
+        ASSERT_NE(nullptr, remover);
         auto* victim = entity.AddComponent<VictimLegacyTickComponent>(&victimTickCount);
-        TEST_ASSERT_NOT_NULL(victim);
+        ASSERT_NE(nullptr, victim);
 
         entity.TickComponents(0.016f);
 
-        TEST_ASSERT_EQ(0, victimTickCount);
-        TEST_ASSERT_EQ(nullptr, entity.GetComponent<VictimLegacyTickComponent>());
-        return true;
+        EXPECT_EQ(0, victimTickCount);
+        EXPECT_EQ(nullptr, entity.GetComponent<VictimLegacyTickComponent>());
     }
 
-    bool Test_SceneEntityActiveStateControlsActorTickThroughActorPointer()
+    TEST(ActorComponentValidation, SceneEntityActiveStateControlsActorTickThroughActorPointer)
     {
         RVX::SceneEntity entity("DirectActorTickEntity");
         RVX::Actor* actor = &entity;
@@ -1282,109 +1284,104 @@ namespace
         RuntimeLifecycleCounters counters;
         auto component = std::make_unique<SceneManagedActorComponent>(&counters);
         auto* raw = component.get();
-        TEST_ASSERT_EQ(raw, actor->AddOwnedComponent(std::move(component)));
+        EXPECT_EQ(raw, actor->AddOwnedComponent(std::move(component)));
 
         entity.SetActive(false);
         actor->Tick(0.25f);
-        TEST_ASSERT_EQ(0, counters.ticked);
+        EXPECT_EQ(0, counters.ticked);
 
         actor->SetActive(true);
         actor->Tick(0.5f);
-        TEST_ASSERT_EQ(1, counters.ticked);
-        TEST_ASSERT_TRUE(IsNear(0.5f, counters.lastDeltaTime));
-        return true;
+        EXPECT_EQ(1, counters.ticked);
+        EXPECT_TRUE(IsNear(0.5f, counters.lastDeltaTime));
     }
 
-    bool Test_SceneManagerDefersDestroyRequestsDuringLifecycleDispatch()
+    TEST(ActorComponentValidation, SceneManagerDefersDestroyRequestsDuringLifecycleDispatch)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
 
         const auto handle = sceneManager.CreateEntity("SelfDestroyingEntity");
         auto* entity = sceneManager.GetEntity(handle);
-        TEST_ASSERT_NOT_NULL(entity);
+        ASSERT_NE(nullptr, entity);
 
         int tickCount = 0;
         auto component = std::make_unique<SelfDestroyingActorComponent>(&sceneManager, handle, &tickCount);
-        TEST_ASSERT_NOT_NULL(static_cast<RVX::Actor*>(entity)->AddOwnedComponent(std::move(component)));
+        ASSERT_NE(nullptr, static_cast<RVX::Actor*>(entity)->AddOwnedComponent(std::move(component)));
         int legacyTickCount = 0;
         auto* legacyComponent = entity->AddComponent<SceneManagedLegacyTickComponent>(&legacyTickCount);
-        TEST_ASSERT_NOT_NULL(legacyComponent);
+        ASSERT_NE(nullptr, legacyComponent);
 
         sceneManager.Update(0.016f);
 
-        TEST_ASSERT_EQ(1, tickCount);
-        TEST_ASSERT_EQ(0, legacyTickCount);
-        TEST_ASSERT_EQ(nullptr, sceneManager.GetEntity(handle));
+        EXPECT_EQ(1, tickCount);
+        EXPECT_EQ(0, legacyTickCount);
+        EXPECT_EQ(nullptr, sceneManager.GetEntity(handle));
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_SceneManagerDestroyEntityDispatchesEndPlayBeforeUnregister()
+    TEST(ActorComponentValidation, SceneManagerDestroyEntityDispatchesEndPlayBeforeUnregister)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
 
         const auto handle = sceneManager.CreateEntity("DestroyLifecycleEntity");
         auto* entity = sceneManager.GetEntity(handle);
-        TEST_ASSERT_NOT_NULL(entity);
+        ASSERT_NE(nullptr, entity);
 
         RuntimeLifecycleCounters counters;
         auto component = std::make_unique<SceneManagedActorComponent>(&counters);
-        TEST_ASSERT_NOT_NULL(static_cast<RVX::Actor*>(entity)->AddOwnedComponent(std::move(component)));
+        ASSERT_NE(nullptr, static_cast<RVX::Actor*>(entity)->AddOwnedComponent(std::move(component)));
 
         sceneManager.Update(0.016f);
-        TEST_ASSERT_EQ(1, counters.beganPlay);
+        EXPECT_EQ(1, counters.beganPlay);
 
         sceneManager.DestroyEntity(handle);
 
-        TEST_ASSERT_EQ(1, counters.endedPlay);
-        TEST_ASSERT_EQ(1, counters.unregistered);
+        EXPECT_EQ(1, counters.endedPlay);
+        EXPECT_EQ(1, counters.unregistered);
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_SceneManagerDestroyEntityBeforeBeginPlayDoesNotDispatchEndPlay()
+    TEST(ActorComponentValidation, SceneManagerDestroyEntityBeforeBeginPlayDoesNotDispatchEndPlay)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
 
         const auto handle = sceneManager.CreateEntity("NeverBegunLifecycleEntity");
         auto* entity = sceneManager.GetEntity(handle);
-        TEST_ASSERT_NOT_NULL(entity);
+        ASSERT_NE(nullptr, entity);
 
         RuntimeLifecycleCounters counters;
         auto component = std::make_unique<SceneManagedActorComponent>(&counters);
-        TEST_ASSERT_NOT_NULL(static_cast<RVX::Actor*>(entity)->AddOwnedComponent(std::move(component)));
+        ASSERT_NE(nullptr, static_cast<RVX::Actor*>(entity)->AddOwnedComponent(std::move(component)));
 
         entity->SetActive(false);
         sceneManager.DestroyEntity(handle);
 
-        TEST_ASSERT_EQ(0, counters.beganPlay);
-        TEST_ASSERT_EQ(0, counters.ticked);
-        TEST_ASSERT_EQ(0, counters.endedPlay);
-        TEST_ASSERT_EQ(1, counters.unregistered);
+        EXPECT_EQ(0, counters.beganPlay);
+        EXPECT_EQ(0, counters.ticked);
+        EXPECT_EQ(0, counters.endedPlay);
+        EXPECT_EQ(1, counters.unregistered);
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_ActorTickSnapshotsComponentsAddedDuringTick()
+    TEST(ActorComponentValidation, ActorTickSnapshotsComponentsAddedDuringTick)
     {
         RVX::Actor actor("AddDuringTickActor");
         int addedTickCount = 0;
         actor.AddComponent<AddComponentDuringTickComponent>(&addedTickCount);
 
         actor.Tick(0.016f);
-        TEST_ASSERT_EQ(0, addedTickCount);
-        TEST_ASSERT_EQ(static_cast<size_t>(2), actor.GetActorComponentCount());
+        EXPECT_EQ(0, addedTickCount);
+        EXPECT_EQ(static_cast<size_t>(2), actor.GetActorComponentCount());
 
         actor.Tick(0.016f);
-        TEST_ASSERT_EQ(1, addedTickCount);
-        return true;
+        EXPECT_EQ(1, addedTickCount);
     }
 
-    bool Test_ActorDefersSelfRemovalDuringTick()
+    TEST(ActorComponentValidation, ActorDefersSelfRemovalDuringTick)
     {
         RVX::Actor actor("SelfRemoveActor");
         int tickCount = 0;
@@ -1392,15 +1389,14 @@ namespace
 
         actor.Tick(0.016f);
 
-        TEST_ASSERT_EQ(1, tickCount);
-        TEST_ASSERT_EQ(static_cast<size_t>(0), actor.GetActorComponentCount());
+        EXPECT_EQ(1, tickCount);
+        EXPECT_EQ(static_cast<size_t>(0), actor.GetActorComponentCount());
 
         actor.Tick(0.016f);
-        TEST_ASSERT_EQ(1, tickCount);
-        return true;
+        EXPECT_EQ(1, tickCount);
     }
 
-    bool Test_ActorDispatchesEndPlayForBegunComponentRemovedDuringTick()
+    TEST(ActorComponentValidation, ActorDispatchesEndPlayForBegunComponentRemovedDuringTick)
     {
         RVX::Actor actor("BegunSelfRemoveActor");
         int tickCount = 0;
@@ -1410,13 +1406,12 @@ namespace
         actor.BeginPlay();
         actor.Tick(0.016f);
 
-        TEST_ASSERT_EQ(1, tickCount);
-        TEST_ASSERT_EQ(1, endPlayCount);
-        TEST_ASSERT_EQ(static_cast<size_t>(0), actor.GetActorComponentCount());
-        return true;
+        EXPECT_EQ(1, tickCount);
+        EXPECT_EQ(1, endPlayCount);
+        EXPECT_EQ(static_cast<size_t>(0), actor.GetActorComponentCount());
     }
 
-    bool Test_ActorSkipsComponentRemovedEarlierInTick()
+    TEST(ActorComponentValidation, ActorSkipsComponentRemovedEarlierInTick)
     {
         RVX::Actor actor("RemoveOtherActor");
         int victimTickCount = 0;
@@ -1425,27 +1420,25 @@ namespace
 
         actor.Tick(0.016f);
 
-        TEST_ASSERT_EQ(0, victimTickCount);
-        TEST_ASSERT_EQ(nullptr, actor.GetComponent<VictimTickComponent>());
-        return true;
+        EXPECT_EQ(0, victimTickCount);
+        EXPECT_EQ(nullptr, actor.GetComponent<VictimTickComponent>());
     }
 
-    bool Test_ActorBeginPlaySnapshotsComponentsAddedDuringBeginPlay()
+    TEST(ActorComponentValidation, ActorBeginPlaySnapshotsComponentsAddedDuringBeginPlay)
     {
         RVX::Actor actor("AddDuringBeginPlayActor");
         int addedBeginCount = 0;
         actor.AddComponent<AddComponentDuringBeginPlayComponent>(&addedBeginCount);
 
         actor.BeginPlay();
-        TEST_ASSERT_EQ(0, addedBeginCount);
-        TEST_ASSERT_EQ(static_cast<size_t>(2), actor.GetActorComponentCount());
+        EXPECT_EQ(0, addedBeginCount);
+        EXPECT_EQ(static_cast<size_t>(2), actor.GetActorComponentCount());
 
         actor.BeginPlay();
-        TEST_ASSERT_EQ(1, addedBeginCount);
-        return true;
+        EXPECT_EQ(1, addedBeginCount);
     }
 
-    bool Test_ActorDefersSelfRemovalDuringEndPlay()
+    TEST(ActorComponentValidation, ActorDefersSelfRemovalDuringEndPlay)
     {
         RVX::Actor actor("SelfRemoveEndPlayActor");
         int endPlayCount = 0;
@@ -1454,26 +1447,24 @@ namespace
         actor.BeginPlay();
         actor.EndPlay();
 
-        TEST_ASSERT_EQ(1, endPlayCount);
-        TEST_ASSERT_EQ(static_cast<size_t>(0), actor.GetActorComponentCount());
-        return true;
+        EXPECT_EQ(1, endPlayCount);
+        EXPECT_EQ(static_cast<size_t>(0), actor.GetActorComponentCount());
     }
 
-    bool Test_ActorDirectRemovalHandlesSelfRemovalDuringEndPlay()
+    TEST(ActorComponentValidation, ActorDirectRemovalHandlesSelfRemovalDuringEndPlay)
     {
         RVX::Actor actor("DirectSelfRemoveEndPlayActor");
         int endPlayCount = 0;
         actor.AddComponent<SelfRemovingEndPlayComponent>(&endPlayCount);
 
         actor.BeginPlay();
-        TEST_ASSERT_TRUE(actor.RemoveComponent<SelfRemovingEndPlayComponent>());
+        EXPECT_TRUE(actor.RemoveComponent<SelfRemovingEndPlayComponent>());
 
-        TEST_ASSERT_EQ(1, endPlayCount);
-        TEST_ASSERT_EQ(static_cast<size_t>(0), actor.GetActorComponentCount());
-        return true;
+        EXPECT_EQ(1, endPlayCount);
+        EXPECT_EQ(static_cast<size_t>(0), actor.GetActorComponentCount());
     }
 
-    bool Test_ActorSkipsComponentRemovedEarlierInEndPlay()
+    TEST(ActorComponentValidation, ActorSkipsComponentRemovedEarlierInEndPlay)
     {
         RVX::Actor actor("RemoveOtherEndPlayActor");
         EndPlayMutationCounters counters;
@@ -1483,14 +1474,13 @@ namespace
         actor.BeginPlay();
         actor.EndPlay();
 
-        TEST_ASSERT_EQ(1, counters.removerEndPlay);
-        TEST_ASSERT_EQ(0, counters.victimEndPlay);
-        TEST_ASSERT_EQ(1, counters.victimDestroyed);
-        TEST_ASSERT_EQ(nullptr, actor.GetComponent<EndPlayVictimComponent>());
-        return true;
+        EXPECT_EQ(1, counters.removerEndPlay);
+        EXPECT_EQ(0, counters.victimEndPlay);
+        EXPECT_EQ(1, counters.victimDestroyed);
+        EXPECT_EQ(nullptr, actor.GetComponent<EndPlayVictimComponent>());
     }
 
-    bool Test_ActorKeepsEndPlaySuppressedAfterNestedEndPlayReturnsToTick()
+    TEST(ActorComponentValidation, ActorKeepsEndPlaySuppressedAfterNestedEndPlayReturnsToTick)
     {
         RVX::Actor actor("NestedEndPlayRemoveActor");
         EndPlayMutationCounters counters;
@@ -1501,14 +1491,13 @@ namespace
         actor.BeginPlay();
         actor.Tick(0.016f);
 
-        TEST_ASSERT_EQ(1, counters.removerEndPlay);
-        TEST_ASSERT_EQ(0, counters.victimEndPlay);
-        TEST_ASSERT_EQ(1, counters.victimDestroyed);
-        TEST_ASSERT_EQ(nullptr, actor.GetComponent<EndPlayVictimComponent>());
-        return true;
+        EXPECT_EQ(1, counters.removerEndPlay);
+        EXPECT_EQ(0, counters.victimEndPlay);
+        EXPECT_EQ(1, counters.victimDestroyed);
+        EXPECT_EQ(nullptr, actor.GetComponent<EndPlayVictimComponent>());
     }
 
-    bool Test_ActorDispatchesEndPlayForComponentQueuedBeforeNestedEndPlay()
+    TEST(ActorComponentValidation, ActorDispatchesEndPlayForComponentQueuedBeforeNestedEndPlay)
     {
         RVX::Actor actor("QueueBeforeNestedEndPlayActor");
         EndPlayMutationCounters counters;
@@ -1519,14 +1508,13 @@ namespace
         actor.BeginPlay();
         actor.Tick(0.016f);
 
-        TEST_ASSERT_EQ(1, counters.removerEndPlay);
-        TEST_ASSERT_EQ(1, counters.victimEndPlay);
-        TEST_ASSERT_EQ(1, counters.victimDestroyed);
-        TEST_ASSERT_EQ(nullptr, actor.GetComponent<EndPlayVictimComponent>());
-        return true;
+        EXPECT_EQ(1, counters.removerEndPlay);
+        EXPECT_EQ(1, counters.victimEndPlay);
+        EXPECT_EQ(1, counters.victimDestroyed);
+        EXPECT_EQ(nullptr, actor.GetComponent<EndPlayVictimComponent>());
     }
 
-    bool Test_ActorDestructionClearsPendingRemovalWithoutDoubleDestroy()
+    TEST(ActorComponentValidation, ActorDestructionClearsPendingRemovalWithoutDoubleDestroy)
     {
         int destroyedCount = 0;
         {
@@ -1535,11 +1523,10 @@ namespace
             actor.Tick(0.016f);
         }
 
-        TEST_ASSERT_EQ(1, destroyedCount);
-        return true;
+        EXPECT_EQ(1, destroyedCount);
     }
 
-    bool Test_SceneComponentAttachmentComputesWorldTransform()
+    TEST(ActorComponentValidation, SceneComponentAttachmentComputesWorldTransform)
     {
         RVX::Actor actor("TransformActor");
         auto* root = actor.AddComponent<RVX::SceneComponent>();
@@ -1548,103 +1535,97 @@ namespace
         actor.SetRootComponent(root);
         root->SetRelativeLocation(RVX::Vec3(10.0f, 0.0f, 0.0f));
         child->SetRelativeLocation(RVX::Vec3(2.0f, 0.0f, 0.0f));
-        TEST_ASSERT_TRUE(child->AttachToComponent(root));
+        EXPECT_TRUE(child->AttachToComponent(root));
 
-        TEST_ASSERT_EQ(RVX::Vec3(12.0f, 0.0f, 0.0f), child->GetWorldLocation());
-        TEST_ASSERT_EQ(root, child->GetAttachParent());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetAttachChildren().size());
-        return true;
+        EXPECT_EQ(RVX::Vec3(12.0f, 0.0f, 0.0f), child->GetWorldLocation());
+        EXPECT_EQ(root, child->GetAttachParent());
+        EXPECT_EQ(static_cast<size_t>(1), root->GetAttachChildren().size());
     }
 
-    bool Test_PrimitiveComponentTracksVisibilityLayerAndBounds()
+    TEST(ActorComponentValidation, PrimitiveComponentTracksVisibilityLayerAndBounds)
     {
         RVX::PrimitiveComponent primitive;
         primitive.SetVisible(false);
         primitive.SetLayerMask(0x04);
         primitive.SetLocalBounds(RVX::AABB(RVX::Vec3(-1.0f), RVX::Vec3(1.0f)));
 
-        TEST_ASSERT_FALSE(primitive.IsVisible());
-        TEST_ASSERT_EQ(static_cast<RVX::uint32>(0x04), primitive.GetLayerMask());
-        TEST_ASSERT_TRUE(primitive.GetLocalBounds().IsValid());
-        TEST_ASSERT_TRUE(primitive.GetWorldBounds().IsValid());
-        return true;
+        EXPECT_FALSE(primitive.IsVisible());
+        EXPECT_EQ(static_cast<RVX::uint32>(0x04), primitive.GetLayerMask());
+        EXPECT_TRUE(primitive.GetLocalBounds().IsValid());
+        EXPECT_TRUE(primitive.GetWorldBounds().IsValid());
     }
 
-    bool Test_StaticMeshComponentIsPrimitiveSceneComponent()
+    TEST(ActorComponentValidation, StaticMeshComponentIsPrimitiveSceneComponent)
     {
-        TEST_ASSERT_TRUE((std::is_base_of_v<RVX::PrimitiveComponent, RVX::StaticMeshComponent>));
+        EXPECT_TRUE((std::is_base_of_v<RVX::PrimitiveComponent, RVX::StaticMeshComponent>));
 
         RVX::StaticMeshComponent component;
-        TEST_ASSERT_EQ(std::string("StaticMeshComponent"), std::string(component.GetClassName()));
-        TEST_ASSERT_FALSE(component.HasRenderData());
-        TEST_ASSERT_FALSE(component.HasValidMesh());
-        TEST_ASSERT_TRUE(component.IsVisible());
-        return true;
+        EXPECT_EQ(std::string("StaticMeshComponent"), std::string(component.GetClassName()));
+        EXPECT_FALSE(component.HasRenderData());
+        EXPECT_FALSE(component.HasValidMesh());
+        EXPECT_TRUE(component.IsVisible());
     }
 
-    bool Test_StaticMeshComponentRegistersWithSceneManager()
+    TEST(ActorComponentValidation, StaticMeshComponentRegistersWithSceneManager)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
 
         auto entity = std::make_shared<RVX::SceneEntity>("PreOwnedPrimitive");
         auto* primitive = static_cast<RVX::Actor*>(entity.get())->AddComponent<RVX::StaticMeshComponent>();
-        TEST_ASSERT_NOT_NULL(primitive);
-        TEST_ASSERT_FALSE(primitive->IsRegistered());
+        ASSERT_NE(nullptr, primitive);
+        EXPECT_FALSE(primitive->IsRegistered());
 
         const auto handle = entity->GetHandle();
         sceneManager.AddEntity(entity);
 
-        TEST_ASSERT_TRUE(primitive->IsRegistered());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), sceneManager.GetPrimitives().size());
-        TEST_ASSERT_EQ(primitive, sceneManager.GetPrimitives()[0]);
+        EXPECT_TRUE(primitive->IsRegistered());
+        EXPECT_EQ(static_cast<size_t>(1), sceneManager.GetPrimitives().size());
+        EXPECT_EQ(primitive, sceneManager.GetPrimitives()[0]);
 
         sceneManager.DestroyEntity(handle);
 
-        TEST_ASSERT_FALSE(primitive->IsRegistered());
-        TEST_ASSERT_TRUE(sceneManager.GetPrimitives().empty());
+        EXPECT_FALSE(primitive->IsRegistered());
+        EXPECT_TRUE(sceneManager.GetPrimitives().empty());
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_RuntimeStaticMeshComponentRemovalUnregistersPrimitive()
+    TEST(ActorComponentValidation, RuntimeStaticMeshComponentRemovalUnregistersPrimitive)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
 
         const auto handle = sceneManager.CreateEntity("RuntimePrimitive");
         auto* entity = sceneManager.GetEntity(handle);
-        TEST_ASSERT_NOT_NULL(entity);
+        ASSERT_NE(nullptr, entity);
 
         auto* primitive = static_cast<RVX::Actor*>(entity)->AddComponent<RVX::StaticMeshComponent>();
-        TEST_ASSERT_NOT_NULL(primitive);
-        TEST_ASSERT_TRUE(primitive->IsRegistered());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), sceneManager.GetPrimitives().size());
+        ASSERT_NE(nullptr, primitive);
+        EXPECT_TRUE(primitive->IsRegistered());
+        EXPECT_EQ(static_cast<size_t>(1), sceneManager.GetPrimitives().size());
 
-        TEST_ASSERT_TRUE(static_cast<RVX::Actor*>(entity)->RemoveComponent<RVX::StaticMeshComponent>());
-        TEST_ASSERT_TRUE(sceneManager.GetPrimitives().empty());
+        EXPECT_TRUE(static_cast<RVX::Actor*>(entity)->RemoveComponent<RVX::StaticMeshComponent>());
+        EXPECT_TRUE(sceneManager.GetPrimitives().empty());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_SceneEntityAddComponentAutoRegistersStaticMeshPrimitive()
+    TEST(ActorComponentValidation, SceneEntityAddComponentAutoRegistersStaticMeshPrimitive)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
 
         const auto handle = sceneManager.CreateEntity("LegacyAddComponentPrimitive");
         auto* entity = sceneManager.GetEntity(handle);
-        TEST_ASSERT_NOT_NULL(entity);
+        ASSERT_NE(nullptr, entity);
 
         auto* primitive = entity->AddComponent<RVX::StaticMeshComponent>();
-        TEST_ASSERT_NOT_NULL(primitive);
-        TEST_ASSERT_TRUE(primitive->IsRegistered());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), sceneManager.GetPrimitives().size());
-        TEST_ASSERT_EQ(primitive, sceneManager.GetPrimitives()[0]);
+        ASSERT_NE(nullptr, primitive);
+        EXPECT_TRUE(primitive->IsRegistered());
+        EXPECT_EQ(static_cast<size_t>(1), sceneManager.GetPrimitives().size());
+        EXPECT_EQ(primitive, sceneManager.GetPrimitives()[0]);
 
         sceneManager.Shutdown();
-        return true;
     }
 
     class TestLegacyComponent : public RVX::Component
@@ -1653,22 +1634,21 @@ namespace
         const char* GetTypeName() const override { return "TestLegacyComponent"; }
     };
 
-    bool Test_SceneEntityAndComponentAreActorCompatible()
+    TEST(ActorComponentValidation, SceneEntityAndComponentAreActorCompatible)
     {
-        TEST_ASSERT_TRUE((std::is_base_of_v<RVX::Actor, RVX::SceneEntity>));
-        TEST_ASSERT_TRUE((std::is_base_of_v<RVX::ActorComponent, RVX::Component>));
+        EXPECT_TRUE((std::is_base_of_v<RVX::Actor, RVX::SceneEntity>));
+        EXPECT_TRUE((std::is_base_of_v<RVX::ActorComponent, RVX::Component>));
 
         RVX::SceneEntity entity("CompatEntity");
         auto* component = entity.AddComponent<TestLegacyComponent>();
         auto* actorComponent = static_cast<RVX::ActorComponent*>(component);
 
-        TEST_ASSERT_NOT_NULL(component);
-        TEST_ASSERT_EQ(&entity, component->GetOwner());
-        TEST_ASSERT_EQ(static_cast<RVX::Actor*>(&entity), actorComponent->GetOwner());
-        return true;
+        ASSERT_NE(nullptr, component);
+        EXPECT_EQ(&entity, component->GetOwner());
+        EXPECT_EQ(static_cast<RVX::Actor*>(&entity), actorComponent->GetOwner());
     }
 
-    bool Test_ActorAddComponentRejectsLegacyComponentToAvoidContainerSplit()
+    TEST(ActorComponentValidation, ActorAddComponentRejectsLegacyComponentToAvoidContainerSplit)
     {
         RVX::SceneEntity entity("ActorLegacyAddGuardEntity");
         RVX::Actor* actor = &entity;
@@ -1676,30 +1656,28 @@ namespace
 
         auto* component = actor->AddComponent<TestLegacyComponent>();
 
-        TEST_ASSERT_EQ(nullptr, component);
-        TEST_ASSERT_EQ(initialActorComponents, actor->GetActorComponentCount());
-        TEST_ASSERT_EQ(static_cast<size_t>(0), entity.GetComponentCount());
-        TEST_ASSERT_EQ(nullptr, entity.GetComponent<TestLegacyComponent>());
-        return true;
+        EXPECT_EQ(nullptr, component);
+        EXPECT_EQ(initialActorComponents, actor->GetActorComponentCount());
+        EXPECT_EQ(static_cast<size_t>(0), entity.GetComponentCount());
+        EXPECT_EQ(nullptr, entity.GetComponent<TestLegacyComponent>());
     }
 
-    bool Test_ActorAndComponentFactoriesCreateRegisteredTypes()
+    TEST(ActorComponentValidation, ActorAndComponentFactoriesCreateRegisteredTypes)
     {
         RVX::ActorFactory::ClearAll();
         RVX::ActorFactory::Register<RVX::Actor>("Actor");
         auto actor = RVX::ActorFactory::Create("Actor");
-        TEST_ASSERT_NOT_NULL(actor.get());
-        TEST_ASSERT_EQ(std::string("Actor"), std::string(actor->GetClassName()));
+        ASSERT_NE(nullptr, actor.get());
+        EXPECT_EQ(std::string("Actor"), std::string(actor->GetClassName()));
 
         RVX::ComponentFactory::ClearComponentClasses();
         RVX::ComponentFactory::RegisterComponentClass<RVX::SceneComponent>("SceneComponent");
         auto component = RVX::ComponentFactory::CreateComponentByClassName("SceneComponent");
-        TEST_ASSERT_NOT_NULL(component.get());
-        TEST_ASSERT_EQ(std::string("SceneComponent"), std::string(component->GetClassName()));
-        return true;
+        ASSERT_NE(nullptr, component.get());
+        EXPECT_EQ(std::string("SceneComponent"), std::string(component->GetClassName()));
     }
 
-    bool Test_ActorTransformForwardsToRootComponent()
+    TEST(ActorComponentValidation, ActorTransformForwardsToRootComponent)
     {
         RVX::Actor actor("RootTransformActor");
         auto* root = actor.AddComponent<RVX::SceneComponent>();
@@ -1708,32 +1686,30 @@ namespace
         actor.SetPosition(RVX::Vec3(3.0f, 4.0f, 5.0f));
         actor.SetScale(RVX::Vec3(2.0f, 3.0f, 4.0f));
 
-        TEST_ASSERT_EQ(RVX::Vec3(3.0f, 4.0f, 5.0f), root->GetRelativeLocation());
-        TEST_ASSERT_EQ(RVX::Vec3(3.0f, 4.0f, 5.0f), actor.GetWorldPosition());
-        TEST_ASSERT_EQ(RVX::Vec3(2.0f, 3.0f, 4.0f), root->GetRelativeScale3D());
-        TEST_ASSERT_EQ(RVX::Vec3(2.0f, 3.0f, 4.0f), actor.GetWorldScale());
-        TEST_ASSERT_EQ(root->GetWorldTransform(), actor.GetWorldMatrix());
-        return true;
+        EXPECT_EQ(RVX::Vec3(3.0f, 4.0f, 5.0f), root->GetRelativeLocation());
+        EXPECT_EQ(RVX::Vec3(3.0f, 4.0f, 5.0f), actor.GetWorldPosition());
+        EXPECT_EQ(RVX::Vec3(2.0f, 3.0f, 4.0f), root->GetRelativeScale3D());
+        EXPECT_EQ(RVX::Vec3(2.0f, 3.0f, 4.0f), actor.GetWorldScale());
+        EXPECT_EQ(root->GetWorldTransform(), actor.GetWorldMatrix());
     }
 
-    bool Test_SceneEntityCreatesRootAndForwardsTransform()
+    TEST(ActorComponentValidation, SceneEntityCreatesRootAndForwardsTransform)
     {
         RVX::SceneEntity entity("CompatTransformEntity");
         auto* root = entity.GetRootComponent();
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
 
         entity.SetPosition(RVX::Vec3(7.0f, 8.0f, 9.0f));
         entity.SetScale(RVX::Vec3(2.0f, 2.0f, 2.0f));
 
-        TEST_ASSERT_EQ(RVX::Vec3(7.0f, 8.0f, 9.0f), entity.GetPosition());
-        TEST_ASSERT_EQ(RVX::Vec3(7.0f, 8.0f, 9.0f), root->GetRelativeLocation());
-        TEST_ASSERT_EQ(RVX::Vec3(7.0f, 8.0f, 9.0f), entity.GetWorldPosition());
-        TEST_ASSERT_EQ(RVX::Vec3(2.0f, 2.0f, 2.0f), entity.GetScale());
-        TEST_ASSERT_EQ(root->GetWorldTransform(), entity.GetWorldMatrix());
-        return true;
+        EXPECT_EQ(RVX::Vec3(7.0f, 8.0f, 9.0f), entity.GetPosition());
+        EXPECT_EQ(RVX::Vec3(7.0f, 8.0f, 9.0f), root->GetRelativeLocation());
+        EXPECT_EQ(RVX::Vec3(7.0f, 8.0f, 9.0f), entity.GetWorldPosition());
+        EXPECT_EQ(RVX::Vec3(2.0f, 2.0f, 2.0f), entity.GetScale());
+        EXPECT_EQ(root->GetWorldTransform(), entity.GetWorldMatrix());
     }
 
-    bool Test_SceneEntityHierarchyAttachesRootComponents()
+    TEST(ActorComponentValidation, SceneEntityHierarchyAttachesRootComponents)
     {
         RVX::SceneEntity parent("ParentEntity");
         RVX::SceneEntity child("ChildEntity");
@@ -1743,75 +1719,71 @@ namespace
 
         parent.AddChild(&child);
 
-        TEST_ASSERT_EQ(parent.GetRootComponent(), child.GetRootComponent()->GetAttachParent());
-        TEST_ASSERT_EQ(RVX::Vec3(12.0f, 0.0f, 0.0f), child.GetWorldPosition());
+        EXPECT_EQ(parent.GetRootComponent(), child.GetRootComponent()->GetAttachParent());
+        EXPECT_EQ(RVX::Vec3(12.0f, 0.0f, 0.0f), child.GetWorldPosition());
 
         parent.SetPosition(RVX::Vec3(20.0f, 0.0f, 0.0f));
-        TEST_ASSERT_EQ(RVX::Vec3(22.0f, 0.0f, 0.0f), child.GetWorldPosition());
+        EXPECT_EQ(RVX::Vec3(22.0f, 0.0f, 0.0f), child.GetWorldPosition());
 
-        TEST_ASSERT_TRUE(parent.RemoveChild(&child));
-        TEST_ASSERT_EQ(nullptr, child.GetRootComponent()->GetAttachParent());
-        TEST_ASSERT_EQ(RVX::Vec3(2.0f, 0.0f, 0.0f), child.GetWorldPosition());
-        return true;
+        EXPECT_TRUE(parent.RemoveChild(&child));
+        EXPECT_EQ(nullptr, child.GetRootComponent()->GetAttachParent());
+        EXPECT_EQ(RVX::Vec3(2.0f, 0.0f, 0.0f), child.GetWorldPosition());
     }
 
-    bool Test_SceneEntityTransformStaysSyncedThroughActorAndRootPaths()
+    TEST(ActorComponentValidation, SceneEntityTransformStaysSyncedThroughActorAndRootPaths)
     {
         RVX::SceneEntity entity("SyncEntity");
         RVX::Actor* actor = &entity;
 
         actor->SetPosition(RVX::Vec3(3.0f, 0.0f, 0.0f));
         entity.Translate(RVX::Vec3(2.0f, 0.0f, 0.0f));
-        TEST_ASSERT_EQ(RVX::Vec3(5.0f, 0.0f, 0.0f), entity.GetPosition());
+        EXPECT_EQ(RVX::Vec3(5.0f, 0.0f, 0.0f), entity.GetPosition());
 
         entity.GetRootComponent()->SetRelativeLocation(RVX::Vec3(4.0f, 0.0f, 0.0f));
         entity.Translate(RVX::Vec3(1.0f, 0.0f, 0.0f));
-        TEST_ASSERT_EQ(RVX::Vec3(5.0f, 0.0f, 0.0f), entity.GetPosition());
+        EXPECT_EQ(RVX::Vec3(5.0f, 0.0f, 0.0f), entity.GetPosition());
 
         entity.GetRootComponent()->SetRelativeLocation(RVX::Vec3(9.0f, 0.0f, 0.0f));
         entity.SetPosition(RVX::Vec3(5.0f, 0.0f, 0.0f));
-        TEST_ASSERT_EQ(RVX::Vec3(5.0f, 0.0f, 0.0f), entity.GetRootComponent()->GetRelativeLocation());
-        return true;
+        EXPECT_EQ(RVX::Vec3(5.0f, 0.0f, 0.0f), entity.GetRootComponent()->GetRelativeLocation());
     }
 
-    bool Test_SceneEntityDestructionMaintainsHierarchy()
+    TEST(ActorComponentValidation, SceneEntityDestructionMaintainsHierarchy)
     {
         RVX::SceneEntity parent("PersistentParent");
         {
             auto child = std::make_unique<RVX::SceneEntity>("TemporaryChild");
             parent.AddChild(child.get());
-            TEST_ASSERT_EQ(static_cast<size_t>(1), parent.GetChildCount());
+            EXPECT_EQ(static_cast<size_t>(1), parent.GetChildCount());
         }
-        TEST_ASSERT_EQ(static_cast<size_t>(0), parent.GetChildCount());
+        EXPECT_EQ(static_cast<size_t>(0), parent.GetChildCount());
 
         auto child = std::make_unique<RVX::SceneEntity>("PersistentChild");
         {
             auto temporaryParent = std::make_unique<RVX::SceneEntity>("TemporaryParent");
             temporaryParent->AddChild(child.get());
-            TEST_ASSERT_EQ(temporaryParent.get(), child->GetParent());
+            EXPECT_EQ(temporaryParent.get(), child->GetParent());
         }
 
-        TEST_ASSERT_EQ(nullptr, child->GetParent());
-        TEST_ASSERT_EQ(nullptr, child->GetRootComponent()->GetAttachParent());
-        return true;
+        EXPECT_EQ(nullptr, child->GetParent());
+        EXPECT_EQ(nullptr, child->GetRootComponent()->GetAttachParent());
     }
 
-    bool Test_SceneEntityCompatRootCannotBeRemovedThroughActorAPI()
+    TEST(ActorComponentValidation, SceneEntityCompatRootCannotBeRemovedThroughActorAPI)
     {
         RVX::SceneEntity entity("RootProtectedEntity");
         RVX::Actor* actor = &entity;
         auto* root = entity.GetRootComponent();
 
-        TEST_ASSERT_NOT_NULL(root);
-        TEST_ASSERT_FALSE(actor->RemoveComponent<RVX::SceneComponent>());
-        TEST_ASSERT_EQ(root, entity.GetRootComponent());
+        ASSERT_NE(nullptr, root);
+        EXPECT_FALSE(actor->RemoveComponent<RVX::SceneComponent>());
+        EXPECT_EQ(root, entity.GetRootComponent());
 
         entity.SetPosition(RVX::Vec3(6.0f, 0.0f, 0.0f));
-        TEST_ASSERT_EQ(RVX::Vec3(6.0f, 0.0f, 0.0f), entity.GetWorldPosition());
-        return true;
+        EXPECT_EQ(RVX::Vec3(6.0f, 0.0f, 0.0f), entity.GetWorldPosition());
     }
 
-    bool Test_SceneEntityRootReplacementKeepsCompatibility()
+    TEST(ActorComponentValidation, SceneEntityRootReplacementKeepsCompatibility)
     {
         RVX::SceneEntity parent("ReplacementParent");
         RVX::SceneEntity child("ReplacementChild");
@@ -1823,40 +1795,38 @@ namespace
 
         auto* originalRoot = child.GetRootComponent();
         childActor->SetRootComponent(nullptr);
-        TEST_ASSERT_EQ(originalRoot, child.GetRootComponent());
+        EXPECT_EQ(originalRoot, child.GetRootComponent());
 
         auto* replacementRoot = childActor->AddComponent<RVX::SceneComponent>();
         replacementRoot->SetRelativeLocation(RVX::Vec3(3.0f, 0.0f, 0.0f));
 
         childActor->SetRootComponent(replacementRoot);
 
-        TEST_ASSERT_EQ(replacementRoot, child.GetRootComponent());
-        TEST_ASSERT_EQ(parent.GetRootComponent(), replacementRoot->GetAttachParent());
-        TEST_ASSERT_EQ(RVX::Vec3(3.0f, 0.0f, 0.0f), child.GetPosition());
-        TEST_ASSERT_EQ(RVX::Vec3(13.0f, 0.0f, 0.0f), child.GetWorldPosition());
-        return true;
+        EXPECT_EQ(replacementRoot, child.GetRootComponent());
+        EXPECT_EQ(parent.GetRootComponent(), replacementRoot->GetAttachParent());
+        EXPECT_EQ(RVX::Vec3(3.0f, 0.0f, 0.0f), child.GetPosition());
+        EXPECT_EQ(RVX::Vec3(13.0f, 0.0f, 0.0f), child.GetWorldPosition());
     }
 
-    bool Test_RootComponentTransformMarksSceneEntityDirty()
+    TEST(ActorComponentValidation, RootComponentTransformMarksSceneEntityDirty)
     {
         RVX::SceneEntity entity("RootDirtyEntity");
         entity.SetLocalBounds(RVX::AABB(RVX::Vec3(-1.0f), RVX::Vec3(1.0f)));
 
         auto initialBounds = entity.GetWorldBounds();
-        TEST_ASSERT_EQ(RVX::Vec3(0.0f), initialBounds.GetCenter());
+        EXPECT_EQ(RVX::Vec3(0.0f), initialBounds.GetCenter());
 
         entity.ClearSpatialDirty();
-        TEST_ASSERT_FALSE(entity.IsSpatialDirty());
+        EXPECT_FALSE(entity.IsSpatialDirty());
 
         entity.GetRootComponent()->SetRelativeLocation(RVX::Vec3(10.0f, 0.0f, 0.0f));
 
-        TEST_ASSERT_TRUE(entity.IsSpatialDirty());
+        EXPECT_TRUE(entity.IsSpatialDirty());
         auto updatedBounds = entity.GetWorldBounds();
-        TEST_ASSERT_EQ(RVX::Vec3(10.0f, 0.0f, 0.0f), updatedBounds.GetCenter());
-        return true;
+        EXPECT_EQ(RVX::Vec3(10.0f, 0.0f, 0.0f), updatedBounds.GetCenter());
     }
 
-    bool Test_SceneEntityRootReplacementRejectsInvalidAttachment()
+    TEST(ActorComponentValidation, SceneEntityRootReplacementRejectsInvalidAttachment)
     {
         RVX::SceneEntity parent("CycleParent");
         RVX::SceneEntity child("CycleChild");
@@ -1866,18 +1836,17 @@ namespace
         auto* originalRoot = child.GetRootComponent();
         auto* replacementRoot = childActor->AddComponent<RVX::SceneComponent>();
 
-        TEST_ASSERT_TRUE(parent.GetRootComponent()->AttachToComponent(replacementRoot));
+        EXPECT_TRUE(parent.GetRootComponent()->AttachToComponent(replacementRoot));
 
         childActor->SetRootComponent(replacementRoot);
 
-        TEST_ASSERT_EQ(originalRoot, child.GetRootComponent());
-        TEST_ASSERT_EQ(parent.GetRootComponent(), originalRoot->GetAttachParent());
+        EXPECT_EQ(originalRoot, child.GetRootComponent());
+        EXPECT_EQ(parent.GetRootComponent(), originalRoot->GetAttachParent());
 
         parent.GetRootComponent()->DetachFromComponent();
-        return true;
     }
 
-    bool Test_SceneEntityRootReplacementDetachesExternalParentWhenRootEntity()
+    TEST(ActorComponentValidation, SceneEntityRootReplacementDetachesExternalParentWhenRootEntity)
     {
         RVX::SceneEntity externalParent("ExternalParent");
         RVX::SceneEntity entity("RootReplacementEntity");
@@ -1887,34 +1856,32 @@ namespace
         auto* replacementRoot = actor->AddComponent<RVX::SceneComponent>();
         replacementRoot->SetRelativeLocation(RVX::Vec3(5.0f, 0.0f, 0.0f));
 
-        TEST_ASSERT_TRUE(replacementRoot->AttachToComponent(externalParent.GetRootComponent()));
+        EXPECT_TRUE(replacementRoot->AttachToComponent(externalParent.GetRootComponent()));
 
         actor->SetRootComponent(replacementRoot);
 
-        TEST_ASSERT_EQ(replacementRoot, entity.GetRootComponent());
-        TEST_ASSERT_EQ(nullptr, replacementRoot->GetAttachParent());
-        TEST_ASSERT_EQ(RVX::Vec3(5.0f, 0.0f, 0.0f), entity.GetWorldPosition());
-        return true;
+        EXPECT_EQ(replacementRoot, entity.GetRootComponent());
+        EXPECT_EQ(nullptr, replacementRoot->GetAttachParent());
+        EXPECT_EQ(RVX::Vec3(5.0f, 0.0f, 0.0f), entity.GetWorldPosition());
     }
 
-    bool Test_SceneEntityAddChildRejectsInconsistentComponentCycle()
+    TEST(ActorComponentValidation, SceneEntityAddChildRejectsInconsistentComponentCycle)
     {
         RVX::SceneEntity parent("CycleAttachmentParent");
         RVX::SceneEntity child("CycleAttachmentChild");
 
-        TEST_ASSERT_TRUE(parent.GetRootComponent()->AttachToComponent(child.GetRootComponent()));
+        EXPECT_TRUE(parent.GetRootComponent()->AttachToComponent(child.GetRootComponent()));
 
         parent.AddChild(&child);
 
-        TEST_ASSERT_EQ(nullptr, child.GetParent());
-        TEST_ASSERT_EQ(static_cast<size_t>(0), parent.GetChildCount());
-        TEST_ASSERT_EQ(child.GetRootComponent(), parent.GetRootComponent()->GetAttachParent());
+        EXPECT_EQ(nullptr, child.GetParent());
+        EXPECT_EQ(static_cast<size_t>(0), parent.GetChildCount());
+        EXPECT_EQ(child.GetRootComponent(), parent.GetRootComponent()->GetAttachParent());
 
         parent.GetRootComponent()->DetachFromComponent();
-        return true;
     }
 
-    bool Test_SceneManagerSpawnActorCreatesSceneOwnedActor()
+    TEST(ActorComponentValidation, SceneManagerSpawnActorCreatesSceneOwnedActor)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
@@ -1925,20 +1892,19 @@ namespace
         params.localScale = RVX::Vec3(2.0f, 3.0f, 4.0f);
 
         auto* actor = sceneManager.SpawnActor<SpawnableSceneActor>(params);
-        TEST_ASSERT_NOT_NULL(actor);
-        TEST_ASSERT_EQ(actor, sceneManager.GetEntity(actor->GetHandle()));
-        TEST_ASSERT_EQ(std::string("SpawnedActor"), actor->GetName());
-        TEST_ASSERT_EQ(params.localPosition, actor->GetPosition());
-        TEST_ASSERT_EQ(params.localPosition, actor->GetWorldPosition());
-        TEST_ASSERT_EQ(params.localScale, actor->GetScale());
-        TEST_ASSERT_EQ(params.localScale, actor->GetWorldScale());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), sceneManager.GetEntityCount());
+        ASSERT_NE(nullptr, actor);
+        EXPECT_EQ(actor, sceneManager.GetEntity(actor->GetHandle()));
+        EXPECT_EQ(std::string("SpawnedActor"), actor->GetName());
+        EXPECT_EQ(params.localPosition, actor->GetPosition());
+        EXPECT_EQ(params.localPosition, actor->GetWorldPosition());
+        EXPECT_EQ(params.localScale, actor->GetScale());
+        EXPECT_EQ(params.localScale, actor->GetWorldScale());
+        EXPECT_EQ(static_cast<size_t>(1), sceneManager.GetEntityCount());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_SceneManagerSpawnActorAttachesParent()
+    TEST(ActorComponentValidation, SceneManagerSpawnActorAttachesParent)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
@@ -1949,7 +1915,7 @@ namespace
         parentParams.localRotation = RVX::Quat(0.9238795f, 0.0f, 0.3826834f, 0.0f);
         parentParams.localScale = RVX::Vec3(2.0f, 2.0f, 2.0f);
         auto* parent = sceneManager.SpawnActor<SpawnableSceneActor>(parentParams);
-        TEST_ASSERT_NOT_NULL(parent);
+        ASSERT_NE(nullptr, parent);
 
         RVX::ActorSpawnParams childParams;
         childParams.name = "SpawnChild";
@@ -1959,20 +1925,19 @@ namespace
         childParams.parent = parent;
 
         auto* child = sceneManager.SpawnActor<SpawnableSceneActor>(childParams);
-        TEST_ASSERT_NOT_NULL(child);
-        TEST_ASSERT_EQ(parent, child->GetParent());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), parent->GetChildCount());
-        TEST_ASSERT_EQ(parent->GetRootComponent(), child->GetRootComponent()->GetAttachParent());
-        TEST_ASSERT_EQ(childParams.localPosition, child->GetPosition());
-        TEST_ASSERT_EQ(childParams.localScale, child->GetScale());
-        TEST_ASSERT_EQ(parent->GetWorldMatrix() * child->GetLocalMatrix(), child->GetWorldMatrix());
-        TEST_ASSERT_EQ(static_cast<size_t>(2), sceneManager.GetEntityCount());
+        ASSERT_NE(nullptr, child);
+        EXPECT_EQ(parent, child->GetParent());
+        EXPECT_EQ(static_cast<size_t>(1), parent->GetChildCount());
+        EXPECT_EQ(parent->GetRootComponent(), child->GetRootComponent()->GetAttachParent());
+        EXPECT_EQ(childParams.localPosition, child->GetPosition());
+        EXPECT_EQ(childParams.localScale, child->GetScale());
+        EXPECT_EQ(parent->GetWorldMatrix() * child->GetLocalMatrix(), child->GetWorldMatrix());
+        EXPECT_EQ(static_cast<size_t>(2), sceneManager.GetEntityCount());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_SceneManagerSpawnActorRejectsForeignParent()
+    TEST(ActorComponentValidation, SceneManagerSpawnActorRejectsForeignParent)
     {
         RVX::SceneManager sourceScene;
         RVX::SceneManager targetScene;
@@ -1982,25 +1947,24 @@ namespace
         RVX::ActorSpawnParams parentParams;
         parentParams.name = "ForeignParent";
         auto* foreignParent = sourceScene.SpawnActor<SpawnableSceneActor>(parentParams);
-        TEST_ASSERT_NOT_NULL(foreignParent);
+        ASSERT_NE(nullptr, foreignParent);
 
         RVX::ActorSpawnParams childParams;
         childParams.name = "RejectedChild";
         childParams.parent = foreignParent;
-        TEST_ASSERT_EQ(nullptr, targetScene.SpawnActor<SpawnableSceneActor>(childParams));
-        TEST_ASSERT_EQ(static_cast<size_t>(0), targetScene.GetEntityCount());
+        EXPECT_EQ(nullptr, targetScene.SpawnActor<SpawnableSceneActor>(childParams));
+        EXPECT_EQ(static_cast<size_t>(0), targetScene.GetEntityCount());
 
         RVX::SceneEntity stackParent("StackParent");
         childParams.parent = &stackParent;
-        TEST_ASSERT_EQ(nullptr, targetScene.SpawnActor<SpawnableSceneActor>(childParams));
-        TEST_ASSERT_EQ(static_cast<size_t>(0), targetScene.GetEntityCount());
+        EXPECT_EQ(nullptr, targetScene.SpawnActor<SpawnableSceneActor>(childParams));
+        EXPECT_EQ(static_cast<size_t>(0), targetScene.GetEntityCount());
 
         sourceScene.Shutdown();
         targetScene.Shutdown();
-        return true;
     }
 
-    bool Test_SceneManagerSpawnActorByClassNameCreatesSceneOwnedActor()
+    TEST(ActorComponentValidation, SceneManagerSpawnActorByClassNameCreatesSceneOwnedActor)
     {
         RVX::ActorFactory::ClearAll();
         RVX::ActorFactory::Register("FactorySpawnSceneActor", []() {
@@ -2014,7 +1978,7 @@ namespace
         RVX::ActorSpawnParams parentParams;
         parentParams.name = "FactoryParent";
         RVX::SceneEntity* parent = sceneManager.SpawnActor(parentParams);
-        TEST_ASSERT_NOT_NULL(parent);
+        ASSERT_NE(nullptr, parent);
 
         RVX::ActorSpawnParams params;
         params.name = "FactorySceneSpawn";
@@ -2025,29 +1989,28 @@ namespace
 
         RVX::SceneEntity* spawned = sceneManager.SpawnActorByClassName("FactorySpawnSceneActor", params);
 
-        TEST_ASSERT_NOT_NULL(spawned);
-        TEST_ASSERT_NOT_NULL(dynamic_cast<FactorySpawnSceneActor*>(spawned));
-        TEST_ASSERT_EQ(std::string("FactorySceneSpawn"), spawned->GetName());
-        TEST_ASSERT_EQ(parent, spawned->GetParent());
-        TEST_ASSERT_EQ(RVX::Vec3(3.0f, 4.0f, 5.0f), spawned->GetPosition());
-        TEST_ASSERT_EQ(RVX::Quat(0.9238795f, 0.0f, 0.3826834f, 0.0f), spawned->GetRotation());
-        TEST_ASSERT_EQ(RVX::Vec3(2.0f, 2.0f, 2.0f), spawned->GetScale());
-        TEST_ASSERT_EQ(spawned, sceneManager.GetEntity(spawned->GetHandle()));
-        TEST_ASSERT_EQ(static_cast<size_t>(2), sceneManager.GetEntityCount());
-        TEST_ASSERT_EQ(1, FactoryLifecycleCounters::registered);
-        TEST_ASSERT_EQ(1, FactoryLifecycleCounters::initialized);
+        ASSERT_NE(nullptr, spawned);
+        ASSERT_NE(nullptr, dynamic_cast<FactorySpawnSceneActor*>(spawned));
+        EXPECT_EQ(std::string("FactorySceneSpawn"), spawned->GetName());
+        EXPECT_EQ(parent, spawned->GetParent());
+        EXPECT_EQ(RVX::Vec3(3.0f, 4.0f, 5.0f), spawned->GetPosition());
+        EXPECT_EQ(RVX::Quat(0.9238795f, 0.0f, 0.3826834f, 0.0f), spawned->GetRotation());
+        EXPECT_EQ(RVX::Vec3(2.0f, 2.0f, 2.0f), spawned->GetScale());
+        EXPECT_EQ(spawned, sceneManager.GetEntity(spawned->GetHandle()));
+        EXPECT_EQ(static_cast<size_t>(2), sceneManager.GetEntityCount());
+        EXPECT_EQ(1, FactoryLifecycleCounters::registered);
+        EXPECT_EQ(1, FactoryLifecycleCounters::initialized);
 
         sceneManager.Update(0.016f);
-        TEST_ASSERT_EQ(1, FactoryLifecycleCounters::beganPlay);
-        TEST_ASSERT_EQ(1, FactoryLifecycleCounters::ticked);
+        EXPECT_EQ(1, FactoryLifecycleCounters::beganPlay);
+        EXPECT_EQ(1, FactoryLifecycleCounters::ticked);
 
         sceneManager.Shutdown();
-        TEST_ASSERT_EQ(1, FactoryLifecycleCounters::unregistered);
+        EXPECT_EQ(1, FactoryLifecycleCounters::unregistered);
         RVX::ActorFactory::ClearAll();
-        return true;
     }
 
-    bool Test_SceneManagerSpawnActorByClassNameRejectsInvalidClasses()
+    TEST(ActorComponentValidation, SceneManagerSpawnActorByClassNameRejectsInvalidClasses)
     {
         RVX::ActorFactory::ClearAll();
         RVX::ActorFactory::Register("FactorySpawnPureActor", []() {
@@ -2065,37 +2028,35 @@ namespace
         RVX::ActorSpawnParams foreignParentParams;
         foreignParentParams.name = "ForeignParent";
         RVX::SceneEntity* foreignParent = foreignSceneManager.SpawnActor(foreignParentParams);
-        TEST_ASSERT_NOT_NULL(foreignParent);
+        ASSERT_NE(nullptr, foreignParent);
 
-        TEST_ASSERT_EQ(nullptr, sceneManager.SpawnActorByClassName("MissingActor", {}));
-        TEST_ASSERT_EQ(nullptr, sceneManager.SpawnActorByClassName("FactorySpawnPureActor", {}));
+        EXPECT_EQ(nullptr, sceneManager.SpawnActorByClassName("MissingActor", {}));
+        EXPECT_EQ(nullptr, sceneManager.SpawnActorByClassName("FactorySpawnPureActor", {}));
 
         RVX::ActorSpawnParams childParams;
         childParams.name = "RejectedChild";
         childParams.parent = foreignParent;
-        TEST_ASSERT_EQ(nullptr, sceneManager.SpawnActorByClassName("FactorySpawnSceneActor", childParams));
-        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+        EXPECT_EQ(nullptr, sceneManager.SpawnActorByClassName("FactorySpawnSceneActor", childParams));
+        EXPECT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
 
         foreignSceneManager.Shutdown();
         sceneManager.Shutdown();
         RVX::ActorFactory::ClearAll();
-        return true;
     }
 
-    bool Test_SceneManagerAddHierarchyIgnoresNullRoot()
+    TEST(ActorComponentValidation, SceneManagerAddHierarchyIgnoresNullRoot)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
 
         sceneManager.AddHierarchy(nullptr);
 
-        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+        EXPECT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_SceneManagerAddHierarchySpawnsNodeTree()
+    TEST(ActorComponentValidation, SceneManagerAddHierarchySpawnsNodeTree)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
@@ -2126,33 +2087,32 @@ namespace
             }
         });
 
-        TEST_ASSERT_EQ(static_cast<size_t>(3), sceneManager.GetEntityCount());
-        TEST_ASSERT_NOT_NULL(rootEntity);
-        TEST_ASSERT_EQ(std::string("HierarchyRoot"), rootEntity->GetName());
-        TEST_ASSERT_EQ(RVX::Vec3(1.0f, 2.0f, 3.0f), rootEntity->GetPosition());
-        TEST_ASSERT_EQ(rootRotation, rootEntity->GetRotation());
-        TEST_ASSERT_EQ(RVX::Vec3(2.0f, 2.0f, 2.0f), rootEntity->GetScale());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), rootEntity->GetChildren().size());
+        EXPECT_EQ(static_cast<size_t>(3), sceneManager.GetEntityCount());
+        ASSERT_NE(nullptr, rootEntity);
+        EXPECT_EQ(std::string("HierarchyRoot"), rootEntity->GetName());
+        EXPECT_EQ(RVX::Vec3(1.0f, 2.0f, 3.0f), rootEntity->GetPosition());
+        EXPECT_EQ(rootRotation, rootEntity->GetRotation());
+        EXPECT_EQ(RVX::Vec3(2.0f, 2.0f, 2.0f), rootEntity->GetScale());
+        EXPECT_EQ(static_cast<size_t>(1), rootEntity->GetChildren().size());
 
         RVX::SceneEntity* childEntity = rootEntity->GetChildren()[0];
-        TEST_ASSERT_NOT_NULL(childEntity);
-        TEST_ASSERT_EQ(std::string("HierarchyChild"), childEntity->GetName());
-        TEST_ASSERT_EQ(rootEntity, childEntity->GetParent());
-        TEST_ASSERT_EQ(RVX::Vec3(4.0f, 5.0f, 6.0f), childEntity->GetPosition());
-        TEST_ASSERT_FALSE(childEntity->IsActive());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), childEntity->GetChildren().size());
+        ASSERT_NE(nullptr, childEntity);
+        EXPECT_EQ(std::string("HierarchyChild"), childEntity->GetName());
+        EXPECT_EQ(rootEntity, childEntity->GetParent());
+        EXPECT_EQ(RVX::Vec3(4.0f, 5.0f, 6.0f), childEntity->GetPosition());
+        EXPECT_FALSE(childEntity->IsActive());
+        EXPECT_EQ(static_cast<size_t>(1), childEntity->GetChildren().size());
 
         RVX::SceneEntity* grandChildEntity = childEntity->GetChildren()[0];
-        TEST_ASSERT_NOT_NULL(grandChildEntity);
-        TEST_ASSERT_EQ(std::string("HierarchyGrandChild"), grandChildEntity->GetName());
-        TEST_ASSERT_EQ(childEntity, grandChildEntity->GetParent());
-        TEST_ASSERT_EQ(RVX::Vec3(0.5f, 0.5f, 0.5f), grandChildEntity->GetScale());
+        ASSERT_NE(nullptr, grandChildEntity);
+        EXPECT_EQ(std::string("HierarchyGrandChild"), grandChildEntity->GetName());
+        EXPECT_EQ(childEntity, grandChildEntity->GetParent());
+        EXPECT_EQ(RVX::Vec3(0.5f, 0.5f, 0.5f), grandChildEntity->GetScale());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_SceneManagerAddHierarchySkipsNodeCycles()
+    TEST(ActorComponentValidation, SceneManagerAddHierarchySkipsNodeCycles)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
@@ -2173,22 +2133,21 @@ namespace
             }
         });
 
-        TEST_ASSERT_EQ(static_cast<size_t>(2), sceneManager.GetEntityCount());
-        TEST_ASSERT_NOT_NULL(rootEntity);
-        TEST_ASSERT_EQ(std::string("CycleRoot"), rootEntity->GetName());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), rootEntity->GetChildren().size());
+        EXPECT_EQ(static_cast<size_t>(2), sceneManager.GetEntityCount());
+        ASSERT_NE(nullptr, rootEntity);
+        EXPECT_EQ(std::string("CycleRoot"), rootEntity->GetName());
+        EXPECT_EQ(static_cast<size_t>(1), rootEntity->GetChildren().size());
 
         RVX::SceneEntity* childEntity = rootEntity->GetChildren()[0];
-        TEST_ASSERT_NOT_NULL(childEntity);
-        TEST_ASSERT_EQ(std::string("CycleChild"), childEntity->GetName());
-        TEST_ASSERT_EQ(rootEntity, childEntity->GetParent());
-        TEST_ASSERT_EQ(static_cast<size_t>(0), childEntity->GetChildren().size());
+        ASSERT_NE(nullptr, childEntity);
+        EXPECT_EQ(std::string("CycleChild"), childEntity->GetName());
+        EXPECT_EQ(rootEntity, childEntity->GetParent());
+        EXPECT_EQ(static_cast<size_t>(0), childEntity->GetChildren().size());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_SceneManagerDestroyActorUsesActorPointer()
+    TEST(ActorComponentValidation, SceneManagerDestroyActorUsesActorPointer)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
@@ -2196,18 +2155,17 @@ namespace
         RVX::ActorSpawnParams params;
         params.name = "DestroyMe";
         auto* actor = sceneManager.SpawnActor<SpawnableSceneActor>(params);
-        TEST_ASSERT_NOT_NULL(actor);
+        ASSERT_NE(nullptr, actor);
         const auto handle = actor->GetHandle();
 
-        TEST_ASSERT_TRUE(sceneManager.DestroyActor(static_cast<RVX::Actor*>(actor)));
-        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
-        TEST_ASSERT_EQ(nullptr, sceneManager.GetEntity(handle));
+        EXPECT_TRUE(sceneManager.DestroyActor(static_cast<RVX::Actor*>(actor)));
+        EXPECT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+        EXPECT_EQ(nullptr, sceneManager.GetEntity(handle));
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_SceneManagerDestroyActorDefersDuringLifecycleDispatch()
+    TEST(ActorComponentValidation, SceneManagerDestroyActorDefersDuringLifecycleDispatch)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
@@ -2216,19 +2174,18 @@ namespace
         RVX::ActorSpawnParams params;
         params.name = "DeferredDestroy";
         auto* actor = sceneManager.SpawnActor<SpawnableSceneActor>(params);
-        TEST_ASSERT_NOT_NULL(actor);
+        ASSERT_NE(nullptr, actor);
         actor->AddComponent<DestroyOwnerActorComponent>(&sceneManager, &destroyAccepted);
 
         sceneManager.Update(0.016f);
 
-        TEST_ASSERT_TRUE(destroyAccepted);
-        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+        EXPECT_TRUE(destroyAccepted);
+        EXPECT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_SceneManagerDestroyActorRejectsDuplicatePendingDestroy()
+    TEST(ActorComponentValidation, SceneManagerDestroyActorRejectsDuplicatePendingDestroy)
     {
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
@@ -2238,20 +2195,19 @@ namespace
         RVX::ActorSpawnParams params;
         params.name = "DuplicateDestroy";
         auto* actor = sceneManager.SpawnActor<SpawnableSceneActor>(params);
-        TEST_ASSERT_NOT_NULL(actor);
+        ASSERT_NE(nullptr, actor);
         actor->AddComponent<DestroyOwnerActorComponent>(&sceneManager, &firstDestroy, &secondDestroy);
 
         sceneManager.Update(0.016f);
 
-        TEST_ASSERT_TRUE(firstDestroy);
-        TEST_ASSERT_FALSE(secondDestroy);
-        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+        EXPECT_TRUE(firstDestroy);
+        EXPECT_FALSE(secondDestroy);
+        EXPECT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_WorldSpawnActorDelegatesToSceneManager()
+    TEST(ActorComponentValidation, WorldSpawnActorDelegatesToSceneManager)
     {
         RVX::World world;
         world.Initialize();
@@ -2259,17 +2215,16 @@ namespace
         RVX::ActorSpawnParams params;
         params.name = "WorldSpawned";
         auto* actor = world.SpawnActor<SpawnableSceneActor>(params);
-        TEST_ASSERT_NOT_NULL(actor);
-        TEST_ASSERT_NOT_NULL(world.GetSceneManager());
-        TEST_ASSERT_EQ(actor, world.GetSceneManager()->GetEntity(actor->GetHandle()));
-        TEST_ASSERT_TRUE(world.DestroyActor(actor));
-        TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetSceneManager()->GetEntityCount());
+        ASSERT_NE(nullptr, actor);
+        ASSERT_NE(nullptr, world.GetSceneManager());
+        EXPECT_EQ(actor, world.GetSceneManager()->GetEntity(actor->GetHandle()));
+        EXPECT_TRUE(world.DestroyActor(actor));
+        EXPECT_EQ(static_cast<size_t>(0), world.GetSceneManager()->GetEntityCount());
 
         world.Shutdown();
-        return true;
     }
 
-    bool Test_WorldSpawnActorByClassNameRoutesSceneAndPureActors()
+    TEST(ActorComponentValidation, WorldSpawnActorByClassNameRoutesSceneAndPureActors)
     {
         RVX::ActorFactory::ClearAll();
         RVX::ActorFactory::Register("FactorySpawnSceneActor", []() {
@@ -2287,74 +2242,72 @@ namespace
         sceneParams.name = "WorldSceneFactoryActor";
         sceneParams.localRotation = RVX::Quat(0.9807853f, 0.1950903f, 0.0f, 0.0f);
         RVX::Actor* sceneActor = world.SpawnActorByClassName("FactorySpawnSceneActor", sceneParams);
-        TEST_ASSERT_NOT_NULL(sceneActor);
-        TEST_ASSERT_NOT_NULL(dynamic_cast<FactorySpawnSceneActor*>(sceneActor));
-        TEST_ASSERT_EQ(sceneActor, world.GetActor(sceneActor->GetHandle()));
+        ASSERT_NE(nullptr, sceneActor);
+        ASSERT_NE(nullptr, dynamic_cast<FactorySpawnSceneActor*>(sceneActor));
+        EXPECT_EQ(sceneActor, world.GetActor(sceneActor->GetHandle()));
         auto* sceneEntity = dynamic_cast<RVX::SceneEntity*>(sceneActor);
-        TEST_ASSERT_NOT_NULL(sceneEntity);
-        TEST_ASSERT_EQ(sceneEntity, world.GetSceneManager()->GetEntity(sceneEntity->GetHandle()));
-        TEST_ASSERT_EQ(RVX::Quat(0.9807853f, 0.1950903f, 0.0f, 0.0f), sceneEntity->GetRotation());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetSceneManager()->GetEntityCount());
+        ASSERT_NE(nullptr, sceneEntity);
+        EXPECT_EQ(sceneEntity, world.GetSceneManager()->GetEntity(sceneEntity->GetHandle()));
+        EXPECT_EQ(RVX::Quat(0.9807853f, 0.1950903f, 0.0f, 0.0f), sceneEntity->GetRotation());
+        EXPECT_EQ(static_cast<size_t>(1), world.GetSceneManager()->GetEntityCount());
 
         RVX::ActorSpawnParams pureParams;
         pureParams.name = "WorldPureFactoryActor";
         pureParams.localPosition = RVX::Vec3(7.0f, 8.0f, 9.0f);
         pureParams.localRotation = RVX::Quat(0.9659258f, 0.0f, 0.2588190f, 0.0f);
         RVX::Actor* pureActor = world.SpawnActorByClassName("FactorySpawnPureActor", pureParams);
-        TEST_ASSERT_NOT_NULL(pureActor);
-        TEST_ASSERT_NOT_NULL(dynamic_cast<FactorySpawnPureActor*>(pureActor));
-        TEST_ASSERT_EQ(std::string("WorldPureFactoryActor"), pureActor->GetName());
-        TEST_ASSERT_EQ(RVX::Vec3(7.0f, 8.0f, 9.0f), pureActor->GetWorldPosition());
-        TEST_ASSERT_EQ(RVX::Quat(0.9659258f, 0.0f, 0.2588190f, 0.0f), pureActor->GetWorldRotation());
-        TEST_ASSERT_EQ(pureActor, world.GetActor(pureActor->GetHandle()));
-        TEST_ASSERT_EQ(nullptr, world.GetSceneManager()->GetEntity(pureActor->GetHandle()));
-        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetActorCount());
-        TEST_ASSERT_EQ(2, FactoryLifecycleCounters::registered);
-        TEST_ASSERT_EQ(2, FactoryLifecycleCounters::initialized);
+        ASSERT_NE(nullptr, pureActor);
+        ASSERT_NE(nullptr, dynamic_cast<FactorySpawnPureActor*>(pureActor));
+        EXPECT_EQ(std::string("WorldPureFactoryActor"), pureActor->GetName());
+        EXPECT_EQ(RVX::Vec3(7.0f, 8.0f, 9.0f), pureActor->GetWorldPosition());
+        EXPECT_EQ(RVX::Quat(0.9659258f, 0.0f, 0.2588190f, 0.0f), pureActor->GetWorldRotation());
+        EXPECT_EQ(pureActor, world.GetActor(pureActor->GetHandle()));
+        EXPECT_EQ(nullptr, world.GetSceneManager()->GetEntity(pureActor->GetHandle()));
+        EXPECT_EQ(static_cast<size_t>(1), world.GetActorCount());
+        EXPECT_EQ(2, FactoryLifecycleCounters::registered);
+        EXPECT_EQ(2, FactoryLifecycleCounters::initialized);
 
         world.Tick(0.016f);
-        TEST_ASSERT_EQ(2, FactoryLifecycleCounters::beganPlay);
-        TEST_ASSERT_EQ(2, FactoryLifecycleCounters::ticked);
+        EXPECT_EQ(2, FactoryLifecycleCounters::beganPlay);
+        EXPECT_EQ(2, FactoryLifecycleCounters::ticked);
 
         RVX::ActorSpawnParams parentedPureParams;
         parentedPureParams.name = "RejectedPureFactoryActor";
         parentedPureParams.parent = sceneEntity;
-        TEST_ASSERT_EQ(nullptr, world.SpawnActorByClassName("FactorySpawnPureActor", parentedPureParams));
+        EXPECT_EQ(nullptr, world.SpawnActorByClassName("FactorySpawnPureActor", parentedPureParams));
 
         RVX::SceneManager foreignSceneManager;
         foreignSceneManager.Initialize();
         RVX::ActorSpawnParams foreignParentParams;
         foreignParentParams.name = "ForeignWorldParent";
         RVX::SceneEntity* foreignParent = foreignSceneManager.SpawnActor(foreignParentParams);
-        TEST_ASSERT_NOT_NULL(foreignParent);
+        ASSERT_NE(nullptr, foreignParent);
 
         RVX::ActorSpawnParams foreignChildParams;
         foreignChildParams.name = "RejectedWorldSceneFactoryActor";
         foreignChildParams.parent = foreignParent;
-        TEST_ASSERT_EQ(nullptr, world.SpawnActorByClassName("FactorySpawnSceneActor", foreignChildParams));
+        EXPECT_EQ(nullptr, world.SpawnActorByClassName("FactorySpawnSceneActor", foreignChildParams));
 
-        TEST_ASSERT_EQ(nullptr, world.SpawnActorByClassName("MissingActor", {}));
+        EXPECT_EQ(nullptr, world.SpawnActorByClassName("MissingActor", {}));
 
         foreignSceneManager.Shutdown();
         world.Shutdown();
-        TEST_ASSERT_EQ(2, FactoryLifecycleCounters::unregistered);
+        EXPECT_EQ(2, FactoryLifecycleCounters::unregistered);
         RVX::ActorFactory::ClearAll();
-        return true;
     }
 
-    bool Test_WorldSpawnActorRejectsWhenUninitialized()
+    TEST(ActorComponentValidation, WorldSpawnActorRejectsWhenUninitialized)
     {
         RVX::World world;
         RVX::ActorSpawnParams params;
         params.name = "RejectedWorldSpawn";
         RVX::Actor actor("StackActor");
 
-        TEST_ASSERT_EQ(nullptr, world.SpawnActor<SpawnableSceneActor>(params));
-        TEST_ASSERT_FALSE(world.DestroyActor(&actor));
-        return true;
+        EXPECT_EQ(nullptr, world.SpawnActor<SpawnableSceneActor>(params));
+        EXPECT_FALSE(world.DestroyActor(&actor));
     }
 
-    bool Test_DestroyActorRejectsForeignOrPureActor()
+    TEST(ActorComponentValidation, DestroyActorRejectsForeignOrPureActor)
     {
         RVX::SceneManager sceneManager;
         RVX::SceneManager foreignScene;
@@ -2366,21 +2319,20 @@ namespace
         RVX::ActorSpawnParams params;
         params.name = "ForeignActor";
         auto* foreignActor = foreignScene.SpawnActor<SpawnableSceneActor>(params);
-        TEST_ASSERT_NOT_NULL(foreignActor);
+        ASSERT_NE(nullptr, foreignActor);
 
-        TEST_ASSERT_FALSE(sceneManager.DestroyActor(nullptr));
-        TEST_ASSERT_FALSE(sceneManager.DestroyActor(&pureActor));
-        TEST_ASSERT_FALSE(sceneManager.DestroyActor(&stackEntity));
-        TEST_ASSERT_FALSE(sceneManager.DestroyActor(foreignActor));
-        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), foreignScene.GetEntityCount());
+        EXPECT_FALSE(sceneManager.DestroyActor(nullptr));
+        EXPECT_FALSE(sceneManager.DestroyActor(&pureActor));
+        EXPECT_FALSE(sceneManager.DestroyActor(&stackEntity));
+        EXPECT_FALSE(sceneManager.DestroyActor(foreignActor));
+        EXPECT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+        EXPECT_EQ(static_cast<size_t>(1), foreignScene.GetEntityCount());
 
         sceneManager.Shutdown();
         foreignScene.Shutdown();
-        return true;
     }
 
-    bool Test_WorldSpawnPureActorOwnsAndLooksUpActor()
+    TEST(ActorComponentValidation, WorldSpawnPureActorOwnsAndLooksUpActor)
     {
         RVX::World world;
         world.Initialize();
@@ -2392,19 +2344,18 @@ namespace
         params.localScale = RVX::Vec3(2.0f, 3.0f, 4.0f);
 
         auto* actor = world.SpawnActor<WorldManagedPureActor>(params);
-        TEST_ASSERT_NOT_NULL(actor);
-        TEST_ASSERT_EQ(actor, world.GetActor(actor->GetHandle()));
-        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetActorCount());
-        TEST_ASSERT_NOT_NULL(world.GetSceneManager());
-        TEST_ASSERT_EQ(nullptr, world.GetSceneManager()->GetEntity(actor->GetHandle()));
-        TEST_ASSERT_EQ(params.localPosition, actor->GetWorldPosition());
-        TEST_ASSERT_EQ(params.localScale, actor->GetWorldScale());
+        ASSERT_NE(nullptr, actor);
+        EXPECT_EQ(actor, world.GetActor(actor->GetHandle()));
+        EXPECT_EQ(static_cast<size_t>(1), world.GetActorCount());
+        ASSERT_NE(nullptr, world.GetSceneManager());
+        EXPECT_EQ(nullptr, world.GetSceneManager()->GetEntity(actor->GetHandle()));
+        EXPECT_EQ(params.localPosition, actor->GetWorldPosition());
+        EXPECT_EQ(params.localScale, actor->GetWorldScale());
 
         world.Shutdown();
-        return true;
     }
 
-    bool Test_WorldSpawnSceneEntityStillDelegatesToSceneManager()
+    TEST(ActorComponentValidation, WorldSpawnSceneEntityStillDelegatesToSceneManager)
     {
         RVX::World world;
         world.Initialize();
@@ -2412,17 +2363,16 @@ namespace
         RVX::ActorSpawnParams params;
         params.name = "SceneActorThroughWorld";
         auto* actor = world.SpawnActor<SpawnableSceneActor>(params);
-        TEST_ASSERT_NOT_NULL(actor);
-        TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetActorCount());
-        TEST_ASSERT_NOT_NULL(world.GetSceneManager());
-        TEST_ASSERT_EQ(actor, world.GetSceneManager()->GetEntity(actor->GetHandle()));
-        TEST_ASSERT_EQ(static_cast<RVX::Actor*>(actor), world.GetActor(actor->GetHandle()));
+        ASSERT_NE(nullptr, actor);
+        EXPECT_EQ(static_cast<size_t>(0), world.GetActorCount());
+        ASSERT_NE(nullptr, world.GetSceneManager());
+        EXPECT_EQ(actor, world.GetSceneManager()->GetEntity(actor->GetHandle()));
+        EXPECT_EQ(static_cast<RVX::Actor*>(actor), world.GetActor(actor->GetHandle()));
 
         world.Shutdown();
-        return true;
     }
 
-    bool Test_WorldPureActorLifecycleBeginsTicksAndDestroys()
+    TEST(ActorComponentValidation, WorldPureActorLifecycleBeginsTicksAndDestroys)
     {
         RVX::World world;
         world.Initialize();
@@ -2431,27 +2381,26 @@ namespace
         RVX::ActorSpawnParams params;
         params.name = "LifecyclePureActor";
         auto* actor = world.SpawnActor<WorldManagedPureActor>(params);
-        TEST_ASSERT_NOT_NULL(actor);
+        ASSERT_NE(nullptr, actor);
         actor->AddComponent<WorldActorLifecycleComponent>(&counters);
 
         world.Tick(0.016f);
 
-        TEST_ASSERT_EQ(1, counters.registered);
-        TEST_ASSERT_EQ(1, counters.initialized);
-        TEST_ASSERT_EQ(1, counters.beganPlay);
-        TEST_ASSERT_EQ(1, counters.ticked);
+        EXPECT_EQ(1, counters.registered);
+        EXPECT_EQ(1, counters.initialized);
+        EXPECT_EQ(1, counters.beganPlay);
+        EXPECT_EQ(1, counters.ticked);
 
-        TEST_ASSERT_TRUE(world.DestroyActor(actor));
-        TEST_ASSERT_EQ(1, counters.endedPlay);
-        TEST_ASSERT_EQ(1, counters.unregistered);
-        TEST_ASSERT_EQ(1, counters.destroyed);
-        TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetActorCount());
+        EXPECT_TRUE(world.DestroyActor(actor));
+        EXPECT_EQ(1, counters.endedPlay);
+        EXPECT_EQ(1, counters.unregistered);
+        EXPECT_EQ(1, counters.destroyed);
+        EXPECT_EQ(static_cast<size_t>(0), world.GetActorCount());
 
         world.Shutdown();
-        return true;
     }
 
-    bool Test_WorldDestroyPureActorDefersDuringLifecycleDispatch()
+    TEST(ActorComponentValidation, WorldDestroyPureActorDefersDuringLifecycleDispatch)
     {
         RVX::World world;
         world.Initialize();
@@ -2460,21 +2409,20 @@ namespace
         RVX::ActorSpawnParams params;
         params.name = "DeferredPureDestroy";
         auto* actor = world.SpawnActor<WorldManagedPureActor>(params);
-        TEST_ASSERT_NOT_NULL(actor);
+        ASSERT_NE(nullptr, actor);
         const auto handle = actor->GetHandle();
         actor->AddComponent<WorldActorSelfDestroyComponent>(&world, &destroyAccepted);
 
         world.Tick(0.016f);
 
-        TEST_ASSERT_TRUE(destroyAccepted);
-        TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetActorCount());
-        TEST_ASSERT_EQ(nullptr, world.GetActor(handle));
+        EXPECT_TRUE(destroyAccepted);
+        EXPECT_EQ(static_cast<size_t>(0), world.GetActorCount());
+        EXPECT_EQ(nullptr, world.GetActor(handle));
 
         world.Shutdown();
-        return true;
     }
 
-    bool Test_WorldDestroyPureActorRejectsDuplicatePendingDestroy()
+    TEST(ActorComponentValidation, WorldDestroyPureActorRejectsDuplicatePendingDestroy)
     {
         RVX::World world;
         world.Initialize();
@@ -2484,20 +2432,19 @@ namespace
         RVX::ActorSpawnParams params;
         params.name = "DuplicatePureDestroy";
         auto* actor = world.SpawnActor<WorldManagedPureActor>(params);
-        TEST_ASSERT_NOT_NULL(actor);
+        ASSERT_NE(nullptr, actor);
         actor->AddComponent<WorldActorSelfDestroyComponent>(&world, &firstDestroy, &secondDestroy);
 
         world.Tick(0.016f);
 
-        TEST_ASSERT_TRUE(firstDestroy);
-        TEST_ASSERT_FALSE(secondDestroy);
-        TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetActorCount());
+        EXPECT_TRUE(firstDestroy);
+        EXPECT_FALSE(secondDestroy);
+        EXPECT_EQ(static_cast<size_t>(0), world.GetActorCount());
 
         world.Shutdown();
-        return true;
     }
 
-    bool Test_WorldPureActorRejectsSceneParent()
+    TEST(ActorComponentValidation, WorldPureActorRejectsSceneParent)
     {
         RVX::World world;
         world.Initialize();
@@ -2505,19 +2452,18 @@ namespace
         RVX::ActorSpawnParams sceneParams;
         sceneParams.name = "SceneParent";
         auto* parent = world.SpawnActor<SpawnableSceneActor>(sceneParams);
-        TEST_ASSERT_NOT_NULL(parent);
+        ASSERT_NE(nullptr, parent);
 
         RVX::ActorSpawnParams pureParams;
         pureParams.name = "RejectedPureChild";
         pureParams.parent = parent;
-        TEST_ASSERT_EQ(nullptr, world.SpawnActor<WorldManagedPureActor>(pureParams));
-        TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetActorCount());
+        EXPECT_EQ(nullptr, world.SpawnActor<WorldManagedPureActor>(pureParams));
+        EXPECT_EQ(static_cast<size_t>(0), world.GetActorCount());
 
         world.Shutdown();
-        return true;
     }
 
-    bool Test_WorldUnloadClearsPureActorsAndSceneActors()
+    TEST(ActorComponentValidation, WorldUnloadClearsPureActorsAndSceneActors)
     {
         RVX::World world;
         world.Initialize();
@@ -2525,27 +2471,26 @@ namespace
         RVX::ActorSpawnParams pureParams;
         pureParams.name = "UnloadPureActor";
         auto* pureActor = world.SpawnActor<WorldManagedPureActor>(pureParams);
-        TEST_ASSERT_NOT_NULL(pureActor);
+        ASSERT_NE(nullptr, pureActor);
 
         RVX::ActorSpawnParams sceneParams;
         sceneParams.name = "UnloadSceneActor";
         auto* sceneActor = world.SpawnActor<SpawnableSceneActor>(sceneParams);
-        TEST_ASSERT_NOT_NULL(sceneActor);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetActorCount());
-        TEST_ASSERT_NOT_NULL(world.GetSceneManager());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetSceneManager()->GetEntityCount());
+        ASSERT_NE(nullptr, sceneActor);
+        EXPECT_EQ(static_cast<size_t>(1), world.GetActorCount());
+        ASSERT_NE(nullptr, world.GetSceneManager());
+        EXPECT_EQ(static_cast<size_t>(1), world.GetSceneManager()->GetEntityCount());
 
         world.Unload();
 
-        TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetActorCount());
-        TEST_ASSERT_NOT_NULL(world.GetSceneManager());
-        TEST_ASSERT_EQ(static_cast<size_t>(0), world.GetSceneManager()->GetEntityCount());
+        EXPECT_EQ(static_cast<size_t>(0), world.GetActorCount());
+        ASSERT_NE(nullptr, world.GetSceneManager());
+        EXPECT_EQ(static_cast<size_t>(0), world.GetSceneManager()->GetEntityCount());
 
         world.Shutdown();
-        return true;
     }
 
-    bool Test_WorldForEachActorVisitsPureAndSceneActors()
+    TEST(ActorComponentValidation, WorldForEachActorVisitsPureAndSceneActors)
     {
         RVX::World world;
         world.Initialize();
@@ -2553,12 +2498,12 @@ namespace
         RVX::ActorSpawnParams pureParams;
         pureParams.name = "PureIterated";
         auto* pureActor = world.SpawnActor<WorldManagedPureActor>(pureParams);
-        TEST_ASSERT_NOT_NULL(pureActor);
+        ASSERT_NE(nullptr, pureActor);
 
         RVX::ActorSpawnParams sceneParams;
         sceneParams.name = "SceneIterated";
         auto* sceneActor = world.SpawnActor<SpawnableSceneActor>(sceneParams);
-        TEST_ASSERT_NOT_NULL(sceneActor);
+        ASSERT_NE(nullptr, sceneActor);
 
         std::vector<RVX::Actor::Handle> visited;
         world.ForEachActor([&](RVX::Actor* actor) {
@@ -2568,15 +2513,14 @@ namespace
             }
         });
 
-        TEST_ASSERT_EQ(static_cast<size_t>(2), visited.size());
-        TEST_ASSERT_TRUE(std::find(visited.begin(), visited.end(), pureActor->GetHandle()) != visited.end());
-        TEST_ASSERT_TRUE(std::find(visited.begin(), visited.end(), sceneActor->GetHandle()) != visited.end());
+        EXPECT_EQ(static_cast<size_t>(2), visited.size());
+        EXPECT_TRUE(std::find(visited.begin(), visited.end(), pureActor->GetHandle()) != visited.end());
+        EXPECT_TRUE(std::find(visited.begin(), visited.end(), sceneActor->GetHandle()) != visited.end());
 
         world.Shutdown();
-        return true;
     }
 
-    bool Test_WorldForEachActorIgnoresEmptyCallback()
+    TEST(ActorComponentValidation, WorldForEachActorIgnoresEmptyCallback)
     {
         RVX::World world;
         world.Initialize();
@@ -2584,16 +2528,15 @@ namespace
         RVX::ActorSpawnParams params;
         params.name = "EmptyCallbackPureActor";
         auto* actor = world.SpawnActor<WorldManagedPureActor>(params);
-        TEST_ASSERT_NOT_NULL(actor);
+        ASSERT_NE(nullptr, actor);
 
         world.ForEachActor({});
-        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetActorCount());
+        EXPECT_EQ(static_cast<size_t>(1), world.GetActorCount());
 
         world.Shutdown();
-        return true;
     }
 
-    bool Test_WorldForEachActorAllowsPureActorDestroyDuringCallback()
+    TEST(ActorComponentValidation, WorldForEachActorAllowsPureActorDestroyDuringCallback)
     {
         RVX::World world;
         world.Initialize();
@@ -2601,13 +2544,13 @@ namespace
         RVX::ActorSpawnParams firstParams;
         firstParams.name = "DestroyPureDuringIteration";
         auto* first = world.SpawnActor<WorldManagedPureActor>(firstParams);
-        TEST_ASSERT_NOT_NULL(first);
+        ASSERT_NE(nullptr, first);
         const auto firstHandle = first->GetHandle();
 
         RVX::ActorSpawnParams secondParams;
         secondParams.name = "SurvivePureIteration";
         auto* second = world.SpawnActor<WorldManagedPureActor>(secondParams);
-        TEST_ASSERT_NOT_NULL(second);
+        ASSERT_NE(nullptr, second);
         const auto secondHandle = second->GetHandle();
 
         bool destroyAccepted = false;
@@ -2623,16 +2566,15 @@ namespace
             }
         });
 
-        TEST_ASSERT_TRUE(destroyAccepted);
-        TEST_ASSERT_EQ(nullptr, world.GetActor(firstHandle));
-        TEST_ASSERT_EQ(second, world.GetActor(secondHandle));
-        TEST_ASSERT_TRUE(visitCount >= static_cast<size_t>(1));
+        EXPECT_TRUE(destroyAccepted);
+        EXPECT_EQ(nullptr, world.GetActor(firstHandle));
+        EXPECT_EQ(second, world.GetActor(secondHandle));
+        EXPECT_TRUE(visitCount >= static_cast<size_t>(1));
 
         world.Shutdown();
-        return true;
     }
 
-    bool Test_WorldForEachActorAllowsSceneActorDestroyDuringCallback()
+    TEST(ActorComponentValidation, WorldForEachActorAllowsSceneActorDestroyDuringCallback)
     {
         RVX::World world;
         world.Initialize();
@@ -2640,13 +2582,13 @@ namespace
         RVX::ActorSpawnParams firstParams;
         firstParams.name = "DestroySceneDuringIteration";
         auto* first = world.SpawnActor<SpawnableSceneActor>(firstParams);
-        TEST_ASSERT_NOT_NULL(first);
+        ASSERT_NE(nullptr, first);
         const auto firstHandle = first->GetHandle();
 
         RVX::ActorSpawnParams secondParams;
         secondParams.name = "SurviveSceneIteration";
         auto* second = world.SpawnActor<SpawnableSceneActor>(secondParams);
-        TEST_ASSERT_NOT_NULL(second);
+        ASSERT_NE(nullptr, second);
         const auto secondHandle = second->GetHandle();
 
         bool destroyAccepted = false;
@@ -2662,184 +2604,11 @@ namespace
             }
         });
 
-        TEST_ASSERT_TRUE(destroyAccepted);
-        TEST_ASSERT_EQ(nullptr, world.GetActor(firstHandle));
-        TEST_ASSERT_EQ(second, world.GetActor(secondHandle));
-        TEST_ASSERT_TRUE(visitCount >= static_cast<size_t>(1));
+        EXPECT_TRUE(destroyAccepted);
+        EXPECT_EQ(nullptr, world.GetActor(firstHandle));
+        EXPECT_EQ(second, world.GetActor(secondHandle));
+        EXPECT_TRUE(visitCount >= static_cast<size_t>(1));
 
         world.Shutdown();
-        return true;
     }
 } // namespace
-
-int main()
-{
-    RVX::Log::Initialize();
-    RVX_CORE_INFO("Actor Component Validation Tests");
-
-    TestSuite suite;
-    suite.AddTest("ActorComponentLifecycleDefaults", Test_ActorComponentLifecycleDefaults);
-    suite.AddTest("ActorAssignsUniqueDefaultComponentNames",
-                  Test_ActorAssignsUniqueDefaultComponentNames);
-    suite.AddTest("ActorAddOwnedComponentUniquifiesExplicitComponentNames",
-                  Test_ActorAddOwnedComponentUniquifiesExplicitComponentNames);
-    suite.AddTest("SceneEntityCompatibilityRootGetsDefaultComponentName",
-                  Test_SceneEntityCompatibilityRootGetsDefaultComponentName);
-    suite.AddTest("ActorOwnsComponentsAndDispatchesLifecycle",
-                  Test_ActorOwnsComponentsAndDispatchesLifecycle);
-    suite.AddTest("SceneManagerUpdateDispatchesActorComponentLifecycle",
-                  Test_SceneManagerUpdateDispatchesActorComponentLifecycle);
-    suite.AddTest("SceneManagerBeginsComponentsAddedAfterActorBeginsPlay",
-                  Test_SceneManagerBeginsComponentsAddedAfterActorBeginsPlay);
-    suite.AddTest("SceneManagerUpdateKeepsLegacyComponentTicking",
-                  Test_SceneManagerUpdateKeepsLegacyComponentTicking);
-    suite.AddTest("SceneManagerDispatchesLegacyComponentFullLifecycle",
-                  Test_SceneManagerDispatchesLegacyComponentFullLifecycle);
-    suite.AddTest("SceneManagerBeginsLegacyComponentAddedAfterEntityBeginsPlay",
-                  Test_SceneManagerBeginsLegacyComponentAddedAfterEntityBeginsPlay);
-    suite.AddTest("SceneEntityActorPointerTickDispatchesLegacyComponents",
-                  Test_SceneEntityActorPointerTickDispatchesLegacyComponents);
-    suite.AddTest("SceneEntityLegacyRemovalDispatchesLifecycleCleanup",
-                  Test_SceneEntityLegacyRemovalDispatchesLifecycleCleanup);
-    suite.AddTest("SceneEntityLegacyTickSnapshotsComponentsAddedDuringTick",
-                  Test_SceneEntityLegacyTickSnapshotsComponentsAddedDuringTick);
-    suite.AddTest("SceneEntityLegacyDefersSelfRemovalDuringTick",
-                  Test_SceneEntityLegacyDefersSelfRemovalDuringTick);
-    suite.AddTest("SceneEntityLegacySkipsComponentRemovedEarlierInTick",
-                  Test_SceneEntityLegacySkipsComponentRemovedEarlierInTick);
-    suite.AddTest("SceneEntityActiveStateControlsActorTickThroughActorPointer",
-                  Test_SceneEntityActiveStateControlsActorTickThroughActorPointer);
-    suite.AddTest("SceneManagerDefersDestroyRequestsDuringLifecycleDispatch",
-                  Test_SceneManagerDefersDestroyRequestsDuringLifecycleDispatch);
-    suite.AddTest("SceneManagerDestroyEntityDispatchesEndPlayBeforeUnregister",
-                  Test_SceneManagerDestroyEntityDispatchesEndPlayBeforeUnregister);
-    suite.AddTest("SceneManagerDestroyEntityBeforeBeginPlayDoesNotDispatchEndPlay",
-                  Test_SceneManagerDestroyEntityBeforeBeginPlayDoesNotDispatchEndPlay);
-    suite.AddTest("ActorTickSnapshotsComponentsAddedDuringTick",
-                  Test_ActorTickSnapshotsComponentsAddedDuringTick);
-    suite.AddTest("ActorDefersSelfRemovalDuringTick",
-                  Test_ActorDefersSelfRemovalDuringTick);
-    suite.AddTest("ActorDispatchesEndPlayForBegunComponentRemovedDuringTick",
-                  Test_ActorDispatchesEndPlayForBegunComponentRemovedDuringTick);
-    suite.AddTest("ActorSkipsComponentRemovedEarlierInTick",
-                  Test_ActorSkipsComponentRemovedEarlierInTick);
-    suite.AddTest("ActorBeginPlaySnapshotsComponentsAddedDuringBeginPlay",
-                  Test_ActorBeginPlaySnapshotsComponentsAddedDuringBeginPlay);
-    suite.AddTest("ActorDefersSelfRemovalDuringEndPlay",
-                  Test_ActorDefersSelfRemovalDuringEndPlay);
-    suite.AddTest("ActorDirectRemovalHandlesSelfRemovalDuringEndPlay",
-                  Test_ActorDirectRemovalHandlesSelfRemovalDuringEndPlay);
-    suite.AddTest("ActorSkipsComponentRemovedEarlierInEndPlay",
-                  Test_ActorSkipsComponentRemovedEarlierInEndPlay);
-    suite.AddTest("ActorKeepsEndPlaySuppressedAfterNestedEndPlayReturnsToTick",
-                  Test_ActorKeepsEndPlaySuppressedAfterNestedEndPlayReturnsToTick);
-    suite.AddTest("ActorDispatchesEndPlayForComponentQueuedBeforeNestedEndPlay",
-                  Test_ActorDispatchesEndPlayForComponentQueuedBeforeNestedEndPlay);
-    suite.AddTest("ActorDestructionClearsPendingRemovalWithoutDoubleDestroy",
-                  Test_ActorDestructionClearsPendingRemovalWithoutDoubleDestroy);
-    suite.AddTest("SceneComponentAttachmentComputesWorldTransform",
-                  Test_SceneComponentAttachmentComputesWorldTransform);
-    suite.AddTest("PrimitiveComponentTracksVisibilityLayerAndBounds",
-                  Test_PrimitiveComponentTracksVisibilityLayerAndBounds);
-    suite.AddTest("StaticMeshComponentIsPrimitiveSceneComponent",
-                  Test_StaticMeshComponentIsPrimitiveSceneComponent);
-    suite.AddTest("StaticMeshComponentRegistersWithSceneManager",
-                  Test_StaticMeshComponentRegistersWithSceneManager);
-    suite.AddTest("RuntimeStaticMeshComponentRemovalUnregistersPrimitive",
-                  Test_RuntimeStaticMeshComponentRemovalUnregistersPrimitive);
-    suite.AddTest("SceneEntityAddComponentAutoRegistersStaticMeshPrimitive",
-                  Test_SceneEntityAddComponentAutoRegistersStaticMeshPrimitive);
-    suite.AddTest("SceneEntityAndComponentAreActorCompatible",
-                  Test_SceneEntityAndComponentAreActorCompatible);
-    suite.AddTest("ActorAddComponentRejectsLegacyComponentToAvoidContainerSplit",
-                  Test_ActorAddComponentRejectsLegacyComponentToAvoidContainerSplit);
-    suite.AddTest("ActorAndComponentFactoriesCreateRegisteredTypes",
-                  Test_ActorAndComponentFactoriesCreateRegisteredTypes);
-    suite.AddTest("ActorTransformForwardsToRootComponent",
-                  Test_ActorTransformForwardsToRootComponent);
-    suite.AddTest("SceneEntityCreatesRootAndForwardsTransform",
-                  Test_SceneEntityCreatesRootAndForwardsTransform);
-    suite.AddTest("SceneEntityHierarchyAttachesRootComponents",
-                  Test_SceneEntityHierarchyAttachesRootComponents);
-    suite.AddTest("SceneEntityTransformStaysSyncedThroughActorAndRootPaths",
-                  Test_SceneEntityTransformStaysSyncedThroughActorAndRootPaths);
-    suite.AddTest("SceneEntityDestructionMaintainsHierarchy",
-                  Test_SceneEntityDestructionMaintainsHierarchy);
-    suite.AddTest("SceneEntityCompatRootCannotBeRemovedThroughActorAPI",
-                  Test_SceneEntityCompatRootCannotBeRemovedThroughActorAPI);
-    suite.AddTest("SceneEntityRootReplacementKeepsCompatibility",
-                  Test_SceneEntityRootReplacementKeepsCompatibility);
-    suite.AddTest("RootComponentTransformMarksSceneEntityDirty",
-                  Test_RootComponentTransformMarksSceneEntityDirty);
-    suite.AddTest("SceneEntityRootReplacementRejectsInvalidAttachment",
-                  Test_SceneEntityRootReplacementRejectsInvalidAttachment);
-    suite.AddTest("SceneEntityRootReplacementDetachesExternalParentWhenRootEntity",
-                  Test_SceneEntityRootReplacementDetachesExternalParentWhenRootEntity);
-    suite.AddTest("SceneEntityAddChildRejectsInconsistentComponentCycle",
-                  Test_SceneEntityAddChildRejectsInconsistentComponentCycle);
-    suite.AddTest("SceneManagerSpawnActorCreatesSceneOwnedActor",
-                  Test_SceneManagerSpawnActorCreatesSceneOwnedActor);
-    suite.AddTest("SceneManagerSpawnActorAttachesParent",
-                  Test_SceneManagerSpawnActorAttachesParent);
-    suite.AddTest("SceneManagerSpawnActorRejectsForeignParent",
-                  Test_SceneManagerSpawnActorRejectsForeignParent);
-    suite.AddTest("SceneManagerSpawnActorByClassNameCreatesSceneOwnedActor",
-                  Test_SceneManagerSpawnActorByClassNameCreatesSceneOwnedActor);
-    suite.AddTest("SceneManagerSpawnActorByClassNameRejectsInvalidClasses",
-                  Test_SceneManagerSpawnActorByClassNameRejectsInvalidClasses);
-    suite.AddTest("SceneManagerAddHierarchyIgnoresNullRoot",
-                  Test_SceneManagerAddHierarchyIgnoresNullRoot);
-    suite.AddTest("SceneManagerAddHierarchySpawnsNodeTree",
-                  Test_SceneManagerAddHierarchySpawnsNodeTree);
-    suite.AddTest("SceneManagerAddHierarchySkipsNodeCycles",
-                  Test_SceneManagerAddHierarchySkipsNodeCycles);
-    suite.AddTest("SceneManagerDestroyActorUsesActorPointer",
-                  Test_SceneManagerDestroyActorUsesActorPointer);
-    suite.AddTest("SceneManagerDestroyActorDefersDuringLifecycleDispatch",
-                  Test_SceneManagerDestroyActorDefersDuringLifecycleDispatch);
-    suite.AddTest("SceneManagerDestroyActorRejectsDuplicatePendingDestroy",
-                  Test_SceneManagerDestroyActorRejectsDuplicatePendingDestroy);
-    suite.AddTest("WorldSpawnActorDelegatesToSceneManager",
-                  Test_WorldSpawnActorDelegatesToSceneManager);
-    suite.AddTest("WorldSpawnActorByClassNameRoutesSceneAndPureActors",
-                  Test_WorldSpawnActorByClassNameRoutesSceneAndPureActors);
-    suite.AddTest("WorldSpawnActorRejectsWhenUninitialized",
-                  Test_WorldSpawnActorRejectsWhenUninitialized);
-    suite.AddTest("DestroyActorRejectsForeignOrPureActor",
-                  Test_DestroyActorRejectsForeignOrPureActor);
-    suite.AddTest("WorldSpawnPureActorOwnsAndLooksUpActor",
-                  Test_WorldSpawnPureActorOwnsAndLooksUpActor);
-    suite.AddTest("WorldSpawnSceneEntityStillDelegatesToSceneManager",
-                  Test_WorldSpawnSceneEntityStillDelegatesToSceneManager);
-    suite.AddTest("WorldPureActorLifecycleBeginsTicksAndDestroys",
-                  Test_WorldPureActorLifecycleBeginsTicksAndDestroys);
-    suite.AddTest("WorldDestroyPureActorDefersDuringLifecycleDispatch",
-                  Test_WorldDestroyPureActorDefersDuringLifecycleDispatch);
-    suite.AddTest("WorldDestroyPureActorRejectsDuplicatePendingDestroy",
-                  Test_WorldDestroyPureActorRejectsDuplicatePendingDestroy);
-    suite.AddTest("WorldPureActorRejectsSceneParent",
-                  Test_WorldPureActorRejectsSceneParent);
-    suite.AddTest("WorldUnloadClearsPureActorsAndSceneActors",
-                  Test_WorldUnloadClearsPureActorsAndSceneActors);
-    suite.AddTest("WorldForEachActorVisitsPureAndSceneActors",
-                  Test_WorldForEachActorVisitsPureAndSceneActors);
-    suite.AddTest("WorldForEachActorIgnoresEmptyCallback",
-                  Test_WorldForEachActorIgnoresEmptyCallback);
-    suite.AddTest("WorldForEachActorAllowsPureActorDestroyDuringCallback",
-                  Test_WorldForEachActorAllowsPureActorDestroyDuringCallback);
-    suite.AddTest("WorldForEachActorAllowsSceneActorDestroyDuringCallback",
-                  Test_WorldForEachActorAllowsSceneActorDestroyDuringCallback);
-
-    auto results = suite.Run();
-    suite.PrintResults(results);
-
-    RVX::Log::Shutdown();
-
-    for (const auto& result : results)
-    {
-        if (!result.passed)
-            return 1;
-    }
-
-    return 0;
-}

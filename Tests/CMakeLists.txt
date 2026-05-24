@@ -225,19 +225,19 @@ rvx_add_gtest(
 )
 
 # Actor component validation tests
-add_executable(ActorComponentValidation
-    ActorComponentValidation/main.cpp
+rvx_add_gtest(
+    NAME ActorComponentValidation
+    SOURCES ActorComponentValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::Scene
+        RVX::Resource
+        RVX::World
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Resource/Include
+    LABELS unit
+    TIMEOUT 120
 )
-target_include_directories(ActorComponentValidation PRIVATE
-    ${CMAKE_SOURCE_DIR}/Resource/Include
-)
-target_link_libraries(ActorComponentValidation PRIVATE
-    RVX_TestFramework
-    RVX::Scene
-    RVX::Resource
-    RVX::World
-)
-target_compile_features(ActorComponentValidation PRIVATE cxx_std_20)
 
 # Spatial component validation tests
 rvx_add_gtest(
@@ -322,10 +322,9 @@ endforeach()
 # =============================================================================
 
 # --- unit (CPU-only) ---
-add_test(NAME ActorComponentValidation      COMMAND ActorComponentValidation)
 add_test(NAME ResourceInstantiationValidation COMMAND ResourceInstantiationValidation)
 set_tests_properties(
-    ActorComponentValidation ResourceInstantiationValidation
+    ResourceInstantiationValidation
     PROPERTIES LABELS "unit" TIMEOUT 120)
 
 # --- gpu (needs a real device; headless CI skips these) ---
