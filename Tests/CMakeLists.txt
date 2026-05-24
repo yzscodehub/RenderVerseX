@@ -141,20 +141,21 @@ if(RVX_ENABLE_DX11)
 endif()
 
 # RenderGraph Validation Tests
-add_executable(RenderGraphValidation
-    RenderGraphValidation/main.cpp
-    ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraph.cpp
-    ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraphCompiler.cpp
-    ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraphExecutor.cpp
+rvx_add_gtest(
+    NAME RenderGraphValidation
+    SOURCES
+        RenderGraphValidation/main.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraph.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraphCompiler.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraphExecutor.cpp
+    LIBS
+        RVX::Core
+        RVX::RHI
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Include
+    LABELS unit
+    TIMEOUT 120
 )
-target_include_directories(RenderGraphValidation PRIVATE
-    ${CMAKE_SOURCE_DIR}/Render/Include
-)
-target_link_libraries(RenderGraphValidation PRIVATE
-    RVX_TestFramework
-    RVX::RHI
-)
-target_compile_features(RenderGraphValidation PRIVATE cxx_std_20)
 
 # GPU Resource Manager Validation Tests
 add_executable(GPUResourceManagerValidation
@@ -311,14 +312,12 @@ foreach(SHADER ${TEST_SHADERS})
 endforeach()
 
 # =============================================================================
-# CTest registration (labels: unit | gpu | lint)
+# CTest registration (labels: unit | gpu)
 #   unit -> CPU-only, the CI gate set      (ctest -L unit)
 #   gpu  -> needs a real device, headless-skip
-#   lint -> source-pattern checks, not behavioral (see Task 0.3)
 # =============================================================================
 
 # --- unit (CPU-only) ---
-add_test(NAME RenderGraphValidation         COMMAND RenderGraphValidation)
 add_test(NAME GPUResourceManagerValidation  COMMAND GPUResourceManagerValidation)
 add_test(NAME GPUUploadServiceValidation    COMMAND GPUUploadServiceValidation)
 add_test(NAME RenderSceneValidation         COMMAND RenderSceneValidation)
@@ -326,7 +325,7 @@ add_test(NAME ActorComponentValidation      COMMAND ActorComponentValidation)
 add_test(NAME SpatialComponentValidation    COMMAND SpatialComponentValidation)
 add_test(NAME ResourceInstantiationValidation COMMAND ResourceInstantiationValidation)
 set_tests_properties(
-    RenderGraphValidation GPUResourceManagerValidation GPUUploadServiceValidation
+    GPUResourceManagerValidation GPUUploadServiceValidation
     RenderSceneValidation
     ActorComponentValidation SpatialComponentValidation ResourceInstantiationValidation
     PROPERTIES LABELS "unit" TIMEOUT 120)
