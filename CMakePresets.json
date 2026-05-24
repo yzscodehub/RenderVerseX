@@ -37,6 +37,8 @@
         "RVX_ENABLE_DX12": "OFF",
         "RVX_ENABLE_VULKAN": "OFF",
         "RVX_ENABLE_METAL": "ON",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "VCPKG_TARGET_TRIPLET": "arm64-osx",
         "RVX_BUILD_SAMPLES": "ON",
         "RVX_BUILD_TESTS": "ON"
       },
@@ -123,6 +125,19 @@
       "name": "debug-unit-lint",
       "configurePreset": "debug",
       "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "unit|lint"
+        }
+      }
+    },
+    {
+      "name": "macos-release-unit-lint",
+      "configurePreset": "macos-release",
+      "configuration": "Release",
       "output": {
         "outputOnFailure": true
       },
