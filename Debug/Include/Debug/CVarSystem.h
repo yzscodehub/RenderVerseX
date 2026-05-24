@@ -13,13 +13,15 @@
  */
 
 #include "Core/Types.h"
-#include <string>
-#include <vector>
-#include <unordered_map>
+
+#include <cfloat>
 #include <functional>
-#include <variant>
-#include <optional>
 #include <mutex>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <variant>
+#include <vector>
 
 namespace RVX
 {

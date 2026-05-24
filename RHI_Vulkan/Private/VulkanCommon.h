@@ -9,7 +9,9 @@
 #endif
 
 // Define VK_USE_PLATFORM before including Vulkan
+#if defined(_WIN32) && !defined(VK_USE_PLATFORM_WIN32_KHR)
 #define VK_USE_PLATFORM_WIN32_KHR
+#endif
 #include <vulkan/vulkan.h>
 
 // Include RHI definitions after Vulkan to ensure proper ordering

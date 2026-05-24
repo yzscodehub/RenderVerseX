@@ -2,6 +2,8 @@
 
 #include "RHI/RHIResources.h"
 
+#include <cstring>
+
 namespace RVX
 {
     // =============================================================================

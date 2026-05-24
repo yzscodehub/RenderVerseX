@@ -55,7 +55,8 @@ namespace RVX
         // =====================================================================
         // Construction
         // =====================================================================
-        explicit ShaderCompileService(const Config& config = {});
+        ShaderCompileService();
+        explicit ShaderCompileService(const Config& config);
         ~ShaderCompileService();
 
         // Non-copyable

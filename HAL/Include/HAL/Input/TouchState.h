@@ -6,7 +6,9 @@
  */
 
 #include "Core/Types.h"
+
 #include <array>
+#include <cmath>
 #include <vector>
 
 namespace RVX::HAL

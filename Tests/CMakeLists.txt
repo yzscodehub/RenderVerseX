@@ -55,6 +55,7 @@ if(RVX_ENABLE_DX12)
     target_link_libraries(DX12Validation PRIVATE
         RVX_TestFramework
         RVX::RenderGraph
+        RVX::RHI
         ${RVX_ALL_BACKENDS}
         glfw
     )
@@ -68,6 +69,7 @@ if(RVX_ENABLE_VULKAN)
     target_link_libraries(VulkanValidation PRIVATE
         RVX_TestFramework
         RVX::RenderGraph
+        RVX::RHI
         ${RVX_ALL_BACKENDS}
         glfw
     )
@@ -81,6 +83,7 @@ if(RVX_ENABLE_DX11)
     target_link_libraries(DX11Validation PRIVATE
         RVX_TestFramework
         RVX::RenderGraph
+        RVX::RHI
         ${RVX_ALL_BACKENDS}
         glfw
     )
@@ -291,6 +294,7 @@ if(RVX_ENABLE_DX12 AND RVX_ENABLE_VULKAN)
     target_link_libraries(CrossBackendValidation PRIVATE
         RVX_TestFramework
         RVX::RenderGraph
+        RVX::RHI
         ${RVX_ALL_BACKENDS}
         glfw
     )

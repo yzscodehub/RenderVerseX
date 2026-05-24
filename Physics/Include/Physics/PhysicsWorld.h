@@ -263,8 +263,9 @@ public:
     /**
      * @brief Get debug draw data
      */
+    void GetDebugDrawData(std::vector<Vec3>& lines, std::vector<Vec4>& colors) const;
     void GetDebugDrawData(std::vector<Vec3>& lines, std::vector<Vec4>& colors,
-                          const DebugDrawOptions& options = {}) const;
+                          const DebugDrawOptions& options) const;
 
 private:
     // =========================================================================
