@@ -94,9 +94,9 @@ namespace RVX
         {
             RHIBufferDesc bufferDesc;
             bufferDesc.size = m_size;
-            bufferDesc.usage = RHIBufferUsage::TransferSrc;
+            bufferDesc.usage = RHIBufferUsage::CopySrc;
             bufferDesc.memoryType = RHIMemoryType::Upload;
-            bufferDesc.debugName = GetDebugName();
+            bufferDesc.debugName = GetDebugName().c_str();
 
             // Create wrapper that wraps our MTLBuffer
             m_wrapperBuffer = MakeRef<MetalBuffer>(m_buffer, bufferDesc);
@@ -242,9 +242,9 @@ namespace RVX
         {
             RHIBufferDesc bufferDesc;
             bufferDesc.size = m_totalSize;
-            bufferDesc.usage = RHIBufferUsage::Constant | RHIBufferUsage::TransferSrc;
+            bufferDesc.usage = RHIBufferUsage::Constant | RHIBufferUsage::CopySrc;
             bufferDesc.memoryType = RHIMemoryType::Upload;
-            bufferDesc.debugName = GetDebugName();
+            bufferDesc.debugName = GetDebugName().c_str();
 
             m_wrapperBuffer = MakeRef<MetalBuffer>(m_buffer, bufferDesc);
         }
