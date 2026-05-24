@@ -13,8 +13,9 @@
 #include "Scene/Node.h"
 #include "Scene/Prefab.h"
 #include "Scene/SceneManager.h"
-#include "TestFramework/TestRunner.h"
 #include "World/World.h"
+
+#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <memory>
@@ -23,10 +24,27 @@
 
 using namespace RVX;
 using namespace RVX::Resource;
-using namespace RVX::Test;
 
 namespace
 {
+    class LogEnvironment : public ::testing::Environment
+    {
+    public:
+        void SetUp() override
+        {
+            Log::Initialize();
+            RVX_CORE_INFO("Resource Instantiation Validation Tests");
+        }
+
+        void TearDown() override
+        {
+            Log::Shutdown();
+        }
+    };
+
+    [[maybe_unused]] const auto* g_logEnvironment =
+        ::testing::AddGlobalTestEnvironment(new LogEnvironment);
+
     class TestMeshResource : public MeshResource
     {
     public:
@@ -278,7 +296,7 @@ namespace
         model.SetRootNode(root);
     }
 
-    bool Test_ActorAddOwnedComponentUsesNormalLifecycle()
+    TEST(ResourceInstantiationValidation, ActorAddOwnedComponentUsesNormalLifecycle)
     {
         class OwnedLifecycleComponent : public ActorComponent
         {
@@ -303,19 +321,18 @@ namespace
 
         ActorComponent* inserted = static_cast<Actor*>(entity)->AddOwnedComponent(std::move(component));
 
-        TEST_ASSERT_EQ(raw, inserted);
-        TEST_ASSERT_EQ(static_cast<Actor*>(entity), raw->GetOwner());
-        TEST_ASSERT_TRUE(raw->IsRegistered());
-        TEST_ASSERT_TRUE(raw->IsInitialized());
-        TEST_ASSERT_EQ(1, raw->created);
-        TEST_ASSERT_EQ(1, raw->registered);
-        TEST_ASSERT_EQ(1, raw->initialized);
+        EXPECT_EQ(raw, inserted);
+        EXPECT_EQ(static_cast<Actor*>(entity), raw->GetOwner());
+        EXPECT_TRUE(raw->IsRegistered());
+        EXPECT_TRUE(raw->IsInitialized());
+        EXPECT_EQ(1, raw->created);
+        EXPECT_EQ(1, raw->registered);
+        EXPECT_EQ(1, raw->initialized);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_AddOwnedComponentRejectsLegacyComponentToAvoidContainerSplit()
+    TEST(ResourceInstantiationValidation, AddOwnedComponentRejectsLegacyComponentToAvoidContainerSplit)
     {
         class OwnedLegacyComponent : public Component
         {
@@ -334,16 +351,15 @@ namespace
 
         ActorComponent* inserted = actor->AddOwnedComponent(std::make_unique<OwnedLegacyComponent>());
 
-        TEST_ASSERT_EQ(nullptr, inserted);
-        TEST_ASSERT_EQ(initialActorCount, actor->GetActorComponentCount());
-        TEST_ASSERT_EQ(initialLegacyCount, entity->GetComponentCount());
-        TEST_ASSERT_FALSE(entity->HasComponent<OwnedLegacyComponent>());
+        EXPECT_EQ(nullptr, inserted);
+        EXPECT_EQ(initialActorCount, actor->GetActorComponentCount());
+        EXPECT_EQ(initialLegacyCount, entity->GetComponentCount());
+        EXPECT_FALSE(entity->HasComponent<OwnedLegacyComponent>());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_ModelResourceInstantiateActorUsesStaticMeshComponent()
+    TEST(ResourceInstantiationValidation, ModelResourceInstantiateActorUsesStaticMeshComponent)
     {
         ComponentFactory::RegisterDefaults();
 
@@ -353,32 +369,31 @@ namespace
         ModelResource model;
         FillIndexedModel(model);
         Actor* actor = model.InstantiateActor(&sceneManager);
-        TEST_ASSERT_NOT_NULL(actor);
+        ASSERT_NE(nullptr, actor);
 
         auto* entity = dynamic_cast<SceneEntity*>(actor);
-        TEST_ASSERT_NOT_NULL(entity);
+        ASSERT_NE(nullptr, entity);
 
         auto* primitive = actor->GetComponent<StaticMeshComponent>();
-        TEST_ASSERT_NOT_NULL(primitive);
-        TEST_ASSERT_TRUE(primitive->IsRegistered());
-        TEST_ASSERT_EQ(actor, primitive->GetOwner());
-        TEST_ASSERT_EQ(primitive, entity->GetComponent<StaticMeshComponent>());
-        TEST_ASSERT_TRUE(entity->HasComponent<StaticMeshComponent>());
-        TEST_ASSERT_FALSE(entity->HasComponent<MeshRendererComponent>());
-        TEST_ASSERT_EQ(entity->GetRootComponent(), primitive->GetAttachParent());
-        TEST_ASSERT_TRUE(primitive->HasValidMesh());
-        TEST_ASSERT_EQ(static_cast<ResourceId>(1001), primitive->GetMesh().GetId());
-        TEST_ASSERT_EQ(static_cast<ResourceId>(2001), primitive->GetMaterial(0).GetId());
-        TEST_ASSERT_EQ(Vec3(3.0f, 0.0f, 0.0f), entity->GetPosition());
-        TEST_ASSERT_TRUE(std::find(sceneManager.GetPrimitives().begin(),
+        ASSERT_NE(nullptr, primitive);
+        EXPECT_TRUE(primitive->IsRegistered());
+        EXPECT_EQ(actor, primitive->GetOwner());
+        EXPECT_EQ(primitive, entity->GetComponent<StaticMeshComponent>());
+        EXPECT_TRUE(entity->HasComponent<StaticMeshComponent>());
+        EXPECT_FALSE(entity->HasComponent<MeshRendererComponent>());
+        EXPECT_EQ(entity->GetRootComponent(), primitive->GetAttachParent());
+        EXPECT_TRUE(primitive->HasValidMesh());
+        EXPECT_EQ(static_cast<ResourceId>(1001), primitive->GetMesh().GetId());
+        EXPECT_EQ(static_cast<ResourceId>(2001), primitive->GetMaterial(0).GetId());
+        EXPECT_EQ(Vec3(3.0f, 0.0f, 0.0f), entity->GetPosition());
+        EXPECT_TRUE(std::find(sceneManager.GetPrimitives().begin(),
                                    sceneManager.GetPrimitives().end(),
                                    primitive) != sceneManager.GetPrimitives().end());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_LegacyInstantiateDelegatesToActorPath()
+    TEST(ResourceInstantiationValidation, LegacyInstantiateDelegatesToActorPath)
     {
         ComponentFactory::RegisterDefaults();
 
@@ -388,16 +403,15 @@ namespace
         ModelResource model;
         FillIndexedModel(model);
         SceneEntity* entity = model.Instantiate(&sceneManager);
-        TEST_ASSERT_NOT_NULL(entity);
-        TEST_ASSERT_NOT_NULL(static_cast<Actor*>(entity)->GetComponent<StaticMeshComponent>());
-        TEST_ASSERT_TRUE(entity->HasComponent<StaticMeshComponent>());
-        TEST_ASSERT_FALSE(entity->HasComponent<MeshRendererComponent>());
+        ASSERT_NE(nullptr, entity);
+        ASSERT_NE(nullptr, static_cast<Actor*>(entity)->GetComponent<StaticMeshComponent>());
+        EXPECT_TRUE(entity->HasComponent<StaticMeshComponent>());
+        EXPECT_FALSE(entity->HasComponent<MeshRendererComponent>());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_ModelResourceInstantiateActorBuildsSpawnedHierarchy()
+    TEST(ResourceInstantiationValidation, ModelResourceInstantiateActorBuildsSpawnedHierarchy)
     {
         ComponentFactory::RegisterDefaults();
 
@@ -408,27 +422,26 @@ namespace
         FillHierarchicalIndexedModel(model);
 
         Actor* actor = model.InstantiateActor(&sceneManager);
-        TEST_ASSERT_NOT_NULL(actor);
+        ASSERT_NE(nullptr, actor);
 
         auto* root = dynamic_cast<SceneEntity*>(actor);
-        TEST_ASSERT_NOT_NULL(root);
-        TEST_ASSERT_EQ(std::string("RootNode"), root->GetName());
-        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), root->GetPosition());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
-        TEST_ASSERT_EQ(static_cast<size_t>(2), sceneManager.GetEntityCount());
+        ASSERT_NE(nullptr, root);
+        EXPECT_EQ(std::string("RootNode"), root->GetName());
+        EXPECT_EQ(Vec3(1.0f, 2.0f, 3.0f), root->GetPosition());
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        EXPECT_EQ(static_cast<size_t>(2), sceneManager.GetEntityCount());
 
         auto* child = root->GetChildren()[0];
-        TEST_ASSERT_NOT_NULL(child);
-        TEST_ASSERT_EQ(std::string("ChildNode"), child->GetName());
-        TEST_ASSERT_EQ(root, child->GetParent());
-        TEST_ASSERT_EQ(Vec3(4.0f, 5.0f, 6.0f), child->GetPosition());
-        TEST_ASSERT_NOT_NULL(static_cast<Actor*>(child)->GetComponent<StaticMeshComponent>());
+        ASSERT_NE(nullptr, child);
+        EXPECT_EQ(std::string("ChildNode"), child->GetName());
+        EXPECT_EQ(root, child->GetParent());
+        EXPECT_EQ(Vec3(4.0f, 5.0f, 6.0f), child->GetPosition());
+        ASSERT_NE(nullptr, static_cast<Actor*>(child)->GetComponent<StaticMeshComponent>());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_ComponentFactoryDefaultCreatesStaticMeshComponent()
+    TEST(ResourceInstantiationValidation, ComponentFactoryDefaultCreatesStaticMeshComponent)
     {
         ComponentFactory::ClearAll();
         ComponentFactory::RegisterDefaults();
@@ -445,17 +458,16 @@ namespace
                                                                       entity,
                                                                       model.GetRootNode().get(),
                                                                       &model);
-        TEST_ASSERT_NOT_NULL(component);
+        ASSERT_NE(nullptr, component);
         auto* primitive = dynamic_cast<StaticMeshComponent*>(component);
-        TEST_ASSERT_NOT_NULL(primitive);
-        TEST_ASSERT_EQ(entity->GetRootComponent(), primitive->GetAttachParent());
-        TEST_ASSERT_EQ(static_cast<ResourceId>(1001), primitive->GetMesh().GetId());
+        ASSERT_NE(nullptr, primitive);
+        EXPECT_EQ(entity->GetRootComponent(), primitive->GetAttachParent());
+        EXPECT_EQ(static_cast<ResourceId>(1001), primitive->GetMesh().GetId());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_ComponentFactoryRegisterDefaultsPreservesCustomCreators()
+    TEST(ResourceInstantiationValidation, ComponentFactoryRegisterDefaultsPreservesCustomCreators)
     {
         ComponentFactory::ClearAll();
         ComponentFactory::Register("CustomNoop",
@@ -465,14 +477,13 @@ namespace
 
         ComponentFactory::RegisterDefaults();
 
-        TEST_ASSERT_TRUE(ComponentFactory::IsRegistered("CustomNoop"));
-        TEST_ASSERT_TRUE(ComponentFactory::IsRegistered("StaticMesh"));
+        EXPECT_TRUE(ComponentFactory::IsRegistered("CustomNoop"));
+        EXPECT_TRUE(ComponentFactory::IsRegistered("StaticMesh"));
 
         ComponentFactory::ClearAll();
-        return true;
     }
 
-    bool Test_PrefabSerializesActorComponentClassNames()
+    TEST(ResourceInstantiationValidation, PrefabSerializesActorComponentClassNames)
     {
         SceneManager sceneManager;
         sceneManager.Initialize();
@@ -480,14 +491,14 @@ namespace
         const auto handle = sceneManager.CreateEntity("PrefabSource");
         auto* entity = sceneManager.GetEntity(handle);
         auto* primitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
-        TEST_ASSERT_NOT_NULL(primitive);
+        ASSERT_NE(nullptr, primitive);
         auto* legacyRenderer = entity->AddComponent<MeshRendererComponent>();
-        TEST_ASSERT_NOT_NULL(legacyRenderer);
+        ASSERT_NE(nullptr, legacyRenderer);
 
         auto prefab = Prefab::CreateFromEntity(entity);
-        TEST_ASSERT_NOT_NULL(prefab.get());
+        ASSERT_NE(nullptr, prefab.get());
         const auto* data = prefab->GetRootData();
-        TEST_ASSERT_NOT_NULL(data);
+        ASSERT_NE(nullptr, data);
         bool foundStaticMesh = false;
         bool foundLegacyRenderer = false;
         for (const auto& componentData : data->actorComponentData)
@@ -495,15 +506,14 @@ namespace
             foundStaticMesh = foundStaticMesh || componentData.className == "StaticMeshComponent";
             foundLegacyRenderer = foundLegacyRenderer || componentData.className == "MeshRenderer";
         }
-        TEST_ASSERT_TRUE(foundStaticMesh);
-        TEST_ASSERT_FALSE(foundLegacyRenderer);
-        TEST_ASSERT_TRUE(data->componentData.find("MeshRenderer") != data->componentData.end());
+        EXPECT_TRUE(foundStaticMesh);
+        EXPECT_FALSE(foundLegacyRenderer);
+        EXPECT_TRUE(data->componentData.find("MeshRenderer") != data->componentData.end());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabSerializesActorComponentPayloads()
+    TEST(ResourceInstantiationValidation, PrefabSerializesActorComponentPayloads)
     {
         SceneManager sceneManager;
         sceneManager.Initialize();
@@ -511,27 +521,26 @@ namespace
         ActorSpawnParams params;
         params.name = "PayloadSource";
         SceneEntity* entity = sceneManager.SpawnActor(params);
-        TEST_ASSERT_NOT_NULL(entity);
+        ASSERT_NE(nullptr, entity);
 
         auto* component = static_cast<Actor*>(entity)->AddComponent<PrefabPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(component);
+        ASSERT_NE(nullptr, component);
         component->payload = "health=75;tag=elite";
 
         auto prefab = Prefab::CreateFromEntity(entity);
-        TEST_ASSERT_NOT_NULL(prefab);
+        ASSERT_NE(nullptr, prefab);
         const PrefabEntityData* data = prefab->GetRootData();
-        TEST_ASSERT_NOT_NULL(data);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), data->actorComponentData.size());
-        TEST_ASSERT_EQ(std::string("PrefabPayloadComponent"),
+        ASSERT_NE(nullptr, data);
+        EXPECT_EQ(static_cast<size_t>(1), data->actorComponentData.size());
+        EXPECT_EQ(std::string("PrefabPayloadComponent"),
                        data->actorComponentData[0].className);
-        TEST_ASSERT_EQ(std::string("health=75;tag=elite"),
+        EXPECT_EQ(std::string("health=75;tag=elite"),
                        data->actorComponentData[0].serializedData);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabSerializesActorComponentNames()
+    TEST(ResourceInstantiationValidation, PrefabSerializesActorComponentNames)
     {
         SceneManager sceneManager;
         sceneManager.Initialize();
@@ -539,51 +548,49 @@ namespace
         ActorSpawnParams params;
         params.name = "NamedPayloadSource";
         SceneEntity* entity = sceneManager.SpawnActor(params);
-        TEST_ASSERT_NOT_NULL(entity);
+        ASSERT_NE(nullptr, entity);
 
         auto* component = static_cast<Actor*>(entity)->AddComponent<PrefabPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(component);
+        ASSERT_NE(nullptr, component);
         component->SetName("PrimaryPayload");
         component->payload = "health=75;tag=elite";
 
         auto prefab = Prefab::CreateFromEntity(entity);
-        TEST_ASSERT_NOT_NULL(prefab);
+        ASSERT_NE(nullptr, prefab);
         const PrefabEntityData* data = prefab->GetRootData();
-        TEST_ASSERT_NOT_NULL(data);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), data->actorComponentData.size());
-        TEST_ASSERT_EQ(std::string("PrimaryPayload"), data->actorComponentData[0].name);
+        ASSERT_NE(nullptr, data);
+        EXPECT_EQ(static_cast<size_t>(1), data->actorComponentData.size());
+        EXPECT_EQ(std::string("PrimaryPayload"), data->actorComponentData[0].name);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabSerializesLegacyComponentPayloads()
+    TEST(ResourceInstantiationValidation, PrefabSerializesLegacyComponentPayloads)
     {
         SceneManager sceneManager;
         sceneManager.Initialize();
 
         const auto handle = sceneManager.CreateEntity("LegacyPayloadSource");
         SceneEntity* entity = sceneManager.GetEntity(handle);
-        TEST_ASSERT_NOT_NULL(entity);
+        ASSERT_NE(nullptr, entity);
 
         auto* component = entity->AddComponent<PrefabLegacyPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(component);
+        ASSERT_NE(nullptr, component);
         component->payload = "legacy=enabled";
 
         auto prefab = Prefab::CreateFromEntity(entity);
-        TEST_ASSERT_NOT_NULL(prefab);
+        ASSERT_NE(nullptr, prefab);
 
         const PrefabEntityData* rootData = prefab->GetRootData();
-        TEST_ASSERT_NOT_NULL(rootData);
+        ASSERT_NE(nullptr, rootData);
         auto it = rootData->componentData.find("PrefabLegacyPayloadComponent");
-        TEST_ASSERT_TRUE(it != rootData->componentData.end());
-        TEST_ASSERT_EQ(std::string("legacy=enabled"), it->second);
+        EXPECT_TRUE(it != rootData->componentData.end());
+        EXPECT_EQ(std::string("legacy=enabled"), it->second);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabSerializesActorClassNames()
+    TEST(ResourceInstantiationValidation, PrefabSerializesActorClassNames)
     {
         SceneManager sceneManager;
         sceneManager.Initialize();
@@ -591,30 +598,29 @@ namespace
         ActorSpawnParams rootParams;
         rootParams.name = "CustomPrefabRoot";
         auto* root = sceneManager.SpawnActor<PrefabCustomSceneActor>(rootParams);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
 
         ActorSpawnParams childParams;
         childParams.name = "CustomPrefabChild";
         childParams.parent = root;
         auto* child = sceneManager.SpawnActor<PrefabCustomSceneActor>(childParams);
-        TEST_ASSERT_NOT_NULL(child);
+        ASSERT_NE(nullptr, child);
 
         auto prefab = Prefab::CreateFromEntity(root);
-        TEST_ASSERT_NOT_NULL(prefab.get());
-        TEST_ASSERT_EQ(static_cast<size_t>(2), prefab->GetEntityCount());
+        ASSERT_NE(nullptr, prefab.get());
+        EXPECT_EQ(static_cast<size_t>(2), prefab->GetEntityCount());
 
         const auto* rootData = prefab->GetEntityData(0);
         const auto* childData = prefab->GetEntityData(1);
-        TEST_ASSERT_NOT_NULL(rootData);
-        TEST_ASSERT_NOT_NULL(childData);
-        TEST_ASSERT_EQ(std::string("PrefabCustomSceneActor"), rootData->actorClassName);
-        TEST_ASSERT_EQ(std::string("PrefabCustomSceneActor"), childData->actorClassName);
+        ASSERT_NE(nullptr, rootData);
+        ASSERT_NE(nullptr, childData);
+        EXPECT_EQ(std::string("PrefabCustomSceneActor"), rootData->actorClassName);
+        EXPECT_EQ(std::string("PrefabCustomSceneActor"), childData->actorClassName);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstantiatesRegisteredActorClasses()
+    TEST(ResourceInstantiationValidation, PrefabInstantiatesRegisteredActorClasses)
     {
         ActorFactory::ClearAll();
         ActorFactory::Register<PrefabCustomSceneActor>("PrefabCustomSceneActor");
@@ -636,26 +642,25 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
-        TEST_ASSERT_NOT_NULL(dynamic_cast<PrefabCustomSceneActor*>(root));
-        TEST_ASSERT_EQ(std::string("RegisteredPrefabRoot"), root->GetName());
-        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), root->GetPosition());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
-        TEST_ASSERT_EQ(static_cast<size_t>(2), sceneManager.GetEntityCount());
+        ASSERT_NE(nullptr, root);
+        ASSERT_NE(nullptr, dynamic_cast<PrefabCustomSceneActor*>(root));
+        EXPECT_EQ(std::string("RegisteredPrefabRoot"), root->GetName());
+        EXPECT_EQ(Vec3(1.0f, 2.0f, 3.0f), root->GetPosition());
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        EXPECT_EQ(static_cast<size_t>(2), sceneManager.GetEntityCount());
 
         SceneEntity* child = root->GetChildren()[0];
-        TEST_ASSERT_NOT_NULL(child);
-        TEST_ASSERT_NOT_NULL(dynamic_cast<PrefabCustomSceneActor*>(child));
-        TEST_ASSERT_EQ(root, child->GetParent());
-        TEST_ASSERT_EQ(std::string("RegisteredPrefabChild"), child->GetName());
-        TEST_ASSERT_EQ(Vec3(4.0f, 5.0f, 6.0f), child->GetPosition());
+        ASSERT_NE(nullptr, child);
+        ASSERT_NE(nullptr, dynamic_cast<PrefabCustomSceneActor*>(child));
+        EXPECT_EQ(root, child->GetParent());
+        EXPECT_EQ(std::string("RegisteredPrefabChild"), child->GetName());
+        EXPECT_EQ(Vec3(4.0f, 5.0f, 6.0f), child->GetPosition());
 
         sceneManager.Shutdown();
         ActorFactory::ClearAll();
-        return true;
     }
 
-    bool Test_PrefabInstantiateFailsForMissingActorClassAndCleansUp()
+    TEST(ResourceInstantiationValidation, PrefabInstantiateFailsForMissingActorClassAndCleansUp)
     {
         ActorFactory::ClearAll();
 
@@ -673,14 +678,13 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_EQ(nullptr, root);
-        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+        EXPECT_EQ(nullptr, root);
+        EXPECT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstantiateFailsForMissingActorComponentClassAndCleansUp()
+    TEST(ResourceInstantiationValidation, PrefabInstantiateFailsForMissingActorComponentClassAndCleansUp)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
 
@@ -694,14 +698,13 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_EQ(nullptr, instance);
-        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+        EXPECT_EQ(nullptr, instance);
+        EXPECT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstantiateFailsForMissingLegacyComponentClassAndCleansUp()
+    TEST(ResourceInstantiationValidation, PrefabInstantiateFailsForMissingLegacyComponentClassAndCleansUp)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
 
@@ -715,14 +718,13 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_EQ(nullptr, instance);
-        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+        EXPECT_EQ(nullptr, instance);
+        EXPECT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstantiateFailsForActorOnlyComponentDataAndCleansUp()
+    TEST(ResourceInstantiationValidation, PrefabInstantiateFailsForActorOnlyComponentDataAndCleansUp)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -738,14 +740,13 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_EQ(nullptr, instance);
-        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+        EXPECT_EQ(nullptr, instance);
+        EXPECT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstantiateFailsForRejectedActorComponentAndCleansUp()
+    TEST(ResourceInstantiationValidation, PrefabInstantiateFailsForRejectedActorComponentAndCleansUp)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabLegacyPayloadComponent>(
@@ -761,14 +762,13 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_EQ(nullptr, instance);
-        TEST_ASSERT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
+        EXPECT_EQ(nullptr, instance);
+        EXPECT_EQ(static_cast<size_t>(0), sceneManager.GetEntityCount());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstantiatesRegisteredActorComponentClasses()
+    TEST(ResourceInstantiationValidation, PrefabInstantiatesRegisteredActorComponentClasses)
     {
         ComponentFactory::ClearComponentClasses();
         ComponentFactory::RegisterComponentClass<StaticMeshComponent>("StaticMeshComponent");
@@ -784,10 +784,10 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* firstPrimitive = static_cast<Actor*>(instance)->GetComponent<StaticMeshComponent>();
-        TEST_ASSERT_NOT_NULL(firstPrimitive);
-        TEST_ASSERT_TRUE(firstPrimitive->IsRegistered());
+        ASSERT_NE(nullptr, firstPrimitive);
+        EXPECT_TRUE(firstPrimitive->IsRegistered());
 
         size_t staticMeshCount = 0;
         for (const auto& component : static_cast<Actor*>(instance)->GetActorComponents())
@@ -797,14 +797,13 @@ namespace
                 ++staticMeshCount;
             }
         }
-        TEST_ASSERT_EQ(static_cast<size_t>(2), staticMeshCount);
-        TEST_ASSERT_EQ(static_cast<size_t>(2), sceneManager.GetPrimitives().size());
+        EXPECT_EQ(static_cast<size_t>(2), staticMeshCount);
+        EXPECT_EQ(static_cast<size_t>(2), sceneManager.GetPrimitives().size());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstantiatesActorComponentPayloads()
+    TEST(ResourceInstantiationValidation, PrefabInstantiatesActorComponentPayloads)
     {
         ComponentFactory::ClearComponentClasses();
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>("PrefabPayloadComponent");
@@ -819,24 +818,23 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
 
         auto* component = static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(component);
-        TEST_ASSERT_EQ(std::string("ammo=12;mode=burst"), component->payload);
-        TEST_ASSERT_EQ(std::string("ammo=12;mode=burst"),
+        ASSERT_NE(nullptr, component);
+        EXPECT_EQ(std::string("ammo=12;mode=burst"), component->payload);
+        EXPECT_EQ(std::string("ammo=12;mode=burst"),
                        component->payloadObservedOnRegister);
-        TEST_ASSERT_EQ(std::string("ammo=12;mode=burst"),
+        EXPECT_EQ(std::string("ammo=12;mode=burst"),
                        component->payloadObservedOnInitialize);
-        TEST_ASSERT_TRUE(component->IsRegistered());
-        TEST_ASSERT_TRUE(component->IsInitialized());
+        EXPECT_TRUE(component->IsRegistered());
+        EXPECT_TRUE(component->IsInitialized());
 
         sceneManager.Shutdown();
         ComponentFactory::ClearComponentClasses();
-        return true;
     }
 
-    bool Test_PrefabInstantiatesActorComponentNames()
+    TEST(ResourceInstantiationValidation, PrefabInstantiatesActorComponentNames)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -852,18 +850,17 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
 
         auto* component = static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(component);
-        TEST_ASSERT_EQ(std::string("PrimaryPayload"), component->GetName());
-        TEST_ASSERT_EQ(std::string("ammo=12"), component->payload);
+        ASSERT_NE(nullptr, component);
+        EXPECT_EQ(std::string("PrimaryPayload"), component->GetName());
+        EXPECT_EQ(std::string("ammo=12"), component->payload);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstantiatesRegisteredLegacyComponentPayloads()
+    TEST(ResourceInstantiationValidation, PrefabInstantiatesRegisteredLegacyComponentPayloads)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabLegacyPayloadComponent>(
@@ -879,18 +876,17 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
 
         auto* component = instance->GetComponent<PrefabLegacyPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(component);
-        TEST_ASSERT_EQ(std::string("legacy=enabled"), component->payload);
-        TEST_ASSERT_EQ(std::string("legacy=enabled"), component->payloadObservedOnAttach);
+        ASSERT_NE(nullptr, component);
+        EXPECT_EQ(std::string("legacy=enabled"), component->payload);
+        EXPECT_EQ(std::string("legacy=enabled"), component->payloadObservedOnAttach);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstantiateAsChildBuildsSpawnedHierarchy()
+    TEST(ResourceInstantiationValidation, PrefabInstantiateAsChildBuildsSpawnedHierarchy)
     {
         ComponentFactory::ClearComponentClasses();
         ComponentFactory::RegisterComponentClass<StaticMeshComponent>("StaticMeshComponent");
@@ -913,26 +909,25 @@ namespace
         ActorSpawnParams parentParams;
         parentParams.name = "PrefabParent";
         auto* parent = sceneManager.SpawnActor(parentParams);
-        TEST_ASSERT_NOT_NULL(parent);
+        ASSERT_NE(nullptr, parent);
 
         SceneEntity* root = prefab->InstantiateAsChild(parent);
-        TEST_ASSERT_NOT_NULL(root);
-        TEST_ASSERT_EQ(parent, root->GetParent());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
-        TEST_ASSERT_EQ(static_cast<size_t>(3), sceneManager.GetEntityCount());
-        TEST_ASSERT_NOT_NULL(static_cast<Actor*>(root)->GetComponent<StaticMeshComponent>());
+        ASSERT_NE(nullptr, root);
+        EXPECT_EQ(parent, root->GetParent());
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        EXPECT_EQ(static_cast<size_t>(3), sceneManager.GetEntityCount());
+        ASSERT_NE(nullptr, static_cast<Actor*>(root)->GetComponent<StaticMeshComponent>());
 
         auto* child = root->GetChildren()[0];
-        TEST_ASSERT_NOT_NULL(child);
-        TEST_ASSERT_EQ(std::string("PrefabChild"), child->GetName());
-        TEST_ASSERT_EQ(root, child->GetParent());
-        TEST_ASSERT_EQ(Vec3(0.0f, 2.0f, 0.0f), child->GetPosition());
+        ASSERT_NE(nullptr, child);
+        EXPECT_EQ(std::string("PrefabChild"), child->GetName());
+        EXPECT_EQ(root, child->GetParent());
+        EXPECT_EQ(Vec3(0.0f, 2.0f, 0.0f), child->GetPosition());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllRestoresRootEntityState()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllRestoresRootEntityState)
     {
         PrefabEntityData data;
         data.name = "RevertAllRoot";
@@ -948,9 +943,9 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         instance->SetPosition(Vec3(9.0f, 9.0f, 9.0f));
         instance->SetRotation(Quat(1.0f, 0.0f, 0.0f, 0.0f));
@@ -962,18 +957,17 @@ namespace
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), instance->GetPosition());
-        TEST_ASSERT_EQ(Quat(0.7071068f, 0.0f, 0.7071068f, 0.0f), instance->GetRotation());
-        TEST_ASSERT_EQ(Vec3(2.0f, 3.0f, 4.0f), instance->GetScale());
-        TEST_ASSERT_EQ(static_cast<uint32_t>(0x5u), instance->GetLayerMask());
-        TEST_ASSERT_FALSE(instance->IsActive());
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        EXPECT_EQ(Vec3(1.0f, 2.0f, 3.0f), instance->GetPosition());
+        EXPECT_EQ(Quat(0.7071068f, 0.0f, 0.7071068f, 0.0f), instance->GetRotation());
+        EXPECT_EQ(Vec3(2.0f, 3.0f, 4.0f), instance->GetScale());
+        EXPECT_EQ(static_cast<uint32_t>(0x5u), instance->GetLayerMask());
+        EXPECT_FALSE(instance->IsActive());
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllRestoresActorComponentPayload()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllRestoresActorComponentPayload)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -989,25 +983,24 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         auto* component = static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(component);
+        ASSERT_NE(nullptr, component);
         component->payload = "ammo=1;mode=single";
         prefabInstance->AddOverride({"PrefabPayloadComponent", "serializedData", component->payload});
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_EQ(std::string("ammo=12;mode=burst"), component->payload);
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        EXPECT_EQ(std::string("ammo=12;mode=burst"), component->payload);
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllRecreatesMissingActorComponent()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllRecreatesMissingActorComponent)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -1024,15 +1017,15 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         auto* actor = static_cast<Actor*>(instance);
         auto* component = FindPrefabPayloadComponentByName(*actor, "PrimaryPayload");
-        TEST_ASSERT_NOT_NULL(component);
-        TEST_ASSERT_TRUE(actor->RemoveComponent<PrefabPayloadComponent>());
-        TEST_ASSERT_TRUE(FindPrefabPayloadComponentByName(*actor, "PrimaryPayload") == nullptr);
+        ASSERT_NE(nullptr, component);
+        EXPECT_TRUE(actor->RemoveComponent<PrefabPayloadComponent>());
+        EXPECT_TRUE(FindPrefabPayloadComponentByName(*actor, "PrimaryPayload") == nullptr);
 
         prefabInstance->AddOverride(
             {"PrefabPayloadComponent",
@@ -1043,15 +1036,14 @@ namespace
         prefabInstance->RevertAll();
 
         auto* restored = FindPrefabPayloadComponentByName(*actor, "PrimaryPayload");
-        TEST_ASSERT_NOT_NULL(restored);
-        TEST_ASSERT_EQ(std::string("ammo=12;mode=burst"), restored->payload);
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        ASSERT_NE(nullptr, restored);
+        EXPECT_EQ(std::string("ammo=12;mode=burst"), restored->payload);
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllKeepsOverrideWhenMissingActorComponentClassUnavailable()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllKeepsOverrideWhenMissingActorComponentClassUnavailable)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -1068,14 +1060,14 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         auto* actor = static_cast<Actor*>(instance);
-        TEST_ASSERT_NOT_NULL(FindPrefabPayloadComponentByName(*actor, "PrimaryPayload"));
-        TEST_ASSERT_TRUE(actor->RemoveComponent<PrefabPayloadComponent>());
-        TEST_ASSERT_TRUE(FindPrefabPayloadComponentByName(*actor, "PrimaryPayload") == nullptr);
+        ASSERT_NE(nullptr, FindPrefabPayloadComponentByName(*actor, "PrimaryPayload"));
+        EXPECT_TRUE(actor->RemoveComponent<PrefabPayloadComponent>());
+        EXPECT_TRUE(FindPrefabPayloadComponentByName(*actor, "PrimaryPayload") == nullptr);
 
         ComponentFactory::ClearComponentClasses();
         prefabInstance->AddOverride(
@@ -1086,16 +1078,15 @@ namespace
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_TRUE(FindPrefabPayloadComponentByName(*actor, "PrimaryPayload") == nullptr);
-        TEST_ASSERT_TRUE(prefabInstance->IsOverridden(
+        EXPECT_TRUE(FindPrefabPayloadComponentByName(*actor, "PrimaryPayload") == nullptr);
+        EXPECT_TRUE(prefabInstance->IsOverridden(
             "PrefabPayloadComponent", "serializedData", "PrimaryPayload"));
-        TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
+        EXPECT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllRestoresNamedDuplicateActorComponentPayloads()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllRestoresNamedDuplicateActorComponentPayloads)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -1112,16 +1103,16 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         auto* primary = FindPrefabPayloadComponentByName(*static_cast<Actor*>(instance),
                                                          "PrimaryPayload");
         auto* secondary = FindPrefabPayloadComponentByName(*static_cast<Actor*>(instance),
                                                            "SecondaryPayload");
-        TEST_ASSERT_NOT_NULL(primary);
-        TEST_ASSERT_NOT_NULL(secondary);
+        ASSERT_NE(nullptr, primary);
+        ASSERT_NE(nullptr, secondary);
 
         primary->SetName("TemporaryPayloadName");
         secondary->SetName("PrimaryPayload");
@@ -1134,15 +1125,14 @@ namespace
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_EQ(std::string("slot=secondary"), primary->payload);
-        TEST_ASSERT_EQ(std::string("slot=primary"), secondary->payload);
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        EXPECT_EQ(std::string("slot=secondary"), primary->payload);
+        EXPECT_EQ(std::string("slot=primary"), secondary->payload);
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllUsesRuntimeNameBindingAfterUniquify()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllUsesRuntimeNameBindingAfterUniquify)
     {
         ActorFactory::ClearAll();
         ActorFactory::Register<PrefabNameCollisionActor>("PrefabNameCollisionActor");
@@ -1162,17 +1152,17 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         auto* actor = static_cast<Actor*>(instance);
         auto* constructorComponent = FindPrefabPayloadComponentByName(*actor, "PrimaryPayload");
         auto* prefabComponent = FindPrefabPayloadComponentByName(*actor, "PrimaryPayload_1");
-        TEST_ASSERT_NOT_NULL(constructorComponent);
-        TEST_ASSERT_NOT_NULL(prefabComponent);
-        TEST_ASSERT_EQ(std::string("constructor"), constructorComponent->payload);
-        TEST_ASSERT_EQ(std::string("slot=prefab"), prefabComponent->payload);
+        ASSERT_NE(nullptr, constructorComponent);
+        ASSERT_NE(nullptr, prefabComponent);
+        EXPECT_EQ(std::string("constructor"), constructorComponent->payload);
+        EXPECT_EQ(std::string("slot=prefab"), prefabComponent->payload);
 
         constructorComponent->payload = "constructor-dirty";
         prefabComponent->payload = "prefab-dirty";
@@ -1180,16 +1170,15 @@ namespace
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_EQ(std::string("constructor-dirty"), constructorComponent->payload);
-        TEST_ASSERT_EQ(std::string("slot=prefab"), prefabComponent->payload);
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        EXPECT_EQ(std::string("constructor-dirty"), constructorComponent->payload);
+        EXPECT_EQ(std::string("slot=prefab"), prefabComponent->payload);
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
         ActorFactory::ClearAll();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllRestoresChildEntityStateAndPayload()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllRestoresChildEntityStateAndPayload)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -1211,16 +1200,16 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
 
         SceneEntity* child = root->GetChildren()[0];
-        TEST_ASSERT_NOT_NULL(child);
+        ASSERT_NE(nullptr, child);
         auto* childPayload = FindPrefabPayloadComponentByName(
             *static_cast<Actor*>(child), "ChildPayload");
-        TEST_ASSERT_NOT_NULL(childPayload);
+        ASSERT_NE(nullptr, childPayload);
 
         child->SetPosition(Vec3(9.0f, 9.0f, 9.0f));
         childPayload->payload = "dirty-child";
@@ -1231,15 +1220,14 @@ namespace
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), child->GetPosition());
-        TEST_ASSERT_EQ(std::string("slot=child"), childPayload->payload);
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        EXPECT_EQ(Vec3(1.0f, 2.0f, 3.0f), child->GetPosition());
+        EXPECT_EQ(std::string("slot=child"), childPayload->payload);
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllRestoresRenamedChildEntityByRuntimeBinding()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllRestoresRenamedChildEntityByRuntimeBinding)
     {
         PrefabEntityData rootData;
         rootData.name = "RuntimeBindingRoot";
@@ -1255,11 +1243,11 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
 
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
 
         SceneEntity* child = root->GetChildren()[0];
         child->SetName("RenamedChild");
@@ -1269,17 +1257,16 @@ namespace
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
-        TEST_ASSERT_EQ(child, root->GetChildren()[0]);
-        TEST_ASSERT_EQ(std::string("Child"), child->GetName());
-        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), child->GetPosition());
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        EXPECT_EQ(child, root->GetChildren()[0]);
+        EXPECT_EQ(std::string("Child"), child->GetName());
+        EXPECT_EQ(Vec3(1.0f, 2.0f, 3.0f), child->GetPosition());
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllRecreatesMissingChildActorComponent()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllRecreatesMissingChildActorComponent)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -1300,16 +1287,16 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
 
         SceneEntity* child = root->GetChildren()[0];
         auto* childActor = static_cast<Actor*>(child);
-        TEST_ASSERT_NOT_NULL(FindPrefabPayloadComponentByName(*childActor, "ChildPayload"));
-        TEST_ASSERT_TRUE(childActor->RemoveComponent<PrefabPayloadComponent>());
-        TEST_ASSERT_TRUE(FindPrefabPayloadComponentByName(*childActor, "ChildPayload") == nullptr);
+        ASSERT_NE(nullptr, FindPrefabPayloadComponentByName(*childActor, "ChildPayload"));
+        EXPECT_TRUE(childActor->RemoveComponent<PrefabPayloadComponent>());
+        EXPECT_TRUE(FindPrefabPayloadComponentByName(*childActor, "ChildPayload") == nullptr);
 
         prefabInstance->AddOverride(
             {"PrefabPayloadComponent",
@@ -1321,15 +1308,14 @@ namespace
         prefabInstance->RevertAll();
 
         auto* restored = FindPrefabPayloadComponentByName(*childActor, "ChildPayload");
-        TEST_ASSERT_NOT_NULL(restored);
-        TEST_ASSERT_EQ(std::string("slot=child"), restored->payload);
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        ASSERT_NE(nullptr, restored);
+        EXPECT_EQ(std::string("slot=child"), restored->payload);
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllRecreatesMissingChildEntity()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllRecreatesMissingChildEntity)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -1351,38 +1337,37 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
 
         SceneEntity* child = root->GetChildren()[0];
         sceneManager.DestroyEntity(child->GetHandle());
-        TEST_ASSERT_TRUE(root->GetChildren().empty());
+        EXPECT_TRUE(root->GetChildren().empty());
 
         prefabInstance->AddOverride(
             {"SceneEntity", "position", Vec3(9.0f, 9.0f, 9.0f), "", "Child"});
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
         SceneEntity* recreated = root->GetChildren()[0];
-        TEST_ASSERT_NOT_NULL(recreated);
-        TEST_ASSERT_EQ(std::string("Child"), recreated->GetName());
-        TEST_ASSERT_EQ(root, recreated->GetParent());
-        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), recreated->GetPosition());
+        ASSERT_NE(nullptr, recreated);
+        EXPECT_EQ(std::string("Child"), recreated->GetName());
+        EXPECT_EQ(root, recreated->GetParent());
+        EXPECT_EQ(Vec3(1.0f, 2.0f, 3.0f), recreated->GetPosition());
 
         auto* childPayload = FindPrefabPayloadComponentByName(
             *static_cast<Actor*>(recreated), "ChildPayload");
-        TEST_ASSERT_NOT_NULL(childPayload);
-        TEST_ASSERT_EQ(std::string("slot=child"), childPayload->payload);
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        ASSERT_NE(nullptr, childPayload);
+        EXPECT_EQ(std::string("slot=child"), childPayload->payload);
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllRecreatesNestedMissingDescendant()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllRecreatesNestedMissingDescendant)
     {
         PrefabEntityData rootData;
         rootData.name = "RecreateNestedRoot";
@@ -1402,31 +1387,30 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
         SceneEntity* branch = root->GetChildren()[0];
-        TEST_ASSERT_EQ(static_cast<size_t>(1), branch->GetChildren().size());
+        EXPECT_EQ(static_cast<size_t>(1), branch->GetChildren().size());
 
         SceneEntity* leaf = branch->GetChildren()[0];
         sceneManager.DestroyEntity(leaf->GetHandle());
-        TEST_ASSERT_TRUE(branch->GetChildren().empty());
+        EXPECT_TRUE(branch->GetChildren().empty());
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_EQ(static_cast<size_t>(1), branch->GetChildren().size());
+        EXPECT_EQ(static_cast<size_t>(1), branch->GetChildren().size());
         SceneEntity* recreatedLeaf = branch->GetChildren()[0];
-        TEST_ASSERT_NOT_NULL(recreatedLeaf);
-        TEST_ASSERT_EQ(std::string("Leaf"), recreatedLeaf->GetName());
-        TEST_ASSERT_EQ(branch, recreatedLeaf->GetParent());
-        TEST_ASSERT_EQ(Vec3(2.0f, 3.0f, 4.0f), recreatedLeaf->GetScale());
+        ASSERT_NE(nullptr, recreatedLeaf);
+        EXPECT_EQ(std::string("Leaf"), recreatedLeaf->GetName());
+        EXPECT_EQ(branch, recreatedLeaf->GetParent());
+        EXPECT_EQ(Vec3(2.0f, 3.0f, 4.0f), recreatedLeaf->GetScale());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllPrunesExtraLiveChildEntity()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllPrunesExtraLiveChildEntity)
     {
         PrefabEntityData rootData;
         rootData.name = "PruneExtraRoot";
@@ -1437,27 +1421,26 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         ActorSpawnParams extraParams;
         extraParams.name = "ExtraChild";
         extraParams.parent = root;
         SceneEntity* extra = sceneManager.SpawnActor(extraParams);
-        TEST_ASSERT_NOT_NULL(extra);
+        ASSERT_NE(nullptr, extra);
         const SceneEntity::Handle extraHandle = extra->GetHandle();
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_TRUE(root->GetChildren().empty());
-        TEST_ASSERT_TRUE(sceneManager.GetEntity(extraHandle) == nullptr);
+        EXPECT_TRUE(root->GetChildren().empty());
+        EXPECT_TRUE(sceneManager.GetEntity(extraHandle) == nullptr);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllPrunesNestedExtraLiveChildSubtree()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllPrunesNestedExtraLiveChildSubtree)
     {
         PrefabEntityData rootData;
         rootData.name = "PruneNestedExtraRoot";
@@ -1468,36 +1451,35 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         ActorSpawnParams branchParams;
         branchParams.name = "ExtraBranch";
         branchParams.parent = root;
         SceneEntity* branch = sceneManager.SpawnActor(branchParams);
-        TEST_ASSERT_NOT_NULL(branch);
+        ASSERT_NE(nullptr, branch);
 
         ActorSpawnParams leafParams;
         leafParams.name = "ExtraLeaf";
         leafParams.parent = branch;
         SceneEntity* leaf = sceneManager.SpawnActor(leafParams);
-        TEST_ASSERT_NOT_NULL(leaf);
+        ASSERT_NE(nullptr, leaf);
 
         const SceneEntity::Handle branchHandle = branch->GetHandle();
         const SceneEntity::Handle leafHandle = leaf->GetHandle();
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_TRUE(root->GetChildren().empty());
-        TEST_ASSERT_TRUE(sceneManager.GetEntity(branchHandle) == nullptr);
-        TEST_ASSERT_TRUE(sceneManager.GetEntity(leafHandle) == nullptr);
+        EXPECT_TRUE(root->GetChildren().empty());
+        EXPECT_TRUE(sceneManager.GetEntity(branchHandle) == nullptr);
+        EXPECT_TRUE(sceneManager.GetEntity(leafHandle) == nullptr);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllPrunesDuplicateExtraChildAfterBoundRestore()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllPrunesDuplicateExtraChildAfterBoundRestore)
     {
         PrefabEntityData rootData;
         rootData.name = "DuplicateExtraRestoreRoot";
@@ -1512,30 +1494,29 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
 
         ActorSpawnParams duplicateParams;
         duplicateParams.name = "Child";
         duplicateParams.parent = root;
         SceneEntity* duplicate = sceneManager.SpawnActor(duplicateParams);
-        TEST_ASSERT_NOT_NULL(duplicate);
+        ASSERT_NE(nullptr, duplicate);
         const SceneEntity::Handle duplicateHandle = duplicate->GetHandle();
-        TEST_ASSERT_EQ(static_cast<size_t>(2), root->GetChildren().size());
+        EXPECT_EQ(static_cast<size_t>(2), root->GetChildren().size());
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
-        TEST_ASSERT_TRUE(sceneManager.GetEntity(duplicateHandle) == nullptr);
-        TEST_ASSERT_EQ(std::string("Child"), root->GetChildren()[0]->GetName());
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        EXPECT_TRUE(sceneManager.GetEntity(duplicateHandle) == nullptr);
+        EXPECT_EQ(std::string("Child"), root->GetChildren()[0]->GetName());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllRestoresReparentedBoundChildAndPrunesExtraParent()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllRestoresReparentedBoundChildAndPrunesExtraParent)
     {
         PrefabEntityData rootData;
         rootData.name = "ReparentRoot";
@@ -1551,10 +1532,10 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
 
         SceneEntity* child = root->GetChildren()[0];
         const SceneEntity::Handle childHandle = child->GetHandle();
@@ -1563,7 +1544,7 @@ namespace
         extraParams.name = "ExtraParent";
         extraParams.parent = root;
         SceneEntity* extraParent = sceneManager.SpawnActor(extraParams);
-        TEST_ASSERT_NOT_NULL(extraParent);
+        ASSERT_NE(nullptr, extraParent);
         const SceneEntity::Handle extraParentHandle = extraParent->GetHandle();
 
         child->SetParent(extraParent);
@@ -1574,19 +1555,18 @@ namespace
         prefabInstance->RevertAll();
 
         SceneEntity* restoredChild = sceneManager.GetEntity(childHandle);
-        TEST_ASSERT_NOT_NULL(restoredChild);
-        TEST_ASSERT_EQ(root, restoredChild->GetParent());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
-        TEST_ASSERT_EQ(restoredChild, root->GetChildren()[0]);
-        TEST_ASSERT_TRUE(sceneManager.GetEntity(extraParentHandle) == nullptr);
-        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), restoredChild->GetPosition());
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        ASSERT_NE(nullptr, restoredChild);
+        EXPECT_EQ(root, restoredChild->GetParent());
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        EXPECT_EQ(restoredChild, root->GetChildren()[0]);
+        EXPECT_TRUE(sceneManager.GetEntity(extraParentHandle) == nullptr);
+        EXPECT_EQ(Vec3(1.0f, 2.0f, 3.0f), restoredChild->GetPosition());
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllRestoresReparentedNestedBoundChild()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllRestoresReparentedNestedBoundChild)
     {
         PrefabEntityData rootData;
         rootData.name = "NestedReparentRoot";
@@ -1606,13 +1586,13 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
 
         SceneEntity* branch = root->GetChildren()[0];
-        TEST_ASSERT_EQ(static_cast<size_t>(1), branch->GetChildren().size());
+        EXPECT_EQ(static_cast<size_t>(1), branch->GetChildren().size());
         SceneEntity* leaf = branch->GetChildren()[0];
         const SceneEntity::Handle leafHandle = leaf->GetHandle();
 
@@ -1620,7 +1600,7 @@ namespace
         extraParams.name = "ExtraNestedParent";
         extraParams.parent = root;
         SceneEntity* extraParent = sceneManager.SpawnActor(extraParams);
-        TEST_ASSERT_NOT_NULL(extraParent);
+        ASSERT_NE(nullptr, extraParent);
         const SceneEntity::Handle extraParentHandle = extraParent->GetHandle();
 
         leaf->SetParent(extraParent);
@@ -1629,18 +1609,17 @@ namespace
         prefabInstance->RevertAll();
 
         SceneEntity* restoredLeaf = sceneManager.GetEntity(leafHandle);
-        TEST_ASSERT_NOT_NULL(restoredLeaf);
-        TEST_ASSERT_EQ(branch, restoredLeaf->GetParent());
-        TEST_ASSERT_EQ(static_cast<size_t>(1), branch->GetChildren().size());
-        TEST_ASSERT_EQ(restoredLeaf, branch->GetChildren()[0]);
-        TEST_ASSERT_TRUE(sceneManager.GetEntity(extraParentHandle) == nullptr);
-        TEST_ASSERT_EQ(Vec3(2.0f, 3.0f, 4.0f), restoredLeaf->GetScale());
+        ASSERT_NE(nullptr, restoredLeaf);
+        EXPECT_EQ(branch, restoredLeaf->GetParent());
+        EXPECT_EQ(static_cast<size_t>(1), branch->GetChildren().size());
+        EXPECT_EQ(restoredLeaf, branch->GetChildren()[0]);
+        EXPECT_TRUE(sceneManager.GetEntity(extraParentHandle) == nullptr);
+        EXPECT_EQ(Vec3(2.0f, 3.0f, 4.0f), restoredLeaf->GetScale());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabRestoreHierarchySkipsPruningWhenEntityBindingMissingAndPathAmbiguous()
+    TEST(ResourceInstantiationValidation, PrefabRestoreHierarchySkipsPruningWhenEntityBindingMissingAndPathAmbiguous)
     {
         PrefabEntityData rootData;
         rootData.name = "MissingBindingAmbiguousRoot";
@@ -1655,29 +1634,28 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, root);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
 
         ActorSpawnParams duplicateParams;
         duplicateParams.name = "Child";
         duplicateParams.parent = root;
         SceneEntity* duplicate = sceneManager.SpawnActor(duplicateParams);
-        TEST_ASSERT_NOT_NULL(duplicate);
+        ASSERT_NE(nullptr, duplicate);
         const SceneEntity::Handle duplicateHandle = duplicate->GetHandle();
-        TEST_ASSERT_EQ(static_cast<size_t>(2), root->GetChildren().size());
+        EXPECT_EQ(static_cast<size_t>(2), root->GetChildren().size());
 
         std::vector<PrefabActorComponentNameBinding> nameBindings;
         std::vector<PrefabEntityRuntimeBinding> entityBindings;
-        TEST_ASSERT_TRUE(prefab->RestoreHierarchyStateTo(*root, nameBindings, entityBindings));
+        EXPECT_TRUE(prefab->RestoreHierarchyStateTo(*root, nameBindings, entityBindings));
 
-        TEST_ASSERT_EQ(static_cast<size_t>(2), root->GetChildren().size());
-        TEST_ASSERT_NOT_NULL(sceneManager.GetEntity(duplicateHandle));
+        EXPECT_EQ(static_cast<size_t>(2), root->GetChildren().size());
+        ASSERT_NE(nullptr, sceneManager.GetEntity(duplicateHandle));
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllKeepsExistingNameBindingsWhenRecreatingChild()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllKeepsExistingNameBindingsWhenRecreatingChild)
     {
         ActorFactory::ClearAll();
         ActorFactory::Register<PrefabNameCollisionActor>("PrefabNameCollisionActor");
@@ -1704,37 +1682,36 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         auto* rootPrefabPayload = FindPrefabPayloadComponentByName(
             *static_cast<Actor*>(root), "PrimaryPayload_1");
-        TEST_ASSERT_NOT_NULL(rootPrefabPayload);
+        ASSERT_NE(nullptr, rootPrefabPayload);
         rootPrefabPayload->payload = "dirty-root";
 
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
         SceneEntity* child = root->GetChildren()[0];
         sceneManager.DestroyEntity(child->GetHandle());
-        TEST_ASSERT_TRUE(root->GetChildren().empty());
+        EXPECT_TRUE(root->GetChildren().empty());
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_EQ(std::string("slot=root-prefab"), rootPrefabPayload->payload);
+        EXPECT_EQ(std::string("slot=root-prefab"), rootPrefabPayload->payload);
 
         rootPrefabPayload->payload = "dirty-root-again";
         prefabInstance->RevertProperty(
             "PrefabPayloadComponent", "serializedData", "PrimaryPayload_1");
 
-        TEST_ASSERT_EQ(std::string("slot=root-prefab"), rootPrefabPayload->payload);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        EXPECT_EQ(std::string("slot=root-prefab"), rootPrefabPayload->payload);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
 
         sceneManager.Shutdown();
         ActorFactory::ClearAll();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllDropsStaleBindingsForRecreatedChild()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllDropsStaleBindingsForRecreatedChild)
     {
         ActorFactory::ClearAll();
         ActorFactory::Register("PrefabRecreateBindingActor", []() {
@@ -1765,18 +1742,18 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
 
         SceneEntity* child = root->GetChildren()[0];
         auto* initialPrefabPayload = FindPrefabPayloadComponentByName(
             *static_cast<Actor*>(child), "ChildPayload_1");
-        TEST_ASSERT_NOT_NULL(initialPrefabPayload);
+        ASSERT_NE(nullptr, initialPrefabPayload);
 
         sceneManager.DestroyEntity(child->GetHandle());
-        TEST_ASSERT_TRUE(root->GetChildren().empty());
+        EXPECT_TRUE(root->GetChildren().empty());
 
         ActorFactory::Register("PrefabRecreateBindingActor", []() {
             return std::make_unique<SceneEntity>("PrefabRecreateBindingActorDefault");
@@ -1784,14 +1761,14 @@ namespace
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
         SceneEntity* recreated = root->GetChildren()[0];
         auto* recreatedPrefabPayload = FindPrefabPayloadComponentByName(
             *static_cast<Actor*>(recreated), "ChildPayload");
-        TEST_ASSERT_NOT_NULL(recreatedPrefabPayload);
+        ASSERT_NE(nullptr, recreatedPrefabPayload);
 
         auto* extraPayload = static_cast<Actor*>(recreated)->AddComponent<PrefabPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(extraPayload);
+        ASSERT_NE(nullptr, extraPayload);
         extraPayload->SetName("ChildPayload_1");
         extraPayload->payload = "extra-dirty";
 
@@ -1805,16 +1782,15 @@ namespace
         prefabInstance->RevertProperty(
             "PrefabPayloadComponent", "serializedData", "ChildPayload_1", "Child");
 
-        TEST_ASSERT_EQ(std::string("extra-dirty"), extraPayload->payload);
-        TEST_ASSERT_TRUE(prefabInstance->IsOverridden(
+        EXPECT_EQ(std::string("extra-dirty"), extraPayload->payload);
+        EXPECT_TRUE(prefabInstance->IsOverridden(
             "PrefabPayloadComponent", "serializedData", "ChildPayload_1", "Child"));
 
         sceneManager.Shutdown();
         ActorFactory::ClearAll();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllRestoresLegacyComponentPayload()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllRestoresLegacyComponentPayload)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabLegacyPayloadComponent>(
@@ -1830,25 +1806,24 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         auto* component = instance->GetComponent<PrefabLegacyPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(component);
+        ASSERT_NE(nullptr, component);
         component->payload = "legacy=disabled";
         prefabInstance->AddOverride({"PrefabLegacyPayloadComponent", "serializedData", component->payload});
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_EQ(std::string("legacy=enabled"), component->payload);
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        EXPECT_EQ(std::string("legacy=enabled"), component->payload);
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertAllRecreatesMissingLegacyComponent()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertAllRecreatesMissingLegacyComponent)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabLegacyPayloadComponent>(
@@ -1864,13 +1839,13 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
-        TEST_ASSERT_NOT_NULL(instance->GetComponent<PrefabLegacyPayloadComponent>());
-        TEST_ASSERT_TRUE(instance->RemoveComponent<PrefabLegacyPayloadComponent>());
-        TEST_ASSERT_TRUE(instance->GetComponent<PrefabLegacyPayloadComponent>() == nullptr);
+        ASSERT_NE(nullptr, instance->GetComponent<PrefabLegacyPayloadComponent>());
+        EXPECT_TRUE(instance->RemoveComponent<PrefabLegacyPayloadComponent>());
+        EXPECT_TRUE(instance->GetComponent<PrefabLegacyPayloadComponent>() == nullptr);
 
         prefabInstance->AddOverride(
             {"PrefabLegacyPayloadComponent", "serializedData", std::string("deleted")});
@@ -1878,15 +1853,14 @@ namespace
         prefabInstance->RevertAll();
 
         auto* restored = instance->GetComponent<PrefabLegacyPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(restored);
-        TEST_ASSERT_EQ(std::string("legacy=enabled"), restored->payload);
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        ASSERT_NE(nullptr, restored);
+        EXPECT_EQ(std::string("legacy=enabled"), restored->payload);
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty)
     {
         PrefabEntityData data;
         data.name = "RevertPropertyRoot";
@@ -1899,9 +1873,9 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         instance->SetPosition(Vec3(9.0f, 9.0f, 9.0f));
         instance->SetScale(Vec3(8.0f, 8.0f, 8.0f));
@@ -1910,17 +1884,16 @@ namespace
 
         prefabInstance->RevertProperty("SceneEntity", "position");
 
-        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), instance->GetPosition());
-        TEST_ASSERT_EQ(Vec3(8.0f, 8.0f, 8.0f), instance->GetScale());
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position"));
-        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("SceneEntity", "scale"));
-        TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
+        EXPECT_EQ(Vec3(1.0f, 2.0f, 3.0f), instance->GetPosition());
+        EXPECT_EQ(Vec3(8.0f, 8.0f, 8.0f), instance->GetScale());
+        EXPECT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position"));
+        EXPECT_TRUE(prefabInstance->IsOverridden("SceneEntity", "scale"));
+        EXPECT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertPropertyRestoresActorComponentPayload()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertPropertyRestoresActorComponentPayload)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -1939,14 +1912,14 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         auto* actorComponent = static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(actorComponent);
+        ASSERT_NE(nullptr, actorComponent);
         auto* legacyComponent = instance->GetComponent<PrefabLegacyPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(legacyComponent);
+        ASSERT_NE(nullptr, legacyComponent);
 
         actorComponent->payload = "ammo=1;mode=single";
         legacyComponent->payload = "legacy=disabled";
@@ -1955,32 +1928,30 @@ namespace
 
         prefabInstance->RevertProperty("PrefabPayloadComponent", "serializedData");
 
-        TEST_ASSERT_EQ(std::string("ammo=12;mode=burst"), actorComponent->payload);
-        TEST_ASSERT_EQ(std::string("legacy=disabled"), legacyComponent->payload);
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData"));
-        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("PrefabLegacyPayloadComponent", "serializedData"));
-        TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
+        EXPECT_EQ(std::string("ammo=12;mode=burst"), actorComponent->payload);
+        EXPECT_EQ(std::string("legacy=disabled"), legacyComponent->payload);
+        EXPECT_FALSE(prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData"));
+        EXPECT_TRUE(prefabInstance->IsOverridden("PrefabLegacyPayloadComponent", "serializedData"));
+        EXPECT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRootEntityPathNormalizesForOverrideIdentity()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRootEntityPathNormalizesForOverrideIdentity)
     {
         PrefabInstance prefabInstance;
         prefabInstance.AddOverride({"SceneEntity", "position", Vec3(1.0f), "", "."});
 
-        TEST_ASSERT_TRUE(prefabInstance.IsOverridden("SceneEntity", "position"));
-        TEST_ASSERT_TRUE(prefabInstance.IsOverridden("SceneEntity", "position", "", "."));
+        EXPECT_TRUE(prefabInstance.IsOverridden("SceneEntity", "position"));
+        EXPECT_TRUE(prefabInstance.IsOverridden("SceneEntity", "position", "", "."));
 
         prefabInstance.RemoveOverride("SceneEntity", "position");
 
-        TEST_ASSERT_FALSE(prefabInstance.IsOverridden("SceneEntity", "position", "", "."));
-        TEST_ASSERT_TRUE(prefabInstance.GetOverrides().empty());
-        return true;
+        EXPECT_FALSE(prefabInstance.IsOverridden("SceneEntity", "position", "", "."));
+        EXPECT_TRUE(prefabInstance.GetOverrides().empty());
     }
 
-    bool Test_PrefabInstanceRevertPropertyRestoresChildEntityProperty()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertPropertyRestoresChildEntityProperty)
     {
         PrefabEntityData rootData;
         rootData.name = "ChildPropertyRoot";
@@ -1997,10 +1968,10 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
         SceneEntity* child = root->GetChildren()[0];
 
         root->SetPosition(Vec3(7.0f, 0.0f, 0.0f));
@@ -2011,16 +1982,15 @@ namespace
 
         prefabInstance->RevertProperty("SceneEntity", "position", "", "Child");
 
-        TEST_ASSERT_EQ(Vec3(7.0f, 0.0f, 0.0f), root->GetPosition());
-        TEST_ASSERT_EQ(Vec3(0.0f, 2.0f, 0.0f), child->GetPosition());
-        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("SceneEntity", "position"));
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child"));
+        EXPECT_EQ(Vec3(7.0f, 0.0f, 0.0f), root->GetPosition());
+        EXPECT_EQ(Vec3(0.0f, 2.0f, 0.0f), child->GetPosition());
+        EXPECT_TRUE(prefabInstance->IsOverridden("SceneEntity", "position"));
+        EXPECT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child"));
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertPropertyRestoresRenamedChildEntityByRuntimeBinding()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertPropertyRestoresRenamedChildEntityByRuntimeBinding)
     {
         PrefabEntityData rootData;
         rootData.name = "RuntimeBindingPropertyRoot";
@@ -2036,11 +2006,11 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
 
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
 
         SceneEntity* child = root->GetChildren()[0];
         child->SetName("RenamedChild");
@@ -2050,18 +2020,17 @@ namespace
 
         prefabInstance->RevertProperty("SceneEntity", "position", "", "Child");
 
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
-        TEST_ASSERT_EQ(child, root->GetChildren()[0]);
-        TEST_ASSERT_EQ(std::string("RenamedChild"), child->GetName());
-        TEST_ASSERT_EQ(Vec3(2.0f, 3.0f, 4.0f), child->GetPosition());
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden(
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        EXPECT_EQ(child, root->GetChildren()[0]);
+        EXPECT_EQ(std::string("RenamedChild"), child->GetName());
+        EXPECT_EQ(Vec3(2.0f, 3.0f, 4.0f), child->GetPosition());
+        EXPECT_FALSE(prefabInstance->IsOverridden(
             "SceneEntity", "position", "", "Child"));
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertPropertyUsesSiblingOrdinalEntityPath()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertPropertyUsesSiblingOrdinalEntityPath)
     {
         PrefabEntityData rootData;
         rootData.name = "DuplicateChildRoot";
@@ -2082,10 +2051,10 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(2), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(2), root->GetChildren().size());
 
         SceneEntity* firstChild = root->GetChildren()[0];
         SceneEntity* secondChild = root->GetChildren()[1];
@@ -2096,15 +2065,14 @@ namespace
 
         prefabInstance->RevertProperty("SceneEntity", "position", "", "Child[1]");
 
-        TEST_ASSERT_EQ(Vec3(9.0f, 0.0f, 0.0f), firstChild->GetPosition());
-        TEST_ASSERT_EQ(Vec3(2.0f, 0.0f, 0.0f), secondChild->GetPosition());
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child[1]"));
+        EXPECT_EQ(Vec3(9.0f, 0.0f, 0.0f), firstChild->GetPosition());
+        EXPECT_EQ(Vec3(2.0f, 0.0f, 0.0f), secondChild->GetPosition());
+        EXPECT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child[1]"));
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertPropertyKeepsAmbiguousDuplicateSiblingPath()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertPropertyKeepsAmbiguousDuplicateSiblingPath)
     {
         PrefabEntityData rootData;
         rootData.name = "AmbiguousDuplicateRoot";
@@ -2125,10 +2093,10 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(2), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(2), root->GetChildren().size());
 
         SceneEntity* firstChild = root->GetChildren()[0];
         SceneEntity* secondChild = root->GetChildren()[1];
@@ -2139,15 +2107,14 @@ namespace
 
         prefabInstance->RevertProperty("SceneEntity", "position", "", "Child");
 
-        TEST_ASSERT_EQ(Vec3(9.0f, 0.0f, 0.0f), firstChild->GetPosition());
-        TEST_ASSERT_EQ(Vec3(8.0f, 0.0f, 0.0f), secondChild->GetPosition());
-        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child"));
+        EXPECT_EQ(Vec3(9.0f, 0.0f, 0.0f), firstChild->GetPosition());
+        EXPECT_EQ(Vec3(8.0f, 0.0f, 0.0f), secondChild->GetPosition());
+        EXPECT_TRUE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child"));
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertPropertyRestoresNamedDuplicateActorComponentPayload()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertPropertyRestoresNamedDuplicateActorComponentPayload)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -2164,16 +2131,16 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         auto* primary = FindPrefabPayloadComponentByName(*static_cast<Actor*>(instance),
                                                          "PrimaryPayload");
         auto* secondary = FindPrefabPayloadComponentByName(*static_cast<Actor*>(instance),
                                                            "SecondaryPayload");
-        TEST_ASSERT_NOT_NULL(primary);
-        TEST_ASSERT_NOT_NULL(secondary);
+        ASSERT_NE(nullptr, primary);
+        ASSERT_NE(nullptr, secondary);
 
         primary->payload = "dirty-primary";
         secondary->payload = "dirty-secondary";
@@ -2184,19 +2151,18 @@ namespace
 
         prefabInstance->RevertProperty("PrefabPayloadComponent", "serializedData", "SecondaryPayload");
 
-        TEST_ASSERT_EQ(std::string("dirty-primary"), primary->payload);
-        TEST_ASSERT_EQ(std::string("slot=secondary"), secondary->payload);
-        TEST_ASSERT_TRUE(
+        EXPECT_EQ(std::string("dirty-primary"), primary->payload);
+        EXPECT_EQ(std::string("slot=secondary"), secondary->payload);
+        EXPECT_TRUE(
             prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData", "PrimaryPayload"));
-        TEST_ASSERT_FALSE(
+        EXPECT_FALSE(
             prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData", "SecondaryPayload"));
-        TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
+        EXPECT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRemoveOverrideTargetsComponentName()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRemoveOverrideTargetsComponentName)
     {
         PrefabInstance prefabInstance;
         prefabInstance.AddOverride(
@@ -2206,16 +2172,14 @@ namespace
 
         prefabInstance.RemoveOverride("PrefabPayloadComponent", "serializedData", "SecondaryPayload");
 
-        TEST_ASSERT_TRUE(
+        EXPECT_TRUE(
             prefabInstance.IsOverridden("PrefabPayloadComponent", "serializedData", "PrimaryPayload"));
-        TEST_ASSERT_FALSE(
+        EXPECT_FALSE(
             prefabInstance.IsOverridden("PrefabPayloadComponent", "serializedData", "SecondaryPayload"));
-        TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance.GetOverrides().size());
-
-        return true;
+        EXPECT_EQ(static_cast<size_t>(1), prefabInstance.GetOverrides().size());
     }
 
-    bool Test_PrefabInstanceRevertPropertyUsesRuntimeNameBindingAfterUniquify()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertPropertyUsesRuntimeNameBindingAfterUniquify)
     {
         ActorFactory::ClearAll();
         ActorFactory::Register<PrefabNameCollisionActor>("PrefabNameCollisionActor");
@@ -2235,15 +2199,15 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         auto* actor = static_cast<Actor*>(instance);
         auto* constructorComponent = FindPrefabPayloadComponentByName(*actor, "PrimaryPayload");
         auto* prefabComponent = FindPrefabPayloadComponentByName(*actor, "PrimaryPayload_1");
-        TEST_ASSERT_NOT_NULL(constructorComponent);
-        TEST_ASSERT_NOT_NULL(prefabComponent);
+        ASSERT_NE(nullptr, constructorComponent);
+        ASSERT_NE(nullptr, prefabComponent);
 
         constructorComponent->payload = "constructor-dirty";
         prefabComponent->payload = "prefab-dirty";
@@ -2252,17 +2216,16 @@ namespace
 
         prefabInstance->RevertProperty("PrefabPayloadComponent", "serializedData", "PrimaryPayload_1");
 
-        TEST_ASSERT_EQ(std::string("constructor-dirty"), constructorComponent->payload);
-        TEST_ASSERT_EQ(std::string("slot=prefab"), prefabComponent->payload);
-        TEST_ASSERT_FALSE(
+        EXPECT_EQ(std::string("constructor-dirty"), constructorComponent->payload);
+        EXPECT_EQ(std::string("slot=prefab"), prefabComponent->payload);
+        EXPECT_FALSE(
             prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData", "PrimaryPayload_1"));
 
         sceneManager.Shutdown();
         ActorFactory::ClearAll();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertPropertyRestoresChildNamedComponentPayload()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertPropertyRestoresChildNamedComponentPayload)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -2285,18 +2248,18 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
         SceneEntity* child = root->GetChildren()[0];
 
         auto* primary = FindPrefabPayloadComponentByName(
             *static_cast<Actor*>(child), "PrimaryPayload");
         auto* secondary = FindPrefabPayloadComponentByName(
             *static_cast<Actor*>(child), "SecondaryPayload");
-        TEST_ASSERT_NOT_NULL(primary);
-        TEST_ASSERT_NOT_NULL(secondary);
+        ASSERT_NE(nullptr, primary);
+        ASSERT_NE(nullptr, secondary);
 
         primary->payload = "dirty-primary";
         secondary->payload = "dirty-secondary";
@@ -2308,18 +2271,17 @@ namespace
         prefabInstance->RevertProperty(
             "PrefabPayloadComponent", "serializedData", "SecondaryPayload", "Child");
 
-        TEST_ASSERT_EQ(std::string("dirty-primary"), primary->payload);
-        TEST_ASSERT_EQ(std::string("slot=secondary"), secondary->payload);
-        TEST_ASSERT_TRUE(prefabInstance->IsOverridden(
+        EXPECT_EQ(std::string("dirty-primary"), primary->payload);
+        EXPECT_EQ(std::string("slot=secondary"), secondary->payload);
+        EXPECT_TRUE(prefabInstance->IsOverridden(
             "PrefabPayloadComponent", "serializedData", "PrimaryPayload", "Child"));
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden(
+        EXPECT_FALSE(prefabInstance->IsOverridden(
             "PrefabPayloadComponent", "serializedData", "SecondaryPayload", "Child"));
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertPropertyScopesComponentBindingsByEntityPath()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertPropertyScopesComponentBindingsByEntityPath)
     {
         ActorFactory::ClearAll();
         ActorFactory::Register<PrefabNameCollisionActor>("PrefabNameCollisionActor");
@@ -2346,18 +2308,18 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
         SceneEntity* child = root->GetChildren()[0];
 
         auto* rootPayload = FindPrefabPayloadComponentByName(
             *static_cast<Actor*>(root), "PrimaryPayload_1");
         auto* childPayload = FindPrefabPayloadComponentByName(
             *static_cast<Actor*>(child), "PrimaryPayload_1");
-        TEST_ASSERT_NOT_NULL(rootPayload);
-        TEST_ASSERT_NOT_NULL(childPayload);
+        ASSERT_NE(nullptr, rootPayload);
+        ASSERT_NE(nullptr, childPayload);
 
         rootPayload->payload = "dirty-root";
         childPayload->payload = "dirty-child";
@@ -2367,15 +2329,14 @@ namespace
         prefabInstance->RevertProperty(
             "PrefabPayloadComponent", "serializedData", "PrimaryPayload_1", "Child");
 
-        TEST_ASSERT_EQ(std::string("dirty-root"), rootPayload->payload);
-        TEST_ASSERT_EQ(std::string("slot=child"), childPayload->payload);
+        EXPECT_EQ(std::string("dirty-root"), rootPayload->payload);
+        EXPECT_EQ(std::string("slot=child"), childPayload->payload);
 
         sceneManager.Shutdown();
         ActorFactory::ClearAll();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertPropertyRestoresLegacyComponentPayload()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertPropertyRestoresLegacyComponentPayload)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -2394,14 +2355,14 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         auto* actorComponent = static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(actorComponent);
+        ASSERT_NE(nullptr, actorComponent);
         auto* legacyComponent = instance->GetComponent<PrefabLegacyPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(legacyComponent);
+        ASSERT_NE(nullptr, legacyComponent);
 
         actorComponent->payload = "ammo=99";
         legacyComponent->payload = "legacy=disabled";
@@ -2410,17 +2371,16 @@ namespace
 
         prefabInstance->RevertProperty("PrefabLegacyPayloadComponent", "serializedData");
 
-        TEST_ASSERT_EQ(std::string("ammo=99"), actorComponent->payload);
-        TEST_ASSERT_EQ(std::string("legacy=enabled"), legacyComponent->payload);
-        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData"));
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("PrefabLegacyPayloadComponent", "serializedData"));
-        TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
+        EXPECT_EQ(std::string("ammo=99"), actorComponent->payload);
+        EXPECT_EQ(std::string("legacy=enabled"), legacyComponent->payload);
+        EXPECT_TRUE(prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData"));
+        EXPECT_FALSE(prefabInstance->IsOverridden("PrefabLegacyPayloadComponent", "serializedData"));
+        EXPECT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertPropertyKeepsPayloadOverrideWhenComponentMissing()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertPropertyKeepsPayloadOverrideWhenComponentMissing)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -2436,25 +2396,24 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
-        TEST_ASSERT_TRUE(static_cast<Actor*>(instance)->RemoveComponent<PrefabPayloadComponent>());
-        TEST_ASSERT_TRUE(static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>() == nullptr);
+        EXPECT_TRUE(static_cast<Actor*>(instance)->RemoveComponent<PrefabPayloadComponent>());
+        EXPECT_TRUE(static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>() == nullptr);
         prefabInstance->AddOverride({"PrefabPayloadComponent", "serializedData", std::string("ammo=99")});
 
         prefabInstance->RevertProperty("PrefabPayloadComponent", "serializedData");
 
-        TEST_ASSERT_TRUE(static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>() == nullptr);
-        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData"));
-        TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
+        EXPECT_TRUE(static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>() == nullptr);
+        EXPECT_TRUE(prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData"));
+        EXPECT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertPropertyAcceptsEmptyRootTarget()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertPropertyAcceptsEmptyRootTarget)
     {
         PrefabEntityData data;
         data.name = "EmptyRootTarget";
@@ -2466,24 +2425,23 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         instance->SetPosition(Vec3(9.0f, 9.0f, 9.0f));
         prefabInstance->AddOverride({"", "position", Vec3(9.0f, 9.0f, 9.0f)});
 
         prefabInstance->RevertProperty("", "position");
 
-        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), instance->GetPosition());
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("", "position"));
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        EXPECT_EQ(Vec3(1.0f, 2.0f, 3.0f), instance->GetPosition());
+        EXPECT_FALSE(prefabInstance->IsOverridden("", "position"));
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertPropertyClearsRootTargetAliases()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertPropertyClearsRootTargetAliases)
     {
         PrefabEntityData data;
         data.name = "AliasRootTarget";
@@ -2495,24 +2453,23 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         instance->SetPosition(Vec3(9.0f, 9.0f, 9.0f));
         prefabInstance->AddOverride({"SceneEntity", "position", Vec3(9.0f, 9.0f, 9.0f)});
 
         prefabInstance->RevertProperty("Actor", "position");
 
-        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), instance->GetPosition());
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position"));
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        EXPECT_EQ(Vec3(1.0f, 2.0f, 3.0f), instance->GetPosition());
+        EXPECT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position"));
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceRevertPropertyKeepsUnsupportedOverride()
+    TEST(ResourceInstantiationValidation, PrefabInstanceRevertPropertyKeepsUnsupportedOverride)
     {
         PrefabEntityData data;
         data.name = "UnsupportedOverrideRoot";
@@ -2523,22 +2480,21 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         prefabInstance->AddOverride({"UnknownComponent", "payload", std::string("custom")});
 
         prefabInstance->RevertProperty("UnknownComponent", "payload");
 
-        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("UnknownComponent", "payload"));
-        TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
+        EXPECT_TRUE(prefabInstance->IsOverridden("UnknownComponent", "payload"));
+        EXPECT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceApplyToPrefabWritesRootEntityState()
+    TEST(ResourceInstantiationValidation, PrefabInstanceApplyToPrefabWritesRootEntityState)
     {
         PrefabEntityData data;
         data.name = "ApplyRoot";
@@ -2554,9 +2510,9 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         instance->SetPosition(Vec3(9.0f, 8.0f, 7.0f));
         instance->SetRotation(Quat(0.7071068f, 0.0f, 0.7071068f, 0.0f));
@@ -2569,19 +2525,18 @@ namespace
         prefabInstance->ApplyToPrefab();
 
         const PrefabEntityData* rootData = prefab->GetRootData();
-        TEST_ASSERT_NOT_NULL(rootData);
-        TEST_ASSERT_EQ(Vec3(9.0f, 8.0f, 7.0f), rootData->position);
-        TEST_ASSERT_EQ(Quat(0.7071068f, 0.0f, 0.7071068f, 0.0f), rootData->rotation);
-        TEST_ASSERT_EQ(Vec3(3.0f, 4.0f, 5.0f), rootData->scale);
-        TEST_ASSERT_EQ(static_cast<uint32_t>(0xAu), rootData->layerMask);
-        TEST_ASSERT_FALSE(rootData->isActive);
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        ASSERT_NE(nullptr, rootData);
+        EXPECT_EQ(Vec3(9.0f, 8.0f, 7.0f), rootData->position);
+        EXPECT_EQ(Quat(0.7071068f, 0.0f, 0.7071068f, 0.0f), rootData->rotation);
+        EXPECT_EQ(Vec3(3.0f, 4.0f, 5.0f), rootData->scale);
+        EXPECT_EQ(static_cast<uint32_t>(0xAu), rootData->layerMask);
+        EXPECT_FALSE(rootData->isActive);
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceApplyToPrefabWritesRootComponentPayloads()
+    TEST(ResourceInstantiationValidation, PrefabInstanceApplyToPrefabWritesRootComponentPayloads)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -2600,16 +2555,16 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         auto* actorComponent = static_cast<Actor*>(instance)->GetComponent<PrefabPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(actorComponent);
+        ASSERT_NE(nullptr, actorComponent);
         actorComponent->payload = "ammo=99;mode=auto";
 
         auto* legacyComponent = instance->GetComponent<PrefabLegacyPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(legacyComponent);
+        ASSERT_NE(nullptr, legacyComponent);
         legacyComponent->payload = "legacy=new";
 
         prefabInstance->AddOverride({"PrefabPayloadComponent", "serializedData", actorComponent->payload});
@@ -2619,26 +2574,25 @@ namespace
         prefabInstance->ApplyToPrefab();
 
         const PrefabEntityData* rootData = prefab->GetRootData();
-        TEST_ASSERT_NOT_NULL(rootData);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), rootData->actorComponentData.size());
-        TEST_ASSERT_EQ(std::string("PrefabPayloadComponent"),
+        ASSERT_NE(nullptr, rootData);
+        EXPECT_EQ(static_cast<size_t>(1), rootData->actorComponentData.size());
+        EXPECT_EQ(std::string("PrefabPayloadComponent"),
                        rootData->actorComponentData[0].className);
-        TEST_ASSERT_EQ(std::string("ammo=99;mode=auto"),
+        EXPECT_EQ(std::string("ammo=99;mode=auto"),
                        rootData->actorComponentData[0].serializedData);
 
         auto it = rootData->componentData.find("PrefabLegacyPayloadComponent");
-        TEST_ASSERT_TRUE(it != rootData->componentData.end());
-        TEST_ASSERT_EQ(std::string("legacy=new"), it->second);
+        EXPECT_TRUE(it != rootData->componentData.end());
+        EXPECT_EQ(std::string("legacy=new"), it->second);
 
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData"));
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("PrefabLegacyPayloadComponent", "serializedData"));
-        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("UnknownComponent", "serializedData"));
+        EXPECT_FALSE(prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData"));
+        EXPECT_FALSE(prefabInstance->IsOverridden("PrefabLegacyPayloadComponent", "serializedData"));
+        EXPECT_TRUE(prefabInstance->IsOverridden("UnknownComponent", "serializedData"));
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceApplyToPrefabClearsOnlyMatchingNamedPayloadOverride()
+    TEST(ResourceInstantiationValidation, PrefabInstanceApplyToPrefabClearsOnlyMatchingNamedPayloadOverride)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -2655,16 +2609,16 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         auto* primary = FindPrefabPayloadComponentByName(*static_cast<Actor*>(instance),
                                                          "PrimaryPayload");
         auto* secondary = FindPrefabPayloadComponentByName(*static_cast<Actor*>(instance),
                                                            "SecondaryPayload");
-        TEST_ASSERT_NOT_NULL(primary);
-        TEST_ASSERT_NOT_NULL(secondary);
+        ASSERT_NE(nullptr, primary);
+        ASSERT_NE(nullptr, secondary);
 
         primary->payload = "slot=primary-applied";
         prefabInstance->AddOverride(
@@ -2675,19 +2629,18 @@ namespace
         prefabInstance->ApplyToPrefab();
 
         const PrefabEntityData* rootData = prefab->GetRootData();
-        TEST_ASSERT_NOT_NULL(rootData);
-        TEST_ASSERT_EQ(static_cast<size_t>(2), rootData->actorComponentData.size());
-        TEST_ASSERT_FALSE(
+        ASSERT_NE(nullptr, rootData);
+        EXPECT_EQ(static_cast<size_t>(2), rootData->actorComponentData.size());
+        EXPECT_FALSE(
             prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData", "PrimaryPayload"));
-        TEST_ASSERT_TRUE(
+        EXPECT_TRUE(
             prefabInstance->IsOverridden("PrefabPayloadComponent", "serializedData", "DetachedPayload"));
-        TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
+        EXPECT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceApplyToPrefabWritesChildEntityStateAndPayload()
+    TEST(ResourceInstantiationValidation, PrefabInstanceApplyToPrefabWritesChildEntityStateAndPayload)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -2709,14 +2662,14 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
         SceneEntity* child = root->GetChildren()[0];
         auto* childPayload = FindPrefabPayloadComponentByName(
             *static_cast<Actor*>(child), "ChildPayload");
-        TEST_ASSERT_NOT_NULL(childPayload);
+        ASSERT_NE(nullptr, childPayload);
 
         child->SetPosition(Vec3(0.0f, 7.0f, 0.0f));
         childPayload->payload = "slot=new";
@@ -2728,20 +2681,19 @@ namespace
         prefabInstance->ApplyToPrefab();
 
         const PrefabEntityData* updatedChildData = prefab->GetEntityData(1);
-        TEST_ASSERT_NOT_NULL(updatedChildData);
-        TEST_ASSERT_EQ(Vec3(0.0f, 7.0f, 0.0f), updatedChildData->position);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), updatedChildData->actorComponentData.size());
-        TEST_ASSERT_EQ(std::string("slot=new"),
+        ASSERT_NE(nullptr, updatedChildData);
+        EXPECT_EQ(Vec3(0.0f, 7.0f, 0.0f), updatedChildData->position);
+        EXPECT_EQ(static_cast<size_t>(1), updatedChildData->actorComponentData.size());
+        EXPECT_EQ(std::string("slot=new"),
                        updatedChildData->actorComponentData[0].serializedData);
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child"));
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden(
+        EXPECT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child"));
+        EXPECT_FALSE(prefabInstance->IsOverridden(
             "PrefabPayloadComponent", "serializedData", "ChildPayload", "Child"));
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceApplyToPrefabRebuildsRuntimeEntityBindings()
+    TEST(ResourceInstantiationValidation, PrefabInstanceApplyToPrefabRebuildsRuntimeEntityBindings)
     {
         PrefabEntityData rootData;
         rootData.name = "ApplyRebindRoot";
@@ -2757,10 +2709,10 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
 
         SceneEntity* child = root->GetChildren()[0];
         prefabInstance->ApplyToPrefab();
@@ -2772,17 +2724,16 @@ namespace
 
         prefabInstance->RevertAll();
 
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
-        TEST_ASSERT_EQ(child, root->GetChildren()[0]);
-        TEST_ASSERT_EQ(std::string("Child"), child->GetName());
-        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), child->GetPosition());
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        EXPECT_EQ(child, root->GetChildren()[0]);
+        EXPECT_EQ(std::string("Child"), child->GetName());
+        EXPECT_EQ(Vec3(1.0f, 2.0f, 3.0f), child->GetPosition());
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceApplyToPrefabAddsLiveChildEntity()
+    TEST(ResourceInstantiationValidation, PrefabInstanceApplyToPrefabAddsLiveChildEntity)
     {
         ComponentFactoryClassGuard componentFactoryGuard;
         ComponentFactory::RegisterComponentClass<PrefabPayloadComponent>(
@@ -2797,42 +2748,41 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         ActorSpawnParams childParams;
         childParams.name = "AddedChild";
         childParams.parent = root;
         SceneEntity* child = sceneManager.SpawnActor(childParams);
-        TEST_ASSERT_NOT_NULL(child);
+        ASSERT_NE(nullptr, child);
         child->SetPosition(Vec3(4.0f, 5.0f, 6.0f));
         auto* payload = child->AddComponent<PrefabPayloadComponent>();
-        TEST_ASSERT_NOT_NULL(payload);
+        ASSERT_NE(nullptr, payload);
         payload->SetName("AddedPayload");
         payload->payload = "slot=added";
 
         prefabInstance->ApplyToPrefab();
 
-        TEST_ASSERT_EQ(static_cast<size_t>(2), prefab->GetEntityCount());
+        EXPECT_EQ(static_cast<size_t>(2), prefab->GetEntityCount());
         const PrefabEntityData* addedData = prefab->GetEntityData(1);
-        TEST_ASSERT_NOT_NULL(addedData);
-        TEST_ASSERT_EQ(std::string("AddedChild"), addedData->name);
-        TEST_ASSERT_EQ(static_cast<int32_t>(0), addedData->parentIndex);
-        TEST_ASSERT_EQ(Vec3(4.0f, 5.0f, 6.0f), addedData->position);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), addedData->actorComponentData.size());
-        TEST_ASSERT_EQ(std::string("PrefabPayloadComponent"),
+        ASSERT_NE(nullptr, addedData);
+        EXPECT_EQ(std::string("AddedChild"), addedData->name);
+        EXPECT_EQ(static_cast<int32_t>(0), addedData->parentIndex);
+        EXPECT_EQ(Vec3(4.0f, 5.0f, 6.0f), addedData->position);
+        EXPECT_EQ(static_cast<size_t>(1), addedData->actorComponentData.size());
+        EXPECT_EQ(std::string("PrefabPayloadComponent"),
                        addedData->actorComponentData[0].className);
-        TEST_ASSERT_EQ(std::string("AddedPayload"),
+        EXPECT_EQ(std::string("AddedPayload"),
                        addedData->actorComponentData[0].name);
-        TEST_ASSERT_EQ(std::string("slot=added"),
+        EXPECT_EQ(std::string("slot=added"),
                        addedData->actorComponentData[0].serializedData);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceApplyToPrefabRemovesDeletedChildEntityAndOverrides()
+    TEST(ResourceInstantiationValidation, PrefabInstanceApplyToPrefabRemovesDeletedChildEntityAndOverrides)
     {
         PrefabEntityData rootData;
         rootData.name = "ApplyRemovesChildRoot";
@@ -2848,10 +2798,10 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
-        TEST_ASSERT_EQ(static_cast<size_t>(1), root->GetChildren().size());
+        ASSERT_NE(nullptr, prefabInstance);
+        EXPECT_EQ(static_cast<size_t>(1), root->GetChildren().size());
 
         SceneEntity* child = root->GetChildren()[0];
         prefabInstance->AddOverride(
@@ -2860,14 +2810,13 @@ namespace
 
         prefabInstance->ApplyToPrefab();
 
-        TEST_ASSERT_EQ(static_cast<size_t>(1), prefab->GetEntityCount());
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child"));
+        EXPECT_EQ(static_cast<size_t>(1), prefab->GetEntityCount());
+        EXPECT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position", "", "Child"));
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceApplyToPrefabPreservesNestedParentIndices()
+    TEST(ResourceInstantiationValidation, PrefabInstanceApplyToPrefabPreservesNestedParentIndices)
     {
         PrefabEntityData rootData;
         rootData.name = "ApplyNestedRoot";
@@ -2878,41 +2827,40 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         ActorSpawnParams branchParams;
         branchParams.name = "Branch";
         branchParams.parent = root;
         SceneEntity* branch = sceneManager.SpawnActor(branchParams);
-        TEST_ASSERT_NOT_NULL(branch);
+        ASSERT_NE(nullptr, branch);
 
         ActorSpawnParams leafParams;
         leafParams.name = "Leaf";
         leafParams.parent = branch;
         SceneEntity* leaf = sceneManager.SpawnActor(leafParams);
-        TEST_ASSERT_NOT_NULL(leaf);
+        ASSERT_NE(nullptr, leaf);
         leaf->SetScale(Vec3(2.0f, 3.0f, 4.0f));
 
         prefabInstance->ApplyToPrefab();
 
-        TEST_ASSERT_EQ(static_cast<size_t>(3), prefab->GetEntityCount());
+        EXPECT_EQ(static_cast<size_t>(3), prefab->GetEntityCount());
         const PrefabEntityData* branchData = prefab->GetEntityData(1);
         const PrefabEntityData* leafData = prefab->GetEntityData(2);
-        TEST_ASSERT_NOT_NULL(branchData);
-        TEST_ASSERT_NOT_NULL(leafData);
-        TEST_ASSERT_EQ(std::string("Branch"), branchData->name);
-        TEST_ASSERT_EQ(static_cast<int32_t>(0), branchData->parentIndex);
-        TEST_ASSERT_EQ(std::string("Leaf"), leafData->name);
-        TEST_ASSERT_EQ(static_cast<int32_t>(1), leafData->parentIndex);
-        TEST_ASSERT_EQ(Vec3(2.0f, 3.0f, 4.0f), leafData->scale);
+        ASSERT_NE(nullptr, branchData);
+        ASSERT_NE(nullptr, leafData);
+        EXPECT_EQ(std::string("Branch"), branchData->name);
+        EXPECT_EQ(static_cast<int32_t>(0), branchData->parentIndex);
+        EXPECT_EQ(std::string("Leaf"), leafData->name);
+        EXPECT_EQ(static_cast<int32_t>(1), leafData->parentIndex);
+        EXPECT_EQ(Vec3(2.0f, 3.0f, 4.0f), leafData->scale);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceApplyToPrefabPreservesUnsupportedOverrideOnExistingChild()
+    TEST(ResourceInstantiationValidation, PrefabInstanceApplyToPrefabPreservesUnsupportedOverrideOnExistingChild)
     {
         PrefabEntityData rootData;
         rootData.name = "ApplyKeepsUnsupportedRoot";
@@ -2927,23 +2875,22 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* root = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(root);
+        ASSERT_NE(nullptr, root);
         auto* prefabInstance = root->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         prefabInstance->AddOverride(
             {"CustomComponent", "customField", std::string("value"), "", "Child"});
 
         prefabInstance->ApplyToPrefab();
 
-        TEST_ASSERT_TRUE(prefabInstance->IsOverridden(
+        EXPECT_TRUE(prefabInstance->IsOverridden(
             "CustomComponent", "customField", "", "Child"));
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceApplyToPrefabClearsRootAliasOverrides()
+    TEST(ResourceInstantiationValidation, PrefabInstanceApplyToPrefabClearsRootAliasOverrides)
     {
         PrefabEntityData data;
         data.name = "ApplyAliases";
@@ -2956,9 +2903,9 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         instance->SetPosition(Vec3(5.0f, 6.0f, 7.0f));
         instance->SetScale(Vec3(2.0f, 2.0f, 2.0f));
@@ -2967,20 +2914,19 @@ namespace
 
         prefabInstance->ApplyToPrefab();
 
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("", "position"));
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("Actor", "scale"));
-        TEST_ASSERT_TRUE(prefabInstance->GetOverrides().empty());
+        EXPECT_FALSE(prefabInstance->IsOverridden("", "position"));
+        EXPECT_FALSE(prefabInstance->IsOverridden("Actor", "scale"));
+        EXPECT_TRUE(prefabInstance->GetOverrides().empty());
 
         const PrefabEntityData* rootData = prefab->GetRootData();
-        TEST_ASSERT_NOT_NULL(rootData);
-        TEST_ASSERT_EQ(Vec3(5.0f, 6.0f, 7.0f), rootData->position);
-        TEST_ASSERT_EQ(Vec3(2.0f, 2.0f, 2.0f), rootData->scale);
+        ASSERT_NE(nullptr, rootData);
+        EXPECT_EQ(Vec3(5.0f, 6.0f, 7.0f), rootData->position);
+        EXPECT_EQ(Vec3(2.0f, 2.0f, 2.0f), rootData->scale);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceApplyToPrefabPreservesUnsupportedOverrides()
+    TEST(ResourceInstantiationValidation, PrefabInstanceApplyToPrefabPreservesUnsupportedOverrides)
     {
         PrefabEntityData data;
         data.name = "ApplyUnsupported";
@@ -2992,9 +2938,9 @@ namespace
         sceneManager.Initialize();
 
         SceneEntity* instance = prefab->Instantiate(sceneManager);
-        TEST_ASSERT_NOT_NULL(instance);
+        ASSERT_NE(nullptr, instance);
         auto* prefabInstance = instance->GetComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
 
         instance->SetPosition(Vec3(4.0f, 5.0f, 6.0f));
         prefabInstance->AddOverride({"SceneEntity", "position", Vec3(4.0f, 5.0f, 6.0f)});
@@ -3003,20 +2949,19 @@ namespace
 
         prefabInstance->ApplyToPrefab();
 
-        TEST_ASSERT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position"));
-        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("SceneEntity", "custom"));
-        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("UnknownComponent", "payload"));
-        TEST_ASSERT_EQ(static_cast<size_t>(2), prefabInstance->GetOverrides().size());
+        EXPECT_FALSE(prefabInstance->IsOverridden("SceneEntity", "position"));
+        EXPECT_TRUE(prefabInstance->IsOverridden("SceneEntity", "custom"));
+        EXPECT_TRUE(prefabInstance->IsOverridden("UnknownComponent", "payload"));
+        EXPECT_EQ(static_cast<size_t>(2), prefabInstance->GetOverrides().size());
 
         const PrefabEntityData* rootData = prefab->GetRootData();
-        TEST_ASSERT_NOT_NULL(rootData);
-        TEST_ASSERT_EQ(Vec3(4.0f, 5.0f, 6.0f), rootData->position);
+        ASSERT_NE(nullptr, rootData);
+        EXPECT_EQ(Vec3(4.0f, 5.0f, 6.0f), rootData->position);
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_PrefabInstanceApplyToPrefabWithoutPrefabKeepsOverrides()
+    TEST(ResourceInstantiationValidation, PrefabInstanceApplyToPrefabWithoutPrefabKeepsOverrides)
     {
         SceneManager sceneManager;
         sceneManager.Initialize();
@@ -3024,22 +2969,21 @@ namespace
         ActorSpawnParams params;
         params.name = "NoPrefabActor";
         SceneEntity* entity = sceneManager.SpawnActor(params);
-        TEST_ASSERT_NOT_NULL(entity);
+        ASSERT_NE(nullptr, entity);
 
         auto* prefabInstance = entity->AddComponent<PrefabInstance>();
-        TEST_ASSERT_NOT_NULL(prefabInstance);
+        ASSERT_NE(nullptr, prefabInstance);
         prefabInstance->AddOverride({"SceneEntity", "position", Vec3(1.0f, 2.0f, 3.0f)});
 
         prefabInstance->ApplyToPrefab();
 
-        TEST_ASSERT_TRUE(prefabInstance->IsOverridden("SceneEntity", "position"));
-        TEST_ASSERT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
+        EXPECT_TRUE(prefabInstance->IsOverridden("SceneEntity", "position"));
+        EXPECT_EQ(static_cast<size_t>(1), prefabInstance->GetOverrides().size());
 
         sceneManager.Shutdown();
-        return true;
     }
 
-    bool Test_WorldLoadModelResourceReplacesSceneContent()
+    TEST(ResourceInstantiationValidation, WorldLoadModelResourceReplacesSceneContent)
     {
         ResourceManagerTestGuard resourceGuard(true);
         auto& resourceManager = ResourceManager::Get();
@@ -3050,30 +2994,29 @@ namespace
 
         ActorSpawnParams existingParams;
         existingParams.name = "ExistingActor";
-        TEST_ASSERT_NOT_NULL(world.SpawnActor(existingParams));
-        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetSceneManager()->GetEntityCount());
+        ASSERT_NE(nullptr, world.SpawnActor(existingParams));
+        EXPECT_EQ(static_cast<size_t>(1), world.GetSceneManager()->GetEntityCount());
 
         world.Load("fixture.model");
 
         SceneManager* sceneManager = world.GetSceneManager();
-        TEST_ASSERT_NOT_NULL(sceneManager);
-        TEST_ASSERT_EQ(static_cast<size_t>(2), sceneManager->GetEntityCount());
+        ASSERT_NE(nullptr, sceneManager);
+        EXPECT_EQ(static_cast<size_t>(2), sceneManager->GetEntityCount());
 
         auto* root = FindEntityByName(*sceneManager, "LoadedWorldRoot");
         auto* child = FindEntityByName(*sceneManager, "LoadedWorldChild");
-        TEST_ASSERT_NOT_NULL(root);
-        TEST_ASSERT_NOT_NULL(child);
-        TEST_ASSERT_EQ(nullptr, FindEntityByName(*sceneManager, "ExistingActor"));
-        TEST_ASSERT_EQ(Vec3(1.0f, 2.0f, 3.0f), root->GetPosition());
-        TEST_ASSERT_EQ(root, child->GetParent());
-        TEST_ASSERT_EQ(Vec3(4.0f, 5.0f, 6.0f), child->GetPosition());
-        TEST_ASSERT_EQ(static_cast<Actor*>(root), world.GetActor(root->GetHandle()));
+        ASSERT_NE(nullptr, root);
+        ASSERT_NE(nullptr, child);
+        EXPECT_EQ(nullptr, FindEntityByName(*sceneManager, "ExistingActor"));
+        EXPECT_EQ(Vec3(1.0f, 2.0f, 3.0f), root->GetPosition());
+        EXPECT_EQ(root, child->GetParent());
+        EXPECT_EQ(Vec3(4.0f, 5.0f, 6.0f), child->GetPosition());
+        EXPECT_EQ(static_cast<Actor*>(root), world.GetActor(root->GetHandle()));
 
         world.Shutdown();
-        return true;
     }
 
-    bool Test_WorldLoadInvalidRequestKeepsExistingContent()
+    TEST(ResourceInstantiationValidation, WorldLoadInvalidRequestKeepsExistingContent)
     {
         ResourceManagerTestGuard resourceGuard(false);
 
@@ -3083,18 +3026,17 @@ namespace
         ActorSpawnParams params;
         params.name = "PersistentActor";
         SceneEntity* existing = world.SpawnActor(params);
-        TEST_ASSERT_NOT_NULL(existing);
+        ASSERT_NE(nullptr, existing);
 
         world.Load("missing.model");
 
-        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetSceneManager()->GetEntityCount());
-        TEST_ASSERT_EQ(existing, FindEntityByName(*world.GetSceneManager(), "PersistentActor"));
+        EXPECT_EQ(static_cast<size_t>(1), world.GetSceneManager()->GetEntityCount());
+        EXPECT_EQ(existing, FindEntityByName(*world.GetSceneManager(), "PersistentActor"));
 
         world.Shutdown();
-        return true;
     }
 
-    bool Test_WorldLoadEmptyModelKeepsExistingContent()
+    TEST(ResourceInstantiationValidation, WorldLoadEmptyModelKeepsExistingContent)
     {
         ResourceManagerTestGuard resourceGuard(true);
         auto& resourceManager = ResourceManager::Get();
@@ -3106,186 +3048,13 @@ namespace
         ActorSpawnParams params;
         params.name = "PersistentActor";
         SceneEntity* existing = world.SpawnActor(params);
-        TEST_ASSERT_NOT_NULL(existing);
+        ASSERT_NE(nullptr, existing);
 
         world.Load("empty.model");
 
-        TEST_ASSERT_EQ(static_cast<size_t>(1), world.GetSceneManager()->GetEntityCount());
-        TEST_ASSERT_EQ(existing, FindEntityByName(*world.GetSceneManager(), "PersistentActor"));
+        EXPECT_EQ(static_cast<size_t>(1), world.GetSceneManager()->GetEntityCount());
+        EXPECT_EQ(existing, FindEntityByName(*world.GetSceneManager(), "PersistentActor"));
 
         world.Shutdown();
-        return true;
     }
 } // namespace
-
-int main()
-{
-    Log::Initialize();
-    RVX_CORE_INFO("Resource Instantiation Validation Tests");
-
-    TestSuite suite;
-    suite.AddTest("ModelResourceInstantiateActorUsesStaticMeshComponent",
-                  Test_ModelResourceInstantiateActorUsesStaticMeshComponent);
-    suite.AddTest("ActorAddOwnedComponentUsesNormalLifecycle",
-                  Test_ActorAddOwnedComponentUsesNormalLifecycle);
-    suite.AddTest("AddOwnedComponentRejectsLegacyComponentToAvoidContainerSplit",
-                  Test_AddOwnedComponentRejectsLegacyComponentToAvoidContainerSplit);
-    suite.AddTest("LegacyInstantiateDelegatesToActorPath",
-                  Test_LegacyInstantiateDelegatesToActorPath);
-    suite.AddTest("ModelResourceInstantiateActorBuildsSpawnedHierarchy",
-                  Test_ModelResourceInstantiateActorBuildsSpawnedHierarchy);
-    suite.AddTest("ComponentFactoryDefaultCreatesStaticMeshComponent",
-                  Test_ComponentFactoryDefaultCreatesStaticMeshComponent);
-    suite.AddTest("ComponentFactoryRegisterDefaultsPreservesCustomCreators",
-                  Test_ComponentFactoryRegisterDefaultsPreservesCustomCreators);
-    suite.AddTest("PrefabSerializesActorComponentClassNames",
-                  Test_PrefabSerializesActorComponentClassNames);
-    suite.AddTest("PrefabSerializesActorComponentPayloads",
-                  Test_PrefabSerializesActorComponentPayloads);
-    suite.AddTest("PrefabSerializesActorComponentNames",
-                  Test_PrefabSerializesActorComponentNames);
-    suite.AddTest("PrefabSerializesLegacyComponentPayloads",
-                  Test_PrefabSerializesLegacyComponentPayloads);
-    suite.AddTest("PrefabSerializesActorClassNames",
-                  Test_PrefabSerializesActorClassNames);
-    suite.AddTest("PrefabInstantiatesRegisteredActorClasses",
-                  Test_PrefabInstantiatesRegisteredActorClasses);
-    suite.AddTest("PrefabInstantiateFailsForMissingActorClassAndCleansUp",
-                  Test_PrefabInstantiateFailsForMissingActorClassAndCleansUp);
-    suite.AddTest("PrefabInstantiateFailsForMissingActorComponentClassAndCleansUp",
-                  Test_PrefabInstantiateFailsForMissingActorComponentClassAndCleansUp);
-    suite.AddTest("PrefabInstantiateFailsForMissingLegacyComponentClassAndCleansUp",
-                  Test_PrefabInstantiateFailsForMissingLegacyComponentClassAndCleansUp);
-    suite.AddTest("PrefabInstantiateFailsForActorOnlyComponentDataAndCleansUp",
-                  Test_PrefabInstantiateFailsForActorOnlyComponentDataAndCleansUp);
-    suite.AddTest("PrefabInstantiateFailsForRejectedActorComponentAndCleansUp",
-                  Test_PrefabInstantiateFailsForRejectedActorComponentAndCleansUp);
-    suite.AddTest("PrefabInstantiatesRegisteredActorComponentClasses",
-                  Test_PrefabInstantiatesRegisteredActorComponentClasses);
-    suite.AddTest("PrefabInstantiatesActorComponentPayloads",
-                  Test_PrefabInstantiatesActorComponentPayloads);
-    suite.AddTest("PrefabInstantiatesActorComponentNames",
-                  Test_PrefabInstantiatesActorComponentNames);
-    suite.AddTest("PrefabInstantiatesRegisteredLegacyComponentPayloads",
-                  Test_PrefabInstantiatesRegisteredLegacyComponentPayloads);
-    suite.AddTest("PrefabInstantiateAsChildBuildsSpawnedHierarchy",
-                  Test_PrefabInstantiateAsChildBuildsSpawnedHierarchy);
-    suite.AddTest("PrefabInstanceRevertAllRestoresRootEntityState",
-                  Test_PrefabInstanceRevertAllRestoresRootEntityState);
-    suite.AddTest("PrefabInstanceRevertAllRestoresActorComponentPayload",
-                  Test_PrefabInstanceRevertAllRestoresActorComponentPayload);
-    suite.AddTest("PrefabInstanceRevertAllRecreatesMissingActorComponent",
-                  Test_PrefabInstanceRevertAllRecreatesMissingActorComponent);
-    suite.AddTest("PrefabInstanceRevertAllKeepsOverrideWhenMissingActorComponentClassUnavailable",
-                  Test_PrefabInstanceRevertAllKeepsOverrideWhenMissingActorComponentClassUnavailable);
-    suite.AddTest("PrefabInstanceRevertAllRestoresNamedDuplicateActorComponentPayloads",
-                  Test_PrefabInstanceRevertAllRestoresNamedDuplicateActorComponentPayloads);
-    suite.AddTest("PrefabInstanceRevertAllUsesRuntimeNameBindingAfterUniquify",
-                  Test_PrefabInstanceRevertAllUsesRuntimeNameBindingAfterUniquify);
-    suite.AddTest("PrefabInstanceRevertAllRestoresChildEntityStateAndPayload",
-                  Test_PrefabInstanceRevertAllRestoresChildEntityStateAndPayload);
-    suite.AddTest("PrefabInstanceRevertAllRestoresRenamedChildEntityByRuntimeBinding",
-                  Test_PrefabInstanceRevertAllRestoresRenamedChildEntityByRuntimeBinding);
-    suite.AddTest("PrefabInstanceRevertAllRecreatesMissingChildActorComponent",
-                  Test_PrefabInstanceRevertAllRecreatesMissingChildActorComponent);
-    suite.AddTest("PrefabInstanceRevertAllRecreatesMissingChildEntity",
-                  Test_PrefabInstanceRevertAllRecreatesMissingChildEntity);
-    suite.AddTest("PrefabInstanceRevertAllRecreatesNestedMissingDescendant",
-                  Test_PrefabInstanceRevertAllRecreatesNestedMissingDescendant);
-    suite.AddTest("PrefabInstanceRevertAllPrunesExtraLiveChildEntity",
-                  Test_PrefabInstanceRevertAllPrunesExtraLiveChildEntity);
-    suite.AddTest("PrefabInstanceRevertAllPrunesNestedExtraLiveChildSubtree",
-                  Test_PrefabInstanceRevertAllPrunesNestedExtraLiveChildSubtree);
-    suite.AddTest("PrefabInstanceRevertAllPrunesDuplicateExtraChildAfterBoundRestore",
-                  Test_PrefabInstanceRevertAllPrunesDuplicateExtraChildAfterBoundRestore);
-    suite.AddTest("PrefabInstanceRevertAllRestoresReparentedBoundChildAndPrunesExtraParent",
-                  Test_PrefabInstanceRevertAllRestoresReparentedBoundChildAndPrunesExtraParent);
-    suite.AddTest("PrefabInstanceRevertAllRestoresReparentedNestedBoundChild",
-                  Test_PrefabInstanceRevertAllRestoresReparentedNestedBoundChild);
-    suite.AddTest("PrefabRestoreHierarchySkipsPruningWhenEntityBindingMissingAndPathAmbiguous",
-                  Test_PrefabRestoreHierarchySkipsPruningWhenEntityBindingMissingAndPathAmbiguous);
-    suite.AddTest("PrefabInstanceRevertAllKeepsExistingNameBindingsWhenRecreatingChild",
-                  Test_PrefabInstanceRevertAllKeepsExistingNameBindingsWhenRecreatingChild);
-    suite.AddTest("PrefabInstanceRevertAllDropsStaleBindingsForRecreatedChild",
-                  Test_PrefabInstanceRevertAllDropsStaleBindingsForRecreatedChild);
-    suite.AddTest("PrefabInstanceRevertAllRestoresLegacyComponentPayload",
-                  Test_PrefabInstanceRevertAllRestoresLegacyComponentPayload);
-    suite.AddTest("PrefabInstanceRevertAllRecreatesMissingLegacyComponent",
-                  Test_PrefabInstanceRevertAllRecreatesMissingLegacyComponent);
-    suite.AddTest("PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty",
-                  Test_PrefabInstanceRevertPropertyRestoresOnlyRequestedEntityProperty);
-    suite.AddTest("PrefabInstanceRootEntityPathNormalizesForOverrideIdentity",
-                  Test_PrefabInstanceRootEntityPathNormalizesForOverrideIdentity);
-    suite.AddTest("PrefabInstanceRevertPropertyRestoresChildEntityProperty",
-                  Test_PrefabInstanceRevertPropertyRestoresChildEntityProperty);
-    suite.AddTest("PrefabInstanceRevertPropertyRestoresRenamedChildEntityByRuntimeBinding",
-                  Test_PrefabInstanceRevertPropertyRestoresRenamedChildEntityByRuntimeBinding);
-    suite.AddTest("PrefabInstanceRevertPropertyUsesSiblingOrdinalEntityPath",
-                  Test_PrefabInstanceRevertPropertyUsesSiblingOrdinalEntityPath);
-    suite.AddTest("PrefabInstanceRevertPropertyKeepsAmbiguousDuplicateSiblingPath",
-                  Test_PrefabInstanceRevertPropertyKeepsAmbiguousDuplicateSiblingPath);
-    suite.AddTest("PrefabInstanceRevertPropertyRestoresActorComponentPayload",
-                  Test_PrefabInstanceRevertPropertyRestoresActorComponentPayload);
-    suite.AddTest("PrefabInstanceRevertPropertyRestoresNamedDuplicateActorComponentPayload",
-                  Test_PrefabInstanceRevertPropertyRestoresNamedDuplicateActorComponentPayload);
-    suite.AddTest("PrefabInstanceRemoveOverrideTargetsComponentName",
-                  Test_PrefabInstanceRemoveOverrideTargetsComponentName);
-    suite.AddTest("PrefabInstanceRevertPropertyUsesRuntimeNameBindingAfterUniquify",
-                  Test_PrefabInstanceRevertPropertyUsesRuntimeNameBindingAfterUniquify);
-    suite.AddTest("PrefabInstanceRevertPropertyRestoresChildNamedComponentPayload",
-                  Test_PrefabInstanceRevertPropertyRestoresChildNamedComponentPayload);
-    suite.AddTest("PrefabInstanceRevertPropertyScopesComponentBindingsByEntityPath",
-                  Test_PrefabInstanceRevertPropertyScopesComponentBindingsByEntityPath);
-    suite.AddTest("PrefabInstanceRevertPropertyRestoresLegacyComponentPayload",
-                  Test_PrefabInstanceRevertPropertyRestoresLegacyComponentPayload);
-    suite.AddTest("PrefabInstanceRevertPropertyKeepsPayloadOverrideWhenComponentMissing",
-                  Test_PrefabInstanceRevertPropertyKeepsPayloadOverrideWhenComponentMissing);
-    suite.AddTest("PrefabInstanceRevertPropertyAcceptsEmptyRootTarget",
-                  Test_PrefabInstanceRevertPropertyAcceptsEmptyRootTarget);
-    suite.AddTest("PrefabInstanceRevertPropertyClearsRootTargetAliases",
-                  Test_PrefabInstanceRevertPropertyClearsRootTargetAliases);
-    suite.AddTest("PrefabInstanceRevertPropertyKeepsUnsupportedOverride",
-                  Test_PrefabInstanceRevertPropertyKeepsUnsupportedOverride);
-    suite.AddTest("PrefabInstanceApplyToPrefabWritesRootEntityState",
-                  Test_PrefabInstanceApplyToPrefabWritesRootEntityState);
-    suite.AddTest("PrefabInstanceApplyToPrefabWritesRootComponentPayloads",
-                  Test_PrefabInstanceApplyToPrefabWritesRootComponentPayloads);
-    suite.AddTest("PrefabInstanceApplyToPrefabClearsOnlyMatchingNamedPayloadOverride",
-                  Test_PrefabInstanceApplyToPrefabClearsOnlyMatchingNamedPayloadOverride);
-    suite.AddTest("PrefabInstanceApplyToPrefabWritesChildEntityStateAndPayload",
-                  Test_PrefabInstanceApplyToPrefabWritesChildEntityStateAndPayload);
-    suite.AddTest("PrefabInstanceApplyToPrefabRebuildsRuntimeEntityBindings",
-                  Test_PrefabInstanceApplyToPrefabRebuildsRuntimeEntityBindings);
-    suite.AddTest("PrefabInstanceApplyToPrefabAddsLiveChildEntity",
-                  Test_PrefabInstanceApplyToPrefabAddsLiveChildEntity);
-    suite.AddTest("PrefabInstanceApplyToPrefabRemovesDeletedChildEntityAndOverrides",
-                  Test_PrefabInstanceApplyToPrefabRemovesDeletedChildEntityAndOverrides);
-    suite.AddTest("PrefabInstanceApplyToPrefabPreservesNestedParentIndices",
-                  Test_PrefabInstanceApplyToPrefabPreservesNestedParentIndices);
-    suite.AddTest("PrefabInstanceApplyToPrefabPreservesUnsupportedOverrideOnExistingChild",
-                  Test_PrefabInstanceApplyToPrefabPreservesUnsupportedOverrideOnExistingChild);
-    suite.AddTest("PrefabInstanceApplyToPrefabClearsRootAliasOverrides",
-                  Test_PrefabInstanceApplyToPrefabClearsRootAliasOverrides);
-    suite.AddTest("PrefabInstanceApplyToPrefabPreservesUnsupportedOverrides",
-                  Test_PrefabInstanceApplyToPrefabPreservesUnsupportedOverrides);
-    suite.AddTest("PrefabInstanceApplyToPrefabWithoutPrefabKeepsOverrides",
-                  Test_PrefabInstanceApplyToPrefabWithoutPrefabKeepsOverrides);
-    suite.AddTest("WorldLoadModelResourceReplacesSceneContent",
-                  Test_WorldLoadModelResourceReplacesSceneContent);
-    suite.AddTest("WorldLoadInvalidRequestKeepsExistingContent",
-                  Test_WorldLoadInvalidRequestKeepsExistingContent);
-    suite.AddTest("WorldLoadEmptyModelKeepsExistingContent",
-                  Test_WorldLoadEmptyModelKeepsExistingContent);
-
-    auto results = suite.Run();
-    suite.PrintResults(results);
-
-    Log::Shutdown();
-
-    for (const auto& result : results)
-    {
-        if (!result.passed)
-            return 1;
-    }
-    return 0;
-}

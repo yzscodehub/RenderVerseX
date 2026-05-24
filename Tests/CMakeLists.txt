@@ -253,16 +253,17 @@ rvx_add_gtest(
 )
 
 # Resource instantiation validation tests
-add_executable(ResourceInstantiationValidation
-    ResourceInstantiationValidation/main.cpp
+rvx_add_gtest(
+    NAME ResourceInstantiationValidation
+    SOURCES ResourceInstantiationValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::Resource
+        RVX::Scene
+        RVX::World
+    LABELS unit
+    TIMEOUT 120
 )
-target_link_libraries(ResourceInstantiationValidation PRIVATE
-    RVX_TestFramework
-    RVX::Resource
-    RVX::Scene
-    RVX::World
-)
-target_compile_features(ResourceInstantiationValidation PRIVATE cxx_std_20)
 
 # Resource view cache validation tests
 rvx_add_gtest(
@@ -320,12 +321,6 @@ endforeach()
 #   unit -> CPU-only, the CI gate set      (ctest -L unit)
 #   gpu  -> needs a real device, headless-skip
 # =============================================================================
-
-# --- unit (CPU-only) ---
-add_test(NAME ResourceInstantiationValidation COMMAND ResourceInstantiationValidation)
-set_tests_properties(
-    ResourceInstantiationValidation
-    PROPERTIES LABELS "unit" TIMEOUT 120)
 
 # --- gpu (needs a real device; headless CI skips these) ---
 if(RVX_ENABLE_DX12)
