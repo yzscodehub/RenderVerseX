@@ -4,9 +4,6 @@
     {
       "name": "windows-base",
       "hidden": true,
-      "environment": {
-        "VCPKG_ROOT": "E:/WorkSpace/vcpkg"
-      },
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_TOOLCHAIN_FILE": {
@@ -102,6 +99,34 @@
     {
       "name": "macos-release",
       "configurePreset": "macos-release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "release-unit-lint",
+      "configurePreset": "release",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "unit|lint"
+        }
+      }
+    },
+    {
+      "name": "debug-unit-lint",
+      "configurePreset": "debug",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "unit|lint"
+        }
+      }
     }
   ]
 }
