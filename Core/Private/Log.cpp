@@ -28,6 +28,11 @@ namespace RVX
         }
     }
 
+    void Log::Initialize()
+    {
+        Initialize(Config{});
+    }
+
     void Log::Initialize(const Config& config)
     {
         // Create sinks

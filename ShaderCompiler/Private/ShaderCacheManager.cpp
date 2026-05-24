@@ -35,6 +35,11 @@ namespace RVX
         }
     }
 
+    ShaderCacheManager::ShaderCacheManager()
+        : ShaderCacheManager(Config{})
+    {
+    }
+
     ShaderCacheManager::ShaderCacheManager(const Config& config)
         : m_config(config)
     {

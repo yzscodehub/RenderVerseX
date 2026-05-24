@@ -65,8 +65,12 @@ namespace RVX
         // =====================================================================
         ShaderHotReloader(
             ShaderCompileService* compileService,
+            ShaderCacheManager* cacheManager);
+
+        ShaderHotReloader(
+            ShaderCompileService* compileService,
             ShaderCacheManager* cacheManager,
-            const Config& config = {});
+            const Config& config);
 
         ~ShaderHotReloader();
 

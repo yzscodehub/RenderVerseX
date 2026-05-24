@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows (DX11/DX12/Vulkan)
+    runs-on: windows-latest
+    env:
+      VCPKG_ROOT: C:/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare vcpkg binary cache dir
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+        shell: pwsh
+
+      - name: Cache vcpkg installed packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-windows-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-windows-
+
+      - name: Configure (debug preset)
+        run: cmake --preset win_x64_debug
+
+      - name: Build
+        run: cmake --build --preset win_x64_debug
+
+      - name: Test (unit + lint, GPU tests skipped on headless runner)
+        run: ctest --preset win_x64_debug_unit_lint
+
+  linux:
+    name: Linux (Vulkan/OpenGL configure)
+    runs-on: ubuntu-latest
+    env:
+      VCPKG_ROOT: /usr/local/share/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps for vcpkg ports
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libx11-dev libxrandr-dev \
+            libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev autoconf libtool
+
+      - name: Prepare vcpkg binary cache dir
+        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+
+      - name: Cache vcpkg installed packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-linux-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-linux-
+
+      - name: Configure
+        run: cmake --preset linux_x64_debug
+
+      - name: Build
+        run: cmake --build --preset linux_x64_debug
+
+      - name: Test (unit + lint)
+        run: ctest --preset linux_x64_debug_unit_lint
+
+  macos:
+    name: macOS ARM64 (Metal)
+    runs-on: macos-15
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve vcpkg root
+        run: echo "VCPKG_ROOT=${VCPKG_INSTALLATION_ROOT:-/usr/local/share/vcpkg}" >> "$GITHUB_ENV"
+
+      - name: Prepare vcpkg binary cache dir
+        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+
+      - name: Cache vcpkg installed packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-macos-arm64-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-macos-arm64-
+
+      - name: Configure (Metal debug preset)
+        run: cmake --preset mac_arm64_debug
+
+      - name: Build
+        run: cmake --build --preset mac_arm64_debug
+
+      - name: Test (unit + lint, GPU tests skipped on headless runner)
+        run: ctest --preset mac_arm64_debug_unit_lint

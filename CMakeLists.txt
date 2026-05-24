@@ -9,6 +9,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+add_library(RVX_Options INTERFACE)
+add_library(RVX::Options ALIAS RVX_Options)
+target_compile_features(RVX_Options INTERFACE cxx_std_20)
+target_compile_definitions(RVX_Options INTERFACE
+    $<$<CONFIG:Debug>:RVX_DEBUG=1>
+)
+
 # =============================================================================
 # Build Options
 # =============================================================================
@@ -201,6 +208,7 @@ if(RVX_BUILD_SAMPLES)
 endif()
 
 if(RVX_BUILD_TESTS)
+    enable_testing()
     add_subdirectory(Tests)
 endif()
 

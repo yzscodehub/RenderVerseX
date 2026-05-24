@@ -23,7 +23,8 @@ namespace RVX
             std::string logFileName = "RenderVerseX.log";
         };
 
-        static void Initialize(const Config& config = Config{});
+        static void Initialize();
+        static void Initialize(const Config& config);
         static void Shutdown();
 
         /// Set global log level for all loggers

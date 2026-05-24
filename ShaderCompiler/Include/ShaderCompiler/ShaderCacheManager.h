@@ -55,7 +55,8 @@ namespace RVX
         // =====================================================================
         // Construction
         // =====================================================================
-        explicit ShaderCacheManager(const Config& config = {});
+        ShaderCacheManager();
+        explicit ShaderCacheManager(const Config& config);
         ~ShaderCacheManager() = default;
 
         // Non-copyable

@@ -25,6 +25,11 @@ namespace RVX
         m_currentValue.store(value, std::memory_order_release);
     }
 
+    void MetalFence::SignalOnQueue(uint64 value, RHICommandQueueType /*queueType*/)
+    {
+        Signal(value);
+    }
+
     void MetalFence::Wait(uint64 value, uint64 timeoutNs)
     {
         // Fast path: check if already signaled

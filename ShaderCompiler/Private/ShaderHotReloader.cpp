@@ -24,6 +24,13 @@ namespace RVX
 
     ShaderHotReloader::ShaderHotReloader(
         ShaderCompileService* compileService,
+        ShaderCacheManager* cacheManager)
+        : ShaderHotReloader(compileService, cacheManager, Config{})
+    {
+    }
+
+    ShaderHotReloader::ShaderHotReloader(
+        ShaderCompileService* compileService,
         ShaderCacheManager* cacheManager,
         const Config& config)
         : m_config(config)

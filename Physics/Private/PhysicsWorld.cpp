@@ -453,6 +453,11 @@ size_t PhysicsWorld::OverlapSphere(const Vec3& center, float radius,
     return bodies.size();
 }
 
+void PhysicsWorld::GetDebugDrawData(std::vector<Vec3>& lines, std::vector<Vec4>& colors) const
+{
+    GetDebugDrawData(lines, colors, DebugDrawOptions{});
+}
+
 void PhysicsWorld::GetDebugDrawData(std::vector<Vec3>& lines, std::vector<Vec4>& colors,
                                     const DebugDrawOptions& options) const
 {

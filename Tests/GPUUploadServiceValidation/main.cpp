@@ -2,14 +2,13 @@
 #include "Render/GPUUploadService.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
-#include "TestFramework/TestRunner.h"
+#include <gtest/gtest.h>
 
 #include <cstring>
 #include <memory>
 #include <vector>
 
 using namespace RVX;
-using namespace RVX::Test;
 
 namespace
 {
@@ -262,9 +261,26 @@ namespace
         uint64 fenceInitialValueOverride = 0;
         bool signalLastFenceOnWaitIdle = false;
     };
+
+    class LogEnvironment final : public ::testing::Environment
+    {
+    public:
+        void SetUp() override
+        {
+            Log::Initialize();
+        }
+
+        void TearDown() override
+        {
+            Log::Shutdown();
+        }
+    };
+
+    [[maybe_unused]] ::testing::Environment* const g_logEnvironment =
+        ::testing::AddGlobalTestEnvironment(new LogEnvironment());
 } // namespace
 
-bool Test_StagedBufferUploadsBatchUntilFlush()
+TEST(GPUUploadServiceValidation, StagedBufferUploadsBatchUntilFlush)
 {
     FakeDevice device;
     GPUUploadService uploadService;
@@ -281,45 +297,44 @@ bool Test_StagedBufferUploadsBatchUntilFlush()
     auto firstResult = uploadService.UploadBufferDataWithResult(desc, first, sizeof(first));
     auto secondResult = uploadService.UploadBufferDataWithResult(desc, second, sizeof(second));
 
-    TEST_ASSERT_TRUE(firstResult.succeeded);
-    TEST_ASSERT_TRUE(secondResult.succeeded);
-    TEST_ASSERT_TRUE(firstResult.isPending);
-    TEST_ASSERT_TRUE(secondResult.isPending);
-    TEST_ASSERT_TRUE(uploadService.IsUploadPending(firstResult.uploadId));
-    TEST_ASSERT_TRUE(uploadService.IsUploadPending(secondResult.uploadId));
-    TEST_ASSERT_EQ(device.createdCommandContextCount, 1u);
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 0u);
-    TEST_ASSERT_EQ(device.createdFenceCount, 0u);
-    TEST_ASSERT_NOT_NULL(device.lastCommandContext);
-    TEST_ASSERT_EQ(device.lastCommandContext->beginCount, 1u);
-    TEST_ASSERT_EQ(device.lastCommandContext->endCount, 0u);
-    TEST_ASSERT_EQ(device.lastCommandContext->copyBufferCount, 2u);
+    EXPECT_TRUE(firstResult.succeeded);
+    EXPECT_TRUE(secondResult.succeeded);
+    EXPECT_TRUE(firstResult.isPending);
+    EXPECT_TRUE(secondResult.isPending);
+    EXPECT_TRUE(uploadService.IsUploadPending(firstResult.uploadId));
+    EXPECT_TRUE(uploadService.IsUploadPending(secondResult.uploadId));
+    EXPECT_EQ(device.createdCommandContextCount, 1u);
+    EXPECT_EQ(device.submittedCommandContextCount, 0u);
+    EXPECT_EQ(device.createdFenceCount, 0u);
+    ASSERT_NE(nullptr, device.lastCommandContext);
+    EXPECT_EQ(device.lastCommandContext->beginCount, 1u);
+    EXPECT_EQ(device.lastCommandContext->endCount, 0u);
+    EXPECT_EQ(device.lastCommandContext->copyBufferCount, 2u);
 
     uploadService.FlushBatchUploads();
 
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 1u);
-    TEST_ASSERT_EQ(device.createdFenceCount, 1u);
-    TEST_ASSERT_EQ(device.lastCommandContext->endCount, 1u);
-    TEST_ASSERT_EQ(device.lastSubmittedContext, device.lastCommandContext);
-    TEST_ASSERT_EQ(device.lastSubmittedFence, device.lastFence);
+    EXPECT_EQ(device.submittedCommandContextCount, 1u);
+    EXPECT_EQ(device.createdFenceCount, 1u);
+    EXPECT_EQ(device.lastCommandContext->endCount, 1u);
+    EXPECT_EQ(device.lastSubmittedContext, device.lastCommandContext);
+    EXPECT_EQ(device.lastSubmittedFence, device.lastFence);
 
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 0u);
-    TEST_ASSERT_NOT_NULL(device.lastFence);
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 0u);
+    ASSERT_NE(nullptr, device.lastFence);
     device.lastFence->Signal(1);
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 2u);
-    TEST_ASSERT_TRUE(uploadService.IsUploadComplete(firstResult.uploadId));
-    TEST_ASSERT_TRUE(uploadService.IsUploadComplete(secondResult.uploadId));
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 2u);
+    EXPECT_TRUE(uploadService.IsUploadComplete(firstResult.uploadId));
+    EXPECT_TRUE(uploadService.IsUploadComplete(secondResult.uploadId));
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.pendingUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.completedUploadCount, 2u);
-    TEST_ASSERT_EQ(stats.stagingBytesInFlight, 0ull);
+    EXPECT_EQ(stats.pendingUploadCount, 0u);
+    EXPECT_EQ(stats.completedUploadCount, 2u);
+    EXPECT_EQ(stats.stagingBytesInFlight, 0ull);
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_ShutdownFlushesDirtyBatchAndWaitsForPendingUploads()
+TEST(GPUUploadServiceValidation, ShutdownFlushesDirtyBatchAndWaitsForPendingUploads)
 {
     FakeDevice device;
     GPUUploadService uploadService;
@@ -334,21 +349,20 @@ bool Test_ShutdownFlushesDirtyBatchAndWaitsForPendingUploads()
 
     auto result = uploadService.UploadBufferDataWithResult(desc, source, sizeof(source));
 
-    TEST_ASSERT_TRUE(result.succeeded);
-    TEST_ASSERT_TRUE(result.isPending);
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 0u);
-    TEST_ASSERT_EQ(device.waitIdleCount, 0u);
+    EXPECT_TRUE(result.succeeded);
+    EXPECT_TRUE(result.isPending);
+    EXPECT_EQ(device.submittedCommandContextCount, 0u);
+    EXPECT_EQ(device.waitIdleCount, 0u);
 
     uploadService.Shutdown();
 
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 1u);
-    TEST_ASSERT_EQ(device.createdFenceCount, 1u);
-    TEST_ASSERT_EQ(device.waitIdleCount, 1u);
-    TEST_ASSERT_EQ(device.lastCommandContext->endCount, 1u);
-    return true;
+    EXPECT_EQ(device.submittedCommandContextCount, 1u);
+    EXPECT_EQ(device.createdFenceCount, 1u);
+    EXPECT_EQ(device.waitIdleCount, 1u);
+    EXPECT_EQ(device.lastCommandContext->endCount, 1u);
 }
 
-bool Test_FlushTracksFenceNextCompletedValue()
+TEST(GPUUploadServiceValidation, FlushTracksFenceNextCompletedValue)
 {
     FakeDevice device;
     device.fenceInitialValueOverride = 4;
@@ -364,29 +378,28 @@ bool Test_FlushTracksFenceNextCompletedValue()
     desc.stride = sizeof(uint32);
 
     auto result = uploadService.UploadBufferDataWithResult(desc, source, sizeof(source));
-    TEST_ASSERT_TRUE(result.succeeded);
+    EXPECT_TRUE(result.succeeded);
 
     uploadService.FlushBatchUploads();
 
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 0u);
-    TEST_ASSERT_NOT_NULL(device.lastFence);
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 0u);
+    ASSERT_NE(nullptr, device.lastFence);
 
     device.lastFence->Signal(4);
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 0u);
-    TEST_ASSERT_TRUE(uploadService.IsUploadPending(result.uploadId));
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 0u);
+    EXPECT_TRUE(uploadService.IsUploadPending(result.uploadId));
 
     device.lastFence->Signal(5);
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 1u);
-    TEST_ASSERT_TRUE(uploadService.IsUploadComplete(result.uploadId));
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 1u);
+    EXPECT_TRUE(uploadService.IsUploadComplete(result.uploadId));
 
     uploadService.ForgetCompletedUpload(result.uploadId);
-    TEST_ASSERT_TRUE(!uploadService.IsUploadComplete(result.uploadId));
+    EXPECT_TRUE(!uploadService.IsUploadComplete(result.uploadId));
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_CompletedFenceIsReusedForNextBatch()
+TEST(GPUUploadServiceValidation, CompletedFenceIsReusedForNextBatch)
 {
     FakeDevice device;
     GPUUploadService uploadService;
@@ -401,37 +414,36 @@ bool Test_CompletedFenceIsReusedForNextBatch()
     desc.stride = sizeof(uint32);
 
     auto firstResult = uploadService.UploadBufferDataWithResult(desc, first, sizeof(first));
-    TEST_ASSERT_TRUE(firstResult.succeeded);
+    EXPECT_TRUE(firstResult.succeeded);
     uploadService.FlushBatchUploads();
 
-    TEST_ASSERT_EQ(device.createdFenceCount, 1u);
-    TEST_ASSERT_NOT_NULL(device.lastFence);
+    EXPECT_EQ(device.createdFenceCount, 1u);
+    ASSERT_NE(nullptr, device.lastFence);
     RHIFence* firstFence = device.lastFence;
 
     device.lastFence->Signal(1);
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 1u);
-    TEST_ASSERT_TRUE(uploadService.IsUploadComplete(firstResult.uploadId));
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 1u);
+    EXPECT_TRUE(uploadService.IsUploadComplete(firstResult.uploadId));
 
     auto secondResult = uploadService.UploadBufferDataWithResult(desc, second, sizeof(second));
-    TEST_ASSERT_TRUE(secondResult.succeeded);
+    EXPECT_TRUE(secondResult.succeeded);
     uploadService.FlushBatchUploads();
 
-    TEST_ASSERT_EQ(device.createdFenceCount, 1u);
-    TEST_ASSERT_EQ(device.lastSubmittedFence, firstFence);
+    EXPECT_EQ(device.createdFenceCount, 1u);
+    EXPECT_EQ(device.lastSubmittedFence, firstFence);
 
     device.lastFence->Signal(1);
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 0u);
-    TEST_ASSERT_TRUE(uploadService.IsUploadPending(secondResult.uploadId));
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 0u);
+    EXPECT_TRUE(uploadService.IsUploadPending(secondResult.uploadId));
 
     device.lastFence->Signal(2);
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 1u);
-    TEST_ASSERT_TRUE(uploadService.IsUploadComplete(secondResult.uploadId));
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 1u);
+    EXPECT_TRUE(uploadService.IsUploadComplete(secondResult.uploadId));
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_FlushAndWaitSubmitsDirtyBatchAndCompletesUploads()
+TEST(GPUUploadServiceValidation, FlushAndWaitSubmitsDirtyBatchAndCompletesUploads)
 {
     FakeDevice device;
     device.signalLastFenceOnWaitIdle = true;
@@ -447,28 +459,27 @@ bool Test_FlushAndWaitSubmitsDirtyBatchAndCompletesUploads()
     desc.stride = sizeof(uint32);
 
     auto result = uploadService.UploadBufferDataWithResult(desc, source, sizeof(source));
-    TEST_ASSERT_TRUE(result.succeeded);
-    TEST_ASSERT_TRUE(result.isPending);
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 0u);
-    TEST_ASSERT_TRUE(uploadService.IsUploadPending(result.uploadId));
+    EXPECT_TRUE(result.succeeded);
+    EXPECT_TRUE(result.isPending);
+    EXPECT_EQ(device.submittedCommandContextCount, 0u);
+    EXPECT_TRUE(uploadService.IsUploadPending(result.uploadId));
 
-    TEST_ASSERT_EQ(uploadService.FlushAndWaitForUploads(), 1u);
+    EXPECT_EQ(uploadService.FlushAndWaitForUploads(), 1u);
 
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 1u);
-    TEST_ASSERT_EQ(device.waitIdleCount, 1u);
-    TEST_ASSERT_TRUE(!uploadService.IsUploadPending(result.uploadId));
-    TEST_ASSERT_TRUE(uploadService.IsUploadComplete(result.uploadId));
+    EXPECT_EQ(device.submittedCommandContextCount, 1u);
+    EXPECT_EQ(device.waitIdleCount, 1u);
+    EXPECT_TRUE(!uploadService.IsUploadPending(result.uploadId));
+    EXPECT_TRUE(uploadService.IsUploadComplete(result.uploadId));
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.pendingUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.completedUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.stagingBytesInFlight, 0ull);
+    EXPECT_EQ(stats.pendingUploadCount, 0u);
+    EXPECT_EQ(stats.completedUploadCount, 1u);
+    EXPECT_EQ(stats.stagingBytesInFlight, 0ull);
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_UnsupportedTextureLayoutDoesNotCreateEmptyTexture()
+TEST(GPUUploadServiceValidation, UnsupportedTextureLayoutDoesNotCreateEmptyTexture)
 {
     FakeDevice device;
     GPUUploadService uploadService;
@@ -488,22 +499,21 @@ bool Test_UnsupportedTextureLayoutDoesNotCreateEmptyTexture()
 
     auto result = uploadService.UploadTextureDataWithResult(desc, pixels);
 
-    TEST_ASSERT_TRUE(!result.succeeded);
-    TEST_ASSERT_TRUE(!result.resource);
-    TEST_ASSERT_EQ(result.mode, GPUUploadMode::None);
-    TEST_ASSERT_EQ(result.failureReason, GPUUploadFailureReason::Unsupported);
-    TEST_ASSERT_EQ(device.createdTextureCount, 0u);
+    EXPECT_TRUE(!result.succeeded);
+    EXPECT_TRUE(!result.resource);
+    EXPECT_EQ(result.mode, GPUUploadMode::None);
+    EXPECT_EQ(result.failureReason, GPUUploadFailureReason::Unsupported);
+    EXPECT_EQ(device.createdTextureCount, 0u);
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.failedUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.textureUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.uploadedBytes, 0ull);
+    EXPECT_EQ(stats.failedUploadCount, 1u);
+    EXPECT_EQ(stats.textureUploadCount, 0u);
+    EXPECT_EQ(stats.uploadedBytes, 0ull);
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_AbandonedUploadDoesNotRemainCompleted()
+TEST(GPUUploadServiceValidation, AbandonedUploadDoesNotRemainCompleted)
 {
     FakeDevice device;
     GPUUploadService uploadService;
@@ -517,50 +527,21 @@ bool Test_AbandonedUploadDoesNotRemainCompleted()
     desc.stride = sizeof(uint32);
 
     auto result = uploadService.UploadBufferDataWithResult(desc, source, sizeof(source));
-    TEST_ASSERT_TRUE(result.succeeded);
-    TEST_ASSERT_TRUE(result.isPending);
+    EXPECT_TRUE(result.succeeded);
+    EXPECT_TRUE(result.isPending);
 
     uploadService.AbandonUpload(result.uploadId);
     uploadService.FlushBatchUploads();
 
-    TEST_ASSERT_NOT_NULL(device.lastFence);
+    ASSERT_NE(nullptr, device.lastFence);
     device.lastFence->Signal(1);
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 1u);
-    TEST_ASSERT_TRUE(!uploadService.IsUploadPending(result.uploadId));
-    TEST_ASSERT_TRUE(!uploadService.IsUploadComplete(result.uploadId));
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 1u);
+    EXPECT_TRUE(!uploadService.IsUploadPending(result.uploadId));
+    EXPECT_TRUE(!uploadService.IsUploadComplete(result.uploadId));
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.pendingUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.stagingBytesInFlight, 0ull);
+    EXPECT_EQ(stats.pendingUploadCount, 0u);
+    EXPECT_EQ(stats.stagingBytesInFlight, 0ull);
 
     uploadService.Shutdown();
-    return true;
-}
-
-int main()
-{
-    Log::Initialize();
-    RVX_CORE_INFO("GPUUploadService Validation Tests");
-
-    TestSuite suite;
-    suite.AddTest("StagedBufferUploadsBatchUntilFlush", Test_StagedBufferUploadsBatchUntilFlush);
-    suite.AddTest("ShutdownFlushesDirtyBatchAndWaitsForPendingUploads", Test_ShutdownFlushesDirtyBatchAndWaitsForPendingUploads);
-    suite.AddTest("FlushTracksFenceNextCompletedValue", Test_FlushTracksFenceNextCompletedValue);
-    suite.AddTest("CompletedFenceIsReusedForNextBatch", Test_CompletedFenceIsReusedForNextBatch);
-    suite.AddTest("FlushAndWaitSubmitsDirtyBatchAndCompletesUploads", Test_FlushAndWaitSubmitsDirtyBatchAndCompletesUploads);
-    suite.AddTest("UnsupportedTextureLayoutDoesNotCreateEmptyTexture", Test_UnsupportedTextureLayoutDoesNotCreateEmptyTexture);
-    suite.AddTest("AbandonedUploadDoesNotRemainCompleted", Test_AbandonedUploadDoesNotRemainCompleted);
-
-    auto results = suite.Run();
-    suite.PrintResults(results);
-
-    Log::Shutdown();
-
-    for (const auto& result : results)
-    {
-        if (!result.passed)
-            return 1;
-    }
-
-    return 0;
 }

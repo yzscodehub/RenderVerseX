@@ -31,6 +31,7 @@ target_include_directories(RVX_Core PUBLIC
 )
 
 target_link_libraries(RVX_Core PUBLIC
+    RVX::Options
     spdlog::spdlog
     glm::glm
 )

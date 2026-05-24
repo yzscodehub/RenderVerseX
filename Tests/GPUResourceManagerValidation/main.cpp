@@ -6,14 +6,13 @@
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
 #include "Scene/Mesh.h"
-#include "TestFramework/TestRunner.h"
+#include <gtest/gtest.h>
 
 #include <cstring>
 #include <memory>
 #include <vector>
 
 using namespace RVX;
-using namespace RVX::Test;
 
 namespace
 {
@@ -356,9 +355,26 @@ namespace
         resource->SetData({255, 255, 255, 255}, metadata);
         return resource;
     }
+
+    class LogEnvironment final : public ::testing::Environment
+    {
+    public:
+        void SetUp() override
+        {
+            Log::Initialize();
+        }
+
+        void TearDown() override
+        {
+            Log::Shutdown();
+        }
+    };
+
+    [[maybe_unused]] ::testing::Environment* const g_logEnvironment =
+        ::testing::AddGlobalTestEnvironment(new LogEnvironment());
 } // namespace
 
-bool Test_DuplicateQueuedUploadIsIgnored()
+TEST(GPUResourceManagerValidation, DuplicateQueuedUploadIsIgnored)
 {
     FakeDevice device;
     GPUResourceManager manager;
@@ -371,15 +387,14 @@ bool Test_DuplicateQueuedUploadIsIgnored()
     manager.RequestUpload(mesh.Get(), UploadPriority::Immediate);
 
     const auto stats = manager.GetStats();
-    TEST_ASSERT_EQ(stats.pendingUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.queuedUploadCount, 1u);
-    TEST_ASSERT_EQ(manager.GetResourceState(mesh->GetId()), GPUResourceState::UploadQueued);
+    EXPECT_EQ(stats.pendingUploadCount, 1u);
+    EXPECT_EQ(stats.queuedUploadCount, 1u);
+    EXPECT_EQ(manager.GetResourceState(mesh->GetId()), GPUResourceState::UploadQueued);
 
     manager.Shutdown();
-    return true;
 }
 
-bool Test_UnmanagedResourceIsNotQueuedForAsyncUpload()
+TEST(GPUResourceManagerValidation, UnmanagedResourceIsNotQueuedForAsyncUpload)
 {
     FakeDevice device;
     GPUResourceManager manager;
@@ -389,14 +404,13 @@ bool Test_UnmanagedResourceIsNotQueuedForAsyncUpload()
     manager.RequestUpload(mesh.get());
 
     const auto stats = manager.GetStats();
-    TEST_ASSERT_EQ(stats.pendingUploadCount, 0u);
-    TEST_ASSERT_EQ(manager.GetResourceState(mesh->GetId()), GPUResourceState::Unloaded);
+    EXPECT_EQ(stats.pendingUploadCount, 0u);
+    EXPECT_EQ(manager.GetResourceState(mesh->GetId()), GPUResourceState::Unloaded);
 
     manager.Shutdown();
-    return true;
 }
 
-bool Test_QueuedUploadRetainsRefCountedResource()
+TEST(GPUResourceManagerValidation, QueuedUploadRetainsRefCountedResource)
 {
     FakeDevice device;
     GPUResourceManager manager;
@@ -406,23 +420,22 @@ bool Test_QueuedUploadRetainsRefCountedResource()
         CreateMeshResource(107, MeshFactory::CreateTriangle()).release());
     Resource::MeshResource* mesh = meshHandle.Get();
 
-    TEST_ASSERT_EQ(mesh->GetRefCount(), 1u);
+    EXPECT_EQ(mesh->GetRefCount(), 1u);
     manager.RequestUpload(mesh);
-    TEST_ASSERT_EQ(mesh->GetRefCount(), 2u);
+    EXPECT_EQ(mesh->GetRefCount(), 2u);
 
     const Resource::ResourceId meshId = mesh->GetId();
     meshHandle.Reset();
 
     manager.ProcessPendingUploads();
 
-    TEST_ASSERT_EQ(manager.GetResourceState(meshId), GPUResourceState::GPUReady);
-    TEST_ASSERT_TRUE(manager.IsResident(meshId));
+    EXPECT_EQ(manager.GetResourceState(meshId), GPUResourceState::GPUReady);
+    EXPECT_TRUE(manager.IsResident(meshId));
 
     manager.Shutdown();
-    return true;
 }
 
-bool Test_ProcessPendingUploadsWithZeroBudgetDoesNotStartNewUpload()
+TEST(GPUResourceManagerValidation, ProcessPendingUploadsWithZeroBudgetDoesNotStartNewUpload)
 {
     FakeDevice device;
     GPUResourceManager manager;
@@ -434,23 +447,22 @@ bool Test_ProcessPendingUploadsWithZeroBudgetDoesNotStartNewUpload()
 
     manager.ProcessPendingUploads(0.0f);
 
-    TEST_ASSERT_EQ(device.createdBufferCount, 0u);
-    TEST_ASSERT_EQ(manager.GetResourceState(mesh->GetId()), GPUResourceState::UploadQueued);
+    EXPECT_EQ(device.createdBufferCount, 0u);
+    EXPECT_EQ(manager.GetResourceState(mesh->GetId()), GPUResourceState::UploadQueued);
     {
         const auto stats = manager.GetStats();
-        TEST_ASSERT_EQ(stats.pendingUploadCount, 1ull);
-        TEST_ASSERT_EQ(stats.queuedUploadCount, 1ull);
+        EXPECT_EQ(stats.pendingUploadCount, 1ull);
+        EXPECT_EQ(stats.queuedUploadCount, 1ull);
     }
 
     manager.ProcessPendingUploads();
 
-    TEST_ASSERT_TRUE(manager.IsGPUReady(mesh->GetId()));
+    EXPECT_TRUE(manager.IsGPUReady(mesh->GetId()));
 
     manager.Shutdown();
-    return true;
 }
 
-bool Test_GPUUploadServiceUploadsBufferData()
+TEST(GPUResourceManagerValidation, GPUUploadServiceUploadsBufferData)
 {
     FakeDevice device;
     GPUUploadService uploadService;
@@ -465,26 +477,25 @@ bool Test_GPUUploadServiceUploadsBufferData()
 
     auto buffer = uploadService.UploadBufferData(desc, source, sizeof(source));
 
-    TEST_ASSERT_NOT_NULL(buffer.Get());
-    TEST_ASSERT_EQ(buffer->GetSize(), static_cast<uint64>(sizeof(source)));
-    TEST_ASSERT_EQ(buffer->GetUsage(), RHIBufferUsage::Vertex);
-    TEST_ASSERT_EQ(buffer->GetMemoryType(), RHIMemoryType::Upload);
-    TEST_ASSERT_EQ(buffer->GetStride(), static_cast<uint32>(sizeof(uint32)));
+    ASSERT_NE(nullptr, buffer.Get());
+    EXPECT_EQ(buffer->GetSize(), static_cast<uint64>(sizeof(source)));
+    EXPECT_EQ(buffer->GetUsage(), RHIBufferUsage::Vertex);
+    EXPECT_EQ(buffer->GetMemoryType(), RHIMemoryType::Upload);
+    EXPECT_EQ(buffer->GetStride(), static_cast<uint32>(sizeof(uint32)));
 
     auto* fakeBuffer = dynamic_cast<FakeBuffer*>(buffer.Get());
-    TEST_ASSERT_NOT_NULL(fakeBuffer);
-    TEST_ASSERT_TRUE(std::memcmp(fakeBuffer->GetStorage().data(), source, sizeof(source)) == 0);
+    ASSERT_NE(nullptr, fakeBuffer);
+    EXPECT_TRUE(std::memcmp(fakeBuffer->GetStorage().data(), source, sizeof(source)) == 0);
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.bufferUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.failedUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.uploadedBytes, static_cast<uint64>(sizeof(source)));
+    EXPECT_EQ(stats.bufferUploadCount, 1u);
+    EXPECT_EQ(stats.failedUploadCount, 0u);
+    EXPECT_EQ(stats.uploadedBytes, static_cast<uint64>(sizeof(source)));
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_GPUUploadServiceRejectsInvalidBufferUpload()
+TEST(GPUResourceManagerValidation, GPUUploadServiceRejectsInvalidBufferUpload)
 {
     FakeDevice device;
     GPUUploadService uploadService;
@@ -496,17 +507,16 @@ bool Test_GPUUploadServiceRejectsInvalidBufferUpload()
 
     auto buffer = uploadService.UploadBufferData(desc, nullptr, desc.size);
 
-    TEST_ASSERT_TRUE(!buffer);
+    EXPECT_TRUE(!buffer);
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.bufferUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.failedUploadCount, 1u);
+    EXPECT_EQ(stats.bufferUploadCount, 0u);
+    EXPECT_EQ(stats.failedUploadCount, 1u);
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_GPUUploadServiceReportsInvalidBufferData()
+TEST(GPUResourceManagerValidation, GPUUploadServiceReportsInvalidBufferData)
 {
     FakeDevice device;
     GPUUploadService uploadService;
@@ -518,22 +528,21 @@ bool Test_GPUUploadServiceReportsInvalidBufferData()
 
     auto result = uploadService.UploadBufferDataWithResult(desc, nullptr, desc.size);
 
-    TEST_ASSERT_FALSE(result.succeeded);
-    TEST_ASSERT_TRUE(!result.resource);
-    TEST_ASSERT_EQ(result.mode, GPUUploadMode::None);
-    TEST_ASSERT_EQ(result.failureReason, GPUUploadFailureReason::InvalidData);
-    TEST_ASSERT_EQ(result.bytesUploaded, 0ull);
+    EXPECT_FALSE(result.succeeded);
+    EXPECT_TRUE(!result.resource);
+    EXPECT_EQ(result.mode, GPUUploadMode::None);
+    EXPECT_EQ(result.failureReason, GPUUploadFailureReason::InvalidData);
+    EXPECT_EQ(result.bytesUploaded, 0ull);
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.failedUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.immediateUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.uploadedBytes, 0ull);
+    EXPECT_EQ(stats.failedUploadCount, 1u);
+    EXPECT_EQ(stats.immediateUploadCount, 0u);
+    EXPECT_EQ(stats.uploadedBytes, 0ull);
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_GPUUploadServiceReportsBufferCreationFailure()
+TEST(GPUResourceManagerValidation, GPUUploadServiceReportsBufferCreationFailure)
 {
     FakeDevice device;
     device.failBufferCreation = true;
@@ -548,21 +557,20 @@ bool Test_GPUUploadServiceReportsBufferCreationFailure()
 
     auto result = uploadService.UploadBufferDataWithResult(desc, source, sizeof(source));
 
-    TEST_ASSERT_FALSE(result.succeeded);
-    TEST_ASSERT_TRUE(!result.resource);
-    TEST_ASSERT_EQ(result.mode, GPUUploadMode::None);
-    TEST_ASSERT_EQ(result.failureReason, GPUUploadFailureReason::CreateResourceFailed);
-    TEST_ASSERT_EQ(result.bytesUploaded, 0ull);
+    EXPECT_FALSE(result.succeeded);
+    EXPECT_TRUE(!result.resource);
+    EXPECT_EQ(result.mode, GPUUploadMode::None);
+    EXPECT_EQ(result.failureReason, GPUUploadFailureReason::CreateResourceFailed);
+    EXPECT_EQ(result.bytesUploaded, 0ull);
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.failedUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.bufferUploadCount, 0u);
+    EXPECT_EQ(stats.failedUploadCount, 1u);
+    EXPECT_EQ(stats.bufferUploadCount, 0u);
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_GPUUploadServiceUsesStagedCopyForBufferWhenAvailable()
+TEST(GPUResourceManagerValidation, GPUUploadServiceUsesStagedCopyForBufferWhenAvailable)
 {
     FakeDevice device;
     device.supportStagedCopy = true;
@@ -579,50 +587,49 @@ bool Test_GPUUploadServiceUsesStagedCopyForBufferWhenAvailable()
 
     auto result = uploadService.UploadBufferDataWithResult(desc, source, sizeof(source));
 
-    TEST_ASSERT_TRUE(result.succeeded);
-    TEST_ASSERT_NOT_NULL(result.resource.Get());
-    TEST_ASSERT_EQ(result.mode, GPUUploadMode::StagedCopy);
-    TEST_ASSERT_EQ(result.failureReason, GPUUploadFailureReason::None);
-    TEST_ASSERT_EQ(result.bytesUploaded, static_cast<uint64>(sizeof(source)));
-    TEST_ASSERT_EQ(result.resource->GetMemoryType(), RHIMemoryType::Default);
-    TEST_ASSERT_EQ(result.resource->GetUsage() & RHIBufferUsage::CopyDst, RHIBufferUsage::CopyDst);
+    EXPECT_TRUE(result.succeeded);
+    ASSERT_NE(nullptr, result.resource.Get());
+    EXPECT_EQ(result.mode, GPUUploadMode::StagedCopy);
+    EXPECT_EQ(result.failureReason, GPUUploadFailureReason::None);
+    EXPECT_EQ(result.bytesUploaded, static_cast<uint64>(sizeof(source)));
+    EXPECT_EQ(result.resource->GetMemoryType(), RHIMemoryType::Default);
+    EXPECT_EQ(result.resource->GetUsage() & RHIBufferUsage::CopyDst, RHIBufferUsage::CopyDst);
 
-    TEST_ASSERT_NOT_NULL(device.lastCommandContext);
-    TEST_ASSERT_EQ(device.lastCommandQueueType, RHICommandQueueType::Copy);
-    TEST_ASSERT_EQ(device.lastCommandContext->beginCount, 1u);
-    TEST_ASSERT_EQ(device.lastCommandContext->endCount, 0u);
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 0u);
-    TEST_ASSERT_EQ(device.createdFenceCount, 0u);
+    ASSERT_NE(nullptr, device.lastCommandContext);
+    EXPECT_EQ(device.lastCommandQueueType, RHICommandQueueType::Copy);
+    EXPECT_EQ(device.lastCommandContext->beginCount, 1u);
+    EXPECT_EQ(device.lastCommandContext->endCount, 0u);
+    EXPECT_EQ(device.submittedCommandContextCount, 0u);
+    EXPECT_EQ(device.createdFenceCount, 0u);
 
     uploadService.FlushBatchUploads();
 
-    TEST_ASSERT_EQ(device.lastCommandContext->endCount, 1u);
-    TEST_ASSERT_EQ(device.lastCommandContext->copyBufferCount, 1u);
-    TEST_ASSERT_EQ(device.lastCommandContext->lastCopyDst, result.resource.Get());
-    TEST_ASSERT_EQ(device.lastCommandContext->lastCopySize, static_cast<uint64>(sizeof(source)));
-    TEST_ASSERT_EQ(device.lastCommandContext->bufferBarrierCount, 1u);
-    TEST_ASSERT_EQ(device.lastCommandContext->lastBufferBarrier.buffer, result.resource.Get());
-    TEST_ASSERT_EQ(device.lastCommandContext->lastBufferBarrier.stateBefore, RHIResourceState::CopyDest);
-    TEST_ASSERT_EQ(device.lastCommandContext->lastBufferBarrier.stateAfter, RHIResourceState::Common);
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 1u);
-    TEST_ASSERT_EQ(result.isPending, true);
-    TEST_ASSERT_TRUE(result.uploadId != 0);
-    TEST_ASSERT_EQ(device.createdFenceCount, 1u);
-    TEST_ASSERT_EQ(device.waitIdleCount, 0u);
+    EXPECT_EQ(device.lastCommandContext->endCount, 1u);
+    EXPECT_EQ(device.lastCommandContext->copyBufferCount, 1u);
+    EXPECT_EQ(device.lastCommandContext->lastCopyDst, result.resource.Get());
+    EXPECT_EQ(device.lastCommandContext->lastCopySize, static_cast<uint64>(sizeof(source)));
+    EXPECT_EQ(device.lastCommandContext->bufferBarrierCount, 1u);
+    EXPECT_EQ(device.lastCommandContext->lastBufferBarrier.buffer, result.resource.Get());
+    EXPECT_EQ(device.lastCommandContext->lastBufferBarrier.stateBefore, RHIResourceState::CopyDest);
+    EXPECT_EQ(device.lastCommandContext->lastBufferBarrier.stateAfter, RHIResourceState::Common);
+    EXPECT_EQ(device.submittedCommandContextCount, 1u);
+    EXPECT_EQ(result.isPending, true);
+    EXPECT_TRUE(result.uploadId != 0);
+    EXPECT_EQ(device.createdFenceCount, 1u);
+    EXPECT_EQ(device.waitIdleCount, 0u);
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.bufferUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.stagedUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.immediateUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.pendingUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.stagingBytesInFlight, static_cast<uint64>(sizeof(source)));
-    TEST_ASSERT_EQ(stats.uploadedBytes, static_cast<uint64>(sizeof(source)));
+    EXPECT_EQ(stats.bufferUploadCount, 1u);
+    EXPECT_EQ(stats.stagedUploadCount, 1u);
+    EXPECT_EQ(stats.immediateUploadCount, 0u);
+    EXPECT_EQ(stats.pendingUploadCount, 1u);
+    EXPECT_EQ(stats.stagingBytesInFlight, static_cast<uint64>(sizeof(source)));
+    EXPECT_EQ(stats.uploadedBytes, static_cast<uint64>(sizeof(source)));
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_GPUUploadServiceCompletesPendingBufferUploadAfterFence()
+TEST(GPUResourceManagerValidation, GPUUploadServiceCompletesPendingBufferUploadAfterFence)
 {
     FakeDevice device;
     device.supportStagedCopy = true;
@@ -637,33 +644,32 @@ bool Test_GPUUploadServiceCompletesPendingBufferUploadAfterFence()
 
     auto result = uploadService.UploadBufferDataWithResult(desc, source, sizeof(source));
 
-    TEST_ASSERT_TRUE(result.succeeded);
-    TEST_ASSERT_TRUE(result.isPending);
-    TEST_ASSERT_TRUE(uploadService.IsUploadPending(result.uploadId));
-    TEST_ASSERT_FALSE(uploadService.IsUploadComplete(result.uploadId));
+    EXPECT_TRUE(result.succeeded);
+    EXPECT_TRUE(result.isPending);
+    EXPECT_TRUE(uploadService.IsUploadPending(result.uploadId));
+    EXPECT_FALSE(uploadService.IsUploadComplete(result.uploadId));
 
     uploadService.FlushBatchUploads();
 
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 0u);
-    TEST_ASSERT_TRUE(uploadService.IsUploadPending(result.uploadId));
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 0u);
+    EXPECT_TRUE(uploadService.IsUploadPending(result.uploadId));
 
-    TEST_ASSERT_NOT_NULL(device.lastFence);
+    ASSERT_NE(nullptr, device.lastFence);
     device.lastFence->Signal(1);
 
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 1u);
-    TEST_ASSERT_FALSE(uploadService.IsUploadPending(result.uploadId));
-    TEST_ASSERT_TRUE(uploadService.IsUploadComplete(result.uploadId));
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 1u);
+    EXPECT_FALSE(uploadService.IsUploadPending(result.uploadId));
+    EXPECT_TRUE(uploadService.IsUploadComplete(result.uploadId));
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.pendingUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.completedUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.stagingBytesInFlight, 0ull);
+    EXPECT_EQ(stats.pendingUploadCount, 0u);
+    EXPECT_EQ(stats.completedUploadCount, 1u);
+    EXPECT_EQ(stats.stagingBytesInFlight, 0ull);
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_GPUUploadServiceFallsBackWhenStagingMapFails()
+TEST(GPUResourceManagerValidation, GPUUploadServiceFallsBackWhenStagingMapFails)
 {
     FakeDevice device;
     device.supportStagedCopy = true;
@@ -679,24 +685,23 @@ bool Test_GPUUploadServiceFallsBackWhenStagingMapFails()
 
     auto result = uploadService.UploadBufferDataWithResult(desc, source, sizeof(source));
 
-    TEST_ASSERT_TRUE(result.succeeded);
-    TEST_ASSERT_EQ(result.mode, GPUUploadMode::ImmediateMapped);
-    TEST_ASSERT_EQ(result.failureReason, GPUUploadFailureReason::None);
-    TEST_ASSERT_FALSE(result.isPending);
-    TEST_ASSERT_EQ(result.uploadId, 0ull);
-    TEST_ASSERT_EQ(result.resource->GetMemoryType(), RHIMemoryType::Upload);
+    EXPECT_TRUE(result.succeeded);
+    EXPECT_EQ(result.mode, GPUUploadMode::ImmediateMapped);
+    EXPECT_EQ(result.failureReason, GPUUploadFailureReason::None);
+    EXPECT_FALSE(result.isPending);
+    EXPECT_EQ(result.uploadId, 0ull);
+    EXPECT_EQ(result.resource->GetMemoryType(), RHIMemoryType::Upload);
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.failedUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.bufferUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.immediateUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.stagedUploadCount, 0u);
+    EXPECT_EQ(stats.failedUploadCount, 0u);
+    EXPECT_EQ(stats.bufferUploadCount, 1u);
+    EXPECT_EQ(stats.immediateUploadCount, 1u);
+    EXPECT_EQ(stats.stagedUploadCount, 0u);
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_GPUUploadServiceRejectsTextureWhenStagedCopyUnavailable()
+TEST(GPUResourceManagerValidation, GPUUploadServiceRejectsTextureWhenStagedCopyUnavailable)
 {
     FakeDevice device;
     GPUUploadService uploadService;
@@ -715,23 +720,22 @@ bool Test_GPUUploadServiceRejectsTextureWhenStagedCopyUnavailable()
 
     auto result = uploadService.UploadTextureDataWithResult(desc, pixels);
 
-    TEST_ASSERT_FALSE(result.succeeded);
-    TEST_ASSERT_TRUE(!result.resource);
-    TEST_ASSERT_EQ(result.mode, GPUUploadMode::None);
-    TEST_ASSERT_EQ(result.failureReason, GPUUploadFailureReason::Unsupported);
-    TEST_ASSERT_EQ(result.bytesUploaded, 0ull);
+    EXPECT_FALSE(result.succeeded);
+    EXPECT_TRUE(!result.resource);
+    EXPECT_EQ(result.mode, GPUUploadMode::None);
+    EXPECT_EQ(result.failureReason, GPUUploadFailureReason::Unsupported);
+    EXPECT_EQ(result.bytesUploaded, 0ull);
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.textureUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.failedUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.immediateUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.uploadedBytes, 0ull);
+    EXPECT_EQ(stats.textureUploadCount, 0u);
+    EXPECT_EQ(stats.failedUploadCount, 1u);
+    EXPECT_EQ(stats.immediateUploadCount, 0u);
+    EXPECT_EQ(stats.uploadedBytes, 0ull);
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_GPUUploadServiceUsesStagedCopyForTextureWhenAvailable()
+TEST(GPUResourceManagerValidation, GPUUploadServiceUsesStagedCopyForTextureWhenAvailable)
 {
     FakeDevice device;
     device.supportStagedCopy = true;
@@ -752,50 +756,49 @@ bool Test_GPUUploadServiceUsesStagedCopyForTextureWhenAvailable()
 
     auto result = uploadService.UploadTextureDataWithResult(desc, pixels);
 
-    TEST_ASSERT_TRUE(result.succeeded);
-    TEST_ASSERT_NOT_NULL(result.resource.Get());
-    TEST_ASSERT_EQ(result.mode, GPUUploadMode::StagedCopy);
-    TEST_ASSERT_EQ(result.failureReason, GPUUploadFailureReason::None);
-    TEST_ASSERT_EQ(result.bytesUploaded, static_cast<uint64>(sizeof(pixels)));
+    EXPECT_TRUE(result.succeeded);
+    ASSERT_NE(nullptr, result.resource.Get());
+    EXPECT_EQ(result.mode, GPUUploadMode::StagedCopy);
+    EXPECT_EQ(result.failureReason, GPUUploadFailureReason::None);
+    EXPECT_EQ(result.bytesUploaded, static_cast<uint64>(sizeof(pixels)));
 
-    TEST_ASSERT_NOT_NULL(device.lastCommandContext);
-    TEST_ASSERT_EQ(device.lastCommandQueueType, RHICommandQueueType::Copy);
-    TEST_ASSERT_EQ(device.lastCommandContext->beginCount, 1u);
-    TEST_ASSERT_EQ(device.lastCommandContext->endCount, 0u);
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 0u);
-    TEST_ASSERT_EQ(device.createdFenceCount, 0u);
+    ASSERT_NE(nullptr, device.lastCommandContext);
+    EXPECT_EQ(device.lastCommandQueueType, RHICommandQueueType::Copy);
+    EXPECT_EQ(device.lastCommandContext->beginCount, 1u);
+    EXPECT_EQ(device.lastCommandContext->endCount, 0u);
+    EXPECT_EQ(device.submittedCommandContextCount, 0u);
+    EXPECT_EQ(device.createdFenceCount, 0u);
 
     uploadService.FlushBatchUploads();
 
-    TEST_ASSERT_EQ(device.lastCommandContext->endCount, 1u);
-    TEST_ASSERT_EQ(device.lastCommandContext->copyBufferToTextureCount, 1u);
-    TEST_ASSERT_EQ(device.lastCommandContext->lastTextureCopyDst, result.resource.Get());
-    TEST_ASSERT_EQ(device.lastCommandContext->lastBufferTextureCopyDesc.bufferRowPitch, 256u);
-    TEST_ASSERT_EQ(device.lastCommandContext->lastBufferTextureCopyDesc.textureRegion.width, 2u);
-    TEST_ASSERT_EQ(device.lastCommandContext->lastBufferTextureCopyDesc.textureRegion.height, 2u);
-    TEST_ASSERT_EQ(device.lastCommandContext->textureBarrierCount, 1u);
-    TEST_ASSERT_EQ(device.lastCommandContext->lastTextureBarrier.texture, result.resource.Get());
-    TEST_ASSERT_EQ(device.lastCommandContext->lastTextureBarrier.stateBefore, RHIResourceState::CopyDest);
-    TEST_ASSERT_EQ(device.lastCommandContext->lastTextureBarrier.stateAfter, RHIResourceState::Common);
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 1u);
-    TEST_ASSERT_EQ(result.isPending, true);
-    TEST_ASSERT_TRUE(result.uploadId != 0);
-    TEST_ASSERT_EQ(device.createdFenceCount, 1u);
-    TEST_ASSERT_EQ(device.waitIdleCount, 0u);
+    EXPECT_EQ(device.lastCommandContext->endCount, 1u);
+    EXPECT_EQ(device.lastCommandContext->copyBufferToTextureCount, 1u);
+    EXPECT_EQ(device.lastCommandContext->lastTextureCopyDst, result.resource.Get());
+    EXPECT_EQ(device.lastCommandContext->lastBufferTextureCopyDesc.bufferRowPitch, 256u);
+    EXPECT_EQ(device.lastCommandContext->lastBufferTextureCopyDesc.textureRegion.width, 2u);
+    EXPECT_EQ(device.lastCommandContext->lastBufferTextureCopyDesc.textureRegion.height, 2u);
+    EXPECT_EQ(device.lastCommandContext->textureBarrierCount, 1u);
+    EXPECT_EQ(device.lastCommandContext->lastTextureBarrier.texture, result.resource.Get());
+    EXPECT_EQ(device.lastCommandContext->lastTextureBarrier.stateBefore, RHIResourceState::CopyDest);
+    EXPECT_EQ(device.lastCommandContext->lastTextureBarrier.stateAfter, RHIResourceState::Common);
+    EXPECT_EQ(device.submittedCommandContextCount, 1u);
+    EXPECT_EQ(result.isPending, true);
+    EXPECT_TRUE(result.uploadId != 0);
+    EXPECT_EQ(device.createdFenceCount, 1u);
+    EXPECT_EQ(device.waitIdleCount, 0u);
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.textureUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.stagedUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.immediateUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.pendingUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.stagingBytesInFlight, 512ull);
-    TEST_ASSERT_EQ(stats.uploadedBytes, static_cast<uint64>(sizeof(pixels)));
+    EXPECT_EQ(stats.textureUploadCount, 1u);
+    EXPECT_EQ(stats.stagedUploadCount, 1u);
+    EXPECT_EQ(stats.immediateUploadCount, 0u);
+    EXPECT_EQ(stats.pendingUploadCount, 1u);
+    EXPECT_EQ(stats.stagingBytesInFlight, 512ull);
+    EXPECT_EQ(stats.uploadedBytes, static_cast<uint64>(sizeof(pixels)));
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_GPUUploadServiceRejectsInvalidTextureDimensions()
+TEST(GPUResourceManagerValidation, GPUUploadServiceRejectsInvalidTextureDimensions)
 {
     FakeDevice device;
     GPUUploadService uploadService;
@@ -808,21 +811,20 @@ bool Test_GPUUploadServiceRejectsInvalidTextureDimensions()
 
     auto result = uploadService.UploadTextureDataWithResult(desc, pixels);
 
-    TEST_ASSERT_FALSE(result.succeeded);
-    TEST_ASSERT_TRUE(!result.resource);
-    TEST_ASSERT_EQ(result.mode, GPUUploadMode::None);
-    TEST_ASSERT_EQ(result.failureReason, GPUUploadFailureReason::InvalidDescription);
-    TEST_ASSERT_EQ(result.bytesUploaded, 0ull);
+    EXPECT_FALSE(result.succeeded);
+    EXPECT_TRUE(!result.resource);
+    EXPECT_EQ(result.mode, GPUUploadMode::None);
+    EXPECT_EQ(result.failureReason, GPUUploadFailureReason::InvalidDescription);
+    EXPECT_EQ(result.bytesUploaded, 0ull);
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.failedUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.textureUploadCount, 0u);
+    EXPECT_EQ(stats.failedUploadCount, 1u);
+    EXPECT_EQ(stats.textureUploadCount, 0u);
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_GPUUploadServiceRejectsUnsupportedTextureFormat()
+TEST(GPUResourceManagerValidation, GPUUploadServiceRejectsUnsupportedTextureFormat)
 {
     FakeDevice device;
     GPUUploadService uploadService;
@@ -835,21 +837,20 @@ bool Test_GPUUploadServiceRejectsUnsupportedTextureFormat()
 
     auto result = uploadService.UploadTextureDataWithResult(desc, pixels);
 
-    TEST_ASSERT_FALSE(result.succeeded);
-    TEST_ASSERT_TRUE(!result.resource);
-    TEST_ASSERT_EQ(result.mode, GPUUploadMode::None);
-    TEST_ASSERT_EQ(result.failureReason, GPUUploadFailureReason::Unsupported);
-    TEST_ASSERT_EQ(result.bytesUploaded, 0ull);
+    EXPECT_FALSE(result.succeeded);
+    EXPECT_TRUE(!result.resource);
+    EXPECT_EQ(result.mode, GPUUploadMode::None);
+    EXPECT_EQ(result.failureReason, GPUUploadFailureReason::Unsupported);
+    EXPECT_EQ(result.bytesUploaded, 0ull);
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.failedUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.textureUploadCount, 0u);
+    EXPECT_EQ(stats.failedUploadCount, 1u);
+    EXPECT_EQ(stats.textureUploadCount, 0u);
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_MeshWithoutIndexDataFailsUpload()
+TEST(GPUResourceManagerValidation, MeshWithoutIndexDataFailsUpload)
 {
     FakeDevice device;
     GPUResourceManager manager;
@@ -859,16 +860,15 @@ bool Test_MeshWithoutIndexDataFailsUpload()
 
     manager.UploadImmediate(mesh.get());
 
-    TEST_ASSERT_EQ(manager.GetResourceState(mesh->GetId()), GPUResourceState::Failed);
-    TEST_ASSERT_FALSE(manager.IsResident(mesh->GetId()));
-    TEST_ASSERT_FALSE(manager.IsGPUReady(mesh->GetId()));
-    TEST_ASSERT_FALSE(manager.GetMeshBuffers(mesh->GetId()).IsValid());
+    EXPECT_EQ(manager.GetResourceState(mesh->GetId()), GPUResourceState::Failed);
+    EXPECT_FALSE(manager.IsResident(mesh->GetId()));
+    EXPECT_FALSE(manager.IsGPUReady(mesh->GetId()));
+    EXPECT_FALSE(manager.GetMeshBuffers(mesh->GetId()).IsValid());
 
     manager.Shutdown();
-    return true;
 }
 
-bool Test_ValidMeshUploadBecomesGPUReady()
+TEST(GPUResourceManagerValidation, ValidMeshUploadBecomesGPUReady)
 {
     FakeDevice device;
     GPUResourceManager manager;
@@ -879,17 +879,16 @@ bool Test_ValidMeshUploadBecomesGPUReady()
     manager.UploadImmediate(mesh.get());
 
     const auto buffers = manager.GetMeshBuffers(mesh->GetId());
-    TEST_ASSERT_EQ(manager.GetResourceState(mesh->GetId()), GPUResourceState::GPUReady);
-    TEST_ASSERT_TRUE(manager.IsResident(mesh->GetId()));
-    TEST_ASSERT_TRUE(manager.IsGPUReady(mesh->GetId()));
-    TEST_ASSERT_TRUE(buffers.IsValid());
-    TEST_ASSERT_TRUE(device.createdBufferCount >= 2);
+    EXPECT_EQ(manager.GetResourceState(mesh->GetId()), GPUResourceState::GPUReady);
+    EXPECT_TRUE(manager.IsResident(mesh->GetId()));
+    EXPECT_TRUE(manager.IsGPUReady(mesh->GetId()));
+    EXPECT_TRUE(buffers.IsValid());
+    EXPECT_TRUE(device.createdBufferCount >= 2);
 
     manager.Shutdown();
-    return true;
 }
 
-bool Test_StagedMeshUploadImmediateWaitsForFenceCompletion()
+TEST(GPUResourceManagerValidation, StagedMeshUploadImmediateWaitsForFenceCompletion)
 {
     FakeDevice device;
     device.supportStagedCopy = true;
@@ -901,22 +900,21 @@ bool Test_StagedMeshUploadImmediateWaitsForFenceCompletion()
 
     manager.UploadImmediate(mesh.get());
 
-    TEST_ASSERT_EQ(manager.GetResourceState(mesh->GetId()), GPUResourceState::GPUReady);
-    TEST_ASSERT_TRUE(manager.IsResident(mesh->GetId()));
-    TEST_ASSERT_TRUE(manager.IsGPUReady(mesh->GetId()));
-    TEST_ASSERT_TRUE(manager.GetMeshBuffers(mesh->GetId()).IsValid());
-    TEST_ASSERT_EQ(device.waitIdleCount, 1u);
+    EXPECT_EQ(manager.GetResourceState(mesh->GetId()), GPUResourceState::GPUReady);
+    EXPECT_TRUE(manager.IsResident(mesh->GetId()));
+    EXPECT_TRUE(manager.IsGPUReady(mesh->GetId()));
+    EXPECT_TRUE(manager.GetMeshBuffers(mesh->GetId()).IsValid());
+    EXPECT_EQ(device.waitIdleCount, 1u);
     {
         const auto stats = manager.GetStats();
-        TEST_ASSERT_EQ(stats.residentMeshCount, 1ull);
-        TEST_ASSERT_EQ(stats.uploadingCount, 0ull);
+        EXPECT_EQ(stats.residentMeshCount, 1ull);
+        EXPECT_EQ(stats.uploadingCount, 0ull);
     }
 
     manager.Shutdown();
-    return true;
 }
 
-bool Test_TransitionTextureTransitionsResidentTextureOnce()
+TEST(GPUResourceManagerValidation, TransitionTextureTransitionsResidentTextureOnce)
 {
     FakeDevice device;
     device.supportStagedCopy = true;
@@ -929,26 +927,25 @@ bool Test_TransitionTextureTransitionsResidentTextureOnce()
     manager.UploadImmediate(texture.get());
     manager.ProcessPendingUploads();
 
-    TEST_ASSERT_EQ(manager.GetResourceState(texture->GetId()), GPUResourceState::GPUReady);
-    TEST_ASSERT_TRUE(manager.IsResident(texture->GetId()));
+    EXPECT_EQ(manager.GetResourceState(texture->GetId()), GPUResourceState::GPUReady);
+    EXPECT_TRUE(manager.IsResident(texture->GetId()));
 
     FakeCommandContext ctx;
-    TEST_ASSERT_TRUE(manager.TransitionTexture(texture->GetId(), ctx, RHIResourceState::ShaderResource));
-    TEST_ASSERT_EQ(ctx.textureBarrierCount, 1u);
-    TEST_ASSERT_EQ(ctx.lastTextureBarrier.texture, manager.GetTexture(texture->GetId()));
-    TEST_ASSERT_EQ(ctx.lastTextureBarrier.stateBefore, RHIResourceState::Common);
-    TEST_ASSERT_EQ(ctx.lastTextureBarrier.stateAfter, RHIResourceState::ShaderResource);
+    EXPECT_TRUE(manager.TransitionTexture(texture->GetId(), ctx, RHIResourceState::ShaderResource));
+    EXPECT_EQ(ctx.textureBarrierCount, 1u);
+    EXPECT_EQ(ctx.lastTextureBarrier.texture, manager.GetTexture(texture->GetId()));
+    EXPECT_EQ(ctx.lastTextureBarrier.stateBefore, RHIResourceState::Common);
+    EXPECT_EQ(ctx.lastTextureBarrier.stateAfter, RHIResourceState::ShaderResource);
 
-    TEST_ASSERT_TRUE(manager.TransitionTexture(texture->GetId(), ctx, RHIResourceState::ShaderResource));
-    TEST_ASSERT_EQ(ctx.textureBarrierCount, 1u);
+    EXPECT_TRUE(manager.TransitionTexture(texture->GetId(), ctx, RHIResourceState::ShaderResource));
+    EXPECT_EQ(ctx.textureBarrierCount, 1u);
 
-    TEST_ASSERT_FALSE(manager.TransitionTexture(Resource::InvalidResourceId, ctx, RHIResourceState::ShaderResource));
+    EXPECT_FALSE(manager.TransitionTexture(Resource::InvalidResourceId, ctx, RHIResourceState::ShaderResource));
 
     manager.Shutdown();
-    return true;
 }
 
-bool Test_TextureEvictionNotifiesViewCachesBeforeRelease()
+TEST(GPUResourceManagerValidation, TextureEvictionNotifiesViewCachesBeforeRelease)
 {
     FakeDevice device;
     device.supportStagedCopy = true;
@@ -969,22 +966,21 @@ bool Test_TextureEvictionNotifiesViewCachesBeforeRelease()
     manager.UploadImmediate(texture.get());
 
     RHITexture* residentTexture = manager.GetTexture(texture->GetId());
-    TEST_ASSERT_NOT_NULL(residentTexture);
-    TEST_ASSERT_EQ(invalidatedCount, 0u);
+    ASSERT_NE(nullptr, residentTexture);
+    EXPECT_EQ(invalidatedCount, 0u);
 
     manager.EvictUnused(10, 1);
 
-    TEST_ASSERT_EQ(invalidatedCount, 1u);
-    TEST_ASSERT_EQ(invalidatedTexture, residentTexture);
-    TEST_ASSERT_TRUE(manager.GetTexture(texture->GetId()) == nullptr);
-    TEST_ASSERT_FALSE(manager.IsResident(texture->GetId()));
-    TEST_ASSERT_EQ(manager.GetResourceState(texture->GetId()), GPUResourceState::Unloaded);
+    EXPECT_EQ(invalidatedCount, 1u);
+    EXPECT_EQ(invalidatedTexture, residentTexture);
+    EXPECT_TRUE(manager.GetTexture(texture->GetId()) == nullptr);
+    EXPECT_FALSE(manager.IsResident(texture->GetId()));
+    EXPECT_EQ(manager.GetResourceState(texture->GetId()), GPUResourceState::Unloaded);
 
     manager.Shutdown();
-    return true;
 }
 
-bool Test_UnsupportedTextureUploadMarksResourceFailed()
+TEST(GPUResourceManagerValidation, UnsupportedTextureUploadMarksResourceFailed)
 {
     FakeDevice device;
     device.supportStagedCopy = false;
@@ -995,59 +991,16 @@ bool Test_UnsupportedTextureUploadMarksResourceFailed()
     auto texture = CreateTextureResource(106);
     manager.UploadImmediate(texture.get());
 
-    TEST_ASSERT_EQ(manager.GetResourceState(texture->GetId()), GPUResourceState::Failed);
-    TEST_ASSERT_FALSE(manager.IsResident(texture->GetId()));
-    TEST_ASSERT_FALSE(manager.IsGPUReady(texture->GetId()));
-    TEST_ASSERT_TRUE(manager.GetTexture(texture->GetId()) == nullptr);
-    TEST_ASSERT_EQ(device.createdTextureCount, 0u);
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 0u);
+    EXPECT_EQ(manager.GetResourceState(texture->GetId()), GPUResourceState::Failed);
+    EXPECT_FALSE(manager.IsResident(texture->GetId()));
+    EXPECT_FALSE(manager.IsGPUReady(texture->GetId()));
+    EXPECT_TRUE(manager.GetTexture(texture->GetId()) == nullptr);
+    EXPECT_EQ(device.createdTextureCount, 0u);
+    EXPECT_EQ(device.submittedCommandContextCount, 0u);
 
     const auto stats = manager.GetStats();
-    TEST_ASSERT_EQ(stats.failedUploadCount, 1ull);
-    TEST_ASSERT_EQ(stats.residentTextureCount, 0ull);
+    EXPECT_EQ(stats.failedUploadCount, 1ull);
+    EXPECT_EQ(stats.residentTextureCount, 0ull);
 
     manager.Shutdown();
-    return true;
-}
-
-int main()
-{
-    Log::Initialize();
-    RVX_CORE_INFO("GPUResourceManager Validation Tests");
-
-    TestSuite suite;
-    suite.AddTest("GPUUploadServiceUploadsBufferData", Test_GPUUploadServiceUploadsBufferData);
-    suite.AddTest("GPUUploadServiceRejectsInvalidBufferUpload", Test_GPUUploadServiceRejectsInvalidBufferUpload);
-    suite.AddTest("GPUUploadServiceReportsInvalidBufferData", Test_GPUUploadServiceReportsInvalidBufferData);
-    suite.AddTest("GPUUploadServiceReportsBufferCreationFailure", Test_GPUUploadServiceReportsBufferCreationFailure);
-    suite.AddTest("GPUUploadServiceUsesStagedCopyForBufferWhenAvailable", Test_GPUUploadServiceUsesStagedCopyForBufferWhenAvailable);
-    suite.AddTest("GPUUploadServiceCompletesPendingBufferUploadAfterFence", Test_GPUUploadServiceCompletesPendingBufferUploadAfterFence);
-    suite.AddTest("GPUUploadServiceFallsBackWhenStagingMapFails", Test_GPUUploadServiceFallsBackWhenStagingMapFails);
-    suite.AddTest("GPUUploadServiceRejectsTextureWhenStagedCopyUnavailable", Test_GPUUploadServiceRejectsTextureWhenStagedCopyUnavailable);
-    suite.AddTest("GPUUploadServiceUsesStagedCopyForTextureWhenAvailable", Test_GPUUploadServiceUsesStagedCopyForTextureWhenAvailable);
-    suite.AddTest("GPUUploadServiceRejectsInvalidTextureDimensions", Test_GPUUploadServiceRejectsInvalidTextureDimensions);
-    suite.AddTest("GPUUploadServiceRejectsUnsupportedTextureFormat", Test_GPUUploadServiceRejectsUnsupportedTextureFormat);
-    suite.AddTest("DuplicateQueuedUploadIsIgnored", Test_DuplicateQueuedUploadIsIgnored);
-    suite.AddTest("UnmanagedResourceIsNotQueuedForAsyncUpload", Test_UnmanagedResourceIsNotQueuedForAsyncUpload);
-    suite.AddTest("QueuedUploadRetainsRefCountedResource", Test_QueuedUploadRetainsRefCountedResource);
-    suite.AddTest("ProcessPendingUploadsWithZeroBudgetDoesNotStartNewUpload", Test_ProcessPendingUploadsWithZeroBudgetDoesNotStartNewUpload);
-    suite.AddTest("MeshWithoutIndexDataFailsUpload", Test_MeshWithoutIndexDataFailsUpload);
-    suite.AddTest("ValidMeshUploadBecomesGPUReady", Test_ValidMeshUploadBecomesGPUReady);
-    suite.AddTest("StagedMeshUploadImmediateWaitsForFenceCompletion", Test_StagedMeshUploadImmediateWaitsForFenceCompletion);
-    suite.AddTest("TransitionTextureTransitionsResidentTextureOnce", Test_TransitionTextureTransitionsResidentTextureOnce);
-    suite.AddTest("TextureEvictionNotifiesViewCachesBeforeRelease", Test_TextureEvictionNotifiesViewCachesBeforeRelease);
-    suite.AddTest("UnsupportedTextureUploadMarksResourceFailed", Test_UnsupportedTextureUploadMarksResourceFailed);
-
-    auto results = suite.Run();
-    suite.PrintResults(results);
-
-    Log::Shutdown();
-
-    for (const auto& result : results)
-    {
-        if (!result.passed)
-            return 1;
-    }
-
-    return 0;
 }

@@ -12,6 +12,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
+#if defined(_WIN32) && !defined(VK_USE_PLATFORM_WIN32_KHR)
 #define VK_USE_PLATFORM_WIN32_KHR
+#endif
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>

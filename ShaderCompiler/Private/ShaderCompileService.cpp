@@ -4,6 +4,11 @@
 
 namespace RVX
 {
+    ShaderCompileService::ShaderCompileService()
+        : ShaderCompileService(Config{})
+    {
+    }
+
     ShaderCompileService::ShaderCompileService(const Config& config)
         : m_config(config)
         , m_compiler(CreateShaderCompiler())
