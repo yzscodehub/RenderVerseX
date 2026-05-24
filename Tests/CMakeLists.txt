@@ -23,17 +23,16 @@ if(RVX_ENABLE_OPENGL)
     list(APPEND RVX_ALL_BACKENDS RVX::RHI_OpenGL)
 endif()
 
-# Test Framework library
-add_library(RVX_TestFramework STATIC
-    TestFramework/TestRunner.cpp
-    TestFramework/ImageCompare.cpp
+# Shared test utilities
+add_library(RVX_TestCommon STATIC
+    Common/ImageCompare.cpp
 )
 
-target_include_directories(RVX_TestFramework PUBLIC
+target_include_directories(RVX_TestCommon PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_link_libraries(RVX_TestFramework PUBLIC
+target_link_libraries(RVX_TestCommon PUBLIC
     RVX::Core
 )
 
