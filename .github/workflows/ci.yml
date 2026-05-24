@@ -31,14 +31,14 @@ jobs:
           key: vcpkg-windows-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-windows-
 
-      - name: Configure (release preset)
-        run: cmake --preset win_x64_release
+      - name: Configure (debug preset)
+        run: cmake --preset win_x64_debug
 
       - name: Build
-        run: cmake --build --preset win_x64_release
+        run: cmake --build --preset win_x64_debug
 
       - name: Test (unit + lint, GPU tests skipped on headless runner)
-        run: ctest --preset win_x64_release_unit_lint
+        run: ctest --preset win_x64_debug_unit_lint
 
   linux:
     name: Linux (Vulkan/OpenGL configure)
@@ -66,13 +66,13 @@ jobs:
           restore-keys: vcpkg-linux-
 
       - name: Configure
-        run: cmake --preset linux_x64_release
+        run: cmake --preset linux_x64_debug
 
       - name: Build
-        run: cmake --build --preset linux_x64_release
+        run: cmake --build --preset linux_x64_debug
 
       - name: Test (unit + lint)
-        run: ctest --preset linux_x64_release_unit_lint
+        run: ctest --preset linux_x64_debug_unit_lint
 
   macos:
     name: macOS ARM64 (Metal)
@@ -95,11 +95,11 @@ jobs:
           key: vcpkg-macos-arm64-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-macos-arm64-
 
-      - name: Configure (Metal release preset)
-        run: cmake --preset mac_arm64_release
+      - name: Configure (Metal debug preset)
+        run: cmake --preset mac_arm64_debug
 
       - name: Build
-        run: cmake --build --preset mac_arm64_release
+        run: cmake --build --preset mac_arm64_debug
 
       - name: Test (unit + lint, GPU tests skipped on headless runner)
-        run: ctest --preset mac_arm64_release_unit_lint
+        run: ctest --preset mac_arm64_debug_unit_lint
