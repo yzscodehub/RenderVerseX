@@ -86,19 +86,23 @@
   "buildPresets": [
     {
       "name": "debug",
-      "configurePreset": "debug"
+      "configurePreset": "debug",
+      "configuration": "Debug"
     },
     {
       "name": "release",
-      "configurePreset": "release"
+      "configurePreset": "release",
+      "configuration": "Release"
     },
     {
       "name": "macos-debug",
-      "configurePreset": "macos-debug"
+      "configurePreset": "macos-debug",
+      "configuration": "Debug"
     },
     {
       "name": "macos-release",
-      "configurePreset": "macos-release"
+      "configurePreset": "macos-release",
+      "configuration": "Release"
     }
   ],
   "testPresets": [
