@@ -59,8 +59,8 @@ namespace
         RVX::RHIDescriptorSetRef CreateDescriptorSet(const RVX::RHIDescriptorSetDesc&) override { return {}; }
         RVX::RHIQueryPoolRef CreateQueryPool(const RVX::RHIQueryPoolDesc&) override { return {}; }
         RVX::RHICommandContextRef CreateCommandContext(RVX::RHICommandQueueType) override { return {}; }
-        void SubmitCommandContext(RVX::RHICommandContext*, RVX::RHIFence*) override {}
-        void SubmitCommandContexts(std::span<RVX::RHICommandContext* const>, RVX::RHIFence*) override {}
+        RVX::uint64 SubmitCommandContext(RVX::RHICommandContext*, RVX::RHIFence*) override { return 0; }
+        RVX::uint64 SubmitCommandContexts(std::span<RVX::RHICommandContext* const>, RVX::RHIFence*) override { return 0; }
         RVX::RHISwapChainRef CreateSwapChain(const RVX::RHISwapChainDesc&) override { return {}; }
         RVX::RHIFenceRef CreateFence(RVX::uint64) override { return {}; }
         void WaitForFence(RVX::RHIFence*, RVX::uint64) override {}
@@ -214,6 +214,13 @@ TEST_F(RenderHonestyValidationFixture, QueryCapabilitiesDefaultToUnsupported)
     EXPECT_FALSE(caps.supportsOcclusionQueries);
     EXPECT_FALSE(caps.supportsPipelineStatisticsQueries);
     EXPECT_EQ(caps.timestampFrequency, 0u);
+    EXPECT_FALSE(caps.supportsExplicitHeapManagement);
+    EXPECT_FALSE(caps.supportsHostFenceSignal);
+    EXPECT_FALSE(caps.supportsDefaultQueueFenceSignal);
+    EXPECT_FALSE(caps.supportsExplicitQueueFenceSignal);
+    EXPECT_FALSE(caps.supportsQueueFenceWait);
+    EXPECT_FALSE(caps.supportsMultiQueueBatchSubmit);
+    EXPECT_FALSE(caps.emulatesQueueFences);
 }
 
 TEST_F(RenderHonestyValidationFixture, TextureReferenceFallbackIsObservable)

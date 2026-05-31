@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -307,6 +308,96 @@ TEST(CrossBackendValidation, FenceConsistency)
     RVX_GTEST_SKIP_IF_NO_GPU_BACKENDS(testedBackendCount);
 }
 
+TEST(CrossBackendValidation, SubmitFenceValueConsistency)
+{
+    std::vector<RHIBackendType> backends = GetAvailableBackends();
+    uint32_t testedBackendCount = 0;
+
+    for (auto backend : backends)
+    {
+        auto device = CreateDeviceForBackend(backend);
+        if (!ShouldRunBackend(device, backend))
+        {
+            continue;
+        }
+        ++testedBackendCount;
+
+        const RHICapabilities& caps = device->GetCapabilities();
+        EXPECT_TRUE(caps.supportsDefaultQueueFenceSignal || caps.emulatesQueueFences);
+
+        auto fence = device->CreateFence(0);
+        ASSERT_NE(nullptr, fence.Get());
+
+        const RHICommandQueueType queueType =
+            caps.supportsAsyncCompute ? RHICommandQueueType::Compute : RHICommandQueueType::Graphics;
+
+        EXPECT_EQ(device->SubmitCommandContext(nullptr, fence.Get()), 0u) << ToString(backend);
+        EXPECT_EQ(fence->GetCompletedValue(), 0u) << ToString(backend);
+
+        EXPECT_EQ(device->SubmitCommandContexts(std::span<RHICommandContext* const>(), fence.Get()), 0u)
+            << ToString(backend);
+        EXPECT_EQ(fence->GetCompletedValue(), 0u) << ToString(backend);
+
+        std::vector<RHICommandContext*> nullBatchContexts = { nullptr, nullptr };
+        EXPECT_EQ(device->SubmitCommandContexts(
+                      std::span<RHICommandContext* const>(nullBatchContexts.data(), nullBatchContexts.size()),
+                      fence.Get()),
+                  0u)
+            << ToString(backend);
+        EXPECT_EQ(fence->GetCompletedValue(), 0u) << ToString(backend);
+
+        auto noFenceContext = device->CreateCommandContext(queueType);
+        ASSERT_NE(nullptr, noFenceContext.Get());
+        noFenceContext->Begin();
+        noFenceContext->End();
+        EXPECT_EQ(device->SubmitCommandContext(noFenceContext.Get(), nullptr), 0u);
+
+        auto firstContext = device->CreateCommandContext(queueType);
+        ASSERT_NE(nullptr, firstContext.Get());
+        firstContext->Begin();
+        firstContext->End();
+        uint64 firstValue = device->SubmitCommandContext(firstContext.Get(), fence.Get());
+
+        auto secondContext = device->CreateCommandContext(queueType);
+        ASSERT_NE(nullptr, secondContext.Get());
+        secondContext->Begin();
+        secondContext->End();
+        uint64 secondValue = device->SubmitCommandContext(secondContext.Get(), fence.Get());
+
+        EXPECT_NE(firstValue, 0u) << ToString(backend);
+        EXPECT_GT(secondValue, firstValue) << ToString(backend);
+
+        device->WaitForFence(fence.Get(), secondValue);
+        EXPECT_GE(fence->GetCompletedValue(), secondValue) << ToString(backend);
+
+        auto batchFence = device->CreateFence(0);
+        ASSERT_NE(nullptr, batchFence.Get());
+
+        auto batchContextA = device->CreateCommandContext(queueType);
+        auto batchContextB = device->CreateCommandContext(queueType);
+        ASSERT_NE(nullptr, batchContextA.Get());
+        ASSERT_NE(nullptr, batchContextB.Get());
+
+        batchContextA->Begin();
+        batchContextA->End();
+        batchContextB->Begin();
+        batchContextB->End();
+
+        std::vector<RHICommandContext*> batchContexts = { batchContextA.Get(), batchContextB.Get() };
+        uint64 batchValue = device->SubmitCommandContexts(
+            std::span<RHICommandContext* const>(batchContexts.data(), batchContexts.size()),
+            batchFence.Get());
+        EXPECT_NE(batchValue, 0u) << ToString(backend);
+
+        device->WaitForFence(batchFence.Get(), batchValue);
+        EXPECT_GE(batchFence->GetCompletedValue(), batchValue) << ToString(backend);
+
+        RVX_CORE_INFO("Backend {}: Submit fence values OK", ToString(backend));
+    }
+
+    RVX_GTEST_SKIP_IF_NO_GPU_BACKENDS(testedBackendCount);
+}
+
 // =============================================================================
 // Heap and Placed Resources Consistency
 // =============================================================================
@@ -324,6 +415,8 @@ TEST(CrossBackendValidation, HeapConsistency)
         }
         ++testedBackendCount;
 
+        const RHICapabilities& caps = device->GetCapabilities();
+
         // Create heap
         RHIHeapDesc heapDesc;
         heapDesc.size = 32 * 1024 * 1024;  // 32 MB
@@ -331,6 +424,13 @@ TEST(CrossBackendValidation, HeapConsistency)
         heapDesc.flags = RHIHeapFlags::AllowRenderTargets;
 
         auto heap = device->CreateHeap(heapDesc);
+        if (!caps.supportsExplicitHeapManagement)
+        {
+            EXPECT_EQ(nullptr, heap.Get()) << ToString(backend);
+            RVX_CORE_INFO("Backend {}: Explicit heaps unsupported as advertised", ToString(backend));
+            continue;
+        }
+
         ASSERT_NE(nullptr, heap.Get());
         EXPECT_EQ(heap->GetSize(), heapDesc.size);
         EXPECT_EQ(heap->GetType(), heapDesc.type);

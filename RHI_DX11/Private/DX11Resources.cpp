@@ -973,6 +973,7 @@ namespace RVX
     DX11Fence::DX11Fence(DX11Device* device, uint64 initialValue)
         : m_device(device)
         , m_value(initialValue)
+        , m_nextSignalValue(initialValue + 1)
     {
         // Try to create ID3D11Fence (Win10+)
         if (auto device5 = device->GetD3DDevice5())
@@ -1017,6 +1018,7 @@ namespace RVX
 
     void DX11Fence::Signal(uint64 value)
     {
+        TrackSubmittedValue(value);
         m_value = value;
         if (m_fence)
         {
@@ -1060,6 +1062,22 @@ namespace RVX
     {
         (void)queueType;  // DX11 only has one queue
         Signal(value);
+    }
+
+    uint64 DX11Fence::AllocateSignalValue()
+    {
+        return m_nextSignalValue.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void DX11Fence::TrackSubmittedValue(uint64 value)
+    {
+        uint64 expected = m_nextSignalValue.load(std::memory_order_relaxed);
+        while (expected <= value &&
+               !m_nextSignalValue.compare_exchange_weak(expected, value + 1,
+                                                        std::memory_order_relaxed,
+                                                        std::memory_order_relaxed))
+        {
+        }
     }
 
     // =============================================================================

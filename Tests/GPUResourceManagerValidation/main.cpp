@@ -251,16 +251,21 @@ namespace
             return retainedCommandContext;
         }
 
-        void SubmitCommandContext(RHICommandContext*, RHIFence* signalFence) override
+        uint64 SubmitCommandContext(RHICommandContext*, RHIFence* signalFence) override
         {
             ++submittedCommandContextCount;
             lastSubmittedFence = signalFence;
+            uint64 submittedValue = signalFence ? 1 : 0;
             if (completeSubmittedFenceImmediately && signalFence)
             {
-                signalFence->Signal(1);
+                signalFence->Signal(submittedValue);
             }
+            return submittedValue;
         }
-        void SubmitCommandContexts(std::span<RHICommandContext* const>, RHIFence*) override {}
+        uint64 SubmitCommandContexts(std::span<RHICommandContext* const>, RHIFence* signalFence) override
+        {
+            return signalFence ? 1 : 0;
+        }
         RHISwapChainRef CreateSwapChain(const RHISwapChainDesc&) override { return nullptr; }
         RHIFenceRef CreateFence(uint64 initialValue) override
         {

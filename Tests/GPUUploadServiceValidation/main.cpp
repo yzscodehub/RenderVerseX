@@ -152,16 +152,26 @@ namespace
     public:
         explicit FakeFence(uint64 initialValue)
             : m_completedValue(initialValue)
+            , m_nextSignalValue(initialValue + 1)
         {
         }
 
         uint64 GetCompletedValue() const override { return m_completedValue; }
-        void Signal(uint64 value) override { m_completedValue = value; }
-        void SignalOnQueue(uint64 value, RHICommandQueueType) override { m_completedValue = value; }
-        void Wait(uint64 value, uint64 = UINT64_MAX) override { m_completedValue = value; }
+        void Signal(uint64 value) override
+        {
+            m_completedValue = value;
+            if (m_nextSignalValue <= value)
+            {
+                m_nextSignalValue = value + 1;
+            }
+        }
+        void SignalOnQueue(uint64 value, RHICommandQueueType) override { Signal(value); }
+        void Wait(uint64 value, uint64 = UINT64_MAX) override { Signal(value); }
+        uint64 AllocateSignalValue() { return m_nextSignalValue++; }
 
     private:
         uint64 m_completedValue = 0;
+        uint64 m_nextSignalValue = 1;
     };
 
     class FakeDevice final : public IRHIDevice
@@ -202,14 +212,18 @@ namespace
             return retainedCommandContext;
         }
 
-        void SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence) override
+        uint64 SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence) override
         {
             ++submittedCommandContextCount;
             lastSubmittedContext = context;
             lastSubmittedFence = signalFence;
+            return signalFence ? static_cast<FakeFence*>(signalFence)->AllocateSignalValue() : 0;
         }
 
-        void SubmitCommandContexts(std::span<RHICommandContext* const>, RHIFence*) override {}
+        uint64 SubmitCommandContexts(std::span<RHICommandContext* const>, RHIFence* signalFence) override
+        {
+            return signalFence ? static_cast<FakeFence*>(signalFence)->AllocateSignalValue() : 0;
+        }
         RHISwapChainRef CreateSwapChain(const RHISwapChainDesc&) override { return nullptr; }
         RHIFenceRef CreateFence(uint64 initialValue) override
         {

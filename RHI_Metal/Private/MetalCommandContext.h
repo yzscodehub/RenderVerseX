@@ -127,7 +127,7 @@ namespace RVX
         // =========================================================================
         // Metal-Specific
         // =========================================================================
-        void Submit(RHIFence* signalFence);
+        uint64 Submit(RHIFence* signalFence);
         id<MTLCommandBuffer> GetCommandBuffer() const { return m_commandBuffer; }
 
         // SwapChain presentation support

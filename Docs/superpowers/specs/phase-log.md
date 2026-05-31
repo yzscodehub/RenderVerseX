@@ -8,12 +8,12 @@ Every R-SP or sub-stage must append one entry before commit.
 
 ### R-SP: R0 Documentation and Scope Lock
 
-**Date:** 2026-05-31  
-**Commit:** `4a50af8`  
-**Spark plan review agent:** `019e7994-2192-7940-8c23-c7b37ba169ac`  
-**Spark code review agent:** N/A - documentation plan review only  
+**Date:** 2026-05-31
+**Commit:** `4a50af8`
+**Spark plan review agent:** `019e7994-2192-7940-8c23-c7b37ba169ac`
+**Spark code review agent:** N/A - documentation plan review only
 
-**Plan source:**  
+**Plan source:**
 
 - Document: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
 - Section: `4. R0 - Documentation and Scope Lock`
@@ -24,54 +24,54 @@ Every R-SP or sub-stage must append one entry before commit.
 - Previous R-SP: N/A
 - Evidence: R0 is the first render-first program stage
 
-**Approved scope:**  
+**Approved scope:**
 
 - Add the render-first authoritative roadmap.
 - Add a durable phase-log template.
 - Record strict serial execution, Spark review gates, and final ModelViewer validation.
 - Keep full-engine roadmap as reference-only for current render work.
 
-**Out of scope:**  
+**Out of scope:**
 
 - Code implementation.
 - Build/test target changes.
 - RenderGraph, RHI, Material, Asset, or SceneRenderer fixes.
 
-**Files changed:**  
+**Files changed:**
 
 - `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
 - `Docs/superpowers/specs/phase-log.md`
 
-**Validation commands:**  
+**Validation commands:**
 
 ```powershell
 rg -n "R-HS|R7 - Visual Gate|R8 - RenderProxy|R12 - Final ModelViewer|strict serial|Spark" Docs\superpowers\specs\2026-05-30-render-program-plan-v1.md
 rg -n "Prerequisite status|Visual gate: PASS" Docs\superpowers\specs\phase-log.md
 ```
 
-**Validation result:**  
+**Validation result:**
 
 - Build: N/A - documentation only
 - Tests: N/A - documentation only
 - Visual gate: N/A
 
-**Artifacts:**  
+**Artifacts:**
 
 - Logs: terminal `rg` output confirmed key gates and phase-log fields
 - Screenshots: N/A
 - Diffs: working tree docs
 
-**Spark plan review result:**  
+**Spark plan review result:**
 
 - Verdict: PASS - `2026-05-30-render-program-plan-v1.md` and `phase-log.md` can serve as the R0 documentation plan.
 - Blockers resolved: Added "create/ensure tests exist" wording, prerequisite status, and enumerated visual gate status.
 
-**Spark code review result:**  
+**Spark code review result:**
 
 - Verdict: N/A - R0 produced documents only and received Spark document/plan review.
 - Blockers resolved: N/A
 
-**Notes / follow-ups:**  
+**Notes / follow-ups:**
 
 - Next stage is `R-HS - Render Honesty Sprint`.
 - R-HS must create its own implementation plan and pass Spark plan review before code changes.
@@ -80,12 +80,12 @@ rg -n "Prerequisite status|Visual gate: PASS" Docs\superpowers\specs\phase-log.m
 
 ### R-SP: R-HS Render Honesty Sprint
 
-**Date:** 2026-05-31  
-**Commit:** pending  
-**Spark plan review agent:** `019e79aa-9968-7011-ad6c-3a8e719b884e`  
-**Spark code review agent:** `019e7bf0-4b96-78b2-92e2-25469de9e566`  
+**Date:** 2026-05-31
+**Commit:** `b460f9e`
+**Spark plan review agent:** `019e79aa-9968-7011-ad6c-3a8e719b884e`
+**Spark code review agent:** `019e7bf0-4b96-78b2-92e2-25469de9e566`
 
-**Plan source:**  
+**Plan source:**
 
 - Document: `Docs/superpowers/specs/2026-05-31-r-hs-render-honesty-sprint-plan.md`
 - Source roadmap: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
@@ -97,7 +97,7 @@ rg -n "Prerequisite status|Visual gate: PASS" Docs\superpowers\specs\phase-log.m
 - Previous R-SP: R0 Documentation and Scope Lock
 - Evidence: R0 committed as `4a50af8`; R-HS implementation plan passed Spark plan review before code changes
 
-**Approved scope:**  
+**Approved scope:**
 
 - Add `RenderHonestyValidation` and make render-facing false-success paths test-visible.
 - Make invalid JSON parsing, placeholder importers, asset database persistence/load, material compile/bind, profiler timestamp support, and texture fallback states honest.
@@ -105,7 +105,7 @@ rg -n "Prerequisite status|Visual gate: PASS" Docs\superpowers\specs\phase-log.m
 - Expose backend query capability honesty, especially Vulkan query/timestamp unsupported paths.
 - Mark disconnected post-process, sky/atmosphere, and particle simulation/rendering paths as unsupported/disabled instead of successful.
 
-**Out of scope:**  
+**Out of scope:**
 
 - Full RenderGraph async/copy scheduling or aliasing implementation.
 - Vulkan query/timestamp implementation.
@@ -113,7 +113,7 @@ rg -n "Prerequisite status|Visual gate: PASS" Docs\superpowers\specs\phase-log.m
 - Full post-process, sky/atmosphere, or particle implementation.
 - RenderProxy work and ModelViewer visual validation.
 
-**Files changed:**  
+**Files changed:**
 
 - `Docs/superpowers/specs/2026-05-31-r-hs-render-honesty-sprint-plan.md`
 - `Docs/superpowers/specs/phase-log.md`
@@ -174,7 +174,7 @@ rg -n "Prerequisite status|Visual gate: PASS" Docs\superpowers\specs\phase-log.m
 - `Tests/RenderGraphValidation/main.cpp`
 - `Tests/VulkanValidation/main.cpp`
 
-**Validation commands:**  
+**Validation commands:**
 
 ```powershell
 cmake --build build/win_x64_debug --config Debug --target RenderHonestyValidation
@@ -198,7 +198,7 @@ build\win_x64_debug\Tests\Debug\ResourceInstantiationValidation.exe
 ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderHonestyValidation|RenderGraphValidation|MaterialSystemValidation|GPUUploadServiceValidation|GPUResourceManagerValidation|ResourceInstantiationValidation|VulkanValidation|DX12Validation|DX11Validation"
 ```
 
-**Validation result:**  
+**Validation result:**
 
 - Build: PASS
 - Tests: PASS
@@ -214,26 +214,155 @@ ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderHone
   - Filtered CTest: 183/183
 - Visual gate: N/A
 
-**Artifacts:**  
+**Artifacts:**
 
 - Logs: terminal build/test output; Spark plan and code review messages
 - Screenshots: N/A
 - Diffs: R-HS working tree diff before commit
 
-**Spark plan review result:**  
+**Spark plan review result:**
 
 - Verdict: PASS on second review.
 - Blockers resolved: first review flagged missing AssetDatabase coverage and oversized/broad pass scope; R-HS plan was narrowed to explicit files/tasks and passed review.
 
-**Spark code review result:**  
+**Spark code review result:**
 
 - Verdict: PASS after blocker fixes.
 - Blockers resolved: fixed TextureLoader cache hit status reporting; replaced JsonArchive heuristic validation with recursive JSON syntax validation; added regression coverage for both.
 
-**Notes / follow-ups:**  
+**Notes / follow-ups:**
 
 - Vulkan validation still emits pre-existing backend validation-layer messages in some tests, but the validation targets pass.
 - Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R-HS commit.
+- Next stage must reread the render-first plan and create its own implementation plan before code changes.
+
+---
+
+### R-SP: R1a RHI Submit/Fence Contract
+
+**Date:** 2026-05-31
+**Commit:** pending
+**Spark plan review agent:** `019e7c3c-06a7-71c0-8a0d-b662be0ec7cc`
+**Spark code review agent:** `019e7cae-8987-73a3-ba9f-0afd6cbd2072`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-05-31-r1a-rhi-submit-fence-contract-plan.md`
+- Source roadmap: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: `6. R1 - RHI Core Contract`
+- Lines checked: R1 section and R1a plan sections 1-8 checked before implementation; plan rechecked before review/commit
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-HS Render Honesty Sprint
+- Evidence: R-HS committed as `b460f9e`; R1a implementation plan passed Spark plan review before code changes
+
+**Approved scope:**
+
+- Define the RHI submit return contract: submitted fence value on queued work, `0` for no fence or failed/no-work submission.
+- Add explicit synchronization capability bits for host fence signal, default queue signal, explicit queue signal, queue wait, mixed queue batch submit, and emulated fences.
+- Update DX12, Vulkan, DX11, OpenGL, and Metal submit/fence implementations to report honest capabilities and return monotonic submitted fence values.
+- Move command-context fence operations to backend capability semantics: unsupported paths are visible and do not fake GPU queue support.
+- Update RenderContext, FrameSynchronizer, GPUUploadService, and validation fakes to consume the returned submitted fence value.
+- Add `supportsExplicitHeapManagement` so explicit heap/placed-resource support is capability-gated instead of assumed by cross-backend tests.
+
+**Out of scope:**
+
+- Descriptor/barrier expansion, Vulkan query implementation, Linux shader pipeline, Metal runtime validation, or Vulkan bindless parity.
+- Full multi-queue scheduling beyond the declared submit contract.
+- Fixing pre-existing Vulkan validation-layer messages in legacy command-context tests.
+- RenderGraph, Material, Asset, RenderProxy, or ModelViewer visual work.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-05-31-r1a-rhi-submit-fence-contract-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `RHI/Include/RHI/RHICapabilities.h`
+- `RHI/Include/RHI/RHICommandContext.h`
+- `RHI/Include/RHI/RHIDevice.h`
+- `RHI/Include/RHI/RHISynchronization.h`
+- `RHI_DX11/Private/DX11CommandContext.cpp`
+- `RHI_DX11/Private/DX11Device.cpp`
+- `RHI_DX11/Private/DX11Device.h`
+- `RHI_DX11/Private/DX11Resources.cpp`
+- `RHI_DX11/Private/DX11Resources.h`
+- `RHI_DX12/Private/DX12CommandContext.cpp`
+- `RHI_DX12/Private/DX12CommandContext.h`
+- `RHI_DX12/Private/DX12Device.cpp`
+- `RHI_DX12/Private/DX12Device.h`
+- `RHI_DX12/Private/DX12Resources.cpp`
+- `RHI_DX12/Private/DX12Resources.h`
+- `RHI_Metal/Private/MetalCommandContext.h`
+- `RHI_Metal/Private/MetalCommandContext.mm`
+- `RHI_Metal/Private/MetalDevice.h`
+- `RHI_Metal/Private/MetalDevice.mm`
+- `RHI_Metal/Private/MetalSynchronization.h`
+- `RHI_Metal/Private/MetalSynchronization.mm`
+- `RHI_OpenGL/Private/OpenGLCommandContext.cpp`
+- `RHI_OpenGL/Private/OpenGLDevice.cpp`
+- `RHI_OpenGL/Private/OpenGLDevice.h`
+- `RHI_OpenGL/Private/OpenGLSync.cpp`
+- `RHI_OpenGL/Private/OpenGLSync.h`
+- `RHI_Vulkan/Private/VulkanCommandContext.cpp`
+- `RHI_Vulkan/Private/VulkanCommandContext.h`
+- `RHI_Vulkan/Private/VulkanDevice.cpp`
+- `RHI_Vulkan/Private/VulkanDevice.h`
+- `Render/Include/Render/Context/FrameSynchronizer.h`
+- `Render/Private/Context/FrameSynchronizer.cpp`
+- `Render/Private/Context/RenderContext.cpp`
+- `Render/Private/GPUUploadService.cpp`
+- `Tests/CrossBackendValidation/main.cpp`
+- `Tests/DX11Validation/main.cpp`
+- `Tests/DX12Validation/main.cpp`
+- `Tests/GPUResourceManagerValidation/main.cpp`
+- `Tests/GPUUploadServiceValidation/main.cpp`
+- `Tests/RenderHonestyValidation/main.cpp`
+- `Tests/ResourceViewCacheValidation/main.cpp`
+- `Tests/VulkanValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target CrossBackendValidation
+build\win_x64_debug\Tests\Debug\CrossBackendValidation.exe
+cmake --build build/win_x64_debug --config Debug --target GPUUploadServiceValidation GPUResourceManagerValidation ResourceViewCacheValidation RenderHonestyValidation DX12Validation VulkanValidation DX11Validation
+build\win_x64_debug\Tests\Debug\GPUUploadServiceValidation.exe
+build\win_x64_debug\Tests\Debug\CrossBackendValidation.exe --gtest_filter=CrossBackendValidation.SubmitFenceValueConsistency
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "DX12Validation|VulkanValidation|DX11Validation|CrossBackendValidation|RenderHonestyValidation|GPUUploadServiceValidation|GPUResourceManagerValidation|ResourceViewCacheValidation"
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `DX12Validation`: 16/16
+  - `VulkanValidation`: 19/19
+  - `DX11Validation`: 14/14
+  - `CrossBackendValidation`: 8/8
+  - `GPUUploadServiceValidation`: 7/7
+  - Filtered CTest: 101/101
+- Visual gate: N/A
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan and code review messages
+- Screenshots: N/A
+- Diffs: R1a working tree diff before commit
+
+**Spark plan review result:**
+
+- Verdict: PASS after plan corrections.
+- Blockers resolved: split DX12 host/default/explicit queue fence semantics, declared DX12 mixed-queue batch unsupported, included all backend/test fake signature updates, and kept Vulkan queue waits unsupported.
+
+**Spark code review result:**
+
+- Verdict: PASS after blocker fixes.
+- Blockers resolved: OpenGL null submit and OpenGL/DX11 empty/all-null batch submit now return `0` without signaling; Metal command-context `SignalFence`/`WaitFence` now log unsupported instead of performing host fence operations; cross-backend tests cover no-work submit semantics.
+
+**Notes / follow-ups:**
+
+- Vulkan validation still emits pre-existing validation-layer messages in legacy command-context tests, but the R1a validation targets pass.
+- Metal code was updated to the same interface contract but could not be runtime-validated on this Windows machine.
 - Next stage must reread the render-first plan and create its own implementation plan before code changes.
 
 ---
@@ -242,12 +371,12 @@ ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderHone
 
 ### R-SP: `<id and title>`
 
-**Date:**  
-**Commit:**  
-**Spark plan review agent:**  
-**Spark code review agent:**  
+**Date:**
+**Commit:**
+**Spark plan review agent:**
+**Spark code review agent:**
 
-**Plan source:**  
+**Plan source:**
 
 - Document:
 - Section:
@@ -258,48 +387,48 @@ ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderHone
 - Previous R-SP:
 - Evidence:
 
-**Approved scope:**  
+**Approved scope:**
 
-- 
+-
 
-**Out of scope:**  
+**Out of scope:**
 
-- 
+-
 
-**Files changed:**  
+**Files changed:**
 
-- 
+-
 
-**Validation commands:**  
+**Validation commands:**
 
 ```powershell
 
 ```
 
-**Validation result:**  
+**Validation result:**
 
 - Build:
 - Tests:
 - Visual gate: PASS / BLOCKED / N/A
 
-**Artifacts:**  
+**Artifacts:**
 
 - Logs:
 - Screenshots:
 - Diffs:
 
-**Spark plan review result:**  
+**Spark plan review result:**
 
 - Verdict:
 - Blockers resolved:
 
-**Spark code review result:**  
+**Spark code review result:**
 
 - Verdict:
 - Blockers resolved:
 
-**Notes / follow-ups:**  
+**Notes / follow-ups:**
 
-- 
+-
 
 ---

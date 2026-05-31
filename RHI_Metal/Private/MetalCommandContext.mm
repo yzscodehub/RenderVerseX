@@ -952,20 +952,20 @@ namespace RVX
     // =============================================================================
     void MetalCommandContext::SignalFence(RHIFence* fence, uint64 value)
     {
-        if (fence)
-        {
-            // Signal the fence from CPU - actual GPU signal happens at command buffer completion
-            fence->Signal(value);
-        }
+        (void)fence;
+        RVX_RHI_WARN(
+            "MetalCommandContext::SignalFence is unsupported; "
+            "RHICapabilities::supportsExplicitQueueFenceSignal is false (requested value {})",
+            value);
     }
 
     void MetalCommandContext::WaitFence(RHIFence* fence, uint64 value)
     {
-        if (fence)
-        {
-            // CPU wait for fence - this will block the calling thread
-            fence->Wait(value);
-        }
+        (void)fence;
+        RVX_RHI_WARN(
+            "MetalCommandContext::WaitFence is unsupported; "
+            "RHICapabilities::supportsQueueFenceWait is false (requested value {})",
+            value);
     }
 
     // =============================================================================
@@ -998,7 +998,7 @@ namespace RVX
     // =============================================================================
     // Submission
     // =============================================================================
-    void MetalCommandContext::Submit(RHIFence* signalFence)
+    uint64 MetalCommandContext::Submit(RHIFence* signalFence)
     {
         EndCurrentEncoder();
 
@@ -1010,13 +1010,15 @@ namespace RVX
             m_pendingDrawable = nil;
         }
 
+        uint64 submittedValue = 0;
         if (signalFence)
         {
             auto* metalFence = static_cast<MetalFence*>(signalFence);
-            metalFence->SignalFromCommandBuffer(m_commandBuffer);
+            submittedValue = metalFence->SignalFromCommandBuffer(m_commandBuffer);
         }
 
         [m_commandBuffer commit];
+        return submittedValue;
     }
 
 } // namespace RVX

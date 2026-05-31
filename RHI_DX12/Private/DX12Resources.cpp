@@ -874,6 +874,7 @@ namespace RVX
     // =============================================================================
     DX12Fence::DX12Fence(DX12Device* device, uint64 initialValue)
         : m_device(device)
+        , m_nextSignalValue(initialValue + 1)
     {
         DX12_CHECK(device->GetD3DDevice()->CreateFence(initialValue, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)));
         m_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -894,6 +895,7 @@ namespace RVX
 
     void DX12Fence::Signal(uint64 value)
     {
+        TrackSubmittedValue(value);
         m_device->GetGraphicsQueue()->Signal(m_fence.Get(), value);
     }
 
@@ -902,6 +904,7 @@ namespace RVX
         ID3D12CommandQueue* queue = m_device->GetQueue(queueType);
         if (queue)
         {
+            TrackSubmittedValue(value);
             queue->Signal(m_fence.Get(), value);
         }
         else
@@ -917,6 +920,22 @@ namespace RVX
             m_fence->SetEventOnCompletion(value, m_event);
             DWORD timeoutMs = (timeoutNs == UINT64_MAX) ? INFINITE : static_cast<DWORD>(timeoutNs / 1000000);
             WaitForSingleObjectEx(m_event, timeoutMs, FALSE);
+        }
+    }
+
+    uint64 DX12Fence::AllocateSignalValue()
+    {
+        return m_nextSignalValue.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void DX12Fence::TrackSubmittedValue(uint64 value)
+    {
+        uint64 expected = m_nextSignalValue.load(std::memory_order_relaxed);
+        while (expected <= value &&
+               !m_nextSignalValue.compare_exchange_weak(expected, value + 1,
+                                                        std::memory_order_relaxed,
+                                                        std::memory_order_relaxed))
+        {
         }
     }
 

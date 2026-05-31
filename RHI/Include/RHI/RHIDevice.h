@@ -102,8 +102,22 @@ namespace RVX
         // Command Context
         // =========================================================================
         virtual RHICommandContextRef CreateCommandContext(RHICommandQueueType type) = 0;
-        virtual void SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence = nullptr) = 0;
-        virtual void SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence = nullptr) = 0;
+
+        /**
+         * @brief Submit a command context for execution.
+         * @param context Recorded command context to submit.
+         * @param signalFence Optional fence to signal after submitted work completes.
+         * @return Submitted fence value when signalFence is provided and queued; 0 when no fence was signaled or submission failed.
+         */
+        virtual uint64 SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence = nullptr) = 0;
+
+        /**
+         * @brief Submit multiple command contexts for execution.
+         * @param contexts Recorded command contexts to submit.
+         * @param signalFence Optional fence to signal after submitted work completes.
+         * @return Submitted fence value when signalFence is provided and queued; 0 when no fence was signaled or submission failed.
+         */
+        virtual uint64 SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence = nullptr) = 0;
 
         // =========================================================================
         // SwapChain

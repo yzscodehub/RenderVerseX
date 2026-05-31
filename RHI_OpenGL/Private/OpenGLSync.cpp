@@ -7,6 +7,7 @@ namespace RVX
     OpenGLFence::OpenGLFence(OpenGLDevice* device, uint64 initialValue)
         : m_device(device)
         , m_completedValue(initialValue)
+        , m_nextSignalValue(initialValue + 1)
         , m_signaledValue(initialValue)
     {
         RVX_RHI_DEBUG("Created OpenGL Fence (initial value: {})", initialValue);
@@ -70,6 +71,8 @@ namespace RVX
                         value, m_signaledValue);
             return;
         }
+
+        TrackSubmittedValue(value);
 
         // Insert a sync object
         GLsync sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -143,6 +146,22 @@ namespace RVX
     void OpenGLFence::InsertSyncPoint(uint64 value)
     {
         Signal(value);
+    }
+
+    uint64 OpenGLFence::AllocateSignalValue()
+    {
+        return m_nextSignalValue.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void OpenGLFence::TrackSubmittedValue(uint64 value)
+    {
+        uint64 expected = m_nextSignalValue.load(std::memory_order_relaxed);
+        while (expected <= value &&
+               !m_nextSignalValue.compare_exchange_weak(expected, value + 1,
+                                                        std::memory_order_relaxed,
+                                                        std::memory_order_relaxed))
+        {
+        }
     }
 
     void OpenGLFence::CleanupCompletedSyncs()

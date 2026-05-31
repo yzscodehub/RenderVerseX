@@ -81,23 +81,23 @@ namespace RVX
     OpenGLDevice::OpenGLDevice(const RHIDeviceDesc& desc)
     {
         RVX_RHI_INFO("Creating OpenGL Device...");
-        
+
         // Store the GL thread ID
         m_glThreadId = std::this_thread::get_id();
-        
+
         // Initialize OpenGL context (assumes GLFW window already exists with context)
         if (!InitializeContext())
         {
             RVX_RHI_ERROR("Failed to initialize OpenGL context");
             return;
         }
-        
+
         // Query capabilities
         QueryCapabilities();
-        
+
         // Load extensions
         LoadExtensions();
-        
+
         // Initialize debug system
         OpenGLDebug::Get().Initialize(desc.enableDebugLayer);
 
@@ -110,10 +110,10 @@ namespace RVX
             glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, GL_TRUE);
             RVX_RHI_INFO("OpenGL debug output enabled");
         }
-        
+
         // Clear any leftover GL errors from driver/GLFW initialization
         while (glGetError() != GL_NO_ERROR) {}
-        
+
         m_initialized = true;
         m_frameIndex = 0;
         RVX_RHI_INFO("OpenGL Device created successfully");
@@ -124,17 +124,17 @@ namespace RVX
         if (m_initialized)
         {
             WaitIdle();
-            
+
             // Flush deletion queue
             m_deletionQueue.FlushAll();
-            
+
             // Clear caches before debug shutdown (they are member variables destroyed after destructor body)
             m_fboCache.Clear();
             m_vaoCache.Clear();
-            
+
             // Shutdown debug system (must be after all resources are destroyed)
             OpenGLDebug::Get().Shutdown();
-            
+
             RVX_RHI_INFO("OpenGL Device destroyed");
         }
     }
@@ -148,31 +148,31 @@ namespace RVX
             RVX_RHI_ERROR("Failed to load OpenGL functions via glad");
             return false;
         }
-        
+
         // Check OpenGL version
         GLint major, minor;
         glGetIntegerv(GL_MAJOR_VERSION, &major);
         glGetIntegerv(GL_MINOR_VERSION, &minor);
-        
+
         RVX_RHI_INFO("OpenGL Version: {}.{}", major, minor);
         RVX_RHI_INFO("GLSL Version: {}", (const char*)glGetString(GL_SHADING_LANGUAGE_VERSION));
         RVX_RHI_INFO("Renderer: {}", (const char*)glGetString(GL_RENDERER));
         RVX_RHI_INFO("Vendor: {}", (const char*)glGetString(GL_VENDOR));
-        
+
         // Require OpenGL 4.5
         if (major < 4 || (major == 4 && minor < 5))
         {
             RVX_RHI_ERROR("OpenGL 4.5 or higher required, got {}.{}", major, minor);
             return false;
         }
-        
+
         return true;
     }
 
     void OpenGLDevice::QueryCapabilities()
     {
         m_capabilities.backendType = RHIBackendType::OpenGL;
-        
+
         // Version info
         GLint major, minor;
         glGetIntegerv(GL_MAJOR_VERSION, &major);
@@ -180,13 +180,13 @@ namespace RVX
         m_capabilities.opengl.majorVersion = static_cast<uint32>(major);
         m_capabilities.opengl.minorVersion = static_cast<uint32>(minor);
         m_capabilities.opengl.coreProfile = true;
-        
+
         // Strings
         m_capabilities.adapterName = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
         m_capabilities.opengl.renderer = m_capabilities.adapterName;
         m_capabilities.opengl.vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
         m_capabilities.opengl.glslVersion = reinterpret_cast<const char*>(glGetString(GL_SHADING_LANGUAGE_VERSION));
-        
+
         // Texture limits
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, reinterpret_cast<GLint*>(&m_capabilities.maxTextureSize2D));
         m_capabilities.maxTextureSize = m_capabilities.maxTextureSize2D;
@@ -195,7 +195,7 @@ namespace RVX
         glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, reinterpret_cast<GLint*>(&m_capabilities.maxTextureArrayLayers));
         m_capabilities.maxTextureLayers = m_capabilities.maxTextureArrayLayers;
         glGetIntegerv(GL_MAX_COLOR_ATTACHMENTS, reinterpret_cast<GLint*>(&m_capabilities.maxColorAttachments));
-        
+
         // Binding limits
         glGetIntegerv(GL_MAX_UNIFORM_BUFFER_BINDINGS, reinterpret_cast<GLint*>(&m_capabilities.opengl.maxUniformBufferBindings));
         glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, reinterpret_cast<GLint*>(&m_capabilities.opengl.maxTextureUnits));
@@ -204,13 +204,13 @@ namespace RVX
         glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, reinterpret_cast<GLint*>(&m_capabilities.opengl.maxVertexAttribs));
         glGetIntegerv(GL_MAX_UNIFORM_BLOCK_SIZE, reinterpret_cast<GLint*>(&m_capabilities.opengl.maxUniformBlockSize));
         glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, reinterpret_cast<GLint*>(&m_capabilities.opengl.maxSSBOSize));
-        
+
         // Compute shader limits
         glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 0, reinterpret_cast<GLint*>(&m_capabilities.maxComputeWorkGroupSize[0]));
         glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 1, reinterpret_cast<GLint*>(&m_capabilities.maxComputeWorkGroupSize[1]));
         glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 2, reinterpret_cast<GLint*>(&m_capabilities.maxComputeWorkGroupSize[2]));
         glGetIntegerv(GL_MAX_COMPUTE_SHARED_MEMORY_SIZE, reinterpret_cast<GLint*>(&m_capabilities.opengl.maxComputeSharedMemorySize));
-        
+
         // Feature detection
         m_capabilities.opengl.hasDSA = (major > 4) || (major == 4 && minor >= 5);
         m_capabilities.opengl.hasComputeShader = (major > 4) || (major == 4 && minor >= 3);
@@ -219,7 +219,7 @@ namespace RVX
         m_capabilities.opengl.hasBufferStorage = m_capabilities.opengl.hasMultiBind;
         m_capabilities.opengl.hasPersistentMapping = m_capabilities.opengl.hasBufferStorage;
         m_capabilities.opengl.hasTextureView = m_capabilities.opengl.hasComputeShader;
-        
+
         // Push constant size (simulated via UBO)
         m_capabilities.maxPushConstantSize = 256;
 
@@ -232,22 +232,29 @@ namespace RVX
         m_capabilities.supportsAsyncCompute = false;            // OpenGL single queue
         m_capabilities.supportsMemoryBudgetQuery = false;       // OpenGL doesn't support memory budget
         m_capabilities.supportsPersistentMapping = m_capabilities.opengl.hasBufferStorage;
+        m_capabilities.supportsExplicitHeapManagement = false;  // OpenGL backend has no explicit heap API
         m_capabilities.supportsTimestampQueries = true;
         m_capabilities.supportsOcclusionQueries = true;
         m_capabilities.supportsPipelineStatisticsQueries = false; // OpenGL only provides partial primitive counters here
         m_capabilities.timestampFrequency = 1000000000;          // OpenGL timestamps are nanosecond-based in this backend
+        m_capabilities.supportsHostFenceSignal = false;
+        m_capabilities.supportsDefaultQueueFenceSignal = true;
+        m_capabilities.supportsExplicitQueueFenceSignal = false;
+        m_capabilities.supportsQueueFenceWait = false;
+        m_capabilities.supportsMultiQueueBatchSubmit = false;
+        m_capabilities.emulatesQueueFences = true;
     }
 
     void OpenGLDevice::LoadExtensions()
     {
         GLint numExtensions;
         glGetIntegerv(GL_NUM_EXTENSIONS, &numExtensions);
-        
+
         for (GLint i = 0; i < numExtensions; ++i)
         {
             const char* ext = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, i));
             if (!ext) continue;
-            
+
             if (strcmp(ext, "GL_ARB_gl_spirv") == 0)
                 m_extensions.GL_ARB_gl_spirv = true;
             else if (strcmp(ext, "GL_ARB_bindless_texture") == 0)
@@ -271,13 +278,13 @@ namespace RVX
             else if (strcmp(ext, "GL_NV_mesh_shader") == 0)
                 m_extensions.GL_NV_mesh_shader = true;
         }
-        
+
         // Update capabilities based on extensions
         m_capabilities.opengl.hasARBSpirv = m_extensions.GL_ARB_gl_spirv;
         m_capabilities.opengl.hasBindlessTexture = m_extensions.GL_ARB_bindless_texture;
         m_capabilities.opengl.hasDebugOutput = m_extensions.GL_KHR_debug;
         m_capabilities.opengl.hasSeparateShaderObjects = m_extensions.GL_ARB_separate_shader_objects;
-        
+
         m_capabilities.supportsBindless = m_extensions.GL_ARB_bindless_texture;
         m_capabilities.supportsMeshShaders = m_extensions.GL_NV_mesh_shader;
     }
@@ -288,7 +295,7 @@ namespace RVX
     RHIBufferRef OpenGLDevice::CreateBuffer(const RHIBufferDesc& desc)
     {
         GL_DEBUG_SCOPE("CreateBuffer");
-        
+
         auto buffer = MakeRef<OpenGLBuffer>(this, desc);
         if (buffer->GetHandle() == 0)
         {
@@ -301,7 +308,7 @@ namespace RVX
     RHITextureRef OpenGLDevice::CreateTexture(const RHITextureDesc& desc)
     {
         GL_DEBUG_SCOPE("CreateTexture");
-        
+
         auto texture = MakeRef<OpenGLTexture>(this, desc);
         if (texture->GetHandle() == 0)
         {
@@ -314,13 +321,13 @@ namespace RVX
     RHITextureViewRef OpenGLDevice::CreateTextureView(RHITexture* texture, const RHITextureViewDesc& desc)
     {
         GL_DEBUG_SCOPE("CreateTextureView");
-        
+
         if (!texture)
         {
             RVX_RHI_ERROR("CreateTextureView: texture is null");
             return nullptr;
         }
-        
+
         auto* glTexture = static_cast<OpenGLTexture*>(texture);
         return MakeRef<OpenGLTextureView>(this, glTexture, desc);
     }
@@ -328,7 +335,7 @@ namespace RVX
     RHISamplerRef OpenGLDevice::CreateSampler(const RHISamplerDesc& desc)
     {
         GL_DEBUG_SCOPE("CreateSampler");
-        
+
         auto sampler = MakeRef<OpenGLSampler>(this, desc);
         if (sampler->GetHandle() == 0)
         {
@@ -341,28 +348,28 @@ namespace RVX
     RHIShaderRef OpenGLDevice::CreateShader(const RHIShaderDesc& desc)
     {
         GL_DEBUG_SCOPE("CreateShader");
-        
+
         // OpenGL shaders need GLSL source, which should be compiled separately
         // and stored in the shader bytecode or provided through a custom path.
         // For now, we expect the bytecode to actually be GLSL source text.
-        
+
         if (!desc.bytecode || desc.bytecodeSize == 0)
         {
-            RVX_RHI_ERROR("CreateShader: No bytecode/source provided for '{}'", 
+            RVX_RHI_ERROR("CreateShader: No bytecode/source provided for '{}'",
                          desc.debugName ? desc.debugName : "");
             return nullptr;
         }
-        
+
         // Treat bytecode as GLSL source
         std::string glslSource(reinterpret_cast<const char*>(desc.bytecode), desc.bytecodeSize);
-        
+
         auto shader = MakeRef<OpenGLShader>(this, desc, glslSource);
         if (!shader->IsValid())
         {
             RVX_RHI_ERROR("Failed to create shader '{}'", desc.debugName ? desc.debugName : "");
             return nullptr;
         }
-        
+
         return shader;
     }
 
@@ -415,11 +422,11 @@ namespace RVX
     RHIPipelineRef OpenGLDevice::CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc)
     {
         GL_DEBUG_SCOPE("CreateGraphicsPipeline");
-        
+
         auto pipeline = MakeRef<OpenGLGraphicsPipeline>(this, desc);
         if (!pipeline->IsValid())
         {
-            RVX_RHI_ERROR("Failed to create graphics pipeline '{}'", 
+            RVX_RHI_ERROR("Failed to create graphics pipeline '{}'",
                          desc.debugName ? desc.debugName : "");
             return nullptr;
         }
@@ -429,11 +436,11 @@ namespace RVX
     RHIPipelineRef OpenGLDevice::CreateComputePipeline(const RHIComputePipelineDesc& desc)
     {
         GL_DEBUG_SCOPE("CreateComputePipeline");
-        
+
         auto pipeline = MakeRef<OpenGLComputePipeline>(this, desc);
         if (!pipeline->IsValid())
         {
-            RVX_RHI_ERROR("Failed to create compute pipeline '{}'", 
+            RVX_RHI_ERROR("Failed to create compute pipeline '{}'",
                          desc.debugName ? desc.debugName : "");
             return nullptr;
         }
@@ -443,20 +450,20 @@ namespace RVX
     RHIDescriptorSetRef OpenGLDevice::CreateDescriptorSet(const RHIDescriptorSetDesc& desc)
     {
         GL_DEBUG_SCOPE("CreateDescriptorSet");
-        
+
         if (!desc.layout)
         {
             RVX_RHI_ERROR("CreateDescriptorSet: layout is null");
             return nullptr;
         }
-        
+
         return MakeRef<OpenGLDescriptorSet>(this, desc);
     }
 
     RHIQueryPoolRef OpenGLDevice::CreateQueryPool(const RHIQueryPoolDesc& desc)
     {
         GL_DEBUG_SCOPE("CreateQueryPool");
-        
+
         auto queryPool = MakeRef<OpenGLQueryPool>(this, desc);
         if (queryPool->GetCount() == 0)
         {
@@ -475,39 +482,54 @@ namespace RVX
         return MakeRef<OpenGLCommandContext>(this, type);
     }
 
-    void OpenGLDevice::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
+    uint64 OpenGLDevice::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
     {
         // OpenGL executes commands immediately, so nothing to do here
         // The context has already executed all commands
-        if (context)
+        if (!context)
         {
-            context->End();
+            return 0;
         }
-        
+
+        context->End();
+
         // Signal fence
+        uint64 submittedValue = 0;
         if (signalFence)
         {
             auto* glFence = static_cast<OpenGLFence*>(signalFence);
-            glFence->Signal(glFence->GetCompletedValue() + 1);
+            submittedValue = glFence->AllocateSignalValue();
+            glFence->Signal(submittedValue);
         }
+        return submittedValue;
     }
 
-    void OpenGLDevice::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
+    uint64 OpenGLDevice::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
     {
+        bool submittedAny = false;
         for (auto* ctx : contexts)
         {
             if (ctx)
             {
                 ctx->End();
+                submittedAny = true;
             }
         }
-        
+
+        if (!submittedAny)
+        {
+            return 0;
+        }
+
         // Signal fence after all contexts
+        uint64 submittedValue = 0;
         if (signalFence)
         {
             auto* glFence = static_cast<OpenGLFence*>(signalFence);
-            glFence->Signal(glFence->GetCompletedValue() + 1);
+            submittedValue = glFence->AllocateSignalValue();
+            glFence->Signal(submittedValue);
         }
+        return submittedValue;
     }
 
     // =============================================================================
@@ -550,24 +572,24 @@ namespace RVX
     void OpenGLDevice::BeginFrame()
     {
         OpenGLDebug::Get().BeginFrame(m_frameIndex);
-        
+
         // Process deletion queue - delete resources that are safe to delete
         m_deletionQueue.ProcessDeletions(m_frameIndex);
-        
+
         // Reset state cache if needed (usually not necessary unless context was lost)
     }
 
     void OpenGLDevice::EndFrame()
     {
         OpenGLDebug::Get().EndFrame();
-        
+
         // Clean up unused cached resources
         m_fboCache.Cleanup(m_frameIndex);
         m_vaoCache.Cleanup(m_frameIndex);
-        
+
         m_currentFrameIndex = (m_currentFrameIndex + 1) % RVX_GL_MAX_FRAME_COUNT;
         m_frameIndex++;
-        
+
         glFlush();
     }
 

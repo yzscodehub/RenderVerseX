@@ -984,18 +984,20 @@ namespace RVX
     // =============================================================================
     void DX11CommandContext::SignalFence(RHIFence* fence, uint64 value)
     {
-        // DX11 is inherently synchronous - all operations complete before returning
-        // No fence signaling needed as the API serializes all work
+        RVX_RHI_WARN(
+            "DX11CommandContext::SignalFence is unsupported as explicit queue sync; "
+            "use device SubmitCommandContext signal fences instead (requested value {})",
+            value);
         (void)fence;
-        (void)value;
     }
 
     void DX11CommandContext::WaitFence(RHIFence* fence, uint64 value)
     {
-        // DX11 is inherently synchronous - all operations complete before returning
-        // No fence waiting needed as the API serializes all work
         (void)fence;
-        (void)value;
+        RVX_RHI_WARN(
+            "DX11CommandContext::WaitFence is unsupported; "
+            "RHICapabilities::supportsQueueFenceWait is false (requested value {})",
+            value);
     }
 
     // =============================================================================

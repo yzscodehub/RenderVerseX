@@ -23,7 +23,7 @@ namespace RVX
         void Wait(uint64 value, uint64 timeoutNs = UINT64_MAX) override;
 
         // Signal from command buffer completion (thread-safe)
-        void SignalFromCommandBuffer(id<MTLCommandBuffer> commandBuffer);
+        uint64 SignalFromCommandBuffer(id<MTLCommandBuffer> commandBuffer);
 
         // Get the next signal value without incrementing (for queries)
         uint64 GetPendingValue() const { return m_currentValue.load(std::memory_order_acquire); }

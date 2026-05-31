@@ -8,6 +8,7 @@
 #include "RHI/RHIQuery.h"
 #include "RHI/RHISynchronization.h"
 
+#include <atomic>
 #include <vector>
 
 namespace RVX
@@ -219,10 +220,14 @@ namespace RVX
         // DX11 Specific
         ID3D11Fence* GetFence() const { return m_fence.Get(); }
         bool HasNativeFence() const { return m_fence != nullptr; }
+        uint64 AllocateSignalValue();
 
     private:
+        void TrackSubmittedValue(uint64 value);
+
         DX11Device* m_device = nullptr;
         uint64 m_value = 0;
+        std::atomic<uint64> m_nextSignalValue{1};
 
         ComPtr<ID3D11Fence> m_fence;
         HANDLE m_event = nullptr;

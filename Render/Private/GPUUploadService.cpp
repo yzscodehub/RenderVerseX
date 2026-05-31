@@ -87,10 +87,9 @@ namespace RVX
         submittedContext->End();
 
         RHIFenceRef fence = AcquireFence();
-        const uint64 fenceValue = fence ? fence->GetCompletedValue() + 1 : 0;
-        m_device->SubmitCommandContext(submittedContext.Get(), fence.Get());
+        const uint64 fenceValue = m_device->SubmitCommandContext(submittedContext.Get(), fence.Get());
 
-        if (fence)
+        if (fence && fenceValue != 0)
         {
             for (auto& upload : m_pendingUploads)
             {
@@ -104,6 +103,10 @@ namespace RVX
         }
         else
         {
+            if (fence)
+            {
+                RVX_RENDER_WARN("GPUUploadService: SubmitCommandContext did not return a fence value; completing batch with WaitIdle fallback");
+            }
             m_device->WaitIdle();
             CompleteBatchUploadsWithoutFence(submittedContext.Get());
         }

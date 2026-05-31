@@ -96,8 +96,8 @@ namespace
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc&) override { return nullptr; }
         RHIQueryPoolRef CreateQueryPool(const RHIQueryPoolDesc&) override { return nullptr; }
         RHICommandContextRef CreateCommandContext(RHICommandQueueType) override { return nullptr; }
-        void SubmitCommandContext(RHICommandContext*, RHIFence* = nullptr) override {}
-        void SubmitCommandContexts(std::span<RHICommandContext* const>, RHIFence* = nullptr) override {}
+        uint64 SubmitCommandContext(RHICommandContext*, RHIFence* = nullptr) override { return 0; }
+        uint64 SubmitCommandContexts(std::span<RHICommandContext* const>, RHIFence* = nullptr) override { return 0; }
         RHISwapChainRef CreateSwapChain(const RHISwapChainDesc&) override { return nullptr; }
         RHIFenceRef CreateFence(uint64 = 0) override { return nullptr; }
         void WaitForFence(RHIFence*, uint64) override {}

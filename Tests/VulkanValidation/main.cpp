@@ -169,6 +169,49 @@ TEST(VulkanValidation, QueryCapabilitiesReportUnsupportedUntilImplemented)
     EXPECT_EQ(device->CreateQueryPool(queryDesc).Get(), nullptr);
 }
 
+TEST(VulkanValidation, SynchronizationCapabilities)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    const RHICapabilities& caps = device->GetCapabilities();
+    EXPECT_TRUE(caps.supportsHostFenceSignal);
+    EXPECT_TRUE(caps.supportsDefaultQueueFenceSignal);
+    EXPECT_TRUE(caps.supportsExplicitQueueFenceSignal);
+    EXPECT_FALSE(caps.supportsQueueFenceWait);
+    EXPECT_TRUE(caps.supportsMultiQueueBatchSubmit);
+    EXPECT_FALSE(caps.emulatesQueueFences);
+}
+
+TEST(VulkanValidation, SubmitReturnsMonotonicFenceValues)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    auto fence = device->CreateFence(0);
+    ASSERT_NE(nullptr, fence.Get());
+
+    auto firstContext = device->CreateCommandContext(RHICommandQueueType::Compute);
+    ASSERT_NE(nullptr, firstContext.Get());
+    firstContext->Begin();
+    firstContext->End();
+    uint64 firstValue = device->SubmitCommandContext(firstContext.Get(), fence.Get());
+
+    auto secondContext = device->CreateCommandContext(RHICommandQueueType::Compute);
+    ASSERT_NE(nullptr, secondContext.Get());
+    secondContext->Begin();
+    secondContext->End();
+    uint64 secondValue = device->SubmitCommandContext(secondContext.Get(), fence.Get());
+
+    EXPECT_NE(firstValue, 0u);
+    EXPECT_GT(secondValue, firstValue);
+
+    device->WaitForFence(fence.Get(), secondValue);
+    EXPECT_GE(fence->GetCompletedValue(), secondValue);
+}
+
 TEST(VulkanValidation, BarrierBatching)
 {
     RHIDeviceDesc deviceDesc;

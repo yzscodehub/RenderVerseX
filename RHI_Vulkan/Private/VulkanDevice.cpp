@@ -877,6 +877,12 @@ namespace RVX
         m_capabilities.supportsOcclusionQueries = false;
         m_capabilities.supportsPipelineStatisticsQueries = false;
         m_capabilities.timestampFrequency = 0;
+        m_capabilities.supportsHostFenceSignal = true;
+        m_capabilities.supportsDefaultQueueFenceSignal = true;
+        m_capabilities.supportsExplicitQueueFenceSignal = true;
+        m_capabilities.supportsQueueFenceWait = false;
+        m_capabilities.supportsMultiQueueBatchSubmit = true;
+        m_capabilities.emulatesQueueFences = false;
 
         RVX_RHI_DEBUG("Vulkan Capabilities: Raytracing={}, MeshShaders={}, VRS={}", 
             m_capabilities.supportsRaytracing, 
@@ -911,6 +917,7 @@ namespace RVX
         m_capabilities.supportsAsyncCompute = true;             // Vulkan supports async compute
         m_capabilities.supportsMemoryBudgetQuery = true;        // VK_EXT_memory_budget
         m_capabilities.supportsPersistentMapping = true;        // Vulkan supports persistent mapping
+        m_capabilities.supportsExplicitHeapManagement = true;   // Vulkan backend implements explicit heaps
     }
 
     // =============================================================================
@@ -1219,14 +1226,14 @@ namespace RVX
         return CreateVulkanCommandContext(this, type);
     }
 
-    void VulkanDevice::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
+    uint64 VulkanDevice::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
     {
-        SubmitVulkanCommandContext(this, context, signalFence);
+        return SubmitVulkanCommandContext(this, context, signalFence);
     }
 
-    void VulkanDevice::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
+    uint64 VulkanDevice::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
     {
-        SubmitVulkanCommandContexts(this, contexts, signalFence);
+        return SubmitVulkanCommandContexts(this, contexts, signalFence);
     }
 
     RHISwapChainRef VulkanDevice::CreateSwapChain(const RHISwapChainDesc& desc)

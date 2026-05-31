@@ -10,6 +10,8 @@
 #include "RHI/RHISynchronization.h"
 #include "RHI/RHIHeap.h"
 
+#include <atomic>
+
 namespace RVX
 {
     class DX12Device;
@@ -197,11 +199,15 @@ namespace RVX
 
         // DX12 Specific
         ID3D12Fence* GetFence() const { return m_fence.Get(); }
+        uint64 AllocateSignalValue();
 
     private:
+        void TrackSubmittedValue(uint64 value);
+
         DX12Device* m_device = nullptr;
         ComPtr<ID3D12Fence> m_fence;
         HANDLE m_event = nullptr;
+        std::atomic<uint64> m_nextSignalValue{1};
     };
 
     // =============================================================================

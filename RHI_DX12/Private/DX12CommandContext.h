@@ -156,7 +156,7 @@ namespace RVX
 
     // Factory functions
     RHICommandContextRef CreateDX12CommandContext(DX12Device* device, RHICommandQueueType type);
-    void SubmitDX12CommandContext(DX12Device* device, RHICommandContext* context, RHIFence* signalFence);
-    void SubmitDX12CommandContexts(DX12Device* device, std::span<RHICommandContext* const> contexts, RHIFence* signalFence);
+    uint64 SubmitDX12CommandContext(DX12Device* device, RHICommandContext* context, RHIFence* signalFence);
+    uint64 SubmitDX12CommandContexts(DX12Device* device, std::span<RHICommandContext* const> contexts, RHIFence* signalFence);
 
 } // namespace RVX

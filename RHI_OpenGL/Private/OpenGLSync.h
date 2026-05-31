@@ -28,6 +28,7 @@ namespace RVX
 
         // OpenGL specific
         void InsertSyncPoint(uint64 value);
+        uint64 AllocateSignalValue();
 
     private:
         struct SyncPoint
@@ -37,11 +38,13 @@ namespace RVX
         };
 
         void CleanupCompletedSyncs();
+        void TrackSubmittedValue(uint64 value);
 
         OpenGLDevice* m_device = nullptr;
         mutable std::mutex m_mutex;
         mutable std::vector<SyncPoint> m_pendingSyncs;  // mutable for cleanup in const GetCompletedValue
         mutable std::atomic<uint64> m_completedValue;
+        std::atomic<uint64> m_nextSignalValue;
         uint64 m_signaledValue = 0;
     };
 

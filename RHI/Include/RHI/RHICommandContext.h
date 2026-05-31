@@ -286,7 +286,7 @@ namespace RVX
          * @brief Signal a fence after all commands in this context complete
          * @param fence The fence to signal
          * @param value The fence value to signal
-         * @note This signals on the queue this context will be submitted to
+         * @note Requires RHICapabilities::supportsExplicitQueueFenceSignal for real queue synchronization.
          */
         virtual void SignalFence(RHIFence* fence, uint64 value) = 0;
 
@@ -294,7 +294,7 @@ namespace RVX
          * @brief Wait for a fence to reach a value before proceeding
          * @param fence The fence to wait on
          * @param value The fence value to wait for
-         * @note This inserts a wait in the command buffer
+         * @note Requires RHICapabilities::supportsQueueFenceWait for real queue synchronization.
          */
         virtual void WaitFence(RHIFence* fence, uint64 value) = 0;
     };

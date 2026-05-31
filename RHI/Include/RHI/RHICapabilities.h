@@ -59,6 +59,14 @@ namespace RVX
         bool supportsPipelineStatisticsQueries = false;
         uint64 timestampFrequency = 0;
 
+        // Synchronization support
+        bool supportsHostFenceSignal = false;          // Fence value can be set directly by the host/CPU.
+        bool supportsDefaultQueueFenceSignal = false;  // Fence signal through the backend's default submit path.
+        bool supportsExplicitQueueFenceSignal = false; // Fence signal on an explicitly selected GPU queue.
+        bool supportsQueueFenceWait = false;           // GPU queue can wait on a fence value without CPU blocking.
+        bool supportsMultiQueueBatchSubmit = false;    // SubmitCommandContexts can submit mixed queue types in one batch.
+        bool emulatesQueueFences = false;              // Queue fence behavior is emulated rather than native GPU sync.
+
         // Dynamic state support
         bool supportsDepthBounds = false;           // DX12/Vulkan only
         bool supportsDynamicLineWidth = false;      // Vulkan/OpenGL only
@@ -71,6 +79,7 @@ namespace RVX
         // Memory features
         bool supportsMemoryBudgetQuery = false;     // DX12(DXGI)/Vulkan(VK_EXT_memory_budget)
         bool supportsPersistentMapping = false;     // Vulkan/DX12/OpenGL4.4+
+        bool supportsExplicitHeapManagement = false;// Explicit heap/placed resource APIs are implemented.
 
         // DX11-specific
         struct DX11Specific

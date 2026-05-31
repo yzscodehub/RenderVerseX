@@ -89,7 +89,7 @@ void FrameSynchronizer::WaitForFrame(uint32_t frameIndex)
     }
 }
 
-void FrameSynchronizer::SignalFrame(uint32_t frameIndex)
+void FrameSynchronizer::SignalFrame(uint32_t frameIndex, uint64_t submittedFenceValue)
 {
     if (frameIndex >= m_frameCount)
     {
@@ -97,13 +97,16 @@ void FrameSynchronizer::SignalFrame(uint32_t frameIndex)
         return;
     }
 
-    // Increment the expected fence value for this frame
-    // Note: The GPU queue signals the timeline semaphore during SubmitCommandContext,
-    // so we only track the value here for WaitForFrame() to work correctly.
-    m_fenceValues[frameIndex]++;
-    
+    if (submittedFenceValue == 0)
+    {
+        RVX_CORE_WARN("FrameSynchronizer: submitted frame {} did not return a fence value", frameIndex);
+        return;
+    }
+
+    m_fenceValues[frameIndex] = submittedFenceValue;
+
     // Don't call fence->Signal() here - the GPU queue already signals the fence
-    // via vkQueueSubmit with the timeline semaphore.
+    // through IRHIDevice::SubmitCommandContext.
 }
 
 void FrameSynchronizer::WaitForAllFrames()

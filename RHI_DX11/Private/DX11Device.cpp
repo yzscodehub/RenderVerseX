@@ -354,9 +354,16 @@ namespace RVX
         m_capabilities.supportsSecondaryCommandBuffer = false;  // DX11 uses deferred context instead
         m_capabilities.supportsMemoryBudgetQuery = false;       // DX11 doesn't support memory budget
         m_capabilities.supportsPersistentMapping = false;       // DX11 doesn't support persistent mapping
+        m_capabilities.supportsExplicitHeapManagement = false;  // DX11 backend has no explicit heap API
         m_capabilities.supportsTimestampQueries = true;
         m_capabilities.supportsOcclusionQueries = true;
         m_capabilities.supportsPipelineStatisticsQueries = true;
+        m_capabilities.supportsHostFenceSignal = false;
+        m_capabilities.supportsDefaultQueueFenceSignal = true;
+        m_capabilities.supportsExplicitQueueFenceSignal = false;
+        m_capabilities.supportsQueueFenceWait = false;
+        m_capabilities.supportsMultiQueueBatchSubmit = false;
+        m_capabilities.emulatesQueueFences = true;
 
         // Set threading mode
         m_capabilities.dx11.threadingMode = DX11ThreadingMode::SingleThreaded;
@@ -552,36 +559,49 @@ namespace RVX
         return MakeRef<DX11CommandContext>(this, type);
     }
 
-    void DX11Device::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
+    uint64 DX11Device::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
     {
-        if (!context) return;
+        if (!context) return 0;
 
         auto* dx11Context = static_cast<DX11CommandContext*>(context);
         dx11Context->Submit();
 
+        uint64 submittedValue = 0;
         if (signalFence)
         {
             auto* dx11Fence = static_cast<DX11Fence*>(signalFence);
-            dx11Fence->Signal(dx11Fence->GetCompletedValue() + 1);
+            submittedValue = dx11Fence->AllocateSignalValue();
+            dx11Fence->Signal(submittedValue);
         }
+        return submittedValue;
     }
 
-    void DX11Device::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
+    uint64 DX11Device::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
     {
+        bool submittedAny = false;
         for (auto* context : contexts)
         {
             if (context)
             {
                 auto* dx11Context = static_cast<DX11CommandContext*>(context);
                 dx11Context->Submit();
+                submittedAny = true;
             }
         }
 
+        if (!submittedAny)
+        {
+            return 0;
+        }
+
+        uint64 submittedValue = 0;
         if (signalFence)
         {
             auto* dx11Fence = static_cast<DX11Fence*>(signalFence);
-            dx11Fence->Signal(dx11Fence->GetCompletedValue() + 1);
+            submittedValue = dx11Fence->AllocateSignalValue();
+            dx11Fence->Signal(submittedValue);
         }
+        return submittedValue;
     }
 
     // =============================================================================

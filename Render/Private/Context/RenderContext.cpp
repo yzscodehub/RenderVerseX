@@ -198,11 +198,9 @@ void RenderContext::EndFrame()
     if (m_device && ctx)
     {
         RHIFence* fence = m_frameSynchronizer.GetFence(m_frameIndex);
-        m_device->SubmitCommandContext(ctx, fence);
+        const uint64 submittedFenceValue = m_device->SubmitCommandContext(ctx, fence);
+        m_frameSynchronizer.SignalFrame(m_frameIndex, submittedFenceValue);
     }
-
-    // Signal frame completion
-    m_frameSynchronizer.SignalFrame(m_frameIndex);
 
     // End device frame
     if (m_device)

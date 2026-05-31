@@ -772,6 +772,7 @@ namespace RVX
         m_capabilities.supportsSecondaryCommandBuffer = true;   // DX12 supports bundles
         m_capabilities.supportsMemoryBudgetQuery = true;        // DXGI supports memory budget
         m_capabilities.supportsPersistentMapping = true;        // DX12 supports persistent mapping
+        m_capabilities.supportsExplicitHeapManagement = true;   // DX12 supports explicit heaps
         m_capabilities.supportsTimestampQueries = true;
         m_capabilities.supportsOcclusionQueries = true;
         m_capabilities.supportsPipelineStatisticsQueries = true;
@@ -779,6 +780,12 @@ namespace RVX
         {
             m_graphicsQueue->GetTimestampFrequency(&m_capabilities.timestampFrequency);
         }
+        m_capabilities.supportsHostFenceSignal = false;
+        m_capabilities.supportsDefaultQueueFenceSignal = true;
+        m_capabilities.supportsExplicitQueueFenceSignal = true;
+        m_capabilities.supportsQueueFenceWait = true;
+        m_capabilities.supportsMultiQueueBatchSubmit = false;
+        m_capabilities.emulatesQueueFences = false;
 
         return true;
     }
@@ -983,14 +990,14 @@ namespace RVX
         return CreateDX12CommandContext(this, type);
     }
 
-    void DX12Device::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
+    uint64 DX12Device::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
     {
-        SubmitDX12CommandContext(this, context, signalFence);
+        return SubmitDX12CommandContext(this, context, signalFence);
     }
 
-    void DX12Device::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
+    uint64 DX12Device::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
     {
-        SubmitDX12CommandContexts(this, contexts, signalFence);
+        return SubmitDX12CommandContexts(this, contexts, signalFence);
     }
 
     // =============================================================================

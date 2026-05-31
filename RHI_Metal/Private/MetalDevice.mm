@@ -105,6 +105,13 @@ namespace RVX
         m_capabilities.supportsSecondaryCommandBuffer = true;   // Metal supports parallel encoders
         m_capabilities.supportsMemoryBudgetQuery = true;        // Metal supports memory budget
         m_capabilities.supportsPersistentMapping = true;        // Metal supports persistent mapping
+        m_capabilities.supportsExplicitHeapManagement = true;   // Metal heaps are implemented
+        m_capabilities.supportsHostFenceSignal = true;
+        m_capabilities.supportsDefaultQueueFenceSignal = true;
+        m_capabilities.supportsExplicitQueueFenceSignal = false;
+        m_capabilities.supportsQueueFenceWait = false;
+        m_capabilities.supportsMultiQueueBatchSubmit = false;
+        m_capabilities.emulatesQueueFences = false;
 
         RVX_RHI_INFO("Metal Capabilities:");
         RVX_RHI_INFO("  Adapter: {}", m_capabilities.adapterName);
@@ -296,9 +303,14 @@ namespace RVX
         return MakeRef<MetalCommandContext>(this, type);
     }
 
-    void MetalDevice::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
+    uint64 MetalDevice::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
     {
         std::lock_guard<std::mutex> lock(m_submitMutex);
+
+        if (!context)
+        {
+            return 0;
+        }
 
         auto* metalContext = static_cast<MetalCommandContext*>(context);
 
@@ -315,19 +327,27 @@ namespace RVX
             }
         }
 
-        metalContext->Submit(signalFence);
+        return metalContext->Submit(signalFence);
     }
 
-    void MetalDevice::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
+    uint64 MetalDevice::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
     {
         std::lock_guard<std::mutex> lock(m_submitMutex);
 
+        uint64 submittedValue = 0;
         for (size_t i = 0; i < contexts.size(); ++i)
         {
+            if (!contexts[i])
+            {
+                RVX_RHI_ERROR("MetalDevice::SubmitCommandContexts: null command context");
+                return 0;
+            }
+
             auto* metalContext = static_cast<MetalCommandContext*>(contexts[i]);
             // Only signal fence on last submission
-            metalContext->Submit(i == contexts.size() - 1 ? signalFence : nullptr);
+            submittedValue = metalContext->Submit(i == contexts.size() - 1 ? signalFence : nullptr);
         }
+        return submittedValue;
     }
 
     // =============================================================================

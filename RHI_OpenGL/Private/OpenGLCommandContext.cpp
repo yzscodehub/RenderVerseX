@@ -1113,18 +1113,20 @@ namespace RVX
     // =============================================================================
     void OpenGLCommandContext::SignalFence(RHIFence* fence, uint64 value)
     {
-        // OpenGL is inherently synchronous - all operations complete before returning
-        // No fence signaling needed as the API serializes all work
         (void)fence;
-        (void)value;
+        RVX_RHI_WARN(
+            "OpenGLCommandContext::SignalFence is unsupported as explicit queue sync; "
+            "use device SubmitCommandContext signal fences instead (requested value {})",
+            value);
     }
 
     void OpenGLCommandContext::WaitFence(RHIFence* fence, uint64 value)
     {
-        // OpenGL is inherently synchronous - all operations complete before returning
-        // No fence waiting needed as the API serializes all work
         (void)fence;
-        (void)value;
+        RVX_RHI_WARN(
+            "OpenGLCommandContext::WaitFence is unsupported; "
+            "RHICapabilities::supportsQueueFenceWait is false (requested value {})",
+            value);
     }
 
     // =============================================================================

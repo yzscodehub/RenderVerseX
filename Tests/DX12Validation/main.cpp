@@ -176,6 +176,49 @@ TEST(DX12Validation, Fence)
     EXPECT_TRUE(fence->GetCompletedValue() >= 1u);
 }
 
+TEST(DX12Validation, SynchronizationCapabilities)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    const RHICapabilities& caps = device->GetCapabilities();
+    EXPECT_FALSE(caps.supportsHostFenceSignal);
+    EXPECT_TRUE(caps.supportsDefaultQueueFenceSignal);
+    EXPECT_TRUE(caps.supportsExplicitQueueFenceSignal);
+    EXPECT_TRUE(caps.supportsQueueFenceWait);
+    EXPECT_FALSE(caps.supportsMultiQueueBatchSubmit);
+    EXPECT_FALSE(caps.emulatesQueueFences);
+}
+
+TEST(DX12Validation, SubmitReturnsMonotonicFenceValues)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    auto fence = device->CreateFence(0);
+    ASSERT_NE(nullptr, fence.Get());
+
+    auto firstContext = device->CreateCommandContext(RHICommandQueueType::Graphics);
+    ASSERT_NE(nullptr, firstContext.Get());
+    firstContext->Begin();
+    firstContext->End();
+    uint64 firstValue = device->SubmitCommandContext(firstContext.Get(), fence.Get());
+
+    auto secondContext = device->CreateCommandContext(RHICommandQueueType::Graphics);
+    ASSERT_NE(nullptr, secondContext.Get());
+    secondContext->Begin();
+    secondContext->End();
+    uint64 secondValue = device->SubmitCommandContext(secondContext.Get(), fence.Get());
+
+    EXPECT_NE(firstValue, 0u);
+    EXPECT_GT(secondValue, firstValue);
+
+    device->WaitForFence(fence.Get(), secondValue);
+    EXPECT_GE(fence->GetCompletedValue(), secondValue);
+}
+
 TEST(DX12Validation, Heap)
 {
     RHIDeviceDesc deviceDesc;

@@ -220,7 +220,7 @@ namespace RVX
             VkRenderingAttachmentInfo attachInfo = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
             attachInfo.imageView = vkView->GetImageView();
             attachInfo.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            
+
             switch (attach.loadOp)
             {
                 case RHILoadOp::Load:    attachInfo.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; break;
@@ -234,14 +234,14 @@ namespace RVX
                 case RHIStoreOp::DontCare: attachInfo.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; break;
             }
 
-            attachInfo.clearValue.color = {{attach.clearColor.r, attach.clearColor.g, 
+            attachInfo.clearValue.color = {{attach.clearColor.r, attach.clearColor.g,
                                             attach.clearColor.b, attach.clearColor.a}};
 
             colorAttachments.push_back(attachInfo);
         }
 
         VkRenderingInfo renderingInfo = {VK_STRUCTURE_TYPE_RENDERING_INFO};
-        
+
         // Get render area from first color attachment
         if (desc.colorAttachmentCount > 0 && desc.colorAttachments[0].view)
         {
@@ -258,10 +258,10 @@ namespace RVX
         if (desc.depthStencilAttachment.view)
         {
             auto* vkView = static_cast<VulkanTextureView*>(desc.depthStencilAttachment.view);
-            
+
             depthAttachInfo.imageView = vkView->GetImageView();
             depthAttachInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            
+
             switch (desc.depthStencilAttachment.depthLoadOp)
             {
                 case RHILoadOp::Load:    depthAttachInfo.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; break;
@@ -275,7 +275,7 @@ namespace RVX
                 case RHIStoreOp::DontCare: depthAttachInfo.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; break;
             }
 
-            depthAttachInfo.clearValue.depthStencil = {desc.depthStencilAttachment.clearValue.depth, 
+            depthAttachInfo.clearValue.depthStencil = {desc.depthStencilAttachment.clearValue.depth,
                                                         desc.depthStencilAttachment.clearValue.stencil};
 
             renderingInfo.pDepthAttachment = &depthAttachInfo;
@@ -297,7 +297,7 @@ namespace RVX
     void VulkanCommandContext::SetPipeline(RHIPipeline* pipeline)
     {
         m_currentPipeline = static_cast<VulkanPipeline*>(pipeline);
-        
+
         VkPipelineBindPoint bindPoint = m_currentPipeline->IsCompute() ?
             VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
 
@@ -312,7 +312,7 @@ namespace RVX
         vkCmdBindVertexBuffers(m_commandBuffer, slot, 1, buffers, offsets);
     }
 
-    void VulkanCommandContext::SetVertexBuffers(uint32 startSlot, std::span<RHIBuffer* const> buffers, 
+    void VulkanCommandContext::SetVertexBuffers(uint32 startSlot, std::span<RHIBuffer* const> buffers,
                                                  std::span<const uint64> offsets)
     {
         std::vector<VkBuffer> vkBuffers(buffers.size());
@@ -335,7 +335,7 @@ namespace RVX
         vkCmdBindIndexBuffer(m_commandBuffer, vkBuffer->GetBuffer(), offset, indexType);
     }
 
-    void VulkanCommandContext::SetDescriptorSet(uint32 slot, RHIDescriptorSet* set, 
+    void VulkanCommandContext::SetDescriptorSet(uint32 slot, RHIDescriptorSet* set,
                                                  std::span<const uint32> dynamicOffsets)
     {
         if (!m_currentPipeline || !set)
@@ -348,7 +348,7 @@ namespace RVX
             VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
 
         vkCmdBindDescriptorSets(m_commandBuffer, bindPoint, m_currentPipeline->GetPipelineLayout(),
-            slot, 1, &descriptorSet, 
+            slot, 1, &descriptorSet,
             static_cast<uint32>(dynamicOffsets.size()), dynamicOffsets.data());
     }
 
@@ -411,14 +411,14 @@ namespace RVX
         vkCmdSetScissor(m_commandBuffer, 0, static_cast<uint32>(rects.size()), rects.data());
     }
 
-    void VulkanCommandContext::Draw(uint32 vertexCount, uint32 instanceCount, 
+    void VulkanCommandContext::Draw(uint32 vertexCount, uint32 instanceCount,
                                      uint32 firstVertex, uint32 firstInstance)
     {
         FlushBarriers();
         vkCmdDraw(m_commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
     }
 
-    void VulkanCommandContext::DrawIndexed(uint32 indexCount, uint32 instanceCount, 
+    void VulkanCommandContext::DrawIndexed(uint32 indexCount, uint32 instanceCount,
                                             uint32 firstIndex, int32 vertexOffset, uint32 firstInstance)
     {
         FlushBarriers();
@@ -452,7 +452,7 @@ namespace RVX
         vkCmdDispatchIndirect(m_commandBuffer, vkBuffer->GetBuffer(), offset);
     }
 
-    void VulkanCommandContext::CopyBuffer(RHIBuffer* src, RHIBuffer* dst, 
+    void VulkanCommandContext::CopyBuffer(RHIBuffer* src, RHIBuffer* dst,
                                            uint64 srcOffset, uint64 dstOffset, uint64 size)
     {
         FlushBarriers();
@@ -486,17 +486,17 @@ namespace RVX
         copyRegion.dstSubresource.baseArrayLayer = 0;
         copyRegion.dstSubresource.layerCount = 1;
         copyRegion.dstOffset = {static_cast<int32>(desc.dstX), static_cast<int32>(desc.dstY), static_cast<int32>(desc.dstZ)};
-        copyRegion.extent = {desc.width ? desc.width : src->GetWidth(), 
-                             desc.height ? desc.height : src->GetHeight(), 
+        copyRegion.extent = {desc.width ? desc.width : src->GetWidth(),
+                             desc.height ? desc.height : src->GetHeight(),
                              desc.depth ? desc.depth : src->GetDepth()};
 
-        vkCmdCopyImage(m_commandBuffer, 
+        vkCmdCopyImage(m_commandBuffer,
             vkSrc->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             vkDst->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             1, &copyRegion);
     }
 
-    void VulkanCommandContext::CopyBufferToTexture(RHIBuffer* src, RHITexture* dst, 
+    void VulkanCommandContext::CopyBufferToTexture(RHIBuffer* src, RHITexture* dst,
                                                     const RHIBufferTextureCopyDesc& desc)
     {
         FlushBarriers();
@@ -512,8 +512,8 @@ namespace RVX
         copyRegion.imageSubresource.mipLevel = desc.textureSubresource;
         copyRegion.imageSubresource.baseArrayLayer = 0;
         copyRegion.imageSubresource.layerCount = 1;
-        copyRegion.imageOffset = {static_cast<int32>(desc.textureRegion.x), 
-                                  static_cast<int32>(desc.textureRegion.y), 
+        copyRegion.imageOffset = {static_cast<int32>(desc.textureRegion.x),
+                                  static_cast<int32>(desc.textureRegion.y),
                                   static_cast<int32>(desc.textureDepthSlice)};
         copyRegion.imageExtent = {desc.textureRegion.width ? desc.textureRegion.width : dst->GetWidth(),
                                   desc.textureRegion.height ? desc.textureRegion.height : dst->GetHeight(),
@@ -539,8 +539,8 @@ namespace RVX
         copyRegion.imageSubresource.mipLevel = desc.textureSubresource;
         copyRegion.imageSubresource.baseArrayLayer = 0;
         copyRegion.imageSubresource.layerCount = 1;
-        copyRegion.imageOffset = {static_cast<int32>(desc.textureRegion.x), 
-                                  static_cast<int32>(desc.textureRegion.y), 
+        copyRegion.imageOffset = {static_cast<int32>(desc.textureRegion.x),
+                                  static_cast<int32>(desc.textureRegion.y),
                                   static_cast<int32>(desc.textureDepthSlice)};
         copyRegion.imageExtent = {desc.textureRegion.width ? desc.textureRegion.width : src->GetWidth(),
                                   desc.textureRegion.height ? desc.textureRegion.height : src->GetHeight(),
@@ -600,8 +600,13 @@ namespace RVX
         }
     }
 
-    void SubmitVulkanCommandContext(VulkanDevice* device, RHICommandContext* context, RHIFence* signalFence)
+    uint64 SubmitVulkanCommandContext(VulkanDevice* device, RHICommandContext* context, RHIFence* signalFence)
     {
+        if (!device || !context)
+        {
+            return 0;
+        }
+
         auto* vkContext = static_cast<VulkanCommandContext*>(context);
 
         std::lock_guard<std::mutex> lock(device->GetSubmitMutex());
@@ -660,13 +665,14 @@ namespace RVX
         submitInfo.pSignalSemaphores = signalSemaphores.empty() ? nullptr : signalSemaphores.data();
 
         VK_CHECK(vkQueueSubmit(queue, 1, &submitInfo, fence));
+        return signalFenceValue;
     }
 
-    void SubmitVulkanCommandContexts(VulkanDevice* device, std::span<RHICommandContext* const> contexts, 
+    uint64 SubmitVulkanCommandContexts(VulkanDevice* device, std::span<RHICommandContext* const> contexts,
                                       RHIFence* signalFence)
     {
-        if (contexts.empty())
-            return;
+        if (!device || contexts.empty())
+            return 0;
 
         std::lock_guard<std::mutex> lock(device->GetSubmitMutex());
 
@@ -677,6 +683,12 @@ namespace RVX
 
         for (auto* context : contexts)
         {
+            if (!context)
+            {
+                RVX_RHI_ERROR("SubmitVulkanCommandContexts: null command context");
+                return 0;
+            }
+
             auto* vkContext = static_cast<VulkanCommandContext*>(context);
             VkCommandBuffer cmdBuffer = vkContext->GetCommandBuffer();
 
@@ -874,8 +886,8 @@ namespace RVX
             VK_CHECK(vkQueueSubmit(device->GetGraphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE));
         }
 
-        if (copyToComputeSemaphore != VK_NULL_HANDLE || 
-            copyToGraphicsSemaphore != VK_NULL_HANDLE || 
+        if (copyToComputeSemaphore != VK_NULL_HANDLE ||
+            copyToGraphicsSemaphore != VK_NULL_HANDLE ||
             computeToGraphicsSemaphore != VK_NULL_HANDLE)
         {
             std::vector<VkSemaphore> semaphoresToDestroy;
@@ -894,6 +906,7 @@ namespace RVX
 
             device->EnqueueDeferredSemaphoreDestroy(std::move(semaphoresToDestroy), finalQueue);
         }
+        return signalFenceValue;
     }
 
     // =============================================================================
@@ -937,7 +950,7 @@ namespace RVX
     {
         if (fence)
         {
-            fence->Signal(value);
+            fence->SignalOnQueue(value, m_queueType);
         }
     }
 
@@ -945,8 +958,10 @@ namespace RVX
     {
         if (fence)
         {
-            // CPU wait for fence - this will block the calling thread
-            fence->Wait(value);
+            RVX_RHI_ERROR(
+                "VulkanCommandContext::WaitFence is unsupported in this backend revision; "
+                "RHICapabilities::supportsQueueFenceWait is false (requested value {})",
+                value);
         }
     }
 
