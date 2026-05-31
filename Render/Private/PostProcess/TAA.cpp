@@ -4,6 +4,7 @@
  */
 
 #include "Render/PostProcess/TAA.h"
+#include "Core/Log.h"
 #include <cmath>
 
 namespace RVX
@@ -16,6 +17,13 @@ TAA::~TAA()
 
 void TAA::Initialize(IRHIDevice* device, uint32 width, uint32 height)
 {
+    if (!device)
+    {
+        RVX_CORE_ERROR("TAA: Cannot initialize without an RHI device");
+        m_unsupportedReason = "No RHI device";
+        return;
+    }
+
     m_device = device;
     m_width = width;
     m_height = height;
@@ -132,7 +140,14 @@ void TAA::Resolve(RHICommandContext& ctx,
                   RHITexture* motionVectors,
                   uint64 frameIndex)
 {
-    if (!m_enabled || !m_device) return;
+    if (!IsEnabled() || !m_device)
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("TAA: unsupported resolve skipped: {}", GetUnsupportedReason());
+        }
+        return;
+    }
 
     // On first frame or after reset, just copy input
     if (!m_historyValid)

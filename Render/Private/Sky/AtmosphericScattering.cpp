@@ -23,6 +23,13 @@ void AtmosphericScattering::Initialize(IRHIDevice* device, const AtmosphericScat
         return;
     }
 
+    if (!device)
+    {
+        RVX_CORE_ERROR("AtmosphericScattering: Cannot initialize without an RHI device");
+        m_unsupportedReason = "No RHI device";
+        return;
+    }
+
     m_device = device;
     m_config = config;
 
@@ -121,6 +128,15 @@ void AtmosphericScattering::PrecomputeLUTs(RHICommandContext& ctx)
     if (!m_lutsNeedUpdate)
         return;
 
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("AtmosphericScattering: unsupported LUT precompute skipped: {}", GetUnsupportedReason());
+        }
+        return;
+    }
+
     RVX_CORE_DEBUG("AtmosphericScattering: Precomputing LUTs");
 
     ComputeTransmittanceLUT(ctx);
@@ -166,8 +182,14 @@ void AtmosphericScattering::RenderSky(RHICommandContext& ctx,
                                        const Mat4& viewMatrix,
                                        const Mat4& projMatrix)
 {
-    if (!m_enabled)
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("AtmosphericScattering: unsupported sky render skipped: {}", GetUnsupportedReason());
+        }
         return;
+    }
 
     (void)outputTarget;
     (void)depthBuffer;
@@ -189,8 +211,14 @@ void AtmosphericScattering::AddToGraph(RenderGraph& graph,
                                         const Mat4& viewMatrix,
                                         const Mat4& projMatrix)
 {
-    if (!m_enabled)
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("AtmosphericScattering: unsupported graph pass skipped: {}", GetUnsupportedReason());
+        }
         return;
+    }
 
     struct SkyRenderData
     {
@@ -233,8 +261,14 @@ void AtmosphericScattering::ApplyAerialPerspective(RenderGraph& graph,
                                                     const Mat4& viewMatrix,
                                                     const Mat4& projMatrix)
 {
-    if (!m_enabled || !m_config.enableAerialPerspective)
+    if (!IsEnabled() || !m_config.enableAerialPerspective)
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("AtmosphericScattering: unsupported aerial perspective skipped: {}", GetUnsupportedReason());
+        }
         return;
+    }
 
     struct AerialPerspectiveData
     {

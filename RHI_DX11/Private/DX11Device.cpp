@@ -354,6 +354,9 @@ namespace RVX
         m_capabilities.supportsSecondaryCommandBuffer = false;  // DX11 uses deferred context instead
         m_capabilities.supportsMemoryBudgetQuery = false;       // DX11 doesn't support memory budget
         m_capabilities.supportsPersistentMapping = false;       // DX11 doesn't support persistent mapping
+        m_capabilities.supportsTimestampQueries = true;
+        m_capabilities.supportsOcclusionQueries = true;
+        m_capabilities.supportsPipelineStatisticsQueries = true;
 
         // Set threading mode
         m_capabilities.dx11.threadingMode = DX11ThreadingMode::SingleThreaded;

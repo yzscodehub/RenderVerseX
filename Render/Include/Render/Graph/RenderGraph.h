@@ -146,6 +146,15 @@ namespace RVX
 
         struct CompileStats
         {
+            // Compile validity / capability honesty
+            bool compileValid = true;
+            bool executionOrderFallbackUsed = false;
+            bool asyncComputeSupported = false;
+            bool asyncFallbackUsed = false;
+            bool memoryAliasingEnabled = false;
+            bool memoryAliasingUnsupportedRequested = false;
+            bool explicitAliasingBarriersSupported = false;
+
             // Pass statistics
             uint32 totalPasses = 0;
             uint32 culledPasses = 0;

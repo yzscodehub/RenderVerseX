@@ -4,6 +4,7 @@
  */
 
 #include "Render/PostProcess/SSAO.h"
+#include "Core/Log.h"
 #include <random>
 #include <cmath>
 
@@ -17,6 +18,13 @@ SSAO::~SSAO()
 
 void SSAO::Initialize(IRHIDevice* device, uint32 width, uint32 height)
 {
+    if (!device)
+    {
+        RVX_CORE_ERROR("SSAO: Cannot initialize without an RHI device");
+        m_unsupportedReason = "No RHI device";
+        return;
+    }
+
     m_device = device;
     m_width = width;
     m_height = height;
@@ -167,7 +175,14 @@ void SSAO::Compute(RHICommandContext& ctx,
                    const Mat4& viewMatrix,
                    const Mat4& projMatrix)
 {
-    if (!m_enabled || !m_device) return;
+    if (!IsEnabled() || !m_device)
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("SSAO: unsupported compute skipped: {}", GetUnsupportedReason());
+        }
+        return;
+    }
 
     ComputeSSAO(ctx, depthTexture, normalTexture);
     

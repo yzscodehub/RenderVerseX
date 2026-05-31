@@ -15,6 +15,11 @@ namespace RVX::Particle
 ParticlePass::ParticlePass() = default;
 ParticlePass::~ParticlePass() = default;
 
+bool ParticlePass::IsEnabled() const
+{
+    return m_renderer && m_renderer->IsRenderingSupported() && !m_batches.empty();
+}
+
 void ParticlePass::SetParticleSystems(const std::vector<ParticleSystemInstance*>& instances)
 {
     m_instances = instances;
@@ -62,6 +67,15 @@ void ParticlePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
     (void)view;
 
+    if (!IsEnabled())
+    {
+        if (m_renderer && !m_renderer->IsRenderingSupported())
+        {
+            RVX_CORE_WARN("ParticlePass: setup skipped: {}", m_renderer->GetUnsupportedReason());
+        }
+        return;
+    }
+
     // Read/write color target
     m_colorTarget = builder.Read(m_colorTarget);
     m_colorTarget = builder.Write(m_colorTarget);
@@ -75,8 +89,14 @@ void ParticlePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 
 void ParticlePass::Execute(RHICommandContext& ctx, const ViewData& view)
 {
-    if (!m_renderer || m_batches.empty())
+    if (!IsEnabled())
+    {
+        if (m_renderer && !m_renderer->IsRenderingSupported())
+        {
+            RVX_CORE_WARN("ParticlePass: execute skipped: {}", m_renderer->GetUnsupportedReason());
+        }
         return;
+    }
 
     // Sort particles by distance if enabled
     if (m_sortingEnabled && m_sorter)

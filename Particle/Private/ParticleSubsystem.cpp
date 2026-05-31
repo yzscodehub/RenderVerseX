@@ -1,11 +1,9 @@
 #include "Particle/ParticleSubsystem.h"
 #include "Particle/Rendering/ParticleRenderer.h"
 #include "Particle/Rendering/ParticlePass.h"
+#include "Particle/GPU/IParticleSimulator.h"
 #include "Particle/GPU/ParticleSorter.h"
-#include "Particle/GPU/GPUParticleSimulator.h"
-#include "Particle/GPU/CPUParticleSimulator.h"
 #include "RHI/RHI.h"
-#include "RHI/RHICapabilities.h"
 #include "Core/Log.h"
 #include <algorithm>
 
@@ -47,37 +45,11 @@ void ParticleSubsystem::CheckCapabilities()
     if (!m_device)
         return;
 
-    const auto& caps = m_device->GetCapabilities();
-    m_gpuSimulationSupported = m_config.enableGPUSimulation;
+    m_gpuSimulationSupported = false;
 
-    // Check for compute shader support
-    switch (caps.backendType)
+    if (m_config.enableGPUSimulation)
     {
-    case RHIBackendType::OpenGL:
-        if (!caps.opengl.hasComputeShader)
-        {
-            RVX_CORE_WARN("ParticleSubsystem: OpenGL Compute Shader unavailable, using CPU fallback");
-            m_gpuSimulationSupported = false;
-        }
-        break;
-
-    case RHIBackendType::DX11:
-        if (caps.dx11.featureLevel < 0xB000)  // Feature Level 11.0
-        {
-            RVX_CORE_WARN("ParticleSubsystem: DX11 Feature Level < 11.0, using CPU fallback");
-            m_gpuSimulationSupported = false;
-        }
-        break;
-
-    case RHIBackendType::DX12:
-    case RHIBackendType::Vulkan:
-    case RHIBackendType::Metal:
-        // These always support compute
-        break;
-
-    default:
-        m_gpuSimulationSupported = false;
-        break;
+        RVX_CORE_WARN("ParticleSubsystem: GPU particle simulation is unsupported until simulator pipelines are connected");
     }
 }
 
@@ -128,20 +100,8 @@ ParticleSystemInstance* ParticleSubsystem::CreateInstance(ParticleSystem::Ptr sy
         return nullptr;
 
     auto instance = std::make_unique<ParticleSystemInstance>(system);
-    
-    // Create appropriate simulator
-    if (m_gpuSimulationSupported)
-    {
-        auto simulator = std::make_unique<GPUParticleSimulator>();
-        simulator->Initialize(m_device, system->maxParticles);
-        // instance->SetSimulator(std::move(simulator));
-    }
-    else
-    {
-        auto simulator = std::make_unique<CPUParticleSimulator>();
-        simulator->Initialize(m_device, system->maxParticles);
-        // instance->SetSimulator(std::move(simulator));
-    }
+    instance->SetSimulationUnsupported(
+        "ParticleSubsystem does not connect GPU/CPU simulators to instances yet");
 
     ParticleSystemInstance* ptr = instance.get();
     m_instances.push_back(std::move(instance));

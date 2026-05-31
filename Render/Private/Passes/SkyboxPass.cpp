@@ -43,6 +43,15 @@ void SkyboxPass::SetProceduralSkyParams(const Vec3& sunDirection, const Vec3& sk
 
 void SkyboxPass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled())
+        {
+            RVX_CORE_WARN("SkyboxPass: unsupported pass skipped: {}", GetUnsupportedReason());
+        }
+        return;
+    }
+
     // Write to color target
     if (view.colorTarget.IsValid())
     {
@@ -59,6 +68,15 @@ void SkyboxPass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 
 void SkyboxPass::Execute(RHICommandContext& ctx, const ViewData& view)
 {
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled())
+        {
+            RVX_CORE_WARN("SkyboxPass: unsupported execute skipped: {}", GetUnsupportedReason());
+        }
+        return;
+    }
+
     if (!m_colorTargetView)
     {
         return;

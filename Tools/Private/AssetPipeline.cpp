@@ -174,8 +174,10 @@ ImportResult TextureImporter::Import(const fs::path& sourcePath,
 
     RVX_CORE_INFO("Importing texture: {}", sourcePath.string());
 
-    result.success = true;
-    result.outputPaths.push_back(outputPath.string());
+    result.success = false;
+    result.error = "TextureImporter is not implemented; no texture artifact was written";
+    result.warnings.push_back("Texture import disabled until the real texture pipeline is implemented");
+    (void)outputPath;
     return result;
 }
 
@@ -197,8 +199,10 @@ ImportResult MeshImporter::Import(const fs::path& sourcePath,
 
     RVX_CORE_INFO("Importing mesh: {}", sourcePath.string());
 
-    result.success = true;
-    result.outputPaths.push_back(outputPath.string());
+    result.success = false;
+    result.error = "MeshImporter is not implemented; no mesh artifact was written";
+    result.warnings.push_back("Mesh import disabled until the real mesh pipeline is implemented");
+    (void)outputPath;
     return result;
 }
 
@@ -219,8 +223,10 @@ ImportResult ShaderImporter::Import(const fs::path& sourcePath,
 
     RVX_CORE_INFO("Compiling shader: {}", sourcePath.string());
 
-    result.success = true;
-    result.outputPaths.push_back(outputPath.string());
+    result.success = false;
+    result.error = "ShaderImporter is not implemented; no shader artifact was written";
+    result.warnings.push_back("Shader import disabled until the real shader pipeline is implemented");
+    (void)outputPath;
     return result;
 }
 
@@ -240,8 +246,10 @@ ImportResult AudioImporter::Import(const fs::path& sourcePath,
 
     RVX_CORE_INFO("Importing audio: {}", sourcePath.string());
 
-    result.success = true;
-    result.outputPaths.push_back(outputPath.string());
+    result.success = false;
+    result.error = "AudioImporter is not implemented; no audio artifact was written";
+    result.warnings.push_back("Audio import disabled until the real audio pipeline is implemented");
+    (void)outputPath;
     return result;
 }
 

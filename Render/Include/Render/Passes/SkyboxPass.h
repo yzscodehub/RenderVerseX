@@ -10,6 +10,7 @@
 
 #include "Render/Passes/IRenderPass.h"
 #include "Core/MathTypes.h"
+#include <string>
 
 namespace RVX
 {
@@ -75,10 +76,15 @@ namespace RVX
          */
         void SetEnabled(bool enabled) { m_enabled = enabled; }
 
-        bool IsEnabled() const override { return m_enabled; }
+        bool IsEnabled() const override { return m_enabled && m_drawReady; }
+        bool IsRequestedEnabled() const { return m_enabled; }
+        bool IsDrawReady() const { return m_drawReady; }
+        const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
 
     private:
         bool m_enabled = true;
+        bool m_drawReady = false;
+        std::string m_unsupportedReason = "Skybox pipeline and draw command are not implemented";
         PipelineCache* m_pipelineCache = nullptr;
         RHITextureView* m_colorTargetView = nullptr;
         RHITextureView* m_depthTargetView = nullptr;

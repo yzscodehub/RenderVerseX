@@ -772,6 +772,13 @@ namespace RVX
         m_capabilities.supportsSecondaryCommandBuffer = true;   // DX12 supports bundles
         m_capabilities.supportsMemoryBudgetQuery = true;        // DXGI supports memory budget
         m_capabilities.supportsPersistentMapping = true;        // DX12 supports persistent mapping
+        m_capabilities.supportsTimestampQueries = true;
+        m_capabilities.supportsOcclusionQueries = true;
+        m_capabilities.supportsPipelineStatisticsQueries = true;
+        if (m_graphicsQueue)
+        {
+            m_graphicsQueue->GetTimestampFrequency(&m_capabilities.timestampFrequency);
+        }
 
         return true;
     }

@@ -12,6 +12,7 @@ namespace RVX
 FXAAPass::FXAAPass()
 {
     m_enabled = true;
+    MarkUnsupported("FXAA shader and fullscreen pipeline are not implemented");
 }
 
 void FXAAPass::Configure(const PostProcessSettings& settings)
@@ -22,8 +23,14 @@ void FXAAPass::Configure(const PostProcessSettings& settings)
 
 void FXAAPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output)
 {
-    if (!m_enabled)
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("FXAA: unsupported pass skipped: {}", GetUnsupportedReason());
+        }
         return;
+    }
 
     struct FXAAData
     {

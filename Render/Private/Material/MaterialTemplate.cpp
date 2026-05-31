@@ -104,17 +104,19 @@ int32 MaterialTemplate::GetParameterIndex(const std::string& name) const
 
 bool MaterialTemplate::Compile(IRHIDevice* device)
 {
+    m_compiled = false;
+    m_pipeline.Reset();
+    m_lastCompileError.clear();
+
     if (!device)
+    {
+        m_lastCompileError = "Cannot compile material template without an RHI device";
         return false;
+    }
 
-    // TODO: Compile shaders and create pipeline
-    // This would involve:
-    // 1. Loading and compiling shaders based on paths
-    // 2. Creating pipeline state based on blend mode, etc.
-    // 3. Setting up descriptor layouts for parameters
-
-    m_compiled = true;
-    return true;
+    m_lastCompileError =
+        "MaterialTemplate::Compile is not implemented; no shader compilation or pipeline creation occurred";
+    return false;
 }
 
 void MaterialTemplate::CalculateParameterOffsets()

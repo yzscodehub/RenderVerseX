@@ -388,17 +388,12 @@ TEST(RenderGraphValidation, MemoryAliasing)
 
     const auto& stats = graph.GetCompileStats();
 
-    // Should have memory savings due to aliasing
-    RVX_CORE_INFO("Memory aliasing test:");
-    RVX_CORE_INFO("  Transient textures: {}", stats.totalTransientTextures);
-    RVX_CORE_INFO("  Aliased textures: {}", stats.aliasedTextureCount);
-    RVX_CORE_INFO("  Memory without aliasing: {} KB", stats.memoryWithoutAliasing / 1024);
-    RVX_CORE_INFO("  Memory with aliasing: {} KB", stats.memoryWithAliasing / 1024);
-    RVX_CORE_INFO("  Savings: {:.1f}%", stats.GetMemorySavingsPercent());
-
-    // If aliasing is working, we should have some aliased resources
-    // Note: This might be 0 if the graph is too simple or aliasing conditions aren't met
-    EXPECT_TRUE(stats.totalTransientTextures >= 3);
+    EXPECT_FALSE(graph.IsMemoryAliasingEnabled());
+    EXPECT_FALSE(stats.memoryAliasingEnabled);
+    EXPECT_TRUE(stats.memoryAliasingUnsupportedRequested);
+    EXPECT_FALSE(stats.explicitAliasingBarriersSupported);
+    EXPECT_EQ(stats.aliasedTextureCount, 0u);
+    EXPECT_EQ(stats.aliasedBufferCount, 0u);
 }
 
 TEST(RenderGraphValidation, ComputePass)
@@ -757,6 +752,9 @@ TEST(RenderGraphValidation, ExecuteAsyncFallsBackToGraphicsUntilQueueSchedulerEx
     graph.Compile();
     graph.ExecuteAsync(graphicsCtx, &computeCtx, &computeFence, 1);
 
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_FALSE(stats.asyncComputeSupported);
+    EXPECT_TRUE(stats.asyncFallbackUsed);
     EXPECT_TRUE(ranOnGraphicsContext);
     EXPECT_FALSE(ranOnComputeContext);
 }
@@ -832,8 +830,10 @@ TEST(RenderGraphValidation, InvalidTextureUsageIsReported)
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_EQ(stats.totalPasses, 1u);
+    EXPECT_FALSE(stats.compileValid);
     EXPECT_EQ(stats.invalidResourceUsageCount, 1u);
     EXPECT_EQ(stats.validationErrorCount, 1u);
+    EXPECT_FALSE(stats.executionOrderFallbackUsed);
 }
 
 TEST(RenderGraphValidation, InvalidBufferUsageIsReported)
@@ -858,8 +858,10 @@ TEST(RenderGraphValidation, InvalidBufferUsageIsReported)
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_EQ(stats.totalPasses, 1u);
+    EXPECT_FALSE(stats.compileValid);
     EXPECT_EQ(stats.invalidResourceUsageCount, 1u);
     EXPECT_EQ(stats.validationErrorCount, 1u);
+    EXPECT_FALSE(stats.executionOrderFallbackUsed);
 }
 
 TEST(RenderGraphValidation, EmptyPassUsageIsReported)
@@ -876,6 +878,7 @@ TEST(RenderGraphValidation, EmptyPassUsageIsReported)
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_EQ(stats.totalPasses, 1u);
+    EXPECT_TRUE(stats.compileValid);
     EXPECT_EQ(stats.emptyPassUsageCount, 1u);
     EXPECT_EQ(stats.validationWarningCount, 1u);
 }
@@ -897,7 +900,9 @@ TEST(RenderGraphValidation, IncompatiblePassStateIsReported)
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_EQ(stats.totalPasses, 1u);
+    EXPECT_FALSE(stats.compileValid);
     EXPECT_EQ(stats.invalidResourceUsageCount, 1u);
     EXPECT_EQ(stats.incompatibleStateUsageCount, 1u);
     EXPECT_EQ(stats.validationErrorCount, 2u);
+    EXPECT_FALSE(stats.executionOrderFallbackUsed);
 }

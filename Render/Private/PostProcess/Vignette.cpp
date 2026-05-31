@@ -12,6 +12,7 @@ namespace RVX
 VignettePass::VignettePass()
 {
     m_enabled = false;  // Disabled by default
+    MarkUnsupported("Vignette shader and compute pipeline are not implemented");
 }
 
 void VignettePass::Configure(const PostProcessSettings& settings)
@@ -23,8 +24,14 @@ void VignettePass::Configure(const PostProcessSettings& settings)
 
 void VignettePass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output)
 {
-    if (!m_enabled || m_config.intensity <= 0.0f)
+    if (!IsEnabled() || m_config.intensity <= 0.0f)
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("Vignette: unsupported pass skipped: {}", GetUnsupportedReason());
+        }
         return;
+    }
 
     struct VignetteData
     {

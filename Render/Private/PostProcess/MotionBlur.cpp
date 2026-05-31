@@ -12,6 +12,7 @@ namespace RVX
 MotionBlurPass::MotionBlurPass()
 {
     m_enabled = true;
+    MarkUnsupported("Motion blur shaders and velocity gather pipeline are not implemented");
 }
 
 void MotionBlurPass::Configure(const PostProcessSettings& settings)
@@ -33,8 +34,14 @@ void MotionBlurPass::SetCameraMatrices(const Mat4& currentViewProj, const Mat4& 
 void MotionBlurPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output)
 {
     // Basic version without velocity buffer - use camera motion
-    if (!m_enabled)
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("MotionBlur: unsupported camera pass skipped: {}", GetUnsupportedReason());
+        }
         return;
+    }
 
     struct CameraMotionBlurData
     {
@@ -84,8 +91,14 @@ void MotionBlurPass::AddToGraph(RenderGraph& graph, RGTextureHandle input,
                                  RGTextureHandle velocity, RGTextureHandle depth,
                                  RGTextureHandle output)
 {
-    if (!m_enabled)
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("MotionBlur: unsupported velocity pass skipped: {}", GetUnsupportedReason());
+        }
         return;
+    }
 
     // Get sample count based on quality
     uint32 sampleCount = 8;

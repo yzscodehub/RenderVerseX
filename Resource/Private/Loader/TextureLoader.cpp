@@ -52,10 +52,15 @@ namespace RVX::Resource
     TextureResource* TextureLoader::LoadFromReference(const TextureReference& ref,
                                                         const std::string& modelPath)
     {
+        m_lastLoadStatus = TextureLoadStatus::None;
+        m_lastLoadError.clear();
+
         if (!ref.IsValid())
         {
-        RVX_CORE_WARN("TextureLoader: Invalid texture reference");
-        return GetDefaultTexture(ref.usage);
+            m_lastLoadStatus = TextureLoadStatus::FallbackInvalidReference;
+            m_lastLoadError = "Invalid texture reference";
+            RVX_CORE_WARN("TextureLoader: Invalid texture reference; using default texture");
+            return GetDefaultTexture(ref.usage);
         }
 
         // Generate unique key for caching
@@ -67,6 +72,8 @@ namespace RVX::Resource
         {
             if (auto* cached = m_manager->GetCache().Get(textureId))
             {
+                m_lastLoadStatus = TextureLoadStatus::Loaded;
+                m_lastLoadError.clear();
                 return static_cast<TextureResource*>(cached);
             }
         }
@@ -101,9 +108,12 @@ namespace RVX::Resource
         {
             texture->SetSRGB(ref.isSRGB);
             texture->SetUsage(ref.usage);
+            m_lastLoadStatus = TextureLoadStatus::Loaded;
         }
         else
         {
+            m_lastLoadStatus = TextureLoadStatus::FallbackLoadFailed;
+            m_lastLoadError = "Failed to load texture source; using default texture";
             RVX_CORE_WARN("TextureLoader: Failed to load texture, using default");
             texture = GetDefaultTexture(ref.usage);
         }
@@ -113,6 +123,8 @@ namespace RVX::Resource
 
     TextureResource* TextureLoader::LoadFromFile(const std::string& absolutePath)
     {
+        m_lastLoadStatus = TextureLoadStatus::None;
+        m_lastLoadError.clear();
         ResourceId textureId = GenerateTextureId(absolutePath);
 
         // Check cache
@@ -120,6 +132,8 @@ namespace RVX::Resource
         {
             if (auto* cached = m_manager->GetCache().Get(textureId))
             {
+                m_lastLoadStatus = TextureLoadStatus::Loaded;
+                m_lastLoadError.clear();
                 return static_cast<TextureResource*>(cached);
             }
         }
@@ -127,6 +141,8 @@ namespace RVX::Resource
         // Check if file exists
         if (!std::filesystem::exists(absolutePath))
         {
+            m_lastLoadStatus = TextureLoadStatus::Failed;
+            m_lastLoadError = "Texture file not found: " + absolutePath;
             RVX_CORE_WARN("TextureLoader: File not found: {}", absolutePath);
             return nullptr;
         }
@@ -135,6 +151,8 @@ namespace RVX::Resource
         std::ifstream file(absolutePath, std::ios::binary | std::ios::ate);
         if (!file.is_open())
         {
+            m_lastLoadStatus = TextureLoadStatus::Failed;
+            m_lastLoadError = "Cannot open texture file: " + absolutePath;
             RVX_CORE_WARN("TextureLoader: Cannot open file: {}", absolutePath);
             return nullptr;
         }
@@ -145,6 +163,8 @@ namespace RVX::Resource
         std::vector<uint8_t> fileData(static_cast<size_t>(size));
         if (!file.read(reinterpret_cast<char*>(fileData.data()), size))
         {
+            m_lastLoadStatus = TextureLoadStatus::Failed;
+            m_lastLoadError = "Failed to read texture file: " + absolutePath;
             RVX_CORE_WARN("TextureLoader: Failed to read file: {}", absolutePath);
             return nullptr;
         }
@@ -156,6 +176,8 @@ namespace RVX::Resource
 
         if (!DecodeImage(fileData.data(), fileData.size(), pixels, width, height, channels))
         {
+            m_lastLoadStatus = TextureLoadStatus::Failed;
+            m_lastLoadError = "Failed to decode texture file: " + absolutePath;
             RVX_CORE_WARN("TextureLoader: Failed to decode image: {}", absolutePath);
             return nullptr;
         }
@@ -180,7 +202,13 @@ namespace RVX::Resource
             usage = TextureUsage::Data;
         }
 
-        return CreateTextureResource(std::move(pixels), width, height, channels, absolutePath, usage);
+        TextureResource* texture = CreateTextureResource(std::move(pixels), width, height, channels, absolutePath, usage);
+        m_lastLoadStatus = texture ? TextureLoadStatus::Loaded : TextureLoadStatus::Failed;
+        if (!texture)
+        {
+            m_lastLoadError = "Failed to create texture resource: " + absolutePath;
+        }
+        return texture;
     }
 
     TextureResource* TextureLoader::LoadFromMemory(const void* data, size_t size,
@@ -189,6 +217,9 @@ namespace RVX::Resource
                                                      bool isRawRGBA,
                                                      uint32_t width, uint32_t height)
     {
+        m_lastLoadStatus = TextureLoadStatus::None;
+        m_lastLoadError.clear();
+
         ResourceId textureId = GenerateTextureId(uniqueKey);
 
         // Check cache
@@ -196,16 +227,19 @@ namespace RVX::Resource
         {
             if (auto* cached = m_manager->GetCache().Get(textureId))
             {
+                m_lastLoadStatus = TextureLoadStatus::Loaded;
+                m_lastLoadError.clear();
                 return static_cast<TextureResource*>(cached);
             }
         }
 
+        TextureResource* texture = nullptr;
         if (isRawRGBA)
         {
             // Raw RGBA data
             std::vector<uint8_t> pixels(static_cast<const uint8_t*>(data),
                                          static_cast<const uint8_t*>(data) + size);
-            return CreateTextureResource(std::move(pixels), width, height, 4, uniqueKey, usage);
+            texture = CreateTextureResource(std::move(pixels), width, height, 4, uniqueKey, usage);
         }
         else
         {
@@ -216,11 +250,20 @@ namespace RVX::Resource
             if (!DecodeImage(data, size, pixels, width, height, channels))
             {
                 RVX_CORE_WARN("TextureLoader: Failed to decode embedded image: {}", uniqueKey);
+                m_lastLoadStatus = TextureLoadStatus::Failed;
+                m_lastLoadError = "Failed to decode embedded texture: " + uniqueKey;
                 return nullptr;
             }
 
-            return CreateTextureResource(std::move(pixels), width, height, channels, uniqueKey, usage);
+            texture = CreateTextureResource(std::move(pixels), width, height, channels, uniqueKey, usage);
         }
+
+        m_lastLoadStatus = texture ? TextureLoadStatus::Loaded : TextureLoadStatus::Failed;
+        if (!texture)
+        {
+            m_lastLoadError = "Failed to create texture resource: " + uniqueKey;
+        }
+        return texture;
     }
 
     // =========================================================================

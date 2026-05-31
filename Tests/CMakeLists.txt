@@ -165,6 +165,26 @@ rvx_add_gtest(
     TIMEOUT 120
 )
 
+# Render honesty validation tests
+rvx_add_gtest(
+    NAME RenderHonestyValidation
+    SOURCES RenderHonestyValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::Render
+        RVX::Resource
+        RVX::Tools
+        RVX::RHI
+        Particle
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Resource/Include
+        ${CMAKE_SOURCE_DIR}/Tools/Include
+        ${CMAKE_SOURCE_DIR}/RHI/Include
+    LABELS unit
+    TIMEOUT 120
+)
+
 # GPU Resource Manager Validation Tests
 rvx_add_gtest(
     NAME GPUResourceManagerValidation

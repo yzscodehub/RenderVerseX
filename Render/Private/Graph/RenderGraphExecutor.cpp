@@ -7,6 +7,12 @@ namespace RVX
 {
     void ExecuteRenderGraph(RenderGraphImpl& graph, RHICommandContext& ctx)
     {
+        if (!graph.stats.compileValid)
+        {
+            RVX_CORE_ERROR("RenderGraph execution skipped because the graph did not compile successfully");
+            return;
+        }
+
         if (!graph.executionOrder.empty())
         {
             for (uint32 passIndex : graph.executionOrder)
@@ -143,6 +149,9 @@ namespace RVX
         (void)computeCtx;
         (void)computeFence;
         (void)frameIndex;
+
+        graph.stats.asyncComputeSupported = false;
+        graph.stats.asyncFallbackUsed = true;
 
         // Cross-queue execution needs explicit queue submission and GPU-side waits.
         // The current RHI command-context fence methods are not a complete scheduler,

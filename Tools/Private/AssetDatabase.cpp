@@ -9,6 +9,7 @@
 #include <sstream>
 #include <iomanip>
 #include <fstream>
+#include <regex>
 
 namespace RVX::Tools
 {
@@ -76,7 +77,24 @@ bool AssetDatabase::Initialize(const fs::path& sourceRoot, const fs::path& impor
 
 bool AssetDatabase::Save()
 {
-    // TODO: Serialize to JSON
+    if (m_databasePath.empty())
+    {
+        RVX_CORE_ERROR("Failed to save asset database: database path is empty");
+        return false;
+    }
+
+    if (!m_databasePath.parent_path().empty())
+    {
+        std::error_code ec;
+        fs::create_directories(m_databasePath.parent_path(), ec);
+        if (ec)
+        {
+            RVX_CORE_ERROR("Failed to create asset database directory '{}': {}",
+                           m_databasePath.parent_path().string(), ec.message());
+            return false;
+        }
+    }
+
     std::ofstream file(m_databasePath);
     if (!file.is_open())
     {
@@ -104,6 +122,12 @@ bool AssetDatabase::Save()
 
     file << "\n  ]\n";
     file << "}\n";
+    file.flush();
+    if (!file.good())
+    {
+        RVX_CORE_ERROR("Failed to write complete asset database: {}", m_databasePath.string());
+        return false;
+    }
 
     RVX_CORE_INFO("Asset database saved: {} assets", m_assets.size());
     return true;
@@ -116,7 +140,60 @@ bool AssetDatabase::Load()
         return false;
     }
 
-    // TODO: Parse JSON and load entries
+    std::ifstream file(m_databasePath);
+    if (!file.is_open())
+    {
+        RVX_CORE_ERROR("Failed to open asset database: {}", m_databasePath.string());
+        return false;
+    }
+
+    const std::string contents((std::istreambuf_iterator<char>(file)),
+                               std::istreambuf_iterator<char>());
+    if (contents.find("\"version\"") == std::string::npos ||
+        contents.find("\"assets\"") == std::string::npos)
+    {
+        RVX_CORE_ERROR("Asset database is malformed: {}", m_databasePath.string());
+        return false;
+    }
+
+    std::unordered_map<uint64, AssetEntry> parsedAssets;
+    std::unordered_map<std::string, uint64> parsedPathToGuid;
+
+    const std::regex entryRegex(
+        R"REGEX(\{\s*"guid"\s*:\s*"([0-9a-fA-F]{32})"\s*,\s*"path"\s*:\s*"([^"]*)"\s*,\s*"name"\s*:\s*"([^"]*)"\s*,\s*"type"\s*:\s*([0-9]+)\s*\})REGEX");
+
+    auto begin = std::sregex_iterator(contents.begin(), contents.end(), entryRegex);
+    auto end = std::sregex_iterator();
+    for (auto it = begin; it != end; ++it)
+    {
+        const std::smatch& match = *it;
+        AssetEntry entry;
+        try
+        {
+            entry.guid = AssetGUID::FromString(match[1].str());
+            entry.path = match[2].str();
+            entry.name = match[3].str();
+            entry.type = static_cast<AssetType>(std::stoi(match[4].str()));
+        }
+        catch (const std::exception& ex)
+        {
+            RVX_CORE_ERROR("Failed to parse asset database entry: {}", ex.what());
+            return false;
+        }
+
+        if (!entry.guid.IsValid() || entry.path.empty())
+        {
+            RVX_CORE_ERROR("Asset database contains invalid entry");
+            return false;
+        }
+
+        uint64 hash = GetGuidHash(entry.guid);
+        parsedAssets[hash] = entry;
+        parsedPathToGuid[entry.path] = hash;
+    }
+
+    m_assets = std::move(parsedAssets);
+    m_pathToGuid = std::move(parsedPathToGuid);
     RVX_CORE_INFO("Asset database loaded from: {}", m_databasePath.string());
     return true;
 }

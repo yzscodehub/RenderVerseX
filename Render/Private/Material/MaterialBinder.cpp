@@ -23,6 +23,13 @@ void MaterialBinder::Initialize(IRHIDevice* device, GPUResourceManager* gpuResou
         return;
     }
 
+    if (!device)
+    {
+        RVX_CORE_ERROR("MaterialBinder: Cannot initialize without an RHI device");
+        m_lastBindStatus = MaterialBindStatus::Error;
+        return;
+    }
+
     m_device = device;
     m_gpuResources = gpuResources;
     m_defaultConstants = GetDefaultConstants();
@@ -41,6 +48,7 @@ void MaterialBinder::Shutdown()
     m_device = nullptr;
     m_gpuResources = nullptr;
     m_currentMaterialId = 0;
+    m_lastBindStatus = MaterialBindStatus::None;
 
     RVX_CORE_DEBUG("MaterialBinder: Shutdown");
 }
@@ -66,7 +74,10 @@ void MaterialBinder::EnsureConstantBuffer()
 void MaterialBinder::UpdateConstantBuffer(const MaterialGPUConstants& constants)
 {
     if (!m_constantBuffer)
+    {
+        m_lastBindStatus = MaterialBindStatus::Error;
         return;
+    }
 
     void* mappedData = m_constantBuffer->Map();
     if (mappedData)
@@ -81,8 +92,16 @@ void MaterialBinder::Bind(RHICommandContext& ctx, const Material& material, uint
     (void)ctx;
     (void)setIndex;
 
+    if (!m_device || !m_constantBuffer)
+    {
+        RVX_CORE_ERROR("MaterialBinder: Cannot bind material before successful initialization");
+        m_lastBindStatus = MaterialBindStatus::Error;
+        return;
+    }
+
     MaterialGPUConstants constants = ConvertToGPU(material);
     UpdateConstantBuffer(constants);
+    m_lastBindStatus = MaterialBindStatus::Unsupported;
 
     // Bind constant buffer
     // Note: Actual binding depends on pipeline layout
@@ -99,8 +118,7 @@ void MaterialBinder::Bind(RHICommandContext& ctx, uint64 materialId, uint32 setI
     (void)materialId;
     (void)setIndex;
 
-    // TODO: Look up material by ID and bind
-    // For now, bind default
+    RVX_CORE_WARN("MaterialBinder: Binding material by ID is not implemented; using explicit default fallback");
     BindDefault(ctx, setIndex);
 }
 
@@ -109,7 +127,15 @@ void MaterialBinder::BindDefault(RHICommandContext& ctx, uint32 setIndex)
     (void)ctx;
     (void)setIndex;
 
+    if (!m_device || !m_constantBuffer)
+    {
+        RVX_CORE_ERROR("MaterialBinder: Cannot bind default material before successful initialization");
+        m_lastBindStatus = MaterialBindStatus::Error;
+        return;
+    }
+
     UpdateConstantBuffer(m_defaultConstants);
+    m_lastBindStatus = MaterialBindStatus::BoundDefaultMaterial;
     // ctx.SetConstantBuffer(setIndex, 0, m_constantBuffer.Get());
 }
 

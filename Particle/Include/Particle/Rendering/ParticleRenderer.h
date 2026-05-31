@@ -12,6 +12,7 @@
 #include "Render/Renderer/ViewData.h"
 #include <unordered_map>
 #include <memory>
+#include <string>
 
 namespace RVX::Particle
 {
@@ -37,6 +38,8 @@ namespace RVX::Particle
         void Initialize(IRHIDevice* device);
         void Shutdown();
         bool IsInitialized() const { return m_device != nullptr; }
+        bool IsRenderingSupported() const { return m_renderingSupported; }
+        const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
 
         // =====================================================================
         // Rendering
@@ -95,6 +98,8 @@ namespace RVX::Particle
         void UploadRenderConstants(const ViewData& view, const SoftParticleConfig& softConfig);
 
         IRHIDevice* m_device = nullptr;
+        bool m_renderingSupported = false;
+        std::string m_unsupportedReason = "Particle render pipelines are not implemented";
 
         // Pipeline cache
         std::unordered_map<uint32, RHIPipelineRef> m_pipelineCache;

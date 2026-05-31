@@ -150,6 +150,25 @@ TEST(VulkanValidation, CommandContext)
     device->WaitIdle();
 }
 
+TEST(VulkanValidation, QueryCapabilitiesReportUnsupportedUntilImplemented)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    const RHICapabilities& caps = device->GetCapabilities();
+    EXPECT_FALSE(caps.supportsTimestampQueries);
+    EXPECT_FALSE(caps.supportsOcclusionQueries);
+    EXPECT_FALSE(caps.supportsPipelineStatisticsQueries);
+    EXPECT_EQ(caps.timestampFrequency, 0u);
+
+    RHIQueryPoolDesc queryDesc;
+    queryDesc.type = RHIQueryType::Timestamp;
+    queryDesc.count = 2;
+    queryDesc.debugName = "UnsupportedTimestampQueries";
+    EXPECT_EQ(device->CreateQueryPool(queryDesc).Get(), nullptr);
+}
+
 TEST(VulkanValidation, BarrierBatching)
 {
     RHIDeviceDesc deviceDesc;

@@ -551,39 +551,34 @@ namespace RVX
     }
 
     // =============================================================================
-    // Query Commands (Vulkan stubs - queries not yet implemented)
+    // Query Commands (Vulkan unsupported path)
     // =============================================================================
     void VulkanCommandContext::BeginQuery(RHIQueryPool* /*pool*/, uint32 /*index*/)
     {
-        // TODO: Implement Vulkan query support using vkCmdBeginQuery
-        RVX_RHI_WARN("VulkanCommandContext::BeginQuery not yet implemented");
+        RVX_RHI_ERROR("VulkanCommandContext::BeginQuery called while RHICapabilities reports queries unsupported");
     }
 
     void VulkanCommandContext::EndQuery(RHIQueryPool* /*pool*/, uint32 /*index*/)
     {
-        // TODO: Implement Vulkan query support using vkCmdEndQuery
-        RVX_RHI_WARN("VulkanCommandContext::EndQuery not yet implemented");
+        RVX_RHI_ERROR("VulkanCommandContext::EndQuery called while RHICapabilities reports queries unsupported");
     }
 
     void VulkanCommandContext::WriteTimestamp(RHIQueryPool* /*pool*/, uint32 /*index*/)
     {
-        // TODO: Implement Vulkan timestamp queries using vkCmdWriteTimestamp
-        RVX_RHI_WARN("VulkanCommandContext::WriteTimestamp not yet implemented");
+        RVX_RHI_ERROR("VulkanCommandContext::WriteTimestamp called while RHICapabilities reports timestamp queries unsupported");
     }
 
     void VulkanCommandContext::ResolveQueries(RHIQueryPool* /*pool*/, uint32 /*firstQuery*/,
                                               uint32 /*queryCount*/, RHIBuffer* /*destBuffer*/,
                                               uint64 /*destOffset*/)
     {
-        // TODO: Implement query result retrieval using vkCmdCopyQueryPoolResults
-        RVX_RHI_WARN("VulkanCommandContext::ResolveQueries not yet implemented");
+        RVX_RHI_ERROR("VulkanCommandContext::ResolveQueries called while RHICapabilities reports queries unsupported");
     }
 
     void VulkanCommandContext::ResetQueries(RHIQueryPool* /*pool*/, uint32 /*firstQuery*/,
                                             uint32 /*queryCount*/)
     {
-        // TODO: Implement query reset using vkCmdResetQueryPool
-        RVX_RHI_WARN("VulkanCommandContext::ResetQueries not yet implemented");
+        RVX_RHI_ERROR("VulkanCommandContext::ResetQueries called while RHICapabilities reports queries unsupported");
     }
 
     // =============================================================================

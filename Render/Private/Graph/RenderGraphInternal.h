@@ -153,7 +153,8 @@ namespace RVX
         
         // Memory aliasing
         std::vector<TransientHeap> transientHeaps;
-        bool enableMemoryAliasing = true;
+        bool enableMemoryAliasing = false;
+        bool memoryAliasingRequested = false;
         
         // Aliasing statistics
         uint64 totalMemoryWithoutAliasing = 0;

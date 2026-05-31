@@ -12,6 +12,7 @@ namespace RVX
 ColorGradingPass::ColorGradingPass()
 {
     m_enabled = true;
+    MarkUnsupported("Color grading shader and LUT bake path are not implemented");
 }
 
 void ColorGradingPass::Configure(const PostProcessSettings& settings)
@@ -42,8 +43,14 @@ RHITextureRef ColorGradingPass::BakeToLUT(IRHIDevice* device, uint32 size)
 
 void ColorGradingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output)
 {
-    if (!m_enabled)
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("ColorGrading: unsupported pass skipped: {}", GetUnsupportedReason());
+        }
         return;
+    }
 
     struct ColorGradingData
     {

@@ -232,6 +232,10 @@ namespace RVX
         m_capabilities.supportsAsyncCompute = false;            // OpenGL single queue
         m_capabilities.supportsMemoryBudgetQuery = false;       // OpenGL doesn't support memory budget
         m_capabilities.supportsPersistentMapping = m_capabilities.opengl.hasBufferStorage;
+        m_capabilities.supportsTimestampQueries = true;
+        m_capabilities.supportsOcclusionQueries = true;
+        m_capabilities.supportsPipelineStatisticsQueries = false; // OpenGL only provides partial primitive counters here
+        m_capabilities.timestampFrequency = 1000000000;          // OpenGL timestamps are nanosecond-based in this backend
     }
 
     void OpenGLDevice::LoadExtensions()

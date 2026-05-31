@@ -10,6 +10,7 @@
 #include <vector>
 #include <memory>
 #include <functional>
+#include <string>
 
 namespace RVX
 {
@@ -133,12 +134,27 @@ namespace RVX
         /**
          * @brief Check if this effect is enabled
          */
-        virtual bool IsEnabled() const { return m_enabled; }
+        virtual bool IsEnabled() const { return m_enabled && m_supported; }
+
+        /**
+         * @brief Check if this effect was requested even when unsupported
+         */
+        bool IsRequestedEnabled() const { return m_enabled; }
 
         /**
          * @brief Enable/disable the effect
          */
         virtual void SetEnabled(bool enabled) { m_enabled = enabled; }
+
+        /**
+         * @brief Check whether the pass has a real GPU implementation
+         */
+        bool IsSupported() const { return m_supported; }
+
+        /**
+         * @brief Human-readable reason when unsupported
+         */
+        const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
 
         /**
          * @brief Configure the effect based on settings
@@ -154,7 +170,15 @@ namespace RVX
         virtual void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) = 0;
 
     protected:
+        void MarkUnsupported(const char* reason)
+        {
+            m_supported = false;
+            m_unsupportedReason = reason ? reason : "Unsupported";
+        }
+
         bool m_enabled = true;
+        bool m_supported = true;
+        std::string m_unsupportedReason;
     };
 
     /**

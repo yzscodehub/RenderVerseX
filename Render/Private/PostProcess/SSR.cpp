@@ -4,6 +4,7 @@
  */
 
 #include "Render/PostProcess/SSR.h"
+#include "Core/Log.h"
 
 namespace RVX
 {
@@ -15,6 +16,13 @@ SSR::~SSR()
 
 void SSR::Initialize(IRHIDevice* device, uint32 width, uint32 height)
 {
+    if (!device)
+    {
+        RVX_CORE_ERROR("SSR: Cannot initialize without an RHI device");
+        m_unsupportedReason = "No RHI device";
+        return;
+    }
+
     m_device = device;
     m_width = width;
     m_height = height;
@@ -107,7 +115,14 @@ void SSR::Compute(RHICommandContext& ctx,
                   const Mat4& viewMatrix,
                   const Mat4& projMatrix)
 {
-    if (!m_enabled || !m_device) return;
+    if (!IsEnabled() || !m_device)
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("SSR: unsupported compute skipped: {}", GetUnsupportedReason());
+        }
+        return;
+    }
 
     // Build HiZ pyramid from depth
     BuildHiZPyramid(ctx, depthTexture);

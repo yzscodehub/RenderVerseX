@@ -47,6 +47,7 @@ namespace RVX::Particle
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        bool IsEnabled() const override;
 
         // =====================================================================
         // Configuration

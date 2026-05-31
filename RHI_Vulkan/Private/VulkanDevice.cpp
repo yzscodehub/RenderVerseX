@@ -871,6 +871,13 @@ namespace RVX
         // Check for variable rate shading support (VK_KHR_fragment_shading_rate)
         m_capabilities.supportsVariableRateShading = hasExtension(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
 
+        // Query pools are intentionally reported unsupported until the backend
+        // creates VkQueryPool objects and resolves their results.
+        m_capabilities.supportsTimestampQueries = false;
+        m_capabilities.supportsOcclusionQueries = false;
+        m_capabilities.supportsPipelineStatisticsQueries = false;
+        m_capabilities.timestampFrequency = 0;
+
         RVX_RHI_DEBUG("Vulkan Capabilities: Raytracing={}, MeshShaders={}, VRS={}", 
             m_capabilities.supportsRaytracing, 
             m_capabilities.supportsMeshShaders, 
@@ -1197,10 +1204,13 @@ namespace RVX
         return CreateVulkanDescriptorSet(this, desc);
     }
 
-    RHIQueryPoolRef VulkanDevice::CreateQueryPool(const RHIQueryPoolDesc& /*desc*/)
+    RHIQueryPoolRef VulkanDevice::CreateQueryPool(const RHIQueryPoolDesc& desc)
     {
-        // TODO: Implement Vulkan query pool support
-        RVX_RHI_WARN("Vulkan query pools not yet implemented");
+        RVX_RHI_ERROR(
+            "Vulkan query pools are unsupported in this backend revision (type={}, count={}); "
+            "check RHICapabilities before requesting queries",
+            static_cast<uint32>(desc.type),
+            desc.count);
         return nullptr;
     }
 

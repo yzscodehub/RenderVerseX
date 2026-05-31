@@ -1008,12 +1008,23 @@ namespace RVX
     {
         graph.stats = {};
         graph.stats.totalPasses = static_cast<uint32>(graph.passes.size());
+        graph.stats.compileValid = true;
+        graph.stats.asyncComputeSupported = false;
+        graph.stats.memoryAliasingEnabled = graph.enableMemoryAliasing;
+        graph.stats.memoryAliasingUnsupportedRequested = graph.memoryAliasingRequested && !graph.enableMemoryAliasing;
+        graph.stats.explicitAliasingBarriersSupported = false;
         graph.totalMemoryWithoutAliasing = 0;
         graph.totalMemoryWithAliasing = 0;
         graph.aliasedTextureCount = 0;
         graph.aliasedBufferCount = 0;
 
         ValidatePassUsages(graph);
+        if (graph.stats.validationErrorCount > 0)
+        {
+            graph.stats.compileValid = false;
+            graph.executionOrder.clear();
+            return;
+        }
 
         std::vector<std::vector<uint32>> textureWriters(graph.textures.size());
         std::vector<std::vector<uint32>> bufferWriters(graph.buffers.size());
@@ -1240,13 +1251,12 @@ namespace RVX
 
         if (graph.executionOrder.size() != queue.size())
         {
+            graph.stats.compileValid = false;
+            graph.stats.executionOrderFallbackUsed = false;
+            graph.stats.validationErrorCount++;
+            RVX_CORE_ERROR("RenderGraph compile failed: execution order topology is incomplete");
             graph.executionOrder.clear();
-            for (uint32 passIndex = 0; passIndex < graph.passes.size(); ++passIndex)
-            {
-                if (!passNeeded.empty() && passNeeded[passIndex] == 0)
-                    continue;
-                graph.executionOrder.push_back(passIndex);
-            }
+            return;
         }
 
         // Mark culled passes first (needed for lifetime calculation)

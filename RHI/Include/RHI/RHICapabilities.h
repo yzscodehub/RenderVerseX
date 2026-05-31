@@ -53,6 +53,12 @@ namespace RVX
         bool supportsAsyncCompute = false;
         bool supportsConservativeRasterization = false;
 
+        // Query support
+        bool supportsTimestampQueries = false;
+        bool supportsOcclusionQueries = false;
+        bool supportsPipelineStatisticsQueries = false;
+        uint64 timestampFrequency = 0;
+
         // Dynamic state support
         bool supportsDepthBounds = false;           // DX12/Vulkan only
         bool supportsDynamicLineWidth = false;      // Vulkan/OpenGL only

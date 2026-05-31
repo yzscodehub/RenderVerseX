@@ -12,6 +12,7 @@ namespace RVX
 ToneMappingPass::ToneMappingPass()
 {
     m_enabled = true;
+    MarkUnsupported("ToneMapping shader and fullscreen pipeline are not implemented");
 }
 
 void ToneMappingPass::Configure(const PostProcessSettings& settings)
@@ -23,8 +24,14 @@ void ToneMappingPass::Configure(const PostProcessSettings& settings)
 
 void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output)
 {
-    if (!m_enabled)
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("ToneMapping: unsupported pass skipped: {}", GetUnsupportedReason());
+        }
         return;
+    }
 
     struct ToneMappingData
     {

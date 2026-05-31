@@ -1,4 +1,5 @@
 #include "RenderGraphInternal.h"
+#include "Core/Log.h"
 #include <sstream>
 #include <fstream>
 
@@ -343,7 +344,12 @@ namespace RVX
 
     void RenderGraph::SetMemoryAliasingEnabled(bool enabled)
     {
-        m_impl->enableMemoryAliasing = enabled;
+        m_impl->memoryAliasingRequested = enabled;
+        if (enabled)
+        {
+            RVX_CORE_WARN("RenderGraph memory aliasing requested, but explicit aliasing barriers are unsupported; keeping aliasing disabled");
+        }
+        m_impl->enableMemoryAliasing = false;
     }
 
     bool RenderGraph::IsMemoryAliasingEnabled() const
@@ -363,6 +369,8 @@ namespace RVX
         m_impl->totalMemoryWithAliasing = 0;
         m_impl->aliasedTextureCount = 0;
         m_impl->aliasedBufferCount = 0;
+        m_impl->memoryAliasingRequested = false;
+        m_impl->enableMemoryAliasing = false;
     }
 
     std::string RenderGraph::ExportGraphviz() const

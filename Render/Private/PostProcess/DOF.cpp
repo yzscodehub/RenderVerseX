@@ -13,6 +13,7 @@ namespace RVX
 DOFPass::DOFPass()
 {
     m_enabled = true;
+    MarkUnsupported("Depth of field shaders and composite pipeline are not implemented");
     m_currentFocusDistance = m_config.focusDistance;
 }
 
@@ -83,8 +84,14 @@ void DOFPass::SetAutoFocus(float screenX, float screenY, float depth)
 void DOFPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output)
 {
     // Basic version without depth - just copy
-    if (!m_enabled)
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("DOF: unsupported fallback pass skipped: {}", GetUnsupportedReason());
+        }
         return;
+    }
 
     struct DOFPassData
     {
@@ -112,8 +119,14 @@ void DOFPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHan
 void DOFPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, 
                          RGTextureHandle depth, RGTextureHandle output)
 {
-    if (!m_enabled)
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("DOF: unsupported pass skipped: {}", GetUnsupportedReason());
+        }
         return;
+    }
 
     // Get sample count based on quality
     uint32 sampleCount = 8;

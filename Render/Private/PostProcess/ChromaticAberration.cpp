@@ -12,6 +12,7 @@ namespace RVX
 ChromaticAberrationPass::ChromaticAberrationPass()
 {
     m_enabled = false;
+    MarkUnsupported("Chromatic aberration shader and compute pipeline are not implemented");
 }
 
 void ChromaticAberrationPass::Configure(const PostProcessSettings& settings)
@@ -22,8 +23,14 @@ void ChromaticAberrationPass::Configure(const PostProcessSettings& settings)
 
 void ChromaticAberrationPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output)
 {
-    if (!m_enabled || m_config.intensity <= 0.0f)
+    if (!IsEnabled() || m_config.intensity <= 0.0f)
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("ChromaticAberration: unsupported pass skipped: {}", GetUnsupportedReason());
+        }
         return;
+    }
 
     struct CAData
     {

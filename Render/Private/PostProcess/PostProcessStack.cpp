@@ -67,6 +67,14 @@ void PostProcessStack::Execute(RenderGraph& graph, RGTextureHandle sceneColor, R
     std::vector<IPostProcessPass*> enabledEffects;
     for (auto& effect : m_effects)
     {
+        if (effect->IsRequestedEnabled() && !effect->IsSupported())
+        {
+            RVX_CORE_WARN(
+                "PostProcessStack: Skipping unsupported effect '{}': {}",
+                effect->GetName(),
+                effect->GetUnsupportedReason());
+        }
+
         if (effect->IsEnabled())
         {
             enabledEffects.push_back(effect.get());

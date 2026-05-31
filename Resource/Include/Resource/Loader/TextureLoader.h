@@ -16,6 +16,15 @@
 
 namespace RVX::Resource
 {
+    enum class TextureLoadStatus : uint8_t
+    {
+        None,
+        Loaded,
+        Failed,
+        FallbackInvalidReference,
+        FallbackLoadFailed
+    };
+
     /**
      * @brief Texture resource loader
      * 
@@ -56,6 +65,14 @@ namespace RVX::Resource
          */
         TextureResource* LoadFromReference(const TextureReference& ref, 
                                             const std::string& modelPath);
+
+        TextureLoadStatus GetLastLoadStatus() const { return m_lastLoadStatus; }
+        const std::string& GetLastLoadError() const { return m_lastLoadError; }
+        bool WasLastLoadFallback() const
+        {
+            return m_lastLoadStatus == TextureLoadStatus::FallbackInvalidReference ||
+                   m_lastLoadStatus == TextureLoadStatus::FallbackLoadFailed;
+        }
 
         /**
          * @brief Load a texture from file
@@ -128,6 +145,8 @@ namespace RVX::Resource
         ResourceId GenerateTextureId(const std::string& uniqueKey);
 
         ResourceManager* m_manager;
+        TextureLoadStatus m_lastLoadStatus = TextureLoadStatus::None;
+        std::string m_lastLoadError;
 
         // Default textures (lazily created)
         TextureResource* m_whiteTexture = nullptr;

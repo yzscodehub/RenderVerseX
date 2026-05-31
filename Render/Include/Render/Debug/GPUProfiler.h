@@ -49,6 +49,7 @@ namespace RVX
         void Initialize(IRHIDevice* device);
         void Shutdown();
         bool IsInitialized() const { return m_device != nullptr; }
+        bool IsTimestampSupported() const { return m_timestampQueriesSupported; }
 
         // =========================================================================
         // Profiling API
@@ -148,7 +149,8 @@ namespace RVX
 
         // Query resources
         static constexpr uint32 MaxQueries = 256;
-        // Note: Actual query pool would be created based on RHI capabilities
+        bool m_timestampQueriesSupported = false;
+        RHIQueryPoolRef m_queryPool;
     };
 
     /**

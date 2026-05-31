@@ -12,6 +12,7 @@ namespace RVX
 BloomPass::BloomPass()
 {
     m_enabled = true;
+    MarkUnsupported("Bloom shader pipeline and mip-chain passes are not implemented");
 }
 
 void BloomPass::Configure(const PostProcessSettings& settings)
@@ -24,8 +25,14 @@ void BloomPass::Configure(const PostProcessSettings& settings)
 
 void BloomPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output)
 {
-    if (!m_enabled)
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("Bloom: unsupported pass skipped: {}", GetUnsupportedReason());
+        }
         return;
+    }
 
     // Bloom requires multiple passes:
     // 1. Bright pass (threshold)

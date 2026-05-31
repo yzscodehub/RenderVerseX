@@ -1,6 +1,7 @@
 #include "Particle/ParticleSystemInstance.h"
 #include "Particle/Events/ParticleEventHandler.h"
 #include "Particle/GPU/IParticleSimulator.h"
+#include "Core/Log.h"
 #include <algorithm>
 #include <cmath>
 
@@ -47,6 +48,13 @@ void ParticleSystemInstance::Initialize()
     m_simulationTime = 0.0f;
     m_emissionAccumulator = 0.0f;
     m_boundsDirty = true;
+}
+
+void ParticleSystemInstance::SetSimulationUnsupported(const char* reason)
+{
+    m_simulationSupported = false;
+    m_simulationUnsupportedReason = reason ? reason : "Particle simulation unsupported";
+    m_loggedUnsupportedSimulation = false;
 }
 
 void ParticleSystemInstance::Play()
@@ -131,6 +139,16 @@ void ParticleSystemInstance::Simulate(float deltaTime)
     // Handle visibility
     if (!m_visible && !m_simulateWhenHidden)
         return;
+
+    if (!IsSimulationSupported())
+    {
+        if (!m_loggedUnsupportedSimulation)
+        {
+            RVX_CORE_WARN("ParticleSystemInstance: simulation skipped: {}", m_simulationUnsupportedReason);
+            m_loggedUnsupportedSimulation = true;
+        }
+        return;
+    }
     
     // Update simulation time
     m_simulationTime += effectiveDeltaTime;

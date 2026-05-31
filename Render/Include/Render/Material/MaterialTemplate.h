@@ -235,6 +235,11 @@ namespace RVX
         bool IsCompiled() const { return m_compiled; }
 
         /**
+         * @brief Get the last compile error, if any
+         */
+        const std::string& GetLastCompileError() const { return m_lastCompileError; }
+
+        /**
          * @brief Get the compiled pipeline
          */
         RHIPipeline* GetPipeline() const { return m_pipeline.Get(); }
@@ -270,6 +275,7 @@ namespace RVX
         // Compiled state
         bool m_compiled = false;
         RHIPipelineRef m_pipeline;
+        std::string m_lastCompileError;
     };
 
 } // namespace RVX

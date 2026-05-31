@@ -20,7 +20,16 @@ void ParticleRenderer::Initialize(IRHIDevice* device)
     if (m_device)
         Shutdown();
 
+    if (!device)
+    {
+        RVX_CORE_ERROR("ParticleRenderer: Cannot initialize without an RHI device");
+        m_unsupportedReason = "No RHI device";
+        return;
+    }
+
     m_device = device;
+    m_renderingSupported = false;
+    m_unsupportedReason = "Particle render pipelines are not implemented";
 
     CreateQuadBuffers();
 
@@ -47,6 +56,7 @@ void ParticleRenderer::Shutdown()
     m_renderConstantsBuffer.Reset();
     m_trailRenderer.reset();
     m_device = nullptr;
+    m_renderingSupported = false;
 }
 
 void ParticleRenderer::CreateQuadBuffers()
@@ -74,7 +84,14 @@ void ParticleRenderer::CreateQuadBuffers()
     vbDesc.memoryType = RHIMemoryType::Upload;
     vbDesc.debugName = "ParticleQuadVB";
     m_quadVertexBuffer = m_device->CreateBuffer(vbDesc);
-    m_quadVertexBuffer->Upload(vertices, 4);
+    if (m_quadVertexBuffer)
+    {
+        m_quadVertexBuffer->Upload(vertices, 4);
+    }
+    else
+    {
+        RVX_CORE_WARN("ParticleRenderer: Failed to create quad vertex buffer");
+    }
 
     // Create index buffer
     RHIBufferDesc ibDesc;
@@ -83,7 +100,14 @@ void ParticleRenderer::CreateQuadBuffers()
     ibDesc.memoryType = RHIMemoryType::Upload;
     ibDesc.debugName = "ParticleQuadIB";
     m_quadIndexBuffer = m_device->CreateBuffer(ibDesc);
-    m_quadIndexBuffer->Upload(indices, 6);
+    if (m_quadIndexBuffer)
+    {
+        m_quadIndexBuffer->Upload(indices, 6);
+    }
+    else
+    {
+        RVX_CORE_WARN("ParticleRenderer: Failed to create quad index buffer");
+    }
 }
 
 void ParticleRenderer::DrawParticles(RHICommandContext& ctx,
@@ -93,6 +117,12 @@ void ParticleRenderer::DrawParticles(RHICommandContext& ctx,
 {
     if (!instance || !instance->HasSystem())
         return;
+
+    if (!IsRenderingSupported())
+    {
+        RVX_CORE_WARN("ParticleRenderer: draw skipped: {}", GetUnsupportedReason());
+        return;
+    }
 
     uint32 aliveCount = instance->GetAliveCount();
     if (aliveCount == 0)
@@ -157,6 +187,12 @@ void ParticleRenderer::DrawParticlesIndirect(RHICommandContext& ctx,
 {
     if (!instance || !instance->HasSystem())
         return;
+
+    if (!IsRenderingSupported())
+    {
+        RVX_CORE_WARN("ParticleRenderer: indirect draw skipped: {}", GetUnsupportedReason());
+        return;
+    }
 
     auto* system = instance->GetSystem().get();
     auto* simulator = instance->GetSimulator();
