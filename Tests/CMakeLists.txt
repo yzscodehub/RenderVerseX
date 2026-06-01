@@ -185,6 +185,21 @@ rvx_add_gtest(
     TIMEOUT 120
 )
 
+# Shader compiler and reflection validation tests
+rvx_add_gtest(
+    NAME ShaderCompilerValidation
+    SOURCES ShaderCompilerValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::ShaderCompiler
+        RVX::RHI
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/ShaderCompiler/Include
+        ${CMAKE_SOURCE_DIR}/RHI/Include
+    LABELS unit
+    TIMEOUT 120
+)
+
 # GPU Resource Manager Validation Tests
 rvx_add_gtest(
     NAME GPUResourceManagerValidation

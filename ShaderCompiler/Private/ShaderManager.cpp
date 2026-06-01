@@ -109,15 +109,18 @@ namespace RVX
         uint64 sourceHash = std::hash<std::string>{}(source);
         uint64 key = BuildCacheKey(desc, sourceHash);
 
-        // Check legacy cache first (for backward compatibility)
+        // Check legacy cache only when the dependency-aware cache manager is unavailable.
         {
-            std::lock_guard<std::mutex> lock(m_legacyCacheMutex);
-            auto it = m_legacyCache.find(key);
-            if (it != m_legacyCache.end())
+            if (!m_cacheManager)
             {
-                result.shader = it->second;
-                result.compileResult.success = true;
-                return result;
+                std::lock_guard<std::mutex> lock(m_legacyCacheMutex);
+                auto it = m_legacyCache.find(key);
+                if (it != m_legacyCache.end())
+                {
+                    result.shader = it->second;
+                    result.compileResult.success = true;
+                    return result;
+                }
             }
         }
 
@@ -133,15 +136,33 @@ namespace RVX
                 shaderDesc.debugName = desc.path.empty() ? "Shader" : desc.path.c_str();
 
                 // Handle backend-specific bytecode
-                if (desc.backend == RHIBackendType::OpenGL && !cached->glslSource.empty())
+                if (desc.backend == RHIBackendType::OpenGL)
                 {
-                    shaderDesc.bytecode = reinterpret_cast<const uint8*>(cached->glslSource.data());
-                    shaderDesc.bytecodeSize = cached->glslSource.size();
+                    if (cached->glslSource.empty())
+                    {
+                        RVX_CORE_WARN("ShaderManager: Invalidating OpenGL shader cache entry without GLSL source: {:016X}", key);
+                        m_cacheManager->Invalidate(key);
+                        cached.reset();
+                    }
+                    else
+                    {
+                        shaderDesc.bytecode = reinterpret_cast<const uint8*>(cached->glslSource.data());
+                        shaderDesc.bytecodeSize = cached->glslSource.size();
+                    }
                 }
-                else if (desc.backend == RHIBackendType::Metal && !cached->mslSource.empty())
+                else if (desc.backend == RHIBackendType::Metal)
                 {
-                    shaderDesc.bytecode = reinterpret_cast<const uint8*>(cached->mslSource.data());
-                    shaderDesc.bytecodeSize = cached->mslSource.size();
+                    if (cached->mslSource.empty())
+                    {
+                        RVX_CORE_WARN("ShaderManager: Invalidating Metal shader cache entry without MSL source: {:016X}", key);
+                        m_cacheManager->Invalidate(key);
+                        cached.reset();
+                    }
+                    else
+                    {
+                        shaderDesc.bytecode = reinterpret_cast<const uint8*>(cached->mslSource.data());
+                        shaderDesc.bytecodeSize = cached->mslSource.size();
+                    }
                 }
                 else
                 {
@@ -149,29 +170,37 @@ namespace RVX
                     shaderDesc.bytecodeSize = cached->bytecode.size();
                 }
 
-                result.shader = device->CreateShader(shaderDesc);
-                if (result.shader)
+                if (cached)
                 {
-                    result.compileResult.success = true;
-                    result.compileResult.bytecode = std::move(cached->bytecode);
-                    result.compileResult.reflection = std::move(cached->reflection);
-                    result.compileResult.glslSource = std::move(cached->glslSource);
-                    result.compileResult.mslSource = std::move(cached->mslSource);
-
-                    std::lock_guard<std::mutex> lock(m_legacyCacheMutex);
-                    m_legacyCache.emplace(key, result.shader);
-
-                    // Register for hot reload if enabled
-                    if (m_hotReloader && m_hotReloader->IsEnabled() && !desc.path.empty())
+                    result.shader = device->CreateShader(shaderDesc);
+                    if (result.shader)
                     {
-                        m_hotReloader->RegisterShader(
-                            device,
-                            desc.path,
-                            result.shader,
-                            ConvertToPermutationDesc(desc));
-                    }
+                        result.compileResult.success = true;
+                        result.compileResult.bytecode = std::move(cached->bytecode);
+                        result.compileResult.reflection = std::move(cached->reflection);
+                        result.compileResult.sourceInfo = std::move(cached->sourceInfo);
+                        result.compileResult.glslSource = std::move(cached->glslSource);
+                        result.compileResult.glslVersion = cached->glslVersion;
+                        result.compileResult.mslSource = std::move(cached->mslSource);
+                        result.compileResult.mslEntryPoint = std::move(cached->mslEntryPoint);
 
-                    return result;
+                        std::lock_guard<std::mutex> lock(m_legacyCacheMutex);
+                        m_legacyCache.emplace(key, result.shader);
+
+                        // Register for hot reload if enabled
+                        if (m_hotReloader && m_hotReloader->IsEnabled() && !desc.path.empty())
+                        {
+                            m_hotReloader->RegisterShader(
+                                device,
+                                desc.path,
+                                result.shader,
+                                ConvertToPermutationDesc(desc),
+                                nullptr,
+                                result.compileResult.sourceInfo.includeFiles);
+                        }
+
+                        return result;
+                    }
                 }
             }
         }
@@ -261,7 +290,11 @@ namespace RVX
             cacheEntry.mslEntryPoint = result.compileResult.mslEntryPoint;
 
             // Set up source info
-            if (!desc.path.empty())
+            if (!result.compileResult.sourceInfo.IsEmpty())
+            {
+                cacheEntry.sourceInfo = result.compileResult.sourceInfo;
+            }
+            else if (!desc.path.empty())
             {
                 cacheEntry.sourceInfo.mainFile = desc.path;
                 cacheEntry.sourceInfo.fileHashes[desc.path] = ShaderSourceInfo::ComputeFileHash(desc.path);
@@ -283,7 +316,9 @@ namespace RVX
                 device,
                 desc.path,
                 result.shader,
-                ConvertToPermutationDesc(desc));
+                ConvertToPermutationDesc(desc),
+                nullptr,
+                result.compileResult.sourceInfo.includeFiles);
         }
 
         return result;
@@ -361,13 +396,29 @@ namespace RVX
 
                     if (descCopy.backend == RHIBackendType::OpenGL)
                     {
-                        shaderDesc.bytecode = reinterpret_cast<const uint8*>(compileResult.glslSource.data());
-                        shaderDesc.bytecodeSize = compileResult.glslSource.size();
+                        if (compileResult.glslSource.empty())
+                        {
+                            result.compileResult.success = false;
+                            result.compileResult.errorMessage = "OpenGL shader compilation failed: no GLSL source generated";
+                        }
+                        else
+                        {
+                            shaderDesc.bytecode = reinterpret_cast<const uint8*>(compileResult.glslSource.data());
+                            shaderDesc.bytecodeSize = compileResult.glslSource.size();
+                        }
                     }
                     else if (descCopy.backend == RHIBackendType::Metal)
                     {
-                        shaderDesc.bytecode = reinterpret_cast<const uint8*>(compileResult.mslSource.data());
-                        shaderDesc.bytecodeSize = compileResult.mslSource.size();
+                        if (compileResult.mslSource.empty())
+                        {
+                            result.compileResult.success = false;
+                            result.compileResult.errorMessage = "Metal shader compilation failed: no MSL source generated";
+                        }
+                        else
+                        {
+                            shaderDesc.bytecode = reinterpret_cast<const uint8*>(compileResult.mslSource.data());
+                            shaderDesc.bytecodeSize = compileResult.mslSource.size();
+                        }
                     }
                     else
                     {
@@ -375,11 +426,14 @@ namespace RVX
                         shaderDesc.bytecodeSize = compileResult.bytecode.size();
                     }
 
-                    result.shader = devicePtr->CreateShader(shaderDesc);
-                    if (!result.shader)
+                    if (result.compileResult.success)
                     {
-                        result.compileResult.success = false;
-                        result.compileResult.errorMessage = "Failed to create RHI shader";
+                        result.shader = devicePtr->CreateShader(shaderDesc);
+                        if (!result.shader)
+                        {
+                            result.compileResult.success = false;
+                            result.compileResult.errorMessage = "Failed to create RHI shader";
+                        }
                     }
                 }
 

@@ -96,7 +96,8 @@ namespace RVX
             const std::string& shaderPath,
             RHIShaderRef shader,
             const ShaderPermutationLoadDesc& loadDesc,
-            ShaderReloadCallback callback = nullptr);
+            ShaderReloadCallback callback = nullptr,
+            std::vector<std::string> dependencies = {});
 
         /** @brief Unregister shader */
         void UnregisterShader(const std::string& shaderPath);

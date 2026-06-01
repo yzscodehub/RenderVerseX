@@ -370,7 +370,7 @@ ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "DX12Valida
 ### R-SP: R1b RHI Descriptor/Barrier Base Contract
 
 **Date:** 2026-05-31
-**Commit:** pending
+**Commit:** `d82cd1b`
 **Spark plan review agent:** `019e7e90-629e-7533-b55d-323d7aba8f3e`
 **Spark code review agent:** `019e83a1-69fa-7b30-a5f6-0831a7e401bf`
 
@@ -472,6 +472,103 @@ ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderHone
 - Vulkan split barriers are now reported unsupported until event-based split barriers are implemented.
 - Metal code was updated to the same descriptor/barrier contract but could not be runtime-validated on this Windows machine.
 - Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R1b commit.
+- Next stage must reread the render-first plan and create its own implementation plan before code changes.
+
+---
+
+### R-SP: R2 ShaderCompiler and Reflection
+
+**Date:** 2026-05-31
+**Commit:** pending
+**Spark plan review agent:** `019e83b0-fc20-7cf1-ab15-8bf0499974e1`
+**Spark code review agent:** `019e83c4-60f0-71c1-8ad4-f8cbc4b368e1`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-05-31-r2-shadercompiler-reflection-plan.md`
+- Source roadmap: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: `7. R2 - ShaderCompiler and Reflection`
+- Lines checked: R2 roadmap section and R2 plan sections 1-7 checked before implementation; plan rechecked before review/commit
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R1b RHI Descriptor/Barrier Base Contract
+- Evidence: R1b committed as `d82cd1b`; R2 implementation plan passed Spark plan review before code changes
+
+**Approved scope:**
+
+- Make async shader compile requests own stable copies of source, entry point, source path, target profile, and defines.
+- Add `ShaderSourceInfo` to compile results and wire DXC include tracking into DX12/SPIR-V compile paths.
+- Populate compile-result reflection metadata for DX11, DX12, Vulkan, and OpenGL paths where supported.
+- Preserve source dependency metadata through shader cache save/load and validate memory-cache entries on load.
+- Ensure OpenGL hot reload, shader manager, and permutation paths use generated GLSL source instead of SPIR-V bytes.
+- Add `ShaderCompilerValidation` coverage for invalid inputs, async lifetime, include invalidation, reflection/layout metadata, OpenGL GLSL output, cache invalidation, and permutation source selection.
+
+**Out of scope:**
+
+- Pipeline/PSO creation, pipeline cache serialization redesign, or render pass integration.
+- Material binding behavior beyond consuming existing shader compile results.
+- Full shader hot-reload watcher redesign.
+- Linux shader compiler replacement beyond honest unsupported behavior.
+- Metal runtime validation on Windows.
+- Visual rendering or ModelViewer validation.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-05-31-r2-shadercompiler-reflection-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `ShaderCompiler/Include/ShaderCompiler/ShaderCompileService.h`
+- `ShaderCompiler/Include/ShaderCompiler/ShaderCompiler.h`
+- `ShaderCompiler/Include/ShaderCompiler/ShaderHotReloader.h`
+- `ShaderCompiler/Private/DXCCompiler.cpp`
+- `ShaderCompiler/Private/ShaderCacheManager.cpp`
+- `ShaderCompiler/Private/ShaderCompileService.cpp`
+- `ShaderCompiler/Private/ShaderHotReloader.cpp`
+- `ShaderCompiler/Private/ShaderManager.cpp`
+- `ShaderCompiler/Private/ShaderPermutation.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/ShaderCompilerValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --preset local_win_x64_debug
+cmake --build build/win_x64_debug --config Debug --target ShaderCompilerValidation RenderHonestyValidation MaterialSystemValidation DX12Validation VulkanValidation
+build\win_x64_debug\Tests\Debug\ShaderCompilerValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "ShaderCompilerValidation|RenderHonestyValidation|MaterialSystemValidation|DX12Validation|VulkanValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `ShaderCompilerValidation`: 8/8
+  - Filtered CTest: 65/65
+- Visual gate: N/A
+
+**Artifacts:**
+
+- Logs: terminal CMake/build/test output; Spark plan and code review messages
+- Screenshots: N/A
+- Diffs: R2 working tree diff before commit
+
+**Spark plan review result:**
+
+- Verdict: PASS after plan clarification.
+- Blockers resolved: first plan review agent ran out of context; second review treated current implementation gaps as plan blockers; plan was clarified so review judged scope/testability rather than pre-existing gaps, then passed.
+
+**Spark code review result:**
+
+- Verdict: PASS after final review.
+- Blockers resolved: N/A
+- Non-blocking follow-ups: async load path still does not persist compile results to cache or re-register hot-reload dependency metadata; Vulkan/Metal positive reflection/source-selection tests are still limited by local platform coverage; disk-cache include invalidation lacks a dedicated end-to-end test.
+
+**Notes / follow-ups:**
+
+- Legacy shader cache is intentionally bypassed when the dependency-aware `ShaderCacheManager` exists, to avoid stale include-blind hits.
+- OpenGL and permutation paths now select GLSL source; Metal source selection is handled similarly but not runtime-validated on this Windows machine.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R2 commit.
 - Next stage must reread the render-first plan and create its own implementation plan before code changes.
 
 ---

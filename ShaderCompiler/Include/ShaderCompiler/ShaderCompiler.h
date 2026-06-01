@@ -2,6 +2,7 @@
 
 #include "RHI/RHIDefinitions.h"
 #include "ShaderCompiler/ShaderReflection.h"
+#include "ShaderCompiler/ShaderSourceInfo.h"
 
 #include <memory>
 #include <optional>
@@ -51,6 +52,7 @@ namespace RVX
         std::string errorMessage;
         uint64 permutationHash = 0;
         ShaderReflection reflection;
+        ShaderSourceInfo sourceInfo;
 
         // Metal-specific: MSL source and entry point (when targeting Metal backend)
         std::string mslSource;

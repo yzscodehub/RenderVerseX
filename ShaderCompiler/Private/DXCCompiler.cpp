@@ -1,5 +1,6 @@
 #include "ShaderCompiler/ShaderCompiler.h"
 #include "SPIRVCrossTranslator.h"
+#include "TrackingIncludeHandler.h"
 #include "Core/Log.h"
 
 // Include COM interface definitions before Windows.h to ensure
@@ -76,6 +77,86 @@ namespace RVX
                 case RHIShaderStage::Domain:   return "ds_5_0";
                 default: return "vs_5_0";
             }
+        }
+
+        std::string NormalizePath(const char* path)
+        {
+            if (!path || !path[0])
+            {
+                return {};
+            }
+
+            std::error_code ec;
+            std::filesystem::path fsPath(path);
+            auto normalized = std::filesystem::weakly_canonical(fsPath, ec);
+            if (ec)
+            {
+                normalized = std::filesystem::absolute(fsPath, ec);
+            }
+            return ec ? fsPath.string() : normalized.string();
+        }
+
+        uint64 ComputeMainSourceHash(const ShaderCompileOptions& options, const std::string& normalizedPath)
+        {
+            uint64 hash = normalizedPath.empty() ? 0 : ShaderSourceInfo::ComputeFileHash(normalizedPath);
+            if (hash == 0 && options.sourceCode)
+            {
+                hash = ShaderSourceInfo::ComputeStringHash(options.sourceCode);
+            }
+            return hash;
+        }
+
+        void PopulateMainSourceInfo(ShaderCompileResult& result, const ShaderCompileOptions& options)
+        {
+            std::string mainPath = NormalizePath(options.sourcePath);
+            if (mainPath.empty())
+            {
+                return;
+            }
+
+            result.sourceInfo.mainFile = mainPath;
+            result.sourceInfo.fileHashes[mainPath] = ComputeMainSourceHash(options, mainPath);
+            result.sourceInfo.combinedHash = result.sourceInfo.ComputeCombinedHash();
+        }
+
+        ComPtr<IDxcIncludeHandler> CreateTrackedIncludeHandler(
+            const ComPtr<IDxcUtils>& utils,
+            const ComPtr<IDxcIncludeHandler>& fallback,
+            const ShaderCompileOptions& options,
+            TrackingIncludeHandler*& outTrackingHandler)
+        {
+            outTrackingHandler = nullptr;
+            if (!utils || !options.sourcePath || !options.sourcePath[0])
+            {
+                return fallback;
+            }
+
+            std::filesystem::path sourcePath(options.sourcePath);
+            std::filesystem::path baseDir = sourcePath.parent_path();
+            auto* trackingHandler = new TrackingIncludeHandler(utils, baseDir);
+
+            std::string mainPath = NormalizePath(options.sourcePath);
+            trackingHandler->SetMainFile(mainPath, ComputeMainSourceHash(options, mainPath));
+
+            ComPtr<IDxcIncludeHandler> includeHandler;
+            includeHandler.Attach(trackingHandler);
+            outTrackingHandler = trackingHandler;
+            return includeHandler;
+        }
+
+        void CaptureSourceInfo(
+            ShaderCompileResult& result,
+            TrackingIncludeHandler* trackingHandler,
+            const ShaderCompileOptions& options)
+        {
+            if (trackingHandler)
+            {
+                result.sourceInfo = trackingHandler->GetSourceInfo();
+                result.sourceInfo.combinedHash = result.sourceInfo.ComputeCombinedHash();
+                return;
+            }
+
+            PopulateMainSourceInfo(result, options);
         }
     }
 
@@ -205,6 +286,8 @@ namespace RVX
             result.success = true;
             result.bytecode.resize(shaderBlob->GetBufferSize());
             std::memcpy(result.bytecode.data(), shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize());
+            result.reflection = ReflectShader(RHIBackendType::DX11, options.stage, result.bytecode);
+            CaptureSourceInfo(result, nullptr, options);
             return result;
         }
 
@@ -292,12 +375,19 @@ namespace RVX
                 args.push_back(localDefines.back().c_str());
             }
 
+            TrackingIncludeHandler* trackingHandler = nullptr;
+            ComPtr<IDxcIncludeHandler> includeHandler = CreateTrackedIncludeHandler(
+                m_utils,
+                m_includeHandler,
+                options,
+                trackingHandler);
+
             ComPtr<IDxcResult> dxcResult;
             HRESULT hr = m_compiler->Compile(
                 &sourceBuffer,
                 args.data(),
                 static_cast<uint32_t>(args.size()),
-                m_includeHandler.Get(),
+                includeHandler.Get(),
                 IID_PPV_ARGS(&dxcResult));
 
             if (FAILED(hr) || !dxcResult)
@@ -332,6 +422,8 @@ namespace RVX
             result.success = true;
             result.bytecode.resize(shaderBlob->GetBufferSize());
             std::memcpy(result.bytecode.data(), shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize());
+            result.reflection = ReflectShader(RHIBackendType::DX12, options.stage, result.bytecode);
+            CaptureSourceInfo(result, trackingHandler, options);
 
             RVX_CORE_DEBUG("DXCShaderCompiler: Compiled DX12 shader with profile {}",
                 options.targetProfile ? options.targetProfile : "auto");
@@ -425,12 +517,19 @@ namespace RVX
                 args.push_back(localDefines.back().c_str());
             }
 
+            TrackingIncludeHandler* trackingHandler = nullptr;
+            ComPtr<IDxcIncludeHandler> includeHandler = CreateTrackedIncludeHandler(
+                m_utils,
+                m_includeHandler,
+                options,
+                trackingHandler);
+
             ComPtr<IDxcResult> dxcResult;
             HRESULT hr = m_compiler->Compile(
                 &sourceBuffer,
                 args.data(),
                 static_cast<uint32_t>(args.size()),
-                m_includeHandler.Get(),
+                includeHandler.Get(),
                 IID_PPV_ARGS(&dxcResult));
 
             if (FAILED(hr) || !dxcResult)
@@ -495,6 +594,7 @@ namespace RVX
                 result.glslSource = std::move(glslResult.glslSource);
                 result.glslVersion = glslOptions.glslVersion;
                 result.reflection = std::move(glslResult.reflection);
+                CaptureSourceInfo(result, trackingHandler, options);
 
                 // Store binding info
                 for (const auto& remap : glslResult.bindingRemaps)
@@ -541,6 +641,8 @@ namespace RVX
             result.success = true;
             result.bytecode.resize(shaderBlob->GetBufferSize());
             std::memcpy(result.bytecode.data(), shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize());
+            result.reflection = ReflectShader(RHIBackendType::Vulkan, options.stage, result.bytecode);
+            CaptureSourceInfo(result, trackingHandler, options);
             return result;
         }
 
