@@ -80,8 +80,22 @@ namespace RVX
         // =========================================================================
         // Resource Barriers
         // =========================================================================
+        /**
+         * @brief Transition a buffer between resource states.
+         * @note Null resources and same-state transitions are no-work and must not emit backend API calls.
+         */
         virtual void BufferBarrier(const RHIBufferBarrier& barrier) = 0;
+
+        /**
+         * @brief Transition a texture between resource states.
+         * @note Null resources and same-state transitions are no-work and must not emit backend API calls.
+         */
         virtual void TextureBarrier(const RHITextureBarrier& barrier) = 0;
+
+        /**
+         * @brief Batch resource barriers.
+         * @note Empty spans, null resources, and same-state transitions are valid no-work inputs.
+         */
         virtual void Barriers(
             std::span<const RHIBufferBarrier> bufferBarriers,
             std::span<const RHITextureBarrier> textureBarriers) = 0;
@@ -104,9 +118,9 @@ namespace RVX
         /**
          * @brief Begin a resource state transition (asynchronous)
          * 
-         * After calling this, the resource is in an intermediate state and must
-         * have EndBarrier called before use. Backends that don't support split
-         * barriers will ignore this call and perform full transition in EndBarrier.
+         * Requires RHICapabilities::supportsSplitBarrier for real split-barrier
+         * behavior. Backends without split barriers must leave BeginBarrier as
+         * visible no-work and perform any full barrier fallback in EndBarrier.
          * 
          * @param barrier Buffer barrier description
          */
@@ -121,8 +135,10 @@ namespace RVX
         /**
          * @brief Complete a resource state transition
          * 
-         * If BeginBarrier was called earlier, this completes the transition.
-         * Otherwise, performs a full transition.
+         * If split barriers are supported and BeginBarrier was called earlier,
+         * this completes the transition. If split barriers are unsupported,
+         * this may perform a full barrier when the backend supports explicit
+         * resource barriers, otherwise it is an emulated/no-work path.
          * 
          * @param barrier Buffer barrier description
          */

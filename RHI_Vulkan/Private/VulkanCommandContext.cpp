@@ -110,7 +110,16 @@ namespace RVX
 
     void VulkanCommandContext::BufferBarrier(const RHIBufferBarrier& barrier)
     {
+        if (!barrier.buffer || barrier.stateBefore == barrier.stateAfter)
+        {
+            return;
+        }
+
         auto* vkBuffer = static_cast<VulkanBuffer*>(barrier.buffer);
+        if (!vkBuffer || vkBuffer->GetBuffer() == VK_NULL_HANDLE)
+        {
+            return;
+        }
 
         VkBufferMemoryBarrier2 bufferBarrier = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
         bufferBarrier.srcStageMask = ToVkPipelineStageFlags(barrier.stateBefore);
@@ -129,7 +138,16 @@ namespace RVX
 
     void VulkanCommandContext::TextureBarrier(const RHITextureBarrier& barrier)
     {
+        if (!barrier.texture || barrier.stateBefore == barrier.stateAfter)
+        {
+            return;
+        }
+
         auto* vkTexture = static_cast<VulkanTexture*>(barrier.texture);
+        if (!vkTexture || vkTexture->GetImage() == VK_NULL_HANDLE)
+        {
+            return;
+        }
 
         VkImageMemoryBarrier2 imageBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
         imageBarrier.srcStageMask = ToVkPipelineStageFlags(barrier.stateBefore);
@@ -970,31 +988,24 @@ namespace RVX
     // =============================================================================
     void VulkanCommandContext::BeginBarrier(const RHIBufferBarrier& barrier)
     {
-        // Vulkan split barriers work by specifying srcStageMask in the begin
-        // and dstStageMask in the end. For simplicity, we add to pending barriers
-        // and they will be flushed together. The actual split is handled by
-        // the barrier batching system.
-        // TODO: Implement proper split barrier with separate dependency tracking
-        BufferBarrier(barrier);
+        (void)barrier;
+        RVX_RHI_WARN("VulkanCommandContext::BeginBarrier is unsupported; RHICapabilities::supportsSplitBarrier is false");
     }
 
     void VulkanCommandContext::BeginBarrier(const RHITextureBarrier& barrier)
     {
-        // Same as buffer - add to pending barriers
-        TextureBarrier(barrier);
+        (void)barrier;
+        RVX_RHI_WARN("VulkanCommandContext::BeginBarrier is unsupported; RHICapabilities::supportsSplitBarrier is false");
     }
 
     void VulkanCommandContext::EndBarrier(const RHIBufferBarrier& barrier)
     {
-        // For now, this is a no-op since we did full barrier in BeginBarrier
-        // TODO: Implement proper split barrier with END_ONLY semantics
-        (void)barrier;
+        BufferBarrier(barrier);
     }
 
     void VulkanCommandContext::EndBarrier(const RHITextureBarrier& barrier)
     {
-        // No-op - barrier was done in BeginBarrier
-        (void)barrier;
+        TextureBarrier(barrier);
     }
 
 } // namespace RVX

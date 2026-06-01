@@ -103,6 +103,11 @@ namespace RVX
         m_capabilities.supportsSeparateStencilRef = true;       // Metal supports separate stencil refs
         m_capabilities.supportsSplitBarrier = false;            // Metal uses automatic barriers
         m_capabilities.supportsSecondaryCommandBuffer = true;   // Metal supports parallel encoders
+        m_capabilities.supportsDescriptorSets = true;           // Implemented through Metal binding metadata
+        m_capabilities.supportsDynamicDescriptorOffsets = true;
+        m_capabilities.maxDescriptorSets = 4;
+        m_capabilities.supportsExplicitResourceBarriers = true;
+        m_capabilities.emulatesResourceBarriers = false;
         m_capabilities.supportsMemoryBudgetQuery = true;        // Metal supports memory budget
         m_capabilities.supportsPersistentMapping = true;        // Metal supports persistent mapping
         m_capabilities.supportsExplicitHeapManagement = true;   // Metal heaps are implemented
@@ -254,11 +259,25 @@ namespace RVX
     // =============================================================================
     RHIDescriptorSetLayoutRef MetalDevice::CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc& desc)
     {
+        auto validation = ValidateRHIDescriptorSetLayoutDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("Metal descriptor set layout creation failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return nullptr;
+        }
         return MakeRef<MetalDescriptorSetLayout>(desc);
     }
 
     RHIPipelineLayoutRef MetalDevice::CreatePipelineLayout(const RHIPipelineLayoutDesc& desc)
     {
+        auto validation = ValidateRHIPipelineLayoutDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("Metal pipeline layout creation failed: {}", validation.message);
+            return nullptr;
+        }
         return MakeRef<MetalPipelineLayout>(desc);
     }
 
@@ -277,6 +296,14 @@ namespace RVX
     // =============================================================================
     RHIDescriptorSetRef MetalDevice::CreateDescriptorSet(const RHIDescriptorSetDesc& desc)
     {
+        auto validation = ValidateRHIDescriptorSetDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("Metal descriptor set creation failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return nullptr;
+        }
         return MakeRef<MetalDescriptorSet>(desc);
     }
 

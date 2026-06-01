@@ -173,6 +173,11 @@ namespace RVX
 
     void OpenGLCommandContext::BufferBarrier(const RHIBufferBarrier& barrier)
     {
+        if (!barrier.buffer || barrier.stateBefore == barrier.stateAfter)
+        {
+            return;
+        }
+
         GLbitfield bits = GetBufferBarrierBits(barrier.stateBefore, barrier.stateAfter);
         if (bits != 0)
         {
@@ -182,6 +187,11 @@ namespace RVX
 
     void OpenGLCommandContext::TextureBarrier(const RHITextureBarrier& barrier)
     {
+        if (!barrier.texture || barrier.stateBefore == barrier.stateAfter)
+        {
+            return;
+        }
+
         GLbitfield bits = GetTextureBarrierBits(barrier.stateBefore, barrier.stateAfter);
         if (bits != 0)
         {
@@ -198,13 +208,19 @@ namespace RVX
         // Accumulate barrier bits for all buffer transitions
         for (const auto& barrier : bufferBarriers)
         {
-            combinedBits |= GetBufferBarrierBits(barrier.stateBefore, barrier.stateAfter);
+            if (barrier.buffer && barrier.stateBefore != barrier.stateAfter)
+            {
+                combinedBits |= GetBufferBarrierBits(barrier.stateBefore, barrier.stateAfter);
+            }
         }
 
         // Accumulate barrier bits for all texture transitions
         for (const auto& barrier : textureBarriers)
         {
-            combinedBits |= GetTextureBarrierBits(barrier.stateBefore, barrier.stateAfter);
+            if (barrier.texture && barrier.stateBefore != barrier.stateAfter)
+            {
+                combinedBits |= GetTextureBarrierBits(barrier.stateBefore, barrier.stateAfter);
+            }
         }
 
         // Issue a single combined memory barrier
@@ -1134,26 +1150,24 @@ namespace RVX
     // =============================================================================
     void OpenGLCommandContext::BeginBarrier(const RHIBufferBarrier& barrier)
     {
-        // OpenGL handles barriers automatically
         (void)barrier;
+        RVX_RHI_WARN("OpenGLCommandContext::BeginBarrier is unsupported; RHICapabilities::supportsSplitBarrier is false");
     }
 
     void OpenGLCommandContext::BeginBarrier(const RHITextureBarrier& barrier)
     {
-        // OpenGL handles barriers automatically
         (void)barrier;
+        RVX_RHI_WARN("OpenGLCommandContext::BeginBarrier is unsupported; RHICapabilities::supportsSplitBarrier is false");
     }
 
     void OpenGLCommandContext::EndBarrier(const RHIBufferBarrier& barrier)
     {
-        // OpenGL handles barriers automatically
-        (void)barrier;
+        BufferBarrier(barrier);
     }
 
     void OpenGLCommandContext::EndBarrier(const RHITextureBarrier& barrier)
     {
-        // OpenGL handles barriers automatically
-        (void)barrier;
+        TextureBarrier(barrier);
     }
 
 } // namespace RVX

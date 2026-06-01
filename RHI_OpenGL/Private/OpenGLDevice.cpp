@@ -230,6 +230,11 @@ namespace RVX
         m_capabilities.supportsSplitBarrier = false;            // OpenGL doesn't support split barriers
         m_capabilities.supportsSecondaryCommandBuffer = false;  // OpenGL is immediate mode
         m_capabilities.supportsAsyncCompute = false;            // OpenGL single queue
+        m_capabilities.supportsDescriptorSets = true;           // Implemented through binding point remapping
+        m_capabilities.supportsDynamicDescriptorOffsets = true; // Dynamic buffer offsets are applied during bind
+        m_capabilities.maxDescriptorSets = 4;
+        m_capabilities.supportsExplicitResourceBarriers = true; // glMemoryBarrier is used for explicit memory ordering
+        m_capabilities.emulatesResourceBarriers = false;
         m_capabilities.supportsMemoryBudgetQuery = false;       // OpenGL doesn't support memory budget
         m_capabilities.supportsPersistentMapping = m_capabilities.opengl.hasBufferStorage;
         m_capabilities.supportsExplicitHeapManagement = false;  // OpenGL backend has no explicit heap API
@@ -410,12 +415,26 @@ namespace RVX
     RHIDescriptorSetLayoutRef OpenGLDevice::CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc& desc)
     {
         GL_DEBUG_SCOPE("CreateDescriptorSetLayout");
+        auto validation = ValidateRHIDescriptorSetLayoutDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("OpenGL descriptor set layout creation failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return nullptr;
+        }
         return MakeRef<OpenGLDescriptorSetLayout>(this, desc);
     }
 
     RHIPipelineLayoutRef OpenGLDevice::CreatePipelineLayout(const RHIPipelineLayoutDesc& desc)
     {
         GL_DEBUG_SCOPE("CreatePipelineLayout");
+        auto validation = ValidateRHIPipelineLayoutDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("OpenGL pipeline layout creation failed: {}", validation.message);
+            return nullptr;
+        }
         return MakeRef<OpenGLPipelineLayout>(this, desc);
     }
 
@@ -450,10 +469,12 @@ namespace RVX
     RHIDescriptorSetRef OpenGLDevice::CreateDescriptorSet(const RHIDescriptorSetDesc& desc)
     {
         GL_DEBUG_SCOPE("CreateDescriptorSet");
-
-        if (!desc.layout)
+        auto validation = ValidateRHIDescriptorSetDesc(desc);
+        if (!validation)
         {
-            RVX_RHI_ERROR("CreateDescriptorSet: layout is null");
+            RVX_RHI_ERROR("OpenGL descriptor set creation failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
             return nullptr;
         }
 

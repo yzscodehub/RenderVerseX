@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <vector>
 
 using namespace RVX;
 
@@ -186,6 +187,58 @@ TEST(DX11Validation, SynchronizationCapabilities)
     EXPECT_TRUE(caps.emulatesQueueFences);
 }
 
+TEST(DX11Validation, DescriptorAndBarrierCapabilities)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    const RHICapabilities& caps = device->GetCapabilities();
+    EXPECT_TRUE(caps.supportsDescriptorSets);
+    EXPECT_GE(caps.maxDescriptorSets, 4u);
+    EXPECT_FALSE(caps.supportsExplicitResourceBarriers);
+    EXPECT_TRUE(caps.emulatesResourceBarriers);
+    EXPECT_FALSE(caps.supportsSplitBarrier);
+}
+
+TEST(DX11Validation, DescriptorValidationRejectsInvalidInputs)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    RHIDescriptorSetLayoutDesc duplicateLayout;
+    duplicateLayout.AddBinding(0, RHIBindingType::UniformBuffer);
+    duplicateLayout.AddBinding(0, RHIBindingType::SampledTexture);
+    EXPECT_EQ(device->CreateDescriptorSetLayout(duplicateLayout).Get(), nullptr);
+
+    RHIDescriptorSetDesc nullSetDesc;
+    EXPECT_EQ(device->CreateDescriptorSet(nullSetDesc).Get(), nullptr);
+
+    RHIDescriptorSetLayoutDesc validLayoutDesc;
+    validLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer);
+    auto layout = device->CreateDescriptorSetLayout(validLayoutDesc);
+    ASSERT_NE(nullptr, layout.Get());
+
+    RHIPipelineLayoutDesc invalidPipelineLayout;
+    invalidPipelineLayout.setLayouts.push_back(nullptr);
+    EXPECT_EQ(device->CreatePipelineLayout(invalidPipelineLayout).Get(), nullptr);
+
+    RHIDescriptorSetDesc validSetDesc;
+    validSetDesc.SetLayout(layout.Get());
+    auto set = device->CreateDescriptorSet(validSetDesc);
+    ASSERT_NE(nullptr, set.Get());
+    EXPECT_TRUE(set->Update({}));
+
+    RHIDescriptorBinding unknownBinding;
+    unknownBinding.binding = 99;
+    EXPECT_FALSE(set->Update(std::vector<RHIDescriptorBinding>{unknownBinding}));
+
+    RHIDescriptorBinding nullBufferBinding;
+    nullBufferBinding.binding = 0;
+    EXPECT_FALSE(set->Update(std::vector<RHIDescriptorBinding>{nullBufferBinding}));
+}
+
 TEST(DX11Validation, SubmitReturnsMonotonicFenceValues)
 {
     RHIDeviceDesc deviceDesc;
@@ -212,6 +265,35 @@ TEST(DX11Validation, SubmitReturnsMonotonicFenceValues)
 
     device->WaitForFence(fence.Get(), secondValue);
     EXPECT_GE(fence->GetCompletedValue(), secondValue);
+}
+
+TEST(DX11Validation, BarrierNoWorkInputsAreSafe)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    auto ctx = device->CreateCommandContext(RHICommandQueueType::Graphics);
+    ASSERT_NE(nullptr, ctx.Get());
+    ctx->Begin();
+
+    ctx->BufferBarrier({nullptr, RHIResourceState::Common, RHIResourceState::CopyDest});
+    ctx->TextureBarrier({nullptr, RHIResourceState::Common, RHIResourceState::ShaderResource});
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 256;
+    bufferDesc.usage = RHIBufferUsage::Vertex;
+    bufferDesc.memoryType = RHIMemoryType::Default;
+    bufferDesc.stride = sizeof(float);
+    auto buffer = device->CreateBuffer(bufferDesc);
+    ASSERT_NE(nullptr, buffer.Get());
+    ctx->BufferBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
+    ctx->BeginBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
+    ctx->EndBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
+
+    ctx->End();
+    EXPECT_EQ(device->SubmitCommandContext(ctx.Get(), nullptr), 0u);
+    device->WaitIdle();
 }
 
 TEST(DX11Validation, MultipleBufferTypes)

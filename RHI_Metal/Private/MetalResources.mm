@@ -1,6 +1,8 @@
 #include "MetalResources.h"
 #include "MetalConversions.h"
 
+#include <utility>
+
 namespace RVX
 {
     // =============================================================================
@@ -488,16 +490,32 @@ namespace RVX
         }
     }
 
-    void MetalDescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
+    bool MetalDescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
     {
+        if (!m_desc.layout)
+        {
+            RVX_RHI_ERROR("MetalDescriptorSet::Update failed: descriptor set has no layout");
+            return false;
+        }
+
+        auto validation = ValidateRHIDescriptorBindings(*m_desc.layout, bindings);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("MetalDescriptorSet::Update failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return false;
+        }
+
+        auto updatedBindings = m_bindings;
         for (const auto& updateDesc : bindings)
         {
-            if (updateDesc.binding >= m_bindings.size())
+            if (updateDesc.binding >= updatedBindings.size())
             {
-                m_bindings.resize(updateDesc.binding + 1);
+                updatedBindings.resize(updateDesc.binding + 1);
             }
 
-            BindingData& binding = m_bindings[updateDesc.binding];
+            BindingData& binding = updatedBindings[updateDesc.binding];
 
             if (updateDesc.buffer)
             {
@@ -513,6 +531,9 @@ namespace RVX
                 binding.sampler = static_cast<MetalSampler*>(updateDesc.sampler)->GetMTLSampler();
             }
         }
+
+        m_bindings = std::move(updatedBindings);
+        return true;
     }
 
 } // namespace RVX

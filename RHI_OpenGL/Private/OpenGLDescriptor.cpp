@@ -17,18 +17,32 @@ namespace RVX
             SetDebugName(desc.debugName);
         }
 
-        // Resolve initial bindings
-        for (const auto& binding : desc.bindings)
+        if (!desc.bindings.empty())
         {
-            ResolveBinding(binding);
+            Update(desc.bindings);
         }
 
         RVX_RHI_DEBUG("Created DescriptorSet '{}' with {} bindings",
                      GetDebugName(), m_bindings.size());
     }
 
-    void OpenGLDescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
+    bool OpenGLDescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
     {
+        if (!m_layout)
+        {
+            RVX_RHI_ERROR("OpenGLDescriptorSet::Update failed: descriptor set has no layout");
+            return false;
+        }
+
+        auto validation = ValidateRHIDescriptorBindings(*m_layout, bindings);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("OpenGLDescriptorSet::Update failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return false;
+        }
+
         // Clear and re-resolve all bindings
         m_bindings.clear();
 
@@ -39,6 +53,7 @@ namespace RVX
 
         RVX_RHI_DEBUG("Updated DescriptorSet '{}' with {} bindings",
                      GetDebugName(), m_bindings.size());
+        return true;
     }
 
     void OpenGLDescriptorSet::ResolveBinding(const RHIDescriptorBinding& binding)

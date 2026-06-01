@@ -770,6 +770,11 @@ namespace RVX
         m_capabilities.supportsSeparateStencilRef = false;      // DX12 doesn't support separate stencil refs
         m_capabilities.supportsSplitBarrier = true;             // DX12 supports split barriers
         m_capabilities.supportsSecondaryCommandBuffer = true;   // DX12 supports bundles
+        m_capabilities.supportsDescriptorSets = true;
+        m_capabilities.supportsDynamicDescriptorOffsets = true;
+        m_capabilities.maxDescriptorSets = 4;
+        m_capabilities.supportsExplicitResourceBarriers = true;
+        m_capabilities.emulatesResourceBarriers = false;
         m_capabilities.supportsMemoryBudgetQuery = true;        // DXGI supports memory budget
         m_capabilities.supportsPersistentMapping = true;        // DX12 supports persistent mapping
         m_capabilities.supportsExplicitHeapManagement = true;   // DX12 supports explicit heaps

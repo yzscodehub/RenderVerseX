@@ -445,8 +445,10 @@ namespace RVX
             m_device->SetObjectName(VK_OBJECT_TYPE_DESCRIPTOR_SET, reinterpret_cast<uint64>(m_descriptorSet), desc.debugName);
         }
 
-        // Initial update
-        Update(desc.bindings);
+        if (!desc.bindings.empty())
+        {
+            Update(desc.bindings);
+        }
     }
 
     VulkanDescriptorSet::~VulkanDescriptorSet()
@@ -457,8 +459,23 @@ namespace RVX
         }
     }
 
-    void VulkanDescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
+    bool VulkanDescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
     {
+        if (!m_layoutWrapper || m_descriptorSet == VK_NULL_HANDLE)
+        {
+            RVX_RHI_ERROR("VulkanDescriptorSet::Update failed: descriptor set has no valid layout");
+            return false;
+        }
+
+        auto validation = ValidateRHIDescriptorBindings(*m_layoutWrapper, bindings);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("VulkanDescriptorSet::Update failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return false;
+        }
+
         std::vector<VkWriteDescriptorSet> writes;
         std::vector<VkDescriptorBufferInfo> bufferInfos;
         std::vector<VkDescriptorImageInfo> imageInfos;
@@ -582,6 +599,7 @@ namespace RVX
             vkUpdateDescriptorSets(m_device->GetDevice(), static_cast<uint32>(writes.size()),
                 writes.data(), 0, nullptr);
         }
+        return true;
     }
 
     // =============================================================================
@@ -589,11 +607,25 @@ namespace RVX
     // =============================================================================
     RHIDescriptorSetLayoutRef CreateVulkanDescriptorSetLayout(VulkanDevice* device, const RHIDescriptorSetLayoutDesc& desc)
     {
+        auto validation = ValidateRHIDescriptorSetLayoutDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("Vulkan descriptor set layout creation failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return nullptr;
+        }
         return Ref<VulkanDescriptorSetLayout>(new VulkanDescriptorSetLayout(device, desc));
     }
 
     RHIPipelineLayoutRef CreateVulkanPipelineLayout(VulkanDevice* device, const RHIPipelineLayoutDesc& desc)
     {
+        auto validation = ValidateRHIPipelineLayoutDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("Vulkan pipeline layout creation failed: {}", validation.message);
+            return nullptr;
+        }
         return Ref<VulkanPipelineLayout>(new VulkanPipelineLayout(device, desc));
     }
 
@@ -609,6 +641,14 @@ namespace RVX
 
     RHIDescriptorSetRef CreateVulkanDescriptorSet(VulkanDevice* device, const RHIDescriptorSetDesc& desc)
     {
+        auto validation = ValidateRHIDescriptorSetDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("Vulkan descriptor set creation failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return nullptr;
+        }
         return Ref<VulkanDescriptorSet>(new VulkanDescriptorSet(device, desc));
     }
 

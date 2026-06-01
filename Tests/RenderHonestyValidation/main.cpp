@@ -221,6 +221,30 @@ TEST_F(RenderHonestyValidationFixture, QueryCapabilitiesDefaultToUnsupported)
     EXPECT_FALSE(caps.supportsQueueFenceWait);
     EXPECT_FALSE(caps.supportsMultiQueueBatchSubmit);
     EXPECT_FALSE(caps.emulatesQueueFences);
+    EXPECT_FALSE(caps.supportsDescriptorSets);
+    EXPECT_FALSE(caps.supportsDynamicDescriptorOffsets);
+    EXPECT_EQ(caps.maxDescriptorSets, 0u);
+    EXPECT_FALSE(caps.supportsExplicitResourceBarriers);
+    EXPECT_FALSE(caps.emulatesResourceBarriers);
+}
+
+TEST_F(RenderHonestyValidationFixture, DescriptorValidationHelpersRejectInvalidInputs)
+{
+    RVX::RHIDescriptorSetLayoutDesc duplicateLayout;
+    duplicateLayout.AddBinding(0, RVX::RHIBindingType::UniformBuffer);
+    duplicateLayout.AddBinding(0, RVX::RHIBindingType::Sampler);
+    EXPECT_FALSE(RVX::ValidateRHIDescriptorSetLayoutDesc(duplicateLayout));
+
+    RVX::RHIDescriptorSetLayoutDesc invalidDynamicLayout;
+    invalidDynamicLayout.AddDynamicBinding(1, RVX::RHIBindingType::SampledTexture);
+    EXPECT_FALSE(RVX::ValidateRHIDescriptorSetLayoutDesc(invalidDynamicLayout));
+
+    RVX::RHIPipelineLayoutDesc invalidPipelineLayout;
+    invalidPipelineLayout.setLayouts.push_back(nullptr);
+    EXPECT_FALSE(RVX::ValidateRHIPipelineLayoutDesc(invalidPipelineLayout));
+
+    RVX::RHIDescriptorSetDesc nullSetDesc;
+    EXPECT_FALSE(RVX::ValidateRHIDescriptorSetDesc(nullSetDesc));
 }
 
 TEST_F(RenderHonestyValidationFixture, TextureReferenceFallbackIsObservable)

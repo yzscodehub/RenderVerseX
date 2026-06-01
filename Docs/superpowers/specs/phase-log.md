@@ -241,7 +241,7 @@ ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderHone
 ### R-SP: R1a RHI Submit/Fence Contract
 
 **Date:** 2026-05-31
-**Commit:** pending
+**Commit:** `4a441d1`
 **Spark plan review agent:** `019e7c3c-06a7-71c0-8a0d-b662be0ec7cc`
 **Spark code review agent:** `019e7cae-8987-73a3-ba9f-0afd6cbd2072`
 
@@ -363,6 +363,115 @@ ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "DX12Valida
 
 - Vulkan validation still emits pre-existing validation-layer messages in legacy command-context tests, but the R1a validation targets pass.
 - Metal code was updated to the same interface contract but could not be runtime-validated on this Windows machine.
+- Next stage must reread the render-first plan and create its own implementation plan before code changes.
+
+---
+
+### R-SP: R1b RHI Descriptor/Barrier Base Contract
+
+**Date:** 2026-05-31
+**Commit:** pending
+**Spark plan review agent:** `019e7e90-629e-7533-b55d-323d7aba8f3e`
+**Spark code review agent:** `019e83a1-69fa-7b30-a5f6-0831a7e401bf`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-05-31-r1b-rhi-descriptor-barrier-contract-plan.md`
+- Source roadmap: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: `6. R1 - RHI Core Contract`
+- Lines checked: R1 section and R1b plan sections 1-7 checked before implementation; plan rechecked before review/commit
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R1a RHI Submit/Fence Contract
+- Evidence: R1a committed as `4a441d1`; R1b implementation plan passed Spark plan review before code changes
+
+**Approved scope:**
+
+- Add public descriptor layout inspection and make `RHIDescriptorSet::Update()` return `bool`.
+- Add shared descriptor validation helpers for layout, pipeline layout, descriptor set, and update inputs.
+- Make DX12, Vulkan, DX11, OpenGL, and Metal descriptor factories return `nullptr` for invalid descriptions.
+- Make descriptor update failures return `false` and preserve the previous valid state.
+- Add descriptor/barrier capability fields with honest backend values.
+- Add null/same-state barrier no-work guards and capability-consistent split-barrier behavior.
+
+**Out of scope:**
+
+- Bindless descriptor parity, descriptor indexing, update-after-bind, and descriptor heap residency work.
+- RenderGraph aliasing or transient resource aliasing.
+- Shader reflection-driven descriptor layout generation.
+- Material binding model changes.
+- ModelViewer visual validation.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-05-31-r1b-rhi-descriptor-barrier-contract-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `RHI/Include/RHI/RHICapabilities.h`
+- `RHI/Include/RHI/RHICommandContext.h`
+- `RHI/Include/RHI/RHIDescriptor.h`
+- `RHI_DX11/Private/DX11Device.cpp`
+- `RHI_DX11/Private/DX11Pipeline.cpp`
+- `RHI_DX11/Private/DX11Pipeline.h`
+- `RHI_DX12/Private/DX12CommandContext.cpp`
+- `RHI_DX12/Private/DX12Device.cpp`
+- `RHI_DX12/Private/DX12Pipeline.cpp`
+- `RHI_DX12/Private/DX12Pipeline.h`
+- `RHI_Metal/Private/MetalCommandContext.mm`
+- `RHI_Metal/Private/MetalDevice.mm`
+- `RHI_Metal/Private/MetalResources.h`
+- `RHI_Metal/Private/MetalResources.mm`
+- `RHI_OpenGL/Private/OpenGLCommandContext.cpp`
+- `RHI_OpenGL/Private/OpenGLDescriptor.cpp`
+- `RHI_OpenGL/Private/OpenGLDescriptor.h`
+- `RHI_OpenGL/Private/OpenGLDevice.cpp`
+- `RHI_OpenGL/Private/OpenGLPipeline.h`
+- `RHI_Vulkan/Private/VulkanCommandContext.cpp`
+- `RHI_Vulkan/Private/VulkanDevice.cpp`
+- `RHI_Vulkan/Private/VulkanPipeline.cpp`
+- `RHI_Vulkan/Private/VulkanPipeline.h`
+- `Tests/CrossBackendValidation/main.cpp`
+- `Tests/DX11Validation/main.cpp`
+- `Tests/DX12Validation/main.cpp`
+- `Tests/RenderHonestyValidation/main.cpp`
+- `Tests/VulkanValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderHonestyValidation DX12Validation VulkanValidation DX11Validation CrossBackendValidation
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderHonestyValidation|DX12Validation|VulkanValidation|DX11Validation|CrossBackendValidation"
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - Filtered CTest: 82/82
+- Visual gate: N/A
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan and code review messages
+- Screenshots: N/A
+- Diffs: R1b working tree diff before commit
+
+**Spark plan review result:**
+
+- Verdict: PASS on second review.
+- Blockers resolved: first Spark plan review agent hung and was closed; second review approved the narrowed descriptor/barrier contract plan.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: N/A
+- Non-blocking follow-ups: consider adding observable tests that failed descriptor updates preserve old bindings; keep descriptor array/range validation for a later API extension.
+
+**Notes / follow-ups:**
+
+- Vulkan split barriers are now reported unsupported until event-based split barriers are implemented.
+- Metal code was updated to the same descriptor/barrier contract but could not be runtime-validated on this Windows machine.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R1b commit.
 - Next stage must reread the render-first plan and create its own implementation plan before code changes.
 
 ---

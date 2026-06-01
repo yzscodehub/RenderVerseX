@@ -912,9 +912,14 @@ namespace RVX
         m_capabilities.supportsDepthBounds = true;              // Vulkan supports depth bounds
         m_capabilities.supportsDynamicLineWidth = true;         // Vulkan supports dynamic line width
         m_capabilities.supportsSeparateStencilRef = true;       // Vulkan supports separate stencil refs
-        m_capabilities.supportsSplitBarrier = true;             // Vulkan supports split barriers
+        m_capabilities.supportsSplitBarrier = false;            // Event-based split barriers are not implemented yet
         m_capabilities.supportsSecondaryCommandBuffer = true;   // Vulkan supports secondary command buffers
         m_capabilities.supportsAsyncCompute = true;             // Vulkan supports async compute
+        m_capabilities.supportsDescriptorSets = true;
+        m_capabilities.supportsDynamicDescriptorOffsets = true;
+        m_capabilities.maxDescriptorSets = 4;
+        m_capabilities.supportsExplicitResourceBarriers = true;
+        m_capabilities.emulatesResourceBarriers = false;
         m_capabilities.supportsMemoryBudgetQuery = true;        // VK_EXT_memory_budget
         m_capabilities.supportsPersistentMapping = true;        // Vulkan supports persistent mapping
         m_capabilities.supportsExplicitHeapManagement = true;   // Vulkan backend implements explicit heaps

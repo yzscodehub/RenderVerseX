@@ -178,7 +178,16 @@ namespace RVX
     // =============================================================================
     void DX12CommandContext::BufferBarrier(const RHIBufferBarrier& barrier)
     {
+        if (!barrier.buffer || barrier.stateBefore == barrier.stateAfter)
+        {
+            return;
+        }
+
         auto* dx12Buffer = static_cast<DX12Buffer*>(barrier.buffer);
+        if (!dx12Buffer || !dx12Buffer->GetResource())
+        {
+            return;
+        }
 
         D3D12_RESOURCE_BARRIER d3dBarrier = {};
         d3dBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -193,7 +202,16 @@ namespace RVX
 
     void DX12CommandContext::TextureBarrier(const RHITextureBarrier& barrier)
     {
+        if (!barrier.texture || barrier.stateBefore == barrier.stateAfter)
+        {
+            return;
+        }
+
         auto* dx12Texture = static_cast<DX12Texture*>(barrier.texture);
+        if (!dx12Texture || !dx12Texture->GetResource())
+        {
+            return;
+        }
 
         D3D12_RESOURCE_BARRIER d3dBarrier = {};
         d3dBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -1067,8 +1085,13 @@ namespace RVX
     // =============================================================================
     void DX12CommandContext::BeginBarrier(const RHIBufferBarrier& barrier)
     {
+        if (!barrier.buffer || barrier.stateBefore == barrier.stateAfter)
+        {
+            return;
+        }
+
         auto* dx12Buffer = static_cast<DX12Buffer*>(barrier.buffer);
-        if (!dx12Buffer)
+        if (!dx12Buffer || !dx12Buffer->GetResource())
             return;
 
         D3D12_RESOURCE_BARRIER d3dBarrier = {};
@@ -1084,8 +1107,13 @@ namespace RVX
 
     void DX12CommandContext::BeginBarrier(const RHITextureBarrier& barrier)
     {
+        if (!barrier.texture || barrier.stateBefore == barrier.stateAfter)
+        {
+            return;
+        }
+
         auto* dx12Texture = static_cast<DX12Texture*>(barrier.texture);
-        if (!dx12Texture)
+        if (!dx12Texture || !dx12Texture->GetResource())
             return;
 
         D3D12_RESOURCE_BARRIER d3dBarrier = {};
@@ -1101,8 +1129,13 @@ namespace RVX
 
     void DX12CommandContext::EndBarrier(const RHIBufferBarrier& barrier)
     {
+        if (!barrier.buffer || barrier.stateBefore == barrier.stateAfter)
+        {
+            return;
+        }
+
         auto* dx12Buffer = static_cast<DX12Buffer*>(barrier.buffer);
-        if (!dx12Buffer)
+        if (!dx12Buffer || !dx12Buffer->GetResource())
             return;
 
         D3D12_RESOURCE_BARRIER d3dBarrier = {};
@@ -1118,8 +1151,13 @@ namespace RVX
 
     void DX12CommandContext::EndBarrier(const RHITextureBarrier& barrier)
     {
+        if (!barrier.texture || barrier.stateBefore == barrier.stateAfter)
+        {
+            return;
+        }
+
         auto* dx12Texture = static_cast<DX12Texture*>(barrier.texture);
-        if (!dx12Texture)
+        if (!dx12Texture || !dx12Texture->GetResource())
             return;
 
         D3D12_RESOURCE_BARRIER d3dBarrier = {};

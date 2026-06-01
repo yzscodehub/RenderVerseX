@@ -21,7 +21,7 @@ namespace RVX
         DX12DescriptorSetLayout(DX12Device* device, const RHIDescriptorSetLayoutDesc& desc);
         ~DX12DescriptorSetLayout() override;
 
-        const std::vector<RHIBindingLayoutEntry>& GetEntries() const { return m_entries; }
+        const std::vector<RHIBindingLayoutEntry>& GetEntries() const override { return m_entries; }
         const RHIBindingLayoutEntry* FindEntry(uint32 binding) const;
         uint32 GetCbvSrvUavCount() const { return m_cbvSrvUavCount; }
         uint32 GetSamplerCount() const { return m_samplerCount; }
@@ -113,10 +113,10 @@ namespace RVX
         ~DX12DescriptorSet() override;
 
         // Update all bindings
-        void Update(const std::vector<RHIDescriptorBinding>& bindings) override;
+        bool Update(const std::vector<RHIDescriptorBinding>& bindings) override;
         
         // Update a single binding (optimized path)
-        void UpdateSingle(uint32 bindingIndex, const RHIDescriptorBinding& binding);
+        bool UpdateSingle(uint32 bindingIndex, const RHIDescriptorBinding& binding);
         
         // Flush any pending descriptor updates
         void FlushUpdates();

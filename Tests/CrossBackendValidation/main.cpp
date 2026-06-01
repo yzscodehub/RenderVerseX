@@ -248,6 +248,12 @@ TEST(CrossBackendValidation, BarrierOperationsConsistency)
         auto ctx = device->CreateCommandContext(RHICommandQueueType::Graphics);
         ctx->Begin();
 
+        // No-work barriers must be accepted without backend calls or crashes.
+        ctx->TextureBarrier({nullptr, RHIResourceState::Common, RHIResourceState::RenderTarget});
+        ctx->BufferBarrier({nullptr, RHIResourceState::Common, RHIResourceState::UnorderedAccess});
+        ctx->TextureBarrier({texture.Get(), RHIResourceState::Common, RHIResourceState::Common});
+        ctx->BufferBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
+
         // Test texture barriers
         ctx->TextureBarrier({texture.Get(), RHIResourceState::Undefined, RHIResourceState::RenderTarget});
         ctx->TextureBarrier({texture.Get(), RHIResourceState::RenderTarget, RHIResourceState::ShaderResource});
@@ -262,6 +268,57 @@ TEST(CrossBackendValidation, BarrierOperationsConsistency)
         device->WaitIdle();
 
         RVX_CORE_INFO("Backend {}: Barrier operations OK", ToString(backend));
+    }
+
+    RVX_GTEST_SKIP_IF_NO_GPU_BACKENDS(testedBackendCount);
+}
+
+TEST(CrossBackendValidation, DescriptorContractConsistency)
+{
+    std::vector<RHIBackendType> backends = GetAvailableBackends();
+    uint32_t testedBackendCount = 0;
+
+    for (auto backend : backends)
+    {
+        auto device = CreateDeviceForBackend(backend);
+        if (!ShouldRunBackend(device, backend))
+        {
+            continue;
+        }
+        ++testedBackendCount;
+
+        const RHICapabilities& caps = device->GetCapabilities();
+        EXPECT_TRUE(caps.supportsDescriptorSets) << ToString(backend);
+        EXPECT_GE(caps.maxDescriptorSets, 4u) << ToString(backend);
+
+        RHIDescriptorSetLayoutDesc duplicateLayout;
+        duplicateLayout.AddBinding(0, RHIBindingType::UniformBuffer);
+        duplicateLayout.AddBinding(0, RHIBindingType::Sampler);
+        EXPECT_EQ(device->CreateDescriptorSetLayout(duplicateLayout).Get(), nullptr) << ToString(backend);
+
+        RHIDescriptorSetDesc nullSetDesc;
+        EXPECT_EQ(device->CreateDescriptorSet(nullSetDesc).Get(), nullptr) << ToString(backend);
+
+        RHIDescriptorSetLayoutDesc validLayoutDesc;
+        validLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer);
+        auto layout = device->CreateDescriptorSetLayout(validLayoutDesc);
+        ASSERT_NE(nullptr, layout.Get()) << ToString(backend);
+
+        RHIDescriptorSetDesc validSetDesc;
+        validSetDesc.SetLayout(layout.Get());
+        auto set = device->CreateDescriptorSet(validSetDesc);
+        ASSERT_NE(nullptr, set.Get()) << ToString(backend);
+        EXPECT_TRUE(set->Update({})) << ToString(backend);
+
+        RHIDescriptorBinding unknownBinding;
+        unknownBinding.binding = 99;
+        EXPECT_FALSE(set->Update(std::vector<RHIDescriptorBinding>{unknownBinding})) << ToString(backend);
+
+        RHIPipelineLayoutDesc invalidPipelineLayout;
+        invalidPipelineLayout.setLayouts.push_back(nullptr);
+        EXPECT_EQ(device->CreatePipelineLayout(invalidPipelineLayout).Get(), nullptr) << ToString(backend);
+
+        RVX_CORE_INFO("Backend {}: Descriptor contract OK", ToString(backend));
     }
 
     RVX_GTEST_SKIP_IF_NO_GPU_BACKENDS(testedBackendCount);

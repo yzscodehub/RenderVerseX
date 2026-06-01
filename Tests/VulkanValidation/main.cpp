@@ -184,6 +184,59 @@ TEST(VulkanValidation, SynchronizationCapabilities)
     EXPECT_FALSE(caps.emulatesQueueFences);
 }
 
+TEST(VulkanValidation, DescriptorAndBarrierCapabilities)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    const RHICapabilities& caps = device->GetCapabilities();
+    EXPECT_TRUE(caps.supportsDescriptorSets);
+    EXPECT_TRUE(caps.supportsDynamicDescriptorOffsets);
+    EXPECT_GE(caps.maxDescriptorSets, 4u);
+    EXPECT_TRUE(caps.supportsExplicitResourceBarriers);
+    EXPECT_FALSE(caps.emulatesResourceBarriers);
+    EXPECT_FALSE(caps.supportsSplitBarrier);
+}
+
+TEST(VulkanValidation, DescriptorValidationRejectsInvalidInputs)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    RHIDescriptorSetLayoutDesc duplicateLayout;
+    duplicateLayout.AddBinding(0, RHIBindingType::UniformBuffer);
+    duplicateLayout.AddBinding(0, RHIBindingType::SampledTexture);
+    EXPECT_EQ(device->CreateDescriptorSetLayout(duplicateLayout).Get(), nullptr);
+
+    RHIDescriptorSetDesc nullSetDesc;
+    EXPECT_EQ(device->CreateDescriptorSet(nullSetDesc).Get(), nullptr);
+
+    RHIDescriptorSetLayoutDesc validLayoutDesc;
+    validLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer);
+    auto layout = device->CreateDescriptorSetLayout(validLayoutDesc);
+    ASSERT_NE(nullptr, layout.Get());
+
+    RHIPipelineLayoutDesc invalidPipelineLayout;
+    invalidPipelineLayout.setLayouts.push_back(nullptr);
+    EXPECT_EQ(device->CreatePipelineLayout(invalidPipelineLayout).Get(), nullptr);
+
+    RHIDescriptorSetDesc validSetDesc;
+    validSetDesc.SetLayout(layout.Get());
+    auto set = device->CreateDescriptorSet(validSetDesc);
+    ASSERT_NE(nullptr, set.Get());
+    EXPECT_TRUE(set->Update({}));
+
+    RHIDescriptorBinding unknownBinding;
+    unknownBinding.binding = 99;
+    EXPECT_FALSE(set->Update(std::vector<RHIDescriptorBinding>{unknownBinding}));
+
+    RHIDescriptorBinding nullBufferBinding;
+    nullBufferBinding.binding = 0;
+    EXPECT_FALSE(set->Update(std::vector<RHIDescriptorBinding>{nullBufferBinding}));
+}
+
 TEST(VulkanValidation, SubmitReturnsMonotonicFenceValues)
 {
     RHIDeviceDesc deviceDesc;
@@ -210,6 +263,35 @@ TEST(VulkanValidation, SubmitReturnsMonotonicFenceValues)
 
     device->WaitForFence(fence.Get(), secondValue);
     EXPECT_GE(fence->GetCompletedValue(), secondValue);
+}
+
+TEST(VulkanValidation, BarrierNoWorkInputsAreSafe)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    auto ctx = device->CreateCommandContext(RHICommandQueueType::Compute);
+    ASSERT_NE(nullptr, ctx.Get());
+    ctx->Begin();
+
+    ctx->BufferBarrier({nullptr, RHIResourceState::Common, RHIResourceState::CopyDest});
+    ctx->TextureBarrier({nullptr, RHIResourceState::Common, RHIResourceState::ShaderResource});
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 256;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    bufferDesc.memoryType = RHIMemoryType::Default;
+    bufferDesc.stride = sizeof(float);
+    auto buffer = device->CreateBuffer(bufferDesc);
+    ASSERT_NE(nullptr, buffer.Get());
+    ctx->BufferBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
+    ctx->BeginBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
+    ctx->EndBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
+
+    ctx->End();
+    EXPECT_EQ(device->SubmitCommandContext(ctx.Get(), nullptr), 0u);
+    device->WaitIdle();
 }
 
 TEST(VulkanValidation, BarrierBatching)

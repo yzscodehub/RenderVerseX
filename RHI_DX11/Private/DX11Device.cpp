@@ -352,6 +352,11 @@ namespace RVX
         m_capabilities.supportsSeparateStencilRef = false;      // DX11 doesn't support separate stencil refs
         m_capabilities.supportsSplitBarrier = false;            // DX11 doesn't have explicit barriers
         m_capabilities.supportsSecondaryCommandBuffer = false;  // DX11 uses deferred context instead
+        m_capabilities.supportsDescriptorSets = true;           // Implemented through DX11 binding remapping
+        m_capabilities.supportsDynamicDescriptorOffsets = m_immediateContext1 != nullptr;
+        m_capabilities.maxDescriptorSets = 4;
+        m_capabilities.supportsExplicitResourceBarriers = false;
+        m_capabilities.emulatesResourceBarriers = true;
         m_capabilities.supportsMemoryBudgetQuery = false;       // DX11 doesn't support memory budget
         m_capabilities.supportsPersistentMapping = false;       // DX11 doesn't support persistent mapping
         m_capabilities.supportsExplicitHeapManagement = false;  // DX11 backend has no explicit heap API
@@ -519,11 +524,25 @@ namespace RVX
     // =============================================================================
     RHIDescriptorSetLayoutRef DX11Device::CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc& desc)
     {
+        auto validation = ValidateRHIDescriptorSetLayoutDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX11 descriptor set layout creation failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return nullptr;
+        }
         return MakeRef<DX11DescriptorSetLayout>(this, desc);
     }
 
     RHIPipelineLayoutRef DX11Device::CreatePipelineLayout(const RHIPipelineLayoutDesc& desc)
     {
+        auto validation = ValidateRHIPipelineLayoutDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX11 pipeline layout creation failed: {}", validation.message);
+            return nullptr;
+        }
         return MakeRef<DX11PipelineLayout>(this, desc);
     }
 
@@ -539,6 +558,14 @@ namespace RVX
 
     RHIDescriptorSetRef DX11Device::CreateDescriptorSet(const RHIDescriptorSetDesc& desc)
     {
+        auto validation = ValidateRHIDescriptorSetDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX11 descriptor set creation failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return nullptr;
+        }
         return MakeRef<DX11DescriptorSet>(this, desc);
     }
 

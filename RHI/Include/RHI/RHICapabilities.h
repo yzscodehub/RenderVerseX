@@ -76,6 +76,13 @@ namespace RVX
         bool supportsSplitBarrier = false;          // DX12/Vulkan only
         bool supportsSecondaryCommandBuffer = false;// DX12/Vulkan/Metal
 
+        // Descriptor and barrier contract support
+        bool supportsDescriptorSets = false;        // Descriptor-set style binding is implemented directly or through backend emulation.
+        bool supportsDynamicDescriptorOffsets = false; // Dynamic buffer offsets are supported by descriptor-set binding.
+        uint32 maxDescriptorSets = 0;               // Maximum descriptor set slots supported by the base contract.
+        bool supportsExplicitResourceBarriers = false; // Backend requires/supports explicit resource barrier commands.
+        bool emulatesResourceBarriers = false;      // Barrier API is emulated/no-op because backend tracks transitions implicitly.
+
         // Memory features
         bool supportsMemoryBudgetQuery = false;     // DX12(DXGI)/Vulkan(VK_EXT_memory_budget)
         bool supportsPersistentMapping = false;     // Vulkan/DX12/OpenGL4.4+

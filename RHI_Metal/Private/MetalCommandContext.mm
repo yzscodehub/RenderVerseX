@@ -136,7 +136,7 @@ namespace RVX
     // =============================================================================
     void MetalCommandContext::BufferBarrier(const RHIBufferBarrier& barrier)
     {
-        if (!barrier.buffer) return;
+        if (!barrier.buffer || barrier.stateBefore == barrier.stateAfter) return;
 
         auto* metalBuffer = static_cast<MetalBuffer*>(barrier.buffer);
 
@@ -168,7 +168,7 @@ namespace RVX
 
     void MetalCommandContext::TextureBarrier(const RHITextureBarrier& barrier)
     {
-        if (!barrier.texture) return;
+        if (!barrier.texture || barrier.stateBefore == barrier.stateAfter) return;
 
         auto* metalTexture = static_cast<MetalTexture*>(barrier.texture);
 
@@ -219,7 +219,7 @@ namespace RVX
 
             for (const auto& barrier : bufferBarriers)
             {
-                if (barrier.buffer)
+                if (barrier.buffer && barrier.stateBefore != barrier.stateAfter)
                 {
                     auto* metalBuffer = static_cast<MetalBuffer*>(barrier.buffer);
                     resources.push_back(metalBuffer->GetMTLBuffer());
@@ -228,7 +228,7 @@ namespace RVX
 
             for (const auto& barrier : textureBarriers)
             {
-                if (barrier.texture)
+                if (barrier.texture && barrier.stateBefore != barrier.stateAfter)
                 {
                     auto* metalTexture = static_cast<MetalTexture*>(barrier.texture);
                     resources.push_back(metalTexture->GetMTLTexture());
@@ -973,26 +973,24 @@ namespace RVX
     // =============================================================================
     void MetalCommandContext::BeginBarrier(const RHIBufferBarrier& barrier)
     {
-        // Metal handles resource tracking automatically
         (void)barrier;
+        RVX_RHI_WARN("MetalCommandContext::BeginBarrier is unsupported; RHICapabilities::supportsSplitBarrier is false");
     }
 
     void MetalCommandContext::BeginBarrier(const RHITextureBarrier& barrier)
     {
-        // Metal handles resource tracking automatically
         (void)barrier;
+        RVX_RHI_WARN("MetalCommandContext::BeginBarrier is unsupported; RHICapabilities::supportsSplitBarrier is false");
     }
 
     void MetalCommandContext::EndBarrier(const RHIBufferBarrier& barrier)
     {
-        // Metal handles resource tracking automatically
-        (void)barrier;
+        BufferBarrier(barrier);
     }
 
     void MetalCommandContext::EndBarrier(const RHITextureBarrier& barrier)
     {
-        // Metal handles resource tracking automatically
-        (void)barrier;
+        TextureBarrier(barrier);
     }
 
     // =============================================================================

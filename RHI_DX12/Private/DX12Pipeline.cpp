@@ -2,6 +2,7 @@
 #include "DX12Device.h"
 #include "DX12Resources.h"
 #include <algorithm>
+#include <utility>
 #include <vector>
 #include <d3d12sdklayers.h>
 
@@ -656,7 +657,6 @@ namespace RVX
         }
 
         m_layout = static_cast<DX12DescriptorSetLayout*>(desc.layout);
-        m_bindings = desc.bindings;
 
         if (m_layout)
         {
@@ -674,9 +674,9 @@ namespace RVX
             }
         }
 
-        if (!m_bindings.empty())
+        if (!desc.bindings.empty())
         {
-            Update(m_bindings);
+            Update(desc.bindings);
         }
     }
 
@@ -695,32 +695,48 @@ namespace RVX
         }
     }
 
-    void DX12DescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
+    bool DX12DescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
     {
-        m_bindings = bindings;
         if (!m_layout)
         {
-            return;
+            RVX_RHI_ERROR("DX12DescriptorSet::Update failed: descriptor set has no layout");
+            return false;
         }
+
+        auto validation = ValidateRHIDescriptorBindings(*m_layout, bindings);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12DescriptorSet::Update failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return false;
+        }
+
+        m_bindings = bindings;
 
         // Update all bindings immediately
         for (const auto& binding : m_bindings)
         {
             UpdateBindingInternal(binding);
         }
-        
         m_dirtyBindings.reset();
         m_hasPendingUpdates = false;
+        return true;
     }
 
-    void DX12DescriptorSet::UpdateSingle(uint32 bindingIndex, const RHIDescriptorBinding& binding)
+    bool DX12DescriptorSet::UpdateSingle(uint32 bindingIndex, const RHIDescriptorBinding& binding)
     {
         if (!m_layout)
-            return;
+        {
+            RVX_RHI_ERROR("DX12DescriptorSet::UpdateSingle failed: descriptor set has no layout");
+            return false;
+        }
+
+        std::vector<RHIDescriptorBinding> candidateBindings = m_bindings;
 
         // Update the binding in our cached list
         bool found = false;
-        for (auto& existing : m_bindings)
+        for (auto& existing : candidateBindings)
         {
             if (existing.binding == binding.binding)
             {
@@ -729,11 +745,21 @@ namespace RVX
                 break;
             }
         }
-        
         if (!found)
         {
-            m_bindings.push_back(binding);
+            candidateBindings.push_back(binding);
         }
+
+        auto validation = ValidateRHIDescriptorBindings(*m_layout, candidateBindings);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12DescriptorSet::UpdateSingle failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return false;
+        }
+
+        m_bindings = std::move(candidateBindings);
 
         // Mark as dirty for deferred update, or update immediately
         if (bindingIndex < 64)
@@ -741,9 +767,9 @@ namespace RVX
             m_dirtyBindings.set(bindingIndex);
             m_hasPendingUpdates = true;
         }
-        
         // For now, update immediately (can be deferred later)
         UpdateBindingInternal(binding);
+        return true;
     }
 
     void DX12DescriptorSet::FlushUpdates()
@@ -832,11 +858,25 @@ namespace RVX
     // =============================================================================
     RHIDescriptorSetLayoutRef CreateDX12DescriptorSetLayout(DX12Device* device, const RHIDescriptorSetLayoutDesc& desc)
     {
+        auto validation = ValidateRHIDescriptorSetLayoutDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12 descriptor set layout creation failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return nullptr;
+        }
         return Ref<DX12DescriptorSetLayout>(new DX12DescriptorSetLayout(device, desc));
     }
 
     RHIPipelineLayoutRef CreateDX12PipelineLayout(DX12Device* device, const RHIPipelineLayoutDesc& desc)
     {
+        auto validation = ValidateRHIPipelineLayoutDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12 pipeline layout creation failed: {}", validation.message);
+            return nullptr;
+        }
         return Ref<DX12PipelineLayout>(new DX12PipelineLayout(device, desc));
     }
 
@@ -864,6 +904,14 @@ namespace RVX
 
     RHIDescriptorSetRef CreateDX12DescriptorSet(DX12Device* device, const RHIDescriptorSetDesc& desc)
     {
+        auto validation = ValidateRHIDescriptorSetDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12 descriptor set creation failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return nullptr;
+        }
         return Ref<DX12DescriptorSet>(new DX12DescriptorSet(device, desc));
     }
 

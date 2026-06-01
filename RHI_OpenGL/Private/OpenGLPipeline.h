@@ -43,7 +43,7 @@ namespace RVX
         ~OpenGLDescriptorSetLayout() override = default;
 
         const RHIDescriptorSetLayoutDesc& GetDesc() const { return m_desc; }
-        const std::vector<RHIBindingLayoutEntry>& GetEntries() const { return m_desc.entries; }
+        const std::vector<RHIBindingLayoutEntry>& GetEntries() const override { return m_desc.entries; }
 
         // Get the OpenGL binding for a given RHI binding
         uint32 GetGLBinding(uint32 rhiBinding, RHIBindingType type) const;

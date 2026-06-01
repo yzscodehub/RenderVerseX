@@ -18,7 +18,7 @@ namespace RVX
         ~VulkanDescriptorSetLayout() override;
 
         VkDescriptorSetLayout GetLayout() const { return m_layout; }
-        const std::vector<RHIBindingLayoutEntry>& GetEntries() const { return m_entries; }
+        const std::vector<RHIBindingLayoutEntry>& GetEntries() const override { return m_entries; }
         const RHIBindingLayoutEntry* FindEntry(uint32 binding) const;
 
     private:
@@ -78,7 +78,7 @@ namespace RVX
         VulkanDescriptorSet(VulkanDevice* device, const RHIDescriptorSetDesc& desc);
         ~VulkanDescriptorSet() override;
 
-        void Update(const std::vector<RHIDescriptorBinding>& bindings) override;
+        bool Update(const std::vector<RHIDescriptorBinding>& bindings) override;
 
         VkDescriptorSet GetDescriptorSet() const { return m_descriptorSet; }
 

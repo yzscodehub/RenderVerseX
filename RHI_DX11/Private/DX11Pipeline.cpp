@@ -86,9 +86,25 @@ namespace RVX
     {
     }
 
-    void DX11DescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
+    bool DX11DescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
     {
+        if (!m_layout)
+        {
+            RVX_RHI_ERROR("DX11DescriptorSet::Update failed: descriptor set has no layout");
+            return false;
+        }
+
+        auto validation = ValidateRHIDescriptorBindings(*m_layout, bindings);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX11DescriptorSet::Update failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return false;
+        }
+
         m_bindings = bindings;
+        return true;
     }
 
     void DX11DescriptorSet::Apply(ID3D11DeviceContext* context, RHIShaderStage stages, uint32 setIndex,
