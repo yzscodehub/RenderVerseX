@@ -17,9 +17,12 @@
 #include "RHI/RHI.h"
 
 #include <array>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace RVX
 {
@@ -46,6 +49,28 @@ namespace RVX
     struct ObjectConstants
     {
         Mat4 world;
+    };
+
+    struct PipelineCacheConfig
+    {
+        RHIFormat renderTargetFormat = RHIFormat::RGBA8_UNORM;
+        RHIFormat depthStencilFormat = RHIFormat::D24_UNORM_S8_UINT;
+        bool reverseZ = false;
+        std::filesystem::path manifestDirectory;
+    };
+
+    struct PipelineCacheStats
+    {
+        uint64 lastPipelineStateHash = 0;
+        uint64 opaquePipelineHash = 0;
+        uint64 maskedPipelineHash = 0;
+        uint64 transparentPipelineHash = 0;
+        uint32 pipelineCreateCount = 0;
+        uint32 pipelineCacheHitCount = 0;
+        uint32 pipelineCacheMissCount = 0;
+        bool manifestLoaded = false;
+        bool manifestValid = false;
+        bool manifestInvalidated = false;
     };
 
     /**
@@ -84,6 +109,17 @@ namespace RVX
          * @brief Check if initialized
          */
         bool IsInitialized() const { return m_initialized; }
+
+        /**
+         * @brief Configure pipeline cache inputs. Must be called before Initialize().
+         */
+        void SetConfig(const PipelineCacheConfig& config);
+
+        const PipelineCacheConfig& GetConfig() const { return m_config; }
+        const PipelineCacheStats& GetStats() const { return m_stats; }
+        const std::string& GetLastError() const { return m_lastError; }
+
+        uint64 GetPipelineStateHashForVariant(MaterialPipelineVariant variant) const;
 
         // =====================================================================
         // Pipeline Access
@@ -185,7 +221,14 @@ namespace RVX
         /**
          * @brief Set the render target format (call before Initialize or recreate pipeline)
          */
-        void SetRenderTargetFormat(RHIFormat format) { m_renderTargetFormat = format; }
+        void SetRenderTargetFormat(RHIFormat format)
+        {
+            m_renderTargetFormat = format;
+            m_config.renderTargetFormat = format;
+        }
+
+        void SetDepthStencilFormat(RHIFormat format) { m_config.depthStencilFormat = format; }
+        void SetReverseZ(bool enabled) { m_config.reverseZ = enabled; }
 
     private:
         static uint32 ToRHIConstantDynamicOffset(uint64 offset)
@@ -204,18 +247,31 @@ namespace RVX
         bool CompileShaders();
         bool CreatePipelineLayout();
         bool CreatePipeline();
-        RHIPipelineRef CreateDefaultLitPipeline(const char* debugName,
-                                                const RHIDepthStencilState& depthStencilState,
-                                                const RHIBlendState& blendState);
+        RHIPipelineRef GetOrCreateDefaultLitPipeline(MaterialPipelineVariant variant,
+                                                     const char* debugName,
+                                                     const RHIDepthStencilState& depthStencilState,
+                                                     const RHIBlendState& blendState);
+        RHIGraphicsPipelineDesc BuildDefaultLitPipelineDesc(const char* debugName,
+                                                            const RHIDepthStencilState& depthStencilState,
+                                                            const RHIBlendState& blendState) const;
         bool CreateViewConstantBuffer();
         bool CreateObjectConstantBuffer();
         RHIDescriptorSetRef CreateFrameDescriptorSet();
         RHIDescriptorSetRef CreateObjectDescriptorSet();
         uint64 AllocateObjectConstantSlot();
+        bool BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSetLayoutDesc>& outLayouts);
+        bool ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSetLayoutDesc>& layouts);
+        void SetLastError(std::string message);
+        uint64 ComputePipelineStateHash(const RHIGraphicsPipelineDesc& desc, MaterialPipelineVariant variant) const;
+        uint64 ComputeShaderHash(const ShaderCompileResult* result) const;
+        uint64 StoreVariantHash(MaterialPipelineVariant variant, uint64 hash);
 
         IRHIDevice* m_device = nullptr;
         std::string m_shaderDir;
         bool m_initialized = false;
+        PipelineCacheConfig m_config;
+        PipelineCacheStats m_stats;
+        std::string m_lastError;
 
         // Shader manager
         std::unique_ptr<ShaderManager> m_shaderManager;
@@ -235,6 +291,7 @@ namespace RVX
         RHIPipelineRef m_maskedPipeline;
         RHIPipelineRef m_transparentPipeline;
         RHIPipelineRef m_depthOnlyPipeline;
+        std::unordered_map<uint64, RHIPipelineRef> m_pipelineCache;
 
         // Frame and object constants
         RHIBufferRef m_viewConstantBuffer;

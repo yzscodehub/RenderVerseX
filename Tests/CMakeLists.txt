@@ -200,6 +200,21 @@ rvx_add_gtest(
     TIMEOUT 120
 )
 
+# Pipeline cache and PSO validation tests
+rvx_add_gtest(
+    NAME PipelineCacheValidation
+    SOURCES PipelineCacheValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::Render
+        RVX::RHI
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/RHI/Include
+    LABELS unit
+    TIMEOUT 120
+)
+
 # GPU Resource Manager Validation Tests
 rvx_add_gtest(
     NAME GPUResourceManagerValidation

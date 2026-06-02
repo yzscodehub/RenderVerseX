@@ -7,10 +7,13 @@
 #include "Core/Log.h"
 #include "Render/Renderer/ViewData.h"
 #include "ShaderCompiler/ShaderCompiler.h"
+#include "ShaderCompiler/ShaderLayout.h"
 #include "ShaderCompiler/ShaderManager.h"
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <utility>
 
 namespace RVX
 {
@@ -19,10 +22,75 @@ namespace
 {
     constexpr uint64 RVX_CONSTANT_BUFFER_ALIGNMENT = 256;
     constexpr uint64 RVX_MAX_DRAW_CONSTANTS_PER_FRAME = 8192;
+    constexpr uint64 RVX_PIPELINE_HASH_OFFSET_BASIS = 0xcbf29ce484222325ull;
+    constexpr uint64 RVX_PIPELINE_HASH_PRIME = 0x100000001b3ull;
 
     uint64 AlignConstantBufferSize(uint64 size)
     {
         return (size + RVX_CONSTANT_BUFFER_ALIGNMENT - 1) & ~(RVX_CONSTANT_BUFFER_ALIGNMENT - 1);
+    }
+
+    void HashBytes(uint64& hash, const void* data, size_t size)
+    {
+        const auto* bytes = static_cast<const uint8*>(data);
+        for (size_t i = 0; i < size; ++i)
+        {
+            hash ^= bytes[i];
+            hash *= RVX_PIPELINE_HASH_PRIME;
+        }
+    }
+
+    template<typename T>
+    void HashValue(uint64& hash, const T& value)
+    {
+        HashBytes(hash, &value, sizeof(T));
+    }
+
+    void HashString(uint64& hash, const char* value)
+    {
+        if (!value)
+        {
+            uint32 zeroLength = 0;
+            HashValue(hash, zeroLength);
+            return;
+        }
+
+        uint32 length = static_cast<uint32>(std::strlen(value));
+        HashValue(hash, length);
+        HashBytes(hash, value, length);
+    }
+
+    void HashFloat(uint64& hash, float value)
+    {
+        if (value == 0.0f)
+        {
+            value = 0.0f;
+        }
+
+        uint32 bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        HashValue(hash, bits);
+    }
+
+    bool IsRequiredDefaultLitBinding(uint32 set, uint32 binding)
+    {
+        if ((set == 0 || set == 1) && binding == 0)
+        {
+            return true;
+        }
+
+        return set == 2 && binding <= 6;
+    }
+
+    bool BindingTypeMatches(RHIBindingType actual, RHIBindingType expected)
+    {
+        if (actual == expected)
+        {
+            return true;
+        }
+
+        return expected == RHIBindingType::DynamicUniformBuffer &&
+               actual == RHIBindingType::UniformBuffer;
     }
 } // namespace
 
@@ -33,6 +101,41 @@ PipelineCache::~PipelineCache()
     Shutdown();
 }
 
+void PipelineCache::SetConfig(const PipelineCacheConfig& config)
+{
+    if (m_initialized)
+    {
+        SetLastError("Cannot change PipelineCache config after initialization");
+        return;
+    }
+
+    m_config = config;
+    m_renderTargetFormat = config.renderTargetFormat;
+}
+
+uint64 PipelineCache::GetPipelineStateHashForVariant(MaterialPipelineVariant variant) const
+{
+    switch (variant)
+    {
+        case MaterialPipelineVariant::Masked:
+            return m_stats.maskedPipelineHash;
+        case MaterialPipelineVariant::Transparent:
+            return m_stats.transparentPipelineHash;
+        case MaterialPipelineVariant::Opaque:
+        default:
+            return m_stats.opaquePipelineHash;
+    }
+}
+
+void PipelineCache::SetLastError(std::string message)
+{
+    m_lastError = std::move(message);
+    if (!m_lastError.empty())
+    {
+        RVX_CORE_ERROR("PipelineCache: {}", m_lastError);
+    }
+}
+
 bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
 {
     if (m_initialized)
@@ -41,9 +144,13 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
         return true;
     }
 
+    m_lastError.clear();
+    m_stats = {};
+    m_pipelineCache.clear();
+
     if (!device)
     {
-        RVX_CORE_ERROR("PipelineCache: Invalid device");
+        SetLastError("Invalid device");
         return false;
     }
 
@@ -57,38 +164,47 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
 
     if (!CompileShaders())
     {
-        RVX_CORE_ERROR("PipelineCache: Failed to compile shaders");
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to compile shaders");
+        }
         return false;
     }
 
     if (!CreatePipelineLayout())
     {
-        RVX_CORE_ERROR("PipelineCache: Failed to create pipeline layout");
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create pipeline layout");
+        }
         return false;
     }
 
     if (!CreateObjectConstantBuffer())
     {
-        RVX_CORE_ERROR("PipelineCache: Failed to create object constant buffer");
+        SetLastError("Failed to create object constant buffer");
         return false;
     }
 
     if (!CreateViewConstantBuffer())
     {
-        RVX_CORE_ERROR("PipelineCache: Failed to create view constant buffer");
+        SetLastError("Failed to create view constant buffer");
         return false;
     }
 
     m_objectDescriptorSet = CreateObjectDescriptorSet();
     if (!m_objectDescriptorSet)
     {
-        RVX_CORE_ERROR("PipelineCache: Failed to create object descriptor set");
+        SetLastError("Failed to create object descriptor set");
         return false;
     }
 
     if (!CreatePipeline())
     {
-        RVX_CORE_ERROR("PipelineCache: Failed to create graphics pipeline");
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create graphics pipeline");
+        }
         return false;
     }
 
@@ -106,6 +222,7 @@ void PipelineCache::Shutdown()
     m_maskedPipeline.Reset();
     m_transparentPipeline.Reset();
     m_depthOnlyPipeline.Reset();
+    m_pipelineCache.clear();
     m_frameDescriptorSet.Reset();
     m_objectDescriptorSet.Reset();
     m_viewConstantBuffer.Reset();
@@ -133,7 +250,7 @@ bool PipelineCache::CompileShaders()
 
     if (!std::filesystem::exists(shaderPath))
     {
-        RVX_CORE_ERROR("PipelineCache: Shader file not found: {}", shaderPath);
+        SetLastError("Shader file not found: " + shaderPath);
 
         std::filesystem::path absPath = std::filesystem::absolute(shaderPath);
         RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
@@ -156,8 +273,12 @@ bool PipelineCache::CompileShaders()
     auto vsResult = m_shaderManager->LoadFromFile(m_device, vsDesc);
     if (!vsResult.compileResult.success)
     {
-        RVX_CORE_ERROR("PipelineCache: Failed to compile vertex shader: {}",
-                       vsResult.compileResult.errorMessage);
+        SetLastError("Failed to compile vertex shader: " + vsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!vsResult.shader)
+    {
+        SetLastError("Failed to create vertex shader");
         return false;
     }
     m_vertexShader = vsResult.shader;
@@ -170,8 +291,12 @@ bool PipelineCache::CompileShaders()
     auto psResult = m_shaderManager->LoadFromFile(m_device, psDesc);
     if (!psResult.compileResult.success)
     {
-        RVX_CORE_ERROR("PipelineCache: Failed to compile pixel shader: {}",
-                       psResult.compileResult.errorMessage);
+        SetLastError("Failed to compile pixel shader: " + psResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!psResult.shader)
+    {
+        SetLastError("Failed to create pixel shader");
         return false;
     }
     m_pixelShader = psResult.shader;
@@ -183,42 +308,20 @@ bool PipelineCache::CompileShaders()
 
 bool PipelineCache::CreatePipelineLayout()
 {
-    RHIDescriptorSetLayoutDesc frameLayoutDesc;
-    frameLayoutDesc.debugName = "DefaultFrameSetLayout";
-    frameLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Vertex | RHIShaderStage::Pixel);
-
-    RHIDescriptorSetLayoutDesc objectLayoutDesc;
-    objectLayoutDesc.debugName = "DefaultObjectSetLayout";
-    RHIBindingLayoutEntry objectEntry;
-    objectEntry.binding = 0;
-    objectEntry.type = RHIBindingType::DynamicUniformBuffer;
-    objectEntry.visibility = RHIShaderStage::Vertex;
-    objectEntry.isDynamic = true;
-    objectLayoutDesc.entries.push_back(objectEntry);
-
-    RHIDescriptorSetLayoutDesc materialLayoutDesc;
-    materialLayoutDesc.debugName = "DefaultMaterialSetLayout";
-    RHIBindingLayoutEntry materialEntry;
-    materialEntry.binding = 0;
-    materialEntry.type = RHIBindingType::DynamicUniformBuffer;
-    materialEntry.visibility = RHIShaderStage::Pixel;
-    materialEntry.isDynamic = true;
-    materialLayoutDesc.entries.push_back(materialEntry);
-    materialLayoutDesc.AddBinding(1, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-    materialLayoutDesc.AddBinding(2, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-    materialLayoutDesc.AddBinding(3, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-    materialLayoutDesc.AddBinding(4, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-    materialLayoutDesc.AddBinding(5, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-    materialLayoutDesc.AddBinding(6, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+    std::vector<RHIDescriptorSetLayoutDesc> layoutDescs;
+    if (!BuildReflectedDefaultLitLayouts(layoutDescs))
+    {
+        return false;
+    }
 
     m_setLayouts.resize(3);
-    m_setLayouts[0] = m_device->CreateDescriptorSetLayout(frameLayoutDesc);
-    m_setLayouts[1] = m_device->CreateDescriptorSetLayout(objectLayoutDesc);
-    m_setLayouts[2] = m_device->CreateDescriptorSetLayout(materialLayoutDesc);
+    m_setLayouts[0] = m_device->CreateDescriptorSetLayout(layoutDescs[0]);
+    m_setLayouts[1] = m_device->CreateDescriptorSetLayout(layoutDescs[1]);
+    m_setLayouts[2] = m_device->CreateDescriptorSetLayout(layoutDescs[2]);
 
     if (!m_setLayouts[0] || !m_setLayouts[1] || !m_setLayouts[2])
     {
-        RVX_CORE_ERROR("PipelineCache: Failed to create descriptor set layouts");
+        SetLastError("Failed to create descriptor set layouts");
         return false;
     }
 
@@ -231,12 +334,136 @@ bool PipelineCache::CreatePipelineLayout()
     m_pipelineLayout = m_device->CreatePipelineLayout(layoutDesc);
     if (!m_pipelineLayout)
     {
-        RVX_CORE_ERROR("PipelineCache: Failed to create pipeline layout");
+        SetLastError("Failed to create pipeline layout");
         return false;
     }
 
     RVX_CORE_DEBUG("PipelineCache: Created pipeline layout with {} set layouts", m_setLayouts.size());
     return true;
+}
+
+bool PipelineCache::BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSetLayoutDesc>& outLayouts)
+{
+    outLayouts.clear();
+
+    if (!m_vsCompileResult || !m_psCompileResult)
+    {
+        SetLastError("Shader compile results are missing");
+        return false;
+    }
+
+    if (m_vsCompileResult->reflection.resources.empty() &&
+        m_psCompileResult->reflection.resources.empty())
+    {
+        SetLastError("Shader reflection metadata is missing");
+        return false;
+    }
+
+    AutoPipelineLayout autoLayout = BuildAutoPipelineLayout({
+        {m_vsCompileResult->reflection, RHIShaderStage::Vertex},
+        {m_psCompileResult->reflection, RHIShaderStage::Pixel}
+    });
+
+    if (autoLayout.setLayouts.size() < 3)
+    {
+        SetLastError("DefaultLit reflection did not produce the required three descriptor sets");
+        return false;
+    }
+
+    outLayouts = std::move(autoLayout.setLayouts);
+    outLayouts.resize(3);
+    outLayouts[0].debugName = "DefaultFrameSetLayout";
+    outLayouts[1].debugName = "DefaultObjectSetLayout";
+    outLayouts[2].debugName = "DefaultMaterialSetLayout";
+
+    for (uint32 setIndex = 0; setIndex < static_cast<uint32>(outLayouts.size()); ++setIndex)
+    {
+        auto& entries = outLayouts[setIndex].entries;
+        for (auto& entry : entries)
+        {
+            if ((setIndex == 1 || setIndex == 2) &&
+                entry.binding == 0 &&
+                entry.type == RHIBindingType::UniformBuffer)
+            {
+                entry.type = RHIBindingType::DynamicUniformBuffer;
+                entry.isDynamic = true;
+            }
+
+            if (!IsRequiredDefaultLitBinding(setIndex, entry.binding))
+            {
+                RVX_CORE_WARN("PipelineCache: DefaultLit reflection includes optional set {} binding {}; leaving it in the layout",
+                              setIndex,
+                              entry.binding);
+            }
+        }
+
+        std::sort(entries.begin(), entries.end(),
+            [](const RHIBindingLayoutEntry& a, const RHIBindingLayoutEntry& b)
+            {
+                if (a.binding != b.binding)
+                    return a.binding < b.binding;
+                return static_cast<uint8>(a.type) < static_cast<uint8>(b.type);
+            });
+    }
+
+    return ValidateDefaultLitLayouts(outLayouts);
+}
+
+bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSetLayoutDesc>& layouts)
+{
+    if (layouts.size() < 3)
+    {
+        SetLastError("DefaultLit layout validation requires three descriptor sets");
+        return false;
+    }
+
+    auto requireBinding = [this, &layouts](uint32 set, uint32 binding, RHIBindingType expectedType) -> bool
+    {
+        const auto& entries = layouts[set].entries;
+        auto it = std::find_if(entries.begin(), entries.end(),
+            [binding](const RHIBindingLayoutEntry& entry)
+            {
+                return entry.binding == binding;
+            });
+
+        if (it == entries.end())
+        {
+            SetLastError("DefaultLit reflection missing required set " +
+                         std::to_string(set) + " binding " + std::to_string(binding));
+            return false;
+        }
+
+        if (!BindingTypeMatches(it->type, expectedType))
+        {
+            SetLastError("DefaultLit reflection incompatible type at set " +
+                         std::to_string(set) + " binding " + std::to_string(binding));
+            return false;
+        }
+
+        if (expectedType == RHIBindingType::DynamicUniformBuffer && !it->isDynamic)
+        {
+            SetLastError("DefaultLit dynamic binding is not marked dynamic at set " +
+                         std::to_string(set) + " binding " + std::to_string(binding));
+            return false;
+        }
+
+        return true;
+    };
+
+    if (!requireBinding(0, 0, RHIBindingType::UniformBuffer))
+        return false;
+    if (!requireBinding(1, 0, RHIBindingType::DynamicUniformBuffer))
+        return false;
+    if (!requireBinding(2, 0, RHIBindingType::DynamicUniformBuffer))
+        return false;
+
+    for (uint32 binding = 1; binding <= 5; ++binding)
+    {
+        if (!requireBinding(2, binding, RHIBindingType::SampledTexture))
+            return false;
+    }
+
+    return requireBinding(2, 6, RHIBindingType::Sampler);
 }
 
 void PipelineCache::BeginFrame()
@@ -355,33 +582,45 @@ RHIDescriptorSetRef PipelineCache::CreateObjectDescriptorSet()
 
 bool PipelineCache::CreatePipeline()
 {
-    m_opaquePipeline = CreateDefaultLitPipeline("DefaultOpaquePipeline",
-                                                RHIDepthStencilState::Default(),
-                                                RHIBlendState::Default());
+    m_opaquePipeline = GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Opaque,
+                                                     "DefaultOpaquePipeline",
+                                                     RHIDepthStencilState::Default(),
+                                                     RHIBlendState::Default());
     if (!m_opaquePipeline)
     {
-        RVX_CORE_ERROR("PipelineCache: Failed to create opaque pipeline");
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create opaque pipeline");
+        }
         return false;
     }
 
-    m_maskedPipeline = CreateDefaultLitPipeline("DefaultMaskedPipeline",
-                                                RHIDepthStencilState::Default(),
-                                                RHIBlendState::Default());
+    m_maskedPipeline = GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Masked,
+                                                     "DefaultMaskedPipeline",
+                                                     RHIDepthStencilState::Default(),
+                                                     RHIBlendState::Default());
     if (!m_maskedPipeline)
     {
-        RVX_CORE_ERROR("PipelineCache: Failed to create masked pipeline");
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create masked pipeline");
+        }
         return false;
     }
 
     RHIBlendState transparentBlend = RHIBlendState::Default();
     transparentBlend.renderTargets[0] = RHIRenderTargetBlendState::AlphaBlend();
 
-    m_transparentPipeline = CreateDefaultLitPipeline("DefaultTransparentPipeline",
-                                                     RHIDepthStencilState::ReadOnly(),
-                                                     transparentBlend);
+    m_transparentPipeline = GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Transparent,
+                                                          "DefaultTransparentPipeline",
+                                                          RHIDepthStencilState::ReadOnly(),
+                                                          transparentBlend);
     if (!m_transparentPipeline)
     {
-        RVX_CORE_ERROR("PipelineCache: Failed to create transparent pipeline");
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create transparent pipeline");
+        }
         return false;
     }
 
@@ -389,9 +628,65 @@ bool PipelineCache::CreatePipeline()
     return true;
 }
 
-RHIPipelineRef PipelineCache::CreateDefaultLitPipeline(const char* debugName,
-                                                       const RHIDepthStencilState& depthStencilState,
-                                                       const RHIBlendState& blendState)
+RHIPipelineRef PipelineCache::GetOrCreateDefaultLitPipeline(MaterialPipelineVariant variant,
+                                                            const char* debugName,
+                                                            const RHIDepthStencilState& depthStencilState,
+                                                            const RHIBlendState& blendState)
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildDefaultLitPipelineDesc(debugName, depthStencilState, blendState);
+    if (!pipelineDesc.vertexShader)
+    {
+        SetLastError("Cannot create pipeline without vertex shader");
+        return {};
+    }
+    if (!pipelineDesc.pixelShader)
+    {
+        SetLastError("Cannot create pipeline without pixel shader");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError("Cannot create pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.numRenderTargets == 0 || pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create pipeline with invalid render target format");
+        return {};
+    }
+    if (pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create pipeline with invalid depth stencil format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc, variant);
+    StoreVariantHash(variant, stateHash);
+    m_stats.lastPipelineStateHash = stateHash;
+
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create pipeline '" + std::string(debugName ? debugName : "") + "'");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildDefaultLitPipelineDesc(const char* debugName,
+                                                                   const RHIDepthStencilState& depthStencilState,
+                                                                   const RHIBlendState& blendState) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
 
@@ -414,10 +709,132 @@ RHIPipelineRef PipelineCache::CreateDefaultLitPipeline(const char* debugName,
 
     pipelineDesc.numRenderTargets = 1;
     pipelineDesc.renderTargetFormats[0] = m_renderTargetFormat;
-    pipelineDesc.depthStencilFormat = RHIFormat::D24_UNORM_S8_UINT;
+    pipelineDesc.depthStencilFormat = m_config.depthStencilFormat;
     pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
 
-    return m_device->CreateGraphicsPipeline(pipelineDesc);
+    return pipelineDesc;
+}
+
+uint64 PipelineCache::StoreVariantHash(MaterialPipelineVariant variant, uint64 hash)
+{
+    switch (variant)
+    {
+        case MaterialPipelineVariant::Masked:
+            m_stats.maskedPipelineHash = hash;
+            break;
+        case MaterialPipelineVariant::Transparent:
+            m_stats.transparentPipelineHash = hash;
+            break;
+        case MaterialPipelineVariant::Opaque:
+        default:
+            m_stats.opaquePipelineHash = hash;
+            break;
+    }
+
+    return hash;
+}
+
+uint64 PipelineCache::ComputeShaderHash(const ShaderCompileResult* result) const
+{
+    uint64 hash = RVX_PIPELINE_HASH_OFFSET_BASIS;
+    if (!result)
+    {
+        return hash;
+    }
+
+    HashValue(hash, result->sourceInfo.combinedHash);
+    HashValue(hash, result->permutationHash);
+
+    const uint64 bytecodeSize = static_cast<uint64>(result->bytecode.size());
+    HashValue(hash, bytecodeSize);
+    if (!result->bytecode.empty())
+    {
+        HashBytes(hash, result->bytecode.data(), result->bytecode.size());
+    }
+
+    HashString(hash, result->glslSource.c_str());
+    HashString(hash, result->mslSource.c_str());
+    HashString(hash, result->mslEntryPoint.c_str());
+    HashValue(hash, result->glslVersion);
+
+    return hash;
+}
+
+uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& desc,
+                                               MaterialPipelineVariant variant) const
+{
+    uint64 hash = RVX_PIPELINE_HASH_OFFSET_BASIS;
+
+    const RHIBackendType backend = m_device ? m_device->GetBackendType() : RHIBackendType::None;
+    HashValue(hash, backend);
+    HashValue(hash, variant);
+    HashValue(hash, ComputeShaderHash(m_vsCompileResult.get()));
+    HashValue(hash, ComputeShaderHash(m_psCompileResult.get()));
+
+    HashValue(hash, desc.tessellationControlPoints);
+    HashValue(hash, desc.primitiveTopology);
+    HashValue(hash, desc.numRenderTargets);
+    for (uint32 i = 0; i < RVX_MAX_RENDER_TARGETS; ++i)
+    {
+        HashValue(hash, desc.renderTargetFormats[i]);
+    }
+    HashValue(hash, desc.depthStencilFormat);
+    HashValue(hash, desc.sampleCount);
+
+    HashValue(hash, desc.rasterizerState.fillMode);
+    HashValue(hash, desc.rasterizerState.cullMode);
+    HashValue(hash, desc.rasterizerState.frontFace);
+    HashFloat(hash, desc.rasterizerState.depthBias);
+    HashFloat(hash, desc.rasterizerState.depthBiasClamp);
+    HashFloat(hash, desc.rasterizerState.slopeScaledDepthBias);
+    HashValue(hash, desc.rasterizerState.depthClipEnable);
+    HashValue(hash, desc.rasterizerState.multisampleEnable);
+    HashValue(hash, desc.rasterizerState.antialiasedLineEnable);
+    HashValue(hash, desc.rasterizerState.conservativeRasterEnable);
+
+    HashValue(hash, desc.depthStencilState.depthTestEnable);
+    HashValue(hash, desc.depthStencilState.depthWriteEnable);
+    HashValue(hash, desc.depthStencilState.depthCompareOp);
+    HashValue(hash, desc.depthStencilState.stencilTestEnable);
+    HashValue(hash, desc.depthStencilState.stencilReadMask);
+    HashValue(hash, desc.depthStencilState.stencilWriteMask);
+    HashValue(hash, desc.depthStencilState.frontFace.failOp);
+    HashValue(hash, desc.depthStencilState.frontFace.depthFailOp);
+    HashValue(hash, desc.depthStencilState.frontFace.passOp);
+    HashValue(hash, desc.depthStencilState.frontFace.compareOp);
+    HashValue(hash, desc.depthStencilState.backFace.failOp);
+    HashValue(hash, desc.depthStencilState.backFace.depthFailOp);
+    HashValue(hash, desc.depthStencilState.backFace.passOp);
+    HashValue(hash, desc.depthStencilState.backFace.compareOp);
+
+    HashValue(hash, desc.blendState.alphaToCoverageEnable);
+    HashValue(hash, desc.blendState.independentBlendEnable);
+    for (const auto& target : desc.blendState.renderTargets)
+    {
+        HashValue(hash, target.blendEnable);
+        HashValue(hash, target.srcColorBlend);
+        HashValue(hash, target.dstColorBlend);
+        HashValue(hash, target.colorBlendOp);
+        HashValue(hash, target.srcAlphaBlend);
+        HashValue(hash, target.dstAlphaBlend);
+        HashValue(hash, target.alphaBlendOp);
+        HashValue(hash, target.colorWriteMask);
+    }
+
+    const uint32 inputElementCount = static_cast<uint32>(desc.inputLayout.elements.size());
+    HashValue(hash, inputElementCount);
+    for (const auto& element : desc.inputLayout.elements)
+    {
+        HashString(hash, element.semanticName);
+        HashValue(hash, element.semanticIndex);
+        HashValue(hash, element.format);
+        HashValue(hash, element.inputSlot);
+        HashValue(hash, element.alignedByteOffset);
+        HashValue(hash, element.perInstance);
+        HashValue(hash, element.instanceDataStepRate);
+    }
+
+    return hash;
 }
 
 uint64 PipelineCache::AllocateObjectConstantSlot()

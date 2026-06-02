@@ -479,7 +479,7 @@ ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderHone
 ### R-SP: R2 ShaderCompiler and Reflection
 
 **Date:** 2026-05-31
-**Commit:** pending
+**Commit:** `91b2ddb`
 **Spark plan review agent:** `019e83b0-fc20-7cf1-ab15-8bf0499974e1`
 **Spark code review agent:** `019e83c4-60f0-71c1-8ad4-f8cbc4b368e1`
 
@@ -570,6 +570,96 @@ git diff --check
 - OpenGL and permutation paths now select GLSL source; Metal source selection is handled similarly but not runtime-validated on this Windows machine.
 - Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R2 commit.
 - Next stage must reread the render-first plan and create its own implementation plan before code changes.
+
+---
+
+### R-SP: R3a Pipeline and PSO Foundation Core
+
+**Date:** 2026-06-02
+**Commit:** pending
+**Spark plan review agent:** `019e88bb-d3c1-76d2-8a0a-748afeca43a8`
+**Spark code review agent:** `019e88c4-2f57-75f2-9051-bfc67229ae28`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-02-r3-pipeline-pso-foundation-plan.md`
+- Source roadmap: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: `8. R3 - Pipeline and PSO Foundation`
+- Lines checked: R3 roadmap section and R3a/R3b split in the R3 plan checked before implementation; R3a scope rechecked before review/commit
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R2 ShaderCompiler and Reflection
+- Evidence: R2 committed as `91b2ddb`; R3 implementation plan passed Spark plan review before code changes
+
+**Approved scope:**
+
+- Add `PipelineCacheValidation` and deterministic fake RHI coverage for PipelineCache behavior.
+- Add PipelineCache diagnostics/config surface, `GetLastError()`, pipeline state hash stats, and visible initialization failure reasons.
+- Build DefaultLit descriptor set layouts from shader reflection metadata and validate the required set/binding contract.
+- Convert object and material constant-buffer bindings to dynamic uniform bindings for runtime dynamic-offset usage.
+- Route opaque, masked, and transparent default-lit pipeline variants through a keyed `GetOrCreateDefaultLitPipeline()` helper.
+- Compute deterministic PSO hashes covering backend, shader inputs/compiled outputs, variant, formats, fixed-function state, topology, and input layout.
+
+**Out of scope:**
+
+- PipelineCache manifest save/load/invalidation.
+- Switching the runtime depth baseline to D32F or enabling reverse-Z by default.
+- SceneRenderer depth target changes.
+- Native backend pipeline cache blobs.
+- Material binding redesign, RenderGraph pass completion, RenderProxy, visual golden validation, or ModelViewer final validation.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-02-r3-pipeline-pso-foundation-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/PipelineCacheValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --preset local_win_x64_debug
+cmake --build build/win_x64_debug --config Debug --target PipelineCacheValidation
+build\win_x64_debug\Tests\Debug\PipelineCacheValidation.exe
+cmake --build build/win_x64_debug --config Debug --target PipelineCacheValidation MaterialSystemValidation DX12Validation
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|MaterialSystemValidation|DX12Validation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `PipelineCacheValidation`: 7/7
+  - Filtered CTest: 27/27
+- Visual gate: N/A
+
+**Artifacts:**
+
+- Logs: terminal CMake/build/test output; Spark plan and code review messages
+- Screenshots: N/A
+- Diffs: R3a working tree diff before commit
+
+**Spark plan review result:**
+
+- Verdict: PASS after R3 was split into R3a/R3b.
+- Blockers resolved: clarified required vs optional reflection bindings, hash canonicalization, corrupt/missing manifest behavior, projection migration deferral to R7, and the R3a/R3b split.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: N/A
+- Non-blocking follow-ups adopted: `Initialize()` no longer clears stats/cache on the already-initialized early-return path; shader hash now includes permutation hash and compiled bytecode/source outputs in addition to source dependency hash; R3 plan now marks D32F/reverse-Z defaults as R3b delivery.
+- Remaining non-blocking follow-ups: add explicit malformed-reflection tests and a direct cache-hit regression once a public same-state creation path exists.
+
+**Notes / follow-ups:**
+
+- `PipelineCacheConfig` exposes manifest and depth/reverse-Z fields in R3a, but manifest behavior and D32F/reverse-Z default switching remain R3b scope.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R3a commit.
+- Next sub-stage is R3b and must reread the R3 plan, pass Spark plan review, implement, pass validation, pass Spark code review, update this log, and commit before R4.
 
 ---
 
