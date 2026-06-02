@@ -68,7 +68,11 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
 
     // Begin render pass with depth-only attachment (no color)
     RHIRenderPassDesc rpDesc;
-    rpDesc.SetDepthStencil(m_depthTargetView, RHILoadOp::Clear, RHIStoreOp::Store, 1.0f, 0);
+    rpDesc.SetDepthStencil(m_depthTargetView,
+                           RHILoadOp::Clear,
+                           RHIStoreOp::Store,
+                           m_pipelineCache->GetDepthClearValue(),
+                           0);
 
     ctx.BeginRenderPass(rpDesc);
 

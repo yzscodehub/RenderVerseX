@@ -170,8 +170,10 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
 
     if (m_depthTargetView)
     {
+        const float clearDepth = m_pipelineCache ? m_pipelineCache->GetDepthClearValue()
+                                                 : PipelineCache::GetDepthClearValue(false);
         rpDesc.SetDepthStencil(m_depthTargetView, RHILoadOp::Clear, RHIStoreOp::Store,
-                               1.0f, 0);
+                               clearDepth, 0);
     }
 
     ctx.BeginRenderPass(rpDesc);

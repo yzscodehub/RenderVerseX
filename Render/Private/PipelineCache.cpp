@@ -13,6 +13,9 @@
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <limits>
+#include <unordered_map>
 #include <utility>
 
 namespace RVX
@@ -24,6 +27,22 @@ namespace
     constexpr uint64 RVX_MAX_DRAW_CONSTANTS_PER_FRAME = 8192;
     constexpr uint64 RVX_PIPELINE_HASH_OFFSET_BASIS = 0xcbf29ce484222325ull;
     constexpr uint64 RVX_PIPELINE_HASH_PRIME = 0x100000001b3ull;
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 1;
+    constexpr const char* RVX_PIPELINE_MANIFEST_MAGIC = "RVX_PIPELINE_CACHE_MANIFEST";
+
+    struct PipelineCacheManifest
+    {
+        uint32 version = RVX_PIPELINE_MANIFEST_VERSION;
+        uint32 backend = 0;
+        uint64 vertexShaderHash = 0;
+        uint64 pixelShaderHash = 0;
+        uint32 renderTargetFormat = 0;
+        uint32 depthStencilFormat = 0;
+        uint32 reverseZ = 0;
+        uint64 opaquePipelineHash = 0;
+        uint64 maskedPipelineHash = 0;
+        uint64 transparentPipelineHash = 0;
+    };
 
     uint64 AlignConstantBufferSize(uint64 size)
     {
@@ -92,6 +111,228 @@ namespace
         return expected == RHIBindingType::DynamicUniformBuffer &&
                actual == RHIBindingType::UniformBuffer;
     }
+
+    std::filesystem::path GetManifestPath(const std::filesystem::path& directory)
+    {
+        return directory / PipelineCache::GetManifestFileName();
+    }
+
+    bool IsKnownManifestField(const std::string& key)
+    {
+        return key == "version" ||
+               key == "backend" ||
+               key == "vertexShaderHash" ||
+               key == "pixelShaderHash" ||
+               key == "renderTargetFormat" ||
+               key == "depthStencilFormat" ||
+               key == "reverseZ" ||
+               key == "opaquePipelineHash" ||
+               key == "maskedPipelineHash" ||
+               key == "transparentPipelineHash";
+    }
+
+    bool ParseManifestUint64(const std::string& value, uint64& out)
+    {
+        try
+        {
+            size_t parsed = 0;
+            const uint64 parsedValue = std::stoull(value, &parsed, 10);
+            if (parsed != value.size())
+            {
+                return false;
+            }
+
+            out = parsedValue;
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    bool ParseManifestUint32(const std::string& value, uint32& out)
+    {
+        uint64 parsed = 0;
+        if (!ParseManifestUint64(value, parsed) ||
+            parsed > static_cast<uint64>(std::numeric_limits<uint32>::max()))
+        {
+            return false;
+        }
+
+        out = static_cast<uint32>(parsed);
+        return true;
+    }
+
+    bool ReadRequiredManifestUint32(const std::unordered_map<std::string, std::string>& fields,
+                                    const char* key,
+                                    uint32& out)
+    {
+        auto it = fields.find(key);
+        return it != fields.end() && ParseManifestUint32(it->second, out);
+    }
+
+    bool ReadRequiredManifestUint64(const std::unordered_map<std::string, std::string>& fields,
+                                    const char* key,
+                                    uint64& out)
+    {
+        auto it = fields.find(key);
+        return it != fields.end() && ParseManifestUint64(it->second, out);
+    }
+
+    bool ReadPipelineManifest(const std::filesystem::path& path, PipelineCacheManifest& manifest)
+    {
+        std::ifstream file(path);
+        if (!file)
+        {
+            return false;
+        }
+
+        std::string line;
+        if (!std::getline(file, line) || line != RVX_PIPELINE_MANIFEST_MAGIC)
+        {
+            return false;
+        }
+
+        std::unordered_map<std::string, std::string> fields;
+        while (std::getline(file, line))
+        {
+            if (line.empty())
+            {
+                return false;
+            }
+
+            const size_t separator = line.find('=');
+            if (separator == std::string::npos || separator == 0 || separator + 1 >= line.size())
+            {
+                return false;
+            }
+
+            std::string key = line.substr(0, separator);
+            std::string value = line.substr(separator + 1);
+            if (!IsKnownManifestField(key) || fields.find(key) != fields.end())
+            {
+                return false;
+            }
+
+            fields.emplace(std::move(key), std::move(value));
+        }
+
+        if (fields.size() != 10)
+        {
+            return false;
+        }
+
+        if (!ReadRequiredManifestUint32(fields, "version", manifest.version) ||
+            !ReadRequiredManifestUint32(fields, "backend", manifest.backend) ||
+            !ReadRequiredManifestUint64(fields, "vertexShaderHash", manifest.vertexShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "pixelShaderHash", manifest.pixelShaderHash) ||
+            !ReadRequiredManifestUint32(fields, "renderTargetFormat", manifest.renderTargetFormat) ||
+            !ReadRequiredManifestUint32(fields, "depthStencilFormat", manifest.depthStencilFormat) ||
+            !ReadRequiredManifestUint32(fields, "reverseZ", manifest.reverseZ) ||
+            !ReadRequiredManifestUint64(fields, "opaquePipelineHash", manifest.opaquePipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "maskedPipelineHash", manifest.maskedPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "transparentPipelineHash", manifest.transparentPipelineHash))
+        {
+            return false;
+        }
+
+        return manifest.reverseZ <= 1;
+    }
+
+    bool WritePipelineManifest(const std::filesystem::path& path, const PipelineCacheManifest& manifest)
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(path.parent_path(), ec);
+        if (ec)
+        {
+            return false;
+        }
+
+        const std::filesystem::path tempPath = path.parent_path() / (path.filename().string() + ".tmp");
+        {
+            std::ofstream file(tempPath, std::ios::trunc);
+            if (!file)
+            {
+                return false;
+            }
+
+            file << RVX_PIPELINE_MANIFEST_MAGIC << '\n';
+            file << "version=" << manifest.version << '\n';
+            file << "backend=" << manifest.backend << '\n';
+            file << "vertexShaderHash=" << manifest.vertexShaderHash << '\n';
+            file << "pixelShaderHash=" << manifest.pixelShaderHash << '\n';
+            file << "renderTargetFormat=" << manifest.renderTargetFormat << '\n';
+            file << "depthStencilFormat=" << manifest.depthStencilFormat << '\n';
+            file << "reverseZ=" << manifest.reverseZ << '\n';
+            file << "opaquePipelineHash=" << manifest.opaquePipelineHash << '\n';
+            file << "maskedPipelineHash=" << manifest.maskedPipelineHash << '\n';
+            file << "transparentPipelineHash=" << manifest.transparentPipelineHash << '\n';
+            if (!file)
+            {
+                return false;
+            }
+        }
+
+        const std::filesystem::path backupPath = path.parent_path() / (path.filename().string() + ".bak");
+        bool hasBackup = false;
+        if (std::filesystem::exists(path, ec))
+        {
+            std::filesystem::remove(backupPath, ec);
+            if (ec)
+            {
+                std::filesystem::remove(tempPath, ec);
+                return false;
+            }
+
+            std::filesystem::rename(path, backupPath, ec);
+            if (ec)
+            {
+                std::filesystem::remove(tempPath, ec);
+                return false;
+            }
+            hasBackup = true;
+        }
+        else if (ec)
+        {
+            std::filesystem::remove(tempPath, ec);
+            return false;
+        }
+
+        ec.clear();
+        std::filesystem::rename(tempPath, path, ec);
+        if (ec)
+        {
+            std::filesystem::remove(tempPath, ec);
+            if (hasBackup)
+            {
+                ec.clear();
+                std::filesystem::rename(backupPath, path, ec);
+            }
+            return false;
+        }
+
+        if (hasBackup)
+        {
+            std::filesystem::remove(backupPath, ec);
+        }
+
+        return true;
+    }
+
+    bool ManifestsMatch(const PipelineCacheManifest& a, const PipelineCacheManifest& b)
+    {
+        return a.version == b.version &&
+               a.backend == b.backend &&
+               a.vertexShaderHash == b.vertexShaderHash &&
+               a.pixelShaderHash == b.pixelShaderHash &&
+               a.renderTargetFormat == b.renderTargetFormat &&
+               a.depthStencilFormat == b.depthStencilFormat &&
+               a.reverseZ == b.reverseZ &&
+               a.opaquePipelineHash == b.opaquePipelineHash &&
+               a.maskedPipelineHash == b.maskedPipelineHash &&
+               a.transparentPipelineHash == b.transparentPipelineHash;
+    }
 } // namespace
 
 PipelineCache::PipelineCache() = default;
@@ -134,6 +375,14 @@ void PipelineCache::SetLastError(std::string message)
     {
         RVX_CORE_ERROR("PipelineCache: {}", m_lastError);
     }
+}
+
+RHIDepthStencilState PipelineCache::BuildDepthStencilState(bool reverseZ, bool depthWrite)
+{
+    RHIDepthStencilState state = RHIDepthStencilState::Default();
+    state.depthWriteEnable = depthWrite;
+    state.depthCompareOp = reverseZ ? RHICompareOp::GreaterEqual : RHICompareOp::Less;
+    return state;
 }
 
 bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
@@ -207,6 +456,8 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
         }
         return false;
     }
+
+    ProcessPipelineManifest();
 
     m_initialized = true;
     RVX_CORE_DEBUG("PipelineCache initialized");
@@ -466,6 +717,60 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
     return requireBinding(2, 6, RHIBindingType::Sampler);
 }
 
+void PipelineCache::ProcessPipelineManifest()
+{
+    if (m_config.manifestDirectory.empty())
+    {
+        return;
+    }
+
+    PipelineCacheManifest expected;
+    expected.version = RVX_PIPELINE_MANIFEST_VERSION;
+    expected.backend = static_cast<uint32>(m_device ? m_device->GetBackendType() : RHIBackendType::None);
+    expected.vertexShaderHash = ComputeShaderHash(m_vsCompileResult.get());
+    expected.pixelShaderHash = ComputeShaderHash(m_psCompileResult.get());
+    expected.renderTargetFormat = static_cast<uint32>(m_renderTargetFormat);
+    expected.depthStencilFormat = static_cast<uint32>(m_config.depthStencilFormat);
+    expected.reverseZ = m_config.reverseZ ? 1u : 0u;
+    expected.opaquePipelineHash = m_stats.opaquePipelineHash;
+    expected.maskedPipelineHash = m_stats.maskedPipelineHash;
+    expected.transparentPipelineHash = m_stats.transparentPipelineHash;
+
+    const std::filesystem::path manifestPath = GetManifestPath(m_config.manifestDirectory);
+    std::error_code ec;
+    const bool manifestExists = std::filesystem::exists(manifestPath, ec);
+    if (ec)
+    {
+        RVX_CORE_WARN("PipelineCache: Could not inspect manifest '{}': {}",
+                      manifestPath.string(),
+                      ec.message());
+    }
+    else if (manifestExists)
+    {
+        m_stats.manifestLoaded = true;
+
+        PipelineCacheManifest loaded;
+        if (ReadPipelineManifest(manifestPath, loaded) && ManifestsMatch(loaded, expected))
+        {
+            m_stats.manifestValid = true;
+        }
+        else
+        {
+            m_stats.manifestInvalidated = true;
+            RVX_CORE_WARN("PipelineCache: Manifest '{}' is stale or invalid; regenerating metadata",
+                          manifestPath.string());
+        }
+    }
+
+    if (!m_stats.manifestValid)
+    {
+        if (!WritePipelineManifest(manifestPath, expected))
+        {
+            RVX_CORE_WARN("PipelineCache: Failed to write manifest '{}'", manifestPath.string());
+        }
+    }
+}
+
 void PipelineCache::BeginFrame()
 {
     m_objectConstantCursor = 0;
@@ -582,9 +887,12 @@ RHIDescriptorSetRef PipelineCache::CreateObjectDescriptorSet()
 
 bool PipelineCache::CreatePipeline()
 {
+    const RHIDepthStencilState writableDepthState = BuildDepthStencilState(m_config.reverseZ, true);
+    const RHIDepthStencilState readOnlyDepthState = BuildDepthStencilState(m_config.reverseZ, false);
+
     m_opaquePipeline = GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Opaque,
                                                      "DefaultOpaquePipeline",
-                                                     RHIDepthStencilState::Default(),
+                                                     writableDepthState,
                                                      RHIBlendState::Default());
     if (!m_opaquePipeline)
     {
@@ -597,7 +905,7 @@ bool PipelineCache::CreatePipeline()
 
     m_maskedPipeline = GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Masked,
                                                      "DefaultMaskedPipeline",
-                                                     RHIDepthStencilState::Default(),
+                                                     writableDepthState,
                                                      RHIBlendState::Default());
     if (!m_maskedPipeline)
     {
@@ -613,7 +921,7 @@ bool PipelineCache::CreatePipeline()
 
     m_transparentPipeline = GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Transparent,
                                                           "DefaultTransparentPipeline",
-                                                          RHIDepthStencilState::ReadOnly(),
+                                                          readOnlyDepthState,
                                                           transparentBlend);
     if (!m_transparentPipeline)
     {

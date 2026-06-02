@@ -576,7 +576,7 @@ git diff --check
 ### R-SP: R3a Pipeline and PSO Foundation Core
 
 **Date:** 2026-06-02
-**Commit:** pending
+**Commit:** `17204a9`
 **Spark plan review agent:** `019e88bb-d3c1-76d2-8a0a-748afeca43a8`
 **Spark code review agent:** `019e88c4-2f57-75f2-9051-bfc67229ae28`
 
@@ -660,6 +660,105 @@ git diff --check
 - `PipelineCacheConfig` exposes manifest and depth/reverse-Z fields in R3a, but manifest behavior and D32F/reverse-Z default switching remain R3b scope.
 - Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R3a commit.
 - Next sub-stage is R3b and must reread the R3 plan, pass Spark plan review, implement, pass validation, pass Spark code review, update this log, and commit before R4.
+
+---
+
+### R-SP: R3b Pipeline Manifest and Depth Baseline
+
+**Date:** 2026-06-02
+**Commit:** pending
+**Spark plan review agent:** `019e88cb-0cf5-7f62-94ed-e24e456ba6cc`
+**Spark code review agent:** `019e88d2-5b3d-7e72-8163-33e744f2ded2`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-02-r3b-pipeline-manifest-depth-plan.md`
+- Parent plan: `Docs/superpowers/specs/2026-06-02-r3-pipeline-pso-foundation-plan.md`
+- Source roadmap: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: `8. R3 - Pipeline and PSO Foundation`
+- Lines checked: R3b plan sections 1-7 checked before implementation; scope and validation sections checked again before review/commit
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R3a Pipeline and PSO Foundation Core
+- Evidence: R3a committed as `17204a9`; R3b implementation plan passed Spark plan review before code changes
+
+**Approved scope:**
+
+- Add strict PipelineCache engine-side manifest save/load/invalidation metadata.
+- Persist only engine-visible PSO inputs and state hashes, not native backend pipeline blobs.
+- Treat missing manifests as cold init; treat stale, corrupt, malformed, or version/config mismatched manifests as visible invalidation.
+- Use temp/backup/restore manifest writes and keep manifest write failure non-fatal after successful runtime PSO creation.
+- Switch PipelineCache and SceneRenderer default depth format to `RHIFormat::D32_FLOAT`.
+- Add explicit forward-Z/reverse-Z depth-state and clear-depth helpers.
+- Keep forward-Z as the runtime default; make reverse-Z opt-in and test-covered until R7 projection migration.
+- Route OpaquePass and DepthPrepass scene clear-depth values through PipelineCache clear-depth convention.
+
+**Out of scope:**
+
+- Native backend pipeline cache blobs.
+- Reverse-Z runtime default switch or projection/camera migration.
+- Shadow-map depth convention migration.
+- Visual golden validation or ModelViewer final validation.
+- RenderGraph pass completion, RenderProxy, Material binding redesign, or Asset pipeline work.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-02-r3b-pipeline-manifest-depth-plan.md`
+- `Docs/superpowers/specs/2026-06-02-r3-pipeline-pso-foundation-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target PipelineCacheValidation
+build\win_x64_debug\Tests\Debug\PipelineCacheValidation.exe
+cmake --build build/win_x64_debug --config Debug --target PipelineCacheValidation MaterialSystemValidation DX12Validation RenderHonestyValidation VulkanValidation
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|MaterialSystemValidation|DX12Validation"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderHonestyValidation|VulkanValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `PipelineCacheValidation`: 15/15
+  - Required filtered CTest: 35/35
+  - Optional filtered CTest: 37/37
+- Visual gate: N/A
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan and code review messages
+- Screenshots: N/A
+- Diffs: R3b working tree diff before commit
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: atomic-style manifest writes with backup/restore, non-fatal manifest write failure coverage, and explicit phase-log evidence for manifest validity/invalidation.
+
+**Spark code review result:**
+
+- Verdict: PASS after final delta review.
+- Blockers resolved: N/A
+- Non-blocking follow-ups adopted: manifest replacement now preserves a `.bak` backup until new manifest rename succeeds; parser rejects non-boolean `reverseZ` values and tests cover that invalidation path.
+- Remaining non-blocking follow-ups: add diagnostics if backup restoration itself fails; replace string-based manifest mutation in tests with a field parser if the manifest format evolves.
+
+**Notes / follow-ups:**
+
+- Reverse-Z remains opt-in because the current camera/projection path is still forward-Z; R7 owns projection migration and visual acceptance.
+- ShadowPass keeps its existing shadow depth clear convention until the shadow projection path is migrated deliberately.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R3b commit.
+- Next stage must reread the render-first plan, create/confirm its implementation plan, pass Spark plan review, implement, pass validation, pass Spark code review, update this log, and commit before moving on.
 
 ---
 

@@ -54,7 +54,7 @@ namespace RVX
     struct PipelineCacheConfig
     {
         RHIFormat renderTargetFormat = RHIFormat::RGBA8_UNORM;
-        RHIFormat depthStencilFormat = RHIFormat::D24_UNORM_S8_UINT;
+        RHIFormat depthStencilFormat = RHIFormat::D32_FLOAT;
         bool reverseZ = false;
         std::filesystem::path manifestDirectory;
     };
@@ -120,6 +120,12 @@ namespace RVX
         const std::string& GetLastError() const { return m_lastError; }
 
         uint64 GetPipelineStateHashForVariant(MaterialPipelineVariant variant) const;
+
+        static constexpr const char* GetManifestFileName() { return "PipelineCacheManifest.txt"; }
+        static constexpr RHIFormat GetDefaultDepthStencilFormat() { return RHIFormat::D32_FLOAT; }
+        static constexpr float GetDepthClearValue(bool reverseZ) { return reverseZ ? 0.0f : 1.0f; }
+        static RHIDepthStencilState BuildDepthStencilState(bool reverseZ, bool depthWrite);
+        float GetDepthClearValue() const { return GetDepthClearValue(m_config.reverseZ); }
 
         // =====================================================================
         // Pipeline Access
@@ -261,6 +267,7 @@ namespace RVX
         uint64 AllocateObjectConstantSlot();
         bool BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSetLayoutDesc>& outLayouts);
         bool ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSetLayoutDesc>& layouts);
+        void ProcessPipelineManifest();
         void SetLastError(std::string message);
         uint64 ComputePipelineStateHash(const RHIGraphicsPipelineDesc& desc, MaterialPipelineVariant variant) const;
         uint64 ComputeShaderHash(const ShaderCompileResult* result) const;

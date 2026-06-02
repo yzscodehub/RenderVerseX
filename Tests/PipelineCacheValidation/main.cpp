@@ -8,6 +8,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -261,6 +262,28 @@ namespace
         auto shaderDir = FindShaderDirectory();
         return !shaderDir.empty();
     }
+
+    void WriteTextFile(const fs::path& path, const std::string& contents)
+    {
+        fs::create_directories(path.parent_path());
+        std::ofstream file(path, std::ios::trunc);
+        file << contents;
+    }
+
+    std::string ReadTextFile(const fs::path& path)
+    {
+        std::ifstream file(path);
+        std::ostringstream contents;
+        contents << file.rdbuf();
+        return contents.str();
+    }
+
+    RVX::PipelineCacheConfig ConfigWithManifest(const fs::path& manifestDirectory)
+    {
+        RVX::PipelineCacheConfig config;
+        config.manifestDirectory = manifestDirectory;
+        return config;
+    }
 }
 
 TEST_F(PipelineCacheValidationFixture, NullDeviceFailsWithVisibleError)
@@ -385,6 +408,213 @@ TEST_F(PipelineCacheValidationFixture, RenderTargetFormatChangesPipelineHash)
               secondCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque));
     ASSERT_FALSE(secondDevice.capturedGraphicsPipelines.empty());
     EXPECT_EQ(secondDevice.capturedGraphicsPipelines.front().renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
+}
+
+TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    EXPECT_EQ(cache.GetConfig().depthStencilFormat, RVX::RHIFormat::D32_FLOAT);
+    EXPECT_EQ(RVX::PipelineCache::GetDefaultDepthStencilFormat(), RVX::RHIFormat::D32_FLOAT);
+    EXPECT_EQ(cache.GetDepthClearValue(), 1.0f);
+
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 3u);
+    const auto& opaqueDesc = device.capturedGraphicsPipelines[0];
+    const auto& transparentDesc = device.capturedGraphicsPipelines[2];
+
+    EXPECT_EQ(opaqueDesc.depthStencilFormat, RVX::RHIFormat::D32_FLOAT);
+    EXPECT_EQ(opaqueDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::Less);
+    EXPECT_TRUE(opaqueDesc.depthStencilState.depthWriteEnable);
+
+    EXPECT_EQ(transparentDesc.depthStencilFormat, RVX::RHIFormat::D32_FLOAT);
+    EXPECT_EQ(transparentDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::Less);
+    EXPECT_FALSE(transparentDesc.depthStencilState.depthWriteEnable);
+}
+
+TEST_F(PipelineCacheValidationFixture, ReverseZOptInChangesDepthCompareAndClearConvention)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    RVX::PipelineCacheConfig config;
+    config.reverseZ = true;
+    cache.SetConfig(config);
+
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+    EXPECT_EQ(cache.GetDepthClearValue(), 0.0f);
+    EXPECT_EQ(RVX::PipelineCache::GetDepthClearValue(true), 0.0f);
+    EXPECT_EQ(RVX::PipelineCache::GetDepthClearValue(false), 1.0f);
+
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 3u);
+    const auto& opaqueDesc = device.capturedGraphicsPipelines[0];
+    const auto& transparentDesc = device.capturedGraphicsPipelines[2];
+
+    EXPECT_EQ(opaqueDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::GreaterEqual);
+    EXPECT_TRUE(opaqueDesc.depthStencilState.depthWriteEnable);
+
+    EXPECT_EQ(transparentDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::GreaterEqual);
+    EXPECT_FALSE(transparentDesc.depthStencilState.depthWriteEnable);
+}
+
+TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    TempDirectory temp("rvx_pipeline_manifest_cold");
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    cache.SetConfig(ConfigWithManifest(temp.Path()));
+
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+    EXPECT_FALSE(cache.GetStats().manifestLoaded);
+    EXPECT_FALSE(cache.GetStats().manifestValid);
+    EXPECT_FALSE(cache.GetStats().manifestInvalidated);
+    EXPECT_TRUE(fs::exists(temp.Path() / RVX::PipelineCache::GetManifestFileName()));
+}
+
+TEST_F(PipelineCacheValidationFixture, ManifestReloadsAsValidForSameInputs)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    TempDirectory temp("rvx_pipeline_manifest_reload");
+
+    {
+        FakeDevice device;
+        RVX::PipelineCache cache;
+        cache.SetConfig(ConfigWithManifest(temp.Path()));
+        ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+    }
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    cache.SetConfig(ConfigWithManifest(temp.Path()));
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    EXPECT_TRUE(cache.GetStats().manifestLoaded);
+    EXPECT_TRUE(cache.GetStats().manifestValid);
+    EXPECT_FALSE(cache.GetStats().manifestInvalidated);
+}
+
+TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenConfigChanges)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    TempDirectory temp("rvx_pipeline_manifest_stale");
+
+    {
+        FakeDevice device;
+        RVX::PipelineCache cache;
+        cache.SetConfig(ConfigWithManifest(temp.Path()));
+        ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+    }
+
+    RVX::PipelineCacheConfig changedConfig = ConfigWithManifest(temp.Path());
+    changedConfig.renderTargetFormat = RVX::RHIFormat::RGBA16_FLOAT;
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    cache.SetConfig(changedConfig);
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    EXPECT_TRUE(cache.GetStats().manifestLoaded);
+    EXPECT_FALSE(cache.GetStats().manifestValid);
+    EXPECT_TRUE(cache.GetStats().manifestInvalidated);
+}
+
+TEST_F(PipelineCacheValidationFixture, CorruptManifestInvalidatesWithoutFailingInitialization)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    TempDirectory temp("rvx_pipeline_manifest_corrupt");
+    WriteTextFile(temp.Path() / RVX::PipelineCache::GetManifestFileName(), "not a manifest\n");
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    cache.SetConfig(ConfigWithManifest(temp.Path()));
+
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+    EXPECT_TRUE(cache.GetStats().manifestLoaded);
+    EXPECT_FALSE(cache.GetStats().manifestValid);
+    EXPECT_TRUE(cache.GetStats().manifestInvalidated);
+}
+
+TEST_F(PipelineCacheValidationFixture, ManifestRejectsInvalidReverseZValue)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    TempDirectory temp("rvx_pipeline_manifest_reversez");
+    const fs::path manifestPath = temp.Path() / RVX::PipelineCache::GetManifestFileName();
+
+    {
+        FakeDevice device;
+        RVX::PipelineCache cache;
+        cache.SetConfig(ConfigWithManifest(temp.Path()));
+        ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+    }
+
+    std::string manifest = ReadTextFile(manifestPath);
+    const std::string oldReverseZ = "reverseZ=0";
+    const size_t reverseZOffset = manifest.find(oldReverseZ);
+    ASSERT_NE(reverseZOffset, std::string::npos);
+    manifest.replace(reverseZOffset, oldReverseZ.size(), "reverseZ=2");
+    WriteTextFile(manifestPath, manifest);
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    cache.SetConfig(ConfigWithManifest(temp.Path()));
+
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+    EXPECT_TRUE(cache.GetStats().manifestLoaded);
+    EXPECT_FALSE(cache.GetStats().manifestValid);
+    EXPECT_TRUE(cache.GetStats().manifestInvalidated);
+}
+
+TEST_F(PipelineCacheValidationFixture, ManifestWriteFailureDoesNotFailInitialization)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    TempDirectory temp("rvx_pipeline_manifest_write_failure");
+    const fs::path fileInsteadOfDirectory = temp.Path() / "not_a_directory";
+    WriteTextFile(fileInsteadOfDirectory, "manifest directory parent is a file");
+
+    RVX::PipelineCacheConfig config;
+    config.manifestDirectory = fileInsteadOfDirectory;
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    cache.SetConfig(config);
+
+    EXPECT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+    EXPECT_FALSE(fs::exists(fileInsteadOfDirectory / RVX::PipelineCache::GetManifestFileName()));
 }
 
 TEST_F(PipelineCacheValidationFixture, BackendPipelineCreationFailureIsVisible)

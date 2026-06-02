@@ -67,7 +67,7 @@ Tasks:
   - depth format field;
   - reverse-Z enabled flag;
   - optional pipeline cache manifest directory.
-- R3a may expose these fields with the current runtime defaults. R3b owns switching the default baseline to `RHIFormat::D32_FLOAT` and reverse-Z enabled.
+- R3a may expose these fields with the current runtime defaults. R3b owns switching the default depth format baseline to `RHIFormat::D32_FLOAT` and making reverse-Z explicit/testable; reverse-Z remains opt-in until R7 migrates projection matrices.
 - Add `GetLastError()` and lightweight stats/diagnostics:
   - last pipeline state hash;
   - manifest loaded/valid/invalidated state;
@@ -189,17 +189,17 @@ Tasks:
 
 - Switch `PipelineCache` depth-stencil format to `RHIFormat::D32_FLOAT` by default.
 - Switch `SceneRenderer` depth texture/view creation to `RHIFormat::D32_FLOAT`.
-- Make reverse-Z state explicit:
+- Make reverse-Z state explicit and opt-in:
   - reverse-Z pipeline compare should be `GreaterEqual`;
   - forward-Z pipeline compare remains `Less`;
   - clear depth convention is represented in one helper, so render passes do not each invent a value.
-- If fully flipping runtime clears/projection would exceed R3 risk, keep runtime render pass clear behavior conservative but expose and test the PSO depth convention; record the visual follow-up for R7.
+- Because current camera/projection code is still forward-Z, keep runtime render pass behavior conservative by default, expose and test the reverse-Z PSO convention as opt-in, and record the visual follow-up for R7.
 - Projection matrix migration and visual validation are deferred to R7 unless the user explicitly approves a separate sub-stage. R3 only makes the PSO/depth-resource convention explicit and test-covered.
 
 Acceptance:
 
 - Pipeline descs use D32F by default.
-- Tests can assert reverse-Z vs forward-Z compare/clear convention.
+- Tests can assert reverse-Z opt-in vs forward-Z default compare/clear convention.
 
 ### R3.6 - Tests
 
@@ -258,7 +258,7 @@ R3a:
 R3b:
 
 1. Add manifest save/load/invalidation.
-2. Add D32F default depth format and explicit reverse-Z/forward-Z depth-state helpers.
+2. Add D32F default depth format and explicit opt-in reverse-Z/forward-Z depth-state helpers.
 3. Update `SceneRenderer` depth buffer format to D32F if the code path remains mechanically safe.
 4. Build and run R3b validation.
 5. Run Spark code review.

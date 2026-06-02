@@ -511,7 +511,7 @@ void SceneRenderer::EnsureDepthBuffer(uint32_t width, uint32_t height)
         depthDesc.depth = 1;
         depthDesc.mipLevels = 1;
         depthDesc.arraySize = 1;
-        depthDesc.format = RHIFormat::D24_UNORM_S8_UINT;
+        depthDesc.format = PipelineCache::GetDefaultDepthStencilFormat();
         depthDesc.dimension = RHITextureDimension::Texture2D;
         depthDesc.usage = RHITextureUsage::DepthStencil;
         depthDesc.debugName = "SceneDepthBuffer";
@@ -525,7 +525,7 @@ void SceneRenderer::EnsureDepthBuffer(uint32_t width, uint32_t height)
         
         // Create depth texture view
         RHITextureViewDesc viewDesc;
-        viewDesc.format = RHIFormat::D24_UNORM_S8_UINT;
+        viewDesc.format = PipelineCache::GetDefaultDepthStencilFormat();
         viewDesc.dimension = RHITextureDimension::Texture2D;
         viewDesc.subresourceRange = RHISubresourceRange::All();
         viewDesc.debugName = "SceneDepthBufferView";
