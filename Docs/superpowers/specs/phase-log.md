@@ -857,7 +857,7 @@ git diff --check
 ### R-SP: R5a Material Binder and Template Minimum Wiring
 
 **Date:** 2026-06-02
-**Commit:** `pending`
+**Commit:** `48c6d2b`
 **Spark plan review agent:** `019e9321-0959-7723-9ba1-47b498f59336`
 **Spark code review agent:** `019e9329-84a9-70c3-9002-2abec351b36d`
 
