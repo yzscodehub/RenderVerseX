@@ -361,6 +361,41 @@ namespace
         return resource;
     }
 
+    std::unique_ptr<Resource::TextureResource> CreateTextureResource(
+        Resource::ResourceId id,
+        Resource::TextureFormat format,
+        std::vector<uint8> pixels,
+        uint32 width = 1,
+        uint32 height = 1)
+    {
+        auto resource = std::make_unique<Resource::TextureResource>();
+        resource->SetId(id);
+        resource->SetName("TestTexture");
+
+        Resource::TextureMetadata metadata;
+        metadata.width = width;
+        metadata.height = height;
+        metadata.format = format;
+        metadata.isSRGB = false;
+
+        resource->SetData(std::move(pixels), metadata);
+        return resource;
+    }
+
+    std::unique_ptr<Resource::TextureResource> CreateTextureResourceWithMetadata(
+        Resource::ResourceId id,
+        Resource::TextureMetadata metadata,
+        std::vector<uint8> pixels)
+    {
+        auto resource = std::make_unique<Resource::TextureResource>();
+        resource->SetId(id);
+        resource->SetName("TestTexture");
+        metadata.isSRGB = false;
+
+        resource->SetData(std::move(pixels), metadata);
+        return resource;
+    }
+
     class LogEnvironment final : public ::testing::Environment
     {
     public:
@@ -411,6 +446,67 @@ TEST(GPUResourceManagerValidation, UnmanagedResourceIsNotQueuedForAsyncUpload)
     const auto stats = manager.GetStats();
     EXPECT_EQ(stats.pendingUploadCount, 0u);
     EXPECT_EQ(manager.GetResourceState(mesh->GetId()), GPUResourceState::Unloaded);
+
+    manager.Shutdown();
+}
+
+TEST(GPUResourceManagerValidation, ResidentTextureIsNotQueuedForAsyncUpload)
+{
+    FakeDevice device;
+    device.supportStagedCopy = true;
+    device.completeSubmittedFenceImmediately = true;
+
+    GPUResourceManager manager;
+    manager.Initialize(&device);
+
+    auto textureHandle = Resource::ResourceHandle<Resource::TextureResource>(
+        CreateTextureResource(113).release());
+    manager.UploadImmediate(textureHandle.Get());
+    ASSERT_TRUE(manager.IsGPUReady(textureHandle.GetId()));
+
+    manager.RequestUpload(textureHandle.Get(), UploadPriority::Immediate);
+
+    const auto stats = manager.GetStats();
+    EXPECT_EQ(stats.pendingUploadCount, 0u);
+    EXPECT_EQ(stats.queuedUploadCount, 0u);
+    EXPECT_EQ(manager.GetResourceState(textureHandle.GetId()), GPUResourceState::GPUReady);
+
+    manager.Shutdown();
+}
+
+TEST(GPUResourceManagerValidation, UploadImmediateTextureRemovesQueuedStaleTextureForSameId)
+{
+    FakeDevice device;
+    device.supportStagedCopy = true;
+    device.completeSubmittedFenceImmediately = true;
+
+    GPUResourceManager manager;
+    manager.Initialize(&device);
+
+    auto queuedTexture = Resource::ResourceHandle<Resource::TextureResource>(
+        CreateTextureResource(114).release());
+    manager.RequestUpload(queuedTexture.Get(), UploadPriority::Immediate);
+    ASSERT_EQ(manager.GetStats().pendingUploadCount, 1u);
+    ASSERT_EQ(manager.GetResourceState(queuedTexture.GetId()), GPUResourceState::UploadQueued);
+
+    auto invalidRefresh = CreateTextureResource(
+        114,
+        Resource::TextureFormat::RGBA8,
+        {1, 2, 3},
+        1,
+        1);
+    manager.UploadImmediate(invalidRefresh.get());
+
+    EXPECT_EQ(manager.GetStats().pendingUploadCount, 0u);
+    EXPECT_EQ(manager.GetStats().queuedUploadCount, 0u);
+    EXPECT_EQ(manager.GetResourceState(queuedTexture.GetId()), GPUResourceState::Failed);
+    EXPECT_EQ(manager.GetTexture(queuedTexture.GetId()), nullptr);
+
+    manager.ProcessPendingUploads();
+
+    EXPECT_EQ(device.createdTextureCount, 0u);
+    EXPECT_EQ(manager.GetResourceState(queuedTexture.GetId()), GPUResourceState::Failed);
+    EXPECT_EQ(manager.GetTexture(queuedTexture.GetId()), nullptr);
 
     manager.Shutdown();
 }
@@ -946,6 +1042,223 @@ TEST(GPUResourceManagerValidation, TransitionTextureTransitionsResidentTextureOn
     EXPECT_EQ(ctx.textureBarrierCount, 1u);
 
     EXPECT_FALSE(manager.TransitionTexture(Resource::InvalidResourceId, ctx, RHIResourceState::ShaderResource));
+
+    manager.Shutdown();
+}
+
+TEST(GPUResourceManagerValidation, RGB8TextureUploadExpandsToRGBA8)
+{
+    FakeDevice device;
+    device.supportStagedCopy = true;
+    device.completeSubmittedFenceImmediately = true;
+
+    GPUResourceManager manager;
+    manager.Initialize(&device);
+
+    auto texture = CreateTextureResource(
+        107,
+        Resource::TextureFormat::RGB8,
+        {255, 0, 0},
+        1,
+        1);
+
+    manager.UploadImmediate(texture.get());
+
+    RHITexture* gpuTexture = manager.GetTexture(texture->GetId());
+    ASSERT_NE(nullptr, gpuTexture);
+    EXPECT_EQ(gpuTexture->GetFormat(), RHIFormat::RGBA8_UNORM);
+    EXPECT_EQ(manager.GetResourceState(texture->GetId()), GPUResourceState::GPUReady);
+    EXPECT_EQ(manager.GetStats().usedMemory, 4ull);
+
+    manager.Shutdown();
+}
+
+TEST(GPUResourceManagerValidation, MismatchedTextureDataSizeFailsWithoutCreatingTexture)
+{
+    FakeDevice device;
+    device.supportStagedCopy = true;
+
+    GPUResourceManager manager;
+    manager.Initialize(&device);
+
+    auto texture = CreateTextureResource(
+        108,
+        Resource::TextureFormat::RGBA8,
+        {255, 255, 255},
+        1,
+        1);
+
+    manager.UploadImmediate(texture.get());
+
+    EXPECT_EQ(manager.GetResourceState(texture->GetId()), GPUResourceState::Failed);
+    EXPECT_FALSE(manager.IsResident(texture->GetId()));
+    EXPECT_EQ(manager.GetTexture(texture->GetId()), nullptr);
+    EXPECT_EQ(device.createdTextureCount, 0u);
+
+    manager.Shutdown();
+}
+
+TEST(GPUResourceManagerValidation, UnsupportedTextureLayoutsFailWithoutCreatingTexture)
+{
+    struct UnsupportedCase
+    {
+        const char* name = nullptr;
+        Resource::TextureMetadata metadata;
+        std::vector<uint8> pixels;
+    };
+
+    auto makeMetadata = []()
+    {
+        Resource::TextureMetadata metadata;
+        metadata.width = 1;
+        metadata.height = 1;
+        metadata.depth = 1;
+        metadata.mipLevels = 1;
+        metadata.arrayLayers = 1;
+        metadata.format = Resource::TextureFormat::RGBA8;
+        metadata.isSRGB = false;
+        return metadata;
+    };
+
+    std::vector<UnsupportedCase> cases;
+    {
+        auto metadata = makeMetadata();
+        metadata.isCubemap = true;
+        cases.push_back({"cubemap", metadata, {1, 2, 3, 4}});
+    }
+    {
+        auto metadata = makeMetadata();
+        metadata.depth = 2;
+        cases.push_back({"3d", metadata, {1, 2, 3, 4, 5, 6, 7, 8}});
+    }
+    {
+        auto metadata = makeMetadata();
+        metadata.mipLevels = 2;
+        cases.push_back({"mip-chain", metadata, {1, 2, 3, 4}});
+    }
+    {
+        auto metadata = makeMetadata();
+        metadata.arrayLayers = 2;
+        metadata.isArray = true;
+        cases.push_back({"array", metadata, {1, 2, 3, 4, 5, 6, 7, 8}});
+    }
+    {
+        auto metadata = makeMetadata();
+        metadata.isArray = true;
+        cases.push_back({"array-flag-single-layer", metadata, {1, 2, 3, 4}});
+    }
+    {
+        auto metadata = makeMetadata();
+        metadata.format = Resource::TextureFormat::BC1;
+        cases.push_back({"compressed", metadata, {1, 2, 3, 4}});
+    }
+
+    for (size_t caseIndex = 0; caseIndex < cases.size(); ++caseIndex)
+    {
+        SCOPED_TRACE(cases[caseIndex].name);
+
+        FakeDevice device;
+        device.supportStagedCopy = true;
+
+        GPUResourceManager manager;
+        manager.Initialize(&device);
+
+        const Resource::ResourceId id = static_cast<Resource::ResourceId>(200 + caseIndex);
+        auto texture = CreateTextureResourceWithMetadata(
+            id,
+            cases[caseIndex].metadata,
+            cases[caseIndex].pixels);
+
+        manager.UploadImmediate(texture.get());
+
+        EXPECT_EQ(manager.GetResourceState(texture->GetId()), GPUResourceState::Failed);
+        EXPECT_FALSE(manager.IsResident(texture->GetId()));
+        EXPECT_EQ(manager.GetTexture(texture->GetId()), nullptr);
+        EXPECT_EQ(device.createdTextureCount, 0u);
+
+        manager.Shutdown();
+    }
+}
+
+TEST(GPUResourceManagerValidation, FailedTextureReplacementInvalidatesExistingResidentTexture)
+{
+    FakeDevice device;
+    device.supportStagedCopy = true;
+    device.completeSubmittedFenceImmediately = true;
+
+    GPUResourceManager manager;
+    manager.Initialize(&device);
+
+    uint32 invalidatedCount = 0;
+    manager.SetTextureInvalidatedCallback(
+        [&invalidatedCount](RHITexture*)
+        {
+            ++invalidatedCount;
+        });
+
+    auto original = CreateTextureResource(111);
+    manager.UploadImmediate(original.get());
+
+    RHITexture* originalTexture = manager.GetTexture(original->GetId());
+    ASSERT_NE(nullptr, originalTexture);
+    const size_t originalMemory = manager.GetStats().usedMemory;
+    ASSERT_GT(originalMemory, 0ull);
+
+    auto replacement = CreateTextureResource(
+        111,
+        Resource::TextureFormat::RGBA8,
+        {1, 2, 3},
+        1,
+        1);
+    manager.UploadImmediate(replacement.get());
+
+    EXPECT_EQ(manager.GetResourceState(original->GetId()), GPUResourceState::Failed);
+    EXPECT_EQ(manager.GetTexture(original->GetId()), nullptr);
+    EXPECT_FALSE(manager.IsResident(original->GetId()));
+    EXPECT_EQ(manager.GetStats().usedMemory, 0ull);
+    EXPECT_EQ(invalidatedCount, 1u);
+
+    manager.Shutdown();
+}
+
+TEST(GPUResourceManagerValidation, SuccessfulTextureReplacementInvalidatesExistingResidentTexture)
+{
+    FakeDevice device;
+    device.supportStagedCopy = true;
+    device.completeSubmittedFenceImmediately = true;
+
+    GPUResourceManager manager;
+    manager.Initialize(&device);
+
+    uint32 invalidatedCount = 0;
+    manager.SetTextureInvalidatedCallback(
+        [&invalidatedCount](RHITexture*)
+        {
+            ++invalidatedCount;
+        });
+
+    auto original = CreateTextureResource(112);
+    manager.UploadImmediate(original.get());
+
+    RHITexture* originalTexture = manager.GetTexture(original->GetId());
+    ASSERT_NE(nullptr, originalTexture);
+    EXPECT_EQ(manager.GetStats().usedMemory, 4ull);
+
+    auto replacement = CreateTextureResource(
+        112,
+        Resource::TextureFormat::RGBA8,
+        {9, 8, 7, 6},
+        1,
+        1);
+    manager.UploadImmediate(replacement.get());
+
+    RHITexture* replacementTexture = manager.GetTexture(original->GetId());
+    ASSERT_NE(nullptr, replacementTexture);
+    EXPECT_NE(originalTexture, replacementTexture);
+    EXPECT_TRUE(manager.IsResident(original->GetId()));
+    EXPECT_EQ(manager.GetResourceState(original->GetId()), GPUResourceState::GPUReady);
+    EXPECT_EQ(manager.GetStats().usedMemory, 4ull);
+    EXPECT_EQ(invalidatedCount, 1u);
 
     manager.Shutdown();
 }

@@ -276,8 +276,15 @@ rvx_add_gtest(
     NAME MaterialSystemValidation
     SOURCES MaterialSystemValidation/main.cpp
     LIBS
+        RVX::Core
         RVX::Render
+        RVX::Resource
+        RVX::RHI
         RVX::Scene
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Resource/Include
+        ${CMAKE_SOURCE_DIR}/RHI/Include
     LABELS unit
     TIMEOUT 120
 )

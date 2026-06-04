@@ -287,8 +287,18 @@ namespace RVX
             }
         };
 
+        struct PreparedTextureUpload
+        {
+            RHITextureDesc textureDesc;
+            std::vector<uint8> data;
+            bool valid = false;
+        };
+
         void UploadMesh(Resource::MeshResource* mesh);
         void UploadTexture(Resource::TextureResource* texture);
+        PreparedTextureUpload PrepareTextureUpload(const Resource::TextureResource& texture) const;
+        void ReleaseTextureGPUData(Resource::ResourceId id);
+        size_t RemoveQueuedUploadRequests(Resource::ResourceId id);
         void UpdateCompletedResourceUploads();
         void AbandonUploadIds(const std::vector<uint64>& uploadIds);
         void NotifyTextureInvalidated(RHITexture* texture);

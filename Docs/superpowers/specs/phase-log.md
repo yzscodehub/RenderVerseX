@@ -666,7 +666,7 @@ git diff --check
 ### R-SP: R3b Pipeline Manifest and Depth Baseline
 
 **Date:** 2026-06-02
-**Commit:** pending
+**Commit:** `d99214b`
 **Spark plan review agent:** `019e88cb-0cf5-7f62-94ed-e24e456ba6cc`
 **Spark code review agent:** `019e88d2-5b3d-7e72-8163-33e744f2ded2`
 
@@ -758,6 +758,98 @@ git diff --check
 - Reverse-Z remains opt-in because the current camera/projection path is still forward-Z; R7 owns projection migration and visual acceptance.
 - ShadowPass keeps its existing shadow depth clear convention until the shadow projection path is migrated deliberately.
 - Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R3b commit.
+- Next stage must reread the render-first plan, create/confirm its implementation plan, pass Spark plan review, implement, pass validation, pass Spark code review, update this log, and commit before moving on.
+
+---
+
+### R-SP: R4 Asset GPU Upload
+
+**Date:** 2026-06-02
+**Commit:** pending
+**Spark plan review agent:** `019e88da-7932-72c2-85c4-532cf7e223b8`
+**Spark code review agent:** `019e9319-2b15-7cf3-97ae-ef73c55cb940`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-02-r4-asset-gpu-upload-plan.md`
+- Section: R4 - Asset GPU Upload
+- Lines checked: R4 plan sections 1-7 checked before implementation; scope, validation, and done criteria rechecked before review/commit
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R3b Pipeline Manifest and Depth Baseline
+- Evidence: R3b committed as `d99214b`; R4 implementation plan passed Spark plan review before code changes
+
+**Approved scope:**
+
+- Harden `GPUResourceManager` texture upload preparation for 2D single-mip/single-layer texture resources.
+- Expand `TextureFormat::RGB8` CPU data to RGBA8 before upload.
+- Reject unsupported, inconsistent, cubemap, array, 3D, mip-chain, and compressed texture uploads visibly without placeholder GPU textures.
+- Keep GPU texture cache identity keyed by `ResourceId`; invalidate dependent views and account memory/pending uploads on success, failure, replacement, and eviction.
+- Prove `MaterialResource` texture handles resolve through `GPUResourceManager` + `ResourceViewCache` to resident GPU texture views, and fall back for non-resident or failed textures.
+
+**Out of scope:**
+
+- Full material binder/template compile wiring and SceneRenderer material binding integration.
+- Compressed, cubemap, array, 3D, and mip-chain texture upload support.
+- RenderProxy work.
+- Visual golden or final ModelViewer validation.
+
+**Files changed:**
+
+- `Render/Include/Render/GPUResourceManager.h`
+- `Render/Private/GPUResourceManager.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/GPUResourceManagerValidation/main.cpp`
+- `Tests/MaterialSystemValidation/main.cpp`
+- `Docs/superpowers/specs/2026-06-02-r4-asset-gpu-upload-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target GPUResourceManagerValidation
+build\win_x64_debug\Tests\Debug\GPUResourceManagerValidation.exe
+cmake --build build/win_x64_debug --config Debug --target MaterialSystemValidation
+build\win_x64_debug\Tests\Debug\MaterialSystemValidation.exe
+cmake --build build/win_x64_debug --config Debug --target GPUUploadServiceValidation GPUResourceManagerValidation ResourceInstantiationValidation RenderHonestyValidation MaterialSystemValidation DX12Validation VulkanValidation
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "GPUUploadServiceValidation|GPUResourceManagerValidation|ResourceInstantiationValidation|RenderHonestyValidation|MaterialSystemValidation|DX12Validation|VulkanValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `GPUResourceManagerValidation`: 28/28
+  - `MaterialSystemValidation`: 4/4
+  - Required + optional filtered CTest: 171/171
+- Visual gate: N/A
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan and code review messages
+- Screenshots: N/A
+- Diffs: R4 working tree diff before commit
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: explicit same-ID replacement failure semantics, memory accounting for replacement/failure/release, and material resident/non-resident texture view tests.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: clear same-`ResourceId` queued texture uploads before immediate refresh, cover unsupported layout failures, cover failed texture material fallback, reject `isArray` textures even when `arrayLayers == 1`, and add texture upload size overflow protection.
+
+**Notes / follow-ups:**
+
+- `UploadImmediate(TextureResource*)` is now the explicit synchronous texture refresh path; `RequestUpload(TextureResource*)` still skips already-resident textures to avoid duplicate ordinary async uploads.
+- R4 keeps unsupported texture classes honest instead of pretending upload support exists. Future compressed/mip/cubemap/array/3D support should add real upload paths and tests.
+- `git diff --check` reports only LF-to-CRLF warnings for two test files, no whitespace errors.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R4 commit.
 - Next stage must reread the render-first plan, create/confirm its implementation plan, pass Spark plan review, implement, pass validation, pass Spark code review, update this log, and commit before moving on.
 
 ---

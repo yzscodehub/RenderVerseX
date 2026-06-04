@@ -5,6 +5,7 @@
 #include "RHI/RHICommandContext.h"
 #include "Scene/Mesh.h"
 #include <chrono>
+#include <limits>
 
 namespace RVX
 {
@@ -144,9 +145,14 @@ void GPUResourceManager::UploadImmediate(Resource::TextureResource* texture)
     if (!texture || !m_device)
         return;
 
-    // Skip if already resident
-    if (IsResident(texture->GetId()))
-        return;
+    // Synchronous texture upload is also the explicit same-id refresh path.
+    const size_t removedQueuedUploads = RemoveQueuedUploadRequests(texture->GetId());
+    if (removedQueuedUploads > 0)
+    {
+        RVX_CORE_DEBUG("GPUResourceManager: Removed {} queued texture upload(s) for immediate refresh of resource {}",
+                       removedQueuedUploads,
+                       texture->GetId());
+    }
 
     UploadTexture(texture);
     if (m_uploadService)
@@ -621,6 +627,108 @@ void GPUResourceManager::UploadMesh(Resource::MeshResource* meshRes)
                    hasTan ? "yes" : "no");
 }
 
+GPUResourceManager::PreparedTextureUpload GPUResourceManager::PrepareTextureUpload(
+    const Resource::TextureResource& texture) const
+{
+    PreparedTextureUpload prepared;
+
+    const auto& metadata = texture.GetMetadata();
+    const auto& sourceData = texture.GetData();
+    if (metadata.width == 0 || metadata.height == 0 || metadata.depth == 0 ||
+        metadata.mipLevels == 0 || metadata.arrayLayers == 0 || sourceData.empty())
+    {
+        return prepared;
+    }
+
+    if (metadata.isCubemap || metadata.isArray || metadata.depth != 1 || metadata.mipLevels != 1 ||
+        metadata.arrayLayers != 1)
+    {
+        return prepared;
+    }
+
+    uint32 sourceBytesPerPixel = 0;
+    RHIFormat uploadFormat = RHIFormat::Unknown;
+
+    switch (metadata.format)
+    {
+        case Resource::TextureFormat::RGBA8:
+            sourceBytesPerPixel = 4;
+            uploadFormat = metadata.isSRGB ? RHIFormat::RGBA8_UNORM_SRGB : RHIFormat::RGBA8_UNORM;
+            break;
+        case Resource::TextureFormat::RGB8:
+            sourceBytesPerPixel = 3;
+            uploadFormat = metadata.isSRGB ? RHIFormat::RGBA8_UNORM_SRGB : RHIFormat::RGBA8_UNORM;
+            break;
+        case Resource::TextureFormat::RG8:
+            sourceBytesPerPixel = 2;
+            uploadFormat = RHIFormat::RG8_UNORM;
+            break;
+        case Resource::TextureFormat::R8:
+            sourceBytesPerPixel = 1;
+            uploadFormat = RHIFormat::R8_UNORM;
+            break;
+        case Resource::TextureFormat::RGBA16F:
+            sourceBytesPerPixel = 8;
+            uploadFormat = RHIFormat::RGBA16_FLOAT;
+            break;
+        case Resource::TextureFormat::RGBA32F:
+            sourceBytesPerPixel = 16;
+            uploadFormat = RHIFormat::RGBA32_FLOAT;
+            break;
+        case Resource::TextureFormat::BC1:
+        case Resource::TextureFormat::BC3:
+        case Resource::TextureFormat::BC5:
+        case Resource::TextureFormat::BC7:
+        case Resource::TextureFormat::Unknown:
+        default:
+            return prepared;
+    }
+
+    const uint64 pixelCount = static_cast<uint64>(metadata.width) * metadata.height;
+    if (sourceBytesPerPixel != 0 &&
+        pixelCount > (std::numeric_limits<uint64>::max() / sourceBytesPerPixel))
+    {
+        return prepared;
+    }
+
+    const uint64 expectedSourceSize = pixelCount * sourceBytesPerPixel;
+    if (sourceData.size() != expectedSourceSize)
+    {
+        return prepared;
+    }
+
+    prepared.textureDesc.width = metadata.width;
+    prepared.textureDesc.height = metadata.height;
+    prepared.textureDesc.depth = 1;
+    prepared.textureDesc.mipLevels = 1;
+    prepared.textureDesc.arraySize = 1;
+    prepared.textureDesc.usage = RHITextureUsage::ShaderResource;
+    prepared.textureDesc.format = uploadFormat;
+    prepared.textureDesc.dimension = RHITextureDimension::Texture2D;
+    prepared.textureDesc.debugName = texture.GetName().c_str();
+
+    if (metadata.format == Resource::TextureFormat::RGB8)
+    {
+        prepared.data.resize(static_cast<size_t>(pixelCount) * 4);
+        const auto* src = sourceData.data();
+        auto* dst = prepared.data.data();
+        for (uint64 i = 0; i < pixelCount; ++i)
+        {
+            dst[i * 4 + 0] = src[i * 3 + 0];
+            dst[i * 4 + 1] = src[i * 3 + 1];
+            dst[i * 4 + 2] = src[i * 3 + 2];
+            dst[i * 4 + 3] = 255;
+        }
+    }
+    else
+    {
+        prepared.data = sourceData;
+    }
+
+    prepared.valid = true;
+    return prepared;
+}
+
 void GPUResourceManager::UploadTexture(Resource::TextureResource* textureRes)
 {
     if (!textureRes || !m_device)
@@ -628,89 +736,26 @@ void GPUResourceManager::UploadTexture(Resource::TextureResource* textureRes)
 
     SetResourceState(textureRes->GetId(), GPUResourceState::Uploading);
 
-    const auto& metadata = textureRes->GetMetadata();
-    const auto& data = textureRes->GetData();
-
-    if (data.empty())
+    TextureGPUData gpuData;
+    PreparedTextureUpload prepared = PrepareTextureUpload(*textureRes);
+    if (!prepared.valid)
     {
-        RVX_CORE_WARN("TextureResource has no data: {}", textureRes->GetName());
+        RVX_CORE_WARN("TextureResource has unsupported or inconsistent upload data: {}", textureRes->GetName());
+        ReleaseTextureGPUData(textureRes->GetId());
         SetResourceState(textureRes->GetId(), GPUResourceState::Failed);
         return;
     }
 
-    TextureGPUData gpuData;
-
-    // Create texture description
-    RHITextureDesc texDesc;
-    texDesc.width = metadata.width;
-    texDesc.height = metadata.height;
-    texDesc.depth = metadata.depth;
-    texDesc.mipLevels = metadata.mipLevels;
-    texDesc.arraySize = metadata.arrayLayers;
-    texDesc.usage = RHITextureUsage::ShaderResource;
-    texDesc.debugName = textureRes->GetName().c_str();
-
-    // Map format
-    switch (metadata.format)
-    {
-        case Resource::TextureFormat::RGBA8:
-            texDesc.format = metadata.isSRGB ? RHIFormat::RGBA8_UNORM_SRGB : RHIFormat::RGBA8_UNORM;
-            break;
-        case Resource::TextureFormat::RGB8:
-            texDesc.format = metadata.isSRGB ? RHIFormat::RGBA8_UNORM_SRGB : RHIFormat::RGBA8_UNORM;
-            break;
-        case Resource::TextureFormat::RG8:
-            texDesc.format = RHIFormat::RG8_UNORM;
-            break;
-        case Resource::TextureFormat::R8:
-            texDesc.format = RHIFormat::R8_UNORM;
-            break;
-        case Resource::TextureFormat::RGBA16F:
-            texDesc.format = RHIFormat::RGBA16_FLOAT;
-            break;
-        case Resource::TextureFormat::RGBA32F:
-            texDesc.format = RHIFormat::RGBA32_FLOAT;
-            break;
-        case Resource::TextureFormat::BC1:
-            texDesc.format = metadata.isSRGB ? RHIFormat::BC1_UNORM_SRGB : RHIFormat::BC1_UNORM;
-            break;
-        case Resource::TextureFormat::BC3:
-            texDesc.format = metadata.isSRGB ? RHIFormat::BC3_UNORM_SRGB : RHIFormat::BC3_UNORM;
-            break;
-        case Resource::TextureFormat::BC5:
-            texDesc.format = RHIFormat::BC5_UNORM;
-            break;
-        case Resource::TextureFormat::BC7:
-            texDesc.format = metadata.isSRGB ? RHIFormat::BC7_UNORM_SRGB : RHIFormat::BC7_UNORM;
-            break;
-        default:
-            texDesc.format = RHIFormat::RGBA8_UNORM;
-            break;
-    }
-
-    // Determine texture dimension
-    if (metadata.isCubemap)
-    {
-        texDesc.dimension = RHITextureDimension::TextureCube;
-    }
-    else if (metadata.depth > 1)
-    {
-        texDesc.dimension = RHITextureDimension::Texture3D;
-    }
-    else
-    {
-        texDesc.dimension = RHITextureDimension::Texture2D;
-    }
-
     GPUUploadTextureDesc uploadDesc;
-    uploadDesc.textureDesc = texDesc;
-    uploadDesc.dataSize = data.size();
+    uploadDesc.textureDesc = prepared.textureDesc;
+    uploadDesc.dataSize = prepared.data.size();
 
-    auto textureUpload = m_uploadService->UploadTextureDataWithResult(uploadDesc, data.data());
+    auto textureUpload = m_uploadService->UploadTextureDataWithResult(uploadDesc, prepared.data.data());
     gpuData.texture = textureUpload.resource;
     if (!textureUpload)
     {
         RVX_CORE_ERROR("Failed to create GPU texture for: {}", textureRes->GetName());
+        ReleaseTextureGPUData(textureRes->GetId());
         SetResourceState(textureRes->GetId(), GPUResourceState::Failed);
         return;
     }
@@ -730,15 +775,11 @@ void GPUResourceManager::UploadTexture(Resource::TextureResource* textureRes)
         m_usedMemory += gpuData.gpuMemorySize;
     }
 
-    if (auto existingIt = m_textureGPUData.find(textureRes->GetId()); existingIt != m_textureGPUData.end())
-    {
-        if (existingIt->second.texture.Get() != gpuData.texture.Get())
-        {
-            NotifyTextureInvalidated(existingIt->second.texture.Get());
-        }
-        AbandonUploadIds(existingIt->second.pendingUploadIds);
-    }
+    const size_t uploadedMemory = gpuData.gpuMemorySize;
+    const uint32 uploadedWidth = prepared.textureDesc.width;
+    const uint32 uploadedHeight = prepared.textureDesc.height;
 
+    ReleaseTextureGPUData(textureRes->GetId());
     m_textureGPUData[textureRes->GetId()] = std::move(gpuData);
     if (!m_textureGPUData[textureRes->GetId()].pendingUploadIds.empty())
     {
@@ -754,8 +795,56 @@ void GPUResourceManager::UploadTexture(Resource::TextureResource* textureRes)
 
     RVX_CORE_DEBUG("Created texture on GPU: {} ({}x{}, {}KB)", 
                    textureRes->GetName(),
-                   metadata.width, metadata.height,
-                   gpuData.gpuMemorySize / 1024);
+                   uploadedWidth, uploadedHeight,
+                   uploadedMemory / 1024);
+}
+
+void GPUResourceManager::ReleaseTextureGPUData(Resource::ResourceId id)
+{
+    auto it = m_textureGPUData.find(id);
+    if (it == m_textureGPUData.end())
+        return;
+
+    NotifyTextureInvalidated(it->second.texture.Get());
+    AbandonUploadIds(it->second.pendingUploadIds);
+    if (it->second.isResident && it->second.gpuMemorySize <= m_usedMemory)
+    {
+        m_usedMemory -= it->second.gpuMemorySize;
+    }
+
+    m_pendingTextureUploadCompletions.erase(id);
+    m_textureGPUData.erase(it);
+}
+
+size_t GPUResourceManager::RemoveQueuedUploadRequests(Resource::ResourceId id)
+{
+    if (id == Resource::InvalidResourceId || m_pendingQueue.empty())
+        return 0;
+
+    std::vector<PendingUpload> retainedUploads;
+    retainedUploads.reserve(m_pendingQueue.size());
+    size_t removedCount = 0;
+
+    while (!m_pendingQueue.empty())
+    {
+        PendingUpload upload = m_pendingQueue.top();
+        m_pendingQueue.pop();
+
+        if (upload.id == id)
+        {
+            ++removedCount;
+            continue;
+        }
+
+        retainedUploads.push_back(std::move(upload));
+    }
+
+    for (PendingUpload& upload : retainedUploads)
+    {
+        m_pendingQueue.push(std::move(upload));
+    }
+
+    return removedCount;
 }
 
 void GPUResourceManager::UpdateCompletedResourceUploads()
