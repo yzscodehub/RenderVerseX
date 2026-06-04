@@ -854,6 +854,99 @@ git diff --check
 
 ---
 
+### R-SP: R5a Material Binder and Template Minimum Wiring
+
+**Date:** 2026-06-02
+**Commit:** `pending`
+**Spark plan review agent:** `019e9321-0959-7723-9ba1-47b498f59336`
+**Spark code review agent:** `019e9329-84a9-70c3-9002-2abec351b36d`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-02-r5a-material-binder-template-plan.md`
+- Section: R5a - Material Binder and Template Minimum Wiring
+- Lines checked: R5a plan sections 1-7 checked before implementation; scope, validation, and done criteria rechecked before review/commit
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R4 Asset GPU Upload
+- Evidence: R4 committed as `de1118c` with hash correction committed as `c07883d`; R5a implementation plan passed Spark plan review before code changes
+
+**Approved scope:**
+
+- Make `MaterialTemplate::Compile` report visible failure instead of placeholder compile success for missing device, missing vertex shader, missing pixel shader, and missing standalone pipeline integration.
+- Make `MaterialBinder` initialization, material bind, default fallback bind, constant-buffer creation, and constant-buffer map failures expose inspectable status and messages.
+- Convert real `Scene::Material` scalar/color/alpha/workflow/double-sided/texture-flag data into `MaterialGPUConstants`.
+- Keep fallback material binding explicit and observable.
+- Add tests for missing shader paths, missing pipeline integration, texture flag present/missing behavior, fallback status, create-buffer failure, and map failure.
+
+**Out of scope:**
+
+- SceneRenderer material-system wiring.
+- Real material PSO creation or PipelineCache integration for material templates.
+- Descriptor-table or backend-specific texture binding.
+- RenderProxy work.
+- Visual golden or final ModelViewer validation.
+
+**Files changed:**
+
+- `Render/Include/Render/Material/MaterialBinder.h`
+- `Render/Private/Material/MaterialBinder.cpp`
+- `Render/Private/Material/MaterialTemplate.cpp`
+- `Tests/MaterialSystemValidation/main.cpp`
+- `Tests/RenderHonestyValidation/main.cpp`
+- `Docs/superpowers/specs/2026-06-02-r5a-material-binder-template-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target MaterialSystemValidation
+build\win_x64_debug\Tests\Debug\MaterialSystemValidation.exe
+cmake --build build/win_x64_debug --config Debug --target MaterialSystemValidation RenderHonestyValidation
+build\win_x64_debug\Tests\Debug\MaterialSystemValidation.exe
+build\win_x64_debug\Tests\Debug\RenderHonestyValidation.exe
+cmake --build build/win_x64_debug --config Debug --target MaterialSystemValidation RenderHonestyValidation PipelineCacheValidation DX12Validation VulkanValidation
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "MaterialSystemValidation|RenderHonestyValidation|PipelineCacheValidation|DX12Validation|VulkanValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `MaterialSystemValidation`: 11/11
+  - `RenderHonestyValidation`: 15/15
+  - Required + optional filtered CTest: 82/82
+- Visual gate: N/A
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan and code review messages
+- Screenshots: N/A
+- Diffs: R5a working tree diff before commit
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: independent missing-pipeline coverage, texture-flag present/missing coverage, bind status/message consistency checks, create/map failure coverage, and grouped compile-failure tests.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: N/A
+- Non-blocking suggestions deferred: clarify the `Bind(uint64)` fallback message in a later material-ID/resource resolution stage if it becomes useful; `RenderHonestyValidation` may add split missing-shader/missing-pipeline assertions later, while R5a already covers them in `MaterialSystemValidation`.
+
+**Notes / follow-ups:**
+
+- R5a intentionally leaves material PSO and descriptor binding as visible `Unsupported` until R5b wires SceneRenderer, PipelineCache, and material descriptor layout integration.
+- `git diff --check` reports only LF-to-CRLF warnings for two test files, no whitespace errors.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R5a commit.
+- Next stage must reread the render-first plan, create/confirm its implementation plan, pass Spark plan review, implement, pass validation, pass Spark code review, update this log, and commit before moving on.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

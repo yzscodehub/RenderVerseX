@@ -1,8 +1,10 @@
 #include "Core/Core.h"
 #include "Render/GPUResourceManager.h"
 #include "Render/Graph/ResourceViewCache.h"
+#include "Render/Material/MaterialBinder.h"
 #include "Render/Material/MaterialClassification.h"
 #include "Render/Material/MaterialSystem.h"
+#include "Render/Material/MaterialTemplate.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/TextureResource.h"
 #include "RHI/RHICommandContext.h"
@@ -12,7 +14,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cstring>
 #include <memory>
+#include <string>
 #include <vector>
 
 using namespace RVX;
@@ -22,9 +26,10 @@ namespace
     class FakeBuffer final : public RHIBuffer
     {
     public:
-        explicit FakeBuffer(const RHIBufferDesc& desc)
+        explicit FakeBuffer(const RHIBufferDesc& desc, bool mapSucceeds = true)
             : m_desc(desc)
             , m_storage(static_cast<size_t>(desc.size))
+            , m_mapSucceeds(mapSucceeds)
         {
         }
 
@@ -33,7 +38,13 @@ namespace
         RHIMemoryType GetMemoryType() const override { return m_desc.memoryType; }
         uint32 GetStride() const override { return m_desc.stride; }
 
-        void* Map() override { return m_storage.empty() ? nullptr : m_storage.data(); }
+        void* Map() override
+        {
+            if (!m_mapSucceeds)
+                return nullptr;
+
+            return m_storage.empty() ? nullptr : m_storage.data();
+        }
         void Unmap() override {}
 
         const std::vector<uint8>& GetStorage() const { return m_storage; }
@@ -41,6 +52,7 @@ namespace
     private:
         RHIBufferDesc m_desc;
         std::vector<uint8> m_storage;
+        bool m_mapSucceeds = true;
     };
 
     class FakeTexture final : public RHITexture
@@ -251,7 +263,12 @@ namespace
         RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
         {
             ++createdBufferCount;
-            return RHIBufferRef(new FakeBuffer(desc));
+            if (failBufferCreation)
+                return nullptr;
+
+            auto buffer = RHIBufferRef(new FakeBuffer(desc, bufferMapSucceeds));
+            lastCreatedBuffer = static_cast<FakeBuffer*>(buffer.Get());
+            return buffer;
         }
 
         RHITextureRef CreateTexture(const RHITextureDesc& desc) override
@@ -368,8 +385,11 @@ namespace
         uint32 createdStagingBufferCount = 0;
         uint32 createdFenceCount = 0;
         uint32 waitIdleCount = 0;
+        bool failBufferCreation = false;
+        bool bufferMapSucceeds = true;
         RHICommandQueueType lastCommandQueueType = RHICommandQueueType::Graphics;
         FakeCommandContext* lastCommandContext = nullptr;
+        FakeBuffer* lastCreatedBuffer = nullptr;
         std::vector<RHIFenceRef> retainedFences;
         RHICapabilities capabilities;
 
@@ -427,6 +447,20 @@ namespace
         return fakeSet ? fakeSet->FindBinding(binding) : nullptr;
     }
 
+    bool Contains(const std::string& text, const char* expected)
+    {
+        return text.find(expected) != std::string::npos;
+    }
+
+    MaterialGPUConstants ReadMaterialConstants(const FakeBuffer& buffer)
+    {
+        MaterialGPUConstants constants;
+        const std::vector<uint8>& storage = buffer.GetStorage();
+        EXPECT_GE(storage.size(), sizeof(MaterialGPUConstants));
+        std::memcpy(&constants, storage.data(), sizeof(MaterialGPUConstants));
+        return constants;
+    }
+
     TEST(MaterialSystemValidation, ClassifiesMaterialAlphaModes)
     {
         auto opaque = std::make_shared<Material>();
@@ -450,6 +484,225 @@ namespace
                   GetPipelineVariantForRenderMode(MaterialRenderMode::Masked));
         EXPECT_EQ(MaterialPipelineVariant::Transparent,
                   GetPipelineVariantForRenderMode(MaterialRenderMode::Transparent));
+    }
+
+    TEST(MaterialSystemValidation, MaterialTemplateCompileFailuresAreSpecificAndVisible)
+    {
+        {
+            MaterialTemplate materialTemplate("null-device");
+            materialTemplate.SetVertexShader("PBRLit.hlsl");
+            materialTemplate.SetPixelShader("PBRLit.hlsl");
+
+            EXPECT_FALSE(materialTemplate.Compile(nullptr));
+            EXPECT_FALSE(materialTemplate.IsCompiled());
+            EXPECT_EQ(materialTemplate.GetPipeline(), nullptr);
+            EXPECT_TRUE(Contains(materialTemplate.GetLastCompileError(), "RHI device"));
+        }
+
+        {
+            FakeDevice device;
+            MaterialTemplate materialTemplate("missing-vertex");
+            materialTemplate.SetPixelShader("PBRLit.hlsl");
+
+            EXPECT_FALSE(materialTemplate.Compile(&device));
+            EXPECT_FALSE(materialTemplate.IsCompiled());
+            EXPECT_EQ(materialTemplate.GetPipeline(), nullptr);
+            EXPECT_TRUE(Contains(materialTemplate.GetLastCompileError(), "vertex shader path"));
+        }
+
+        {
+            FakeDevice device;
+            MaterialTemplate materialTemplate("missing-pixel");
+            materialTemplate.SetVertexShader("PBRLit.hlsl");
+
+            EXPECT_FALSE(materialTemplate.Compile(&device));
+            EXPECT_FALSE(materialTemplate.IsCompiled());
+            EXPECT_EQ(materialTemplate.GetPipeline(), nullptr);
+            EXPECT_TRUE(Contains(materialTemplate.GetLastCompileError(), "pixel shader path"));
+        }
+
+        {
+            FakeDevice device;
+            MaterialTemplate materialTemplate("missing-pipeline");
+            materialTemplate.SetVertexShader("PBRLit.hlsl");
+            materialTemplate.SetPixelShader("PBRLit.hlsl");
+
+            EXPECT_FALSE(materialTemplate.Compile(&device));
+            EXPECT_FALSE(materialTemplate.IsCompiled());
+            EXPECT_EQ(materialTemplate.GetPipeline(), nullptr);
+            EXPECT_TRUE(Contains(materialTemplate.GetLastCompileError(), "standalone material pipeline"));
+        }
+    }
+
+    TEST(MaterialSystemValidation, MaterialBinderConvertToGPUUsesMaterialProperties)
+    {
+        Material material("gpu-material");
+        material.SetBaseColor(0.25f, 0.5f, 0.75f, 0.9f);
+        material.SetMetallicFactor(0.35f);
+        material.SetRoughnessFactor(0.65f);
+        material.SetNormalScale(0.8f);
+        material.SetOcclusionStrength(0.7f);
+        material.SetEmissiveColor({0.1f, 0.2f, 0.3f});
+        material.SetEmissiveStrength(2.5f);
+        material.SetAlphaMode(Material::AlphaMode::Blend);
+        material.SetAlphaCutoff(0.42f);
+        material.SetWorkflow(MaterialWorkflow::SpecularGlossiness);
+        material.SetDoubleSided(true);
+
+        const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(material);
+
+        EXPECT_FLOAT_EQ(constants.baseColorFactor.x, 0.25f);
+        EXPECT_FLOAT_EQ(constants.baseColorFactor.y, 0.5f);
+        EXPECT_FLOAT_EQ(constants.baseColorFactor.z, 0.75f);
+        EXPECT_FLOAT_EQ(constants.baseColorFactor.w, 0.9f);
+        EXPECT_FLOAT_EQ(constants.metallicFactor, 0.35f);
+        EXPECT_FLOAT_EQ(constants.roughnessFactor, 0.65f);
+        EXPECT_FLOAT_EQ(constants.normalScale, 0.8f);
+        EXPECT_FLOAT_EQ(constants.occlusionStrength, 0.7f);
+        EXPECT_FLOAT_EQ(constants.emissiveColor.x, 0.1f);
+        EXPECT_FLOAT_EQ(constants.emissiveColor.y, 0.2f);
+        EXPECT_FLOAT_EQ(constants.emissiveColor.z, 0.3f);
+        EXPECT_FLOAT_EQ(constants.emissiveStrength, 2.5f);
+        EXPECT_FLOAT_EQ(constants.alphaCutoff, 0.42f);
+        EXPECT_EQ(constants.alphaMode, static_cast<uint32>(MaterialGPUAlphaMode::Blend));
+        EXPECT_EQ(constants.workflow, static_cast<uint32>(MaterialGPUWorkflow::SpecularGlossiness));
+        EXPECT_EQ(constants.doubleSided, 1u);
+    }
+
+    TEST(MaterialSystemValidation, MaterialBinderConvertToGPUTextureFlagsReflectOptionalTextures)
+    {
+        Material material("texture-flags");
+
+        MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(material);
+        EXPECT_EQ(constants.textureFlags, 0u);
+
+        material.SetBaseColorTexture(TextureInfo("base-color.png"));
+        material.SetNormalTexture(TextureInfo("normal.png"));
+        material.SetMetallicRoughnessTexture(TextureInfo("mr.png"));
+        material.SetOcclusionTexture(TextureInfo("ao.png"));
+        material.SetEmissiveTexture(TextureInfo("emissive.png"));
+
+        constants = MaterialBinder::ConvertToGPU(material);
+        const uint32 expectedFlags =
+            static_cast<uint32>(MaterialTextureFlags::HasBaseColor) |
+            static_cast<uint32>(MaterialTextureFlags::HasNormal) |
+            static_cast<uint32>(MaterialTextureFlags::HasMetallicRoughness) |
+            static_cast<uint32>(MaterialTextureFlags::HasOcclusion) |
+            static_cast<uint32>(MaterialTextureFlags::HasEmissive);
+        EXPECT_EQ(constants.textureFlags, expectedFlags);
+
+        material.ClearBaseColorTexture();
+        material.ClearNormalTexture();
+        material.ClearMetallicRoughnessTexture();
+        material.ClearOcclusionTexture();
+        material.ClearEmissiveTexture();
+
+        constants = MaterialBinder::ConvertToGPU(material);
+        EXPECT_EQ(constants.textureFlags, 0u);
+    }
+
+    TEST(MaterialSystemValidation, MaterialBinderBindUpdatesConstantsButReportsUnsupported)
+    {
+        FakeDevice device;
+        MaterialBinder binder;
+        binder.Initialize(&device, nullptr);
+        ASSERT_TRUE(binder.IsInitialized());
+        ASSERT_NE(device.lastCreatedBuffer, nullptr);
+
+        Material material("bind-material");
+        material.SetBaseColor(0.2f, 0.3f, 0.4f, 1.0f);
+        material.SetRoughnessFactor(0.55f);
+
+        FakeCommandContext ctx;
+        binder.Bind(ctx, material);
+
+        EXPECT_EQ(binder.GetLastBindStatus(), MaterialBindStatus::Unsupported);
+        EXPECT_FALSE(binder.GetLastBindMessage().empty());
+        EXPECT_TRUE(Contains(binder.GetLastBindMessage(), "R5b"));
+
+        const MaterialGPUConstants constants = ReadMaterialConstants(*device.lastCreatedBuffer);
+        EXPECT_FLOAT_EQ(constants.baseColorFactor.x, 0.2f);
+        EXPECT_FLOAT_EQ(constants.baseColorFactor.y, 0.3f);
+        EXPECT_FLOAT_EQ(constants.baseColorFactor.z, 0.4f);
+        EXPECT_FLOAT_EQ(constants.roughnessFactor, 0.55f);
+
+        binder.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation, MaterialBinderDefaultFallbackIsObservable)
+    {
+        FakeDevice device;
+        MaterialBinder binder;
+        binder.Initialize(&device, nullptr);
+        ASSERT_TRUE(binder.IsInitialized());
+        ASSERT_NE(device.lastCreatedBuffer, nullptr);
+
+        FakeCommandContext ctx;
+        binder.Bind(ctx, 404);
+
+        EXPECT_EQ(binder.GetLastBindStatus(), MaterialBindStatus::BoundDefaultMaterial);
+        EXPECT_FALSE(binder.GetLastBindMessage().empty());
+        EXPECT_TRUE(Contains(binder.GetLastBindMessage(), "default material"));
+
+        const MaterialGPUConstants constants = ReadMaterialConstants(*device.lastCreatedBuffer);
+        EXPECT_FLOAT_EQ(constants.baseColorFactor.x, 0.8f);
+        EXPECT_FLOAT_EQ(constants.roughnessFactor, 0.5f);
+
+        binder.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation, MaterialBinderInitializationFailureKeepsErrorStatus)
+    {
+        FakeDevice device;
+        device.failBufferCreation = true;
+
+        MaterialBinder binder;
+        binder.Initialize(&device, nullptr);
+
+        EXPECT_FALSE(binder.IsInitialized());
+        EXPECT_EQ(binder.GetLastBindStatus(), MaterialBindStatus::Error);
+        EXPECT_FALSE(binder.GetLastBindMessage().empty());
+        EXPECT_TRUE(Contains(binder.GetLastBindMessage(), "constant buffer"));
+    }
+
+    TEST(MaterialSystemValidation, MaterialBinderMapFailureKeepsErrorForMaterialAndDefaultBind)
+    {
+        {
+            FakeDevice device;
+            device.bufferMapSucceeds = false;
+
+            MaterialBinder binder;
+            binder.Initialize(&device, nullptr);
+            ASSERT_TRUE(binder.IsInitialized());
+
+            Material material("map-fail");
+            FakeCommandContext ctx;
+            binder.Bind(ctx, material);
+
+            EXPECT_EQ(binder.GetLastBindStatus(), MaterialBindStatus::Error);
+            EXPECT_FALSE(binder.GetLastBindMessage().empty());
+            EXPECT_TRUE(Contains(binder.GetLastBindMessage(), "map material constant buffer"));
+
+            binder.Shutdown();
+        }
+
+        {
+            FakeDevice device;
+            device.bufferMapSucceeds = false;
+
+            MaterialBinder binder;
+            binder.Initialize(&device, nullptr);
+            ASSERT_TRUE(binder.IsInitialized());
+
+            FakeCommandContext ctx;
+            binder.BindDefault(ctx);
+
+            EXPECT_EQ(binder.GetLastBindStatus(), MaterialBindStatus::Error);
+            EXPECT_FALSE(binder.GetLastBindMessage().empty());
+            EXPECT_TRUE(Contains(binder.GetLastBindMessage(), "map material constant buffer"));
+
+            binder.Shutdown();
+        }
     }
 
     TEST(MaterialSystemValidation, MaterialSetUsesResidentTextureViewForAlbedo)

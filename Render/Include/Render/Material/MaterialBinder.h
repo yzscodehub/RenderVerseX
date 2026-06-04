@@ -7,6 +7,7 @@
 
 #include "Render/Material/MaterialGPUData.h"
 #include "RHI/RHI.h"
+#include <string>
 #include <unordered_map>
 
 namespace RVX
@@ -63,6 +64,7 @@ namespace RVX
          */
         bool IsInitialized() const { return m_device != nullptr; }
         MaterialBindStatus GetLastBindStatus() const { return m_lastBindStatus; }
+        const std::string& GetLastBindMessage() const { return m_lastBindMessage; }
 
         // =========================================================================
         // Binding
@@ -110,8 +112,9 @@ namespace RVX
         static MaterialGPUConstants GetDefaultConstants();
 
     private:
-        void EnsureConstantBuffer();
-        void UpdateConstantBuffer(const MaterialGPUConstants& constants);
+        bool EnsureConstantBuffer();
+        bool UpdateConstantBuffer(const MaterialGPUConstants& constants);
+        void SetBindResult(MaterialBindStatus status, std::string message);
 
         IRHIDevice* m_device = nullptr;
         GPUResourceManager* m_gpuResources = nullptr;
@@ -122,6 +125,7 @@ namespace RVX
         // Current material ID (for caching)
         uint64 m_currentMaterialId = 0;
         MaterialBindStatus m_lastBindStatus = MaterialBindStatus::None;
+        std::string m_lastBindMessage;
 
         // Default material constants
         MaterialGPUConstants m_defaultConstants;

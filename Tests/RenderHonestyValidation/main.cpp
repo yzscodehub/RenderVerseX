@@ -192,6 +192,7 @@ TEST_F(RenderHonestyValidationFixture, MaterialBinderRejectsInitializationWithou
 
     EXPECT_FALSE(binder.IsInitialized());
     EXPECT_EQ(binder.GetLastBindStatus(), RVX::MaterialBindStatus::Error);
+    EXPECT_FALSE(binder.GetLastBindMessage().empty());
 }
 
 TEST_F(RenderHonestyValidationFixture, GPUProfilerReportsTimestampQueriesUnavailable)

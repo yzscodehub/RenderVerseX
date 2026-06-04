@@ -114,8 +114,20 @@ bool MaterialTemplate::Compile(IRHIDevice* device)
         return false;
     }
 
+    if (m_vertexShaderPath.empty())
+    {
+        m_lastCompileError = "MaterialTemplate::Compile requires a vertex shader path";
+        return false;
+    }
+
+    if (m_pixelShaderPath.empty())
+    {
+        m_lastCompileError = "MaterialTemplate::Compile requires a pixel shader path";
+        return false;
+    }
+
     m_lastCompileError =
-        "MaterialTemplate::Compile is not implemented; no shader compilation or pipeline creation occurred";
+        "MaterialTemplate::Compile cannot create a standalone material pipeline yet; missing R5b pipeline binding integration";
     return false;
 }
 
