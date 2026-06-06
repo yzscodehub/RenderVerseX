@@ -14,6 +14,7 @@ namespace RVX
 {
     class World;
     class Camera;
+    struct RenderProxySnapshot;
     namespace Resource
     {
         class MaterialResource;
@@ -104,10 +105,15 @@ namespace RVX
         void Clear();
 
         /**
-         * @brief Collect renderable objects from a World
+         * @brief Collect renderable objects from a World through the legacy fallback collector.
          * @param world The world to collect from
          */
         void CollectFromWorld(World* world);
+
+        /**
+         * @brief Populate the render scene from a render-only proxy snapshot.
+         */
+        void ApplyProxySnapshot(const RenderProxySnapshot& snapshot);
 
         /**
          * @brief Perform view frustum culling

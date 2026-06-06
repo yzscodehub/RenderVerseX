@@ -29,6 +29,7 @@ target_sources(RVX_Render PRIVATE
     Private/Renderer/RenderDrawItem.cpp
     Private/Renderer/RenderFrameResourceBinder.cpp
     Private/Renderer/RenderPassRegistry.cpp
+    Private/Renderer/RenderProxySceneBridge.cpp
     Private/Renderer/SceneRenderer.cpp
     # Passes
     Private/Passes/OpaquePass.cpp

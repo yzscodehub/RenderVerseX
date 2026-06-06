@@ -2,7 +2,7 @@
 
 /**
  * @file RenderSceneCollector.h
- * @brief Collects renderable data from World/Scene into RenderScene snapshots
+ * @brief Legacy fallback collector for World/Scene to RenderScene snapshots.
  */
 
 #include "Core/MathTypes.h"
@@ -17,7 +17,7 @@ namespace RVX
     class World;
 
     /**
-     * @brief Converts scene entities and components into render-thread friendly data.
+     * @brief Converts scene entities and components into render-thread friendly data for legacy fallback.
      */
     class RenderSceneCollector
     {

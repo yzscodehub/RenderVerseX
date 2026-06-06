@@ -268,6 +268,7 @@ rvx_add_gtest(
         RenderSceneValidation/main.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Material/MaterialClassification.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderDrawItem.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderProxySceneBridge.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderScene.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderSceneCollector.cpp
     LIBS

@@ -15,7 +15,11 @@
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderDrawItem.h"
+#include "Render/Renderer/RenderProxy.h"
+
+#include <cstddef>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace RVX
@@ -26,8 +30,27 @@ namespace RVX
     class DepthPrepass;
     class OpaquePass;
     class RenderPassRegistry;
+    class RenderProxySceneBridge;
     class SkyboxPass;
     class TransparentPass;
+
+    enum class SceneRenderCollectionPath : uint8
+    {
+        None = 0,
+        Proxy,
+        LegacyFallback
+    };
+
+    struct SceneRenderCollectionStats
+    {
+        SceneRenderCollectionPath lastPath = SceneRenderCollectionPath::None;
+        uint64 proxyFrameCount = 0;
+        uint64 legacyFallbackFrameCount = 0;
+        size_t lastProxyPrimitiveCount = 0;
+        size_t lastProxyLightCount = 0;
+        uint64 lastFallbackOwnerId = 0;
+        std::string lastFallbackReason;
+    };
 
     /**
      * @brief Scene renderer - orchestrates rendering of a scene
@@ -176,6 +199,9 @@ namespace RVX
         /// Get visible object indices
         const std::vector<uint32_t>& GetVisibleObjectIndices() const { return m_visibleObjectIndices; }
 
+        /// Get scene collection path statistics.
+        const SceneRenderCollectionStats& GetCollectionStats() const { return m_collectionStats; }
+
         /// Get draw items for material-aware passes
         const std::vector<RenderDrawItem>& GetOpaqueDrawItems() const { return m_opaqueDrawItems; }
         const std::vector<RenderDrawItem>& GetMaskedDrawItems() const { return m_maskedDrawItems; }
@@ -200,9 +226,12 @@ namespace RVX
         std::unique_ptr<TransientResourcePool> m_transientResourcePool;
         std::unique_ptr<ResourceViewCache> m_resourceViewCache;
         std::unique_ptr<RenderPassRegistry> m_passRegistry;
+        std::unique_ptr<RenderProxySceneBridge> m_proxyBridge;
         
         ViewData m_viewData;
         RenderScene m_renderScene;
+        RenderProxySnapshot m_proxySnapshot;
+        SceneRenderCollectionStats m_collectionStats;
         std::vector<uint32_t> m_visibleObjectIndices;
         std::vector<RenderDrawItem> m_opaqueDrawItems;
         std::vector<RenderDrawItem> m_maskedDrawItems;

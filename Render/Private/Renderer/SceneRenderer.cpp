@@ -13,6 +13,7 @@
 #include "Resource/Types/TextureResource.h"
 #include "Renderer/RenderFrameResourceBinder.h"
 #include "Renderer/RenderPassRegistry.h"
+#include "Renderer/RenderProxySceneBridge.h"
 #include "Runtime/Camera/Camera.h"
 #include "Core/Log.h"
 #include <filesystem>
@@ -43,6 +44,7 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
 
     m_renderContext = renderContext;
     m_passRegistry = std::make_unique<RenderPassRegistry>();
+    m_proxyBridge = std::make_unique<RenderProxySceneBridge>();
 
     // Create render graph
     m_renderGraph = std::make_unique<RenderGraph>();
@@ -193,6 +195,7 @@ void SceneRenderer::Shutdown()
     
     m_renderGraph.reset();
     m_passRegistry.reset();
+    m_proxyBridge.reset();
     m_renderContext = nullptr;
     m_initialized = false;
 
@@ -217,8 +220,32 @@ void SceneRenderer::SetupView(const Camera& camera, World* world)
     // Setup view data from camera
     m_viewData.SetupFromCamera(camera, width, height);
 
-    // Collect scene data from world
-    m_renderScene.CollectFromWorld(world);
+    // Collect scene data through the proxy bridge first; legacy collection is audited fallback only.
+    RenderProxySceneBridgeResult proxyResult;
+    if (m_proxyBridge && m_proxyBridge->BuildSnapshot(world, m_proxySnapshot, &proxyResult))
+    {
+        m_renderScene.ApplyProxySnapshot(m_proxySnapshot);
+        m_collectionStats.lastPath = SceneRenderCollectionPath::Proxy;
+        ++m_collectionStats.proxyFrameCount;
+        m_collectionStats.lastProxyPrimitiveCount = proxyResult.primitiveCount;
+        m_collectionStats.lastProxyLightCount = proxyResult.lightCount;
+        m_collectionStats.lastFallbackOwnerId = 0;
+        m_collectionStats.lastFallbackReason.clear();
+    }
+    else
+    {
+        m_renderScene.CollectFromWorld(world);
+        m_collectionStats.lastPath = SceneRenderCollectionPath::LegacyFallback;
+        ++m_collectionStats.legacyFallbackFrameCount;
+        m_collectionStats.lastProxyPrimitiveCount = 0;
+        m_collectionStats.lastProxyLightCount = 0;
+        m_collectionStats.lastFallbackOwnerId = proxyResult.fallbackOwnerId;
+        m_collectionStats.lastFallbackReason = ToString(proxyResult.fallbackReason);
+
+        RVX_CORE_WARN("SceneRenderer: using legacy RenderSceneCollector fallback, reason={}, ownerId={}",
+                      m_collectionStats.lastFallbackReason,
+                      m_collectionStats.lastFallbackOwnerId);
+    }
 
     // Perform visibility culling
     m_renderScene.CullAgainstCamera(camera, m_visibleObjectIndices);

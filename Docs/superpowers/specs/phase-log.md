@@ -1344,6 +1344,115 @@ git diff --check
 
 ---
 
+### R8: RenderProxy-v1 Bridge and Main Path Switch
+
+**Date:** 2026-06-06
+**Commit:** `TBD`
+**Spark plan review agent:** `019e9aef-8ddb-7c60-86fe-f436b466a22e`
+**Spark code review agent:** `019e9afc-45d3-7d23-87a8-447444db3437`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: `14. R8 - RenderProxy-v1 Bridge and Main Path Switch`
+- Stage plan: `Docs/superpowers/specs/2026-06-06-r8-renderproxy-v1-plan.md`
+- Lines checked: roadmap lines 403-481 were reread before implementation.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R7 Visual Gate Baseline
+- Evidence: R7 committed as `7a275bc` with hash correction committed as `9319c79`; R8 implementation plan passed Spark plan review before code changes.
+
+**Approved scope:**
+
+- Add render-only proxy data types for primitives, lights, snapshots, ids, and minimal commands.
+- Extend `PrimitiveComponent` with proxy creation methods while retaining legacy `CollectRenderData`.
+- Make `StaticMeshComponent` produce `RenderPrimitiveProxy` without embedding Scene/Component pointers in proxy data.
+- Add a synchronous Scene-to-Render proxy bridge that builds a snapshot from scene primitives and lights.
+- Add visible fallback reasons and owner ids when proxy collection cannot represent the current world.
+- Add `RenderScene::ApplyProxySnapshot` to convert proxy snapshots into existing render object/light lists.
+- Switch `SceneRenderer::SetupView` to prefer proxy snapshots, with logged and counted legacy fallback.
+- Add RenderScene validation coverage for proxy creation, snapshot application, bridge fallback, light proxy capture, hidden/disabled behavior, creation failure, and transform updates.
+- Keep the R7 visual gate in the required validation path.
+
+**Out of scope:**
+
+- Full ECS/Object migration or deletion of `SceneEntity`.
+- Persistent proxy lifetime optimization.
+- Multithreaded render command queue.
+- Removal of `RenderSceneCollector`, `CollectFromWorld`, or `CollectRenderData`.
+- Broad pass/draw-list rewrites beyond adapting collection to the proxy bridge.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-06-r8-renderproxy-v1-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/CMakeLists.txt`
+- `Render/Include/Render/Renderer/RenderProxy.h`
+- `Render/Include/Render/Renderer/RenderScene.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/RenderProxySceneBridge.h`
+- `Render/Private/Renderer/RenderProxySceneBridge.cpp`
+- `Render/Private/Renderer/RenderScene.cpp`
+- `Render/Private/Renderer/RenderSceneCollector.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Scene/Include/Scene/PrimitiveComponent.h`
+- `Scene/Include/Scene/Components/StaticMeshComponent.h`
+- `Scene/Private/Components/StaticMeshComponent.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/RenderSceneValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderSceneValidation ResourceInstantiationValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+build\win_x64_debug\Tests\Debug\RenderSceneValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderSceneValidation|ResourceInstantiationValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|RenderHonestyValidation|RenderSceneValidation|RenderPassValidation|MaterialSystemValidation|ResourceInstantiationValidation|PipelineCacheValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `RenderSceneValidation`: 17/17
+  - Required R8 filtered CTest: 99/99
+  - Broad render regression CTest: 182/182
+- Visual gate: PASS
+  - `ModelViewerSmoke`: PASS
+  - `VisualGoldenValidation`: PASS
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan, code review, and follow-up confirmation messages
+- Screenshots: `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R7_DX11_320x180.ppm`
+- Golden: `Tests/Golden/ModelViewer/R7_DX11_320x180.ppm`
+- Diffs: failure diff path configured as `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R7_DX11_320x180.diff.ppm`
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: added a stable fallback reason enum, explicit fallback-only tests, and deterministic stats/test seam requirements to the stage plan.
+
+**Spark code review result:**
+
+- Verdict: PASS, confirmed again after adding the proxy creation failure test.
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: added `PrimitiveProxyCreationFailed` bridge coverage.
+- Non-blocking suggestions deferred: direct `SceneRenderer::SetupView` stats tests and null-world stats/log tests, because constructing the full renderer/context is larger than the R8 bridge seam.
+
+**Notes / follow-ups:**
+
+- `RenderSceneCollector`, `RenderScene::CollectFromWorld`, and `PrimitiveComponent::CollectRenderData` are now legacy fallback paths, not the desired primary renderer collection path.
+- Future stages should add direct `SceneRenderer` collection stats tests once a lightweight renderer harness exists.
+- Persistent proxy ids, incremental proxy updates, and multithreaded command queues remain future work.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R8 commit.
+- Next stage must reread the render-first plan and the next documented scope, create/confirm its implementation plan, pass Spark plan review, implement, pass validation including the visual gate, pass Spark code review, update this log, and commit before moving on.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

@@ -1,15 +1,19 @@
 #include "Core/Core.h"
 #include "Render/Renderer/RenderDrawItem.h"
+#include "Render/Renderer/RenderProxy.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MeshResource.h"
 #include "Runtime/Camera/Camera.h"
 #include "Scene/Actor.h"
+#include "Scene/Components/LightComponent.h"
 #include "Scene/Components/MeshRendererComponent.h"
 #include "Scene/Components/StaticMeshComponent.h"
 #include "Scene/Mesh.h"
 #include "Scene/SceneManager.h"
 #include "World/World.h"
+
+#include "RenderProxySceneBridge.h"
 
 #include <gtest/gtest.h>
 
@@ -107,6 +111,35 @@ namespace
         const auto handle = sceneManager->CreateEntity(name);
         return sceneManager->GetEntity(handle);
     }
+
+    class EmptyPrimitiveComponent : public PrimitiveComponent
+    {
+    public:
+        const char* GetClassName() const override { return "EmptyPrimitiveComponent"; }
+        bool HasRenderProxy() const override { return false; }
+        bool HasRenderData() const override { return false; }
+    };
+
+    class LegacyOnlyPrimitiveComponent : public PrimitiveComponent
+    {
+    public:
+        const char* GetClassName() const override { return "LegacyOnlyPrimitiveComponent"; }
+        bool HasRenderProxy() const override { return false; }
+        bool HasRenderData() const override { return true; }
+    };
+
+    class FailingProxyPrimitiveComponent : public PrimitiveComponent
+    {
+    public:
+        const char* GetClassName() const override { return "FailingProxyPrimitiveComponent"; }
+        bool HasRenderProxy() const override { return true; }
+        bool HasRenderData() const override { return true; }
+        bool CreateRenderProxy(RenderPrimitiveProxy& outProxy) const override
+        {
+            (void)outProxy;
+            return false;
+        }
+    };
 
     class LogEnvironment final : public ::testing::Environment
     {
@@ -254,6 +287,293 @@ TEST(RenderSceneValidation, StaticMeshComponentCollectsRenderObjectFromWorld)
     EXPECT_FALSE(object.castsShadow);
     EXPECT_FALSE(object.receivesShadow);
     EXPECT_EQ(Vec3(4.0f, 0.0f, 0.0f), Vec3(object.worldMatrix[3]));
+
+    world.Shutdown();
+}
+
+TEST(RenderSceneValidation, StaticMeshComponentCreatesRenderProxy)
+{
+    World world;
+    world.Initialize();
+
+    auto* entity = CreateEntity(world, "ProxyPrimitiveEntity");
+    ASSERT_NE(nullptr, entity);
+    entity->SetPosition(Vec3(2.0f, 3.0f, 4.0f));
+
+    auto mesh = MakeMeshResource(1101);
+    auto material = MakeMaterialResource(2101);
+
+    auto* primitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
+    ASSERT_NE(nullptr, primitive);
+    EXPECT_TRUE(primitive->AttachToComponent(entity->GetRootComponent()));
+    primitive->SetMesh(mesh);
+    primitive->SetMaterial(0, material);
+    primitive->SetLayerMask(0x10u);
+    primitive->SetCastsShadow(false);
+    primitive->SetReceivesShadow(false);
+
+    RenderPrimitiveProxy proxy;
+    ASSERT_TRUE(primitive->CreateRenderProxy(proxy));
+
+    EXPECT_EQ(0u, proxy.ownerId);
+    EXPECT_EQ(mesh.GetId(), proxy.meshId);
+    EXPECT_EQ(mesh.Get(), proxy.meshResource);
+    ASSERT_EQ(static_cast<size_t>(1), proxy.materialIds.size());
+    ASSERT_EQ(static_cast<size_t>(1), proxy.materialResources.size());
+    EXPECT_EQ(material.GetId(), proxy.materialIds[0]);
+    EXPECT_EQ(material.Get(), proxy.materialResources[0]);
+    EXPECT_EQ(0x10u, proxy.layerMask);
+    EXPECT_FALSE(proxy.castsShadow);
+    EXPECT_FALSE(proxy.receivesShadow);
+    EXPECT_TRUE(proxy.visible);
+    EXPECT_EQ(Vec3(2.0f, 3.0f, 4.0f), Vec3(proxy.worldMatrix[3]));
+
+    world.Shutdown();
+}
+
+TEST(RenderSceneValidation, RenderSceneApplyProxySnapshotPopulatesObjectsAndLights)
+{
+    RenderProxySnapshot snapshot;
+
+    RenderPrimitiveProxy primitive;
+    primitive.ownerId = 42;
+    primitive.worldMatrix = Mat4Identity();
+    primitive.worldMatrix[3] = Vec4(1.0f, 2.0f, 3.0f, 1.0f);
+    primitive.normalMatrix = Mat4Identity();
+    primitive.bounds = AABB(Vec3(-1.0f), Vec3(1.0f));
+    primitive.meshId = 3101;
+    primitive.materialIds = {4101};
+    primitive.sortKey = 4101;
+    primitive.visible = true;
+    primitive.castsShadow = false;
+    primitive.receivesShadow = true;
+    snapshot.primitives.push_back(primitive);
+
+    RenderLightProxy light;
+    light.ownerId = 43;
+    light.type = RenderLightProxy::Type::Point;
+    light.position = Vec3(0.0f, 4.0f, 0.0f);
+    light.color = Vec3(1.0f, 0.5f, 0.25f);
+    light.intensity = 3.0f;
+    light.range = 12.0f;
+    light.castsShadow = true;
+    snapshot.lights.push_back(light);
+
+    RenderScene scene;
+    scene.AddObject(MakeObject(Vec3(99.0f)));
+    scene.ApplyProxySnapshot(snapshot);
+
+    ASSERT_EQ(static_cast<size_t>(1), scene.GetObjectCount());
+    ASSERT_EQ(static_cast<size_t>(1), scene.GetLightCount());
+
+    const RenderObject& object = scene.GetObject(0);
+    EXPECT_EQ(42u, object.entityId);
+    EXPECT_EQ(3101u, object.meshId);
+    EXPECT_EQ(Vec3(1.0f, 2.0f, 3.0f), Vec3(object.worldMatrix[3]));
+    ASSERT_EQ(static_cast<size_t>(1), object.materialIds.size());
+    EXPECT_EQ(4101u, object.materialIds[0]);
+    EXPECT_FALSE(object.castsShadow);
+    EXPECT_TRUE(object.receivesShadow);
+
+    const RenderLight& renderLight = scene.GetLight(0);
+    EXPECT_EQ(RenderLight::Type::Point, renderLight.type);
+    EXPECT_EQ(Vec3(0.0f, 4.0f, 0.0f), renderLight.position);
+    EXPECT_EQ(Vec3(1.0f, 0.5f, 0.25f), renderLight.color);
+    EXPECT_EQ(3.0f, renderLight.intensity);
+    EXPECT_TRUE(renderLight.castsShadow);
+}
+
+TEST(RenderSceneValidation, RenderProxyBridgeBuildsPrimitiveAndLightSnapshot)
+{
+    World world;
+    world.Initialize();
+
+    auto* meshEntity = CreateEntity(world, "ProxyMeshEntity");
+    ASSERT_NE(nullptr, meshEntity);
+    meshEntity->SetPosition(Vec3(3.0f, 0.0f, 0.0f));
+
+    auto mesh = MakeMeshResource(1201);
+    auto material = MakeMaterialResource(2201);
+    auto* primitive = static_cast<Actor*>(meshEntity)->AddComponent<StaticMeshComponent>();
+    ASSERT_NE(nullptr, primitive);
+    EXPECT_TRUE(primitive->AttachToComponent(meshEntity->GetRootComponent()));
+    primitive->SetMesh(mesh);
+    primitive->SetMaterial(0, material);
+
+    auto* lightEntity = CreateEntity(world, "ProxyLightEntity");
+    ASSERT_NE(nullptr, lightEntity);
+    lightEntity->SetPosition(Vec3(0.0f, 5.0f, 0.0f));
+    auto* light = lightEntity->AddComponent<LightComponent>();
+    ASSERT_NE(nullptr, light);
+    light->SetLightType(LightType::Point);
+    light->SetColor(Vec3(0.25f, 0.5f, 1.0f));
+    light->SetIntensity(2.0f);
+    light->SetCastsShadow(true);
+
+    RenderProxySceneBridge bridge;
+    RenderProxySnapshot snapshot;
+    RenderProxySceneBridgeResult result;
+    ASSERT_TRUE(bridge.BuildSnapshot(&world, snapshot, &result));
+
+    EXPECT_TRUE(result.usedProxyPath);
+    EXPECT_FALSE(result.requiresLegacyFallback);
+    EXPECT_EQ(RenderProxySceneBridgeFallbackReason::None, result.fallbackReason);
+    EXPECT_EQ(static_cast<size_t>(1), result.primitiveCount);
+    EXPECT_EQ(static_cast<size_t>(1), result.lightCount);
+
+    ASSERT_EQ(static_cast<size_t>(1), snapshot.primitives.size());
+    EXPECT_EQ(meshEntity->GetHandle(), snapshot.primitives[0].ownerId);
+    EXPECT_EQ(meshEntity->GetHandle(), snapshot.primitives[0].id.value);
+    EXPECT_EQ(mesh.GetId(), snapshot.primitives[0].meshId);
+    EXPECT_EQ(material.GetId(), snapshot.primitives[0].materialIds[0]);
+
+    ASSERT_EQ(static_cast<size_t>(1), snapshot.lights.size());
+    EXPECT_EQ(lightEntity->GetHandle(), snapshot.lights[0].ownerId);
+    EXPECT_EQ(RenderLightProxy::Type::Point, snapshot.lights[0].type);
+    EXPECT_EQ(Vec3(0.0f, 5.0f, 0.0f), snapshot.lights[0].position);
+    EXPECT_TRUE(snapshot.lights[0].castsShadow);
+
+    world.Shutdown();
+}
+
+TEST(RenderSceneValidation, RenderProxyBridgeReportsLegacyRendererFallback)
+{
+    World world;
+    world.Initialize();
+
+    auto* entity = CreateEntity(world, "LegacyRendererEntity");
+    ASSERT_NE(nullptr, entity);
+
+    auto mesh = MakeMeshResource(1202);
+    auto* legacyRenderer = entity->AddComponent<MeshRendererComponent>();
+    ASSERT_NE(nullptr, legacyRenderer);
+    legacyRenderer->SetMesh(mesh);
+
+    RenderProxySceneBridge bridge;
+    RenderProxySnapshot snapshot;
+    RenderProxySceneBridgeResult result;
+    EXPECT_FALSE(bridge.BuildSnapshot(&world, snapshot, &result));
+
+    EXPECT_FALSE(result.usedProxyPath);
+    EXPECT_TRUE(result.requiresLegacyFallback);
+    EXPECT_EQ(RenderProxySceneBridgeFallbackReason::LegacyRendererRequired, result.fallbackReason);
+    EXPECT_EQ(entity->GetHandle(), result.fallbackOwnerId);
+    EXPECT_TRUE(snapshot.primitives.empty());
+    EXPECT_TRUE(snapshot.lights.empty());
+
+    world.Shutdown();
+}
+
+TEST(RenderSceneValidation, RenderProxyBridgeDoesNotFallbackForHiddenPrimitiveControlledLegacyRenderer)
+{
+    World world;
+    world.Initialize();
+
+    auto* entity = CreateEntity(world, "HiddenPrimitiveControlledEntity");
+    ASSERT_NE(nullptr, entity);
+
+    auto mesh = MakeMeshResource(1203);
+    auto* legacyRenderer = entity->AddComponent<MeshRendererComponent>();
+    ASSERT_NE(nullptr, legacyRenderer);
+    legacyRenderer->SetMesh(mesh);
+
+    auto* primitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
+    ASSERT_NE(nullptr, primitive);
+    EXPECT_TRUE(primitive->AttachToComponent(entity->GetRootComponent()));
+    primitive->SetMesh(mesh);
+    primitive->SetVisible(false);
+
+    RenderProxySceneBridge bridge;
+    RenderProxySnapshot snapshot;
+    RenderProxySceneBridgeResult result;
+    EXPECT_TRUE(bridge.BuildSnapshot(&world, snapshot, &result));
+
+    EXPECT_TRUE(result.usedProxyPath);
+    EXPECT_FALSE(result.requiresLegacyFallback);
+    EXPECT_TRUE(snapshot.primitives.empty());
+
+    world.Shutdown();
+}
+
+TEST(RenderSceneValidation, RenderProxyBridgeFallbackOnlyWhenLegacyPrimitiveIsRenderable)
+{
+    World world;
+    world.Initialize();
+
+    auto* emptyEntity = CreateEntity(world, "EmptyPrimitiveEntity");
+    ASSERT_NE(nullptr, emptyEntity);
+    auto* emptyPrimitive = static_cast<Actor*>(emptyEntity)->AddComponent<EmptyPrimitiveComponent>();
+    ASSERT_NE(nullptr, emptyPrimitive);
+
+    RenderProxySceneBridge bridge;
+    RenderProxySnapshot snapshot;
+    RenderProxySceneBridgeResult result;
+    EXPECT_TRUE(bridge.BuildSnapshot(&world, snapshot, &result));
+    EXPECT_FALSE(result.requiresLegacyFallback);
+
+    auto* legacyEntity = CreateEntity(world, "LegacyPrimitiveEntity");
+    ASSERT_NE(nullptr, legacyEntity);
+    auto* legacyPrimitive = static_cast<Actor*>(legacyEntity)->AddComponent<LegacyOnlyPrimitiveComponent>();
+    ASSERT_NE(nullptr, legacyPrimitive);
+
+    EXPECT_FALSE(bridge.BuildSnapshot(&world, snapshot, &result));
+    EXPECT_TRUE(result.requiresLegacyFallback);
+    EXPECT_EQ(RenderProxySceneBridgeFallbackReason::PrimitiveProxyUnavailable, result.fallbackReason);
+    EXPECT_EQ(legacyEntity->GetHandle(), result.fallbackOwnerId);
+
+    world.Shutdown();
+}
+
+TEST(RenderSceneValidation, RenderProxyBridgeReportsProxyCreationFailure)
+{
+    World world;
+    world.Initialize();
+
+    auto* entity = CreateEntity(world, "FailingProxyPrimitiveEntity");
+    ASSERT_NE(nullptr, entity);
+    auto* primitive = static_cast<Actor*>(entity)->AddComponent<FailingProxyPrimitiveComponent>();
+    ASSERT_NE(nullptr, primitive);
+
+    RenderProxySceneBridge bridge;
+    RenderProxySnapshot snapshot;
+    RenderProxySceneBridgeResult result;
+    EXPECT_FALSE(bridge.BuildSnapshot(&world, snapshot, &result));
+
+    EXPECT_TRUE(result.requiresLegacyFallback);
+    EXPECT_EQ(RenderProxySceneBridgeFallbackReason::PrimitiveProxyCreationFailed, result.fallbackReason);
+    EXPECT_EQ(entity->GetHandle(), result.fallbackOwnerId);
+    EXPECT_TRUE(snapshot.primitives.empty());
+
+    world.Shutdown();
+}
+
+TEST(RenderSceneValidation, RenderProxyBridgeReflectsTransformUpdates)
+{
+    World world;
+    world.Initialize();
+
+    auto* entity = CreateEntity(world, "TransformProxyEntity");
+    ASSERT_NE(nullptr, entity);
+
+    auto mesh = MakeMeshResource(1204);
+    auto* primitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
+    ASSERT_NE(nullptr, primitive);
+    EXPECT_TRUE(primitive->AttachToComponent(entity->GetRootComponent()));
+    primitive->SetMesh(mesh);
+
+    RenderProxySceneBridge bridge;
+    RenderProxySnapshot snapshot;
+    RenderProxySceneBridgeResult result;
+
+    entity->SetPosition(Vec3(1.0f, 0.0f, 0.0f));
+    ASSERT_TRUE(bridge.BuildSnapshot(&world, snapshot, &result));
+    ASSERT_EQ(static_cast<size_t>(1), snapshot.primitives.size());
+    EXPECT_EQ(Vec3(1.0f, 0.0f, 0.0f), Vec3(snapshot.primitives[0].worldMatrix[3]));
+
+    entity->SetPosition(Vec3(5.0f, 0.0f, 0.0f));
+    ASSERT_TRUE(bridge.BuildSnapshot(&world, snapshot, &result));
+    ASSERT_EQ(static_cast<size_t>(1), snapshot.primitives.size());
+    EXPECT_EQ(Vec3(5.0f, 0.0f, 0.0f), Vec3(snapshot.primitives[0].worldMatrix[3]));
 
     world.Shutdown();
 }
