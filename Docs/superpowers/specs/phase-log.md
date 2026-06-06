@@ -1347,7 +1347,7 @@ git diff --check
 ### R8: RenderProxy-v1 Bridge and Main Path Switch
 
 **Date:** 2026-06-06
-**Commit:** `TBD`
+**Commit:** `4785071`
 **Spark plan review agent:** `019e9aef-8ddb-7c60-86fe-f436b466a22e`
 **Spark code review agent:** `019e9afc-45d3-7d23-87a8-447444db3437`
 
