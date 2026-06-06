@@ -65,6 +65,7 @@ namespace RVX
         uint64 opaquePipelineHash = 0;
         uint64 maskedPipelineHash = 0;
         uint64 transparentPipelineHash = 0;
+        uint64 toneMappingPipelineHash = 0;
         uint32 pipelineCreateCount = 0;
         uint32 pipelineCacheHitCount = 0;
         uint32 pipelineCacheMissCount = 0;
@@ -157,14 +158,33 @@ namespace RVX
         /**
          * @brief Get the depth-only pipeline for depth prepass
          * @return Depth-only pipeline or nullptr if not available
-         * @note Currently returns nullptr - depth-only pipeline not yet implemented
          */
         RHIPipeline* GetDepthOnlyPipeline() const { return m_depthOnlyPipeline.Get(); }
+
+        /**
+         * @brief Get the fullscreen ToneMapping post-process pipeline
+         */
+        RHIPipeline* GetToneMappingPipeline() const { return m_toneMappingPipeline.Get(); }
 
         /**
          * @brief Get the default pipeline layout
          */
         RHIPipelineLayout* GetDefaultLayout() const { return m_pipelineLayout.Get(); }
+
+        /**
+         * @brief Get the post-process fullscreen pipeline layout
+         */
+        RHIPipelineLayout* GetPostProcessLayout() const { return m_postProcessPipelineLayout.Get(); }
+
+        /**
+         * @brief Get the descriptor set layout used by fullscreen post-process passes
+         */
+        RHIDescriptorSetLayout* GetPostProcessSetLayout() const { return m_postProcessSetLayout.Get(); }
+
+        /**
+         * @brief Get the owning RHI device for pass-local resources
+         */
+        IRHIDevice* GetDevice() const { return m_device; }
 
         // =====================================================================
         // Descriptor Sets
@@ -252,16 +272,19 @@ namespace RVX
 
         bool CompileShaders();
         bool CreatePipelineLayout();
+        bool CreatePostProcessPipelineLayout();
         bool CreatePipeline();
         RHIPipelineRef GetOrCreateDefaultLitPipeline(MaterialPipelineVariant variant,
                                                      const char* debugName,
                                                      const RHIDepthStencilState& depthStencilState,
                                                      const RHIBlendState& blendState);
         RHIPipelineRef GetOrCreateDepthOnlyPipeline();
+        RHIPipelineRef GetOrCreateToneMappingPipeline();
         RHIGraphicsPipelineDesc BuildDefaultLitPipelineDesc(const char* debugName,
                                                             const RHIDepthStencilState& depthStencilState,
                                                             const RHIBlendState& blendState) const;
         RHIGraphicsPipelineDesc BuildDepthOnlyPipelineDesc() const;
+        RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc() const;
         bool CreateViewConstantBuffer();
         bool CreateObjectConstantBuffer();
         RHIDescriptorSetRef CreateFrameDescriptorSet();
@@ -289,19 +312,26 @@ namespace RVX
         RHIShaderRef m_vertexShader;
         RHIShaderRef m_pixelShader;
         RHIShaderRef m_depthOnlyVertexShader;
+        RHIShaderRef m_toneMappingVertexShader;
+        RHIShaderRef m_toneMappingPixelShader;
         std::unique_ptr<ShaderCompileResult> m_vsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_psCompileResult;
         std::unique_ptr<ShaderCompileResult> m_depthOnlyVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_toneMappingVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_toneMappingPsCompileResult;
 
         // Descriptor set layouts and pipeline layout
         std::vector<RHIDescriptorSetLayoutRef> m_setLayouts;
         RHIPipelineLayoutRef m_pipelineLayout;
+        RHIDescriptorSetLayoutRef m_postProcessSetLayout;
+        RHIPipelineLayoutRef m_postProcessPipelineLayout;
 
         // Graphics pipelines
         RHIPipelineRef m_opaquePipeline;
         RHIPipelineRef m_maskedPipeline;
         RHIPipelineRef m_transparentPipeline;
         RHIPipelineRef m_depthOnlyPipeline;
+        RHIPipelineRef m_toneMappingPipeline;
         std::unordered_map<uint64, RHIPipelineRef> m_pipelineCache;
 
         // Frame and object constants

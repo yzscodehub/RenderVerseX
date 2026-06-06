@@ -189,6 +189,16 @@ namespace RVX
      * - Ping-pong buffer management
      * - Integration with RenderGraph
      */
+    struct PostProcessStackExecuteStats
+    {
+        uint32 requestedEffectCount = 0;
+        uint32 unsupportedSkippedCount = 0;
+        uint32 enabledEffectCount = 0;
+        uint32 graphPassCount = 0;
+        uint32 transientIntermediateCount = 0;
+        bool noEffectNoWork = false;
+    };
+
     class PostProcessStack
     {
     public:
@@ -266,11 +276,17 @@ namespace RVX
         PostProcessSettings& GetSettings() { return m_settings; }
         const PostProcessSettings& GetSettings() const { return m_settings; }
 
+        /**
+         * @brief Get statistics from the last Execute() call
+         */
+        const PostProcessStackExecuteStats& GetLastExecuteStats() const { return m_lastExecuteStats; }
+
     private:
         void SortEffects();
 
         IRHIDevice* m_device = nullptr;
         PostProcessSettings m_settings;
+        PostProcessStackExecuteStats m_lastExecuteStats;
         std::vector<std::unique_ptr<IPostProcessPass>> m_effects;
     };
 

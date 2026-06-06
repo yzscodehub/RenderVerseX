@@ -8,6 +8,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -174,7 +175,7 @@ namespace
         RVX::RHIShaderRef CreateShader(const RVX::RHIShaderDesc& desc) override
         {
             ++shaderCreateCount;
-            if (failShaderCreation)
+            if (failShaderCreation || shaderCreateCount == failShaderCreationAtIndex)
                 return {};
             return RVX::MakeRef<FakeShader>(desc);
         }
@@ -194,6 +195,7 @@ namespace
         RVX::RHIPipelineLayoutRef CreatePipelineLayout(const RVX::RHIPipelineLayoutDesc& desc) override
         {
             capturedPipelineLayoutSetCount = static_cast<RVX::uint32>(desc.setLayouts.size());
+            capturedPipelineLayoutSetCounts.push_back(capturedPipelineLayoutSetCount);
             if (failPipelineLayoutCreation)
                 return {};
             return RVX::MakeRef<FakePipelineLayout>();
@@ -202,7 +204,8 @@ namespace
         RVX::RHIPipelineRef CreateGraphicsPipeline(const RVX::RHIGraphicsPipelineDesc& desc) override
         {
             capturedGraphicsPipelines.push_back(desc);
-            if (failPipelineCreation)
+            if (failPipelineCreation ||
+                capturedGraphicsPipelines.size() == static_cast<size_t>(failPipelineCreationAtIndex))
                 return {};
             return RVX::MakeRef<FakePipeline>();
         }
@@ -233,10 +236,13 @@ namespace
 
         bool failBufferCreation = false;
         bool failShaderCreation = false;
+        RVX::uint32 failShaderCreationAtIndex = std::numeric_limits<RVX::uint32>::max();
         bool failPipelineLayoutCreation = false;
         bool failPipelineCreation = false;
+        RVX::uint32 failPipelineCreationAtIndex = std::numeric_limits<RVX::uint32>::max();
         RVX::uint32 shaderCreateCount = 0;
         RVX::uint32 capturedPipelineLayoutSetCount = 0;
+        std::vector<RVX::uint32> capturedPipelineLayoutSetCounts;
         std::vector<RVX::RHIDescriptorSetLayoutDesc> capturedSetLayouts;
         std::vector<RVX::RHIGraphicsPipelineDesc> capturedGraphicsPipelines;
 
@@ -276,6 +282,23 @@ namespace
         std::ostringstream contents;
         contents << file.rdbuf();
         return contents.str();
+    }
+
+    void ReplaceManifestFieldValue(const fs::path& manifestPath,
+                                   const std::string& key,
+                                   const std::string& replacementValue)
+    {
+        std::string manifest = ReadTextFile(manifestPath);
+        const std::string prefix = key + "=";
+        const size_t fieldOffset = manifest.find(prefix);
+        ASSERT_NE(fieldOffset, std::string::npos);
+
+        const size_t valueOffset = fieldOffset + prefix.size();
+        const size_t lineEnd = manifest.find('\n', valueOffset);
+        ASSERT_NE(lineEnd, std::string::npos);
+
+        manifest.replace(valueOffset, lineEnd - valueOffset, replacementValue);
+        WriteTextFile(manifestPath, manifest);
     }
 
     RVX::PipelineCacheConfig ConfigWithManifest(const fs::path& manifestDirectory)
@@ -318,6 +341,27 @@ TEST_F(PipelineCacheValidationFixture, FailedShaderCreationFailsWithVisibleError
     EXPECT_NE(cache.GetLastError().find("vertex shader"), std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture, MissingToneMappingShaderFailsWithVisibleError)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path sourceDir = FindShaderDirectory();
+    TempDirectory temp("rvx_pipeline_missing_tonemapping_shader");
+    fs::copy_file(sourceDir / "DefaultLit.hlsl", temp.Path() / "DefaultLit.hlsl");
+    fs::copy_file(sourceDir / "DepthOnly.hlsl", temp.Path() / "DepthOnly.hlsl");
+    fs::copy(sourceDir / "Include", temp.Path() / "Include", fs::copy_options::recursive);
+    fs::create_directories(temp.Path() / "PostProcess");
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+
+    EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
+    EXPECT_NE(cache.GetLastError().find("ToneMapping shader file not found"), std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
 {
     if (!HasCompilerAvailable())
@@ -329,12 +373,15 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     RVX::PipelineCache cache;
 
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
-    ASSERT_GE(device.capturedSetLayouts.size(), 3u);
-    EXPECT_EQ(device.capturedPipelineLayoutSetCount, 3u);
+    ASSERT_GE(device.capturedSetLayouts.size(), 4u);
+    ASSERT_GE(device.capturedPipelineLayoutSetCounts.size(), 2u);
+    EXPECT_EQ(device.capturedPipelineLayoutSetCounts[0], 3u);
+    EXPECT_EQ(device.capturedPipelineLayoutSetCounts[1], 1u);
 
     const auto& frameLayout = device.capturedSetLayouts[0];
     const auto& objectLayout = device.capturedSetLayouts[1];
     const auto& materialLayout = device.capturedSetLayouts[2];
+    const auto& postProcessLayout = device.capturedSetLayouts[3];
 
     const auto* frame = FindBinding(frameLayout, 0);
     ASSERT_NE(frame, nullptr);
@@ -362,6 +409,24 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     const auto* sampler = FindBinding(materialLayout, 6);
     ASSERT_NE(sampler, nullptr);
     EXPECT_EQ(sampler->type, RVX::RHIBindingType::Sampler);
+
+    const auto* postProcessConstants = FindBinding(postProcessLayout, 0);
+    ASSERT_NE(postProcessConstants, nullptr);
+    EXPECT_EQ(postProcessConstants->type, RVX::RHIBindingType::UniformBuffer);
+    EXPECT_TRUE(RVX::HasFlag(postProcessConstants->visibility, RVX::RHIShaderStage::Pixel));
+
+    const auto* postProcessTexture = FindBinding(postProcessLayout, 1);
+    ASSERT_NE(postProcessTexture, nullptr);
+    EXPECT_EQ(postProcessTexture->type, RVX::RHIBindingType::SampledTexture);
+    EXPECT_TRUE(RVX::HasFlag(postProcessTexture->visibility, RVX::RHIShaderStage::Pixel));
+
+    const auto* postProcessSampler = FindBinding(postProcessLayout, 2);
+    ASSERT_NE(postProcessSampler, nullptr);
+    EXPECT_EQ(postProcessSampler->type, RVX::RHIBindingType::Sampler);
+    EXPECT_TRUE(RVX::HasFlag(postProcessSampler->visibility, RVX::RHIShaderStage::Pixel));
+
+    EXPECT_NE(cache.GetPostProcessSetLayout(), nullptr);
+    EXPECT_NE(cache.GetPostProcessLayout(), nullptr);
 }
 
 TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAware)
@@ -384,8 +449,8 @@ TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAwa
     EXPECT_NE(firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque), 0u);
     EXPECT_NE(firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque),
               firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Transparent));
-    EXPECT_EQ(firstCache.GetStats().pipelineCreateCount, 4u);
-    EXPECT_EQ(firstCache.GetStats().pipelineCacheMissCount, 4u);
+    EXPECT_EQ(firstCache.GetStats().pipelineCreateCount, 5u);
+    EXPECT_EQ(firstCache.GetStats().pipelineCacheMissCount, 5u);
 }
 
 TEST_F(PipelineCacheValidationFixture, RenderTargetFormatChangesPipelineHash)
@@ -406,8 +471,9 @@ TEST_F(PipelineCacheValidationFixture, RenderTargetFormatChangesPipelineHash)
 
     EXPECT_NE(firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque),
               secondCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque));
-    ASSERT_FALSE(secondDevice.capturedGraphicsPipelines.empty());
+    ASSERT_GE(secondDevice.capturedGraphicsPipelines.size(), 5u);
     EXPECT_EQ(secondDevice.capturedGraphicsPipelines.front().renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(secondDevice.capturedGraphicsPipelines[4].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
 }
 
 TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
@@ -425,10 +491,11 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_EQ(RVX::PipelineCache::GetDefaultDepthStencilFormat(), RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(cache.GetDepthClearValue(), 1.0f);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), 4u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 5u);
     const auto& opaqueDesc = device.capturedGraphicsPipelines[0];
     const auto& transparentDesc = device.capturedGraphicsPipelines[2];
     const auto& depthOnlyDesc = device.capturedGraphicsPipelines[3];
+    const auto& toneMappingDesc = device.capturedGraphicsPipelines[4];
 
     EXPECT_EQ(opaqueDesc.depthStencilFormat, RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(opaqueDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::Less);
@@ -447,6 +514,16 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_EQ(depthOnlyDesc.pixelShader, nullptr);
     ASSERT_EQ(depthOnlyDesc.inputLayout.elements.size(), static_cast<size_t>(1));
     EXPECT_STREQ(depthOnlyDesc.inputLayout.elements[0].semanticName, "POSITION");
+
+    ASSERT_NE(cache.GetToneMappingPipeline(), nullptr);
+    EXPECT_EQ(toneMappingDesc.numRenderTargets, 1u);
+    EXPECT_EQ(toneMappingDesc.renderTargetFormats[0], RVX::RHIFormat::RGBA8_UNORM);
+    EXPECT_EQ(toneMappingDesc.depthStencilFormat, RVX::RHIFormat::Unknown);
+    EXPECT_FALSE(toneMappingDesc.depthStencilState.depthTestEnable);
+    EXPECT_FALSE(toneMappingDesc.depthStencilState.depthWriteEnable);
+    EXPECT_NE(toneMappingDesc.vertexShader, nullptr);
+    EXPECT_NE(toneMappingDesc.pixelShader, nullptr);
+    EXPECT_TRUE(toneMappingDesc.inputLayout.elements.empty());
 }
 
 TEST_F(PipelineCacheValidationFixture, ReverseZOptInChangesDepthCompareAndClearConvention)
@@ -467,7 +544,7 @@ TEST_F(PipelineCacheValidationFixture, ReverseZOptInChangesDepthCompareAndClearC
     EXPECT_EQ(RVX::PipelineCache::GetDepthClearValue(true), 0.0f);
     EXPECT_EQ(RVX::PipelineCache::GetDepthClearValue(false), 1.0f);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), 4u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 5u);
     const auto& opaqueDesc = device.capturedGraphicsPipelines[0];
     const auto& transparentDesc = device.capturedGraphicsPipelines[2];
     const auto& depthOnlyDesc = device.capturedGraphicsPipelines[3];
@@ -556,6 +633,39 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenConfigChanges)
     EXPECT_TRUE(cache.GetStats().manifestInvalidated);
 }
 
+TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenToneMappingPipelineHashChanges)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    TempDirectory temp("rvx_pipeline_manifest_tonemapping_stale");
+    const fs::path manifestPath = temp.Path() / RVX::PipelineCache::GetManifestFileName();
+    RVX::uint64 firstToneMappingHash = 0;
+
+    {
+        FakeDevice device;
+        RVX::PipelineCache cache;
+        cache.SetConfig(ConfigWithManifest(temp.Path()));
+        ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+        firstToneMappingHash = cache.GetStats().toneMappingPipelineHash;
+        ASSERT_NE(firstToneMappingHash, 0u);
+    }
+
+    const RVX::uint64 staleToneMappingHash = firstToneMappingHash == 1u ? 2u : 1u;
+    ReplaceManifestFieldValue(manifestPath, "toneMappingPipelineHash", std::to_string(staleToneMappingHash));
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    cache.SetConfig(ConfigWithManifest(temp.Path()));
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    EXPECT_TRUE(cache.GetStats().manifestLoaded);
+    EXPECT_FALSE(cache.GetStats().manifestValid);
+    EXPECT_TRUE(cache.GetStats().manifestInvalidated);
+}
+
 TEST_F(PipelineCacheValidationFixture, CorruptManifestInvalidatesWithoutFailingInitialization)
 {
     if (!HasCompilerAvailable())
@@ -593,12 +703,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestRejectsInvalidReverseZValue)
         ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
     }
 
-    std::string manifest = ReadTextFile(manifestPath);
-    const std::string oldReverseZ = "reverseZ=0";
-    const size_t reverseZOffset = manifest.find(oldReverseZ);
-    ASSERT_NE(reverseZOffset, std::string::npos);
-    manifest.replace(reverseZOffset, oldReverseZ.size(), "reverseZ=2");
-    WriteTextFile(manifestPath, manifest);
+    ReplaceManifestFieldValue(manifestPath, "reverseZ", "2");
 
     FakeDevice device;
     RVX::PipelineCache cache;
@@ -645,4 +750,19 @@ TEST_F(PipelineCacheValidationFixture, BackendPipelineCreationFailureIsVisible)
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("Backend failed to create pipeline"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, ToneMappingPipelineCreationFailureIsVisible)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    device.failPipelineCreationAtIndex = 5;
+    RVX::PipelineCache cache;
+
+    EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
+    EXPECT_NE(cache.GetLastError().find("ToneMapping pipeline"), std::string::npos);
 }

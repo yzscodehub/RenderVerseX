@@ -27,7 +27,7 @@ namespace
     constexpr uint64 RVX_MAX_DRAW_CONSTANTS_PER_FRAME = 8192;
     constexpr uint64 RVX_PIPELINE_HASH_OFFSET_BASIS = 0xcbf29ce484222325ull;
     constexpr uint64 RVX_PIPELINE_HASH_PRIME = 0x100000001b3ull;
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 1;
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 2;
     constexpr const char* RVX_PIPELINE_MANIFEST_MAGIC = "RVX_PIPELINE_CACHE_MANIFEST";
 
     struct PipelineCacheManifest
@@ -36,12 +36,15 @@ namespace
         uint32 backend = 0;
         uint64 vertexShaderHash = 0;
         uint64 pixelShaderHash = 0;
+        uint64 toneMappingVertexShaderHash = 0;
+        uint64 toneMappingPixelShaderHash = 0;
         uint32 renderTargetFormat = 0;
         uint32 depthStencilFormat = 0;
         uint32 reverseZ = 0;
         uint64 opaquePipelineHash = 0;
         uint64 maskedPipelineHash = 0;
         uint64 transparentPipelineHash = 0;
+        uint64 toneMappingPipelineHash = 0;
     };
 
     uint64 AlignConstantBufferSize(uint64 size)
@@ -123,12 +126,15 @@ namespace
                key == "backend" ||
                key == "vertexShaderHash" ||
                key == "pixelShaderHash" ||
+               key == "toneMappingVertexShaderHash" ||
+               key == "toneMappingPixelShaderHash" ||
                key == "renderTargetFormat" ||
                key == "depthStencilFormat" ||
                key == "reverseZ" ||
                key == "opaquePipelineHash" ||
                key == "maskedPipelineHash" ||
-               key == "transparentPipelineHash";
+               key == "transparentPipelineHash" ||
+               key == "toneMappingPipelineHash";
     }
 
     bool ParseManifestUint64(const std::string& value, uint64& out)
@@ -218,7 +224,7 @@ namespace
             fields.emplace(std::move(key), std::move(value));
         }
 
-        if (fields.size() != 10)
+        if (fields.size() != 13)
         {
             return false;
         }
@@ -227,12 +233,15 @@ namespace
             !ReadRequiredManifestUint32(fields, "backend", manifest.backend) ||
             !ReadRequiredManifestUint64(fields, "vertexShaderHash", manifest.vertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "pixelShaderHash", manifest.pixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "toneMappingVertexShaderHash", manifest.toneMappingVertexShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "toneMappingPixelShaderHash", manifest.toneMappingPixelShaderHash) ||
             !ReadRequiredManifestUint32(fields, "renderTargetFormat", manifest.renderTargetFormat) ||
             !ReadRequiredManifestUint32(fields, "depthStencilFormat", manifest.depthStencilFormat) ||
             !ReadRequiredManifestUint32(fields, "reverseZ", manifest.reverseZ) ||
             !ReadRequiredManifestUint64(fields, "opaquePipelineHash", manifest.opaquePipelineHash) ||
             !ReadRequiredManifestUint64(fields, "maskedPipelineHash", manifest.maskedPipelineHash) ||
-            !ReadRequiredManifestUint64(fields, "transparentPipelineHash", manifest.transparentPipelineHash))
+            !ReadRequiredManifestUint64(fields, "transparentPipelineHash", manifest.transparentPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "toneMappingPipelineHash", manifest.toneMappingPipelineHash))
         {
             return false;
         }
@@ -262,12 +271,15 @@ namespace
             file << "backend=" << manifest.backend << '\n';
             file << "vertexShaderHash=" << manifest.vertexShaderHash << '\n';
             file << "pixelShaderHash=" << manifest.pixelShaderHash << '\n';
+            file << "toneMappingVertexShaderHash=" << manifest.toneMappingVertexShaderHash << '\n';
+            file << "toneMappingPixelShaderHash=" << manifest.toneMappingPixelShaderHash << '\n';
             file << "renderTargetFormat=" << manifest.renderTargetFormat << '\n';
             file << "depthStencilFormat=" << manifest.depthStencilFormat << '\n';
             file << "reverseZ=" << manifest.reverseZ << '\n';
             file << "opaquePipelineHash=" << manifest.opaquePipelineHash << '\n';
             file << "maskedPipelineHash=" << manifest.maskedPipelineHash << '\n';
             file << "transparentPipelineHash=" << manifest.transparentPipelineHash << '\n';
+            file << "toneMappingPipelineHash=" << manifest.toneMappingPipelineHash << '\n';
             if (!file)
             {
                 return false;
@@ -326,12 +338,15 @@ namespace
                a.backend == b.backend &&
                a.vertexShaderHash == b.vertexShaderHash &&
                a.pixelShaderHash == b.pixelShaderHash &&
+               a.toneMappingVertexShaderHash == b.toneMappingVertexShaderHash &&
+               a.toneMappingPixelShaderHash == b.toneMappingPixelShaderHash &&
                a.renderTargetFormat == b.renderTargetFormat &&
                a.depthStencilFormat == b.depthStencilFormat &&
                a.reverseZ == b.reverseZ &&
                a.opaquePipelineHash == b.opaquePipelineHash &&
                a.maskedPipelineHash == b.maskedPipelineHash &&
-               a.transparentPipelineHash == b.transparentPipelineHash;
+               a.transparentPipelineHash == b.transparentPipelineHash &&
+               a.toneMappingPipelineHash == b.toneMappingPipelineHash;
     }
 } // namespace
 
@@ -429,6 +444,15 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
         return false;
     }
 
+    if (!CreatePostProcessPipelineLayout())
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create post-process pipeline layout");
+        }
+        return false;
+    }
+
     if (!CreateObjectConstantBuffer())
     {
         SetLastError("Failed to create object constant buffer");
@@ -473,19 +497,26 @@ void PipelineCache::Shutdown()
     m_maskedPipeline.Reset();
     m_transparentPipeline.Reset();
     m_depthOnlyPipeline.Reset();
+    m_toneMappingPipeline.Reset();
     m_pipelineCache.clear();
     m_frameDescriptorSet.Reset();
     m_objectDescriptorSet.Reset();
     m_viewConstantBuffer.Reset();
     m_objectConstantBuffer.Reset();
+    m_postProcessPipelineLayout.Reset();
+    m_postProcessSetLayout.Reset();
     m_pipelineLayout.Reset();
     m_setLayouts.clear();
     m_vertexShader.Reset();
     m_pixelShader.Reset();
     m_depthOnlyVertexShader.Reset();
+    m_toneMappingVertexShader.Reset();
+    m_toneMappingPixelShader.Reset();
     m_vsCompileResult.reset();
     m_psCompileResult.reset();
     m_depthOnlyVsCompileResult.reset();
+    m_toneMappingVsCompileResult.reset();
+    m_toneMappingPsCompileResult.reset();
     m_shaderManager.reset();
     m_device = nullptr;
     m_initialized = false;
@@ -497,6 +528,7 @@ bool PipelineCache::CompileShaders()
 {
     std::string shaderPath = m_shaderDir + "/DefaultLit.hlsl";
     std::string depthOnlyShaderPath = m_shaderDir + "/DepthOnly.hlsl";
+    std::string toneMappingShaderPath = m_shaderDir + "/PostProcess/ToneMapping.hlsl";
 
     RVX_CORE_INFO("PipelineCache: Compiling shaders...");
     RVX_CORE_INFO("  Shader directory: {}", m_shaderDir);
@@ -544,6 +576,17 @@ bool PipelineCache::CompileShaders()
         RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
         return false;
     }
+
+    if (!std::filesystem::exists(toneMappingShaderPath))
+    {
+        SetLastError("ToneMapping shader file not found: " + toneMappingShaderPath);
+
+        std::filesystem::path absPath = std::filesystem::absolute(toneMappingShaderPath);
+        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
+        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
+        return false;
+    }
+
     if (!vsResult.shader)
     {
         SetLastError("Failed to create vertex shader");
@@ -597,6 +640,53 @@ bool PipelineCache::CompileShaders()
     m_depthOnlyVertexShader = depthVsResult.shader;
     m_depthOnlyVsCompileResult = std::make_unique<ShaderCompileResult>(std::move(depthVsResult.compileResult));
 
+    ShaderLoadDesc toneMappingVsDesc = vsDesc;
+    toneMappingVsDesc.path = toneMappingShaderPath;
+    toneMappingVsDesc.entryPoint = "VSMain";
+    toneMappingVsDesc.stage = RHIShaderStage::Vertex;
+    if (backend == RHIBackendType::DX11)
+    {
+        toneMappingVsDesc.targetProfile = "vs_5_0";
+    }
+
+    auto toneMappingVsResult = m_shaderManager->LoadFromFile(m_device, toneMappingVsDesc);
+    if (!toneMappingVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile ToneMapping vertex shader: " + toneMappingVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!toneMappingVsResult.shader)
+    {
+        SetLastError("Failed to create ToneMapping vertex shader");
+        return false;
+    }
+    m_toneMappingVertexShader = toneMappingVsResult.shader;
+    m_toneMappingVsCompileResult =
+        std::make_unique<ShaderCompileResult>(std::move(toneMappingVsResult.compileResult));
+
+    ShaderLoadDesc toneMappingPsDesc = toneMappingVsDesc;
+    toneMappingPsDesc.entryPoint = "PSMain";
+    toneMappingPsDesc.stage = RHIShaderStage::Pixel;
+    if (backend == RHIBackendType::DX11)
+    {
+        toneMappingPsDesc.targetProfile = "ps_5_0";
+    }
+
+    auto toneMappingPsResult = m_shaderManager->LoadFromFile(m_device, toneMappingPsDesc);
+    if (!toneMappingPsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile ToneMapping pixel shader: " + toneMappingPsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!toneMappingPsResult.shader)
+    {
+        SetLastError("Failed to create ToneMapping pixel shader");
+        return false;
+    }
+    m_toneMappingPixelShader = toneMappingPsResult.shader;
+    m_toneMappingPsCompileResult =
+        std::make_unique<ShaderCompileResult>(std::move(toneMappingPsResult.compileResult));
+
     RVX_CORE_DEBUG("PipelineCache: Compiled shaders successfully");
     return true;
 }
@@ -634,6 +724,36 @@ bool PipelineCache::CreatePipelineLayout()
     }
 
     RVX_CORE_DEBUG("PipelineCache: Created pipeline layout with {} set layouts", m_setLayouts.size());
+    return true;
+}
+
+bool PipelineCache::CreatePostProcessPipelineLayout()
+{
+    RHIDescriptorSetLayoutDesc setLayoutDesc;
+    setLayoutDesc.debugName = "PostProcessSetLayout";
+    setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(1, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(2, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+
+    m_postProcessSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
+    if (!m_postProcessSetLayout)
+    {
+        SetLastError("Failed to create post-process descriptor set layout");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "PostProcessPipelineLayout";
+    layoutDesc.setLayouts.push_back(m_postProcessSetLayout.Get());
+
+    m_postProcessPipelineLayout = m_device->CreatePipelineLayout(layoutDesc);
+    if (!m_postProcessPipelineLayout)
+    {
+        SetLastError("Failed to create post-process pipeline layout");
+        return false;
+    }
+
+    RVX_CORE_DEBUG("PipelineCache: Created post-process pipeline layout");
     return true;
 }
 
@@ -773,12 +893,15 @@ void PipelineCache::ProcessPipelineManifest()
     expected.backend = static_cast<uint32>(m_device ? m_device->GetBackendType() : RHIBackendType::None);
     expected.vertexShaderHash = ComputeShaderHash(m_vsCompileResult.get());
     expected.pixelShaderHash = ComputeShaderHash(m_psCompileResult.get());
+    expected.toneMappingVertexShaderHash = ComputeShaderHash(m_toneMappingVsCompileResult.get());
+    expected.toneMappingPixelShaderHash = ComputeShaderHash(m_toneMappingPsCompileResult.get());
     expected.renderTargetFormat = static_cast<uint32>(m_renderTargetFormat);
     expected.depthStencilFormat = static_cast<uint32>(m_config.depthStencilFormat);
     expected.reverseZ = m_config.reverseZ ? 1u : 0u;
     expected.opaquePipelineHash = m_stats.opaquePipelineHash;
     expected.maskedPipelineHash = m_stats.maskedPipelineHash;
     expected.transparentPipelineHash = m_stats.transparentPipelineHash;
+    expected.toneMappingPipelineHash = m_stats.toneMappingPipelineHash;
 
     const std::filesystem::path manifestPath = GetManifestPath(m_config.manifestDirectory);
     std::error_code ec;
@@ -986,7 +1109,17 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
-    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants and depth-only pipeline");
+    m_toneMappingPipeline = GetOrCreateToneMappingPipeline();
+    if (!m_toneMappingPipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create ToneMapping pipeline");
+        }
+        return false;
+    }
+
+    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, and ToneMapping pipeline");
     return true;
 }
 
@@ -1088,6 +1221,54 @@ RHIPipelineRef PipelineCache::GetOrCreateDepthOnlyPipeline()
     return pipeline;
 }
 
+RHIPipelineRef PipelineCache::GetOrCreateToneMappingPipeline()
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildToneMappingPipelineDesc();
+    if (!pipelineDesc.vertexShader)
+    {
+        SetLastError("Cannot create ToneMapping pipeline without vertex shader");
+        return {};
+    }
+    if (!pipelineDesc.pixelShader)
+    {
+        SetLastError("Cannot create ToneMapping pipeline without pixel shader");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError("Cannot create ToneMapping pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.numRenderTargets != 1 || pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create ToneMapping pipeline with invalid render target format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc, MaterialPipelineVariant::Transparent);
+    m_stats.toneMappingPipelineHash = stateHash;
+    m_stats.lastPipelineStateHash = stateHash;
+
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create ToneMapping pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
 RHIGraphicsPipelineDesc PipelineCache::BuildDefaultLitPipelineDesc(const char* debugName,
                                                                    const RHIDepthStencilState& depthStencilState,
                                                                    const RHIBlendState& blendState) const
@@ -1147,6 +1328,28 @@ RHIGraphicsPipelineDesc PipelineCache::BuildDepthOnlyPipelineDesc() const
     return pipelineDesc;
 }
 
+RHIGraphicsPipelineDesc PipelineCache::BuildToneMappingPipelineDesc() const
+{
+    RHIGraphicsPipelineDesc pipelineDesc;
+
+    pipelineDesc.vertexShader = m_toneMappingVertexShader.Get();
+    pipelineDesc.pixelShader = m_toneMappingPixelShader.Get();
+    pipelineDesc.pipelineLayout = m_postProcessPipelineLayout.Get();
+    pipelineDesc.debugName = "ToneMappingPipeline";
+
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets = 1;
+    pipelineDesc.renderTargetFormats[0] = m_renderTargetFormat;
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+
+    return pipelineDesc;
+}
+
 uint64 PipelineCache::StoreVariantHash(MaterialPipelineVariant variant, uint64 hash)
 {
     switch (variant)
@@ -1200,8 +1403,24 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
     const RHIBackendType backend = m_device ? m_device->GetBackendType() : RHIBackendType::None;
     HashValue(hash, backend);
     HashValue(hash, variant);
-    HashValue(hash, ComputeShaderHash(m_vsCompileResult.get()));
-    HashValue(hash, ComputeShaderHash(m_psCompileResult.get()));
+
+    auto shaderHashFor = [this](const RHIShader* shader) -> uint64
+    {
+        if (shader == m_vertexShader.Get())
+            return ComputeShaderHash(m_vsCompileResult.get());
+        if (shader == m_pixelShader.Get())
+            return ComputeShaderHash(m_psCompileResult.get());
+        if (shader == m_depthOnlyVertexShader.Get())
+            return ComputeShaderHash(m_depthOnlyVsCompileResult.get());
+        if (shader == m_toneMappingVertexShader.Get())
+            return ComputeShaderHash(m_toneMappingVsCompileResult.get());
+        if (shader == m_toneMappingPixelShader.Get())
+            return ComputeShaderHash(m_toneMappingPsCompileResult.get());
+        return ComputeShaderHash(nullptr);
+    };
+
+    HashValue(hash, shaderHashFor(desc.vertexShader));
+    HashValue(hash, shaderHashFor(desc.pixelShader));
 
     HashValue(hash, desc.tessellationControlPoints);
     HashValue(hash, desc.primitiveTopology);

@@ -9,6 +9,9 @@
 
 namespace RVX
 {
+    class PipelineCache;
+    class ResourceViewCache;
+
     /**
      * @brief Tone mapping operator types
      */
@@ -39,6 +42,11 @@ namespace RVX
         void Configure(const PostProcessSettings& settings) override;
         void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override;
 
+        /**
+         * @brief Provide GPU resources required by the fullscreen ToneMapping path
+         */
+        void SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache);
+
         // =========================================================================
         // Configuration
         // =========================================================================
@@ -56,10 +64,23 @@ namespace RVX
         float GetWhitePoint() const { return m_whitePoint; }
 
     private:
+        bool EnsureRuntimeResources();
+        bool UpdateConstants(uint32 width,
+                             uint32 height,
+                             ToneMappingOperator op,
+                             float exposure,
+                             float gamma,
+                             float whitePoint);
+
         ToneMappingOperator m_operator = ToneMappingOperator::ACES;
         float m_exposure = 1.0f;
         float m_gamma = 2.2f;
         float m_whitePoint = 11.2f;
+        PipelineCache* m_pipelineCache = nullptr;
+        ResourceViewCache* m_viewCache = nullptr;
+        IRHIDevice* m_resourceDevice = nullptr;
+        RHIBufferRef m_constantBuffer;
+        RHISamplerRef m_sampler;
     };
 
 } // namespace RVX

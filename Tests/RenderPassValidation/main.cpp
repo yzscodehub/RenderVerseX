@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <iterator>
 #include <memory>
 #include <span>
 #include <string>
@@ -27,6 +28,8 @@
 #include "Render/Passes/ShadowPass.h"
 #include "Render/Passes/SkyboxPass.h"
 #include "Render/Passes/TransparentPass.h"
+#include "Render/PostProcess/PostProcessStack.h"
+#include "Render/PostProcess/ToneMapping.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
 #include "Renderer/RenderPassRegistry.h"
@@ -251,22 +254,45 @@ namespace
         {
             ++beginRenderPassCount;
             renderPasses.push_back(desc);
+            callSequence.push_back("BeginRenderPass");
         }
-        void EndRenderPass() override { ++endRenderPassCount; }
-        void SetPipeline(RHIPipeline* pipeline) override { pipelineSequence.push_back(pipeline); }
+        void EndRenderPass() override
+        {
+            ++endRenderPassCount;
+            callSequence.push_back("EndRenderPass");
+        }
+        void SetPipeline(RHIPipeline* pipeline) override
+        {
+            pipelineSequence.push_back(pipeline);
+            callSequence.push_back("SetPipeline");
+        }
         void SetVertexBuffer(uint32, RHIBuffer*, uint64 = 0) override {}
         void SetVertexBuffers(uint32, std::span<RHIBuffer* const>, std::span<const uint64> = {}) override {}
         void SetIndexBuffer(RHIBuffer*, RHIFormat, uint64 = 0) override {}
         void SetDescriptorSet(uint32 set, RHIDescriptorSet*, std::span<const uint32> = {}) override
         {
             descriptorSetSequence.push_back(set);
+            callSequence.push_back("SetDescriptorSet");
         }
         void SetPushConstants(const void*, uint32, uint32 = 0) override {}
-        void SetViewport(const RHIViewport&) override {}
+        void SetViewport(const RHIViewport& viewport) override
+        {
+            viewports.push_back(viewport);
+            callSequence.push_back("SetViewport");
+        }
         void SetViewports(std::span<const RHIViewport>) override {}
-        void SetScissor(const RHIRect&) override {}
+        void SetScissor(const RHIRect& scissor) override
+        {
+            scissors.push_back(scissor);
+            callSequence.push_back("SetScissor");
+        }
         void SetScissors(std::span<const RHIRect>) override {}
-        void Draw(uint32, uint32 = 1, uint32 = 0, uint32 = 0) override {}
+        void Draw(uint32 vertexCount, uint32 = 1, uint32 = 0, uint32 = 0) override
+        {
+            ++drawCount;
+            lastDrawVertexCount = vertexCount;
+            callSequence.push_back("Draw");
+        }
         void DrawIndexed(uint32, uint32 = 1, uint32 = 0, int32 = 0, uint32 = 0) override
         {
             ++drawIndexedCount;
@@ -304,10 +330,15 @@ namespace
         uint32 textureBarrierCount = 0;
         uint32 copyBufferCount = 0;
         uint32 copyBufferToTextureCount = 0;
+        uint32 drawCount = 0;
         uint32 drawIndexedCount = 0;
+        uint32 lastDrawVertexCount = 0;
         std::vector<RHIRenderPassDesc> renderPasses;
         std::vector<RHIPipeline*> pipelineSequence;
         std::vector<uint32> descriptorSetSequence;
+        std::vector<RHIViewport> viewports;
+        std::vector<RHIRect> scissors;
+        std::vector<std::string> callSequence;
     };
 
     class FakeFence final : public RHIFence
@@ -332,6 +363,7 @@ namespace
     public:
         RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
         {
+            createdBufferDescs.push_back(desc);
             return RHIBufferRef(new FakeBuffer(desc, bufferMapSucceeds));
         }
 
@@ -382,6 +414,7 @@ namespace
 
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) override
         {
+            createdDescriptorSetDescs.push_back(desc);
             return RHIDescriptorSetRef(new FakeDescriptorSet(desc));
         }
 
@@ -448,6 +481,8 @@ namespace
         RHIBackendType GetBackendType() const override { return RHIBackendType::DX12; }
 
         bool bufferMapSucceeds = true;
+        std::vector<RHIBufferDesc> createdBufferDescs;
+        std::vector<RHIDescriptorSetDesc> createdDescriptorSetDescs;
         std::vector<RHITextureDesc> createdTextureDescs;
         std::vector<RHITextureViewDesc> createdTextureViewDescs;
 
@@ -487,6 +522,53 @@ namespace
         bool m_requested = false;
         bool m_supported = false;
         std::string m_unsupportedReason;
+    };
+
+    class RecordingPostProcessPass final : public IPostProcessPass
+    {
+    public:
+        RecordingPostProcessPass(std::string name, int32 priority)
+            : m_name(std::move(name))
+            , m_priority(priority)
+        {
+            m_enabled = true;
+            m_supported = true;
+        }
+
+        const char* GetName() const override { return m_name.c_str(); }
+        int32 GetPriority() const override { return m_priority; }
+        void Configure(const PostProcessSettings&) override {}
+
+        void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override
+        {
+            lastInput = input;
+            lastOutput = output;
+            addToGraphCount++;
+
+            struct PassData
+            {
+                RGTextureHandle input;
+                RGTextureHandle output;
+            };
+
+            graph.AddPass<PassData>(
+                m_name.c_str(),
+                RenderGraphPassType::Graphics,
+                [input, output](RenderGraphBuilder& builder, PassData& data)
+                {
+                    data.input = builder.Read(input);
+                    data.output = builder.Write(output, RHIResourceState::RenderTarget);
+                },
+                [](const PassData&, RHICommandContext&) {});
+        }
+
+        RGTextureHandle lastInput;
+        RGTextureHandle lastOutput;
+        uint32 addToGraphCount = 0;
+
+    private:
+        std::string m_name;
+        int32 m_priority = 0;
     };
 
     std::unique_ptr<Resource::MeshResource> CreateMeshResource(Resource::ResourceId id)
@@ -884,6 +966,242 @@ TEST_F(RenderPassValidationFixture, ShadowPassExecuteResolvesCascadeViewsAndDraw
         EXPECT_TRUE(renderPass.hasDepthStencil);
         ASSERT_NE(renderPass.depthStencilAttachment.view, nullptr);
     }
+}
+
+TEST_F(RenderPassValidationFixture, ToneMappingRequiresResourcesBeforeReportingSupported)
+{
+    ToneMappingPass pass;
+    PostProcessSettings settings;
+    settings.enableToneMapping = true;
+    pass.Configure(settings);
+
+    EXPECT_TRUE(pass.IsRequestedEnabled());
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_FALSE(pass.IsEnabled());
+    EXPECT_FALSE(pass.GetUnsupportedReason().empty());
+}
+
+TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscreenTriangle)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    ToneMappingPass pass;
+    PostProcessSettings settings;
+    settings.enableToneMapping = true;
+    settings.exposure = 1.25f;
+    settings.gamma = 2.2f;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    ASSERT_TRUE(pass.IsEnabled());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.compileValid);
+    EXPECT_EQ(stats.totalPasses, 1u);
+    EXPECT_EQ(stats.culledPasses, 0u);
+    EXPECT_EQ(stats.emptyPassUsageCount, 0u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.beginRenderPassCount, 1u);
+    EXPECT_EQ(ctx.endRenderPassCount, 1u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetToneMappingPipeline());
+    ASSERT_EQ(ctx.descriptorSetSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.descriptorSetSequence[0], 0u);
+    EXPECT_EQ(ctx.drawCount, 1u);
+    EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
+    EXPECT_EQ(ctx.drawIndexedCount, 0u);
+
+    ASSERT_EQ(ctx.renderPasses.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.renderPasses[0].colorAttachmentCount, 1u);
+    EXPECT_FALSE(ctx.renderPasses[0].hasDepthStencil);
+    EXPECT_EQ(ctx.renderPasses[0].renderArea.width, 64u);
+    EXPECT_EQ(ctx.renderPasses[0].renderArea.height, 64u);
+
+    ASSERT_FALSE(ctx.viewports.empty());
+    EXPECT_EQ(ctx.viewports.back().width, 64.0f);
+    EXPECT_EQ(ctx.viewports.back().height, 64.0f);
+    ASSERT_FALSE(ctx.scissors.empty());
+    EXPECT_EQ(ctx.scissors.back().width, 64u);
+    EXPECT_EQ(ctx.scissors.back().height, 64u);
+
+    auto descriptorIt = std::find_if(
+        device.createdDescriptorSetDescs.begin(),
+        device.createdDescriptorSetDescs.end(),
+        [](const RHIDescriptorSetDesc& desc)
+        {
+            return desc.debugName && std::string(desc.debugName) == "ToneMappingDescriptorSet";
+        });
+    ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
+    EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
+
+    const auto hasBinding = [descriptorIt](uint32 binding,
+                                           bool expectBuffer,
+                                           bool expectTexture,
+                                           bool expectSampler)
+    {
+        auto it = std::find_if(descriptorIt->bindings.begin(),
+                               descriptorIt->bindings.end(),
+                               [binding](const RHIDescriptorBinding& descriptorBinding)
+                               {
+                                   return descriptorBinding.binding == binding;
+                               });
+        if (it == descriptorIt->bindings.end())
+            return false;
+
+        return (it->buffer != nullptr) == expectBuffer &&
+               (it->textureView != nullptr) == expectTexture &&
+               (it->sampler != nullptr) == expectSampler;
+    };
+
+    EXPECT_TRUE(hasBinding(0, true, false, false));
+    EXPECT_TRUE(hasBinding(1, false, true, false));
+    EXPECT_TRUE(hasBinding(2, false, false, true));
+
+    auto descriptorCall = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), "SetDescriptorSet");
+    auto drawCall = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), "Draw");
+    ASSERT_NE(descriptorCall, ctx.callSequence.end());
+    ASSERT_NE(drawCall, ctx.callSequence.end());
+    EXPECT_LT(std::distance(ctx.callSequence.begin(), descriptorCall),
+              std::distance(ctx.callSequence.begin(), drawCall));
+}
+
+TEST_F(RenderPassValidationFixture, ToneMappingSkipsDrawWhenConstantsCannotMap)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+
+    ToneMappingPass pass;
+    PostProcessSettings settings;
+    settings.enableToneMapping = true;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.drawCount, 0u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 0u);
+}
+
+TEST(RenderPostProcessStackValidation, NoSupportedEffectsReportsNoWork)
+{
+    FakeDevice device;
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+
+    PostProcessStack stack;
+    stack.Execute(graph, input, output);
+
+    const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
+    EXPECT_TRUE(executeStats.noEffectNoWork);
+    EXPECT_EQ(executeStats.enabledEffectCount, 0u);
+    EXPECT_EQ(executeStats.graphPassCount, 0u);
+
+    graph.Compile();
+    const auto& graphStats = graph.GetCompileStats();
+    EXPECT_TRUE(graphStats.compileValid);
+    EXPECT_EQ(graphStats.totalPasses, 0u);
+}
+
+TEST(RenderPostProcessStackValidation, MultiPassChainUsesDistinctTransientIntermediate)
+{
+    FakeDevice device;
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    PostProcessStack stack;
+    auto* first = stack.AddEffect<RecordingPostProcessPass>("FirstPostProcess", 100);
+    auto* second = stack.AddEffect<RecordingPostProcessPass>("SecondPostProcess", 200);
+
+    stack.Execute(graph, input, output);
+
+    const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
+    EXPECT_FALSE(executeStats.noEffectNoWork);
+    EXPECT_EQ(executeStats.enabledEffectCount, 2u);
+    EXPECT_EQ(executeStats.graphPassCount, 2u);
+    EXPECT_EQ(executeStats.transientIntermediateCount, 1u);
+
+    EXPECT_EQ(first->addToGraphCount, 1u);
+    EXPECT_EQ(second->addToGraphCount, 1u);
+    EXPECT_EQ(first->lastInput.index, input.index);
+    EXPECT_NE(first->lastOutput.index, input.index);
+    EXPECT_NE(first->lastOutput.index, output.index);
+    EXPECT_EQ(second->lastInput.index, first->lastOutput.index);
+    EXPECT_EQ(second->lastOutput.index, output.index);
+
+    const RHITextureDesc* intermediateDesc = graph.GetTextureDesc(first->lastOutput);
+    ASSERT_NE(intermediateDesc, nullptr);
+    EXPECT_EQ(intermediateDesc->width, 32u);
+    EXPECT_EQ(intermediateDesc->height, 32u);
+    EXPECT_EQ(intermediateDesc->format, RHIFormat::RGBA16_FLOAT);
+    EXPECT_TRUE(HasFlag(intermediateDesc->usage, RHITextureUsage::RenderTarget));
+    EXPECT_TRUE(HasFlag(intermediateDesc->usage, RHITextureUsage::ShaderResource));
+
+    graph.Compile();
+    const auto& graphStats = graph.GetCompileStats();
+    EXPECT_TRUE(graphStats.compileValid);
+    EXPECT_EQ(graphStats.totalPasses, 2u);
 }
 
 TEST_F(RenderPassValidationFixture, OpaquePassBindsOpaqueThenMaskedPipelinesAndDrawsBothGroups)

@@ -1773,6 +1773,108 @@ git diff --check
 
 ---
 
+### R-SP: `R9d - ToneMapping Fullscreen Minimum Path`
+
+**Date:** 2026-06-06
+**Commit:** pending in R9d stage commit
+**Spark plan review agent:** Mendel (`019e9d4c-0ce8-72f1-8749-5221ed699028`)
+**Spark code review agents:** Huygens (`019e9d61-8bf8-7502-a19b-9f8c5df944f8`), Hume (`019e9d6a-ee75-7d62-880d-e2404e209f02`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: `15. R9 - Render Pass Completion`
+- Lines checked: parent R9 section around lines 485-497; R9d plan document lines 7-104
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R9c - Clustered Lighting Resource Bridge
+- Evidence: R9c committed as `a7d9274`; R9c broad render regression and visual gate passed before R9d planning.
+
+**Approved scope:**
+
+- Add a post-process fullscreen foundation in `PipelineCache`: ToneMapping shader compilation, post-process descriptor set layout, post-process pipeline layout, and a no-input fullscreen ToneMapping graphics pipeline.
+- Make `ToneMappingPass` executable only after valid `PipelineCache` and `ResourceViewCache` resources are injected; keep missing-resource paths visibly unsupported or skipped.
+- Add RenderGraph read/write declarations and a fullscreen triangle draw path for ToneMapping.
+- Add `PostProcessStack` execute stats, honest no-effect/no-work reporting, and multi-pass transient ping-pong texture chaining.
+- Keep `PostProcessStack` and ToneMapping out of `SceneRenderer`'s default frame path in R9d so ModelViewer/golden output remains stable.
+- Extend `PipelineCache` manifest v2 to track ToneMapping shader and pipeline hashes, adopting Spark's code-review suggestion.
+
+**Out of scope:**
+
+- Bloom, TAA, IBL, skybox/BRDF LUT/environment prefiltering, or post-process stack integration into `SceneRenderer`.
+- Replacing the final backbuffer path or changing default ModelViewer visual output.
+- ECS/Object refactoring or RenderProxy changes.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-06-r9d-tonemapping-fullscreen-minimum-path-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Shaders/PostProcess/ToneMapping.hlsl`
+- `Render/Include/Render/PostProcess/ToneMapping.h`
+- `Render/Private/PostProcess/ToneMapping.cpp`
+- `Render/Include/Render/PostProcess/PostProcessStack.h`
+- `Render/Private/PostProcess/PostProcessStack.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderHonestyValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target PipelineCacheValidation RenderHonestyValidation RenderPassValidation RenderGraphValidation RenderSceneValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+build\win_x64_debug\Tests\Debug\PipelineCacheValidation.exe
+build\win_x64_debug\Tests\Debug\RenderHonestyValidation.exe
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderHonestyValidation|RenderPassValidation|RenderGraphValidation|RenderSceneValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "ClusteredLightingValidation|RenderGraphValidation|RenderHonestyValidation|RenderSceneValidation|RenderPassValidation|MaterialSystemValidation|ResourceInstantiationValidation|PipelineCacheValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `PipelineCacheValidation`: 18/18 by direct executable
+  - `RenderHonestyValidation`: 16/16 by direct executable
+  - `RenderPassValidation`: 21/21 by direct executable
+  - Required R9d filtered CTest: 99/99
+  - Broad render regression CTest: 201/201
+  - `git diff --check`: PASS, with only Git CRLF warnings
+- Visual gate: PASS
+  - `ModelViewerSmoke`: PASS
+  - `VisualGoldenValidation`: PASS
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan review and two Spark code-review messages
+- Plan: `Docs/superpowers/specs/2026-06-06-r9d-tonemapping-fullscreen-minimum-path-plan.md`
+- Screenshots/golden: unchanged default visual gate path from prior ModelViewer smoke/golden validation
+
+**Spark plan review result:**
+
+- Verdict: `PASS_WITH_NON_BLOCKING_SUGGESTIONS`
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: explicitly kept R9d out of `SceneRenderer` default output, added no-effect visibility, descriptor integrity, multi-pass ping-pong, and unchanged-default-output criteria.
+
+**Spark code review result:**
+
+- Verdict: `PASS_WITH_NON_BLOCKING_SUGGESTIONS`
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: added ToneMapping shader/pipeline hashes to `PipelineCache` manifest v2 and added `ManifestInvalidatesWhenToneMappingPipelineHashChanges`.
+- Incremental re-review verdict: `PASS_WITH_NON_BLOCKING_SUGGESTIONS`
+- Non-blocking suggestions deferred: make the manifest test helper match field names by exact line prefix, add a shader-hash-specific manifest invalidation test, and add a destroyed pipeline/layout skip test if later lifecycle work makes that path more relevant.
+
+**Notes / follow-ups:**
+
+- R9d turns ToneMapping into a real RenderGraph-declared fullscreen draw path when resources are injected; it does not claim the full post-process stack is integrated into runtime output.
+- Bloom/TAA and IBL remain the next R9 feature candidates and must still follow the same per-stage plan, Spark plan review, implementation, validation, Spark code review, phase-log, and commit protocol.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R9d commit.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

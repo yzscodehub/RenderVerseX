@@ -6,7 +6,7 @@
 // Constant Buffer
 // =============================================================================
 
-cbuffer ToneMappingConstants : register(b0)
+cbuffer ToneMappingConstants : register(b0, space0)
 {
     float Exposure;
     float Gamma;
@@ -20,8 +20,8 @@ cbuffer ToneMappingConstants : register(b0)
 // Textures and Samplers
 // =============================================================================
 
-Texture2D<float4> InputTexture : register(t0);
-SamplerState LinearSampler : register(s0);
+Texture2D<float4> InputTexture : register(t1, space0);
+SamplerState LinearSampler : register(s2, space0);
 
 // =============================================================================
 // Tone Mapping Operators
@@ -92,14 +92,14 @@ float3 NeutralTonemap(float3 x)
 // Gamma Correction
 // =============================================================================
 
-float3 LinearToSRGB(float3 linear)
+float3 LinearToSRGB(float3 linearColor)
 {
-    return pow(linear, 1.0 / 2.2);
+    return pow(linearColor, 1.0 / 2.2);
 }
 
-float3 GammaCorrect(float3 linear, float gamma)
+float3 GammaCorrect(float3 linearColor, float gamma)
 {
-    return pow(linear, 1.0 / gamma);
+    return pow(linearColor, 1.0 / gamma);
 }
 
 // =============================================================================
