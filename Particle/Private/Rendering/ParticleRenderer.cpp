@@ -1,10 +1,11 @@
 #include "Particle/Rendering/ParticleRenderer.h"
-#include "Particle/Rendering/TrailRenderer.h"
-#include "Particle/GPU/IParticleSimulator.h"
-#include "Particle/ParticleSystemInstance.h"
-#include "Particle/ParticleSystem.h"
-#include "Render/Renderer/ViewData.h"
 #include "Core/Log.h"
+#include "Particle/GPU/IParticleSimulator.h"
+#include "Particle/ParticleSystem.h"
+#include "Particle/ParticleSystemInstance.h"
+#include "Particle/Rendering/TrailRenderer.h"
+#include "Render/Renderer/ViewData.h"
+
 #include <cstring>
 
 namespace RVX::Particle
@@ -110,28 +111,37 @@ void ParticleRenderer::CreateQuadBuffers()
     }
 }
 
-void ParticleRenderer::DrawParticles(RHICommandContext& ctx,
+bool ParticleRenderer::DrawParticles(RHICommandContext& ctx,
                                      ParticleSystemInstance* instance,
                                      const ViewData& view,
                                      RHITexture* depthTexture)
 {
     if (!instance || !instance->HasSystem())
-        return;
+        return false;
 
     if (!IsRenderingSupported())
     {
         RVX_CORE_WARN("ParticleRenderer: draw skipped: {}", GetUnsupportedReason());
-        return;
+        return false;
     }
 
     uint32 aliveCount = instance->GetAliveCount();
     if (aliveCount == 0)
-        return;
+        return false;
 
     auto* system = instance->GetSystem().get();
     auto* simulator = instance->GetSimulator();
     if (!simulator)
-        return;
+    {
+        RVX_CORE_WARN("ParticleRenderer: draw skipped: particle simulator is unavailable");
+        return false;
+    }
+
+    if (!m_renderConstantsBuffer || !m_quadVertexBuffer || !m_quadIndexBuffer)
+    {
+        RVX_CORE_WARN("ParticleRenderer: draw skipped: render buffers are unavailable");
+        return false;
+    }
 
     // Upload render constants
     UploadRenderConstants(view, system->softParticleConfig);
@@ -161,7 +171,10 @@ void ParticleRenderer::DrawParticles(RHICommandContext& ctx,
     }
 
     if (!pipeline)
-        return;
+    {
+        RVX_CORE_WARN("ParticleRenderer: draw skipped: pipeline is unavailable");
+        return false;
+    }
 
     // Bind pipeline
     ctx.SetPipeline(pipeline);
@@ -178,26 +191,39 @@ void ParticleRenderer::DrawParticles(RHICommandContext& ctx,
 
     // Draw instanced
     ctx.DrawIndexed(6, aliveCount, 0, 0, 0);
+    return true;
 }
 
-void ParticleRenderer::DrawParticlesIndirect(RHICommandContext& ctx,
+bool ParticleRenderer::DrawParticlesIndirect(RHICommandContext& ctx,
                                              ParticleSystemInstance* instance,
                                              const ViewData& view,
                                              RHITexture* depthTexture)
 {
     if (!instance || !instance->HasSystem())
-        return;
+        return false;
 
     if (!IsRenderingSupported())
     {
         RVX_CORE_WARN("ParticleRenderer: indirect draw skipped: {}", GetUnsupportedReason());
-        return;
+        return false;
     }
+
+    if (instance->GetAliveCount() == 0)
+        return false;
 
     auto* system = instance->GetSystem().get();
     auto* simulator = instance->GetSimulator();
     if (!simulator)
-        return;
+    {
+        RVX_CORE_WARN("ParticleRenderer: indirect draw skipped: particle simulator is unavailable");
+        return false;
+    }
+
+    if (!m_renderConstantsBuffer || !m_quadVertexBuffer || !m_quadIndexBuffer)
+    {
+        RVX_CORE_WARN("ParticleRenderer: indirect draw skipped: render buffers are unavailable");
+        return false;
+    }
 
     // Upload render constants
     UploadRenderConstants(view, system->softParticleConfig);
@@ -206,14 +232,25 @@ void ParticleRenderer::DrawParticlesIndirect(RHICommandContext& ctx,
     RHIPipeline* pipeline = GetBillboardPipeline(system->blendMode,
                                                   system->softParticleConfig.enabled && depthTexture);
     if (!pipeline)
-        return;
+    {
+        RVX_CORE_WARN("ParticleRenderer: indirect draw skipped: pipeline is unavailable");
+        return false;
+    }
+
+    RHIBuffer* indirectDrawBuffer = simulator->GetIndirectDrawBuffer();
+    if (!indirectDrawBuffer)
+    {
+        RVX_CORE_WARN("ParticleRenderer: indirect draw skipped: indirect draw buffer is unavailable");
+        return false;
+    }
 
     ctx.SetPipeline(pipeline);
     ctx.SetVertexBuffer(0, m_quadVertexBuffer.Get());
     ctx.SetIndexBuffer(m_quadIndexBuffer.Get(), RHIFormat::R16_UINT, 0);
 
     // Indirect draw (1 draw call, stride = 0 for single draw)
-    ctx.DrawIndexedIndirect(simulator->GetIndirectDrawBuffer(), 0, 1, 0);
+    ctx.DrawIndexedIndirect(indirectDrawBuffer, 0, 1, 0);
+    return true;
 }
 
 void ParticleRenderer::UploadRenderConstants(const ViewData& view, 

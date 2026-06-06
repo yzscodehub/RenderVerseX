@@ -1,12 +1,13 @@
 #include "Particle/Rendering/ParticlePass.h"
-#include "Particle/Rendering/ParticleRenderer.h"
-#include "Particle/GPU/ParticleSorter.h"
+#include "Core/Log.h"
 #include "Particle/GPU/IParticleSimulator.h"
-#include "Particle/ParticleSystemInstance.h"
+#include "Particle/GPU/ParticleSorter.h"
 #include "Particle/ParticleSystem.h"
+#include "Particle/ParticleSystemInstance.h"
+#include "Particle/Rendering/ParticleRenderer.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Renderer/ViewData.h"
-#include "Core/Log.h"
+
 #include <unordered_map>
 
 namespace RVX::Particle
@@ -15,9 +16,28 @@ namespace RVX::Particle
 ParticlePass::ParticlePass() = default;
 ParticlePass::~ParticlePass() = default;
 
+bool ParticlePass::IsSupported() const
+{
+    return m_renderer && m_renderer->IsRenderingSupported();
+}
+
+const std::string& ParticlePass::GetUnsupportedReason() const
+{
+    static const std::string noRendererReason = "Particle renderer is not connected";
+    static const std::string emptyReason;
+
+    if (!m_renderer)
+        return noRendererReason;
+
+    if (!m_renderer->IsRenderingSupported())
+        return m_renderer->GetUnsupportedReason();
+
+    return emptyReason;
+}
+
 bool ParticlePass::IsEnabled() const
 {
-    return m_renderer && m_renderer->IsRenderingSupported() && !m_batches.empty();
+    return IsRequestedEnabled() && IsSupported() && !m_batches.empty();
 }
 
 void ParticlePass::SetParticleSystems(const std::vector<ParticleSystemInstance*>& instances)
@@ -65,23 +85,27 @@ void ParticlePass::SortIntoBatches()
 
 void ParticlePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
-    (void)view;
+    m_colorTarget = view.colorTarget;
+    m_depthTarget = view.depthTarget;
 
     if (!IsEnabled())
     {
-        if (m_renderer && !m_renderer->IsRenderingSupported())
+        if (!IsSupported())
         {
-            RVX_CORE_WARN("ParticlePass: setup skipped: {}", m_renderer->GetUnsupportedReason());
+            RVX_CORE_WARN("ParticlePass: setup skipped: {}", GetUnsupportedReason());
         }
         return;
     }
 
     // Read/write color target
-    m_colorTarget = builder.Read(m_colorTarget);
-    m_colorTarget = builder.Write(m_colorTarget);
+    if (m_colorTarget.IsValid())
+    {
+        m_colorTarget = builder.Read(m_colorTarget);
+        m_colorTarget = builder.Write(m_colorTarget);
+    }
 
     // Read depth for soft particles
-    if (m_softParticlesEnabled)
+    if (m_softParticlesEnabled && m_depthTarget.IsValid())
     {
         m_depthTarget = builder.Read(m_depthTarget);
     }
@@ -91,9 +115,9 @@ void ParticlePass::Execute(RHICommandContext& ctx, const ViewData& view)
 {
     if (!IsEnabled())
     {
-        if (m_renderer && !m_renderer->IsRenderingSupported())
+        if (!IsSupported())
         {
-            RVX_CORE_WARN("ParticlePass: execute skipped: {}", m_renderer->GetUnsupportedReason());
+            RVX_CORE_WARN("ParticlePass: execute skipped: {}", GetUnsupportedReason());
         }
         return;
     }

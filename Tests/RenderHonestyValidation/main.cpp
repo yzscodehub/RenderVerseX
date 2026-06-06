@@ -17,8 +17,11 @@
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
 #include "Render/PostProcess/VolumetricLighting.h"
+#include "Render/Graph/RenderGraph.h"
+#include "Render/Renderer/ViewData.h"
 #include "Render/Sky/AtmosphericScattering.h"
 #include "Resource/Loader/TextureLoader.h"
+#include "RHI/RHICommandContext.h"
 #include "RHI/RHI.h"
 #include "Particle/ParticleSystem.h"
 #include "Particle/ParticleSystemInstance.h"
@@ -78,6 +81,77 @@ namespace
 
     private:
         RVX::RHICapabilities m_capabilities;
+    };
+
+    class NoOpCommandContext final : public RVX::RHICommandContext
+    {
+    public:
+        void Begin() override {}
+        void End() override {}
+        void Reset() override {}
+        void BeginEvent(const char*, RVX::uint32 = 0) override {}
+        void EndEvent() override {}
+        void SetMarker(const char*, RVX::uint32 = 0) override {}
+        void BufferBarrier(const RVX::RHIBufferBarrier&) override {}
+        void TextureBarrier(const RVX::RHITextureBarrier&) override {}
+        void Barriers(std::span<const RVX::RHIBufferBarrier>,
+                      std::span<const RVX::RHITextureBarrier>) override {}
+        void BeginBarrier(const RVX::RHIBufferBarrier&) override {}
+        void BeginBarrier(const RVX::RHITextureBarrier&) override {}
+        void EndBarrier(const RVX::RHIBufferBarrier&) override {}
+        void EndBarrier(const RVX::RHITextureBarrier&) override {}
+        void BeginRenderPass(const RVX::RHIRenderPassDesc&) override {}
+        void EndRenderPass() override {}
+        void SetPipeline(RVX::RHIPipeline*) override {}
+        void SetVertexBuffer(RVX::uint32, RVX::RHIBuffer*, RVX::uint64 = 0) override {}
+        void SetVertexBuffers(RVX::uint32,
+                              std::span<RVX::RHIBuffer* const>,
+                              std::span<const RVX::uint64> = {}) override {}
+        void SetIndexBuffer(RVX::RHIBuffer*, RVX::RHIFormat, RVX::uint64 = 0) override {}
+        void SetDescriptorSet(RVX::uint32, RVX::RHIDescriptorSet*, std::span<const RVX::uint32> = {}) override {}
+        void SetPushConstants(const void*, RVX::uint32, RVX::uint32 = 0) override {}
+        void SetViewport(const RVX::RHIViewport&) override {}
+        void SetViewports(std::span<const RVX::RHIViewport>) override {}
+        void SetScissor(const RVX::RHIRect&) override {}
+        void SetScissors(std::span<const RVX::RHIRect>) override {}
+        void Draw(RVX::uint32, RVX::uint32 = 1, RVX::uint32 = 0, RVX::uint32 = 0) override { drawCount++; }
+        void DrawIndexed(RVX::uint32,
+                         RVX::uint32 = 1,
+                         RVX::uint32 = 0,
+                         RVX::int32 = 0,
+                         RVX::uint32 = 0) override { drawIndexedCount++; }
+        void DrawIndirect(RVX::RHIBuffer*, RVX::uint64, RVX::uint32, RVX::uint32) override
+        {
+            drawIndirectCount++;
+        }
+        void DrawIndexedIndirect(RVX::RHIBuffer*, RVX::uint64, RVX::uint32, RVX::uint32) override
+        {
+            drawIndexedIndirectCount++;
+        }
+        void Dispatch(RVX::uint32, RVX::uint32, RVX::uint32) override {}
+        void DispatchIndirect(RVX::RHIBuffer*, RVX::uint64) override {}
+        void CopyBuffer(RVX::RHIBuffer*, RVX::RHIBuffer*, RVX::uint64, RVX::uint64, RVX::uint64) override {}
+        void CopyTexture(RVX::RHITexture*, RVX::RHITexture*, const RVX::RHITextureCopyDesc& = {}) override {}
+        void CopyBufferToTexture(RVX::RHIBuffer*, RVX::RHITexture*, const RVX::RHIBufferTextureCopyDesc&) override {}
+        void CopyTextureToBuffer(RVX::RHITexture*, RVX::RHIBuffer*, const RVX::RHIBufferTextureCopyDesc&) override {}
+        void BeginQuery(RVX::RHIQueryPool*, RVX::uint32) override {}
+        void EndQuery(RVX::RHIQueryPool*, RVX::uint32) override {}
+        void WriteTimestamp(RVX::RHIQueryPool*, RVX::uint32) override {}
+        void ResolveQueries(RVX::RHIQueryPool*, RVX::uint32, RVX::uint32, RVX::RHIBuffer*, RVX::uint64) override {}
+        void ResetQueries(RVX::RHIQueryPool*, RVX::uint32, RVX::uint32) override {}
+        void SetStencilReference(RVX::uint32) override {}
+        void SetBlendConstants(const float[4]) override {}
+        void SetDepthBias(float, float, float = 0.0f) override {}
+        void SetDepthBounds(float, float) override {}
+        void SetStencilReferenceSeparate(RVX::uint32, RVX::uint32) override {}
+        void SetLineWidth(float) override {}
+        void SignalFence(RVX::RHIFence*, RVX::uint64) override {}
+        void WaitFence(RVX::RHIFence*, RVX::uint64) override {}
+
+        RVX::uint32 drawCount = 0;
+        RVX::uint32 drawIndexedCount = 0;
+        RVX::uint32 drawIndirectCount = 0;
+        RVX::uint32 drawIndexedIndirectCount = 0;
     };
 
     fs::path MakeTempDir(const char* name)
@@ -436,5 +510,73 @@ TEST_F(RenderHonestyValidationFixture, ParticleRenderingAndSimulationExposeDisco
     EXPECT_FALSE(renderer.GetUnsupportedReason().empty());
 
     RVX::Particle::ParticlePass pass;
+    RVX::RenderPassStatus status = pass.GetStatus();
+    EXPECT_FALSE(status.supported);
+    EXPECT_FALSE(status.enabled);
+    EXPECT_FALSE(status.unsupportedReason.empty());
+
+    pass.SetRenderer(&renderer);
+    status = pass.GetStatus();
+    EXPECT_TRUE(status.requestedEnabled);
+    EXPECT_FALSE(status.supported);
+    EXPECT_FALSE(status.enabled);
+    EXPECT_FALSE(status.unsupportedReason.empty());
     EXPECT_FALSE(pass.IsEnabled());
+}
+
+TEST_F(RenderHonestyValidationFixture, ParticleRendererDrawsReturnFalseWhenUnsupported)
+{
+    NullDevice device;
+    NoOpCommandContext ctx;
+    RVX::ViewData view;
+    auto system = RVX::Particle::ParticleSystem::Create("draw-return-particles");
+    RVX::Particle::ParticleSystemInstance instance(system);
+    instance.Play();
+
+    RVX::Particle::ParticleRenderer renderer;
+    EXPECT_FALSE(renderer.DrawParticles(ctx, nullptr, view, nullptr));
+    EXPECT_FALSE(renderer.DrawParticlesIndirect(ctx, nullptr, view, nullptr));
+
+    renderer.Initialize(&device);
+    EXPECT_TRUE(renderer.IsInitialized());
+    EXPECT_FALSE(renderer.IsRenderingSupported());
+    EXPECT_FALSE(renderer.GetUnsupportedReason().empty());
+
+    EXPECT_FALSE(renderer.DrawParticles(ctx, &instance, view, nullptr));
+    EXPECT_FALSE(renderer.DrawParticlesIndirect(ctx, &instance, view, nullptr));
+    EXPECT_EQ(ctx.drawIndexedCount, 0u);
+    EXPECT_EQ(ctx.drawIndexedIndirectCount, 0u);
+}
+
+TEST_F(RenderHonestyValidationFixture, ParticlePassUnsupportedSetupDeclaresNoGraphResources)
+{
+    NullDevice device;
+    RVX::RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RVX::ViewData view;
+    RVX::RHITextureDesc colorDesc = RVX::RHITextureDesc::RenderTarget(32, 32, RVX::RHIFormat::RGBA8_UNORM);
+    colorDesc.debugName = "ParticleUnsupportedColor";
+    view.colorTarget = graph.CreateTexture(colorDesc);
+
+    RVX::RHITextureDesc depthDesc = RVX::RHITextureDesc::DepthStencil(32, 32, RVX::RHIFormat::D32_FLOAT);
+    depthDesc.debugName = "ParticleUnsupportedDepth";
+    view.depthTarget = graph.CreateTexture(depthDesc);
+
+    RVX::Particle::ParticleRenderer renderer;
+    RVX::Particle::ParticlePass pass;
+    pass.SetRenderer(&renderer);
+    pass.AddToGraph(graph, view);
+    graph.Compile();
+
+    const RVX::RenderGraph::CompileStats& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.compileValid);
+    EXPECT_EQ(stats.totalPasses, 1u);
+    EXPECT_EQ(stats.emptyPassUsageCount, 1u);
+    EXPECT_EQ(stats.culledPasses, 1u);
+
+    NoOpCommandContext ctx;
+    graph.Execute(ctx);
+    EXPECT_EQ(ctx.drawIndexedCount, 0u);
+    EXPECT_EQ(ctx.drawIndexedIndirectCount, 0u);
 }

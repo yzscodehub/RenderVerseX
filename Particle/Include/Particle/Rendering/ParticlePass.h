@@ -5,8 +5,10 @@
  * @brief Particle rendering pass for RenderGraph integration
  */
 
-#include "Render/Passes/IRenderPass.h"
 #include "Particle/ParticleTypes.h"
+#include "Render/Passes/IRenderPass.h"
+
+#include <string>
 #include <vector>
 
 namespace RVX::Particle
@@ -47,6 +49,8 @@ namespace RVX::Particle
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        bool IsSupported() const override;
+        const std::string& GetUnsupportedReason() const override;
         bool IsEnabled() const override;
 
         // =====================================================================

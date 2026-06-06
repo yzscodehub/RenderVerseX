@@ -10,9 +10,10 @@
 #include "Particle/Rendering/TrailRenderer.h"
 #include "RHI/RHI.h"
 #include "Render/Renderer/ViewData.h"
-#include <unordered_map>
+
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 namespace RVX::Particle
 {
@@ -52,7 +53,7 @@ namespace RVX::Particle
          * @param view View data
          * @param depthTexture Scene depth texture (for soft particles)
          */
-        void DrawParticles(RHICommandContext& ctx,
+        bool DrawParticles(RHICommandContext& ctx,
                           ParticleSystemInstance* instance,
                           const ViewData& view,
                           RHITexture* depthTexture);
@@ -60,7 +61,7 @@ namespace RVX::Particle
         /**
          * @brief Draw particles with indirect draw
          */
-        void DrawParticlesIndirect(RHICommandContext& ctx,
+        bool DrawParticlesIndirect(RHICommandContext& ctx,
                                    ParticleSystemInstance* instance,
                                    const ViewData& view,
                                    RHITexture* depthTexture);

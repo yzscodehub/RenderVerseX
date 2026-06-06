@@ -2186,6 +2186,107 @@ ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderPass
 
 ---
 
+### R10a: Particle Rendering Honesty Hardening
+
+**Date:** 2026-06-06
+**Commit:** pending
+**Spark plan review agent:** Popper (`019e9db5-178f-7633-ac79-4f8b4d129e10`)
+**Spark code review agent:** Kant (`019e9dbc-25c0-7c12-97ad-aff6d552a083`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: R10 - Particle Rendering Honesty and Minimal Visual Path
+- Stage plan: `Docs/superpowers/specs/2026-06-06-r10a-particle-rendering-honesty-plan.md`
+- Lines checked: execution rules, R10 scope/done criteria, and final visual-gate requirements before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R9g SceneRenderer PostProcess Runtime Integration
+- Evidence: R9g implementation and log-correction commits are present; R9g narrow, broad, ModelViewer smoke, and visual golden validations passed.
+
+**Approved scope:**
+
+- Select the R10 explicit unsupported path rather than CPU fallback visible path.
+- Make `ParticlePass::GetStatus()` honest by overriding `IsSupported()` and `GetUnsupportedReason()`.
+- Keep `ParticlePass::IsEnabled()` false unless the pass is requested, supported, and has renderable batches.
+- Make `ParticlePass::Setup()` copy current `ViewData` color/depth handles and declare no graph resources when unsupported.
+- Change `ParticleRenderer::DrawParticles()` and `DrawParticlesIndirect()` to return `bool`, with `true` only when a draw command is actually submitted.
+- Return `false` for unsupported renderer, missing instance/system, zero alive particles, missing simulator, missing render buffers, missing pipeline, or missing indirect draw buffer.
+- Extend `RenderHonestyValidation` with particle status, draw-return, and unsupported RenderGraph setup tests.
+
+**Out of scope:**
+
+- CPU particle fallback simulation connection.
+- Particle graphics pipeline creation.
+- Shader descriptor binding for particle buffers, alive index buffers, textures, depth, or constants.
+- Particle sample scene or visual golden rebaseline.
+- Integrating `ParticlePass` into `SceneRenderer`'s production pass chain.
+- Full particle authoring, editor panels, or advanced simulation.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-06-r10a-particle-rendering-honesty-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Particle/Include/Particle/Rendering/ParticleRenderer.h`
+- `Particle/Private/Rendering/ParticleRenderer.cpp`
+- `Particle/Include/Particle/Rendering/ParticlePass.h`
+- `Particle/Private/Rendering/ParticlePass.cpp`
+- `Tests/RenderHonestyValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderHonestyValidation RenderPassValidation RenderSceneValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+build\win_x64_debug\Tests\Debug\RenderHonestyValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderHonestyValidation|RenderPassValidation|RenderSceneValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "ClusteredLightingValidation|RenderGraphValidation|RenderHonestyValidation|RenderSceneValidation|RenderPassValidation|MaterialSystemValidation|ResourceInstantiationValidation|PipelineCacheValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+cmake --build build/win_x64_debug --config Debug --target RenderHonestyValidation
+build\win_x64_debug\Tests\Debug\RenderHonestyValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderHonestyValidation|RenderPassValidation|RenderSceneValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `RenderHonestyValidation`: 19/19 by direct executable after final Spark suggestion adoption
+  - Required R10a filtered CTest: 63/63 after final Spark suggestion adoption
+  - Broad render/resource regression CTest: 217/217 before final non-blocking suggestion adoption
+  - `git diff --check`: PASS, with only Git CRLF warnings
+- Visual gate: PASS
+  - `ModelViewerSmoke`: PASS
+  - `VisualGoldenValidation`: PASS
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan review, Spark code review, and Spark incremental/final code-review messages
+- Plan: `Docs/superpowers/specs/2026-06-06-r10a-particle-rendering-honesty-plan.md`
+- Screenshots/golden: unchanged default visual gate path from ModelViewer smoke/golden validation
+
+**Spark plan review result:**
+
+- Verdict: `PASS_WITH_NON_BLOCKING`
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: status assertion for `ParticlePass::GetStatus().supported == false`, unsupported setup no-resource test, and draw-return false tests for disconnected renderer paths.
+
+**Spark code review result:**
+
+- Verdict: `PASS_WITH_NON_BLOCKING`
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: added `DrawParticlesIndirect()` zero-alive-count false return for symmetry with direct draw.
+- Final incremental re-review verdict: `PASS`
+
+**Notes / follow-ups:**
+
+- R10a completes the explicit unsupported branch of R10; it does not claim a visible particle rendering path.
+- A future CPU fallback visible path must be its own gated phase because it needs simulator connection, particle graphics pipelines, descriptor bindings, and sample visual coverage.
+- `ParticlePass` now avoids false pass-chain support reporting and avoids declaring RenderGraph resources when disconnected.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R10a commit.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
