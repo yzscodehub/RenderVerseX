@@ -5,77 +5,297 @@
 
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
+#include "Core/Log.h"
+
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <limits>
+#include <utility>
 
 namespace RVX
 {
+namespace
+{
+    constexpr uint64 RVX_MAX_CLUSTERED_LIGHTING_CLUSTERS = 1ull << 20;
+    constexpr uint64 RVX_MAX_CLUSTERED_LIGHTING_INDICES = 1ull << 24;
+    constexpr float RVX_CLUSTERING_EPSILON = 0.0001f;
+
+    struct ClusterConstants
+    {
+        Vec4 clusterSize;  // x, y, z counts, total
+        Vec4 screenParams; // width, height, near, far
+        Mat4 invProj;
+    };
+
+    bool CheckedMultiply(uint64 a, uint64 b, uint64& out)
+    {
+        if (a != 0 && b > std::numeric_limits<uint64>::max() / a)
+            return false;
+
+        out = a * b;
+        return true;
+    }
+
+    bool IsFinitePositive(float value)
+    {
+        return std::isfinite(value) && value > RVX_CLUSTERING_EPSILON;
+    }
+
+} // namespace
 
 ClusteredLighting::~ClusteredLighting()
 {
     Shutdown();
 }
 
-void ClusteredLighting::Initialize(IRHIDevice* device, const ClusteringConfig& config)
+bool ClusteredLighting::Initialize(IRHIDevice* device, const ClusteringConfig& config)
 {
+    if (!device)
+    {
+        SetLastError("ClusteredLighting requires a valid RHI device");
+        return false;
+    }
+
+    uint64 totalClusters = 0;
+    uint64 lightIndexCapacity = 0;
+    if (!ValidateConfig(config, totalClusters, lightIndexCapacity))
+    {
+        return false;
+    }
+
+    ReleaseResources();
     m_device = device;
     m_config = config;
 
-    // Allocate cluster data
-    uint32 totalClusters = m_config.GetTotalClusterCount();
-    m_clusterAABBs.resize(totalClusters);
-    m_clusters.resize(totalClusters);
-    m_lightIndices.reserve(totalClusters * m_config.maxLightsPerCluster);
-
-    // Create GPU buffers
-    if (m_device)
+    try
     {
-        RHIBufferDesc desc;
-        desc.size = totalClusters * sizeof(ClusterAABB);
-        desc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
-        desc.memoryType = RHIMemoryType::Upload;
-        m_clusterAABBBuffer = m_device->CreateBuffer(desc);
-
-        desc.size = totalClusters * sizeof(GPUCluster);
-        m_clusterBuffer = m_device->CreateBuffer(desc);
-
-        desc.size = totalClusters * m_config.maxLightsPerCluster * sizeof(LightIndex);
-        m_lightIndexBuffer = m_device->CreateBuffer(desc);
-
-        desc.size = 256;  // Cluster constants
-        desc.usage = RHIBufferUsage::Constant;
-        desc.memoryType = RHIMemoryType::Upload;
-        m_clusterConstantsBuffer = m_device->CreateBuffer(desc);
+        m_clusterAABBs.resize(static_cast<size_t>(totalClusters));
+        m_clusters.resize(static_cast<size_t>(totalClusters));
+        m_lightIndices.reserve(static_cast<size_t>(lightIndexCapacity));
     }
+    catch (const std::bad_alloc&)
+    {
+        ReleaseResources();
+        m_device = nullptr;
+        SetLastError("ClusteredLighting failed to allocate CPU cluster data");
+        return false;
+    }
+
+    if (!CreateBuffers(totalClusters, lightIndexCapacity))
+    {
+        ReleaseResources();
+        m_device = nullptr;
+        return false;
+    }
+
+    m_initialized = true;
+    m_frameBegun = false;
+    m_stats = {};
+    m_stats.clusterCount = static_cast<uint32>(totalClusters);
+    m_lastError.clear();
+    RVX_CORE_DEBUG("ClusteredLighting: Initialized with {} clusters", m_stats.clusterCount);
+    return true;
 }
 
 void ClusteredLighting::Shutdown()
 {
-    m_clusterAABBBuffer.Reset();
-    m_clusterBuffer.Reset();
-    m_lightIndexBuffer.Reset();
-    m_clusterConstantsBuffer.Reset();
+    ReleaseResources();
     m_device = nullptr;
+    m_lastError.clear();
 }
 
-void ClusteredLighting::Reconfigure(const ClusteringConfig& config)
+bool ClusteredLighting::Reconfigure(const ClusteringConfig& config)
 {
-    Shutdown();
-    Initialize(m_device, config);
+    IRHIDevice* device = m_device;
+    if (!device)
+    {
+        SetLastError("ClusteredLighting cannot reconfigure without an RHI device");
+        return false;
+    }
+
+    return Initialize(device, config);
 }
 
-void ClusteredLighting::BeginFrame(const Mat4& viewMatrix, const Mat4& projMatrix,
+bool ClusteredLighting::BeginFrame(const Mat4& viewMatrix, const Mat4& projMatrix,
                                     uint32 screenWidth, uint32 screenHeight)
 {
+    if (!m_initialized)
+    {
+        SetLastError("ClusteredLighting must be initialized before BeginFrame");
+        return false;
+    }
+
+    if (screenWidth == 0 || screenHeight == 0)
+    {
+        SetLastError("ClusteredLighting requires a non-zero viewport");
+        return false;
+    }
+
     m_viewMatrix = viewMatrix;
     m_projMatrix = projMatrix;
     m_invProjMatrix = inverse(projMatrix);
     m_screenWidth = screenWidth;
     m_screenHeight = screenHeight;
+    m_frameBegun = true;
 
     // Rebuild cluster AABBs if view parameters changed significantly
     BuildClusterAABBs();
     ClearClusters();
+    m_lastError.clear();
+    return true;
+}
+
+void ClusteredLighting::ReleaseResources()
+{
+    m_clusterAABBBuffer.Reset();
+    m_clusterBuffer.Reset();
+    m_lightIndexBuffer.Reset();
+    m_clusterConstantsBuffer.Reset();
+    m_clusterAABBs.clear();
+    m_clusters.clear();
+    m_lightIndices.clear();
+    m_stats = {};
+    m_initialized = false;
+    m_frameBegun = false;
+}
+
+void ClusteredLighting::SetLastError(std::string message)
+{
+    m_lastError = std::move(message);
+    if (!m_lastError.empty())
+    {
+        RVX_CORE_WARN("ClusteredLighting: {}", m_lastError);
+    }
+}
+
+bool ClusteredLighting::ValidateConfig(const ClusteringConfig& config,
+                                       uint64& outTotalClusters,
+                                       uint64& outLightIndexCapacity)
+{
+    outTotalClusters = 0;
+    outLightIndexCapacity = 0;
+
+    if (config.clusterCountX == 0 || config.clusterCountY == 0 || config.clusterCountZ == 0)
+    {
+        SetLastError("ClusteredLighting requires non-zero cluster dimensions");
+        return false;
+    }
+
+    if (!IsFinitePositive(config.nearPlane) || !std::isfinite(config.farPlane) ||
+        config.farPlane <= config.nearPlane)
+    {
+        SetLastError("ClusteredLighting requires finite ordered near/far planes");
+        return false;
+    }
+
+    if (config.maxLightsPerCluster == 0)
+    {
+        SetLastError("ClusteredLighting requires maxLightsPerCluster > 0");
+        return false;
+    }
+
+    uint64 xy = 0;
+    if (!CheckedMultiply(config.clusterCountX, config.clusterCountY, xy) ||
+        !CheckedMultiply(xy, config.clusterCountZ, outTotalClusters))
+    {
+        SetLastError("ClusteredLighting cluster count overflow");
+        return false;
+    }
+
+    if (outTotalClusters == 0 || outTotalClusters > RVX_MAX_CLUSTERED_LIGHTING_CLUSTERS)
+    {
+        SetLastError("ClusteredLighting cluster count exceeds supported maximum");
+        return false;
+    }
+
+    if (!CheckedMultiply(outTotalClusters, config.maxLightsPerCluster, outLightIndexCapacity))
+    {
+        SetLastError("ClusteredLighting light index capacity overflow");
+        return false;
+    }
+
+    if (outLightIndexCapacity > RVX_MAX_CLUSTERED_LIGHTING_INDICES)
+    {
+        SetLastError("ClusteredLighting light index capacity exceeds supported maximum");
+        return false;
+    }
+
+    uint64 allocationSize = 0;
+    if (!CheckedMultiply(outTotalClusters, sizeof(ClusterAABB), allocationSize) ||
+        !CheckedMultiply(outTotalClusters, sizeof(GPUCluster), allocationSize) ||
+        !CheckedMultiply(outLightIndexCapacity, sizeof(LightIndex), allocationSize))
+    {
+        SetLastError("ClusteredLighting buffer size overflow");
+        return false;
+    }
+
+    return true;
+}
+
+bool ClusteredLighting::CreateBuffers(uint64 totalClusters, uint64 lightIndexCapacity)
+{
+    RHIBufferDesc desc;
+    desc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
+    desc.memoryType = RHIMemoryType::Upload;
+
+    desc.size = totalClusters * sizeof(ClusterAABB);
+    desc.stride = sizeof(ClusterAABB);
+    desc.debugName = "ClusterAABBBuffer";
+    m_clusterAABBBuffer = m_device->CreateBuffer(desc);
+
+    desc.size = totalClusters * sizeof(GPUCluster);
+    desc.stride = sizeof(GPUCluster);
+    desc.debugName = "ClusterDataBuffer";
+    m_clusterBuffer = m_device->CreateBuffer(desc);
+
+    desc.size = lightIndexCapacity * sizeof(LightIndex);
+    desc.stride = sizeof(LightIndex);
+    desc.debugName = "ClusterLightIndexBuffer";
+    m_lightIndexBuffer = m_device->CreateBuffer(desc);
+
+    desc.size = 256;
+    desc.usage = RHIBufferUsage::Constant;
+    desc.stride = 0;
+    desc.debugName = "ClusterConstantsBuffer";
+    m_clusterConstantsBuffer = m_device->CreateBuffer(desc);
+
+    if (!m_clusterAABBBuffer || !m_clusterBuffer || !m_lightIndexBuffer || !m_clusterConstantsBuffer)
+    {
+        SetLastError("ClusteredLighting failed to create required GPU buffers");
+        return false;
+    }
+
+    return true;
+}
+
+bool ClusteredLighting::UploadBuffer(RHIBuffer* buffer, const void* data, uint64 size, const char* label)
+{
+    if (size == 0)
+        return true;
+
+    if (!buffer)
+    {
+        SetLastError(std::string("ClusteredLighting missing buffer for ") + label);
+        return false;
+    }
+
+    if (!data)
+    {
+        SetLastError(std::string("ClusteredLighting missing upload data for ") + label);
+        return false;
+    }
+
+    void* mapped = buffer->Map();
+    if (!mapped)
+    {
+        SetLastError(std::string("ClusteredLighting failed to map ") + label);
+        return false;
+    }
+
+    std::memcpy(mapped, data, static_cast<size_t>(size));
+    buffer->Unmap();
+    return true;
 }
 
 void ClusteredLighting::BuildClusterAABBs()
@@ -130,10 +350,13 @@ void ClusteredLighting::BuildClusterAABBs()
                 for (int i = 0; i < 8; ++i)
                 {
                     float depth = (i < 4) ? minZ : maxZ;
-                    Vec4 clip(corners[i][0], corners[i][1], 
+                    Vec4 clip(corners[i][0], corners[i][1],
                              (depth - nearZ) / (farZ - nearZ), 1.0f);
                     Vec4 view = m_invProjMatrix * clip;
-                    view /= view.w;
+                    if (std::abs(view.w) > RVX_CLUSTERING_EPSILON)
+                    {
+                        view /= view.w;
+                    }
 
                     minPoint = min(minPoint, Vec3(view));
                     maxPoint = max(maxPoint, Vec3(view));
@@ -157,10 +380,25 @@ void ClusteredLighting::ClearClusters()
     }
     m_lightIndices.clear();
     m_stats = {};
+    m_stats.clusterCount = static_cast<uint32>(m_clusters.size());
 }
 
-void ClusteredLighting::AssignLights(const LightManager& lightManager)
+bool ClusteredLighting::AssignLights(const LightManager& lightManager)
 {
+    if (!m_initialized)
+    {
+        SetLastError("ClusteredLighting must be initialized before AssignLights");
+        return false;
+    }
+
+    if (!m_frameBegun)
+    {
+        SetLastError("ClusteredLighting requires BeginFrame before AssignLights");
+        return false;
+    }
+
+    ClearClusters();
+
     const auto& pointLights = lightManager.GetPointLights();
     const auto& spotLights = lightManager.GetSpotLights();
 
@@ -228,9 +466,12 @@ void ClusteredLighting::AssignLights(const LightManager& lightManager)
 
     if (m_stats.activeClusters > 0)
     {
-        m_stats.avgLightsPerCluster = 
+        m_stats.avgLightsPerCluster =
             static_cast<float>(m_stats.totalLightAssignments) / m_stats.activeClusters;
     }
+    m_stats.lightIndexCount = static_cast<uint32>(m_lightIndices.size());
+    m_lastError.clear();
+    return true;
 }
 
 bool ClusteredLighting::IntersectsCluster(const ClusterAABB& cluster, 
@@ -247,46 +488,72 @@ bool ClusteredLighting::IntersectsCluster(const ClusterAABB& cluster,
     return distSq <= (range * range);
 }
 
-void ClusteredLighting::UpdateGPUBuffers(RHICommandContext& /*ctx*/)
+bool ClusteredLighting::UpdateGPUBuffers(RHICommandContext& ctx)
 {
-    // Update cluster buffer
-    if (m_clusterBuffer && !m_clusters.empty())
+    (void)ctx;
+
+    if (!m_initialized)
     {
-        m_clusterBuffer->Upload(m_clusters.data(), m_clusters.size());
+        SetLastError("ClusteredLighting must be initialized before UpdateGPUBuffers");
+        return false;
     }
 
-    // Update light index buffer
-    if (m_lightIndexBuffer && !m_lightIndices.empty())
+    if (!m_frameBegun)
     {
-        m_lightIndexBuffer->Upload(m_lightIndices.data(), m_lightIndices.size());
+        SetLastError("ClusteredLighting requires BeginFrame before UpdateGPUBuffers");
+        return false;
     }
 
-    // Update cluster constants
-    if (m_clusterConstantsBuffer)
+    if (!UploadBuffer(m_clusterAABBBuffer.Get(),
+                      m_clusterAABBs.data(),
+                      static_cast<uint64>(m_clusterAABBs.size() * sizeof(ClusterAABB)),
+                      "cluster AABB buffer"))
     {
-        struct ClusterConstants
-        {
-            Vec4 clusterSize;  // x, y, z counts, total
-            Vec4 screenParams; // width, height, near, far
-            Mat4 invProj;
-        } constants;
-
-        constants.clusterSize = Vec4(
-            static_cast<float>(m_config.clusterCountX),
-            static_cast<float>(m_config.clusterCountY),
-            static_cast<float>(m_config.clusterCountZ),
-            static_cast<float>(m_config.GetTotalClusterCount())
-        );
-        constants.screenParams = Vec4(
-            static_cast<float>(m_screenWidth),
-            static_cast<float>(m_screenHeight),
-            m_config.nearPlane,
-            m_config.farPlane
-        );
-        constants.invProj = m_invProjMatrix;
-
-        m_clusterConstantsBuffer->Upload(&constants, 1);
+        return false;
     }
+
+    if (!UploadBuffer(m_clusterBuffer.Get(),
+                      m_clusters.data(),
+                      static_cast<uint64>(m_clusters.size() * sizeof(GPUCluster)),
+                      "cluster data buffer"))
+    {
+        return false;
+    }
+
+    if (!m_lightIndices.empty() &&
+        !UploadBuffer(m_lightIndexBuffer.Get(),
+                      m_lightIndices.data(),
+                      static_cast<uint64>(m_lightIndices.size() * sizeof(LightIndex)),
+                      "light index buffer"))
+    {
+        return false;
+    }
+
+    ClusterConstants constants;
+    constants.clusterSize = Vec4(
+        static_cast<float>(m_config.clusterCountX),
+        static_cast<float>(m_config.clusterCountY),
+        static_cast<float>(m_config.clusterCountZ),
+        static_cast<float>(m_clusters.size())
+    );
+    constants.screenParams = Vec4(
+        static_cast<float>(m_screenWidth),
+        static_cast<float>(m_screenHeight),
+        m_config.nearPlane,
+        m_config.farPlane
+    );
+    constants.invProj = m_invProjMatrix;
+
+    if (!UploadBuffer(m_clusterConstantsBuffer.Get(),
+                      &constants,
+                      sizeof(ClusterConstants),
+                      "cluster constants buffer"))
+    {
+        return false;
+    }
+
+    m_lastError.clear();
+    return true;
 }
 
 } // namespace RVX

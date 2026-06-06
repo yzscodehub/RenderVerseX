@@ -11,8 +11,10 @@
 #include "Core/Types.h"
 #include "Core/MathTypes.h"
 #include "RHI/RHI.h"
-#include <vector>
+
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace RVX
 {
@@ -93,7 +95,7 @@ namespace RVX
         /**
          * @brief Initialize the clustered lighting system
          */
-        void Initialize(IRHIDevice* device, const ClusteringConfig& config = {});
+        bool Initialize(IRHIDevice* device, const ClusteringConfig& config = {});
 
         /**
          * @brief Shutdown and release resources
@@ -103,7 +105,12 @@ namespace RVX
         /**
          * @brief Check if initialized
          */
-        bool IsInitialized() const { return m_device != nullptr; }
+        bool IsInitialized() const { return m_initialized; }
+
+        /**
+         * @brief Get the last visible failure reason
+         */
+        const std::string& GetLastError() const { return m_lastError; }
 
         // =========================================================================
         // Configuration
@@ -117,7 +124,7 @@ namespace RVX
         /**
          * @brief Reconfigure clusters (rebuilds cluster AABBs)
          */
-        void Reconfigure(const ClusteringConfig& config);
+        bool Reconfigure(const ClusteringConfig& config);
 
         // =========================================================================
         // Per-Frame Update
@@ -130,20 +137,20 @@ namespace RVX
          * @param screenWidth Screen width in pixels
          * @param screenHeight Screen height in pixels
          */
-        void BeginFrame(const Mat4& viewMatrix, const Mat4& projMatrix,
+        bool BeginFrame(const Mat4& viewMatrix, const Mat4& projMatrix,
                         uint32 screenWidth, uint32 screenHeight);
 
         /**
          * @brief Assign lights to clusters
          * @param lightManager Light manager with current frame's lights
          */
-        void AssignLights(const LightManager& lightManager);
+        bool AssignLights(const LightManager& lightManager);
 
         /**
          * @brief Upload cluster data to GPU
          * @param ctx Command context for buffer updates
          */
-        void UpdateGPUBuffers(RHICommandContext& ctx);
+        bool UpdateGPUBuffers(RHICommandContext& ctx);
 
         // =========================================================================
         // GPU Resources
@@ -178,6 +185,8 @@ namespace RVX
          */
         struct Statistics
         {
+            uint32 clusterCount = 0;
+            uint32 lightIndexCount = 0;
             uint32 activeClusters = 0;
             uint32 totalLightAssignments = 0;
             uint32 maxLightsInCluster = 0;
@@ -202,9 +211,19 @@ namespace RVX
         void BuildClusterAABBs();
         void ClearClusters();
         bool IntersectsCluster(const ClusterAABB& cluster, const Vec3& lightPos, float range);
+        void ReleaseResources();
+        void SetLastError(std::string message);
+        bool ValidateConfig(const ClusteringConfig& config,
+                            uint64& outTotalClusters,
+                            uint64& outLightIndexCapacity);
+        bool CreateBuffers(uint64 totalClusters, uint64 lightIndexCapacity);
+        bool UploadBuffer(RHIBuffer* buffer, const void* data, uint64 size, const char* label);
 
         IRHIDevice* m_device = nullptr;
+        bool m_initialized = false;
+        bool m_frameBegun = false;
         ClusteringConfig m_config;
+        std::string m_lastError;
 
         // View data
         Mat4 m_viewMatrix;

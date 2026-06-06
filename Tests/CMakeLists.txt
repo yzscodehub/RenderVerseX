@@ -305,6 +305,21 @@ rvx_add_gtest(
     TIMEOUT 120
 )
 
+# Clustered lighting validation tests
+rvx_add_gtest(
+    NAME ClusteredLightingValidation
+    SOURCES ClusteredLightingValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::Render
+        RVX::RHI
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/RHI/Include
+    LABELS unit
+    TIMEOUT 120
+)
+
 # Render pass validation tests
 rvx_add_gtest(
     NAME RenderPassValidation

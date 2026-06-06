@@ -1674,6 +1674,105 @@ git diff --check
 
 ---
 
+### R9c: Clustered Lighting Minimum Buffer Path
+
+**Date:** 2026-06-06
+**Commit:** R9c stage commit created immediately after this log entry
+**Spark plan review agent:** `019e9d39-7fdc-7e50-bc6b-6b39a6dabcbe`
+**Spark code review agent:** `019e9d45-af0b-7d01-9009-f24e97d3dd31`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: `15. R9 - Render Pass Completion`
+- Stage plan: `Docs/superpowers/specs/2026-06-06-r9c-clustered-lighting-minimum-buffer-path-plan.md`
+- Lines checked: roadmap lines 485-513 were reread before implementation.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R9b Shadow/PSSM Minimum Resource Path
+- Evidence: R9b committed as `67c605b`; R9c implementation plan passed Spark plan review before code changes.
+
+**Approved scope:**
+
+- Make `ClusteredLighting` expose honest success/failure through bool-returning lifecycle and per-frame methods.
+- Add explicit initialized/frame-begun state and `GetLastError()`.
+- Validate cluster dimensions, near/far planes, max lights per cluster, and allocation-size limits before resource creation.
+- Create required cluster AABB, cluster data, light index, and cluster constants buffers only after validation succeeds.
+- Fix `Reconfigure()` so it preserves the device pointer and does not destroy existing initialized state on invalid config.
+- Build deterministic per-frame cluster AABBs, assign point/spot lights, handle empty light sets, and expose deterministic stats.
+- Replace silent `RHIBuffer::Upload()` usage with explicit Map/memcpy/Unmap upload paths so map failure and partial upload failure are visible.
+- Add `ClusteredLightingValidation` coverage for invalid inputs, buffer descriptors, reconfigure, frame/update ordering, assignment stats, empty lights, uploads, and partial upload failure.
+- Keep shader/PipelineCache/SceneRenderer integration out of this sub-stage.
+
+**Out of scope:**
+
+- Binding clustered buffers into descriptor layouts.
+- Changing `DefaultLit.hlsl`, `PBRLit.hlsl`, material shaders, or ModelViewer lighting.
+- Adding a new render pass to the default `SceneRenderer` pass chain.
+- GPU/compute cluster building, shadow sampling, IBL, ToneMapping, Bloom, or TAA.
+- ECS/Object migration or RenderProxy changes.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-06-r9c-clustered-lighting-minimum-buffer-path-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Include/Render/Lighting/ClusteredLighting.h`
+- `Render/Private/Lighting/ClusteredLighting.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/ClusteredLightingValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target ClusteredLightingValidation RenderGraphValidation RenderSceneValidation RenderPassValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+build\win_x64_debug\Tests\Debug\ClusteredLightingValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "ClusteredLightingValidation|RenderGraphValidation|RenderSceneValidation|RenderPassValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "ClusteredLightingValidation|RenderGraphValidation|RenderHonestyValidation|RenderSceneValidation|RenderPassValidation|MaterialSystemValidation|ResourceInstantiationValidation|PipelineCacheValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `ClusteredLightingValidation`: 8/8 by direct executable
+  - Required R9c filtered CTest: 70/70
+  - Broad render regression CTest: 194/194
+  - `git diff --check`: PASS
+- Visual gate: PASS
+  - `ModelViewerSmoke`: PASS
+  - `VisualGoldenValidation`: PASS
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan and code review messages
+- Screenshots: `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R7_DX11_320x180.ppm`
+- Golden: `Tests/Golden/ModelViewer/R7_DX11_320x180.ppm`
+- Diffs: failure diff path configured as `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R7_DX11_320x180.diff.ppm`
+
+**Spark plan review result:**
+
+- Verdict: `PASS_WITH_NON_BLOCKING_SUGGESTIONS`
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: added empty-light assignment regression, explicit reconfigure device-preservation regression, and partial upload failure regression.
+
+**Spark code review result:**
+
+- Verdict: `PASS_WITH_NON_BLOCKING_SUGGESTIONS`
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: ran a compatibility grep for the new bool API and confirmed there are no production `ClusteredLighting` call sites to update.
+- Non-blocking suggestions deferred: add richer partial-upload state tracking if upper layers begin consuming clustered buffers; add device-replacement semantics if `ClusteredLighting` gains multi-device ownership.
+
+**Notes / follow-ups:**
+
+- R9c creates a verified CPU/GPU buffer path for clustered lighting but does not claim shader-visible clustered lighting output.
+- `DefaultLit.hlsl` still uses `ViewConstants.LightDirection`; clustered shader binding remains a later R9 sub-stage.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R9c commit.
+- Next R9 substage must reread the render-first plan and R9 scope, create/confirm its implementation plan, pass Spark plan review, implement, pass validation including the visual gate, pass Spark code review, update this log, and commit before moving on.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
