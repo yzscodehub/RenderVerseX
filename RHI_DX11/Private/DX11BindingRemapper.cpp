@@ -16,10 +16,10 @@ namespace RVX
         m_setAssignments[0] = { 0, 4, 0, 32, 0, 2, 0, 4 };
         // Set 1
         m_setAssignments[1] = { 4, 4, 32, 32, 2, 2, 4, 4 };
-        // Set 2
-        m_setAssignments[2] = { 8, 4, 64, 32, 4, 2, 8, 4 };
-        // Set 3
-        m_setAssignments[3] = { 12, 2, 96, 32, 6, 2, 12, 4 };
+        // Set 2. Samplers reserve s8-s15 so material binding 6 maps to s14.
+        m_setAssignments[2] = { 8, 4, 64, 32, 4, 2, 8, 8 };
+        // Set 3. D3D11 has only 16 sampler slots; set 3 has no default sampler range.
+        m_setAssignments[3] = { 12, 2, 96, 32, 6, 2, 0, 0 };
 
         m_initialized = true;
     }

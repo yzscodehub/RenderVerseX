@@ -1,6 +1,7 @@
 #include "Core/Core.h"
 #include "RHI/RHI.h"
 #include "Common/GpuTestUtils.h"
+#include "ShaderCompiler/ShaderCompiler.h"
 
 #include <gtest/gtest.h>
 
@@ -56,6 +57,79 @@ TEST(DX11Validation, BufferCreation)
     auto buffer = device->CreateBuffer(bufferDesc);
     ASSERT_NE(nullptr, buffer.Get());
     EXPECT_EQ(buffer->GetSize(), 1024u);
+}
+
+TEST(DX11Validation, VertexBufferCreationAllowsInputAssemblerStride)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 36;
+    bufferDesc.usage = RHIBufferUsage::Vertex;
+    bufferDesc.memoryType = RHIMemoryType::Default;
+    bufferDesc.stride = 12;
+    bufferDesc.debugName = "TestVertexBufferWithStride";
+
+    auto buffer = device->CreateBuffer(bufferDesc);
+    ASSERT_NE(nullptr, buffer.Get());
+    EXPECT_EQ(buffer->GetStride(), 12u);
+}
+
+TEST(DX11Validation, RegisterSpaceShaderIsRuntimeCompatible)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    const char* source = R"(
+cbuffer Camera : register(b0, space0)
+{
+    float4x4 gViewProjection;
+};
+
+struct VSInput
+{
+    float3 position : POSITION;
+};
+
+struct VSOutput
+{
+    float4 position : SV_POSITION;
+};
+
+VSOutput main(VSInput input)
+{
+    VSOutput output;
+    output.position = mul(gViewProjection, float4(input.position, 1.0));
+    return output;
+}
+)";
+
+    auto compiler = CreateShaderCompiler();
+    ASSERT_NE(nullptr, compiler);
+
+    ShaderCompileOptions options;
+    options.stage = RHIShaderStage::Vertex;
+    options.entryPoint = "main";
+    options.sourceCode = source;
+    options.sourcePath = "DX11RegisterSpaceRuntimeTest.hlsl";
+    options.targetBackend = RHIBackendType::DX11;
+    options.enableOptimization = false;
+
+    ShaderCompileResult result = compiler->Compile(options);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    ASSERT_FALSE(result.bytecode.empty());
+
+    RHIShaderDesc shaderDesc;
+    shaderDesc.stage = RHIShaderStage::Vertex;
+    shaderDesc.bytecode = result.bytecode.data();
+    shaderDesc.bytecodeSize = result.bytecode.size();
+    shaderDesc.debugName = "DX11RegisterSpaceRuntimeShader";
+
+    auto shader = device->CreateShader(shaderDesc);
+    ASSERT_NE(nullptr, shader.Get());
 }
 
 TEST(DX11Validation, UploadBuffer)

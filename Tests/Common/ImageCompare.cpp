@@ -29,12 +29,26 @@ namespace RVX::Test
         double sumSquaredError = 0.0;
         result.differentPixels = 0;
 
-        for (uint64 i = 0; i < totalBytes; ++i)
-        {
-            const int diff = static_cast<int>(a[i]) - static_cast<int>(b[i]);
-            sumSquaredError += diff * diff;
+        const int toleranceByte = static_cast<int>(tolerance * 255.0f);
 
-            if (i % bytesPerPixel == 0 && std::abs(diff) > static_cast<int>(tolerance * 255.0f))
+        for (uint64 pixelIndex = 0; pixelIndex < totalPixels; ++pixelIndex)
+        {
+            bool pixelDifferent = false;
+            const uint64 pixelOffset = pixelIndex * bytesPerPixel;
+
+            for (uint32 channel = 0; channel < bytesPerPixel; ++channel)
+            {
+                const uint64 byteIndex = pixelOffset + channel;
+                const int diff = static_cast<int>(a[byteIndex]) - static_cast<int>(b[byteIndex]);
+                sumSquaredError += diff * diff;
+
+                if (std::abs(diff) > toleranceByte)
+                {
+                    pixelDifferent = true;
+                }
+            }
+
+            if (pixelDifferent)
             {
                 ++result.differentPixels;
             }

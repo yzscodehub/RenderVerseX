@@ -17,12 +17,13 @@ namespace RVX
         bufferDesc.BindFlags = ToD3D11BindFlags(desc.usage);
         bufferDesc.CPUAccessFlags = ToD3D11CPUAccessFlags(desc.memoryType);
         bufferDesc.MiscFlags = 0;
-        bufferDesc.StructureByteStride = desc.stride;
+        bufferDesc.StructureByteStride = 0;
 
         // Structured buffer needs StructureByteStride and MiscFlags
         if (HasFlag(desc.usage, RHIBufferUsage::Structured) && desc.stride > 0)
         {
             bufferDesc.MiscFlags |= D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+            bufferDesc.StructureByteStride = desc.stride;
         }
 
         // IndirectArgs buffer

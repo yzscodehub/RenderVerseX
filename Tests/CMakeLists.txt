@@ -26,6 +26,7 @@ endif()
 # Shared test utilities
 add_library(RVX_TestCommon STATIC
     Common/ImageCompare.cpp
+    Common/ImageFile.cpp
 )
 
 target_include_directories(RVX_TestCommon PUBLIC
@@ -140,6 +141,7 @@ if(RVX_ENABLE_DX11)
             RVX::Core
             RVX::RenderGraph
             RVX::RHI
+            RVX::ShaderCompiler
             ${RVX_ALL_BACKENDS}
             glfw
         INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
@@ -163,6 +165,17 @@ rvx_add_gtest(
         ${CMAKE_SOURCE_DIR}/Render/Include
     LABELS unit
     TIMEOUT 120
+)
+
+# Image comparison utility validation tests
+rvx_add_gtest(
+    NAME ImageCompareValidation
+    SOURCES ImageCompareValidation/main.cpp
+    LIBS
+        RVX_TestCommon
+    INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
+    LABELS unit
+    TIMEOUT 30
 )
 
 # Render honesty validation tests
@@ -366,6 +379,65 @@ rvx_add_gtest(
     LABELS unit
     TIMEOUT 120
 )
+
+# Visual golden validation utility
+add_executable(VisualGoldenValidation
+    VisualGoldenValidation/main.cpp
+)
+
+target_link_libraries(VisualGoldenValidation PRIVATE
+    RVX_TestCommon
+)
+
+target_compile_features(VisualGoldenValidation PRIVATE cxx_std_20)
+target_include_directories(VisualGoldenValidation PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+if(RVX_ENABLE_DX11 AND TARGET ModelViewer)
+    set(RVX_MODELVIEWER_SMOKE_WIDTH 320)
+    set(RVX_MODELVIEWER_SMOKE_HEIGHT 180)
+    set(RVX_MODELVIEWER_SMOKE_ACTUAL
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ModelViewer/R7_DX11_320x180.ppm")
+    set(RVX_MODELVIEWER_SMOKE_DIFF
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ModelViewer/R7_DX11_320x180.diff.ppm")
+    set(RVX_MODELVIEWER_SMOKE_GOLDEN
+        "${CMAKE_CURRENT_SOURCE_DIR}/Golden/ModelViewer/R7_DX11_320x180.ppm")
+
+    add_test(
+        NAME ModelViewerSmoke
+        COMMAND $<TARGET_FILE:ModelViewer>
+            --smoke
+            --model "${CMAKE_CURRENT_SOURCE_DIR}/Fixtures/ModelViewer/R7Triangle.gltf"
+            --backend dx11
+            --width ${RVX_MODELVIEWER_SMOKE_WIDTH}
+            --height ${RVX_MODELVIEWER_SMOKE_HEIGHT}
+            --frames 8
+            --screenshot "${RVX_MODELVIEWER_SMOKE_ACTUAL}"
+            --validation
+    )
+    set_tests_properties(ModelViewerSmoke PROPERTIES
+        LABELS "visual;gpu"
+        TIMEOUT 120
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME VisualGoldenValidation
+        COMMAND $<TARGET_FILE:VisualGoldenValidation>
+            --expected "${RVX_MODELVIEWER_SMOKE_GOLDEN}"
+            --actual "${RVX_MODELVIEWER_SMOKE_ACTUAL}"
+            --diff "${RVX_MODELVIEWER_SMOKE_DIFF}"
+            --tolerance 0.0
+            --max-different-pixels 0
+    )
+    set_tests_properties(VisualGoldenValidation PROPERTIES
+        LABELS "visual;gpu"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+    set_property(TEST VisualGoldenValidation PROPERTY DEPENDS ModelViewerSmoke)
+endif()
 
 # Cross-Backend Validation Tests (requires both DX12 and Vulkan)
 if(RVX_ENABLE_DX12 AND RVX_ENABLE_VULKAN)

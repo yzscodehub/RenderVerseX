@@ -520,6 +520,10 @@ bool PipelineCache::CompileShaders()
     vsDesc.stage = RHIShaderStage::Vertex;
     vsDesc.backend = backend;
     vsDesc.enableDebugInfo = true;
+    if (backend == RHIBackendType::DX11)
+    {
+        vsDesc.targetProfile = "vs_5_0";
+    }
 
     auto vsResult = m_shaderManager->LoadFromFile(m_device, vsDesc);
     if (!vsResult.compileResult.success)
@@ -538,6 +542,10 @@ bool PipelineCache::CompileShaders()
     ShaderLoadDesc psDesc = vsDesc;
     psDesc.entryPoint = "PSMain";
     psDesc.stage = RHIShaderStage::Pixel;
+    if (backend == RHIBackendType::DX11)
+    {
+        psDesc.targetProfile = "ps_5_0";
+    }
 
     auto psResult = m_shaderManager->LoadFromFile(m_device, psDesc);
     if (!psResult.compileResult.success)

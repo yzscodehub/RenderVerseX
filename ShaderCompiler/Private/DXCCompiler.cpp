@@ -11,9 +11,11 @@
 #include <Windows.h>
 #include <dxcapi.h>
 #include <wrl/client.h>
+#include <cctype>
 #include <filesystem>
 #include <cstring>
 #include <d3dcompiler.h>
+#include <regex>
 
 namespace RVX
 {
@@ -77,6 +79,123 @@ namespace RVX
                 case RHIShaderStage::Domain:   return "ds_5_0";
                 default: return "vs_5_0";
             }
+        }
+
+        uint32 GetDX11FlattenedRegisterBase(char registerType, uint32 space)
+        {
+            const char lowerType = static_cast<char>(std::tolower(static_cast<unsigned char>(registerType)));
+            switch (lowerType)
+            {
+                case 'b': return space * 4;
+                case 't': return space * 32;
+                case 'u': return space * 2;
+                case 's': return space * 4;
+                default:  return 0;
+            }
+        }
+
+        void RestoreDX11SetBinding(ShaderReflection::ResourceBinding& resource)
+        {
+            const uint32 slot = resource.binding;
+            const auto restoreFromRange = [&resource, slot](uint32 set, uint32 base, uint32 count) -> bool
+            {
+                if (slot < base || slot >= base + count)
+                {
+                    return false;
+                }
+
+                resource.set = set;
+                resource.binding = slot - base;
+                return true;
+            };
+
+            switch (resource.type)
+            {
+                case RHIBindingType::UniformBuffer:
+                    if (restoreFromRange(0, 0, 4) ||
+                        restoreFromRange(1, 4, 4) ||
+                        restoreFromRange(2, 8, 4) ||
+                        restoreFromRange(3, 12, 2))
+                    {
+                        return;
+                    }
+                    break;
+                case RHIBindingType::SampledTexture:
+                    if (restoreFromRange(0, 0, 32) ||
+                        restoreFromRange(1, 32, 32) ||
+                        restoreFromRange(2, 64, 32) ||
+                        restoreFromRange(3, 96, 32))
+                    {
+                        return;
+                    }
+                    break;
+                case RHIBindingType::StorageBuffer:
+                case RHIBindingType::StorageTexture:
+                    if (restoreFromRange(0, 0, 2) ||
+                        restoreFromRange(1, 2, 2) ||
+                        restoreFromRange(2, 4, 2) ||
+                        restoreFromRange(3, 6, 2))
+                    {
+                        return;
+                    }
+                    break;
+                case RHIBindingType::Sampler:
+                    if (restoreFromRange(0, 0, 4) ||
+                        restoreFromRange(1, 4, 4) ||
+                        restoreFromRange(2, 8, 8))
+                    {
+                        return;
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        void RestoreDX11SetBindings(ShaderReflection& reflection)
+        {
+            for (auto& resource : reflection.resources)
+            {
+                RestoreDX11SetBinding(resource);
+            }
+        }
+
+        std::string RemapRegisterSpacesForDX11(const char* source)
+        {
+            if (!source)
+            {
+                return {};
+            }
+
+            static const std::regex registerSpacePattern(
+                R"(register\s*\(\s*([A-Za-z])\s*([0-9]+)\s*,\s*space\s*([0-9]+)\s*\))");
+
+            const std::string input(source);
+            std::string output;
+            size_t lastOffset = 0;
+
+            for (auto it = std::sregex_iterator(input.begin(), input.end(), registerSpacePattern);
+                 it != std::sregex_iterator();
+                 ++it)
+            {
+                const std::smatch& match = *it;
+                output.append(input, lastOffset, static_cast<size_t>(match.position()) - lastOffset);
+
+                const char registerType = match[1].str()[0];
+                const uint32 binding = static_cast<uint32>(std::stoul(match[2].str()));
+                const uint32 space = static_cast<uint32>(std::stoul(match[3].str()));
+                const uint32 flattenedBinding = GetDX11FlattenedRegisterBase(registerType, space) + binding;
+
+                output += "register(";
+                output += registerType;
+                output += std::to_string(flattenedBinding);
+                output += ")";
+
+                lastOffset = static_cast<size_t>(match.position() + match.length());
+            }
+
+            output.append(input, lastOffset, std::string::npos);
+            return output;
         }
 
         std::string NormalizePath(const char* path)
@@ -215,7 +334,7 @@ namespace RVX
 
     private:
         // =========================================================================
-        // FXC Compilation (DX11 - SM5)
+        // FXC Compilation (DX11 - runtime-compatible SM5)
         // =========================================================================
         ShaderCompileResult CompileWithFXC(const ShaderCompileOptions& options)
         {
@@ -230,6 +349,9 @@ namespace RVX
             {
                 profile = GetSM5ProfileNarrow(options.stage);
             }
+
+            std::string dx11Source = RemapRegisterSpacesForDX11(options.sourceCode);
+            const char* sourceCode = dx11Source.c_str();
 
             std::vector<D3D_SHADER_MACRO> macros;
             macros.reserve(options.defines.size() + 1);
@@ -256,8 +378,8 @@ namespace RVX
             ComPtr<ID3DBlob> shaderBlob;
             ComPtr<ID3DBlob> errorBlob;
             HRESULT hr = D3DCompile(
-                options.sourceCode,
-                strlen(options.sourceCode),
+                sourceCode,
+                strlen(sourceCode),
                 options.sourcePath ? options.sourcePath : "Shader",
                 macros.data(),
                 D3D_COMPILE_STANDARD_FILE_INCLUDE,
@@ -287,6 +409,7 @@ namespace RVX
             result.bytecode.resize(shaderBlob->GetBufferSize());
             std::memcpy(result.bytecode.data(), shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize());
             result.reflection = ReflectShader(RHIBackendType::DX11, options.stage, result.bytecode);
+            RestoreDX11SetBindings(result.reflection);
             CaptureSourceInfo(result, nullptr, options);
             return result;
         }

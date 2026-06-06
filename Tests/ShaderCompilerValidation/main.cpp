@@ -428,6 +428,69 @@ TEST_F(ShaderCompilerValidationFixture, DX12CompileProducesReflectionAndSourceIn
     EXPECT_EQ(layout.setLayouts[0].entries[0].type, RVX::RHIBindingType::UniformBuffer);
 }
 
+TEST_F(ShaderCompilerValidationFixture, DX11DefaultProfileSupportsRegisterSpaces)
+{
+    const std::string source = R"(
+cbuffer Camera : register(b0, space0)
+{
+    float4x4 gViewProjection;
+};
+
+cbuffer Object : register(b0, space1)
+{
+    float4 gOffset;
+};
+
+struct VSInput
+{
+    float3 position : POSITION;
+};
+
+struct VSOutput
+{
+    float4 position : SV_POSITION;
+};
+
+VSOutput main(VSInput input)
+{
+    VSOutput output;
+    output.position = mul(gViewProjection, float4(input.position + gOffset.xyz, 1.0));
+    return output;
+}
+)";
+
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Vertex;
+    options.entryPoint = "main";
+    options.sourceCode = source.c_str();
+    options.sourcePath = "DX11RegisterSpaceTest.hlsl";
+    options.targetBackend = RVX::RHIBackendType::DX11;
+    options.enableOptimization = false;
+
+    RVX::ShaderCompileResult result = compiler->Compile(options);
+    if (!result.success && IsCompilerUnavailable(result))
+    {
+        GTEST_SKIP() << result.errorMessage;
+    }
+
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    EXPECT_FALSE(result.bytecode.empty());
+
+    auto objectIt = std::find_if(
+        result.reflection.resources.begin(),
+        result.reflection.resources.end(),
+        [](const RVX::ShaderReflection::ResourceBinding& binding)
+        {
+            return binding.name == "Object";
+        });
+    ASSERT_NE(objectIt, result.reflection.resources.end());
+    EXPECT_EQ(objectIt->set, 1u);
+    EXPECT_EQ(objectIt->binding, 0u);
+}
+
 TEST_F(ShaderCompilerValidationFixture, OpenGLCompileProducesGLSLSource)
 {
     TempDirectory temp("rvx_shader_compile_gl");

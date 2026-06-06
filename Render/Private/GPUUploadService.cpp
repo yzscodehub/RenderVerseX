@@ -289,6 +289,16 @@ namespace RVX
 
     GPUUploadBufferResult GPUUploadService::TryUploadBufferStaged(const GPUUploadBufferDesc& desc, const void* data, uint64 dataSize)
     {
+        if (m_device->GetBackendType() == RHIBackendType::DX11)
+        {
+            // DX11 staging buffers currently do not expose the written staging D3D buffer
+            // through the generic RHIBuffer wrapper. Use immediate mapped buffers until
+            // the RHI staging-copy contract is unified.
+            GPUUploadBufferResult result;
+            result.failureReason = GPUUploadFailureReason::Unsupported;
+            return result;
+        }
+
         auto commandContext = GetOrCreateBatchCommandContext();
         if (!commandContext)
         {

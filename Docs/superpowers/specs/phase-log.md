@@ -1235,6 +1235,115 @@ git diff --check
 
 ---
 
+### R7: Visual Gate Baseline
+
+**Date:** 2026-06-06
+**Commit:** `TBD`
+**Spark plan review agent:** `019e9ac4-a24f-7380-8baf-451060bd510f`
+**Spark code review agent:** `019e9ae6-0c95-74c0-ba46-385b09906636`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: `13. R7 - Visual Gate Baseline`
+- Stage plan: `Docs/superpowers/specs/2026-06-06-r7-visual-gate-baseline-plan.md`
+- Lines checked: roadmap lines 374-399 were reread before implementation; R7 plan was rechecked and corrected to match the implemented capture order before review/commit.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R6a RenderGraph Lifetime and Hazard Validation
+- Evidence: R6a committed as `c5985c2` with hash correction committed as `a5446ba`; R7 implementation plan passed Spark plan review before code changes.
+
+**Approved scope:**
+
+- Add a repository-owned deterministic glTF fixture for ModelViewer.
+- Add ModelViewer smoke mode with fixed DX11 backend, camera, time step, frame count, resolution, validation setting, and bounded render loop.
+- Add DX11 backbuffer screenshot capture that writes a binary PPM before present and fails visibly on unsupported backends.
+- Add PPM load/save/diff helpers and `VisualGoldenValidation`.
+- Fix `ImageCompare` so any channel difference marks the pixel once, and add `ImageCompareValidation`.
+- Add `ModelViewerSmoke` and make `VisualGoldenValidation` depend on it in CTest.
+- Store the first DX11 golden PPM under `Tests/Golden/ModelViewer`.
+- Fix DX11 issues required for the visual gate: non-structured vertex buffer stride handling, DX11 runtime-compatible register-space shader compilation, material sampler remap range, and immediate DX11 buffer upload fallback.
+
+**Out of scope:**
+
+- RenderProxy, ECS, Object, or SceneEntity work.
+- DX12/Vulkan/Metal/OpenGL golden capture.
+- PNG or external image dependencies.
+- Broader renderer algorithm changes beyond bounded ModelViewer capture plumbing.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-06-r7-visual-gate-baseline-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Samples/ModelViewer/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/Common/ImageCompare.cpp`
+- `Tests/Common/ImageFile.h`
+- `Tests/Common/ImageFile.cpp`
+- `Tests/ImageCompareValidation/main.cpp`
+- `Tests/VisualGoldenValidation/main.cpp`
+- `Tests/Fixtures/ModelViewer/R7Triangle.gltf`
+- `Tests/Golden/ModelViewer/R7_DX11_320x180.ppm`
+- `RHI_DX11/Private/DX11Resources.cpp`
+- `RHI_DX11/Private/DX11BindingRemapper.cpp`
+- `Render/Private/GPUUploadService.cpp`
+- `Render/Private/PipelineCache.cpp`
+- `ShaderCompiler/Private/DXCCompiler.cpp`
+- `Tests/DX11Validation/main.cpp`
+- `Tests/ShaderCompilerValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target DX11Validation ShaderCompilerValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation|DX11Validation|ShaderCompilerValidation"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|RenderHonestyValidation|RenderSceneValidation|RenderPassValidation|MaterialSystemValidation|ShaderCompilerValidation|DX11Validation|PipelineCacheValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - R7 and affected filtered CTest: 34/34
+  - Broad render regression CTest: 126/126
+- Visual gate: PASS
+  - `ModelViewerSmoke`: PASS
+  - `VisualGoldenValidation`: PASS
+  - Actual and golden PPM size: 172815 bytes
+  - Actual and golden color set: `(24, 7, 4)` and `(25, 25, 38)`
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan and code review messages
+- Screenshots: `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R7_DX11_320x180.ppm`
+- Golden: `Tests/Golden/ModelViewer/R7_DX11_320x180.ppm`
+- Diffs: failure diff path configured as `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R7_DX11_320x180.diff.ppm`
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: fixed camera/time explicitly documented, capture order made explicit, DX11/window prerequisite documented, CTest dependency added with `set_property`, ImageCompare regression tests added, and build directory parameterization documented.
+
+**Spark code review result:**
+
+- Verdict: PASS after providing a review bundle because the subagent filesystem sandbox could not read the workspace directly.
+- Blockers resolved: N/A
+- Non-blocking suggestions deferred: optionally reject non-DX11 smoke backends even without screenshot, optionally write diff artifacts for tolerated drift, and clarify tolerance units in future comments/tests.
+
+**Notes / follow-ups:**
+
+- DX12/Vulkan screenshot and golden expansion remains deferred until the RHI row-pitch/copy-readback contract is unified.
+- DX11 buffer staged upload still needs a proper staging wrapper/copy contract; R7 forces immediate mapped buffer upload for DX11.
+- DX11 set 3 has no default sampler range because D3D11 exposes only 16 sampler slots and set 2 uses `s8-s15`.
+- `git diff --check` reports only LF-to-CRLF warnings for touched files, no whitespace errors.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R7 commit.
+- Next stage must reread the render-first plan and R8 scope, create/confirm its implementation plan, pass Spark plan review, implement, pass validation including the new visual gate, pass Spark code review, update this log, and commit before moving on.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
