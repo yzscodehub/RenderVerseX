@@ -103,9 +103,11 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
     ctx.SetViewport(view.GetRHIViewport());
     ctx.SetScissor(view.GetRHIScissor());
 
-    RHIPipeline* pipeline = m_pipelineCache->GetTransparentPipeline();
+    RHIPipeline* pipeline = m_pipelineCache->GetPipelineForVariant(MaterialPipelineVariant::Transparent);
     if (!pipeline)
     {
+        RVX_CORE_WARN("TransparentPass: Missing transparent pipeline; skipping {} draw items",
+                      m_transparentDrawItems->size());
         ctx.EndRenderPass();
         return;
     }

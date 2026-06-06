@@ -1,4 +1,5 @@
 #include "Core/Core.h"
+#include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MeshResource.h"
@@ -12,6 +13,7 @@
 
 #include <gtest/gtest.h>
 
+#include <initializer_list>
 #include <memory>
 #include <vector>
 
@@ -68,8 +70,35 @@ namespace
     {
         auto* resource = new TestMaterialResource();
         resource->SetId(id);
+        resource->SetMaterialData(std::make_shared<Material>());
         resource->MarkLoaded();
         return Resource::ResourceHandle<Resource::MaterialResource>(resource);
+    }
+
+    Resource::ResourceHandle<Resource::MaterialResource> MakeMaterialResource(Resource::ResourceId id,
+                                                                             Material::AlphaMode alphaMode)
+    {
+        auto resource = MakeMaterialResource(id);
+        resource->GetMaterial()->SetAlphaMode(alphaMode);
+        return resource;
+    }
+
+    RenderObject MakeMaterialObject(uint64 meshId,
+                                    std::initializer_list<Resource::MaterialResource*> materials,
+                                    const Vec3& position = Vec3(0.0f))
+    {
+        RenderObject object = MakeObject(position);
+        object.meshId = meshId;
+        object.worldMatrix = Mat4Identity();
+        object.worldMatrix[3] = Vec4(position, 1.0f);
+
+        for (Resource::MaterialResource* material : materials)
+        {
+            object.materialResources.push_back(material);
+            object.materialIds.push_back(material ? material->GetId() : 0);
+        }
+
+        return object;
     }
 
     SceneEntity* CreateEntity(World& world, const std::string& name)
@@ -121,6 +150,74 @@ TEST(RenderSceneValidation, CullAgainstCameraHonorsVisibilityFlag)
     scene.CullAgainstCamera(MakeTestCamera(), visibleIndices);
 
     EXPECT_TRUE(visibleIndices.empty());
+}
+
+TEST(RenderSceneValidation, BuildMaterialDrawListsRoutesMaterialModesAndPreservesIdentity)
+{
+    auto opaqueMaterial = MakeMaterialResource(2101, Material::AlphaMode::Opaque);
+    auto maskedMaterial = MakeMaterialResource(2102, Material::AlphaMode::Mask);
+    auto transparentMaterial = MakeMaterialResource(2103, Material::AlphaMode::Blend);
+
+    RenderScene scene;
+    scene.AddObject(MakeMaterialObject(3101,
+                                       {opaqueMaterial.Get(), maskedMaterial.Get(), transparentMaterial.Get()}));
+
+    std::vector<uint32_t> visibleIndices = {0};
+    std::vector<RenderDrawItem> opaqueItems;
+    std::vector<RenderDrawItem> maskedItems;
+    std::vector<RenderDrawItem> transparentItems;
+
+    BuildMaterialDrawLists(scene, visibleIndices, Vec3(0.0f, 0.0f, 5.0f),
+                           opaqueItems, maskedItems, transparentItems);
+
+    ASSERT_EQ(static_cast<size_t>(1), opaqueItems.size());
+    ASSERT_EQ(static_cast<size_t>(1), maskedItems.size());
+    ASSERT_EQ(static_cast<size_t>(1), transparentItems.size());
+
+    EXPECT_EQ(0u, opaqueItems[0].objectIndex);
+    EXPECT_EQ(0u, opaqueItems[0].submeshIndex);
+    EXPECT_EQ(3101u, opaqueItems[0].meshId);
+    EXPECT_EQ(opaqueMaterial.GetId(), opaqueItems[0].materialId);
+    EXPECT_EQ(opaqueMaterial.Get(), opaqueItems[0].materialResource);
+    EXPECT_EQ(MaterialRenderMode::Opaque, opaqueItems[0].renderMode);
+
+    EXPECT_EQ(0u, maskedItems[0].objectIndex);
+    EXPECT_EQ(1u, maskedItems[0].submeshIndex);
+    EXPECT_EQ(3101u, maskedItems[0].meshId);
+    EXPECT_EQ(maskedMaterial.GetId(), maskedItems[0].materialId);
+    EXPECT_EQ(maskedMaterial.Get(), maskedItems[0].materialResource);
+    EXPECT_EQ(MaterialRenderMode::Masked, maskedItems[0].renderMode);
+
+    EXPECT_EQ(0u, transparentItems[0].objectIndex);
+    EXPECT_EQ(2u, transparentItems[0].submeshIndex);
+    EXPECT_EQ(3101u, transparentItems[0].meshId);
+    EXPECT_EQ(transparentMaterial.GetId(), transparentItems[0].materialId);
+    EXPECT_EQ(transparentMaterial.Get(), transparentItems[0].materialResource);
+    EXPECT_EQ(MaterialRenderMode::Transparent, transparentItems[0].renderMode);
+}
+
+TEST(RenderSceneValidation, BuildMaterialDrawListsSortsTransparentBackToFront)
+{
+    auto transparentMaterial = MakeMaterialResource(2201, Material::AlphaMode::Blend);
+
+    RenderScene scene;
+    scene.AddObject(MakeMaterialObject(3201, {transparentMaterial.Get()}, Vec3(0.0f, 0.0f, 2.0f)));
+    scene.AddObject(MakeMaterialObject(3202, {transparentMaterial.Get()}, Vec3(0.0f, 0.0f, 9.0f)));
+
+    std::vector<uint32_t> visibleIndices = {0, 1};
+    std::vector<RenderDrawItem> opaqueItems;
+    std::vector<RenderDrawItem> maskedItems;
+    std::vector<RenderDrawItem> transparentItems;
+
+    BuildMaterialDrawLists(scene, visibleIndices, Vec3(0.0f),
+                           opaqueItems, maskedItems, transparentItems);
+
+    EXPECT_TRUE(opaqueItems.empty());
+    EXPECT_TRUE(maskedItems.empty());
+    ASSERT_EQ(static_cast<size_t>(2), transparentItems.size());
+    EXPECT_EQ(1u, transparentItems[0].objectIndex);
+    EXPECT_EQ(0u, transparentItems[1].objectIndex);
+    EXPECT_GT(transparentItems[0].depthFromCamera, transparentItems[1].depthFromCamera);
 }
 
 TEST(RenderSceneValidation, StaticMeshComponentCollectsRenderObjectFromWorld)

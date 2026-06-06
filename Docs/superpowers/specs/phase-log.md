@@ -947,6 +947,107 @@ git diff --check
 
 ---
 
+### R-SP: R5b-1 Material Draw Routing
+
+**Date:** 2026-06-06
+**Commit:** `pending`
+**Spark plan review agent:** `019e9335-0c36-72c0-be27-bc6e3c2e1b25`
+**Spark code review agent:** `019e9a99-6d07-7672-b69b-9bdba2e5c30b`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-02-r5b-1-material-draw-routing-plan.md`
+- Section: R5b-1 - Material Draw Routing
+- Lines checked: parent R5b section and R5b-1 plan sections 1-8 checked before implementation; scope, validation, and done criteria rechecked before review/commit
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R5a Material Binder and Template Minimum Wiring
+- Evidence: R5a committed as `48c6d2b` with hash correction committed as `200014a`; R5b-1 implementation plan passed Spark plan review after the first broader R5b plan was blocked and split
+
+**Approved scope:**
+
+- Extract a testable material draw-list helper from `SceneRenderer::BuildMaterialDrawLists`.
+- Preserve material render mode classification, submesh identity, `materialResource`, `materialId`, sort keys, and transparent back-to-front ordering.
+- Make `SceneRenderer::BuildMaterialDrawLists` delegate to the helper.
+- Make `OpaquePass` bind opaque and masked material pipeline variants separately at actual execution time.
+- Make missing opaque or masked variant pipelines skip only their corresponding draw group with visible logging.
+- Keep `TransparentPass` on the transparent material variant contract.
+- Add `RenderPassValidation` execution tests that assert `SetPipeline` order/identity and `DrawIndexed` count.
+
+**Out of scope:**
+
+- `MaterialSystem` status/result redesign and `UpdateMaterialConstants()` return contract; this remains R5b-2.
+- Descriptor fallback status/result structs.
+- RenderProxy work.
+- ECS/Object/SceneEntity migration.
+- RenderGraph hardening.
+- Shader compiler, bindless, or new PBR shader feature work.
+- Visual golden or final ModelViewer validation.
+
+**Files changed:**
+
+- `Render/Include/Render/Renderer/RenderDrawItem.h`
+- `Render/Private/Renderer/RenderDrawItem.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Passes/TransparentPass.cpp`
+- `Tests/RenderSceneValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Docs/superpowers/specs/2026-06-02-r5b-1-material-draw-routing-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake -S . -B build/win_x64_debug
+cmake --build build/win_x64_debug --config Debug --target RenderSceneValidation RenderPassValidation
+build\win_x64_debug\Tests\Debug\RenderSceneValidation.exe
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe
+build\win_x64_debug\Tests\Debug\MaterialSystemValidation.exe
+cmake --build build/win_x64_debug --config Debug --target RenderSceneValidation RenderPassValidation MaterialSystemValidation RenderHonestyValidation PipelineCacheValidation DX12Validation VulkanValidation
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderSceneValidation|RenderPassValidation|MaterialSystemValidation|RenderHonestyValidation|PipelineCacheValidation|DX12Validation|VulkanValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `RenderSceneValidation`: 9/9
+  - `RenderPassValidation`: 4/4
+  - `MaterialSystemValidation`: 11/11
+  - Required + optional filtered CTest: 95/95
+- Visual gate: N/A
+
+**Artifacts:**
+
+- Logs: terminal configure/build/test output; Spark plan and code review messages
+- Screenshots: N/A
+- Diffs: R5b-1 working tree diff before commit
+
+**Spark plan review result:**
+
+- Verdict: PASS after split.
+- Blockers resolved: first broader R5b plan review (`019e9332-800e-7873-85cd-56ec1f7eb9f0`) blocked on missing pass execution tests, vague `MaterialSystem` status contract, and oversized scope; R5b was split into R5b-1 draw routing and future R5b-2 material status/result contract.
+- Non-blocking suggestions adopted: fixed `RenderPassValidation` target name, added missing opaque pipeline skip coverage, and added independent `RenderSceneValidation`/`RenderPassValidation` done criteria.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: N/A
+- Non-blocking suggestions: `#define private public` in `RenderPassValidation` is acceptable for this missing-variant simulation; a future test-only friend or `RVX_BUILD_TESTS` hook could replace it if desired.
+
+**Notes / follow-ups:**
+
+- R5b-1 intentionally does not change `MaterialSystem::UpdateMaterialConstants()` or descriptor fallback result semantics; that is the next R5b-2 sub-stage.
+- `git diff --check` reports only LF-to-CRLF warnings for four touched files, no whitespace errors.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R5b-1 commit.
+- Next stage must reread the render-first plan and R5b-2 scope, create/confirm its implementation plan, pass Spark plan review, implement, pass validation, pass Spark code review, update this log, and commit before moving on.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

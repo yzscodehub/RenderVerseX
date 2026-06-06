@@ -253,6 +253,8 @@ rvx_add_gtest(
     NAME RenderSceneValidation
     SOURCES
         RenderSceneValidation/main.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Material/MaterialClassification.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderDrawItem.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderScene.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderSceneCollector.cpp
     LIBS
@@ -285,6 +287,25 @@ rvx_add_gtest(
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Resource/Include
         ${CMAKE_SOURCE_DIR}/RHI/Include
+    LABELS unit
+    TIMEOUT 120
+)
+
+# Render pass validation tests
+rvx_add_gtest(
+    NAME RenderPassValidation
+    SOURCES RenderPassValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::Render
+        RVX::Resource
+        RVX::RHI
+        RVX::Scene
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Resource/Include
+        ${CMAKE_SOURCE_DIR}/RHI/Include
+        ${CMAKE_SOURCE_DIR}/Scene/Include
     LABELS unit
     TIMEOUT 120
 )

@@ -54,27 +54,6 @@ namespace
         }
     }
 
-    template <typename DrawFunc>
-    void ForEachOpaqueDrawItem(const std::vector<RenderDrawItem>* opaqueDrawItems,
-                               const std::vector<RenderDrawItem>* maskedDrawItems,
-                               DrawFunc&& drawFunc)
-    {
-        if (opaqueDrawItems)
-        {
-            for (const RenderDrawItem& item : *opaqueDrawItems)
-            {
-                drawFunc(item);
-            }
-        }
-
-        if (maskedDrawItems)
-        {
-            for (const RenderDrawItem& item : *maskedDrawItems)
-            {
-                drawFunc(item);
-            }
-        }
-    }
 } // namespace
 
 void OpaquePass::OnAdd(IRHIDevice* device)
@@ -182,92 +161,102 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     ctx.SetViewport(view.GetRHIViewport());
     ctx.SetScissor(view.GetRHIScissor());
 
-    // 3. Bind pipeline
-    RHIPipeline* pipeline = m_pipelineCache->GetOpaquePipeline();
-    if (!pipeline)
-    {
-        RVX_CORE_WARN("OpaquePass: No opaque pipeline available");
-        ctx.EndRenderPass();
-        return;
-    }
-    ctx.SetPipeline(pipeline);
-
-    // 4. Bind frame constants descriptor set
+    // 3. Bind frame constants descriptor set
     RHIDescriptorSet* frameSet = m_pipelineCache->GetFrameDescriptorSet();
     if (frameSet)
     {
         ctx.SetDescriptorSet(0, frameSet);
     }
 
-    // 5. Draw each visible object
+    // 4. Draw each visible object group with its material variant pipeline.
     if (m_renderScene && m_gpuResources)
     {
-        ForEachOpaqueDrawItem(
-            m_opaqueDrawItems, m_maskedDrawItems,
-            [&](const RenderDrawItem& item)
+        const auto drawGroup = [&](const std::vector<RenderDrawItem>* drawItems,
+                                   MaterialPipelineVariant variant,
+                                   const char* groupName)
         {
-            if (item.objectIndex >= m_renderScene->GetObjectCount())
+            if (!drawItems || drawItems->empty())
                 return;
 
-            const RenderObject& obj = m_renderScene->GetObject(item.objectIndex);
-
-            // Get GPU buffers for this mesh
-            MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(obj.meshId);
-            if (!buffers.IsValid())
+            RHIPipeline* pipeline = m_pipelineCache->GetPipelineForVariant(variant);
+            if (!pipeline)
             {
-                return;  // Mesh not uploaded yet
-            }
-
-            // Update per-object constants (world matrix)
-            m_pipelineCache->UpdateObjectConstants(obj.worldMatrix);
-            RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
-            if (objectSet)
-            {
-                const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
-                ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
-            }
-
-            // Bind SEPARATE vertex buffers to different slots
-            ctx.SetVertexBuffer(0, buffers.positionBuffer);  // Slot 0: Position
-            
-            if (buffers.normalBuffer)
-            {
-                ctx.SetVertexBuffer(1, buffers.normalBuffer);  // Slot 1: Normal
-            }
-            
-            if (buffers.uvBuffer)
-            {
-                ctx.SetVertexBuffer(2, buffers.uvBuffer);  // Slot 2: UV
-            }
-
-            if (buffers.tangentBuffer)
-            {
-                ctx.SetVertexBuffer(3, buffers.tangentBuffer);  // Slot 3: Tangent
-            }
-
-            // Bind index buffer
-            ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
-
-            if (item.submeshIndex >= buffers.submeshes.size())
-            {
+                RVX_CORE_WARN("OpaquePass: Missing {} pipeline; skipping {} draw items",
+                              groupName, drawItems->size());
                 return;
             }
 
-            const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
-            const Resource::MaterialResource* materialResource =
-                item.materialResource ? item.materialResource : ResolveMaterialResource(obj, item.submeshIndex);
-            m_materialSystem->UpdateMaterialConstants(materialResource, view.viewCache);
+            ctx.SetPipeline(pipeline);
 
-            RHIDescriptorSet* materialSet = m_materialSystem->GetOrCreateMaterialSet(materialResource, view.viewCache);
-            if (materialSet)
+            for (const RenderDrawItem& item : *drawItems)
             {
-                const auto materialDynamicOffsets = m_materialSystem->GetCurrentMaterialDynamicOffset();
-                ctx.SetDescriptorSet(2, materialSet, materialDynamicOffsets);
-            }
+                if (item.objectIndex >= m_renderScene->GetObjectCount())
+                    continue;
 
-            ctx.DrawIndexed(submesh.indexCount, 1,
-                            submesh.indexOffset, submesh.baseVertex, 0);
-        });
+                const RenderObject& obj = m_renderScene->GetObject(item.objectIndex);
+
+                // Get GPU buffers for this mesh
+                MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(obj.meshId);
+                if (!buffers.IsValid())
+                {
+                    continue;  // Mesh not uploaded yet
+                }
+
+                // Update per-object constants (world matrix)
+                m_pipelineCache->UpdateObjectConstants(obj.worldMatrix);
+                RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
+                if (objectSet)
+                {
+                    const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
+                    ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
+                }
+
+                // Bind SEPARATE vertex buffers to different slots
+                ctx.SetVertexBuffer(0, buffers.positionBuffer);  // Slot 0: Position
+
+                if (buffers.normalBuffer)
+                {
+                    ctx.SetVertexBuffer(1, buffers.normalBuffer);  // Slot 1: Normal
+                }
+
+                if (buffers.uvBuffer)
+                {
+                    ctx.SetVertexBuffer(2, buffers.uvBuffer);  // Slot 2: UV
+                }
+
+                if (buffers.tangentBuffer)
+                {
+                    ctx.SetVertexBuffer(3, buffers.tangentBuffer);  // Slot 3: Tangent
+                }
+
+                // Bind index buffer
+                ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
+
+                if (item.submeshIndex >= buffers.submeshes.size())
+                {
+                    continue;
+                }
+
+                const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
+                const Resource::MaterialResource* materialResource =
+                    item.materialResource ? item.materialResource : ResolveMaterialResource(obj, item.submeshIndex);
+                m_materialSystem->UpdateMaterialConstants(materialResource, view.viewCache);
+
+                RHIDescriptorSet* materialSet =
+                    m_materialSystem->GetOrCreateMaterialSet(materialResource, view.viewCache);
+                if (materialSet)
+                {
+                    const auto materialDynamicOffsets = m_materialSystem->GetCurrentMaterialDynamicOffset();
+                    ctx.SetDescriptorSet(2, materialSet, materialDynamicOffsets);
+                }
+
+                ctx.DrawIndexed(submesh.indexCount, 1,
+                                submesh.indexOffset, submesh.baseVertex, 0);
+            }
+        };
+
+        drawGroup(m_opaqueDrawItems, MaterialPipelineVariant::Opaque, "opaque");
+        drawGroup(m_maskedDrawItems, MaterialPipelineVariant::Masked, "masked");
     }
     else
     {

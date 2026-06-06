@@ -9,14 +9,12 @@
 #include "Render/Passes/OpaquePass.h"
 #include "Render/Passes/SkyboxPass.h"
 #include "Render/Passes/TransparentPass.h"
-#include "Render/Material/MaterialClassification.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/TextureResource.h"
 #include "Renderer/RenderFrameResourceBinder.h"
 #include "Renderer/RenderPassRegistry.h"
 #include "Runtime/Camera/Camera.h"
 #include "Core/Log.h"
-#include <algorithm>
 #include <filesystem>
 
 namespace RVX
@@ -271,61 +269,12 @@ void SceneRenderer::SetupView(const Camera& camera, World* world)
 
 void SceneRenderer::BuildMaterialDrawLists()
 {
-    m_opaqueDrawItems.clear();
-    m_maskedDrawItems.clear();
-    m_transparentDrawItems.clear();
-
-    for (uint32_t objectIndex : m_visibleObjectIndices)
-    {
-        const RenderObject& obj = m_renderScene.GetObject(objectIndex);
-        const size_t submeshCount = obj.materialResources.empty() ? 1 : obj.materialResources.size();
-
-        for (size_t submeshIndex = 0; submeshIndex < submeshCount; ++submeshIndex)
-        {
-            Resource::MaterialResource* materialResource =
-                submeshIndex < obj.materialResources.size() ? obj.materialResources[submeshIndex] : nullptr;
-            const Material* material = materialResource ? materialResource->GetMaterial().get() : nullptr;
-            const MaterialRenderMode mode = ClassifyMaterialRenderMode(material);
-
-            RenderDrawItem item;
-            item.objectIndex = objectIndex;
-            item.submeshIndex = static_cast<uint32>(submeshIndex);
-            item.meshId = obj.meshId;
-            item.materialId = submeshIndex < obj.materialIds.size() ? obj.materialIds[submeshIndex] : 0;
-            item.materialResource = materialResource;
-            item.renderMode = mode;
-            item.depthFromCamera = length(Vec3(obj.worldMatrix[3]) - m_viewData.cameraPosition);
-
-            if (mode == MaterialRenderMode::Transparent)
-            {
-                item.sortKey = BuildTransparentDrawSortKey(item);
-                m_transparentDrawItems.push_back(item);
-            }
-            else if (mode == MaterialRenderMode::Masked)
-            {
-                item.sortKey = BuildOpaqueDrawSortKey(item);
-                m_maskedDrawItems.push_back(item);
-            }
-            else
-            {
-                item.sortKey = BuildOpaqueDrawSortKey(item);
-                m_opaqueDrawItems.push_back(item);
-            }
-        }
-    }
-
-    const auto sortFrontToBack = [](const RenderDrawItem& lhs, const RenderDrawItem& rhs)
-    {
-        return lhs.sortKey < rhs.sortKey;
-    };
-    std::sort(m_opaqueDrawItems.begin(), m_opaqueDrawItems.end(), sortFrontToBack);
-    std::sort(m_maskedDrawItems.begin(), m_maskedDrawItems.end(), sortFrontToBack);
-
-    std::sort(m_transparentDrawItems.begin(), m_transparentDrawItems.end(),
-              [](const RenderDrawItem& lhs, const RenderDrawItem& rhs)
-              {
-                  return lhs.depthFromCamera > rhs.depthFromCamera;
-              });
+    RVX::BuildMaterialDrawLists(m_renderScene,
+                                m_visibleObjectIndices,
+                                m_viewData.cameraPosition,
+                                m_opaqueDrawItems,
+                                m_maskedDrawItems,
+                                m_transparentDrawItems);
 }
 
 void SceneRenderer::Render()
