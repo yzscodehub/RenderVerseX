@@ -13,6 +13,7 @@
 #include "Render/Context/RenderContext.h"
 #include "Render/GPUResourceManager.h"
 #include "Render/Material/MaterialSystem.h"
+#include "Render/Passes/IRenderPass.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderProxy.h"
@@ -31,6 +32,7 @@ namespace RVX
     class OpaquePass;
     class RenderPassRegistry;
     class RenderProxySceneBridge;
+    class ShadowPass;
     class SkyboxPass;
     class TransparentPass;
 
@@ -50,6 +52,16 @@ namespace RVX
         size_t lastProxyLightCount = 0;
         uint64 lastFallbackOwnerId = 0;
         std::string lastFallbackReason;
+    };
+
+    struct SceneRenderPassChainStats
+    {
+        uint64 frameCount = 0;
+        size_t registeredPassCount = 0;
+        size_t graphPassCount = 0;
+        size_t skippedDisabledPassCount = 0;
+        size_t skippedUnsupportedPassCount = 0;
+        std::vector<RenderPassStatus> passStatuses;
     };
 
     /**
@@ -202,6 +214,9 @@ namespace RVX
         /// Get scene collection path statistics.
         const SceneRenderCollectionStats& GetCollectionStats() const { return m_collectionStats; }
 
+        /// Get render pass chain statistics from the last RenderGraph build.
+        const SceneRenderPassChainStats& GetPassChainStats() const { return m_passChainStats; }
+
         /// Get draw items for material-aware passes
         const std::vector<RenderDrawItem>& GetOpaqueDrawItems() const { return m_opaqueDrawItems; }
         const std::vector<RenderDrawItem>& GetMaskedDrawItems() const { return m_maskedDrawItems; }
@@ -232,14 +247,17 @@ namespace RVX
         RenderScene m_renderScene;
         RenderProxySnapshot m_proxySnapshot;
         SceneRenderCollectionStats m_collectionStats;
+        SceneRenderPassChainStats m_passChainStats;
         std::vector<uint32_t> m_visibleObjectIndices;
         std::vector<RenderDrawItem> m_opaqueDrawItems;
         std::vector<RenderDrawItem> m_maskedDrawItems;
         std::vector<RenderDrawItem> m_transparentDrawItems;
+        std::vector<std::string> m_loggedUnsupportedPassNames;
         
         std::string m_shaderDir;
         DepthPrepass* m_depthPrepass = nullptr;  // Cached pointer to optional depth prepass
         OpaquePass* m_opaquePass = nullptr;  // Cached pointer to opaque pass
+        ShadowPass* m_shadowPass = nullptr;  // Cached pointer to shadow pass
         TransparentPass* m_transparentPass = nullptr;  // Cached pointer to transparent pass
         SkyboxPass* m_skyboxPass = nullptr;  // Cached pointer to skybox pass
         

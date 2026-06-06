@@ -18,6 +18,7 @@ namespace RVX
         size_t GetPassCount() const { return m_passes.size(); }
         std::vector<std::unique_ptr<IRenderPass>>& GetPasses() { return m_passes; }
         const std::vector<std::unique_ptr<IRenderPass>>& GetPasses() const { return m_passes; }
+        std::vector<RenderPassStatus> GetPassStatuses() const;
 
     private:
         std::vector<std::unique_ptr<IRenderPass>> m_passes;

@@ -80,10 +80,14 @@ namespace RVX
          */
         void SetEnabled(bool enabled) { m_enabled = enabled; }
 
-        bool IsEnabled() const override { return m_enabled; }
+        bool IsRequestedEnabled() const override { return m_enabled; }
+        bool IsSupported() const override;
+        const std::string& GetUnsupportedReason() const override { return m_unsupportedReason; }
+        bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
 
     private:
         bool m_enabled = false;  // Disabled by default until depth-only pipeline is ready
+        std::string m_unsupportedReason = "Depth-only pipeline is not available";
         GPUResourceManager* m_gpuResources = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         const RenderScene* m_renderScene = nullptr;

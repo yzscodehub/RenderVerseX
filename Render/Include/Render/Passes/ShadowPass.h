@@ -97,13 +97,17 @@ namespace RVX
         RHITexture* GetShadowMap() const { return m_shadowMapTexture; }
 
         void SetEnabled(bool enabled) { m_enabled = enabled; }
-        bool IsEnabled() const override { return m_enabled; }
+        bool IsRequestedEnabled() const override { return m_enabled; }
+        bool IsSupported() const override;
+        const std::string& GetUnsupportedReason() const override { return m_unsupportedReason; }
+        bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
 
     private:
         void CreateShadowMap();
         void RenderCascade(RHICommandContext& ctx, uint32_t cascadeIndex);
 
         bool m_enabled = false;  // Disabled by default until light is configured
+        std::string m_unsupportedReason = "Shadow map resources and cascade views are not implemented";
         GPUResourceManager* m_gpuResources = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         const RenderScene* m_renderScene = nullptr;

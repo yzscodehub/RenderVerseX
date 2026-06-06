@@ -10,6 +10,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #define private public
@@ -18,10 +19,15 @@
 
 #include "Render/GPUResourceManager.h"
 #include "Render/Material/MaterialSystem.h"
+#include "Render/Passes/DepthPrepass.h"
+#include "Render/Passes/IRenderPass.h"
 #include "Render/Passes/OpaquePass.h"
+#include "Render/Passes/ShadowPass.h"
+#include "Render/Passes/SkyboxPass.h"
 #include "Render/Passes/TransparentPass.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
+#include "Renderer/RenderPassRegistry.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/TextureResource.h"
@@ -440,6 +446,38 @@ namespace
         RHICapabilities m_capabilities;
     };
 
+    class StatusTestPass final : public IRenderPass
+    {
+    public:
+        StatusTestPass(std::string name,
+                       int32_t priority,
+                       bool requested,
+                       bool supported,
+                       std::string unsupportedReason = {})
+            : m_name(std::move(name))
+            , m_priority(priority)
+            , m_requested(requested)
+            , m_supported(supported)
+            , m_unsupportedReason(std::move(unsupportedReason))
+        {
+        }
+
+        const char* GetName() const override { return m_name.c_str(); }
+        int32_t GetPriority() const override { return m_priority; }
+        bool IsRequestedEnabled() const override { return m_requested; }
+        bool IsSupported() const override { return m_supported; }
+        const std::string& GetUnsupportedReason() const override { return m_unsupportedReason; }
+        void Setup(RenderGraphBuilder&, const ViewData&) override {}
+        void Execute(RHICommandContext&, const ViewData&) override {}
+
+    private:
+        std::string m_name;
+        int32_t m_priority = 0;
+        bool m_requested = false;
+        bool m_supported = false;
+        std::string m_unsupportedReason;
+    };
+
     std::unique_ptr<Resource::MeshResource> CreateMeshResource(Resource::ResourceId id)
     {
         auto resource = std::make_unique<Resource::MeshResource>();
@@ -556,6 +594,96 @@ namespace
         ViewData view;
     };
 } // namespace
+
+TEST(RenderPassStatusValidation, DefaultImplementedPassReportsEnabledAndSupported)
+{
+    StatusTestPass pass("Implemented", 20, true, true);
+
+    RenderPassStatus status = pass.GetStatus();
+
+    EXPECT_EQ("Implemented", status.name);
+    EXPECT_EQ(20, status.priority);
+    EXPECT_TRUE(status.requestedEnabled);
+    EXPECT_TRUE(status.supported);
+    EXPECT_TRUE(status.enabled);
+    EXPECT_TRUE(status.unsupportedReason.empty());
+}
+
+TEST(RenderPassStatusValidation, RequestedUnsupportedPassIsNotEnabled)
+{
+    StatusTestPass pass("Unsupported", 30, true, false, "No pipeline");
+
+    RenderPassStatus status = pass.GetStatus();
+
+    EXPECT_TRUE(status.requestedEnabled);
+    EXPECT_FALSE(status.supported);
+    EXPECT_FALSE(status.enabled);
+    EXPECT_EQ("No pipeline", status.unsupportedReason);
+}
+
+TEST(RenderPassStatusValidation, RegistryStatusSnapshotsPreserveSortedPassOrder)
+{
+    RenderPassRegistry registry;
+
+    registry.AddPass(std::make_unique<StatusTestPass>("Late", 300, true, true), nullptr);
+    registry.AddPass(std::make_unique<StatusTestPass>("Early", 100, false, true), nullptr);
+    registry.AddPass(std::make_unique<StatusTestPass>("MiddleUnsupported", 200, true, false, "No target"), nullptr);
+
+    std::vector<RenderPassStatus> statuses = registry.GetPassStatuses();
+
+    ASSERT_EQ(static_cast<size_t>(3), statuses.size());
+    EXPECT_EQ("Early", statuses[0].name);
+    EXPECT_FALSE(statuses[0].requestedEnabled);
+    EXPECT_FALSE(statuses[0].enabled);
+
+    EXPECT_EQ("MiddleUnsupported", statuses[1].name);
+    EXPECT_TRUE(statuses[1].requestedEnabled);
+    EXPECT_FALSE(statuses[1].supported);
+    EXPECT_FALSE(statuses[1].enabled);
+    EXPECT_EQ("No target", statuses[1].unsupportedReason);
+
+    EXPECT_EQ("Late", statuses[2].name);
+    EXPECT_TRUE(statuses[2].enabled);
+}
+
+TEST(RenderPassStatusValidation, BuiltInProductionPassStatusesAreHonest)
+{
+    DepthPrepass depthPrepass;
+    EXPECT_FALSE(depthPrepass.IsRequestedEnabled());
+    EXPECT_FALSE(depthPrepass.IsEnabled());
+
+    depthPrepass.SetEnabled(true);
+    EXPECT_TRUE(depthPrepass.IsRequestedEnabled());
+    EXPECT_FALSE(depthPrepass.IsSupported());
+    EXPECT_FALSE(depthPrepass.IsEnabled());
+    EXPECT_FALSE(depthPrepass.GetUnsupportedReason().empty());
+
+    ShadowPass shadowPass;
+    EXPECT_FALSE(shadowPass.IsRequestedEnabled());
+    EXPECT_FALSE(shadowPass.IsEnabled());
+
+    shadowPass.SetDirectionalLight(Vec3{0.0f, -1.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    EXPECT_TRUE(shadowPass.IsRequestedEnabled());
+    EXPECT_FALSE(shadowPass.IsSupported());
+    EXPECT_FALSE(shadowPass.IsEnabled());
+    EXPECT_FALSE(shadowPass.GetUnsupportedReason().empty());
+
+    SkyboxPass skyboxPass;
+    EXPECT_TRUE(skyboxPass.IsRequestedEnabled());
+    EXPECT_FALSE(skyboxPass.IsSupported());
+    EXPECT_FALSE(skyboxPass.IsEnabled());
+    EXPECT_FALSE(skyboxPass.GetUnsupportedReason().empty());
+
+    OpaquePass opaquePass;
+    EXPECT_TRUE(opaquePass.IsRequestedEnabled());
+    EXPECT_TRUE(opaquePass.IsSupported());
+    EXPECT_TRUE(opaquePass.IsEnabled());
+
+    TransparentPass transparentPass;
+    EXPECT_TRUE(transparentPass.IsRequestedEnabled());
+    EXPECT_TRUE(transparentPass.IsSupported());
+    EXPECT_TRUE(transparentPass.IsEnabled());
+}
 
 TEST_F(RenderPassValidationFixture, OpaquePassBindsOpaqueThenMaskedPipelinesAndDrawsBothGroups)
 {

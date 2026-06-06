@@ -45,6 +45,26 @@ void ShadowPass::SetDirectionalLight(const Vec3& direction, const Vec3& color, f
     m_enabled = true;  // Enable shadow pass when light is configured
 }
 
+bool ShadowPass::IsSupported() const
+{
+    if (!m_pipelineCache || !m_pipelineCache->IsInitialized() || !m_pipelineCache->GetDepthOnlyPipeline())
+        return false;
+
+    if (!m_gpuResources || !m_renderScene || !m_shadowMapTexture)
+        return false;
+
+    if (m_cascadeViews.size() != m_cascades.size())
+        return false;
+
+    for (const auto& cascadeView : m_cascadeViews)
+    {
+        if (!cascadeView)
+            return false;
+    }
+
+    return true;
+}
+
 void ShadowPass::CalculateCascades(const ViewData& view)
 {
     if (m_cascades.empty())
@@ -94,16 +114,27 @@ void ShadowPass::CalculateCascades(const ViewData& view)
 
 void ShadowPass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
-    (void)builder;
+    if (!IsEnabled())
+        return;
 
     // Shadow pass creates its own render targets (shadow maps)
     // These would be transient textures in a full RenderGraph implementation
+    (void)builder;
     CalculateCascades(view);
 }
 
 void ShadowPass::Execute(RHICommandContext& ctx, const ViewData& view)
 {
     (void)view;
+
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled())
+        {
+            RVX_CORE_WARN("ShadowPass: unsupported pass skipped: {}", GetUnsupportedReason());
+        }
+        return;
+    }
 
     if (!m_pipelineCache || !m_renderScene || !m_gpuResources)
     {

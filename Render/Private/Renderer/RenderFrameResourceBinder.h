@@ -11,6 +11,7 @@ namespace RVX
     class OpaquePass;
     class RenderContext;
     class RenderScene;
+    class ShadowPass;
     class SkyboxPass;
     class TransparentPass;
 
@@ -26,6 +27,7 @@ namespace RVX
             RHITextureView* depthTargetView,
             DepthPrepass* depthPrepass,
             OpaquePass* opaquePass,
+            ShadowPass* shadowPass,
             TransparentPass* transparentPass,
             SkyboxPass* skyboxPass);
     };

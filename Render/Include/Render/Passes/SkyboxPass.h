@@ -76,10 +76,11 @@ namespace RVX
          */
         void SetEnabled(bool enabled) { m_enabled = enabled; }
 
-        bool IsEnabled() const override { return m_enabled && m_drawReady; }
-        bool IsRequestedEnabled() const { return m_enabled; }
+        bool IsRequestedEnabled() const override { return m_enabled; }
+        bool IsSupported() const override { return m_drawReady; }
+        bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
         bool IsDrawReady() const { return m_drawReady; }
-        const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
+        const std::string& GetUnsupportedReason() const override { return m_unsupportedReason; }
 
     private:
         bool m_enabled = true;

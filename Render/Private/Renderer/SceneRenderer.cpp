@@ -7,6 +7,7 @@
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Passes/DepthPrepass.h"
 #include "Render/Passes/OpaquePass.h"
+#include "Render/Passes/ShadowPass.h"
 #include "Render/Passes/SkyboxPass.h"
 #include "Render/Passes/TransparentPass.h"
 #include "Resource/Types/MaterialResource.h"
@@ -16,6 +17,8 @@
 #include "Renderer/RenderProxySceneBridge.h"
 #include "Runtime/Camera/Camera.h"
 #include "Core/Log.h"
+
+#include <algorithm>
 #include <filesystem>
 
 namespace RVX
@@ -160,6 +163,7 @@ void SceneRenderer::Shutdown()
     ClearPasses();
     m_depthPrepass = nullptr;
     m_opaquePass = nullptr;
+    m_shadowPass = nullptr;
     m_transparentPass = nullptr;
     m_skyboxPass = nullptr;
     
@@ -462,6 +466,7 @@ void SceneRenderer::UpdatePassResources()
         m_depthTextureView.Get(),
         m_depthPrepass,
         m_opaquePass,
+        m_shadowPass,
         m_transparentPass,
         m_skyboxPass);
 }
@@ -580,14 +585,50 @@ void SceneRenderer::BuildRenderGraph()
     if (!m_passRegistry)
         return;
 
+    m_passChainStats.frameCount++;
+    m_passChainStats.passStatuses = m_passRegistry->GetPassStatuses();
+    m_passChainStats.registeredPassCount = m_passChainStats.passStatuses.size();
+    m_passChainStats.graphPassCount = 0;
+    m_passChainStats.skippedDisabledPassCount = 0;
+    m_passChainStats.skippedUnsupportedPassCount = 0;
+
     for (auto& pass : m_passRegistry->GetPasses())
     {
-        if (pass && pass->IsEnabled())
+        if (!pass)
+            continue;
+
+        const RenderPassStatus status = pass->GetStatus();
+        if (!status.requestedEnabled)
         {
-            // AddToGraph wraps Setup/Execute into RenderGraph callbacks
-            // This enables automatic barrier insertion, pass culling, and memory aliasing
-            pass->AddToGraph(*m_renderGraph, m_viewData);
+            m_passChainStats.skippedDisabledPassCount++;
+            continue;
         }
+
+        if (!status.supported)
+        {
+            m_passChainStats.skippedUnsupportedPassCount++;
+            const bool alreadyLogged = std::find(m_loggedUnsupportedPassNames.begin(),
+                                                 m_loggedUnsupportedPassNames.end(),
+                                                 status.name) != m_loggedUnsupportedPassNames.end();
+            if (!alreadyLogged)
+            {
+                RVX_CORE_WARN("SceneRenderer: Skipping unsupported requested pass '{}': {}",
+                              status.name,
+                              status.unsupportedReason.empty() ? "Unsupported" : status.unsupportedReason);
+                m_loggedUnsupportedPassNames.push_back(status.name);
+            }
+            continue;
+        }
+
+        if (!status.enabled)
+        {
+            m_passChainStats.skippedDisabledPassCount++;
+            continue;
+        }
+
+        // AddToGraph wraps Setup/Execute into RenderGraph callbacks.
+        pass->AddToGraph(*m_renderGraph, m_viewData);
+        m_passChainStats.graphPassCount++;
     }
 }
 
@@ -608,6 +649,14 @@ void SceneRenderer::ClearPasses()
 {
     if (m_passRegistry)
         m_passRegistry->Clear();
+
+    m_depthPrepass = nullptr;
+    m_opaquePass = nullptr;
+    m_shadowPass = nullptr;
+    m_transparentPass = nullptr;
+    m_skyboxPass = nullptr;
+    m_passChainStats = {};
+    m_loggedUnsupportedPassNames.clear();
 }
 
 size_t SceneRenderer::GetPassCount() const
@@ -621,6 +670,11 @@ void SceneRenderer::SetupDefaultPasses()
     depthPrepass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get());
     m_depthPrepass = depthPrepass.get();
     AddPass(std::move(depthPrepass));
+
+    auto shadowPass = std::make_unique<ShadowPass>();
+    shadowPass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get());
+    m_shadowPass = shadowPass.get();
+    AddPass(std::move(shadowPass));
 
     auto opaquePass = std::make_unique<OpaquePass>();
     opaquePass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get(), m_materialSystem.get());

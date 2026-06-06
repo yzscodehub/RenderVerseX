@@ -41,8 +41,16 @@ void DepthPrepass::SetDepthTarget(RHITextureView* depthView)
     m_depthTargetView = depthView;
 }
 
+bool DepthPrepass::IsSupported() const
+{
+    return m_pipelineCache && m_pipelineCache->IsInitialized() && m_pipelineCache->GetDepthOnlyPipeline();
+}
+
 void DepthPrepass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
+    if (!IsEnabled())
+        return;
+
     // Declare depth buffer write (no color output)
     if (view.depthTarget.IsValid())
     {

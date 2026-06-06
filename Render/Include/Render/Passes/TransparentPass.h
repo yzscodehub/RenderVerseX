@@ -77,7 +77,8 @@ namespace RVX
          */
         void SetEnabled(bool enabled) { m_enabled = enabled; }
 
-        bool IsEnabled() const override { return m_enabled; }
+        bool IsRequestedEnabled() const override { return m_enabled; }
+        bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
 
     private:
         bool m_enabled = true;

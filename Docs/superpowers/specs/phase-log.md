@@ -1453,6 +1453,119 @@ git diff --check
 
 ---
 
+### R9a: Render Pass Chain Honesty
+
+**Date:** 2026-06-06
+**Commit:** `TBD`
+**Spark plan review agent:** `019e9b05-8327-79c0-9d06-635963545420`
+**Spark code review agent:** `019e9c6d-7f55-74d2-ba77-1c6ea4fc536b`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: `15. R9 - Render Pass Completion`
+- Stage plan: `Docs/superpowers/specs/2026-06-06-r9a-render-pass-chain-honesty-plan.md`
+- Lines checked: roadmap lines 485-513 were reread before implementation.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R8 RenderProxy-v1 Bridge and Main Path Switch
+- Evidence: R8 committed as `4785071` with hash correction committed as `86e392d`; R9a implementation plan passed Spark plan review before code changes.
+
+**Approved scope:**
+
+- Add a uniform `IRenderPass` status contract for requested, supported, enabled, and unsupported reason.
+- Add `RenderPassRegistry` status snapshots for registered main-chain passes.
+- Expose `SceneRenderer` pass-chain stats for the last graph build.
+- Make `SceneRenderer::BuildRenderGraph` add only enabled passes, skip requested unsupported passes visibly, and count disabled/unsupported skips.
+- Make `DepthPrepass`, `SkyboxPass`, `ShadowPass`, and `TransparentPass` report honest status through the new contract.
+- Register `ShadowPass` in the default main chain as a non-requested, unsupported future production pass.
+- Keep `OpaquePass` and `TransparentPass` as supported implemented geometry passes.
+- Add `RenderPassValidation` coverage for status semantics, registry snapshots, and built-in production pass honesty.
+- Keep the R7 visual gate in the required validation path.
+
+**Out of scope:**
+
+- Completing shadow map rendering, PSSM matrices, or shadow sampling.
+- Implementing clustered lighting shader/descriptors.
+- Implementing ToneMapping, Bloom, TAA, or IBL algorithms.
+- Adding HDR/post-process render targets or ping-pong buffers.
+- Changing ModelViewer visuals beyond preserving the existing golden output.
+- Removing legacy passes or rewriting draw submission.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-06-r9a-render-pass-chain-honesty-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Include/Render/Passes/IRenderPass.h`
+- `Render/Include/Render/Passes/DepthPrepass.h`
+- `Render/Include/Render/Passes/ShadowPass.h`
+- `Render/Include/Render/Passes/SkyboxPass.h`
+- `Render/Include/Render/Passes/TransparentPass.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Render/Private/Passes/ShadowPass.cpp`
+- `Render/Private/Renderer/RenderFrameResourceBinder.h`
+- `Render/Private/Renderer/RenderFrameResourceBinder.cpp`
+- `Render/Private/Renderer/RenderPassRegistry.h`
+- `Render/Private/Renderer/RenderPassRegistry.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderPassValidation RenderHonestyValidation ModelViewer VisualGoldenValidation ImageCompareValidation RenderGraphValidation
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe
+build\win_x64_debug\Tests\Debug\RenderHonestyValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderPassValidation|RenderHonestyValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|RenderHonestyValidation|RenderSceneValidation|RenderPassValidation|MaterialSystemValidation|ResourceInstantiationValidation|PipelineCacheValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `RenderPassValidation`: 12/12 by direct executable
+  - `RenderHonestyValidation`: 15/15 by direct executable
+  - Required R9a filtered CTest: 29/29
+  - Broad render regression CTest: 182/182
+  - Post-review spot CTest after snapshot sorting: 10/10
+- Visual gate: PASS
+  - `ModelViewerSmoke`: PASS
+  - `VisualGoldenValidation`: PASS
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan, code review, and follow-up confirmation messages
+- Screenshots: `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R7_DX11_320x180.ppm`
+- Golden: `Tests/Golden/ModelViewer/R7_DX11_320x180.ppm`
+- Diffs: failure diff path configured as `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R7_DX11_320x180.diff.ppm`
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: documented that R9a checks only registered main-chain passes, added the `SceneRenderer` pass-chain stats accessor to scope, and added `RenderGraphValidation` to explicit build validation.
+
+**Spark code review result:**
+
+- Verdict: PASS, confirmed again after sorting `RenderPassRegistry::GetPassStatuses()`.
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: `GetPassStatuses()` now returns a stable priority-sorted snapshot.
+- Non-blocking suggestions deferred: bind pass frame resources before support evaluation when R9b makes `ShadowPass` genuinely supported.
+
+**Notes / follow-ups:**
+
+- R9a intentionally does not mark Shadow, Skybox, Bloom, ToneMapping, TAA, clustered lighting, or IBL as implemented.
+- `ShadowPass` is now registered in the default pass chain, but it is not requested by default and remains unsupported until its real resources exist.
+- Local CTest discovery did not include newly added non-fixture `RenderPassStatusValidation` cases until a fresh configure; direct executable coverage recorded them as 4/4.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R9a commit.
+- Next R9 substage must reread the render-first plan and R9 scope, create/confirm its implementation plan, pass Spark plan review, implement, pass validation including the visual gate, pass Spark code review, update this log, and commit before moving on.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
