@@ -507,6 +507,117 @@ namespace RVX
             edges.push_back(afterPass);
             indegree[afterPass]++;
         }
+
+        void ValidateResourceLifetimes(RenderGraphImpl& graph, const std::vector<uint8>& passNeeded)
+        {
+            std::vector<uint8> initializedTextures(graph.textures.size(), 0);
+            std::vector<uint8> initializedBuffers(graph.buffers.size(), 0);
+
+            for (uint32 textureIndex = 0; textureIndex < graph.textures.size(); ++textureIndex)
+            {
+                initializedTextures[textureIndex] = graph.textures[textureIndex].imported ? 1 : 0;
+            }
+            for (uint32 bufferIndex = 0; bufferIndex < graph.buffers.size(); ++bufferIndex)
+            {
+                initializedBuffers[bufferIndex] = graph.buffers[bufferIndex].imported ? 1 : 0;
+            }
+
+            for (uint32 passIndex = 0; passIndex < graph.passes.size(); ++passIndex)
+            {
+                if (!passNeeded.empty() && passNeeded[passIndex] == 0)
+                    continue;
+
+                const auto& pass = graph.passes[passIndex];
+                std::vector<uint32> writtenTextures;
+                std::vector<uint32> writtenBuffers;
+
+                for (const auto& usage : pass.usages)
+                {
+                    const bool readsResource =
+                        usage.access == RGAccessType::Read || usage.access == RGAccessType::ReadWrite;
+                    const bool writesResource =
+                        usage.access == RGAccessType::Write || usage.access == RGAccessType::ReadWrite;
+
+                    if (usage.type == ResourceType::Texture)
+                    {
+                        if (usage.index >= graph.textures.size())
+                            continue;
+
+                        const auto& resource = graph.textures[usage.index];
+                        if (!resource.imported && readsResource && !initializedTextures[usage.index])
+                        {
+                            graph.stats.readBeforeWriteHazardCount++;
+                            graph.stats.validationErrorCount++;
+                            RVX_CORE_ERROR("RenderGraph pass '{}' reads transient texture {} before any producing write",
+                                           pass.name,
+                                           usage.index);
+                        }
+
+                        if (!resource.imported && writesResource &&
+                            !ContainsIndex(writtenTextures, usage.index))
+                        {
+                            writtenTextures.push_back(usage.index);
+                        }
+                    }
+                    else
+                    {
+                        if (usage.index >= graph.buffers.size())
+                            continue;
+
+                        const auto& resource = graph.buffers[usage.index];
+                        if (!resource.imported && readsResource && !initializedBuffers[usage.index])
+                        {
+                            graph.stats.readBeforeWriteHazardCount++;
+                            graph.stats.validationErrorCount++;
+                            RVX_CORE_ERROR("RenderGraph pass '{}' reads transient buffer {} before any producing write",
+                                           pass.name,
+                                           usage.index);
+                        }
+
+                        if (!resource.imported && writesResource &&
+                            !ContainsIndex(writtenBuffers, usage.index))
+                        {
+                            writtenBuffers.push_back(usage.index);
+                        }
+                    }
+                }
+
+                for (uint32 textureIndex : writtenTextures)
+                {
+                    initializedTextures[textureIndex] = 1;
+                }
+                for (uint32 bufferIndex : writtenBuffers)
+                {
+                    initializedBuffers[bufferIndex] = 1;
+                }
+            }
+
+            for (uint32 textureIndex = 0; textureIndex < graph.textures.size(); ++textureIndex)
+            {
+                const auto& resource = graph.textures[textureIndex];
+                if (!resource.imported && resource.exportState.has_value() &&
+                    !initializedTextures[textureIndex])
+                {
+                    graph.stats.uninitializedExportCount++;
+                    graph.stats.validationErrorCount++;
+                    RVX_CORE_ERROR("RenderGraph exports transient texture {} without any producing write",
+                                   textureIndex);
+                }
+            }
+
+            for (uint32 bufferIndex = 0; bufferIndex < graph.buffers.size(); ++bufferIndex)
+            {
+                const auto& resource = graph.buffers[bufferIndex];
+                if (!resource.imported && resource.exportState.has_value() &&
+                    !initializedBuffers[bufferIndex])
+                {
+                    graph.stats.uninitializedExportCount++;
+                    graph.stats.validationErrorCount++;
+                    RVX_CORE_ERROR("RenderGraph exports transient buffer {} without any producing write",
+                                   bufferIndex);
+                }
+            }
+        }
     }
 
     // =============================================================================
@@ -1152,6 +1263,14 @@ namespace RVX
                     }
                 }
             }
+        }
+
+        ValidateResourceLifetimes(graph, passNeeded);
+        if (graph.stats.validationErrorCount > 0)
+        {
+            graph.stats.compileValid = false;
+            graph.executionOrder.clear();
+            return;
         }
 
         std::vector<std::vector<uint32>> adjacency(graph.passes.size());

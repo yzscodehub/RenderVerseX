@@ -1140,6 +1140,101 @@ git diff --check
 
 ---
 
+### R6a: RenderGraph Lifetime and Hazard Validation
+
+**Date:** 2026-06-06
+**Commit:** pending; record after commit
+**Spark plan review agent:** `019e9ab1-3b1f-7501-bef4-a52b0c6510de`
+**Spark code review agent:** `019e9ab8-846b-7490-9da7-9e33b0d8eabd`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: `12. R6 - RenderGraph Hardening`
+- Stage plan: `Docs/superpowers/specs/2026-06-06-r6a-rendergraph-lifetime-hazard-plan.md`
+- Lines checked: current R6/R7/R8 sections were reread before implementation; R6 was split to keep lifetime hazards independent from aliasing and async scheduler work.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R5b-2
+- Evidence: R5b-2 commit `22e850b` plus log correction `e1bd252`; R6 is the next documented render-first stage.
+
+**Approved scope:**
+
+- Add visible RenderGraph compile stats for transient read-before-write hazards and uninitialized exports.
+- Reject transient texture/buffer `Read` before any producing write.
+- Reject transient texture/buffer `ReadWrite` before initialization.
+- Reject exported transient resources that were never produced by a needed pass.
+- Preserve imported-resource read-before-later-write behavior.
+- Ensure culled hazard passes do not poison valid graphs.
+- Ensure invalid lifetime graphs do not execute callbacks.
+
+**Out of scope:**
+
+- Full cycle construction APIs or external dependency graph API.
+- Re-enabling memory aliasing or emitting native aliasing barriers.
+- Per-subresource or per-buffer-range initialized-region tracking.
+- Real async compute/copy scheduler or multi-queue submission.
+- RenderGraph visual pass completion.
+- Visual golden baseline, RenderProxy, material, asset, or ModelViewer work.
+
+**Files changed:**
+
+- `Render/Include/Render/Graph/RenderGraph.h`
+- `Render/Private/Graph/RenderGraphCompiler.cpp`
+- `Tests/RenderGraphValidation/main.cpp`
+- `Docs/superpowers/specs/2026-06-06-r6a-rendergraph-lifetime-hazard-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderGraphValidation RenderHonestyValidation
+build\win_x64_debug\Tests\Debug\RenderGraphValidation.exe
+build\win_x64_debug\Tests\Debug\RenderHonestyValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|RenderHonestyValidation"
+cmake --build build/win_x64_debug --config Debug --target RenderPassValidation RenderSceneValidation MaterialSystemValidation
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|RenderHonestyValidation|RenderPassValidation|RenderSceneValidation|MaterialSystemValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `RenderGraphValidation`: 27/27
+  - `RenderHonestyValidation`: 15/15
+  - Required filtered CTest: 42/42
+  - Optional render regression CTest: 77/77
+- Visual gate: N/A
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan and final code review messages
+- Screenshots: N/A
+- Diffs: R6a working tree diff before commit
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: added `ReadWrite` coverage, stats reset coverage, imported/transient behavior distinction, and explicit uninitialized export semantics to the plan.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: added buffer invalid-graph no-execute coverage.
+
+**Notes / follow-ups:**
+
+- `git diff --check` reports only an LF-to-CRLF warning for `Tests/RenderGraphValidation/main.cpp`, no whitespace errors.
+- Future R6 work should consider lifetime validation based on final `executionOrder` and de-duplicating repeated same-pass hazard counts.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R6a commit.
+- Next stage must reread the render-first plan and the next documented R6 sub-scope, create/confirm its implementation plan, pass Spark plan review, implement, pass validation, pass Spark code review, update this log, and commit before moving on.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

@@ -525,7 +525,8 @@ TEST(RenderGraphValidation, BufferRanges)
     RHIBufferDesc bufDesc;
     bufDesc.size = 1024 * 1024;  // 1 MB
     bufDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
-    auto buffer = graph.CreateBuffer(bufDesc);
+    FakeBuffer backingBuffer(bufDesc);
+    auto buffer = graph.ImportBuffer(&backingBuffer, RHIResourceState::ShaderResource);
 
     struct RangePassData { RGBufferHandle range; };
 
@@ -644,6 +645,9 @@ TEST(RenderGraphValidation, ReadBeforeWriteHazardPreservesExecutionOrder)
 {
     RenderGraph graph;
 
+    // Imported resources start initialized from their external state. This test
+    // verifies a valid imported read before a later graph write, not a transient
+    // read-before-write hazard.
     RHITextureDesc texDesc = RHITextureDesc::RenderTarget(128, 128, RHIFormat::RGBA8_UNORM);
     FakeTexture textureA(texDesc);
     FakeTexture textureB(texDesc);
@@ -704,6 +708,11 @@ TEST(RenderGraphValidation, ReadBeforeWriteHazardPreservesExecutionOrder)
     graph.SetExportState(a, RHIResourceState::ShaderResource);
     graph.Compile();
 
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.compileValid);
+    EXPECT_EQ(stats.readBeforeWriteHazardCount, 0u);
+    EXPECT_EQ(stats.uninitializedExportCount, 0u);
+
     FakeCommandContext ctx;
     graph.Execute(ctx);
 
@@ -711,6 +720,245 @@ TEST(RenderGraphValidation, ReadBeforeWriteHazardPreservesExecutionOrder)
     EXPECT_EQ(executed[0], std::string("ProduceB"));
     EXPECT_EQ(executed[1], std::string("ReadAWriteC"));
     EXPECT_EQ(executed[2], std::string("WriteA"));
+}
+
+TEST(RenderGraphValidation, TransientTextureReadBeforeWriteFailsCompileAndDoesNotExecute)
+{
+    RenderGraph graph;
+
+    RHITextureDesc texDesc = RHITextureDesc::RenderTarget(128, 128, RHIFormat::RGBA8_UNORM);
+    auto input = graph.CreateTexture(texDesc);
+    auto output = graph.CreateTexture(texDesc);
+    bool executed = false;
+
+    struct TextureHazardData
+    {
+        RGTextureHandle input;
+        RGTextureHandle output;
+    };
+
+    graph.AddPass<TextureHazardData>(
+        "ReadUnwrittenTexture",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, TextureHazardData& data)
+        {
+            data.input = builder.Read(input);
+            data.output = builder.Write(output, RHIResourceState::RenderTarget);
+        },
+        [&](const TextureHazardData&, RHICommandContext&)
+        {
+            executed = true;
+        });
+
+    graph.SetExportState(output, RHIResourceState::ShaderResource);
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_FALSE(stats.compileValid);
+    EXPECT_EQ(stats.readBeforeWriteHazardCount, 1u);
+    EXPECT_EQ(stats.uninitializedExportCount, 0u);
+    EXPECT_EQ(stats.validationErrorCount, 1u);
+    EXPECT_FALSE(stats.executionOrderFallbackUsed);
+
+    FakeCommandContext ctx;
+    graph.Execute(ctx);
+    EXPECT_FALSE(executed);
+}
+
+TEST(RenderGraphValidation, TransientBufferReadBeforeWriteFailsCompile)
+{
+    RenderGraph graph;
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    auto input = graph.CreateBuffer(bufferDesc);
+    auto output = graph.CreateBuffer(bufferDesc);
+    bool executed = false;
+
+    struct BufferHazardData
+    {
+        RGBufferHandle input;
+        RGBufferHandle output;
+    };
+
+    graph.AddPass<BufferHazardData>(
+        "ReadUnwrittenBuffer",
+        RenderGraphPassType::Compute,
+        [&](RenderGraphBuilder& builder, BufferHazardData& data)
+        {
+            data.input = builder.Read(input);
+            data.output = builder.Write(output, RHIResourceState::UnorderedAccess);
+        },
+        [&](const BufferHazardData&, RHICommandContext&)
+        {
+            executed = true;
+        });
+
+    graph.SetExportState(output, RHIResourceState::ShaderResource);
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_FALSE(stats.compileValid);
+    EXPECT_EQ(stats.readBeforeWriteHazardCount, 1u);
+    EXPECT_EQ(stats.uninitializedExportCount, 0u);
+    EXPECT_EQ(stats.validationErrorCount, 1u);
+
+    FakeCommandContext ctx;
+    graph.Execute(ctx);
+    EXPECT_FALSE(executed);
+}
+
+TEST(RenderGraphValidation, TransientReadWriteBeforeInitializationFailsCompile)
+{
+    RenderGraph graph;
+
+    RHITextureDesc texDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
+    texDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::UnorderedAccess;
+    auto texture = graph.CreateTexture(texDesc);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    auto buffer = graph.CreateBuffer(bufferDesc);
+
+    struct TextureReadWriteData
+    {
+        RGTextureHandle texture;
+    };
+    struct BufferReadWriteData
+    {
+        RGBufferHandle buffer;
+    };
+
+    graph.AddPass<TextureReadWriteData>(
+        "ReadWriteUnwrittenTexture",
+        RenderGraphPassType::Compute,
+        [&](RenderGraphBuilder& builder, TextureReadWriteData& data)
+        {
+            data.texture = builder.ReadWrite(texture);
+        },
+        [](const TextureReadWriteData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferReadWriteData>(
+        "ReadWriteUnwrittenBuffer",
+        RenderGraphPassType::Compute,
+        [&](RenderGraphBuilder& builder, BufferReadWriteData& data)
+        {
+            data.buffer = builder.ReadWrite(buffer);
+        },
+        [](const BufferReadWriteData&, RHICommandContext&) {});
+
+    graph.SetExportState(texture, RHIResourceState::ShaderResource);
+    graph.SetExportState(buffer, RHIResourceState::ShaderResource);
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_FALSE(stats.compileValid);
+    EXPECT_EQ(stats.readBeforeWriteHazardCount, 2u);
+    EXPECT_EQ(stats.uninitializedExportCount, 0u);
+    EXPECT_EQ(stats.validationErrorCount, 2u);
+}
+
+TEST(RenderGraphValidation, TransientExportWithoutProducerFailsCompile)
+{
+    RenderGraph graph;
+
+    RHITextureDesc texDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
+    auto texture = graph.CreateTexture(texDesc);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured;
+    auto buffer = graph.CreateBuffer(bufferDesc);
+
+    graph.SetExportState(texture, RHIResourceState::ShaderResource);
+    graph.SetExportState(buffer, RHIResourceState::ShaderResource);
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_FALSE(stats.compileValid);
+    EXPECT_EQ(stats.readBeforeWriteHazardCount, 0u);
+    EXPECT_EQ(stats.uninitializedExportCount, 2u);
+    EXPECT_EQ(stats.validationErrorCount, 2u);
+}
+
+TEST(RenderGraphValidation, CulledTransientReadBeforeWriteDoesNotInvalidateGraph)
+{
+    RenderGraph graph;
+
+    RHITextureDesc texDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
+    auto unusedInput = graph.CreateTexture(texDesc);
+    auto unusedOutput = graph.CreateTexture(texDesc);
+    auto finalOutput = graph.CreateTexture(texDesc);
+
+    struct TextureHazardData
+    {
+        RGTextureHandle input;
+        RGTextureHandle output;
+    };
+
+    graph.AddPass<TextureHazardData>(
+        "CulledReadUnwrittenTexture",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, TextureHazardData& data)
+        {
+            data.input = builder.Read(unusedInput);
+            data.output = builder.Write(unusedOutput, RHIResourceState::RenderTarget);
+        },
+        [](const TextureHazardData&, RHICommandContext&) {});
+
+    graph.AddPass<SimplePassData>(
+        "ProduceFinal",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, SimplePassData& data)
+        {
+            data.colorTarget = builder.Write(finalOutput, RHIResourceState::RenderTarget);
+        },
+        [](const SimplePassData&, RHICommandContext&) {});
+
+    graph.SetExportState(finalOutput, RHIResourceState::ShaderResource);
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.compileValid);
+    EXPECT_EQ(stats.readBeforeWriteHazardCount, 0u);
+    EXPECT_EQ(stats.uninitializedExportCount, 0u);
+    EXPECT_EQ(stats.validationErrorCount, 0u);
+    EXPECT_EQ(stats.culledPasses, 1u);
+}
+
+TEST(RenderGraphValidation, LifetimeHazardStatsResetAfterClear)
+{
+    RenderGraph graph;
+
+    RHITextureDesc texDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
+    auto unwritten = graph.CreateTexture(texDesc);
+    graph.SetExportState(unwritten, RHIResourceState::ShaderResource);
+    graph.Compile();
+
+    EXPECT_FALSE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(graph.GetCompileStats().uninitializedExportCount, 1u);
+
+    graph.Clear();
+    auto written = graph.CreateTexture(texDesc);
+    graph.AddPass<SimplePassData>(
+        "ProduceWrittenTexture",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, SimplePassData& data)
+        {
+            data.colorTarget = builder.Write(written, RHIResourceState::RenderTarget);
+        },
+        [](const SimplePassData&, RHICommandContext&) {});
+
+    graph.SetExportState(written, RHIResourceState::ShaderResource);
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.compileValid);
+    EXPECT_EQ(stats.readBeforeWriteHazardCount, 0u);
+    EXPECT_EQ(stats.uninitializedExportCount, 0u);
+    EXPECT_EQ(stats.validationErrorCount, 0u);
 }
 
 TEST(RenderGraphValidation, ExecuteAsyncFallsBackToGraphicsUntilQueueSchedulerExists)

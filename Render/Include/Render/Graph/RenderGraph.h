@@ -165,6 +165,8 @@ namespace RVX
             uint32 emptyPassUsageCount = 0;
             uint32 invalidResourceUsageCount = 0;
             uint32 incompatibleStateUsageCount = 0;
+            uint32 readBeforeWriteHazardCount = 0;
+            uint32 uninitializedExportCount = 0;
             
             // Barrier statistics
             uint32 barrierCount = 0;
