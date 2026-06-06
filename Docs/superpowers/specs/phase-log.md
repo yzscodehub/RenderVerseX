@@ -2189,7 +2189,7 @@ ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderPass
 ### R10a: Particle Rendering Honesty Hardening
 
 **Date:** 2026-06-06
-**Commit:** pending
+**Commit:** `14436d4`
 **Spark plan review agent:** Popper (`019e9db5-178f-7633-ac79-4f8b4d129e10`)
 **Spark code review agent:** Kant (`019e9dbc-25c0-7c12-97ad-aff6d552a083`)
 
