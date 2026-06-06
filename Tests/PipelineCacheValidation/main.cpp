@@ -1,16 +1,20 @@
 #include "Core/Log.h"
 #include "Render/PipelineCache.h"
+#include "Render/Renderer/ViewData.h"
 #include "RHI/RHI.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace
@@ -89,6 +93,7 @@ namespace
         RVX::uint32 GetStride() const override { return m_desc.stride; }
         void* Map() override { return m_storage.data(); }
         void Unmap() override {}
+        const std::vector<RVX::uint8>& GetStorage() const { return m_storage; }
 
     private:
         RVX::RHIBufferDesc m_desc;
@@ -165,7 +170,10 @@ namespace
         {
             if (failBufferCreation)
                 return {};
-            return RVX::MakeRef<FakeBuffer>(desc);
+            auto buffer = RVX::MakeRef<FakeBuffer>(desc);
+            capturedBufferDescs.push_back(desc);
+            capturedBuffers.push_back(buffer.Get());
+            return buffer;
         }
 
         RVX::RHITextureRef CreateTexture(const RVX::RHITextureDesc&) override { return {}; }
@@ -243,6 +251,8 @@ namespace
         RVX::uint32 shaderCreateCount = 0;
         RVX::uint32 capturedPipelineLayoutSetCount = 0;
         std::vector<RVX::uint32> capturedPipelineLayoutSetCounts;
+        std::vector<RVX::RHIBufferDesc> capturedBufferDescs;
+        std::vector<FakeBuffer*> capturedBuffers;
         std::vector<RVX::RHIDescriptorSetLayoutDesc> capturedSetLayouts;
         std::vector<RVX::RHIGraphicsPipelineDesc> capturedGraphicsPipelines;
 
@@ -306,6 +316,19 @@ namespace
         RVX::PipelineCacheConfig config;
         config.manifestDirectory = manifestDirectory;
         return config;
+    }
+
+    const FakeBuffer* FindCapturedBuffer(const FakeDevice& device, const char* debugName)
+    {
+        for (size_t i = 0; i < device.capturedBufferDescs.size(); ++i)
+        {
+            const char* capturedName = device.capturedBufferDescs[i].debugName;
+            if (capturedName && std::strcmp(capturedName, debugName) == 0)
+            {
+                return device.capturedBuffers[i];
+            }
+        }
+        return nullptr;
     }
 }
 
@@ -450,6 +473,117 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
 
     EXPECT_NE(cache.GetPostProcessSetLayout(), nullptr);
     EXPECT_NE(cache.GetPostProcessLayout(), nullptr);
+}
+
+TEST_F(PipelineCacheValidationFixture, ViewConstantsLayoutMatchesDefaultLitCBufferPacking)
+{
+    EXPECT_TRUE(std::is_standard_layout_v<RVX::ViewConstants>);
+    EXPECT_EQ(sizeof(RVX::Mat4), 64u);
+    EXPECT_EQ(sizeof(RVX::Vec3), 12u);
+    EXPECT_EQ(sizeof(RVX::Vec4), 16u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, viewProjection), 0u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, cameraPosition), 64u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, time), 76u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, lightDirection), 80u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, padding), 92u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, iblDiffuseAmbient), 96u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, iblSpecularAmbient), 112u);
+    EXPECT_EQ(sizeof(RVX::ViewConstants), 128u);
+}
+
+TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDefaultIBLAmbientValues)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    RVX::ViewData view;
+    view.cameraPosition = RVX::Vec3(1.0f, 2.0f, 3.0f);
+    view.time = 4.0f;
+    cache.UpdateViewConstants(view);
+
+    const FakeBuffer* viewBuffer = FindCapturedBuffer(device, "ViewConstantBuffer");
+    ASSERT_NE(viewBuffer, nullptr);
+    ASSERT_GE(viewBuffer->GetStorage().size(), sizeof(RVX::ViewConstants));
+
+    RVX::ViewConstants uploaded{};
+    std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.x, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.y, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.z, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.w, 0.12f);
+    EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.x, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.y, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.z, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.w, 0.04f);
+}
+
+TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabledIBLAmbientValues)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    RVX::ViewData view;
+    view.iblDiffuseColor = RVX::Vec3(0.25f, 0.5f, 0.75f);
+    view.iblDiffuseIntensity = 0.8f;
+    view.iblSpecularColor = RVX::Vec3(0.1f, 0.2f, 0.3f);
+    view.iblSpecularIntensity = 0.6f;
+    view.iblAmbientEnabled = 2;
+    cache.UpdateViewConstants(view);
+
+    const FakeBuffer* viewBuffer = FindCapturedBuffer(device, "ViewConstantBuffer");
+    ASSERT_NE(viewBuffer, nullptr);
+    ASSERT_GE(viewBuffer->GetStorage().size(), sizeof(RVX::ViewConstants));
+
+    RVX::ViewConstants uploaded{};
+    std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.x, 0.25f);
+    EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.y, 0.5f);
+    EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.z, 0.75f);
+    EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.w, 0.8f);
+    EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.x, 0.1f);
+    EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.y, 0.2f);
+    EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.z, 0.3f);
+    EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.w, 0.6f);
+
+    view.iblAmbientEnabled = 0;
+    cache.UpdateViewConstants(view);
+    std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.x, 0.25f);
+    EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.y, 0.5f);
+    EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.z, 0.75f);
+    EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.w, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.x, 0.1f);
+    EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.y, 0.2f);
+    EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.z, 0.3f);
+    EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.w, 0.0f);
+}
+
+TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const std::string shader = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
+    EXPECT_NE(shader.find("IBLDiffuseAmbient"), std::string::npos);
+    EXPECT_NE(shader.find("IBLSpecularAmbient"), std::string::npos);
+    EXPECT_EQ(shader.find("ambientDiffuse = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic) * occlusion * 0.12;"),
+              std::string::npos);
+    EXPECT_EQ(shader.find("ambientSpecular = f0 * occlusion * (1.0 - clampedRoughness) * 0.04;"),
+              std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAware)

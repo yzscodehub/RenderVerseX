@@ -37,6 +37,8 @@ cbuffer ViewConstants : register(b0, space0)
     float Time;
     float3 LightDirection;
     float Padding;
+    float4 IBLDiffuseAmbient;   // rgb: color, a: diffuse intensity
+    float4 IBLSpecularAmbient;  // rgb: color, a: specular intensity
 };
 
 cbuffer ObjectConstants : register(b0, space1)
@@ -184,8 +186,10 @@ float4 PSMain(PSInput input) : SV_TARGET
 
     float nDotV = max(dot(normal, viewDir), 0.001);
     float3 fresnel = F_SchlickRoughness(nDotV, f0, clampedRoughness);
-    float3 ambientDiffuse = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic) * occlusion * 0.12;
-    float3 ambientSpecular = f0 * occlusion * (1.0 - clampedRoughness) * 0.04;
+    float3 iblDiffuse = IBLDiffuseAmbient.rgb * IBLDiffuseAmbient.a;
+    float3 iblSpecular = IBLSpecularAmbient.rgb * IBLSpecularAmbient.a;
+    float3 ambientDiffuse = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic) * occlusion * iblDiffuse;
+    float3 ambientSpecular = f0 * occlusion * (1.0 - clampedRoughness) * iblSpecular;
     float3 finalColor = ambientDiffuse + ambientSpecular + directLight + emissive;
 
     return float4(finalColor, baseColor.a);

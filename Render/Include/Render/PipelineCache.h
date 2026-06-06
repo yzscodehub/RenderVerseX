@@ -41,6 +41,8 @@ namespace RVX
         float time;
         Vec3 lightDirection;
         float padding;
+        Vec4 iblDiffuseAmbient;
+        Vec4 iblSpecularAmbient;
     };
 
     /**

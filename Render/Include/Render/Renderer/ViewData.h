@@ -6,6 +6,7 @@
  */
 
 #include "Core/MathTypes.h"
+#include "Core/Types.h"
 #include "RHI/RHI.h"
 #include "Render/Graph/RenderGraph.h"
 
@@ -77,9 +78,28 @@ namespace RVX
         
         /// Main color target
         RGTextureHandle colorTarget;
-        
+
         /// Depth target
         RGTextureHandle depthTarget;
+
+        // =====================================================================
+        // Environment / IBL-Approximate Ambient
+        // =====================================================================
+
+        /// Diffuse ambient color multiplier for the minimum IBL-approx path
+        Vec3 iblDiffuseColor{1.0f, 1.0f, 1.0f};
+
+        /// Diffuse ambient intensity; defaults to the previous DefaultLit value
+        float iblDiffuseIntensity = 0.12f;
+
+        /// Specular ambient color multiplier for the minimum IBL-approx path
+        Vec3 iblSpecularColor{1.0f, 1.0f, 1.0f};
+
+        /// Specular ambient intensity; defaults to the previous DefaultLit value
+        float iblSpecularIntensity = 0.04f;
+
+        /// Allows callers to disable IBL-approx ambient without changing colors
+        uint8 iblAmbientEnabled = 1;
 
         // =====================================================================
         // RenderGraph Reference

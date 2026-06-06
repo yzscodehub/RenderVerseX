@@ -1690,6 +1690,11 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
     constants.time = view.time;
     constants.lightDirection = Vec3(0.5f, -0.8f, 0.3f);
     constants.padding = 0.0f;
+    const bool iblAmbientEnabled = view.iblAmbientEnabled != 0;
+    const float iblDiffuseIntensity = iblAmbientEnabled ? view.iblDiffuseIntensity : 0.0f;
+    const float iblSpecularIntensity = iblAmbientEnabled ? view.iblSpecularIntensity : 0.0f;
+    constants.iblDiffuseAmbient = Vec4(view.iblDiffuseColor, iblDiffuseIntensity);
+    constants.iblSpecularAmbient = Vec4(view.iblSpecularColor, iblSpecularIntensity);
 
     void* mapped = m_viewConstantBuffer->Map();
     if (mapped)

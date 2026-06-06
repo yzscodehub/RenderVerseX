@@ -1983,6 +1983,104 @@ rg "SetMipCount|GetMipCount|m_mipCount" .
 
 ---
 
+### R-SP: `R9f - IBL-Approximate Ambient Minimum Path`
+
+**Date:** 2026-06-06
+**Commit:** pending
+**Spark plan review agent:** Popper (`019e9db5-178f-7633-ac79-4f8b4d129e10`)
+**Spark code review agent:** Kant (`019e9dbc-25c0-7c12-97ad-aff6d552a083`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: `15. R9 - Render Pass Completion`
+- Lines checked: parent R9 section around lines 485-497; R9e phase-log notes around lines 1873 and 1981; R9f plan document lines 1-111
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R9e Bloom fullscreen minimum path
+- Evidence: R9e committed as `65d0af9` with follow-up log correction `6817d18`; R9e validation and visual gate passed before R9f planning.
+
+**Approved scope:**
+
+- Add explicit IBL-approximate ambient settings to `ViewData` with defaults matching the old `DefaultLit` hard-coded ambient constants.
+- Append diffuse/specular IBL-approximate ambient values to `PipelineCache::ViewConstants` without reordering existing fields.
+- Upload default, custom, and disabled IBL-approximate ambient values through `PipelineCache::UpdateViewConstants()`.
+- Replace `DefaultLit.hlsl` hidden ambient magic constants with view constants while preserving default ModelViewer output.
+- Keep `Lighting.hlsli` comments honest: IBL-approximate only, no cubemap/irradiance/prefilter/BRDF LUT sampling.
+- Add C++ layout/upload tests and shader-source guardrails.
+
+**Out of scope:**
+
+- Full cubemap IBL, irradiance, prefiltered environment, or BRDF LUT descriptor bindings/sampling.
+- GPU IBL convolution passes.
+- Making `SkyboxPass` draw or connecting `SkyboxComponent` to `ViewData`.
+- TAA or additional post-process integration.
+- Changing ModelViewer default visual output.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-06-r9f-ibl-ambient-minimum-path-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Include/Render/Renderer/ViewData.h`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Render/Shaders/Include/Lighting.hlsli`
+- `Tests/PipelineCacheValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation RenderSceneValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+build\win_x64_debug\Tests\Debug\PipelineCacheValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|RenderSceneValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "ClusteredLightingValidation|RenderGraphValidation|RenderHonestyValidation|RenderSceneValidation|RenderPassValidation|MaterialSystemValidation|ResourceInstantiationValidation|PipelineCacheValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+cmake --build build/win_x64_debug --config Debug --target PipelineCacheValidation
+build\win_x64_debug\Tests\Debug\PipelineCacheValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|RenderSceneValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `PipelineCacheValidation`: 25/25 by direct executable after final suggestion adoption
+  - Required R9f filtered CTest: 67/67 after final suggestion adoption
+  - Broad render/resource regression CTest: 213/213 before final non-blocking doc/test suggestion adoption
+  - `git diff --check`: PASS, with only Git CRLF warnings
+- Visual gate: PASS
+  - `ModelViewerSmoke`: PASS
+  - `VisualGoldenValidation`: PASS
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan review, Spark code review, and Spark incremental/final code-review messages
+- Plan: `Docs/superpowers/specs/2026-06-06-r9f-ibl-ambient-minimum-path-plan.md`
+- Screenshots/golden: unchanged default visual gate path from ModelViewer smoke/golden validation
+
+**Spark plan review result:**
+
+- Verdict: `PASS_WITH_NON_BLOCKING_SUGGESTIONS`
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: narrowed the stage name and wording to IBL-approximate ambient, explicitly excluded full cubemap IBL sampling, documented the default formula, aligned `Lighting.hlsli` comments, and added C++ cbuffer offset/layout tests.
+
+**Spark code review result:**
+
+- Verdict: `PASS_WITH_NON_BLOCKING_SUGGESTIONS`
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: changed `ViewData::iblAmbientEnabled` from `bool` to `uint8`, added `Core/Types.h`, documented `Lighting.hlsli` independence from `DefaultLit` view constants, fixed the plan document current-state wording, and added a non-zero `uint8` enable-value upload test.
+- Final incremental re-review verdict: `PASS`
+
+**Notes / follow-ups:**
+
+- R9f is an honest minimum path: it parameterizes ambient lighting through view constants but does not claim complete texture IBL.
+- Full IBL texture sampling, Skybox draw integration, and TAA remain future R9 or later candidates and must follow the same phase protocol.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R9f commit.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

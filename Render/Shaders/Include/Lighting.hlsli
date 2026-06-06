@@ -158,7 +158,9 @@ float3 EvaluateSpotLight(
 // Ambient / Environment Lighting
 // =============================================================================
 
-// Simple ambient approximation (no IBL)
+// IBL-approximate ambient helper (no cubemap/irradiance/prefilter sampling).
+// This stays independent from DefaultLit's IBLDiffuseAmbient/IBLSpecularAmbient
+// view constants so later full IBL can replace either path deliberately.
 float3 AmbientLighting(
     float3 N,
     float3 V,
@@ -176,10 +178,10 @@ float3 AmbientLighting(
     float3 kS = F;
     float3 kD = (1.0 - kS) * (1.0 - metallic);
     
-    // Simple diffuse ambient
+    // Diffuse ambient approximation
     float3 diffuseAmbient = kD * albedo * ambientColor;
-    
-    // Simple specular ambient (proper IBL would sample a pre-filtered environment map)
+
+    // Specular ambient approximation; complete IBL would sample a pre-filtered environment map
     float3 specularAmbient = F * ambientColor * 0.3;
     
     return (diffuseAmbient + specularAmbient) * ao;
