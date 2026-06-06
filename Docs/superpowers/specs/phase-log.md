@@ -2287,6 +2287,114 @@ git diff --check
 
 ---
 
+### R-SP: `R12 - Final ModelViewer Validation`
+
+**Date:** 2026-06-06
+**Commit:** this R12 stage commit
+**Spark plan review agent:** Sagan
+**Spark code review agent:** Sagan
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: `17. R11 - GPU-Driven Optional Advanced`; `18. R12 - Final ModelViewer Validation`
+- Lines checked: R11/R12 source block around lines 542-585
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: `R10a - Particle Rendering Honesty Hardening`
+- Evidence: R10a implementation and log correction commits completed; current stage re-read the render-first roadmap before starting.
+
+**Approved scope:**
+
+- Defer R11 because it is P2/L optional GPU-driven advanced work and not required for final ModelViewer acceptance.
+- Build and validate Release `ModelViewer`.
+- Run Release CTest and focused Release render validation.
+- Run manual Release ModelViewer smoke against the fixed R7 glTF fixture.
+- Record backend, GPU/driver, resolution, fixture, commands, logs, screenshots, and render path.
+- Fix R12 validation blockers discovered during acceptance if they directly affect the final gate.
+
+**Out of scope:**
+
+- Starting R11 GPU-driven culling, compaction, indirect draw, or bindless work.
+- Full DX12/Vulkan screenshot acceptance; current ModelViewer screenshot readback remains DX11-only.
+- New rendering features beyond targeted R12 gate fixes.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-06-r12-final-modelviewer-validation-plan.md`
+- `Docs/superpowers/specs/2026-06-06-r12-final-modelviewer-validation-report.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `RHI_DX11/Private/DX11Resources.cpp`
+- `RHI_DX11/Private/DX11Resources.h`
+- `Tests/DX11Validation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion,AdapterCompatibility
+cmake --build build\win_x64_debug --config Release
+cmake --build build\win_x64_debug --config Release --target DX11Validation ModelViewer VisualGoldenValidation ImageCompareValidation
+cmake --build build\win_x64_debug --config Debug --target DX11Validation
+build\win_x64_debug\Tests\Release\DX11Validation.exe --gtest_filter=DX11Validation.UploadCopySourceBufferMaps
+build\win_x64_debug\Tests\Debug\DX11Validation.exe --gtest_filter=DX11Validation.UploadCopySourceBufferMaps
+build\win_x64_debug\Tests\Release\DX11Validation.exe
+ctest --test-dir build\win_x64_debug -C Release --output-on-failure -O build\win_x64_debug\R12Artifacts\Logs\release-full-ctest.log
+ctest --test-dir build\win_x64_debug -C Release --output-on-failure -O build\win_x64_debug\R12Artifacts\Logs\release-focused-render-ctest.log -R "DX11Validation|ClusteredLightingValidation|RenderGraphValidation|RenderHonestyValidation|RenderSceneValidation|RenderPassValidation|MaterialSystemValidation|ResourceInstantiationValidation|PipelineCacheValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+build\win_x64_debug\Samples\ModelViewer\Release\ModelViewer.exe --smoke --model Tests\Fixtures\ModelViewer\R7Triangle.gltf --backend dx11 --width 320 --height 180 --frames 8 --screenshot build\win_x64_debug\Tests\VisualArtifacts\Release\ModelViewer\R12_DX11_320x180.ppm --validation
+build\win_x64_debug\Tests\Release\VisualGoldenValidation.exe --expected Tests\Golden\ModelViewer\R7_DX11_320x180.ppm --actual build\win_x64_debug\Tests\VisualArtifacts\Release\ModelViewer\R12_DX11_320x180.ppm --diff build\win_x64_debug\Tests\VisualArtifacts\Release\ModelViewer\R12_DX11_320x180.diff.ppm --tolerance 0.0 --max-different-pixels 0
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - Release full CTest: 434/434
+  - Focused Release render CTest: 238/238
+  - Release `DX11Validation.exe`: 20/20
+  - `DX11Validation.UploadCopySourceBufferMaps`: PASS in Debug and Release
+  - `git diff --check`: PASS, with only Git CRLF warnings
+- Visual gate: PASS
+  - `ModelViewerSmoke`: PASS
+  - `VisualGoldenValidation`: PASS
+  - Manual ModelViewer smoke: PASS; final log has no `[error]` lines
+  - Manual golden compare: MSE 0, PSNR 100, differing pixels 0
+
+**Artifacts:**
+
+- Report: `Docs/superpowers/specs/2026-06-06-r12-final-modelviewer-validation-report.md`
+- Full Release CTest log: `build/win_x64_debug/R12Artifacts/Logs/release-full-ctest.log`
+- Focused Release render CTest log: `build/win_x64_debug/R12Artifacts/Logs/release-focused-render-ctest.log`
+- Manual ModelViewer log: `build/win_x64_debug/R12Artifacts/Logs/manual-modelviewer-dx11.log`
+- Manual golden comparison log: `build/win_x64_debug/R12Artifacts/Logs/manual-golden-compare.log`
+- Screenshot: `build/win_x64_debug/Tests/VisualArtifacts/Release/ModelViewer/R12_DX11_320x180.ppm`
+
+**Spark plan review result:**
+
+- Verdict: `PASS_WITH_NON_BLOCKING`
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: explicit R11 deferral rationale, DX11 visual-backend exception note, and saved validation log paths.
+
+**Spark code review result:**
+
+- First verdict: `BLOCKED` on procedural documentation gates only.
+- Code blockers: none reported.
+- Procedural blockers addressed in this entry and the R12 report.
+- Final incremental re-review verdict: `PASS_WITH_NON_BLOCKING`.
+- Remaining blockers: none.
+
+**Notes / follow-ups:**
+
+- R11 remains deferred as optional advanced GPU-driven work.
+- DX11 is the final visual backend because current ModelViewer screenshot readback explicitly requires DX11.
+- DX12/Vulkan remain covered by Release backend and cross-backend tests; screenshot acceptance for those backends remains a future RHI readback task.
+- R12 validation exposed and fixed a DX11 `Upload + CopySrc` buffer creation issue that polluted ModelViewer logs with default material texture upload errors.
+- `RenderPassValidationFixture.NoSupportedEffectsReportsNoWork` now verifies the no-effect post-process no-work path under the fixture logger lifecycle.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

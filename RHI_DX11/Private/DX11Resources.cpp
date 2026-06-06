@@ -19,6 +19,13 @@ namespace RVX
         bufferDesc.MiscFlags = 0;
         bufferDesc.StructureByteStride = 0;
 
+        if (desc.memoryType == RHIMemoryType::Upload && bufferDesc.BindFlags == 0)
+        {
+            bufferDesc.Usage = D3D11_USAGE_STAGING;
+            bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            m_useStagingUpload = true;
+        }
+
         // Structured buffer needs StructureByteStride and MiscFlags
         if (HasFlag(desc.usage, RHIBufferUsage::Structured) && desc.stride > 0)
         {
@@ -79,7 +86,7 @@ namespace RVX
         switch (m_desc.memoryType)
         {
             case RHIMemoryType::Upload:
-                mapType = D3D11_MAP_WRITE_DISCARD;
+                mapType = m_useStagingUpload ? D3D11_MAP_WRITE : D3D11_MAP_WRITE_DISCARD;
                 break;
             case RHIMemoryType::Readback:
                 mapType = D3D11_MAP_READ;

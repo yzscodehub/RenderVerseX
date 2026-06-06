@@ -42,6 +42,7 @@ namespace RVX
 
         DX11Device* m_device = nullptr;
         RHIBufferDesc m_desc;
+        bool m_useStagingUpload = false;
 
         ComPtr<ID3D11Buffer> m_buffer;
         ComPtr<ID3D11ShaderResourceView> m_srv;

@@ -1380,24 +1380,13 @@ TEST(RenderPostProcessStackValidation, EvaluateEffectsReportsRequestedButUnsuppo
     EXPECT_EQ(stats.graphPassCount, 0u);
 }
 
-TEST(RenderPostProcessStackValidation, NoSupportedEffectsReportsNoWork)
+TEST_F(RenderPassValidationFixture, NoSupportedEffectsReportsNoWork)
 {
-    FakeDevice device;
     RenderGraph graph;
     graph.SetDevice(&device);
 
-    RHITextureRef inputTexture =
-        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
-    RHITextureRef outputTexture =
-        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
-    ASSERT_TRUE(inputTexture);
-    ASSERT_TRUE(outputTexture);
-
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
-
     PostProcessStack stack;
-    stack.Execute(graph, input, output);
+    stack.Execute(graph, {}, {});
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_TRUE(executeStats.noEffectNoWork);

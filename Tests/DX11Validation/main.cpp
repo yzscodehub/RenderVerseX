@@ -155,6 +155,29 @@ TEST(DX11Validation, UploadBuffer)
     buffer->Unmap();
 }
 
+TEST(DX11Validation, UploadCopySourceBufferMaps)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 16;
+    bufferDesc.usage = RHIBufferUsage::CopySrc;
+    bufferDesc.memoryType = RHIMemoryType::Upload;
+    bufferDesc.debugName = "TestUploadCopySourceBuffer";
+
+    auto buffer = device->CreateBuffer(bufferDesc);
+    ASSERT_NE(nullptr, buffer.Get());
+
+    void* mappedData = buffer->Map();
+    ASSERT_NE(nullptr, mappedData);
+
+    uint32 testData[4] = {0xFFFFFFFFu, 0x8080FFFFu, 0x000000FFu, 0x12345678u};
+    std::memcpy(mappedData, testData, sizeof(testData));
+    buffer->Unmap();
+}
+
 TEST(DX11Validation, TextureCreation)
 {
     RHIDeviceDesc deviceDesc;
