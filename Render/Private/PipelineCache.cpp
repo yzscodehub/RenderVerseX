@@ -482,8 +482,10 @@ void PipelineCache::Shutdown()
     m_setLayouts.clear();
     m_vertexShader.Reset();
     m_pixelShader.Reset();
+    m_depthOnlyVertexShader.Reset();
     m_vsCompileResult.reset();
     m_psCompileResult.reset();
+    m_depthOnlyVsCompileResult.reset();
     m_shaderManager.reset();
     m_device = nullptr;
     m_initialized = false;
@@ -494,6 +496,7 @@ void PipelineCache::Shutdown()
 bool PipelineCache::CompileShaders()
 {
     std::string shaderPath = m_shaderDir + "/DefaultLit.hlsl";
+    std::string depthOnlyShaderPath = m_shaderDir + "/DepthOnly.hlsl";
 
     RVX_CORE_INFO("PipelineCache: Compiling shaders...");
     RVX_CORE_INFO("  Shader directory: {}", m_shaderDir);
@@ -531,6 +534,16 @@ bool PipelineCache::CompileShaders()
         SetLastError("Failed to compile vertex shader: " + vsResult.compileResult.errorMessage);
         return false;
     }
+
+    if (!std::filesystem::exists(depthOnlyShaderPath))
+    {
+        SetLastError("Depth-only shader file not found: " + depthOnlyShaderPath);
+
+        std::filesystem::path absPath = std::filesystem::absolute(depthOnlyShaderPath);
+        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
+        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
+        return false;
+    }
     if (!vsResult.shader)
     {
         SetLastError("Failed to create vertex shader");
@@ -560,6 +573,29 @@ bool PipelineCache::CompileShaders()
     }
     m_pixelShader = psResult.shader;
     m_psCompileResult = std::make_unique<ShaderCompileResult>(std::move(psResult.compileResult));
+
+    ShaderLoadDesc depthVsDesc = vsDesc;
+    depthVsDesc.path = depthOnlyShaderPath;
+    depthVsDesc.entryPoint = "VSMain";
+    depthVsDesc.stage = RHIShaderStage::Vertex;
+    if (backend == RHIBackendType::DX11)
+    {
+        depthVsDesc.targetProfile = "vs_5_0";
+    }
+
+    auto depthVsResult = m_shaderManager->LoadFromFile(m_device, depthVsDesc);
+    if (!depthVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile depth-only vertex shader: " + depthVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!depthVsResult.shader)
+    {
+        SetLastError("Failed to create depth-only vertex shader");
+        return false;
+    }
+    m_depthOnlyVertexShader = depthVsResult.shader;
+    m_depthOnlyVsCompileResult = std::make_unique<ShaderCompileResult>(std::move(depthVsResult.compileResult));
 
     RVX_CORE_DEBUG("PipelineCache: Compiled shaders successfully");
     return true;
@@ -940,7 +976,17 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
-    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants");
+    m_depthOnlyPipeline = GetOrCreateDepthOnlyPipeline();
+    if (!m_depthOnlyPipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create depth-only pipeline");
+        }
+        return false;
+    }
+
+    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants and depth-only pipeline");
     return true;
 }
 
@@ -1000,6 +1046,48 @@ RHIPipelineRef PipelineCache::GetOrCreateDefaultLitPipeline(MaterialPipelineVari
     return pipeline;
 }
 
+RHIPipelineRef PipelineCache::GetOrCreateDepthOnlyPipeline()
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
+    if (!pipelineDesc.vertexShader)
+    {
+        SetLastError("Cannot create depth-only pipeline without vertex shader");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError("Cannot create depth-only pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create depth-only pipeline with invalid depth stencil format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc, MaterialPipelineVariant::Opaque);
+    m_stats.lastPipelineStateHash = stateHash;
+
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create depth-only pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
 RHIGraphicsPipelineDesc PipelineCache::BuildDefaultLitPipelineDesc(const char* debugName,
                                                                    const RHIDepthStencilState& depthStencilState,
                                                                    const RHIBlendState& blendState) const
@@ -1025,6 +1113,34 @@ RHIGraphicsPipelineDesc PipelineCache::BuildDefaultLitPipelineDesc(const char* d
 
     pipelineDesc.numRenderTargets = 1;
     pipelineDesc.renderTargetFormats[0] = m_renderTargetFormat;
+    pipelineDesc.depthStencilFormat = m_config.depthStencilFormat;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildDepthOnlyPipelineDesc() const
+{
+    RHIGraphicsPipelineDesc pipelineDesc;
+
+    pipelineDesc.vertexShader = m_depthOnlyVertexShader.Get();
+    pipelineDesc.pixelShader = nullptr;
+    pipelineDesc.pipelineLayout = m_pipelineLayout.Get();
+    pipelineDesc.debugName = "DepthOnlyPipeline";
+
+    pipelineDesc.inputLayout.AddElement("POSITION", RHIFormat::RGB32_FLOAT, 0);
+
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.frontFace = RHIFrontFace::Clockwise;
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+
+    pipelineDesc.depthStencilState = BuildDepthStencilState(m_config.reverseZ, true);
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets = 0;
+    for (RHIFormat& format : pipelineDesc.renderTargetFormats)
+    {
+        format = RHIFormat::Unknown;
+    }
     pipelineDesc.depthStencilFormat = m_config.depthStencilFormat;
     pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
 

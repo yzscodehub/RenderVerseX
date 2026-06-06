@@ -12,6 +12,8 @@
 #include "Render/Passes/IRenderPass.h"
 #include "Core/MathTypes.h"
 
+#include <vector>
+
 namespace RVX
 {
     class RenderScene;
@@ -37,6 +39,15 @@ namespace RVX
         float cascadeSplitLambda = 0.95f;    // PSSM split scheme parameter
         float shadowBias = 0.005f;           // Depth bias to reduce shadow acne
         float normalBias = 0.02f;            // Normal offset bias
+    };
+
+    struct ShadowPassStats
+    {
+        uint32_t configuredCascadeCount = 0;
+        uint32_t declaredCascadeResourceCount = 0;
+        uint32_t resolvedCascadeViewCount = 0;
+        uint32_t shadowCasterCount = 0;
+        uint32_t drawCount = 0;
     };
 
     /**
@@ -95,6 +106,8 @@ namespace RVX
          * @brief Get the shadow map texture (after execution)
          */
         RHITexture* GetShadowMap() const { return m_shadowMapTexture; }
+        const std::vector<RGTextureHandle>& GetCascadeTextureHandles() const { return m_cascadeTextureHandles; }
+        const ShadowPassStats& GetStats() const { return m_stats; }
 
         void SetEnabled(bool enabled) { m_enabled = enabled; }
         bool IsRequestedEnabled() const override { return m_enabled; }
@@ -103,11 +116,11 @@ namespace RVX
         bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
 
     private:
-        void CreateShadowMap();
-        void RenderCascade(RHICommandContext& ctx, uint32_t cascadeIndex);
+        bool ResolveCascadeViews(const ViewData& view);
+        void RenderCascade(RHICommandContext& ctx, const ViewData& view, uint32_t cascadeIndex);
 
         bool m_enabled = false;  // Disabled by default until light is configured
-        std::string m_unsupportedReason = "Shadow map resources and cascade views are not implemented";
+        mutable std::string m_unsupportedReason = "ShadowPass has not been configured";
         GPUResourceManager* m_gpuResources = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         const RenderScene* m_renderScene = nullptr;
@@ -118,11 +131,12 @@ namespace RVX
         float m_lightIntensity = 1.0f;
 
         std::vector<ShadowCascade> m_cascades;
-        
+
         // Shadow map resources
         RHITexture* m_shadowMapTexture = nullptr;
-        RHITextureRef m_ownedShadowMap;
-        std::vector<RHITextureViewRef> m_cascadeViews;
+        std::vector<RGTextureHandle> m_cascadeTextureHandles;
+        std::vector<RHITextureView*> m_cascadeViews;
+        ShadowPassStats m_stats;
     };
 
 } // namespace RVX

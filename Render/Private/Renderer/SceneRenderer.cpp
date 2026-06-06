@@ -346,6 +346,8 @@ void SceneRenderer::Render()
         m_pipelineCache->UpdateViewConstants(m_viewData);
     }
 
+    PreparePassesForFrame();
+
     // Clear the render graph for this frame
     m_renderGraph->Clear();
 
@@ -469,6 +471,23 @@ void SceneRenderer::UpdatePassResources()
         m_shadowPass,
         m_transparentPass,
         m_skyboxPass);
+}
+
+void SceneRenderer::PreparePassesForFrame()
+{
+    if (!m_shadowPass)
+        return;
+
+    m_shadowPass->SetEnabled(false);
+
+    for (const RenderLight& light : m_renderScene.GetLights())
+    {
+        if (light.type != RenderLight::Type::Directional || !light.castsShadow || light.intensity <= 0.0f)
+            continue;
+
+        m_shadowPass->SetDirectionalLight(light.direction, light.color, light.intensity);
+        break;
+    }
 }
 
 void SceneRenderer::EnsureDepthBuffer(uint32_t width, uint32_t height)

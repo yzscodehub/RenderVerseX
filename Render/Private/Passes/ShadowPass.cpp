@@ -4,16 +4,101 @@
  */
 
 #include "Render/Passes/ShadowPass.h"
+#include "Render/Graph/ResourceViewCache.h"
 #include "Render/Renderer/ViewData.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/GPUResourceManager.h"
 #include "Render/PipelineCache.h"
 #include "RHI/RHIRenderPass.h"
 #include "Core/Log.h"
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
 
 namespace RVX
 {
+namespace
+{
+    constexpr float RVX_SHADOW_EPSILON = 0.0001f;
+
+    Vec3 NormalizeOr(const Vec3& value, const Vec3& fallback)
+    {
+        const float valueLength = length(value);
+        if (valueLength > RVX_SHADOW_EPSILON)
+        {
+            return value / valueLength;
+        }
+        return fallback;
+    }
+
+    bool IsFinitePositive(float value)
+    {
+        return std::isfinite(value) && value > RVX_SHADOW_EPSILON;
+    }
+
+    struct FrustumSlice
+    {
+        std::array<Vec3, 8> corners{};
+        Vec3 center{0.0f, 0.0f, 0.0f};
+        float radius = 1.0f;
+    };
+
+    FrustumSlice BuildFrustumSlice(const ViewData& view, float nearDistance, float farDistance)
+    {
+        FrustumSlice slice;
+
+        const float aspect = IsFinitePositive(view.aspectRatio) ? view.aspectRatio : 1.0f;
+        const float fov = IsFinitePositive(view.fieldOfView) ? view.fieldOfView : 1.0472f;
+        const float tanHalfFov = std::tan(fov * 0.5f);
+
+        const Vec3 forward = NormalizeOr(view.cameraForward, Vec3(0.0f, 0.0f, -1.0f));
+        Vec3 right = NormalizeOr(GetRightFromMatrix(view.inverseViewMatrix), Vec3(1.0f, 0.0f, 0.0f));
+        Vec3 up = NormalizeOr(GetUpFromMatrix(view.inverseViewMatrix), Vec3(0.0f, 1.0f, 0.0f));
+
+        if (std::abs(dot(right, forward)) > 0.95f)
+        {
+            right = NormalizeOr(cross(forward, Vec3(0.0f, 1.0f, 0.0f)), Vec3(1.0f, 0.0f, 0.0f));
+        }
+        if (std::abs(dot(up, forward)) > 0.95f)
+        {
+            up = NormalizeOr(cross(right, forward), Vec3(0.0f, 1.0f, 0.0f));
+        }
+
+        const float nearHeight = tanHalfFov * nearDistance;
+        const float nearWidth = nearHeight * aspect;
+        const float farHeight = tanHalfFov * farDistance;
+        const float farWidth = farHeight * aspect;
+
+        const Vec3 nearCenter = view.cameraPosition + forward * nearDistance;
+        const Vec3 farCenter = view.cameraPosition + forward * farDistance;
+
+        const auto writePlane = [&](size_t offset, const Vec3& center, float halfWidth, float halfHeight)
+        {
+            slice.corners[offset + 0] = center - right * halfWidth - up * halfHeight;
+            slice.corners[offset + 1] = center + right * halfWidth - up * halfHeight;
+            slice.corners[offset + 2] = center + right * halfWidth + up * halfHeight;
+            slice.corners[offset + 3] = center - right * halfWidth + up * halfHeight;
+        };
+
+        writePlane(0, nearCenter, nearWidth, nearHeight);
+        writePlane(4, farCenter, farWidth, farHeight);
+
+        for (const Vec3& corner : slice.corners)
+        {
+            slice.center += corner;
+        }
+        slice.center /= static_cast<float>(slice.corners.size());
+
+        for (const Vec3& corner : slice.corners)
+        {
+            slice.radius = std::max(slice.radius, length(corner - slice.center));
+        }
+
+        return slice;
+    }
+
+} // namespace
 
 ShadowPass::ShadowPass()
 {
@@ -34,7 +119,7 @@ void ShadowPass::SetRenderScene(const RenderScene* scene)
 void ShadowPass::SetConfig(const ShadowPassConfig& config)
 {
     m_config = config;
-    m_cascades.resize(config.numCascades);
+    m_cascades.resize(std::max(1u, config.numCascades));
 }
 
 void ShadowPass::SetDirectionalLight(const Vec3& direction, const Vec3& color, float intensity)
@@ -47,21 +132,43 @@ void ShadowPass::SetDirectionalLight(const Vec3& direction, const Vec3& color, f
 
 bool ShadowPass::IsSupported() const
 {
-    if (!m_pipelineCache || !m_pipelineCache->IsInitialized() || !m_pipelineCache->GetDepthOnlyPipeline())
-        return false;
-
-    if (!m_gpuResources || !m_renderScene || !m_shadowMapTexture)
-        return false;
-
-    if (m_cascadeViews.size() != m_cascades.size())
-        return false;
-
-    for (const auto& cascadeView : m_cascadeViews)
+    if (!m_pipelineCache)
     {
-        if (!cascadeView)
-            return false;
+        m_unsupportedReason = "PipelineCache is not available";
+        return false;
     }
 
+    if (!m_pipelineCache->IsInitialized())
+    {
+        m_unsupportedReason = "PipelineCache is not initialized";
+        return false;
+    }
+
+    if (!m_pipelineCache->GetDepthOnlyPipeline())
+    {
+        m_unsupportedReason = "Depth-only pipeline is not available";
+        return false;
+    }
+
+    if (!m_gpuResources)
+    {
+        m_unsupportedReason = "GPUResourceManager is not available";
+        return false;
+    }
+
+    if (m_config.numCascades == 0)
+    {
+        m_unsupportedReason = "ShadowPass requires at least one cascade";
+        return false;
+    }
+
+    if (m_config.shadowMapSize == 0)
+    {
+        m_unsupportedReason = "ShadowPass requires a non-zero shadow map size";
+        return false;
+    }
+
+    m_unsupportedReason.clear();
     return true;
 }
 
@@ -70,45 +177,49 @@ void ShadowPass::CalculateCascades(const ViewData& view)
     if (m_cascades.empty())
         return;
 
-    float nearClip = view.nearPlane;
-    float farClip = view.farPlane;
-    float range = farClip - nearClip;
-    float ratio = farClip / nearClip;
+    const float nearClip = std::max(0.001f, view.nearPlane);
+    const float farClip = std::max(nearClip + 1.0f, view.farPlane);
+    const float range = farClip - nearClip;
+    const float ratio = farClip / nearClip;
+    const float lambda = clamp(m_config.cascadeSplitLambda, 0.0f, 1.0f);
+    const Vec3 lightDir = NormalizeOr(m_lightDirection, Vec3(0.0f, -1.0f, 0.0f));
+    const Vec3 worldUp(0.0f, 1.0f, 0.0f);
+    const Vec3 lightUp = std::abs(dot(lightDir, worldUp)) > 0.95f ? Vec3(1.0f, 0.0f, 0.0f) : worldUp;
 
-    // Calculate cascade split depths using PSSM scheme
+    float previousSplitDistance = nearClip;
     for (uint32_t i = 0; i < m_cascades.size(); ++i)
     {
-        float p = static_cast<float>(i + 1) / static_cast<float>(m_cascades.size());
-        float logSplit = nearClip * std::pow(ratio, p);
-        float uniformSplit = nearClip + range * p;
-        float splitDepth = m_config.cascadeSplitLambda * logSplit + 
-                          (1.0f - m_config.cascadeSplitLambda) * uniformSplit;
-        m_cascades[i].splitDepth = (splitDepth - nearClip) / range;
-    }
+        const float p = static_cast<float>(i + 1) / static_cast<float>(m_cascades.size());
+        const float logSplit = nearClip * std::pow(ratio, p);
+        const float uniformSplit = nearClip + range * p;
+        const float splitDistance = lambda * logSplit + (1.0f - lambda) * uniformSplit;
+        m_cascades[i].splitDepth = (splitDistance - nearClip) / range;
 
-    // Calculate light view-projection matrix for each cascade
-    // Note: This is a simplified implementation. A full implementation would:
-    // 1. Calculate the frustum corners for each cascade split
-    // 2. Transform corners to world space
-    // 3. Fit an orthographic projection to encompass the frustum
-    // 4. Stabilize the shadow map to prevent shimmer
+        const FrustumSlice slice = BuildFrustumSlice(view, previousSplitDistance, splitDistance);
+        previousSplitDistance = splitDistance;
 
-    Vec3 lightDir = m_lightDirection;
-    // Normalize
-    float len = std::sqrt(lightDir.x * lightDir.x + lightDir.y * lightDir.y + lightDir.z * lightDir.z);
-    if (len > 0.0f)
-    {
-        lightDir.x /= len;
-        lightDir.y /= len;
-        lightDir.z /= len;
-    }
+        const Vec3 lightPosition = slice.center - lightDir * (slice.radius * 2.0f);
+        const Mat4 lightView = lookAt(lightPosition, slice.center, lightUp);
 
-    // Simplified: Create a basic orthographic light projection centered on view
-    for (uint32_t i = 0; i < m_cascades.size(); ++i)
-    {
-        // Simple orthographic projection for directional light
-        // A full implementation would calculate proper bounds from frustum corners
-        m_cascades[i].viewProjection = Mat4Identity();  // Placeholder
+        Vec3 minLight(std::numeric_limits<float>::max());
+        Vec3 maxLight(std::numeric_limits<float>::lowest());
+        for (const Vec3& corner : slice.corners)
+        {
+            const Vec4 lightSpaceCorner = lightView * Vec4(corner, 1.0f);
+            minLight = min(minLight, Vec3(lightSpaceCorner));
+            maxLight = max(maxLight, Vec3(lightSpaceCorner));
+        }
+
+        const float padding = std::max(1.0f, slice.radius * 0.1f);
+        const float zNear = std::max(0.001f, -maxLight.z - padding);
+        const float zFar = std::max(zNear + 1.0f, -minLight.z + padding);
+        const Mat4 lightProjection = ortho(minLight.x - padding,
+                                           maxLight.x + padding,
+                                           minLight.y - padding,
+                                           maxLight.y + padding,
+                                           zNear,
+                                           zFar);
+        m_cascades[i].viewProjection = lightProjection * lightView;
     }
 }
 
@@ -117,10 +228,37 @@ void ShadowPass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     if (!IsEnabled())
         return;
 
-    // Shadow pass creates its own render targets (shadow maps)
-    // These would be transient textures in a full RenderGraph implementation
-    (void)builder;
+    m_stats = {};
+    m_shadowMapTexture = nullptr;
+    m_cascadeTextureHandles.clear();
+    m_cascadeViews.clear();
+    m_cascades.resize(std::max(1u, m_config.numCascades));
+
+    if (!view.renderGraph)
+    {
+        m_unsupportedReason = "RenderGraph is not available during ShadowPass setup";
+        return;
+    }
+
     CalculateCascades(view);
+    m_stats.configuredCascadeCount = static_cast<uint32_t>(m_cascades.size());
+
+    const RHIFormat depthFormat = m_pipelineCache ? m_pipelineCache->GetConfig().depthStencilFormat
+                                                  : PipelineCache::GetDefaultDepthStencilFormat();
+    for (uint32_t i = 0; i < static_cast<uint32_t>(m_cascades.size()); ++i)
+    {
+        RHITextureDesc shadowDesc = RHITextureDesc::DepthStencil(m_config.shadowMapSize,
+                                                                 m_config.shadowMapSize,
+                                                                 depthFormat);
+        shadowDesc.debugName = "ShadowCascadeDepth";
+
+        RGTextureHandle shadowMap = view.renderGraph->CreateTexture(shadowDesc);
+        view.renderGraph->SetExportState(shadowMap, RHIResourceState::ShaderResource);
+        builder.SetDepthStencil(shadowMap, true, false);
+        m_cascadeTextureHandles.push_back(shadowMap);
+    }
+
+    m_stats.declaredCascadeResourceCount = static_cast<uint32_t>(m_cascadeTextureHandles.size());
 }
 
 void ShadowPass::Execute(RHICommandContext& ctx, const ViewData& view)
@@ -149,24 +287,69 @@ void ShadowPass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
+    if (!ResolveCascadeViews(view))
+    {
+        RVX_CORE_WARN("ShadowPass: cascade resources were not resolved; skipping shadow rendering");
+        return;
+    }
+
     // Render each cascade
     for (uint32_t i = 0; i < static_cast<uint32_t>(m_cascades.size()); ++i)
     {
-        RenderCascade(ctx, i);
+        RenderCascade(ctx, view, i);
     }
+
+    m_pipelineCache->UpdateViewConstants(view);
 }
 
-void ShadowPass::RenderCascade(RHICommandContext& ctx, uint32_t cascadeIndex)
+bool ShadowPass::ResolveCascadeViews(const ViewData& view)
+{
+    m_cascadeViews.assign(m_cascadeTextureHandles.size(), nullptr);
+    m_stats.resolvedCascadeViewCount = 0;
+    m_shadowMapTexture = nullptr;
+
+    if (!view.renderGraph || !view.viewCache)
+    {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < static_cast<uint32_t>(m_cascadeTextureHandles.size()); ++i)
+    {
+        RHITexture* texture = view.renderGraph->GetTexture(m_cascadeTextureHandles[i]);
+        if (!texture)
+            continue;
+
+        RHITextureView* viewHandle = view.viewCache->GetDefaultDSV(texture);
+        if (!viewHandle)
+            continue;
+
+        if (!m_shadowMapTexture)
+        {
+            m_shadowMapTexture = texture;
+        }
+        m_cascadeViews[i] = viewHandle;
+        ++m_stats.resolvedCascadeViewCount;
+    }
+
+    return m_stats.resolvedCascadeViewCount == m_cascadeTextureHandles.size();
+}
+
+void ShadowPass::RenderCascade(RHICommandContext& ctx, const ViewData& view, uint32_t cascadeIndex)
 {
     if (cascadeIndex >= m_cascadeViews.size() || !m_cascadeViews[cascadeIndex])
     {
         return;  // Cascade view not created
     }
 
+    ViewData shadowView = view;
+    shadowView.viewProjectionMatrix = m_cascades[cascadeIndex].viewProjection;
+    shadowView.cameraForward = NormalizeOr(m_lightDirection, Vec3(0.0f, -1.0f, 0.0f));
+    m_pipelineCache->UpdateViewConstants(shadowView);
+
     // Begin shadow render pass for this cascade
     RHIRenderPassDesc rpDesc;
-    rpDesc.SetDepthStencil(m_cascadeViews[cascadeIndex].Get(), 
-                           RHILoadOp::Clear, RHIStoreOp::Store, 1.0f, 0);
+    rpDesc.SetDepthStencil(m_cascadeViews[cascadeIndex],
+                           RHILoadOp::Clear, RHIStoreOp::Store, m_pipelineCache->GetDepthClearValue(), 0);
 
     ctx.BeginRenderPass(rpDesc);
 
@@ -185,6 +368,12 @@ void ShadowPass::RenderCascade(RHICommandContext& ctx, uint32_t cascadeIndex)
         ctx.SetPipeline(pipeline);
     }
 
+    RHIDescriptorSet* frameSet = m_pipelineCache->GetFrameDescriptorSet();
+    if (frameSet)
+    {
+        ctx.SetDescriptorSet(0, frameSet);
+    }
+
     // Draw all shadow-casting objects
     for (size_t i = 0; i < m_renderScene->GetObjectCount(); ++i)
     {
@@ -197,11 +386,19 @@ void ShadowPass::RenderCascade(RHICommandContext& ctx, uint32_t cascadeIndex)
         if (!buffers.IsValid())
             continue;
 
+        ++m_stats.shadowCasterCount;
+
         // Update object constants with light-space matrix
-        // In a full implementation: lightViewProj * worldMatrix
         if (m_pipelineCache)
         {
             m_pipelineCache->UpdateObjectConstants(obj.worldMatrix);
+        }
+
+        RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
+        if (objectSet)
+        {
+            const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
+            ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
         }
 
         // Bind vertex buffers
@@ -212,16 +409,11 @@ void ShadowPass::RenderCascade(RHICommandContext& ctx, uint32_t cascadeIndex)
         for (const SubmeshGPUInfo& submesh : buffers.submeshes)
         {
             ctx.DrawIndexed(submesh.indexCount, 1, submesh.indexOffset, submesh.baseVertex, 0);
+            ++m_stats.drawCount;
         }
     }
 
     ctx.EndRenderPass();
-}
-
-void ShadowPass::CreateShadowMap()
-{
-    // Shadow map creation would typically be done through RenderGraph
-    // This is a placeholder for when direct resource creation is needed
 }
 
 } // namespace RVX

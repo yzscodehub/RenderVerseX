@@ -384,8 +384,8 @@ TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAwa
     EXPECT_NE(firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque), 0u);
     EXPECT_NE(firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque),
               firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Transparent));
-    EXPECT_EQ(firstCache.GetStats().pipelineCreateCount, 3u);
-    EXPECT_EQ(firstCache.GetStats().pipelineCacheMissCount, 3u);
+    EXPECT_EQ(firstCache.GetStats().pipelineCreateCount, 4u);
+    EXPECT_EQ(firstCache.GetStats().pipelineCacheMissCount, 4u);
 }
 
 TEST_F(PipelineCacheValidationFixture, RenderTargetFormatChangesPipelineHash)
@@ -425,9 +425,10 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_EQ(RVX::PipelineCache::GetDefaultDepthStencilFormat(), RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(cache.GetDepthClearValue(), 1.0f);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), 3u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 4u);
     const auto& opaqueDesc = device.capturedGraphicsPipelines[0];
     const auto& transparentDesc = device.capturedGraphicsPipelines[2];
+    const auto& depthOnlyDesc = device.capturedGraphicsPipelines[3];
 
     EXPECT_EQ(opaqueDesc.depthStencilFormat, RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(opaqueDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::Less);
@@ -436,6 +437,16 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_EQ(transparentDesc.depthStencilFormat, RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(transparentDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::Less);
     EXPECT_FALSE(transparentDesc.depthStencilState.depthWriteEnable);
+
+    ASSERT_NE(cache.GetDepthOnlyPipeline(), nullptr);
+    EXPECT_EQ(depthOnlyDesc.numRenderTargets, 0u);
+    EXPECT_EQ(depthOnlyDesc.renderTargetFormats[0], RVX::RHIFormat::Unknown);
+    EXPECT_EQ(depthOnlyDesc.depthStencilFormat, RVX::RHIFormat::D32_FLOAT);
+    EXPECT_EQ(depthOnlyDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::Less);
+    EXPECT_TRUE(depthOnlyDesc.depthStencilState.depthWriteEnable);
+    EXPECT_EQ(depthOnlyDesc.pixelShader, nullptr);
+    ASSERT_EQ(depthOnlyDesc.inputLayout.elements.size(), static_cast<size_t>(1));
+    EXPECT_STREQ(depthOnlyDesc.inputLayout.elements[0].semanticName, "POSITION");
 }
 
 TEST_F(PipelineCacheValidationFixture, ReverseZOptInChangesDepthCompareAndClearConvention)
@@ -456,15 +467,19 @@ TEST_F(PipelineCacheValidationFixture, ReverseZOptInChangesDepthCompareAndClearC
     EXPECT_EQ(RVX::PipelineCache::GetDepthClearValue(true), 0.0f);
     EXPECT_EQ(RVX::PipelineCache::GetDepthClearValue(false), 1.0f);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), 3u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 4u);
     const auto& opaqueDesc = device.capturedGraphicsPipelines[0];
     const auto& transparentDesc = device.capturedGraphicsPipelines[2];
+    const auto& depthOnlyDesc = device.capturedGraphicsPipelines[3];
 
     EXPECT_EQ(opaqueDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::GreaterEqual);
     EXPECT_TRUE(opaqueDesc.depthStencilState.depthWriteEnable);
 
     EXPECT_EQ(transparentDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::GreaterEqual);
     EXPECT_FALSE(transparentDesc.depthStencilState.depthWriteEnable);
+
+    EXPECT_EQ(depthOnlyDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::GreaterEqual);
+    EXPECT_TRUE(depthOnlyDesc.depthStencilState.depthWriteEnable);
 }
 
 TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata)

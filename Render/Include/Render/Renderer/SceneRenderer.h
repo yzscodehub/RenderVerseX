@@ -228,6 +228,7 @@ namespace RVX
     private:
         void BuildRenderGraph();
         void BuildMaterialDrawLists();
+        void PreparePassesForFrame();
         void SetupDefaultPasses();
         void UpdatePassResources();
         void ExecutePasses(RHICommandContext& ctx);

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <memory>
 #include <span>
@@ -18,6 +19,7 @@
 #undef private
 
 #include "Render/GPUResourceManager.h"
+#include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/DepthPrepass.h"
 #include "Render/Passes/IRenderPass.h"
@@ -245,7 +247,11 @@ namespace
         void BeginBarrier(const RHITextureBarrier&) override {}
         void EndBarrier(const RHIBufferBarrier&) override {}
         void EndBarrier(const RHITextureBarrier&) override {}
-        void BeginRenderPass(const RHIRenderPassDesc&) override { ++beginRenderPassCount; }
+        void BeginRenderPass(const RHIRenderPassDesc& desc) override
+        {
+            ++beginRenderPassCount;
+            renderPasses.push_back(desc);
+        }
         void EndRenderPass() override { ++endRenderPassCount; }
         void SetPipeline(RHIPipeline* pipeline) override { pipelineSequence.push_back(pipeline); }
         void SetVertexBuffer(uint32, RHIBuffer*, uint64 = 0) override {}
@@ -299,6 +305,7 @@ namespace
         uint32 copyBufferCount = 0;
         uint32 copyBufferToTextureCount = 0;
         uint32 drawIndexedCount = 0;
+        std::vector<RHIRenderPassDesc> renderPasses;
         std::vector<RHIPipeline*> pipelineSequence;
         std::vector<uint32> descriptorSetSequence;
     };
@@ -330,11 +337,13 @@ namespace
 
         RHITextureRef CreateTexture(const RHITextureDesc& desc) override
         {
+            createdTextureDescs.push_back(desc);
             return RHITextureRef(new FakeTexture(desc));
         }
 
         RHITextureViewRef CreateTextureView(RHITexture* texture, const RHITextureViewDesc& desc = {}) override
         {
+            createdTextureViewDescs.push_back(desc);
             return RHITextureViewRef(new FakeTextureView(texture, desc));
         }
 
@@ -439,6 +448,8 @@ namespace
         RHIBackendType GetBackendType() const override { return RHIBackendType::DX12; }
 
         bool bufferMapSucceeds = true;
+        std::vector<RHITextureDesc> createdTextureDescs;
+        std::vector<RHITextureViewDesc> createdTextureViewDescs;
 
     private:
         uint64 m_nextFenceValue = 1;
@@ -534,6 +545,20 @@ namespace
         materialResource.SetTexture("albedo", albedo);
     }
 
+    bool IsIdentityMatrix(const Mat4& matrix, float epsilon = 0.0001f)
+    {
+        const Mat4 identity = Mat4Identity();
+        for (int column = 0; column < 4; ++column)
+        {
+            for (int row = 0; row < 4; ++row)
+            {
+                if (std::abs(matrix[column][row] - identity[column][row]) > epsilon)
+                    return false;
+            }
+        }
+        return true;
+    }
+
     class RenderPassValidationFixture : public ::testing::Test
     {
     protected:
@@ -562,6 +587,7 @@ namespace
             ASSERT_TRUE(pipelineCache.Initialize(&device, shaderDir.string())) << pipelineCache.GetLastError();
 
             gpuResources.Initialize(&device);
+            viewCache.Initialize(&device);
             ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, pipelineCache.GetMaterialSetLayout()));
 
             meshResource = CreateMeshResource(401);
@@ -579,6 +605,7 @@ namespace
         void TearDown() override
         {
             materialSystem.Shutdown();
+            viewCache.Shutdown();
             gpuResources.Shutdown();
             pipelineCache.Shutdown();
         }
@@ -586,6 +613,7 @@ namespace
         FakeDevice device;
         PipelineCache pipelineCache;
         GPUResourceManager gpuResources;
+        ResourceViewCache viewCache;
         MaterialSystem materialSystem;
         RenderScene scene;
         std::unique_ptr<Resource::MeshResource> meshResource;
@@ -683,6 +711,179 @@ TEST(RenderPassStatusValidation, BuiltInProductionPassStatusesAreHonest)
     EXPECT_TRUE(transparentPass.IsRequestedEnabled());
     EXPECT_TRUE(transparentPass.IsSupported());
     EXPECT_TRUE(transparentPass.IsEnabled());
+}
+
+TEST_F(RenderPassValidationFixture, ShadowPassReportsSupportedWithDepthPipelineAndResources)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    ShadowPass pass;
+    pass.SetResources(&gpuResources, &pipelineCache);
+    pass.SetDirectionalLight(Vec3{0.0f, -1.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+
+    EXPECT_TRUE(pass.IsRequestedEnabled());
+    EXPECT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    EXPECT_TRUE(pass.IsEnabled());
+
+    pipelineCache.m_depthOnlyPipeline.Reset();
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_FALSE(pass.GetUnsupportedReason().empty());
+}
+
+TEST_F(RenderPassValidationFixture, ShadowPassDisabledDoesNotDeclareOrDrawCascadeResources)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+
+    ShadowPass pass;
+    pass.SetResources(&gpuResources, &pipelineCache);
+    pass.SetRenderScene(&scene);
+
+    EXPECT_FALSE(pass.IsRequestedEnabled());
+    EXPECT_FALSE(pass.IsEnabled());
+
+    pass.AddToGraph(graph, view);
+
+    EXPECT_TRUE(pass.GetCascadeTextureHandles().empty());
+    EXPECT_EQ(pass.GetStats().declaredCascadeResourceCount, 0u);
+
+    graph.Compile();
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.compileValid);
+    EXPECT_EQ(stats.totalPasses, 1u);
+    EXPECT_EQ(stats.emptyPassUsageCount, 1u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.beginRenderPassCount, 0u);
+    EXPECT_EQ(ctx.drawIndexedCount, 0u);
+    EXPECT_EQ(pass.GetStats().resolvedCascadeViewCount, 0u);
+    EXPECT_EQ(pass.GetStats().drawCount, 0u);
+}
+
+TEST_F(RenderPassValidationFixture, ShadowPassSetupDeclaresCascadeDepthResourcesAndPSSMMatrices)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+    view.viewportWidth = 320;
+    view.viewportHeight = 180;
+    view.aspectRatio = 16.0f / 9.0f;
+    view.fieldOfView = 1.0472f;
+    view.nearPlane = 0.1f;
+    view.farPlane = 100.0f;
+    view.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+    view.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    view.inverseViewMatrix = Mat4Identity();
+
+    ShadowPassConfig config;
+    config.numCascades = 3;
+    config.shadowMapSize = 128;
+
+    ShadowPass pass;
+    pass.SetResources(&gpuResources, &pipelineCache);
+    pass.SetRenderScene(&scene);
+    pass.SetConfig(config);
+    pass.SetDirectionalLight(Vec3{-0.4f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 2.0f);
+
+    pass.AddToGraph(graph, view);
+
+    const auto& handles = pass.GetCascadeTextureHandles();
+    ASSERT_EQ(handles.size(), static_cast<size_t>(3));
+    EXPECT_EQ(pass.GetStats().configuredCascadeCount, 3u);
+    EXPECT_EQ(pass.GetStats().declaredCascadeResourceCount, 3u);
+
+    for (const RGTextureHandle& handle : handles)
+    {
+        const RHITextureDesc* desc = graph.GetTextureDesc(handle);
+        ASSERT_NE(desc, nullptr);
+        EXPECT_EQ(desc->width, 128u);
+        EXPECT_EQ(desc->height, 128u);
+        EXPECT_EQ(desc->format, PipelineCache::GetDefaultDepthStencilFormat());
+        EXPECT_TRUE(HasFlag(desc->usage, RHITextureUsage::DepthStencil));
+    }
+
+    const auto& cascades = pass.GetCascades();
+    ASSERT_EQ(cascades.size(), static_cast<size_t>(3));
+    float previousSplit = 0.0f;
+    for (const ShadowCascade& cascade : cascades)
+    {
+        EXPECT_GT(cascade.splitDepth, previousSplit);
+        EXPECT_LE(cascade.splitDepth, 1.0f);
+        EXPECT_FALSE(IsIdentityMatrix(cascade.viewProjection));
+        previousSplit = cascade.splitDepth;
+    }
+
+    graph.Compile();
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.compileValid);
+    EXPECT_EQ(stats.totalPasses, 1u);
+    EXPECT_EQ(stats.culledPasses, 0u);
+    EXPECT_EQ(stats.emptyPassUsageCount, 0u);
+}
+
+TEST_F(RenderPassValidationFixture, ShadowPassExecuteResolvesCascadeViewsAndDrawsOnlyShadowCasters)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderObject nonCaster = MakeRenderObject(*meshResource);
+    nonCaster.castsShadow = false;
+    scene.AddObject(nonCaster);
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+    view.viewportWidth = 320;
+    view.viewportHeight = 180;
+    view.aspectRatio = 16.0f / 9.0f;
+    view.fieldOfView = 1.0472f;
+    view.nearPlane = 0.1f;
+    view.farPlane = 100.0f;
+    view.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+    view.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    view.inverseViewMatrix = Mat4Identity();
+
+    ShadowPassConfig config;
+    config.numCascades = 2;
+    config.shadowMapSize = 64;
+
+    ShadowPass pass;
+    pass.SetResources(&gpuResources, &pipelineCache);
+    pass.SetRenderScene(&scene);
+    pass.SetConfig(config);
+    pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+
+    pass.AddToGraph(graph, view);
+    graph.Compile();
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.beginRenderPassCount, 2u);
+    EXPECT_EQ(ctx.endRenderPassCount, 2u);
+    EXPECT_EQ(ctx.drawIndexedCount, 2u);
+    EXPECT_EQ(pass.GetStats().resolvedCascadeViewCount, 2u);
+    EXPECT_EQ(pass.GetStats().shadowCasterCount, 2u);
+    EXPECT_EQ(pass.GetStats().drawCount, 2u);
+    ASSERT_EQ(ctx.renderPasses.size(), static_cast<size_t>(2));
+    for (const RHIRenderPassDesc& renderPass : ctx.renderPasses)
+    {
+        EXPECT_EQ(renderPass.colorAttachmentCount, 0u);
+        EXPECT_TRUE(renderPass.hasDepthStencil);
+        ASSERT_NE(renderPass.depthStencilAttachment.view, nullptr);
+    }
 }
 
 TEST_F(RenderPassValidationFixture, OpaquePassBindsOpaqueThenMaskedPipelinesAndDrawsBothGroups)

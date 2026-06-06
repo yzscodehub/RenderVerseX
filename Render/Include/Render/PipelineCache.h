@@ -257,9 +257,11 @@ namespace RVX
                                                      const char* debugName,
                                                      const RHIDepthStencilState& depthStencilState,
                                                      const RHIBlendState& blendState);
+        RHIPipelineRef GetOrCreateDepthOnlyPipeline();
         RHIGraphicsPipelineDesc BuildDefaultLitPipelineDesc(const char* debugName,
                                                             const RHIDepthStencilState& depthStencilState,
                                                             const RHIBlendState& blendState) const;
+        RHIGraphicsPipelineDesc BuildDepthOnlyPipelineDesc() const;
         bool CreateViewConstantBuffer();
         bool CreateObjectConstantBuffer();
         RHIDescriptorSetRef CreateFrameDescriptorSet();
@@ -286,8 +288,10 @@ namespace RVX
         // Shaders
         RHIShaderRef m_vertexShader;
         RHIShaderRef m_pixelShader;
+        RHIShaderRef m_depthOnlyVertexShader;
         std::unique_ptr<ShaderCompileResult> m_vsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_psCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_depthOnlyVsCompileResult;
 
         // Descriptor set layouts and pipeline layout
         std::vector<RHIDescriptorSetLayoutRef> m_setLayouts;

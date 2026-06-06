@@ -1566,6 +1566,114 @@ git diff --check
 
 ---
 
+### R9b: Shadow/PSSM Minimum Resource Path
+
+**Date:** 2026-06-06
+**Commit:** R9b stage commit created immediately after this log entry
+**Spark plan review agent:** `019e9ceb-72f3-7e72-8e3a-d79dd73a8db0`
+**Spark code review agent:** `019e9d1c-54cc-7072-9185-de319163a620`
+**Spark final follow-up review agent:** `019e9d21-4e99-76f2-88b8-60d05747f2e1`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: `15. R9 - Render Pass Completion`
+- Stage plan: `Docs/superpowers/specs/2026-06-06-r9b-shadow-pssm-minimum-path-plan.md`
+- Lines checked: roadmap lines 485-513 were reread before implementation.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R9a Render Pass Chain Honesty
+- Evidence: R9a committed as `2f2c077` with hash correction committed as `4647949`; R9b implementation plan passed Spark plan review before code changes.
+
+**Approved scope:**
+
+- Add a minimal depth-only shader and `PipelineCache` depth-only graphics pipeline.
+- Make `ShadowPass` supported when required render infrastructure exists and a directional shadow light requests it.
+- Generate practical minimum PSSM split depths and non-identity light view-projection matrices.
+- Declare one transient depth texture per cascade through `RenderGraph` and export it to `ShaderResource` so the enabled shadow pass remains live until later shadow sampling is implemented.
+- Resolve cascade depth textures through `RenderGraph` and `ResourceViewCache`, then render shadow-casting geometry with the depth-only pipeline.
+- Add per-frame `SceneRenderer` preparation that disables `ShadowPass` by default and enables/configures it only for an eligible directional shadow-casting light.
+- Add deterministic `ShadowPass` stats for setup and execution validation.
+- Extend `PipelineCacheValidation` and `RenderPassValidation` for depth-only pipeline, PSSM resource declaration, execution, and disabled/no-light behavior.
+- Keep ModelViewer visual output unchanged because R9b does not sample shadows in lighting.
+
+**Out of scope:**
+
+- Sampling shadow maps in lighting or material shaders.
+- Clustered lighting, IBL, ToneMapping, Bloom, TAA, SSAO, SSR, or Skybox implementation.
+- Point/spot shadows, texture arrays, atlas packing, stable texel snapping, cascade blending, or PCF.
+- Changing the R7 ModelViewer golden image.
+- ECS/Object migration, `SceneEntity` deletion, or multithreaded render proxy command queues.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-06-r9b-shadow-pssm-minimum-path-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Shaders/DepthOnly.hlsl`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Include/Render/Passes/ShadowPass.h`
+- `Render/Private/Passes/ShadowPass.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation RenderGraphValidation RenderSceneValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+build\win_x64_debug\Tests\Debug\PipelineCacheValidation.exe
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|RenderGraphValidation|RenderSceneValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|RenderHonestyValidation|RenderSceneValidation|RenderPassValidation|MaterialSystemValidation|ResourceInstantiationValidation|PipelineCacheValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `PipelineCacheValidation`: 15/15 by direct executable
+  - `RenderPassValidation`: 16/16 by direct executable
+  - Required R9b filtered CTest: 77/77
+  - Broad render regression CTest: 186/186
+  - `git diff --check`: PASS, CRLF warnings only
+- Visual gate: PASS
+  - `ModelViewerSmoke`: PASS
+  - `VisualGoldenValidation`: PASS
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan, code review, and final follow-up review messages
+- Screenshots: `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R7_DX11_320x180.ppm`
+- Golden: `Tests/Golden/ModelViewer/R7_DX11_320x180.ppm`
+- Diffs: failure diff path configured as `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R7_DX11_320x180.diff.ppm`
+
+**Spark plan review result:**
+
+- Verdict: `PASS_WITH_NON_BLOCKING_SUGGESTIONS`
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: documented RenderGraph liveness strategy, backend-sensitive no-pixel-shader fallback contract, and validation command consistency.
+
+**Spark code review result:**
+
+- Verdict: `PASS_WITH_NON_BLOCKING_SUGGESTIONS`
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: added disabled/no-light `ShadowPass` regression coverage before final validation.
+- Non-blocking suggestions deferred: consider a future line-ending policy cleanup for CRLF warnings; add stronger depth-only input layout documentation or assertions when mesh layout variability grows; add direct `SceneRenderer` no-light frame preparation tests once a lightweight renderer harness exists.
+
+**Notes / follow-ups:**
+
+- R9b makes `ShadowPass` a real RenderGraph-declared minimum resource path, but it does not yet feed shadow maps into lighting.
+- The disabled/no-light regression calls `AddToGraph()` directly and verifies no cascade resources or draws are produced; `SceneRenderer` already excludes disabled passes through the R9a pass-chain gate.
+- `ShadowPass` exports cascade depth textures to `ShaderResource` to keep the enabled pass live until the later shadow sampling stage consumes them directly.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R9b commit.
+- Next R9 substage must reread the render-first plan and R9 scope, create/confirm its implementation plan, pass Spark plan review, implement, pass validation including the visual gate, pass Spark code review, update this log, and commit before moving on.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
