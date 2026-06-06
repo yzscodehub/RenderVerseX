@@ -11,7 +11,7 @@ cbuffer ToneMappingConstants : register(b0, space0)
     float Exposure;
     float Gamma;
     float WhitePoint;
-    uint OperatorType;  // 0=Reinhard, 1=ReinhardExt, 2=ACES, 3=Uncharted2, 4=Neutral
+    uint OperatorType;  // 0=Reinhard, 1=ReinhardExt, 2=ACES, 3=Uncharted2, 4=Neutral, other=Pass-through
     float2 TextureSize;
     float2 InvTextureSize;
 };
@@ -120,8 +120,6 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
     // Vertex 0: (-1, -1), Vertex 1: (3, -1), Vertex 2: (-1, 3)
     output.TexCoord = float2((vertexID << 1) & 2, vertexID & 2);
     output.Position = float4(output.TexCoord * 2.0 - 1.0, 0.0, 1.0);
-    output.TexCoord.y = 1.0 - output.TexCoord.y;  // Flip Y for texture coords
-    
     return output;
 }
 

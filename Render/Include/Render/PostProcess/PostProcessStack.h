@@ -271,6 +271,11 @@ namespace RVX
         void Execute(RenderGraph& graph, RGTextureHandle sceneColor, RGTextureHandle output);
 
         /**
+         * @brief Evaluate currently configured effects without adding graph passes
+         */
+        PostProcessStackExecuteStats EvaluateEffects() const;
+
+        /**
          * @brief Get current settings
          */
         PostProcessSettings& GetSettings() { return m_settings; }
@@ -282,6 +287,8 @@ namespace RVX
         const PostProcessStackExecuteStats& GetLastExecuteStats() const { return m_lastExecuteStats; }
 
     private:
+        std::vector<IPostProcessPass*> GatherEnabledEffects(PostProcessStackExecuteStats& stats,
+                                                            bool logUnsupported) const;
         void SortEffects();
 
         IRHIDevice* m_device = nullptr;

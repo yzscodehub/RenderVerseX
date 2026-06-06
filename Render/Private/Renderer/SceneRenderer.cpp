@@ -4,25 +4,51 @@
  */
 
 #include "Render/Renderer/SceneRenderer.h"
-#include "Render/Passes/IRenderPass.h"
+#include "Core/Log.h"
 #include "Render/Passes/DepthPrepass.h"
+#include "Render/Passes/IRenderPass.h"
 #include "Render/Passes/OpaquePass.h"
 #include "Render/Passes/ShadowPass.h"
 #include "Render/Passes/SkyboxPass.h"
 #include "Render/Passes/TransparentPass.h"
+#include "Render/PostProcess/Bloom.h"
+#include "Render/PostProcess/ToneMapping.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/TextureResource.h"
 #include "Renderer/RenderFrameResourceBinder.h"
 #include "Renderer/RenderPassRegistry.h"
 #include "Renderer/RenderProxySceneBridge.h"
 #include "Runtime/Camera/Camera.h"
-#include "Core/Log.h"
 
 #include <algorithm>
 #include <filesystem>
 
 namespace RVX
 {
+namespace
+{
+    PostProcessSettings MakeDefaultRuntimePostProcessSettings()
+    {
+        PostProcessSettings settings;
+        settings.enableToneMapping = true;
+        settings.exposure = 1.0f;
+        settings.gamma = 1.0f;
+        settings.enableBloom = true;
+        settings.bloomIntensity = 0.0f;
+        settings.enableFXAA = false;
+        settings.enableDOF = false;
+        settings.enableMotionBlur = false;
+        settings.enableColorGrading = false;
+        settings.enableVignette = false;
+        settings.enableChromaticAberration = false;
+        settings.enableFilmGrain = false;
+        settings.enableVolumetricLighting = false;
+        settings.enableSSAO = false;
+        settings.enableSSR = false;
+        settings.enableTAA = false;
+        return settings;
+    }
+}
 
 SceneRenderer::SceneRenderer() = default;
 
@@ -150,6 +176,7 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
 
     // Setup default passes (can be customized later)
     SetupDefaultPasses();
+    SetupDefaultPostProcess();
 
     m_initialized = true;
     RVX_CORE_DEBUG("SceneRenderer initialized");
@@ -166,6 +193,13 @@ void SceneRenderer::Shutdown()
     m_shadowPass = nullptr;
     m_transparentPass = nullptr;
     m_skyboxPass = nullptr;
+    m_bloomPostProcess = nullptr;
+    m_toneMappingPostProcess = nullptr;
+    if (m_postProcessStack)
+    {
+        m_postProcessStack->Shutdown();
+        m_postProcessStack.reset();
+    }
     
     if (m_materialSystem)
     {
@@ -306,6 +340,15 @@ void SceneRenderer::BuildMaterialDrawLists()
                                 m_opaqueDrawItems,
                                 m_maskedDrawItems,
                                 m_transparentDrawItems);
+}
+
+void SceneRenderer::ApplyPostProcessSettings(const PostProcessSettings& settings)
+{
+    m_postProcessSettings = settings;
+    if (m_postProcessStack)
+    {
+        m_postProcessStack->ApplySettings(m_postProcessSettings);
+    }
 }
 
 void SceneRenderer::Render()
@@ -551,6 +594,12 @@ void SceneRenderer::BuildRenderGraph()
     // Store RenderGraph and ViewCache pointers in ViewData so passes can access resources
     m_viewData.renderGraph = m_renderGraph.get();
     m_viewData.viewCache = m_resourceViewCache.get();
+    const uint64 postProcessFrameCount = m_postProcessStats.frameCount + 1;
+    m_postProcessStats = {};
+    m_postProcessStats.frameCount = postProcessFrameCount;
+
+    RGTextureHandle backBufferTarget;
+    RGTextureHandle sceneColorTarget;
 
     // Import back buffer from swap chain
     RHISwapChain* swapChain = m_renderContext->GetSwapChain();
@@ -580,9 +629,10 @@ void SceneRenderer::BuildRenderGraph()
             RHIResourceState currentState = m_backBufferStates[backBufferIndex];
             
             // Import with actual current state (Undefined on first use, Present after presentation)
-            m_viewData.colorTarget = m_renderGraph->ImportTexture(backBuffer, currentState);
+            backBufferTarget = m_renderGraph->ImportTexture(backBuffer, currentState);
+            m_viewData.colorTarget = backBufferTarget;
             // Export back to Present state for display
-            m_renderGraph->SetExportState(m_viewData.colorTarget, RHIResourceState::Present);
+            m_renderGraph->SetExportState(backBufferTarget, RHIResourceState::Present);
             
             // After RenderGraph executes, the back buffer will be in Present state
             m_backBufferStates[backBufferIndex] = RHIResourceState::Present;
@@ -597,6 +647,34 @@ void SceneRenderer::BuildRenderGraph()
         m_viewData.depthTarget = m_renderGraph->ImportTexture(
             m_depthTexture.Get(), 
             m_depthBufferState);
+    }
+
+    if (m_postProcessStack)
+    {
+        m_postProcessStats.stackStats = m_postProcessStack->EvaluateEffects();
+    }
+
+    if (backBufferTarget.IsValid() && m_postProcessStats.stackStats.enabledEffectCount > 0)
+    {
+        const RHITextureDesc* backBufferDesc = m_renderGraph->GetTextureDesc(backBufferTarget);
+        if (backBufferDesc)
+        {
+            RHITextureDesc sceneColorDesc = *backBufferDesc;
+            sceneColorDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+            sceneColorDesc.debugName = "SceneColorPostProcessInput";
+
+            sceneColorTarget = m_renderGraph->CreateTexture(sceneColorDesc);
+            m_viewData.colorTarget = sceneColorTarget;
+            m_postProcessStats.sceneColorStagingUsed = true;
+            m_postProcessStats.directToBackBuffer = false;
+            m_postProcessStats.sceneColorWidth = sceneColorDesc.width;
+            m_postProcessStats.sceneColorHeight = sceneColorDesc.height;
+            m_postProcessStats.sceneColorFormat = sceneColorDesc.format;
+        }
+        else
+        {
+            RVX_CORE_WARN("SceneRenderer: post-process requested but back buffer description is unavailable");
+        }
     }
 
     // Register each render pass with the RenderGraph
@@ -649,6 +727,13 @@ void SceneRenderer::BuildRenderGraph()
         pass->AddToGraph(*m_renderGraph, m_viewData);
         m_passChainStats.graphPassCount++;
     }
+
+    if (m_postProcessStats.sceneColorStagingUsed && sceneColorTarget.IsValid() && backBufferTarget.IsValid() &&
+        m_postProcessStack)
+    {
+        m_postProcessStack->Execute(*m_renderGraph, sceneColorTarget, backBufferTarget);
+        m_postProcessStats.stackStats = m_postProcessStack->GetLastExecuteStats();
+    }
 }
 
 void SceneRenderer::AddPass(std::unique_ptr<IRenderPass> pass)
@@ -681,6 +766,33 @@ void SceneRenderer::ClearPasses()
 size_t SceneRenderer::GetPassCount() const
 {
     return m_passRegistry ? m_passRegistry->GetPassCount() : 0;
+}
+
+void SceneRenderer::SetupDefaultPostProcess()
+{
+    if (!m_renderContext || !m_renderContext->GetDevice())
+        return;
+
+    m_postProcessStack = std::make_unique<PostProcessStack>();
+    m_postProcessStack->Initialize(m_renderContext->GetDevice());
+    m_bloomPostProcess = m_postProcessStack->AddEffect<BloomPass>();
+    m_toneMappingPostProcess = m_postProcessStack->AddEffect<ToneMappingPass>();
+
+    if (m_bloomPostProcess)
+    {
+        m_bloomPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
+    }
+
+    if (m_toneMappingPostProcess)
+    {
+        m_toneMappingPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
+    }
+
+    ApplyPostProcessSettings(MakeDefaultRuntimePostProcessSettings());
+    if (m_toneMappingPostProcess)
+    {
+        m_toneMappingPostProcess->SetOperator(ToneMappingOperator::None);
+    }
 }
 
 void SceneRenderer::SetupDefaultPasses()

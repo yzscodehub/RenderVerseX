@@ -15,6 +15,7 @@
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/IRenderPass.h"
 #include "Render/PipelineCache.h"
+#include "Render/PostProcess/PostProcessStack.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderProxy.h"
 
@@ -27,6 +28,7 @@ namespace RVX
 {
     class World;
     class Camera;
+    class BloomPass;
     class IRenderPass;
     class DepthPrepass;
     class OpaquePass;
@@ -34,6 +36,7 @@ namespace RVX
     class RenderProxySceneBridge;
     class ShadowPass;
     class SkyboxPass;
+    class ToneMappingPass;
     class TransparentPass;
 
     enum class SceneRenderCollectionPath : uint8
@@ -62,6 +65,17 @@ namespace RVX
         size_t skippedDisabledPassCount = 0;
         size_t skippedUnsupportedPassCount = 0;
         std::vector<RenderPassStatus> passStatuses;
+    };
+
+    struct SceneRenderPostProcessStats
+    {
+        uint64 frameCount = 0;
+        bool sceneColorStagingUsed = false;
+        bool directToBackBuffer = true;
+        uint32 sceneColorWidth = 0;
+        uint32 sceneColorHeight = 0;
+        RHIFormat sceneColorFormat = RHIFormat::Unknown;
+        PostProcessStackExecuteStats stackStats;
     };
 
     /**
@@ -217,6 +231,20 @@ namespace RVX
         /// Get render pass chain statistics from the last RenderGraph build.
         const SceneRenderPassChainStats& GetPassChainStats() const { return m_passChainStats; }
 
+        /// Get runtime post-process statistics from the last RenderGraph build.
+        const SceneRenderPostProcessStats& GetPostProcessStats() const { return m_postProcessStats; }
+
+        /// Get runtime post-process stack.
+        PostProcessStack* GetPostProcessStack() { return m_postProcessStack.get(); }
+        const PostProcessStack* GetPostProcessStack() const { return m_postProcessStack.get(); }
+
+        /// Apply runtime post-process settings.
+        void ApplyPostProcessSettings(const PostProcessSettings& settings);
+
+        /// Get runtime post-process settings.
+        PostProcessSettings& GetPostProcessSettings() { return m_postProcessSettings; }
+        const PostProcessSettings& GetPostProcessSettings() const { return m_postProcessSettings; }
+
         /// Get draw items for material-aware passes
         const std::vector<RenderDrawItem>& GetOpaqueDrawItems() const { return m_opaqueDrawItems; }
         const std::vector<RenderDrawItem>& GetMaskedDrawItems() const { return m_maskedDrawItems; }
@@ -229,6 +257,7 @@ namespace RVX
         void BuildRenderGraph();
         void BuildMaterialDrawLists();
         void PreparePassesForFrame();
+        void SetupDefaultPostProcess();
         void SetupDefaultPasses();
         void UpdatePassResources();
         void ExecutePasses(RHICommandContext& ctx);
@@ -243,12 +272,15 @@ namespace RVX
         std::unique_ptr<ResourceViewCache> m_resourceViewCache;
         std::unique_ptr<RenderPassRegistry> m_passRegistry;
         std::unique_ptr<RenderProxySceneBridge> m_proxyBridge;
+        std::unique_ptr<PostProcessStack> m_postProcessStack;
         
         ViewData m_viewData;
         RenderScene m_renderScene;
         RenderProxySnapshot m_proxySnapshot;
         SceneRenderCollectionStats m_collectionStats;
         SceneRenderPassChainStats m_passChainStats;
+        SceneRenderPostProcessStats m_postProcessStats;
+        PostProcessSettings m_postProcessSettings;
         std::vector<uint32_t> m_visibleObjectIndices;
         std::vector<RenderDrawItem> m_opaqueDrawItems;
         std::vector<RenderDrawItem> m_maskedDrawItems;
@@ -261,6 +293,8 @@ namespace RVX
         ShadowPass* m_shadowPass = nullptr;  // Cached pointer to shadow pass
         TransparentPass* m_transparentPass = nullptr;  // Cached pointer to transparent pass
         SkyboxPass* m_skyboxPass = nullptr;  // Cached pointer to skybox pass
+        BloomPass* m_bloomPostProcess = nullptr;
+        ToneMappingPass* m_toneMappingPostProcess = nullptr;
         
         // Depth buffer
         RHITextureRef m_depthTexture;

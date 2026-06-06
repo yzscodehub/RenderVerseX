@@ -53,7 +53,6 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
     VSOutput output;
     output.TexCoord = float2((vertexID << 1) & 2, vertexID & 2);
     output.Position = float4(output.TexCoord * 2.0 - 1.0, 0.0, 1.0);
-    output.TexCoord.y = 1.0 - output.TexCoord.y;
     return output;
 }
 

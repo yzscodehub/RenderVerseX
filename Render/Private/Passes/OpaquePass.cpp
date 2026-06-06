@@ -6,6 +6,7 @@
 #include "Render/Passes/OpaquePass.h"
 #include "Core/Log.h"
 #include "Render/GPUResourceManager.h"
+#include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderScene.h"
@@ -128,7 +129,16 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    if (!m_colorTargetView)
+    RHITextureView* colorTargetView = m_colorTargetView;
+    if (view.renderGraph && view.viewCache && m_colorTargetHandle.IsValid())
+    {
+        if (RHITexture* colorTarget = view.renderGraph->GetTexture(m_colorTargetHandle))
+        {
+            colorTargetView = view.viewCache->GetDefaultRTV(colorTarget);
+        }
+    }
+
+    if (!colorTargetView)
     {
         RVX_CORE_WARN("OpaquePass: No color target view set");
         return;
@@ -144,7 +154,7 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
 
     // 1. Begin render pass using builder pattern
     RHIRenderPassDesc rpDesc;
-    rpDesc.AddColorAttachment(m_colorTargetView, RHILoadOp::Clear, RHIStoreOp::Store,
+    rpDesc.AddColorAttachment(colorTargetView, RHILoadOp::Clear, RHIStoreOp::Store,
                               {0.1f, 0.1f, 0.15f, 1.0f});
 
     if (m_depthTargetView)

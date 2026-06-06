@@ -1335,6 +1335,51 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingTh
     EXPECT_EQ(ctx.endRenderPassCount, 2u);
 }
 
+TEST_F(RenderPassValidationFixture, PostProcessStackEvaluateEffectsCountsRuntimeSupportedEffects)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    PostProcessSettings settings;
+    settings.enableBloom = true;
+    settings.enableToneMapping = true;
+
+    PostProcessStack stack;
+    auto* bloom = stack.AddEffect<BloomPass>();
+    auto* toneMapping = stack.AddEffect<ToneMappingPass>();
+    bloom->Configure(settings);
+    toneMapping->Configure(settings);
+    bloom->SetResources(&pipelineCache, &viewCache);
+    toneMapping->SetResources(&pipelineCache, &viewCache);
+
+    const PostProcessStackExecuteStats stats = stack.EvaluateEffects();
+    EXPECT_FALSE(stats.noEffectNoWork);
+    EXPECT_EQ(stats.requestedEffectCount, 2u);
+    EXPECT_EQ(stats.unsupportedSkippedCount, 0u);
+    EXPECT_EQ(stats.enabledEffectCount, 2u);
+    EXPECT_EQ(stats.graphPassCount, 0u);
+    EXPECT_EQ(stats.transientIntermediateCount, 0u);
+}
+
+TEST(RenderPostProcessStackValidation, EvaluateEffectsReportsRequestedButUnsupportedResources)
+{
+    PostProcessSettings settings;
+    settings.enableBloom = true;
+    settings.enableToneMapping = true;
+
+    PostProcessStack stack;
+    auto* bloom = stack.AddEffect<BloomPass>();
+    auto* toneMapping = stack.AddEffect<ToneMappingPass>();
+    bloom->Configure(settings);
+    toneMapping->Configure(settings);
+
+    const PostProcessStackExecuteStats stats = stack.EvaluateEffects();
+    EXPECT_TRUE(stats.noEffectNoWork);
+    EXPECT_EQ(stats.requestedEffectCount, 2u);
+    EXPECT_EQ(stats.unsupportedSkippedCount, 2u);
+    EXPECT_EQ(stats.enabledEffectCount, 0u);
+    EXPECT_EQ(stats.graphPassCount, 0u);
+}
+
 TEST(RenderPostProcessStackValidation, NoSupportedEffectsReportsNoWork)
 {
     FakeDevice device;
@@ -1435,6 +1480,42 @@ TEST_F(RenderPassValidationFixture, OpaquePassBindsOpaqueThenMaskedPipelinesAndD
     EXPECT_EQ(pipelineCache.GetOpaquePipeline(), ctx.pipelineSequence[0]);
     EXPECT_EQ(pipelineCache.GetMaskedPipeline(), ctx.pipelineSequence[1]);
     EXPECT_EQ(2u, ctx.drawIndexedCount);
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassResolvesRenderGraphColorTargetView)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureDesc sceneColorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
+    sceneColorDesc.debugName = "GraphSceneColorForOpaquePass";
+    view.colorTarget = graph.CreateTexture(sceneColorDesc);
+    graph.SetExportState(view.colorTarget, RHIResourceState::RenderTarget);
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+
+    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
+    std::vector<RenderDrawItem> maskedItems;
+
+    OpaquePass pass;
+    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    pass.AddToGraph(graph, view);
+    graph.Compile();
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    ASSERT_FALSE(ctx.renderPasses.empty());
+    ASSERT_GT(ctx.renderPasses[0].colorAttachmentCount, 0u);
+    RHITextureView* resolvedView = ctx.renderPasses[0].colorAttachments[0].view;
+    ASSERT_NE(resolvedView, nullptr);
+    EXPECT_NE(resolvedView, colorView.Get());
+    EXPECT_NE(resolvedView->GetTexture(), colorTexture.Get());
 }
 
 TEST_F(RenderPassValidationFixture, OpaquePassSkipsMaskedItemsWhenMaskedPipelineIsMissing)

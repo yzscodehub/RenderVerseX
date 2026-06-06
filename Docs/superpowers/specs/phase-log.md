@@ -2081,6 +2081,111 @@ git diff --check
 
 ---
 
+### R9g: SceneRenderer PostProcess Runtime Integration
+
+**Date:** 2026-06-06
+**Commit:** pending
+**Spark plan review agent:** Popper (`019e9db5-178f-7633-ac79-4f8b4d129e10`)
+**Spark code review agent:** Kant (`019e9dbc-25c0-7c12-97ad-aff6d552a083`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: R9 shading/post-process path (`ToneMapping`, `Bloom/TAA`, IBL, declared pass chain, ModelViewer visual gate)
+- Stage plan: `Docs/superpowers/specs/2026-06-06-r9g-scene-renderer-postprocess-runtime-integration-plan.md`
+- Lines checked: R9 section and prior R9e/R9f phase-log notes before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R9f IBL-Approx Ambient Minimum Path
+- Evidence: R9f implementation and log-correction commits are present; R9f narrow and broad render/resource validations passed.
+
+**Approved scope:**
+
+- Add a runtime `PostProcessStack` owned by `SceneRenderer`.
+- Register supported runtime post-process effects (`BloomPass`, `ToneMappingPass`) with real `PipelineCache` and `ResourceViewCache` resources.
+- Evaluate requested/supported/enabled effects before building the graph and expose runtime post-process stats.
+- When at least one requested, supported, enabled effect exists, render scene passes into a transient scene-color staging target and execute the post-process stack into the imported backbuffer.
+- Preserve backbuffer import/export to `Present`.
+- Resolve graph-owned color targets inside `OpaquePass`, `TransparentPass`, and `SkyboxPass` execution so declared RenderGraph writes match actual render target views.
+- Keep the default visual baseline pass-through: bloom is requested with intensity `0.0`, tone mapping is requested with `ToneMappingOperator::None`.
+- Add R9g tests for effect evaluation, unsupported resource accounting, and graph RTV resolution.
+
+**Out of scope:**
+
+- Full post-process settings UI or editor integration.
+- TAA, FXAA, SSR, SSAO, motion blur, DOF, color grading, vignette, chromatic aberration, film grain, or volumetric lighting runtime implementation.
+- Full cubemap IBL or skybox draw integration.
+- Deleting legacy render paths.
+- Rebaseline of ModelViewer golden images.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-06-r9g-scene-renderer-postprocess-runtime-integration-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Include/Render/PostProcess/PostProcessStack.h`
+- `Render/Private/PostProcess/PostProcessStack.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Passes/TransparentPass.cpp`
+- `Render/Private/Passes/SkyboxPass.cpp`
+- `Render/Shaders/PostProcess/Bloom.hlsl`
+- `Render/Shaders/PostProcess/ToneMapping.hlsl`
+- `Tests/RenderPassValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderPassValidation RenderGraphValidation PipelineCacheValidation RenderSceneValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderPassValidation|RenderGraphValidation|PipelineCacheValidation|RenderSceneValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "ClusteredLightingValidation|RenderGraphValidation|RenderHonestyValidation|RenderSceneValidation|RenderPassValidation|MaterialSystemValidation|ResourceInstantiationValidation|PipelineCacheValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+git diff --check
+cmake --build build/win_x64_debug --config Debug --target RenderPassValidation ModelViewer
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "RenderPassValidation|ModelViewerSmoke|VisualGoldenValidation"
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `RenderPassValidation`: 28/28 by direct executable
+  - Required R9g filtered CTest: 96/96
+  - Broad render/resource regression CTest: 215/215
+  - Final quick regression after include-order cleanup: 23/23
+  - `git diff --check`: PASS, with only Git CRLF warnings
+- Visual gate: PASS
+  - `ModelViewerSmoke`: PASS
+  - `VisualGoldenValidation`: PASS
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan review and Spark code review messages
+- Plan: `Docs/superpowers/specs/2026-06-06-r9g-scene-renderer-postprocess-runtime-integration-plan.md`
+- Screenshots/golden: unchanged default visual gate path from ModelViewer smoke/golden validation
+
+**Spark plan review result:**
+
+- Verdict: `PASS`
+- Blockers resolved: clarified scene-color staging vs stack transient intermediates, default enabled-effect semantics, runtime stats, Present export preservation, and fallback/direct behavior.
+
+**Spark code review result:**
+
+- Verdict: `PASS_WITH_NON_BLOCKING_SUGGESTIONS`
+- Blockers resolved: N/A
+- Commit readiness: yes
+- Non-blocking suggestions retained for a later test-hardening pass: SceneRenderer-level staging/direct branch regression tests, Transparent/Skybox graph RTV fallback tests, and additional EvaluateEffects semantics tests.
+
+**Notes / follow-ups:**
+
+- R9g connects the already implemented Bloom/ToneMapping passes into the runtime SceneRenderer graph without changing the visual golden baseline.
+- `SceneRenderer` now has observable post-process stats, including scene-color staging, direct-to-backbuffer state, and stack requested/enabled/unsupported counters.
+- `OpaquePass`, `TransparentPass`, and `SkyboxPass` now use RenderGraph-resolved RTVs during execution when graph handles are active; this prevents scene-color staging from remaining black.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R9g commit.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

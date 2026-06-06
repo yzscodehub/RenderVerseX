@@ -61,26 +61,27 @@ void PostProcessStack::ApplySettings(const PostProcessSettings& settings)
     }
 }
 
-void PostProcessStack::Execute(RenderGraph& graph, RGTextureHandle sceneColor, RGTextureHandle output)
+std::vector<IPostProcessPass*> PostProcessStack::GatherEnabledEffects(PostProcessStackExecuteStats& stats,
+                                                                      bool logUnsupported) const
 {
-    m_lastExecuteStats = {};
-
-    // Count enabled effects
     std::vector<IPostProcessPass*> enabledEffects;
-    for (auto& effect : m_effects)
+    for (const auto& effect : m_effects)
     {
         if (effect->IsRequestedEnabled())
         {
-            m_lastExecuteStats.requestedEffectCount++;
+            stats.requestedEffectCount++;
         }
 
         if (effect->IsRequestedEnabled() && !effect->IsSupported())
         {
-            m_lastExecuteStats.unsupportedSkippedCount++;
-            RVX_CORE_WARN(
-                "PostProcessStack: Skipping unsupported effect '{}': {}",
-                effect->GetName(),
-                effect->GetUnsupportedReason());
+            stats.unsupportedSkippedCount++;
+            if (logUnsupported)
+            {
+                RVX_CORE_WARN(
+                    "PostProcessStack: Skipping unsupported effect '{}': {}",
+                    effect->GetName(),
+                    effect->GetUnsupportedReason());
+            }
         }
 
         if (effect->IsEnabled())
@@ -88,7 +89,28 @@ void PostProcessStack::Execute(RenderGraph& graph, RGTextureHandle sceneColor, R
             enabledEffects.push_back(effect.get());
         }
     }
-    m_lastExecuteStats.enabledEffectCount = static_cast<uint32>(enabledEffects.size());
+    stats.enabledEffectCount = static_cast<uint32>(enabledEffects.size());
+
+    if (enabledEffects.empty())
+    {
+        stats.noEffectNoWork = true;
+    }
+
+    return enabledEffects;
+}
+
+PostProcessStackExecuteStats PostProcessStack::EvaluateEffects() const
+{
+    PostProcessStackExecuteStats stats;
+    (void)GatherEnabledEffects(stats, false);
+    return stats;
+}
+
+void PostProcessStack::Execute(RenderGraph& graph, RGTextureHandle sceneColor, RGTextureHandle output)
+{
+    m_lastExecuteStats = {};
+
+    std::vector<IPostProcessPass*> enabledEffects = GatherEnabledEffects(m_lastExecuteStats, true);
 
     if (enabledEffects.empty())
     {

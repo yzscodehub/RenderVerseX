@@ -4,15 +4,16 @@
  */
 
 #include "Render/Passes/TransparentPass.h"
-#include "Render/Material/MaterialSystem.h"
-#include "Render/Renderer/ViewData.h"
-#include "Render/Renderer/RenderScene.h"
-#include "Render/Renderer/RenderDrawItem.h"
+#include "Core/Log.h"
 #include "Render/GPUResourceManager.h"
+#include "Render/Graph/ResourceViewCache.h"
+#include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
+#include "Render/Renderer/RenderDrawItem.h"
+#include "Render/Renderer/RenderScene.h"
+#include "Render/Renderer/ViewData.h"
 #include "Resource/Types/MaterialResource.h"
 #include "RHI/RHIRenderPass.h"
-#include "Core/Log.h"
 
 namespace RVX
 {
@@ -81,14 +82,23 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    if (!m_colorTargetView)
+    RHITextureView* colorTargetView = m_colorTargetView;
+    if (view.renderGraph && view.viewCache && m_colorTargetHandle.IsValid())
+    {
+        if (RHITexture* colorTarget = view.renderGraph->GetTexture(m_colorTargetHandle))
+        {
+            colorTargetView = view.viewCache->GetDefaultRTV(colorTarget);
+        }
+    }
+
+    if (!colorTargetView)
     {
         return;
     }
 
     // Begin render pass with alpha blending
     RHIRenderPassDesc rpDesc;
-    rpDesc.AddColorAttachment(m_colorTargetView, RHILoadOp::Load, RHIStoreOp::Store,
+    rpDesc.AddColorAttachment(colorTargetView, RHILoadOp::Load, RHIStoreOp::Store,
                               {0.0f, 0.0f, 0.0f, 0.0f});  // Load existing content
 
     if (m_depthTargetView)
