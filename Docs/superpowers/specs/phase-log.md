@@ -1776,7 +1776,7 @@ git diff --check
 ### R-SP: `R9d - ToneMapping Fullscreen Minimum Path`
 
 **Date:** 2026-06-06
-**Commit:** pending in R9d stage commit
+**Commit:** `336e55d`
 **Spark plan review agent:** Mendel (`019e9d4c-0ce8-72f1-8749-5221ed699028`)
 **Spark code review agents:** Huygens (`019e9d61-8bf8-7502-a19b-9f8c5df944f8`), Hume (`019e9d6a-ee75-7d62-880d-e2404e209f02`)
 
