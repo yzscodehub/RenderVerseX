@@ -1143,7 +1143,7 @@ git diff --check
 ### R6a: RenderGraph Lifetime and Hazard Validation
 
 **Date:** 2026-06-06
-**Commit:** pending; record after commit
+**Commit:** `c5985c2`
 **Spark plan review agent:** `019e9ab1-3b1f-7501-bef4-a52b0c6510de`
 **Spark code review agent:** `019e9ab8-846b-7490-9da7-9e33b0d8eabd`
 
