@@ -1051,7 +1051,7 @@ git diff --check
 ### R5b-2: Material Binding Status
 
 **Date:** 2026-06-06
-**Commit:** pending; record after commit
+**Commit:** `22e850b`
 **Spark plan review agent:** `019e9a9f-2018-7333-826f-39b925787d6a`
 **Spark code review agent:** `019e9aa8-20ff-7e02-a9df-fd1843d0483c`
 
