@@ -174,14 +174,16 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
             const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
             const Resource::MaterialResource* materialResource =
                 item.materialResource ? item.materialResource : ResolveMaterialResource(obj, item.submeshIndex);
-            m_materialSystem->UpdateMaterialConstants(materialResource, view.viewCache);
-
-            RHIDescriptorSet* materialSet = m_materialSystem->GetOrCreateMaterialSet(materialResource, view.viewCache);
-            if (materialSet)
+            const MaterialBindingResult materialBinding =
+                m_materialSystem->PrepareMaterialBinding(materialResource, view.viewCache);
+            if (!materialBinding.IsDrawable())
             {
-                const auto materialDynamicOffsets = m_materialSystem->GetCurrentMaterialDynamicOffset();
-                ctx.SetDescriptorSet(2, materialSet, materialDynamicOffsets);
+                RVX_CORE_WARN("TransparentPass: Skipping draw item because material binding failed: {}",
+                              materialBinding.message);
+                continue;
             }
+
+            ctx.SetDescriptorSet(2, materialBinding.descriptorSet, materialBinding.dynamicOffsets);
 
             ctx.DrawIndexed(submesh.indexCount, 1,
                             submesh.indexOffset, submesh.baseVertex, 0);

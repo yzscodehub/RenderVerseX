@@ -303,6 +303,9 @@ namespace
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) override
         {
             ++createdDescriptorSetCount;
+            if (failDescriptorSetCreation)
+                return nullptr;
+
             return RHIDescriptorSetRef(new FakeDescriptorSet(desc));
         }
 
@@ -386,6 +389,7 @@ namespace
         uint32 createdFenceCount = 0;
         uint32 waitIdleCount = 0;
         bool failBufferCreation = false;
+        bool failDescriptorSetCreation = false;
         bool bufferMapSucceeds = true;
         RHICommandQueueType lastCommandQueueType = RHICommandQueueType::Graphics;
         FakeCommandContext* lastCommandContext = nullptr;
@@ -439,6 +443,19 @@ namespace
         materialResource.SetName("TestMaterialResource");
         materialResource.SetMaterialData(std::make_shared<Material>());
         materialResource.SetTexture("albedo", albedo);
+    }
+
+    void ConfigureMaterialWithAllTextures(Resource::MaterialResource& materialResource,
+                                          const Resource::TextureHandle& texture)
+    {
+        materialResource.SetId(202);
+        materialResource.SetName("FullyTexturedMaterialResource");
+        materialResource.SetMaterialData(std::make_shared<Material>());
+        materialResource.SetTexture("albedo", texture);
+        materialResource.SetTexture("normal", texture);
+        materialResource.SetTexture("metallic_roughness", texture);
+        materialResource.SetTexture("ao", texture);
+        materialResource.SetTexture("emissive", texture);
     }
 
     const RHIDescriptorBinding* FindBinding(const RHIDescriptorSet* descriptorSet, uint32 binding)
@@ -702,6 +719,198 @@ namespace
             EXPECT_TRUE(Contains(binder.GetLastBindMessage(), "map material constant buffer"));
 
             binder.Shutdown();
+        }
+    }
+
+    TEST(MaterialSystemValidation, MaterialBindingReportsNotInitialized)
+    {
+        MaterialSystem materialSystem;
+
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(nullptr, nullptr);
+
+        EXPECT_EQ(MaterialBindingStatus::NotInitialized, result.status);
+        EXPECT_FALSE(result.IsDrawable());
+        EXPECT_TRUE(result.IsError());
+        EXPECT_TRUE(Contains(result.message, "not initialized"));
+        EXPECT_EQ(MaterialBindingStatus::NotInitialized, materialSystem.GetLastBindingResult().status);
+    }
+
+    TEST(MaterialSystemValidation, MaterialBindingMapFailureIsVisibleError)
+    {
+        FakeDevice device;
+        device.bufferMapSucceeds = false;
+
+        GPUResourceManager gpuResources;
+        gpuResources.Initialize(&device);
+
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(nullptr, nullptr);
+
+        EXPECT_EQ(MaterialBindingStatus::Error, result.status);
+        EXPECT_FALSE(result.IsDrawable());
+        EXPECT_FALSE(result.constantsUpdated);
+        EXPECT_TRUE(result.usedFallback);
+        EXPECT_TRUE(Contains(result.message, "map material constant buffer"));
+        EXPECT_EQ(MaterialBindingStatus::Error, materialSystem.GetLastBindingResult().status);
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation, MaterialBindingDescriptorFailureUsesExplicitDefaultFallback)
+    {
+        FakeDevice device;
+        GPUResourceManager gpuResources;
+        gpuResources.Initialize(&device);
+
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+
+        device.failDescriptorSetCreation = true;
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(nullptr, nullptr);
+
+        EXPECT_EQ(MaterialBindingStatus::Fallback, result.status);
+        EXPECT_TRUE(result.IsDrawable());
+        EXPECT_TRUE(result.constantsUpdated);
+        EXPECT_TRUE(result.usedFallback);
+        EXPECT_EQ(materialSystem.GetDefaultMaterialSet(), result.descriptorSet);
+        EXPECT_TRUE(Contains(result.message, "default material set"));
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation, MaterialBindingNullMaterialUsesExplicitFallback)
+    {
+        FakeDevice device;
+        GPUResourceManager gpuResources;
+        gpuResources.Initialize(&device);
+
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(nullptr, nullptr);
+
+        EXPECT_EQ(MaterialBindingStatus::Fallback, result.status);
+        EXPECT_TRUE(result.IsDrawable());
+        EXPECT_TRUE(result.usedFallback);
+        EXPECT_TRUE(Contains(result.message, "fallback"));
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation, MaterialBindingResidentTexturesAreReady)
+    {
+        FakeDevice device;
+        GPUResourceManager gpuResources;
+        gpuResources.Initialize(&device);
+
+        ResourceViewCache viewCache;
+        viewCache.Initialize(&device);
+
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+
+        auto texture = CreateTextureResource(306);
+        Resource::MaterialResource materialResource;
+        ConfigureMaterialWithAllTextures(materialResource, texture);
+
+        gpuResources.UploadImmediate(texture.Get());
+        ASSERT_TRUE(gpuResources.IsGPUReady(texture.GetId()));
+
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(&materialResource, &viewCache);
+
+        EXPECT_EQ(MaterialBindingStatus::Ready, result.status);
+        EXPECT_TRUE(result.IsDrawable());
+        EXPECT_TRUE(result.constantsUpdated);
+        EXPECT_FALSE(result.usedFallback);
+        EXPECT_NE(materialSystem.GetDefaultMaterialSet(), result.descriptorSet);
+        EXPECT_TRUE(Contains(result.message, "ready"));
+
+        materialSystem.Shutdown();
+        viewCache.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation, MaterialBindingNonResidentTextureReportsFallback)
+    {
+        FakeDevice device;
+        GPUResourceManager gpuResources;
+        gpuResources.Initialize(&device);
+
+        ResourceViewCache viewCache;
+        viewCache.Initialize(&device);
+
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+
+        auto texture = CreateTextureResource(307);
+        Resource::MaterialResource materialResource;
+        ConfigureMaterialWithAlbedo(materialResource, texture);
+
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(&materialResource, &viewCache);
+
+        EXPECT_EQ(MaterialBindingStatus::Fallback, result.status);
+        EXPECT_TRUE(result.IsDrawable());
+        EXPECT_TRUE(result.usedFallback);
+        EXPECT_TRUE(Contains(result.message, "fallback"));
+
+        materialSystem.Shutdown();
+        viewCache.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation, UpdateMaterialConstantsReportsFallbackSuccessAndErrorFailure)
+    {
+        {
+            FakeDevice device;
+            GPUResourceManager gpuResources;
+            gpuResources.Initialize(&device);
+
+            FakeDescriptorSetLayout materialLayout;
+            MaterialSystem materialSystem;
+            ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+
+            EXPECT_TRUE(materialSystem.UpdateMaterialConstants(nullptr, nullptr));
+            EXPECT_EQ(MaterialBindingStatus::Fallback, materialSystem.GetLastBindingResult().status);
+            EXPECT_TRUE(materialSystem.GetLastBindingResult().constantsUpdated);
+
+            materialSystem.Shutdown();
+            gpuResources.Shutdown();
+        }
+
+        {
+            FakeDevice device;
+            device.bufferMapSucceeds = false;
+
+            GPUResourceManager gpuResources;
+            gpuResources.Initialize(&device);
+
+            FakeDescriptorSetLayout materialLayout;
+            MaterialSystem materialSystem;
+            ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+
+            EXPECT_FALSE(materialSystem.UpdateMaterialConstants(nullptr, nullptr));
+            EXPECT_EQ(MaterialBindingStatus::Error, materialSystem.GetLastBindingResult().status);
+            EXPECT_FALSE(materialSystem.GetLastBindingResult().constantsUpdated);
+
+            materialSystem.Shutdown();
+            gpuResources.Shutdown();
+        }
+
+        {
+            MaterialSystem materialSystem;
+
+            EXPECT_FALSE(materialSystem.UpdateMaterialConstants(nullptr, nullptr));
+            EXPECT_EQ(MaterialBindingStatus::NotInitialized, materialSystem.GetLastBindingResult().status);
         }
     }
 

@@ -1048,6 +1048,98 @@ git diff --check
 
 ---
 
+### R5b-2: Material Binding Status
+
+**Date:** 2026-06-06
+**Commit:** pending; record after commit
+**Spark plan review agent:** `019e9a9f-2018-7333-826f-39b925787d6a`
+**Spark code review agent:** `019e9aa8-20ff-7e02-a9df-fd1843d0483c`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-05-30-engine-program-plan-v2.md`
+- Section: R5b material draw contract, narrowed by R5b-1 follow-up notes
+- Stage plan: `Docs/superpowers/specs/2026-06-06-r5b-2-material-binding-status-plan.md`
+- Lines checked: current document text was reread before implementation; stage scope was limited to material binding status/result semantics and pass draw gating.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R5b-1
+- Evidence: R5b-1 commit `48c6d2b` plus log correction `200014a`; R5b-1 noted `MaterialSystem::UpdateMaterialConstants()` and descriptor fallback result semantics as the next sub-stage.
+
+**Approved scope:**
+
+- Add structured `MaterialBindingStatus` and `MaterialBindingResult`.
+- Add `MaterialSystem::PrepareMaterialBinding()` as the atomic constants + descriptor + dynamic-offset contract.
+- Make initialization failure, missing constant buffer, map failure, descriptor creation failure, and explicit fallback visible through status/message.
+- Keep `UpdateMaterialConstants()` and `GetOrCreateMaterialSet()` compatibility while wiring them to observable last-result state.
+- Change `OpaquePass` and `TransparentPass` to draw only when material binding is `Ready` or explicit `Fallback`.
+- Add validation for error skip, fallback draw, and compatibility return semantics.
+
+**Out of scope:**
+
+- Further material shader feature work.
+- RenderGraph or pass scheduling changes.
+- RenderProxy work.
+- ECS/Object/SceneEntity migration.
+- Visual golden or final ModelViewer validation.
+
+**Files changed:**
+
+- `Render/Include/Render/Material/MaterialSystem.h`
+- `Render/Private/Material/MaterialSystem.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Passes/TransparentPass.cpp`
+- `Tests/MaterialSystemValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Docs/superpowers/specs/2026-06-06-r5b-2-material-binding-status-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target MaterialSystemValidation RenderPassValidation
+build\win_x64_debug\Tests\Debug\MaterialSystemValidation.exe
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe
+cmake --build build/win_x64_debug --config Debug --target MaterialSystemValidation RenderPassValidation RenderSceneValidation RenderHonestyValidation PipelineCacheValidation DX12Validation VulkanValidation
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "MaterialSystemValidation|RenderPassValidation|RenderSceneValidation|RenderHonestyValidation|PipelineCacheValidation|DX12Validation|VulkanValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `MaterialSystemValidation`: 18/18
+  - `RenderPassValidation`: 8/8
+  - Required + optional filtered CTest: 106/106
+- Visual gate: N/A
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan and final code review messages
+- Screenshots: N/A
+- Diffs: R5b-2 working tree diff before commit
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: plan adopted explicit `NotInitialized`/`Unavailable` semantics, pass error/fallback test coverage, and compatibility risk notes.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: added fallback-draw pass regressions and `UpdateMaterialConstants()` true/false compatibility semantics tests before final review.
+
+**Notes / follow-ups:**
+
+- `git diff --check` reports only LF-to-CRLF warnings for touched files, no whitespace errors.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R5b-2 commit.
+- Next stage must reread the render-first plan and the next documented stage scope, create/confirm its implementation plan, pass Spark plan review, implement, pass validation, pass Spark code review, update this log, and commit before moving on.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

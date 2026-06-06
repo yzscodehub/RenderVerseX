@@ -3,6 +3,7 @@
 #include "Render/Material/MaterialClassification.h"
 #include "RHI/RHI.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <filesystem>
@@ -21,7 +22,9 @@
 #include "Render/Passes/TransparentPass.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
+#include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MeshResource.h"
+#include "Resource/Types/TextureResource.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
 #include "RHI/RHIUpload.h"
@@ -58,9 +61,10 @@ namespace
     class FakeBuffer final : public RHIBuffer
     {
     public:
-        explicit FakeBuffer(const RHIBufferDesc& desc)
+        explicit FakeBuffer(const RHIBufferDesc& desc, bool mapSucceeds = true)
             : m_desc(desc)
             , m_storage(static_cast<size_t>(desc.size))
+            , m_mapSucceeds(mapSucceeds)
         {
         }
 
@@ -69,7 +73,7 @@ namespace
         RHIMemoryType GetMemoryType() const override { return m_desc.memoryType; }
         uint32 GetStride() const override { return m_desc.stride; }
 
-        void* Map() override { return m_storage.empty() ? nullptr : m_storage.data(); }
+        void* Map() override { return !m_mapSucceeds || m_storage.empty() ? nullptr : m_storage.data(); }
         void Unmap() override {}
 
         const std::vector<uint8>& GetStorage() const { return m_storage; }
@@ -77,6 +81,7 @@ namespace
     private:
         RHIBufferDesc m_desc;
         std::vector<uint8> m_storage;
+        bool m_mapSucceeds = true;
     };
 
     class FakeTexture final : public RHITexture
@@ -314,7 +319,7 @@ namespace
     public:
         RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
         {
-            return RHIBufferRef(new FakeBuffer(desc));
+            return RHIBufferRef(new FakeBuffer(desc, bufferMapSucceeds));
         }
 
         RHITextureRef CreateTexture(const RHITextureDesc& desc) override
@@ -427,6 +432,8 @@ namespace
         const RHICapabilities& GetCapabilities() const override { return m_capabilities; }
         RHIBackendType GetBackendType() const override { return RHIBackendType::DX12; }
 
+        bool bufferMapSucceeds = true;
+
     private:
         uint64 m_nextFenceValue = 1;
         std::vector<RHIFenceRef> m_fences;
@@ -464,6 +471,31 @@ namespace
         return item;
     }
 
+    Resource::TextureHandle CreateTextureResource(Resource::ResourceId id)
+    {
+        auto* texture = new Resource::TextureResource();
+        texture->SetId(id);
+        texture->SetName("RenderPassTexture");
+
+        Resource::TextureMetadata metadata;
+        metadata.width = 1;
+        metadata.height = 1;
+        metadata.format = Resource::TextureFormat::RGBA8;
+        metadata.isSRGB = false;
+
+        texture->SetData({255, 255, 255, 255}, metadata);
+        return Resource::TextureHandle(texture);
+    }
+
+    void ConfigureMaterialWithAlbedo(Resource::MaterialResource& materialResource,
+                                     const Resource::TextureHandle& albedo)
+    {
+        materialResource.SetId(501);
+        materialResource.SetName("RenderPassFallbackMaterial");
+        materialResource.SetMaterialData(std::make_shared<Material>());
+        materialResource.SetTexture("albedo", albedo);
+    }
+
     class RenderPassValidationFixture : public ::testing::Test
     {
     protected:
@@ -477,13 +509,17 @@ namespace
             Log::Shutdown();
         }
 
-        void SetUp() override
+        void SetUp() override {}
+
+        void Initialize(bool bufferMapSucceeds = true)
         {
             const fs::path shaderDir = FindShaderDirectory();
             if (shaderDir.empty())
             {
                 GTEST_SKIP() << "Render/Shaders directory not found";
             }
+
+            device.bufferMapSucceeds = bufferMapSucceeds;
 
             ASSERT_TRUE(pipelineCache.Initialize(&device, shaderDir.string())) << pipelineCache.GetLastError();
 
@@ -523,6 +559,8 @@ namespace
 
 TEST_F(RenderPassValidationFixture, OpaquePassBindsOpaqueThenMaskedPipelinesAndDrawsBothGroups)
 {
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
     std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
     std::vector<RenderDrawItem> maskedItems = {MakeDrawItem(MaterialRenderMode::Masked)};
 
@@ -542,6 +580,8 @@ TEST_F(RenderPassValidationFixture, OpaquePassBindsOpaqueThenMaskedPipelinesAndD
 
 TEST_F(RenderPassValidationFixture, OpaquePassSkipsMaskedItemsWhenMaskedPipelineIsMissing)
 {
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
     ASSERT_TRUE(pipelineCache.GetMaskedPipeline());
     pipelineCache.m_maskedPipeline.Reset();
 
@@ -563,6 +603,8 @@ TEST_F(RenderPassValidationFixture, OpaquePassSkipsMaskedItemsWhenMaskedPipeline
 
 TEST_F(RenderPassValidationFixture, OpaquePassSkipsOpaqueItemsWhenOpaquePipelineIsMissing)
 {
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
     ASSERT_TRUE(pipelineCache.GetOpaquePipeline());
     pipelineCache.m_opaquePipeline.Reset();
 
@@ -584,6 +626,8 @@ TEST_F(RenderPassValidationFixture, OpaquePassSkipsOpaqueItemsWhenOpaquePipeline
 
 TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
 {
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
     std::vector<RenderDrawItem> transparentItems = {MakeDrawItem(MaterialRenderMode::Transparent)};
 
     TransparentPass pass;
@@ -599,3 +643,100 @@ TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
     EXPECT_EQ(1u, ctx.drawIndexedCount);
 }
 
+TEST_F(RenderPassValidationFixture, OpaquePassSkipsDrawWhenMaterialBindingErrors)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+
+    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
+    std::vector<RenderDrawItem> maskedItems;
+
+    OpaquePass pass;
+    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(MaterialBindingStatus::Error, materialSystem.GetLastBindingResult().status);
+    EXPECT_FALSE(materialSystem.GetLastBindingResult().IsDrawable());
+    EXPECT_FALSE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
+                             [](uint32 set) { return set == 2; }));
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassDrawsWhenMaterialBindingUsesFallback)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    Resource::TextureHandle missingTexture = CreateTextureResource(502);
+    Resource::MaterialResource materialResource;
+    ConfigureMaterialWithAlbedo(materialResource, missingTexture);
+
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
+    item.materialResource = &materialResource;
+    std::vector<RenderDrawItem> opaqueItems = {item};
+    std::vector<RenderDrawItem> maskedItems;
+
+    OpaquePass pass;
+    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(1u, ctx.drawIndexedCount);
+    EXPECT_EQ(MaterialBindingStatus::Fallback, materialSystem.GetLastBindingResult().status);
+    EXPECT_TRUE(materialSystem.GetLastBindingResult().IsDrawable());
+    EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
+                            [](uint32 set) { return set == 2; }));
+}
+
+TEST_F(RenderPassValidationFixture, TransparentPassSkipsDrawWhenMaterialBindingErrors)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+
+    std::vector<RenderDrawItem> transparentItems = {MakeDrawItem(MaterialRenderMode::Transparent)};
+
+    TransparentPass pass;
+    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
+    pass.SetRenderScene(&scene, &transparentItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(MaterialBindingStatus::Error, materialSystem.GetLastBindingResult().status);
+    EXPECT_FALSE(materialSystem.GetLastBindingResult().IsDrawable());
+    EXPECT_FALSE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
+                             [](uint32 set) { return set == 2; }));
+}
+
+TEST_F(RenderPassValidationFixture, TransparentPassDrawsWhenMaterialBindingUsesFallback)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    Resource::TextureHandle missingTexture = CreateTextureResource(503);
+    Resource::MaterialResource materialResource;
+    ConfigureMaterialWithAlbedo(materialResource, missingTexture);
+
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Transparent);
+    item.materialResource = &materialResource;
+    std::vector<RenderDrawItem> transparentItems = {item};
+
+    TransparentPass pass;
+    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
+    pass.SetRenderScene(&scene, &transparentItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(1u, ctx.drawIndexedCount);
+    EXPECT_EQ(MaterialBindingStatus::Fallback, materialSystem.GetLastBindingResult().status);
+    EXPECT_TRUE(materialSystem.GetLastBindingResult().IsDrawable());
+    EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
+                            [](uint32 set) { return set == 2; }));
+}
