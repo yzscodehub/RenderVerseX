@@ -328,7 +328,6 @@ TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDis
     settings.enableFilmGrain = true;
     settings.enableVolumetricLighting = true;
 
-    RVX::BloomPass bloom;
     RVX::FXAAPass fxaa;
     RVX::ColorGradingPass colorGrading;
     RVX::DOFPass dof;
@@ -339,7 +338,6 @@ TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDis
     RVX::VolumetricLightingPass volumetricLighting;
 
     RVX::IPostProcessPass* passes[] = {
-        &bloom,
         &fxaa,
         &colorGrading,
         &dof,
@@ -358,6 +356,20 @@ TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDis
         EXPECT_FALSE(pass->IsEnabled()) << pass->GetName();
         EXPECT_FALSE(pass->GetUnsupportedReason().empty()) << pass->GetName();
     }
+}
+
+TEST_F(RenderHonestyValidationFixture, BloomRequiresResourcesBeforeSupported)
+{
+    RVX::PostProcessSettings settings;
+    settings.enableBloom = true;
+
+    RVX::BloomPass bloom;
+    bloom.Configure(settings);
+
+    EXPECT_TRUE(bloom.IsRequestedEnabled());
+    EXPECT_FALSE(bloom.IsSupported());
+    EXPECT_FALSE(bloom.IsEnabled());
+    EXPECT_FALSE(bloom.GetUnsupportedReason().empty());
 }
 
 TEST_F(RenderHonestyValidationFixture, ToneMappingRequiresResourcesBeforeSupported)

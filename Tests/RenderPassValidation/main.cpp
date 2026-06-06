@@ -28,6 +28,7 @@
 #include "Render/Passes/ShadowPass.h"
 #include "Render/Passes/SkyboxPass.h"
 #include "Render/Passes/TransparentPass.h"
+#include "Render/PostProcess/Bloom.h"
 #include "Render/PostProcess/PostProcessStack.h"
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/Renderer/RenderScene.h"
@@ -1121,6 +1122,217 @@ TEST_F(RenderPassValidationFixture, ToneMappingSkipsDrawWhenConstantsCannotMap)
 
     EXPECT_EQ(ctx.drawCount, 0u);
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
+}
+
+TEST_F(RenderPassValidationFixture, BloomRequiresResourcesBeforeReportingSupported)
+{
+    BloomPass pass;
+    PostProcessSettings settings;
+    settings.enableBloom = true;
+    pass.Configure(settings);
+
+    EXPECT_TRUE(pass.IsRequestedEnabled());
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_FALSE(pass.IsEnabled());
+    EXPECT_FALSE(pass.GetUnsupportedReason().empty());
+}
+
+TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTriangle)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    BloomPass pass;
+    PostProcessSettings settings;
+    settings.enableBloom = true;
+    settings.bloomThreshold = 1.1f;
+    settings.bloomIntensity = 0.75f;
+    settings.bloomRadius = 1.5f;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    ASSERT_TRUE(pass.IsEnabled());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.compileValid);
+    EXPECT_EQ(stats.totalPasses, 1u);
+    EXPECT_EQ(stats.culledPasses, 0u);
+    EXPECT_EQ(stats.emptyPassUsageCount, 0u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.beginRenderPassCount, 1u);
+    EXPECT_EQ(ctx.endRenderPassCount, 1u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetBloomPipeline());
+    ASSERT_EQ(ctx.descriptorSetSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.descriptorSetSequence[0], 0u);
+    EXPECT_EQ(ctx.drawCount, 1u);
+    EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
+    EXPECT_EQ(ctx.drawIndexedCount, 0u);
+
+    ASSERT_EQ(ctx.renderPasses.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.renderPasses[0].colorAttachmentCount, 1u);
+    EXPECT_FALSE(ctx.renderPasses[0].hasDepthStencil);
+    EXPECT_EQ(ctx.renderPasses[0].renderArea.width, 64u);
+    EXPECT_EQ(ctx.renderPasses[0].renderArea.height, 64u);
+
+    ASSERT_FALSE(ctx.viewports.empty());
+    EXPECT_EQ(ctx.viewports.back().width, 64.0f);
+    EXPECT_EQ(ctx.viewports.back().height, 64.0f);
+    ASSERT_FALSE(ctx.scissors.empty());
+    EXPECT_EQ(ctx.scissors.back().width, 64u);
+    EXPECT_EQ(ctx.scissors.back().height, 64u);
+
+    auto descriptorIt = std::find_if(
+        device.createdDescriptorSetDescs.begin(),
+        device.createdDescriptorSetDescs.end(),
+        [](const RHIDescriptorSetDesc& desc)
+        {
+            return desc.debugName && std::string(desc.debugName) == "BloomDescriptorSet";
+        });
+    ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
+    EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
+
+    const auto hasBinding = [descriptorIt](uint32 binding,
+                                           bool expectBuffer,
+                                           bool expectTexture,
+                                           bool expectSampler)
+    {
+        auto it = std::find_if(descriptorIt->bindings.begin(),
+                               descriptorIt->bindings.end(),
+                               [binding](const RHIDescriptorBinding& descriptorBinding)
+                               {
+                                   return descriptorBinding.binding == binding;
+                               });
+        if (it == descriptorIt->bindings.end())
+            return false;
+
+        return (it->buffer != nullptr) == expectBuffer &&
+               (it->textureView != nullptr) == expectTexture &&
+               (it->sampler != nullptr) == expectSampler;
+    };
+
+    EXPECT_TRUE(hasBinding(0, true, false, false));
+    EXPECT_TRUE(hasBinding(1, false, true, false));
+    EXPECT_TRUE(hasBinding(2, false, false, true));
+
+    auto descriptorCall = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), "SetDescriptorSet");
+    auto drawCall = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), "Draw");
+    ASSERT_NE(descriptorCall, ctx.callSequence.end());
+    ASSERT_NE(drawCall, ctx.callSequence.end());
+    EXPECT_LT(std::distance(ctx.callSequence.begin(), descriptorCall),
+              std::distance(ctx.callSequence.begin(), drawCall));
+}
+
+TEST_F(RenderPassValidationFixture, BloomSkipsDrawWhenConstantsCannotMap)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+
+    BloomPass pass;
+    PostProcessSettings settings;
+    settings.enableBloom = true;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA16_FLOAT));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.drawCount, 0u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 0u);
+}
+
+TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingThroughIntermediate)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    PostProcessSettings settings;
+    settings.enableBloom = true;
+    settings.enableToneMapping = true;
+
+    PostProcessStack stack;
+    auto* bloom = stack.AddEffect<BloomPass>();
+    auto* toneMapping = stack.AddEffect<ToneMappingPass>();
+    bloom->Configure(settings);
+    toneMapping->Configure(settings);
+    bloom->SetResources(&pipelineCache, &viewCache);
+    toneMapping->SetResources(&pipelineCache, &viewCache);
+
+    stack.Execute(graph, input, output);
+
+    const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
+    EXPECT_FALSE(executeStats.noEffectNoWork);
+    EXPECT_EQ(executeStats.enabledEffectCount, 2u);
+    EXPECT_EQ(executeStats.graphPassCount, 2u);
+    EXPECT_EQ(executeStats.transientIntermediateCount, 1u);
+
+    graph.Compile();
+    const auto& graphStats = graph.GetCompileStats();
+    EXPECT_TRUE(graphStats.compileValid);
+    EXPECT_EQ(graphStats.totalPasses, 2u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(2));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetBloomPipeline());
+    EXPECT_EQ(ctx.pipelineSequence[1], pipelineCache.GetToneMappingPipeline());
+    EXPECT_EQ(ctx.drawCount, 2u);
+    EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 2u);
+    EXPECT_EQ(ctx.endRenderPassCount, 2u);
 }
 
 TEST(RenderPostProcessStackValidation, NoSupportedEffectsReportsNoWork)

@@ -362,6 +362,29 @@ TEST_F(PipelineCacheValidationFixture, MissingToneMappingShaderFailsWithVisibleE
     EXPECT_NE(cache.GetLastError().find("ToneMapping shader file not found"), std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture, MissingBloomShaderFailsWithVisibleError)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path sourceDir = FindShaderDirectory();
+    TempDirectory temp("rvx_pipeline_missing_bloom_shader");
+    fs::copy_file(sourceDir / "DefaultLit.hlsl", temp.Path() / "DefaultLit.hlsl");
+    fs::copy_file(sourceDir / "DepthOnly.hlsl", temp.Path() / "DepthOnly.hlsl");
+    fs::copy(sourceDir / "Include", temp.Path() / "Include", fs::copy_options::recursive);
+    fs::create_directories(temp.Path() / "PostProcess");
+    fs::copy_file(sourceDir / "PostProcess" / "ToneMapping.hlsl",
+                  temp.Path() / "PostProcess" / "ToneMapping.hlsl");
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+
+    EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
+    EXPECT_NE(cache.GetLastError().find("Bloom shader file not found"), std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
 {
     if (!HasCompilerAvailable())
@@ -449,8 +472,11 @@ TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAwa
     EXPECT_NE(firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque), 0u);
     EXPECT_NE(firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque),
               firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Transparent));
-    EXPECT_EQ(firstCache.GetStats().pipelineCreateCount, 5u);
-    EXPECT_EQ(firstCache.GetStats().pipelineCacheMissCount, 5u);
+    EXPECT_NE(firstCache.GetStats().toneMappingPipelineHash, 0u);
+    EXPECT_NE(firstCache.GetStats().bloomPipelineHash, 0u);
+    EXPECT_NE(firstCache.GetStats().toneMappingPipelineHash, firstCache.GetStats().bloomPipelineHash);
+    EXPECT_EQ(firstCache.GetStats().pipelineCreateCount, 6u);
+    EXPECT_EQ(firstCache.GetStats().pipelineCacheMissCount, 6u);
 }
 
 TEST_F(PipelineCacheValidationFixture, RenderTargetFormatChangesPipelineHash)
@@ -471,9 +497,10 @@ TEST_F(PipelineCacheValidationFixture, RenderTargetFormatChangesPipelineHash)
 
     EXPECT_NE(firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque),
               secondCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque));
-    ASSERT_GE(secondDevice.capturedGraphicsPipelines.size(), 5u);
+    ASSERT_GE(secondDevice.capturedGraphicsPipelines.size(), 6u);
     EXPECT_EQ(secondDevice.capturedGraphicsPipelines.front().renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(secondDevice.capturedGraphicsPipelines[4].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(secondDevice.capturedGraphicsPipelines[5].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
 }
 
 TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
@@ -491,11 +518,12 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_EQ(RVX::PipelineCache::GetDefaultDepthStencilFormat(), RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(cache.GetDepthClearValue(), 1.0f);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), 5u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 6u);
     const auto& opaqueDesc = device.capturedGraphicsPipelines[0];
     const auto& transparentDesc = device.capturedGraphicsPipelines[2];
     const auto& depthOnlyDesc = device.capturedGraphicsPipelines[3];
     const auto& toneMappingDesc = device.capturedGraphicsPipelines[4];
+    const auto& bloomDesc = device.capturedGraphicsPipelines[5];
 
     EXPECT_EQ(opaqueDesc.depthStencilFormat, RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(opaqueDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::Less);
@@ -524,6 +552,16 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_NE(toneMappingDesc.vertexShader, nullptr);
     EXPECT_NE(toneMappingDesc.pixelShader, nullptr);
     EXPECT_TRUE(toneMappingDesc.inputLayout.elements.empty());
+
+    ASSERT_NE(cache.GetBloomPipeline(), nullptr);
+    EXPECT_EQ(bloomDesc.numRenderTargets, 1u);
+    EXPECT_EQ(bloomDesc.renderTargetFormats[0], RVX::RHIFormat::RGBA8_UNORM);
+    EXPECT_EQ(bloomDesc.depthStencilFormat, RVX::RHIFormat::Unknown);
+    EXPECT_FALSE(bloomDesc.depthStencilState.depthTestEnable);
+    EXPECT_FALSE(bloomDesc.depthStencilState.depthWriteEnable);
+    EXPECT_NE(bloomDesc.vertexShader, nullptr);
+    EXPECT_NE(bloomDesc.pixelShader, nullptr);
+    EXPECT_TRUE(bloomDesc.inputLayout.elements.empty());
 }
 
 TEST_F(PipelineCacheValidationFixture, ReverseZOptInChangesDepthCompareAndClearConvention)
@@ -544,7 +582,7 @@ TEST_F(PipelineCacheValidationFixture, ReverseZOptInChangesDepthCompareAndClearC
     EXPECT_EQ(RVX::PipelineCache::GetDepthClearValue(true), 0.0f);
     EXPECT_EQ(RVX::PipelineCache::GetDepthClearValue(false), 1.0f);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), 5u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 6u);
     const auto& opaqueDesc = device.capturedGraphicsPipelines[0];
     const auto& transparentDesc = device.capturedGraphicsPipelines[2];
     const auto& depthOnlyDesc = device.capturedGraphicsPipelines[3];
@@ -666,6 +704,39 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenToneMappingPipelin
     EXPECT_TRUE(cache.GetStats().manifestInvalidated);
 }
 
+TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenBloomPipelineHashChanges)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    TempDirectory temp("rvx_pipeline_manifest_bloom_stale");
+    const fs::path manifestPath = temp.Path() / RVX::PipelineCache::GetManifestFileName();
+    RVX::uint64 firstBloomHash = 0;
+
+    {
+        FakeDevice device;
+        RVX::PipelineCache cache;
+        cache.SetConfig(ConfigWithManifest(temp.Path()));
+        ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+        firstBloomHash = cache.GetStats().bloomPipelineHash;
+        ASSERT_NE(firstBloomHash, 0u);
+    }
+
+    const RVX::uint64 staleBloomHash = firstBloomHash == 1u ? 2u : 1u;
+    ReplaceManifestFieldValue(manifestPath, "bloomPipelineHash", std::to_string(staleBloomHash));
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    cache.SetConfig(ConfigWithManifest(temp.Path()));
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    EXPECT_TRUE(cache.GetStats().manifestLoaded);
+    EXPECT_FALSE(cache.GetStats().manifestValid);
+    EXPECT_TRUE(cache.GetStats().manifestInvalidated);
+}
+
 TEST_F(PipelineCacheValidationFixture, CorruptManifestInvalidatesWithoutFailingInitialization)
 {
     if (!HasCompilerAvailable())
@@ -765,4 +836,19 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingPipelineCreationFailureIsVisib
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("ToneMapping pipeline"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, BloomPipelineCreationFailureIsVisible)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    device.failPipelineCreationAtIndex = 6;
+    RVX::PipelineCache cache;
+
+    EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
+    EXPECT_NE(cache.GetLastError().find("Bloom pipeline"), std::string::npos);
 }

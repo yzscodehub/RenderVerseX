@@ -9,13 +9,15 @@
 
 namespace RVX
 {
+    class PipelineCache;
+    class ResourceViewCache;
+
     /**
-     * @brief Bloom post-process pass
-     * 
-     * Implements a multi-pass bloom effect:
-     * 1. Threshold bright areas
-     * 2. Downsample with blur
-     * 3. Upsample and combine
+     * @brief Minimum fullscreen Bloom post-process pass
+     *
+     * R9e implements a single fullscreen approximation that thresholds bright
+     * pixels, samples a small neighborhood, and composites the contribution
+     * back into scene color. Full mip-chain bloom remains a future expansion.
      */
     class BloomPass : public IPostProcessPass
     {
@@ -28,6 +30,11 @@ namespace RVX
 
         void Configure(const PostProcessSettings& settings) override;
         void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override;
+
+        /**
+         * @brief Provide GPU resources required by the fullscreen Bloom path
+         */
+        void SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache);
 
         // =========================================================================
         // Configuration
@@ -42,18 +49,27 @@ namespace RVX
         void SetRadius(float radius) { m_radius = radius; }
         float GetRadius() const { return m_radius; }
 
-        void SetMipCount(uint32 mips) { m_mipCount = mips; }
-        uint32 GetMipCount() const { return m_mipCount; }
-
         void SetSoftKnee(float knee) { m_softKnee = knee; }
         float GetSoftKnee() const { return m_softKnee; }
 
     private:
+        bool EnsureRuntimeResources();
+        bool UpdateConstants(uint32 width,
+                             uint32 height,
+                             float threshold,
+                             float intensity,
+                             float radius,
+                             float softKnee);
+
         float m_threshold = 1.0f;
         float m_intensity = 1.0f;
         float m_radius = 0.5f;
         float m_softKnee = 0.5f;
-        uint32 m_mipCount = 5;
+        PipelineCache* m_pipelineCache = nullptr;
+        ResourceViewCache* m_viewCache = nullptr;
+        IRHIDevice* m_resourceDevice = nullptr;
+        RHIBufferRef m_constantBuffer;
+        RHISamplerRef m_sampler;
     };
 
 } // namespace RVX

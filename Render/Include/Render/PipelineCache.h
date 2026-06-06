@@ -66,6 +66,7 @@ namespace RVX
         uint64 maskedPipelineHash = 0;
         uint64 transparentPipelineHash = 0;
         uint64 toneMappingPipelineHash = 0;
+        uint64 bloomPipelineHash = 0;
         uint32 pipelineCreateCount = 0;
         uint32 pipelineCacheHitCount = 0;
         uint32 pipelineCacheMissCount = 0;
@@ -165,6 +166,11 @@ namespace RVX
          * @brief Get the fullscreen ToneMapping post-process pipeline
          */
         RHIPipeline* GetToneMappingPipeline() const { return m_toneMappingPipeline.Get(); }
+
+        /**
+         * @brief Get the fullscreen Bloom minimum-path post-process pipeline
+         */
+        RHIPipeline* GetBloomPipeline() const { return m_bloomPipeline.Get(); }
 
         /**
          * @brief Get the default pipeline layout
@@ -280,11 +286,13 @@ namespace RVX
                                                      const RHIBlendState& blendState);
         RHIPipelineRef GetOrCreateDepthOnlyPipeline();
         RHIPipelineRef GetOrCreateToneMappingPipeline();
+        RHIPipelineRef GetOrCreateBloomPipeline();
         RHIGraphicsPipelineDesc BuildDefaultLitPipelineDesc(const char* debugName,
                                                             const RHIDepthStencilState& depthStencilState,
                                                             const RHIBlendState& blendState) const;
         RHIGraphicsPipelineDesc BuildDepthOnlyPipelineDesc() const;
         RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc() const;
+        RHIGraphicsPipelineDesc BuildBloomPipelineDesc() const;
         bool CreateViewConstantBuffer();
         bool CreateObjectConstantBuffer();
         RHIDescriptorSetRef CreateFrameDescriptorSet();
@@ -314,11 +322,15 @@ namespace RVX
         RHIShaderRef m_depthOnlyVertexShader;
         RHIShaderRef m_toneMappingVertexShader;
         RHIShaderRef m_toneMappingPixelShader;
+        RHIShaderRef m_bloomVertexShader;
+        RHIShaderRef m_bloomPixelShader;
         std::unique_ptr<ShaderCompileResult> m_vsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_psCompileResult;
         std::unique_ptr<ShaderCompileResult> m_depthOnlyVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_toneMappingVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_toneMappingPsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_bloomVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_bloomPsCompileResult;
 
         // Descriptor set layouts and pipeline layout
         std::vector<RHIDescriptorSetLayoutRef> m_setLayouts;
@@ -332,6 +344,7 @@ namespace RVX
         RHIPipelineRef m_transparentPipeline;
         RHIPipelineRef m_depthOnlyPipeline;
         RHIPipelineRef m_toneMappingPipeline;
+        RHIPipelineRef m_bloomPipeline;
         std::unordered_map<uint64, RHIPipelineRef> m_pipelineCache;
 
         // Frame and object constants

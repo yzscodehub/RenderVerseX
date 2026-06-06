@@ -27,7 +27,7 @@ namespace
     constexpr uint64 RVX_MAX_DRAW_CONSTANTS_PER_FRAME = 8192;
     constexpr uint64 RVX_PIPELINE_HASH_OFFSET_BASIS = 0xcbf29ce484222325ull;
     constexpr uint64 RVX_PIPELINE_HASH_PRIME = 0x100000001b3ull;
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 2;
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 3;
     constexpr const char* RVX_PIPELINE_MANIFEST_MAGIC = "RVX_PIPELINE_CACHE_MANIFEST";
 
     struct PipelineCacheManifest
@@ -38,6 +38,8 @@ namespace
         uint64 pixelShaderHash = 0;
         uint64 toneMappingVertexShaderHash = 0;
         uint64 toneMappingPixelShaderHash = 0;
+        uint64 bloomVertexShaderHash = 0;
+        uint64 bloomPixelShaderHash = 0;
         uint32 renderTargetFormat = 0;
         uint32 depthStencilFormat = 0;
         uint32 reverseZ = 0;
@@ -45,6 +47,7 @@ namespace
         uint64 maskedPipelineHash = 0;
         uint64 transparentPipelineHash = 0;
         uint64 toneMappingPipelineHash = 0;
+        uint64 bloomPipelineHash = 0;
     };
 
     uint64 AlignConstantBufferSize(uint64 size)
@@ -128,13 +131,16 @@ namespace
                key == "pixelShaderHash" ||
                key == "toneMappingVertexShaderHash" ||
                key == "toneMappingPixelShaderHash" ||
+               key == "bloomVertexShaderHash" ||
+               key == "bloomPixelShaderHash" ||
                key == "renderTargetFormat" ||
                key == "depthStencilFormat" ||
                key == "reverseZ" ||
                key == "opaquePipelineHash" ||
                key == "maskedPipelineHash" ||
                key == "transparentPipelineHash" ||
-               key == "toneMappingPipelineHash";
+               key == "toneMappingPipelineHash" ||
+               key == "bloomPipelineHash";
     }
 
     bool ParseManifestUint64(const std::string& value, uint64& out)
@@ -224,7 +230,7 @@ namespace
             fields.emplace(std::move(key), std::move(value));
         }
 
-        if (fields.size() != 13)
+        if (fields.size() != 16)
         {
             return false;
         }
@@ -235,13 +241,16 @@ namespace
             !ReadRequiredManifestUint64(fields, "pixelShaderHash", manifest.pixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "toneMappingVertexShaderHash", manifest.toneMappingVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "toneMappingPixelShaderHash", manifest.toneMappingPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "bloomVertexShaderHash", manifest.bloomVertexShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "bloomPixelShaderHash", manifest.bloomPixelShaderHash) ||
             !ReadRequiredManifestUint32(fields, "renderTargetFormat", manifest.renderTargetFormat) ||
             !ReadRequiredManifestUint32(fields, "depthStencilFormat", manifest.depthStencilFormat) ||
             !ReadRequiredManifestUint32(fields, "reverseZ", manifest.reverseZ) ||
             !ReadRequiredManifestUint64(fields, "opaquePipelineHash", manifest.opaquePipelineHash) ||
             !ReadRequiredManifestUint64(fields, "maskedPipelineHash", manifest.maskedPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "transparentPipelineHash", manifest.transparentPipelineHash) ||
-            !ReadRequiredManifestUint64(fields, "toneMappingPipelineHash", manifest.toneMappingPipelineHash))
+            !ReadRequiredManifestUint64(fields, "toneMappingPipelineHash", manifest.toneMappingPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "bloomPipelineHash", manifest.bloomPipelineHash))
         {
             return false;
         }
@@ -273,6 +282,8 @@ namespace
             file << "pixelShaderHash=" << manifest.pixelShaderHash << '\n';
             file << "toneMappingVertexShaderHash=" << manifest.toneMappingVertexShaderHash << '\n';
             file << "toneMappingPixelShaderHash=" << manifest.toneMappingPixelShaderHash << '\n';
+            file << "bloomVertexShaderHash=" << manifest.bloomVertexShaderHash << '\n';
+            file << "bloomPixelShaderHash=" << manifest.bloomPixelShaderHash << '\n';
             file << "renderTargetFormat=" << manifest.renderTargetFormat << '\n';
             file << "depthStencilFormat=" << manifest.depthStencilFormat << '\n';
             file << "reverseZ=" << manifest.reverseZ << '\n';
@@ -280,6 +291,7 @@ namespace
             file << "maskedPipelineHash=" << manifest.maskedPipelineHash << '\n';
             file << "transparentPipelineHash=" << manifest.transparentPipelineHash << '\n';
             file << "toneMappingPipelineHash=" << manifest.toneMappingPipelineHash << '\n';
+            file << "bloomPipelineHash=" << manifest.bloomPipelineHash << '\n';
             if (!file)
             {
                 return false;
@@ -340,13 +352,16 @@ namespace
                a.pixelShaderHash == b.pixelShaderHash &&
                a.toneMappingVertexShaderHash == b.toneMappingVertexShaderHash &&
                a.toneMappingPixelShaderHash == b.toneMappingPixelShaderHash &&
+               a.bloomVertexShaderHash == b.bloomVertexShaderHash &&
+               a.bloomPixelShaderHash == b.bloomPixelShaderHash &&
                a.renderTargetFormat == b.renderTargetFormat &&
                a.depthStencilFormat == b.depthStencilFormat &&
                a.reverseZ == b.reverseZ &&
                a.opaquePipelineHash == b.opaquePipelineHash &&
                a.maskedPipelineHash == b.maskedPipelineHash &&
                a.transparentPipelineHash == b.transparentPipelineHash &&
-               a.toneMappingPipelineHash == b.toneMappingPipelineHash;
+               a.toneMappingPipelineHash == b.toneMappingPipelineHash &&
+               a.bloomPipelineHash == b.bloomPipelineHash;
     }
 } // namespace
 
@@ -498,6 +513,7 @@ void PipelineCache::Shutdown()
     m_transparentPipeline.Reset();
     m_depthOnlyPipeline.Reset();
     m_toneMappingPipeline.Reset();
+    m_bloomPipeline.Reset();
     m_pipelineCache.clear();
     m_frameDescriptorSet.Reset();
     m_objectDescriptorSet.Reset();
@@ -512,11 +528,15 @@ void PipelineCache::Shutdown()
     m_depthOnlyVertexShader.Reset();
     m_toneMappingVertexShader.Reset();
     m_toneMappingPixelShader.Reset();
+    m_bloomVertexShader.Reset();
+    m_bloomPixelShader.Reset();
     m_vsCompileResult.reset();
     m_psCompileResult.reset();
     m_depthOnlyVsCompileResult.reset();
     m_toneMappingVsCompileResult.reset();
     m_toneMappingPsCompileResult.reset();
+    m_bloomVsCompileResult.reset();
+    m_bloomPsCompileResult.reset();
     m_shaderManager.reset();
     m_device = nullptr;
     m_initialized = false;
@@ -529,6 +549,7 @@ bool PipelineCache::CompileShaders()
     std::string shaderPath = m_shaderDir + "/DefaultLit.hlsl";
     std::string depthOnlyShaderPath = m_shaderDir + "/DepthOnly.hlsl";
     std::string toneMappingShaderPath = m_shaderDir + "/PostProcess/ToneMapping.hlsl";
+    std::string bloomShaderPath = m_shaderDir + "/PostProcess/Bloom.hlsl";
 
     RVX_CORE_INFO("PipelineCache: Compiling shaders...");
     RVX_CORE_INFO("  Shader directory: {}", m_shaderDir);
@@ -582,6 +603,16 @@ bool PipelineCache::CompileShaders()
         SetLastError("ToneMapping shader file not found: " + toneMappingShaderPath);
 
         std::filesystem::path absPath = std::filesystem::absolute(toneMappingShaderPath);
+        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
+        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
+        return false;
+    }
+
+    if (!std::filesystem::exists(bloomShaderPath))
+    {
+        SetLastError("Bloom shader file not found: " + bloomShaderPath);
+
+        std::filesystem::path absPath = std::filesystem::absolute(bloomShaderPath);
         RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
         RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
         return false;
@@ -686,6 +717,51 @@ bool PipelineCache::CompileShaders()
     m_toneMappingPixelShader = toneMappingPsResult.shader;
     m_toneMappingPsCompileResult =
         std::make_unique<ShaderCompileResult>(std::move(toneMappingPsResult.compileResult));
+
+    ShaderLoadDesc bloomVsDesc = vsDesc;
+    bloomVsDesc.path = bloomShaderPath;
+    bloomVsDesc.entryPoint = "VSMain";
+    bloomVsDesc.stage = RHIShaderStage::Vertex;
+    if (backend == RHIBackendType::DX11)
+    {
+        bloomVsDesc.targetProfile = "vs_5_0";
+    }
+
+    auto bloomVsResult = m_shaderManager->LoadFromFile(m_device, bloomVsDesc);
+    if (!bloomVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile Bloom vertex shader: " + bloomVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!bloomVsResult.shader)
+    {
+        SetLastError("Failed to create Bloom vertex shader");
+        return false;
+    }
+    m_bloomVertexShader = bloomVsResult.shader;
+    m_bloomVsCompileResult = std::make_unique<ShaderCompileResult>(std::move(bloomVsResult.compileResult));
+
+    ShaderLoadDesc bloomPsDesc = bloomVsDesc;
+    bloomPsDesc.entryPoint = "PSMain";
+    bloomPsDesc.stage = RHIShaderStage::Pixel;
+    if (backend == RHIBackendType::DX11)
+    {
+        bloomPsDesc.targetProfile = "ps_5_0";
+    }
+
+    auto bloomPsResult = m_shaderManager->LoadFromFile(m_device, bloomPsDesc);
+    if (!bloomPsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile Bloom pixel shader: " + bloomPsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!bloomPsResult.shader)
+    {
+        SetLastError("Failed to create Bloom pixel shader");
+        return false;
+    }
+    m_bloomPixelShader = bloomPsResult.shader;
+    m_bloomPsCompileResult = std::make_unique<ShaderCompileResult>(std::move(bloomPsResult.compileResult));
 
     RVX_CORE_DEBUG("PipelineCache: Compiled shaders successfully");
     return true;
@@ -895,6 +971,8 @@ void PipelineCache::ProcessPipelineManifest()
     expected.pixelShaderHash = ComputeShaderHash(m_psCompileResult.get());
     expected.toneMappingVertexShaderHash = ComputeShaderHash(m_toneMappingVsCompileResult.get());
     expected.toneMappingPixelShaderHash = ComputeShaderHash(m_toneMappingPsCompileResult.get());
+    expected.bloomVertexShaderHash = ComputeShaderHash(m_bloomVsCompileResult.get());
+    expected.bloomPixelShaderHash = ComputeShaderHash(m_bloomPsCompileResult.get());
     expected.renderTargetFormat = static_cast<uint32>(m_renderTargetFormat);
     expected.depthStencilFormat = static_cast<uint32>(m_config.depthStencilFormat);
     expected.reverseZ = m_config.reverseZ ? 1u : 0u;
@@ -902,6 +980,7 @@ void PipelineCache::ProcessPipelineManifest()
     expected.maskedPipelineHash = m_stats.maskedPipelineHash;
     expected.transparentPipelineHash = m_stats.transparentPipelineHash;
     expected.toneMappingPipelineHash = m_stats.toneMappingPipelineHash;
+    expected.bloomPipelineHash = m_stats.bloomPipelineHash;
 
     const std::filesystem::path manifestPath = GetManifestPath(m_config.manifestDirectory);
     std::error_code ec;
@@ -1119,7 +1198,17 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
-    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, and ToneMapping pipeline");
+    m_bloomPipeline = GetOrCreateBloomPipeline();
+    if (!m_bloomPipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create Bloom pipeline");
+        }
+        return false;
+    }
+
+    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, ToneMapping pipeline, and Bloom pipeline");
     return true;
 }
 
@@ -1269,6 +1358,54 @@ RHIPipelineRef PipelineCache::GetOrCreateToneMappingPipeline()
     return pipeline;
 }
 
+RHIPipelineRef PipelineCache::GetOrCreateBloomPipeline()
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildBloomPipelineDesc();
+    if (!pipelineDesc.vertexShader)
+    {
+        SetLastError("Cannot create Bloom pipeline without vertex shader");
+        return {};
+    }
+    if (!pipelineDesc.pixelShader)
+    {
+        SetLastError("Cannot create Bloom pipeline without pixel shader");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError("Cannot create Bloom pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.numRenderTargets != 1 || pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create Bloom pipeline with invalid render target format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc, MaterialPipelineVariant::Transparent);
+    m_stats.bloomPipelineHash = stateHash;
+    m_stats.lastPipelineStateHash = stateHash;
+
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create Bloom pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
 RHIGraphicsPipelineDesc PipelineCache::BuildDefaultLitPipelineDesc(const char* debugName,
                                                                    const RHIDepthStencilState& depthStencilState,
                                                                    const RHIBlendState& blendState) const
@@ -1350,6 +1487,28 @@ RHIGraphicsPipelineDesc PipelineCache::BuildToneMappingPipelineDesc() const
     return pipelineDesc;
 }
 
+RHIGraphicsPipelineDesc PipelineCache::BuildBloomPipelineDesc() const
+{
+    RHIGraphicsPipelineDesc pipelineDesc;
+
+    pipelineDesc.vertexShader = m_bloomVertexShader.Get();
+    pipelineDesc.pixelShader = m_bloomPixelShader.Get();
+    pipelineDesc.pipelineLayout = m_postProcessPipelineLayout.Get();
+    pipelineDesc.debugName = "BloomPipeline";
+
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets = 1;
+    pipelineDesc.renderTargetFormats[0] = m_renderTargetFormat;
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+
+    return pipelineDesc;
+}
+
 uint64 PipelineCache::StoreVariantHash(MaterialPipelineVariant variant, uint64 hash)
 {
     switch (variant)
@@ -1416,6 +1575,10 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_toneMappingVsCompileResult.get());
         if (shader == m_toneMappingPixelShader.Get())
             return ComputeShaderHash(m_toneMappingPsCompileResult.get());
+        if (shader == m_bloomVertexShader.Get())
+            return ComputeShaderHash(m_bloomVsCompileResult.get());
+        if (shader == m_bloomPixelShader.Get())
+            return ComputeShaderHash(m_bloomPsCompileResult.get());
         return ComputeShaderHash(nullptr);
     };
 

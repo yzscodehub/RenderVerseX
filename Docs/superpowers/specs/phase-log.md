@@ -1875,6 +1875,114 @@ git diff --check
 
 ---
 
+### R-SP: `R9e - Bloom Fullscreen Minimum Path`
+
+**Date:** 2026-06-06
+**Commit:** `pending`
+**Spark plan review agent:** Wegener (`019e9d75-4f0f-7580-b251-266b34f58fc8`)
+**Spark code review agents:** Dewey (`019e9d8a-640c-73c3-b5b1-2b1c2c16deac`), Noether (`019e9d94-362a-7e91-b9d3-9f068ff1a468`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-05-30-render-program-plan-v1.md`
+- Section: `15. R9 - Render Pass Completion`
+- Lines checked: parent R9 section around lines 485-497; R9e plan document lines 1-121
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R9d - ToneMapping Fullscreen Minimum Path
+- Evidence: R9d committed as `336e55d` with follow-up log correction `2f4c9b7`; R9d validation and visual gate passed before R9e planning.
+
+**Approved scope:**
+
+- Turn Bloom from an unsupported/stub graph pass into a minimum fullscreen post-process path when resources are injected.
+- Compile `PostProcess/Bloom.hlsl` VS/PS in `PipelineCache`, create the sixth graphics pipeline, and expose `GetBloomPipeline()`.
+- Upgrade the pipeline manifest to v3 and include Bloom VS, PS, and pipeline hashes in strict manifest validation, matching, writing, and invalidation tests.
+- Use the existing post-process descriptor convention: constants at `b0`, input texture at `t1`, sampler at `s2`.
+- Keep Bloom honest when resources are missing: unsupported before `SetResources()`, visible skips during execution, and no silent fallback.
+- Add Bloom graph read/write declarations, descriptor binding, render-pass setup, fullscreen `Draw(3)`, and Bloom-before-ToneMapping stack order coverage.
+- Adopt Spark code-review suggestions by correcting the `BloomPass` header comment to describe the minimum fullscreen path and removing the inactive mip-count API.
+
+**Out of scope:**
+
+- Full mip-chain downsample/upsample Bloom, compute Bloom, lens dirt, temporal stabilization, or backend-specific quality tuning.
+- Integrating Bloom or `PostProcessStack` into `SceneRenderer`'s default frame output.
+- TAA, IBL, skybox/BRDF LUT/environment prefiltering, ECS/Object refactoring, or RenderProxy changes.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-06-r9e-bloom-fullscreen-minimum-path-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Shaders/PostProcess/Bloom.hlsl`
+- `Render/Include/Render/PostProcess/Bloom.h`
+- `Render/Private/PostProcess/Bloom.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderHonestyValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target PipelineCacheValidation RenderHonestyValidation RenderPassValidation
+build\win_x64_debug\Tests\Debug\PipelineCacheValidation.exe
+build\win_x64_debug\Tests\Debug\RenderHonestyValidation.exe
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderHonestyValidation|RenderPassValidation|RenderGraphValidation|RenderSceneValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+cmake --build build/win_x64_debug --config Debug --target PipelineCacheValidation RenderHonestyValidation RenderPassValidation RenderGraphValidation RenderSceneValidation ModelViewer VisualGoldenValidation ImageCompareValidation ClusteredLightingValidation MaterialSystemValidation ResourceInstantiationValidation
+build\win_x64_debug\Tests\Debug\ClusteredLightingValidation.exe --gtest_filter=ClusteredLightingValidationFixture.ReconfigurePreservesDeviceAndRebuildsBuffers
+build\win_x64_debug\Tests\Debug\ClusteredLightingValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "ClusteredLightingValidation|RenderGraphValidation|RenderHonestyValidation|RenderSceneValidation|RenderPassValidation|MaterialSystemValidation|ResourceInstantiationValidation|PipelineCacheValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+git diff --check
+rg "SetMipCount|GetMipCount|m_mipCount" .
+```
+
+**Validation result:**
+
+- Build: PASS
+- Tests: PASS
+  - `PipelineCacheValidation`: 21/21 by direct executable
+  - `RenderHonestyValidation`: 17/17 by direct executable
+  - `RenderPassValidation`: 25/25 by direct executable
+  - Required R9e filtered CTest: 107/107
+  - Broad render/resource regression CTest: 209/209 on final rerun
+  - One earlier broad run reported `ClusteredLightingValidationFixture.ReconfigurePreservesDeviceAndRebuildsBuffers`; the failing test then passed standalone, the full `ClusteredLightingValidation` executable passed 8/8, and the final broad CTest passed 209/209.
+  - `git diff --check`: PASS, with only Git CRLF warnings
+  - `rg "SetMipCount|GetMipCount|m_mipCount" .`: no matches after removing the inactive Bloom mip-count API
+- Visual gate: PASS
+  - `ModelViewerSmoke`: PASS
+  - `VisualGoldenValidation`: PASS
+
+**Artifacts:**
+
+- Logs: terminal build/test output; Spark plan review, Spark code review, and Spark incremental code-review messages
+- Plan: `Docs/superpowers/specs/2026-06-06-r9e-bloom-fullscreen-minimum-path-plan.md`
+- Screenshots/golden: unchanged default visual gate path from prior ModelViewer smoke/golden validation
+
+**Spark plan review result:**
+
+- Verdict: `PASS_WITH_NON_BLOCKING_SUGGESTIONS`
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: rewrote the existing Bloom shader as a minimum fullscreen path, used the `b0/t1/s2` post-process descriptor convention, upgraded manifest coverage to v3 with Bloom hashes, treated Bloom as the sixth pipeline, added Bloom-to-ToneMapping ordering coverage, and kept mip-chain semantics out of R9e.
+
+**Spark code review result:**
+
+- Verdict: `PASS_WITH_NON_BLOCKING_SUGGESTIONS`
+- Blockers resolved: N/A
+- Non-blocking suggestions adopted: updated `BloomPass` documentation to say minimum fullscreen approximation and removed the inactive `m_mipCount` API.
+- Incremental re-review verdict: `PASS_WITH_NON_BLOCKING_SUGGESTIONS`
+- Non-blocking suggestions deferred: centralize runtime resource injection for Bloom/ToneMapping when the post-process stack is integrated into the runtime frame path.
+
+**Notes / follow-ups:**
+
+- R9e makes Bloom a real RenderGraph-declared fullscreen draw path when resources are injected; it still does not claim a full production mip-chain Bloom.
+- `PostProcessStack` still relies on callers to inject resources into Bloom/ToneMapping before graph submission; this is acceptable for R9e and should be addressed before runtime integration.
+- TAA and IBL remain R9 candidates and must follow the same per-stage plan, Spark plan review, implementation, validation including visual gate, Spark code review, phase-log, and commit protocol.
+- Old untracked framework/spec documents and `vulkan_pipeline_cache.bin` are intentionally excluded from the R9e commit.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
