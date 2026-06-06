@@ -1238,7 +1238,7 @@ git diff --check
 ### R7: Visual Gate Baseline
 
 **Date:** 2026-06-06
-**Commit:** `TBD`
+**Commit:** `7a275bc`
 **Spark plan review agent:** `019e9ac4-a24f-7380-8baf-451060bd510f`
 **Spark code review agent:** `019e9ae6-0c95-74c0-ba46-385b09906636`
 
