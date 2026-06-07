@@ -4,6 +4,7 @@
 #include "VulkanCommandContext.h"
 #include "VulkanPipeline.h"
 #include "VulkanUpload.h"
+#include "RHI/RHITexture.h"
 
 #include <set>
 #include <algorithm>
@@ -1117,7 +1118,7 @@ namespace RVX
         imageInfo.extent.height = desc.height;
         imageInfo.extent.depth = desc.depth;
         imageInfo.mipLevels = desc.mipLevels;
-        imageInfo.arrayLayers = desc.arraySize;
+        imageInfo.arrayLayers = GetTexturePhysicalLayerCount(desc);
         imageInfo.format = ToVkFormat(desc.format);
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;

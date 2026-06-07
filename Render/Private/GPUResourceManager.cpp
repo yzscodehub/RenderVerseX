@@ -4,6 +4,7 @@
 #include "Resource/Types/TextureResource.h"
 #include "RHI/RHICommandContext.h"
 #include "Scene/Mesh.h"
+#include <algorithm>
 #include <chrono>
 #include <limits>
 
@@ -640,8 +641,7 @@ GPUResourceManager::PreparedTextureUpload GPUResourceManager::PrepareTextureUplo
         return prepared;
     }
 
-    if (metadata.isCubemap || metadata.isArray || metadata.depth != 1 || metadata.mipLevels != 1 ||
-        metadata.arrayLayers != 1)
+    if (metadata.depth != 1)
     {
         return prepared;
     }
@@ -656,6 +656,10 @@ GPUResourceManager::PreparedTextureUpload GPUResourceManager::PrepareTextureUplo
             uploadFormat = metadata.isSRGB ? RHIFormat::RGBA8_UNORM_SRGB : RHIFormat::RGBA8_UNORM;
             break;
         case Resource::TextureFormat::RGB8:
+            if (metadata.isCubemap || metadata.isArray || metadata.mipLevels != 1 || metadata.arrayLayers != 1)
+            {
+                return prepared;
+            }
             sourceBytesPerPixel = 3;
             uploadFormat = metadata.isSRGB ? RHIFormat::RGBA8_UNORM_SRGB : RHIFormat::RGBA8_UNORM;
             break;
@@ -684,14 +688,56 @@ GPUResourceManager::PreparedTextureUpload GPUResourceManager::PrepareTextureUplo
             return prepared;
     }
 
-    const uint64 pixelCount = static_cast<uint64>(metadata.width) * metadata.height;
-    if (sourceBytesPerPixel != 0 &&
-        pixelCount > (std::numeric_limits<uint64>::max() / sourceBytesPerPixel))
+    RHITextureDimension dimension = RHITextureDimension::Texture2D;
+    uint32 logicalArraySize = std::max(1u, metadata.arrayLayers);
+    if (metadata.isCubemap)
+    {
+        if (metadata.arrayLayers == 0 || metadata.arrayLayers % 6 != 0)
+        {
+            return prepared;
+        }
+
+        dimension = RHITextureDimension::TextureCube;
+        logicalArraySize = metadata.arrayLayers / 6;
+    }
+    else if (!metadata.isArray && metadata.arrayLayers != 1)
     {
         return prepared;
     }
 
-    const uint64 expectedSourceSize = pixelCount * sourceBytesPerPixel;
+    const uint32 mipLevels = std::max(1u, metadata.mipLevels);
+    const uint32 physicalLayerCount = metadata.isCubemap ? metadata.arrayLayers : logicalArraySize;
+
+    std::vector<uint64> mipSizes;
+    std::vector<uint64> mipOffsets;
+    mipSizes.reserve(mipLevels);
+    mipOffsets.reserve(mipLevels);
+
+    uint64 expectedSourceSize = 0;
+    for (uint32 mipLevel = 0; mipLevel < mipLevels; ++mipLevel)
+    {
+        const uint32 mipWidth = std::max(1u, metadata.width >> mipLevel);
+        const uint32 mipHeight = std::max(1u, metadata.height >> mipLevel);
+        const uint64 pixelCount = static_cast<uint64>(mipWidth) * mipHeight;
+        if (sourceBytesPerPixel != 0 &&
+            pixelCount > (std::numeric_limits<uint64>::max() / sourceBytesPerPixel))
+        {
+            return prepared;
+        }
+
+        const uint64 mipSize = pixelCount * sourceBytesPerPixel;
+        mipOffsets.push_back(expectedSourceSize);
+        mipSizes.push_back(mipSize);
+
+        if (physicalLayerCount != 0 &&
+            mipSize > (std::numeric_limits<uint64>::max() - expectedSourceSize) / physicalLayerCount)
+        {
+            return prepared;
+        }
+
+        expectedSourceSize += mipSize * physicalLayerCount;
+    }
+
     if (sourceData.size() != expectedSourceSize)
     {
         return prepared;
@@ -700,15 +746,16 @@ GPUResourceManager::PreparedTextureUpload GPUResourceManager::PrepareTextureUplo
     prepared.textureDesc.width = metadata.width;
     prepared.textureDesc.height = metadata.height;
     prepared.textureDesc.depth = 1;
-    prepared.textureDesc.mipLevels = 1;
-    prepared.textureDesc.arraySize = 1;
+    prepared.textureDesc.mipLevels = mipLevels;
+    prepared.textureDesc.arraySize = logicalArraySize;
     prepared.textureDesc.usage = RHITextureUsage::ShaderResource;
     prepared.textureDesc.format = uploadFormat;
-    prepared.textureDesc.dimension = RHITextureDimension::Texture2D;
+    prepared.textureDesc.dimension = dimension;
     prepared.textureDesc.debugName = texture.GetName().c_str();
 
     if (metadata.format == Resource::TextureFormat::RGB8)
     {
+        const uint64 pixelCount = static_cast<uint64>(metadata.width) * metadata.height;
         prepared.data.resize(static_cast<size_t>(pixelCount) * 4);
         const auto* src = sourceData.data();
         auto* dst = prepared.data.data();
@@ -718,6 +765,24 @@ GPUResourceManager::PreparedTextureUpload GPUResourceManager::PrepareTextureUplo
             dst[i * 4 + 1] = src[i * 3 + 1];
             dst[i * 4 + 2] = src[i * 3 + 2];
             dst[i * 4 + 3] = 255;
+        }
+    }
+    else if (metadata.isCubemap && mipLevels > 1)
+    {
+        prepared.data.resize(static_cast<size_t>(expectedSourceSize));
+
+        uint64 dstOffset = 0;
+        for (uint32 physicalLayer = 0; physicalLayer < physicalLayerCount; ++physicalLayer)
+        {
+            for (uint32 mipLevel = 0; mipLevel < mipLevels; ++mipLevel)
+            {
+                const uint64 mipSize = mipSizes[mipLevel];
+                const uint64 srcOffset = mipOffsets[mipLevel] + static_cast<uint64>(physicalLayer) * mipSize;
+                std::memcpy(prepared.data.data() + dstOffset,
+                            sourceData.data() + srcOffset,
+                            static_cast<size_t>(mipSize));
+                dstOffset += mipSize;
+            }
         }
     }
     else

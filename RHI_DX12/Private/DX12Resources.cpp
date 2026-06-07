@@ -1,5 +1,6 @@
 #include "DX12Resources.h"
 #include "DX12Device.h"
+#include "RHI/RHITexture.h"
 
 namespace RVX
 {
@@ -348,9 +349,12 @@ namespace RVX
                 resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.arraySize);
                 break;
             case RHITextureDimension::Texture2D:
-            case RHITextureDimension::TextureCube:
                 resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
                 resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.arraySize);
+                break;
+            case RHITextureDimension::TextureCube:
+                resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                resourceDesc.DepthOrArraySize = static_cast<UINT16>(GetTexturePhysicalLayerCount(desc));
                 break;
             case RHITextureDimension::Texture3D:
                 resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
@@ -534,11 +538,11 @@ namespace RVX
                     break;
 
                 case RHITextureDimension::TextureCube:
-                    if (m_desc.arraySize > 6)
+                    if (m_desc.arraySize > 1)
                     {
                         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
                         srvDesc.TextureCubeArray.MipLevels = m_desc.mipLevels;
-                        srvDesc.TextureCubeArray.NumCubes = m_desc.arraySize / 6;
+                        srvDesc.TextureCubeArray.NumCubes = m_desc.arraySize;
                     }
                     else
                     {
@@ -579,7 +583,6 @@ namespace RVX
                     break;
 
                 case RHITextureDimension::Texture2D:
-                case RHITextureDimension::TextureCube:
                     if (m_desc.arraySize > 1)
                     {
                         uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
@@ -589,6 +592,11 @@ namespace RVX
                     {
                         uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
                     }
+                    break;
+
+                case RHITextureDimension::TextureCube:
+                    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+                    uavDesc.Texture2DArray.ArraySize = GetTexturePhysicalLayerCount(m_desc);
                     break;
 
                 case RHITextureDimension::Texture3D:
@@ -603,7 +611,7 @@ namespace RVX
         // RTV
         if (HasFlag(m_desc.usage, RHITextureUsage::RenderTarget))
         {
-            uint32 rtvCount = m_desc.arraySize;
+            uint32 rtvCount = GetTexturePhysicalLayerCount(m_desc);
             m_rtvHandles.resize(rtvCount);
 
             for (uint32 i = 0; i < rtvCount; ++i)
@@ -613,7 +621,7 @@ namespace RVX
                 D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
                 rtvDesc.Format = m_dxgiFormat;
 
-                if (m_desc.arraySize > 1)
+                if (rtvCount > 1)
                 {
                     rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
                     rtvDesc.Texture2DArray.FirstArraySlice = i;
@@ -678,9 +686,13 @@ namespace RVX
 
         DXGI_FORMAT dxgiFormat = ToDXGIFormat(m_format);
         RHITextureUsage usage = texture->GetUsage();
+        const uint32 mipCount = (desc.subresourceRange.mipLevelCount == 0 || desc.subresourceRange.mipLevelCount == RVX_ALL_MIPS)
+            ? texture->GetMipLevels() - desc.subresourceRange.baseMipLevel
+            : desc.subresourceRange.mipLevelCount;
+        const uint32 arrayLayerCount = ResolveTextureArrayLayerCount(*texture, desc.subresourceRange);
 
         // Create SRV for shader resource textures
-        if (HasFlag(usage, RHITextureUsage::ShaderResource) || 
+        if (HasFlag(usage, RHITextureUsage::ShaderResource) ||
             HasFlag(usage, RHITextureUsage::RenderTarget))  // RT textures may also be sampled
         {
             DXGI_FORMAT srvFormat = dxgiFormat;
@@ -694,11 +706,46 @@ namespace RVX
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
             srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
             srvDesc.Format = srvFormat;
-            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            srvDesc.Texture2D.MostDetailedMip = desc.subresourceRange.baseMipLevel;
-            srvDesc.Texture2D.MipLevels = desc.subresourceRange.mipLevelCount == RVX_ALL_MIPS
-                ? texture->GetMipLevels() - desc.subresourceRange.baseMipLevel
-                : desc.subresourceRange.mipLevelCount;
+            switch (texture->GetDimension())
+            {
+                case RHITextureDimension::TextureCube:
+                    if (arrayLayerCount > 6)
+                    {
+                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+                        srvDesc.TextureCubeArray.MostDetailedMip = desc.subresourceRange.baseMipLevel;
+                        srvDesc.TextureCubeArray.MipLevels = mipCount;
+                        srvDesc.TextureCubeArray.First2DArrayFace = desc.subresourceRange.baseArrayLayer;
+                        srvDesc.TextureCubeArray.NumCubes = arrayLayerCount / 6;
+                    }
+                    else
+                    {
+                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                        srvDesc.TextureCube.MostDetailedMip = desc.subresourceRange.baseMipLevel;
+                        srvDesc.TextureCube.MipLevels = mipCount;
+                    }
+                    break;
+                case RHITextureDimension::Texture2D:
+                    if (arrayLayerCount > 1)
+                    {
+                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+                        srvDesc.Texture2DArray.MostDetailedMip = desc.subresourceRange.baseMipLevel;
+                        srvDesc.Texture2DArray.MipLevels = mipCount;
+                        srvDesc.Texture2DArray.FirstArraySlice = desc.subresourceRange.baseArrayLayer;
+                        srvDesc.Texture2DArray.ArraySize = arrayLayerCount;
+                    }
+                    else
+                    {
+                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                        srvDesc.Texture2D.MostDetailedMip = desc.subresourceRange.baseMipLevel;
+                        srvDesc.Texture2D.MipLevels = mipCount;
+                    }
+                    break;
+                default:
+                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    srvDesc.Texture2D.MostDetailedMip = desc.subresourceRange.baseMipLevel;
+                    srvDesc.Texture2D.MipLevels = mipCount;
+                    break;
+            }
 
             d3dDevice->CreateShaderResourceView(dx12Texture->GetResource(), &srvDesc, m_srvHandle.cpuHandle);
         }
@@ -711,14 +758,12 @@ namespace RVX
             D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
             rtvDesc.Format = dxgiFormat;
             
-            if (texture->GetArraySize() > 1)
+            if (arrayLayerCount > 1 || texture->GetDimension() == RHITextureDimension::TextureCube)
             {
                 rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
                 rtvDesc.Texture2DArray.MipSlice = desc.subresourceRange.baseMipLevel;
                 rtvDesc.Texture2DArray.FirstArraySlice = desc.subresourceRange.baseArrayLayer;
-                rtvDesc.Texture2DArray.ArraySize = desc.subresourceRange.arrayLayerCount == RVX_ALL_LAYERS
-                    ? texture->GetArraySize() - desc.subresourceRange.baseArrayLayer
-                    : desc.subresourceRange.arrayLayerCount;
+                rtvDesc.Texture2DArray.ArraySize = arrayLayerCount;
             }
             else
             {
@@ -766,14 +811,12 @@ namespace RVX
             D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
             uavDesc.Format = dxgiFormat;
 
-            if (texture->GetArraySize() > 1)
+            if (arrayLayerCount > 1 || texture->GetDimension() == RHITextureDimension::TextureCube)
             {
                 uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
                 uavDesc.Texture2DArray.MipSlice = desc.subresourceRange.baseMipLevel;
                 uavDesc.Texture2DArray.FirstArraySlice = desc.subresourceRange.baseArrayLayer;
-                uavDesc.Texture2DArray.ArraySize = desc.subresourceRange.arrayLayerCount == RVX_ALL_LAYERS
-                    ? texture->GetArraySize() - desc.subresourceRange.baseArrayLayer
-                    : desc.subresourceRange.arrayLayerCount;
+                uavDesc.Texture2DArray.ArraySize = arrayLayerCount;
             }
             else
             {
@@ -1116,9 +1159,12 @@ namespace RVX
                 resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.arraySize);
                 break;
             case RHITextureDimension::Texture2D:
-            case RHITextureDimension::TextureCube:
                 resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
                 resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.arraySize);
+                break;
+            case RHITextureDimension::TextureCube:
+                resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                resourceDesc.DepthOrArraySize = static_cast<UINT16>(GetTexturePhysicalLayerCount(desc));
                 break;
             case RHITextureDimension::Texture3D:
                 resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;

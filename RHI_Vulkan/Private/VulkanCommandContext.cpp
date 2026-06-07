@@ -3,6 +3,7 @@
 #include "VulkanResources.h"
 #include "VulkanPipeline.h"
 #include "VulkanSwapChain.h"
+#include "RHI/RHITexture.h"
 
 #include <utility>
 
@@ -492,16 +493,18 @@ namespace RVX
 
         auto* vkSrc = static_cast<VulkanTexture*>(src);
         auto* vkDst = static_cast<VulkanTexture*>(dst);
+        const auto srcSubresource = DecodeTextureSubresource(desc.srcSubresource, src->GetMipLevels());
+        const auto dstSubresource = DecodeTextureSubresource(desc.dstSubresource, dst->GetMipLevels());
 
         VkImageCopy copyRegion = {};
         copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copyRegion.srcSubresource.mipLevel = desc.srcSubresource;
-        copyRegion.srcSubresource.baseArrayLayer = 0;
+        copyRegion.srcSubresource.mipLevel = srcSubresource.mipLevel;
+        copyRegion.srcSubresource.baseArrayLayer = srcSubresource.physicalLayer;
         copyRegion.srcSubresource.layerCount = 1;
         copyRegion.srcOffset = {static_cast<int32>(desc.srcX), static_cast<int32>(desc.srcY), static_cast<int32>(desc.srcZ)};
         copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copyRegion.dstSubresource.mipLevel = desc.dstSubresource;
-        copyRegion.dstSubresource.baseArrayLayer = 0;
+        copyRegion.dstSubresource.mipLevel = dstSubresource.mipLevel;
+        copyRegion.dstSubresource.baseArrayLayer = dstSubresource.physicalLayer;
         copyRegion.dstSubresource.layerCount = 1;
         copyRegion.dstOffset = {static_cast<int32>(desc.dstX), static_cast<int32>(desc.dstY), static_cast<int32>(desc.dstZ)};
         copyRegion.extent = {desc.width ? desc.width : src->GetWidth(),
@@ -521,14 +524,16 @@ namespace RVX
 
         auto* vkSrc = static_cast<VulkanBuffer*>(src);
         auto* vkDst = static_cast<VulkanTexture*>(dst);
+        const auto subresource = DecodeTextureSubresource(desc.textureSubresource, dst->GetMipLevels());
+        const uint32 bytesPerPixel = GetFormatBytesPerPixel(dst->GetFormat());
 
         VkBufferImageCopy copyRegion = {};
         copyRegion.bufferOffset = desc.bufferOffset;
-        copyRegion.bufferRowLength = desc.bufferRowPitch;
+        copyRegion.bufferRowLength = (desc.bufferRowPitch != 0 && bytesPerPixel != 0) ? desc.bufferRowPitch / bytesPerPixel : 0;
         copyRegion.bufferImageHeight = desc.bufferImageHeight;
         copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copyRegion.imageSubresource.mipLevel = desc.textureSubresource;
-        copyRegion.imageSubresource.baseArrayLayer = 0;
+        copyRegion.imageSubresource.mipLevel = subresource.mipLevel;
+        copyRegion.imageSubresource.baseArrayLayer = subresource.physicalLayer;
         copyRegion.imageSubresource.layerCount = 1;
         copyRegion.imageOffset = {static_cast<int32>(desc.textureRegion.x),
                                   static_cast<int32>(desc.textureRegion.y),
@@ -548,14 +553,16 @@ namespace RVX
 
         auto* vkSrc = static_cast<VulkanTexture*>(src);
         auto* vkDst = static_cast<VulkanBuffer*>(dst);
+        const auto subresource = DecodeTextureSubresource(desc.textureSubresource, src->GetMipLevels());
+        const uint32 bytesPerPixel = GetFormatBytesPerPixel(src->GetFormat());
 
         VkBufferImageCopy copyRegion = {};
         copyRegion.bufferOffset = desc.bufferOffset;
-        copyRegion.bufferRowLength = desc.bufferRowPitch;
+        copyRegion.bufferRowLength = (desc.bufferRowPitch != 0 && bytesPerPixel != 0) ? desc.bufferRowPitch / bytesPerPixel : 0;
         copyRegion.bufferImageHeight = desc.bufferImageHeight;
         copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copyRegion.imageSubresource.mipLevel = desc.textureSubresource;
-        copyRegion.imageSubresource.baseArrayLayer = 0;
+        copyRegion.imageSubresource.mipLevel = subresource.mipLevel;
+        copyRegion.imageSubresource.baseArrayLayer = subresource.physicalLayer;
         copyRegion.imageSubresource.layerCount = 1;
         copyRegion.imageOffset = {static_cast<int32>(desc.textureRegion.x),
                                   static_cast<int32>(desc.textureRegion.y),

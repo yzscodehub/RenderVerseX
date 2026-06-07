@@ -91,6 +91,11 @@ namespace
         void Unmap() override {}
         uint64 GetSize() const override { return m_desc.size; }
         RHIBuffer* GetBuffer() const override { return m_buffer.Get(); }
+        const std::vector<uint8>& GetStorage() const
+        {
+            auto* fakeBuffer = static_cast<FakeBuffer*>(m_buffer.Get());
+            return fakeBuffer->GetStorage();
+        }
 
     private:
         RHIStagingBufferDesc m_desc;
@@ -114,6 +119,7 @@ namespace
         RHITexture* lastTextureCopyDst = nullptr;
         uint64 lastCopySize = 0;
         RHIBufferTextureCopyDesc lastBufferTextureCopyDesc;
+        std::vector<RHIBufferTextureCopyDesc> bufferTextureCopyDescs;
 
         void Begin() override { ++beginCount; }
         void End() override { ++endCount; }
@@ -170,6 +176,7 @@ namespace
             lastCopySrc = src;
             lastTextureCopyDst = dst;
             lastBufferTextureCopyDesc = desc;
+            bufferTextureCopyDescs.push_back(desc);
         }
         void CopyTextureToBuffer(RHITexture*, RHIBuffer*, const RHIBufferTextureCopyDesc&) override {}
         void BeginQuery(RHIQueryPool*, uint32) override {}
@@ -219,6 +226,7 @@ namespace
         RHITextureRef CreateTexture(const RHITextureDesc& desc) override
         {
             ++createdTextureCount;
+            lastCreatedTextureDesc = desc;
             if (failTextureCreation)
                 return nullptr;
 
@@ -294,7 +302,10 @@ namespace
             if (!supportStagedCopy)
                 return nullptr;
 
-            return RHIStagingBufferRef(new FakeStagingBuffer(desc, stagingMapSucceeds));
+            auto staging = RHIStagingBufferRef(new FakeStagingBuffer(desc, stagingMapSucceeds));
+            lastStagingBuffer = static_cast<FakeStagingBuffer*>(staging.Get());
+            retainedStagingBuffers.push_back(staging);
+            return staging;
         }
         RHIRingBufferRef CreateRingBuffer(const RHIRingBufferDesc&) override { return nullptr; }
         RHIMemoryStats GetMemoryStats() const override { return {}; }
@@ -317,12 +328,15 @@ namespace
         bool stagingMapSucceeds = true;
         bool completeSubmittedFenceImmediately = false;
         FakeCommandContext* lastCommandContext = nullptr;
+        FakeStagingBuffer* lastStagingBuffer = nullptr;
         FakeFence* lastFence = nullptr;
         std::vector<FakeFence*> fences;
         RHIFence* lastSubmittedFence = nullptr;
         RHICommandContextRef retainedCommandContext;
+        std::vector<RHIStagingBufferRef> retainedStagingBuffers;
         std::vector<RHIFenceRef> retainedFences;
         RHICapabilities capabilities;
+        RHITextureDesc lastCreatedTextureDesc;
     };
 
     std::unique_ptr<Resource::MeshResource> CreateMeshResource(Resource::ResourceId id, std::shared_ptr<Mesh> mesh)
@@ -1098,6 +1112,137 @@ TEST(GPUResourceManagerValidation, MismatchedTextureDataSizeFailsWithoutCreating
     manager.Shutdown();
 }
 
+TEST(GPUResourceManagerValidation, CubemapTextureUploadsAsSingleRHICube)
+{
+    FakeDevice device;
+    device.supportStagedCopy = true;
+    device.completeSubmittedFenceImmediately = true;
+
+    GPUResourceManager manager;
+    manager.Initialize(&device);
+
+    Resource::TextureMetadata metadata;
+    metadata.width = 1;
+    metadata.height = 1;
+    metadata.depth = 1;
+    metadata.mipLevels = 1;
+    metadata.arrayLayers = 6;
+    metadata.format = Resource::TextureFormat::RGBA32F;
+    metadata.isCubemap = true;
+    metadata.isSRGB = false;
+
+    std::vector<uint8> pixels(6 * 16, 42);
+    auto texture = CreateTextureResourceWithMetadata(120, metadata, pixels);
+
+    manager.UploadImmediate(texture.get());
+
+    EXPECT_EQ(manager.GetResourceState(texture->GetId()), GPUResourceState::GPUReady);
+    EXPECT_TRUE(manager.IsResident(texture->GetId()));
+    EXPECT_EQ(device.createdTextureCount, 1u);
+    EXPECT_EQ(device.lastCreatedTextureDesc.dimension, RHITextureDimension::TextureCube);
+    EXPECT_EQ(device.lastCreatedTextureDesc.arraySize, 1u);
+    EXPECT_EQ(device.lastCreatedTextureDesc.mipLevels, 1u);
+    EXPECT_EQ(device.lastCreatedTextureDesc.format, RHIFormat::RGBA32_FLOAT);
+    ASSERT_NE(nullptr, device.lastCommandContext);
+    ASSERT_EQ(device.lastCommandContext->bufferTextureCopyDescs.size(), 6u);
+    for (uint32 physicalLayer = 0; physicalLayer < 6; ++physicalLayer)
+    {
+        EXPECT_EQ(device.lastCommandContext->bufferTextureCopyDescs[physicalLayer].textureSubresource,
+                  EncodeTextureSubresource(0, physicalLayer, 1));
+    }
+
+    manager.Shutdown();
+}
+
+TEST(GPUResourceManagerValidation, TextureArrayMetadataUploadsAsTexture2DArray)
+{
+    FakeDevice device;
+    device.supportStagedCopy = true;
+    device.completeSubmittedFenceImmediately = true;
+
+    GPUResourceManager manager;
+    manager.Initialize(&device);
+
+    Resource::TextureMetadata metadata;
+    metadata.width = 1;
+    metadata.height = 1;
+    metadata.depth = 1;
+    metadata.mipLevels = 1;
+    metadata.arrayLayers = 2;
+    metadata.format = Resource::TextureFormat::RGBA8;
+    metadata.isArray = true;
+    metadata.isSRGB = false;
+
+    auto texture = CreateTextureResourceWithMetadata(122, metadata, {1, 2, 3, 4, 5, 6, 7, 8});
+    manager.UploadImmediate(texture.get());
+
+    EXPECT_EQ(manager.GetResourceState(texture->GetId()), GPUResourceState::GPUReady);
+    EXPECT_EQ(device.lastCreatedTextureDesc.dimension, RHITextureDimension::Texture2D);
+    EXPECT_EQ(device.lastCreatedTextureDesc.arraySize, 2u);
+    ASSERT_NE(nullptr, device.lastCommandContext);
+    ASSERT_EQ(device.lastCommandContext->bufferTextureCopyDescs.size(), 2u);
+    EXPECT_EQ(device.lastCommandContext->bufferTextureCopyDescs[0].textureSubresource, 0u);
+    EXPECT_EQ(device.lastCommandContext->bufferTextureCopyDescs[1].textureSubresource, 1u);
+
+    manager.Shutdown();
+}
+
+TEST(GPUResourceManagerValidation, MippedCubemapDataIsRepackedToRHIFlatOrder)
+{
+    FakeDevice device;
+    device.supportStagedCopy = true;
+
+    GPUResourceManager manager;
+    manager.Initialize(&device);
+
+    Resource::TextureMetadata metadata;
+    metadata.width = 2;
+    metadata.height = 2;
+    metadata.depth = 1;
+    metadata.mipLevels = 2;
+    metadata.arrayLayers = 6;
+    metadata.format = Resource::TextureFormat::RGBA8;
+    metadata.isCubemap = true;
+    metadata.isSRGB = false;
+
+    std::vector<uint8> pixels;
+    pixels.reserve(120);
+    for (uint32 mipLevel = 0; mipLevel < 2; ++mipLevel)
+    {
+        const uint32 mipSize = mipLevel == 0 ? 16u : 4u;
+        for (uint32 face = 0; face < 6; ++face)
+        {
+            pixels.insert(pixels.end(), mipSize, static_cast<uint8>((mipLevel == 0 ? 10 : 100) + face));
+        }
+    }
+
+    auto texture = CreateTextureResourceWithMetadata(121, metadata, pixels);
+    manager.UploadImmediate(texture.get());
+
+    ASSERT_EQ(manager.GetResourceState(texture->GetId()), GPUResourceState::GPUReady);
+    ASSERT_NE(nullptr, device.lastCommandContext);
+    ASSERT_NE(nullptr, device.lastStagingBuffer);
+    ASSERT_EQ(device.lastCommandContext->bufferTextureCopyDescs.size(), 12u);
+
+    const auto& storage = device.lastStagingBuffer->GetStorage();
+    const auto& face0Mip0 = device.lastCommandContext->bufferTextureCopyDescs[0];
+    const auto& face0Mip1 = device.lastCommandContext->bufferTextureCopyDescs[1];
+    const auto& face1Mip0 = device.lastCommandContext->bufferTextureCopyDescs[2];
+    const auto& face1Mip1 = device.lastCommandContext->bufferTextureCopyDescs[3];
+
+    EXPECT_EQ(face0Mip0.textureSubresource, EncodeTextureSubresource(0, 0, 2));
+    EXPECT_EQ(face0Mip1.textureSubresource, EncodeTextureSubresource(1, 0, 2));
+    EXPECT_EQ(face1Mip0.textureSubresource, EncodeTextureSubresource(0, 1, 2));
+    EXPECT_EQ(face1Mip1.textureSubresource, EncodeTextureSubresource(1, 1, 2));
+
+    EXPECT_EQ(storage[static_cast<size_t>(face0Mip0.bufferOffset)], 10u);
+    EXPECT_EQ(storage[static_cast<size_t>(face0Mip1.bufferOffset)], 100u);
+    EXPECT_EQ(storage[static_cast<size_t>(face1Mip0.bufferOffset)], 11u);
+    EXPECT_EQ(storage[static_cast<size_t>(face1Mip1.bufferOffset)], 101u);
+
+    manager.Shutdown();
+}
+
 TEST(GPUResourceManagerValidation, UnsupportedTextureLayoutsFailWithoutCreatingTexture)
 {
     struct UnsupportedCase
@@ -1124,6 +1269,7 @@ TEST(GPUResourceManagerValidation, UnsupportedTextureLayoutsFailWithoutCreatingT
     {
         auto metadata = makeMetadata();
         metadata.isCubemap = true;
+        metadata.arrayLayers = 5;
         cases.push_back({"cubemap", metadata, {1, 2, 3, 4}});
     }
     {
@@ -1133,19 +1279,14 @@ TEST(GPUResourceManagerValidation, UnsupportedTextureLayoutsFailWithoutCreatingT
     }
     {
         auto metadata = makeMetadata();
+        metadata.format = Resource::TextureFormat::RGB8;
         metadata.mipLevels = 2;
-        cases.push_back({"mip-chain", metadata, {1, 2, 3, 4}});
+        cases.push_back({"rgb8-mip-chain", metadata, {1, 2, 3, 4}});
     }
     {
         auto metadata = makeMetadata();
         metadata.arrayLayers = 2;
-        metadata.isArray = true;
-        cases.push_back({"array", metadata, {1, 2, 3, 4, 5, 6, 7, 8}});
-    }
-    {
-        auto metadata = makeMetadata();
-        metadata.isArray = true;
-        cases.push_back({"array-flag-single-layer", metadata, {1, 2, 3, 4}});
+        cases.push_back({"array-layers-without-array-flag", metadata, {1, 2, 3, 4, 5, 6, 7, 8}});
     }
     {
         auto metadata = makeMetadata();

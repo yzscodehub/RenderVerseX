@@ -270,9 +270,9 @@ namespace RVX
         ++OpenGLDebug::Get().GetStats().texturesCreated;
 
         // Estimate memory size
-        uint64 textureSize = static_cast<uint64>(desc.width) * desc.height * 
-                            GetFormatBytesPerPixel(desc.format) * 
-                            std::max(1u, desc.arraySize) * std::max(1u, desc.depth);
+        uint64 textureSize = static_cast<uint64>(desc.width) * desc.height *
+                            GetFormatBytesPerPixel(desc.format) *
+                            GetTexturePhysicalLayerCount(desc) * std::max(1u, desc.depth);
         OpenGLDebug::Get().SetResourceSize(m_texture, GLResourceType::Texture, textureSize);
         OpenGLDebug::Get().GetStats().totalTextureMemory += textureSize;
 
@@ -345,13 +345,14 @@ namespace RVX
         const auto& texDesc = texture->GetDesc();
         const auto& sr = desc.subresourceRange;
         
-        uint32 mipCount = (sr.mipLevelCount == RVX_ALL_MIPS) ? texDesc.mipLevels : sr.mipLevelCount;
-        uint32 arrayCount = (sr.arrayLayerCount == RVX_ALL_LAYERS) ? texDesc.arraySize : sr.arrayLayerCount;
+        const uint32 physicalLayerCount = GetTexturePhysicalLayerCount(texDesc);
+        uint32 mipCount = (sr.mipLevelCount == RVX_ALL_MIPS) ? texDesc.mipLevels - sr.baseMipLevel : sr.mipLevelCount;
+        uint32 arrayCount = (sr.arrayLayerCount == RVX_ALL_LAYERS) ? physicalLayerCount - sr.baseArrayLayer : sr.arrayLayerCount;
         
         bool needsView = (sr.baseMipLevel != 0 || 
                          mipCount != texDesc.mipLevels ||
                          sr.baseArrayLayer != 0 ||
-                         arrayCount != texDesc.arraySize ||
+                         arrayCount != physicalLayerCount ||
                          m_desc.format != texDesc.format);
 
         if (!needsView)
@@ -364,7 +365,8 @@ namespace RVX
         }
 
         // Create a texture view
-        m_target = ToGLTextureTarget(texDesc.dimension, arrayCount > 1, false);
+        const bool isArrayView = texDesc.dimension == RHITextureDimension::TextureCube ? arrayCount > 6 : arrayCount > 1;
+        m_target = ToGLTextureTarget(texDesc.dimension, isArrayView, false);
         auto glFormat = ToGLFormat(m_desc.format);
 
         GL_CHECK(glGenTextures(1, &m_textureView));

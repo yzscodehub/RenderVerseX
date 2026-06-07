@@ -6,6 +6,7 @@
 #include "DX12Query.h"
 #include "DX12Upload.h"
 #include "Core/Log.h"
+#include "RHI/RHITexture.h"
 
 namespace RVX
 {
@@ -901,9 +902,12 @@ namespace RVX
                 resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.arraySize);
                 break;
             case RHITextureDimension::Texture2D:
-            case RHITextureDimension::TextureCube:
                 resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
                 resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.arraySize);
+                break;
+            case RHITextureDimension::TextureCube:
+                resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                resourceDesc.DepthOrArraySize = static_cast<UINT16>(GetTexturePhysicalLayerCount(desc));
                 break;
             case RHITextureDimension::Texture3D:
                 resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;

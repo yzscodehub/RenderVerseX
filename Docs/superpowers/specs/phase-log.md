@@ -2489,6 +2489,97 @@ git diff --check
 
 ---
 
+### R-SP: `RQ2a - RHI Cubemap Subresource and Upload Foundation`
+
+**Date:** 2026-06-07
+**Commit:** pending in this commit
+**Spark plan review agent:** Russell / Heisenberg (`gpt-5.3-codex-spark`)
+**Spark code review agent:** Heisenberg (`gpt-5.3-codex-spark`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-07-rq2a-rhi-cubemap-upload-foundation-plan.md`
+- Section: full document, especially §1.1 Binding Indexing Contract and §1.2 Blocker Resolution Order
+- Lines checked: current RQ2a plan before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: `RQ1 - HDR Scene Color and ToneMapping Format Split`
+- Evidence: RQ1 committed as `2a2c7bd feat(render): render scene color in HDR before tonemap`; RQ2a plan reviewed by Spark before implementation.
+
+**Approved scope:**
+
+- Define RHI texture physical-layer/subresource helpers and document `TextureCube.arraySize` as cube count.
+- Align DX11/DX12/Vulkan/Metal/OpenGL cubemap creation, view, memory-requirement, and copy paths with physical-layer subresource decoding.
+- Extend staged texture upload to multi-mip, array, and cubemap payloads with aligned rows and per-subresource copy descriptors.
+- Extend GPU resource texture preparation to accept valid 2D arrays and cubemaps, and repack mipped cubemap CPU data into RHI flat layer-major/mip-minor order.
+- Update validation tests for helper contracts, multi-subresource copy descriptors, cubemap/array upload, mipped cubemap repacking, and continued honest rejection of invalid layouts.
+
+**Out of scope:**
+
+- Shader-side cubemap IBL sampling.
+- Material descriptor binding for irradiance, prefiltered environment, or BRDF LUT resources.
+- GPU IBL convolution passes, skybox rendering, compressed texture upload, 3D texture upload, and visual golden changes.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-07-rq2a-rhi-cubemap-upload-foundation-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `RHI/Include/RHI/RHICommandContext.h`
+- `RHI/Include/RHI/RHITexture.h`
+- `RHI_DX11/Private/DX11Resources.cpp`
+- `RHI_DX12/Private/DX12Device.cpp`
+- `RHI_DX12/Private/DX12Resources.cpp`
+- `RHI_Metal/Private/MetalCommandContext.mm`
+- `RHI_Metal/Private/MetalDevice.mm`
+- `RHI_Metal/Private/MetalResources.mm`
+- `RHI_OpenGL/Private/OpenGLCommandContext.cpp`
+- `RHI_OpenGL/Private/OpenGLResources.cpp`
+- `RHI_Vulkan/Private/VulkanCommandContext.cpp`
+- `RHI_Vulkan/Private/VulkanDevice.cpp`
+- `RHI_Vulkan/Private/VulkanResources.cpp`
+- `Render/Private/GPUResourceManager.cpp`
+- `Render/Private/GPUUploadService.cpp`
+- `Tests/GPUResourceManagerValidation/main.cpp`
+- `Tests/GPUUploadServiceValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target ModelViewer GPUUploadServiceValidation GPUResourceManagerValidation RenderPassValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "GPUUploadServiceValidation|GPUResourceManagerValidation|RenderPassValidation|RenderGraphValidation|RenderHonestyValidation|RenderSceneValidation|MaterialSystemValidation|PipelineCacheValidation|ClusteredLightingValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Tests: PASS, 189/189 selected tests passed.
+- Visual gate: PASS, `ModelViewerSmoke` and `VisualGoldenValidation` passed.
+
+**Artifacts:**
+
+- Logs: terminal build, ctest, and `git diff --check` output in this thread.
+- Screenshots: none.
+- Diffs: current RQ2a working tree diff before commit.
+
+**Spark plan review result:**
+
+- Verdict: PASS after plan revision.
+- Blockers resolved: explicit cube-count vs physical-layer contract, backend copy-path decode order, Metal cube-array type handling, and HDR loader mip-major/face-major repack strategy were added to the plan before implementation.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none. Non-blocking OpenGLTextureView physical-layer note was adopted and re-confirmed by Spark as PASS.
+
+**Notes / follow-ups:**
+
+- RQ2a only makes cubemap/array/mip resources uploadable and viewable; real IBL descriptor binding and shader sampling remain a later stage.
+- Metal changes were made according to the shared RHI contract but were not compiled on this Windows build host.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

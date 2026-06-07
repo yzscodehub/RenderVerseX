@@ -233,7 +233,7 @@ namespace RVX
         imageInfo.extent.height = desc.height;
         imageInfo.extent.depth = desc.depth;
         imageInfo.mipLevels = desc.mipLevels;
-        imageInfo.arrayLayers = desc.arraySize;
+        imageInfo.arrayLayers = GetTexturePhysicalLayerCount(desc);
         imageInfo.format = ToVkFormat(desc.format);
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -333,7 +333,7 @@ namespace RVX
                 viewInfo.viewType = VK_IMAGE_VIEW_TYPE_3D;
                 break;
             case RHITextureDimension::TextureCube:
-                viewInfo.viewType = (desc.subresourceRange.arrayLayerCount > 6) ?
+                viewInfo.viewType = (ResolveTextureArrayLayerCount(*texture, desc.subresourceRange) > 6) ?
                     VK_IMAGE_VIEW_TYPE_CUBE_ARRAY : VK_IMAGE_VIEW_TYPE_CUBE;
                 break;
         }
@@ -756,7 +756,7 @@ namespace RVX
         imageInfo.extent.height = desc.height;
         imageInfo.extent.depth = desc.depth;
         imageInfo.mipLevels = desc.mipLevels;
-        imageInfo.arrayLayers = desc.arraySize;
+        imageInfo.arrayLayers = GetTexturePhysicalLayerCount(desc);
         imageInfo.format = ToVkFormat(desc.format);
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;

@@ -206,7 +206,7 @@ namespace RVX
                 texDesc.textureType = MTLTextureType3D;
                 break;
             case RHITextureDimension::TextureCube:
-                texDesc.textureType = MTLTextureTypeCube;
+                texDesc.textureType = desc.arraySize > 1 ? MTLTextureTypeCubeArray : MTLTextureTypeCube;
                 break;
         }
 

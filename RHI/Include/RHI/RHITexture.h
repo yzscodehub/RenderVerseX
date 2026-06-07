@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RHI/RHIResources.h"
+#include <algorithm>
 
 namespace RVX
 {
@@ -13,6 +14,8 @@ namespace RVX
         uint32 height = 1;
         uint32 depth = 1;
         uint32 mipLevels = 1;
+        /// Logical array element count. For TextureCube this is cube count;
+        /// use GetTexturePhysicalLayerCount() when native API code needs face layers.
         uint32 arraySize = 1;
         RHIFormat format = RHIFormat::RGBA8_UNORM;
         RHITextureUsage usage = RHITextureUsage::ShaderResource;
@@ -80,6 +83,69 @@ namespace RVX
             return mipLevel + arraySlice * GetMipLevels();
         }
     };
+
+    struct RHITextureSubresource
+    {
+        uint32 mipLevel = 0;
+        uint32 physicalLayer = 0;
+    };
+
+    inline uint32 GetTexturePhysicalLayerCount(const RHITextureDesc& desc)
+    {
+        const uint32 logicalLayers = desc.dimension == RHITextureDimension::Texture3D ? 1u : std::max(1u, desc.arraySize);
+        return desc.dimension == RHITextureDimension::TextureCube ? logicalLayers * 6u : logicalLayers;
+    }
+
+    inline uint32 GetTexturePhysicalLayerCount(const RHITexture& texture)
+    {
+        const uint32 logicalLayers = texture.GetDimension() == RHITextureDimension::Texture3D ? 1u : std::max(1u, texture.GetArraySize());
+        return texture.GetDimension() == RHITextureDimension::TextureCube ? logicalLayers * 6u : logicalLayers;
+    }
+
+    inline uint32 GetTextureSubresourceCount(const RHITextureDesc& desc)
+    {
+        return std::max(1u, desc.mipLevels) * GetTexturePhysicalLayerCount(desc);
+    }
+
+    inline uint32 GetTextureSubresourceCount(const RHITexture& texture)
+    {
+        return std::max(1u, texture.GetMipLevels()) * GetTexturePhysicalLayerCount(texture);
+    }
+
+    inline uint32 EncodeTextureSubresource(uint32 mipLevel, uint32 physicalLayer, uint32 mipLevels)
+    {
+        return mipLevel + physicalLayer * std::max(1u, mipLevels);
+    }
+
+    inline RHITextureSubresource DecodeTextureSubresource(uint32 subresource, uint32 mipLevels)
+    {
+        const uint32 mipCount = std::max(1u, mipLevels);
+        return RHITextureSubresource{subresource % mipCount, subresource / mipCount};
+    }
+
+    inline uint32 ResolveTextureMipLevelCount(const RHITextureDesc& desc, const RHISubresourceRange& range)
+    {
+        if (range.mipLevelCount == 0 || range.mipLevelCount == RVX_ALL_MIPS)
+            return std::max(1u, desc.mipLevels) - range.baseMipLevel;
+
+        return range.mipLevelCount;
+    }
+
+    inline uint32 ResolveTextureArrayLayerCount(const RHITextureDesc& desc, const RHISubresourceRange& range)
+    {
+        if (range.arrayLayerCount == 0 || range.arrayLayerCount == RVX_ALL_LAYERS)
+            return GetTexturePhysicalLayerCount(desc) - range.baseArrayLayer;
+
+        return range.arrayLayerCount;
+    }
+
+    inline uint32 ResolveTextureArrayLayerCount(const RHITexture& texture, const RHISubresourceRange& range)
+    {
+        if (range.arrayLayerCount == 0 || range.arrayLayerCount == RVX_ALL_LAYERS)
+            return GetTexturePhysicalLayerCount(texture) - range.baseArrayLayer;
+
+        return range.arrayLayerCount;
+    }
 
     // =============================================================================
     // Texture View Description

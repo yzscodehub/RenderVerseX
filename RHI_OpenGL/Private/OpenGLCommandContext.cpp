@@ -5,6 +5,7 @@
 #include "OpenGLConversions.h"
 #include "OpenGLQuery.h"
 #include "Core/Log.h"
+#include "RHI/RHITexture.h"
 #include <algorithm>
 
 namespace RVX
@@ -907,10 +908,10 @@ namespace RVX
         auto* srcGL = static_cast<OpenGLTexture*>(src);
         auto* dstGL = static_cast<OpenGLTexture*>(dst);
 
-        // Extract mip level from subresource index
-        // Subresource = mipLevel + (arrayLayer * mipLevels)
-        uint32 srcMipLevel = desc.srcSubresource % srcGL->GetMipLevels();
-        uint32 dstMipLevel = desc.dstSubresource % dstGL->GetMipLevels();
+        const auto srcSubresource = DecodeTextureSubresource(desc.srcSubresource, srcGL->GetMipLevels());
+        const auto dstSubresource = DecodeTextureSubresource(desc.dstSubresource, dstGL->GetMipLevels());
+        uint32 srcMipLevel = srcSubresource.mipLevel;
+        uint32 dstMipLevel = dstSubresource.mipLevel;
 
         // Calculate dimensions at the specified mip level if not provided
         uint32 srcMipWidth = std::max(1u, srcGL->GetWidth() >> srcMipLevel);
@@ -921,11 +922,21 @@ namespace RVX
         uint32 height = desc.height > 0 ? desc.height : srcMipHeight;
         uint32 depth = desc.depth > 0 ? desc.depth : srcMipDepth;
 
+        uint32 srcZ = srcGL->GetDimension() == RHITextureDimension::Texture3D ?
+            desc.srcZ : desc.srcZ + srcSubresource.physicalLayer;
+        uint32 dstZ = dstGL->GetDimension() == RHITextureDimension::Texture3D ?
+            desc.dstZ : desc.dstZ + dstSubresource.physicalLayer;
+        if (srcGL->GetDimension() != RHITextureDimension::Texture3D &&
+            dstGL->GetDimension() != RHITextureDimension::Texture3D)
+        {
+            depth = desc.depth > 0 ? desc.depth : 1;
+        }
+
         GL_CHECK(glCopyImageSubData(
-            srcGL->GetHandle(), srcGL->GetTarget(), static_cast<GLint>(srcMipLevel), 
-            desc.srcX, desc.srcY, desc.srcZ,
-            dstGL->GetHandle(), dstGL->GetTarget(), static_cast<GLint>(dstMipLevel), 
-            desc.dstX, desc.dstY, desc.dstZ,
+            srcGL->GetHandle(), srcGL->GetTarget(), static_cast<GLint>(srcMipLevel),
+            desc.srcX, desc.srcY, srcZ,
+            dstGL->GetHandle(), dstGL->GetTarget(), static_cast<GLint>(dstMipLevel),
+            desc.dstX, desc.dstY, dstZ,
             width, height, depth));
     }
 
@@ -935,20 +946,47 @@ namespace RVX
         auto* srcGL = static_cast<OpenGLBuffer*>(src);
         auto* dstGL = static_cast<OpenGLTexture*>(dst);
         auto glFormat = dstGL->GetGLFormat();
+        const auto subresource = DecodeTextureSubresource(desc.textureSubresource, dstGL->GetMipLevels());
 
         // Bind PBO for transfer
         GL_CHECK(glBindBuffer(GL_PIXEL_UNPACK_BUFFER, srcGL->GetHandle()));
 
         uint32 width = desc.textureRegion.width > 0 ? desc.textureRegion.width : dstGL->GetWidth();
         uint32 height = desc.textureRegion.height > 0 ? desc.textureRegion.height : dstGL->GetHeight();
+        uint32 bytesPerPixel = GetFormatBytesPerPixel(dstGL->GetFormat());
+        if (desc.bufferRowPitch > 0 && bytesPerPixel > 0)
+        {
+            GL_CHECK(glPixelStorei(GL_UNPACK_ROW_LENGTH, static_cast<GLint>(desc.bufferRowPitch / bytesPerPixel)));
+        }
+        if (desc.bufferImageHeight > 0)
+        {
+            GL_CHECK(glPixelStorei(GL_UNPACK_IMAGE_HEIGHT, static_cast<GLint>(desc.bufferImageHeight)));
+        }
 
-        GL_CHECK(glTextureSubImage2D(
-            dstGL->GetHandle(), 0,
-            desc.textureRegion.x, desc.textureRegion.y,
-            width, height,
-            glFormat.format, glFormat.type,
-            reinterpret_cast<const void*>(desc.bufferOffset)));
+        if (dstGL->GetDimension() == RHITextureDimension::Texture2D &&
+            GetTexturePhysicalLayerCount(*dstGL) == 1)
+        {
+            GL_CHECK(glTextureSubImage2D(
+                dstGL->GetHandle(), static_cast<GLint>(subresource.mipLevel),
+                desc.textureRegion.x, desc.textureRegion.y,
+                width, height,
+                glFormat.format, glFormat.type,
+                reinterpret_cast<const void*>(desc.bufferOffset)));
+        }
+        else
+        {
+            const uint32 zOffset = dstGL->GetDimension() == RHITextureDimension::Texture3D ?
+                desc.textureDepthSlice : subresource.physicalLayer;
+            GL_CHECK(glTextureSubImage3D(
+                dstGL->GetHandle(), static_cast<GLint>(subresource.mipLevel),
+                desc.textureRegion.x, desc.textureRegion.y, static_cast<GLint>(zOffset),
+                width, height, 1,
+                glFormat.format, glFormat.type,
+                reinterpret_cast<const void*>(desc.bufferOffset)));
+        }
 
+        GL_CHECK(glPixelStorei(GL_UNPACK_ROW_LENGTH, 0));
+        GL_CHECK(glPixelStorei(GL_UNPACK_IMAGE_HEIGHT, 0));
         GL_CHECK(glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0));
     }
 
@@ -958,21 +996,35 @@ namespace RVX
         auto* srcGL = static_cast<OpenGLTexture*>(src);
         auto* dstGL = static_cast<OpenGLBuffer*>(dst);
         auto glFormat = srcGL->GetGLFormat();
+        const auto subresource = DecodeTextureSubresource(desc.textureSubresource, srcGL->GetMipLevels());
 
         // Bind PBO for transfer
         GL_CHECK(glBindBuffer(GL_PIXEL_PACK_BUFFER, dstGL->GetHandle()));
 
         uint32 width = desc.textureRegion.width > 0 ? desc.textureRegion.width : srcGL->GetWidth();
         uint32 height = desc.textureRegion.height > 0 ? desc.textureRegion.height : srcGL->GetHeight();
+        uint32 bytesPerPixel = GetFormatBytesPerPixel(srcGL->GetFormat());
+        if (desc.bufferRowPitch > 0 && bytesPerPixel > 0)
+        {
+            GL_CHECK(glPixelStorei(GL_PACK_ROW_LENGTH, static_cast<GLint>(desc.bufferRowPitch / bytesPerPixel)));
+        }
+        if (desc.bufferImageHeight > 0)
+        {
+            GL_CHECK(glPixelStorei(GL_PACK_IMAGE_HEIGHT, static_cast<GLint>(desc.bufferImageHeight)));
+        }
+        const uint32 zOffset = srcGL->GetDimension() == RHITextureDimension::Texture3D ?
+            desc.textureDepthSlice : subresource.physicalLayer;
 
         GL_CHECK(glGetTextureSubImage(
-            srcGL->GetHandle(), 0,
-            desc.textureRegion.x, desc.textureRegion.y, 0,
+            srcGL->GetHandle(), static_cast<GLint>(subresource.mipLevel),
+            desc.textureRegion.x, desc.textureRegion.y, static_cast<GLint>(zOffset),
             width, height, 1,
             glFormat.format, glFormat.type,
             static_cast<GLsizei>(dstGL->GetSize() - desc.bufferOffset),
             reinterpret_cast<void*>(desc.bufferOffset)));
 
+        GL_CHECK(glPixelStorei(GL_PACK_ROW_LENGTH, 0));
+        GL_CHECK(glPixelStorei(GL_PACK_IMAGE_HEIGHT, 0));
         GL_CHECK(glBindBuffer(GL_PIXEL_PACK_BUFFER, 0));
     }
 

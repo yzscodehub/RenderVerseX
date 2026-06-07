@@ -1,6 +1,7 @@
 #include "DX11Resources.h"
 #include "DX11Device.h"
 #include "DX11Conversions.h"
+#include "RHI/RHITexture.h"
 
 namespace RVX
 {
@@ -660,17 +661,18 @@ namespace RVX
 
         RHITextureUsage usage = texture->GetUsage();
         RHITextureDimension dimension = texture->GetDimension();
+        uint32 baseMip = m_subresourceRange.baseMipLevel;
+        uint32 mipCount = (m_subresourceRange.mipLevelCount == 0 || m_subresourceRange.mipLevelCount == RVX_ALL_MIPS)
+            ? texture->GetMipLevels() - baseMip
+            : m_subresourceRange.mipLevelCount;
+        uint32 baseArray = m_subresourceRange.baseArrayLayer;
+        uint32 arraySize = ResolveTextureArrayLayerCount(*texture, m_subresourceRange);
 
         // Create SRV
         if (HasFlag(usage, RHITextureUsage::ShaderResource))
         {
             D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
             srvDesc.Format = isDepthFormat ? GetDepthSRVFormat(viewFormat) : viewFormat;
-
-            uint32 baseMip = m_subresourceRange.baseMipLevel;
-            uint32 mipCount = m_subresourceRange.mipLevelCount;
-            uint32 baseArray = m_subresourceRange.baseArrayLayer;
-            uint32 arraySize = m_subresourceRange.arrayLayerCount;
 
             switch (dimension)
             {
@@ -728,7 +730,7 @@ namespace RVX
                     break;
 
                 case RHITextureDimension::TextureCube:
-                    if (texture->GetArraySize() > 1)
+                    if (arraySize > 6)
                     {
                         srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBEARRAY;
                         srvDesc.TextureCubeArray.MostDetailedMip = baseMip;
@@ -763,17 +765,17 @@ namespace RVX
             {
                 case RHITextureDimension::Texture2D:
                 case RHITextureDimension::TextureCube:
-                    if (m_subresourceRange.arrayLayerCount > 1 || dimension == RHITextureDimension::TextureCube)
+                    if (arraySize > 1 || dimension == RHITextureDimension::TextureCube)
                     {
                         rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
-                        rtvDesc.Texture2DArray.MipSlice = m_subresourceRange.baseMipLevel;
-                        rtvDesc.Texture2DArray.FirstArraySlice = m_subresourceRange.baseArrayLayer;
-                        rtvDesc.Texture2DArray.ArraySize = m_subresourceRange.arrayLayerCount;
+                        rtvDesc.Texture2DArray.MipSlice = baseMip;
+                        rtvDesc.Texture2DArray.FirstArraySlice = baseArray;
+                        rtvDesc.Texture2DArray.ArraySize = arraySize;
                     }
                     else
                     {
                         rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-                        rtvDesc.Texture2D.MipSlice = m_subresourceRange.baseMipLevel;
+                        rtvDesc.Texture2D.MipSlice = baseMip;
                     }
                     break;
                 default:
@@ -807,17 +809,17 @@ namespace RVX
             switch (dimension)
             {
                 case RHITextureDimension::Texture2D:
-                    if (m_subresourceRange.arrayLayerCount > 1)
+                    if (arraySize > 1)
                     {
                         dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
-                        dsvDesc.Texture2DArray.MipSlice = m_subresourceRange.baseMipLevel;
-                        dsvDesc.Texture2DArray.FirstArraySlice = m_subresourceRange.baseArrayLayer;
-                        dsvDesc.Texture2DArray.ArraySize = m_subresourceRange.arrayLayerCount;
+                        dsvDesc.Texture2DArray.MipSlice = baseMip;
+                        dsvDesc.Texture2DArray.FirstArraySlice = baseArray;
+                        dsvDesc.Texture2DArray.ArraySize = arraySize;
                     }
                     else
                     {
                         dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
-                        dsvDesc.Texture2D.MipSlice = m_subresourceRange.baseMipLevel;
+                        dsvDesc.Texture2D.MipSlice = baseMip;
                     }
                     break;
                 default:
@@ -842,17 +844,17 @@ namespace RVX
             {
                 case RHITextureDimension::Texture2D:
                 case RHITextureDimension::TextureCube:
-                    if (m_subresourceRange.arrayLayerCount > 1 || dimension == RHITextureDimension::TextureCube)
+                    if (arraySize > 1 || dimension == RHITextureDimension::TextureCube)
                     {
                         uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
-                        uavDesc.Texture2DArray.MipSlice = m_subresourceRange.baseMipLevel;
-                        uavDesc.Texture2DArray.FirstArraySlice = m_subresourceRange.baseArrayLayer;
-                        uavDesc.Texture2DArray.ArraySize = m_subresourceRange.arrayLayerCount;
+                        uavDesc.Texture2DArray.MipSlice = baseMip;
+                        uavDesc.Texture2DArray.FirstArraySlice = baseArray;
+                        uavDesc.Texture2DArray.ArraySize = arraySize;
                     }
                     else
                     {
                         uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
-                        uavDesc.Texture2D.MipSlice = m_subresourceRange.baseMipLevel;
+                        uavDesc.Texture2D.MipSlice = baseMip;
                     }
                     break;
 

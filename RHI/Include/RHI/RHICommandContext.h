@@ -36,8 +36,8 @@ namespace RVX
     struct RHIBufferTextureCopyDesc
     {
         uint64 bufferOffset = 0;
-        uint32 bufferRowPitch = 0;    // 0 = tightly packed
-        uint32 bufferImageHeight = 0; // 0 = tightly packed
+        uint32 bufferRowPitch = 0;    // Bytes per row; 0 = tightly packed
+        uint32 bufferImageHeight = 0; // Rows per image; 0 = tightly packed
         uint32 textureSubresource = 0;
         RHIRect textureRegion = {0, 0, 0, 0};  // 0,0,0,0 = full texture
         uint32 textureDepthSlice = 0;
