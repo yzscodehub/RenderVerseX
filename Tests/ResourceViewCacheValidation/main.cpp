@@ -213,4 +213,44 @@ namespace
 
         cache.Shutdown();
     }
+
+    TEST(ResourceViewCacheValidation, TextureViewsExpireAfterSafeFrameLag)
+    {
+        FakeDevice device;
+        ResourceViewCache cache;
+        cache.Initialize(&device);
+
+        RHITextureDesc textureDesc = RHITextureDesc::Texture2D(4, 4, RHIFormat::RGBA8_UNORM);
+        FakeTexture texture(textureDesc);
+
+        RHITextureViewDesc viewDesc;
+        viewDesc.format = RHIFormat::RGBA8_UNORM;
+        viewDesc.dimension = RHITextureDimension::Texture2D;
+        viewDesc.subresourceRange = RHISubresourceRange::All();
+
+        RHITextureView* view = cache.GetTextureView(&texture, viewDesc);
+        ASSERT_NE(nullptr, view);
+        EXPECT_EQ(1u, device.createdTextureViewCount);
+        EXPECT_EQ(1u, cache.GetStats().textureViewCount);
+
+        const uint64 initialGeneration = cache.GetGeneration();
+        for (uint32 i = 0; i < RVX_MAX_FRAME_COUNT + 1; ++i)
+        {
+            cache.BeginFrame();
+        }
+
+        EXPECT_EQ(initialGeneration, cache.GetGeneration());
+        EXPECT_EQ(1u, cache.GetStats().textureViewCount);
+
+        cache.BeginFrame();
+
+        EXPECT_EQ(initialGeneration + 1, cache.GetGeneration());
+        EXPECT_EQ(0u, cache.GetStats().textureViewCount);
+
+        RHITextureView* recreatedView = cache.GetTextureView(&texture, viewDesc);
+        ASSERT_NE(nullptr, recreatedView);
+        EXPECT_EQ(2u, device.createdTextureViewCount);
+
+        cache.Shutdown();
+    }
 } // namespace

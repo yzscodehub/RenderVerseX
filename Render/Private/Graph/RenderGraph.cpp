@@ -359,6 +359,39 @@ namespace RVX
 
     void RenderGraph::Clear()
     {
+        Impl::RetiredFrameResources retiredResources;
+        for (auto& texture : m_impl->textures)
+        {
+            if (!texture.imported && texture.texture)
+            {
+                retiredResources.textures.push_back(std::move(texture.texture));
+            }
+        }
+        for (auto& buffer : m_impl->buffers)
+        {
+            if (!buffer.imported && buffer.buffer)
+            {
+                retiredResources.buffers.push_back(std::move(buffer.buffer));
+            }
+        }
+        for (auto& heap : m_impl->transientHeaps)
+        {
+            if (heap.heap)
+            {
+                retiredResources.heaps.push_back(std::move(heap.heap));
+            }
+        }
+        if (!retiredResources.textures.empty() ||
+            !retiredResources.buffers.empty() ||
+            !retiredResources.heaps.empty())
+        {
+            m_impl->retiredFrameResources.push_back(std::move(retiredResources));
+            while (m_impl->retiredFrameResources.size() > RVX_MAX_FRAME_COUNT + 1)
+            {
+                m_impl->retiredFrameResources.pop_front();
+            }
+        }
+
         m_impl->passes.clear();
         m_impl->textures.clear();
         m_impl->buffers.clear();

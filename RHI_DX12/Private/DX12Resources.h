@@ -133,6 +133,7 @@ namespace RVX
 
     private:
         DX12Device* m_device = nullptr;
+        RHITextureRef m_textureRef;
         RHITexture* m_texture = nullptr;
         RHIFormat m_format = RHIFormat::Unknown;
         RHISubresourceRange m_subresourceRange;

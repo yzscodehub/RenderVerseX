@@ -2,6 +2,7 @@
 
 #include "Render/Graph/RenderGraph.h"
 #include "RHI/RHIHeap.h"
+#include <deque>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -144,13 +145,22 @@ namespace RVX
 
     struct RenderGraphImpl
     {
+        struct RetiredFrameResources
+        {
+            // Keep heaps after placed resources so destruction releases resources first.
+            std::vector<RHIHeapRef> heaps;
+            std::vector<RHITextureRef> textures;
+            std::vector<RHIBufferRef> buffers;
+        };
+
         IRHIDevice* device = nullptr;
         std::vector<TextureResource> textures;
         std::vector<BufferResource> buffers;
         std::vector<Pass> passes;
         std::vector<uint32> executionOrder;
         RenderGraph::CompileStats stats;
-        
+        std::deque<RetiredFrameResources> retiredFrameResources;
+
         // Memory aliasing
         std::vector<TransientHeap> transientHeaps;
         bool enableMemoryAliasing = false;

@@ -144,6 +144,29 @@ RHITextureView* ResourceViewCache::GetDefaultUAV(RHITexture* texture)
 void ResourceViewCache::BeginFrame()
 {
     m_currentFrame++;
+    constexpr uint32 kViewRetireFrameLag = RVX_MAX_FRAME_COUNT + 1;
+    bool evicted = false;
+    for (auto it = m_textureViews.begin(); it != m_textureViews.end(); )
+    {
+        if ((m_currentFrame - it->second.lastUsedFrame) > kViewRetireFrameLag)
+        {
+            it = m_textureViews.erase(it);
+            evicted = true;
+            if (m_stats.textureViewCount > 0)
+            {
+                m_stats.textureViewCount--;
+            }
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    if (evicted)
+    {
+        ++m_generation;
+    }
+
     ResetFrameStats();
 }
 
