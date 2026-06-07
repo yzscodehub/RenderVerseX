@@ -349,25 +349,16 @@ namespace
             defaultPaths.push_back(desktopHelmetPath.string());
         };
 
-        if (options.smoke)
-        {
-            defaultPaths = {
-                "Tests/Fixtures/ModelViewer/R7Triangle.gltf",
-                "../Tests/Fixtures/ModelViewer/R7Triangle.gltf",
-                "../../Tests/Fixtures/ModelViewer/R7Triangle.gltf"
-            };
-        }
-        else
-        {
-            appendDesktopHelmetPath("USERPROFILE");
-            appendDesktopHelmetPath("HOME");
-            defaultPaths.push_back("models/DamagedHelmet.glb");
-            defaultPaths.push_back("models/helmet.gltf");
-            defaultPaths.push_back("assets/models/DamagedHelmet.glb");
-            defaultPaths.push_back("../assets/models/DamagedHelmet.glb");
-            defaultPaths.push_back("../../assets/models/DamagedHelmet.glb");
-            defaultPaths.push_back("Tests/Fixtures/ModelViewer/R7Triangle.gltf");
-        }
+        appendDesktopHelmetPath("USERPROFILE");
+        appendDesktopHelmetPath("HOME");
+        defaultPaths.push_back("models/DamagedHelmet.glb");
+        defaultPaths.push_back("models/helmet.gltf");
+        defaultPaths.push_back("assets/models/DamagedHelmet.glb");
+        defaultPaths.push_back("../assets/models/DamagedHelmet.glb");
+        defaultPaths.push_back("../../assets/models/DamagedHelmet.glb");
+        defaultPaths.push_back("Tests/Fixtures/ModelViewer/R7Triangle.gltf");
+        defaultPaths.push_back("../Tests/Fixtures/ModelViewer/R7Triangle.gltf");
+        defaultPaths.push_back("../../Tests/Fixtures/ModelViewer/R7Triangle.gltf");
 
         for (const auto& path : defaultPaths)
         {

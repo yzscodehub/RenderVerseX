@@ -32,7 +32,7 @@ namespace
         PostProcessSettings settings;
         settings.enableToneMapping = true;
         settings.exposure = 1.0f;
-        settings.gamma = 1.0f;
+        settings.gamma = 2.2f;
         settings.enableBloom = true;
         settings.bloomIntensity = 0.0f;
         settings.enableFXAA = false;

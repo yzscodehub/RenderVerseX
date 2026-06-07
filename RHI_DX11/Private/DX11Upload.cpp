@@ -83,7 +83,7 @@ namespace RVX
             desc.size = m_size;
             desc.usage = RHIBufferUsage::CopySrc;
             desc.memoryType = RHIMemoryType::Upload;
-            m_wrapperBuffer = m_device->CreateBuffer(desc);
+            m_wrapperBuffer = RHIBufferRef(new DX11Buffer(m_device, m_buffer, desc));
         }
         return m_wrapperBuffer.Get();
     }

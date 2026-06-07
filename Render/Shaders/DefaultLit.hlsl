@@ -113,20 +113,26 @@ PSInput VSMain(VSInput input)
 // Pixel Shader
 // =============================================================================
 
+float3 SafeNormalize(float3 value, float3 fallback)
+{
+    float lenSq = dot(value, value);
+    return lenSq > 1.0e-8 ? value * rsqrt(lenSq) : fallback;
+}
+
 float3 SampleNormalMap(float2 uv, float3 worldNormal, float4 worldTangent)
 {
     float3 tangentNormal = NormalTexture.Sample(MaterialSampler, uv).xyz * 2.0 - 1.0;
     tangentNormal.xy *= NormalScale;
 
-    float3 n = normalize(worldNormal);
-    float3 t = normalize(worldTangent.xyz);
-    t = normalize(t - n * dot(n, t));
+    float3 n = SafeNormalize(worldNormal, float3(0.0, 0.0, 1.0));
+    float3 t = SafeNormalize(worldTangent.xyz, float3(1.0, 0.0, 0.0));
+    t = SafeNormalize(t - n * dot(n, t), float3(1.0, 0.0, 0.0));
 
     float tangentSign = worldTangent.w >= 0.0 ? 1.0 : -1.0;
-    float3 b = normalize(cross(n, t) * tangentSign);
+    float3 b = SafeNormalize(cross(n, t) * tangentSign, float3(0.0, 1.0, 0.0));
     float3x3 tbn = float3x3(t, b, n);
 
-    return normalize(mul(tangentNormal, tbn));
+    return SafeNormalize(mul(tangentNormal, tbn), n);
 }
 
 float4 PSMain(PSInput input) : SV_TARGET
@@ -163,14 +169,14 @@ float4 PSMain(PSInput input) : SV_TARGET
         emissive *= EmissiveTexture.Sample(MaterialSampler, input.TexCoord).rgb;
     }
 
-    float3 normal = normalize(input.WorldNormal);
+    float3 normal = SafeNormalize(input.WorldNormal, float3(0.0, 0.0, 1.0));
     if ((TextureFlags & MATERIAL_TEXTURE_NORMAL) != 0)
     {
         normal = SampleNormalMap(input.TexCoord, normal, input.WorldTangent);
     }
 
-    float3 toLight = normalize(-LightDirection);
-    float3 viewDir = normalize(CameraPosition - input.WorldPos);
+    float3 toLight = SafeNormalize(-LightDirection, float3(0.0, 1.0, 0.0));
+    float3 viewDir = SafeNormalize(CameraPosition - input.WorldPos, float3(0.0, 0.0, 1.0));
     float clampedRoughness = clamp(roughness, 0.04, 1.0);
     float3 f0 = ComputeF0(baseColor.rgb, metallic);
 
@@ -190,7 +196,8 @@ float4 PSMain(PSInput input) : SV_TARGET
     float3 iblSpecular = IBLSpecularAmbient.rgb * IBLSpecularAmbient.a;
     float3 ambientDiffuse = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic) * occlusion * iblDiffuse;
     float3 ambientSpecular = f0 * occlusion * (1.0 - clampedRoughness) * iblSpecular;
-    float3 finalColor = ambientDiffuse + ambientSpecular + directLight + emissive;
+    float3 ambientFloor = baseColor.rgb * 0.08;
+    float3 finalColor = ambientDiffuse + ambientSpecular + directLight + emissive + ambientFloor;
 
     return float4(finalColor, baseColor.a);
 }

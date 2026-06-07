@@ -22,7 +22,7 @@ namespace RVX
         if (desc.memoryType == RHIMemoryType::Upload && bufferDesc.BindFlags == 0)
         {
             bufferDesc.Usage = D3D11_USAGE_STAGING;
-            bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
             m_useStagingUpload = true;
         }
 
@@ -78,6 +78,20 @@ namespace RVX
     {
     }
 
+    DX11Buffer::DX11Buffer(DX11Device* device, ComPtr<ID3D11Buffer> buffer, const RHIBufferDesc& desc)
+        : m_device(device)
+        , m_desc(desc)
+        , m_buffer(buffer)
+    {
+        // Wrap an existing DX11 staging buffer for copy operations without creating a second backing resource.
+        if (desc.memoryType == RHIMemoryType::Upload && !HasFlag(desc.usage, RHIBufferUsage::Constant) &&
+            !HasFlag(desc.usage, RHIBufferUsage::Vertex) && !HasFlag(desc.usage, RHIBufferUsage::Index) &&
+            !HasFlag(desc.usage, RHIBufferUsage::ShaderResource) && !HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess))
+        {
+            m_useStagingUpload = true;
+        }
+    }
+
     void* DX11Buffer::Map()
     {
         if (!m_buffer) return nullptr;
@@ -86,7 +100,7 @@ namespace RVX
         switch (m_desc.memoryType)
         {
             case RHIMemoryType::Upload:
-                mapType = m_useStagingUpload ? D3D11_MAP_WRITE : D3D11_MAP_WRITE_DISCARD;
+                mapType = m_useStagingUpload ? D3D11_MAP_READ_WRITE : D3D11_MAP_WRITE_DISCARD;
                 break;
             case RHIMemoryType::Readback:
                 mapType = D3D11_MAP_READ;

@@ -22,6 +22,7 @@ namespace RVX
     {
     public:
         DX11Buffer(DX11Device* device, const RHIBufferDesc& desc);
+        DX11Buffer(DX11Device* device, ComPtr<ID3D11Buffer> buffer, const RHIBufferDesc& desc);
         ~DX11Buffer() override;
 
         // RHIBuffer interface
