@@ -101,6 +101,15 @@ namespace RVX
         /// Allows callers to disable IBL-approx ambient without changing colors
         uint8 iblAmbientEnabled = 1;
 
+        /// Enables real texture IBL sampling when irradiance/prefilter/BRDF resources are ready
+        uint8 textureIBLEnabled = 0;
+
+        /// Number of mips in the prefiltered environment map used by texture IBL
+        uint32 textureIBLPrefilteredMipLevels = 1;
+
+        /// Exposure/intensity multiplier applied to texture IBL samples
+        float textureIBLIntensity = 1.0f;
+
         // =====================================================================
         // RenderGraph Reference
         // =====================================================================

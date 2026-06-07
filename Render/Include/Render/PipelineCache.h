@@ -43,6 +43,7 @@ namespace RVX
         float padding;
         Vec4 iblDiffuseAmbient;
         Vec4 iblSpecularAmbient;
+        Vec4 iblTextureParams;
     };
 
     /**

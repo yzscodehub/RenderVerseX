@@ -96,6 +96,17 @@ namespace RVX
         PostProcessStackExecuteStats stackStats;
     };
 
+    struct SceneEnvironmentIBLStats
+    {
+        uint64 frameCount = 0;
+        bool skyboxFound = false;
+        bool uploadRequested = false;
+        bool textureIBLEnabled = false;
+        uint32 prefilteredMipLevels = 1;
+        float intensity = 1.0f;
+        std::string fallbackReason;
+    };
+
     /**
      * @brief Scene renderer - orchestrates rendering of a scene
      * 
@@ -252,6 +263,9 @@ namespace RVX
         /// Get runtime post-process statistics from the last RenderGraph build.
         const SceneRenderPostProcessStats& GetPostProcessStats() const { return m_postProcessStats; }
 
+        /// Get environment IBL binding statistics from the last view setup.
+        const SceneEnvironmentIBLStats& GetEnvironmentIBLStats() const { return m_environmentIBLStats; }
+
         /// Get runtime post-process stack.
         PostProcessStack* GetPostProcessStack() { return m_postProcessStack.get(); }
         const PostProcessStack* GetPostProcessStack() const { return m_postProcessStack.get(); }
@@ -277,6 +291,7 @@ namespace RVX
         void PreparePassesForFrame();
         void SetupDefaultPostProcess();
         void SetupDefaultPasses();
+        void UpdateEnvironmentIBL(World* world);
         SceneColorFormatPolicy ResolveSceneColorFormatPolicy(RHIFormat backBufferFormat,
                                                              bool postProcessActive) const;
         bool SupportsHDRSceneColor() const;
@@ -301,6 +316,7 @@ namespace RVX
         SceneRenderCollectionStats m_collectionStats;
         SceneRenderPassChainStats m_passChainStats;
         SceneRenderPostProcessStats m_postProcessStats;
+        SceneEnvironmentIBLStats m_environmentIBLStats;
         SceneColorFormatPolicy m_sceneColorFormatPolicy;
         PostProcessSettings m_postProcessSettings;
         std::vector<uint32_t> m_visibleObjectIndices;

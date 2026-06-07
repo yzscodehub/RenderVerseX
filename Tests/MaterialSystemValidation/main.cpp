@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -113,6 +114,9 @@ namespace
             m_entries.push_back({4, RHIBindingType::SampledTexture, RHIShaderStage::All, 1, false});
             m_entries.push_back({5, RHIBindingType::SampledTexture, RHIShaderStage::All, 1, false});
             m_entries.push_back({6, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
+            m_entries.push_back({7, RHIBindingType::SampledTexture, RHIShaderStage::All, 1, false});
+            m_entries.push_back({8, RHIBindingType::SampledTexture, RHIShaderStage::All, 1, false});
+            m_entries.push_back({9, RHIBindingType::SampledTexture, RHIShaderStage::All, 1, false});
         }
 
         const std::vector<RHIBindingLayoutEntry>& GetEntries() const override { return m_entries; }
@@ -434,6 +438,33 @@ namespace
 
         texture->SetData(std::move(pixels), metadata);
         return Resource::TextureHandle(texture);
+    }
+
+    Resource::TextureHandle CreateIBLCubemapResource(Resource::ResourceId id, uint32 mipLevels = 1)
+    {
+        Resource::TextureMetadata metadata;
+        metadata.width = 1;
+        metadata.height = 1;
+        metadata.mipLevels = std::max(1u, mipLevels);
+        metadata.arrayLayers = 6;
+        metadata.format = Resource::TextureFormat::RGBA8;
+        metadata.isCubemap = true;
+        metadata.isSRGB = false;
+
+        const size_t dataSize = static_cast<size_t>(metadata.arrayLayers) *
+                                static_cast<size_t>(metadata.mipLevels) *
+                                4u;
+        std::vector<uint8> pixels(dataSize, 0);
+        auto* texture = new Resource::TextureResource();
+        texture->SetId(id);
+        texture->SetName("MaterialSystemIBLCubemap");
+        texture->SetData(std::move(pixels), metadata);
+        return Resource::TextureHandle(texture);
+    }
+
+    Resource::TextureHandle CreateIBLBRDFLUTResource(Resource::ResourceId id)
+    {
+        return CreateTextureResource(id, Resource::TextureFormat::RGBA8, {0, 0, 0, 255});
     }
 
     void ConfigureMaterialWithAlbedo(Resource::MaterialResource& materialResource,
@@ -951,6 +982,209 @@ namespace
         const RHIDescriptorBinding* samplerBinding = FindBinding(descriptorSet, 6);
         ASSERT_NE(nullptr, samplerBinding);
         EXPECT_NE(nullptr, samplerBinding->sampler);
+
+        materialSystem.Shutdown();
+        viewCache.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation, DefaultMaterialSetBindsIBLFallbackViews)
+    {
+        FakeDevice device;
+        GPUResourceManager gpuResources;
+        gpuResources.Initialize(&device);
+
+        FakeDescriptorSetLayout materialSetLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+
+        RHIDescriptorSet* descriptorSet = materialSystem.GetDefaultMaterialSet();
+        ASSERT_NE(nullptr, descriptorSet);
+
+        const RHIDescriptorBinding* irradianceBinding = FindBinding(descriptorSet, 7);
+        const RHIDescriptorBinding* prefilteredBinding = FindBinding(descriptorSet, 8);
+        const RHIDescriptorBinding* brdfBinding = FindBinding(descriptorSet, 9);
+        ASSERT_NE(nullptr, irradianceBinding);
+        ASSERT_NE(nullptr, prefilteredBinding);
+        ASSERT_NE(nullptr, brdfBinding);
+        ASSERT_NE(nullptr, irradianceBinding->textureView);
+        ASSERT_NE(nullptr, prefilteredBinding->textureView);
+        ASSERT_NE(nullptr, brdfBinding->textureView);
+
+        EXPECT_EQ(RHITextureDimension::TextureCube, irradianceBinding->textureView->GetTexture()->GetDimension());
+        EXPECT_EQ(RHITextureDimension::TextureCube, prefilteredBinding->textureView->GetTexture()->GetDimension());
+        EXPECT_EQ(RHITextureDimension::Texture2D, brdfBinding->textureView->GetTexture()->GetDimension());
+        EXPECT_EQ(irradianceBinding->textureView, prefilteredBinding->textureView);
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation, MaterialSetUsesResidentTextureIBLViews)
+    {
+        FakeDevice device;
+        GPUResourceManager gpuResources;
+        gpuResources.Initialize(&device);
+
+        ResourceViewCache viewCache;
+        viewCache.Initialize(&device);
+
+        FakeDescriptorSetLayout materialSetLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+
+        Resource::TextureHandle irradiance = CreateIBLCubemapResource(401);
+        Resource::TextureHandle prefiltered = CreateIBLCubemapResource(402, 2);
+        Resource::TextureHandle brdfLUT = CreateIBLBRDFLUTResource(403);
+        gpuResources.UploadImmediate(irradiance.Get());
+        gpuResources.UploadImmediate(prefiltered.Get());
+        gpuResources.UploadImmediate(brdfLUT.Get());
+        ASSERT_TRUE(gpuResources.IsGPUReady(irradiance.GetId()));
+        ASSERT_TRUE(gpuResources.IsGPUReady(prefiltered.GetId()));
+        ASSERT_TRUE(gpuResources.IsGPUReady(brdfLUT.GetId()));
+
+        MaterialSystem::EnvironmentIBLResources iblResources;
+        iblResources.irradianceMap = irradiance.Get();
+        iblResources.prefilteredMap = prefiltered.Get();
+        iblResources.brdfLUT = brdfLUT.Get();
+        iblResources.prefilteredMipLevels = 2;
+        iblResources.textureIBLEnabled = true;
+        materialSystem.SetEnvironmentIBLResources(iblResources);
+
+        Resource::MaterialResource materialResource;
+        materialResource.SetId(501);
+        materialResource.SetName("IBLReadyMaterial");
+        materialResource.SetMaterialData(std::make_shared<Material>());
+
+        RHIDescriptorSet* descriptorSet = materialSystem.GetOrCreateMaterialSet(&materialResource, &viewCache);
+        ASSERT_NE(nullptr, descriptorSet);
+
+        const RHIDescriptorBinding* irradianceBinding = FindBinding(descriptorSet, 7);
+        const RHIDescriptorBinding* prefilteredBinding = FindBinding(descriptorSet, 8);
+        const RHIDescriptorBinding* brdfBinding = FindBinding(descriptorSet, 9);
+        ASSERT_NE(nullptr, irradianceBinding);
+        ASSERT_NE(nullptr, prefilteredBinding);
+        ASSERT_NE(nullptr, brdfBinding);
+        ASSERT_NE(nullptr, irradianceBinding->textureView);
+        ASSERT_NE(nullptr, prefilteredBinding->textureView);
+        ASSERT_NE(nullptr, brdfBinding->textureView);
+
+        EXPECT_EQ(gpuResources.GetTexture(irradiance.GetId()), irradianceBinding->textureView->GetTexture());
+        EXPECT_EQ(gpuResources.GetTexture(prefiltered.GetId()), prefilteredBinding->textureView->GetTexture());
+        EXPECT_EQ(gpuResources.GetTexture(brdfLUT.GetId()), brdfBinding->textureView->GetTexture());
+
+        materialSystem.Shutdown();
+        viewCache.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation, MaterialSetFallsBackWhenTextureIBLIsNotReady)
+    {
+        FakeDevice device;
+        GPUResourceManager gpuResources;
+        gpuResources.Initialize(&device);
+
+        ResourceViewCache viewCache;
+        viewCache.Initialize(&device);
+
+        FakeDescriptorSetLayout materialSetLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+
+        Resource::TextureHandle irradiance = CreateIBLCubemapResource(411);
+        Resource::TextureHandle prefiltered = CreateIBLCubemapResource(412, 2);
+        Resource::TextureHandle brdfLUT = CreateIBLBRDFLUTResource(413);
+
+        MaterialSystem::EnvironmentIBLResources iblResources;
+        iblResources.irradianceMap = irradiance.Get();
+        iblResources.prefilteredMap = prefiltered.Get();
+        iblResources.brdfLUT = brdfLUT.Get();
+        iblResources.prefilteredMipLevels = 2;
+        iblResources.textureIBLEnabled = true;
+        materialSystem.SetEnvironmentIBLResources(iblResources);
+
+        Resource::MaterialResource materialResource;
+        materialResource.SetId(502);
+        materialResource.SetName("IBLFallbackMaterial");
+        materialResource.SetMaterialData(std::make_shared<Material>());
+
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(&materialResource, &viewCache);
+        EXPECT_EQ(MaterialBindingStatus::Fallback, result.status);
+        EXPECT_TRUE(result.usedFallback);
+        ASSERT_NE(nullptr, result.descriptorSet);
+
+        const RHIDescriptorBinding* defaultIrradiance = FindBinding(materialSystem.GetDefaultMaterialSet(), 7);
+        const RHIDescriptorBinding* boundIrradiance = FindBinding(result.descriptorSet, 7);
+        ASSERT_NE(nullptr, defaultIrradiance);
+        ASSERT_NE(nullptr, boundIrradiance);
+        EXPECT_EQ(defaultIrradiance->textureView, boundIrradiance->textureView);
+
+        materialSystem.Shutdown();
+        viewCache.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation, EnvironmentIBLResourceChangeInvalidatesMaterialDescriptorCache)
+    {
+        FakeDevice device;
+        GPUResourceManager gpuResources;
+        gpuResources.Initialize(&device);
+
+        ResourceViewCache viewCache;
+        viewCache.Initialize(&device);
+
+        FakeDescriptorSetLayout materialSetLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+
+        auto upload = [&gpuResources](const Resource::TextureHandle& texture)
+        {
+            gpuResources.UploadImmediate(texture.Get());
+            ASSERT_TRUE(gpuResources.IsGPUReady(texture.GetId()));
+        };
+
+        Resource::TextureHandle irradianceA = CreateIBLCubemapResource(421);
+        Resource::TextureHandle prefilteredA = CreateIBLCubemapResource(422);
+        Resource::TextureHandle brdfA = CreateIBLBRDFLUTResource(423);
+        upload(irradianceA);
+        upload(prefilteredA);
+        upload(brdfA);
+
+        Resource::TextureHandle irradianceB = CreateIBLCubemapResource(431);
+        Resource::TextureHandle prefilteredB = CreateIBLCubemapResource(432);
+        Resource::TextureHandle brdfB = CreateIBLBRDFLUTResource(433);
+        upload(irradianceB);
+        upload(prefilteredB);
+        upload(brdfB);
+
+        Resource::MaterialResource materialResource;
+        materialResource.SetId(503);
+        materialResource.SetName("IBLCacheMaterial");
+        materialResource.SetMaterialData(std::make_shared<Material>());
+
+        MaterialSystem::EnvironmentIBLResources firstIBL;
+        firstIBL.irradianceMap = irradianceA.Get();
+        firstIBL.prefilteredMap = prefilteredA.Get();
+        firstIBL.brdfLUT = brdfA.Get();
+        firstIBL.textureIBLEnabled = true;
+        materialSystem.SetEnvironmentIBLResources(firstIBL);
+        RHIDescriptorSet* firstSet = materialSystem.GetOrCreateMaterialSet(&materialResource, &viewCache);
+        ASSERT_NE(nullptr, firstSet);
+
+        MaterialSystem::EnvironmentIBLResources secondIBL;
+        secondIBL.irradianceMap = irradianceB.Get();
+        secondIBL.prefilteredMap = prefilteredB.Get();
+        secondIBL.brdfLUT = brdfB.Get();
+        secondIBL.textureIBLEnabled = true;
+        materialSystem.SetEnvironmentIBLResources(secondIBL);
+        RHIDescriptorSet* secondSet = materialSystem.GetOrCreateMaterialSet(&materialResource, &viewCache);
+        ASSERT_NE(nullptr, secondSet);
+
+        EXPECT_NE(firstSet, secondSet);
+        const RHIDescriptorBinding* irradianceBinding = FindBinding(secondSet, 7);
+        ASSERT_NE(nullptr, irradianceBinding);
+        ASSERT_NE(nullptr, irradianceBinding->textureView);
+        EXPECT_EQ(gpuResources.GetTexture(irradianceB.GetId()), irradianceBinding->textureView->GetTexture());
 
         materialSystem.Shutdown();
         viewCache.Shutdown();

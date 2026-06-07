@@ -19,6 +19,9 @@
 #include "Renderer/RenderPassRegistry.h"
 #include "Renderer/RenderProxySceneBridge.h"
 #include "Runtime/Camera/Camera.h"
+#include "Scene/Components/SkyboxComponent.h"
+#include "Scene/SceneManager.h"
+#include "World/World.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -307,6 +310,145 @@ void SceneRenderer::Shutdown()
     RVX_CORE_DEBUG("SceneRenderer shutdown");
 }
 
+void SceneRenderer::UpdateEnvironmentIBL(World* world)
+{
+    ++m_environmentIBLStats.frameCount;
+    m_environmentIBLStats.skyboxFound = false;
+    m_environmentIBLStats.uploadRequested = false;
+    m_environmentIBLStats.textureIBLEnabled = false;
+    m_environmentIBLStats.prefilteredMipLevels = 1;
+    m_environmentIBLStats.intensity = 1.0f;
+    m_environmentIBLStats.fallbackReason.clear();
+
+    m_viewData.textureIBLEnabled = 0;
+    m_viewData.textureIBLPrefilteredMipLevels = 1;
+    m_viewData.textureIBLIntensity = 1.0f;
+
+    auto disableTextureIBL = [this](const char* reason)
+    {
+        m_environmentIBLStats.fallbackReason = reason ? reason : "Unknown";
+        if (m_materialSystem)
+        {
+            m_materialSystem->ClearEnvironmentIBLResources();
+        }
+    };
+
+    if (!m_gpuResourceManager || !m_materialSystem || !m_resourceViewCache)
+    {
+        disableTextureIBL("RendererIBLDependenciesMissing");
+        return;
+    }
+
+    if (!world)
+    {
+        disableTextureIBL("NoWorld");
+        return;
+    }
+
+    SceneManager* sceneManager = world->GetSceneManager();
+    if (!sceneManager)
+    {
+        disableTextureIBL("NoSceneManager");
+        return;
+    }
+
+    SkyboxComponent* skybox = nullptr;
+    sceneManager->ForEachActiveEntity(
+        [&skybox](SceneEntity* entity)
+        {
+            if (skybox || !entity)
+                return;
+
+            auto* candidate = entity->GetComponent<SkyboxComponent>();
+            if (candidate && candidate->IsEnabled() && candidate->ContributesToLighting())
+            {
+                skybox = candidate;
+            }
+        });
+
+    if (!skybox)
+    {
+        disableTextureIBL("NoLightingSkybox");
+        return;
+    }
+
+    m_environmentIBLStats.skyboxFound = true;
+    m_environmentIBLStats.intensity = skybox->GetExposure();
+
+    Resource::TextureResource* irradiance = skybox->GetIrradianceMap().Get();
+    Resource::TextureResource* prefiltered = skybox->GetPrefilteredMap().Get();
+    Resource::TextureResource* brdfLUT = skybox->GetBRDFLUT().Get();
+    if (!irradiance || !prefiltered || !brdfLUT)
+    {
+        disableTextureIBL("SkyboxIBLResourcesMissing");
+        return;
+    }
+
+    m_environmentIBLStats.prefilteredMipLevels = std::max(1u, prefiltered->GetMipLevels());
+
+    auto requestAndResolveView = [this](Resource::TextureResource* texture,
+                                        const char* reason) -> bool
+    {
+        if (!texture)
+        {
+            m_environmentIBLStats.fallbackReason = reason;
+            return false;
+        }
+
+        const Resource::ResourceId textureId = texture->GetId();
+        if (!m_gpuResourceManager->IsResident(textureId))
+        {
+            m_gpuResourceManager->RequestUpload(texture, UploadPriority::High);
+            m_environmentIBLStats.uploadRequested = true;
+        }
+
+        m_gpuResourceManager->MarkUsed(textureId);
+        if (!m_gpuResourceManager->IsGPUReady(textureId))
+        {
+            m_environmentIBLStats.fallbackReason = reason;
+            return false;
+        }
+
+        RHITexture* rhiTexture = m_gpuResourceManager->GetTexture(textureId);
+        if (!rhiTexture || !m_resourceViewCache->GetDefaultSRV(rhiTexture))
+        {
+            m_environmentIBLStats.fallbackReason = reason;
+            return false;
+        }
+
+        return true;
+    };
+
+    bool ready = true;
+    ready = requestAndResolveView(irradiance, "IrradianceNotReady") && ready;
+    ready = requestAndResolveView(prefiltered, "PrefilteredEnvironmentNotReady") && ready;
+    ready = requestAndResolveView(brdfLUT, "BRDFLUTNotReady") && ready;
+
+    if (!ready)
+    {
+        if (m_environmentIBLStats.fallbackReason.empty())
+        {
+            m_environmentIBLStats.fallbackReason = "IBLResourcesNotReady";
+        }
+        m_materialSystem->ClearEnvironmentIBLResources();
+        return;
+    }
+
+    MaterialSystem::EnvironmentIBLResources resources;
+    resources.irradianceMap = irradiance;
+    resources.prefilteredMap = prefiltered;
+    resources.brdfLUT = brdfLUT;
+    resources.prefilteredMipLevels = m_environmentIBLStats.prefilteredMipLevels;
+    resources.intensity = m_environmentIBLStats.intensity;
+    resources.textureIBLEnabled = true;
+    m_materialSystem->SetEnvironmentIBLResources(resources);
+
+    m_viewData.textureIBLEnabled = 1;
+    m_viewData.textureIBLPrefilteredMipLevels = resources.prefilteredMipLevels;
+    m_viewData.textureIBLIntensity = resources.intensity;
+    m_environmentIBLStats.textureIBLEnabled = true;
+}
+
 void SceneRenderer::SetupView(const Camera& camera, World* world)
 {
     if (!m_initialized)
@@ -324,6 +466,7 @@ void SceneRenderer::SetupView(const Camera& camera, World* world)
 
     // Setup view data from camera
     m_viewData.SetupFromCamera(camera, width, height);
+    UpdateEnvironmentIBL(world);
 
     // Collect scene data through the proxy bridge first; legacy collection is audited fallback only.
     RenderProxySceneBridgeResult proxyResult;

@@ -104,6 +104,20 @@ namespace RVX
         const MaterialBindingResult& GetLastBindingResult() const { return m_lastBindingResult; }
         const std::string& GetLastBindingMessage() const { return m_lastBindingResult.message; }
 
+        struct EnvironmentIBLResources
+        {
+            const Resource::TextureResource* irradianceMap = nullptr;
+            const Resource::TextureResource* prefilteredMap = nullptr;
+            const Resource::TextureResource* brdfLUT = nullptr;
+            uint32 prefilteredMipLevels = 1;
+            float intensity = 1.0f;
+            bool textureIBLEnabled = false;
+        };
+
+        void SetEnvironmentIBLResources(const EnvironmentIBLResources& resources);
+        void ClearEnvironmentIBLResources();
+        const EnvironmentIBLResources& GetEnvironmentIBLResources() const { return m_environmentIBL; }
+
     private:
         static uint64 AlignConstantBufferSize(uint64 size);
         static uint32 ToRHIConstantDynamicOffset(uint64 offset)
@@ -126,8 +140,12 @@ namespace RVX
             RHITextureView* metallicRoughness = nullptr;
             RHITextureView* occlusion = nullptr;
             RHITextureView* emissive = nullptr;
+            RHITextureView* irradiance = nullptr;
+            RHITextureView* prefilteredEnvironment = nullptr;
+            RHITextureView* brdfLUT = nullptr;
             uint32 textureFlags = 0;
             uint64 viewGeneration = 0;
+            bool textureIBLEnabled = false;
             bool usedFallback = false;
         };
 
@@ -138,7 +156,11 @@ namespace RVX
             RHITextureView* metallicRoughness = nullptr;
             RHITextureView* occlusion = nullptr;
             RHITextureView* emissive = nullptr;
+            RHITextureView* irradiance = nullptr;
+            RHITextureView* prefilteredEnvironment = nullptr;
+            RHITextureView* brdfLUT = nullptr;
             uint64 viewGeneration = 0;
+            bool textureIBLEnabled = false;
 
             bool operator==(const MaterialDescriptorKey& other) const
             {
@@ -147,7 +169,11 @@ namespace RVX
                        metallicRoughness == other.metallicRoughness &&
                        occlusion == other.occlusion &&
                        emissive == other.emissive &&
-                       viewGeneration == other.viewGeneration;
+                       irradiance == other.irradiance &&
+                       prefilteredEnvironment == other.prefilteredEnvironment &&
+                       brdfLUT == other.brdfLUT &&
+                       viewGeneration == other.viewGeneration &&
+                       textureIBLEnabled == other.textureIBLEnabled;
             }
         };
 
@@ -198,9 +224,12 @@ namespace RVX
         RHITextureViewRef m_defaultNormalTextureView;
         RHITextureViewRef m_defaultBlackTextureView;
         RHISamplerRef m_defaultSampler;
+        RHITextureRef m_defaultBlackCubemap;
+        RHITextureViewRef m_defaultBlackCubemapView;
         RHIDescriptorSetRef m_defaultMaterialSet;
         std::unordered_map<MaterialDescriptorKey, RHIDescriptorSetRef, MaterialDescriptorKeyHash> m_materialDescriptorCache;
         uint64 m_materialDescriptorCacheGeneration = ~uint64{0};
+        EnvironmentIBLResources m_environmentIBL;
         MaterialBindingResult m_lastBindingResult;
     };
 

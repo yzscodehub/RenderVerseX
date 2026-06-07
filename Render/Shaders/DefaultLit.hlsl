@@ -5,7 +5,7 @@
 // Descriptor sets:
 //   set 0 / space0: frame data
 //   set 1 / space1: object data
-//   set 2 / space2: material data
+//   set 2 / space2: material data and environment IBL textures
 //
 // Vertex inputs come from separate vertex buffers:
 //   Slot 0: Position buffer (float3)
@@ -39,6 +39,7 @@ cbuffer ViewConstants : register(b0, space0)
     float Padding;
     float4 IBLDiffuseAmbient;   // rgb: color, a: diffuse intensity
     float4 IBLSpecularAmbient;  // rgb: color, a: specular intensity
+    float4 IBLTextureParams;    // x: enabled, y: prefiltered mip count, z: intensity, w: reserved
 };
 
 cbuffer ObjectConstants : register(b0, space1)
@@ -69,6 +70,9 @@ Texture2D MetallicRoughnessTexture : register(t3, space2);
 Texture2D OcclusionTexture : register(t4, space2);
 Texture2D EmissiveTexture : register(t5, space2);
 SamplerState MaterialSampler : register(s6, space2);
+TextureCube IrradianceTexture : register(t7, space2);
+TextureCube PrefilteredEnvironmentTexture : register(t8, space2);
+Texture2D BRDFLUTTexture : register(t9, space2);
 
 // =============================================================================
 // Vertex Shader Input/Output
@@ -192,10 +196,30 @@ float4 PSMain(PSInput input) : SV_TARGET
 
     float nDotV = max(dot(normal, viewDir), 0.001);
     float3 fresnel = F_SchlickRoughness(nDotV, f0, clampedRoughness);
-    float3 iblDiffuse = IBLDiffuseAmbient.rgb * IBLDiffuseAmbient.a;
-    float3 iblSpecular = IBLSpecularAmbient.rgb * IBLSpecularAmbient.a;
-    float3 ambientDiffuse = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic) * occlusion * iblDiffuse;
-    float3 ambientSpecular = f0 * occlusion * (1.0 - clampedRoughness) * iblSpecular;
+    float3 ambientDiffuse;
+    float3 ambientSpecular;
+    if (IBLTextureParams.x > 0.5)
+    {
+        float3 irradiance = IrradianceTexture.Sample(MaterialSampler, normal).rgb * IBLTextureParams.z;
+        float prefilteredMip = clampedRoughness * max(IBLTextureParams.y - 1.0, 0.0);
+        float3 reflectionDir = reflect(-viewDir, normal);
+        float3 prefilteredColor = PrefilteredEnvironmentTexture.SampleLevel(
+            MaterialSampler,
+            reflectionDir,
+            prefilteredMip).rgb * IBLTextureParams.z;
+        float2 brdf = BRDFLUTTexture.Sample(MaterialSampler, float2(nDotV, clampedRoughness)).rg;
+
+        float3 diffuseEnergy = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic);
+        ambientDiffuse = diffuseEnergy * irradiance * occlusion;
+        ambientSpecular = prefilteredColor * (fresnel * brdf.x + brdf.y) * occlusion;
+    }
+    else
+    {
+        float3 iblDiffuse = IBLDiffuseAmbient.rgb * IBLDiffuseAmbient.a;
+        float3 iblSpecular = IBLSpecularAmbient.rgb * IBLSpecularAmbient.a;
+        ambientDiffuse = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic) * occlusion * iblDiffuse;
+        ambientSpecular = f0 * occlusion * (1.0 - clampedRoughness) * iblSpecular;
+    }
     float3 ambientFloor = baseColor.rgb * 0.08;
     float3 finalColor = ambientDiffuse + ambientSpecular + directLight + emissive + ambientFloor;
 

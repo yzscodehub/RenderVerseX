@@ -106,7 +106,7 @@ namespace
             return true;
         }
 
-        return set == 2 && binding <= 6;
+        return set == 2 && binding <= 9;
     }
 
     bool BindingTypeMatches(RHIBindingType actual, RHIBindingType expected)
@@ -966,7 +966,16 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
             return false;
     }
 
-    return requireBinding(2, 6, RHIBindingType::Sampler);
+    if (!requireBinding(2, 6, RHIBindingType::Sampler))
+        return false;
+
+    for (uint32 binding = 7; binding <= 9; ++binding)
+    {
+        if (!requireBinding(2, binding, RHIBindingType::SampledTexture))
+            return false;
+    }
+
+    return true;
 }
 
 void PipelineCache::ProcessPipelineManifest()
@@ -1785,6 +1794,11 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
     const float iblSpecularIntensity = iblAmbientEnabled ? view.iblSpecularIntensity : 0.0f;
     constants.iblDiffuseAmbient = Vec4(view.iblDiffuseColor, iblDiffuseIntensity);
     constants.iblSpecularAmbient = Vec4(view.iblSpecularColor, iblSpecularIntensity);
+    constants.iblTextureParams = Vec4(
+        view.textureIBLEnabled != 0 ? 1.0f : 0.0f,
+        static_cast<float>(std::max(1u, view.textureIBLPrefilteredMipLevels)),
+        view.textureIBLIntensity,
+        0.0f);
 
     void* mapped = m_viewConstantBuffer->Map();
     if (mapped)

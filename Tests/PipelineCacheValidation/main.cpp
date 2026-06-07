@@ -483,6 +483,13 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     ASSERT_NE(sampler, nullptr);
     EXPECT_EQ(sampler->type, RVX::RHIBindingType::Sampler);
 
+    for (RVX::uint32 binding = 7; binding <= 9; ++binding)
+    {
+        const auto* iblTexture = FindBinding(materialLayout, binding);
+        ASSERT_NE(iblTexture, nullptr);
+        EXPECT_EQ(iblTexture->type, RVX::RHIBindingType::SampledTexture);
+    }
+
     const auto* postProcessConstants = FindBinding(postProcessLayout, 0);
     ASSERT_NE(postProcessConstants, nullptr);
     EXPECT_EQ(postProcessConstants->type, RVX::RHIBindingType::UniformBuffer);
@@ -515,7 +522,8 @@ TEST_F(PipelineCacheValidationFixture, ViewConstantsLayoutMatchesDefaultLitCBuff
     EXPECT_EQ(offsetof(RVX::ViewConstants, padding), 92u);
     EXPECT_EQ(offsetof(RVX::ViewConstants, iblDiffuseAmbient), 96u);
     EXPECT_EQ(offsetof(RVX::ViewConstants, iblSpecularAmbient), 112u);
-    EXPECT_EQ(sizeof(RVX::ViewConstants), 128u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, iblTextureParams), 128u);
+    EXPECT_EQ(sizeof(RVX::ViewConstants), 144u);
 }
 
 TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDefaultIBLAmbientValues)
@@ -548,6 +556,10 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDefaultIBLAmbie
     EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.y, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.z, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.w, 0.04f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.x, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.y, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.z, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.0f);
 }
 
 TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabledIBLAmbientValues)
@@ -567,6 +579,9 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabl
     view.iblSpecularColor = RVX::Vec3(0.1f, 0.2f, 0.3f);
     view.iblSpecularIntensity = 0.6f;
     view.iblAmbientEnabled = 2;
+    view.textureIBLEnabled = 1;
+    view.textureIBLPrefilteredMipLevels = 5;
+    view.textureIBLIntensity = 1.7f;
     cache.UpdateViewConstants(view);
 
     const FakeBuffer* viewBuffer = FindCapturedBuffer(device, "ViewConstantBuffer");
@@ -583,8 +598,13 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabl
     EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.y, 0.2f);
     EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.z, 0.3f);
     EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.w, 0.6f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.x, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.y, 5.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.z, 1.7f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.0f);
 
     view.iblAmbientEnabled = 0;
+    view.textureIBLEnabled = 0;
     cache.UpdateViewConstants(view);
     std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
     EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.x, 0.25f);
@@ -595,6 +615,10 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabl
     EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.y, 0.2f);
     EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.z, 0.3f);
     EXPECT_FLOAT_EQ(uploaded.iblSpecularAmbient.w, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.x, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.y, 5.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.z, 1.7f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.0f);
 }
 
 TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
@@ -607,6 +631,10 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
     const std::string shader = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
     EXPECT_NE(shader.find("IBLDiffuseAmbient"), std::string::npos);
     EXPECT_NE(shader.find("IBLSpecularAmbient"), std::string::npos);
+    EXPECT_NE(shader.find("TextureCube IrradianceTexture : register(t7, space2);"), std::string::npos);
+    EXPECT_NE(shader.find("TextureCube PrefilteredEnvironmentTexture : register(t8, space2);"), std::string::npos);
+    EXPECT_NE(shader.find("Texture2D BRDFLUTTexture : register(t9, space2);"), std::string::npos);
+    EXPECT_NE(shader.find("if (IBLTextureParams.x > 0.5)"), std::string::npos);
     EXPECT_EQ(shader.find("ambientDiffuse = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic) * occlusion * 0.12;"),
               std::string::npos);
     EXPECT_EQ(shader.find("ambientSpecular = f0 * occlusion * (1.0 - clampedRoughness) * 0.04;"),

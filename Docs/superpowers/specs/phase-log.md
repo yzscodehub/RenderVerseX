@@ -2492,7 +2492,7 @@ git diff --check
 ### R-SP: `RQ2a - RHI Cubemap Subresource and Upload Foundation`
 
 **Date:** 2026-06-07
-**Commit:** pending in this commit
+**Commit:** `970d5bd feat(render): support cubemap texture upload foundation`
 **Spark plan review agent:** Russell / Heisenberg (`gpt-5.3-codex-spark`)
 **Spark code review agent:** Heisenberg (`gpt-5.3-codex-spark`)
 
@@ -2577,6 +2577,96 @@ git diff --check
 
 - RQ2a only makes cubemap/array/mip resources uploadable and viewable; real IBL descriptor binding and shader sampling remain a later stage.
 - Metal changes were made according to the shared RHI contract but were not compiled on this Windows build host.
+
+---
+
+### R-SP: `RQ2b - DefaultLit Texture IBL Binding`
+
+**Date:** 2026-06-07
+**Commit:** pending in this commit
+**Spark plan review agent:** Carson (`gpt-5.3-codex-spark`)
+**Spark code review agent:** Parfit (`gpt-5.3-codex-spark`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-07-rq2b-defaultlit-texture-ibl-binding-plan.md`
+- Section: full document, especially §3 Scope, §6 Required Tests, and §10 Spark Review
+- Lines checked: current RQ2b plan before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: `RQ2a - RHI Cubemap Subresource and Upload Foundation`
+- Evidence: RQ2a committed as `970d5bd feat(render): support cubemap texture upload foundation`; RQ2b plan reviewed by Spark before implementation.
+
+**Approved scope:**
+
+- Append texture IBL parameters to `ViewData` and `PipelineCache::ViewConstants` without moving existing cbuffer fields.
+- Add DefaultLit texture IBL bindings for irradiance cubemap, prefiltered cubemap, and BRDF LUT at set 2 bindings 7, 8, and 9.
+- Keep the R9f approximate ambient branch as explicit fallback when texture IBL is disabled.
+- Extend PipelineCache reflection validation for the new sampled texture bindings.
+- Extend MaterialSystem set 2 descriptors with descriptor-complete IBL fallback resources and live environment resource binding when all IBL textures are GPU-ready.
+- Add SceneRenderer environment IBL discovery from `SkyboxComponent`, upload requests, readiness checks, fallback stats, and view constant enablement.
+- Update focused validation tests for layout, cbuffer packing, shader guardrails, fallback descriptors, live IBL descriptors, and descriptor cache invalidation.
+
+**Out of scope:**
+
+- SkyboxPass draw implementation.
+- Loading a new HDRI in ModelViewer.
+- GPU-side IBL convolution.
+- Tone mapping operator changes, bindless descriptors, material texture slot rewrites, and visual golden recapture.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-07-rq2b-defaultlit-texture-ibl-binding-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Include/Render/Material/MaterialSystem.h`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Include/Render/Renderer/ViewData.h`
+- `Render/Private/Material/MaterialSystem.cpp`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Tests/MaterialSystemValidation/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation MaterialSystemValidation RenderSceneValidation RenderPassValidation GPUUploadServiceValidation GPUResourceManagerValidation ModelViewer
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|MaterialSystemValidation|RenderSceneValidation|RenderPassValidation|GPUResourceManagerValidation|GPUUploadServiceValidation|RenderGraphValidation|RenderHonestyValidation|ClusteredLightingValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Tests: PASS, 193/193 selected tests passed.
+- Visual gate: PASS, `ModelViewerSmoke` and `VisualGoldenValidation` passed.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Logs: terminal build, ctest, and `git diff --check` output in this thread.
+- Screenshots: none.
+- Diffs: current RQ2b working tree diff before commit.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Non-blocking notes adopted: keep set 2 bindings 7, 8, and 9 collision-free, and include fallback/live state plus view generation in the descriptor cache key.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Non-blocking note: CRLF warnings only.
+
+**Notes / follow-ups:**
+
+- RQ2b enables real texture IBL consumption only when a scene provides GPU-ready `SkyboxComponent` irradiance, prefiltered environment, and BRDF LUT resources.
+- Current ModelViewer does not yet load or author a SkyboxComponent IBL environment, so the visual gate can remain unchanged while the binding path is validated.
+- Skybox rendering, sample HDRI wiring, and GPU IBL convolution remain later stages and must follow the same plan/review/commit protocol.
 
 ---
 
