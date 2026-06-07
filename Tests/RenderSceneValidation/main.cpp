@@ -2,18 +2,21 @@
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderProxy.h"
 #include "Render/Renderer/RenderScene.h"
+#include "RHI/RHITexture.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MeshResource.h"
 #include "Runtime/Camera/Camera.h"
 #include "Scene/Actor.h"
 #include "Scene/Components/LightComponent.h"
 #include "Scene/Components/MeshRendererComponent.h"
+#include "Scene/Components/SkyboxComponent.h"
 #include "Scene/Components/StaticMeshComponent.h"
 #include "Scene/Mesh.h"
 #include "Scene/SceneManager.h"
 #include "World/World.h"
 
 #include "RenderProxySceneBridge.h"
+#include "SceneSkyboxPassBridge.h"
 
 #include <gtest/gtest.h>
 
@@ -41,6 +44,79 @@ namespace
         {
             SetState(Resource::ResourceState::Loaded);
         }
+    };
+
+    class TestTextureResource : public Resource::TextureResource
+    {
+    public:
+        void MarkLoaded()
+        {
+            SetState(Resource::ResourceState::Loaded);
+        }
+    };
+
+    class FakeSkyboxTexture final : public RHITexture
+    {
+    public:
+        uint32 GetWidth() const override { return 4; }
+        uint32 GetHeight() const override { return 4; }
+        uint32 GetDepth() const override { return 1; }
+        uint32 GetMipLevels() const override { return 1; }
+        uint32 GetArraySize() const override { return 1; }
+        RHIFormat GetFormat() const override { return RHIFormat::RGBA8_UNORM; }
+        RHITextureUsage GetUsage() const override { return RHITextureUsage::ShaderResource; }
+        RHITextureDimension GetDimension() const override { return RHITextureDimension::TextureCube; }
+        RHISampleCount GetSampleCount() const override { return RHISampleCount::Count1; }
+    };
+
+    struct FakeSkyboxPassTarget
+    {
+        SceneSkyboxPassActions MakeActions()
+        {
+            SceneSkyboxPassActions actions;
+            actions.setProcedural =
+                [this](const Vec3&,
+                       const Vec3&,
+                       const Vec3&,
+                       const Vec3&,
+                       const Vec3&,
+                       float,
+                       float)
+                {
+                    proceduralSet = true;
+                    clearedReason.clear();
+                };
+            actions.setSolidColor =
+                [this](const Vec3&, float)
+                {
+                    solidColorSet = true;
+                    clearedReason.clear();
+                };
+            actions.setCubemap =
+                [this](RHITexture* texture, float exposure, float rotation, float blurLevel)
+                {
+                    selectedCubemap = texture;
+                    cubemapExposure = exposure;
+                    cubemapRotation = rotation;
+                    cubemapBlurLevel = blurLevel;
+                    clearedReason.clear();
+                };
+            actions.clear =
+                [this](const char* reason)
+                {
+                    selectedCubemap = nullptr;
+                    clearedReason = reason ? reason : "";
+                };
+            return actions;
+        }
+
+        bool proceduralSet = false;
+        bool solidColorSet = false;
+        RHITexture* selectedCubemap = nullptr;
+        float cubemapExposure = 0.0f;
+        float cubemapRotation = 0.0f;
+        float cubemapBlurLevel = 0.0f;
+        std::string clearedReason;
     };
 
     RenderObject MakeObject(const Vec3& center, float extent = 0.5f)
@@ -85,6 +161,28 @@ namespace
         auto resource = MakeMaterialResource(id);
         resource->GetMaterial()->SetAlphaMode(alphaMode);
         return resource;
+    }
+
+    Resource::ResourceHandle<Resource::TextureResource> MakeCubemapTextureResource(Resource::ResourceId id)
+    {
+        auto* resource = new TestTextureResource();
+        resource->SetId(id);
+
+        Resource::TextureMetadata metadata;
+        metadata.width = 1;
+        metadata.height = 1;
+        metadata.depth = 1;
+        metadata.mipLevels = 1;
+        metadata.arrayLayers = 6;
+        metadata.format = Resource::TextureFormat::RGBA8;
+        metadata.isCubemap = true;
+        metadata.isArray = false;
+        metadata.isSRGB = false;
+        metadata.usage = Resource::TextureUsage::Color;
+        resource->SetData(std::vector<uint8>(6u * 4u, 255u), metadata);
+        resource->MarkLoaded();
+
+        return Resource::ResourceHandle<Resource::TextureResource>(resource);
     }
 
     RenderObject MakeMaterialObject(uint64 meshId,
@@ -432,6 +530,151 @@ TEST(RenderSceneValidation, RenderProxyBridgeBuildsPrimitiveAndLightSnapshot)
     EXPECT_EQ(RenderLightProxy::Type::Point, snapshot.lights[0].type);
     EXPECT_EQ(Vec3(0.0f, 5.0f, 0.0f), snapshot.lights[0].position);
     EXPECT_TRUE(snapshot.lights[0].castsShadow);
+
+    world.Shutdown();
+}
+
+TEST(RenderSceneValidation, SceneSkyboxBridgeReportsMissingCubemapResource)
+{
+    World world;
+    world.Initialize();
+
+    auto* entity = CreateEntity(world, "MissingCubemapSkybox");
+    ASSERT_NE(nullptr, entity);
+    auto* skybox = entity->AddComponent<SkyboxComponent>();
+    ASSERT_NE(nullptr, skybox);
+    skybox->SetSkyboxType(SkyboxType::Cubemap);
+
+    SceneSkyboxPassBridge bridge;
+    FakeSkyboxPassTarget target;
+    SceneSkyboxPassBridgeResult result;
+    EXPECT_FALSE(bridge.Update(&world, target.MakeActions(), {}, &result));
+
+    EXPECT_TRUE(result.skyboxFound);
+    EXPECT_FALSE(result.uploadRequested);
+    EXPECT_EQ(SceneSkyboxPassBridgeFallbackReason::SkyboxCubemapMissing, result.fallbackReason);
+    EXPECT_EQ(std::string(ToString(result.fallbackReason)), target.clearedReason);
+    EXPECT_EQ(nullptr, target.selectedCubemap);
+
+    world.Shutdown();
+}
+
+TEST(RenderSceneValidation, SceneSkyboxBridgeRequestsUploadForNotReadyCubemap)
+{
+    World world;
+    world.Initialize();
+
+    auto* entity = CreateEntity(world, "NotReadyCubemapSkybox");
+    ASSERT_NE(nullptr, entity);
+    auto* skybox = entity->AddComponent<SkyboxComponent>();
+    ASSERT_NE(nullptr, skybox);
+    auto cubemap = MakeCubemapTextureResource(9101);
+    skybox->SetCubemap(cubemap);
+
+    bool uploadRequested = false;
+    Resource::ResourceId uploadId = Resource::InvalidResourceId;
+    SceneSkyboxTextureAccess textureAccess;
+    textureAccess.requestUpload =
+        [&uploadRequested, &uploadId](Resource::TextureResource* texture)
+        {
+            uploadRequested = true;
+            uploadId = texture ? texture->GetId() : Resource::InvalidResourceId;
+        };
+    textureAccess.isGPUReady =
+        [](Resource::ResourceId) -> bool
+        {
+            return false;
+        };
+    textureAccess.getTexture =
+        [](Resource::ResourceId) -> RHITexture*
+        {
+            return nullptr;
+        };
+
+    SceneSkyboxPassBridge bridge;
+    FakeSkyboxPassTarget target;
+    SceneSkyboxPassBridgeResult result;
+    EXPECT_FALSE(bridge.Update(&world, target.MakeActions(), textureAccess, &result));
+
+    EXPECT_TRUE(result.skyboxFound);
+    EXPECT_TRUE(result.uploadRequested);
+    EXPECT_TRUE(uploadRequested);
+    EXPECT_EQ(cubemap.GetId(), uploadId);
+    EXPECT_EQ(SceneSkyboxPassBridgeFallbackReason::SkyboxCubemapNotReady, result.fallbackReason);
+    EXPECT_EQ(std::string(ToString(result.fallbackReason)), target.clearedReason);
+    EXPECT_EQ(nullptr, target.selectedCubemap);
+
+    world.Shutdown();
+}
+
+TEST(RenderSceneValidation, SceneSkyboxBridgePassesReadyCubemapToTarget)
+{
+    World world;
+    world.Initialize();
+
+    auto* entity = CreateEntity(world, "ReadyCubemapSkybox");
+    ASSERT_NE(nullptr, entity);
+    auto* skybox = entity->AddComponent<SkyboxComponent>();
+    ASSERT_NE(nullptr, skybox);
+    auto cubemap = MakeCubemapTextureResource(9102);
+    skybox->SetCubemap(cubemap);
+    skybox->SetExposure(1.5f);
+    skybox->SetRotation(0.25f);
+    skybox->SetBlurLevel(2.0f);
+
+    FakeSkyboxTexture gpuCubemap;
+    SceneSkyboxTextureAccess textureAccess;
+    textureAccess.isGPUReady =
+        [cubemap](Resource::ResourceId id) -> bool
+        {
+            return id == cubemap.GetId();
+        };
+    textureAccess.getTexture =
+        [cubemap, &gpuCubemap](Resource::ResourceId id) -> RHITexture*
+        {
+            return id == cubemap.GetId() ? &gpuCubemap : nullptr;
+        };
+
+    SceneSkyboxPassBridge bridge;
+    FakeSkyboxPassTarget target;
+    SceneSkyboxPassBridgeResult result;
+    EXPECT_TRUE(bridge.Update(&world, target.MakeActions(), textureAccess, &result));
+
+    EXPECT_TRUE(result.skyboxFound);
+    EXPECT_FALSE(result.uploadRequested);
+    EXPECT_EQ(SceneSkyboxPassBridgeFallbackReason::None, result.fallbackReason);
+    EXPECT_EQ(&gpuCubemap, result.selectedCubemap);
+    EXPECT_EQ(&gpuCubemap, target.selectedCubemap);
+    EXPECT_EQ(1.5f, target.cubemapExposure);
+    EXPECT_EQ(0.25f, target.cubemapRotation);
+    EXPECT_EQ(2.0f, target.cubemapBlurLevel);
+    EXPECT_TRUE(target.clearedReason.empty());
+
+    world.Shutdown();
+}
+
+TEST(RenderSceneValidation, SceneSkyboxBridgeKeepsEquirectangularUnsupported)
+{
+    World world;
+    world.Initialize();
+
+    auto* entity = CreateEntity(world, "EquirectangularSkybox");
+    ASSERT_NE(nullptr, entity);
+    auto* skybox = entity->AddComponent<SkyboxComponent>();
+    ASSERT_NE(nullptr, skybox);
+    skybox->SetSkyboxType(SkyboxType::Equirectangular);
+
+    SceneSkyboxPassBridge bridge;
+    FakeSkyboxPassTarget target;
+    SceneSkyboxPassBridgeResult result;
+    EXPECT_FALSE(bridge.Update(&world, target.MakeActions(), {}, &result));
+
+    EXPECT_TRUE(result.skyboxFound);
+    EXPECT_FALSE(result.uploadRequested);
+    EXPECT_EQ(SceneSkyboxPassBridgeFallbackReason::SkyboxEquirectangularDrawingNotImplemented,
+              result.fallbackReason);
+    EXPECT_EQ(std::string(ToString(result.fallbackReason)), target.clearedReason);
+    EXPECT_EQ(nullptr, target.selectedCubemap);
 
     world.Shutdown();
 }

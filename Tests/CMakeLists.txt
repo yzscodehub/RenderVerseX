@@ -269,6 +269,7 @@ rvx_add_gtest(
         ${CMAKE_SOURCE_DIR}/Render/Private/Material/MaterialClassification.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderDrawItem.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderProxySceneBridge.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/SceneSkyboxPassBridge.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderScene.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderSceneCollector.cpp
     LIBS
@@ -277,7 +278,9 @@ rvx_add_gtest(
         RVX::World
         RVX::Resource
         RVX::Scene
+        RVX::RHI
     INCLUDES
+        ${CMAKE_SOURCE_DIR}/RHI/Include
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer
         ${CMAKE_SOURCE_DIR}/Resource/Include

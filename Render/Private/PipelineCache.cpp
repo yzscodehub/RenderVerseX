@@ -27,7 +27,7 @@ namespace
     constexpr uint64 RVX_MAX_DRAW_CONSTANTS_PER_FRAME = 8192;
     constexpr uint64 RVX_PIPELINE_HASH_OFFSET_BASIS = 0xcbf29ce484222325ull;
     constexpr uint64 RVX_PIPELINE_HASH_PRIME = 0x100000001b3ull;
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 5;
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 6;
     constexpr const char* RVX_PIPELINE_MANIFEST_MAGIC = "RVX_PIPELINE_CACHE_MANIFEST";
 
     struct PipelineCacheManifest
@@ -937,6 +937,8 @@ bool PipelineCache::CreateSkyboxPipelineLayout()
     RHIDescriptorSetLayoutDesc setLayoutDesc;
     setLayoutDesc.debugName = "SkyboxSetLayout";
     setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Vertex | RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(1, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(2, RHIBindingType::Sampler, RHIShaderStage::Pixel);
 
     m_skyboxSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
     if (!m_skyboxSetLayout)
@@ -1900,11 +1902,29 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_bloomVsCompileResult.get());
         if (shader == m_bloomPixelShader.Get())
             return ComputeShaderHash(m_bloomPsCompileResult.get());
+        if (shader == m_skyboxVertexShader.Get())
+            return ComputeShaderHash(m_skyboxVsCompileResult.get());
+        if (shader == m_skyboxPixelShader.Get())
+            return ComputeShaderHash(m_skyboxPsCompileResult.get());
         return ComputeShaderHash(nullptr);
     };
 
     HashValue(hash, shaderHashFor(desc.vertexShader));
     HashValue(hash, shaderHashFor(desc.pixelShader));
+
+    if (desc.pipelineLayout == m_skyboxPipelineLayout.Get() && m_skyboxSetLayout)
+    {
+        const auto& entries = m_skyboxSetLayout->GetEntries();
+        HashValue(hash, static_cast<uint32>(entries.size()));
+        for (const RHIBindingLayoutEntry& entry : entries)
+        {
+            HashValue(hash, entry.binding);
+            HashValue(hash, entry.type);
+            HashValue(hash, entry.visibility);
+            HashValue(hash, entry.count);
+            HashValue(hash, entry.isDynamic);
+        }
+    }
 
     HashValue(hash, desc.tessellationControlPoints);
     HashValue(hash, desc.primitiveTopology);

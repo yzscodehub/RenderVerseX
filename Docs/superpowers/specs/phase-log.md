@@ -2853,6 +2853,100 @@ git diff --check
 
 ---
 
+### RQ2e: Texture Skybox Cubemap Draw
+
+**Date:** 2026-06-07
+**Commit:** pending in this commit
+**Spark plan review agent:** Zeno (`gpt-5.5`, xhigh)
+**Spark code review agent:** Darwin (`gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-07-rq2e-texture-skybox-cubemap-draw-plan.md`
+- Section: entire RQ2e plan
+- Lines checked: plan review performed after blocker fixes
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ2d procedural skybox minimum draw, plus bugfix `a3b66b0`.
+- Evidence: RQ2d visual/modelviewer gates were green before RQ2e; RQ2e plan review passed after blocker fixes.
+
+**Approved scope:**
+
+- Draw `SkyboxType::Cubemap` as a real texture skybox when the cubemap is GPU-ready.
+- Expand skybox shader/layout to bind constants, cubemap SRV, and sampler.
+- Keep procedural/color skybox paths working under the expanded layout.
+- Keep `SkyboxType::Equirectangular` honestly unsupported.
+- Add mandatory SceneRenderer cubemap bridge coverage for missing, not-ready upload request, ready handoff, and equirectangular unsupported.
+- Fix skybox pipeline hash/manifest identity to include skybox shader inputs and the RQ2e layout contract.
+
+**Out of scope:**
+
+- Equirectangular panorama draw/conversion.
+- HDRI loader wiring in ModelViewer.
+- IBL convolution or DefaultLit lighting quality changes.
+- ECS/Object/RenderProxy refactors.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-07-rq2e-texture-skybox-cubemap-draw-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/CMakeLists.txt`
+- `Render/Shaders/Skybox.hlsl`
+- `Render/Include/Render/Passes/SkyboxPass.h`
+- `Render/Private/Passes/SkyboxPass.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Private/Renderer/SceneSkyboxPassBridge.h`
+- `Render/Private/Renderer/SceneSkyboxPassBridge.cpp`
+- `Render/Private/PipelineCache.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/RenderSceneValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation RenderSceneValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|RenderSceneValidation"
+cmake --build build\win_x64_debug --config Debug --target ModelViewer VisualGoldenValidation RenderHonestyValidation MaterialSystemValidation GPUUploadServiceValidation GPUResourceManagerValidation ClusteredLightingValidation RenderGraphValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerIBLSmoke"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|RenderHonestyValidation|MaterialSystemValidation|GPUUploadServiceValidation|GPUResourceManagerValidation|ClusteredLightingValidation"
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 85/85 selected tests passed.
+- Visual tests: PASS, 3/3 selected tests passed (`ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerIBLSmoke`).
+- Regression tests: PASS, 118/118 selected tests passed.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Logs: terminal build and ctest output in this thread.
+- Screenshots: none.
+- Diffs: current RQ2e working tree diff before commit.
+
+**Spark plan review result:**
+
+- First verdict: BLOCKED.
+- Blockers adopted: made skybox shader/layout manifest/hash coverage mandatory; made SceneRenderer cubemap bridge tests mandatory.
+- Second verdict: PASS.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Notes / follow-ups:**
+
+- RQ2e intentionally does not make ModelViewer use an external cubemap background yet; it only enables the engine path when a GPU-ready cubemap component is present.
+- The existing `ModelViewerSmoke --no-ibl` golden remained stable.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

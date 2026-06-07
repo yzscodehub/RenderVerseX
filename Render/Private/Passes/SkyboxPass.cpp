@@ -33,6 +33,9 @@ namespace
         float groundColor[4] = {0.3f, 0.25f, 0.2f, 0.999f};
         float sunDirection[4] = {0.5f, 0.5f, 0.5f, 1.0f};
         float sunColor[4] = {1.0f, 0.95f, 0.9f, 0.0f};
+        float textureParams[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        float cameraPosition[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        Mat4 inverseViewProjection = Mat4Identity();
     };
 } // namespace
 
@@ -49,7 +52,11 @@ void SkyboxPass::SetResources(PipelineCache* pipelineCache)
     if (device != m_resourceDevice)
     {
         m_retainedDescriptorSets.clear();
+        m_retainedCubemapViews.clear();
         m_constantBuffer.Reset();
+        m_fallbackCubemap.Reset();
+        m_fallbackCubemapView.Reset();
+        m_sampler.Reset();
         m_resourceDevice = device;
     }
 
@@ -62,16 +69,20 @@ void SkyboxPass::SetRenderTargets(RHITextureView* colorTargetView, RHITextureVie
     m_depthTargetView = depthTargetView;
 }
 
-void SkyboxPass::SetCubemap(RHITexture* cubemap)
+void SkyboxPass::SetCubemap(RHITexture* cubemap, float exposure, float rotation, float blurLevel)
 {
     m_cubemap = cubemap;
-    m_useProceduralSky = (cubemap == nullptr);
-    if (cubemap)
+    m_exposure = exposure;
+    m_rotation = rotation;
+    m_blurLevel = blurLevel;
+    if (!cubemap)
     {
-        ClearSkybox("Cubemap skybox drawing is not implemented");
+        ClearSkybox("SkyboxCubemapMissing");
         return;
     }
 
+    m_drawMode = SkyboxDrawMode::Cubemap;
+    m_skySelected = true;
     RefreshSupport();
 }
 
@@ -90,7 +101,10 @@ void SkyboxPass::SetProceduralSkyParams(const Vec3& sunDirection,
     m_sunColor = sunColor;
     m_exposure = exposure;
     m_scatteringIntensity = scatteringIntensity;
-    m_useProceduralSky = true;
+    m_rotation = 0.0f;
+    m_blurLevel = 0.0f;
+    m_cubemap = nullptr;
+    m_drawMode = SkyboxDrawMode::Procedural;
     m_skySelected = true;
     RefreshSupport();
 }
@@ -104,6 +118,8 @@ void SkyboxPass::ClearSkybox(const char* reason)
 {
     m_skySelected = false;
     m_drawReady = false;
+    m_cubemap = nullptr;
+    m_drawMode = SkyboxDrawMode::None;
     m_unsupportedReason = reason ? reason : "No supported SkyboxComponent selected";
 }
 
@@ -233,6 +249,13 @@ void SkyboxPass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
+    RHITextureView* cubemapView = ResolveCubemapView(view);
+    if (!cubemapView || !m_sampler)
+    {
+        RVX_CORE_WARN("SkyboxPass: texture descriptor resources are unavailable");
+        return;
+    }
+
     RHIDescriptorSetDesc descriptorDesc;
     descriptorDesc.layout = setLayout;
     descriptorDesc.debugName = "SkyboxDescriptorSet";
@@ -240,6 +263,8 @@ void SkyboxPass::Execute(RHICommandContext& ctx, const ViewData& view)
                               m_constantBuffer.Get(),
                               0,
                               AlignSkyboxConstantBufferSize(sizeof(SkyboxGPUConstants)));
+    descriptorDesc.BindTexture(1, cubemapView);
+    descriptorDesc.BindSampler(2, m_sampler.Get());
 
     RHIDescriptorSetRef descriptorSet = device->CreateDescriptorSet(descriptorDesc);
     if (!descriptorSet)
@@ -304,7 +329,86 @@ bool SkyboxPass::EnsureRuntimeResources()
         }
     }
 
+    if (!m_sampler)
+    {
+        RHISamplerDesc samplerDesc = RHISamplerDesc::LinearWrap();
+        samplerDesc.debugName = "SkyboxLinearWrapSampler";
+        m_sampler = device->CreateSampler(samplerDesc);
+        if (!m_sampler)
+        {
+            m_unsupportedReason = "Skybox sampler creation failed";
+            return false;
+        }
+    }
+
+    if (!m_fallbackCubemap)
+    {
+        RHITextureDesc fallbackDesc = RHITextureDesc::Texture2D(1, 1, RHIFormat::RGBA8_UNORM);
+        fallbackDesc.dimension = RHITextureDimension::TextureCube;
+        fallbackDesc.arraySize = 1;
+        fallbackDesc.usage = RHITextureUsage::ShaderResource;
+        fallbackDesc.debugName = "SkyboxFallbackCubemap";
+        m_fallbackCubemap = device->CreateTexture(fallbackDesc);
+        if (!m_fallbackCubemap)
+        {
+            m_unsupportedReason = "Skybox fallback cubemap creation failed";
+            return false;
+        }
+    }
+
+    if (!m_fallbackCubemapView)
+    {
+        RHITextureViewDesc fallbackViewDesc;
+        fallbackViewDesc.format = m_fallbackCubemap->GetFormat();
+        fallbackViewDesc.dimension = RHITextureDimension::TextureCube;
+        fallbackViewDesc.subresourceRange = RHISubresourceRange::All();
+        fallbackViewDesc.debugName = "SkyboxFallbackCubemapSRV";
+        m_fallbackCubemapView = device->CreateTextureView(m_fallbackCubemap.Get(), fallbackViewDesc);
+        if (!m_fallbackCubemapView)
+        {
+            m_unsupportedReason = "Skybox fallback cubemap view creation failed";
+            return false;
+        }
+    }
+
     return true;
+}
+
+RHITextureView* SkyboxPass::ResolveCubemapView(const ViewData& view)
+{
+    if (m_drawMode != SkyboxDrawMode::Cubemap)
+    {
+        return m_fallbackCubemapView.Get();
+    }
+
+    if (!m_cubemap)
+        return nullptr;
+
+    if (view.viewCache)
+    {
+        return view.viewCache->GetDefaultSRV(m_cubemap);
+    }
+
+    IRHIDevice* device = m_pipelineCache ? m_pipelineCache->GetDevice() : nullptr;
+    if (!device)
+        return nullptr;
+
+    RHITextureViewDesc viewDesc;
+    viewDesc.format = m_cubemap->GetFormat();
+    viewDesc.dimension = RHITextureDimension::TextureCube;
+    viewDesc.subresourceRange = RHISubresourceRange::All();
+    viewDesc.debugName = "SkyboxCubemapSRV";
+    RHITextureViewRef viewRef = device->CreateTextureView(m_cubemap, viewDesc);
+    if (!viewRef)
+        return nullptr;
+
+    RHITextureView* result = viewRef.Get();
+    m_retainedCubemapViews.push_back(std::move(viewRef));
+    while (m_retainedCubemapViews.size() > RVX_MAX_FRAME_COUNT + 1)
+    {
+        m_retainedCubemapViews.pop_front();
+    }
+    return result;
 }
 
 bool SkyboxPass::UpdateConstants(const ViewData& view)
@@ -332,10 +436,17 @@ bool SkyboxPass::UpdateConstants(const ViewData& view)
     constants.sunDirection[0] = m_sunDirection.x;
     constants.sunDirection[1] = m_sunDirection.y;
     constants.sunDirection[2] = m_sunDirection.z;
-    constants.sunDirection[3] = m_useProceduralSky ? 1.0f : 0.0f;
+    constants.sunDirection[3] = m_drawMode == SkyboxDrawMode::Procedural ? 1.0f : 0.0f;
     constants.sunColor[0] = m_sunColor.x;
     constants.sunColor[1] = m_sunColor.y;
     constants.sunColor[2] = m_sunColor.z;
+    constants.textureParams[0] = m_drawMode == SkyboxDrawMode::Cubemap ? 1.0f : 0.0f;
+    constants.textureParams[1] = std::max(0.0f, m_blurLevel);
+    constants.textureParams[2] = m_rotation;
+    constants.cameraPosition[0] = view.cameraPosition.x;
+    constants.cameraPosition[1] = view.cameraPosition.y;
+    constants.cameraPosition[2] = view.cameraPosition.z;
+    constants.inverseViewProjection = view.inverseViewMatrix * view.inverseProjectionMatrix;
 
     void* mapped = m_constantBuffer->Map();
     if (!mapped)
@@ -344,7 +455,6 @@ bool SkyboxPass::UpdateConstants(const ViewData& view)
         return false;
     }
 
-    (void)view;
     std::memcpy(mapped, &constants, sizeof(constants));
     m_constantBuffer->Unmap();
     return true;

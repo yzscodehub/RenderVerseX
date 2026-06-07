@@ -36,6 +36,7 @@ namespace RVX
     class OpaquePass;
     class RenderPassRegistry;
     class RenderProxySceneBridge;
+    class SceneSkyboxPassBridge;
     class ShadowPass;
     class SkyboxPass;
     class ToneMappingPass;
@@ -309,6 +310,7 @@ namespace RVX
         std::unique_ptr<ResourceViewCache> m_resourceViewCache;
         std::unique_ptr<RenderPassRegistry> m_passRegistry;
         std::unique_ptr<RenderProxySceneBridge> m_proxyBridge;
+        std::unique_ptr<SceneSkyboxPassBridge> m_skyboxBridge;
         std::unique_ptr<PostProcessStack> m_postProcessStack;
         
         ViewData m_viewData;

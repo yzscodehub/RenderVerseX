@@ -8,7 +8,13 @@ cbuffer SkyboxConstants : register(b0, space0)
     float4 SkyboxGroundColor;    // rgb: ground color, a: far-depth value
     float4 SkyboxSunDirection;   // xyz: sun direction, w: sun intensity
     float4 SkyboxSunColor;       // rgb: sun color, a: reserved
+    float4 SkyboxTextureParams;  // x: cubemap mode, y: mip/blur, z: Y rotation radians
+    float4 SkyboxCameraPosition; // xyz: camera position
+    float4x4 SkyboxInverseViewProjection;
 };
+
+TextureCube SkyboxCubemap : register(t1, space0);
+SamplerState SkyboxSampler : register(s2, space0);
 
 struct VSOutput
 {
@@ -33,6 +39,24 @@ VSOutput VSMain(uint vertexId : SV_VertexID)
 
 float4 PSMain(VSOutput input) : SV_TARGET
 {
+    if (SkyboxTextureParams.x > 0.5)
+    {
+        float4 worldPos = mul(SkyboxInverseViewProjection, float4(input.ndc, 1.0, 1.0));
+        worldPos.xyz /= (abs(worldPos.w) > 1.0e-5) ? worldPos.w : 1.0;
+        float3 viewDir = normalize(worldPos.xyz - SkyboxCameraPosition.xyz);
+
+        const float sinYaw = sin(SkyboxTextureParams.z);
+        const float cosYaw = cos(SkyboxTextureParams.z);
+        viewDir = float3(cosYaw * viewDir.x + sinYaw * viewDir.z,
+                         viewDir.y,
+                         -sinYaw * viewDir.x + cosYaw * viewDir.z);
+
+        const float mipLevel = max(0.0, SkyboxTextureParams.y);
+        const float3 color = SkyboxCubemap.SampleLevel(SkyboxSampler, viewDir, mipLevel).rgb *
+                             SkyboxZenithColor.a;
+        return float4(color, 1.0);
+    }
+
     const float height = saturate(input.ndc.y * 0.5 + 0.5);
     const float skyBlend = smoothstep(0.0, 1.0, height);
     const float groundBlend = saturate((0.5 - height) * 2.0);

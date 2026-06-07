@@ -18,6 +18,7 @@
 #include "Renderer/RenderFrameResourceBinder.h"
 #include "Renderer/RenderPassRegistry.h"
 #include "Renderer/RenderProxySceneBridge.h"
+#include "Renderer/SceneSkyboxPassBridge.h"
 #include "Runtime/Camera/Camera.h"
 #include "Scene/Components/SkyboxComponent.h"
 #include "Scene/SceneManager.h"
@@ -132,6 +133,7 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
     m_renderContext = renderContext;
     m_passRegistry = std::make_unique<RenderPassRegistry>();
     m_proxyBridge = std::make_unique<RenderProxySceneBridge>();
+    m_skyboxBridge = std::make_unique<SceneSkyboxPassBridge>();
 
     // Create render graph
     m_renderGraph = std::make_unique<RenderGraph>();
@@ -304,6 +306,7 @@ void SceneRenderer::Shutdown()
     m_renderGraph.reset();
     m_passRegistry.reset();
     m_proxyBridge.reset();
+    m_skyboxBridge.reset();
     m_renderContext = nullptr;
     m_initialized = false;
 
@@ -451,68 +454,64 @@ void SceneRenderer::UpdateEnvironmentIBL(World* world)
 
 void SceneRenderer::UpdateSkyboxPass(World* world)
 {
-    if (!m_skyboxPass)
+    if (!m_skyboxPass || !m_skyboxBridge)
         return;
 
-    auto clearSkybox = [this](const char* reason)
-    {
-        m_skyboxPass->ClearSkybox(reason);
-    };
-
-    if (!world)
-    {
-        clearSkybox("NoWorld");
-        return;
-    }
-
-    SceneManager* sceneManager = world->GetSceneManager();
-    if (!sceneManager)
-    {
-        clearSkybox("NoSceneManager");
-        return;
-    }
-
-    SkyboxComponent* skybox = nullptr;
-    // Stable policy for RQ2d: first active enabled SkyboxComponent in scene traversal order wins.
-    sceneManager->ForEachActiveEntity(
-        [&skybox](SceneEntity* entity)
+    SceneSkyboxPassActions passActions;
+    passActions.setProcedural =
+        [this](const Vec3& sunDirection,
+               const Vec3& skyColor,
+               const Vec3& horizonColor,
+               const Vec3& groundColor,
+               const Vec3& sunColor,
+               float exposure,
+               float scatteringIntensity)
         {
-            if (skybox || !entity)
-                return;
+            m_skyboxPass->SetProceduralSkyParams(sunDirection,
+                                                 skyColor,
+                                                 horizonColor,
+                                                 groundColor,
+                                                 sunColor,
+                                                 exposure,
+                                                 scatteringIntensity);
+        };
+    passActions.setSolidColor =
+        [this](const Vec3& color, float exposure)
+        {
+            m_skyboxPass->SetSolidColor(color, exposure);
+        };
+    passActions.setCubemap =
+        [this](RHITexture* cubemap, float exposure, float rotation, float blurLevel)
+        {
+            m_skyboxPass->SetCubemap(cubemap, exposure, rotation, blurLevel);
+        };
+    passActions.clear =
+        [this](const char* reason)
+        {
+            m_skyboxPass->ClearSkybox(reason);
+        };
 
-            auto* candidate = entity->GetComponent<SkyboxComponent>();
-            if (candidate && candidate->IsEnabled())
+    SceneSkyboxTextureAccess textureAccess;
+    textureAccess.requestUpload =
+        [this](Resource::TextureResource* texture)
+        {
+            if (m_gpuResourceManager)
             {
-                skybox = candidate;
+                m_gpuResourceManager->RequestUpload(texture, UploadPriority::High);
             }
-        });
+        };
+    textureAccess.isGPUReady =
+        [this](Resource::ResourceId id) -> bool
+        {
+            return m_gpuResourceManager && m_gpuResourceManager->IsGPUReady(id);
+        };
+    textureAccess.getTexture =
+        [this](Resource::ResourceId id) -> RHITexture*
+        {
+            return m_gpuResourceManager ? m_gpuResourceManager->GetTexture(id) : nullptr;
+        };
 
-    if (!skybox)
-    {
-        clearSkybox("NoSkyboxComponent");
-        return;
-    }
-
-    switch (skybox->GetSkyboxType())
-    {
-        case SkyboxType::Procedural:
-            m_skyboxPass->SetProceduralSkyParams(skybox->GetSunDirection(),
-                                                 skybox->GetZenithColor(),
-                                                 skybox->GetHorizonColor(),
-                                                 skybox->GetGroundColor(),
-                                                 skybox->GetSunColor(),
-                                                 skybox->GetExposure(),
-                                                 skybox->GetScatteringIntensity());
-            break;
-        case SkyboxType::Color:
-            m_skyboxPass->SetSolidColor(skybox->GetSolidColor(), skybox->GetExposure());
-            break;
-        case SkyboxType::Cubemap:
-        case SkyboxType::Equirectangular:
-        default:
-            clearSkybox("SkyboxTextureDrawingNotImplemented");
-            break;
-    }
+    m_skyboxBridge->Update(world, passActions, textureAccess);
 }
 
 void SceneRenderer::SetupView(const Camera& camera, World* world)

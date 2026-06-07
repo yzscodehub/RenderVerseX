@@ -377,11 +377,15 @@ namespace
         RHITextureViewRef CreateTextureView(RHITexture* texture, const RHITextureViewDesc& desc = {}) override
         {
             createdTextureViewDescs.push_back(desc);
+            if (!textureViewCreationSucceeds)
+                return {};
             return RHITextureViewRef(new FakeTextureView(texture, desc));
         }
 
         RHISamplerRef CreateSampler(const RHISamplerDesc&) override
         {
+            if (!samplerCreationSucceeds)
+                return {};
             return RHISamplerRef(new FakeSampler());
         }
 
@@ -482,6 +486,8 @@ namespace
         RHIBackendType GetBackendType() const override { return RHIBackendType::DX12; }
 
         bool bufferMapSucceeds = true;
+        bool textureViewCreationSucceeds = true;
+        bool samplerCreationSucceeds = true;
         std::vector<RHIBufferDesc> createdBufferDescs;
         std::vector<RHIDescriptorSetDesc> createdDescriptorSetDescs;
         std::vector<RHITextureDesc> createdTextureDescs;
@@ -1067,9 +1073,14 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleT
             return desc.debugName && std::string(desc.debugName) == "SkyboxDescriptorSet";
         });
     ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
-    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(1));
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
     EXPECT_EQ(descriptorIt->bindings[0].binding, 0u);
     EXPECT_NE(descriptorIt->bindings[0].buffer, nullptr);
+    EXPECT_EQ(descriptorIt->bindings[1].binding, 1u);
+    EXPECT_NE(descriptorIt->bindings[1].textureView, nullptr);
+    EXPECT_EQ(descriptorIt->bindings[1].textureView->GetTexture()->GetDimension(), RHITextureDimension::TextureCube);
+    EXPECT_EQ(descriptorIt->bindings[2].binding, 2u);
+    EXPECT_NE(descriptorIt->bindings[2].sampler, nullptr);
 }
 
 TEST_F(RenderPassValidationFixture, SkyboxPassDrawsFullscreenBackgroundWithoutDepthTarget)
@@ -1096,6 +1107,102 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsFullscreenBackgroundWithoutDe
     EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
     ASSERT_FALSE(ctx.renderPasses.empty());
     EXPECT_FALSE(ctx.renderPasses[0].hasDepthStencil);
+}
+
+TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+
+    RHITextureDesc cubemapDesc = RHITextureDesc::Texture2D(16, 16, RHIFormat::RGBA8_UNORM);
+    cubemapDesc.dimension = RHITextureDimension::TextureCube;
+    cubemapDesc.arraySize = 1;
+    auto cubemap = device.CreateTexture(cubemapDesc);
+    ASSERT_NE(cubemap, nullptr);
+
+    SkyboxPass pass;
+    pass.SetResources(&pipelineCache);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.SetCubemap(cubemap.Get(), 1.25f, 0.35f, 1.0f);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    ASSERT_TRUE(pass.IsCubemapSelected());
+    EXPECT_EQ(pass.GetSelectedCubemap(), cubemap.Get());
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    ASSERT_EQ(ctx.beginRenderPassCount, 1u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetSkyboxPipeline(RHIFormat::RGBA8_UNORM, false));
+    EXPECT_EQ(ctx.drawCount, 1u);
+    EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
+
+    auto descriptorIt = std::find_if(
+        device.createdDescriptorSetDescs.begin(),
+        device.createdDescriptorSetDescs.end(),
+        [](const RHIDescriptorSetDesc& desc)
+        {
+            return desc.debugName && std::string(desc.debugName) == "SkyboxDescriptorSet";
+        });
+    ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
+    EXPECT_EQ(descriptorIt->bindings[0].binding, 0u);
+    EXPECT_NE(descriptorIt->bindings[0].buffer, nullptr);
+    EXPECT_EQ(descriptorIt->bindings[1].binding, 1u);
+    ASSERT_NE(descriptorIt->bindings[1].textureView, nullptr);
+    EXPECT_EQ(descriptorIt->bindings[1].textureView->GetTexture(), cubemap.Get());
+    EXPECT_EQ(descriptorIt->bindings[2].binding, 2u);
+    EXPECT_NE(descriptorIt->bindings[2].sampler, nullptr);
+}
+
+TEST_F(RenderPassValidationFixture, SkyboxPassSkipsCubemapDrawWhenSRVCreationFails)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RHITextureDesc cubemapDesc = RHITextureDesc::Texture2D(16, 16, RHIFormat::RGBA8_UNORM);
+    cubemapDesc.dimension = RHITextureDimension::TextureCube;
+    cubemapDesc.arraySize = 1;
+    auto cubemap = device.CreateTexture(cubemapDesc);
+    ASSERT_NE(cubemap, nullptr);
+
+    SkyboxPass pass;
+    pass.SetResources(&pipelineCache);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.SetCubemap(cubemap.Get());
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    device.textureViewCreationSucceeds = false;
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_TRUE(ctx.pipelineSequence.empty());
+    EXPECT_EQ(ctx.drawCount, 0u);
+}
+
+TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenSamplerCannotBeCreated)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    device.samplerCreationSucceeds = false;
+
+    SkyboxPass pass;
+    pass.SetResources(&pipelineCache);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.SetProceduralSkyParams(Vec3{0.25f, 0.8f, 0.35f},
+                                Vec3{0.12f, 0.24f, 0.55f},
+                                Vec3{0.6f, 0.72f, 0.88f});
+
+    EXPECT_FALSE(pass.IsSupported());
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_TRUE(ctx.pipelineSequence.empty());
+    EXPECT_EQ(ctx.drawCount, 0u);
 }
 
 TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenConstantsCannotMap)

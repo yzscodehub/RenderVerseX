@@ -294,6 +294,18 @@ namespace
         return contents.str();
     }
 
+    fs::path CopyShaderDirectoryToTemp(const fs::path& destinationRoot)
+    {
+        const fs::path source = FindShaderDirectory();
+        EXPECT_FALSE(source.empty());
+        const fs::path destination = destinationRoot / "Shaders";
+        fs::create_directories(destination);
+        fs::copy(source,
+                 destination,
+                 fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+        return destination;
+    }
+
     void ReplaceManifestFieldValue(const fs::path& manifestPath,
                                    const std::string& key,
                                    const std::string& replacementValue)
@@ -446,6 +458,9 @@ TEST_F(PipelineCacheValidationFixture, SkyboxShaderUsesFullscreenTriangleAndProc
     EXPECT_NE(shaderSource.find("SkyboxGroundColor.a"), std::string::npos);
     EXPECT_NE(shaderSource.find("SkyboxZenithColor"), std::string::npos);
     EXPECT_NE(shaderSource.find("SkyboxHorizonColor"), std::string::npos);
+    EXPECT_NE(shaderSource.find("TextureCube SkyboxCubemap"), std::string::npos);
+    EXPECT_NE(shaderSource.find("SamplerState SkyboxSampler"), std::string::npos);
+    EXPECT_NE(shaderSource.find("SkyboxTextureParams.x"), std::string::npos);
     EXPECT_NE(shaderSource.find("smoothstep"), std::string::npos);
 }
 
@@ -551,12 +566,20 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_NE(cache.GetPostProcessSetLayout(), nullptr);
     EXPECT_NE(cache.GetPostProcessLayout(), nullptr);
 
-    ASSERT_EQ(skyboxLayout.entries.size(), static_cast<size_t>(1));
+    ASSERT_EQ(skyboxLayout.entries.size(), static_cast<size_t>(3));
     const auto* skyboxConstants = FindBinding(skyboxLayout, 0);
     ASSERT_NE(skyboxConstants, nullptr);
     EXPECT_EQ(skyboxConstants->type, RVX::RHIBindingType::UniformBuffer);
     EXPECT_TRUE(RVX::HasFlag(skyboxConstants->visibility, RVX::RHIShaderStage::Vertex));
     EXPECT_TRUE(RVX::HasFlag(skyboxConstants->visibility, RVX::RHIShaderStage::Pixel));
+    const auto* skyboxTexture = FindBinding(skyboxLayout, 1);
+    ASSERT_NE(skyboxTexture, nullptr);
+    EXPECT_EQ(skyboxTexture->type, RVX::RHIBindingType::SampledTexture);
+    EXPECT_TRUE(RVX::HasFlag(skyboxTexture->visibility, RVX::RHIShaderStage::Pixel));
+    const auto* skyboxSampler = FindBinding(skyboxLayout, 2);
+    ASSERT_NE(skyboxSampler, nullptr);
+    EXPECT_EQ(skyboxSampler->type, RVX::RHIBindingType::Sampler);
+    EXPECT_TRUE(RVX::HasFlag(skyboxSampler->visibility, RVX::RHIShaderStage::Pixel));
     EXPECT_NE(cache.GetSkyboxSetLayout(), nullptr);
     EXPECT_NE(cache.GetSkyboxLayout(), nullptr);
 }
@@ -940,6 +963,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata
     EXPECT_TRUE(fs::exists(temp.Path() / RVX::PipelineCache::GetManifestFileName()));
 
     const std::string manifest = ReadTextFile(temp.Path() / RVX::PipelineCache::GetManifestFileName());
+    EXPECT_NE(manifest.find("version=6"), std::string::npos);
     EXPECT_NE(manifest.find("skyboxVertexShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("skyboxPixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("skyboxPipelineHash="), std::string::npos);
@@ -1126,6 +1150,43 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSkyboxPipelineHash
     EXPECT_TRUE(cache.GetStats().manifestLoaded);
     EXPECT_FALSE(cache.GetStats().manifestValid);
     EXPECT_TRUE(cache.GetStats().manifestInvalidated);
+}
+
+TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSkyboxShaderChanges)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    TempDirectory temp("rvx_pipeline_manifest_skybox_shader");
+    const fs::path shaderDir = CopyShaderDirectoryToTemp(temp.Path());
+    const fs::path manifestDir = temp.Path() / "Manifest";
+    RVX::uint64 firstSkyboxHash = 0;
+
+    {
+        FakeDevice device;
+        RVX::PipelineCache cache;
+        cache.SetConfig(ConfigWithManifest(manifestDir));
+        ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
+        firstSkyboxHash = cache.GetStats().skyboxPipelineHash;
+        ASSERT_NE(firstSkyboxHash, 0u);
+        EXPECT_FALSE(cache.GetStats().manifestInvalidated);
+    }
+
+    const fs::path skyboxShader = shaderDir / "Skybox.hlsl";
+    std::string source = ReadTextFile(skyboxShader);
+    source += "\n// PipelineCacheValidation skybox hash mutation\n";
+    WriteTextFile(skyboxShader, source);
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    cache.SetConfig(ConfigWithManifest(manifestDir));
+    ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
+    EXPECT_TRUE(cache.GetStats().manifestLoaded);
+    EXPECT_TRUE(cache.GetStats().manifestInvalidated);
+    EXPECT_NE(cache.GetStats().skyboxPipelineHash, 0u);
+    EXPECT_NE(cache.GetStats().skyboxPipelineHash, firstSkyboxHash);
 }
 
 TEST_F(PipelineCacheValidationFixture, CorruptManifestInvalidatesWithoutFailingInitialization)
