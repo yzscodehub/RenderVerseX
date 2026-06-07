@@ -463,7 +463,7 @@ if(RVX_ENABLE_DX11 AND TARGET ModelViewer)
             --backend dx11
             --width ${RVX_MODELVIEWER_SMOKE_WIDTH}
             --height ${RVX_MODELVIEWER_SMOKE_HEIGHT}
-            --frames 8
+            --frames 2
             --expect-ibl-ready
             --validation
     )

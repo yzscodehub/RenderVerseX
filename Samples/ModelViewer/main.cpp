@@ -534,12 +534,39 @@ namespace
                 return false;
 
             gpuResources->UploadImmediate(texture.Get());
-            return gpuResources->IsGPUReady(texture.GetId());
+            return true;
         };
 
-        return upload(resources.irradiance) &&
-               upload(resources.prefiltered) &&
-               upload(resources.brdfLUT);
+        const bool irradianceSubmitted = upload(resources.irradiance);
+        const bool prefilteredSubmitted = upload(resources.prefiltered);
+        const bool brdfLUTSubmitted = upload(resources.brdfLUT);
+
+        auto isReady = [gpuResources](const Resource::ResourceHandle<Resource::TextureResource>& texture,
+                                      const char* label) -> bool
+        {
+            if (!texture)
+            {
+                RVX_CORE_WARN("ModelViewer procedural IBL {} resource is missing", label);
+                return false;
+            }
+
+            const bool ready = gpuResources->IsGPUReady(texture.GetId());
+            if (!ready)
+            {
+                RVX_CORE_WARN("ModelViewer procedural IBL {} resource '{}' ({}) is not GPU-ready",
+                              label,
+                              texture->GetName(),
+                              texture.GetId());
+            }
+            return ready;
+        };
+
+        const bool irradianceReady = isReady(resources.irradiance, "irradiance");
+        const bool prefilteredReady = isReady(resources.prefiltered, "prefiltered");
+        const bool brdfLUTReady = isReady(resources.brdfLUT, "BRDF LUT");
+
+        return irradianceSubmitted && prefilteredSubmitted && brdfLUTSubmitted &&
+               irradianceReady && prefilteredReady && brdfLUTReady;
     }
 
     bool QueueBackBufferScreenshot(RenderSubsystem* renderSubsystem, PendingScreenshot& outScreenshot)
