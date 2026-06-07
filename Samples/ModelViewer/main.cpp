@@ -40,6 +40,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -308,6 +309,25 @@ namespace
         return true;
     }
 
+    std::string GetEnvironmentVariableValue(const char* name)
+    {
+#if defined(_MSC_VER)
+        char* value = nullptr;
+        size_t size = 0;
+        if (_dupenv_s(&value, &size, name) != 0 || !value)
+        {
+            return {};
+        }
+
+        std::string result(value);
+        std::free(value);
+        return result;
+#else
+        const char* value = std::getenv(name);
+        return value ? std::string(value) : std::string();
+#endif
+    }
+
     std::string ResolveModelPath(const ModelViewerOptions& options)
     {
         if (!options.modelPath.empty())
@@ -316,6 +336,19 @@ namespace
         }
 
         std::vector<std::string> defaultPaths;
+        auto appendDesktopHelmetPath = [&defaultPaths](const char* envName)
+        {
+            const std::string envValue = GetEnvironmentVariableValue(envName);
+            if (envValue.empty())
+            {
+                return;
+            }
+
+            const std::filesystem::path desktopHelmetPath =
+                std::filesystem::path(envValue) / "Desktop" / "DamagedHelmet.glb";
+            defaultPaths.push_back(desktopHelmetPath.string());
+        };
+
         if (options.smoke)
         {
             defaultPaths = {
@@ -326,14 +359,14 @@ namespace
         }
         else
         {
-            defaultPaths = {
-                "models/DamagedHelmet.glb",
-                "models/helmet.gltf",
-                "assets/models/DamagedHelmet.glb",
-                "../assets/models/DamagedHelmet.glb",
-                "../../assets/models/DamagedHelmet.glb",
-                "Tests/Fixtures/ModelViewer/R7Triangle.gltf"
-            };
+            appendDesktopHelmetPath("USERPROFILE");
+            appendDesktopHelmetPath("HOME");
+            defaultPaths.push_back("models/DamagedHelmet.glb");
+            defaultPaths.push_back("models/helmet.gltf");
+            defaultPaths.push_back("assets/models/DamagedHelmet.glb");
+            defaultPaths.push_back("../assets/models/DamagedHelmet.glb");
+            defaultPaths.push_back("../../assets/models/DamagedHelmet.glb");
+            defaultPaths.push_back("Tests/Fixtures/ModelViewer/R7Triangle.gltf");
         }
 
         for (const auto& path : defaultPaths)
