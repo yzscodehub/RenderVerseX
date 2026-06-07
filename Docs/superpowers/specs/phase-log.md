@@ -2670,6 +2670,91 @@ git diff --check
 
 ---
 
+### R-SP: `RQ2c - ModelViewer Procedural IBL Wiring`
+
+**Date:** 2026-06-07
+**Commit:** pending in this commit
+**Spark plan review agent:** Confucius (`gpt-5.3-codex-spark`)
+**Spark code review agent:** Confucius (`gpt-5.3-codex-spark`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-07-rq2c-modelviewer-procedural-ibl-plan.md`
+- Section: full document, especially §3 Scope, §6 Required Tests, and §10 Spark Review
+- Lines checked: current RQ2c plan before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: `RQ2b - DefaultLit Texture IBL Binding`
+- Evidence: RQ2b committed as `cad6ef0 feat(render): bind texture IBL resources for default lit`; RQ2c plan reviewed by Spark before implementation.
+
+**Approved scope:**
+
+- Add ModelViewer CLI controls for `--no-ibl` and `--expect-ibl-ready`.
+- Keep procedural IBL enabled by default for normal ModelViewer runs.
+- Create small procedural irradiance cubemap, prefiltered mipped cubemap, and BRDF LUT resources in ModelViewer.
+- Generate cubemap CPU data in mip-major / face-major source order for `GPUResourceManager` repacking.
+- Attach the procedural IBL resources to a `SkyboxComponent` and upload all three textures immediately.
+- Preserve the existing golden path by passing `--no-ibl` to `ModelViewerSmoke`.
+- Add `ModelViewerIBLSmoke` as a readiness-only smoke test with no image compare.
+
+**Out of scope:**
+
+- SkyboxPass background drawing.
+- External HDRI loading in ModelViewer.
+- CPU or GPU environment convolution.
+- Visual golden recapture.
+- RenderSubsystem upload scheduling refactor.
+- Descriptor layout, DefaultLit shader math, or RQ2b binding changes.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-07-rq2c-modelviewer-procedural-ibl-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Samples/ModelViewer/main.cpp`
+- `Tests/CMakeLists.txt`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target ModelViewer PipelineCacheValidation MaterialSystemValidation GPUUploadServiceValidation GPUResourceManagerValidation RenderPassValidation RenderSceneValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|ModelViewerIBLSmoke|VisualGoldenValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|MaterialSystemValidation|GPUUploadServiceValidation|GPUResourceManagerValidation|RenderGraphValidation|RenderHonestyValidation|RenderSceneValidation|RenderPassValidation|ClusteredLightingValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Visual tests: PASS, 3/3 selected tests passed (`ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerIBLSmoke`).
+- Regression tests: PASS, 187/187 selected tests passed.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Logs: terminal build, ctest, and `git diff --check` output in this thread.
+- Screenshots: none.
+- Diffs: current RQ2c working tree diff before commit.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Non-blocking notes adopted: keep CLI flags aligned with the existing parser, use mip-major / face-major cubemap source data, upload all three resources immediately, and keep `ModelViewerIBLSmoke` readiness-only.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Non-blocking note: `--expect-ibl-ready` is intentionally smoke-only and harmless in interactive mode.
+
+**Notes / follow-ups:**
+
+- ModelViewer now exercises the RQ2b texture IBL path by default without requiring a committed HDRI fixture.
+- Existing zero-tolerance visual golden remains stable through `--no-ibl`.
+- Skybox drawing, real HDRI sample wiring, and environment convolution remain later stages and must follow the same plan/review/commit protocol.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

@@ -430,6 +430,7 @@ if(RVX_ENABLE_DX11 AND TARGET ModelViewer)
             --height ${RVX_MODELVIEWER_SMOKE_HEIGHT}
             --frames 8
             --screenshot "${RVX_MODELVIEWER_SMOKE_ACTUAL}"
+            --no-ibl
             --validation
     )
     set_tests_properties(ModelViewerSmoke PROPERTIES
@@ -453,6 +454,24 @@ if(RVX_ENABLE_DX11 AND TARGET ModelViewer)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
     set_property(TEST VisualGoldenValidation PROPERTY DEPENDS ModelViewerSmoke)
+
+    add_test(
+        NAME ModelViewerIBLSmoke
+        COMMAND $<TARGET_FILE:ModelViewer>
+            --smoke
+            --model "${CMAKE_CURRENT_SOURCE_DIR}/Fixtures/ModelViewer/R7Triangle.gltf"
+            --backend dx11
+            --width ${RVX_MODELVIEWER_SMOKE_WIDTH}
+            --height ${RVX_MODELVIEWER_SMOKE_HEIGHT}
+            --frames 8
+            --expect-ibl-ready
+            --validation
+    )
+    set_tests_properties(ModelViewerIBLSmoke PROPERTIES
+        LABELS "visual;gpu"
+        TIMEOUT 120
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
 endif()
 
 # Cross-Backend Validation Tests (requires both DX12 and Vulkan)
