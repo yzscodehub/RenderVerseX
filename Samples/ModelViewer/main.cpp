@@ -33,6 +33,7 @@
 #include "Scene/Components/SkyboxComponent.h"
 #include "Resource/ResourceSubsystem.h"
 #include "Resource/ResourceManager.h"
+#include "Resource/Loader/HDRTextureLoader.h"
 #include "Resource/Types/ModelResource.h"
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/TextureResource.h"
@@ -81,6 +82,7 @@ struct ModelViewerOptions
 {
     std::string modelPath;
     std::string screenshotPath;
+    std::string hdriPath;
     RHIBackendType backend = RHIBackendType::Auto;
     uint32 width = 1280;
     uint32 height = 720;
@@ -88,6 +90,7 @@ struct ModelViewerOptions
     bool smoke = false;
     bool enableProceduralIBL = true;
     bool expectIBLReady = false;
+    bool expectSkyboxReady = false;
     bool enableValidation = true;
     bool showHelp = false;
     bool backendSet = false;
@@ -101,6 +104,20 @@ struct ProceduralIBLResources
     Resource::ResourceHandle<Resource::TextureResource> irradiance;
     Resource::ResourceHandle<Resource::TextureResource> prefiltered;
     Resource::ResourceHandle<Resource::TextureResource> brdfLUT;
+};
+
+struct HDRIEnvironmentResources
+{
+    Resource::ResourceHandle<Resource::TextureResource> environment;
+    Resource::ResourceHandle<Resource::TextureResource> irradiance;
+    Resource::ResourceHandle<Resource::TextureResource> prefiltered;
+    Resource::ResourceHandle<Resource::TextureResource> brdfLUT;
+    uint32 prefilteredMipLevels = 0;
+
+    bool IsValid() const
+    {
+        return environment && irradiance && prefiltered && brdfLUT && prefilteredMipLevels > 0;
+    }
 };
 
 struct PendingScreenshot
@@ -135,8 +152,10 @@ namespace
             << "  --height <pixels>    Window height\n"
             << "  --backend <name>     auto, dx11, dx12, vulkan, metal, opengl\n"
             << "  --screenshot <path>  Write final smoke frame as binary PPM\n"
-            << "  --no-ibl            Disable procedural ModelViewer IBL wiring\n"
-            << "  --expect-ibl-ready  Smoke mode fails unless texture IBL becomes ready\n"
+            << "  --hdri <path>        Use an HDR/EXR environment for skybox and texture IBL\n"
+            << "  --no-ibl             Disable procedural ModelViewer IBL wiring\n"
+            << "  --expect-ibl-ready   Smoke mode fails unless texture IBL becomes ready\n"
+            << "  --expect-skybox-ready Smoke mode fails unless SkyboxPass becomes ready\n"
             << "  --validation         Enable backend validation\n"
             << "  --no-validation      Disable backend validation\n"
             << "  --help               Show this help\n";
@@ -282,6 +301,12 @@ namespace
                 if (!value) return false;
                 options.screenshotPath = value;
             }
+            else if (arg == "--hdri")
+            {
+                const char* value = requireValue("--hdri");
+                if (!value) return false;
+                options.hdriPath = value;
+            }
             else if (arg == "--no-ibl")
             {
                 options.enableProceduralIBL = false;
@@ -289,6 +314,10 @@ namespace
             else if (arg == "--expect-ibl-ready")
             {
                 options.expectIBLReady = true;
+            }
+            else if (arg == "--expect-skybox-ready")
+            {
+                options.expectSkyboxReady = true;
             }
             else if (arg == "--validation")
             {
@@ -307,6 +336,12 @@ namespace
                 RVX_CORE_ERROR("Unknown argument: {}", arg);
                 return false;
             }
+        }
+
+        if (!options.hdriPath.empty() && !options.enableProceduralIBL)
+        {
+            RVX_CORE_ERROR("--hdri cannot be combined with --no-ibl");
+            return false;
         }
 
         if (options.smoke)
@@ -567,6 +602,157 @@ namespace
 
         return irradianceSubmitted && prefilteredSubmitted && brdfLUTSubmitted &&
                irradianceReady && prefilteredReady && brdfLUTReady;
+    }
+
+    Resource::HDRLoadOptions MakeHDRILoadOptions(bool smoke)
+    {
+        Resource::HDRLoadOptions options;
+        options.generateCubemap = true;
+        options.generateIBL = true;
+        options.applyGamma = false;
+        options.exposure = 1.0f;
+
+        if (smoke)
+        {
+            options.cubemapResolution = 4;
+            options.irradianceResolution = 1;
+            options.prefilteredResolution = 4;
+            options.prefilteredMipLevels = 3;
+            options.brdfLUTResolution = 4;
+            options.convolutionSamples = 8;
+        }
+        else
+        {
+            options.cubemapResolution = 64;
+            options.irradianceResolution = 8;
+            options.prefilteredResolution = 64;
+            options.prefilteredMipLevels = 5;
+            options.brdfLUTResolution = 64;
+            options.convolutionSamples = 64;
+        }
+
+        return options;
+    }
+
+    HDRIEnvironmentResources LoadHDRIEnvironment(const std::string& path, bool smoke)
+    {
+        HDRIEnvironmentResources resources;
+        if (path.empty())
+        {
+            return resources;
+        }
+
+        if (!std::filesystem::exists(path))
+        {
+            RVX_CORE_ERROR("ModelViewer HDRI path does not exist: {}", path);
+            return resources;
+        }
+
+        auto& resourceManager = Resource::ResourceManager::Get();
+        Resource::HDRTextureLoader loader(&resourceManager);
+        const Resource::HDRLoadOptions loadOptions = MakeHDRILoadOptions(smoke);
+        Resource::IBLData ibl = loader.LoadIBL(path, loadOptions);
+        if (!ibl.IsValid())
+        {
+            RVX_CORE_ERROR("ModelViewer failed to generate HDRI environment from {}", path);
+            return resources;
+        }
+
+        resources.environment = Resource::TextureHandle(ibl.environmentMap);
+        resources.irradiance = Resource::TextureHandle(ibl.irradianceMap);
+        resources.prefiltered = Resource::TextureHandle(ibl.prefilteredMap);
+        resources.brdfLUT = Resource::TextureHandle(ibl.brdfLUT);
+        resources.prefilteredMipLevels = ibl.prefilteredMipLevels;
+
+        RVX_CORE_INFO("ModelViewer HDRI generated: env={} irradiance={} prefiltered={} brdf={} prefilteredMips={}",
+                      resources.environment ? resources.environment->GetName() : "<missing>",
+                      resources.irradiance ? resources.irradiance->GetName() : "<missing>",
+                      resources.prefiltered ? resources.prefiltered->GetName() : "<missing>",
+                      resources.brdfLUT ? resources.brdfLUT->GetName() : "<missing>",
+                      resources.prefilteredMipLevels);
+
+        return resources;
+    }
+
+    bool UploadHDRIEnvironment(RenderSubsystem* renderSubsystem, const HDRIEnvironmentResources& resources)
+    {
+        if (!renderSubsystem || !renderSubsystem->GetGPUResourceManager() || !resources.IsValid())
+            return false;
+
+        auto* gpuResources = renderSubsystem->GetGPUResourceManager();
+        auto upload = [gpuResources](const Resource::TextureHandle& texture, const char* label) -> bool
+        {
+            if (!texture)
+            {
+                RVX_CORE_ERROR("ModelViewer HDRI {} resource is missing", label);
+                return false;
+            }
+
+            gpuResources->UploadImmediate(texture.Get());
+            return true;
+        };
+
+        const bool envSubmitted = upload(resources.environment, "environment");
+        const bool irradianceSubmitted = upload(resources.irradiance, "irradiance");
+        const bool prefilteredSubmitted = upload(resources.prefiltered, "prefiltered");
+        const bool brdfLUTSubmitted = upload(resources.brdfLUT, "BRDF LUT");
+
+        for (uint32 attempt = 0; attempt < 4; ++attempt)
+        {
+            gpuResources->ProcessPendingUploads(0.0f);
+        }
+
+        auto isReady = [gpuResources](const Resource::TextureHandle& texture, const char* label) -> bool
+        {
+            if (!texture)
+                return false;
+
+            const bool ready = gpuResources->IsGPUReady(texture.GetId());
+            if (!ready)
+            {
+                RVX_CORE_ERROR("ModelViewer HDRI {} resource '{}' ({}) is not GPU-ready",
+                               label,
+                               texture->GetName(),
+                               texture.GetId());
+            }
+            return ready;
+        };
+
+        const bool envReady = isReady(resources.environment, "environment");
+        const bool irradianceReady = isReady(resources.irradiance, "irradiance");
+        const bool prefilteredReady = isReady(resources.prefiltered, "prefiltered");
+        const bool brdfLUTReady = isReady(resources.brdfLUT, "BRDF LUT");
+
+        return envSubmitted && irradianceSubmitted && prefilteredSubmitted && brdfLUTSubmitted &&
+               envReady && irradianceReady && prefilteredReady && brdfLUTReady;
+    }
+
+    bool IsSkyboxPassReady(SceneRenderer* sceneRenderer, std::string& outReason)
+    {
+        if (!sceneRenderer)
+        {
+            outReason = "NoSceneRenderer";
+            return false;
+        }
+
+        const SceneRenderPassChainStats& stats = sceneRenderer->GetPassChainStats();
+        for (const RenderPassStatus& status : stats.passStatuses)
+        {
+            if (status.name == "SkyboxPass")
+            {
+                if (status.supported && status.enabled)
+                {
+                    outReason.clear();
+                    return true;
+                }
+
+                outReason = status.unsupportedReason.empty() ? "SkyboxPassNotReady" : status.unsupportedReason;
+                return false;
+            }
+        }
+
+        outReason = "SkyboxPassStatusMissing";
+        return false;
     }
 
     bool QueueBackBufferScreenshot(RenderSubsystem* renderSubsystem, PendingScreenshot& outScreenshot)
@@ -850,8 +1036,47 @@ int main(int argc, char* argv[])
         return -1;
     }
 
+    HDRIEnvironmentResources hdriEnvironmentResources;
     ProceduralIBLResources proceduralIBLResources;
-    if (options.enableProceduralIBL)
+    if (!options.hdriPath.empty())
+    {
+        ActorSpawnParams skyboxParams;
+        skyboxParams.name = "ModelViewerHDRIEnvironment";
+        SceneEntity* skyboxEntity = sceneManager->SpawnActor(skyboxParams);
+        SkyboxComponent* skyboxComponent = skyboxEntity ? skyboxEntity->AddComponent<SkyboxComponent>() : nullptr;
+        if (!skyboxComponent)
+        {
+            RVX_CORE_ERROR("ModelViewer could not create HDRI SkyboxComponent");
+            engine.Shutdown();
+            return -1;
+        }
+
+        hdriEnvironmentResources = LoadHDRIEnvironment(options.hdriPath, options.smoke);
+        if (!hdriEnvironmentResources.IsValid())
+        {
+            engine.Shutdown();
+            return -1;
+        }
+
+        skyboxComponent->SetCubemap(hdriEnvironmentResources.environment);
+        skyboxComponent->SetIrradianceMap(hdriEnvironmentResources.irradiance);
+        skyboxComponent->SetPrefilteredMap(hdriEnvironmentResources.prefiltered);
+        skyboxComponent->SetBRDFLUT(hdriEnvironmentResources.brdfLUT);
+        skyboxComponent->SetExposure(1.0f);
+        skyboxComponent->SetContributesToLighting(true);
+
+        if (UploadHDRIEnvironment(renderSubsystem, hdriEnvironmentResources))
+        {
+            RVX_CORE_INFO("ModelViewer HDRI environment resources uploaded");
+        }
+        else
+        {
+            RVX_CORE_ERROR("ModelViewer HDRI environment resources were created but not GPU-ready");
+            engine.Shutdown();
+            return -1;
+        }
+    }
+    else if (options.enableProceduralIBL)
     {
         ActorSpawnParams skyboxParams;
         skyboxParams.name = "ModelViewerProceduralIBL";
@@ -985,6 +1210,18 @@ int main(int argc, char* argv[])
                 {
                     RVX_CORE_ERROR("ModelViewer smoke expected texture IBL ready; fallback reason: {}",
                                    iblStats ? iblStats->fallbackReason : "NoSceneRenderer");
+                    smokeSucceeded = false;
+                }
+            }
+
+            if (options.expectSkyboxReady && (frameIndex + 1 == options.frames))
+            {
+                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
+                std::string skyboxFallbackReason;
+                if (!IsSkyboxPassReady(sceneRenderer, skyboxFallbackReason))
+                {
+                    RVX_CORE_ERROR("ModelViewer smoke expected SkyboxPass ready; fallback reason: {}",
+                                   skyboxFallbackReason);
                     smokeSucceeded = false;
                 }
             }

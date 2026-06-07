@@ -413,6 +413,11 @@ target_include_directories(VisualGoldenValidation PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+add_executable(ModelViewerHDRIFixtureWriter
+    ModelViewerHDRIFixtureWriter/main.cpp
+)
+target_compile_features(ModelViewerHDRIFixtureWriter PRIVATE cxx_std_20)
+
 if(RVX_ENABLE_DX11 AND TARGET ModelViewer)
     set(RVX_MODELVIEWER_SMOKE_WIDTH 320)
     set(RVX_MODELVIEWER_SMOKE_HEIGHT 180)
@@ -422,6 +427,8 @@ if(RVX_ENABLE_DX11 AND TARGET ModelViewer)
         "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ModelViewer/R7_DX11_320x180.diff.ppm")
     set(RVX_MODELVIEWER_SMOKE_GOLDEN
         "${CMAKE_CURRENT_SOURCE_DIR}/Golden/ModelViewer/R7_DX11_320x180.ppm")
+    set(RVX_MODELVIEWER_HDRI_FIXTURE
+        "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/$<CONFIG>/ModelViewer/RQ2fTinyEnvironment.hdr")
 
     add_test(
         NAME ModelViewerSmoke
@@ -475,6 +482,38 @@ if(RVX_ENABLE_DX11 AND TARGET ModelViewer)
         TIMEOUT 120
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
+
+    add_test(
+        NAME ModelViewerHDRIFixture
+        COMMAND $<TARGET_FILE:ModelViewerHDRIFixtureWriter>
+            --output "${RVX_MODELVIEWER_HDRI_FIXTURE}"
+    )
+    set_tests_properties(ModelViewerHDRIFixture PROPERTIES
+        LABELS "visual;fixture"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME ModelViewerHDRISmoke
+        COMMAND $<TARGET_FILE:ModelViewer>
+            --smoke
+            --model "${CMAKE_CURRENT_SOURCE_DIR}/Fixtures/ModelViewer/R7Triangle.gltf"
+            --backend dx11
+            --width ${RVX_MODELVIEWER_SMOKE_WIDTH}
+            --height ${RVX_MODELVIEWER_SMOKE_HEIGHT}
+            --frames 2
+            --hdri "${RVX_MODELVIEWER_HDRI_FIXTURE}"
+            --expect-ibl-ready
+            --expect-skybox-ready
+            --validation
+    )
+    set_tests_properties(ModelViewerHDRISmoke PROPERTIES
+        LABELS "visual;gpu"
+        TIMEOUT 120
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+    set_property(TEST ModelViewerHDRISmoke PROPERTY DEPENDS ModelViewerHDRIFixture)
 endif()
 
 # Cross-Backend Validation Tests (requires both DX12 and Vulkan)

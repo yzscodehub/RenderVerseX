@@ -2947,6 +2947,91 @@ ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderGrap
 
 ---
 
+### RQ2f: ModelViewer HDRI Environment Wiring
+
+**Date:** 2026-06-07
+**Commit:** pending in this commit
+**Spark plan review agent:** Lovelace (`gpt-5.5`, xhigh)
+**Spark code review agent:** Pascal (`gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-07-rq2f-modelviewer-hdri-environment-plan.md`
+- Section: entire RQ2f plan
+- Lines checked: plan review performed before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ2e texture skybox cubemap draw.
+- Evidence: RQ2e committed as `840b14e feat(render): draw cubemap texture skybox`; RQ2f plan review passed before implementation.
+
+**Approved scope:**
+
+- Add `--hdri <path>` to ModelViewer for explicit HDR/EXR environment loading.
+- Use `HDRTextureLoader::LoadIBL()` to generate environment cubemap, irradiance cubemap, prefiltered cubemap, and BRDF LUT resources.
+- Upload HDRI resources immediately and bind them through a `SkyboxComponent`.
+- Add `--expect-skybox-ready` and keep `--expect-ibl-ready` as smoke assertions.
+- Add a tiny HDR fixture writer and `ModelViewerHDRISmoke` ctest.
+- Preserve procedural IBL behavior when `--hdri` is absent and preserve the `--no-ibl` golden path.
+
+**Out of scope:**
+
+- GPU-side environment convolution.
+- Direct equirectangular draw in `SkyboxPass`.
+- Bundling a production HDRI asset.
+- Making HDRI the default ModelViewer environment without `--hdri`.
+- Tonemap, exposure automation, bloom, BRDF, ECS/Object, or RenderProxy changes.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-07-rq2f-modelviewer-hdri-environment-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Samples/ModelViewer/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/ModelViewerHDRIFixtureWriter/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target ModelViewer ModelViewerHDRIFixtureWriter
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerHDRIFixture|ModelViewerHDRISmoke|ModelViewerIBLSmoke"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation"
+cmake --build build\win_x64_debug --config Debug --target RenderSceneValidation RenderPassValidation MaterialSystemValidation GPUUploadServiceValidation GPUResourceManagerValidation PipelineCacheValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderSceneValidation|RenderPassValidation|MaterialSystemValidation|GPUUploadServiceValidation|GPUResourceManagerValidation|PipelineCacheValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 3/3 selected tests passed (`ModelViewerHDRIFixture`, `ModelViewerHDRISmoke`, `ModelViewerIBLSmoke`).
+- Visual stability: PASS, 2/2 selected tests passed (`ModelViewerSmoke`, `VisualGoldenValidation`).
+- Regression tests: PASS, 149/149 selected tests passed.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Logs: terminal build, ctest, and `git diff --check` output in this thread.
+- Screenshots: none.
+- Diffs: current RQ2f working tree diff before commit.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Non-blocking suggestions adopted: documented `--expect-skybox-ready` through `SceneRenderer::GetPassChainStats().passStatuses`, named the fixture test `ModelViewerHDRIFixture`, and kept smoke HDRI generation settings small.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Notes / follow-ups:**
+
+- RQ2f uses CPU-side `HDRTextureLoader` generation as a sample wiring path; GPU IBL convolution remains a later stage.
+- The zero-tolerance golden path remains `ModelViewerSmoke --no-ibl` and is unchanged.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
