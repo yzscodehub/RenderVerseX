@@ -143,6 +143,10 @@ namespace RVX
         {
             m_device->WaitIdle();
             completedCount += ProcessCompletedUploads();
+            if (!m_pendingUploads.empty())
+            {
+                completedCount += CompleteAllPendingUploadsAfterWaitIdle();
+            }
         }
 
         return completedCount;
@@ -651,6 +655,32 @@ namespace RVX
             if (!isAbandoned)
             {
                 m_completedUploads.insert(it->id);
+            }
+            m_stats.completedUploadCount++;
+            m_stats.pendingUploadCount--;
+            m_stats.stagingBytesInFlight -= it->stagingBytes;
+            ++completedCount;
+            it = m_pendingUploads.erase(it);
+        }
+
+        return completedCount;
+    }
+
+    uint32 GPUUploadService::CompleteAllPendingUploadsAfterWaitIdle()
+    {
+        uint32 completedCount = 0;
+
+        auto it = m_pendingUploads.begin();
+        while (it != m_pendingUploads.end())
+        {
+            const bool isAbandoned = m_abandonedUploads.erase(it->id) > 0;
+            if (!isAbandoned)
+            {
+                m_completedUploads.insert(it->id);
+            }
+            if (it->fence)
+            {
+                ReleasePendingFence(it->fence);
             }
             m_stats.completedUploadCount++;
             m_stats.pendingUploadCount--;

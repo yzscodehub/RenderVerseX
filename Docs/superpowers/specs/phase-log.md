@@ -3032,6 +3032,95 @@ git diff --check
 
 ---
 
+### RQ2g: HDRTextureLoader CPU IBL Sampling Controls
+
+**Date:** 2026-06-07
+**Commit:** pending in this commit
+**Spark plan review agent:** Franklin (`gpt-5.5`, xhigh), Archimedes (`gpt-5.5`, xhigh)
+**Spark code review agent:** Epicurus (`gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-07-rq2g-hdrtextureloader-cpu-ibl-sampling-plan.md`
+- Section: entire RQ2g plan
+- Lines checked: plan review performed before implementation and after scope supplement
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ2f ModelViewer HDRI environment wiring.
+- Evidence: RQ2f committed as `5911b42 feat(samples): load HDRI environments in model viewer`; RQ2g plan review passed after adopting blocker fixes.
+
+**Approved scope:**
+
+- Make `HDRLoadOptions::convolutionSamples` drive diffuse irradiance generation instead of being ignored.
+- Clamp zero/low sample counts for irradiance, prefiltered environment, and BRDF LUT generation.
+- Harden prefiltered generation for one mip and zero-weight samples.
+- Add CPU-only `HDRTextureLoaderValidation` coverage for finite output, zero-sample clamp, and non-uniform cubemap sample-count differences.
+- Preserve RQ2f `ModelViewerHDRISmoke`; if it exposes blocking upload completion issues, fix upload infrastructure rather than weakening readiness assertions.
+
+**Out of scope:**
+
+- GPU IBL convolution or compute prefiltering.
+- Renderer wiring, shader layout, SkyboxPass, or SceneRenderer changes.
+- DefaultLit BRDF/math changes.
+- Production HDRI assets, visual golden recapture, tonemap, exposure, bloom, or color grading changes.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-07-rq2g-hdrtextureloader-cpu-ibl-sampling-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Resource/Private/Loader/HDRTextureLoader.cpp`
+- `Render/Include/Render/GPUUploadService.h`
+- `Render/Private/GPUUploadService.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/HDRTextureLoaderValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target HDRTextureLoaderValidation ModelViewer GPUUploadServiceValidation GPUResourceManagerValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "HDRTextureLoaderValidation|ModelViewerHDRISmoke|ModelViewerIBLSmoke|GPUUploadServiceValidation|GPUResourceManagerValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation"
+cmake --build build\win_x64_debug --config Debug --target MaterialSystemValidation RenderSceneValidation RenderPassValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "MaterialSystemValidation|RenderSceneValidation|RenderPassValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Pre-fix proof: the new `HDRTextureLoaderValidation` failed on the old implementation for ignored irradiance sample counts and non-finite zero-sample prefilter output.
+- Build: PASS.
+- Focused/upload tests: PASS, 49/49 selected tests passed.
+- Visual stability: PASS, 2/2 selected tests passed (`ModelViewerSmoke`, `VisualGoldenValidation`).
+- Regression tests: PASS, 73/73 selected tests passed.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Logs: terminal build, ctest, and `git diff --check` output in this thread.
+- Screenshots: none.
+- Diffs: current RQ2g working tree diff before commit.
+
+**Spark plan review result:**
+
+- First verdict: BLOCKED.
+- Blockers adopted: added non-uniform cubemap output-difference test for irradiance sample controls, and added zero-sample clamp tests for irradiance, prefiltered map, and BRDF LUT.
+- Second verdict: PASS.
+- Scope supplement review: PASS; `ModelViewerHDRISmoke` exposed a blocking upload completion issue, so the upload infrastructure was allowed to be fixed without weakening smoke readiness assertions.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Non-blocking follow-ups: strengthen BRDF LUT half-data tests and add a direct fake-fence upload service fallback test.
+
+**Notes / follow-ups:**
+
+- RQ2g improves CPU IBL generation honesty and robustness only; GPU convolution remains a later stage.
+- The upload service fix preserves `UploadImmediate()` blocking semantics for staged uploads after `WaitIdle()`.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

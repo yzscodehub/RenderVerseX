@@ -28,6 +28,105 @@ namespace RVX::Resource
     static constexpr float TWO_PI = 2.0f * PI;
     static constexpr float HALF_PI = PI / 2.0f;
 
+    namespace
+    {
+        Vec3 SampleCubemapNearest(const CubemapFaces& envMap, const Vec3& direction)
+        {
+            if (envMap.faceSize == 0)
+            {
+                return Vec3(0.0f);
+            }
+
+            const Vec3 sampleVec = glm::normalize(direction);
+            const float maxAxis = std::max({std::abs(sampleVec.x),
+                                            std::abs(sampleVec.y),
+                                            std::abs(sampleVec.z)});
+
+            if (maxAxis <= 0.0f || !std::isfinite(maxAxis))
+            {
+                return Vec3(0.0f);
+            }
+
+            int sampleFace = 0;
+            float sc = 0.0f;
+            float tc = 0.0f;
+            float ma = 1.0f;
+
+            if (sampleVec.x > 0.0f && std::abs(sampleVec.x) >= maxAxis)
+            {
+                sampleFace = CubemapFaces::PositiveX;
+                sc = -sampleVec.z;
+                tc = -sampleVec.y;
+                ma = sampleVec.x;
+            }
+            else if (sampleVec.x < 0.0f && std::abs(sampleVec.x) >= maxAxis)
+            {
+                sampleFace = CubemapFaces::NegativeX;
+                sc = sampleVec.z;
+                tc = -sampleVec.y;
+                ma = -sampleVec.x;
+            }
+            else if (sampleVec.y > 0.0f && std::abs(sampleVec.y) >= maxAxis)
+            {
+                sampleFace = CubemapFaces::PositiveY;
+                sc = sampleVec.x;
+                tc = sampleVec.z;
+                ma = sampleVec.y;
+            }
+            else if (sampleVec.y < 0.0f && std::abs(sampleVec.y) >= maxAxis)
+            {
+                sampleFace = CubemapFaces::NegativeY;
+                sc = sampleVec.x;
+                tc = -sampleVec.z;
+                ma = -sampleVec.y;
+            }
+            else if (sampleVec.z > 0.0f && std::abs(sampleVec.z) >= maxAxis)
+            {
+                sampleFace = CubemapFaces::PositiveZ;
+                sc = sampleVec.x;
+                tc = -sampleVec.y;
+                ma = sampleVec.z;
+            }
+            else
+            {
+                sampleFace = CubemapFaces::NegativeZ;
+                sc = -sampleVec.x;
+                tc = -sampleVec.y;
+                ma = -sampleVec.z;
+            }
+
+            const std::vector<float>& faceData = envMap.faces[static_cast<size_t>(sampleFace)];
+            if (faceData.empty())
+            {
+                return Vec3(0.0f);
+            }
+
+            const float sampleU = 0.5f * (sc / ma + 1.0f);
+            const float sampleV = 0.5f * (tc / ma + 1.0f);
+            const int px = std::clamp(static_cast<int>(sampleU * envMap.faceSize),
+                                      0,
+                                      static_cast<int>(envMap.faceSize) - 1);
+            const int py = std::clamp(static_cast<int>(sampleV * envMap.faceSize),
+                                      0,
+                                      static_cast<int>(envMap.faceSize) - 1);
+
+            const size_t idx = (static_cast<size_t>(py) * envMap.faceSize + static_cast<size_t>(px)) * 4u;
+            if (idx + 2 >= faceData.size())
+            {
+                return Vec3(0.0f);
+            }
+
+            return Vec3(faceData[idx], faceData[idx + 1], faceData[idx + 2]);
+        }
+
+        Vec3 SanitizeFiniteColor(const Vec3& color)
+        {
+            return Vec3(std::isfinite(color.r) ? color.r : 0.0f,
+                        std::isfinite(color.g) ? color.g : 0.0f,
+                        std::isfinite(color.b) ? color.b : 0.0f);
+        }
+    } // namespace
+
     // =========================================================================
     // Construction
     // =========================================================================
@@ -81,7 +180,8 @@ namespace RVX::Resource
 
         // Load HDR data
         std::vector<float> pixels;
-        uint32_t width, height;
+        uint32_t width = 0;
+        uint32_t height = 0;
 
         std::string ext = absPath.extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
@@ -177,7 +277,8 @@ namespace RVX::Resource
 
         // Load HDR data
         std::vector<float> pixels;
-        uint32_t width, height;
+        uint32_t width = 0;
+        uint32_t height = 0;
 
         std::string ext = absPath.extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
@@ -357,72 +458,22 @@ namespace RVX::Resource
                     Vec3 right = glm::normalize(glm::cross(up, N));
                     up = glm::cross(N, right);
 
-                    float sampleDelta = 0.025f;
-                    int nSamples = 0;
-
-                    for (float phi = 0.0f; phi < TWO_PI; phi += sampleDelta)
+                    const uint32_t sampleCount = std::max(1u, numSamples);
+                    for (uint32_t i = 0; i < sampleCount; ++i)
                     {
-                        for (float theta = 0.0f; theta < HALF_PI; theta += sampleDelta)
-                        {
-                            // Spherical to cartesian in tangent space
-                            Vec3 tangentSample(
-                                std::sin(theta) * std::cos(phi),
-                                std::sin(theta) * std::sin(phi),
-                                std::cos(theta)
-                            );
-
-                            // Transform to world space
-                            Vec3 sampleVec = tangentSample.x * right + 
-                                            tangentSample.y * up + 
-                                            tangentSample.z * N;
-
-                            // Sample environment map
-                            // (simplified - in production, sample the actual cubemap)
-                            Vec2 envUV = DirectionToEquirectangular(sampleVec);
-                            
-                            // Find which face and coordinates
-                            float maxAxis = std::max({std::abs(sampleVec.x), 
-                                                      std::abs(sampleVec.y), 
-                                                      std::abs(sampleVec.z)});
-                            
-                            int sampleFace = 0;
-                            float sc, tc, ma;
-                            
-                            if (sampleVec.x > 0 && std::abs(sampleVec.x) >= maxAxis) {
-                                sampleFace = 0; sc = -sampleVec.z; tc = -sampleVec.y; ma = sampleVec.x;
-                            } else if (sampleVec.x < 0 && std::abs(sampleVec.x) >= maxAxis) {
-                                sampleFace = 1; sc = sampleVec.z; tc = -sampleVec.y; ma = -sampleVec.x;
-                            } else if (sampleVec.y > 0 && std::abs(sampleVec.y) >= maxAxis) {
-                                sampleFace = 2; sc = sampleVec.x; tc = sampleVec.z; ma = sampleVec.y;
-                            } else if (sampleVec.y < 0 && std::abs(sampleVec.y) >= maxAxis) {
-                                sampleFace = 3; sc = sampleVec.x; tc = -sampleVec.z; ma = -sampleVec.y;
-                            } else if (sampleVec.z > 0 && std::abs(sampleVec.z) >= maxAxis) {
-                                sampleFace = 4; sc = sampleVec.x; tc = -sampleVec.y; ma = sampleVec.z;
-                            } else {
-                                sampleFace = 5; sc = -sampleVec.x; tc = -sampleVec.y; ma = -sampleVec.z;
-                            }
-
-                            float sampleU = 0.5f * (sc / ma + 1.0f);
-                            float sampleV = 0.5f * (tc / ma + 1.0f);
-
-                            int px = std::clamp(static_cast<int>(sampleU * envMap.faceSize), 
-                                               0, static_cast<int>(envMap.faceSize) - 1);
-                            int py = std::clamp(static_cast<int>(sampleV * envMap.faceSize), 
-                                               0, static_cast<int>(envMap.faceSize) - 1);
-
-                            size_t idx = (py * envMap.faceSize + px) * 4;
-                            Vec3 envColor(
-                                envMap.faces[sampleFace][idx],
-                                envMap.faces[sampleFace][idx + 1],
-                                envMap.faces[sampleFace][idx + 2]
-                            );
-
-                            irradiance += envColor * std::cos(theta) * std::sin(theta);
-                            nSamples++;
-                        }
+                        const Vec2 xi = Hammersley(i, sampleCount);
+                        const float radius = std::sqrt(xi.y);
+                        const float phi = TWO_PI * xi.x;
+                        const Vec3 tangentSample(radius * std::cos(phi),
+                                                 radius * std::sin(phi),
+                                                 std::sqrt(std::max(0.0f, 1.0f - xi.y)));
+                        const Vec3 sampleVec = glm::normalize(tangentSample.x * right +
+                                                              tangentSample.y * up +
+                                                              tangentSample.z * N);
+                        irradiance += SampleCubemapNearest(envMap, sampleVec);
                     }
 
-                    irradiance = PI * irradiance / static_cast<float>(nSamples);
+                    irradiance = SanitizeFiniteColor(PI * irradiance / static_cast<float>(sampleCount));
 
                     size_t dstIdx = (y * outputSize + x) * 4;
                     result.faces[face][dstIdx] = irradiance.r;
@@ -443,11 +494,14 @@ namespace RVX::Resource
     {
         std::vector<CubemapFaces> mipChain;
         mipChain.reserve(numMipLevels);
+        const uint32_t sampleCount = std::max(1u, numSamples);
 
         for (uint32_t mip = 0; mip < numMipLevels; ++mip)
         {
-            float roughness = static_cast<float>(mip) / static_cast<float>(numMipLevels - 1);
-            uint32_t mipSize = std::max(1u, outputSize >> mip);
+            const float roughness = numMipLevels > 1 ?
+                static_cast<float>(mip) / static_cast<float>(numMipLevels - 1) :
+                0.0f;
+            const uint32_t mipSize = std::max(1u, outputSize >> mip);
 
             CubemapFaces mipFaces;
             mipFaces.faceSize = mipSize;
@@ -471,55 +525,31 @@ namespace RVX::Resource
                         Vec3 prefilteredColor(0.0f);
                         float totalWeight = 0.0f;
 
-                        for (uint32_t i = 0; i < numSamples; ++i)
+                        for (uint32_t i = 0; i < sampleCount; ++i)
                         {
-                            Vec2 xi = Hammersley(i, numSamples);
+                            Vec2 xi = Hammersley(i, sampleCount);
                             Vec3 H = ImportanceSampleGGX(xi, N, roughness);
                             Vec3 L = glm::normalize(2.0f * glm::dot(V, H) * H - V);
 
                             float NdotL = std::max(glm::dot(N, L), 0.0f);
                             if (NdotL > 0.0f)
                             {
-                                // Sample environment (simplified)
-                                float maxAxis = std::max({std::abs(L.x), std::abs(L.y), std::abs(L.z)});
-                                int sampleFace = 0;
-                                float sc, tc, ma;
-
-                                if (L.x > 0 && std::abs(L.x) >= maxAxis) {
-                                    sampleFace = 0; sc = -L.z; tc = -L.y; ma = L.x;
-                                } else if (L.x < 0 && std::abs(L.x) >= maxAxis) {
-                                    sampleFace = 1; sc = L.z; tc = -L.y; ma = -L.x;
-                                } else if (L.y > 0 && std::abs(L.y) >= maxAxis) {
-                                    sampleFace = 2; sc = L.x; tc = L.z; ma = L.y;
-                                } else if (L.y < 0 && std::abs(L.y) >= maxAxis) {
-                                    sampleFace = 3; sc = L.x; tc = -L.z; ma = -L.y;
-                                } else if (L.z > 0 && std::abs(L.z) >= maxAxis) {
-                                    sampleFace = 4; sc = L.x; tc = -L.y; ma = L.z;
-                                } else {
-                                    sampleFace = 5; sc = -L.x; tc = -L.y; ma = -L.z;
-                                }
-
-                                float sampleU = 0.5f * (sc / ma + 1.0f);
-                                float sampleV = 0.5f * (tc / ma + 1.0f);
-
-                                int px = std::clamp(static_cast<int>(sampleU * envMap.faceSize),
-                                                   0, static_cast<int>(envMap.faceSize) - 1);
-                                int py = std::clamp(static_cast<int>(sampleV * envMap.faceSize),
-                                                   0, static_cast<int>(envMap.faceSize) - 1);
-
-                                size_t idx = (py * envMap.faceSize + px) * 4;
-                                Vec3 envColor(
-                                    envMap.faces[sampleFace][idx],
-                                    envMap.faces[sampleFace][idx + 1],
-                                    envMap.faces[sampleFace][idx + 2]
-                                );
-
+                                const Vec3 envColor = SampleCubemapNearest(envMap, L);
                                 prefilteredColor += envColor * NdotL;
                                 totalWeight += NdotL;
                             }
                         }
 
-                        prefilteredColor /= totalWeight;
+                        if (totalWeight > 0.0f && std::isfinite(totalWeight))
+                        {
+                            prefilteredColor /= totalWeight;
+                        }
+                        else
+                        {
+                            prefilteredColor = SampleCubemapNearest(envMap, N);
+                        }
+
+                        prefilteredColor = SanitizeFiniteColor(prefilteredColor);
 
                         size_t dstIdx = (y * mipSize + x) * 4;
                         mipFaces.faces[face][dstIdx] = prefilteredColor.r;
@@ -550,6 +580,7 @@ namespace RVX::Resource
         }
 
         std::vector<float> lutData(resolution * resolution * 2);  // RG16F
+        const uint32_t sampleCount = std::max(1u, numSamples);
 
         for (uint32_t y = 0; y < resolution; ++y)
         {
@@ -569,9 +600,9 @@ namespace RVX::Resource
 
                 Vec3 N(0.0f, 0.0f, 1.0f);
 
-                for (uint32_t i = 0; i < numSamples; ++i)
+                for (uint32_t i = 0; i < sampleCount; ++i)
                 {
-                    Vec2 xi = Hammersley(i, numSamples);
+                    Vec2 xi = Hammersley(i, sampleCount);
                     Vec3 H = ImportanceSampleGGX(xi, N, roughness);
                     Vec3 L = glm::normalize(2.0f * glm::dot(V, H) * H - V);
 
@@ -590,8 +621,8 @@ namespace RVX::Resource
                     }
                 }
 
-                A /= static_cast<float>(numSamples);
-                B /= static_cast<float>(numSamples);
+                A /= static_cast<float>(sampleCount);
+                B /= static_cast<float>(sampleCount);
 
                 size_t idx = (y * resolution + x) * 2;
                 lutData[idx] = A;

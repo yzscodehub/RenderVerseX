@@ -178,6 +178,19 @@ rvx_add_gtest(
     TIMEOUT 30
 )
 
+# HDR texture loader CPU IBL validation tests
+rvx_add_gtest(
+    NAME HDRTextureLoaderValidation
+    SOURCES HDRTextureLoaderValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::Resource
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Resource/Include
+    LABELS unit
+    TIMEOUT 120
+)
+
 # Render honesty validation tests
 rvx_add_gtest(
     NAME RenderHonestyValidation
