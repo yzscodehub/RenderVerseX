@@ -2755,6 +2755,104 @@ git diff --check
 
 ---
 
+### R-SP: `RQ2d - Procedural Skybox Minimum Draw`
+
+**Date:** 2026-06-07
+**Commit:** pending in this commit
+**Spark plan review agent:** Confucius (`gpt-5.3-codex-spark`)
+**Spark code review agent:** Confucius (`gpt-5.3-codex-spark`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-07-rq2d-procedural-skybox-minimum-draw-plan.md`
+- Section: full document, especially §3 Scope, §6 Required Tests, and §10 Spark Review
+- Lines checked: current RQ2d plan before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: `RQ2c - ModelViewer Procedural IBL Wiring`
+- Evidence: RQ2c committed as `7a7fef9 feat(samples): wire procedural IBL into model viewer`; RQ2d plan reviewed by Spark before implementation.
+
+**Approved scope:**
+
+- Add `Render/Shaders/Skybox.hlsl` for a procedural fullscreen sky background.
+- Extend PipelineCache with skybox shader compilation, a dedicated skybox descriptor layout, a skybox pipeline layout, and skybox pipeline accessors.
+- Add skybox shader/pipeline hashes to PipelineCache manifest metadata and tests.
+- Add depth-tested and no-depth skybox pipeline variants; only the primary depth-tested pipeline participates in manifest metadata.
+- Make `SkyboxPass` allocate constants, retain descriptor sets, resolve graph color/depth views, bind the skybox pipeline, and draw a fullscreen triangle.
+- Gate drawing through the first active enabled `SkyboxComponent` in scene traversal order.
+- Support `SkyboxType::Procedural` and `SkyboxType::Color`; keep cubemap/equirectangular drawing out of scope and visibly non-drawing.
+- Mark ModelViewer's default procedural IBL skybox as `SkyboxType::Procedural` while preserving the `--no-ibl` golden path.
+- Update focused PipelineCache and RenderPass validation coverage.
+
+**Out of scope:**
+
+- Cubemap or equirectangular skybox texture sampling.
+- External HDRI loading in ModelViewer.
+- CPU or GPU environment convolution.
+- Physically based sky, atmosphere, clouds, or sun disk quality work.
+- Visual golden recapture.
+- RenderProxy, ECS/Object refactors, or material descriptor layout changes.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-07-rq2d-procedural-skybox-minimum-draw-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Shaders/Skybox.hlsl`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Include/Render/Passes/SkyboxPass.h`
+- `Render/Private/Passes/SkyboxPass.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Samples/ModelViewer/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation RenderHonestyValidation ModelViewer
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|RenderHonestyValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerIBLSmoke"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|RenderSceneValidation|MaterialSystemValidation|GPUUploadServiceValidation|GPUResourceManagerValidation|ClusteredLightingValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 79/79 selected tests passed.
+- Visual tests: PASS, 3/3 selected tests passed (`ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerIBLSmoke`).
+- Regression tests: PASS, 116/116 selected tests passed.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Logs: terminal build, ctest, and `git diff --check` output in this thread.
+- Screenshots: none.
+- Diffs: current RQ2d working tree diff before commit.
+
+**Spark plan review result:**
+
+- First verdict: BLOCKED.
+- Blockers adopted: added component draw gating so `ModelViewerSmoke --no-ibl` remains skybox-free; added PipelineCache manifest/hash/count requirements; added `SceneRenderer` background parameter bridge.
+- Second verdict: PASS.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Non-blocking follow-ups: add future scene-level non-draw coverage for cubemap/equirectangular skybox types, and add a future direct ModelViewer state/log assertion for `--no-ibl` no-skybox creation.
+
+**Notes / follow-ups:**
+
+- RQ2d intentionally draws only procedural/solid backgrounds. Texture skybox drawing remains a later stage.
+- The old zero-tolerance visual golden remained stable because the golden smoke path passes `--no-ibl` and creates no skybox component.
+- No-depth skybox drawing uses an on-demand no-depth pipeline and does not overwrite the primary manifest skybox hash.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

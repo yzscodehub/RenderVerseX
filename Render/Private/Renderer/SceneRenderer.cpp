@@ -449,6 +449,72 @@ void SceneRenderer::UpdateEnvironmentIBL(World* world)
     m_environmentIBLStats.textureIBLEnabled = true;
 }
 
+void SceneRenderer::UpdateSkyboxPass(World* world)
+{
+    if (!m_skyboxPass)
+        return;
+
+    auto clearSkybox = [this](const char* reason)
+    {
+        m_skyboxPass->ClearSkybox(reason);
+    };
+
+    if (!world)
+    {
+        clearSkybox("NoWorld");
+        return;
+    }
+
+    SceneManager* sceneManager = world->GetSceneManager();
+    if (!sceneManager)
+    {
+        clearSkybox("NoSceneManager");
+        return;
+    }
+
+    SkyboxComponent* skybox = nullptr;
+    // Stable policy for RQ2d: first active enabled SkyboxComponent in scene traversal order wins.
+    sceneManager->ForEachActiveEntity(
+        [&skybox](SceneEntity* entity)
+        {
+            if (skybox || !entity)
+                return;
+
+            auto* candidate = entity->GetComponent<SkyboxComponent>();
+            if (candidate && candidate->IsEnabled())
+            {
+                skybox = candidate;
+            }
+        });
+
+    if (!skybox)
+    {
+        clearSkybox("NoSkyboxComponent");
+        return;
+    }
+
+    switch (skybox->GetSkyboxType())
+    {
+        case SkyboxType::Procedural:
+            m_skyboxPass->SetProceduralSkyParams(skybox->GetSunDirection(),
+                                                 skybox->GetZenithColor(),
+                                                 skybox->GetHorizonColor(),
+                                                 skybox->GetGroundColor(),
+                                                 skybox->GetSunColor(),
+                                                 skybox->GetExposure(),
+                                                 skybox->GetScatteringIntensity());
+            break;
+        case SkyboxType::Color:
+            m_skyboxPass->SetSolidColor(skybox->GetSolidColor(), skybox->GetExposure());
+            break;
+        case SkyboxType::Cubemap:
+        case SkyboxType::Equirectangular:
+        default:
+            clearSkybox("SkyboxTextureDrawingNotImplemented");
+            break;
+    }
+}
+
 void SceneRenderer::SetupView(const Camera& camera, World* world)
 {
     if (!m_initialized)
@@ -467,6 +533,7 @@ void SceneRenderer::SetupView(const Camera& camera, World* world)
     // Setup view data from camera
     m_viewData.SetupFromCamera(camera, width, height);
     UpdateEnvironmentIBL(world);
+    UpdateSkyboxPass(world);
 
     // Collect scene data through the proxy bridge first; legacy collection is audited fallback only.
     RenderProxySceneBridgeResult proxyResult;

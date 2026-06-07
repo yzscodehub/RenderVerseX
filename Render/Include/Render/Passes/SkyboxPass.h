@@ -10,6 +10,7 @@
 
 #include "Render/Passes/IRenderPass.h"
 #include "Core/MathTypes.h"
+#include <deque>
 #include <string>
 
 namespace RVX
@@ -69,7 +70,23 @@ namespace RVX
         /**
          * @brief Set procedural sky parameters
          */
-        void SetProceduralSkyParams(const Vec3& sunDirection, const Vec3& skyColor, const Vec3& horizonColor);
+        void SetProceduralSkyParams(const Vec3& sunDirection,
+                                    const Vec3& skyColor,
+                                    const Vec3& horizonColor,
+                                    const Vec3& groundColor = Vec3{0.3f, 0.25f, 0.2f},
+                                    const Vec3& sunColor = Vec3{1.0f, 0.95f, 0.9f},
+                                    float exposure = 1.0f,
+                                    float scatteringIntensity = 1.0f);
+
+        /**
+         * @brief Set a solid-color background through the procedural shader path
+         */
+        void SetSolidColor(const Vec3& color, float exposure = 1.0f);
+
+        /**
+         * @brief Clear the selected skybox for this frame
+         */
+        void ClearSkybox(const char* reason = "No supported SkyboxComponent selected");
 
         /**
          * @brief Enable or disable this pass
@@ -83,18 +100,30 @@ namespace RVX
         const std::string& GetUnsupportedReason() const override { return m_unsupportedReason; }
 
     private:
+        void RefreshSupport();
+        bool EnsureRuntimeResources();
+        bool UpdateConstants(const ViewData& view);
+
         bool m_enabled = true;
         bool m_drawReady = false;
-        std::string m_unsupportedReason = "Skybox pipeline and draw command are not implemented";
+        bool m_skySelected = false;
+        std::string m_unsupportedReason = "No supported SkyboxComponent selected";
         PipelineCache* m_pipelineCache = nullptr;
+        IRHIDevice* m_resourceDevice = nullptr;
         RHITextureView* m_colorTargetView = nullptr;
         RHITextureView* m_depthTargetView = nullptr;
         RHITexture* m_cubemap = nullptr;
+        RHIBufferRef m_constantBuffer;
+        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
 
         // Procedural sky parameters
         Vec3 m_sunDirection{0.5f, 0.5f, 0.5f};
         Vec3 m_skyColor{0.4f, 0.6f, 1.0f};
         Vec3 m_horizonColor{0.8f, 0.85f, 0.9f};
+        Vec3 m_groundColor{0.3f, 0.25f, 0.2f};
+        Vec3 m_sunColor{1.0f, 0.95f, 0.9f};
+        float m_exposure = 1.0f;
+        float m_scatteringIntensity = 1.0f;
         bool m_useProceduralSky = true;
 
         // RenderGraph handles

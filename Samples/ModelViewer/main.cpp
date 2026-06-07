@@ -833,6 +833,13 @@ int main(int argc, char* argv[])
         if (skyboxComponent)
         {
             proceduralIBLResources = CreateProceduralIBLResources();
+            skyboxComponent->SetSkyboxType(SkyboxType::Procedural);
+            skyboxComponent->SetSunDirection(Vec3{0.35f, 0.65f, 0.45f});
+            skyboxComponent->SetSunColor(Vec3{1.0f, 0.94f, 0.82f});
+            skyboxComponent->SetZenithColor(Vec3{0.12f, 0.28f, 0.58f});
+            skyboxComponent->SetHorizonColor(Vec3{0.55f, 0.68f, 0.82f});
+            skyboxComponent->SetGroundColor(Vec3{0.08f, 0.09f, 0.11f});
+            skyboxComponent->SetScatteringIntensity(0.65f);
             skyboxComponent->SetIrradianceMap(proceduralIBLResources.irradiance);
             skyboxComponent->SetPrefilteredMap(proceduralIBLResources.prefiltered);
             skyboxComponent->SetBRDFLUT(proceduralIBLResources.brdfLUT);

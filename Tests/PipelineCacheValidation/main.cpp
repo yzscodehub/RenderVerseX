@@ -408,6 +408,47 @@ TEST_F(PipelineCacheValidationFixture, MissingBloomShaderFailsWithVisibleError)
     EXPECT_NE(cache.GetLastError().find("Bloom shader file not found"), std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture, MissingSkyboxShaderFailsWithVisibleError)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path sourceDir = FindShaderDirectory();
+    TempDirectory temp("rvx_pipeline_missing_skybox_shader");
+    fs::copy_file(sourceDir / "DefaultLit.hlsl", temp.Path() / "DefaultLit.hlsl");
+    fs::copy_file(sourceDir / "DepthOnly.hlsl", temp.Path() / "DepthOnly.hlsl");
+    fs::copy(sourceDir / "Include", temp.Path() / "Include", fs::copy_options::recursive);
+    fs::create_directories(temp.Path() / "PostProcess");
+    fs::copy_file(sourceDir / "PostProcess" / "ToneMapping.hlsl",
+                  temp.Path() / "PostProcess" / "ToneMapping.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "Bloom.hlsl",
+                  temp.Path() / "PostProcess" / "Bloom.hlsl");
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+
+    EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
+    EXPECT_NE(cache.GetLastError().find("Skybox shader file not found"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, SkyboxShaderUsesFullscreenTriangleAndProceduralGradient)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const std::string shaderSource = ReadTextFile(FindShaderDirectory() / "Skybox.hlsl");
+
+    EXPECT_NE(shaderSource.find("SV_VertexID"), std::string::npos);
+    EXPECT_NE(shaderSource.find("SkyboxGroundColor.a"), std::string::npos);
+    EXPECT_NE(shaderSource.find("SkyboxZenithColor"), std::string::npos);
+    EXPECT_NE(shaderSource.find("SkyboxHorizonColor"), std::string::npos);
+    EXPECT_NE(shaderSource.find("smoothstep"), std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, ToneMappingShaderUsesSingleDisplayConversion)
 {
     if (!HasCompilerAvailable())
@@ -446,15 +487,17 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     RVX::PipelineCache cache;
 
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
-    ASSERT_GE(device.capturedSetLayouts.size(), 4u);
-    ASSERT_GE(device.capturedPipelineLayoutSetCounts.size(), 2u);
+    ASSERT_GE(device.capturedSetLayouts.size(), 5u);
+    ASSERT_GE(device.capturedPipelineLayoutSetCounts.size(), 3u);
     EXPECT_EQ(device.capturedPipelineLayoutSetCounts[0], 3u);
     EXPECT_EQ(device.capturedPipelineLayoutSetCounts[1], 1u);
+    EXPECT_EQ(device.capturedPipelineLayoutSetCounts[2], 1u);
 
     const auto& frameLayout = device.capturedSetLayouts[0];
     const auto& objectLayout = device.capturedSetLayouts[1];
     const auto& materialLayout = device.capturedSetLayouts[2];
     const auto& postProcessLayout = device.capturedSetLayouts[3];
+    const auto& skyboxLayout = device.capturedSetLayouts[4];
 
     const auto* frame = FindBinding(frameLayout, 0);
     ASSERT_NE(frame, nullptr);
@@ -507,6 +550,15 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
 
     EXPECT_NE(cache.GetPostProcessSetLayout(), nullptr);
     EXPECT_NE(cache.GetPostProcessLayout(), nullptr);
+
+    ASSERT_EQ(skyboxLayout.entries.size(), static_cast<size_t>(1));
+    const auto* skyboxConstants = FindBinding(skyboxLayout, 0);
+    ASSERT_NE(skyboxConstants, nullptr);
+    EXPECT_EQ(skyboxConstants->type, RVX::RHIBindingType::UniformBuffer);
+    EXPECT_TRUE(RVX::HasFlag(skyboxConstants->visibility, RVX::RHIShaderStage::Vertex));
+    EXPECT_TRUE(RVX::HasFlag(skyboxConstants->visibility, RVX::RHIShaderStage::Pixel));
+    EXPECT_NE(cache.GetSkyboxSetLayout(), nullptr);
+    EXPECT_NE(cache.GetSkyboxLayout(), nullptr);
 }
 
 TEST_F(PipelineCacheValidationFixture, ViewConstantsLayoutMatchesDefaultLitCBufferPacking)
@@ -663,9 +715,11 @@ TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAwa
               firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Transparent));
     EXPECT_NE(firstCache.GetStats().toneMappingPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().bloomPipelineHash, 0u);
+    EXPECT_NE(firstCache.GetStats().skyboxPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().toneMappingPipelineHash, firstCache.GetStats().bloomPipelineHash);
-    EXPECT_EQ(firstCache.GetStats().pipelineCreateCount, 6u);
-    EXPECT_EQ(firstCache.GetStats().pipelineCacheMissCount, 6u);
+    EXPECT_NE(firstCache.GetStats().skyboxPipelineHash, firstCache.GetStats().toneMappingPipelineHash);
+    EXPECT_EQ(firstCache.GetStats().pipelineCreateCount, 7u);
+    EXPECT_EQ(firstCache.GetStats().pipelineCacheMissCount, 7u);
 }
 
 TEST_F(PipelineCacheValidationFixture, RenderTargetFormatChangesPipelineHash)
@@ -686,10 +740,11 @@ TEST_F(PipelineCacheValidationFixture, RenderTargetFormatChangesPipelineHash)
 
     EXPECT_NE(firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque),
               secondCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque));
-    ASSERT_GE(secondDevice.capturedGraphicsPipelines.size(), 6u);
+    ASSERT_GE(secondDevice.capturedGraphicsPipelines.size(), 7u);
     EXPECT_EQ(secondDevice.capturedGraphicsPipelines.front().renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(secondDevice.capturedGraphicsPipelines[4].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(secondDevice.capturedGraphicsPipelines[5].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(secondDevice.capturedGraphicsPipelines[6].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
 }
 
 TEST_F(PipelineCacheValidationFixture, SplitRenderTargetFormatsRouteSceneBloomAndToneMapping)
@@ -713,14 +768,16 @@ TEST_F(PipelineCacheValidationFixture, SplitRenderTargetFormatsRouteSceneBloomAn
     EXPECT_EQ(cache.GetPostProcessIntermediateFormat(), RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(cache.GetToneMappingOutputFormat(), RVX::RHIFormat::BGRA8_UNORM);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), 6u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 7u);
     EXPECT_EQ(device.capturedGraphicsPipelines[0].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(device.capturedGraphicsPipelines[1].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(device.capturedGraphicsPipelines[2].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
-    EXPECT_EQ(device.capturedGraphicsPipelines[4].renderTargetFormats[0], RVX::RHIFormat::BGRA8_UNORM);
-    EXPECT_EQ(device.capturedGraphicsPipelines[5].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(device.capturedGraphicsPipelines[4].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(device.capturedGraphicsPipelines[5].renderTargetFormats[0], RVX::RHIFormat::BGRA8_UNORM);
+    EXPECT_EQ(device.capturedGraphicsPipelines[6].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
 
     EXPECT_NE(cache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque), 0u);
+    EXPECT_NE(cache.GetStats().skyboxPipelineHash, 0u);
     EXPECT_NE(cache.GetStats().toneMappingPipelineHash, 0u);
     EXPECT_NE(cache.GetStats().bloomPipelineHash, 0u);
     EXPECT_NE(cache.GetStats().toneMappingPipelineHash, cache.GetStats().bloomPipelineHash);
@@ -742,12 +799,15 @@ TEST_F(PipelineCacheValidationFixture, RuntimeOutputFormatRequestsCreateMatching
 
     const size_t initialPipelineCount = device.capturedGraphicsPipelines.size();
     ASSERT_NE(cache.GetPipelineForVariant(RVX::MaterialPipelineVariant::Opaque, RVX::RHIFormat::RGBA8_UNORM), nullptr);
+    ASSERT_NE(cache.GetSkyboxPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetBloomPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), initialPipelineCount + 2u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), initialPipelineCount + 3u);
     EXPECT_EQ(device.capturedGraphicsPipelines[initialPipelineCount].renderTargetFormats[0],
               RVX::RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(device.capturedGraphicsPipelines[initialPipelineCount + 1].renderTargetFormats[0],
+              RVX::RHIFormat::RGBA8_UNORM);
+    EXPECT_EQ(device.capturedGraphicsPipelines[initialPipelineCount + 2].renderTargetFormats[0],
               RVX::RHIFormat::RGBA8_UNORM);
 }
 
@@ -766,12 +826,13 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_EQ(RVX::PipelineCache::GetDefaultDepthStencilFormat(), RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(cache.GetDepthClearValue(), 1.0f);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), 6u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 7u);
     const auto& opaqueDesc = device.capturedGraphicsPipelines[0];
     const auto& transparentDesc = device.capturedGraphicsPipelines[2];
     const auto& depthOnlyDesc = device.capturedGraphicsPipelines[3];
-    const auto& toneMappingDesc = device.capturedGraphicsPipelines[4];
-    const auto& bloomDesc = device.capturedGraphicsPipelines[5];
+    const auto& skyboxDesc = device.capturedGraphicsPipelines[4];
+    const auto& toneMappingDesc = device.capturedGraphicsPipelines[5];
+    const auto& bloomDesc = device.capturedGraphicsPipelines[6];
 
     EXPECT_EQ(opaqueDesc.depthStencilFormat, RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(opaqueDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::Less);
@@ -790,6 +851,17 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_EQ(depthOnlyDesc.pixelShader, nullptr);
     ASSERT_EQ(depthOnlyDesc.inputLayout.elements.size(), static_cast<size_t>(1));
     EXPECT_STREQ(depthOnlyDesc.inputLayout.elements[0].semanticName, "POSITION");
+
+    ASSERT_NE(cache.GetSkyboxPipeline(), nullptr);
+    EXPECT_EQ(skyboxDesc.numRenderTargets, 1u);
+    EXPECT_EQ(skyboxDesc.renderTargetFormats[0], RVX::RHIFormat::RGBA8_UNORM);
+    EXPECT_EQ(skyboxDesc.depthStencilFormat, RVX::RHIFormat::D32_FLOAT);
+    EXPECT_EQ(skyboxDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::Less);
+    EXPECT_TRUE(skyboxDesc.depthStencilState.depthTestEnable);
+    EXPECT_FALSE(skyboxDesc.depthStencilState.depthWriteEnable);
+    EXPECT_NE(skyboxDesc.vertexShader, nullptr);
+    EXPECT_NE(skyboxDesc.pixelShader, nullptr);
+    EXPECT_TRUE(skyboxDesc.inputLayout.elements.empty());
 
     ASSERT_NE(cache.GetToneMappingPipeline(), nullptr);
     EXPECT_EQ(toneMappingDesc.numRenderTargets, 1u);
@@ -830,10 +902,11 @@ TEST_F(PipelineCacheValidationFixture, ReverseZOptInChangesDepthCompareAndClearC
     EXPECT_EQ(RVX::PipelineCache::GetDepthClearValue(true), 0.0f);
     EXPECT_EQ(RVX::PipelineCache::GetDepthClearValue(false), 1.0f);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), 6u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 7u);
     const auto& opaqueDesc = device.capturedGraphicsPipelines[0];
     const auto& transparentDesc = device.capturedGraphicsPipelines[2];
     const auto& depthOnlyDesc = device.capturedGraphicsPipelines[3];
+    const auto& skyboxDesc = device.capturedGraphicsPipelines[4];
 
     EXPECT_EQ(opaqueDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::GreaterEqual);
     EXPECT_TRUE(opaqueDesc.depthStencilState.depthWriteEnable);
@@ -843,6 +916,9 @@ TEST_F(PipelineCacheValidationFixture, ReverseZOptInChangesDepthCompareAndClearC
 
     EXPECT_EQ(depthOnlyDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::GreaterEqual);
     EXPECT_TRUE(depthOnlyDesc.depthStencilState.depthWriteEnable);
+
+    EXPECT_EQ(skyboxDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::GreaterEqual);
+    EXPECT_FALSE(skyboxDesc.depthStencilState.depthWriteEnable);
 }
 
 TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata)
@@ -862,6 +938,11 @@ TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata
     EXPECT_FALSE(cache.GetStats().manifestValid);
     EXPECT_FALSE(cache.GetStats().manifestInvalidated);
     EXPECT_TRUE(fs::exists(temp.Path() / RVX::PipelineCache::GetManifestFileName()));
+
+    const std::string manifest = ReadTextFile(temp.Path() / RVX::PipelineCache::GetManifestFileName());
+    EXPECT_NE(manifest.find("skyboxVertexShaderHash="), std::string::npos);
+    EXPECT_NE(manifest.find("skyboxPixelShaderHash="), std::string::npos);
+    EXPECT_NE(manifest.find("skyboxPipelineHash="), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, ManifestReloadsAsValidForSameInputs)
@@ -1014,6 +1095,39 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenBloomPipelineHashC
     EXPECT_TRUE(cache.GetStats().manifestInvalidated);
 }
 
+TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSkyboxPipelineHashChanges)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    TempDirectory temp("rvx_pipeline_manifest_skybox_stale");
+    const fs::path manifestPath = temp.Path() / RVX::PipelineCache::GetManifestFileName();
+    RVX::uint64 firstSkyboxHash = 0;
+
+    {
+        FakeDevice device;
+        RVX::PipelineCache cache;
+        cache.SetConfig(ConfigWithManifest(temp.Path()));
+        ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+        firstSkyboxHash = cache.GetStats().skyboxPipelineHash;
+        ASSERT_NE(firstSkyboxHash, 0u);
+    }
+
+    const RVX::uint64 staleSkyboxHash = firstSkyboxHash == 1u ? 2u : 1u;
+    ReplaceManifestFieldValue(manifestPath, "skyboxPipelineHash", std::to_string(staleSkyboxHash));
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    cache.SetConfig(ConfigWithManifest(temp.Path()));
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    EXPECT_TRUE(cache.GetStats().manifestLoaded);
+    EXPECT_FALSE(cache.GetStats().manifestValid);
+    EXPECT_TRUE(cache.GetStats().manifestInvalidated);
+}
+
 TEST_F(PipelineCacheValidationFixture, CorruptManifestInvalidatesWithoutFailingInitialization)
 {
     if (!HasCompilerAvailable())
@@ -1108,11 +1222,26 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingPipelineCreationFailureIsVisib
     }
 
     FakeDevice device;
-    device.failPipelineCreationAtIndex = 5;
+    device.failPipelineCreationAtIndex = 6;
     RVX::PipelineCache cache;
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("ToneMapping pipeline"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, SkyboxPipelineCreationFailureIsVisible)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    device.failPipelineCreationAtIndex = 5;
+    RVX::PipelineCache cache;
+
+    EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
+    EXPECT_NE(cache.GetLastError().find("Skybox pipeline"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, BloomPipelineCreationFailureIsVisible)
@@ -1123,7 +1252,7 @@ TEST_F(PipelineCacheValidationFixture, BloomPipelineCreationFailureIsVisible)
     }
 
     FakeDevice device;
-    device.failPipelineCreationAtIndex = 6;
+    device.failPipelineCreationAtIndex = 7;
     RVX::PipelineCache cache;
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));

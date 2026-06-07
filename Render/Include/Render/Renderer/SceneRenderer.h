@@ -292,6 +292,7 @@ namespace RVX
         void SetupDefaultPostProcess();
         void SetupDefaultPasses();
         void UpdateEnvironmentIBL(World* world);
+        void UpdateSkyboxPass(World* world);
         SceneColorFormatPolicy ResolveSceneColorFormatPolicy(RHIFormat backBufferFormat,
                                                              bool postProcessActive) const;
         bool SupportsHDRSceneColor() const;

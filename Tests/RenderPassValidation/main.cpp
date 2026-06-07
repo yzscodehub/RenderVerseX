@@ -969,6 +969,153 @@ TEST_F(RenderPassValidationFixture, ShadowPassExecuteResolvesCascadeViewsAndDraw
     }
 }
 
+TEST_F(RenderPassValidationFixture, SkyboxPassWithoutSelectedSkyboxDoesNotBindOrDraw)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    SkyboxPass pass;
+    pass.SetResources(&pipelineCache);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    EXPECT_TRUE(pass.IsRequestedEnabled());
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_FALSE(pass.IsEnabled());
+    EXPECT_FALSE(pass.GetUnsupportedReason().empty());
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(ctx.beginRenderPassCount, 0u);
+    EXPECT_TRUE(ctx.pipelineSequence.empty());
+    EXPECT_EQ(ctx.drawCount, 0u);
+}
+
+TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleThroughRenderGraph)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureDesc sceneColorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
+    sceneColorDesc.debugName = "GraphSceneColorForSkyboxPass";
+    view.colorTarget = graph.CreateTexture(sceneColorDesc);
+    graph.SetExportState(view.colorTarget, RHIResourceState::RenderTarget);
+
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
+    depthDesc.debugName = "GraphDepthForSkyboxPass";
+    view.depthTarget = graph.CreateTexture(depthDesc);
+    graph.SetExportState(view.depthTarget, RHIResourceState::DepthRead);
+
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+
+    SkyboxPass pass;
+    pass.SetResources(&pipelineCache);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.SetProceduralSkyParams(Vec3{0.25f, 0.8f, 0.35f},
+                                Vec3{0.12f, 0.24f, 0.55f},
+                                Vec3{0.6f, 0.72f, 0.88f});
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    ASSERT_TRUE(pass.IsEnabled());
+
+    struct SkyboxTestData
+    {
+    };
+
+    graph.AddPass<SkyboxTestData>(
+        "SkyboxPassTest",
+        RenderGraphPassType::Graphics,
+        [this, &pass](RenderGraphBuilder& builder, SkyboxTestData&)
+        {
+            pass.Setup(builder, view);
+        },
+        [this, &pass](const SkyboxTestData&, RHICommandContext& ctx)
+        {
+            pass.Execute(ctx, view);
+        });
+
+    graph.Compile();
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    ASSERT_EQ(ctx.beginRenderPassCount, 1u);
+    ASSERT_EQ(ctx.endRenderPassCount, 1u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetSkyboxPipeline());
+    ASSERT_EQ(ctx.descriptorSetSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.descriptorSetSequence[0], 0u);
+    EXPECT_EQ(ctx.drawCount, 1u);
+    EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
+
+    ASSERT_FALSE(ctx.renderPasses.empty());
+    ASSERT_GT(ctx.renderPasses[0].colorAttachmentCount, 0u);
+    RHITextureView* resolvedColorView = ctx.renderPasses[0].colorAttachments[0].view;
+    ASSERT_NE(resolvedColorView, nullptr);
+    EXPECT_NE(resolvedColorView, colorView.Get());
+    EXPECT_TRUE(ctx.renderPasses[0].hasDepthStencil);
+    ASSERT_NE(ctx.renderPasses[0].depthStencilAttachment.view, nullptr);
+
+    auto descriptorIt = std::find_if(
+        device.createdDescriptorSetDescs.begin(),
+        device.createdDescriptorSetDescs.end(),
+        [](const RHIDescriptorSetDesc& desc)
+        {
+            return desc.debugName && std::string(desc.debugName) == "SkyboxDescriptorSet";
+        });
+    ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(1));
+    EXPECT_EQ(descriptorIt->bindings[0].binding, 0u);
+    EXPECT_NE(descriptorIt->bindings[0].buffer, nullptr);
+}
+
+TEST_F(RenderPassValidationFixture, SkyboxPassDrawsFullscreenBackgroundWithoutDepthTarget)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+
+    SkyboxPass pass;
+    pass.SetResources(&pipelineCache);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.SetProceduralSkyParams(Vec3{0.25f, 0.8f, 0.35f},
+                                Vec3{0.12f, 0.24f, 0.55f},
+                                Vec3{0.6f, 0.72f, 0.88f});
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    ASSERT_EQ(ctx.beginRenderPassCount, 1u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetSkyboxPipeline(RHIFormat::RGBA8_UNORM, false));
+    EXPECT_EQ(ctx.drawCount, 1u);
+    EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
+    ASSERT_FALSE(ctx.renderPasses.empty());
+    EXPECT_FALSE(ctx.renderPasses[0].hasDepthStencil);
+}
+
+TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenConstantsCannotMap)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+
+    SkyboxPass pass;
+    pass.SetResources(&pipelineCache);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.SetProceduralSkyParams(Vec3{0.25f, 0.8f, 0.35f},
+                                Vec3{0.12f, 0.24f, 0.55f},
+                                Vec3{0.6f, 0.72f, 0.88f});
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_TRUE(ctx.pipelineSequence.empty());
+    EXPECT_EQ(ctx.drawCount, 0u);
+}
+
 TEST_F(RenderPassValidationFixture, ToneMappingRequiresResourcesBeforeReportingSupported)
 {
     ToneMappingPass pass;

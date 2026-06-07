@@ -27,7 +27,7 @@ namespace
     constexpr uint64 RVX_MAX_DRAW_CONSTANTS_PER_FRAME = 8192;
     constexpr uint64 RVX_PIPELINE_HASH_OFFSET_BASIS = 0xcbf29ce484222325ull;
     constexpr uint64 RVX_PIPELINE_HASH_PRIME = 0x100000001b3ull;
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 4;
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 5;
     constexpr const char* RVX_PIPELINE_MANIFEST_MAGIC = "RVX_PIPELINE_CACHE_MANIFEST";
 
     struct PipelineCacheManifest
@@ -40,6 +40,8 @@ namespace
         uint64 toneMappingPixelShaderHash = 0;
         uint64 bloomVertexShaderHash = 0;
         uint64 bloomPixelShaderHash = 0;
+        uint64 skyboxVertexShaderHash = 0;
+        uint64 skyboxPixelShaderHash = 0;
         uint32 renderTargetFormat = 0;
         uint32 postProcessIntermediateFormat = 0;
         uint32 toneMappingOutputFormat = 0;
@@ -48,6 +50,7 @@ namespace
         uint64 opaquePipelineHash = 0;
         uint64 maskedPipelineHash = 0;
         uint64 transparentPipelineHash = 0;
+        uint64 skyboxPipelineHash = 0;
         uint64 toneMappingPipelineHash = 0;
         uint64 bloomPipelineHash = 0;
     };
@@ -135,6 +138,8 @@ namespace
                key == "toneMappingPixelShaderHash" ||
                key == "bloomVertexShaderHash" ||
                key == "bloomPixelShaderHash" ||
+               key == "skyboxVertexShaderHash" ||
+               key == "skyboxPixelShaderHash" ||
                key == "renderTargetFormat" ||
                key == "postProcessIntermediateFormat" ||
                key == "toneMappingOutputFormat" ||
@@ -143,6 +148,7 @@ namespace
                key == "opaquePipelineHash" ||
                key == "maskedPipelineHash" ||
                key == "transparentPipelineHash" ||
+               key == "skyboxPipelineHash" ||
                key == "toneMappingPipelineHash" ||
                key == "bloomPipelineHash";
     }
@@ -234,7 +240,7 @@ namespace
             fields.emplace(std::move(key), std::move(value));
         }
 
-        if (fields.size() != 18)
+        if (fields.size() != 21)
         {
             return false;
         }
@@ -247,6 +253,8 @@ namespace
             !ReadRequiredManifestUint64(fields, "toneMappingPixelShaderHash", manifest.toneMappingPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomVertexShaderHash", manifest.bloomVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomPixelShaderHash", manifest.bloomPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "skyboxVertexShaderHash", manifest.skyboxVertexShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "skyboxPixelShaderHash", manifest.skyboxPixelShaderHash) ||
             !ReadRequiredManifestUint32(fields, "renderTargetFormat", manifest.renderTargetFormat) ||
             !ReadRequiredManifestUint32(fields, "postProcessIntermediateFormat", manifest.postProcessIntermediateFormat) ||
             !ReadRequiredManifestUint32(fields, "toneMappingOutputFormat", manifest.toneMappingOutputFormat) ||
@@ -255,6 +263,7 @@ namespace
             !ReadRequiredManifestUint64(fields, "opaquePipelineHash", manifest.opaquePipelineHash) ||
             !ReadRequiredManifestUint64(fields, "maskedPipelineHash", manifest.maskedPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "transparentPipelineHash", manifest.transparentPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "skyboxPipelineHash", manifest.skyboxPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "toneMappingPipelineHash", manifest.toneMappingPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "bloomPipelineHash", manifest.bloomPipelineHash))
         {
@@ -290,6 +299,8 @@ namespace
             file << "toneMappingPixelShaderHash=" << manifest.toneMappingPixelShaderHash << '\n';
             file << "bloomVertexShaderHash=" << manifest.bloomVertexShaderHash << '\n';
             file << "bloomPixelShaderHash=" << manifest.bloomPixelShaderHash << '\n';
+            file << "skyboxVertexShaderHash=" << manifest.skyboxVertexShaderHash << '\n';
+            file << "skyboxPixelShaderHash=" << manifest.skyboxPixelShaderHash << '\n';
             file << "renderTargetFormat=" << manifest.renderTargetFormat << '\n';
             file << "postProcessIntermediateFormat=" << manifest.postProcessIntermediateFormat << '\n';
             file << "toneMappingOutputFormat=" << manifest.toneMappingOutputFormat << '\n';
@@ -298,6 +309,7 @@ namespace
             file << "opaquePipelineHash=" << manifest.opaquePipelineHash << '\n';
             file << "maskedPipelineHash=" << manifest.maskedPipelineHash << '\n';
             file << "transparentPipelineHash=" << manifest.transparentPipelineHash << '\n';
+            file << "skyboxPipelineHash=" << manifest.skyboxPipelineHash << '\n';
             file << "toneMappingPipelineHash=" << manifest.toneMappingPipelineHash << '\n';
             file << "bloomPipelineHash=" << manifest.bloomPipelineHash << '\n';
             if (!file)
@@ -362,6 +374,8 @@ namespace
                a.toneMappingPixelShaderHash == b.toneMappingPixelShaderHash &&
                a.bloomVertexShaderHash == b.bloomVertexShaderHash &&
                a.bloomPixelShaderHash == b.bloomPixelShaderHash &&
+               a.skyboxVertexShaderHash == b.skyboxVertexShaderHash &&
+               a.skyboxPixelShaderHash == b.skyboxPixelShaderHash &&
                a.renderTargetFormat == b.renderTargetFormat &&
                a.postProcessIntermediateFormat == b.postProcessIntermediateFormat &&
                a.toneMappingOutputFormat == b.toneMappingOutputFormat &&
@@ -370,6 +384,7 @@ namespace
                a.opaquePipelineHash == b.opaquePipelineHash &&
                a.maskedPipelineHash == b.maskedPipelineHash &&
                a.transparentPipelineHash == b.transparentPipelineHash &&
+               a.skyboxPipelineHash == b.skyboxPipelineHash &&
                a.toneMappingPipelineHash == b.toneMappingPipelineHash &&
                a.bloomPipelineHash == b.bloomPipelineHash;
     }
@@ -480,6 +495,15 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
         return false;
     }
 
+    if (!CreateSkyboxPipelineLayout())
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create skybox pipeline layout");
+        }
+        return false;
+    }
+
     if (!CreateObjectConstantBuffer())
     {
         SetLastError("Failed to create object constant buffer");
@@ -524,6 +548,7 @@ void PipelineCache::Shutdown()
     m_maskedPipeline.Reset();
     m_transparentPipeline.Reset();
     m_depthOnlyPipeline.Reset();
+    m_skyboxPipeline.Reset();
     m_toneMappingPipeline.Reset();
     m_bloomPipeline.Reset();
     m_pipelineCache.clear();
@@ -533,11 +558,15 @@ void PipelineCache::Shutdown()
     m_objectConstantBuffer.Reset();
     m_postProcessPipelineLayout.Reset();
     m_postProcessSetLayout.Reset();
+    m_skyboxPipelineLayout.Reset();
+    m_skyboxSetLayout.Reset();
     m_pipelineLayout.Reset();
     m_setLayouts.clear();
     m_vertexShader.Reset();
     m_pixelShader.Reset();
     m_depthOnlyVertexShader.Reset();
+    m_skyboxVertexShader.Reset();
+    m_skyboxPixelShader.Reset();
     m_toneMappingVertexShader.Reset();
     m_toneMappingPixelShader.Reset();
     m_bloomVertexShader.Reset();
@@ -545,6 +574,8 @@ void PipelineCache::Shutdown()
     m_vsCompileResult.reset();
     m_psCompileResult.reset();
     m_depthOnlyVsCompileResult.reset();
+    m_skyboxVsCompileResult.reset();
+    m_skyboxPsCompileResult.reset();
     m_toneMappingVsCompileResult.reset();
     m_toneMappingPsCompileResult.reset();
     m_bloomVsCompileResult.reset();
@@ -562,6 +593,7 @@ bool PipelineCache::CompileShaders()
     std::string depthOnlyShaderPath = m_shaderDir + "/DepthOnly.hlsl";
     std::string toneMappingShaderPath = m_shaderDir + "/PostProcess/ToneMapping.hlsl";
     std::string bloomShaderPath = m_shaderDir + "/PostProcess/Bloom.hlsl";
+    std::string skyboxShaderPath = m_shaderDir + "/Skybox.hlsl";
 
     RVX_CORE_INFO("PipelineCache: Compiling shaders...");
     RVX_CORE_INFO("  Shader directory: {}", m_shaderDir);
@@ -625,6 +657,16 @@ bool PipelineCache::CompileShaders()
         SetLastError("Bloom shader file not found: " + bloomShaderPath);
 
         std::filesystem::path absPath = std::filesystem::absolute(bloomShaderPath);
+        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
+        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
+        return false;
+    }
+
+    if (!std::filesystem::exists(skyboxShaderPath))
+    {
+        SetLastError("Skybox shader file not found: " + skyboxShaderPath);
+
+        std::filesystem::path absPath = std::filesystem::absolute(skyboxShaderPath);
         RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
         RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
         return false;
@@ -775,6 +817,51 @@ bool PipelineCache::CompileShaders()
     m_bloomPixelShader = bloomPsResult.shader;
     m_bloomPsCompileResult = std::make_unique<ShaderCompileResult>(std::move(bloomPsResult.compileResult));
 
+    ShaderLoadDesc skyboxVsDesc = vsDesc;
+    skyboxVsDesc.path = skyboxShaderPath;
+    skyboxVsDesc.entryPoint = "VSMain";
+    skyboxVsDesc.stage = RHIShaderStage::Vertex;
+    if (backend == RHIBackendType::DX11)
+    {
+        skyboxVsDesc.targetProfile = "vs_5_0";
+    }
+
+    auto skyboxVsResult = m_shaderManager->LoadFromFile(m_device, skyboxVsDesc);
+    if (!skyboxVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile Skybox vertex shader: " + skyboxVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!skyboxVsResult.shader)
+    {
+        SetLastError("Failed to create Skybox vertex shader");
+        return false;
+    }
+    m_skyboxVertexShader = skyboxVsResult.shader;
+    m_skyboxVsCompileResult = std::make_unique<ShaderCompileResult>(std::move(skyboxVsResult.compileResult));
+
+    ShaderLoadDesc skyboxPsDesc = skyboxVsDesc;
+    skyboxPsDesc.entryPoint = "PSMain";
+    skyboxPsDesc.stage = RHIShaderStage::Pixel;
+    if (backend == RHIBackendType::DX11)
+    {
+        skyboxPsDesc.targetProfile = "ps_5_0";
+    }
+
+    auto skyboxPsResult = m_shaderManager->LoadFromFile(m_device, skyboxPsDesc);
+    if (!skyboxPsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile Skybox pixel shader: " + skyboxPsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!skyboxPsResult.shader)
+    {
+        SetLastError("Failed to create Skybox pixel shader");
+        return false;
+    }
+    m_skyboxPixelShader = skyboxPsResult.shader;
+    m_skyboxPsCompileResult = std::make_unique<ShaderCompileResult>(std::move(skyboxPsResult.compileResult));
+
     RVX_CORE_DEBUG("PipelineCache: Compiled shaders successfully");
     return true;
 }
@@ -842,6 +929,34 @@ bool PipelineCache::CreatePostProcessPipelineLayout()
     }
 
     RVX_CORE_DEBUG("PipelineCache: Created post-process pipeline layout");
+    return true;
+}
+
+bool PipelineCache::CreateSkyboxPipelineLayout()
+{
+    RHIDescriptorSetLayoutDesc setLayoutDesc;
+    setLayoutDesc.debugName = "SkyboxSetLayout";
+    setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Vertex | RHIShaderStage::Pixel);
+
+    m_skyboxSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
+    if (!m_skyboxSetLayout)
+    {
+        SetLastError("Failed to create skybox descriptor set layout");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "SkyboxPipelineLayout";
+    layoutDesc.setLayouts.push_back(m_skyboxSetLayout.Get());
+
+    m_skyboxPipelineLayout = m_device->CreatePipelineLayout(layoutDesc);
+    if (!m_skyboxPipelineLayout)
+    {
+        SetLastError("Failed to create skybox pipeline layout");
+        return false;
+    }
+
+    RVX_CORE_DEBUG("PipelineCache: Created skybox pipeline layout");
     return true;
 }
 
@@ -994,6 +1109,8 @@ void PipelineCache::ProcessPipelineManifest()
     expected.toneMappingPixelShaderHash = ComputeShaderHash(m_toneMappingPsCompileResult.get());
     expected.bloomVertexShaderHash = ComputeShaderHash(m_bloomVsCompileResult.get());
     expected.bloomPixelShaderHash = ComputeShaderHash(m_bloomPsCompileResult.get());
+    expected.skyboxVertexShaderHash = ComputeShaderHash(m_skyboxVsCompileResult.get());
+    expected.skyboxPixelShaderHash = ComputeShaderHash(m_skyboxPsCompileResult.get());
     expected.renderTargetFormat = static_cast<uint32>(m_renderTargetFormat);
     expected.postProcessIntermediateFormat = static_cast<uint32>(m_postProcessIntermediateFormat);
     expected.toneMappingOutputFormat = static_cast<uint32>(m_toneMappingOutputFormat);
@@ -1002,6 +1119,7 @@ void PipelineCache::ProcessPipelineManifest()
     expected.opaquePipelineHash = m_stats.opaquePipelineHash;
     expected.maskedPipelineHash = m_stats.maskedPipelineHash;
     expected.transparentPipelineHash = m_stats.transparentPipelineHash;
+    expected.skyboxPipelineHash = m_stats.skyboxPipelineHash;
     expected.toneMappingPipelineHash = m_stats.toneMappingPipelineHash;
     expected.bloomPipelineHash = m_stats.bloomPipelineHash;
 
@@ -1122,6 +1240,24 @@ RHIPipeline* PipelineCache::GetPipelineForVariant(MaterialPipelineVariant varian
                                                  renderTargetFormat,
                                                  false).Get();
     }
+}
+
+RHIPipeline* PipelineCache::GetSkyboxPipeline(RHIFormat outputFormat)
+{
+    return GetSkyboxPipeline(outputFormat, true);
+}
+
+RHIPipeline* PipelineCache::GetSkyboxPipeline(RHIFormat outputFormat, bool depthTest)
+{
+    if (outputFormat == RHIFormat::Unknown || outputFormat == m_renderTargetFormat)
+    {
+        if (depthTest)
+        {
+            return GetSkyboxPipeline();
+        }
+    }
+
+    return GetOrCreateSkyboxPipeline(outputFormat, depthTest, false).Get();
 }
 
 RHIPipeline* PipelineCache::GetToneMappingPipeline(RHIFormat outputFormat)
@@ -1278,6 +1414,16 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
+    m_skyboxPipeline = GetOrCreateSkyboxPipeline(m_renderTargetFormat);
+    if (!m_skyboxPipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create Skybox pipeline");
+        }
+        return false;
+    }
+
     m_toneMappingPipeline = GetOrCreateToneMappingPipeline(m_toneMappingOutputFormat);
     if (!m_toneMappingPipeline)
     {
@@ -1298,7 +1444,7 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
-    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, ToneMapping pipeline, and Bloom pipeline");
+    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, Skybox pipeline, ToneMapping pipeline, and Bloom pipeline");
     return true;
 }
 
@@ -1400,6 +1546,59 @@ RHIPipelineRef PipelineCache::GetOrCreateDepthOnlyPipeline()
     if (!pipeline)
     {
         SetLastError("Backend failed to create depth-only pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateSkyboxPipeline(RHIFormat outputFormat,
+                                                        bool depthTest,
+                                                        bool updatePrimaryStats)
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildSkyboxPipelineDesc(outputFormat, depthTest);
+    if (!pipelineDesc.vertexShader)
+    {
+        SetLastError("Cannot create Skybox pipeline without vertex shader");
+        return {};
+    }
+    if (!pipelineDesc.pixelShader)
+    {
+        SetLastError("Cannot create Skybox pipeline without pixel shader");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError("Cannot create Skybox pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.numRenderTargets != 1 || pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create Skybox pipeline with invalid render target format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc, MaterialPipelineVariant::Opaque);
+    if (updatePrimaryStats)
+    {
+        m_stats.skyboxPipelineHash = stateHash;
+    }
+    m_stats.lastPipelineStateHash = stateHash;
+
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create Skybox pipeline");
         return {};
     }
 
@@ -1559,6 +1758,29 @@ RHIGraphicsPipelineDesc PipelineCache::BuildDepthOnlyPipelineDesc() const
         format = RHIFormat::Unknown;
     }
     pipelineDesc.depthStencilFormat = m_config.depthStencilFormat;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildSkyboxPipelineDesc(RHIFormat outputFormat, bool depthTest) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc;
+
+    pipelineDesc.vertexShader = m_skyboxVertexShader.Get();
+    pipelineDesc.pixelShader = m_skyboxPixelShader.Get();
+    pipelineDesc.pipelineLayout = m_skyboxPipelineLayout.Get();
+    pipelineDesc.debugName = depthTest ? "SkyboxPipeline" : "SkyboxNoDepthPipeline";
+
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+
+    pipelineDesc.depthStencilState = depthTest ? BuildDepthStencilState(m_config.reverseZ, false)
+                                               : RHIDepthStencilState::Disabled();
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets = 1;
+    pipelineDesc.renderTargetFormats[0] = outputFormat;
+    pipelineDesc.depthStencilFormat = depthTest ? m_config.depthStencilFormat : RHIFormat::Unknown;
     pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
 
     return pipelineDesc;

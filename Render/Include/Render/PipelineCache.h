@@ -70,6 +70,7 @@ namespace RVX
         uint64 opaquePipelineHash = 0;
         uint64 maskedPipelineHash = 0;
         uint64 transparentPipelineHash = 0;
+        uint64 skyboxPipelineHash = 0;
         uint64 toneMappingPipelineHash = 0;
         uint64 bloomPipelineHash = 0;
         uint32 pipelineCreateCount = 0;
@@ -169,6 +170,13 @@ namespace RVX
         RHIPipeline* GetDepthOnlyPipeline() const { return m_depthOnlyPipeline.Get(); }
 
         /**
+         * @brief Get the procedural skybox fullscreen pipeline
+         */
+        RHIPipeline* GetSkyboxPipeline() const { return m_skyboxPipeline.Get(); }
+        RHIPipeline* GetSkyboxPipeline(RHIFormat outputFormat);
+        RHIPipeline* GetSkyboxPipeline(RHIFormat outputFormat, bool depthTest);
+
+        /**
          * @brief Get the fullscreen ToneMapping post-process pipeline
          */
         RHIPipeline* GetToneMappingPipeline() const { return m_toneMappingPipeline.Get(); }
@@ -191,9 +199,19 @@ namespace RVX
         RHIPipelineLayout* GetPostProcessLayout() const { return m_postProcessPipelineLayout.Get(); }
 
         /**
+         * @brief Get the procedural skybox fullscreen pipeline layout
+         */
+        RHIPipelineLayout* GetSkyboxLayout() const { return m_skyboxPipelineLayout.Get(); }
+
+        /**
          * @brief Get the descriptor set layout used by fullscreen post-process passes
          */
         RHIDescriptorSetLayout* GetPostProcessSetLayout() const { return m_postProcessSetLayout.Get(); }
+
+        /**
+         * @brief Get the descriptor set layout used by the procedural skybox pass
+         */
+        RHIDescriptorSetLayout* GetSkyboxSetLayout() const { return m_skyboxSetLayout.Get(); }
 
         /**
          * @brief Get the owning RHI device for pass-local resources
@@ -310,6 +328,7 @@ namespace RVX
         bool CompileShaders();
         bool CreatePipelineLayout();
         bool CreatePostProcessPipelineLayout();
+        bool CreateSkyboxPipelineLayout();
         bool CreatePipeline();
         RHIPipelineRef GetOrCreateDefaultLitPipeline(MaterialPipelineVariant variant,
                                                      const char* debugName,
@@ -318,6 +337,9 @@ namespace RVX
                                                      RHIFormat renderTargetFormat,
                                                      bool updatePrimaryStats);
         RHIPipelineRef GetOrCreateDepthOnlyPipeline();
+        RHIPipelineRef GetOrCreateSkyboxPipeline(RHIFormat outputFormat,
+                                                 bool depthTest = true,
+                                                 bool updatePrimaryStats = true);
         RHIPipelineRef GetOrCreateToneMappingPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateBloomPipeline(RHIFormat outputFormat);
         RHIGraphicsPipelineDesc BuildDefaultLitPipelineDesc(const char* debugName,
@@ -325,6 +347,7 @@ namespace RVX
                                                             const RHIBlendState& blendState,
                                                             RHIFormat renderTargetFormat) const;
         RHIGraphicsPipelineDesc BuildDepthOnlyPipelineDesc() const;
+        RHIGraphicsPipelineDesc BuildSkyboxPipelineDesc(RHIFormat outputFormat, bool depthTest = true) const;
         RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomPipelineDesc(RHIFormat outputFormat) const;
         bool CreateViewConstantBuffer();
@@ -354,6 +377,8 @@ namespace RVX
         RHIShaderRef m_vertexShader;
         RHIShaderRef m_pixelShader;
         RHIShaderRef m_depthOnlyVertexShader;
+        RHIShaderRef m_skyboxVertexShader;
+        RHIShaderRef m_skyboxPixelShader;
         RHIShaderRef m_toneMappingVertexShader;
         RHIShaderRef m_toneMappingPixelShader;
         RHIShaderRef m_bloomVertexShader;
@@ -361,6 +386,8 @@ namespace RVX
         std::unique_ptr<ShaderCompileResult> m_vsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_psCompileResult;
         std::unique_ptr<ShaderCompileResult> m_depthOnlyVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_skyboxVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_skyboxPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_toneMappingVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_toneMappingPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_bloomVsCompileResult;
@@ -371,12 +398,15 @@ namespace RVX
         RHIPipelineLayoutRef m_pipelineLayout;
         RHIDescriptorSetLayoutRef m_postProcessSetLayout;
         RHIPipelineLayoutRef m_postProcessPipelineLayout;
+        RHIDescriptorSetLayoutRef m_skyboxSetLayout;
+        RHIPipelineLayoutRef m_skyboxPipelineLayout;
 
         // Graphics pipelines
         RHIPipelineRef m_opaquePipeline;
         RHIPipelineRef m_maskedPipeline;
         RHIPipelineRef m_transparentPipeline;
         RHIPipelineRef m_depthOnlyPipeline;
+        RHIPipelineRef m_skyboxPipeline;
         RHIPipelineRef m_toneMappingPipeline;
         RHIPipelineRef m_bloomPipeline;
         std::unordered_map<uint64, RHIPipelineRef> m_pipelineCache;
