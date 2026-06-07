@@ -171,12 +171,8 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     ctx.SetViewport(view.GetRHIViewport());
     ctx.SetScissor(view.GetRHIScissor());
 
-    // 3. Bind frame constants descriptor set
+    // 3. Cache frame constants descriptor set. DX12 needs descriptor sets bound after the pipeline root signature.
     RHIDescriptorSet* frameSet = m_pipelineCache->GetFrameDescriptorSet();
-    if (frameSet)
-    {
-        ctx.SetDescriptorSet(0, frameSet);
-    }
 
     // 4. Draw each visible object group with its material variant pipeline.
     if (m_renderScene && m_gpuResources)
@@ -197,6 +193,10 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
             }
 
             ctx.SetPipeline(pipeline);
+            if (frameSet)
+            {
+                ctx.SetDescriptorSet(0, frameSet);
+            }
 
             for (const RenderDrawItem& item : *drawItems)
             {

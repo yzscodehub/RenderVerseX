@@ -106,6 +106,7 @@ namespace
     constexpr uint32 kSmokeDefaultHeight = 180;
     constexpr uint32 kSmokeDefaultFrames = 8;
     constexpr float kSmokeDeltaSeconds = 1.0f / 60.0f;
+    constexpr uint32 kDX12TextureCopyPitchAlignment = 256;
 
     void PrintUsage()
     {
@@ -387,10 +388,11 @@ namespace
             return false;
         }
 
-        if (device->GetBackendType() != RHIBackendType::DX11)
+        const RHIBackendType backendType = device->GetBackendType();
+        if (backendType != RHIBackendType::DX11 && backendType != RHIBackendType::DX12)
         {
-            RVX_CORE_ERROR("ModelViewer smoke capture currently requires DX11; active backend is {}",
-                           ToString(device->GetBackendType()));
+            RVX_CORE_ERROR("ModelViewer smoke capture currently supports DX11/DX12; active backend is {}",
+                           ToString(backendType));
             return false;
         }
 
@@ -411,7 +413,12 @@ namespace
 
         const uint32 width = backBuffer->GetWidth();
         const uint32 height = backBuffer->GetHeight();
-        const uint32 rowPitch = width * bytesPerPixel;
+        uint32 rowPitch = width * bytesPerPixel;
+        if (backendType == RHIBackendType::DX12)
+        {
+            rowPitch = (rowPitch + kDX12TextureCopyPitchAlignment - 1u) &
+                       ~(kDX12TextureCopyPitchAlignment - 1u);
+        }
 
         RHIBufferDesc readbackDesc;
         readbackDesc.size = static_cast<uint64>(rowPitch) * height;
@@ -601,9 +608,10 @@ int main(int argc, char* argv[])
         if (!options.screenshotPath.empty())
         {
             IRHIDevice* device = renderSubsystem->GetDevice();
-            if (!device || device->GetBackendType() != RHIBackendType::DX11)
+            const RHIBackendType backendType = device ? device->GetBackendType() : RHIBackendType::None;
+            if (!device || (backendType != RHIBackendType::DX11 && backendType != RHIBackendType::DX12))
             {
-                RVX_CORE_ERROR("Smoke screenshot gate currently requires DX11");
+                RVX_CORE_ERROR("Smoke screenshot gate currently supports DX11/DX12");
                 engine.Shutdown();
                 return -1;
             }
