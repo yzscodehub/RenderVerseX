@@ -2395,6 +2395,100 @@ git diff --check
 
 ---
 
+### RQ1-A/B/C/D/E: HDR Scene Color and ToneMapping Format Split
+
+**Date:** 2026-06-07
+**Commit:** this commit
+**Spark plan review agent:** `019ea086-5b9a-7fc0-b402-944a98d76842`
+**Spark code review agent:** `019ea0a2-cfb9-7dd2-b38a-b5e84eee981e`, `019ea0b1-6cef-77b1-b42f-e9870002c78b`
+
+**Plan source:**
+
+- Document: user-approved RQ1 implementation plan in this thread.
+- Section: RQ1-A/B/C/D/E.
+- Lines checked: local code evidence for `SceneRenderer`, `PipelineCache`, `PostProcessStack`, and `ToneMapping.hlsl`.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R12 / Render Program v1 visual baseline.
+- Evidence: Spark plan review reported no direction blocker after requiring PipelineCache format split before graph edits.
+
+**Approved scope:**
+
+- Add explicit scene/post-process/tone-mapping render target format policy.
+- Route scene/material and Bloom pipelines to HDR scene/intermediate formats.
+- Route ToneMapping final pipeline to the LDR backbuffer format.
+- Create HDR scene color when supported post-process is active.
+- Expose HDR fallback and selected formats in `SceneRenderPostProcessStats`.
+- Add PostProcessStack stats for intermediate/final formats and ToneMapping boundary validity.
+- Keep a single ToneMapping display conversion for the current UNORM backbuffer path.
+- Refresh the DX11 visual golden after verified HDR/tonemap output changes.
+
+**Out of scope:**
+
+- IBL, ACES/AgX operator switch, auto exposure, sRGB swapchain rewrite, Vulkan golden, and dynamic pipeline recreation when post-process is disabled after initialization.
+
+**Files changed:**
+
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Passes/TransparentPass.cpp`
+- `Render/Include/Render/PostProcess/PostProcessStack.h`
+- `Render/Private/PostProcess/Bloom.cpp`
+- `Render/Private/PostProcess/PostProcessStack.cpp`
+- `Render/Private/PostProcess/ToneMapping.cpp`
+- `Render/Shaders/PostProcess/ToneMapping.hlsl`
+- `Tests/ClusteredLightingValidation/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/Golden/ModelViewer/R7_DX11_320x180.ppm`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|RenderHonestyValidation|RenderSceneValidation|MaterialSystemValidation|ClusteredLightingValidation"
+cmake --build build\win_x64_debug --config Debug --target ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+cmake --build build\win_x64_debug --config Debug --target ClusteredLightingValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ClusteredLightingValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Tests: PASS for direct and regression gates listed above.
+- Visual gate: PASS after refreshing `R7_DX11_320x180.ppm` from the verified HDR/tonemap output.
+
+**Artifacts:**
+
+- Actual golden source: `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R7_DX11_320x180.ppm`
+- Temporary preview: `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R7_DX11_320x180.bmp`
+
+**Spark plan review result:**
+
+- Verdict: PASS after requiring `SceneColorFormatPolicy` and `PipelineCache` split formats before `BuildRenderGraph`/`PostProcessStack` changes.
+- Blockers resolved: single `m_renderTargetFormat` was split for scene, post-process intermediate, and ToneMapping output formats; manifest/config fields were expanded.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: runtime output-format mismatch was fixed by selecting scene, Bloom, and ToneMapping pipelines from the active RenderGraph target format instead of only using initialization-time primary formats.
+
+**Notes / follow-ups:**
+
+- Current HDR support policy is renderer-level and conservative for `None`/`Auto`; a real per-format RHI capability query remains a future infrastructure item.
+- Dynamic runtime pipeline format requests are supported through PipelineCache lazy creation; full per-format RHI capability queries remain future work.
+- ToneMapping still uses the current `None` operator default in `SceneRenderer`; RQ1 fixes the HDR/display path, not the filmic operator choice.
+- `ClusteredLightingValidationFixture.ReconfigurePreservesDeviceAndRebuildsBuffers` no longer relies on allocator pointer uniqueness and now validates rebuild by creation count and buffer sizes.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

@@ -57,6 +57,61 @@ SceneRenderer::~SceneRenderer()
     Shutdown();
 }
 
+bool SceneRenderer::SupportsHDRSceneColor() const
+{
+    const IRHIDevice* device = m_renderContext ? m_renderContext->GetDevice() : nullptr;
+    if (!device)
+    {
+        return false;
+    }
+
+    switch (device->GetBackendType())
+    {
+        case RHIBackendType::DX11:
+        case RHIBackendType::DX12:
+        case RHIBackendType::Vulkan:
+        case RHIBackendType::Metal:
+        case RHIBackendType::OpenGL:
+            return true;
+        case RHIBackendType::Auto:
+        case RHIBackendType::None:
+        default:
+            return false;
+    }
+}
+
+SceneColorFormatPolicy SceneRenderer::ResolveSceneColorFormatPolicy(RHIFormat backBufferFormat,
+                                                                    bool postProcessActive) const
+{
+    SceneColorFormatPolicy policy;
+    policy.backBufferFormat = backBufferFormat;
+    policy.toneMappingOutputFormat = backBufferFormat;
+    policy.actualSceneColorFormat = backBufferFormat;
+
+    if (backBufferFormat == RHIFormat::Unknown)
+    {
+        policy.hdrFallbackReason = "back buffer format is unavailable";
+        return policy;
+    }
+
+    if (!postProcessActive)
+    {
+        policy.hdrFallbackReason = "post-process stack has no supported enabled effects";
+        return policy;
+    }
+
+    if (!SupportsHDRSceneColor())
+    {
+        policy.hdrFallbackReason = "current RHI backend does not advertise HDR scene color support";
+        return policy;
+    }
+
+    policy.actualSceneColorFormat = policy.requestedSceneColorFormat;
+    policy.hdrSceneColorEnabled = true;
+    policy.hdrFallbackReason.clear();
+    return policy;
+}
+
 void SceneRenderer::Initialize(RenderContext* renderContext)
 {
     if (m_initialized)
@@ -150,7 +205,19 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
     {
         RVX_CORE_WARN("SceneRenderer: Swap chain not ready, using default render target format: {}", static_cast<int>(rtFormat));
     }
-    m_pipelineCache->SetRenderTargetFormat(rtFormat);
+    m_sceneColorFormatPolicy = ResolveSceneColorFormatPolicy(rtFormat, true);
+    m_pipelineCache->SetRenderTargetFormats(m_sceneColorFormatPolicy.actualSceneColorFormat,
+                                            m_sceneColorFormatPolicy.actualSceneColorFormat,
+                                            m_sceneColorFormatPolicy.toneMappingOutputFormat);
+    RVX_CORE_INFO("SceneRenderer: Pipeline formats scene={}, postProcessIntermediate={}, toneMappingOutput={}",
+                  static_cast<int>(m_sceneColorFormatPolicy.actualSceneColorFormat),
+                  static_cast<int>(m_sceneColorFormatPolicy.actualSceneColorFormat),
+                  static_cast<int>(m_sceneColorFormatPolicy.toneMappingOutputFormat));
+    if (!m_sceneColorFormatPolicy.hdrSceneColorEnabled)
+    {
+        RVX_CORE_WARN("SceneRenderer: HDR scene color fallback: {}",
+                      m_sceneColorFormatPolicy.hdrFallbackReason);
+    }
 
     // Initialize pipeline cache
     RVX_CORE_INFO("SceneRenderer: Initializing PipelineCache...");
@@ -654,12 +721,25 @@ void SceneRenderer::BuildRenderGraph()
         m_postProcessStats.stackStats = m_postProcessStack->EvaluateEffects();
     }
 
+    const RHITextureDesc* backBufferDesc = backBufferTarget.IsValid()
+                                               ? m_renderGraph->GetTextureDesc(backBufferTarget)
+                                               : nullptr;
+    const RHIFormat backBufferFormat = backBufferDesc ? backBufferDesc->format : RHIFormat::Unknown;
+    const bool postProcessActive = m_postProcessStats.stackStats.enabledEffectCount > 0;
+    m_sceneColorFormatPolicy = ResolveSceneColorFormatPolicy(backBufferFormat, postProcessActive);
+    m_postProcessStats.requestedSceneColorFormat = m_sceneColorFormatPolicy.requestedSceneColorFormat;
+    m_postProcessStats.actualSceneColorFormat = m_sceneColorFormatPolicy.actualSceneColorFormat;
+    m_postProcessStats.backBufferFormat = m_sceneColorFormatPolicy.backBufferFormat;
+    m_postProcessStats.toneMappingOutputFormat = m_sceneColorFormatPolicy.toneMappingOutputFormat;
+    m_postProcessStats.hdrSceneColorEnabled = m_sceneColorFormatPolicy.hdrSceneColorEnabled;
+    m_postProcessStats.hdrFallbackReason = m_sceneColorFormatPolicy.hdrFallbackReason;
+
     if (backBufferTarget.IsValid() && m_postProcessStats.stackStats.enabledEffectCount > 0)
     {
-        const RHITextureDesc* backBufferDesc = m_renderGraph->GetTextureDesc(backBufferTarget);
         if (backBufferDesc)
         {
             RHITextureDesc sceneColorDesc = *backBufferDesc;
+            sceneColorDesc.format = m_sceneColorFormatPolicy.actualSceneColorFormat;
             sceneColorDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
             sceneColorDesc.debugName = "SceneColorPostProcessInput";
 

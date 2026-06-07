@@ -89,15 +89,12 @@ float3 NeutralTonemap(float3 x)
 }
 
 // =============================================================================
-// Gamma Correction
+// Display Conversion
 // =============================================================================
 
-float3 LinearToSRGB(float3 linearColor)
-{
-    return pow(linearColor, 1.0 / 2.2);
-}
-
-float3 GammaCorrect(float3 linearColor, float gamma)
+// RQ1 guardrail: for UNORM back buffers, this shader owns the single
+// linear-to-display conversion. Do not also apply an sRGB conversion here.
+float3 ApplyDisplayConversion(float3 linearColor, float gamma)
 {
     return pow(linearColor, 1.0 / gamma);
 }
@@ -159,8 +156,8 @@ float4 PSMain(VSOutput input) : SV_TARGET
         break;
     }
     
-    // Gamma correction
-    float3 output = GammaCorrect(ldr, Gamma);
+    // Single display conversion for the final LDR back buffer write
+    float3 output = ApplyDisplayConversion(ldr, Gamma);
     
     return float4(output, 1.0);
 }

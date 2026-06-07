@@ -131,7 +131,13 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
                 return;
             }
 
-            RHIPipeline* pipeline = m_pipelineCache->GetToneMappingPipeline();
+            RHIFormat outputFormat = RHIFormat::Unknown;
+            if (const RHITextureDesc* outputDesc = graph.GetTextureDesc(data.output))
+            {
+                outputFormat = outputDesc->format;
+            }
+
+            RHIPipeline* pipeline = m_pipelineCache->GetToneMappingPipeline(outputFormat);
             RHIDescriptorSetLayout* setLayout = m_pipelineCache->GetPostProcessSetLayout();
             IRHIDevice* device = m_pipelineCache->GetDevice();
             if (!pipeline || !setLayout || !device)

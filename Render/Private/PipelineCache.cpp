@@ -27,7 +27,7 @@ namespace
     constexpr uint64 RVX_MAX_DRAW_CONSTANTS_PER_FRAME = 8192;
     constexpr uint64 RVX_PIPELINE_HASH_OFFSET_BASIS = 0xcbf29ce484222325ull;
     constexpr uint64 RVX_PIPELINE_HASH_PRIME = 0x100000001b3ull;
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 3;
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 4;
     constexpr const char* RVX_PIPELINE_MANIFEST_MAGIC = "RVX_PIPELINE_CACHE_MANIFEST";
 
     struct PipelineCacheManifest
@@ -41,6 +41,8 @@ namespace
         uint64 bloomVertexShaderHash = 0;
         uint64 bloomPixelShaderHash = 0;
         uint32 renderTargetFormat = 0;
+        uint32 postProcessIntermediateFormat = 0;
+        uint32 toneMappingOutputFormat = 0;
         uint32 depthStencilFormat = 0;
         uint32 reverseZ = 0;
         uint64 opaquePipelineHash = 0;
@@ -134,6 +136,8 @@ namespace
                key == "bloomVertexShaderHash" ||
                key == "bloomPixelShaderHash" ||
                key == "renderTargetFormat" ||
+               key == "postProcessIntermediateFormat" ||
+               key == "toneMappingOutputFormat" ||
                key == "depthStencilFormat" ||
                key == "reverseZ" ||
                key == "opaquePipelineHash" ||
@@ -230,7 +234,7 @@ namespace
             fields.emplace(std::move(key), std::move(value));
         }
 
-        if (fields.size() != 16)
+        if (fields.size() != 18)
         {
             return false;
         }
@@ -244,6 +248,8 @@ namespace
             !ReadRequiredManifestUint64(fields, "bloomVertexShaderHash", manifest.bloomVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomPixelShaderHash", manifest.bloomPixelShaderHash) ||
             !ReadRequiredManifestUint32(fields, "renderTargetFormat", manifest.renderTargetFormat) ||
+            !ReadRequiredManifestUint32(fields, "postProcessIntermediateFormat", manifest.postProcessIntermediateFormat) ||
+            !ReadRequiredManifestUint32(fields, "toneMappingOutputFormat", manifest.toneMappingOutputFormat) ||
             !ReadRequiredManifestUint32(fields, "depthStencilFormat", manifest.depthStencilFormat) ||
             !ReadRequiredManifestUint32(fields, "reverseZ", manifest.reverseZ) ||
             !ReadRequiredManifestUint64(fields, "opaquePipelineHash", manifest.opaquePipelineHash) ||
@@ -285,6 +291,8 @@ namespace
             file << "bloomVertexShaderHash=" << manifest.bloomVertexShaderHash << '\n';
             file << "bloomPixelShaderHash=" << manifest.bloomPixelShaderHash << '\n';
             file << "renderTargetFormat=" << manifest.renderTargetFormat << '\n';
+            file << "postProcessIntermediateFormat=" << manifest.postProcessIntermediateFormat << '\n';
+            file << "toneMappingOutputFormat=" << manifest.toneMappingOutputFormat << '\n';
             file << "depthStencilFormat=" << manifest.depthStencilFormat << '\n';
             file << "reverseZ=" << manifest.reverseZ << '\n';
             file << "opaquePipelineHash=" << manifest.opaquePipelineHash << '\n';
@@ -355,6 +363,8 @@ namespace
                a.bloomVertexShaderHash == b.bloomVertexShaderHash &&
                a.bloomPixelShaderHash == b.bloomPixelShaderHash &&
                a.renderTargetFormat == b.renderTargetFormat &&
+               a.postProcessIntermediateFormat == b.postProcessIntermediateFormat &&
+               a.toneMappingOutputFormat == b.toneMappingOutputFormat &&
                a.depthStencilFormat == b.depthStencilFormat &&
                a.reverseZ == b.reverseZ &&
                a.opaquePipelineHash == b.opaquePipelineHash &&
@@ -382,6 +392,8 @@ void PipelineCache::SetConfig(const PipelineCacheConfig& config)
 
     m_config = config;
     m_renderTargetFormat = config.renderTargetFormat;
+    m_postProcessIntermediateFormat = config.postProcessIntermediateFormat;
+    m_toneMappingOutputFormat = config.toneMappingOutputFormat;
 }
 
 uint64 PipelineCache::GetPipelineStateHashForVariant(MaterialPipelineVariant variant) const
@@ -974,6 +986,8 @@ void PipelineCache::ProcessPipelineManifest()
     expected.bloomVertexShaderHash = ComputeShaderHash(m_bloomVsCompileResult.get());
     expected.bloomPixelShaderHash = ComputeShaderHash(m_bloomPsCompileResult.get());
     expected.renderTargetFormat = static_cast<uint32>(m_renderTargetFormat);
+    expected.postProcessIntermediateFormat = static_cast<uint32>(m_postProcessIntermediateFormat);
+    expected.toneMappingOutputFormat = static_cast<uint32>(m_toneMappingOutputFormat);
     expected.depthStencilFormat = static_cast<uint32>(m_config.depthStencilFormat);
     expected.reverseZ = m_config.reverseZ ? 1u : 0u;
     expected.opaquePipelineHash = m_stats.opaquePipelineHash;
@@ -1060,6 +1074,67 @@ RHIPipeline* PipelineCache::GetPipelineForVariant(MaterialPipelineVariant varian
     }
 }
 
+RHIPipeline* PipelineCache::GetPipelineForVariant(MaterialPipelineVariant variant, RHIFormat renderTargetFormat)
+{
+    if (renderTargetFormat == RHIFormat::Unknown || renderTargetFormat == m_renderTargetFormat)
+    {
+        return GetPipelineForVariant(variant);
+    }
+
+    const RHIDepthStencilState writableDepthState = BuildDepthStencilState(m_config.reverseZ, true);
+    const RHIDepthStencilState readOnlyDepthState = BuildDepthStencilState(m_config.reverseZ, false);
+
+    switch (variant)
+    {
+        case MaterialPipelineVariant::Masked:
+            return GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Masked,
+                                                 "DefaultMaskedPipeline",
+                                                 writableDepthState,
+                                                 RHIBlendState::Default(),
+                                                 renderTargetFormat,
+                                                 false).Get();
+        case MaterialPipelineVariant::Transparent:
+        {
+            RHIBlendState transparentBlend = RHIBlendState::Default();
+            transparentBlend.renderTargets[0] = RHIRenderTargetBlendState::AlphaBlend();
+            return GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Transparent,
+                                                 "DefaultTransparentPipeline",
+                                                 readOnlyDepthState,
+                                                 transparentBlend,
+                                                 renderTargetFormat,
+                                                 false).Get();
+        }
+        case MaterialPipelineVariant::Opaque:
+        default:
+            return GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Opaque,
+                                                 "DefaultOpaquePipeline",
+                                                 writableDepthState,
+                                                 RHIBlendState::Default(),
+                                                 renderTargetFormat,
+                                                 false).Get();
+    }
+}
+
+RHIPipeline* PipelineCache::GetToneMappingPipeline(RHIFormat outputFormat)
+{
+    if (outputFormat == RHIFormat::Unknown || outputFormat == m_toneMappingOutputFormat)
+    {
+        return GetToneMappingPipeline();
+    }
+
+    return GetOrCreateToneMappingPipeline(outputFormat).Get();
+}
+
+RHIPipeline* PipelineCache::GetBloomPipeline(RHIFormat outputFormat)
+{
+    if (outputFormat == RHIFormat::Unknown || outputFormat == m_postProcessIntermediateFormat)
+    {
+        return GetBloomPipeline();
+    }
+
+    return GetOrCreateBloomPipeline(outputFormat).Get();
+}
+
 bool PipelineCache::CreateViewConstantBuffer()
 {
     RHIBufferDesc cbDesc;
@@ -1139,7 +1214,9 @@ bool PipelineCache::CreatePipeline()
     m_opaquePipeline = GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Opaque,
                                                      "DefaultOpaquePipeline",
                                                      writableDepthState,
-                                                     RHIBlendState::Default());
+                                                     RHIBlendState::Default(),
+                                                     m_renderTargetFormat,
+                                                     true);
     if (!m_opaquePipeline)
     {
         if (m_lastError.empty())
@@ -1152,7 +1229,9 @@ bool PipelineCache::CreatePipeline()
     m_maskedPipeline = GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Masked,
                                                      "DefaultMaskedPipeline",
                                                      writableDepthState,
-                                                     RHIBlendState::Default());
+                                                     RHIBlendState::Default(),
+                                                     m_renderTargetFormat,
+                                                     true);
     if (!m_maskedPipeline)
     {
         if (m_lastError.empty())
@@ -1168,7 +1247,9 @@ bool PipelineCache::CreatePipeline()
     m_transparentPipeline = GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Transparent,
                                                           "DefaultTransparentPipeline",
                                                           readOnlyDepthState,
-                                                          transparentBlend);
+                                                          transparentBlend,
+                                                          m_renderTargetFormat,
+                                                          true);
     if (!m_transparentPipeline)
     {
         if (m_lastError.empty())
@@ -1188,7 +1269,7 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
-    m_toneMappingPipeline = GetOrCreateToneMappingPipeline();
+    m_toneMappingPipeline = GetOrCreateToneMappingPipeline(m_toneMappingOutputFormat);
     if (!m_toneMappingPipeline)
     {
         if (m_lastError.empty())
@@ -1198,7 +1279,7 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
-    m_bloomPipeline = GetOrCreateBloomPipeline();
+    m_bloomPipeline = GetOrCreateBloomPipeline(m_postProcessIntermediateFormat);
     if (!m_bloomPipeline)
     {
         if (m_lastError.empty())
@@ -1215,9 +1296,14 @@ bool PipelineCache::CreatePipeline()
 RHIPipelineRef PipelineCache::GetOrCreateDefaultLitPipeline(MaterialPipelineVariant variant,
                                                             const char* debugName,
                                                             const RHIDepthStencilState& depthStencilState,
-                                                            const RHIBlendState& blendState)
+                                                            const RHIBlendState& blendState,
+                                                            RHIFormat renderTargetFormat,
+                                                            bool updatePrimaryStats)
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildDefaultLitPipelineDesc(debugName, depthStencilState, blendState);
+    RHIGraphicsPipelineDesc pipelineDesc = BuildDefaultLitPipelineDesc(debugName,
+                                                                       depthStencilState,
+                                                                       blendState,
+                                                                       renderTargetFormat);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create pipeline without vertex shader");
@@ -1245,7 +1331,10 @@ RHIPipelineRef PipelineCache::GetOrCreateDefaultLitPipeline(MaterialPipelineVari
     }
 
     const uint64 stateHash = ComputePipelineStateHash(pipelineDesc, variant);
-    StoreVariantHash(variant, stateHash);
+    if (updatePrimaryStats)
+    {
+        StoreVariantHash(variant, stateHash);
+    }
     m_stats.lastPipelineStateHash = stateHash;
 
     auto cached = m_pipelineCache.find(stateHash);
@@ -1310,9 +1399,9 @@ RHIPipelineRef PipelineCache::GetOrCreateDepthOnlyPipeline()
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateToneMappingPipeline()
+RHIPipelineRef PipelineCache::GetOrCreateToneMappingPipeline(RHIFormat outputFormat)
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildToneMappingPipelineDesc();
+    RHIGraphicsPipelineDesc pipelineDesc = BuildToneMappingPipelineDesc(outputFormat);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create ToneMapping pipeline without vertex shader");
@@ -1358,9 +1447,9 @@ RHIPipelineRef PipelineCache::GetOrCreateToneMappingPipeline()
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateBloomPipeline()
+RHIPipelineRef PipelineCache::GetOrCreateBloomPipeline(RHIFormat outputFormat)
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildBloomPipelineDesc();
+    RHIGraphicsPipelineDesc pipelineDesc = BuildBloomPipelineDesc(outputFormat);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create Bloom pipeline without vertex shader");
@@ -1408,7 +1497,8 @@ RHIPipelineRef PipelineCache::GetOrCreateBloomPipeline()
 
 RHIGraphicsPipelineDesc PipelineCache::BuildDefaultLitPipelineDesc(const char* debugName,
                                                                    const RHIDepthStencilState& depthStencilState,
-                                                                   const RHIBlendState& blendState) const
+                                                                   const RHIBlendState& blendState,
+                                                                   RHIFormat renderTargetFormat) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
 
@@ -1430,7 +1520,7 @@ RHIGraphicsPipelineDesc PipelineCache::BuildDefaultLitPipelineDesc(const char* d
     pipelineDesc.blendState = blendState;
 
     pipelineDesc.numRenderTargets = 1;
-    pipelineDesc.renderTargetFormats[0] = m_renderTargetFormat;
+    pipelineDesc.renderTargetFormats[0] = renderTargetFormat;
     pipelineDesc.depthStencilFormat = m_config.depthStencilFormat;
     pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
 
@@ -1465,7 +1555,7 @@ RHIGraphicsPipelineDesc PipelineCache::BuildDepthOnlyPipelineDesc() const
     return pipelineDesc;
 }
 
-RHIGraphicsPipelineDesc PipelineCache::BuildToneMappingPipelineDesc() const
+RHIGraphicsPipelineDesc PipelineCache::BuildToneMappingPipelineDesc(RHIFormat outputFormat) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
 
@@ -1480,14 +1570,14 @@ RHIGraphicsPipelineDesc PipelineCache::BuildToneMappingPipelineDesc() const
     pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
     pipelineDesc.blendState = RHIBlendState::Default();
     pipelineDesc.numRenderTargets = 1;
-    pipelineDesc.renderTargetFormats[0] = m_renderTargetFormat;
+    pipelineDesc.renderTargetFormats[0] = outputFormat;
     pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
     pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
 
     return pipelineDesc;
 }
 
-RHIGraphicsPipelineDesc PipelineCache::BuildBloomPipelineDesc() const
+RHIGraphicsPipelineDesc PipelineCache::BuildBloomPipelineDesc(RHIFormat outputFormat) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
 
@@ -1502,7 +1592,7 @@ RHIGraphicsPipelineDesc PipelineCache::BuildBloomPipelineDesc() const
     pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
     pipelineDesc.blendState = RHIBlendState::Default();
     pipelineDesc.numRenderTargets = 1;
-    pipelineDesc.renderTargetFormats[0] = m_renderTargetFormat;
+    pipelineDesc.renderTargetFormats[0] = outputFormat;
     pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
     pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
 

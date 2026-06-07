@@ -119,6 +119,23 @@ void PostProcessStack::Execute(RenderGraph& graph, RGTextureHandle sceneColor, R
         return;
     }
 
+    if (const RHITextureDesc* outputDesc = graph.GetTextureDesc(output))
+    {
+        m_lastExecuteStats.finalOutputFormat = outputDesc->format;
+    }
+
+    for (size_t i = 0; i + 1 < enabledEffects.size(); ++i)
+    {
+        if (std::string(enabledEffects[i]->GetName()) == "ToneMapping")
+        {
+            m_lastExecuteStats.toneMappingBoundaryValid = false;
+            m_lastExecuteStats.toneMappingBoundaryWarning =
+                "ToneMapping must remain the HDR-to-LDR boundary and run after HDR effects";
+            RVX_CORE_WARN("PostProcessStack: {}", m_lastExecuteStats.toneMappingBoundaryWarning);
+            break;
+        }
+    }
+
     std::vector<RGTextureHandle> intermediates;
     if (enabledEffects.size() > 1)
     {
@@ -137,6 +154,7 @@ void PostProcessStack::Execute(RenderGraph& graph, RGTextureHandle sceneColor, R
             intermediateDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
             intermediateDesc.debugName = "PostProcessIntermediate";
             intermediates.push_back(graph.CreateTexture(intermediateDesc));
+            m_lastExecuteStats.transientIntermediateFormat = intermediateDesc.format;
         }
         m_lastExecuteStats.transientIntermediateCount = static_cast<uint32>(intermediates.size());
     }

@@ -132,7 +132,13 @@ void BloomPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureH
                 return;
             }
 
-            RHIPipeline* pipeline = m_pipelineCache->GetBloomPipeline();
+            RHIFormat outputFormat = RHIFormat::Unknown;
+            if (const RHITextureDesc* outputDesc = graph.GetTextureDesc(data.output))
+            {
+                outputFormat = outputDesc->format;
+            }
+
+            RHIPipeline* pipeline = m_pipelineCache->GetBloomPipeline(outputFormat);
             RHIDescriptorSetLayout* setLayout = m_pipelineCache->GetPostProcessSetLayout();
             IRHIDevice* device = m_pipelineCache->GetDevice();
             if (!pipeline || !setLayout || !device)

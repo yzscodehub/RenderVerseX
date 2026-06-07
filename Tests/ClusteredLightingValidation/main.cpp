@@ -331,9 +331,11 @@ TEST_F(ClusteredLightingValidationFixture, ReconfigurePreservesDeviceAndRebuilds
 
     ASSERT_TRUE(lighting.Reconfigure(reconfigured)) << lighting.GetLastError();
     EXPECT_TRUE(lighting.IsInitialized());
-    EXPECT_NE(lighting.GetClusterBuffer(), oldClusterBuffer);
     EXPECT_EQ(device.createBufferCalls, 8u);
     EXPECT_EQ(lighting.GetStatistics().clusterCount, 12u);
+    EXPECT_EQ(device.createdBufferDescs[4].size, 12u * sizeof(Vec4) * 2u);
+    EXPECT_EQ(device.createdBufferDescs[5].size, 12u * sizeof(GPUCluster));
+    EXPECT_EQ(device.createdBufferDescs[6].size, 12u * reconfigured.maxLightsPerCluster * sizeof(LightIndex));
     EXPECT_EQ(device.createdBufferDescs.back().size, 256u);
 }
 

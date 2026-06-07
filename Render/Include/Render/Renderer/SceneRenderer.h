@@ -26,6 +26,8 @@
 
 namespace RVX
 {
+    inline constexpr RHIFormat RVX_SCENE_COLOR_HDR_FORMAT = RHIFormat::RGBA16_FLOAT;
+
     class World;
     class Camera;
     class BloomPass;
@@ -67,6 +69,16 @@ namespace RVX
         std::vector<RenderPassStatus> passStatuses;
     };
 
+    struct SceneColorFormatPolicy
+    {
+        RHIFormat requestedSceneColorFormat = RVX_SCENE_COLOR_HDR_FORMAT;
+        RHIFormat actualSceneColorFormat = RHIFormat::Unknown;
+        RHIFormat backBufferFormat = RHIFormat::Unknown;
+        RHIFormat toneMappingOutputFormat = RHIFormat::Unknown;
+        bool hdrSceneColorEnabled = false;
+        std::string hdrFallbackReason;
+    };
+
     struct SceneRenderPostProcessStats
     {
         uint64 frameCount = 0;
@@ -75,6 +87,12 @@ namespace RVX
         uint32 sceneColorWidth = 0;
         uint32 sceneColorHeight = 0;
         RHIFormat sceneColorFormat = RHIFormat::Unknown;
+        RHIFormat requestedSceneColorFormat = RVX_SCENE_COLOR_HDR_FORMAT;
+        RHIFormat actualSceneColorFormat = RHIFormat::Unknown;
+        RHIFormat backBufferFormat = RHIFormat::Unknown;
+        RHIFormat toneMappingOutputFormat = RHIFormat::Unknown;
+        bool hdrSceneColorEnabled = false;
+        std::string hdrFallbackReason;
         PostProcessStackExecuteStats stackStats;
     };
 
@@ -259,6 +277,9 @@ namespace RVX
         void PreparePassesForFrame();
         void SetupDefaultPostProcess();
         void SetupDefaultPasses();
+        SceneColorFormatPolicy ResolveSceneColorFormatPolicy(RHIFormat backBufferFormat,
+                                                             bool postProcessActive) const;
+        bool SupportsHDRSceneColor() const;
         void UpdatePassResources();
         void ExecutePasses(RHICommandContext& ctx);
         void EnsureDepthBuffer(uint32_t width, uint32_t height);
@@ -280,6 +301,7 @@ namespace RVX
         SceneRenderCollectionStats m_collectionStats;
         SceneRenderPassChainStats m_passChainStats;
         SceneRenderPostProcessStats m_postProcessStats;
+        SceneColorFormatPolicy m_sceneColorFormatPolicy;
         PostProcessSettings m_postProcessSettings;
         std::vector<uint32_t> m_visibleObjectIndices;
         std::vector<RenderDrawItem> m_opaqueDrawItems;

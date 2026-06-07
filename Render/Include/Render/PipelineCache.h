@@ -56,6 +56,8 @@ namespace RVX
     struct PipelineCacheConfig
     {
         RHIFormat renderTargetFormat = RHIFormat::RGBA8_UNORM;
+        RHIFormat postProcessIntermediateFormat = RHIFormat::RGBA8_UNORM;
+        RHIFormat toneMappingOutputFormat = RHIFormat::RGBA8_UNORM;
         RHIFormat depthStencilFormat = RHIFormat::D32_FLOAT;
         bool reverseZ = false;
         std::filesystem::path manifestDirectory;
@@ -157,6 +159,7 @@ namespace RVX
          * @brief Get a pipeline for a material variant
          */
         RHIPipeline* GetPipelineForVariant(MaterialPipelineVariant variant) const;
+        RHIPipeline* GetPipelineForVariant(MaterialPipelineVariant variant, RHIFormat renderTargetFormat);
 
         /**
          * @brief Get the depth-only pipeline for depth prepass
@@ -168,11 +171,13 @@ namespace RVX
          * @brief Get the fullscreen ToneMapping post-process pipeline
          */
         RHIPipeline* GetToneMappingPipeline() const { return m_toneMappingPipeline.Get(); }
+        RHIPipeline* GetToneMappingPipeline(RHIFormat outputFormat);
 
         /**
          * @brief Get the fullscreen Bloom minimum-path post-process pipeline
          */
         RHIPipeline* GetBloomPipeline() const { return m_bloomPipeline.Get(); }
+        RHIPipeline* GetBloomPipeline(RHIFormat outputFormat);
 
         /**
          * @brief Get the default pipeline layout
@@ -258,8 +263,31 @@ namespace RVX
         void SetRenderTargetFormat(RHIFormat format)
         {
             m_renderTargetFormat = format;
+            m_postProcessIntermediateFormat = format;
+            m_toneMappingOutputFormat = format;
             m_config.renderTargetFormat = format;
+            m_config.postProcessIntermediateFormat = format;
+            m_config.toneMappingOutputFormat = format;
         }
+
+        /**
+         * @brief Set distinct render target formats for scene and post-process pipelines
+         */
+        void SetRenderTargetFormats(RHIFormat sceneFormat,
+                                    RHIFormat postProcessIntermediateFormat,
+                                    RHIFormat toneMappingOutputFormat)
+        {
+            m_renderTargetFormat = sceneFormat;
+            m_postProcessIntermediateFormat = postProcessIntermediateFormat;
+            m_toneMappingOutputFormat = toneMappingOutputFormat;
+            m_config.renderTargetFormat = sceneFormat;
+            m_config.postProcessIntermediateFormat = postProcessIntermediateFormat;
+            m_config.toneMappingOutputFormat = toneMappingOutputFormat;
+        }
+
+        RHIFormat GetSceneRenderTargetFormat() const { return m_renderTargetFormat; }
+        RHIFormat GetPostProcessIntermediateFormat() const { return m_postProcessIntermediateFormat; }
+        RHIFormat GetToneMappingOutputFormat() const { return m_toneMappingOutputFormat; }
 
         void SetDepthStencilFormat(RHIFormat format) { m_config.depthStencilFormat = format; }
         void SetReverseZ(bool enabled) { m_config.reverseZ = enabled; }
@@ -285,16 +313,19 @@ namespace RVX
         RHIPipelineRef GetOrCreateDefaultLitPipeline(MaterialPipelineVariant variant,
                                                      const char* debugName,
                                                      const RHIDepthStencilState& depthStencilState,
-                                                     const RHIBlendState& blendState);
+                                                     const RHIBlendState& blendState,
+                                                     RHIFormat renderTargetFormat,
+                                                     bool updatePrimaryStats);
         RHIPipelineRef GetOrCreateDepthOnlyPipeline();
-        RHIPipelineRef GetOrCreateToneMappingPipeline();
-        RHIPipelineRef GetOrCreateBloomPipeline();
+        RHIPipelineRef GetOrCreateToneMappingPipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateBloomPipeline(RHIFormat outputFormat);
         RHIGraphicsPipelineDesc BuildDefaultLitPipelineDesc(const char* debugName,
                                                             const RHIDepthStencilState& depthStencilState,
-                                                            const RHIBlendState& blendState) const;
+                                                            const RHIBlendState& blendState,
+                                                            RHIFormat renderTargetFormat) const;
         RHIGraphicsPipelineDesc BuildDepthOnlyPipelineDesc() const;
-        RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc() const;
-        RHIGraphicsPipelineDesc BuildBloomPipelineDesc() const;
+        RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildBloomPipelineDesc(RHIFormat outputFormat) const;
         bool CreateViewConstantBuffer();
         bool CreateObjectConstantBuffer();
         RHIDescriptorSetRef CreateFrameDescriptorSet();
@@ -360,6 +391,8 @@ namespace RVX
 
         // Render target format
         RHIFormat m_renderTargetFormat = RHIFormat::RGBA8_UNORM;
+        RHIFormat m_postProcessIntermediateFormat = RHIFormat::RGBA8_UNORM;
+        RHIFormat m_toneMappingOutputFormat = RHIFormat::RGBA8_UNORM;
     };
 
 } // namespace RVX

@@ -130,8 +130,13 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     }
 
     RHITextureView* colorTargetView = m_colorTargetView;
+    RHIFormat colorTargetFormat = RHIFormat::Unknown;
     if (view.renderGraph && view.viewCache && m_colorTargetHandle.IsValid())
     {
+        if (const RHITextureDesc* colorTargetDesc = view.renderGraph->GetTextureDesc(m_colorTargetHandle))
+        {
+            colorTargetFormat = colorTargetDesc->format;
+        }
         if (RHITexture* colorTarget = view.renderGraph->GetTexture(m_colorTargetHandle))
         {
             colorTargetView = view.viewCache->GetDefaultRTV(colorTarget);
@@ -184,7 +189,7 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
             if (!drawItems || drawItems->empty())
                 return;
 
-            RHIPipeline* pipeline = m_pipelineCache->GetPipelineForVariant(variant);
+            RHIPipeline* pipeline = m_pipelineCache->GetPipelineForVariant(variant, colorTargetFormat);
             if (!pipeline)
             {
                 RVX_CORE_WARN("OpaquePass: Missing {} pipeline; skipping {} draw items",

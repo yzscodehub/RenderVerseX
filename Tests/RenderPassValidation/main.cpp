@@ -1182,7 +1182,7 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
     EXPECT_EQ(ctx.beginRenderPassCount, 1u);
     EXPECT_EQ(ctx.endRenderPassCount, 1u);
     ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
-    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetBloomPipeline());
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetBloomPipeline(RHIFormat::RGBA16_FLOAT));
     ASSERT_EQ(ctx.descriptorSetSequence.size(), static_cast<size_t>(1));
     EXPECT_EQ(ctx.descriptorSetSequence[0], 0u);
     EXPECT_EQ(ctx.drawCount, 1u);
@@ -1317,6 +1317,10 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingTh
     EXPECT_EQ(executeStats.enabledEffectCount, 2u);
     EXPECT_EQ(executeStats.graphPassCount, 2u);
     EXPECT_EQ(executeStats.transientIntermediateCount, 1u);
+    EXPECT_EQ(executeStats.transientIntermediateFormat, RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
+    EXPECT_TRUE(executeStats.toneMappingBoundaryValid);
+    EXPECT_TRUE(executeStats.toneMappingBoundaryWarning.empty());
 
     graph.Compile();
     const auto& graphStats = graph.GetCompileStats();
@@ -1327,12 +1331,42 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingTh
     graph.Execute(ctx);
 
     ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(2));
-    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetBloomPipeline());
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetBloomPipeline(RHIFormat::RGBA16_FLOAT));
     EXPECT_EQ(ctx.pipelineSequence[1], pipelineCache.GetToneMappingPipeline());
     EXPECT_EQ(ctx.drawCount, 2u);
     EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
     EXPECT_EQ(ctx.beginRenderPassCount, 2u);
     EXPECT_EQ(ctx.endRenderPassCount, 2u);
+}
+
+TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidToneMappingBoundary)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+
+    PostProcessStack stack;
+    (void)stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 100);
+    (void)stack.AddEffect<RecordingPostProcessPass>("UnsupportedLdrEffect", 200);
+
+    stack.Execute(graph, input, output);
+
+    const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
+    EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
+    EXPECT_FALSE(executeStats.toneMappingBoundaryWarning.empty());
+    EXPECT_EQ(executeStats.transientIntermediateFormat, RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessStackEvaluateEffectsCountsRuntimeSupportedEffects)

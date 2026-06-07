@@ -408,6 +408,33 @@ TEST_F(PipelineCacheValidationFixture, MissingBloomShaderFailsWithVisibleError)
     EXPECT_NE(cache.GetLastError().find("Bloom shader file not found"), std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture, ToneMappingShaderUsesSingleDisplayConversion)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const std::string shaderSource =
+        ReadTextFile(FindShaderDirectory() / "PostProcess" / "ToneMapping.hlsl");
+
+    auto countOccurrences = [](const std::string& text, const std::string& needle)
+    {
+        size_t count = 0;
+        size_t offset = 0;
+        while ((offset = text.find(needle, offset)) != std::string::npos)
+        {
+            ++count;
+            offset += needle.size();
+        }
+        return count;
+    };
+
+    EXPECT_EQ(shaderSource.find("LinearToSRGB"), std::string::npos);
+    EXPECT_EQ(countOccurrences(shaderSource, "ApplyDisplayConversion("), static_cast<size_t>(2));
+    EXPECT_EQ(countOccurrences(shaderSource, "pow("), static_cast<size_t>(1));
+}
+
 TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
 {
     if (!HasCompilerAvailable())
@@ -637,6 +664,65 @@ TEST_F(PipelineCacheValidationFixture, RenderTargetFormatChangesPipelineHash)
     EXPECT_EQ(secondDevice.capturedGraphicsPipelines[5].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
 }
 
+TEST_F(PipelineCacheValidationFixture, SplitRenderTargetFormatsRouteSceneBloomAndToneMapping)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    cache.SetRenderTargetFormats(RVX::RHIFormat::RGBA16_FLOAT,
+                                 RVX::RHIFormat::RGBA16_FLOAT,
+                                 RVX::RHIFormat::BGRA8_UNORM);
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    EXPECT_EQ(cache.GetConfig().renderTargetFormat, RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(cache.GetConfig().postProcessIntermediateFormat, RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(cache.GetConfig().toneMappingOutputFormat, RVX::RHIFormat::BGRA8_UNORM);
+    EXPECT_EQ(cache.GetSceneRenderTargetFormat(), RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(cache.GetPostProcessIntermediateFormat(), RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(cache.GetToneMappingOutputFormat(), RVX::RHIFormat::BGRA8_UNORM);
+
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 6u);
+    EXPECT_EQ(device.capturedGraphicsPipelines[0].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(device.capturedGraphicsPipelines[1].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(device.capturedGraphicsPipelines[2].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(device.capturedGraphicsPipelines[4].renderTargetFormats[0], RVX::RHIFormat::BGRA8_UNORM);
+    EXPECT_EQ(device.capturedGraphicsPipelines[5].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
+
+    EXPECT_NE(cache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque), 0u);
+    EXPECT_NE(cache.GetStats().toneMappingPipelineHash, 0u);
+    EXPECT_NE(cache.GetStats().bloomPipelineHash, 0u);
+    EXPECT_NE(cache.GetStats().toneMappingPipelineHash, cache.GetStats().bloomPipelineHash);
+}
+
+TEST_F(PipelineCacheValidationFixture, RuntimeOutputFormatRequestsCreateMatchingPipelines)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    cache.SetRenderTargetFormats(RVX::RHIFormat::RGBA16_FLOAT,
+                                 RVX::RHIFormat::RGBA16_FLOAT,
+                                 RVX::RHIFormat::BGRA8_UNORM);
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    const size_t initialPipelineCount = device.capturedGraphicsPipelines.size();
+    ASSERT_NE(cache.GetPipelineForVariant(RVX::MaterialPipelineVariant::Opaque, RVX::RHIFormat::RGBA8_UNORM), nullptr);
+    ASSERT_NE(cache.GetBloomPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
+
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), initialPipelineCount + 2u);
+    EXPECT_EQ(device.capturedGraphicsPipelines[initialPipelineCount].renderTargetFormats[0],
+              RVX::RHIFormat::RGBA8_UNORM);
+    EXPECT_EQ(device.capturedGraphicsPipelines[initialPipelineCount + 1].renderTargetFormats[0],
+              RVX::RHIFormat::RGBA8_UNORM);
+}
+
 TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
 {
     if (!HasCompilerAvailable())
@@ -794,6 +880,35 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenConfigChanges)
 
     RVX::PipelineCacheConfig changedConfig = ConfigWithManifest(temp.Path());
     changedConfig.renderTargetFormat = RVX::RHIFormat::RGBA16_FLOAT;
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    cache.SetConfig(changedConfig);
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    EXPECT_TRUE(cache.GetStats().manifestLoaded);
+    EXPECT_FALSE(cache.GetStats().manifestValid);
+    EXPECT_TRUE(cache.GetStats().manifestInvalidated);
+}
+
+TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenToneMappingOutputFormatChanges)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    TempDirectory temp("rvx_pipeline_manifest_tonemapping_format_stale");
+
+    {
+        FakeDevice device;
+        RVX::PipelineCache cache;
+        cache.SetConfig(ConfigWithManifest(temp.Path()));
+        ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+    }
+
+    RVX::PipelineCacheConfig changedConfig = ConfigWithManifest(temp.Path());
+    changedConfig.toneMappingOutputFormat = RVX::RHIFormat::BGRA8_UNORM;
 
     FakeDevice device;
     RVX::PipelineCache cache;
