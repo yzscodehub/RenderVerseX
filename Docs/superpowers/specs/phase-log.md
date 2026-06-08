@@ -3213,9 +3213,9 @@ git diff --check
 ### R-SP: `RQ2i - ModelViewer CPU IBL Quality Baseline`
 
 **Date:** 2026-06-08
-**Commit:** pending
+**Commit:** `76977a6 feat(samples): generate procedural model viewer ibl with hdr pipeline`
 **Spark plan review agent:** `019ea7ae-c787-7e02-b3de-9b4ce760ac5d` / `019ea7b8-b6ff-7ec2-b7ab-a94b6a7f89f1`
-**Spark code review agent:** pending
+**Spark code review agent:** `019ea7c4-3d44-7543-8076-bb0855159917`
 
 **Plan source:**
 
