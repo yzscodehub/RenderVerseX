@@ -488,6 +488,7 @@ if(RVX_ENABLE_DX11 AND TARGET ModelViewer)
             --height ${RVX_MODELVIEWER_SMOKE_HEIGHT}
             --frames 2
             --expect-ibl-ready
+            --expect-procedural-ibl-quality
             --validation
     )
     set_tests_properties(ModelViewerIBLSmoke PROPERTIES

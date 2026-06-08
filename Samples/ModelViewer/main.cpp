@@ -40,10 +40,12 @@
 #include "Core/Log.h"
 #include "Core/MathTypes.h"
 #include "HAL/Input/KeyCodes.h"
+#include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -91,6 +93,7 @@ struct ModelViewerOptions
     bool enableProceduralIBL = true;
     bool expectIBLReady = false;
     bool expectSkyboxReady = false;
+    bool expectProceduralIBLQuality = false;
     bool enableValidation = true;
     bool showHelp = false;
     bool backendSet = false;
@@ -104,6 +107,14 @@ struct ProceduralIBLResources
     Resource::ResourceHandle<Resource::TextureResource> irradiance;
     Resource::ResourceHandle<Resource::TextureResource> prefiltered;
     Resource::ResourceHandle<Resource::TextureResource> brdfLUT;
+    uint32 equirectWidth = 0;
+    uint32 equirectHeight = 0;
+    uint32 environmentResolution = 0;
+    uint32 irradianceResolution = 0;
+    uint32 prefilteredResolution = 0;
+    uint32 prefilteredMipLevels = 0;
+    uint32 brdfLUTResolution = 0;
+    uint32 convolutionSamples = 0;
 };
 
 struct HDRIEnvironmentResources
@@ -156,6 +167,7 @@ namespace
             << "  --no-ibl             Disable procedural ModelViewer IBL wiring\n"
             << "  --expect-ibl-ready   Smoke mode fails unless texture IBL becomes ready\n"
             << "  --expect-skybox-ready Smoke mode fails unless SkyboxPass becomes ready\n"
+            << "  --expect-procedural-ibl-quality Smoke mode fails unless default procedural IBL uses the CPU HDR pipeline\n"
             << "  --validation         Enable backend validation\n"
             << "  --no-validation      Disable backend validation\n"
             << "  --help               Show this help\n";
@@ -319,6 +331,10 @@ namespace
             {
                 options.expectSkyboxReady = true;
             }
+            else if (arg == "--expect-procedural-ibl-quality")
+            {
+                options.expectProceduralIBLQuality = true;
+            }
             else if (arg == "--validation")
             {
                 options.enableValidation = true;
@@ -341,6 +357,18 @@ namespace
         if (!options.hdriPath.empty() && !options.enableProceduralIBL)
         {
             RVX_CORE_ERROR("--hdri cannot be combined with --no-ibl");
+            return false;
+        }
+
+        if (options.expectProceduralIBLQuality && !options.smoke)
+        {
+            RVX_CORE_ERROR("--expect-procedural-ibl-quality requires --smoke");
+            return false;
+        }
+
+        if (options.expectProceduralIBLQuality && (!options.enableProceduralIBL || !options.hdriPath.empty()))
+        {
+            RVX_CORE_ERROR("--expect-procedural-ibl-quality requires the default procedural IBL path");
             return false;
         }
 
@@ -442,118 +470,225 @@ namespace
         return Resource::ResourceHandle<Resource::TextureResource>(texture);
     }
 
-    void WriteRGBA(std::vector<uint8>& pixels, size_t offset, uint8 r, uint8 g, uint8 b, uint8 a = 255)
-    {
-        if (offset + 3 >= pixels.size())
-            return;
+    constexpr Resource::ResourceId kProceduralIrradianceId = 0x4D5649424C495201ull;
+    constexpr Resource::ResourceId kProceduralPrefilteredId = 0x4D5649424C505201ull;
+    constexpr Resource::ResourceId kProceduralBRDFLUTId = 0x4D56494252444601ull;
 
-        pixels[offset + 0] = r;
-        pixels[offset + 1] = g;
-        pixels[offset + 2] = b;
-        pixels[offset + 3] = a;
+    struct ProceduralIBLQualityPreset
+    {
+        uint32 equirectWidth = 16;
+        uint32 equirectHeight = 8;
+        uint32 environmentResolution = 8;
+        uint32 irradianceResolution = 4;
+        uint32 prefilteredResolution = 8;
+        uint32 prefilteredMipLevels = 4;
+        uint32 brdfLUTResolution = 16;
+        uint32 convolutionSamples = 16;
+    };
+
+    ProceduralIBLQualityPreset GetProceduralIBLPreset(bool smoke)
+    {
+        if (smoke)
+        {
+            return {};
+        }
+
+        ProceduralIBLQualityPreset preset;
+        preset.equirectWidth = 64;
+        preset.equirectHeight = 32;
+        preset.environmentResolution = 32;
+        preset.irradianceResolution = 16;
+        preset.prefilteredResolution = 32;
+        preset.prefilteredMipLevels = 5;
+        preset.brdfLUTResolution = 64;
+        preset.convolutionSamples = 64;
+        return preset;
     }
 
-    std::vector<uint8> MakeMipMajorCubemapPixels(uint32 baseSize, uint32 mipLevels, bool prefiltered)
+    std::vector<float> MakeProceduralEquirectangularHDR(const ProceduralIBLQualityPreset& preset)
     {
-        std::vector<uint8> pixels;
-        for (uint32 mip = 0; mip < mipLevels; ++mip)
+        const Vec3 sunDirection = glm::normalize(Vec3{0.35f, 0.65f, 0.45f});
+        const Vec3 sunColor{1.0f, 0.94f, 0.82f};
+        const Vec3 zenithColor{0.12f, 0.28f, 0.58f};
+        const Vec3 horizonColor{0.55f, 0.68f, 0.82f};
+        const Vec3 groundColor{0.08f, 0.09f, 0.11f};
+
+        std::vector<float> pixels(static_cast<size_t>(preset.equirectWidth) *
+                                  static_cast<size_t>(preset.equirectHeight) * 4u);
+        for (uint32 y = 0; y < preset.equirectHeight; ++y)
         {
-            for (uint32 face = 0; face < 6; ++face)
+            const float v = static_cast<float>(y) / static_cast<float>(preset.equirectHeight - 1u);
+            const float theta = v * glm::pi<float>();
+            for (uint32 x = 0; x < preset.equirectWidth; ++x)
             {
-                const uint32 mipSize = std::max(1u, baseSize >> mip);
-                const size_t mipByteCount = static_cast<size_t>(mipSize) * static_cast<size_t>(mipSize) * 4u;
-                const size_t offset = pixels.size();
-                pixels.resize(offset + mipByteCount);
+                const float u = static_cast<float>(x) / static_cast<float>(preset.equirectWidth);
+                const float phi = u * glm::two_pi<float>();
+                const Vec3 direction = glm::normalize(Vec3{
+                    std::sin(theta) * std::cos(phi),
+                    std::cos(theta),
+                    std::sin(theta) * std::sin(phi)});
 
-                const uint8 faceTint = static_cast<uint8>(24u + face * 24u);
-                const uint8 roughnessTint = static_cast<uint8>(prefiltered ? (40u + mip * 35u) : 16u);
-                const uint8 r = static_cast<uint8>(std::min<uint32>(255u, faceTint + roughnessTint));
-                const uint8 g = static_cast<uint8>(std::min<uint32>(255u, 80u + face * 8u + mip * 12u));
-                const uint8 b = static_cast<uint8>(std::min<uint32>(255u, 120u + mip * 24u));
+                const float up = std::clamp(direction.y * 0.5f + 0.5f, 0.0f, 1.0f);
+                const float horizon = std::pow(1.0f - std::abs(direction.y), 2.0f);
+                Vec3 skyColor = glm::mix(groundColor, zenithColor, up);
+                skyColor = glm::mix(skyColor, horizonColor, horizon * 0.65f);
 
-                for (size_t texel = 0; texel < mipByteCount; texel += 4)
-                {
-                    WriteRGBA(pixels, offset + texel, r, g, b);
-                }
+                const float sunDot = std::max(glm::dot(direction, sunDirection), 0.0f);
+                const Vec3 sunDisc = sunColor * std::pow(sunDot, 512.0f) * 9.0f;
+                const Vec3 sunGlow = sunColor * std::pow(sunDot, 32.0f) * 0.75f;
+                const Vec3 color = skyColor + sunDisc + sunGlow;
+
+                const size_t offset = (static_cast<size_t>(y) * preset.equirectWidth + x) * 4u;
+                pixels[offset + 0] = color.r;
+                pixels[offset + 1] = color.g;
+                pixels[offset + 2] = color.b;
+                pixels[offset + 3] = 1.0f;
             }
         }
 
         return pixels;
     }
 
-    Resource::ResourceHandle<Resource::TextureResource> CreateProceduralCubemap(
+    std::vector<uint8> PackCubemapFacesRGBA32F(const Resource::CubemapFaces& faces)
+    {
+        const size_t faceDataSize = static_cast<size_t>(faces.faceSize) * faces.faceSize * 4u * sizeof(float);
+        std::vector<uint8> packed(faceDataSize * Resource::CubemapFaces::FACE_COUNT);
+        for (int face = 0; face < Resource::CubemapFaces::FACE_COUNT; ++face)
+        {
+            std::memcpy(packed.data() + static_cast<size_t>(face) * faceDataSize,
+                        faces.faces[face].data(),
+                        faceDataSize);
+        }
+        return packed;
+    }
+
+    std::vector<uint8> PackCubemapMipChainRGBA32F(const std::vector<Resource::CubemapFaces>& mipChain)
+    {
+        size_t totalSize = 0;
+        for (const Resource::CubemapFaces& mip : mipChain)
+        {
+            totalSize += static_cast<size_t>(mip.faceSize) * mip.faceSize * 4u * sizeof(float) *
+                         Resource::CubemapFaces::FACE_COUNT;
+        }
+
+        std::vector<uint8> packed(totalSize);
+        size_t offset = 0;
+        for (const Resource::CubemapFaces& mip : mipChain)
+        {
+            const size_t faceDataSize = static_cast<size_t>(mip.faceSize) * mip.faceSize * 4u * sizeof(float);
+            for (int face = 0; face < Resource::CubemapFaces::FACE_COUNT; ++face)
+            {
+                std::memcpy(packed.data() + offset, mip.faces[face].data(), faceDataSize);
+                offset += faceDataSize;
+            }
+        }
+
+        return packed;
+    }
+
+    Resource::ResourceHandle<Resource::TextureResource> CreateCubemapResourceRGBA32F(
         Resource::ResourceId id,
         const std::string& name,
-        uint32 baseSize,
-        uint32 mipLevels,
-        bool prefiltered)
+        const std::string& path,
+        std::vector<uint8> pixels,
+        uint32 faceSize,
+        uint32 mipLevels)
     {
         Resource::TextureMetadata metadata;
-        metadata.width = baseSize;
-        metadata.height = baseSize;
+        metadata.width = faceSize;
+        metadata.height = faceSize;
         metadata.depth = 1;
         metadata.mipLevels = std::max(1u, mipLevels);
-        metadata.arrayLayers = 6;
-        metadata.format = Resource::TextureFormat::RGBA8;
+        metadata.arrayLayers = Resource::CubemapFaces::FACE_COUNT;
+        metadata.format = Resource::TextureFormat::RGBA32F;
         metadata.isCubemap = true;
         metadata.isArray = false;
         metadata.isSRGB = false;
         metadata.usage = Resource::TextureUsage::Color;
 
-        return CreateTextureResource(id,
-                                     name,
-                                     MakeMipMajorCubemapPixels(baseSize, metadata.mipLevels, prefiltered),
-                                     metadata);
-    }
-
-    Resource::ResourceHandle<Resource::TextureResource> CreateProceduralBRDFLUT()
-    {
-        constexpr uint32 lutSize = 4;
-        std::vector<uint8> pixels(static_cast<size_t>(lutSize) * static_cast<size_t>(lutSize) * 4u);
-        for (uint32 y = 0; y < lutSize; ++y)
+        auto texture = CreateTextureResource(id, name, std::move(pixels), metadata);
+        if (texture)
         {
-            for (uint32 x = 0; x < lutSize; ++x)
-            {
-                const float ndotv = static_cast<float>(x) / static_cast<float>(lutSize - 1);
-                const float roughness = static_cast<float>(y) / static_cast<float>(lutSize - 1);
-                const uint8 scale = static_cast<uint8>(std::clamp(ndotv * (1.0f - 0.35f * roughness), 0.0f, 1.0f) * 255.0f);
-                const uint8 bias = static_cast<uint8>(std::clamp(0.08f + roughness * 0.16f, 0.0f, 1.0f) * 255.0f);
-                WriteRGBA(pixels, (static_cast<size_t>(y) * lutSize + x) * 4u, scale, bias, 0, 255);
-            }
+            texture->SetPath(path);
         }
-
-        Resource::TextureMetadata metadata;
-        metadata.width = lutSize;
-        metadata.height = lutSize;
-        metadata.depth = 1;
-        metadata.mipLevels = 1;
-        metadata.arrayLayers = 1;
-        metadata.format = Resource::TextureFormat::RGBA8;
-        metadata.isCubemap = false;
-        metadata.isArray = false;
-        metadata.isSRGB = false;
-        metadata.usage = Resource::TextureUsage::Color;
-
-        return CreateTextureResource(0x4D56494252444601ull,
-                                     "ModelViewerProceduralBRDFLUT",
-                                     std::move(pixels),
-                                     metadata);
+        return texture;
     }
 
-    ProceduralIBLResources CreateProceduralIBLResources()
+    void AssignTextureIdentity(Resource::TextureResource* texture,
+                               Resource::ResourceId id,
+                               const std::string& name,
+                               const std::string& path)
     {
+        if (!texture)
+            return;
+
+        texture->SetId(id);
+        texture->SetName(name);
+        texture->SetPath(path);
+    }
+
+    ProceduralIBLResources CreateProceduralIBLResources(bool smoke)
+    {
+        const ProceduralIBLQualityPreset preset = GetProceduralIBLPreset(smoke);
+
+        Resource::HDRTextureLoader loader(nullptr);
+        const std::vector<float> equirect = MakeProceduralEquirectangularHDR(preset);
+        const Resource::CubemapFaces environment = loader.EquirectangularToCubemap(
+            equirect.data(),
+            preset.equirectWidth,
+            preset.equirectHeight,
+            preset.environmentResolution);
+        const Resource::CubemapFaces irradiance = loader.GenerateIrradianceMap(
+            environment,
+            preset.irradianceResolution,
+            preset.convolutionSamples);
+        const std::vector<Resource::CubemapFaces> prefiltered = loader.GeneratePrefilteredMap(
+            environment,
+            preset.prefilteredResolution,
+            preset.prefilteredMipLevels,
+            preset.convolutionSamples);
+        Resource::TextureResource* brdfLUT = loader.GenerateBRDFLUT(
+            preset.brdfLUTResolution,
+            preset.convolutionSamples);
+        AssignTextureIdentity(brdfLUT,
+                              kProceduralBRDFLUTId,
+                              "ModelViewerProceduralBRDFLUT",
+                              "__modelviewer_procedural_brdf_lut__");
+
         ProceduralIBLResources resources;
-        resources.irradiance = CreateProceduralCubemap(0x4D5649424C495201ull,
-                                                       "ModelViewerProceduralIrradiance",
-                                                       2,
-                                                       1,
-                                                       false);
-        resources.prefiltered = CreateProceduralCubemap(0x4D5649424C505201ull,
-                                                        "ModelViewerProceduralPrefiltered",
-                                                        4,
-                                                        3,
-                                                        true);
-        resources.brdfLUT = CreateProceduralBRDFLUT();
+        resources.equirectWidth = preset.equirectWidth;
+        resources.equirectHeight = preset.equirectHeight;
+        resources.environmentResolution = preset.environmentResolution;
+        resources.irradianceResolution = preset.irradianceResolution;
+        resources.prefilteredResolution = preset.prefilteredResolution;
+        resources.prefilteredMipLevels = static_cast<uint32>(prefiltered.size());
+        resources.brdfLUTResolution = preset.brdfLUTResolution;
+        resources.convolutionSamples = preset.convolutionSamples;
+        resources.irradiance = CreateCubemapResourceRGBA32F(kProceduralIrradianceId,
+                                                            "ModelViewerProceduralIrradiance",
+                                                            "__modelviewer_procedural_irradiance__",
+                                                            PackCubemapFacesRGBA32F(irradiance),
+                                                            preset.irradianceResolution,
+                                                            1);
+        resources.prefiltered = CreateCubemapResourceRGBA32F(kProceduralPrefilteredId,
+                                                             "ModelViewerProceduralPrefiltered",
+                                                             "__modelviewer_procedural_prefiltered__",
+                                                             PackCubemapMipChainRGBA32F(prefiltered),
+                                                             preset.prefilteredResolution,
+                                                             resources.prefilteredMipLevels);
+        resources.brdfLUT = Resource::ResourceHandle<Resource::TextureResource>(brdfLUT);
+
+        RVX_CORE_INFO("ModelViewer procedural CPU IBL generated: equirect={}x{}, envCube={}, irradiance={}, "
+                      "prefiltered={} mips={}, brdf={}, samples={}",
+                      resources.equirectWidth,
+                      resources.equirectHeight,
+                      resources.environmentResolution,
+                      resources.irradianceResolution,
+                      resources.prefilteredResolution,
+                      resources.prefilteredMipLevels,
+                      resources.brdfLUTResolution,
+                      resources.convolutionSamples);
+
         return resources;
     }
 
@@ -602,6 +737,173 @@ namespace
 
         return irradianceSubmitted && prefilteredSubmitted && brdfLUTSubmitted &&
                irradianceReady && prefilteredReady && brdfLUTReady;
+    }
+
+    bool ValidateProceduralIBLQuality(const ProceduralIBLResources& resources,
+                                      bool smoke,
+                                      GPUResourceManager* gpuResources)
+    {
+        const ProceduralIBLQualityPreset expected = GetProceduralIBLPreset(smoke);
+        bool valid = true;
+
+        auto requireTexture = [&valid](const Resource::TextureHandle& texture,
+                                       const char* label) -> Resource::TextureResource*
+        {
+            if (!texture)
+            {
+                RVX_CORE_ERROR("ModelViewer procedural IBL quality check failed: {} texture is missing", label);
+                valid = false;
+                return nullptr;
+            }
+            return texture.Get();
+        };
+
+        auto checkCubemap = [&valid, gpuResources](const Resource::TextureHandle& texture,
+                                                   const char* label,
+                                                   Resource::ResourceId expectedId,
+                                                   const char* expectedName,
+                                                   const char* expectedPath,
+                                                   uint32 expectedSize,
+                                                   uint32 expectedMipLevels)
+        {
+            Resource::TextureResource* resource = texture.Get();
+            if (!resource)
+            {
+                RVX_CORE_ERROR("ModelViewer procedural IBL quality check failed: {} texture is missing", label);
+                valid = false;
+                return;
+            }
+
+            const Resource::TextureMetadata& metadata = resource->GetMetadata();
+            const bool metadataOk =
+                resource->GetId() == expectedId &&
+                resource->GetName() == expectedName &&
+                resource->GetPath() == expectedPath &&
+                metadata.format == Resource::TextureFormat::RGBA32F &&
+                metadata.width == expectedSize &&
+                metadata.height == expectedSize &&
+                metadata.mipLevels == expectedMipLevels &&
+                metadata.arrayLayers == Resource::CubemapFaces::FACE_COUNT &&
+                metadata.isCubemap &&
+                !metadata.isArray &&
+                !metadata.isSRGB &&
+                metadata.usage == Resource::TextureUsage::Color;
+
+            if (!metadataOk)
+            {
+                RVX_CORE_ERROR("ModelViewer procedural IBL quality check failed: {} metadata mismatch "
+                               "(id={}, name='{}', path='{}', format={}, size={}x{}, mips={}, layers={}, "
+                               "cubemap={}, sRGB={}, usage={})",
+                               label,
+                               resource->GetId(),
+                               resource->GetName(),
+                               resource->GetPath(),
+                               static_cast<int>(metadata.format),
+                               metadata.width,
+                               metadata.height,
+                               metadata.mipLevels,
+                               metadata.arrayLayers,
+                               metadata.isCubemap ? "true" : "false",
+                               metadata.isSRGB ? "true" : "false",
+                               static_cast<int>(metadata.usage));
+                valid = false;
+            }
+
+            if (!gpuResources || !gpuResources->IsGPUReady(resource->GetId()))
+            {
+                RVX_CORE_ERROR("ModelViewer procedural IBL quality check failed: {} texture is not GPU-ready", label);
+                valid = false;
+            }
+        };
+
+        Resource::TextureResource* brdf = requireTexture(resources.brdfLUT, "BRDF LUT");
+        checkCubemap(resources.irradiance,
+                     "irradiance",
+                     kProceduralIrradianceId,
+                     "ModelViewerProceduralIrradiance",
+                     "__modelviewer_procedural_irradiance__",
+                     expected.irradianceResolution,
+                     1);
+        checkCubemap(resources.prefiltered,
+                     "prefiltered",
+                     kProceduralPrefilteredId,
+                     "ModelViewerProceduralPrefiltered",
+                     "__modelviewer_procedural_prefiltered__",
+                     expected.prefilteredResolution,
+                     expected.prefilteredMipLevels);
+
+        if (brdf)
+        {
+            const Resource::TextureMetadata& metadata = brdf->GetMetadata();
+            const bool metadataOk =
+                brdf->GetId() == kProceduralBRDFLUTId &&
+                brdf->GetName() == "ModelViewerProceduralBRDFLUT" &&
+                brdf->GetPath() == "__modelviewer_procedural_brdf_lut__" &&
+                metadata.format == Resource::TextureFormat::RGBA16F &&
+                metadata.width == expected.brdfLUTResolution &&
+                metadata.height == expected.brdfLUTResolution &&
+                metadata.mipLevels == 1 &&
+                metadata.arrayLayers == 1 &&
+                !metadata.isCubemap &&
+                !metadata.isArray &&
+                !metadata.isSRGB &&
+                metadata.usage == Resource::TextureUsage::Data;
+
+            if (!metadataOk)
+            {
+                RVX_CORE_ERROR("ModelViewer procedural IBL quality check failed: BRDF LUT metadata mismatch "
+                               "(id={}, name='{}', path='{}', format={}, size={}x{}, mips={}, layers={}, "
+                               "cubemap={}, sRGB={}, usage={})",
+                               brdf->GetId(),
+                               brdf->GetName(),
+                               brdf->GetPath(),
+                               static_cast<int>(metadata.format),
+                               metadata.width,
+                               metadata.height,
+                               metadata.mipLevels,
+                               metadata.arrayLayers,
+                               metadata.isCubemap ? "true" : "false",
+                               metadata.isSRGB ? "true" : "false",
+                               static_cast<int>(metadata.usage));
+                valid = false;
+            }
+
+            if (!gpuResources || !gpuResources->IsGPUReady(brdf->GetId()))
+            {
+                RVX_CORE_ERROR("ModelViewer procedural IBL quality check failed: BRDF LUT texture is not GPU-ready");
+                valid = false;
+            }
+        }
+
+        const bool presetOk =
+            resources.equirectWidth == expected.equirectWidth &&
+            resources.equirectHeight == expected.equirectHeight &&
+            resources.environmentResolution == expected.environmentResolution &&
+            resources.irradianceResolution == expected.irradianceResolution &&
+            resources.prefilteredResolution == expected.prefilteredResolution &&
+            resources.prefilteredMipLevels == expected.prefilteredMipLevels &&
+            resources.brdfLUTResolution == expected.brdfLUTResolution &&
+            resources.convolutionSamples == expected.convolutionSamples;
+        if (!presetOk)
+        {
+            RVX_CORE_ERROR("ModelViewer procedural IBL quality check failed: preset mismatch "
+                           "(equirect={}x{}, env={}, irradiance={}, prefiltered={} mips={}, brdf={}, samples={})",
+                           resources.equirectWidth,
+                           resources.equirectHeight,
+                           resources.environmentResolution,
+                           resources.irradianceResolution,
+                           resources.prefilteredResolution,
+                           resources.prefilteredMipLevels,
+                           resources.brdfLUTResolution,
+                           resources.convolutionSamples);
+            valid = false;
+        }
+
+        if (valid)
+        {
+            RVX_CORE_INFO("ModelViewer procedural IBL quality check passed");
+        }
+        return valid;
     }
 
     Resource::HDRLoadOptions MakeHDRILoadOptions(bool smoke)
@@ -1084,7 +1386,7 @@ int main(int argc, char* argv[])
         SkyboxComponent* skyboxComponent = skyboxEntity ? skyboxEntity->AddComponent<SkyboxComponent>() : nullptr;
         if (skyboxComponent)
         {
-            proceduralIBLResources = CreateProceduralIBLResources();
+            proceduralIBLResources = CreateProceduralIBLResources(options.smoke);
             skyboxComponent->SetSkyboxType(SkyboxType::Procedural);
             skyboxComponent->SetSunDirection(Vec3{0.35f, 0.65f, 0.45f});
             skyboxComponent->SetSunColor(Vec3{1.0f, 0.94f, 0.82f});
@@ -1222,6 +1524,16 @@ int main(int argc, char* argv[])
                 {
                     RVX_CORE_ERROR("ModelViewer smoke expected SkyboxPass ready; fallback reason: {}",
                                    skyboxFallbackReason);
+                    smokeSucceeded = false;
+                }
+            }
+
+            if (options.expectProceduralIBLQuality && (frameIndex + 1 == options.frames))
+            {
+                if (!ValidateProceduralIBLQuality(proceduralIBLResources,
+                                                  options.smoke,
+                                                  renderSubsystem->GetGPUResourceManager()))
+                {
                     smokeSucceeded = false;
                 }
             }

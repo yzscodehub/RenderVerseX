@@ -3126,7 +3126,7 @@ git diff --check
 **Date:** 2026-06-08
 **Commit:** pending in this commit
 **Spark plan review agent:** Galileo (`gpt-5.5`, xhigh), Ohm (`gpt-5.5`, xhigh)
-**Spark code review agent:** pending
+**Spark code review agent:** `019ea7c4-3d44-7543-8076-bb0855159917`
 
 **Plan source:**
 
@@ -3207,6 +3207,91 @@ git diff --check
 
 - Same-id resident texture refresh is intentionally no longer implicit; if a caller needs replacement later, add an explicit refresh API with invalidation semantics.
 - Current image-based texture identity cannot represent one image uploaded as both sRGB and linear; RQ2h chooses the safer linear/normal usage when slots conflict.
+
+---
+
+### R-SP: `RQ2i - ModelViewer CPU IBL Quality Baseline`
+
+**Date:** 2026-06-08
+**Commit:** pending
+**Spark plan review agent:** `019ea7ae-c787-7e02-b3de-9b4ce760ac5d` / `019ea7b8-b6ff-7ec2-b7ab-a94b6a7f89f1`
+**Spark code review agent:** pending
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-08-rq2i-modelviewer-cpu-ibl-quality-plan.md`
+- Section: entire RQ2i stage scope, tests, and acceptance criteria
+- Lines checked: local document reviewed immediately before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ2h
+- Evidence: RQ2h committed as `fa1f923 fix(render): make texture uploads idempotent and import gltf pbr color space`.
+
+**Approved scope:**
+
+- Replace ModelViewer default procedural IBL resources with CPU-generated `HDRTextureLoader` output.
+- Keep `--hdri` as the explicit real environment path and `--no-ibl` as the golden-preserving path.
+- Add bounded smoke and interactive procedural IBL presets.
+- Pack irradiance and prefiltered cubemaps as RGBA32F `TextureResource` objects with fixed ids, names, and paths.
+- Use the `HDRTextureLoader` BRDF LUT generator with a fixed ModelViewer identity.
+- Add `--expect-procedural-ibl-quality` and wire it into `ModelViewerIBLSmoke`.
+
+**Out of scope:**
+
+- Shader BRDF edits, direct lighting intensity, ambient floor, tone mapping, shadows, SSAO, SSR, bloom, exposure, and real HDRI default asset selection.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-08-rq2i-modelviewer-cpu-ibl-quality-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Samples/ModelViewer/main.cpp`
+- `Tests/CMakeLists.txt`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target ModelViewer HDRTextureLoaderValidation GPUResourceManagerValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerIBLSmoke|ModelViewerHDRISmoke|HDRTextureLoaderValidation|GPUResourceManagerValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation"
+cmake --build build\win_x64_debug --config Debug --target ModelViewer
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerIBLSmoke|ModelViewerSmoke|VisualGoldenValidation|HDRTextureLoaderValidation|GPUResourceManagerValidation"
+build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --backend dx11 --width 800 --height 450 --frames 8 --screenshot build\win_x64_debug\VisualArtifacts\Debug\ModelViewer\RQ2i_DamagedHelmet.ppm --validation --expect-ibl-ready --expect-procedural-ibl-quality
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 38/38 selected tests passed.
+- Visual stability: PASS, 2/2 selected tests passed.
+- Final combined rerun after CLI smoke-only guard: PASS, 39/39 selected tests passed.
+- Manual DamagedHelmet smoke: PASS, exit code 0, `ModelViewer procedural IBL quality check passed`, `ModelViewer Smoke PASS`, screenshot inspected.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Screenshot: `build/win_x64_debug/VisualArtifacts/Debug/ModelViewer/RQ2i_DamagedHelmet.ppm`
+- Preview: `build/win_x64_debug/VisualArtifacts/Debug/ModelViewer/RQ2i_DamagedHelmet.png`
+- Diffs: current RQ2i working tree diff before commit.
+
+**Spark plan review result:**
+
+- First verdict: BLOCKED.
+- Blockers adopted: added a validation gate that fails the old tiny RGBA8 procedural IBL path and fixed the BRDF LUT procedural resource identity rule.
+- Second verdict: PASS.
+- Non-blocking suggestions adopted: pinned exact smoke/interactive resolutions, mips, sample counts, and fixed ModelViewer ids/names/paths.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Non-blocking follow-ups: keep the default procedural `HDRTextureLoader` managerless so BRDF LUT cache identity cannot diverge from the fixed ModelViewer identity; this gate proves metadata, fixed identity, preset shape, and GPU readiness, but not numerical IBL content quality.
+
+**Notes / follow-ups:**
+
+- The default procedural skybox remains procedural draw data, while texture IBL now comes from a coherent procedural HDR equirectangular source.
+- The `--expect-procedural-ibl-quality` assertion is smoke-only and default-procedural-only by design.
 
 ---
 
