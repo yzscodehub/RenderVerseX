@@ -146,14 +146,19 @@ void GPUResourceManager::UploadImmediate(Resource::TextureResource* texture)
     if (!texture || !m_device)
         return;
 
-    // Synchronous texture upload is also the explicit same-id refresh path.
     const size_t removedQueuedUploads = RemoveQueuedUploadRequests(texture->GetId());
     if (removedQueuedUploads > 0)
     {
-        RVX_CORE_DEBUG("GPUResourceManager: Removed {} queued texture upload(s) for immediate refresh of resource {}",
+        RVX_CORE_DEBUG("GPUResourceManager: Removed {} queued texture upload(s) before immediate upload of resource {}",
                        removedQueuedUploads,
                        texture->GetId());
     }
+
+    // Match mesh semantics: UploadImmediate is a blocking residency request, not
+    // an implicit same-id refresh path. Explicit refresh can be added as a
+    // separate API when callers need to replace resident GPU data.
+    if (IsResident(texture->GetId()))
+        return;
 
     UploadTexture(texture);
     if (m_uploadService)

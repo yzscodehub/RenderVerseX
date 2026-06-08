@@ -3121,6 +3121,95 @@ git diff --check
 
 ---
 
+### RQ2h: Texture Residency and glTF PBR Color-Space Correctness
+
+**Date:** 2026-06-08
+**Commit:** pending in this commit
+**Spark plan review agent:** Galileo (`gpt-5.5`, xhigh), Ohm (`gpt-5.5`, xhigh)
+**Spark code review agent:** pending
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-08-rq2h-texture-residency-gltf-pbr-plan.md`
+- Section: entire RQ2h plan
+- Lines checked: plan review performed before implementation; revised after first blocker review
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ2g HDRTextureLoader CPU IBL sampling controls.
+- Evidence: RQ2g committed as `b47435d fix(resource): honor HDR IBL sampling controls`; RQ2h plan review passed after adopting blocker fixes.
+
+**Approved scope:**
+
+- Make resident `GPUResourceManager::UploadImmediate(TextureResource*)` idempotent while removing stale queued same-id uploads first.
+- Update GPU resource manager validation so resident same-id immediate upload keeps the same `RHITexture*`, does not invalidate views, does not create a second texture, preserves memory, and remains `GPUReady`.
+- Mark glTF `TextureReference` usage/sRGB from material slots: base color/emissive as sRGB color, normal as linear normal, metallic-roughness/AO as linear data.
+- Resolve shared-image slot conflicts by deterministic `Color < Data < Normal` precedence with visible warnings.
+- Add importer tests for normal PBR slot color-space metadata and shared-image conflict resolution.
+- Run ModelViewer DamagedHelmet smoke and inspect the screenshot.
+
+**Out of scope:**
+
+- BRDF math, real HDRI defaults, GPU IBL convolution, shadows, tone mapping, exposure, bloom, color grading, mipmap generation, sampler import, or texture identity redesign.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-08-rq2h-texture-residency-gltf-pbr-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Private/GPUResourceManager.cpp`
+- `Resource/Private/Importer/GLTFImporter.cpp`
+- `Tests/GPUResourceManagerValidation/main.cpp`
+- `Tests/ResourceInstantiationValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target GPUResourceManagerValidation ResourceInstantiationValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "GPUResourceManagerValidation|ResourceInstantiationValidation"
+cmake --build build\win_x64_debug --config Debug --target ModelViewer
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "MaterialSystemValidation|RenderSceneValidation|RenderPassValidation|GPUUploadServiceValidation|HDRTextureLoaderValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerIBLSmoke|ModelViewerHDRISmoke"
+build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --backend dx11 --width 800 --height 450 --frames 8 --screenshot build\win_x64_debug\VisualArtifacts\Debug\ModelViewer\RQ2h_DamagedHelmet.ppm --validation
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 109/109 selected tests passed.
+- Regression tests: PASS, 89/89 selected tests passed.
+- Visual stability: PASS, 4/4 selected tests passed.
+- Manual DamagedHelmet smoke: PASS, exit code 0, `ModelViewer Smoke PASS`, screenshot inspected.
+- Texture upload log check: PASS, `Created texture on GPU: DamagedHelmet` appears 5 times, matching the five initial glTF textures instead of repeated per-frame uploads.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Log: `build/win_x64_debug/VisualArtifacts/Debug/ModelViewer/RQ2h_DamagedHelmet.log`
+- Screenshot: `build/win_x64_debug/VisualArtifacts/Debug/ModelViewer/RQ2h_DamagedHelmet.ppm`
+- Preview: `build/win_x64_debug/VisualArtifacts/Debug/ModelViewer/RQ2h_DamagedHelmet.png`
+- Diffs: current RQ2h working tree diff before commit.
+
+**Spark plan review result:**
+
+- First verdict: BLOCKED.
+- Blockers adopted: explicitly replaced existing resident texture replacement tests with resident no-op assertions; defined shared-image conflict precedence and warning policy.
+- Second verdict: PASS.
+- Non-blocking suggestions adopted: added conflict precedence to acceptance criteria and covered a `Data+Normal` highest-precedence fixture.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Non-blocking follow-ups: exclude unrelated dirty files from commit, decide later whether to keep/remove old untracked May docs and `vulkan_pipeline_cache.bin`, and consider a future direct assertion that shared-image conflict warnings are surfaced.
+
+**Notes / follow-ups:**
+
+- Same-id resident texture refresh is intentionally no longer implicit; if a caller needs replacement later, add an explicit refresh API with invalidation semantics.
+- Current image-based texture identity cannot represent one image uploaded as both sRGB and linear; RQ2h chooses the safer linear/normal usage when slots conflict.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

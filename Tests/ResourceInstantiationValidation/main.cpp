@@ -1,4 +1,5 @@
 #include "Core/Core.h"
+#include "Resource/Importer/GLTFImporter.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MeshResource.h"
@@ -18,7 +19,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -253,6 +257,34 @@ namespace
         return ResourceHandle<MaterialResource>(resource);
     }
 
+    std::filesystem::path WriteTemporaryGltf(const char* fileName, const std::string& json)
+    {
+        std::filesystem::path path = std::filesystem::temp_directory_path() / fileName;
+        std::ofstream stream(path, std::ios::binary);
+        stream << json;
+        return path;
+    }
+
+    const char* InlineOnePixelPngUri()
+    {
+        return "data:image/png;base64,"
+               "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    }
+
+    void ExpectTextureReferenceUsageByInfo(const GLTFImportResult& result,
+                                           const std::optional<TextureInfo>& info,
+                                           TextureUsage expectedUsage,
+                                           bool expectedSRGB)
+    {
+        ASSERT_TRUE(info.has_value());
+        ASSERT_GE(info->imageId, 0);
+        ASSERT_LT(static_cast<size_t>(info->imageId), result.textures.size());
+
+        const TextureReference& ref = result.textures[static_cast<size_t>(info->imageId)];
+        EXPECT_EQ(expectedUsage, ref.usage);
+        EXPECT_EQ(expectedSRGB, ref.isSRGB);
+    }
+
     PrefabPayloadComponent* FindPrefabPayloadComponentByName(Actor& actor, const std::string& name)
     {
         for (const auto& component : actor.GetActorComponents())
@@ -294,6 +326,94 @@ namespace
         root->AddChild(child);
 
         model.SetRootNode(root);
+    }
+
+    TEST(ResourceInstantiationValidation, GLTFImporterMarksPBRTextureColorSpaceByMaterialSlot)
+    {
+        const std::string image = std::string("{\"uri\":\"") + InlineOnePixelPngUri() + "\"}";
+        const std::string json =
+            "{\"asset\":{\"version\":\"2.0\"},"
+            "\"images\":[" + image + "," + image + "," + image + "," + image + "," + image + "],"
+            "\"textures\":["
+                "{\"source\":0},"
+                "{\"source\":1},"
+                "{\"source\":2},"
+                "{\"source\":3},"
+                "{\"source\":4}"
+            "],"
+            "\"materials\":[{"
+                "\"pbrMetallicRoughness\":{"
+                    "\"baseColorTexture\":{\"index\":0},"
+                    "\"metallicRoughnessTexture\":{\"index\":2}"
+                "},"
+                "\"normalTexture\":{\"index\":1},"
+                "\"occlusionTexture\":{\"index\":3},"
+                "\"emissiveTexture\":{\"index\":4}"
+            "}]"
+            "}";
+
+        const std::filesystem::path path = WriteTemporaryGltf("rvx_gltf_pbr_color_space.gltf", json);
+        GLTFImporter importer;
+        const GLTFImportResult result = importer.Import(path.string());
+        std::filesystem::remove(path);
+
+        ASSERT_TRUE(result.success) << result.errorMessage;
+        ASSERT_EQ(1u, result.materials.size());
+        ASSERT_EQ(5u, result.textures.size());
+
+        const Material& material = *result.materials[0];
+        ExpectTextureReferenceUsageByInfo(result, material.GetBaseColorTexture(), TextureUsage::Color, true);
+        ExpectTextureReferenceUsageByInfo(result, material.GetNormalTexture(), TextureUsage::Normal, false);
+        ExpectTextureReferenceUsageByInfo(result, material.GetMetallicRoughnessTexture(), TextureUsage::Data, false);
+        ExpectTextureReferenceUsageByInfo(result, material.GetOcclusionTexture(), TextureUsage::Data, false);
+        ExpectTextureReferenceUsageByInfo(result, material.GetEmissiveTexture(), TextureUsage::Color, true);
+    }
+
+    TEST(ResourceInstantiationValidation, GLTFImporterResolvesSharedImagePBRColorSpaceConflicts)
+    {
+        const std::string image = std::string("{\"uri\":\"") + InlineOnePixelPngUri() + "\"}";
+        const std::string json =
+            "{\"asset\":{\"version\":\"2.0\"},"
+            "\"images\":[" + image + "," + image + "],"
+            "\"textures\":[{\"source\":0},{\"source\":1}],"
+            "\"materials\":["
+                "{"
+                    "\"pbrMetallicRoughness\":{"
+                        "\"baseColorTexture\":{\"index\":0},"
+                        "\"metallicRoughnessTexture\":{\"index\":0}"
+                    "}"
+                "},"
+                "{"
+                    "\"pbrMetallicRoughness\":{"
+                        "\"metallicRoughnessTexture\":{\"index\":1}"
+                    "},"
+                    "\"normalTexture\":{\"index\":1}"
+                "}"
+            "]"
+            "}";
+
+        const std::filesystem::path path = WriteTemporaryGltf("rvx_gltf_pbr_color_space_conflict.gltf", json);
+        GLTFImporter importer;
+        const GLTFImportResult result = importer.Import(path.string());
+        std::filesystem::remove(path);
+
+        ASSERT_TRUE(result.success) << result.errorMessage;
+        ASSERT_EQ(2u, result.materials.size());
+        ASSERT_EQ(2u, result.textures.size());
+
+        const auto& baseColorInfo = result.materials[0]->GetBaseColorTexture();
+        const auto& metallicRoughnessInfo = result.materials[0]->GetMetallicRoughnessTexture();
+        ASSERT_TRUE(baseColorInfo.has_value());
+        ASSERT_TRUE(metallicRoughnessInfo.has_value());
+        EXPECT_EQ(baseColorInfo->imageId, metallicRoughnessInfo->imageId);
+        ExpectTextureReferenceUsageByInfo(result, baseColorInfo, TextureUsage::Data, false);
+
+        const auto& dataInfo = result.materials[1]->GetMetallicRoughnessTexture();
+        const auto& normalInfo = result.materials[1]->GetNormalTexture();
+        ASSERT_TRUE(dataInfo.has_value());
+        ASSERT_TRUE(normalInfo.has_value());
+        EXPECT_EQ(dataInfo->imageId, normalInfo->imageId);
+        ExpectTextureReferenceUsageByInfo(result, normalInfo, TextureUsage::Normal, false);
     }
 
     TEST(ResourceInstantiationValidation, ActorAddOwnedComponentUsesNormalLifecycle)

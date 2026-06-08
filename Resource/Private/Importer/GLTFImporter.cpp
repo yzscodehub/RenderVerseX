@@ -12,6 +12,148 @@
 
 namespace RVX::Resource
 {
+    namespace
+    {
+        uint32_t GetTextureUsageRank(TextureUsage usage)
+        {
+            switch (usage)
+            {
+                case TextureUsage::Normal:
+                    return 2;
+                case TextureUsage::Data:
+                    return 1;
+                case TextureUsage::Color:
+                default:
+                    return 0;
+            }
+        }
+
+        const char* TextureUsageName(TextureUsage usage)
+        {
+            switch (usage)
+            {
+                case TextureUsage::Normal:
+                    return "Normal";
+                case TextureUsage::Data:
+                    return "Data";
+                case TextureUsage::Color:
+                default:
+                    return "Color";
+            }
+        }
+
+        int ResolveTextureImageIndex(const tinygltf::Model& gltf, int textureIndex)
+        {
+            if (textureIndex < 0 || textureIndex >= static_cast<int>(gltf.textures.size()))
+            {
+                return -1;
+            }
+
+            const int imageIndex = gltf.textures[textureIndex].source;
+            if (imageIndex < 0 || imageIndex >= static_cast<int>(gltf.images.size()))
+            {
+                return -1;
+            }
+
+            return imageIndex;
+        }
+
+        void MarkTextureReferenceUsage(const tinygltf::Model& gltf,
+                                       int textureIndex,
+                                       TextureUsage usage,
+                                       bool isSRGB,
+                                       const char* slotName,
+                                       GLTFImportResult& result,
+                                       std::vector<bool>& assigned)
+        {
+            const int imageIndex = ResolveTextureImageIndex(gltf, textureIndex);
+            if (imageIndex < 0 || imageIndex >= static_cast<int>(result.textures.size()))
+            {
+                return;
+            }
+
+            TextureReference& ref = result.textures[imageIndex];
+            if (!assigned[static_cast<size_t>(imageIndex)])
+            {
+                ref.usage = usage;
+                ref.isSRGB = isSRGB;
+                assigned[static_cast<size_t>(imageIndex)] = true;
+                return;
+            }
+
+            if (ref.usage == usage && ref.isSRGB == isSRGB)
+            {
+                return;
+            }
+
+            const TextureUsage previousUsage = ref.usage;
+            const bool previousSRGB = ref.isSRGB;
+            const uint32_t previousRank = GetTextureUsageRank(previousUsage);
+            const uint32_t desiredRank = GetTextureUsageRank(usage);
+
+            if (desiredRank > previousRank)
+            {
+                ref.usage = usage;
+                ref.isSRGB = isSRGB;
+            }
+
+            RVX_CORE_WARN(
+                "GLTFImporter: image {} is referenced by incompatible PBR texture slots; "
+                "previous usage={} sRGB={}, new slot={} usage={} sRGB={}, resolved usage={} sRGB={}",
+                imageIndex,
+                TextureUsageName(previousUsage),
+                previousSRGB ? "true" : "false",
+                slotName ? slotName : "<unknown>",
+                TextureUsageName(usage),
+                isSRGB ? "true" : "false",
+                TextureUsageName(ref.usage),
+                ref.isSRGB ? "true" : "false");
+        }
+
+        void MarkMaterialTextureUsages(const tinygltf::Model& gltf,
+                                       const tinygltf::Material& material,
+                                       GLTFImportResult& result,
+                                       std::vector<bool>& assigned)
+        {
+            const auto& pbr = material.pbrMetallicRoughness;
+            MarkTextureReferenceUsage(gltf,
+                                      pbr.baseColorTexture.index,
+                                      TextureUsage::Color,
+                                      true,
+                                      "baseColor",
+                                      result,
+                                      assigned);
+            MarkTextureReferenceUsage(gltf,
+                                      pbr.metallicRoughnessTexture.index,
+                                      TextureUsage::Data,
+                                      false,
+                                      "metallicRoughness",
+                                      result,
+                                      assigned);
+            MarkTextureReferenceUsage(gltf,
+                                      material.normalTexture.index,
+                                      TextureUsage::Normal,
+                                      false,
+                                      "normal",
+                                      result,
+                                      assigned);
+            MarkTextureReferenceUsage(gltf,
+                                      material.occlusionTexture.index,
+                                      TextureUsage::Data,
+                                      false,
+                                      "occlusion",
+                                      result,
+                                      assigned);
+            MarkTextureReferenceUsage(gltf,
+                                      material.emissiveTexture.index,
+                                      TextureUsage::Color,
+                                      true,
+                                      "emissive",
+                                      result,
+                                      assigned);
+        }
+    } // namespace
+
     // =========================================================================
     // Public Interface
     // =========================================================================
@@ -157,10 +299,13 @@ namespace RVX::Resource
     void GLTFImporter::ParseMaterials(const tinygltf::Model& gltf, GLTFImportResult& result)
     {
         result.materials.reserve(gltf.materials.size());
+        std::vector<bool> textureUsageAssigned(result.textures.size(), false);
 
         for (size_t i = 0; i < gltf.materials.size(); ++i)
         {
-            result.materials.push_back(ConvertMaterial(gltf, gltf.materials[i], static_cast<int>(i)));
+            const tinygltf::Material& material = gltf.materials[i];
+            result.materials.push_back(ConvertMaterial(gltf, material, static_cast<int>(i)));
+            MarkMaterialTextureUsages(gltf, material, result, textureUsageAssigned);
         }
 
         // Add a default material if none exist

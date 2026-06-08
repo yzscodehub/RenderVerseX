@@ -1321,7 +1321,7 @@ TEST(GPUResourceManagerValidation, UnsupportedTextureLayoutsFailWithoutCreatingT
     }
 }
 
-TEST(GPUResourceManagerValidation, FailedTextureReplacementInvalidatesExistingResidentTexture)
+TEST(GPUResourceManagerValidation, ResidentTextureImmediateUploadIgnoresInvalidSameIdReplacement)
 {
     FakeDevice device;
     device.supportStagedCopy = true;
@@ -1344,6 +1344,7 @@ TEST(GPUResourceManagerValidation, FailedTextureReplacementInvalidatesExistingRe
     ASSERT_NE(nullptr, originalTexture);
     const size_t originalMemory = manager.GetStats().usedMemory;
     ASSERT_GT(originalMemory, 0ull);
+    ASSERT_EQ(device.createdTextureCount, 1u);
 
     auto replacement = CreateTextureResource(
         111,
@@ -1353,16 +1354,17 @@ TEST(GPUResourceManagerValidation, FailedTextureReplacementInvalidatesExistingRe
         1);
     manager.UploadImmediate(replacement.get());
 
-    EXPECT_EQ(manager.GetResourceState(original->GetId()), GPUResourceState::Failed);
-    EXPECT_EQ(manager.GetTexture(original->GetId()), nullptr);
-    EXPECT_FALSE(manager.IsResident(original->GetId()));
-    EXPECT_EQ(manager.GetStats().usedMemory, 0ull);
-    EXPECT_EQ(invalidatedCount, 1u);
+    EXPECT_EQ(manager.GetResourceState(original->GetId()), GPUResourceState::GPUReady);
+    EXPECT_EQ(manager.GetTexture(original->GetId()), originalTexture);
+    EXPECT_TRUE(manager.IsResident(original->GetId()));
+    EXPECT_EQ(manager.GetStats().usedMemory, originalMemory);
+    EXPECT_EQ(device.createdTextureCount, 1u);
+    EXPECT_EQ(invalidatedCount, 0u);
 
     manager.Shutdown();
 }
 
-TEST(GPUResourceManagerValidation, SuccessfulTextureReplacementInvalidatesExistingResidentTexture)
+TEST(GPUResourceManagerValidation, ResidentTextureImmediateUploadIsNoOpForSameIdReplacement)
 {
     FakeDevice device;
     device.supportStagedCopy = true;
@@ -1384,6 +1386,7 @@ TEST(GPUResourceManagerValidation, SuccessfulTextureReplacementInvalidatesExisti
     RHITexture* originalTexture = manager.GetTexture(original->GetId());
     ASSERT_NE(nullptr, originalTexture);
     EXPECT_EQ(manager.GetStats().usedMemory, 4ull);
+    ASSERT_EQ(device.createdTextureCount, 1u);
 
     auto replacement = CreateTextureResource(
         112,
@@ -1395,11 +1398,12 @@ TEST(GPUResourceManagerValidation, SuccessfulTextureReplacementInvalidatesExisti
 
     RHITexture* replacementTexture = manager.GetTexture(original->GetId());
     ASSERT_NE(nullptr, replacementTexture);
-    EXPECT_NE(originalTexture, replacementTexture);
+    EXPECT_EQ(originalTexture, replacementTexture);
     EXPECT_TRUE(manager.IsResident(original->GetId()));
     EXPECT_EQ(manager.GetResourceState(original->GetId()), GPUResourceState::GPUReady);
     EXPECT_EQ(manager.GetStats().usedMemory, 4ull);
-    EXPECT_EQ(invalidatedCount, 1u);
+    EXPECT_EQ(device.createdTextureCount, 1u);
+    EXPECT_EQ(invalidatedCount, 0u);
 
     manager.Shutdown();
 }
