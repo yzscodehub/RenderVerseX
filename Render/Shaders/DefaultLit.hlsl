@@ -36,10 +36,10 @@ cbuffer ViewConstants : register(b0, space0)
     float3 CameraPosition;
     float Time;
     float3 LightDirection;
-    float Padding;
+    float DirectionalLightIntensity;
     float4 IBLDiffuseAmbient;   // rgb: color, a: diffuse intensity
     float4 IBLSpecularAmbient;  // rgb: color, a: specular intensity
-    float4 IBLTextureParams;    // x: enabled, y: prefiltered mip count, z: intensity, w: reserved
+    float4 IBLTextureParams;    // x: enabled, y: prefiltered mip count, z: intensity, w: ambient floor intensity
 };
 
 cbuffer ObjectConstants : register(b0, space1)
@@ -191,7 +191,7 @@ float4 PSMain(PSInput input) : SV_TARGET
         baseColor.rgb,
         metallic,
         clampedRoughness,
-        float3(4.0, 4.0, 4.0),
+        float3(DirectionalLightIntensity, DirectionalLightIntensity, DirectionalLightIntensity),
         1.0);
 
     float nDotV = max(dot(normal, viewDir), 0.001);
@@ -220,7 +220,7 @@ float4 PSMain(PSInput input) : SV_TARGET
         ambientDiffuse = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic) * occlusion * iblDiffuse;
         ambientSpecular = f0 * occlusion * (1.0 - clampedRoughness) * iblSpecular;
     }
-    float3 ambientFloor = baseColor.rgb * 0.08;
+    float3 ambientFloor = baseColor.rgb * max(IBLTextureParams.w, 0.0);
     float3 finalColor = ambientDiffuse + ambientSpecular + directLight + emissive + ambientFloor;
 
     return float4(finalColor, baseColor.a);

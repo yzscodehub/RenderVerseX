@@ -594,7 +594,7 @@ TEST_F(PipelineCacheValidationFixture, ViewConstantsLayoutMatchesDefaultLitCBuff
     EXPECT_EQ(offsetof(RVX::ViewConstants, cameraPosition), 64u);
     EXPECT_EQ(offsetof(RVX::ViewConstants, time), 76u);
     EXPECT_EQ(offsetof(RVX::ViewConstants, lightDirection), 80u);
-    EXPECT_EQ(offsetof(RVX::ViewConstants, padding), 92u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalLightIntensity), 92u);
     EXPECT_EQ(offsetof(RVX::ViewConstants, iblDiffuseAmbient), 96u);
     EXPECT_EQ(offsetof(RVX::ViewConstants, iblSpecularAmbient), 112u);
     EXPECT_EQ(offsetof(RVX::ViewConstants, iblTextureParams), 128u);
@@ -623,6 +623,10 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDefaultIBLAmbie
 
     RVX::ViewConstants uploaded{};
     std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_NEAR(uploaded.lightDirection.x, 0.505076f, 0.00001f);
+    EXPECT_NEAR(uploaded.lightDirection.y, -0.808122f, 0.00001f);
+    EXPECT_NEAR(uploaded.lightDirection.z, 0.303046f, 0.00001f);
+    EXPECT_FLOAT_EQ(uploaded.directionalLightIntensity, 4.0f);
     EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.x, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.y, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.z, 1.0f);
@@ -634,7 +638,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDefaultIBLAmbie
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.x, 0.0f);
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.y, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.z, 1.0f);
-    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.08f);
 }
 
 TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabledIBLAmbientValues)
@@ -649,6 +653,8 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabl
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
     RVX::ViewData view;
+    view.directionalLightDirection = RVX::Vec3(0.0f, -2.0f, 0.0f);
+    view.directionalLightIntensity = 2.5f;
     view.iblDiffuseColor = RVX::Vec3(0.25f, 0.5f, 0.75f);
     view.iblDiffuseIntensity = 0.8f;
     view.iblSpecularColor = RVX::Vec3(0.1f, 0.2f, 0.3f);
@@ -657,6 +663,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabl
     view.textureIBLEnabled = 1;
     view.textureIBLPrefilteredMipLevels = 5;
     view.textureIBLIntensity = 1.7f;
+    view.ambientFloorIntensity = 0.03f;
     cache.UpdateViewConstants(view);
 
     const FakeBuffer* viewBuffer = FindCapturedBuffer(device, "ViewConstantBuffer");
@@ -665,6 +672,10 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabl
 
     RVX::ViewConstants uploaded{};
     std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_FLOAT_EQ(uploaded.lightDirection.x, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.lightDirection.y, -1.0f);
+    EXPECT_FLOAT_EQ(uploaded.lightDirection.z, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalLightIntensity, 2.5f);
     EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.x, 0.25f);
     EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.y, 0.5f);
     EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.z, 0.75f);
@@ -676,7 +687,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabl
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.x, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.y, 5.0f);
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.z, 1.7f);
-    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.03f);
 
     view.iblAmbientEnabled = 0;
     view.textureIBLEnabled = 0;
@@ -693,7 +704,74 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabl
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.x, 0.0f);
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.y, 5.0f);
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.z, 1.7f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.03f);
+}
+
+TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsZeroAmbientFloorForTextureIBLReadyViews)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    RVX::ViewData view;
+    view.textureIBLEnabled = 1;
+    view.textureIBLPrefilteredMipLevels = 4;
+    view.textureIBLIntensity = 1.0f;
+    view.ambientFloorIntensity = 0.0f;
+    cache.UpdateViewConstants(view);
+
+    const FakeBuffer* viewBuffer = FindCapturedBuffer(device, "ViewConstantBuffer");
+    ASSERT_NE(viewBuffer, nullptr);
+
+    RVX::ViewConstants uploaded{};
+    std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.x, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.0f);
+}
+
+TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLightingControls)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    RVX::ViewData view;
+    view.directionalLightDirection = RVX::Vec3(0.0f, 0.0f, 0.0f);
+    view.directionalLightIntensity = -3.0f;
+    view.ambientFloorIntensity = -1.0f;
+    cache.UpdateViewConstants(view);
+
+    const FakeBuffer* viewBuffer = FindCapturedBuffer(device, "ViewConstantBuffer");
+    ASSERT_NE(viewBuffer, nullptr);
+
+    RVX::ViewConstants uploaded{};
+    std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_NEAR(uploaded.lightDirection.x, 0.505076f, 0.00001f);
+    EXPECT_NEAR(uploaded.lightDirection.y, -0.808122f, 0.00001f);
+    EXPECT_NEAR(uploaded.lightDirection.z, 0.303046f, 0.00001f);
+    EXPECT_FLOAT_EQ(uploaded.directionalLightIntensity, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.0f);
+
+    view.directionalLightDirection = RVX::Vec3(std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f);
+    view.directionalLightIntensity = std::numeric_limits<float>::infinity();
+    view.ambientFloorIntensity = std::numeric_limits<float>::quiet_NaN();
+    cache.UpdateViewConstants(view);
+    std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_NEAR(uploaded.lightDirection.x, 0.505076f, 0.00001f);
+    EXPECT_NEAR(uploaded.lightDirection.y, -0.808122f, 0.00001f);
+    EXPECT_NEAR(uploaded.lightDirection.z, 0.303046f, 0.00001f);
+    EXPECT_FLOAT_EQ(uploaded.directionalLightIntensity, 4.0f);
+    EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.08f);
 }
 
 TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
@@ -709,11 +787,31 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
     EXPECT_NE(shader.find("TextureCube IrradianceTexture : register(t7, space2);"), std::string::npos);
     EXPECT_NE(shader.find("TextureCube PrefilteredEnvironmentTexture : register(t8, space2);"), std::string::npos);
     EXPECT_NE(shader.find("Texture2D BRDFLUTTexture : register(t9, space2);"), std::string::npos);
+    EXPECT_NE(shader.find("float DirectionalLightIntensity;"), std::string::npos);
     EXPECT_NE(shader.find("if (IBLTextureParams.x > 0.5)"), std::string::npos);
+    EXPECT_NE(shader.find("IBLTextureParams.w"), std::string::npos);
+    EXPECT_NE(shader.find("float3(DirectionalLightIntensity, DirectionalLightIntensity, DirectionalLightIntensity)"),
+              std::string::npos);
+    EXPECT_EQ(shader.find("float3(4.0, 4.0, 4.0)"), std::string::npos);
+    EXPECT_EQ(shader.find("ambientFloor = baseColor.rgb * 0.08"), std::string::npos);
     EXPECT_EQ(shader.find("ambientDiffuse = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic) * occlusion * 0.12;"),
               std::string::npos);
     EXPECT_EQ(shader.find("ambientSpecular = f0 * occlusion * (1.0 - clampedRoughness) * 0.04;"),
               std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, SceneRendererClearsAmbientFloorWhenTextureIBLIsReady)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path sceneRendererPath = FindShaderDirectory().parent_path() /
+        "Private" / "Renderer" / "SceneRenderer.cpp";
+    const std::string source = ReadTextFile(sceneRendererPath);
+    EXPECT_NE(source.find("m_viewData.ambientFloorIntensity = 0.08f;"), std::string::npos);
+    EXPECT_NE(source.find("m_viewData.ambientFloorIntensity = 0.0f;"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAware)

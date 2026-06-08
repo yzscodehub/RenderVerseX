@@ -11,6 +11,7 @@
 #include "ShaderCompiler/ShaderManager.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -58,6 +59,27 @@ namespace
     uint64 AlignConstantBufferSize(uint64 size)
     {
         return (size + RVX_CONSTANT_BUFFER_ALIGNMENT - 1) & ~(RVX_CONSTANT_BUFFER_ALIGNMENT - 1);
+    }
+
+    Vec3 NormalizeOr(const Vec3& value, const Vec3& fallback)
+    {
+        const float lengthSq = glm::dot(value, value);
+        if (std::isfinite(lengthSq) && lengthSq > 1.0e-8f)
+        {
+            return glm::normalize(value);
+        }
+
+        const float fallbackLengthSq = glm::dot(fallback, fallback);
+        return fallbackLengthSq > 1.0e-8f ? glm::normalize(fallback) : Vec3(0.0f, -1.0f, 0.0f);
+    }
+
+    float ClampFiniteNonNegative(float value, float fallback)
+    {
+        if (!std::isfinite(value))
+        {
+            return fallback;
+        }
+        return std::max(0.0f, value);
     }
 
     void HashBytes(uint64& hash, const void* data, size_t size)
@@ -2029,8 +2051,8 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
 
     constants.cameraPosition = view.cameraPosition;
     constants.time = view.time;
-    constants.lightDirection = Vec3(0.5f, -0.8f, 0.3f);
-    constants.padding = 0.0f;
+    constants.lightDirection = NormalizeOr(view.directionalLightDirection, Vec3(0.5f, -0.8f, 0.3f));
+    constants.directionalLightIntensity = ClampFiniteNonNegative(view.directionalLightIntensity, 4.0f);
     const bool iblAmbientEnabled = view.iblAmbientEnabled != 0;
     const float iblDiffuseIntensity = iblAmbientEnabled ? view.iblDiffuseIntensity : 0.0f;
     const float iblSpecularIntensity = iblAmbientEnabled ? view.iblSpecularIntensity : 0.0f;
@@ -2040,7 +2062,7 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
         view.textureIBLEnabled != 0 ? 1.0f : 0.0f,
         static_cast<float>(std::max(1u, view.textureIBLPrefilteredMipLevels)),
         view.textureIBLIntensity,
-        0.0f);
+        ClampFiniteNonNegative(view.ambientFloorIntensity, 0.08f));
 
     void* mapped = m_viewConstantBuffer->Map();
     if (mapped)

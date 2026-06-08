@@ -3295,6 +3295,88 @@ git diff --check
 
 ---
 
+### R-SP: `RQ2j - View Lighting Controls and IBL Ambient Floor Split`
+
+**Date:** 2026-06-08
+**Commit:** pending
+**Spark plan review agent:** `019ea7d1-755d-7722-a381-eee0479e884e`
+**Spark code review agent:** `019ea7df-d0cd-7b71-9336-d6c41e2c839f`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-08-rq2j-view-lighting-controls-plan.md`
+- Section: entire RQ2j stage scope, tests, and acceptance criteria
+- Lines checked: local document reviewed immediately before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ2i
+- Evidence: RQ2i committed as `76977a6 feat(samples): generate procedural model viewer ibl with hdr pipeline`, with docs follow-up `722fc96 docs(render): record rq2i review and commit`.
+
+**Approved scope:**
+
+- Add explicit `ViewData` controls for directional light direction, directional light intensity, and ambient floor intensity.
+- Preserve `ViewConstants` size and offsets by repurposing the existing padding float and `IBLTextureParams.w`.
+- Remove DefaultLit hard-coded direct light radiance and hard-coded ambient floor.
+- Keep the no-IBL/fallback ambient floor at `0.08` while setting it to `0.0` only when texture IBL is ready.
+- Add PipelineCacheValidation ABI, upload, shader-source, and SceneRenderer source guardrails.
+
+**Out of scope:**
+
+- BRDF/math changes, shadow sampling, bloom/exposure/tonemap changes, new light component systems, ModelViewer camera/model/HDRI changes, and golden recapture.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-08-rq2j-view-lighting-controls-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Include/Render/Renderer/ViewData.h`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Tests/PipelineCacheValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation ModelViewer
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|ModelViewerIBLSmoke|ModelViewerSmoke|VisualGoldenValidation"
+build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --backend dx11 --width 800 --height 450 --frames 8 --screenshot build\win_x64_debug\VisualArtifacts\Debug\ModelViewer\RQ2j_DamagedHelmet.ppm --validation --expect-ibl-ready --expect-procedural-ibl-quality
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 40/40 selected tests passed after adopting Spark's clamp/fallback test suggestion.
+- Manual DamagedHelmet smoke: PASS, exit code 0, `ModelViewer procedural IBL quality check passed`, `ModelViewer Smoke PASS`, screenshot inspected.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Screenshot: `build/win_x64_debug/VisualArtifacts/Debug/ModelViewer/RQ2j_DamagedHelmet.ppm`
+- Preview: `build/win_x64_debug/VisualArtifacts/Debug/ModelViewer/RQ2j_DamagedHelmet.png`
+- Diffs: current RQ2j working tree diff before commit.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Non-blocking suggestions adopted: added a targeted guardrail for the texture IBL-ready ambient floor path and documented the padding/`IBLTextureParams.w` reuse in tests/comments.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Non-blocking suggestions adopted: added clamp/fallback assertions for negative/nonfinite intensities and zero/nonfinite light direction; noted that a later scoped behavioral SceneRenderer test would be stronger than the current source guardrail.
+
+**Notes / follow-ups:**
+
+- RQ2j intentionally preserves the legacy no-IBL visual floor while making texture IBL frames rely on real IBL instead of a fixed base-color ambient term.
+- Next quality stages can now compare BRDF/IBL/shadow changes without the hidden ambient floor masking results.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

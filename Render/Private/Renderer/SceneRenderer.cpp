@@ -326,6 +326,7 @@ void SceneRenderer::UpdateEnvironmentIBL(World* world)
     m_viewData.textureIBLEnabled = 0;
     m_viewData.textureIBLPrefilteredMipLevels = 1;
     m_viewData.textureIBLIntensity = 1.0f;
+    m_viewData.ambientFloorIntensity = 0.08f;
 
     auto disableTextureIBL = [this](const char* reason)
     {
@@ -449,6 +450,7 @@ void SceneRenderer::UpdateEnvironmentIBL(World* world)
     m_viewData.textureIBLEnabled = 1;
     m_viewData.textureIBLPrefilteredMipLevels = resources.prefilteredMipLevels;
     m_viewData.textureIBLIntensity = resources.intensity;
+    m_viewData.ambientFloorIntensity = 0.0f;
     m_environmentIBLStats.textureIBLEnabled = true;
 }
 

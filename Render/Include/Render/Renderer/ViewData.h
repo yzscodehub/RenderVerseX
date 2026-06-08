@@ -73,6 +73,16 @@ namespace RVX
         float aspectRatio = 1.0f;
 
         // =====================================================================
+        // Lighting Controls
+        // =====================================================================
+
+        /// Primary directional light direction; matches the previous hard-coded DefaultLit direction
+        Vec3 directionalLightDirection{0.5f, -0.8f, 0.3f};
+
+        /// Primary directional light intensity; matches the previous hard-coded DefaultLit radiance
+        float directionalLightIntensity = 4.0f;
+
+        // =====================================================================
         // Render Targets
         // =====================================================================
         
@@ -109,6 +119,9 @@ namespace RVX
 
         /// Exposure/intensity multiplier applied to texture IBL samples
         float textureIBLIntensity = 1.0f;
+
+        /// Legacy non-IBL ambient floor; set to zero when texture IBL is ready
+        float ambientFloorIntensity = 0.08f;
 
         // =====================================================================
         // RenderGraph Reference

@@ -40,7 +40,7 @@ namespace RVX
         Vec3 cameraPosition;
         float time;
         Vec3 lightDirection;
-        float padding;
+        float directionalLightIntensity;
         Vec4 iblDiffuseAmbient;
         Vec4 iblSpecularAmbient;
         Vec4 iblTextureParams;
