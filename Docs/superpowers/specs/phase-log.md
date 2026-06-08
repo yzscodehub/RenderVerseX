@@ -3298,7 +3298,7 @@ git diff --check
 ### R-SP: `RQ2j - View Lighting Controls and IBL Ambient Floor Split`
 
 **Date:** 2026-06-08
-**Commit:** pending
+**Commit:** `19a3f72 feat(render): expose view lighting controls for default lit`
 **Spark plan review agent:** `019ea7d1-755d-7722-a381-eee0479e884e`
 **Spark code review agent:** `019ea7df-d0cd-7b71-9336-d6c41e2c839f`
 
