@@ -32,6 +32,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -167,6 +168,40 @@ namespace
         fs::create_directories(path.parent_path());
         std::ofstream file(path, std::ios::binary);
         file << text;
+    }
+
+    size_t MipOffset(uint32_t width, uint32_t height, uint32_t mipLevel)
+    {
+        size_t offset = 0;
+        for (uint32_t mip = 0; mip < mipLevel; ++mip)
+        {
+            offset += static_cast<size_t>(std::max(1u, width >> mip)) *
+                      std::max(1u, height >> mip) *
+                      4u;
+        }
+        return offset;
+    }
+
+    void WriteRgbaTga(const fs::path& path, uint16_t width, uint16_t height, const std::vector<uint8_t>& rgba)
+    {
+        fs::create_directories(path.parent_path());
+        std::ofstream file(path, std::ios::binary);
+
+        uint8_t header[18] = {};
+        header[2] = 2; // Uncompressed true-color image.
+        header[12] = static_cast<uint8_t>(width & 0xFFu);
+        header[13] = static_cast<uint8_t>((width >> 8u) & 0xFFu);
+        header[14] = static_cast<uint8_t>(height & 0xFFu);
+        header[15] = static_cast<uint8_t>((height >> 8u) & 0xFFu);
+        header[16] = 32;
+        header[17] = 0x20 | 8; // Top-left origin, 8 alpha bits.
+        file.write(reinterpret_cast<const char*>(header), sizeof(header));
+
+        for (size_t i = 0; i + 3 < rgba.size(); i += 4)
+        {
+            const uint8_t bgra[4] = {rgba[i + 2], rgba[i + 1], rgba[i + 0], rgba[i + 3]};
+            file.write(reinterpret_cast<const char*>(bgra), sizeof(bgra));
+        }
     }
 
     class RenderHonestyValidationFixture : public ::testing::Test
@@ -399,6 +434,214 @@ TEST_F(RenderHonestyValidationFixture, TextureCacheHitsReportLoadedStatus)
 
     manager.Shutdown();
     fs::remove_all(cachePath.parent_path());
+}
+
+TEST_F(RenderHonestyValidationFixture, TextureLoaderGeneratesOrdinaryRgbaMipChain)
+{
+    std::vector<RVX::uint8> rgba(static_cast<size_t>(4 * 4 * 4), 255u);
+
+    RVX::Resource::TextureLoader loader(nullptr);
+    RVX::Resource::TextureResource* texture =
+        loader.LoadFromMemory(rgba.data(), rgba.size(), "ordinary_4x4_rgba", RVX::Resource::TextureUsage::Color, true, 4, 4);
+
+    ASSERT_NE(texture, nullptr);
+    EXPECT_FALSE(texture->IsDefaultFallback());
+    EXPECT_EQ(texture->GetMipLevels(), 3u);
+    EXPECT_EQ(texture->GetData().size(), static_cast<size_t>(4 * 4 * 4 + 2 * 2 * 4 + 1 * 1 * 4));
+}
+
+TEST_F(RenderHonestyValidationFixture, TextureLoaderGeneratesColorMipsInLinearSpace)
+{
+    const std::vector<RVX::uint8> rgba = {
+        0, 0, 0, 0,       255, 255, 255, 255,
+        0, 0, 0, 255,     255, 255, 255, 255,
+    };
+
+    RVX::Resource::TextureLoader loader(nullptr);
+    RVX::Resource::TextureResource* texture =
+        loader.LoadFromMemory(rgba.data(), rgba.size(), "color_srgb_2x2", RVX::Resource::TextureUsage::Color, true, 2, 2);
+
+    ASSERT_NE(texture, nullptr);
+    ASSERT_EQ(texture->GetMipLevels(), 2u);
+    const size_t mip1 = MipOffset(2, 2, 1);
+    ASSERT_GE(texture->GetData().size(), mip1 + 4u);
+
+    EXPECT_EQ(texture->GetData()[mip1 + 0], 188u);
+    EXPECT_EQ(texture->GetData()[mip1 + 1], 188u);
+    EXPECT_EQ(texture->GetData()[mip1 + 2], 188u);
+    EXPECT_EQ(texture->GetData()[mip1 + 3], 191u);
+}
+
+TEST_F(RenderHonestyValidationFixture, TextureLoaderGeneratesNormalMipsInSignedSpace)
+{
+    const std::vector<RVX::uint8> rgba = {
+        255, 128, 128, 255,   128, 128, 255, 255,
+        128, 128, 255, 255,   128, 128, 255, 255,
+    };
+
+    RVX::Resource::TextureLoader loader(nullptr);
+    RVX::Resource::TextureResource* texture =
+        loader.LoadFromMemory(rgba.data(), rgba.size(), "normal_2x2", RVX::Resource::TextureUsage::Normal, true, 2, 2);
+
+    ASSERT_NE(texture, nullptr);
+    ASSERT_EQ(texture->GetMipLevels(), 2u);
+    EXPECT_FALSE(texture->IsSRGB());
+    const size_t mip1 = MipOffset(2, 2, 1);
+    ASSERT_GE(texture->GetData().size(), mip1 + 4u);
+
+    EXPECT_GE(texture->GetData()[mip1 + 0], 166u);
+    EXPECT_LE(texture->GetData()[mip1 + 0], 170u);
+    EXPECT_GE(texture->GetData()[mip1 + 2], 248u);
+    EXPECT_EQ(texture->GetData()[mip1 + 3], 255u);
+}
+
+TEST_F(RenderHonestyValidationFixture, TextureLoaderGeneratesDataMipsWithByteLinearAverage)
+{
+    const std::vector<RVX::uint8> rgba = {
+        0, 0, 0, 0,       255, 255, 255, 255,
+        0, 0, 0, 255,     255, 255, 255, 255,
+    };
+
+    RVX::Resource::TextureLoader loader(nullptr);
+    RVX::Resource::TextureResource* texture =
+        loader.LoadFromMemory(rgba.data(), rgba.size(), "data_2x2", RVX::Resource::TextureUsage::Data, true, 2, 2);
+
+    ASSERT_NE(texture, nullptr);
+    ASSERT_EQ(texture->GetMipLevels(), 2u);
+    EXPECT_FALSE(texture->IsSRGB());
+    const size_t mip1 = MipOffset(2, 2, 1);
+    ASSERT_GE(texture->GetData().size(), mip1 + 4u);
+
+    EXPECT_EQ(texture->GetData()[mip1 + 0], 128u);
+    EXPECT_EQ(texture->GetData()[mip1 + 1], 128u);
+    EXPECT_EQ(texture->GetData()[mip1 + 2], 128u);
+    EXPECT_EQ(texture->GetData()[mip1 + 3], 191u);
+}
+
+TEST_F(RenderHonestyValidationFixture, TextureReferenceExternalUsageControlsMipPolicyAndCacheIdentity)
+{
+    fs::path temp = MakeTempDir("rvx_texture_external_policy");
+    const fs::path texturePath = temp / "shared_texture.tga";
+    const fs::path modelPath = temp / "model.gltf";
+    WriteTextFile(modelPath, "{}");
+
+    const std::vector<RVX::uint8> rgba = {
+        255, 128, 128, 255,   128, 128, 255, 255,
+        128, 128, 255, 255,   128, 128, 255, 255,
+    };
+    WriteRgbaTga(texturePath, 2, 2, rgba);
+
+    RVX::Resource::ResourceManager manager;
+    RVX::Resource::ResourceManagerConfig config;
+    config.asyncThreadCount = 0;
+    manager.Initialize(config);
+
+    RVX::Resource::TextureLoader loader(&manager);
+    RVX::Resource::TextureReference colorRef =
+        RVX::Resource::TextureReference::CreateExternal(texturePath.string(), RVX::Resource::TextureUsage::Color, true);
+    RVX::Resource::TextureReference normalRef =
+        RVX::Resource::TextureReference::CreateExternal(texturePath.string(), RVX::Resource::TextureUsage::Normal, false);
+
+    RVX::Resource::TextureResource* color = loader.LoadFromReference(colorRef, modelPath.string());
+    ASSERT_NE(color, nullptr);
+    EXPECT_EQ(color->GetUsage(), RVX::Resource::TextureUsage::Color);
+    EXPECT_TRUE(color->IsSRGB());
+
+    RVX::Resource::TextureResource* normal = loader.LoadFromReference(normalRef, modelPath.string());
+    ASSERT_NE(normal, nullptr);
+    EXPECT_EQ(normal->GetUsage(), RVX::Resource::TextureUsage::Normal);
+    EXPECT_FALSE(normal->IsSRGB());
+    EXPECT_NE(color->GetId(), normal->GetId());
+    EXPECT_NE(color, normal);
+
+    const size_t mip1 = MipOffset(2, 2, 1);
+    ASSERT_GE(normal->GetData().size(), mip1 + 4u);
+    EXPECT_GE(normal->GetData()[mip1 + 2], 248u);
+
+    manager.Shutdown();
+    fs::remove_all(temp);
+}
+
+TEST_F(RenderHonestyValidationFixture, ResourceManagerTextureLoadDoesNotLeavePolicyCacheAlias)
+{
+    fs::path temp = MakeTempDir("rvx_texture_manager_policy_alias");
+    const fs::path texturePath = temp / "manager_texture.tga";
+    const std::vector<RVX::uint8> rgba = {
+        0, 0, 0, 255,       255, 255, 255, 255,
+        0, 0, 0, 255,       255, 255, 255, 255,
+    };
+    WriteRgbaTga(texturePath, 2, 2, rgba);
+
+    RVX::Resource::ResourceManager manager;
+    RVX::Resource::ResourceManagerConfig config;
+    config.asyncThreadCount = 0;
+    manager.Initialize(config);
+
+    RVX::IResource* resource = manager.LoadResource(texturePath.string());
+    ASSERT_NE(resource, nullptr);
+    EXPECT_EQ(resource->GetType(), RVX::ResourceType::Texture);
+    EXPECT_EQ(resource->GetId(), RVX::GenerateResourceId(texturePath.string()));
+    EXPECT_TRUE(manager.IsLoaded(texturePath.string()));
+
+    RVX::Resource::ResourceCache::Stats stats = manager.GetCache().GetStats();
+    EXPECT_EQ(stats.totalResources, 1u);
+
+    manager.Unload(texturePath.string());
+    EXPECT_FALSE(manager.IsLoaded(texturePath.string()));
+    stats = manager.GetCache().GetStats();
+    EXPECT_EQ(stats.totalResources, 0u);
+
+    manager.Shutdown();
+    fs::remove_all(temp);
+}
+
+TEST_F(RenderHonestyValidationFixture, ResourceManagerTextureLoadDoesNotStealExistingPolicyTexture)
+{
+    fs::path temp = MakeTempDir("rvx_texture_manager_policy_existing");
+    const fs::path texturePath = temp / "shared_texture.tga";
+    const fs::path modelPath = temp / "model.gltf";
+    WriteTextFile(modelPath, "{}");
+
+    const std::vector<RVX::uint8> rgba = {
+        255, 128, 128, 255,   128, 128, 255, 255,
+        128, 128, 255, 255,   128, 128, 255, 255,
+    };
+    WriteRgbaTga(texturePath, 2, 2, rgba);
+
+    RVX::Resource::ResourceManager manager;
+    RVX::Resource::ResourceManagerConfig config;
+    config.asyncThreadCount = 0;
+    manager.Initialize(config);
+
+    RVX::Resource::TextureLoader loader(&manager);
+    RVX::Resource::TextureReference normalRef =
+        RVX::Resource::TextureReference::CreateExternal(texturePath.string(), RVX::Resource::TextureUsage::Normal, false);
+
+    RVX::Resource::TextureResource* policyTexture = loader.LoadFromReference(normalRef, modelPath.string());
+    ASSERT_NE(policyTexture, nullptr);
+    const RVX::Resource::ResourceId policyId = policyTexture->GetId();
+    EXPECT_TRUE(manager.GetCache().Contains(policyId));
+
+    RVX::IResource* genericResource = manager.LoadResource(texturePath.string());
+    ASSERT_NE(genericResource, nullptr);
+    EXPECT_NE(genericResource, policyTexture);
+    EXPECT_EQ(policyTexture->GetId(), policyId);
+    EXPECT_TRUE(manager.GetCache().Contains(policyId));
+    EXPECT_TRUE(manager.GetCache().Contains(RVX::GenerateResourceId(texturePath.string())));
+
+    RVX::Resource::ResourceCache::Stats stats = manager.GetCache().GetStats();
+    EXPECT_EQ(stats.totalResources, 2u);
+
+    manager.Unload(texturePath.string());
+    EXPECT_TRUE(manager.GetCache().Contains(policyId));
+    EXPECT_EQ(policyTexture->GetId(), policyId);
+
+    RVX::Resource::TextureResource* policyCached = loader.LoadFromReference(normalRef, modelPath.string());
+    EXPECT_EQ(policyCached, policyTexture);
+    EXPECT_EQ(policyCached->GetId(), policyId);
+
+    manager.Shutdown();
+    fs::remove_all(temp);
 }
 
 TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDisabled)

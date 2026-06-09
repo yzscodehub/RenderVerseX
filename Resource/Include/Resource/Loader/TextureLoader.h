@@ -134,12 +134,34 @@ namespace RVX::Resource
                          uint32_t& outWidth, uint32_t& outHeight,
                          int& outChannels);
 
+        TextureResource* LoadFromFileWithPolicy(const std::string& absolutePath,
+                                                 TextureUsage usage,
+                                                 bool isSRGB,
+                                                 const std::string& cacheKey);
+        TextureResource* LoadFromMemoryWithPolicy(const void* data,
+                                                   size_t size,
+                                                   const std::string& sourceKey,
+                                                   const std::string& cacheKey,
+                                                   TextureUsage usage,
+                                                   bool isSRGB,
+                                                   bool isRawRGBA,
+                                                   uint32_t width,
+                                                   uint32_t height);
+
         /// Create texture resource from decoded data
         TextureResource* CreateTextureResource(std::vector<uint8_t> pixels,
                                                 uint32_t width, uint32_t height,
                                                 int channels,
-                                                const std::string& uniqueKey,
-                                                TextureUsage usage);
+                                                const std::string& sourceKey,
+                                                const std::string& cacheKey,
+                                                TextureUsage usage,
+                                                bool isSRGB,
+                                                bool generateMipChain = true);
+
+        std::string BuildTexturePolicyCacheKey(const std::string& sourceKey,
+                                               TextureUsage usage,
+                                               bool isSRGB) const;
+        TextureUsage InferTextureUsageFromPath(const std::string& path) const;
 
         /// Generate ResourceId from unique key
         ResourceId GenerateTextureId(const std::string& uniqueKey);

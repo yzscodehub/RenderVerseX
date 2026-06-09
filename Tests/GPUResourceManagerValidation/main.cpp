@@ -1187,6 +1187,55 @@ TEST(GPUResourceManagerValidation, TextureArrayMetadataUploadsAsTexture2DArray)
     manager.Shutdown();
 }
 
+TEST(GPUResourceManagerValidation, Ordinary2DMipChainUploadsAllMipSubresources)
+{
+    FakeDevice device;
+    device.supportStagedCopy = true;
+
+    GPUResourceManager manager;
+    manager.Initialize(&device);
+
+    Resource::TextureMetadata metadata;
+    metadata.width = 2;
+    metadata.height = 2;
+    metadata.depth = 1;
+    metadata.mipLevels = 2;
+    metadata.arrayLayers = 1;
+    metadata.format = Resource::TextureFormat::RGBA8;
+    metadata.isSRGB = false;
+
+    const std::vector<uint8> pixels = {
+        10, 11, 12, 13,     20, 21, 22, 23,
+        30, 31, 32, 33,     40, 41, 42, 43,
+        90, 91, 92, 93,
+    };
+    auto texture = CreateTextureResourceWithMetadata(123, metadata, pixels);
+    manager.UploadImmediate(texture.get());
+
+    ASSERT_EQ(manager.GetResourceState(texture->GetId()), GPUResourceState::GPUReady);
+    EXPECT_EQ(device.lastCreatedTextureDesc.dimension, RHITextureDimension::Texture2D);
+    EXPECT_EQ(device.lastCreatedTextureDesc.arraySize, 1u);
+    EXPECT_EQ(device.lastCreatedTextureDesc.mipLevels, 2u);
+    ASSERT_NE(nullptr, device.lastCommandContext);
+    ASSERT_NE(nullptr, device.lastStagingBuffer);
+    ASSERT_EQ(device.lastCommandContext->bufferTextureCopyDescs.size(), 2u);
+
+    const auto& mip0 = device.lastCommandContext->bufferTextureCopyDescs[0];
+    const auto& mip1 = device.lastCommandContext->bufferTextureCopyDescs[1];
+    EXPECT_EQ(mip0.textureSubresource, EncodeTextureSubresource(0, 0, 2));
+    EXPECT_EQ(mip1.textureSubresource, EncodeTextureSubresource(1, 0, 2));
+    EXPECT_EQ(mip0.textureRegion.width, 2u);
+    EXPECT_EQ(mip0.textureRegion.height, 2u);
+    EXPECT_EQ(mip1.textureRegion.width, 1u);
+    EXPECT_EQ(mip1.textureRegion.height, 1u);
+
+    const auto& storage = device.lastStagingBuffer->GetStorage();
+    EXPECT_EQ(storage[static_cast<size_t>(mip0.bufferOffset)], 10u);
+    EXPECT_EQ(storage[static_cast<size_t>(mip1.bufferOffset)], 90u);
+
+    manager.Shutdown();
+}
+
 TEST(GPUResourceManagerValidation, MippedCubemapDataIsRepackedToRHIFlatOrder)
 {
     FakeDevice device;

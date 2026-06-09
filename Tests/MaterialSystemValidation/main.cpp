@@ -287,9 +287,10 @@ namespace
             return RHITextureViewRef(new FakeTextureView(texture, desc));
         }
 
-        RHISamplerRef CreateSampler(const RHISamplerDesc&) override
+        RHISamplerRef CreateSampler(const RHISamplerDesc& desc) override
         {
             ++createdSamplerCount;
+            createdSamplerDescs.push_back(desc);
             return RHISamplerRef(new FakeSampler());
         }
 
@@ -398,6 +399,7 @@ namespace
         RHICommandQueueType lastCommandQueueType = RHICommandQueueType::Graphics;
         FakeCommandContext* lastCommandContext = nullptr;
         FakeBuffer* lastCreatedBuffer = nullptr;
+        std::vector<RHISamplerDesc> createdSamplerDescs;
         std::vector<RHIFenceRef> retainedFences;
         RHICapabilities capabilities;
 
@@ -1048,6 +1050,31 @@ namespace
 
         materialSystem.Shutdown();
         viewCache.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation, MaterialSystemCreatesExplicitMipFilteredMaterialSampler)
+    {
+        FakeDevice device;
+        GPUResourceManager gpuResources;
+        gpuResources.Initialize(&device);
+
+        FakeDescriptorSetLayout materialSetLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+
+        ASSERT_FALSE(device.createdSamplerDescs.empty());
+        const RHISamplerDesc& samplerDesc = device.createdSamplerDescs.back();
+        EXPECT_EQ(RHIFilterMode::Linear, samplerDesc.minFilter);
+        EXPECT_EQ(RHIFilterMode::Linear, samplerDesc.magFilter);
+        EXPECT_EQ(RHIFilterMode::Linear, samplerDesc.mipFilter);
+        EXPECT_EQ(RHIAddressMode::Repeat, samplerDesc.addressU);
+        EXPECT_EQ(RHIAddressMode::Repeat, samplerDesc.addressV);
+        EXPECT_EQ(RHIAddressMode::Repeat, samplerDesc.addressW);
+        EXPECT_TRUE(samplerDesc.anisotropyEnable);
+        EXPECT_FLOAT_EQ(8.0f, samplerDesc.maxAnisotropy);
+
+        materialSystem.Shutdown();
         gpuResources.Shutdown();
     }
 

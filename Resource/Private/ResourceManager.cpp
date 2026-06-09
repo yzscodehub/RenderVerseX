@@ -165,8 +165,22 @@ IResource* ResourceManager::LoadInternal(const std::string& path, ResourceType t
         return nullptr;
     }
 
-    // Set resource properties
-    resource->SetId(GenerateResourceId(path));
+    // Some loaders cache specialized variants internally while loading. The
+    // ResourceManager path API owns the generic path identity, so remove any
+    // loader-assigned cache entry before rewriting the ID to avoid one object
+    // being stored under two keys.
+    const ResourceId managerId = GenerateResourceId(path);
+    const ResourceId loaderAssignedId = resource->GetId();
+    bool releaseLoaderCacheRetainAfterStore = false;
+    if (loaderAssignedId != InvalidResourceId && loaderAssignedId != managerId &&
+        m_cache->Contains(loaderAssignedId))
+    {
+        resource->AddRef();
+        m_cache->Remove(loaderAssignedId);
+        releaseLoaderCacheRetainAfterStore = true;
+    }
+
+    resource->SetId(managerId);
     resource->SetPath(path);
     resource->SetName(std::filesystem::path(path).stem().string());
 
@@ -187,6 +201,10 @@ IResource* ResourceManager::LoadInternal(const std::string& path, ResourceType t
 
     // Store in cache
     m_cache->Store(resource);
+    if (releaseLoaderCacheRetainAfterStore)
+    {
+        resource->Release();
+    }
 
     // Mark as loaded
     resource->NotifyLoaded();

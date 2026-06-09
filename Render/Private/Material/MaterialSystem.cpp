@@ -419,9 +419,23 @@ bool MaterialSystem::CreateDefaultResources()
         return false;
     }
 
-    RHISamplerDesc samplerDesc = RHISamplerDesc::LinearWrap();
+    RHISamplerDesc samplerDesc = RHISamplerDesc::Anisotropic(8.0f);
+    samplerDesc.minFilter = RHIFilterMode::Linear;
+    samplerDesc.magFilter = RHIFilterMode::Linear;
+    samplerDesc.mipFilter = RHIFilterMode::Linear;
+    samplerDesc.addressU = RHIAddressMode::Repeat;
+    samplerDesc.addressV = RHIAddressMode::Repeat;
+    samplerDesc.addressW = RHIAddressMode::Repeat;
     samplerDesc.debugName = "DefaultMaterialSampler";
     m_defaultSampler = m_device->CreateSampler(samplerDesc);
+    if (!m_defaultSampler && samplerDesc.anisotropyEnable)
+    {
+        RVX_CORE_WARN("MaterialSystem: Anisotropic material sampler creation failed; falling back to linear mip sampler");
+        samplerDesc.anisotropyEnable = false;
+        samplerDesc.maxAnisotropy = 1.0f;
+        samplerDesc.debugName = "DefaultMaterialLinearMipSampler";
+        m_defaultSampler = m_device->CreateSampler(samplerDesc);
+    }
     if (!m_defaultSampler)
     {
         RVX_CORE_ERROR("MaterialSystem: Failed to create default material sampler");

@@ -4014,6 +4014,91 @@ git diff --check
 
 ---
 
+### RQ6: Texture Mip Chain And Material Sampler Quality
+
+**Date:** 2026-06-10
+**Commit:** pending
+**Spark plan review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+**Spark code review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-10-rq6-texture-mip-sampler-quality-plan.md`
+- Section: full document
+- Lines checked: full document reread before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ5 - Texture Fallback Provenance Guard
+- Evidence: RQ5 committed in `4bb9dcd` and recorded in `5d0af89`; fallback provenance tests stayed green after RQ6 changes.
+
+**Approved scope:**
+
+- Generate CPU mip chains for ordinary decoded 2D RGBA8 textures.
+- Make external glTF texture loading usage/sRGB-aware before mip generation and include usage/sRGB in cache identity.
+- Keep TextureLoader default fallback textures single-mip with RQ5 provenance intact.
+- Validate ordinary 2D mip-chain GPU upload subresources.
+- Make the default material sampler explicitly mip-filtered, with anisotropy attempted and visible fallback to linear mip filtering.
+
+**Out of scope:**
+
+- GPU compute mip generation, streaming, virtual texturing, compressed texture import, per-material sampler states, sampler cache redesign, post-process rewrites, or BRDF/lighting changes.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-10-rq6-texture-mip-sampler-quality-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Resource/Include/Resource/Loader/TextureLoader.h`
+- `Resource/Private/Loader/TextureLoader.cpp`
+- `Resource/Private/ResourceManager.cpp`
+- `Render/Private/Material/MaterialSystem.cpp`
+- `Tests/RenderHonestyValidation/main.cpp`
+- `Tests/GPUResourceManagerValidation/main.cpp`
+- `Tests/MaterialSystemValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target RenderHonestyValidation GPUResourceManagerValidation MaterialSystemValidation ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderHonestyValidation|GPUResourceManagerValidation|MaterialSystemValidation|ModelViewerPBRMaterialSmoke|PBRMaterialVisualGoldenValidation"
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation RenderSceneValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|RenderSceneValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerIBLSmoke|ModelViewerShadowSmoke|ShadowVisualGoldenValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS, warnings only from existing warning sites.
+- RQ6/RQ4/RQ5 gate: PASS, 84/84 selected tests passed.
+- Focused render regression: PASS, 93/93 selected tests passed.
+- Extra visual regression: PASS, 6/6 selected ModelViewer visual tests passed.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Tests: `RenderHonestyValidation`, `GPUResourceManagerValidation`, `MaterialSystemValidation`, `ModelViewerPBRMaterialSmoke`, `PBRMaterialVisualGoldenValidation`, `PipelineCacheValidation`, `RenderPassValidation`, `RenderSceneValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerIBLSmoke`, `ModelViewerShadowSmoke`, `ShadowVisualGoldenValidation`.
+- Diffs: RQ6 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Initial verdict: BLOCKED.
+- Blockers resolved: external `LoadFromReference()` usage/sRGB policy is now required before mip generation; cache identity must distinguish usage/sRGB; deterministic Color/Normal/Data mip tests and ordinary 2D mip layout tests are required.
+- Final verdict: PASS.
+
+**Spark code review result:**
+
+- Initial verdict: BLOCKED.
+- Blockers resolved: generic `ResourceManager::LoadResource(path)` no longer leaves the generic loader cache alias after rewriting the resource to the manager path identity; it also no longer steals or mutates an existing TextureLoader policy-cache resource created through `LoadFromReference()` for the same source path. Regression tests cover both `Unload(path)` and pre-existing policy cache identity.
+- Final verdict: PASS.
+
+**Notes / follow-ups:**
+
+- RQ6 improves material texture minification quality and sampler correctness without changing BRDF math or render pass topology.
+- Follow-ups from code review: add an anisotropic sampler creation-failure fallback test; add odd-size/non-square mip chain layout coverage.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
