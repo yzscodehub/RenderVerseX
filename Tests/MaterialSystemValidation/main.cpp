@@ -880,6 +880,59 @@ namespace
         gpuResources.Shutdown();
     }
 
+    TEST(MaterialSystemValidation, MaterialBindingDefaultFallbackTextureDoesNotSetTextureFlag)
+    {
+        FakeDevice device;
+        GPUResourceManager gpuResources;
+        gpuResources.Initialize(&device);
+
+        ResourceViewCache viewCache;
+        viewCache.Initialize(&device);
+
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+
+        auto fallbackTexture = CreateTextureResource(307);
+        fallbackTexture->MarkDefaultFallback("test default fallback");
+        gpuResources.UploadImmediate(fallbackTexture.Get());
+        ASSERT_TRUE(gpuResources.IsGPUReady(fallbackTexture.GetId()));
+
+        Resource::MaterialResource fallbackMaterial;
+        fallbackMaterial.SetId(203);
+        fallbackMaterial.SetName("FallbackTextureMaterialResource");
+        fallbackMaterial.SetMaterialData(std::make_shared<Material>("FallbackTextureMaterialResource"));
+        fallbackMaterial.SetTexture("albedo", fallbackTexture);
+
+        const MaterialBindingResult fallbackResult =
+            materialSystem.PrepareMaterialBinding(&fallbackMaterial, &viewCache);
+
+        EXPECT_EQ(MaterialBindingStatus::Fallback, fallbackResult.status);
+        EXPECT_TRUE(fallbackResult.IsDrawable());
+        EXPECT_TRUE(fallbackResult.usedFallback);
+        EXPECT_EQ(0u, fallbackResult.textureFlags & static_cast<uint32>(MaterialTextureFlags::HasBaseColor));
+        EXPECT_EQ(static_cast<uint32>(MaterialTextureFlags::HasBaseColor),
+                  fallbackResult.fallbackTextureFlags & static_cast<uint32>(MaterialTextureFlags::HasBaseColor));
+
+        Resource::MaterialResource omittedTextureMaterial;
+        omittedTextureMaterial.SetId(204);
+        omittedTextureMaterial.SetName("OmittedTextureMaterialResource");
+        omittedTextureMaterial.SetMaterialData(std::make_shared<Material>("OmittedTextureMaterialResource"));
+
+        const MaterialBindingResult omittedResult =
+            materialSystem.PrepareMaterialBinding(&omittedTextureMaterial, &viewCache);
+
+        EXPECT_EQ(MaterialBindingStatus::Ready, omittedResult.status);
+        EXPECT_TRUE(omittedResult.IsDrawable());
+        EXPECT_FALSE(omittedResult.usedFallback);
+        EXPECT_EQ(0u, omittedResult.textureFlags);
+        EXPECT_EQ(0u, omittedResult.fallbackTextureFlags);
+
+        materialSystem.Shutdown();
+        viewCache.Shutdown();
+        gpuResources.Shutdown();
+    }
+
     TEST(MaterialSystemValidation, MaterialBindingNonResidentTextureReportsFallback)
     {
         FakeDevice device;

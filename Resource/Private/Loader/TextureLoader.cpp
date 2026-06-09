@@ -291,6 +291,10 @@ namespace RVX::Resource
             std::vector<uint8_t> whitePixel = { 255, 255, 255, 255 };
             m_whiteTexture = CreateTextureResource(std::move(whitePixel), 1, 1, 4,
                                                     "__default_white__", TextureUsage::Color);
+            if (m_whiteTexture)
+            {
+                m_whiteTexture->MarkDefaultFallback("TextureLoader default white fallback");
+            }
         }
         return m_whiteTexture;
     }
@@ -307,6 +311,7 @@ namespace RVX::Resource
             if (m_normalTexture)
             {
                 m_normalTexture->SetSRGB(false);
+                m_normalTexture->MarkDefaultFallback("TextureLoader default normal fallback");
             }
         }
         return m_normalTexture;
@@ -323,6 +328,10 @@ namespace RVX::Resource
             };
             m_errorTexture = CreateTextureResource(std::move(errorPixels), 2, 2, 4,
                                                     "__default_error__", TextureUsage::Color);
+            if (m_errorTexture)
+            {
+                m_errorTexture->MarkDefaultFallback("TextureLoader default error fallback");
+            }
         }
         return m_errorTexture;
     }

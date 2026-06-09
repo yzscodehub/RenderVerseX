@@ -330,6 +330,8 @@ TEST_F(RenderHonestyValidationFixture, TextureReferenceFallbackIsObservable)
     RVX::Resource::TextureResource* texture = loader.LoadFromReference(invalidReference, "model.gltf");
 
     ASSERT_NE(texture, nullptr);
+    EXPECT_TRUE(texture->IsDefaultFallback());
+    EXPECT_FALSE(texture->GetFallbackReason().empty());
     EXPECT_TRUE(loader.WasLastLoadFallback());
     EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::FallbackInvalidReference);
     EXPECT_FALSE(loader.GetLastLoadError().empty());
@@ -349,15 +351,19 @@ TEST_F(RenderHonestyValidationFixture, TextureCacheHitsReportLoadedStatus)
     RVX::Resource::TextureResource* first = loader.LoadFromMemory(
         rgba.data(), rgba.size(), cachePath.string(), RVX::Resource::TextureUsage::Color, true, 1, 1);
     ASSERT_NE(first, nullptr);
+    EXPECT_FALSE(first->IsDefaultFallback());
     EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
 
     RVX::Resource::TextureReference invalidReference;
-    ASSERT_NE(loader.LoadFromReference(invalidReference, "model.gltf"), nullptr);
+    RVX::Resource::TextureResource* invalidFallback = loader.LoadFromReference(invalidReference, "model.gltf");
+    ASSERT_NE(invalidFallback, nullptr);
+    EXPECT_TRUE(invalidFallback->IsDefaultFallback());
     ASSERT_TRUE(loader.WasLastLoadFallback());
 
     RVX::Resource::TextureResource* cachedMemory = loader.LoadFromMemory(
         rgba.data(), rgba.size(), cachePath.string(), RVX::Resource::TextureUsage::Color, true, 1, 1);
     EXPECT_EQ(cachedMemory, first);
+    EXPECT_FALSE(cachedMemory->IsDefaultFallback());
     EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
     EXPECT_FALSE(loader.WasLastLoadFallback());
     EXPECT_TRUE(loader.GetLastLoadError().empty());
@@ -367,6 +373,7 @@ TEST_F(RenderHonestyValidationFixture, TextureCacheHitsReportLoadedStatus)
 
     RVX::Resource::TextureResource* cachedFile = loader.LoadFromFile(cachePath.string());
     EXPECT_EQ(cachedFile, first);
+    EXPECT_FALSE(cachedFile->IsDefaultFallback());
     EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
     EXPECT_FALSE(loader.WasLastLoadFallback());
     EXPECT_TRUE(loader.GetLastLoadError().empty());
@@ -377,6 +384,7 @@ TEST_F(RenderHonestyValidationFixture, TextureCacheHitsReportLoadedStatus)
 
     RVX::Resource::TextureResource* embeddedFirst = loader.LoadFromReference(embedded, "model.gltf");
     ASSERT_NE(embeddedFirst, nullptr);
+    EXPECT_FALSE(embeddedFirst->IsDefaultFallback());
     EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
 
     ASSERT_NE(loader.LoadFromReference(invalidReference, "model.gltf"), nullptr);
@@ -384,6 +392,7 @@ TEST_F(RenderHonestyValidationFixture, TextureCacheHitsReportLoadedStatus)
 
     RVX::Resource::TextureResource* embeddedCached = loader.LoadFromReference(embedded, "model.gltf");
     EXPECT_EQ(embeddedCached, embeddedFirst);
+    EXPECT_FALSE(embeddedCached->IsDefaultFallback());
     EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
     EXPECT_FALSE(loader.WasLastLoadFallback());
     EXPECT_TRUE(loader.GetLastLoadError().empty());

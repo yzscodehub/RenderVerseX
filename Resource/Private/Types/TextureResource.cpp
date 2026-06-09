@@ -1,5 +1,7 @@
 #include "Resource/Types/TextureResource.h"
 
+#include <utility>
+
 namespace RVX::Resource
 {
 
@@ -10,6 +12,12 @@ void TextureResource::SetData(std::vector<uint8_t> data, const TextureMetadata& 
 {
     m_data = std::move(data);
     m_metadata = metadata;
+}
+
+void TextureResource::MarkDefaultFallback(std::string reason)
+{
+    m_isDefaultFallback = true;
+    m_fallbackReason = std::move(reason);
 }
 
 size_t TextureResource::GetMemoryUsage() const

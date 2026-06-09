@@ -42,6 +42,7 @@ namespace RVX
         RHIDescriptorSet* descriptorSet = nullptr;
         std::array<uint32, 1> dynamicOffsets = {0};
         uint32 textureFlags = 0;
+        uint32 fallbackTextureFlags = 0;
         bool constantsUpdated = false;
         bool usedFallback = false;
         std::string materialName;
@@ -146,6 +147,7 @@ namespace RVX
             RHITextureView* prefilteredEnvironment = nullptr;
             RHITextureView* brdfLUT = nullptr;
             uint32 textureFlags = 0;
+            uint32 fallbackTextureFlags = 0;
             uint64 viewGeneration = 0;
             bool textureIBLEnabled = false;
             bool usedFallback = false;
@@ -199,6 +201,7 @@ namespace RVX
                                            ResourceViewCache* viewCache,
                                            uint32 textureFlag,
                                            uint32& textureFlags,
+                                           uint32& fallbackTextureFlags,
                                            bool& usedFallback) const;
         ResolvedMaterialTextures ResolveMaterialTextures(const Resource::MaterialResource* materialResource,
                                                         ResourceViewCache* viewCache) const;

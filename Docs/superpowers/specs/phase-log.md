@@ -3932,6 +3932,88 @@ git diff --check
 
 ---
 
+### RQ5: Texture Fallback Provenance Guard
+
+**Date:** 2026-06-10
+**Commit:** pending
+**Spark plan review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+**Spark code review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-10-rq5-texture-fallback-provenance-plan.md`
+- Section: full document
+- Lines checked: full document reread before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ4 - PBR Material Texture Visual Gate
+- Evidence: RQ4 committed in `5dd6514` and recorded in `cf983cc`; RQ4 visual gates stayed green after RQ5 changes.
+
+**Approved scope:**
+
+- Add queryable default-fallback provenance to `TextureResource`.
+- Mark TextureLoader white/normal/error default resources as fallback resources.
+- Make `MaterialSystem` treat explicit default fallback textures as fallback provenance instead of real material texture slots.
+- Preserve omitted optional material texture slots as normal non-fallback omissions.
+- Extend honesty/material tests and keep RQ4 visual gates green.
+
+**Out of scope:**
+
+- Texture streaming, mip generation, sampler redesign, asset database schema changes, editor UI, async retry, material feature work, or DX12/Vulkan visual golden expansion.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-10-rq5-texture-fallback-provenance-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Resource/Include/Resource/Types/TextureResource.h`
+- `Resource/Private/Types/TextureResource.cpp`
+- `Resource/Private/Loader/TextureLoader.cpp`
+- `Render/Include/Render/Material/MaterialSystem.h`
+- `Render/Private/Material/MaterialSystem.cpp`
+- `Tests/RenderHonestyValidation/main.cpp`
+- `Tests/MaterialSystemValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target RenderHonestyValidation MaterialSystemValidation ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderHonestyValidation|MaterialSystemValidation|ModelViewerPBRMaterialSmoke|PBRMaterialVisualGoldenValidation"
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation RenderSceneValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|RenderSceneValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS, warnings only from existing warning sites.
+- RQ5/RQ4 gate: PASS, 44/44 selected tests passed.
+- Focused render regression: PASS, 93/93 selected tests passed.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Tests: `RenderHonestyValidation`, `MaterialSystemValidation`, `ModelViewerPBRMaterialSmoke`, `PBRMaterialVisualGoldenValidation`, `PipelineCacheValidation`, `RenderPassValidation`, `RenderSceneValidation`.
+- Diffs: RQ5 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Optional suggestions adopted: successful file/memory/embedded loads and cache hits remain non-fallback; material validation distinguishes omitted optional texture slots from explicit fallback resources.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Optional follow-ups: add independent IBL fallback diagnostics if future IBL gates need slot-level provenance; add a clear/reset API only if `TextureResource` reloads from fallback to real texture in place.
+
+**Notes / follow-ups:**
+
+- RQ5 is an honesty/diagnostic guard for the render asset path; it intentionally does not change valid asset visual output.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

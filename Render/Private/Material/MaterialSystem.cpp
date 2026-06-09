@@ -152,6 +152,7 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::Mat
         MaterialBindingResult result;
         result.status = MaterialBindingStatus::Error;
         result.textureFlags = constants.textureFlags;
+        result.fallbackTextureFlags = textures.fallbackTextureFlags;
         result.usedFallback = textures.usedFallback;
         result.materialName = materialName;
         result.message = "Failed to map material constant buffer";
@@ -170,6 +171,7 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::Mat
                                                                         : setResult.status;
         result.constantsUpdated = true;
         result.textureFlags = constants.textureFlags;
+        result.fallbackTextureFlags = textures.fallbackTextureFlags;
         result.usedFallback = textures.usedFallback || setResult.usedFallback;
         result.materialName = materialName;
         result.message = setResult.message.empty() ? "Material descriptor set is unavailable"
@@ -184,6 +186,7 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::Mat
     result.dynamicOffsets = GetCurrentMaterialDynamicOffset();
     result.constantsUpdated = true;
     result.textureFlags = constants.textureFlags;
+    result.fallbackTextureFlags = textures.fallbackTextureFlags;
     result.usedFallback = textures.usedFallback || setResult.usedFallback;
     result.materialName = materialName;
     if (result.status == MaterialBindingStatus::Fallback)
@@ -230,6 +233,7 @@ RHIDescriptorSet* MaterialSystem::GetOrCreateMaterialSet(const Resource::Materia
     result.descriptorSet = setResult.descriptorSet;
     result.dynamicOffsets = GetCurrentMaterialDynamicOffset();
     result.textureFlags = textures.textureFlags;
+    result.fallbackTextureFlags = textures.fallbackTextureFlags;
     result.usedFallback = textures.usedFallback || setResult.usedFallback;
     result.materialName = materialName;
     result.message = setResult.message.empty()
@@ -432,11 +436,19 @@ RHITextureView* MaterialSystem::ResolveTextureView(const Resource::TextureResour
                                                    ResourceViewCache* viewCache,
                                                    uint32 textureFlag,
                                                    uint32& textureFlags,
+                                                   uint32& fallbackTextureFlags,
                                                    bool& usedFallback) const
 {
-    if (!textureResource || !m_gpuResources || !viewCache || !m_gpuResources->IsGPUReady(textureResource->GetId()))
+    if (!textureResource)
+    {
+        return fallbackView;
+    }
+
+    if (textureResource->IsDefaultFallback() || !m_gpuResources || !viewCache ||
+        !m_gpuResources->IsGPUReady(textureResource->GetId()))
     {
         usedFallback = true;
+        fallbackTextureFlags |= textureFlag;
         return fallbackView;
     }
 
@@ -444,6 +456,7 @@ RHITextureView* MaterialSystem::ResolveTextureView(const Resource::TextureResour
     if (!texture)
     {
         usedFallback = true;
+        fallbackTextureFlags |= textureFlag;
         return fallbackView;
     }
 
@@ -451,6 +464,7 @@ RHITextureView* MaterialSystem::ResolveTextureView(const Resource::TextureResour
     if (!view)
     {
         usedFallback = true;
+        fallbackTextureFlags |= textureFlag;
         return fallbackView;
     }
 
@@ -483,27 +497,32 @@ MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures
                                                 viewCache,
                                                 static_cast<uint32>(MaterialTextureFlags::HasBaseColor),
                                                 textures.textureFlags,
+                                                textures.fallbackTextureFlags,
                                                 textures.usedFallback);
         textures.normal = ResolveTextureView(materialResource->GetNormalTexture().Get(), textures.normal,
                                              viewCache,
                                              static_cast<uint32>(MaterialTextureFlags::HasNormal),
                                              textures.textureFlags,
+                                             textures.fallbackTextureFlags,
                                              textures.usedFallback);
         textures.metallicRoughness =
             ResolveTextureView(materialResource->GetMetallicRoughnessTexture().Get(), textures.metallicRoughness,
                                viewCache,
                                static_cast<uint32>(MaterialTextureFlags::HasMetallicRoughness),
                                textures.textureFlags,
+                               textures.fallbackTextureFlags,
                                textures.usedFallback);
         textures.occlusion = ResolveTextureView(materialResource->GetAOTexture().Get(), textures.occlusion,
                                                 viewCache,
                                                 static_cast<uint32>(MaterialTextureFlags::HasOcclusion),
                                                 textures.textureFlags,
+                                                textures.fallbackTextureFlags,
                                                 textures.usedFallback);
         textures.emissive = ResolveTextureView(materialResource->GetEmissiveTexture().Get(), textures.emissive,
                                                viewCache,
                                                static_cast<uint32>(MaterialTextureFlags::HasEmissive),
                                                textures.textureFlags,
+                                               textures.fallbackTextureFlags,
                                                textures.usedFallback);
     }
 
@@ -515,18 +534,21 @@ MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures
                                                  viewCache,
                                                  0,
                                                  textures.textureFlags,
+                                                 textures.fallbackTextureFlags,
                                                  iblUsedFallback);
         textures.prefilteredEnvironment = ResolveTextureView(m_environmentIBL.prefilteredMap,
                                                              textures.prefilteredEnvironment,
                                                              viewCache,
                                                              0,
                                                              textures.textureFlags,
+                                                             textures.fallbackTextureFlags,
                                                              iblUsedFallback);
         textures.brdfLUT = ResolveTextureView(m_environmentIBL.brdfLUT,
                                               textures.brdfLUT,
                                               viewCache,
                                               0,
                                               textures.textureFlags,
+                                              textures.fallbackTextureFlags,
                                               iblUsedFallback);
 
         if (iblUsedFallback)
