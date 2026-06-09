@@ -3762,7 +3762,7 @@ git diff --check
 ### R-SP: `RQ3d - Directional Shadow Visual Gate`
 
 **Date:** 2026-06-10
-**Commit:** pending
+**Commit:** `6fdfe90 test(render): add directional shadow visual gate`
 **Spark plan review agent:** Pauli (`019ead8c-e21b-78c3-add0-12e95fc7bb43`)
 **Spark code review agent:** Pauli (`019ead8c-e21b-78c3-add0-12e95fc7bb43`)
 
