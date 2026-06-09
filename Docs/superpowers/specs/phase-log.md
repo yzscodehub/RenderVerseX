@@ -4181,7 +4181,7 @@ git diff --check
 ### R-SP: `RQ8 - Tangent Basis Robustness And Normal-Map Honesty`
 
 **Date:** 2026-06-10
-**Commit:** pending
+**Commit:** `c73ae75`
 **Spark plan review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
 **Spark code review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
 
