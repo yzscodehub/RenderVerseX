@@ -676,7 +676,7 @@ namespace RVX
 
         if (!desc.bindings.empty())
         {
-            Update(desc.bindings);
+            m_isValid = Update(desc.bindings);
         }
     }
 
@@ -717,7 +717,8 @@ namespace RVX
         // Update all bindings immediately
         for (const auto& binding : m_bindings)
         {
-            UpdateBindingInternal(binding);
+            if (!UpdateBindingInternal(binding))
+                return false;
         }
         m_dirtyBindings.reset();
         m_hasPendingUpdates = false;
@@ -768,8 +769,7 @@ namespace RVX
             m_hasPendingUpdates = true;
         }
         // For now, update immediately (can be deferred later)
-        UpdateBindingInternal(binding);
-        return true;
+        return UpdateBindingInternal(binding);
     }
 
     void DX12DescriptorSet::FlushUpdates()
@@ -790,7 +790,7 @@ namespace RVX
         m_hasPendingUpdates = false;
     }
 
-    void DX12DescriptorSet::UpdateBindingInternal(const RHIDescriptorBinding& binding)
+    bool DX12DescriptorSet::UpdateBindingInternal(const RHIDescriptorBinding& binding)
     {
         auto d3dDevice = m_device->GetD3DDevice();
         auto& heapManager = m_device->GetDescriptorHeapManager();
@@ -798,20 +798,45 @@ namespace RVX
         const uint32 cbvSrvUavSize = heapManager.GetCbvSrvUavDescriptorSize();
         const uint32 samplerSize = heapManager.GetSamplerDescriptorSize();
 
-        // Handle texture view (SRV) - copy to CBV_SRV_UAV heap
+        // Handle texture views. Sampled texture ranges are SRV descriptors;
+        // storage texture ranges are UAV descriptors. This matters now that a
+        // RHI texture view owns only the requested native view role.
         if (binding.textureView && m_cbvSrvUavHandle.IsValid())
         {
             auto* dx12View = static_cast<DX12TextureView*>(binding.textureView);
-            const DX12DescriptorHandle& srcHandle = dx12View->GetSRVHandle();
-            if (srcHandle.IsValid())
+            const RHIBindingLayoutEntry* entry = m_layout ? m_layout->FindEntry(binding.binding) : nullptr;
+            const DX12DescriptorHandle* srcHandle = nullptr;
+            if (entry && (entry->type == RHIBindingType::SampledTexture ||
+                          entry->type == RHIBindingType::CombinedTextureSampler))
+            {
+                srcHandle = &dx12View->GetSRVHandle();
+            }
+            else if (entry && entry->type == RHIBindingType::StorageTexture)
+            {
+                srcHandle = &dx12View->GetUAVHandle();
+            }
+
+            if (srcHandle && srcHandle->IsValid())
             {
                 uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
                 if (dstIndex != UINT32_MAX)
                 {
                     D3D12_CPU_DESCRIPTOR_HANDLE dst = m_cbvSrvUavHandle.cpuHandle;
                     dst.ptr += static_cast<SIZE_T>(dstIndex) * cbvSrvUavSize;
-                    d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                    d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle->cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
                 }
+            }
+            else if (entry)
+            {
+                RVX_RHI_ERROR("DX12DescriptorSet: missing native texture descriptor for binding {} type {}",
+                              binding.binding,
+                              static_cast<uint32>(entry->type));
+                return false;
+            }
+            else
+            {
+                RVX_RHI_ERROR("DX12DescriptorSet: texture binding {} is not declared in layout", binding.binding);
+                return false;
             }
         }
 
@@ -851,6 +876,8 @@ namespace RVX
                 }
             }
         }
+
+        return true;
     }
 
     // =============================================================================
@@ -912,7 +939,13 @@ namespace RVX
                           validation.binding);
             return nullptr;
         }
-        return Ref<DX12DescriptorSet>(new DX12DescriptorSet(device, desc));
+        auto descriptorSet = Ref<DX12DescriptorSet>(new DX12DescriptorSet(device, desc));
+        if (!descriptorSet->IsValid())
+        {
+            RVX_RHI_ERROR("DX12 descriptor set creation failed: initial bindings could not be applied");
+            return nullptr;
+        }
+        return descriptorSet;
     }
 
 } // namespace RVX

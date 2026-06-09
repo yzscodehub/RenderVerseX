@@ -866,6 +866,8 @@ void SceneRenderer::EnsureDepthBuffer(uint32_t width, uint32_t height)
         viewDesc.format = PipelineCache::GetDefaultDepthStencilFormat();
         viewDesc.dimension = RHITextureDimension::Texture2D;
         viewDesc.subresourceRange = RHISubresourceRange::All();
+        viewDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+        viewDesc.type = RHITextureViewType::DepthStencil;
         viewDesc.debugName = "SceneDepthBufferView";
         
         m_depthTextureView = device->CreateTextureView(m_depthTexture.Get(), viewDesc);

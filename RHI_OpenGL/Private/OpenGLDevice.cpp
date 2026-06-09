@@ -332,9 +332,24 @@ namespace RVX
             RVX_RHI_ERROR("CreateTextureView: texture is null");
             return nullptr;
         }
+        if (!IsTextureViewTypeCompatible(texture->GetUsage(), texture->GetFormat(), desc))
+        {
+            RVX_RHI_ERROR("OpenGL: Cannot create {} texture view for texture usage {} format {}",
+                          GetTextureViewTypeName(desc.type),
+                          static_cast<uint32>(texture->GetUsage()),
+                          static_cast<uint32>(desc.format == RHIFormat::Unknown ? texture->GetFormat() : desc.format));
+            return nullptr;
+        }
 
         auto* glTexture = static_cast<OpenGLTexture*>(texture);
-        return MakeRef<OpenGLTextureView>(this, glTexture, desc);
+        auto view = MakeRef<OpenGLTextureView>(this, glTexture, desc);
+        if (glTexture->GetHandle() != 0 && view->GetHandle() == 0)
+        {
+            RVX_RHI_ERROR("OpenGL: Failed to create native {} texture view",
+                          GetTextureViewTypeName(desc.type));
+            return nullptr;
+        }
+        return view;
     }
 
     RHISamplerRef OpenGLDevice::CreateSampler(const RHISamplerDesc& desc)

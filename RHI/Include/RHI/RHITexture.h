@@ -150,13 +150,52 @@ namespace RVX
     // =============================================================================
     // Texture View Description
     // =============================================================================
+    enum class RHITextureViewType : uint8
+    {
+        ShaderResource = 0,
+        RenderTarget,
+        DepthStencil,
+        UnorderedAccess,
+    };
+
     struct RHITextureViewDesc
     {
         RHIFormat format = RHIFormat::Unknown;  // Unknown = use texture format
         RHITextureDimension dimension = RHITextureDimension::Texture2D;
         RHISubresourceRange subresourceRange;
+        RHITextureViewType type = RHITextureViewType::ShaderResource;
         const char* debugName = nullptr;
     };
+
+    inline const char* GetTextureViewTypeName(RHITextureViewType type)
+    {
+        switch (type)
+        {
+            case RHITextureViewType::ShaderResource: return "ShaderResource";
+            case RHITextureViewType::RenderTarget: return "RenderTarget";
+            case RHITextureViewType::DepthStencil: return "DepthStencil";
+            case RHITextureViewType::UnorderedAccess: return "UnorderedAccess";
+            default: return "Unknown";
+        }
+    }
+
+    inline bool IsTextureViewTypeCompatible(RHITextureUsage usage, RHIFormat textureFormat, const RHITextureViewDesc& desc)
+    {
+        const RHIFormat viewFormat = desc.format == RHIFormat::Unknown ? textureFormat : desc.format;
+        switch (desc.type)
+        {
+            case RHITextureViewType::ShaderResource:
+                return HasFlag(usage, RHITextureUsage::ShaderResource);
+            case RHITextureViewType::RenderTarget:
+                return HasFlag(usage, RHITextureUsage::RenderTarget) && !IsDepthFormat(viewFormat);
+            case RHITextureViewType::DepthStencil:
+                return HasFlag(usage, RHITextureUsage::DepthStencil) && IsDepthFormat(viewFormat);
+            case RHITextureViewType::UnorderedAccess:
+                return HasFlag(usage, RHITextureUsage::UnorderedAccess);
+            default:
+                return false;
+        }
+    }
 
     // =============================================================================
     // Texture View Interface

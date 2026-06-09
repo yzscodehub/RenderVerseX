@@ -3556,6 +3556,119 @@ git diff --check
 
 ---
 
+### R-SP: `RQ3b - Texture View Role Semantics`
+
+**Date:** 2026-06-10
+**Commit:** pending
+**Spark plan review agent:** Pasteur (`019ead27-1d96-7523-a84f-846a554bc71f`)
+**Spark code review agent:** Pasteur (`019ead27-1d96-7523-a84f-846a554bc71f`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-10-rq3b-texture-view-role-semantics-plan.md`
+- Section: entire RQ3b stage scope, tests, validation plan, and acceptance criteria
+- Lines checked: local document reviewed before implementation; scope tightened after Spark plan review.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ3a
+- Evidence: RQ3a committed as `b980d99 feat(render): bridge directional shadow sampling`, with docs follow-up `0d425b9 docs(render): record rq3a commit`.
+
+**Approved scope:**
+
+- Add explicit `RHITextureViewType` to `RHITextureViewDesc`, defaulting to `ShaderResource`.
+- Include texture view type in `ResourceViewCache` key equality and hashing.
+- Make SRV/RTV/DSV/UAV default helpers request explicit roles and keep debug names out of identity.
+- Make DX11/DX12/Vulkan/Metal/OpenGL texture-view creation fail honestly for incompatible requested roles.
+- Make DX12 descriptor updates bind SRV handles for sampled textures and UAV handles for storage textures.
+- Patch render call sites that manually create backbuffer, depth, shadow, material, skybox, and fallback views.
+- Add backend and cache regression tests, including same-descriptor/different-type identity and DX12 storage texture binding.
+
+**Out of scope:**
+
+- Shadow filtering quality, CSM stabilization, atlas packing, point/spot shadows, RenderGraph state tracking rewrites, descriptor/bindless redesign, ECS/Object/RenderProxy work.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-10-rq3b-texture-view-role-semantics-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `RHI/Include/RHI/RHITexture.h`
+- `Render/Include/Render/Graph/ResourceViewCache.h`
+- `Render/Private/Graph/ResourceViewCache.cpp`
+- `RHI_DX11/Private/DX11Device.cpp`
+- `RHI_DX11/Private/DX11Resources.cpp`
+- `RHI_DX11/Private/DX11SwapChain.cpp`
+- `RHI_DX12/Private/DX12Pipeline.h`
+- `RHI_DX12/Private/DX12Pipeline.cpp`
+- `RHI_DX12/Private/DX12Resources.cpp`
+- `RHI_DX12/Private/DX12SwapChain.cpp`
+- `RHI_Vulkan/Private/VulkanResources.cpp`
+- `RHI_Vulkan/Private/VulkanSwapChain.cpp`
+- `RHI_Metal/Private/MetalDevice.mm`
+- `RHI_Metal/Private/MetalSwapChain.mm`
+- `RHI_OpenGL/Private/OpenGLDevice.cpp`
+- `RHI_OpenGL/Private/OpenGLSwapChain.cpp`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Material/MaterialSystem.cpp`
+- `Render/Private/Passes/SkyboxPass.cpp`
+- `Tests/ResourceViewCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/DX11Validation/main.cpp`
+- `Tests/DX12Validation/main.cpp`
+- `Tests/VulkanValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target ResourceViewCacheValidation RenderPassValidation PipelineCacheValidation DX11Validation DX12Validation VulkanValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ResourceViewCacheValidation|RenderPassValidation|PipelineCacheValidation|DX11Validation|DX12Validation|VulkanValidation"
+cmake --build build\win_x64_debug --config Debug --target ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerIBLSmoke"
+build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --backend dx11 --width 800 --height 450 --frames 8 --screenshot build\win_x64_debug\VisualArtifacts\Debug\ModelViewer\RQ3b_DamagedHelmet.ppm --validation --expect-ibl-ready --expect-procedural-ibl-quality
+rg -n "OpenGLValidation" Tests\CMakeLists.txt Tests
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused RHI/render tests: PASS, 141/141 selected tests passed.
+- DX12 blocker fix rerun: PASS, `DX12Validation` target built and 20/20 selected tests passed.
+- Visual tests: PASS, 3/3 selected tests passed (`ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerIBLSmoke`).
+- Manual DamagedHelmet smoke: PASS, exit code 0, `ModelViewer procedural IBL quality check passed`, `ModelViewer Smoke PASS`.
+- OpenGLValidation: skipped because no `OpenGLValidation` target is present in `Tests/CMakeLists.txt` or `Tests`.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Screenshot: `build/win_x64_debug/VisualArtifacts/Debug/ModelViewer/RQ3b_DamagedHelmet.ppm`
+- Diffs: RQ3b intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Initial verdict: BLOCKED.
+- Blockers resolved: DX12 sampled/storage descriptor binding was added to scope; OpenGL role propagation and swapchain coverage were added; exact same-descriptor/different-type cache identity testing was added.
+- Final verdict: PASS.
+
+**Spark code review result:**
+
+- Initial verdict: BLOCKED.
+- Blocker resolved: DX12 descriptor-set creation now propagates initial-binding failures instead of returning a non-null set after `Update(desc.bindings)` fails.
+- Added follow-up coverage: creation-time `StorageTexture` binding accepts a UAV view and rejects an SRV-only view in `DX12Validation.TextureViewRolesAndStorageTextureBinding`.
+- Final verdict: PASS.
+- Optional follow-up: surface/log `DX12DescriptorSet::FlushUpdates()` failures if deferred descriptor updates become a real public path later.
+
+**Notes / follow-ups:**
+
+- RQ3b keeps `RHITextureViewDesc::type` defaulting to `ShaderResource` for compatibility, but known render-target/depth manual call sites were made explicit.
+- Vulkan aspect-mask behavior is covered by implementation review and backend validation; there is still no standalone OpenGL validation target in this workspace.
+- Metal role behavior was not covered by this Windows validation run.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

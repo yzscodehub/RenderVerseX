@@ -379,10 +379,9 @@ namespace
         RHITextureViewRef CreateTextureView(RHITexture* texture, const RHITextureViewDesc& desc = {}) override
         {
             createdTextureViewDescs.push_back(desc);
-            const bool isDirectionalShadowSRV = desc.debugName && std::string(desc.debugName) == "DirectionalShadowSRV";
-            const bool isShadowDepthView = failDirectionalShadowDepthViewCreation &&
-                                           desc.subresourceRange.aspect == RHITextureAspect::Depth;
-            if (isShadowDepthView || (failDirectionalShadowDepthViewCreation && isDirectionalShadowSRV))
+            const bool isDirectionalShadowSRV = desc.debugName && std::string(desc.debugName) == "DirectionalShadowSRV" &&
+                                                desc.type == RHITextureViewType::ShaderResource;
+            if (failDirectionalShadowSRVCreation && isDirectionalShadowSRV)
                 return {};
             if (!textureViewCreationSucceeds)
                 return {};
@@ -494,7 +493,7 @@ namespace
 
         bool bufferMapSucceeds = true;
         bool textureViewCreationSucceeds = true;
-        bool failDirectionalShadowDepthViewCreation = false;
+        bool failDirectionalShadowSRVCreation = false;
         bool samplerCreationSucceeds = true;
         std::vector<RHIBufferDesc> createdBufferDescs;
         std::vector<FakeBuffer*> createdBuffers;
@@ -1940,7 +1939,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassReportsMissingShadowSRVWhenRequest
 
     graph.Compile();
 
-    device.failDirectionalShadowDepthViewCreation = true;
+    device.failDirectionalShadowSRVCreation = true;
     RecordingCommandContext ctx;
     graph.Execute(ctx);
 

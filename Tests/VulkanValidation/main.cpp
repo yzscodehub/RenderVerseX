@@ -119,6 +119,37 @@ TEST(VulkanValidation, TextureView)
     ASSERT_NE(nullptr, view.Get());
 }
 
+TEST(VulkanValidation, TextureViewRolesAreExplicit)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    auto sampledTextureDesc = RHITextureDesc::Texture2D(64, 64, RHIFormat::RGBA8_UNORM);
+    auto sampledTexture = device->CreateTexture(sampledTextureDesc);
+    ASSERT_NE(nullptr, sampledTexture.Get());
+
+    RHITextureViewDesc sampledViewDesc;
+    sampledViewDesc.format = RHIFormat::RGBA8_UNORM;
+    sampledViewDesc.type = RHITextureViewType::ShaderResource;
+    auto sampledView = device->CreateTextureView(sampledTexture.Get(), sampledViewDesc);
+    ASSERT_NE(nullptr, sampledView.Get());
+
+    RHITextureViewDesc invalidRTVDesc = sampledViewDesc;
+    invalidRTVDesc.type = RHITextureViewType::RenderTarget;
+    EXPECT_EQ(nullptr, device->CreateTextureView(sampledTexture.Get(), invalidRTVDesc).Get());
+
+    auto renderTargetDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
+    auto renderTarget = device->CreateTexture(renderTargetDesc);
+    ASSERT_NE(nullptr, renderTarget.Get());
+
+    RHITextureViewDesc rtvDesc;
+    rtvDesc.format = RHIFormat::RGBA8_UNORM;
+    rtvDesc.type = RHITextureViewType::RenderTarget;
+    auto rtv = device->CreateTextureView(renderTarget.Get(), rtvDesc);
+    ASSERT_NE(nullptr, rtv.Get());
+}
+
 TEST(VulkanValidation, Sampler)
 {
     RHIDeviceDesc deviceDesc;

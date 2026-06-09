@@ -1461,6 +1461,7 @@ bool PipelineCache::EnsureFrameShadowFallbackResources()
         viewDesc.format = m_fallbackDirectionalShadowTexture->GetFormat();
         viewDesc.dimension = m_fallbackDirectionalShadowTexture->GetDimension();
         viewDesc.subresourceRange = RHISubresourceRange::All();
+        viewDesc.type = RHITextureViewType::ShaderResource;
         viewDesc.debugName = "FallbackDirectionalShadowSRV";
         m_fallbackDirectionalShadowView =
             m_device->CreateTextureView(m_fallbackDirectionalShadowTexture.Get(), viewDesc);

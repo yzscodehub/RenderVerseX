@@ -384,6 +384,7 @@ bool MaterialSystem::CreateDefaultResources()
     {
         RHITextureViewDesc viewDesc;
         viewDesc.dimension = RHITextureDimension::Texture2D;
+        viewDesc.type = RHITextureViewType::ShaderResource;
         viewDesc.debugName = defaultTexture.name;
         *defaultTexture.view = m_device->CreateTextureView(defaultTexture.texture->Get(), viewDesc);
         if (!*defaultTexture.view)
@@ -395,6 +396,7 @@ bool MaterialSystem::CreateDefaultResources()
 
     RHITextureViewDesc blackCubemapViewDesc;
     blackCubemapViewDesc.dimension = RHITextureDimension::TextureCube;
+    blackCubemapViewDesc.type = RHITextureViewType::ShaderResource;
     blackCubemapViewDesc.debugName = "DefaultBlackIBLCubemap";
     m_defaultBlackCubemapView = m_device->CreateTextureView(m_defaultBlackCubemap.Get(), blackCubemapViewDesc);
     if (!m_defaultBlackCubemapView)

@@ -362,6 +362,7 @@ bool SkyboxPass::EnsureRuntimeResources()
         fallbackViewDesc.format = m_fallbackCubemap->GetFormat();
         fallbackViewDesc.dimension = RHITextureDimension::TextureCube;
         fallbackViewDesc.subresourceRange = RHISubresourceRange::All();
+        fallbackViewDesc.type = RHITextureViewType::ShaderResource;
         fallbackViewDesc.debugName = "SkyboxFallbackCubemapSRV";
         m_fallbackCubemapView = device->CreateTextureView(m_fallbackCubemap.Get(), fallbackViewDesc);
         if (!m_fallbackCubemapView)
@@ -397,6 +398,7 @@ RHITextureView* SkyboxPass::ResolveCubemapView(const ViewData& view)
     viewDesc.format = m_cubemap->GetFormat();
     viewDesc.dimension = RHITextureDimension::TextureCube;
     viewDesc.subresourceRange = RHISubresourceRange::All();
+    viewDesc.type = RHITextureViewType::ShaderResource;
     viewDesc.debugName = "SkyboxCubemapSRV";
     RHITextureViewRef viewRef = device->CreateTextureView(m_cubemap, viewDesc);
     if (!viewRef)

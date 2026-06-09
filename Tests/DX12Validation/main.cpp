@@ -126,6 +126,75 @@ TEST(DX12Validation, TextureView)
     EXPECT_EQ(view->GetTexture(), texture.Get());
 }
 
+TEST(DX12Validation, TextureViewRolesAndStorageTextureBinding)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    auto sampledTextureDesc = RHITextureDesc::Texture2D(64, 64, RHIFormat::RGBA8_UNORM);
+    auto sampledTexture = device->CreateTexture(sampledTextureDesc);
+    ASSERT_NE(nullptr, sampledTexture.Get());
+
+    RHITextureViewDesc sampledViewDesc;
+    sampledViewDesc.format = RHIFormat::RGBA8_UNORM;
+    sampledViewDesc.type = RHITextureViewType::ShaderResource;
+    auto sampledView = device->CreateTextureView(sampledTexture.Get(), sampledViewDesc);
+    ASSERT_NE(nullptr, sampledView.Get());
+
+    RHITextureViewDesc invalidRTVDesc = sampledViewDesc;
+    invalidRTVDesc.type = RHITextureViewType::RenderTarget;
+    EXPECT_EQ(nullptr, device->CreateTextureView(sampledTexture.Get(), invalidRTVDesc).Get());
+
+    auto renderTargetDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
+    auto renderTarget = device->CreateTexture(renderTargetDesc);
+    ASSERT_NE(nullptr, renderTarget.Get());
+
+    RHITextureViewDesc rtvDesc;
+    rtvDesc.format = RHIFormat::RGBA8_UNORM;
+    rtvDesc.type = RHITextureViewType::RenderTarget;
+    auto rtv = device->CreateTextureView(renderTarget.Get(), rtvDesc);
+    ASSERT_NE(nullptr, rtv.Get());
+
+    auto storageTextureDesc = RHITextureDesc::Texture2D(
+        64, 64, RHIFormat::R32_FLOAT,
+        RHITextureUsage::ShaderResource | RHITextureUsage::UnorderedAccess);
+    auto storageTexture = device->CreateTexture(storageTextureDesc);
+    ASSERT_NE(nullptr, storageTexture.Get());
+
+    RHITextureViewDesc storageSRVDesc;
+    storageSRVDesc.format = RHIFormat::R32_FLOAT;
+    storageSRVDesc.type = RHITextureViewType::ShaderResource;
+    auto storageSRV = device->CreateTextureView(storageTexture.Get(), storageSRVDesc);
+    ASSERT_NE(nullptr, storageSRV.Get());
+
+    RHITextureViewDesc storageUAVDesc = storageSRVDesc;
+    storageUAVDesc.type = RHITextureViewType::UnorderedAccess;
+    auto storageUAV = device->CreateTextureView(storageTexture.Get(), storageUAVDesc);
+    ASSERT_NE(nullptr, storageUAV.Get());
+
+    RHIDescriptorSetLayoutDesc layoutDesc;
+    layoutDesc.AddBinding(0, RHIBindingType::StorageTexture, RHIShaderStage::Compute);
+    auto layout = device->CreateDescriptorSetLayout(layoutDesc);
+    ASSERT_NE(nullptr, layout.Get());
+
+    RHIDescriptorSetDesc setDesc;
+    setDesc.SetLayout(layout.Get());
+    auto set = device->CreateDescriptorSet(setDesc);
+    ASSERT_NE(nullptr, set.Get());
+
+    EXPECT_TRUE(set->Update({RHIDescriptorBinding{0, nullptr, 0, 0, storageUAV.Get(), nullptr}}));
+    EXPECT_FALSE(set->Update({RHIDescriptorBinding{0, nullptr, 0, 0, storageSRV.Get(), nullptr}}));
+
+    RHIDescriptorSetDesc validInitialSetDesc;
+    validInitialSetDesc.SetLayout(layout.Get()).BindTexture(0, storageUAV.Get());
+    EXPECT_NE(nullptr, device->CreateDescriptorSet(validInitialSetDesc).Get());
+
+    RHIDescriptorSetDesc invalidInitialSetDesc;
+    invalidInitialSetDesc.SetLayout(layout.Get()).BindTexture(0, storageSRV.Get());
+    EXPECT_EQ(nullptr, device->CreateDescriptorSet(invalidInitialSetDesc).Get());
+}
+
 TEST(DX12Validation, Sampler)
 {
     RHIDeviceDesc deviceDesc;

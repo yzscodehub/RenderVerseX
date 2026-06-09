@@ -659,7 +659,6 @@ namespace RVX
                               m_format == RHIFormat::D32_FLOAT ||
                               m_format == RHIFormat::D32_FLOAT_S8_UINT);
 
-        RHITextureUsage usage = texture->GetUsage();
         RHITextureDimension dimension = texture->GetDimension();
         uint32 baseMip = m_subresourceRange.baseMipLevel;
         uint32 mipCount = (m_subresourceRange.mipLevelCount == 0 || m_subresourceRange.mipLevelCount == RVX_ALL_MIPS)
@@ -668,8 +667,10 @@ namespace RVX
         uint32 baseArray = m_subresourceRange.baseArrayLayer;
         uint32 arraySize = ResolveTextureArrayLayerCount(*texture, m_subresourceRange);
 
-        // Create SRV
-        if (HasFlag(usage, RHITextureUsage::ShaderResource))
+        // Create only the requested native view role. ResourceViewCache keys the
+        // RHI view role separately, so a DSV and SRV for the same texture must
+        // not collapse into one multi-role wrapper.
+        if (desc.type == RHITextureViewType::ShaderResource)
         {
             D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
             srvDesc.Format = isDepthFormat ? GetDepthSRVFormat(viewFormat) : viewFormat;
@@ -755,8 +756,7 @@ namespace RVX
             }
         }
 
-        // Create RTV if render target
-        if (HasFlag(usage, RHITextureUsage::RenderTarget))
+        if (desc.type == RHITextureViewType::RenderTarget)
         {
             D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
             rtvDesc.Format = viewFormat;
@@ -793,14 +793,7 @@ namespace RVX
                 RVX_RHI_DEBUG("DX11: Created texture view RTV for format {}", static_cast<int>(m_format));
             }
         }
-        else
-        {
-            RVX_RHI_DEBUG("DX11: Skipping RTV creation - texture usage does not include RenderTarget (usage={})", 
-                static_cast<uint32>(usage));
-        }
-
-        // Create DSV if depth stencil
-        if (HasFlag(usage, RHITextureUsage::DepthStencil))
+        if (desc.type == RHITextureViewType::DepthStencil)
         {
             D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
             dsvDesc.Format = viewFormat;
@@ -834,8 +827,7 @@ namespace RVX
             }
         }
 
-        // Create UAV if unordered access
-        if (HasFlag(usage, RHITextureUsage::UnorderedAccess))
+        if (desc.type == RHITextureViewType::UnorderedAccess)
         {
             D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
             uavDesc.Format = viewFormat;

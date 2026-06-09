@@ -123,13 +123,14 @@ namespace RVX
 
         const std::vector<RHIDescriptorBinding>& GetBindings() const { return m_bindings; }
         DX12DescriptorSetLayout* GetLayout() const { return m_layout; }
+        bool IsValid() const { return m_isValid; }
         bool HasCbvSrvUavTable() const { return m_cbvSrvUavHandle.IsValid(); }
         bool HasSamplerTable() const { return m_samplerHandle.IsValid(); }
         D3D12_GPU_DESCRIPTOR_HANDLE GetCbvSrvUavGpuHandle() const { return m_cbvSrvUavHandle.gpuHandle; }
         D3D12_GPU_DESCRIPTOR_HANDLE GetSamplerGpuHandle() const { return m_samplerHandle.gpuHandle; }
 
     private:
-        void UpdateBindingInternal(const RHIDescriptorBinding& binding);
+        bool UpdateBindingInternal(const RHIDescriptorBinding& binding);
 
         DX12Device* m_device = nullptr;
         DX12DescriptorSetLayout* m_layout = nullptr;
@@ -138,7 +139,8 @@ namespace RVX
         DX12DescriptorHandle m_samplerHandle;
         uint32 m_cbvSrvUavCount = 0;
         uint32 m_samplerCount = 0;
-        
+        bool m_isValid = true;
+
         // Dirty tracking for deferred updates
         std::bitset<64> m_dirtyBindings;
         bool m_hasPendingUpdates = false;

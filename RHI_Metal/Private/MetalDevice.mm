@@ -138,7 +138,28 @@ namespace RVX
 
     RHITextureViewRef MetalDevice::CreateTextureView(RHITexture* texture, const RHITextureViewDesc& desc)
     {
-        return MakeRef<MetalTextureView>(static_cast<MetalTexture*>(texture), desc);
+        if (!texture)
+        {
+            RVX_RHI_ERROR("Metal: Cannot create texture view from null texture");
+            return nullptr;
+        }
+        if (!IsTextureViewTypeCompatible(texture->GetUsage(), texture->GetFormat(), desc))
+        {
+            RVX_RHI_ERROR("Metal: Cannot create {} texture view for texture usage {} format {}",
+                          GetTextureViewTypeName(desc.type),
+                          static_cast<uint32>(texture->GetUsage()),
+                          static_cast<uint32>(desc.format == RHIFormat::Unknown ? texture->GetFormat() : desc.format));
+            return nullptr;
+        }
+
+        auto view = MakeRef<MetalTextureView>(static_cast<MetalTexture*>(texture), desc);
+        if (!view->GetMTLTexture())
+        {
+            RVX_RHI_ERROR("Metal: Failed to create native {} texture view",
+                          GetTextureViewTypeName(desc.type));
+            return nullptr;
+        }
+        return view;
     }
 
     RHISamplerRef MetalDevice::CreateSampler(const RHISamplerDesc& desc)

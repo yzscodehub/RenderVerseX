@@ -941,6 +941,7 @@ TEST_F(PipelineCacheValidationFixture, DirectionalShadowFrameResourcesReportFall
     viewDesc.dimension = texture->GetDimension();
     viewDesc.subresourceRange = RVX::RHISubresourceRange::All();
     viewDesc.subresourceRange.aspect = RVX::RHITextureAspect::Depth;
+    viewDesc.type = RVX::RHITextureViewType::ShaderResource;
     RVX::RHITextureViewRef shadowView = device.CreateTextureView(texture.Get(), viewDesc);
     ASSERT_NE(shadowView, nullptr);
 

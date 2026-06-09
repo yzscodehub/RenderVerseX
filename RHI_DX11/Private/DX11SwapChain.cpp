@@ -206,6 +206,7 @@ namespace RVX
         // This allows SRGB gamma correction when rendering to the swap chain
         RHITextureViewDesc viewDesc = {};
         viewDesc.format = m_requestedFormat;  // Use requested format (SRGB if requested)
+        viewDesc.type = RHITextureViewType::RenderTarget;
         m_backBufferViews[0] = std::make_unique<DX11TextureView>(m_device, m_backBuffers[0].get(), viewDesc);
     }
 

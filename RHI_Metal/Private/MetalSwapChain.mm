@@ -108,6 +108,7 @@ namespace RVX
                 // Create view
                 RHITextureViewDesc viewDesc;
                 viewDesc.format = m_format;
+                viewDesc.type = RHITextureViewType::RenderTarget;
                 m_backBufferViews[m_currentBackBufferIndex] = MakeRef<MetalTextureView>(
                     static_cast<MetalTexture*>(m_backBuffers[m_currentBackBufferIndex].Get()),
                     viewDesc);

@@ -152,6 +152,7 @@ namespace RVX
 
             RHITextureViewDesc viewDesc;
             viewDesc.format = m_format;
+            viewDesc.type = RHITextureViewType::RenderTarget;
             VulkanTextureView* rawView = new VulkanTextureView(m_device, rawTex, viewDesc);
             m_backBufferViews.push_back(RHITextureViewRef(rawView));
 

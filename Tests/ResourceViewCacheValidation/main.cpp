@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <unordered_map>
+#include <vector>
 
 #define private public
 #include "Render/Graph/ResourceViewCache.h"
@@ -80,6 +81,7 @@ namespace
         RHITextureViewRef CreateTextureView(RHITexture* texture, const RHITextureViewDesc& desc = {}) override
         {
             ++createdTextureViewCount;
+            createdTextureViewDescs.push_back(desc);
             return RHITextureViewRef(new FakeTextureView(texture, desc));
         }
         RHISamplerRef CreateSampler(const RHISamplerDesc&) override { return nullptr; }
@@ -114,6 +116,7 @@ namespace
         RHIBackendType GetBackendType() const override { return RHIBackendType::None; }
 
         uint32 createdTextureViewCount = 0;
+        std::vector<RHITextureViewDesc> createdTextureViewDescs;
 
     private:
         RHICapabilities m_capabilities;
@@ -130,6 +133,7 @@ namespace
             key.format = desc.format;
             key.dimension = desc.dimension;
             key.subresourceRange = desc.subresourceRange;
+            key.type = desc.type;
             return key;
         };
 
@@ -147,27 +151,97 @@ namespace
         RHITextureViewDesc descRenamed = descA;
         descRenamed.debugName = "DebugNameDoesNotAffectGPUViewIdentity";
 
+        RHITextureViewDesc descRenderTarget = descA;
+        descRenderTarget.type = RHITextureViewType::RenderTarget;
+
         const auto keyA = makeKey(textureA, descA);
         const auto keyA2 = makeKey(textureA, descA);
         const auto keyRenamed = makeKey(textureA, descRenamed);
         const auto keyTextureB = makeKey(textureB, descA);
         const auto keyMip = makeKey(textureA, descMip);
         const auto keyLayer = makeKey(textureA, descLayer);
+        const auto keyRenderTarget = makeKey(textureA, descRenderTarget);
 
         EXPECT_TRUE(keyA == keyA2);
         EXPECT_TRUE(keyA == keyRenamed);
         EXPECT_FALSE(keyA == keyTextureB);
         EXPECT_FALSE(keyA == keyMip);
         EXPECT_FALSE(keyA == keyLayer);
+        EXPECT_FALSE(keyA == keyRenderTarget);
 
         std::unordered_map<ResourceViewCache::TextureViewKey, int, ResourceViewCache::TextureViewKeyHash> keys;
         keys[keyA] = 1;
         keys[keyMip] = 2;
         keys[keyLayer] = 3;
         keys[keyTextureB] = 4;
+        keys[keyRenderTarget] = 5;
 
-        EXPECT_EQ(static_cast<size_t>(4), keys.size());
+        EXPECT_EQ(static_cast<size_t>(5), keys.size());
         EXPECT_EQ(1, keys[keyA2]);
+    }
+
+    TEST(ResourceViewCacheValidation, TextureViewCacheSeparatesViewsByTypeEvenWhenDescriptorRangeMatches)
+    {
+        FakeDevice device;
+        ResourceViewCache cache;
+        cache.Initialize(&device);
+
+        RHITextureDesc textureDesc = RHITextureDesc::DepthStencil(4, 4, RHIFormat::D32_FLOAT);
+        FakeTexture texture(textureDesc);
+
+        RHITextureViewDesc srvDesc;
+        srvDesc.format = RHIFormat::D32_FLOAT;
+        srvDesc.dimension = RHITextureDimension::Texture2D;
+        srvDesc.subresourceRange = RHISubresourceRange::All();
+        srvDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+        srvDesc.type = RHITextureViewType::ShaderResource;
+
+        RHITextureViewDesc dsvDesc = srvDesc;
+        dsvDesc.type = RHITextureViewType::DepthStencil;
+
+        RHITextureView* srv = cache.GetTextureView(&texture, srvDesc);
+        RHITextureView* dsv = cache.GetTextureView(&texture, dsvDesc);
+        RHITextureView* srvHit = cache.GetTextureView(&texture, srvDesc);
+        RHITextureView* dsvHit = cache.GetTextureView(&texture, dsvDesc);
+
+        ASSERT_NE(nullptr, srv);
+        ASSERT_NE(nullptr, dsv);
+        EXPECT_NE(srv, dsv);
+        EXPECT_EQ(srv, srvHit);
+        EXPECT_EQ(dsv, dsvHit);
+        EXPECT_EQ(2u, device.createdTextureViewCount);
+        EXPECT_EQ(2u, cache.GetStats().textureViewCount);
+
+        cache.Shutdown();
+    }
+
+    TEST(ResourceViewCacheValidation, DefaultDepthSRVAndDSVDoNotAlias)
+    {
+        FakeDevice device;
+        ResourceViewCache cache;
+        cache.Initialize(&device);
+
+        RHITextureDesc textureDesc = RHITextureDesc::DepthStencil(4, 4, RHIFormat::D32_FLOAT);
+        FakeTexture texture(textureDesc);
+
+        RHITextureView* dsv = cache.GetDefaultDSV(&texture);
+        RHITextureView* srv = cache.GetDefaultSRV(&texture);
+        RHITextureView* dsvHit = cache.GetDefaultDSV(&texture);
+        RHITextureView* srvHit = cache.GetDefaultSRV(&texture);
+
+        ASSERT_NE(nullptr, dsv);
+        ASSERT_NE(nullptr, srv);
+        EXPECT_NE(dsv, srv);
+        EXPECT_EQ(dsv, dsvHit);
+        EXPECT_EQ(srv, srvHit);
+        ASSERT_EQ(2u, device.createdTextureViewDescs.size());
+        EXPECT_EQ(RHITextureViewType::DepthStencil, device.createdTextureViewDescs[0].type);
+        EXPECT_EQ(RHITextureAspect::Depth, device.createdTextureViewDescs[0].subresourceRange.aspect);
+        EXPECT_EQ(RHITextureViewType::ShaderResource, device.createdTextureViewDescs[1].type);
+        EXPECT_EQ(RHITextureAspect::Depth, device.createdTextureViewDescs[1].subresourceRange.aspect);
+        EXPECT_EQ(2u, cache.GetStats().textureViewCount);
+
+        cache.Shutdown();
     }
 
     TEST(ResourceViewCacheValidation, TextureViewCacheInvalidationUpdatesGeneration)

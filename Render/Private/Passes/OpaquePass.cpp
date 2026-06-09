@@ -191,6 +191,7 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
             shadowViewDesc.format = shadowTexture->GetFormat();
             shadowViewDesc.dimension = shadowTexture->GetDimension();
             shadowViewDesc.subresourceRange = RHISubresourceRange::All();
+            shadowViewDesc.type = RHITextureViewType::ShaderResource;
             if (IsDepthFormat(shadowViewDesc.format))
             {
                 shadowViewDesc.subresourceRange.aspect = RHITextureAspect::Depth;

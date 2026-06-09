@@ -685,15 +685,15 @@ namespace RVX
         auto* dx12Texture = static_cast<DX12Texture*>(texture);
 
         DXGI_FORMAT dxgiFormat = ToDXGIFormat(m_format);
-        RHITextureUsage usage = texture->GetUsage();
         const uint32 mipCount = (desc.subresourceRange.mipLevelCount == 0 || desc.subresourceRange.mipLevelCount == RVX_ALL_MIPS)
             ? texture->GetMipLevels() - desc.subresourceRange.baseMipLevel
             : desc.subresourceRange.mipLevelCount;
         const uint32 arrayLayerCount = ResolveTextureArrayLayerCount(*texture, desc.subresourceRange);
 
-        // Create SRV for shader resource textures
-        if (HasFlag(usage, RHITextureUsage::ShaderResource) ||
-            HasFlag(usage, RHITextureUsage::RenderTarget))  // RT textures may also be sampled
+        // Create only the requested native view role. The RHI view type is part
+        // of cache identity, so SRV/RTV/DSV/UAV wrappers must not all carry
+        // unrelated descriptor handles.
+        if (desc.type == RHITextureViewType::ShaderResource)
         {
             DXGI_FORMAT srvFormat = dxgiFormat;
             if (IsDepthFormat(m_format))
@@ -750,8 +750,7 @@ namespace RVX
             d3dDevice->CreateShaderResourceView(dx12Texture->GetResource(), &srvDesc, m_srvHandle.cpuHandle);
         }
 
-        // Create RTV for render target textures
-        if (HasFlag(usage, RHITextureUsage::RenderTarget))
+        if (desc.type == RHITextureViewType::RenderTarget)
         {
             m_rtvHandle = heapManager.AllocateRTV();
 
@@ -781,8 +780,7 @@ namespace RVX
             d3dDevice->CreateRenderTargetView(dx12Texture->GetResource(), &rtvDesc, m_rtvHandle.cpuHandle);
         }
 
-        // Create DSV for depth stencil textures
-        if (HasFlag(usage, RHITextureUsage::DepthStencil))
+        if (desc.type == RHITextureViewType::DepthStencil)
         {
             m_dsvHandle = heapManager.AllocateDSV();
 
@@ -803,8 +801,7 @@ namespace RVX
             d3dDevice->CreateDepthStencilView(dx12Texture->GetResource(), &dsvDesc, m_dsvHandle.cpuHandle);
         }
 
-        // Create UAV for unordered access textures
-        if (HasFlag(usage, RHITextureUsage::UnorderedAccess))
+        if (desc.type == RHITextureViewType::UnorderedAccess)
         {
             m_uavHandle = heapManager.AllocateCbvSrvUav();
 
@@ -1003,7 +1000,34 @@ namespace RVX
 
     RHITextureViewRef CreateDX12TextureView(DX12Device* device, RHITexture* texture, const RHITextureViewDesc& desc)
     {
-        return Ref<DX12TextureView>(new DX12TextureView(device, texture, desc));
+        if (!texture)
+        {
+            RVX_RHI_ERROR("DX12: Cannot create texture view from null texture");
+            return nullptr;
+        }
+        if (!IsTextureViewTypeCompatible(texture->GetUsage(), texture->GetFormat(), desc))
+        {
+            RVX_RHI_ERROR("DX12: Cannot create {} texture view for texture usage {} format {}",
+                          GetTextureViewTypeName(desc.type),
+                          static_cast<uint32>(texture->GetUsage()),
+                          static_cast<uint32>(desc.format == RHIFormat::Unknown ? texture->GetFormat() : desc.format));
+            return nullptr;
+        }
+
+        auto view = Ref<DX12TextureView>(new DX12TextureView(device, texture, desc));
+        const bool nativeViewCreated =
+            (desc.type == RHITextureViewType::ShaderResource && view->GetSRVHandle().IsValid()) ||
+            (desc.type == RHITextureViewType::RenderTarget && view->GetRTVHandle().IsValid()) ||
+            (desc.type == RHITextureViewType::DepthStencil && view->GetDSVHandle().IsValid()) ||
+            (desc.type == RHITextureViewType::UnorderedAccess && view->GetUAVHandle().IsValid());
+        if (!nativeViewCreated)
+        {
+            RVX_RHI_ERROR("DX12: Failed to create native {} texture view",
+                          GetTextureViewTypeName(desc.type));
+            return nullptr;
+        }
+
+        return view;
     }
 
     RHISamplerRef CreateDX12Sampler(DX12Device* device, const RHISamplerDesc& desc)

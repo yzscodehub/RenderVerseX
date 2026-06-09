@@ -445,7 +445,29 @@ namespace RVX
             RVX_RHI_ERROR("DX11: Cannot create texture view from null texture");
             return nullptr;
         }
-        return MakeRef<DX11TextureView>(this, texture, desc);
+        if (!IsTextureViewTypeCompatible(texture->GetUsage(), texture->GetFormat(), desc))
+        {
+            RVX_RHI_ERROR("DX11: Cannot create {} texture view for texture usage {} format {}",
+                          GetTextureViewTypeName(desc.type),
+                          static_cast<uint32>(texture->GetUsage()),
+                          static_cast<uint32>(desc.format == RHIFormat::Unknown ? texture->GetFormat() : desc.format));
+            return nullptr;
+        }
+
+        auto view = MakeRef<DX11TextureView>(this, texture, desc);
+        const bool nativeViewCreated =
+            (desc.type == RHITextureViewType::ShaderResource && view->GetSRV()) ||
+            (desc.type == RHITextureViewType::RenderTarget && view->GetRTV()) ||
+            (desc.type == RHITextureViewType::DepthStencil && view->GetDSV()) ||
+            (desc.type == RHITextureViewType::UnorderedAccess && view->GetUAV());
+        if (!nativeViewCreated)
+        {
+            RVX_RHI_ERROR("DX11: Failed to create native {} texture view",
+                          GetTextureViewTypeName(desc.type));
+            return nullptr;
+        }
+
+        return view;
     }
 
     RHISamplerRef DX11Device::CreateSampler(const RHISamplerDesc& desc)
