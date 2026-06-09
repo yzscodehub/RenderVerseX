@@ -3462,7 +3462,7 @@ git diff --check
 ### R-SP: `RQ3a - Directional Shadow Sampling Bridge`
 
 **Date:** 2026-06-09
-**Commit:** pending
+**Commit:** `b980d99 feat(render): bridge directional shadow sampling`
 **Spark plan review agent:** Banach (`019eace5-b5f8-7dd1-b8b6-cc24ec12a40d`)
 **Spark code review agent:** Poincare (`019eacfe-0771-78e3-8662-615312f9b326`)
 
