@@ -209,6 +209,7 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         drawView.directionalShadowInvMapSize = shadowConfig.shadowMapSize > 0
                                                    ? 1.0f / static_cast<float>(shadowConfig.shadowMapSize)
                                                    : 0.0f;
+        drawView.directionalShadowFilterRadiusTexels = shadowConfig.filterRadiusTexels;
         shadowResources.enabled = true;
         shadowResources.shadowMapView = shadowView;
     }

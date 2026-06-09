@@ -863,6 +863,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
     view.directionalShadowDepthBias = 0.0125f;
     view.directionalShadowStrength = 0.6f;
     view.directionalShadowInvMapSize = 1.0f / 512.0f;
+    view.directionalShadowFilterRadiusTexels = 2.0f;
 
     FakeDevice dxDevice(RVX::RHIBackendType::DX12);
     RVX::PipelineCache dxCache;
@@ -881,7 +882,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.y, 0.0125f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.z, 0.6f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w, 1.0f / 512.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w, 2.0f / 512.0f);
 
     FakeDevice vkDevice(RVX::RHIBackendType::Vulkan);
     RVX::PipelineCache vkCache;
@@ -895,6 +896,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
     EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[1][1], -2.0f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[1][2], 0.5f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w, 2.0f / 512.0f);
 
     FakeDevice reverseZDevice(RVX::RHIBackendType::DX12);
     RVX::PipelineCache reverseZCache;
@@ -989,9 +991,25 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLighti
     EXPECT_FLOAT_EQ(uploaded.directionalLightIntensity, 0.0f);
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.0f);
 
+    view.directionalShadowEnabled = 1;
+    view.directionalShadowDepthBias = -0.25f;
+    view.directionalShadowStrength = 5.0f;
+    view.directionalShadowInvMapSize = 1.0f / 256.0f;
+    view.directionalShadowFilterRadiusTexels = -2.0f;
+    cache.UpdateViewConstants(view);
+    std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.y, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.z, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w, 0.0f);
+
     view.directionalLightDirection = RVX::Vec3(std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f);
     view.directionalLightIntensity = std::numeric_limits<float>::infinity();
     view.ambientFloorIntensity = std::numeric_limits<float>::quiet_NaN();
+    view.directionalShadowDepthBias = std::numeric_limits<float>::quiet_NaN();
+    view.directionalShadowStrength = std::numeric_limits<float>::quiet_NaN();
+    view.directionalShadowInvMapSize = std::numeric_limits<float>::quiet_NaN();
+    view.directionalShadowFilterRadiusTexels = std::numeric_limits<float>::infinity();
     cache.UpdateViewConstants(view);
     std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
     EXPECT_NEAR(uploaded.lightDirection.x, 0.505076f, 0.00001f);
@@ -999,6 +1017,9 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLighti
     EXPECT_NEAR(uploaded.lightDirection.z, 0.303046f, 0.00001f);
     EXPECT_FLOAT_EQ(uploaded.directionalLightIntensity, 4.0f);
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.08f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.y, 0.005f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.z, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w, 0.0f);
 }
 
 TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
@@ -1018,14 +1039,26 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
               std::string::npos);
     EXPECT_NE(shader.find("SamplerState DirectionalShadowSampler : register(s2, space0);"), std::string::npos);
     EXPECT_NE(shader.find("float SampleDirectionalShadow(float3 worldPos)"), std::string::npos);
+    EXPECT_NE(shader.find("float CompareDirectionalShadowDepth(float2 uv, float compareDepth)"), std::string::npos);
+    EXPECT_NE(shader.find("float SampleDirectionalShadowPCF(float2 shadowUV, float compareDepth, float filterStep)"),
+              std::string::npos);
     EXPECT_NE(shader.find("float DirectionalLightIntensity;"), std::string::npos);
     EXPECT_NE(shader.find("if (IBLTextureParams.x > 0.5)"), std::string::npos);
     EXPECT_NE(shader.find("IBLTextureParams.w"), std::string::npos);
+    EXPECT_NE(shader.find("DirectionalShadowParams.w"), std::string::npos);
+    EXPECT_NE(shader.find("for (int y = -1; y <= 1; ++y)"), std::string::npos);
+    EXPECT_NE(shader.find("for (int x = -1; x <= 1; ++x)"), std::string::npos);
+    EXPECT_NE(shader.find("tapCount > 0.5 ? visibility / tapCount : 1.0"), std::string::npos);
+    EXPECT_NE(shader.find("SampleDirectionalShadowPCF(shadowUV, compareDepth, DirectionalShadowParams.w)"),
+              std::string::npos);
     EXPECT_NE(shader.find("float shadowVisibility = SampleDirectionalShadow(input.WorldPos);"), std::string::npos);
     EXPECT_NE(shader.find("float3(DirectionalLightIntensity, DirectionalLightIntensity, DirectionalLightIntensity)"),
               std::string::npos);
     EXPECT_EQ(shader.find("float3(DirectionalLightIntensity, DirectionalLightIntensity, DirectionalLightIntensity),\n        1.0"),
               std::string::npos);
+    EXPECT_EQ(shader.find("float storedDepth = DirectionalShadowMapTexture.SampleLevel(DirectionalShadowSampler, shadowUV, 0).r"),
+              std::string::npos);
+    EXPECT_EQ(shader.find("float lit = compareDepth <= storedDepth ? 1.0 : 0.0"), std::string::npos);
     EXPECT_EQ(shader.find("float3(4.0, 4.0, 4.0)"), std::string::npos);
     EXPECT_EQ(shader.find("ambientFloor = baseColor.rgb * 0.08"), std::string::npos);
     EXPECT_EQ(shader.find("ambientDiffuse = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic) * occlusion * 0.12;"),

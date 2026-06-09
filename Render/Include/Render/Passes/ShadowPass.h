@@ -39,6 +39,7 @@ namespace RVX
         float cascadeSplitLambda = 0.95f;    // PSSM split scheme parameter
         float shadowBias = 0.005f;           // Depth bias to reduce shadow acne
         float normalBias = 0.02f;            // Normal offset bias
+        float filterRadiusTexels = 1.0f;     // PCF radius in shadow-map texels
     };
 
     struct ShadowPassStats

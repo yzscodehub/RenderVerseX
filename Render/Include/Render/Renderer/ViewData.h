@@ -91,8 +91,11 @@ namespace RVX
         /// Directional shadow darkening strength in [0, 1]
         float directionalShadowStrength = 1.0f;
 
-        /// Reciprocal shadow map size for shader filtering/future PCF
+        /// Reciprocal shadow map size used to derive the UV-space shadow filter step
         float directionalShadowInvMapSize = 0.0f;
+
+        /// Shadow PCF radius in texels; multiplied by the inverse map size during upload
+        float directionalShadowFilterRadiusTexels = 1.0f;
 
         /// Enables directional shadow sampling when the frame descriptor has a valid map
         uint8 directionalShadowEnabled = 0;

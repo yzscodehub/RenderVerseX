@@ -1843,6 +1843,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDurin
     ShadowPassConfig shadowConfig;
     shadowConfig.numCascades = 1;
     shadowConfig.shadowMapSize = 64;
+    shadowConfig.filterRadiusTexels = 2.0f;
 
     ShadowPass shadowPass;
     shadowPass.SetResources(&gpuResources, &pipelineCache);
@@ -1887,7 +1888,8 @@ TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDurin
     std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.y, shadowConfig.shadowBias);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w, 1.0f / static_cast<float>(shadowConfig.shadowMapSize));
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w,
+                    shadowConfig.filterRadiusTexels / static_cast<float>(shadowConfig.shadowMapSize));
     EXPECT_FALSE(IsIdentityMatrix(uploaded.directionalShadowViewProjection));
 }
 

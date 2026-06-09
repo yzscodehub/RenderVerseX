@@ -2202,11 +2202,18 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
         ApplyBackendClipConvention(view.directionalShadowViewProjection, backend);
     const bool directionalShadowEnabled = view.directionalShadowEnabled != 0 &&
                                           !m_config.reverseZ;
+    const float shadowInvMapSize = ClampFiniteNonNegative(view.directionalShadowInvMapSize, 0.0f);
+    const float shadowFilterRadiusTexels =
+        ClampFiniteNonNegative(view.directionalShadowFilterRadiusTexels, 1.0f);
+    const float unclampedShadowFilterStep = shadowInvMapSize * shadowFilterRadiusTexels;
+    const float shadowFilterStep = std::isfinite(unclampedShadowFilterStep)
+                                       ? std::max(0.0f, unclampedShadowFilterStep)
+                                       : shadowInvMapSize;
     constants.directionalShadowParams = Vec4(
         directionalShadowEnabled ? 1.0f : 0.0f,
         ClampFiniteNonNegative(view.directionalShadowDepthBias, 0.005f),
         std::min(ClampFiniteNonNegative(view.directionalShadowStrength, 1.0f), 1.0f),
-        ClampFiniteNonNegative(view.directionalShadowInvMapSize, 0.0f));
+        shadowFilterStep);
 
     void* mapped = m_viewConstantBuffer->Map();
     if (mapped)

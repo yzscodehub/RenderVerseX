@@ -41,7 +41,7 @@ cbuffer ViewConstants : register(b0, space0)
     float4 IBLSpecularAmbient;  // rgb: color, a: specular intensity
     float4 IBLTextureParams;    // x: enabled, y: prefiltered mip count, z: intensity, w: ambient floor intensity
     float4x4 DirectionalShadowViewProjection;
-    float4 DirectionalShadowParams; // x: enabled, y: depth bias, z: strength, w: inverse map size
+    float4 DirectionalShadowParams; // x: enabled, y: depth bias, z: strength, w: UV-space PCF filter step
 };
 
 cbuffer ObjectConstants : register(b0, space1)
@@ -143,6 +143,41 @@ float3 SampleNormalMap(float2 uv, float3 worldNormal, float4 worldTangent)
     return SafeNormalize(mul(tangentNormal, tbn), n);
 }
 
+float CompareDirectionalShadowDepth(float2 uv, float compareDepth)
+{
+    float storedDepth = DirectionalShadowMapTexture.SampleLevel(DirectionalShadowSampler, uv, 0).r;
+    return compareDepth <= storedDepth ? 1.0 : 0.0;
+}
+
+float SampleDirectionalShadowPCF(float2 shadowUV, float compareDepth, float filterStep)
+{
+    float filterStepUv = max(filterStep, 0.0);
+    if (filterStepUv <= 1.0e-7)
+    {
+        return CompareDirectionalShadowDepth(shadowUV, compareDepth);
+    }
+
+    float visibility = 0.0;
+    float tapCount = 0.0;
+
+    [unroll]
+    for (int y = -1; y <= 1; ++y)
+    {
+        [unroll]
+        for (int x = -1; x <= 1; ++x)
+        {
+            float2 tapUV = shadowUV + float2((float)x, (float)y) * filterStepUv;
+            if (!any(tapUV < 0.0) && !any(tapUV > 1.0))
+            {
+                visibility += CompareDirectionalShadowDepth(tapUV, compareDepth);
+                tapCount += 1.0;
+            }
+        }
+    }
+
+    return tapCount > 0.5 ? visibility / tapCount : 1.0;
+}
+
 float SampleDirectionalShadow(float3 worldPos)
 {
     if (DirectionalShadowParams.x <= 0.5)
@@ -164,8 +199,7 @@ float SampleDirectionalShadow(float3 worldPos)
     }
 
     float compareDepth = shadowNdc.z - max(DirectionalShadowParams.y, 0.0);
-    float storedDepth = DirectionalShadowMapTexture.SampleLevel(DirectionalShadowSampler, shadowUV, 0).r;
-    float lit = compareDepth <= storedDepth ? 1.0 : 0.0;
+    float lit = SampleDirectionalShadowPCF(shadowUV, compareDepth, DirectionalShadowParams.w);
     return lerp(1.0 - saturate(DirectionalShadowParams.z), 1.0, lit);
 }
 

@@ -3669,6 +3669,96 @@ git diff --check
 
 ---
 
+### R-SP: `RQ3c - Directional Shadow PCF Filter Foundation`
+
+**Date:** 2026-06-10
+**Commit:** pending
+**Spark plan review agent:** Hubble (`019ead70-b0fb-7fd1-8fd7-ba1fc67286a4`)
+**Spark code review agent:** Hubble (`019ead70-b0fb-7fd1-8fd7-ba1fc67286a4`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-10-rq3c-directional-shadow-pcf-filter-plan.md`
+- Section: entire RQ3c stage scope, tests, validation plan, and acceptance criteria
+- Lines checked: local document reviewed before implementation; scope tightened after Spark plan review.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ3b
+- Evidence: RQ3b committed as `97d6014 feat(rhi): make texture view roles explicit`, with docs follow-up `929f7aa docs(render): record rq3b commit`.
+
+**Approved scope:**
+
+- Add a CPU-side directional shadow PCF radius in `ShadowPassConfig` and `ViewData`.
+- Preserve the `ViewConstants` ABI and upload `DirectionalShadowParams.w` as a UV-space PCF filter step.
+- Propagate non-default filter radius through `ShadowPassConfig -> OpaquePass -> ViewData -> PipelineCache -> ViewConstants`.
+- Replace the one-tap hard directional shadow compare in `DefaultLit` with a bounded 3x3 PCF helper.
+- Add shader/source guardrails and parameter propagation tests.
+
+**Out of scope:**
+
+- PCSS, EVSM/VSM/MSM, contact shadows, screen-space shadows, temporal shadow denoising, cascade stabilization/blending, atlas packing, point/spot shadows, reverse-Z shadow sampling, comparison samplers, RenderGraph rewrites, or ECS/Object refactors.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-10-rq3c-directional-shadow-pcf-filter-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Include/Render/Passes/ShadowPass.h`
+- `Render/Include/Render/Renderer/ViewData.h`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation"
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation ResourceViewCacheValidation DX11Validation DX12Validation VulkanValidation ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|ResourceViewCacheValidation|DX11Validation|DX12Validation|VulkanValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerIBLSmoke"
+build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --backend dx11 --width 800 --height 450 --frames 8 --screenshot build\win_x64_debug\VisualArtifacts\Debug\ModelViewer\RQ3c_DamagedHelmet.ppm --validation --expect-ibl-ready --expect-procedural-ibl-quality
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Core PipelineCache/RenderPass tests: PASS, 72/72 selected tests passed.
+- Focused RHI/render tests: PASS, 141/141 selected tests passed.
+- Visual tests: PASS, 3/3 selected tests passed (`ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerIBLSmoke`).
+- Manual DamagedHelmet smoke: PASS, exit code 0, DefaultLit shader compiled successfully, `ModelViewer procedural IBL quality check passed`, `ModelViewer Smoke PASS`.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Screenshot: `build/win_x64_debug/VisualArtifacts/Debug/ModelViewer/RQ3c_DamagedHelmet.ppm`
+- Diffs: RQ3c intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Initial verdict: BLOCKED.
+- Blocker resolved: required a non-default `ShadowPassConfig::filterRadiusTexels` propagation test through OpaquePass into uploaded `ViewConstants`.
+- Final verdict: PASS.
+
+**Spark code review result:**
+
+- Initial verdict: PASS.
+- Findings: none.
+- Optional follow-ups applied: refreshed `ViewData` shadow texel-size comment and added `Render/Private/Renderer/SceneRenderer.cpp` to the RQ3c plan expected file list.
+- Final verdict after follow-up re-review: PASS.
+
+**Notes / follow-ups:**
+
+- RQ3c intentionally uses a small bounded 3x3 software PCF path and does not add a controlled shadow-edge GPU golden.
+- `DirectionalShadowParams.w` is now documented and tested as a UV-space PCF filter step.
+- Shader guardrails are source-string based; a future controlled shadow-edge golden would be stronger proof of visual softness.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
