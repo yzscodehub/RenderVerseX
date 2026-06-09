@@ -3672,7 +3672,7 @@ git diff --check
 ### R-SP: `RQ3c - Directional Shadow PCF Filter Foundation`
 
 **Date:** 2026-06-10
-**Commit:** pending
+**Commit:** `8538027 feat(render): add directional shadow pcf filter`
 **Spark plan review agent:** Hubble (`019ead70-b0fb-7fd1-8fd7-ba1fc67286a4`)
 **Spark code review agent:** Hubble (`019ead70-b0fb-7fd1-8fd7-ba1fc67286a4`)
 
