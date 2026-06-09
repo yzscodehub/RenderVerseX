@@ -4017,7 +4017,7 @@ git diff --check
 ### RQ6: Texture Mip Chain And Material Sampler Quality
 
 **Date:** 2026-06-10
-**Commit:** pending
+**Commit:** `33d379b`
 **Spark plan review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
 **Spark code review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
 
