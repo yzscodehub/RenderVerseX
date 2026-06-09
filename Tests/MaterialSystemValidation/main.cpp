@@ -481,7 +481,7 @@ namespace
     {
         materialResource.SetId(202);
         materialResource.SetName("FullyTexturedMaterialResource");
-        materialResource.SetMaterialData(std::make_shared<Material>());
+        materialResource.SetMaterialData(std::make_shared<Material>("FullyTexturedMaterialResource"));
         materialResource.SetTexture("albedo", texture);
         materialResource.SetTexture("normal", texture);
         materialResource.SetTexture("metallic_roughness", texture);
@@ -863,6 +863,16 @@ namespace
         EXPECT_TRUE(result.constantsUpdated);
         EXPECT_FALSE(result.usedFallback);
         EXPECT_NE(materialSystem.GetDefaultMaterialSet(), result.descriptorSet);
+        const uint32 expectedFlags =
+            static_cast<uint32>(MaterialTextureFlags::HasBaseColor) |
+            static_cast<uint32>(MaterialTextureFlags::HasNormal) |
+            static_cast<uint32>(MaterialTextureFlags::HasMetallicRoughness) |
+            static_cast<uint32>(MaterialTextureFlags::HasOcclusion) |
+            static_cast<uint32>(MaterialTextureFlags::HasEmissive);
+        EXPECT_EQ(expectedFlags, result.textureFlags);
+        EXPECT_EQ("FullyTexturedMaterialResource", result.materialName);
+        EXPECT_EQ(expectedFlags, materialSystem.GetLastBindingResult().textureFlags);
+        EXPECT_EQ("FullyTexturedMaterialResource", materialSystem.GetLastBindingResult().materialName);
         EXPECT_TRUE(Contains(result.message, "ready"));
 
         materialSystem.Shutdown();
@@ -1170,6 +1180,7 @@ namespace
         materialSystem.SetEnvironmentIBLResources(firstIBL);
         RHIDescriptorSet* firstSet = materialSystem.GetOrCreateMaterialSet(&materialResource, &viewCache);
         ASSERT_NE(nullptr, firstSet);
+        const uint32 descriptorSetCountAfterFirstIBL = device.createdDescriptorSetCount;
 
         MaterialSystem::EnvironmentIBLResources secondIBL;
         secondIBL.irradianceMap = irradianceB.Get();
@@ -1180,7 +1191,7 @@ namespace
         RHIDescriptorSet* secondSet = materialSystem.GetOrCreateMaterialSet(&materialResource, &viewCache);
         ASSERT_NE(nullptr, secondSet);
 
-        EXPECT_NE(firstSet, secondSet);
+        EXPECT_GT(device.createdDescriptorSetCount, descriptorSetCountAfterFirstIBL);
         const RHIDescriptorBinding* irradianceBinding = FindBinding(secondSet, 7);
         ASSERT_NE(nullptr, irradianceBinding);
         ASSERT_NE(nullptr, irradianceBinding->textureView);

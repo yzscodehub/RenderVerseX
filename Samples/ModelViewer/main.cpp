@@ -21,6 +21,7 @@
 
 #include "Engine/Engine.h"
 #include "Render/Context/RenderContext.h"
+#include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/SceneRenderer.h"
 #include "Render/RenderSubsystem.h"
@@ -96,7 +97,9 @@ struct ModelViewerOptions
     bool expectIBLReady = false;
     bool expectSkyboxReady = false;
     bool expectShadowReady = false;
+    bool expectMaterialReady = false;
     bool expectProceduralIBLQuality = false;
+    bool materialTestScene = false;
     bool shadowTestScene = false;
     bool enableValidation = true;
     bool showHelp = false;
@@ -151,6 +154,7 @@ namespace
     constexpr uint32 kSmokeDefaultFrames = 8;
     constexpr float kSmokeDeltaSeconds = 1.0f / 60.0f;
     constexpr uint32 kDX12TextureCopyPitchAlignment = 256;
+    constexpr const char* kPBRMaterialTestMaterialName = "RQ4PBRMaterial";
 
     void PrintUsage()
     {
@@ -169,10 +173,12 @@ namespace
             << "  --screenshot <path>  Write final smoke frame as binary PPM\n"
             << "  --hdri <path>        Use an HDR/EXR environment for skybox and texture IBL\n"
             << "  --no-ibl             Disable procedural ModelViewer IBL wiring\n"
+            << "  --material-test-scene Add deterministic lighting for PBR material visual gates\n"
             << "  --shadow-test-scene  Add a deterministic shadow-casting directional light\n"
             << "  --expect-ibl-ready   Smoke mode fails unless texture IBL becomes ready\n"
             << "  --expect-skybox-ready Smoke mode fails unless SkyboxPass becomes ready\n"
             << "  --expect-shadow-ready Smoke mode fails unless directional shadow sampling is ready\n"
+            << "  --expect-material-ready Smoke mode fails unless the PBR material swatch binds all texture maps\n"
             << "  --expect-procedural-ibl-quality Smoke mode fails unless default procedural IBL uses the CPU HDR pipeline\n"
             << "  --validation         Enable backend validation\n"
             << "  --no-validation      Disable backend validation\n"
@@ -329,6 +335,10 @@ namespace
             {
                 options.enableProceduralIBL = false;
             }
+            else if (arg == "--material-test-scene")
+            {
+                options.materialTestScene = true;
+            }
             else if (arg == "--shadow-test-scene")
             {
                 options.shadowTestScene = true;
@@ -344,6 +354,10 @@ namespace
             else if (arg == "--expect-shadow-ready")
             {
                 options.expectShadowReady = true;
+            }
+            else if (arg == "--expect-material-ready")
+            {
+                options.expectMaterialReady = true;
             }
             else if (arg == "--expect-procedural-ibl-quality")
             {
@@ -389,6 +403,24 @@ namespace
         if (options.expectShadowReady && !options.shadowTestScene)
         {
             RVX_CORE_ERROR("--expect-shadow-ready requires --shadow-test-scene");
+            return false;
+        }
+
+        if (options.expectMaterialReady && !options.smoke)
+        {
+            RVX_CORE_ERROR("--expect-material-ready requires --smoke");
+            return false;
+        }
+
+        if (options.expectMaterialReady && !options.materialTestScene)
+        {
+            RVX_CORE_ERROR("--expect-material-ready requires --material-test-scene");
+            return false;
+        }
+
+        if (options.materialTestScene && options.shadowTestScene)
+        {
+            RVX_CORE_ERROR("--material-test-scene cannot be combined with --shadow-test-scene");
             return false;
         }
 
@@ -1114,6 +1146,83 @@ namespace
         return false;
     }
 
+    const char* MaterialBindingStatusName(MaterialBindingStatus status)
+    {
+        switch (status)
+        {
+            case MaterialBindingStatus::None:
+                return "None";
+            case MaterialBindingStatus::Ready:
+                return "Ready";
+            case MaterialBindingStatus::Fallback:
+                return "Fallback";
+            case MaterialBindingStatus::NotInitialized:
+                return "NotInitialized";
+            case MaterialBindingStatus::Unavailable:
+                return "Unavailable";
+            case MaterialBindingStatus::Error:
+                return "Error";
+        }
+
+        return "Unknown";
+    }
+
+    uint32 GetRequiredPBRMaterialTextureFlags()
+    {
+        return static_cast<uint32>(MaterialTextureFlags::HasBaseColor) |
+               static_cast<uint32>(MaterialTextureFlags::HasNormal) |
+               static_cast<uint32>(MaterialTextureFlags::HasMetallicRoughness) |
+               static_cast<uint32>(MaterialTextureFlags::HasOcclusion) |
+               static_cast<uint32>(MaterialTextureFlags::HasEmissive);
+    }
+
+    bool IsPBRMaterialReady(SceneRenderer* sceneRenderer, std::string& outReason)
+    {
+        if (!sceneRenderer)
+        {
+            outReason = "NoSceneRenderer";
+            return false;
+        }
+
+        MaterialSystem* materialSystem = sceneRenderer->GetMaterialSystem();
+        if (!materialSystem)
+        {
+            outReason = "NoMaterialSystem";
+            return false;
+        }
+
+        const MaterialBindingResult& result = materialSystem->GetLastBindingResult();
+        const uint32 requiredFlags = GetRequiredPBRMaterialTextureFlags();
+        const bool hasAllTextureFlags = (result.textureFlags & requiredFlags) == requiredFlags;
+        const bool materialNameMatches = result.materialName == kPBRMaterialTestMaterialName;
+        if (result.status == MaterialBindingStatus::Ready &&
+            !result.usedFallback &&
+            result.constantsUpdated &&
+            result.descriptorSet &&
+            hasAllTextureFlags &&
+            materialNameMatches)
+        {
+            outReason.clear();
+            return true;
+        }
+
+        outReason = "status=";
+        outReason += MaterialBindingStatusName(result.status);
+        outReason += ", usedFallback=";
+        outReason += result.usedFallback ? "true" : "false";
+        outReason += ", constantsUpdated=";
+        outReason += result.constantsUpdated ? "true" : "false";
+        outReason += ", descriptorSet=";
+        outReason += result.descriptorSet ? "true" : "false";
+        outReason += ", textureFlags=" + std::to_string(result.textureFlags);
+        outReason += ", materialName='" + result.materialName + "'";
+        if (!result.message.empty())
+        {
+            outReason += ", message='" + result.message + "'";
+        }
+        return false;
+    }
+
     Quat MakeLookRotation(const Vec3& direction, const Vec3& up)
     {
         Vec3 forward = direction;
@@ -1168,6 +1277,37 @@ namespace
         light->SetShadowBias(0.0008f);
 
         RVX_CORE_INFO("ModelViewer shadow test directional light configured: dir=({}, {}, {})",
+                      lightDirection.x,
+                      lightDirection.y,
+                      lightDirection.z);
+        return true;
+    }
+
+    bool ConfigureMaterialTestLight(SceneManager* sceneManager)
+    {
+        if (!sceneManager)
+        {
+            return false;
+        }
+
+        ActorSpawnParams lightParams;
+        lightParams.name = "ModelViewerMaterialTestKeyLight";
+        SceneEntity* lightEntity = sceneManager->SpawnActor(lightParams);
+        LightComponent* light = lightEntity ? lightEntity->AddComponent<LightComponent>() : nullptr;
+        if (!lightEntity || !light)
+        {
+            RVX_CORE_ERROR("ModelViewer material test scene could not create a directional light");
+            return false;
+        }
+
+        const Vec3 lightDirection = normalize(Vec3(-0.25f, -0.35f, -0.85f));
+        lightEntity->SetRotation(MakeLookRotation(lightDirection, Vec3(0.0f, 1.0f, 0.0f)));
+        light->SetLightType(LightType::Directional);
+        light->SetColor(Vec3(1.0f, 0.96f, 0.9f));
+        light->SetIntensity(4.0f);
+        light->SetCastsShadow(false);
+
+        RVX_CORE_INFO("ModelViewer material test directional light configured: dir=({}, {}, {})",
                       lightDirection.x,
                       lightDirection.y,
                       lightDirection.z);
@@ -1439,9 +1579,11 @@ int main(int argc, char* argv[])
 
     // Create camera
     Camera* camera = world->CreateCamera("MainCamera");
-    Vec3 cameraPos = options.shadowTestScene ? Vec3(0.0f, 1.35f, 4.0f) :
-                     (options.smoke ? Vec3(0.0f, 1.5f, 4.0f) : Vec3(0.0f, 2.0f, 5.0f));
-    Vec3 target = options.shadowTestScene ? Vec3(0.0f, 0.35f, 0.0f) : Vec3(0.0f, 0.0f, 0.0f);
+    Vec3 cameraPos = options.materialTestScene ? Vec3(0.0f, 0.45f, 2.4f) :
+                     (options.shadowTestScene ? Vec3(0.0f, 1.35f, 4.0f) :
+                      (options.smoke ? Vec3(0.0f, 1.5f, 4.0f) : Vec3(0.0f, 2.0f, 5.0f)));
+    Vec3 target = options.materialTestScene ? Vec3(0.0f, 0.18f, 0.0f) :
+                  (options.shadowTestScene ? Vec3(0.0f, 0.35f, 0.0f) : Vec3(0.0f, 0.0f, 0.0f));
     camera->SetPosition(cameraPos);
     camera->LookAt(target);
     camera->SetPerspective(glm::radians(45.0f), static_cast<float>(options.width) / static_cast<float>(options.height), 0.1f, 1000.0f);
@@ -1457,6 +1599,12 @@ int main(int argc, char* argv[])
     }
 
     if (options.shadowTestScene && !ConfigureShadowTestLight(sceneManager))
+    {
+        engine.Shutdown();
+        return -1;
+    }
+
+    if (options.materialTestScene && !ConfigureMaterialTestLight(sceneManager))
     {
         engine.Shutdown();
         return -1;
@@ -1617,7 +1765,8 @@ int main(int argc, char* argv[])
         {
             engine.TickWithoutRender(kSmokeDeltaSeconds);
 
-            cameraPos = options.shadowTestScene ? Vec3(0.0f, 1.35f, 4.0f) : Vec3(0.0f, 1.5f, 4.0f);
+            cameraPos = options.materialTestScene ? Vec3(0.0f, 0.45f, 2.4f) :
+                        (options.shadowTestScene ? Vec3(0.0f, 1.35f, 4.0f) : Vec3(0.0f, 1.5f, 4.0f));
             camera->SetPosition(cameraPos);
             camera->LookAt(target);
 
@@ -1666,6 +1815,24 @@ int main(int argc, char* argv[])
                 {
                     RVX_CORE_INFO("ModelViewer smoke directional shadow ready: shadowSamplingEnabled=true, "
                                   "fallbackReason=None");
+                }
+            }
+
+            if (options.expectMaterialReady && (frameIndex + 1 == options.frames))
+            {
+                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
+                std::string materialFallbackReason;
+                if (!IsPBRMaterialReady(sceneRenderer, materialFallbackReason))
+                {
+                    RVX_CORE_ERROR("ModelViewer smoke expected PBR material ready; binding: {}",
+                                   materialFallbackReason);
+                    smokeSucceeded = false;
+                }
+                else
+                {
+                    RVX_CORE_INFO("ModelViewer smoke PBR material ready: material='{}', textureFlags={}",
+                                  kPBRMaterialTestMaterialName,
+                                  GetRequiredPBRMaterialTextureFlags());
                 }
             }
 

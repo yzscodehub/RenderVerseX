@@ -41,8 +41,10 @@ namespace RVX
         MaterialBindingStatus status = MaterialBindingStatus::None;
         RHIDescriptorSet* descriptorSet = nullptr;
         std::array<uint32, 1> dynamicOffsets = {0};
+        uint32 textureFlags = 0;
         bool constantsUpdated = false;
         bool usedFallback = false;
+        std::string materialName;
         std::string message;
 
         bool IsDrawable() const

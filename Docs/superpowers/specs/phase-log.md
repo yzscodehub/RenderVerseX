@@ -3843,6 +3843,95 @@ git diff --check
 
 ---
 
+### R-SP: `RQ4 - PBR Material Texture Visual Gate`
+
+**Date:** 2026-06-10
+**Commit:** pending
+**Spark plan review agent:** Pauli (`019ead8c-e21b-78c3-add0-12e95fc7bb43`)
+**Spark code review agent:** Pauli (`019ead8c-e21b-78c3-add0-12e95fc7bb43`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-10-rq4-pbr-material-visual-gate-plan.md`
+- Section: entire RQ4 stage scope, tests, validation plan, and acceptance criteria
+- Lines checked: local document reviewed before implementation; scope tightened after Spark plan review blocker.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ3d
+- Evidence: RQ3d committed as `6fdfe90 test(render): add directional shadow visual gate`, with docs follow-up `2a3e6b4 docs(render): record rq3d commit`.
+
+**Approved scope:**
+
+- Add a deterministic single-material PBR swatch fixture with embedded geometry and embedded texture data.
+- Expose final material binding texture flags and material identity through `MaterialBindingResult`.
+- Add `--material-test-scene` and `--expect-material-ready` to ModelViewer.
+- Fail material smoke unless final binding is ready, no fallback, has constants updated, has a descriptor set, binds `RQ4PBRMaterial`, and reports all five PBR texture flags.
+- Add `ModelViewerPBRMaterialSmoke` and `PBRMaterialVisualGoldenValidation` CTest gates.
+- Capture and commit the inspected DX11 Debug PBR material golden.
+
+**Out of scope:**
+
+- BRDF redesign, KHR material extensions, texture transforms, multi-UV support, sampler-state rewrites, DX12/Vulkan visual golden capture, DamagedHelmet camera/lighting changes, or ECS/Object refactors.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-10-rq4-pbr-material-visual-gate-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Include/Render/Material/MaterialSystem.h`
+- `Render/Private/Material/MaterialSystem.cpp`
+- `Samples/ModelViewer/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/Fixtures/ModelViewer/PBRMaterialSwatch.gltf`
+- `Tests/Golden/ModelViewer/RQ4_PBRMaterial_DX11_320x180.ppm`
+- `Tests/MaterialSystemValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target ModelViewer VisualGoldenValidation MaterialSystemValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "MaterialSystemValidation|ModelViewerPBRMaterialSmoke"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerPBRMaterialSmoke|PBRMaterialVisualGoldenValidation|ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ModelViewerIBLSmoke"
+cmake --build build\win_x64_debug --config Debug --target MaterialSystemValidation PipelineCacheValidation RenderPassValidation RenderSceneValidation ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "MaterialSystemValidation|PipelineCacheValidation|RenderPassValidation|RenderSceneValidation|ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ModelViewerPBRMaterialSmoke|PBRMaterialVisualGoldenValidation|ModelViewerIBLSmoke"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Material readiness tests: PASS, `MaterialSystemValidation` reports all expected bindings ready.
+- PBR material smoke: PASS, `--expect-material-ready` passed with `RQ4PBRMaterial` and all five texture flags.
+- Visual tests: PASS, 7/7 selected tests passed (`ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerShadowSmoke`, `ShadowVisualGoldenValidation`, `ModelViewerPBRMaterialSmoke`, `PBRMaterialVisualGoldenValidation`, `ModelViewerIBLSmoke`).
+- Focused material/render regression: PASS, 122/122 selected tests passed.
+- Golden inspection: PASS, captured image shows base-color patterning, lighting/normal variation, material contrast, darkened regions, and emissive color regions.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Golden: `Tests/Golden/ModelViewer/RQ4_PBRMaterial_DX11_320x180.ppm`
+- Screenshot inspected: `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/RQ4_PBRMaterial_DX11_320x180.ppm`
+- Diffs: RQ4 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Initial verdict: BLOCKED.
+- Blockers resolved: `--expect-material-ready` now requires all five texture flags and `RQ4PBRMaterial` identity; expected files include MaterialSystem changes and MaterialSystemValidation; fixture is constrained to single draw/material.
+- Final verdict: PASS.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Optional follow-up: expose texture load status/resource identity in a later diagnostic if material readiness logs need to distinguish real decoded images from TextureLoader default replacement resources without relying on the visual golden.
+
+**Notes / follow-ups:**
+
+- RQ4 adds a DX11 Debug visual gate for material texture wiring; it does not change BRDF math.
+- The descriptor-cache invalidation test now checks descriptor creation count instead of pointer inequality, avoiding allocator address reuse false failures.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

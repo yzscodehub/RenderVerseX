@@ -144,13 +144,16 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::Mat
 
     const ResolvedMaterialTextures textures = ResolveMaterialTextures(materialResource, viewCache);
     const MaterialGPUConstants constants = BuildConstants(materialResource, textures);
+    const std::string materialName = materialResource ? materialResource->GetMaterialName() : std::string();
 
     void* mapped = m_materialConstantBuffer->Map();
     if (!mapped)
     {
         MaterialBindingResult result;
         result.status = MaterialBindingStatus::Error;
+        result.textureFlags = constants.textureFlags;
         result.usedFallback = textures.usedFallback;
+        result.materialName = materialName;
         result.message = "Failed to map material constant buffer";
         return SetLastBindingResult(std::move(result));
     }
@@ -166,7 +169,9 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::Mat
         result.status = setResult.status == MaterialBindingStatus::None ? MaterialBindingStatus::Error
                                                                         : setResult.status;
         result.constantsUpdated = true;
+        result.textureFlags = constants.textureFlags;
         result.usedFallback = textures.usedFallback || setResult.usedFallback;
+        result.materialName = materialName;
         result.message = setResult.message.empty() ? "Material descriptor set is unavailable"
                                                    : std::move(setResult.message);
         return SetLastBindingResult(std::move(result));
@@ -178,7 +183,9 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::Mat
     result.descriptorSet = setResult.descriptorSet;
     result.dynamicOffsets = GetCurrentMaterialDynamicOffset();
     result.constantsUpdated = true;
+    result.textureFlags = constants.textureFlags;
     result.usedFallback = textures.usedFallback || setResult.usedFallback;
+    result.materialName = materialName;
     if (result.status == MaterialBindingStatus::Fallback)
     {
         result.message = setResult.message.empty() ? "Material binding used explicit fallback resources"
@@ -213,6 +220,7 @@ RHIDescriptorSet* MaterialSystem::GetOrCreateMaterialSet(const Resource::Materia
 
     const ResolvedMaterialTextures textures = ResolveMaterialTextures(materialResource, viewCache);
     MaterialSetResolveResult setResult = GetOrCreateMaterialSetForResolved(textures);
+    const std::string materialName = materialResource ? materialResource->GetMaterialName() : std::string();
 
     MaterialBindingResult result;
     result.status = setResult.descriptorSet
@@ -221,7 +229,9 @@ RHIDescriptorSet* MaterialSystem::GetOrCreateMaterialSet(const Resource::Materia
         : (setResult.status == MaterialBindingStatus::None ? MaterialBindingStatus::Error : setResult.status);
     result.descriptorSet = setResult.descriptorSet;
     result.dynamicOffsets = GetCurrentMaterialDynamicOffset();
+    result.textureFlags = textures.textureFlags;
     result.usedFallback = textures.usedFallback || setResult.usedFallback;
+    result.materialName = materialName;
     result.message = setResult.message.empty()
         ? (result.usedFallback ? "Material descriptor used explicit fallback resources"
                                : "Material descriptor ready")
