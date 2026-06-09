@@ -21,6 +21,7 @@
 
 #include "Engine/Engine.h"
 #include "Render/Context/RenderContext.h"
+#include "Render/PipelineCache.h"
 #include "Render/Renderer/SceneRenderer.h"
 #include "Render/RenderSubsystem.h"
 #include "Runtime/Window/WindowSubsystem.h"
@@ -30,6 +31,7 @@
 #include "Scene/SceneManager.h"
 #include "Scene/SceneEntity.h"
 #include "Scene/ComponentFactory.h"
+#include "Scene/Components/LightComponent.h"
 #include "Scene/Components/SkyboxComponent.h"
 #include "Resource/ResourceSubsystem.h"
 #include "Resource/ResourceManager.h"
@@ -93,7 +95,9 @@ struct ModelViewerOptions
     bool enableProceduralIBL = true;
     bool expectIBLReady = false;
     bool expectSkyboxReady = false;
+    bool expectShadowReady = false;
     bool expectProceduralIBLQuality = false;
+    bool shadowTestScene = false;
     bool enableValidation = true;
     bool showHelp = false;
     bool backendSet = false;
@@ -165,8 +169,10 @@ namespace
             << "  --screenshot <path>  Write final smoke frame as binary PPM\n"
             << "  --hdri <path>        Use an HDR/EXR environment for skybox and texture IBL\n"
             << "  --no-ibl             Disable procedural ModelViewer IBL wiring\n"
+            << "  --shadow-test-scene  Add a deterministic shadow-casting directional light\n"
             << "  --expect-ibl-ready   Smoke mode fails unless texture IBL becomes ready\n"
             << "  --expect-skybox-ready Smoke mode fails unless SkyboxPass becomes ready\n"
+            << "  --expect-shadow-ready Smoke mode fails unless directional shadow sampling is ready\n"
             << "  --expect-procedural-ibl-quality Smoke mode fails unless default procedural IBL uses the CPU HDR pipeline\n"
             << "  --validation         Enable backend validation\n"
             << "  --no-validation      Disable backend validation\n"
@@ -323,6 +329,10 @@ namespace
             {
                 options.enableProceduralIBL = false;
             }
+            else if (arg == "--shadow-test-scene")
+            {
+                options.shadowTestScene = true;
+            }
             else if (arg == "--expect-ibl-ready")
             {
                 options.expectIBLReady = true;
@@ -330,6 +340,10 @@ namespace
             else if (arg == "--expect-skybox-ready")
             {
                 options.expectSkyboxReady = true;
+            }
+            else if (arg == "--expect-shadow-ready")
+            {
+                options.expectShadowReady = true;
             }
             else if (arg == "--expect-procedural-ibl-quality")
             {
@@ -363,6 +377,18 @@ namespace
         if (options.expectProceduralIBLQuality && !options.smoke)
         {
             RVX_CORE_ERROR("--expect-procedural-ibl-quality requires --smoke");
+            return false;
+        }
+
+        if (options.expectShadowReady && !options.smoke)
+        {
+            RVX_CORE_ERROR("--expect-shadow-ready requires --smoke");
+            return false;
+        }
+
+        if (options.expectShadowReady && !options.shadowTestScene)
+        {
+            RVX_CORE_ERROR("--expect-shadow-ready requires --shadow-test-scene");
             return false;
         }
 
@@ -1057,6 +1083,97 @@ namespace
         return false;
     }
 
+    bool IsDirectionalShadowReady(SceneRenderer* sceneRenderer, std::string& outReason)
+    {
+        if (!sceneRenderer)
+        {
+            outReason = "NoSceneRenderer";
+            return false;
+        }
+
+        PipelineCache* pipelineCache = sceneRenderer->GetPipelineCache();
+        if (!pipelineCache)
+        {
+            outReason = "NoPipelineCache";
+            return false;
+        }
+
+        const DirectionalShadowFrameBindingResult& result =
+            pipelineCache->GetLastDirectionalShadowFrameBindingResult();
+        if (result.shadowSamplingEnabled && result.fallbackReason == DirectionalShadowFallbackReason::None)
+        {
+            outReason.clear();
+            return true;
+        }
+
+        outReason = PipelineCache::GetDirectionalShadowFallbackReasonName(result.fallbackReason);
+        if (outReason.empty())
+        {
+            outReason = result.shadowSamplingEnabled ? "UnexpectedDirectionalShadowState" : "ShadowSamplingDisabled";
+        }
+        return false;
+    }
+
+    Quat MakeLookRotation(const Vec3& direction, const Vec3& up)
+    {
+        Vec3 forward = direction;
+        if (length(forward) < 0.001f)
+        {
+            forward = Vec3(0.0f, -1.0f, 0.0f);
+        }
+        forward = normalize(forward);
+
+        Vec3 right = cross(up, forward);
+        if (length(right) < 0.001f)
+        {
+            right = Vec3(1.0f, 0.0f, 0.0f);
+        }
+        else
+        {
+            right = normalize(right);
+        }
+        const Vec3 correctedUp = cross(forward, right);
+
+        Mat4 lookMatrix(1.0f);
+        lookMatrix[0] = Vec4(right, 0.0f);
+        lookMatrix[1] = Vec4(correctedUp, 0.0f);
+        lookMatrix[2] = Vec4(-forward, 0.0f);
+        lookMatrix[3] = Vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        return Mat4ToQuat(lookMatrix);
+    }
+
+    bool ConfigureShadowTestLight(SceneManager* sceneManager)
+    {
+        if (!sceneManager)
+        {
+            return false;
+        }
+
+        ActorSpawnParams lightParams;
+        lightParams.name = "ModelViewerShadowTestSun";
+        SceneEntity* lightEntity = sceneManager->SpawnActor(lightParams);
+        LightComponent* light = lightEntity ? lightEntity->AddComponent<LightComponent>() : nullptr;
+        if (!lightEntity || !light)
+        {
+            RVX_CORE_ERROR("ModelViewer shadow test scene could not create a directional light");
+            return false;
+        }
+
+        const Vec3 lightDirection = normalize(Vec3(-0.25f, -0.55f, -0.65f));
+        lightEntity->SetRotation(MakeLookRotation(lightDirection, Vec3(0.0f, 1.0f, 0.0f)));
+        light->SetLightType(LightType::Directional);
+        light->SetColor(Vec3(1.0f, 0.96f, 0.88f));
+        light->SetIntensity(5.0f);
+        light->SetCastsShadow(true);
+        light->SetShadowBias(0.0008f);
+
+        RVX_CORE_INFO("ModelViewer shadow test directional light configured: dir=({}, {}, {})",
+                      lightDirection.x,
+                      lightDirection.y,
+                      lightDirection.z);
+        return true;
+    }
+
     bool QueueBackBufferScreenshot(RenderSubsystem* renderSubsystem, PendingScreenshot& outScreenshot)
     {
         if (!renderSubsystem || !renderSubsystem->GetRenderContext())
@@ -1322,8 +1439,9 @@ int main(int argc, char* argv[])
 
     // Create camera
     Camera* camera = world->CreateCamera("MainCamera");
-    Vec3 cameraPos = options.smoke ? Vec3(0.0f, 1.5f, 4.0f) : Vec3(0.0f, 2.0f, 5.0f);
-    Vec3 target(0.0f, 0.0f, 0.0f);
+    Vec3 cameraPos = options.shadowTestScene ? Vec3(0.0f, 1.35f, 4.0f) :
+                     (options.smoke ? Vec3(0.0f, 1.5f, 4.0f) : Vec3(0.0f, 2.0f, 5.0f));
+    Vec3 target = options.shadowTestScene ? Vec3(0.0f, 0.35f, 0.0f) : Vec3(0.0f, 0.0f, 0.0f);
     camera->SetPosition(cameraPos);
     camera->LookAt(target);
     camera->SetPerspective(glm::radians(45.0f), static_cast<float>(options.width) / static_cast<float>(options.height), 0.1f, 1000.0f);
@@ -1334,6 +1452,12 @@ int main(int argc, char* argv[])
     if (!sceneManager)
     {
         RVX_CORE_ERROR("World has no scene manager");
+        engine.Shutdown();
+        return -1;
+    }
+
+    if (options.shadowTestScene && !ConfigureShadowTestLight(sceneManager))
+    {
         engine.Shutdown();
         return -1;
     }
@@ -1493,7 +1617,7 @@ int main(int argc, char* argv[])
         {
             engine.TickWithoutRender(kSmokeDeltaSeconds);
 
-            cameraPos = Vec3(0.0f, 1.5f, 4.0f);
+            cameraPos = options.shadowTestScene ? Vec3(0.0f, 1.35f, 4.0f) : Vec3(0.0f, 1.5f, 4.0f);
             camera->SetPosition(cameraPos);
             camera->LookAt(target);
 
@@ -1525,6 +1649,23 @@ int main(int argc, char* argv[])
                     RVX_CORE_ERROR("ModelViewer smoke expected SkyboxPass ready; fallback reason: {}",
                                    skyboxFallbackReason);
                     smokeSucceeded = false;
+                }
+            }
+
+            if (options.expectShadowReady && (frameIndex + 1 == options.frames))
+            {
+                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
+                std::string shadowFallbackReason;
+                if (!IsDirectionalShadowReady(sceneRenderer, shadowFallbackReason))
+                {
+                    RVX_CORE_ERROR("ModelViewer smoke expected directional shadow ready; fallback reason: {}",
+                                   shadowFallbackReason);
+                    smokeSucceeded = false;
+                }
+                else
+                {
+                    RVX_CORE_INFO("ModelViewer smoke directional shadow ready: shadowSamplingEnabled=true, "
+                                  "fallbackReason=None");
                 }
             }
 

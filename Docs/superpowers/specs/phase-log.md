@@ -3759,6 +3759,90 @@ git diff --check
 
 ---
 
+### R-SP: `RQ3d - Directional Shadow Visual Gate`
+
+**Date:** 2026-06-10
+**Commit:** pending
+**Spark plan review agent:** Pauli (`019ead8c-e21b-78c3-add0-12e95fc7bb43`)
+**Spark code review agent:** Pauli (`019ead8c-e21b-78c3-add0-12e95fc7bb43`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-10-rq3d-shadow-visual-gate-plan.md`
+- Section: entire RQ3d stage scope, tests, validation plan, and acceptance criteria
+- Lines checked: local document reviewed before implementation; scope tightened after Spark plan review.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ3c
+- Evidence: RQ3c committed as `8538027 feat(render): add directional shadow pcf filter`, with docs follow-up `7a1d045 docs(render): record rq3c commit`.
+
+**Approved scope:**
+
+- Add a deterministic ModelViewer shadow fixture with an opaque receiver and caster.
+- Add `--shadow-test-scene` and `--expect-shadow-ready` smoke options to ModelViewer.
+- Assert `PipelineCache::GetLastDirectionalShadowFrameBindingResult()` reports `shadowSamplingEnabled=true` and `fallbackReason=None` on the final smoke frame.
+- Add `ModelViewerShadowSmoke` and `ShadowVisualGoldenValidation` CTest gates.
+- Capture and commit the inspected DX11 Debug shadow golden.
+
+**Out of scope:**
+
+- CSM cascade selection/blending, PCSS, EVSM/VSM/MSM, contact shadows, reverse-Z shadows, shadow atlases, point/spot shadows, general ModelViewer redesign, or ECS/Object refactors.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-10-rq3d-shadow-visual-gate-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Samples/ModelViewer/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/Fixtures/ModelViewer/ShadowPlaneCaster.gltf`
+- `Tests/Golden/ModelViewer/RQ3d_Shadow_DX11_320x180.ppm`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerShadowSmoke"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ModelViewerSmoke|VisualGoldenValidation|ModelViewerIBLSmoke"
+cmake --build build\win_x64_debug --config Debug --target RenderGraphValidation RenderHonestyValidation RenderSceneValidation RenderPassValidation MaterialSystemValidation PipelineCacheValidation ClusteredLightingValidation ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|RenderHonestyValidation|RenderSceneValidation|RenderPassValidation|MaterialSystemValidation|PipelineCacheValidation|ClusteredLightingValidation|ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ModelViewerIBLSmoke"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Shadow smoke: PASS, `ModelViewerShadowSmoke` generated the RQ3d screenshot and `--expect-shadow-ready` passed.
+- Visual tests: PASS, 5/5 selected tests passed (`ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerShadowSmoke`, `ShadowVisualGoldenValidation`, `ModelViewerIBLSmoke`).
+- Focused render regression: PASS, 174/174 selected tests passed.
+- Golden inspection: PASS, captured image contains a visible opaque caster, receiver plane, and clear directional shadow darkening.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Golden: `Tests/Golden/ModelViewer/RQ3d_Shadow_DX11_320x180.ppm`
+- Screenshot inspected: `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/RQ3d_Shadow_DX11_320x180.ppm`
+- Diffs: RQ3d intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Initial verdict: PASS.
+- Optional follow-ups applied: `--expect-shadow-ready` requires both shadow sampling enabled and fallback reason none; golden inspection requires visible caster, receiver, and clear shadow darkening; fixture materials remain opaque.
+
+**Spark code review result:**
+
+- Initial verdict: PASS.
+- Blockers resolved: none.
+- Optional follow-ups applied: success log for `--expect-shadow-ready`; manual validation paths aligned with the CTest `Tests/VisualArtifacts` output directory.
+- Final short re-review verdict: PASS.
+
+**Notes / follow-ups:**
+
+- RQ3d adds a single-backend DX11 Debug visual gate; DX12/Vulkan shadow visual gates remain future work.
+- This stage deliberately verifies the existing directional shadow path and does not change the shadow algorithm.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

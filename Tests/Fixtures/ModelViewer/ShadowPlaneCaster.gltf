@@ -1,0 +1,132 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "RenderVerseX RQ3d shadow visual gate"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "name": "RQ3dShadowScene",
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "ShadowPlaneCaster",
+      "mesh": 0
+    }
+  ],
+  "meshes": [
+    {
+      "name": "ShadowPlaneCasterMesh",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TEXCOORD_0": 2
+          },
+          "indices": 3,
+          "material": 0,
+          "mode": 4
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "RQ3dOpaqueMatte",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.72,
+          0.72,
+          0.68,
+          1.0
+        ],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.9
+      },
+      "alphaMode": "OPAQUE"
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 980,
+      "uri": "data:application/octet-stream;base64,zcwMwAAAAABmZua/zcwMQAAAAABmZua/zcwMQAAAAABmZuY/zcwMwAAAAABmZuY/PQrXvgrXozzNzEw+PQrXPgrXozzNzEw+PQrXPmZmhj/NzEw+PQrXvmZmhj/NzEw+PQrXPgrXozzNzEy+PQrXvgrXozzNzEy+PQrXvmZmhj/NzEy+PQrXPmZmhj/NzEy+PQrXPgrXozzNzEw+PQrXPgrXozzNzEy+PQrXPmZmhj/NzEy+PQrXPmZmhj/NzEw+PQrXvgrXozzNzEy+PQrXvgrXozzNzEw+PQrXvmZmhj/NzEw+PQrXvmZmhj/NzEy+PQrXvmZmhj/NzEw+PQrXPmZmhj/NzEw+PQrXPmZmhj/NzEy+PQrXvmZmhj/NzEy+PQrXvgrXozzNzEy+PQrXPgrXozzNzEy+PQrXPgrXozzNzEw+PQrXvgrXozzNzEw+AAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAgD8AAIA/AAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAACAPwAAgD8AAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAIA/AACAPwAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAIA/AAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAACAPwAAgD8AAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAIA/AACAPwAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAIA/AAAAAAAAgD8AAAIAAQAAAAMAAgAEAAUABgAEAAYABwAIAAkACgAIAAoACwAMAA0ADgAMAA4ADwAQABEAEgAQABIAEwAUABUAFgAUABYAFwAYABkAGgAYABoAGwA="
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 336,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 336,
+      "byteLength": 336,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 672,
+      "byteLength": 224,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 896,
+      "byteLength": 84,
+      "target": 34963
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "byteOffset": 0,
+      "componentType": 5126,
+      "count": 28,
+      "type": "VEC3",
+      "min": [
+        -2.2,
+        0.0,
+        -1.8
+      ],
+      "max": [
+        2.2,
+        1.05,
+        1.8
+      ]
+    },
+    {
+      "bufferView": 1,
+      "byteOffset": 0,
+      "componentType": 5126,
+      "count": 28,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "byteOffset": 0,
+      "componentType": 5126,
+      "count": 28,
+      "type": "VEC2"
+    },
+    {
+      "bufferView": 3,
+      "byteOffset": 0,
+      "componentType": 5123,
+      "count": 42,
+      "type": "SCALAR",
+      "min": [
+        0
+      ],
+      "max": [
+        27
+      ]
+    }
+  ]
+}

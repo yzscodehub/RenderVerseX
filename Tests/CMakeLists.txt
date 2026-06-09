@@ -440,6 +440,12 @@ if(RVX_ENABLE_DX11 AND TARGET ModelViewer)
         "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ModelViewer/R7_DX11_320x180.diff.ppm")
     set(RVX_MODELVIEWER_SMOKE_GOLDEN
         "${CMAKE_CURRENT_SOURCE_DIR}/Golden/ModelViewer/R7_DX11_320x180.ppm")
+    set(RVX_MODELVIEWER_SHADOW_ACTUAL
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ModelViewer/RQ3d_Shadow_DX11_320x180.ppm")
+    set(RVX_MODELVIEWER_SHADOW_DIFF
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ModelViewer/RQ3d_Shadow_DX11_320x180.diff.ppm")
+    set(RVX_MODELVIEWER_SHADOW_GOLDEN
+        "${CMAKE_CURRENT_SOURCE_DIR}/Golden/ModelViewer/RQ3d_Shadow_DX11_320x180.ppm")
     set(RVX_MODELVIEWER_HDRI_FIXTURE
         "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/$<CONFIG>/ModelViewer/RQ2fTinyEnvironment.hdr")
 
@@ -477,6 +483,43 @@ if(RVX_ENABLE_DX11 AND TARGET ModelViewer)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
     set_property(TEST VisualGoldenValidation PROPERTY DEPENDS ModelViewerSmoke)
+
+    add_test(
+        NAME ModelViewerShadowSmoke
+        COMMAND $<TARGET_FILE:ModelViewer>
+            --smoke
+            --model "${CMAKE_CURRENT_SOURCE_DIR}/Fixtures/ModelViewer/ShadowPlaneCaster.gltf"
+            --shadow-test-scene
+            --expect-shadow-ready
+            --backend dx11
+            --width ${RVX_MODELVIEWER_SMOKE_WIDTH}
+            --height ${RVX_MODELVIEWER_SMOKE_HEIGHT}
+            --frames 8
+            --screenshot "${RVX_MODELVIEWER_SHADOW_ACTUAL}"
+            --no-ibl
+            --validation
+    )
+    set_tests_properties(ModelViewerShadowSmoke PROPERTIES
+        LABELS "visual;gpu"
+        TIMEOUT 120
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME ShadowVisualGoldenValidation
+        COMMAND $<TARGET_FILE:VisualGoldenValidation>
+            --expected "${RVX_MODELVIEWER_SHADOW_GOLDEN}"
+            --actual "${RVX_MODELVIEWER_SHADOW_ACTUAL}"
+            --diff "${RVX_MODELVIEWER_SHADOW_DIFF}"
+            --tolerance 0.0
+            --max-different-pixels 0
+    )
+    set_tests_properties(ShadowVisualGoldenValidation PROPERTIES
+        LABELS "visual;gpu"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+    set_property(TEST ShadowVisualGoldenValidation PROPERTY DEPENDS ModelViewerShadowSmoke)
 
     add_test(
         NAME ModelViewerIBLSmoke
