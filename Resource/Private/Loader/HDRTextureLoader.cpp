@@ -1,6 +1,7 @@
 #include "Resource/Loader/HDRTextureLoader.h"
-#include "Resource/ResourceCache.h"
+
 #include "Core/Log.h"
+#include "Resource/ResourceCache.h"
 
 #include <stb_image.h>
 
@@ -13,9 +14,10 @@
     #define HAS_TINYEXR 0
 #endif
 
-#include <filesystem>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <filesystem>
 #include <functional>
 
 namespace RVX::Resource
@@ -124,6 +126,69 @@ namespace RVX::Resource
             return Vec3(std::isfinite(color.r) ? color.r : 0.0f,
                         std::isfinite(color.g) ? color.g : 0.0f,
                         std::isfinite(color.b) ? color.b : 0.0f);
+        }
+
+        float SanitizeFiniteNonNegative(float value)
+        {
+            return std::isfinite(value) ? std::max(0.0f, value) : 0.0f;
+        }
+
+        float GeometrySchlickGGX(float nDot, float roughness)
+        {
+            const float alpha = roughness * roughness;
+            const float k = alpha * 0.5f;
+            return nDot / std::max(nDot * (1.0f - k) + k, 1.0e-6f);
+        }
+
+        float GeometrySmithIBL(float nDotV, float nDotL, float roughness)
+        {
+            return GeometrySchlickGGX(nDotV, roughness) * GeometrySchlickGGX(nDotL, roughness);
+        }
+
+        uint16_t FloatToHalfBits(float value)
+        {
+            const float sanitized = SanitizeFiniteNonNegative(value);
+            if (sanitized == 0.0f)
+            {
+                return 0;
+            }
+
+            uint32_t bits = 0;
+            std::memcpy(&bits, &sanitized, sizeof(bits));
+            const uint16_t sign = static_cast<uint16_t>((bits >> 16) & 0x8000u);
+            int32_t exp = static_cast<int32_t>((bits >> 23) & 0xFFu) - 127 + 15;
+            uint32_t mant = bits & 0x007FFFFFu;
+
+            if (exp <= 0)
+            {
+                if (exp < -10)
+                {
+                    return sign;
+                }
+
+                mant |= 0x00800000u;
+                const uint32_t shift = static_cast<uint32_t>(14 - exp);
+                uint16_t half = static_cast<uint16_t>(mant >> shift);
+                if ((mant >> (shift - 1u)) & 1u)
+                {
+                    ++half;
+                }
+                return static_cast<uint16_t>(sign | half);
+            }
+
+            if (exp >= 31)
+            {
+                return static_cast<uint16_t>(sign | 0x7C00u);
+            }
+
+            uint16_t half = static_cast<uint16_t>(sign |
+                                                  (static_cast<uint16_t>(exp) << 10) |
+                                                  static_cast<uint16_t>(mant >> 13));
+            if (mant & 0x00001000u)
+            {
+                ++half;
+            }
+            return half;
         }
     } // namespace
 
@@ -612,8 +677,8 @@ namespace RVX::Resource
 
                     if (NdotL > 0.0f)
                     {
-                        float G = NdotL * NdotV;  // Simplified geometry term
-                        float G_Vis = (G * VdotH) / (NdotH * NdotV + 0.0001f);
+                        float G = GeometrySmithIBL(NdotV, NdotL, roughness);
+                        float G_Vis = (G * VdotH) / std::max(NdotH * NdotV, 1.0e-6f);
                         float Fc = std::pow(1.0f - VdotH, 5.0f);
 
                         A += (1.0f - Fc) * G_Vis;
@@ -625,8 +690,8 @@ namespace RVX::Resource
                 B /= static_cast<float>(sampleCount);
 
                 size_t idx = (y * resolution + x) * 2;
-                lutData[idx] = A;
-                lutData[idx + 1] = B;
+                lutData[idx] = SanitizeFiniteNonNegative(A);
+                lutData[idx + 1] = SanitizeFiniteNonNegative(B);
             }
         }
 
@@ -650,23 +715,10 @@ namespace RVX::Resource
 
         for (uint32_t i = 0; i < resolution * resolution; ++i)
         {
-            // Simple float to half conversion (approximate)
-            auto floatToHalf = [](float f) -> uint16_t {
-                // Simplified conversion - for production use proper half-float conversion
-                if (f == 0.0f) return 0;
-                uint32_t bits = *reinterpret_cast<uint32_t*>(&f);
-                uint16_t sign = (bits >> 16) & 0x8000;
-                int32_t exp = ((bits >> 23) & 0xFF) - 127 + 15;
-                uint16_t mant = (bits >> 13) & 0x3FF;
-                if (exp <= 0) return sign;
-                if (exp >= 31) return sign | 0x7C00;
-                return sign | (static_cast<uint16_t>(exp) << 10) | mant;
-            };
-
-            halfData[i * 4 + 0] = floatToHalf(lutData[i * 2]);
-            halfData[i * 4 + 1] = floatToHalf(lutData[i * 2 + 1]);
+            halfData[i * 4 + 0] = FloatToHalfBits(lutData[i * 2]);
+            halfData[i * 4 + 1] = FloatToHalfBits(lutData[i * 2 + 1]);
             halfData[i * 4 + 2] = 0;
-            halfData[i * 4 + 3] = floatToHalf(1.0f);
+            halfData[i * 4 + 3] = FloatToHalfBits(1.0f);
         }
 
         texture->SetData(std::move(byteData), metadata);

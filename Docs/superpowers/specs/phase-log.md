@@ -3377,6 +3377,88 @@ git diff --check
 
 ---
 
+### R-SP: `RQ2k - BRDF LUT Split-Sum Numeric Guardrails`
+
+**Date:** 2026-06-09
+**Commit:** pending
+**Spark plan review agent:** `019eaccb-1bd7-7880-86cd-27f6c5671fd8`
+**Spark code review agent:** `019eacd1-d50c-7d82-874f-20b94f43f850`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-09-rq2k-brdf-lut-split-sum-guardrails-plan.md`
+- Section: entire RQ2k stage scope, tests, and acceptance criteria
+- Lines checked: local document reviewed immediately before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ2j
+- Evidence: RQ2j committed as `19a3f72 feat(render): expose view lighting controls for default lit`, with docs follow-up `ed584d7 docs(render): record rq2j commit`.
+
+**Approved scope:**
+
+- Replace the simplified BRDF LUT visibility term with Smith GGX split-sum visibility integration.
+- Harden BRDF LUT RGBA16F packing while preserving id/path/name/cache behavior and metadata.
+- Add numeric BRDF LUT tests that decode half-float data, compare against a reference split-sum integration, and prove the old simplified term would differ.
+- Keep no-IBL golden stable and use ModelViewer IBL smoke/manual DamagedHelmet smoke as visual safety gates.
+
+**Out of scope:**
+
+- DefaultLit shader BRDF changes, shadow sampling, bloom/exposure/tonemap changes, GPU IBL convolution, ModelViewer preset/camera/model changes, and golden recapture.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-09-rq2k-brdf-lut-split-sum-guardrails-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Resource/Private/Loader/HDRTextureLoader.cpp`
+- `Tests/HDRTextureLoaderValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target HDRTextureLoaderValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "HDRTextureLoaderValidation"
+cmake --build build\win_x64_debug --config Debug --target HDRTextureLoaderValidation ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "HDRTextureLoaderValidation|ModelViewerIBLSmoke|ModelViewerSmoke|VisualGoldenValidation"
+build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --backend dx11 --width 800 --height 450 --frames 8 --screenshot build\win_x64_debug\VisualArtifacts\Debug\ModelViewer\RQ2k_DamagedHelmet.ppm --validation --expect-ibl-ready --expect-procedural-ibl-quality
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused HDRTextureLoader tests: PASS, 7/7 selected tests passed after aligning the finite-sample reference tangent basis and fixing the reviewed Schlick-Smith `k` formula.
+- Focused visual/regression tests: PASS, 10/10 selected tests passed.
+- Manual DamagedHelmet smoke: PASS, exit code 0, `ModelViewer procedural IBL quality check passed`, `ModelViewer Smoke PASS`, screenshot inspected.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Screenshot: `build/win_x64_debug/VisualArtifacts/Debug/ModelViewer/RQ2k_DamagedHelmet.ppm`
+- Preview: `build/win_x64_debug/VisualArtifacts/Debug/ModelViewer/RQ2k_DamagedHelmet.bmp`
+- Diffs: current RQ2k working tree diff before commit.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Non-blocking suggestions adopted: added `VisualGoldenValidation` to the build target list and required grazing/low-roughness reference samples that distinguish the old simplified visibility term.
+
+**Spark code review result:**
+
+- Initial verdict: BLOCKED.
+- Blocker resolved: `GeometrySchlickGGX` now uses the IBL split-sum `k = roughness^2 * 0.5` form in both implementation and numeric reference tests, replacing the erroneous `roughness^4 * 0.5` formula.
+- Final verdict: PASS.
+- Remaining blockers: none.
+- Non-blocking suggestion adopted: added an explicit `<cstring>` include in `HDRTextureLoader.cpp` for `std::memcpy`.
+
+**Notes / follow-ups:**
+
+- RQ2k improves CPU-generated BRDF LUT correctness only; shader BRDF and shadowing remain later stages.
+- The new numeric tests intentionally compare decoded texture data, so they cover the actual bytes consumed by the GPU upload path.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
