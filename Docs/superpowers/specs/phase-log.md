@@ -3380,7 +3380,7 @@ git diff --check
 ### R-SP: `RQ2k - BRDF LUT Split-Sum Numeric Guardrails`
 
 **Date:** 2026-06-09
-**Commit:** pending
+**Commit:** `4bc38c1 fix(resource): use split-sum geometry for brdf lut`
 **Spark plan review agent:** `019eaccb-1bd7-7880-86cd-27f6c5671fd8`
 **Spark code review agent:** `019eacd1-d50c-7d82-874f-20b94f43f850`
 
