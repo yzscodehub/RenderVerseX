@@ -796,17 +796,34 @@ void SceneRenderer::UpdatePassResources()
 
 void SceneRenderer::PreparePassesForFrame()
 {
-    if (!m_shadowPass)
-        return;
+    m_viewData.directionalLightDirection = Vec3{0.5f, -0.8f, 0.3f};
+    m_viewData.directionalLightIntensity = 4.0f;
+    m_viewData.directionalShadowEnabled = 0;
+    m_viewData.directionalShadowViewProjection = Mat4Identity();
+    m_viewData.directionalShadowInvMapSize = 0.0f;
 
-    m_shadowPass->SetEnabled(false);
+    if (m_shadowPass)
+    {
+        m_shadowPass->SetEnabled(false);
+    }
+
+    if (m_opaquePass)
+    {
+        m_opaquePass->SetDirectionalShadowSource(m_shadowPass);
+    }
 
     for (const RenderLight& light : m_renderScene.GetLights())
     {
-        if (light.type != RenderLight::Type::Directional || !light.castsShadow || light.intensity <= 0.0f)
+        if (light.type != RenderLight::Type::Directional || light.intensity <= 0.0f)
             continue;
 
-        m_shadowPass->SetDirectionalLight(light.direction, light.color, light.intensity);
+        m_viewData.directionalLightDirection = light.direction;
+        m_viewData.directionalLightIntensity = light.intensity;
+
+        if (m_shadowPass && light.castsShadow)
+        {
+            m_shadowPass->SetDirectionalLight(light.direction, light.color, light.intensity);
+        }
         break;
     }
 }

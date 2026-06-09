@@ -82,6 +82,21 @@ namespace RVX
         /// Primary directional light intensity; matches the previous hard-coded DefaultLit radiance
         float directionalLightIntensity = 4.0f;
 
+        /// Directional shadow matrix for the selected primary light and cascade 0
+        Mat4 directionalShadowViewProjection = Mat4Identity();
+
+        /// Directional shadow depth bias for manual shadow compare
+        float directionalShadowDepthBias = 0.005f;
+
+        /// Directional shadow darkening strength in [0, 1]
+        float directionalShadowStrength = 1.0f;
+
+        /// Reciprocal shadow map size for shader filtering/future PCF
+        float directionalShadowInvMapSize = 0.0f;
+
+        /// Enables directional shadow sampling when the frame descriptor has a valid map
+        uint8 directionalShadowEnabled = 0;
+
         // =====================================================================
         // Render Targets
         // =====================================================================

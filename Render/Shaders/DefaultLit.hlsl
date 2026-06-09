@@ -40,6 +40,8 @@ cbuffer ViewConstants : register(b0, space0)
     float4 IBLDiffuseAmbient;   // rgb: color, a: diffuse intensity
     float4 IBLSpecularAmbient;  // rgb: color, a: specular intensity
     float4 IBLTextureParams;    // x: enabled, y: prefiltered mip count, z: intensity, w: ambient floor intensity
+    float4x4 DirectionalShadowViewProjection;
+    float4 DirectionalShadowParams; // x: enabled, y: depth bias, z: strength, w: inverse map size
 };
 
 cbuffer ObjectConstants : register(b0, space1)
@@ -73,6 +75,8 @@ SamplerState MaterialSampler : register(s6, space2);
 TextureCube IrradianceTexture : register(t7, space2);
 TextureCube PrefilteredEnvironmentTexture : register(t8, space2);
 Texture2D BRDFLUTTexture : register(t9, space2);
+Texture2D<float> DirectionalShadowMapTexture : register(t1, space0);
+SamplerState DirectionalShadowSampler : register(s2, space0);
 
 // =============================================================================
 // Vertex Shader Input/Output
@@ -139,6 +143,32 @@ float3 SampleNormalMap(float2 uv, float3 worldNormal, float4 worldTangent)
     return SafeNormalize(mul(tangentNormal, tbn), n);
 }
 
+float SampleDirectionalShadow(float3 worldPos)
+{
+    if (DirectionalShadowParams.x <= 0.5)
+    {
+        return 1.0;
+    }
+
+    float4 shadowClip = mul(DirectionalShadowViewProjection, float4(worldPos, 1.0));
+    if (abs(shadowClip.w) <= 1.0e-6)
+    {
+        return 1.0;
+    }
+
+    float3 shadowNdc = shadowClip.xyz / shadowClip.w;
+    float2 shadowUV = float2(shadowNdc.x * 0.5 + 0.5, 0.5 - shadowNdc.y * 0.5);
+    if (any(shadowUV < 0.0) || any(shadowUV > 1.0) || shadowNdc.z < 0.0 || shadowNdc.z > 1.0)
+    {
+        return 1.0;
+    }
+
+    float compareDepth = shadowNdc.z - max(DirectionalShadowParams.y, 0.0);
+    float storedDepth = DirectionalShadowMapTexture.SampleLevel(DirectionalShadowSampler, shadowUV, 0).r;
+    float lit = compareDepth <= storedDepth ? 1.0 : 0.0;
+    return lerp(1.0 - saturate(DirectionalShadowParams.z), 1.0, lit);
+}
+
 float4 PSMain(PSInput input) : SV_TARGET
 {
     float4 baseColor = BaseColorFactor;
@@ -184,6 +214,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     float clampedRoughness = clamp(roughness, 0.04, 1.0);
     float3 f0 = ComputeF0(baseColor.rgb, metallic);
 
+    float shadowVisibility = SampleDirectionalShadow(input.WorldPos);
     float3 directLight = EvaluatePBR(
         normal,
         viewDir,
@@ -192,7 +223,7 @@ float4 PSMain(PSInput input) : SV_TARGET
         metallic,
         clampedRoughness,
         float3(DirectionalLightIntensity, DirectionalLightIntensity, DirectionalLightIntensity),
-        1.0);
+        shadowVisibility);
 
     float nDotV = max(dot(normal, viewDir), 0.001);
     float3 fresnel = F_SchlickRoughness(nDotV, f0, clampedRoughness);

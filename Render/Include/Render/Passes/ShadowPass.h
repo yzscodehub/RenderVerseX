@@ -101,6 +101,9 @@ namespace RVX
          * @brief Get cascade info for shader binding
          */
         const std::vector<ShadowCascade>& GetCascades() const { return m_cascades; }
+        const ShadowPassConfig& GetConfig() const { return m_config; }
+        const Vec3& GetLightDirection() const { return m_lightDirection; }
+        float GetLightIntensity() const { return m_lightIntensity; }
 
         /**
          * @brief Get the shadow map texture (after execution)

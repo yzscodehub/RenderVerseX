@@ -101,6 +101,14 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
+    // RQ3a keeps directional shadow sampling scoped to OpaquePass. Transparent
+    // shading reuses DefaultLit, so reset the frame shadow state explicitly
+    // before binding the frame descriptor for transparent draws.
+    ViewData transparentView = view;
+    transparentView.directionalShadowEnabled = 0;
+    m_pipelineCache->UpdateDirectionalShadowFrameResources({});
+    m_pipelineCache->UpdateViewConstants(transparentView);
+
     // Begin render pass with alpha blending
     RHIRenderPassDesc rpDesc;
     rpDesc.AddColorAttachment(colorTargetView, RHILoadOp::Load, RHIStoreOp::Store,

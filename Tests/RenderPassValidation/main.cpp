@@ -365,7 +365,9 @@ namespace
         RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
         {
             createdBufferDescs.push_back(desc);
-            return RHIBufferRef(new FakeBuffer(desc, bufferMapSucceeds));
+            auto buffer = RHIBufferRef(new FakeBuffer(desc, bufferMapSucceeds));
+            createdBuffers.push_back(static_cast<FakeBuffer*>(buffer.Get()));
+            return buffer;
         }
 
         RHITextureRef CreateTexture(const RHITextureDesc& desc) override
@@ -377,6 +379,11 @@ namespace
         RHITextureViewRef CreateTextureView(RHITexture* texture, const RHITextureViewDesc& desc = {}) override
         {
             createdTextureViewDescs.push_back(desc);
+            const bool isDirectionalShadowSRV = desc.debugName && std::string(desc.debugName) == "DirectionalShadowSRV";
+            const bool isShadowDepthView = failDirectionalShadowDepthViewCreation &&
+                                           desc.subresourceRange.aspect == RHITextureAspect::Depth;
+            if (isShadowDepthView || (failDirectionalShadowDepthViewCreation && isDirectionalShadowSRV))
+                return {};
             if (!textureViewCreationSucceeds)
                 return {};
             return RHITextureViewRef(new FakeTextureView(texture, desc));
@@ -487,8 +494,10 @@ namespace
 
         bool bufferMapSucceeds = true;
         bool textureViewCreationSucceeds = true;
+        bool failDirectionalShadowDepthViewCreation = false;
         bool samplerCreationSucceeds = true;
         std::vector<RHIBufferDesc> createdBufferDescs;
+        std::vector<FakeBuffer*> createdBuffers;
         std::vector<RHIDescriptorSetDesc> createdDescriptorSetDescs;
         std::vector<RHITextureDesc> createdTextureDescs;
         std::vector<RHITextureViewDesc> createdTextureViewDescs;
@@ -646,6 +655,20 @@ namespace
             }
         }
         return true;
+    }
+
+    const FakeBuffer* FindCreatedBuffer(const FakeDevice& device, const char* debugName)
+    {
+        for (size_t i = 0; i < device.createdBufferDescs.size() && i < device.createdBuffers.size(); ++i)
+        {
+            const char* name = device.createdBufferDescs[i].debugName;
+            if (name && std::string(name) == debugName)
+            {
+                return device.createdBuffers[i];
+            }
+        }
+
+        return nullptr;
     }
 
     class RenderPassValidationFixture : public ::testing::Test
@@ -1795,6 +1818,139 @@ TEST_F(RenderPassValidationFixture, OpaquePassResolvesRenderGraphColorTargetView
     EXPECT_NE(resolvedView->GetTexture(), colorTexture.Get());
 }
 
+TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDuringSetup)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureDesc sceneColorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
+    sceneColorDesc.debugName = "GraphSceneColorForOpaqueShadowPass";
+    view.colorTarget = graph.CreateTexture(sceneColorDesc);
+    graph.SetExportState(view.colorTarget, RHIResourceState::RenderTarget);
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+    view.aspectRatio = 1.0f;
+    view.fieldOfView = 1.0472f;
+    view.nearPlane = 0.1f;
+    view.farPlane = 100.0f;
+    view.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+    view.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    view.inverseViewMatrix = Mat4Identity();
+
+    ShadowPassConfig shadowConfig;
+    shadowConfig.numCascades = 1;
+    shadowConfig.shadowMapSize = 64;
+
+    ShadowPass shadowPass;
+    shadowPass.SetResources(&gpuResources, &pipelineCache);
+    shadowPass.SetRenderScene(&scene);
+    shadowPass.SetConfig(shadowConfig);
+    shadowPass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+
+    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
+    std::vector<RenderDrawItem> maskedItems;
+
+    OpaquePass opaquePass;
+    opaquePass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
+    opaquePass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    opaquePass.SetRenderTargets(colorView.Get(), nullptr);
+    opaquePass.SetDirectionalShadowSource(&shadowPass);
+
+    shadowPass.AddToGraph(graph, view);
+    opaquePass.AddToGraph(graph, view);
+
+    EXPECT_TRUE(opaquePass.GetShadowStats().requested);
+    EXPECT_TRUE(opaquePass.GetShadowStats().renderGraphReadDeclared);
+
+    graph.Compile();
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.compileValid);
+    EXPECT_EQ(stats.totalPasses, 2u);
+    EXPECT_EQ(stats.culledPasses, 0u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_TRUE(opaquePass.GetShadowStats().frameShadowReady);
+    const DirectionalShadowFrameBindingResult& binding =
+        pipelineCache.GetLastDirectionalShadowFrameBindingResult();
+    EXPECT_TRUE(binding.shadowSamplingEnabled);
+    EXPECT_EQ(binding.fallbackReason, DirectionalShadowFallbackReason::None);
+
+    const FakeBuffer* viewBuffer = FindCreatedBuffer(device, "ViewConstantBuffer");
+    ASSERT_NE(viewBuffer, nullptr);
+    ASSERT_GE(viewBuffer->GetStorage().size(), sizeof(ViewConstants));
+    ViewConstants uploaded{};
+    std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.y, shadowConfig.shadowBias);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w, 1.0f / static_cast<float>(shadowConfig.shadowMapSize));
+    EXPECT_FALSE(IsIdentityMatrix(uploaded.directionalShadowViewProjection));
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassReportsMissingShadowSRVWhenRequestedReadCannotResolveView)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureDesc sceneColorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
+    sceneColorDesc.debugName = "GraphSceneColorForOpaqueMissingShadowSRV";
+    view.colorTarget = graph.CreateTexture(sceneColorDesc);
+    graph.SetExportState(view.colorTarget, RHIResourceState::RenderTarget);
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+    view.aspectRatio = 1.0f;
+    view.fieldOfView = 1.0472f;
+    view.nearPlane = 0.1f;
+    view.farPlane = 100.0f;
+    view.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+    view.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    view.inverseViewMatrix = Mat4Identity();
+
+    ShadowPassConfig shadowConfig;
+    shadowConfig.numCascades = 1;
+    shadowConfig.shadowMapSize = 64;
+
+    ShadowPass shadowPass;
+    shadowPass.SetResources(&gpuResources, &pipelineCache);
+    shadowPass.SetRenderScene(&scene);
+    shadowPass.SetConfig(shadowConfig);
+    shadowPass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+
+    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
+    std::vector<RenderDrawItem> maskedItems;
+
+    OpaquePass opaquePass;
+    opaquePass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
+    opaquePass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    opaquePass.SetRenderTargets(colorView.Get(), nullptr);
+    opaquePass.SetDirectionalShadowSource(&shadowPass);
+
+    shadowPass.AddToGraph(graph, view);
+    opaquePass.AddToGraph(graph, view);
+    EXPECT_TRUE(opaquePass.GetShadowStats().renderGraphReadDeclared);
+
+    graph.Compile();
+
+    device.failDirectionalShadowDepthViewCreation = true;
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_FALSE(opaquePass.GetShadowStats().frameShadowReady);
+    const DirectionalShadowFrameBindingResult& binding =
+        pipelineCache.GetLastDirectionalShadowFrameBindingResult();
+    EXPECT_FALSE(binding.shadowSamplingEnabled);
+    EXPECT_EQ(binding.fallbackReason, DirectionalShadowFallbackReason::MissingShadowSRV);
+}
+
 TEST_F(RenderPassValidationFixture, OpaquePassSkipsMaskedItemsWhenMaskedPipelineIsMissing)
 {
     ASSERT_NO_FATAL_FAILURE(Initialize());
@@ -1858,6 +2014,9 @@ TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
     ASSERT_EQ(static_cast<size_t>(1), ctx.pipelineSequence.size());
     EXPECT_EQ(pipelineCache.GetTransparentPipeline(), ctx.pipelineSequence[0]);
     EXPECT_EQ(1u, ctx.drawIndexedCount);
+    EXPECT_FALSE(pipelineCache.GetLastDirectionalShadowFrameBindingResult().shadowSamplingEnabled);
+    EXPECT_EQ(pipelineCache.GetLastDirectionalShadowFrameBindingResult().fallbackReason,
+              DirectionalShadowFallbackReason::DisabledNoDirectionalLight);
 }
 
 TEST_F(RenderPassValidationFixture, OpaquePassSkipsDrawWhenMaterialBindingErrors)

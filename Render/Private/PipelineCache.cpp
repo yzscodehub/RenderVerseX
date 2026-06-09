@@ -126,7 +126,12 @@ namespace
 
     bool IsRequiredDefaultLitBinding(uint32 set, uint32 binding)
     {
-        if ((set == 0 || set == 1) && binding == 0)
+        if (set == 0 && binding <= 2)
+        {
+            return true;
+        }
+
+        if (set == 1 && binding == 0)
         {
             return true;
         }
@@ -143,6 +148,16 @@ namespace
 
         return expected == RHIBindingType::DynamicUniformBuffer &&
                actual == RHIBindingType::UniformBuffer;
+    }
+
+    Mat4 ApplyBackendClipConvention(const Mat4& matrix, RHIBackendType backend)
+    {
+        Mat4 result = matrix;
+        if (backend == RHIBackendType::Vulkan)
+        {
+            result[1] = -result[1];
+        }
+        return result;
     }
 
     std::filesystem::path GetManifestPath(const std::filesystem::path& directory)
@@ -578,6 +593,9 @@ void PipelineCache::Shutdown()
     m_objectDescriptorSet.Reset();
     m_viewConstantBuffer.Reset();
     m_objectConstantBuffer.Reset();
+    m_fallbackDirectionalShadowView.Reset();
+    m_fallbackDirectionalShadowTexture.Reset();
+    m_directionalShadowSampler.Reset();
     m_postProcessPipelineLayout.Reset();
     m_postProcessSetLayout.Reset();
     m_skyboxPipelineLayout.Reset();
@@ -1094,6 +1112,10 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
 
     if (!requireBinding(0, 0, RHIBindingType::UniformBuffer))
         return false;
+    if (!requireBinding(0, 1, RHIBindingType::SampledTexture))
+        return false;
+    if (!requireBinding(0, 2, RHIBindingType::Sampler))
+        return false;
     if (!requireBinding(1, 0, RHIBindingType::DynamicUniformBuffer))
         return false;
     if (!requireBinding(2, 0, RHIBindingType::DynamicUniformBuffer))
@@ -1188,9 +1210,77 @@ void PipelineCache::BeginFrame()
     m_currentObjectConstantOffset = 0;
 }
 
+const char* PipelineCache::GetDirectionalShadowFallbackReasonName(DirectionalShadowFallbackReason reason)
+{
+    switch (reason)
+    {
+        case DirectionalShadowFallbackReason::None: return "None";
+        case DirectionalShadowFallbackReason::DisabledNoDirectionalLight: return "DisabledNoDirectionalLight";
+        case DirectionalShadowFallbackReason::MissingShadowSRV: return "MissingShadowSRV";
+        case DirectionalShadowFallbackReason::MissingSampler: return "MissingSampler";
+        case DirectionalShadowFallbackReason::ReverseZUnsupported: return "ReverseZUnsupported";
+        case DirectionalShadowFallbackReason::FallbackUnavailable: return "FallbackUnavailable";
+        default: return "Unknown";
+    }
+}
+
 RHIDescriptorSet* PipelineCache::GetFrameDescriptorSet()
 {
     return m_frameDescriptorSet.Get();
+}
+
+DirectionalShadowFrameBindingResult PipelineCache::UpdateDirectionalShadowFrameResources(
+    const DirectionalShadowFrameResources& resources)
+{
+    DirectionalShadowFrameBindingResult result;
+
+    if (!m_frameDescriptorSet || !m_viewConstantBuffer || !EnsureFrameShadowFallbackResources())
+    {
+        result.fallbackReason = DirectionalShadowFallbackReason::FallbackUnavailable;
+        m_lastDirectionalShadowFrameBindingResult = result;
+        return result;
+    }
+
+    RHITextureView* textureView = m_fallbackDirectionalShadowView.Get();
+    RHISampler* sampler = m_directionalShadowSampler.Get();
+
+    if (!sampler)
+    {
+        result.fallbackReason = DirectionalShadowFallbackReason::MissingSampler;
+    }
+    else if (!resources.enabled)
+    {
+        result.fallbackReason = DirectionalShadowFallbackReason::DisabledNoDirectionalLight;
+    }
+    else if (m_config.reverseZ)
+    {
+        result.fallbackReason = DirectionalShadowFallbackReason::ReverseZUnsupported;
+    }
+    else if (!resources.shadowMapView)
+    {
+        result.fallbackReason = DirectionalShadowFallbackReason::MissingShadowSRV;
+    }
+    else
+    {
+        textureView = resources.shadowMapView;
+        result.shadowSamplingEnabled = true;
+        result.fallbackReason = DirectionalShadowFallbackReason::None;
+    }
+
+    std::vector<RHIDescriptorBinding> bindings;
+    bindings.reserve(3);
+    bindings.push_back({0, m_viewConstantBuffer.Get(), 0, AlignConstantBufferSize(sizeof(ViewConstants)), nullptr, nullptr});
+    bindings.push_back({1, nullptr, 0, 0, textureView, nullptr});
+    bindings.push_back({2, nullptr, 0, 0, nullptr, sampler});
+
+    if (!m_frameDescriptorSet->Update(bindings))
+    {
+        result.shadowSamplingEnabled = false;
+        result.fallbackReason = DirectionalShadowFallbackReason::FallbackUnavailable;
+    }
+
+    m_lastDirectionalShadowFrameBindingResult = result;
+    return result;
 }
 
 RHIDescriptorSet* PipelineCache::GetObjectDescriptorSet()
@@ -1349,15 +1439,63 @@ bool PipelineCache::CreateObjectConstantBuffer()
     return true;
 }
 
+bool PipelineCache::EnsureFrameShadowFallbackResources()
+{
+    if (!m_device)
+        return false;
+
+    if (!m_fallbackDirectionalShadowTexture)
+    {
+        RHITextureDesc textureDesc = RHITextureDesc::Texture2D(1, 1, RHIFormat::R32_FLOAT);
+        textureDesc.debugName = "FallbackDirectionalShadowMap";
+        m_fallbackDirectionalShadowTexture = m_device->CreateTexture(textureDesc);
+        if (!m_fallbackDirectionalShadowTexture)
+        {
+            return false;
+        }
+    }
+
+    if (!m_fallbackDirectionalShadowView)
+    {
+        RHITextureViewDesc viewDesc;
+        viewDesc.format = m_fallbackDirectionalShadowTexture->GetFormat();
+        viewDesc.dimension = m_fallbackDirectionalShadowTexture->GetDimension();
+        viewDesc.subresourceRange = RHISubresourceRange::All();
+        viewDesc.debugName = "FallbackDirectionalShadowSRV";
+        m_fallbackDirectionalShadowView =
+            m_device->CreateTextureView(m_fallbackDirectionalShadowTexture.Get(), viewDesc);
+        if (!m_fallbackDirectionalShadowView)
+        {
+            return false;
+        }
+    }
+
+    if (!m_directionalShadowSampler)
+    {
+        RHISamplerDesc samplerDesc = RHISamplerDesc::PointClamp();
+        samplerDesc.debugName = "DirectionalShadowPointClampSampler";
+        m_directionalShadowSampler = m_device->CreateSampler(samplerDesc);
+        if (!m_directionalShadowSampler)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 RHIDescriptorSetRef PipelineCache::CreateFrameDescriptorSet()
 {
-    if (m_setLayouts.empty() || !m_setLayouts[0] || !m_viewConstantBuffer)
+    if (m_setLayouts.empty() || !m_setLayouts[0] || !m_viewConstantBuffer ||
+        !EnsureFrameShadowFallbackResources())
         return {};
 
     RHIDescriptorSetDesc descSetDesc;
     descSetDesc.layout = m_setLayouts[0].Get();
     descSetDesc.debugName = "DefaultFrameDescriptorSet";
     descSetDesc.BindBuffer(0, m_viewConstantBuffer.Get(), 0, AlignConstantBufferSize(sizeof(ViewConstants)));
+    descSetDesc.BindTexture(1, m_fallbackDirectionalShadowView.Get());
+    descSetDesc.BindSampler(2, m_directionalShadowSampler.Get());
 
     return m_device->CreateDescriptorSet(descSetDesc);
 }
@@ -2042,12 +2180,8 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
         return;
 
     ViewConstants constants;
-    constants.viewProjection = view.viewProjectionMatrix;
-
-    if (m_device && m_device->GetBackendType() == RHIBackendType::Vulkan)
-    {
-        constants.viewProjection[1] = -constants.viewProjection[1];
-    }
+    const RHIBackendType backend = m_device ? m_device->GetBackendType() : RHIBackendType::None;
+    constants.viewProjection = ApplyBackendClipConvention(view.viewProjectionMatrix, backend);
 
     constants.cameraPosition = view.cameraPosition;
     constants.time = view.time;
@@ -2063,6 +2197,15 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
         static_cast<float>(std::max(1u, view.textureIBLPrefilteredMipLevels)),
         view.textureIBLIntensity,
         ClampFiniteNonNegative(view.ambientFloorIntensity, 0.08f));
+    constants.directionalShadowViewProjection =
+        ApplyBackendClipConvention(view.directionalShadowViewProjection, backend);
+    const bool directionalShadowEnabled = view.directionalShadowEnabled != 0 &&
+                                          !m_config.reverseZ;
+    constants.directionalShadowParams = Vec4(
+        directionalShadowEnabled ? 1.0f : 0.0f,
+        ClampFiniteNonNegative(view.directionalShadowDepthBias, 0.005f),
+        std::min(ClampFiniteNonNegative(view.directionalShadowStrength, 1.0f), 1.0f),
+        ClampFiniteNonNegative(view.directionalShadowInvMapSize, 0.0f));
 
     void* mapped = m_viewConstantBuffer->Map();
     if (mapped)

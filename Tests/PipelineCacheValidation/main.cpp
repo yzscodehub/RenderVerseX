@@ -100,6 +100,54 @@ namespace
         std::vector<RVX::uint8> m_storage;
     };
 
+    class FakeTexture final : public RVX::RHITexture
+    {
+    public:
+        explicit FakeTexture(const RVX::RHITextureDesc& desc)
+            : m_desc(desc)
+        {
+        }
+
+        RVX::uint32 GetWidth() const override { return m_desc.width; }
+        RVX::uint32 GetHeight() const override { return m_desc.height; }
+        RVX::uint32 GetDepth() const override { return m_desc.depth; }
+        RVX::uint32 GetMipLevels() const override { return m_desc.mipLevels; }
+        RVX::uint32 GetArraySize() const override { return m_desc.arraySize; }
+        RVX::RHIFormat GetFormat() const override { return m_desc.format; }
+        RVX::RHITextureUsage GetUsage() const override { return m_desc.usage; }
+        RVX::RHITextureDimension GetDimension() const override { return m_desc.dimension; }
+        RVX::RHISampleCount GetSampleCount() const override { return m_desc.sampleCount; }
+
+    private:
+        RVX::RHITextureDesc m_desc;
+    };
+
+    class FakeTextureView final : public RVX::RHITextureView
+    {
+    public:
+        FakeTextureView(RVX::RHITexture* texture, const RVX::RHITextureViewDesc& desc)
+            : m_texture(texture)
+            , m_desc(desc)
+        {
+            if (m_desc.format == RVX::RHIFormat::Unknown && m_texture)
+            {
+                m_desc.format = m_texture->GetFormat();
+            }
+        }
+
+        RVX::RHITexture* GetTexture() const override { return m_texture; }
+        RVX::RHIFormat GetFormat() const override { return m_desc.format; }
+        const RVX::RHISubresourceRange& GetSubresourceRange() const override { return m_desc.subresourceRange; }
+
+    private:
+        RVX::RHITexture* m_texture = nullptr;
+        RVX::RHITextureViewDesc m_desc;
+    };
+
+    class FakeSampler final : public RVX::RHISampler
+    {
+    };
+
     class FakeShader final : public RVX::RHIShader
     {
     public:
@@ -148,6 +196,11 @@ namespace
     class FakeDescriptorSet final : public RVX::RHIDescriptorSet
     {
     public:
+        explicit FakeDescriptorSet(const RVX::RHIDescriptorSetDesc& desc)
+            : m_bindings(desc.bindings)
+        {
+        }
+
         bool Update(const std::vector<RVX::RHIDescriptorBinding>& bindings) override
         {
             m_bindings = bindings;
@@ -176,9 +229,23 @@ namespace
             return buffer;
         }
 
-        RVX::RHITextureRef CreateTexture(const RVX::RHITextureDesc&) override { return {}; }
-        RVX::RHITextureViewRef CreateTextureView(RVX::RHITexture*, const RVX::RHITextureViewDesc&) override { return {}; }
-        RVX::RHISamplerRef CreateSampler(const RVX::RHISamplerDesc&) override { return {}; }
+        RVX::RHITextureRef CreateTexture(const RVX::RHITextureDesc& desc) override
+        {
+            capturedTextureDescs.push_back(desc);
+            return RVX::MakeRef<FakeTexture>(desc);
+        }
+
+        RVX::RHITextureViewRef CreateTextureView(RVX::RHITexture* texture, const RVX::RHITextureViewDesc& desc) override
+        {
+            capturedTextureViewDescs.push_back(desc);
+            return RVX::MakeRef<FakeTextureView>(texture, desc);
+        }
+
+        RVX::RHISamplerRef CreateSampler(const RVX::RHISamplerDesc& desc) override
+        {
+            capturedSamplerDescs.push_back(desc);
+            return RVX::MakeRef<FakeSampler>();
+        }
 
         RVX::RHIShaderRef CreateShader(const RVX::RHIShaderDesc& desc) override
         {
@@ -219,9 +286,10 @@ namespace
         }
 
         RVX::RHIPipelineRef CreateComputePipeline(const RVX::RHIComputePipelineDesc&) override { return {}; }
-        RVX::RHIDescriptorSetRef CreateDescriptorSet(const RVX::RHIDescriptorSetDesc&) override
+        RVX::RHIDescriptorSetRef CreateDescriptorSet(const RVX::RHIDescriptorSetDesc& desc) override
         {
-            return RVX::MakeRef<FakeDescriptorSet>();
+            capturedDescriptorSetDescs.push_back(desc);
+            return RVX::MakeRef<FakeDescriptorSet>(desc);
         }
         RVX::RHIQueryPoolRef CreateQueryPool(const RVX::RHIQueryPoolDesc&) override { return {}; }
         RVX::RHICommandContextRef CreateCommandContext(RVX::RHICommandQueueType) override { return {}; }
@@ -253,6 +321,10 @@ namespace
         std::vector<RVX::uint32> capturedPipelineLayoutSetCounts;
         std::vector<RVX::RHIBufferDesc> capturedBufferDescs;
         std::vector<FakeBuffer*> capturedBuffers;
+        std::vector<RVX::RHITextureDesc> capturedTextureDescs;
+        std::vector<RVX::RHITextureViewDesc> capturedTextureViewDescs;
+        std::vector<RVX::RHISamplerDesc> capturedSamplerDescs;
+        std::vector<RVX::RHIDescriptorSetDesc> capturedDescriptorSetDescs;
         std::vector<RVX::RHIDescriptorSetLayoutDesc> capturedSetLayouts;
         std::vector<RVX::RHIGraphicsPipelineDesc> capturedGraphicsPipelines;
 
@@ -271,6 +343,18 @@ namespace
                 return entry.binding == binding;
             });
         return it == desc.entries.end() ? nullptr : &(*it);
+    }
+
+    const RVX::RHIDescriptorBinding* FindDescriptorBinding(
+        const RVX::RHIDescriptorSetDesc& desc,
+        RVX::uint32 binding)
+    {
+        auto it = std::find_if(desc.bindings.begin(), desc.bindings.end(),
+            [binding](const RVX::RHIDescriptorBinding& entry)
+            {
+                return entry.binding == binding;
+            });
+        return it == desc.bindings.end() ? nullptr : &(*it);
     }
 
     bool HasCompilerAvailable()
@@ -519,6 +603,24 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_EQ(frame->type, RVX::RHIBindingType::UniformBuffer);
     EXPECT_TRUE(RVX::HasFlag(frame->visibility, RVX::RHIShaderStage::Vertex));
     EXPECT_TRUE(RVX::HasFlag(frame->visibility, RVX::RHIShaderStage::Pixel));
+    const auto* frameShadowTexture = FindBinding(frameLayout, 1);
+    ASSERT_NE(frameShadowTexture, nullptr);
+    EXPECT_EQ(frameShadowTexture->type, RVX::RHIBindingType::SampledTexture);
+    EXPECT_TRUE(RVX::HasFlag(frameShadowTexture->visibility, RVX::RHIShaderStage::Pixel));
+    const auto* frameShadowSampler = FindBinding(frameLayout, 2);
+    ASSERT_NE(frameShadowSampler, nullptr);
+    EXPECT_EQ(frameShadowSampler->type, RVX::RHIBindingType::Sampler);
+    EXPECT_TRUE(RVX::HasFlag(frameShadowSampler->visibility, RVX::RHIShaderStage::Pixel));
+
+    ASSERT_FALSE(device.capturedDescriptorSetDescs.empty());
+    const RVX::RHIDescriptorSetDesc& frameSetDesc = device.capturedDescriptorSetDescs.front();
+    EXPECT_NE(FindDescriptorBinding(frameSetDesc, 0), nullptr);
+    const auto* fallbackShadowTexture = FindDescriptorBinding(frameSetDesc, 1);
+    ASSERT_NE(fallbackShadowTexture, nullptr);
+    EXPECT_NE(fallbackShadowTexture->textureView, nullptr);
+    const auto* fallbackShadowSampler = FindDescriptorBinding(frameSetDesc, 2);
+    ASSERT_NE(fallbackShadowSampler, nullptr);
+    EXPECT_NE(fallbackShadowSampler->sampler, nullptr);
 
     const auto* object = FindBinding(objectLayout, 0);
     ASSERT_NE(object, nullptr);
@@ -598,7 +700,9 @@ TEST_F(PipelineCacheValidationFixture, ViewConstantsLayoutMatchesDefaultLitCBuff
     EXPECT_EQ(offsetof(RVX::ViewConstants, iblDiffuseAmbient), 96u);
     EXPECT_EQ(offsetof(RVX::ViewConstants, iblSpecularAmbient), 112u);
     EXPECT_EQ(offsetof(RVX::ViewConstants, iblTextureParams), 128u);
-    EXPECT_EQ(sizeof(RVX::ViewConstants), 144u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowViewProjection), 144u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowParams), 208u);
+    EXPECT_EQ(sizeof(RVX::ViewConstants), 224u);
 }
 
 TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDefaultIBLAmbientValues)
@@ -639,6 +743,14 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDefaultIBLAmbie
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.y, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.z, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.08f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[0][0], 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[1][1], 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[2][2], 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[3][3], 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.y, 0.005f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.z, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w, 0.0f);
 }
 
 TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabledIBLAmbientValues)
@@ -734,6 +846,120 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsZeroAmbientFloo
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.0f);
 }
 
+TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShadowParamsAndBackendConvention)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    RVX::ViewData view;
+    view.directionalShadowEnabled = 1;
+    view.directionalShadowViewProjection = RVX::Mat4Identity();
+    view.directionalShadowViewProjection[1][1] = 2.0f;
+    view.directionalShadowViewProjection[1][0] = 0.25f;
+    view.directionalShadowViewProjection[1][2] = -0.5f;
+    view.directionalShadowViewProjection[3][2] = 0.75f;
+    view.directionalShadowDepthBias = 0.0125f;
+    view.directionalShadowStrength = 0.6f;
+    view.directionalShadowInvMapSize = 1.0f / 512.0f;
+
+    FakeDevice dxDevice(RVX::RHIBackendType::DX12);
+    RVX::PipelineCache dxCache;
+    ASSERT_TRUE(dxCache.Initialize(&dxDevice, FindShaderDirectory().string())) << dxCache.GetLastError();
+    dxCache.UpdateViewConstants(view);
+
+    const FakeBuffer* dxViewBuffer = FindCapturedBuffer(dxDevice, "ViewConstantBuffer");
+    ASSERT_NE(dxViewBuffer, nullptr);
+
+    RVX::ViewConstants uploaded{};
+    std::memcpy(&uploaded, dxViewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[1][0], 0.25f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[1][1], 2.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[1][2], -0.5f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[3][2], 0.75f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.y, 0.0125f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.z, 0.6f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w, 1.0f / 512.0f);
+
+    FakeDevice vkDevice(RVX::RHIBackendType::Vulkan);
+    RVX::PipelineCache vkCache;
+    ASSERT_TRUE(vkCache.Initialize(&vkDevice, FindShaderDirectory().string())) << vkCache.GetLastError();
+    vkCache.UpdateViewConstants(view);
+
+    const FakeBuffer* vkViewBuffer = FindCapturedBuffer(vkDevice, "ViewConstantBuffer");
+    ASSERT_NE(vkViewBuffer, nullptr);
+    std::memcpy(&uploaded, vkViewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[1][0], -0.25f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[1][1], -2.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[1][2], 0.5f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 1.0f);
+
+    FakeDevice reverseZDevice(RVX::RHIBackendType::DX12);
+    RVX::PipelineCache reverseZCache;
+    RVX::PipelineCacheConfig config;
+    config.reverseZ = true;
+    reverseZCache.SetConfig(config);
+    ASSERT_TRUE(reverseZCache.Initialize(&reverseZDevice, FindShaderDirectory().string()))
+        << reverseZCache.GetLastError();
+    reverseZCache.UpdateViewConstants(view);
+
+    const FakeBuffer* reverseZViewBuffer = FindCapturedBuffer(reverseZDevice, "ViewConstantBuffer");
+    ASSERT_NE(reverseZViewBuffer, nullptr);
+    std::memcpy(&uploaded, reverseZViewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 0.0f);
+}
+
+TEST_F(PipelineCacheValidationFixture, DirectionalShadowFrameResourcesReportFallbackReasons)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    RVX::DirectionalShadowFrameBindingResult result =
+        cache.UpdateDirectionalShadowFrameResources({});
+    EXPECT_FALSE(result.shadowSamplingEnabled);
+    EXPECT_EQ(result.fallbackReason, RVX::DirectionalShadowFallbackReason::DisabledNoDirectionalLight);
+
+    RVX::DirectionalShadowFrameResources resources;
+    resources.enabled = true;
+    result = cache.UpdateDirectionalShadowFrameResources(resources);
+    EXPECT_FALSE(result.shadowSamplingEnabled);
+    EXPECT_EQ(result.fallbackReason, RVX::DirectionalShadowFallbackReason::MissingShadowSRV);
+
+    RVX::RHITextureDesc textureDesc = RVX::RHITextureDesc::DepthStencil(32, 32, RVX::RHIFormat::D32_FLOAT);
+    RVX::RHITextureRef texture = device.CreateTexture(textureDesc);
+    ASSERT_NE(texture, nullptr);
+    RVX::RHITextureViewDesc viewDesc;
+    viewDesc.format = texture->GetFormat();
+    viewDesc.dimension = texture->GetDimension();
+    viewDesc.subresourceRange = RVX::RHISubresourceRange::All();
+    viewDesc.subresourceRange.aspect = RVX::RHITextureAspect::Depth;
+    RVX::RHITextureViewRef shadowView = device.CreateTextureView(texture.Get(), viewDesc);
+    ASSERT_NE(shadowView, nullptr);
+
+    resources.shadowMapView = shadowView.Get();
+    result = cache.UpdateDirectionalShadowFrameResources(resources);
+    EXPECT_TRUE(result.shadowSamplingEnabled);
+    EXPECT_EQ(result.fallbackReason, RVX::DirectionalShadowFallbackReason::None);
+
+    RVX::PipelineCache reverseZCache;
+    RVX::PipelineCacheConfig config;
+    config.reverseZ = true;
+    reverseZCache.SetConfig(config);
+    ASSERT_TRUE(reverseZCache.Initialize(&device, FindShaderDirectory().string()))
+        << reverseZCache.GetLastError();
+    result = reverseZCache.UpdateDirectionalShadowFrameResources(resources);
+    EXPECT_FALSE(result.shadowSamplingEnabled);
+    EXPECT_EQ(result.fallbackReason, RVX::DirectionalShadowFallbackReason::ReverseZUnsupported);
+}
+
 TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLightingControls)
 {
     if (!HasCompilerAvailable())
@@ -787,10 +1013,17 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
     EXPECT_NE(shader.find("TextureCube IrradianceTexture : register(t7, space2);"), std::string::npos);
     EXPECT_NE(shader.find("TextureCube PrefilteredEnvironmentTexture : register(t8, space2);"), std::string::npos);
     EXPECT_NE(shader.find("Texture2D BRDFLUTTexture : register(t9, space2);"), std::string::npos);
+    EXPECT_NE(shader.find("Texture2D<float> DirectionalShadowMapTexture : register(t1, space0);"),
+              std::string::npos);
+    EXPECT_NE(shader.find("SamplerState DirectionalShadowSampler : register(s2, space0);"), std::string::npos);
+    EXPECT_NE(shader.find("float SampleDirectionalShadow(float3 worldPos)"), std::string::npos);
     EXPECT_NE(shader.find("float DirectionalLightIntensity;"), std::string::npos);
     EXPECT_NE(shader.find("if (IBLTextureParams.x > 0.5)"), std::string::npos);
     EXPECT_NE(shader.find("IBLTextureParams.w"), std::string::npos);
+    EXPECT_NE(shader.find("float shadowVisibility = SampleDirectionalShadow(input.WorldPos);"), std::string::npos);
     EXPECT_NE(shader.find("float3(DirectionalLightIntensity, DirectionalLightIntensity, DirectionalLightIntensity)"),
+              std::string::npos);
+    EXPECT_EQ(shader.find("float3(DirectionalLightIntensity, DirectionalLightIntensity, DirectionalLightIntensity),\n        1.0"),
               std::string::npos);
     EXPECT_EQ(shader.find("float3(4.0, 4.0, 4.0)"), std::string::npos);
     EXPECT_EQ(shader.find("ambientFloor = baseColor.rgb * 0.08"), std::string::npos);
@@ -812,6 +1045,24 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererClearsAmbientFloorWhenTextur
     const std::string source = ReadTextFile(sceneRendererPath);
     EXPECT_NE(source.find("m_viewData.ambientFloorIntensity = 0.08f;"), std::string::npos);
     EXPECT_NE(source.find("m_viewData.ambientFloorIntensity = 0.0f;"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, SceneRendererUsesSamePrimaryDirectionalLightForDefaultLitAndShadowPass)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path sceneRendererPath = FindShaderDirectory().parent_path() /
+        "Private" / "Renderer" / "SceneRenderer.cpp";
+    const std::string source = ReadTextFile(sceneRendererPath);
+    EXPECT_NE(source.find("m_viewData.directionalLightDirection = Vec3{0.5f, -0.8f, 0.3f};"),
+              std::string::npos);
+    EXPECT_NE(source.find("m_viewData.directionalLightDirection = light.direction;"), std::string::npos);
+    EXPECT_NE(source.find("m_viewData.directionalLightIntensity = light.intensity;"), std::string::npos);
+    EXPECT_NE(source.find("m_shadowPass->SetDirectionalLight(light.direction, light.color, light.intensity);"),
+              std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAware)

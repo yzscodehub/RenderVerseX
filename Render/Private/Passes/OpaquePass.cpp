@@ -9,6 +9,7 @@
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
+#include "Render/Passes/ShadowPass.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
 #include "Resource/Types/MaterialResource.h"
@@ -71,6 +72,7 @@ void OpaquePass::OnRemove()
     m_pipelineCache = nullptr;
     m_materialSystem = nullptr;
     m_renderScene = nullptr;
+    m_shadowPass = nullptr;
     m_opaqueDrawItems = nullptr;
     m_maskedDrawItems = nullptr;
 }
@@ -91,6 +93,11 @@ void OpaquePass::SetRenderScene(const RenderScene* scene,
     m_maskedDrawItems = maskedDrawItems;
 }
 
+void OpaquePass::SetDirectionalShadowSource(const ShadowPass* shadowPass)
+{
+    m_shadowPass = shadowPass;
+}
+
 void OpaquePass::SetRenderTargets(RHITextureView* colorTargetView, RHITextureView* depthTargetView)
 {
     m_colorTargetView = colorTargetView;
@@ -99,6 +106,9 @@ void OpaquePass::SetRenderTargets(RHITextureView* colorTargetView, RHITextureVie
 
 void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
+    m_directionalShadowReadHandle = {};
+    m_shadowStats = {};
+
     // Declare that we write to the color target
     if (view.colorTarget.IsValid())
     {
@@ -110,6 +120,17 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     {
         builder.SetDepthStencil(view.depthTarget, true, false);
         m_depthTargetHandle = view.depthTarget;
+    }
+
+    if (m_shadowPass && m_shadowPass->IsEnabled())
+    {
+        const auto& handles = m_shadowPass->GetCascadeTextureHandles();
+        if (!handles.empty() && handles[0].IsValid())
+        {
+            m_directionalShadowReadHandle = builder.Read(handles[0], RHIShaderStage::Pixel);
+            m_shadowStats.requested = true;
+            m_shadowStats.renderGraphReadDeclared = true;
+        }
     }
 }
 
@@ -156,6 +177,50 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         if (m_maskedDrawItems)
             TransitionVisibleMaterialTextures(*m_maskedDrawItems, *m_gpuResources, ctx);
     }
+
+    ViewData drawView = view;
+    DirectionalShadowFrameResources shadowResources;
+    if (m_shadowPass && m_directionalShadowReadHandle.IsValid() &&
+        view.renderGraph && view.viewCache &&
+        !m_shadowPass->GetCascades().empty())
+    {
+        RHITexture* shadowTexture = view.renderGraph->GetTexture(m_directionalShadowReadHandle);
+        RHITextureViewDesc shadowViewDesc;
+        if (shadowTexture)
+        {
+            shadowViewDesc.format = shadowTexture->GetFormat();
+            shadowViewDesc.dimension = shadowTexture->GetDimension();
+            shadowViewDesc.subresourceRange = RHISubresourceRange::All();
+            if (IsDepthFormat(shadowViewDesc.format))
+            {
+                shadowViewDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+            }
+            shadowViewDesc.debugName = "DirectionalShadowSRV";
+        }
+
+        RHITextureView* shadowView = shadowTexture ? view.viewCache->GetTextureView(shadowTexture, shadowViewDesc)
+                                                   : nullptr;
+        const ShadowPassConfig& shadowConfig = m_shadowPass->GetConfig();
+        drawView.directionalShadowEnabled = shadowView ? 1 : 0;
+        drawView.directionalShadowViewProjection = m_shadowPass->GetCascades()[0].viewProjection;
+        drawView.directionalShadowDepthBias = shadowConfig.shadowBias;
+        drawView.directionalShadowStrength = 1.0f;
+        drawView.directionalShadowInvMapSize = shadowConfig.shadowMapSize > 0
+                                                   ? 1.0f / static_cast<float>(shadowConfig.shadowMapSize)
+                                                   : 0.0f;
+        shadowResources.enabled = true;
+        shadowResources.shadowMapView = shadowView;
+    }
+    else
+    {
+        drawView.directionalShadowEnabled = 0;
+    }
+
+    const DirectionalShadowFrameBindingResult shadowBinding =
+        m_pipelineCache->UpdateDirectionalShadowFrameResources(shadowResources);
+    drawView.directionalShadowEnabled = shadowBinding.shadowSamplingEnabled ? 1 : 0;
+    m_shadowStats.frameShadowReady = shadowBinding.shadowSamplingEnabled;
+    m_pipelineCache->UpdateViewConstants(drawView);
 
     // 1. Begin render pass using builder pattern
     RHIRenderPassDesc rpDesc;

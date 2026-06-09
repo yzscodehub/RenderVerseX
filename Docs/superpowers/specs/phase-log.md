@@ -3459,6 +3459,103 @@ git diff --check
 
 ---
 
+### R-SP: `RQ3a - Directional Shadow Sampling Bridge`
+
+**Date:** 2026-06-09
+**Commit:** pending
+**Spark plan review agent:** Banach (`019eace5-b5f8-7dd1-b8b6-cc24ec12a40d`)
+**Spark code review agent:** Poincare (`019eacfe-0771-78e3-8662-615312f9b326`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-09-rq3a-directional-shadow-sampling-bridge-plan.md`
+- Section: entire RQ3a stage scope, tests, and acceptance criteria
+- Lines checked: local document reviewed immediately before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ2k
+- Evidence: RQ2k committed as `4bc38c1 fix(resource): use split-sum geometry for brdf lut`, with docs follow-up `969f520 docs(render): record rq2k commit`.
+
+**Approved scope:**
+
+- Extend set 0 frame constants/descriptors with directional shadow matrix, params, texture, and sampler.
+- Keep material set 2 unchanged; shadow resources are frame/light state.
+- Make OpaquePass declare a RenderGraph read of ShadowPass cascade 0 during setup and re-upload main-view constants before DefaultLit draws.
+- Use a single selected primary directional light for DefaultLit direct lighting and ShadowPass generation.
+- Keep TransparentPass shadow sampling explicitly disabled in RQ3a.
+- Keep reverse-Z shadow sampling disabled with a visible fallback reason.
+
+**Out of scope:**
+
+- Full CSM cascade selection/blending/stabilization, PCSS/EVSM/contact shadows, point/spot shadows, transparent shadows, shadow atlas refactors, and `receivesShadow` per-object shading.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-09-rq3a-directional-shadow-sampling-bridge-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Include/Render/Renderer/ViewData.h`
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Include/Render/Passes/ShadowPass.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Passes/TransparentPass.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation"
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation RenderSceneValidation ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|RenderSceneValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerIBLSmoke"
+build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --backend dx11 --width 800 --height 450 --frames 8 --screenshot build\win_x64_debug\VisualArtifacts\Debug\ModelViewer\RQ3a_DamagedHelmet.ppm --validation --expect-ibl-ready --expect-procedural-ibl-quality
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused PipelineCache/RenderPass tests: PASS, 72/72 selected tests passed.
+- Planned CPU/render tests: PASS, 93/93 selected tests passed.
+- Visual tests: PASS, 3/3 selected tests passed (`ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerIBLSmoke`).
+- Manual DamagedHelmet smoke: PASS, exit code 0, `ModelViewer procedural IBL quality check passed`, `ModelViewer Smoke PASS`; screenshot inspected.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Screenshot: `build/win_x64_debug/VisualArtifacts/Debug/ModelViewer/RQ3a_DamagedHelmet.ppm`
+- Preview: `build/win_x64_debug/VisualArtifacts/Debug/ModelViewer/RQ3a_DamagedHelmet.bmp`
+- Diffs: current RQ3a working tree diff before commit.
+
+**Spark plan review result:**
+
+- Initial verdict: BLOCKED.
+- Blockers resolved: required main-view constants re-upload after cascade 0 is known; unified primary directional light selection; documented backend clip/depth convention and reverse-Z fallback.
+- Final verdict: PASS.
+- Non-blocking suggestions adopted: explicit TransparentPass shadow behavior, fallback reason categories, Setup-phase shadow read test, disabled fallback descriptor binding test.
+
+**Spark code review result:**
+
+- Initial verdict: BLOCKED.
+- Blocker resolved: OpaquePass now preserves the requested shadow-read state when the resolved shadow SRV is missing, so PipelineCache reports `MissingShadowSRV` instead of silently degrading to `DisabledNoDirectionalLight`.
+- Added follow-up coverage: missing shadow view fallback test, OpaquePass main-view constants re-upload assertions, and Vulkan off-diagonal shadow-matrix convention guardrail.
+- Final verdict: PASS.
+- Non-blocking follow-up: replace the SceneRenderer primary-light source-string guardrail with a behavior-level test or a small introspection seam when that seam exists.
+
+**Notes / follow-ups:**
+
+- RQ3a samples cascade 0 only and intentionally leaves stable multi-cascade CSM for a later stage.
+- `RenderObject::receivesShadow` is not yet a shader input; per-object receive-shadow control remains a follow-up.
+- Reverse-Z shadow sampling is disabled honestly in this stage and should be implemented with a dedicated depth-convention pass later.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

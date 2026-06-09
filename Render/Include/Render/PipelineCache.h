@@ -44,6 +44,30 @@ namespace RVX
         Vec4 iblDiffuseAmbient;
         Vec4 iblSpecularAmbient;
         Vec4 iblTextureParams;
+        Mat4 directionalShadowViewProjection;
+        Vec4 directionalShadowParams;
+    };
+
+    enum class DirectionalShadowFallbackReason : uint8
+    {
+        None = 0,
+        DisabledNoDirectionalLight,
+        MissingShadowSRV,
+        MissingSampler,
+        ReverseZUnsupported,
+        FallbackUnavailable,
+    };
+
+    struct DirectionalShadowFrameResources
+    {
+        bool enabled = false;
+        RHITextureView* shadowMapView = nullptr;
+    };
+
+    struct DirectionalShadowFrameBindingResult
+    {
+        bool shadowSamplingEnabled = false;
+        DirectionalShadowFallbackReason fallbackReason = DirectionalShadowFallbackReason::DisabledNoDirectionalLight;
     };
 
     /**
@@ -233,6 +257,19 @@ namespace RVX
         RHIDescriptorSet* GetFrameDescriptorSet();
 
         /**
+         * @brief Update frame-scope directional shadow texture/sampler bindings.
+         */
+        DirectionalShadowFrameBindingResult UpdateDirectionalShadowFrameResources(
+            const DirectionalShadowFrameResources& resources);
+
+        const DirectionalShadowFrameBindingResult& GetLastDirectionalShadowFrameBindingResult() const
+        {
+            return m_lastDirectionalShadowFrameBindingResult;
+        }
+
+        static const char* GetDirectionalShadowFallbackReasonName(DirectionalShadowFallbackReason reason);
+
+        /**
          * @brief Backward-compatible alias for frame constants
          */
         RHIDescriptorSet* GetViewDescriptorSet() { return GetFrameDescriptorSet(); }
@@ -352,6 +389,7 @@ namespace RVX
         RHIGraphicsPipelineDesc BuildBloomPipelineDesc(RHIFormat outputFormat) const;
         bool CreateViewConstantBuffer();
         bool CreateObjectConstantBuffer();
+        bool EnsureFrameShadowFallbackResources();
         RHIDescriptorSetRef CreateFrameDescriptorSet();
         RHIDescriptorSetRef CreateObjectDescriptorSet();
         uint64 AllocateObjectConstantSlot();
@@ -416,6 +454,10 @@ namespace RVX
         RHIBufferRef m_objectConstantBuffer;
         RHIDescriptorSetRef m_frameDescriptorSet;
         RHIDescriptorSetRef m_objectDescriptorSet;
+        RHITextureRef m_fallbackDirectionalShadowTexture;
+        RHITextureViewRef m_fallbackDirectionalShadowView;
+        RHISamplerRef m_directionalShadowSampler;
+        DirectionalShadowFrameBindingResult m_lastDirectionalShadowFrameBindingResult;
         uint64 m_objectConstantStride = 0;
         uint64 m_objectConstantCursor = 0;
         uint64 m_currentObjectConstantOffset = 0;

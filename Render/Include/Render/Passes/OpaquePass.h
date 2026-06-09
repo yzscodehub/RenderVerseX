@@ -18,6 +18,14 @@ namespace RVX
     class MaterialSystem;
     class PipelineCache;
     class RenderScene;
+    class ShadowPass;
+
+    struct OpaquePassShadowStats
+    {
+        bool requested = false;
+        bool renderGraphReadDeclared = false;
+        bool frameShadowReady = false;
+    };
 
     /**
      * @brief Opaque geometry render pass
@@ -66,6 +74,9 @@ namespace RVX
                             const std::vector<RenderDrawItem>* opaqueDrawItems,
                             const std::vector<RenderDrawItem>* maskedDrawItems);
 
+        void SetDirectionalShadowSource(const ShadowPass* shadowPass);
+        const OpaquePassShadowStats& GetShadowStats() const { return m_shadowStats; }
+
         // =====================================================================
         // Render Targets
         // =====================================================================
@@ -78,12 +89,15 @@ namespace RVX
     private:
         RGTextureHandle m_colorTargetHandle;
         RGTextureHandle m_depthTargetHandle;
+        RGTextureHandle m_directionalShadowReadHandle;
+        OpaquePassShadowStats m_shadowStats;
 
         // Resource dependencies
         GPUResourceManager* m_gpuResources = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         MaterialSystem* m_materialSystem = nullptr;
         const RenderScene* m_renderScene = nullptr;
+        const ShadowPass* m_shadowPass = nullptr;
         const std::vector<RenderDrawItem>* m_opaqueDrawItems = nullptr;
         const std::vector<RenderDrawItem>* m_maskedDrawItems = nullptr;
 
