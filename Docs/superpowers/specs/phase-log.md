@@ -3559,7 +3559,7 @@ git diff --check
 ### R-SP: `RQ3b - Texture View Role Semantics`
 
 **Date:** 2026-06-10
-**Commit:** pending
+**Commit:** `97d6014 feat(rhi): make texture view roles explicit`
 **Spark plan review agent:** Pasteur (`019ead27-1d96-7523-a84f-846a554bc71f`)
 **Spark code review agent:** Pasteur (`019ead27-1d96-7523-a84f-846a554bc71f`)
 
