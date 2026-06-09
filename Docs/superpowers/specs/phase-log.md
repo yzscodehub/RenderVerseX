@@ -4102,7 +4102,7 @@ git diff --check
 ### R-SP: `RQ7 - Object Normal Matrix Main-Path Correction`
 
 **Date:** 2026-06-10
-**Commit:** pending
+**Commit:** `1ac51f8`
 **Spark plan review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
 **Spark code review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
 
