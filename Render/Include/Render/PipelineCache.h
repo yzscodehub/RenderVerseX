@@ -76,6 +76,7 @@ namespace RVX
     struct ObjectConstants
     {
         Mat4 world;
+        Mat4 normalMatrix;
     };
 
     struct PipelineCacheConfig
@@ -307,7 +308,7 @@ namespace RVX
          * @brief Update per-object constants
          * @param worldMatrix The object's world matrix
          */
-        void UpdateObjectConstants(const Mat4& worldMatrix);
+        void UpdateObjectConstants(const Mat4& worldMatrix, const Mat4& normalMatrix);
 
         // =====================================================================
         // Render Target Format

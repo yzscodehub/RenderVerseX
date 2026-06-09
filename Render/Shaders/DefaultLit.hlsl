@@ -47,6 +47,7 @@ cbuffer ViewConstants : register(b0, space0)
 cbuffer ObjectConstants : register(b0, space1)
 {
     float4x4 World;
+    float4x4 NormalMatrix;
 };
 
 cbuffer MaterialConstants : register(b0, space2)
@@ -110,7 +111,7 @@ PSInput VSMain(VSInput input)
     float4 worldPos = mul(World, float4(input.Position, 1.0));
     output.WorldPos = worldPos.xyz;
     output.Position = mul(ViewProjection, worldPos);
-    output.WorldNormal = normalize(mul((float3x3)World, input.Normal));
+    output.WorldNormal = normalize(mul((float3x3)NormalMatrix, input.Normal));
     output.TexCoord = input.TexCoord;
     output.WorldTangent = float4(normalize(mul((float3x3)World, input.Tangent.xyz)), input.Tangent.w);
 

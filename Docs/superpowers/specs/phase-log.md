@@ -4099,6 +4099,85 @@ git diff --check
 
 ---
 
+### R-SP: `RQ7 - Object Normal Matrix Main-Path Correction`
+
+**Date:** 2026-06-10
+**Commit:** pending
+**Spark plan review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+**Spark code review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-10-rq7-object-normal-matrix-plan.md`
+- Section: RQ7 full stage plan
+- Lines checked: full document reread before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ6 - Texture Mip Chain And Material Sampler Quality
+- Evidence: RQ6 committed as `33d379b` plus phase-log commit `bf2f816`; RQ6 validation and Spark code review were PASS.
+
+**Approved scope:**
+
+- Extend `ObjectConstants` with `normalMatrix` and upload both world and normal matrices.
+- Wire `OpaquePass`, `TransparentPass`, `DepthPrepass`, and `ShadowPass` to pass `obj.normalMatrix`.
+- Update `DefaultLit.hlsl` to transform normals with `NormalMatrix`.
+- Add layout, upload, shader-source, draw-pass call-site, and object constant stride/range guards.
+
+**Out of scope:**
+
+- Tangent generation, skinning, instancing, BRDF changes, render pass architecture, ECS, RenderProxy, and visual golden recapture unless a visual diff appears.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-10-rq7-object-normal-matrix-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Passes/TransparentPass.cpp`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Render/Private/Passes/ShadowPass.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Tests/PipelineCacheValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation RenderSceneValidation ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|RenderSceneValidation|ModelViewerPBRMaterialSmoke|PBRMaterialVisualGoldenValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerIBLSmoke|ModelViewerShadowSmoke|ShadowVisualGoldenValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused render gate: PASS, 100/100 selected tests passed.
+- Extra ModelViewer visual gate: PASS, 6/6 selected tests passed.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `RenderPassValidation`, `RenderSceneValidation`, `ModelViewerPBRMaterialSmoke`, `PBRMaterialVisualGoldenValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerIBLSmoke`, `ModelViewerShadowSmoke`, `ShadowVisualGoldenValidation`.
+- Diffs: RQ7 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none. Optional suggestion adopted: object constant buffer stride/range now has an explicit guard derived from aligned `sizeof(ObjectConstants)`.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Notes / follow-ups:**
+
+- RQ7 improves normal correctness for non-uniformly scaled objects without changing pass topology or BRDF math.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

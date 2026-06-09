@@ -284,8 +284,8 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                     continue;  // Mesh not uploaded yet
                 }
 
-                // Update per-object constants (world matrix)
-                m_pipelineCache->UpdateObjectConstants(obj.worldMatrix);
+                // Update per-object constants
+                m_pipelineCache->UpdateObjectConstants(obj.worldMatrix, obj.normalMatrix);
                 RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
                 if (objectSet)
                 {

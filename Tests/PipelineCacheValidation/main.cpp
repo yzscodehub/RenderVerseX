@@ -705,6 +705,108 @@ TEST_F(PipelineCacheValidationFixture, ViewConstantsLayoutMatchesDefaultLitCBuff
     EXPECT_EQ(sizeof(RVX::ViewConstants), 224u);
 }
 
+TEST_F(PipelineCacheValidationFixture, ObjectConstantsLayoutMatchesDefaultLitCBufferPacking)
+{
+    EXPECT_TRUE(std::is_standard_layout_v<RVX::ObjectConstants>);
+    EXPECT_EQ(offsetof(RVX::ObjectConstants, world), 0u);
+    EXPECT_EQ(offsetof(RVX::ObjectConstants, normalMatrix), 64u);
+    EXPECT_EQ(sizeof(RVX::ObjectConstants), 128u);
+}
+
+TEST_F(PipelineCacheValidationFixture, ObjectConstantBufferUsesAlignedObjectConstantsStride)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    constexpr RVX::uint64 kExpectedConstantBufferAlignment = 256;
+    constexpr RVX::uint64 kExpectedDrawConstantSlots = 8192;
+    const RVX::uint64 expectedStride =
+        (sizeof(RVX::ObjectConstants) + kExpectedConstantBufferAlignment - 1u) &
+        ~(kExpectedConstantBufferAlignment - 1u);
+
+    const FakeBuffer* objectBuffer = FindCapturedBuffer(device, "ObjectConstantBuffer");
+    ASSERT_NE(objectBuffer, nullptr);
+    EXPECT_EQ(objectBuffer->GetSize(), expectedStride * kExpectedDrawConstantSlots);
+
+    const auto objectDescIt = std::find_if(device.capturedDescriptorSetDescs.begin(),
+                                           device.capturedDescriptorSetDescs.end(),
+                                           [](const RVX::RHIDescriptorSetDesc& desc)
+                                           {
+                                               return desc.debugName &&
+                                                      std::strcmp(desc.debugName, "DefaultObjectDescriptorSet") == 0;
+                                           });
+    ASSERT_NE(objectDescIt, device.capturedDescriptorSetDescs.end());
+    const RVX::RHIDescriptorBinding* objectBinding = FindDescriptorBinding(*objectDescIt, 0);
+    ASSERT_NE(objectBinding, nullptr);
+    EXPECT_EQ(objectBinding->range, expectedStride);
+}
+
+TEST_F(PipelineCacheValidationFixture, UpdateObjectConstantsUploadsWorldAndNormalMatrices)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    RVX::Mat4 world = RVX::Mat4Identity();
+    world[3][0] = 4.0f;
+    world[3][1] = 5.0f;
+    world[3][2] = 6.0f;
+
+    RVX::Mat4 normalMatrix = RVX::Mat4Identity();
+    normalMatrix[0][0] = 0.5f;
+    normalMatrix[1][1] = 2.0f;
+    normalMatrix[2][2] = 3.0f;
+
+    cache.UpdateObjectConstants(world, normalMatrix);
+
+    const FakeBuffer* objectBuffer = FindCapturedBuffer(device, "ObjectConstantBuffer");
+    ASSERT_NE(objectBuffer, nullptr);
+    ASSERT_GE(objectBuffer->GetStorage().size(), sizeof(RVX::ObjectConstants));
+
+    RVX::ObjectConstants uploaded{};
+    std::memcpy(&uploaded, objectBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_FLOAT_EQ(uploaded.world[3][0], 4.0f);
+    EXPECT_FLOAT_EQ(uploaded.world[3][1], 5.0f);
+    EXPECT_FLOAT_EQ(uploaded.world[3][2], 6.0f);
+    EXPECT_FLOAT_EQ(uploaded.normalMatrix[0][0], 0.5f);
+    EXPECT_FLOAT_EQ(uploaded.normalMatrix[1][1], 2.0f);
+    EXPECT_FLOAT_EQ(uploaded.normalMatrix[2][2], 3.0f);
+}
+
+TEST_F(PipelineCacheValidationFixture, DefaultLitUsesObjectNormalMatrix)
+{
+    const std::string shader = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
+    EXPECT_NE(shader.find("float4x4 NormalMatrix;"), std::string::npos);
+    EXPECT_NE(shader.find("mul((float3x3)NormalMatrix, input.Normal)"), std::string::npos);
+    EXPECT_EQ(shader.find("mul((float3x3)World, input.Normal)"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, DrawPassesUploadRenderObjectNormalMatrix)
+{
+    const fs::path passesDir = FindShaderDirectory().parent_path() / "Private" / "Passes";
+
+    const std::string opaquePass = ReadTextFile(passesDir / "OpaquePass.cpp");
+    const std::string transparentPass = ReadTextFile(passesDir / "TransparentPass.cpp");
+    const std::string depthPrepass = ReadTextFile(passesDir / "DepthPrepass.cpp");
+    const std::string shadowPass = ReadTextFile(passesDir / "ShadowPass.cpp");
+
+    EXPECT_NE(opaquePass.find("UpdateObjectConstants(obj.worldMatrix, obj.normalMatrix)"), std::string::npos);
+    EXPECT_NE(transparentPass.find("UpdateObjectConstants(obj.worldMatrix, obj.normalMatrix)"), std::string::npos);
+    EXPECT_NE(depthPrepass.find("UpdateObjectConstants(obj.worldMatrix, obj.normalMatrix)"), std::string::npos);
+    EXPECT_NE(shadowPass.find("UpdateObjectConstants(obj.worldMatrix, obj.normalMatrix)"), std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDefaultIBLAmbientValues)
 {
     if (!HasCompilerAvailable())

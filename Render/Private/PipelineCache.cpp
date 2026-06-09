@@ -2223,13 +2223,14 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
     }
 }
 
-void PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix)
+void PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix, const Mat4& normalMatrix)
 {
     if (!m_objectConstantBuffer)
         return;
 
     ObjectConstants constants;
     constants.world = worldMatrix;
+    constants.normalMatrix = normalMatrix;
 
     const uint64 offset = AllocateObjectConstantSlot();
     void* mapped = m_objectConstantBuffer->Map();

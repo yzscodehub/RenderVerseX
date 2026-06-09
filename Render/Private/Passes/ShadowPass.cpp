@@ -388,10 +388,10 @@ void ShadowPass::RenderCascade(RHICommandContext& ctx, const ViewData& view, uin
 
         ++m_stats.shadowCasterCount;
 
-        // Update object constants with light-space matrix
+        // Update per-object constants
         if (m_pipelineCache)
         {
-            m_pipelineCache->UpdateObjectConstants(obj.worldMatrix);
+            m_pipelineCache->UpdateObjectConstants(obj.worldMatrix, obj.normalMatrix);
         }
 
         RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
