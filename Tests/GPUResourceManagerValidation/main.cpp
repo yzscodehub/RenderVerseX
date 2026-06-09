@@ -1003,6 +1003,41 @@ TEST(GPUResourceManagerValidation, ValidMeshUploadBecomesGPUReady)
     manager.Shutdown();
 }
 
+TEST(GPUResourceManagerValidation, MeshBuffersExposeAttributeAvailability)
+{
+    FakeDevice device;
+    GPUResourceManager manager;
+    manager.Initialize(&device);
+
+    auto tangentMesh = MeshFactory::CreateTriangle();
+    ASSERT_TRUE(tangentMesh->GenerateTangents());
+    auto mesh = CreateMeshResource(110, tangentMesh);
+
+    manager.UploadImmediate(mesh.get());
+
+    const auto buffers = manager.GetMeshBuffers(mesh->GetId());
+    EXPECT_TRUE(buffers.IsValid());
+    EXPECT_TRUE(buffers.hasNormals);
+    EXPECT_TRUE(buffers.hasUVs);
+    EXPECT_TRUE(buffers.hasTangents);
+    EXPECT_TRUE(buffers.HasNormalMapTangentBasis());
+
+    auto positionOnly = CreatePositionOnlyMesh();
+    positionOnly->SetIndices(std::vector<uint32_t>{0, 1, 2});
+    auto positionOnlyResource = CreateMeshResource(111, positionOnly);
+
+    manager.UploadImmediate(positionOnlyResource.get());
+
+    const auto positionOnlyBuffers = manager.GetMeshBuffers(positionOnlyResource->GetId());
+    EXPECT_TRUE(positionOnlyBuffers.IsValid());
+    EXPECT_FALSE(positionOnlyBuffers.hasNormals);
+    EXPECT_FALSE(positionOnlyBuffers.hasUVs);
+    EXPECT_FALSE(positionOnlyBuffers.hasTangents);
+    EXPECT_FALSE(positionOnlyBuffers.HasNormalMapTangentBasis());
+
+    manager.Shutdown();
+}
+
 TEST(GPUResourceManagerValidation, StagedMeshUploadImmediateWaitsForFenceCompletion)
 {
     FakeDevice device;

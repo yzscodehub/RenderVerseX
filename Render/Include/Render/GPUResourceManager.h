@@ -88,8 +88,16 @@ namespace RVX
         RHIBuffer* indexBuffer = nullptr;
         std::vector<SubmeshGPUInfo> submeshes;
         bool isResident = false;
-        
+        bool hasNormals = false;
+        bool hasUVs = false;
+        bool hasTangents = false;
+
         bool IsValid() const { return positionBuffer && indexBuffer && isResident; }
+        bool HasNormalMapTangentBasis() const
+        {
+            return normalBuffer && uvBuffer && tangentBuffer &&
+                   hasNormals && hasUVs && hasTangents;
+        }
     };
 
     /**

@@ -182,6 +182,9 @@ MeshGPUBuffers GPUResourceManager::GetMeshBuffers(Resource::ResourceId meshId) c
         result.indexBuffer = it->second.indexBuffer.Get();
         result.submeshes = it->second.submeshes;
         result.isResident = true;
+        result.hasNormals = it->second.hasNormals;
+        result.hasUVs = it->second.hasUVs;
+        result.hasTangents = it->second.hasTangents;
     }
     
     return result;

@@ -64,6 +64,11 @@ namespace RVX
         }
     };
 
+    struct MaterialBindingOptions
+    {
+        bool allowNormalMap = true;
+    };
+
     /**
      * @brief Owns material GPU constants, fallback textures, and set 2 descriptors.
      */
@@ -96,11 +101,14 @@ namespace RVX
         // =====================================================================
 
         MaterialBindingResult PrepareMaterialBinding(const Resource::MaterialResource* materialResource,
-                                                     ResourceViewCache* viewCache);
+                                                     ResourceViewCache* viewCache,
+                                                     MaterialBindingOptions options = {});
         bool UpdateMaterialConstants(const Resource::MaterialResource* materialResource,
-                                     ResourceViewCache* viewCache);
+                                     ResourceViewCache* viewCache,
+                                     MaterialBindingOptions options = {});
         RHIDescriptorSet* GetOrCreateMaterialSet(const Resource::MaterialResource* materialResource,
-                                                 ResourceViewCache* viewCache);
+                                                 ResourceViewCache* viewCache,
+                                                 MaterialBindingOptions options = {});
         RHIDescriptorSet* GetDefaultMaterialSet();
 
         std::array<uint32, 1> GetCurrentMaterialDynamicOffset() const;
@@ -151,6 +159,7 @@ namespace RVX
             uint64 viewGeneration = 0;
             bool textureIBLEnabled = false;
             bool usedFallback = false;
+            bool normalMapDisabled = false;
         };
 
         struct MaterialDescriptorKey
@@ -204,7 +213,8 @@ namespace RVX
                                            uint32& fallbackTextureFlags,
                                            bool& usedFallback) const;
         ResolvedMaterialTextures ResolveMaterialTextures(const Resource::MaterialResource* materialResource,
-                                                        ResourceViewCache* viewCache) const;
+                                                        ResourceViewCache* viewCache,
+                                                        MaterialBindingOptions options) const;
         MaterialGPUConstants BuildConstants(const Resource::MaterialResource* materialResource,
                                             const ResolvedMaterialTextures& textures) const;
         MaterialSetResolveResult GetOrCreateMaterialSetForResolved(const ResolvedMaterialTextures& textures);

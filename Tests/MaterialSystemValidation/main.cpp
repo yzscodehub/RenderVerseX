@@ -882,6 +882,122 @@ namespace
         gpuResources.Shutdown();
     }
 
+    TEST(MaterialSystemValidation, MaterialBindingDefaultOptionsKeepReadyNormalTextureEnabled)
+    {
+        FakeDevice device;
+        GPUResourceManager gpuResources;
+        gpuResources.Initialize(&device);
+
+        ResourceViewCache viewCache;
+        viewCache.Initialize(&device);
+
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+
+        auto normalTexture = CreateTextureResource(320);
+        Resource::MaterialResource materialResource;
+        materialResource.SetId(220);
+        materialResource.SetName("NormalOnlyMaterialResource");
+        materialResource.SetMaterialData(std::make_shared<Material>("NormalOnlyMaterialResource"));
+        materialResource.SetTexture("normal", normalTexture);
+
+        gpuResources.UploadImmediate(normalTexture.Get());
+        ASSERT_TRUE(gpuResources.IsGPUReady(normalTexture.GetId()));
+
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(&materialResource, &viewCache);
+        const uint32 normalFlag = static_cast<uint32>(MaterialTextureFlags::HasNormal);
+
+        EXPECT_EQ(MaterialBindingStatus::Ready, result.status);
+        EXPECT_TRUE(result.IsDrawable());
+        EXPECT_FALSE(result.usedFallback);
+        EXPECT_EQ(normalFlag, result.textureFlags & normalFlag);
+        EXPECT_EQ(0u, result.fallbackTextureFlags & normalFlag);
+
+        materialSystem.Shutdown();
+        viewCache.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation, MaterialBindingCanDisableNormalMapWhenTangentBasisIsUnavailable)
+    {
+        FakeDevice device;
+        GPUResourceManager gpuResources;
+        gpuResources.Initialize(&device);
+
+        ResourceViewCache viewCache;
+        viewCache.Initialize(&device);
+
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+
+        auto normalTexture = CreateTextureResource(321);
+        Resource::MaterialResource materialResource;
+        materialResource.SetId(221);
+        materialResource.SetName("NormalMapDisabledMaterialResource");
+        materialResource.SetMaterialData(std::make_shared<Material>("NormalMapDisabledMaterialResource"));
+        materialResource.SetTexture("normal", normalTexture);
+
+        gpuResources.UploadImmediate(normalTexture.Get());
+        ASSERT_TRUE(gpuResources.IsGPUReady(normalTexture.GetId()));
+
+        MaterialBindingOptions options;
+        options.allowNormalMap = false;
+        const MaterialBindingResult result =
+            materialSystem.PrepareMaterialBinding(&materialResource, &viewCache, options);
+        const uint32 normalFlag = static_cast<uint32>(MaterialTextureFlags::HasNormal);
+
+        EXPECT_EQ(MaterialBindingStatus::Fallback, result.status);
+        EXPECT_TRUE(result.IsDrawable());
+        EXPECT_TRUE(result.usedFallback);
+        EXPECT_EQ(0u, result.textureFlags & normalFlag);
+        EXPECT_EQ(normalFlag, result.fallbackTextureFlags & normalFlag);
+        EXPECT_TRUE(Contains(result.message, "normal map disabled"));
+        ASSERT_NE(device.lastCreatedBuffer, nullptr);
+        const MaterialGPUConstants constants = ReadMaterialConstants(*device.lastCreatedBuffer);
+        EXPECT_EQ(0u, constants.textureFlags & normalFlag);
+
+        materialSystem.Shutdown();
+        viewCache.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation, MaterialBindingDoesNotReportFallbackForOmittedNormalTextureWhenNormalMapsDisabled)
+    {
+        FakeDevice device;
+        GPUResourceManager gpuResources;
+        gpuResources.Initialize(&device);
+
+        ResourceViewCache viewCache;
+        viewCache.Initialize(&device);
+
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+
+        Resource::MaterialResource materialResource;
+        materialResource.SetId(222);
+        materialResource.SetName("OmittedNormalMaterialResource");
+        materialResource.SetMaterialData(std::make_shared<Material>("OmittedNormalMaterialResource"));
+
+        MaterialBindingOptions options;
+        options.allowNormalMap = false;
+        const MaterialBindingResult result =
+            materialSystem.PrepareMaterialBinding(&materialResource, &viewCache, options);
+        const uint32 normalFlag = static_cast<uint32>(MaterialTextureFlags::HasNormal);
+
+        EXPECT_EQ(MaterialBindingStatus::Ready, result.status);
+        EXPECT_TRUE(result.IsDrawable());
+        EXPECT_FALSE(result.usedFallback);
+        EXPECT_EQ(0u, result.textureFlags & normalFlag);
+        EXPECT_EQ(0u, result.fallbackTextureFlags & normalFlag);
+
+        materialSystem.Shutdown();
+        viewCache.Shutdown();
+        gpuResources.Shutdown();
+    }
+
     TEST(MaterialSystemValidation, MaterialBindingDefaultFallbackTextureDoesNotSetTextureFlag)
     {
         FakeDevice device;

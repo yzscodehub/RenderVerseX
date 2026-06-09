@@ -322,8 +322,10 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                 const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
                 const Resource::MaterialResource* materialResource =
                     item.materialResource ? item.materialResource : ResolveMaterialResource(obj, item.submeshIndex);
+                MaterialBindingOptions materialOptions;
+                materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();
                 const MaterialBindingResult materialBinding =
-                    m_materialSystem->PrepareMaterialBinding(materialResource, view.viewCache);
+                    m_materialSystem->PrepareMaterialBinding(materialResource, view.viewCache, materialOptions);
                 if (!materialBinding.IsDrawable())
                 {
                     RVX_CORE_WARN("OpaquePass: Skipping {} draw item because material binding failed: {}",

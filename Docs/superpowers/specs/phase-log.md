@@ -4178,6 +4178,91 @@ git diff --check
 
 ---
 
+### R-SP: `RQ8 - Tangent Basis Robustness And Normal-Map Honesty`
+
+**Date:** 2026-06-10
+**Commit:** pending
+**Spark plan review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+**Spark code review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-10-rq8-tangent-basis-normal-map-honesty-plan.md`
+- Section: RQ8 full stage plan
+- Lines checked: full document reread before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ7 - Object Normal Matrix Main-Path Correction
+- Evidence: RQ7 committed as `1ac51f8` plus phase-log commit `0569724`; RQ7 validation and Spark code review were PASS.
+
+**Approved scope:**
+
+- Harden `Mesh::GenerateTangents()` for degenerate UV and zero tangent input.
+- Synthesize sequential indices for non-indexed glTF triangle-list primitives.
+- Expose mesh normal/UV/tangent availability through `MeshGPUBuffers`.
+- Add `MaterialBindingOptions::allowNormalMap` and clear normal-map sampling when a mesh lacks tangent basis.
+- Wire opaque and transparent passes to derive normal-map allowance from mesh buffers.
+
+**Out of scope:**
+
+- MikkTSpace, tangent convention migration, skinning, morph targets, instancing, GBuffer, SSAO, TAA, SSR, BRDF changes, and visual golden recapture unless a visual diff appears.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-10-rq8-tangent-basis-normal-map-honesty-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+- `Scene/Private/Mesh.cpp`
+- `Resource/Private/Importer/GLTFImporter.cpp`
+- `Render/Include/Render/GPUResourceManager.h`
+- `Render/Private/GPUResourceManager.cpp`
+- `Render/Include/Render/Material/MaterialSystem.h`
+- `Render/Private/Material/MaterialSystem.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Passes/TransparentPass.cpp`
+- `Tests/ResourceInstantiationValidation/main.cpp`
+- `Tests/GPUResourceManagerValidation/main.cpp`
+- `Tests/MaterialSystemValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target ResourceInstantiationValidation GPUResourceManagerValidation MaterialSystemValidation RenderPassValidation PipelineCacheValidation RenderSceneValidation ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ResourceInstantiationValidation|GPUResourceManagerValidation|MaterialSystemValidation|RenderPassValidation|PipelineCacheValidation|RenderSceneValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerPBRMaterialSmoke|PBRMaterialVisualGoldenValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS, warnings only from existing warning sites.
+- Focused render/resource gate: PASS, 239/239 selected tests passed.
+- ModelViewer visual gate: PASS, 5/5 selected tests passed.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Tests: `ResourceInstantiationValidation`, `GPUResourceManagerValidation`, `MaterialSystemValidation`, `RenderPassValidation`, `PipelineCacheValidation`, `RenderSceneValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerPBRMaterialSmoke`, `PBRMaterialVisualGoldenValidation`.
+- Diffs: RQ8 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Initial verdict: BLOCKED.
+- Blockers resolved: required tests now cover `allowNormalMap=false` with an explicit normal texture, `allowNormalMap=false` with an omitted normal texture, default `allowNormalMap=true` compatibility, and tangent fallback finite/unit-ish/orthogonal/`w=+1` behavior.
+- Final verdict: PASS.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Notes / follow-ups:**
+
+- RQ8 keeps normal-map behavior honest per draw: assets without a complete tangent basis render with vertex normals instead of sampling tangent-space normal maps from incomplete vertex inputs.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`

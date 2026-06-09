@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -414,6 +415,125 @@ namespace
         ASSERT_TRUE(normalInfo.has_value());
         EXPECT_EQ(dataInfo->imageId, normalInfo->imageId);
         ExpectTextureReferenceUsageByInfo(result, normalInfo, TextureUsage::Normal, false);
+    }
+
+    TEST(ResourceInstantiationValidation, MeshGenerateTangentsUsesFiniteFallbackForDegenerateUVs)
+    {
+        Mesh mesh;
+        mesh.SetPositions({
+            Vec3(0.0f, 0.0f, 0.0f),
+            Vec3(1.0f, 0.0f, 0.0f),
+            Vec3(0.0f, 1.0f, 0.0f),
+        });
+        mesh.SetNormals({
+            Vec3(0.0f, 0.0f, 1.0f),
+            Vec3(0.0f, 0.0f, 1.0f),
+            Vec3(0.0f, 0.0f, 1.0f),
+        });
+        mesh.SetUVs({
+            Vec2(0.0f, 0.0f),
+            Vec2(0.0f, 0.0f),
+            Vec2(0.0f, 0.0f),
+        });
+        mesh.SetIndices(std::vector<uint32_t>{0, 1, 2});
+
+        ASSERT_TRUE(mesh.GenerateTangents());
+
+        const VertexAttribute* tangentAttr = mesh.GetAttribute(VertexBufferNames::Tangent);
+        ASSERT_NE(tangentAttr, nullptr);
+        ASSERT_EQ(tangentAttr->GetVertexCount(), 3u);
+
+        const float* tangents = static_cast<const float*>(tangentAttr->GetData());
+        for (size_t i = 0; i < tangentAttr->GetVertexCount(); ++i)
+        {
+            const Vec3 tangent(tangents[i * 4], tangents[i * 4 + 1], tangents[i * 4 + 2]);
+            const float handedness = tangents[i * 4 + 3];
+            const float length = glm::length(tangent);
+            EXPECT_TRUE(std::isfinite(tangent.x));
+            EXPECT_TRUE(std::isfinite(tangent.y));
+            EXPECT_TRUE(std::isfinite(tangent.z));
+            EXPECT_TRUE(std::isfinite(handedness));
+            EXPECT_NEAR(length, 1.0f, 1.0e-4f);
+            EXPECT_NEAR(glm::dot(tangent, Vec3(0.0f, 0.0f, 1.0f)), 0.0f, 1.0e-4f);
+            EXPECT_FLOAT_EQ(handedness, 1.0f);
+        }
+    }
+
+    TEST(ResourceInstantiationValidation, GLTFImporterSynthesizesIndicesForNonIndexedTrianglePrimitive)
+    {
+        const std::filesystem::path gltfPath =
+            std::filesystem::temp_directory_path() / "rvx_gltf_nonindexed_triangle.gltf";
+        const std::filesystem::path binPath =
+            std::filesystem::temp_directory_path() / "rvx_gltf_nonindexed_triangle.bin";
+
+        const std::vector<float> positions = {
+            0.0f, 0.0f, 0.0f,
+            1.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f,
+        };
+        const std::vector<float> normals = {
+            0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 1.0f,
+        };
+        const std::vector<float> uvs = {
+            0.0f, 0.0f,
+            1.0f, 0.0f,
+            0.0f, 1.0f,
+        };
+
+        {
+            std::ofstream bin(binPath, std::ios::binary);
+            bin.write(reinterpret_cast<const char*>(positions.data()),
+                      static_cast<std::streamsize>(positions.size() * sizeof(float)));
+            bin.write(reinterpret_cast<const char*>(normals.data()),
+                      static_cast<std::streamsize>(normals.size() * sizeof(float)));
+            bin.write(reinterpret_cast<const char*>(uvs.data()),
+                      static_cast<std::streamsize>(uvs.size() * sizeof(float)));
+        }
+
+        const std::string json =
+            "{\"asset\":{\"version\":\"2.0\"},"
+            "\"buffers\":[{\"uri\":\"rvx_gltf_nonindexed_triangle.bin\",\"byteLength\":96}],"
+            "\"bufferViews\":["
+                "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+                "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+                "{\"buffer\":0,\"byteOffset\":72,\"byteLength\":24}"
+            "],"
+            "\"accessors\":["
+                "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\","
+                    "\"min\":[0,0,0],\"max\":[1,1,0]},"
+                "{\"bufferView\":1,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+                "{\"bufferView\":2,\"componentType\":5126,\"count\":3,\"type\":\"VEC2\"}"
+            "],"
+            "\"meshes\":[{\"primitives\":[{\"attributes\":{"
+                "\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2},\"mode\":4}]}]"
+            "}";
+
+        {
+            std::ofstream gltf(gltfPath, std::ios::binary);
+            gltf << json;
+        }
+
+        GLTFImporter importer;
+        const GLTFImportResult result = importer.Import(gltfPath.string());
+
+        std::filesystem::remove(gltfPath);
+        std::filesystem::remove(binPath);
+
+        ASSERT_TRUE(result.success) << result.errorMessage;
+        ASSERT_EQ(result.meshes.size(), 1u);
+
+        const Mesh::Ptr& mesh = result.meshes[0];
+        ASSERT_NE(mesh, nullptr);
+        EXPECT_EQ(mesh->GetIndexCount(), 3u);
+        EXPECT_TRUE(mesh->HasAttribute(VertexBufferNames::Tangent));
+
+        const std::vector<uint32_t> indices = mesh->GetTypedIndices<uint32_t>();
+        ASSERT_EQ(indices.size(), 3u);
+        EXPECT_EQ(indices[0], 0u);
+        EXPECT_EQ(indices[1], 1u);
+        EXPECT_EQ(indices[2], 2u);
     }
 
     TEST(ResourceInstantiationValidation, ActorAddOwnedComponentUsesNormalLifecycle)

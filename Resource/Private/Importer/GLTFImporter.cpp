@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 namespace RVX::Resource
 {
@@ -604,6 +605,20 @@ namespace RVX::Resource
         {
             std::vector<uint32_t> indices = ExtractIndices(gltf, primitive.indices);
             mesh->SetIndices(indices);
+        }
+        else if (mesh->GetPrimitiveType() == PrimitiveType::Triangles)
+        {
+            const VertexAttribute* posAttr = mesh->GetAttribute(VertexBufferNames::Position);
+            const size_t vertexCount = posAttr ? posAttr->GetVertexCount() : 0;
+            if (vertexCount > 0 && vertexCount <= std::numeric_limits<uint32_t>::max())
+            {
+                std::vector<uint32_t> indices(vertexCount);
+                for (size_t i = 0; i < vertexCount; ++i)
+                {
+                    indices[i] = static_cast<uint32_t>(i);
+                }
+                mesh->SetIndices(indices);
+            }
         }
 
         // Generate normals if needed

@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <fstream>
 #include <filesystem>
 #include <iterator>
 #include <memory>
@@ -68,6 +69,12 @@ namespace
         }
 
         return {};
+    }
+
+    std::string ReadTextFile(const fs::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
     }
 
     class FakeBuffer final : public RHIBuffer
@@ -1779,6 +1786,27 @@ TEST_F(RenderPassValidationFixture, OpaquePassBindsOpaqueThenMaskedPipelinesAndD
     EXPECT_EQ(pipelineCache.GetOpaquePipeline(), ctx.pipelineSequence[0]);
     EXPECT_EQ(pipelineCache.GetMaskedPipeline(), ctx.pipelineSequence[1]);
     EXPECT_EQ(2u, ctx.drawIndexedCount);
+}
+
+TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassGateNormalMapsOnTangentBasis)
+{
+    const fs::path passesDir = FindShaderDirectory().parent_path() / "Private" / "Passes";
+    ASSERT_FALSE(passesDir.empty());
+
+    const std::string opaquePass = ReadTextFile(passesDir / "OpaquePass.cpp");
+    const std::string transparentPass = ReadTextFile(passesDir / "TransparentPass.cpp");
+
+    EXPECT_NE(opaquePass.find("MaterialBindingOptions materialOptions;"), std::string::npos);
+    EXPECT_NE(opaquePass.find("materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis()"),
+              std::string::npos);
+    EXPECT_NE(opaquePass.find("PrepareMaterialBinding(materialResource, view.viewCache, materialOptions)"),
+              std::string::npos);
+
+    EXPECT_NE(transparentPass.find("MaterialBindingOptions materialOptions;"), std::string::npos);
+    EXPECT_NE(transparentPass.find("materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis()"),
+              std::string::npos);
+    EXPECT_NE(transparentPass.find("PrepareMaterialBinding(materialResource, view.viewCache, materialOptions)"),
+              std::string::npos);
 }
 
 TEST_F(RenderPassValidationFixture, OpaquePassResolvesRenderGraphColorTargetView)

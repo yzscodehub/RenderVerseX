@@ -124,7 +124,8 @@ void MaterialSystem::BeginFrame()
 }
 
 MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::MaterialResource* materialResource,
-                                                             ResourceViewCache* viewCache)
+                                                             ResourceViewCache* viewCache,
+                                                             MaterialBindingOptions options)
 {
     if (!m_initialized)
     {
@@ -142,7 +143,7 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::Mat
         return SetLastBindingResult(std::move(result));
     }
 
-    const ResolvedMaterialTextures textures = ResolveMaterialTextures(materialResource, viewCache);
+    const ResolvedMaterialTextures textures = ResolveMaterialTextures(materialResource, viewCache, options);
     const MaterialGPUConstants constants = BuildConstants(materialResource, textures);
     const std::string materialName = materialResource ? materialResource->GetMaterialName() : std::string();
 
@@ -191,8 +192,15 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::Mat
     result.materialName = materialName;
     if (result.status == MaterialBindingStatus::Fallback)
     {
-        result.message = setResult.message.empty() ? "Material binding used explicit fallback resources"
-                                                   : std::move(setResult.message);
+        if (textures.normalMapDisabled)
+        {
+            result.message = "Material normal map disabled because mesh tangent basis is unavailable";
+        }
+        else
+        {
+            result.message = setResult.message.empty() ? "Material binding used explicit fallback resources"
+                                                       : std::move(setResult.message);
+        }
     }
     else
     {
@@ -203,14 +211,16 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::Mat
 }
 
 bool MaterialSystem::UpdateMaterialConstants(const Resource::MaterialResource* materialResource,
-                                             ResourceViewCache* viewCache)
+                                             ResourceViewCache* viewCache,
+                                             MaterialBindingOptions options)
 {
-    const MaterialBindingResult result = PrepareMaterialBinding(materialResource, viewCache);
+    const MaterialBindingResult result = PrepareMaterialBinding(materialResource, viewCache, options);
     return result.constantsUpdated && !result.IsError();
 }
 
 RHIDescriptorSet* MaterialSystem::GetOrCreateMaterialSet(const Resource::MaterialResource* materialResource,
-                                                         ResourceViewCache* viewCache)
+                                                         ResourceViewCache* viewCache,
+                                                         MaterialBindingOptions options)
 {
     if (!m_initialized)
     {
@@ -221,7 +231,7 @@ RHIDescriptorSet* MaterialSystem::GetOrCreateMaterialSet(const Resource::Materia
         return nullptr;
     }
 
-    const ResolvedMaterialTextures textures = ResolveMaterialTextures(materialResource, viewCache);
+    const ResolvedMaterialTextures textures = ResolveMaterialTextures(materialResource, viewCache, options);
     MaterialSetResolveResult setResult = GetOrCreateMaterialSetForResolved(textures);
     const std::string materialName = materialResource ? materialResource->GetMaterialName() : std::string();
 
@@ -236,10 +246,17 @@ RHIDescriptorSet* MaterialSystem::GetOrCreateMaterialSet(const Resource::Materia
     result.fallbackTextureFlags = textures.fallbackTextureFlags;
     result.usedFallback = textures.usedFallback || setResult.usedFallback;
     result.materialName = materialName;
-    result.message = setResult.message.empty()
-        ? (result.usedFallback ? "Material descriptor used explicit fallback resources"
-                               : "Material descriptor ready")
-        : std::move(setResult.message);
+    if (textures.normalMapDisabled)
+    {
+        result.message = "Material normal map disabled because mesh tangent basis is unavailable";
+    }
+    else
+    {
+        result.message = setResult.message.empty()
+            ? (result.usedFallback ? "Material descriptor used explicit fallback resources"
+                                   : "Material descriptor ready")
+            : std::move(setResult.message);
+    }
     SetLastBindingResult(std::move(result));
 
     return setResult.descriptorSet;
@@ -488,7 +505,8 @@ RHITextureView* MaterialSystem::ResolveTextureView(const Resource::TextureResour
 
 MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures(
     const Resource::MaterialResource* materialResource,
-    ResourceViewCache* viewCache) const
+    ResourceViewCache* viewCache,
+    MaterialBindingOptions options) const
 {
     ResolvedMaterialTextures textures;
     textures.baseColor = m_defaultWhiteTextureView.Get();
@@ -513,12 +531,22 @@ MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures
                                                 textures.textureFlags,
                                                 textures.fallbackTextureFlags,
                                                 textures.usedFallback);
-        textures.normal = ResolveTextureView(materialResource->GetNormalTexture().Get(), textures.normal,
-                                             viewCache,
-                                             static_cast<uint32>(MaterialTextureFlags::HasNormal),
-                                             textures.textureFlags,
-                                             textures.fallbackTextureFlags,
-                                             textures.usedFallback);
+        const Resource::TextureResource* normalTexture = materialResource->GetNormalTexture().Get();
+        if (!options.allowNormalMap && normalTexture)
+        {
+            textures.usedFallback = true;
+            textures.normalMapDisabled = true;
+            textures.fallbackTextureFlags |= static_cast<uint32>(MaterialTextureFlags::HasNormal);
+        }
+        else
+        {
+            textures.normal = ResolveTextureView(normalTexture, textures.normal,
+                                                 viewCache,
+                                                 static_cast<uint32>(MaterialTextureFlags::HasNormal),
+                                                 textures.textureFlags,
+                                                 textures.fallbackTextureFlags,
+                                                 textures.usedFallback);
+        }
         textures.metallicRoughness =
             ResolveTextureView(materialResource->GetMetallicRoughnessTexture().Get(), textures.metallicRoughness,
                                viewCache,
