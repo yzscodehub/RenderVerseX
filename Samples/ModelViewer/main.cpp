@@ -130,6 +130,10 @@ struct ModelViewerOptions
     bool framesSet = false;
     ShadowQualityPreset shadowQualityPreset = ShadowQualityPreset::Default;
     ToneMapSelection tonemapSelection = ToneMapSelection::Default;
+    bool postExposureSet = false;
+    bool displayGammaSet = false;
+    float postExposure = 1.0f;
+    float displayGamma = 2.2f;
 };
 
 struct ProceduralIBLResources
@@ -202,6 +206,10 @@ namespace
             << "                       Select directional shadow quality preset\n"
             << "  --tonemap <default|none|reinhard|reinhard-extended|aces|uncharted2|neutral>\n"
             << "                       Select tone mapping operator without changing default smoke/golden behavior\n"
+            << "  --post-exposure <linear>\n"
+            << "                       Set tone mapping exposure multiplier, range [0.0, 64.0]\n"
+            << "  --display-gamma <value>\n"
+            << "                       Set tone mapping display gamma, range [0.1, 10.0]\n"
             << "  --expect-ibl-ready   Smoke mode fails unless texture IBL becomes ready\n"
             << "  --expect-skybox-ready Smoke mode fails unless SkyboxPass becomes ready\n"
             << "  --expect-shadow-ready Smoke mode fails unless directional shadow sampling is ready\n"
@@ -462,6 +470,31 @@ namespace
         }
     }
 
+    bool ParseFloat(const char* text, float& outValue)
+    {
+        if (!text)
+        {
+            return false;
+        }
+
+        try
+        {
+            size_t parsedChars = 0;
+            const float parsed = std::stof(text, &parsedChars);
+            if (parsedChars != std::strlen(text) || !std::isfinite(parsed))
+            {
+                return false;
+            }
+
+            outValue = parsed;
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
     bool ParseOptions(int argc, char* argv[], ModelViewerOptions& options)
     {
         for (int i = 1; i < argc; ++i)
@@ -572,6 +605,32 @@ namespace
                     RVX_CORE_ERROR("Invalid --tonemap value: {}", value ? value : "");
                     return false;
                 }
+            }
+            else if (arg == "--post-exposure")
+            {
+                const char* value = requireValue("--post-exposure");
+                float parsed = 0.0f;
+                if (!ParseFloat(value, parsed) || parsed < 0.0f || parsed > 64.0f)
+                {
+                    RVX_CORE_ERROR("Invalid --post-exposure value: {} (expected finite range [0.0, 64.0])",
+                                   value ? value : "");
+                    return false;
+                }
+                options.postExposure = parsed;
+                options.postExposureSet = true;
+            }
+            else if (arg == "--display-gamma")
+            {
+                const char* value = requireValue("--display-gamma");
+                float parsed = 0.0f;
+                if (!ParseFloat(value, parsed) || parsed < 0.1f || parsed > 10.0f)
+                {
+                    RVX_CORE_ERROR("Invalid --display-gamma value: {} (expected finite range [0.1, 10.0])",
+                                   value ? value : "");
+                    return false;
+                }
+                options.displayGamma = parsed;
+                options.displayGammaSet = true;
             }
             else if (arg == "--expect-ibl-ready")
             {
@@ -1771,13 +1830,28 @@ int main(int argc, char* argv[])
     if (SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer())
     {
         ToneMappingOperator tonemapOperator = ToneMappingOperator::None;
-        if (TryGetToneMappingOperator(options.tonemapSelection, tonemapOperator))
+        const bool tonemapSet = TryGetToneMappingOperator(options.tonemapSelection, tonemapOperator);
+        bool applyPostProcessSettings = tonemapSet || options.postExposureSet || options.displayGammaSet;
+        if (applyPostProcessSettings)
         {
             PostProcessSettings postProcessSettings = sceneRenderer->GetPostProcessSettings();
-            postProcessSettings.toneMappingOperator = tonemapOperator;
+            if (tonemapSet)
+            {
+                postProcessSettings.toneMappingOperator = tonemapOperator;
+            }
+            if (options.postExposureSet)
+            {
+                postProcessSettings.exposure = options.postExposure;
+            }
+            if (options.displayGammaSet)
+            {
+                postProcessSettings.gamma = options.displayGamma;
+            }
             sceneRenderer->ApplyPostProcessSettings(postProcessSettings);
-            RVX_CORE_INFO("ModelViewer tonemap operator '{}'",
-                          GetToneMapSelectionName(options.tonemapSelection));
+            RVX_CORE_INFO("ModelViewer post-process toneMapping='{}', exposure={:.3f}, gamma={:.3f}",
+                          GetToneMapSelectionName(options.tonemapSelection),
+                          postProcessSettings.exposure,
+                          postProcessSettings.gamma);
         }
 
         const ShadowPassConfig shadowConfig = MakeShadowQualityConfig(options.shadowQualityPreset);
@@ -1795,10 +1869,11 @@ int main(int argc, char* argv[])
     }
     else
     {
-        if (options.tonemapSelection != ToneMapSelection::Default)
+        if (options.tonemapSelection != ToneMapSelection::Default ||
+            options.postExposureSet ||
+            options.displayGammaSet)
         {
-            RVX_CORE_WARN("ModelViewer tonemap operator '{}' could not be applied: SceneRenderer unavailable",
-                          GetToneMapSelectionName(options.tonemapSelection));
+            RVX_CORE_WARN("ModelViewer post-process settings could not be applied: SceneRenderer unavailable");
         }
 
         RVX_CORE_WARN("ModelViewer shadow quality preset '{}' could not be applied: SceneRenderer unavailable",

@@ -1577,7 +1577,15 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
     EXPECT_NE(source.find("#include \"Render/PostProcess/ToneMappingTypes.h\""), std::string::npos);
     EXPECT_NE(source.find("--tonemap <default|none|reinhard|reinhard-extended|aces|uncharted2|neutral>"),
               std::string::npos);
+    EXPECT_NE(source.find("--post-exposure <linear>"), std::string::npos);
+    EXPECT_NE(source.find("range [0.0, 64.0]"), std::string::npos);
+    EXPECT_NE(source.find("--display-gamma <value>"), std::string::npos);
+    EXPECT_NE(source.find("range [0.1, 10.0]"), std::string::npos);
     EXPECT_NE(source.find("enum class ToneMapSelection"), std::string::npos);
+    EXPECT_NE(source.find("bool postExposureSet = false;"), std::string::npos);
+    EXPECT_NE(source.find("bool displayGammaSet = false;"), std::string::npos);
+    EXPECT_NE(source.find("float postExposure = 1.0f;"), std::string::npos);
+    EXPECT_NE(source.find("float displayGamma = 2.2f;"), std::string::npos);
 
     const auto parseStart = source.find("bool ParseToneMapSelection");
     ASSERT_NE(parseStart, std::string::npos);
@@ -1604,14 +1612,54 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
     EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::Uncharted2;"), std::string::npos);
     EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::Neutral;"), std::string::npos);
 
+    const auto parseFloatStart = source.find("bool ParseFloat");
+    ASSERT_NE(parseFloatStart, std::string::npos);
+    const auto parseFloatEnd = source.find("bool ParseOptions", parseFloatStart);
+    ASSERT_NE(parseFloatEnd, std::string::npos);
+    const std::string parseFloatBody = source.substr(parseFloatStart, parseFloatEnd - parseFloatStart);
+    EXPECT_NE(parseFloatBody.find("std::stof(text, &parsedChars)"), std::string::npos);
+    EXPECT_NE(parseFloatBody.find("parsedChars != std::strlen(text)"), std::string::npos);
+    EXPECT_NE(parseFloatBody.find("!std::isfinite(parsed)"), std::string::npos);
+
+    EXPECT_NE(source.find("arg == \"--post-exposure\""), std::string::npos);
+    EXPECT_NE(source.find("parsed < 0.0f || parsed > 64.0f"), std::string::npos);
+    EXPECT_NE(source.find("Invalid --post-exposure value"), std::string::npos);
+    EXPECT_NE(source.find("arg == \"--display-gamma\""), std::string::npos);
+    EXPECT_NE(source.find("parsed < 0.1f || parsed > 10.0f"), std::string::npos);
+    EXPECT_NE(source.find("Invalid --display-gamma value"), std::string::npos);
     EXPECT_NE(source.find("PostProcessSettings postProcessSettings = sceneRenderer->GetPostProcessSettings();"),
               std::string::npos);
     EXPECT_NE(source.find("postProcessSettings.toneMappingOperator = tonemapOperator;"), std::string::npos);
+    EXPECT_NE(source.find("postProcessSettings.exposure = options.postExposure;"), std::string::npos);
+    EXPECT_NE(source.find("postProcessSettings.gamma = options.displayGamma;"), std::string::npos);
     EXPECT_NE(source.find("sceneRenderer->ApplyPostProcessSettings(postProcessSettings);"), std::string::npos);
     EXPECT_NE(source.find("TryGetToneMappingOperator(options.tonemapSelection, tonemapOperator)"),
               std::string::npos);
+    EXPECT_NE(source.find("bool applyPostProcessSettings = tonemapSet || options.postExposureSet || options.displayGammaSet;"),
+              std::string::npos);
     EXPECT_NE(source.find("Invalid --tonemap value"), std::string::npos);
     EXPECT_EQ(source.find("options.tonemapSelection = ToneMapSelection::ACES"), std::string::npos);
+
+    const auto applyStart = source.find("if (applyPostProcessSettings)");
+    ASSERT_NE(applyStart, std::string::npos);
+    const auto applyEnd = source.find("const ShadowPassConfig shadowConfig", applyStart);
+    ASSERT_NE(applyEnd, std::string::npos);
+    const std::string applyBody = source.substr(applyStart, applyEnd - applyStart);
+    EXPECT_NE(applyBody.find("sceneRenderer->ApplyPostProcessSettings(postProcessSettings);"), std::string::npos);
+
+    auto countOccurrences = [](const std::string& text, const std::string& needle)
+    {
+        size_t count = 0;
+        size_t pos = text.find(needle);
+        while (pos != std::string::npos)
+        {
+            ++count;
+            pos = text.find(needle, pos + needle.size());
+        }
+        return count;
+    };
+    EXPECT_EQ(countOccurrences(source, "sceneRenderer->ApplyPostProcessSettings(postProcessSettings);"),
+              static_cast<size_t>(1));
 }
 
 TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAware)
