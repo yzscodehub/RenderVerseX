@@ -5185,6 +5185,88 @@ git diff --check
 
 ---
 
+### R-SP: `RQ19 - ModelViewer Shadow Quality Presets`
+
+**Date:** 2026-06-11
+**Commit:** `a2fc3a3 feat(samples): add model viewer shadow quality presets`
+**Spark plan review agent:** Bernoulli (`019eb2ba-f88d-7631-8af3-9f32f285e6b3`, `gpt-5.5`, xhigh)
+**Spark code review agent:** Bernoulli (`019eb2ba-f88d-7631-8af3-9f32f285e6b3`, `gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-11-rq19-modelviewer-shadow-quality-presets-plan.md`
+- Section: RQ19 goal, scope, preset table, tests, validation plan, Spark review
+- Lines checked: full stage document before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ18 Directional Shadow Quality Settings API (`17d1489`)
+- Evidence: RQ18 implementation and phase-log commits completed, Spark plan/code review PASS.
+
+**Approved scope:**
+
+- Add `--shadow-quality <default|low|medium|high|ultra>` to ModelViewer.
+- Map presets to existing `ShadowPassConfig` quality fields.
+- Keep default equal to `ShadowPassConfig{}` and keep caster raster bias fields zero.
+- Apply the selected preset through `SceneRenderer::ApplyShadowPassConfig()`.
+- Add source guards and a high-preset runtime smoke while preserving default visual goldens.
+
+**Out of scope:**
+
+- Changing default visuals/goldens, adding PCSS/contact shadows, changing shaders/pass topology, adding CTest high
+  golden coverage, or enabling non-zero caster raster bias.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-11-rq19-modelviewer-shadow-quality-presets-plan.md`
+- `Samples/ModelViewer/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation"
+build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --model Tests\Fixtures\ModelViewer\ShadowPlaneCaster.gltf --shadow-test-scene --expect-shadow-ready --shadow-quality high --backend dx11 --width 320 --height 180 --frames 4 --no-ibl --validation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 70/70 `PipelineCacheValidation` tests passed.
+- High preset smoke: PASS; log confirmed `preset high`, 4096 shadow array creation, and
+  `shadowSamplingEnabled=true, fallbackReason=None`.
+- Visual gate: PASS, 9/9 selected default visual tests passed.
+- Golden update: not needed; default visual output stayed stable.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, high-preset ModelViewer smoke, `ModelViewerSmoke`, `VisualGoldenValidation`,
+  `ModelViewerShadowSmoke`, `ShadowVisualGoldenValidation`, `ImageCompareValidation`.
+- Diffs: RQ19 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Non-blocking guidance adopted: preset values were documented in a table, and source guards check default config plus
+  zero caster raster bias fields.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Notes / follow-ups:**
+
+- High/ultra are explicit opt-in presets. They do not alter existing default ModelViewer smoke/golden behavior.
+- If CI budget remains stable, a future stage can promote high-preset smoke into CTest as non-golden coverage.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
