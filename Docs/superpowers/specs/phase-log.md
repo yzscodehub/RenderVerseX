@@ -4351,6 +4351,94 @@ git diff --check
 
 ---
 
+### R-SP: RQ10 - Vignette LDR Post-Process Activation
+
+**Date:** 2026-06-10
+**Commit:** `869dd87 feat(render): enable vignette postprocess pass`
+**Spark plan review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+**Spark code review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-10-rq10-vignette-ldr-postprocess-plan.md`
+- Section: full RQ10 stage document
+- Lines checked: full document before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ9 FXAA post-process activation.
+- Evidence: RQ9 committed and recorded; RQ10 implementation started only after Spark plan review PASS.
+
+**Approved scope:**
+
+- Compile, cache, hash, manifest, and expose a Vignette fullscreen graphics pipeline.
+- Implement `VignettePass` runtime resources, descriptor binding, constants upload, and fullscreen draw path.
+- Treat Vignette as an LDR post-ToneMapping effect and preserve HDR-after-LDR ordering validation.
+- Wire Vignette resources in `SceneRenderer` while keeping runtime default `enableVignette = false`.
+- Add tests for missing shader/pipeline visibility, descriptor layout, manifest invalidation, supported/resource behavior, zero-intensity pass-through, invalid ordering, and ModelViewer visual stability.
+
+**Out of scope:**
+
+- ColorGrading, FilmGrain, ChromaticAberration, compute post-process infrastructure, TAA, SSAO, SSR, volumetrics, and default visual tuning.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-10-rq10-vignette-ldr-postprocess-plan.md`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Shaders/PostProcess/Vignette.hlsl`
+- `Render/Include/Render/PostProcess/Vignette.h`
+- `Render/Private/PostProcess/Vignette.cpp`
+- `Render/Private/PostProcess/PostProcessStack.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/RenderHonestyValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target RenderPassValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderPassValidation"
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation RenderSceneValidation RenderHonestyValidation ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|RenderSceneValidation|RenderHonestyValidation|ModelViewerSmoke|VisualGoldenValidation|ModelViewerPBRMaterialSmoke|PBRMaterialVisualGoldenValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|MaterialSystemValidation|ClusteredLightingValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused RQ10 gate: PASS, `RenderPassValidation` 44/44 passed after blocker fix.
+- Core and visual gate: PASS, 153/153 selected tests passed.
+- Additional render regression: PASS, 66/66 selected tests passed.
+- Visual gate: PASS, `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerPBRMaterialSmoke`, and `PBRMaterialVisualGoldenValidation` passed.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `RenderPassValidation`, `RenderSceneValidation`, `RenderHonestyValidation`, `RenderGraphValidation`, `MaterialSystemValidation`, `ClusteredLightingValidation`, `ImageCompareValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerPBRMaterialSmoke`, `PBRMaterialVisualGoldenValidation`.
+- Diffs: RQ10 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none; optional plan follow-ups adopted for unique priority, invalid HDR-after-LDR tests, and manifest schema/hash coverage.
+
+**Spark code review result:**
+
+- Initial verdict: BLOCKED.
+- Blocker resolved: enabled Vignette with zero intensity no longer returns without writing; it stays in the graph as a pass-through fullscreen pass. `PostProcessStackKeepsZeroIntensityVignetteAsPassThrough` guards the chain.
+- Final verdict: PASS.
+
+**Notes / follow-ups:**
+
+- Vignette is wired but disabled by default, so existing ModelViewer goldens remain stable.
+- `VignetteData` captures configuration during graph construction and execution uploads the captured values, avoiding mutable config drift between graph build and execute.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
