@@ -5604,6 +5604,94 @@ git diff --check
 
 ---
 
+### R-SP: RQ24 - ModelViewer Camera EV100 Exposure CLI
+
+**Date:** 2026-06-11
+**Commit:** `18ab6b2 feat(samples): expose camera ev exposure controls`
+**Spark plan review agent:** Mill (`019eb337-0a0a-7a12-a030-d4969ed4c87a`, gpt-5.5 xhigh)
+**Spark code review agent:** Mill (`019eb337-0a0a-7a12-a030-d4969ed4c87a`, gpt-5.5 xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-11-rq24-modelviewer-camera-ev100-cli-plan.md`
+- Section: RQ24 full stage plan, §§1-11
+- Lines checked: full document before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ23 - Tone Mapping Camera EV100 Exposure Model
+- Evidence: RQ23 implementation commit `b8d716e`, phase-log commit `981779f`, focused and visual gates passed.
+
+**Approved scope:**
+
+- Add ModelViewer `--camera-ev100 <value>` and `--exposure-compensation <ev>` controls.
+- Reuse full-token finite float parsing and add range validation.
+- Reject conflicting manual multiplier and camera EV100 exposure modes.
+- Reject exposure compensation without camera EV100.
+- Route EV settings through the existing single `SceneRenderer::ApplyPostProcessSettings()` path.
+- Add source guards for help text, options, parser ranges, conflict checks, exposure mode assignment, and single apply.
+- Keep default visual/golden behavior unchanged.
+
+**Out of scope:**
+
+- Auto exposure, physical camera aperture/shutter/ISO, shader layout changes, default operator/exposure/gamma changes,
+  visual golden recapture, or broader tone mapping quality changes.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-11-rq24-modelviewer-camera-ev100-cli-plan.md`
+- `Samples/ModelViewer/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation"
+build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --model Tests\Fixtures\ModelViewer\R7Triangle.gltf --tonemap aces --camera-ev100 2.0 --exposure-compensation 1.0 --backend dx11 --width 320 --height 180 --frames 4 --no-ibl --validation
+& build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --model Tests\Fixtures\ModelViewer\R7Triangle.gltf --post-exposure 1.0 --camera-ev100 2.0 --backend dx11 --width 320 --height 180 --frames 1 --no-ibl --validation; if ($LASTEXITCODE -eq 0) { exit 1 } else { exit 0 }
+& build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --model Tests\Fixtures\ModelViewer\R7Triangle.gltf --exposure-compensation 1.0 --backend dx11 --width 320 --height 180 --frames 1 --no-ibl --validation; if ($LASTEXITCODE -eq 0) { exit 1 } else { exit 0 }
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 72/72 selected `PipelineCacheValidation` tests passed.
+- Runtime smoke: PASS, ModelViewer logged `exposureMode='camera-ev100'`, `cameraEV100=2.000`, and
+  `compensationEV=1.000`.
+- Expected-failure tests: PASS, conflict and missing-dependency CLI cases failed visibly.
+- Visual gate: PASS, 9/9 selected default visual tests passed.
+- Diff check: PASS, with CRLF warnings only.
+- Golden update: not needed; default visual output stayed stable.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerShadowSmoke`,
+  `ShadowVisualGoldenValidation`, `ImageCompareValidation`.
+- Runtime smoke: ModelViewer DX11 smoke with `--tonemap aces --camera-ev100 2.0 --exposure-compensation 1.0`.
+- Diffs: RQ24 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Non-blocking guidance adopted: add expected-failure validation for `--exposure-compensation` without
+  `--camera-ev100`.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Notes / follow-ups:**
+
+- RQ24 exposes the RQ23 engine EV model at the sample boundary while preserving existing default golden behavior.
+- Future exposure work can move from manual EV controls to auto exposure/histogram passes.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
