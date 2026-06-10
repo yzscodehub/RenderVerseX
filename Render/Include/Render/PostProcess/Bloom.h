@@ -15,11 +15,11 @@ namespace RVX
     class ResourceViewCache;
 
     /**
-     * @brief Minimum fullscreen Bloom post-process pass
+     * @brief HDR Bloom post-process pass
      *
-     * R9e implements a single fullscreen approximation that thresholds bright
-     * pixels, samples a small neighborhood, and composites the contribution
-     * back into scene color. Full mip-chain bloom remains a future expansion.
+     * RQ27 builds a small transient pyramid, then additively composites the
+     * blurred levels over a scene-color copy. Full quality presets and compute
+     * downsample remain future expansions.
      */
     class BloomPass : public IPostProcessPass
     {
@@ -55,13 +55,32 @@ namespace RVX
         float GetSoftKnee() const { return m_softKnee; }
 
     private:
+        enum class PassMode : uint32
+        {
+            CopyScene = 0,
+            Extract = 1,
+            Downsample = 2,
+            CompositeAdditive = 3,
+        };
+
+        void AddFullscreenPass(RenderGraph& graph,
+                               const char* passName,
+                               RGTextureHandle input,
+                               RGTextureHandle output,
+                               PassMode mode,
+                               bool additive,
+                               RHILoadOp outputLoadOp,
+                               float threshold,
+                               float intensity,
+                               float radius);
         bool EnsureRuntimeResources();
         bool UpdateConstants(uint32 width,
                              uint32 height,
                              float threshold,
                              float intensity,
                              float radius,
-                             float softKnee);
+                             float softKnee,
+                             PassMode mode);
 
         float m_threshold = 1.0f;
         float m_intensity = 1.0f;

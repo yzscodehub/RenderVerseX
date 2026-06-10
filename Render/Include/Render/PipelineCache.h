@@ -230,10 +230,11 @@ namespace RVX
         RHIPipeline* GetToneMappingPipeline(RHIFormat outputFormat);
 
         /**
-         * @brief Get the fullscreen Bloom minimum-path post-process pipeline
+         * @brief Get the fullscreen Bloom post-process pipeline
          */
         RHIPipeline* GetBloomPipeline() const { return m_bloomPipeline.Get(); }
         RHIPipeline* GetBloomPipeline(RHIFormat outputFormat);
+        RHIPipeline* GetBloomAdditivePipeline(RHIFormat outputFormat);
 
         /**
          * @brief Get the fullscreen ColorGrading LDR post-process pipeline
@@ -427,6 +428,7 @@ namespace RVX
                                                  bool updatePrimaryStats = true);
         RHIPipelineRef GetOrCreateToneMappingPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateBloomPipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateBloomAdditivePipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateColorGradingPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateChromaticAberrationPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateFXAAPipeline(RHIFormat outputFormat);
@@ -440,6 +442,7 @@ namespace RVX
         RHIGraphicsPipelineDesc BuildSkyboxPipelineDesc(RHIFormat outputFormat, bool depthTest = true) const;
         RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomPipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildBloomAdditivePipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildColorGradingPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildChromaticAberrationPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildFXAAPipelineDesc(RHIFormat outputFormat) const;
@@ -523,6 +526,7 @@ namespace RVX
         RHIPipelineRef m_skyboxPipeline;
         RHIPipelineRef m_toneMappingPipeline;
         RHIPipelineRef m_bloomPipeline;
+        RHIPipelineRef m_bloomAdditivePipeline;
         RHIPipelineRef m_colorGradingPipeline;
         RHIPipelineRef m_chromaticAberrationPipeline;
         RHIPipelineRef m_fxaaPipeline;

@@ -196,7 +196,14 @@ namespace
     class FakePipeline final : public RHIPipeline
     {
     public:
+        explicit FakePipeline(const RHIGraphicsPipelineDesc& desc)
+            : debugName(desc.debugName ? desc.debugName : "")
+        {
+        }
+
         bool IsCompute() const override { return false; }
+
+        std::string debugName;
     };
 
     class FakeDescriptorSet final : public RHIDescriptorSet
@@ -429,9 +436,9 @@ namespace
             return RHIPipelineLayoutRef(new FakePipelineLayout());
         }
 
-        RHIPipelineRef CreateGraphicsPipeline(const RHIGraphicsPipelineDesc&) override
+        RHIPipelineRef CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc) override
         {
-            return RHIPipelineRef(new FakePipeline());
+            return RHIPipelineRef(new FakePipeline(desc));
         }
 
         RHIPipelineRef CreateComputePipeline(const RHIComputePipelineDesc&) override { return nullptr; }
@@ -702,6 +709,14 @@ namespace
         }
 
         return nullptr;
+    }
+
+    void ExpectPipelineDebugName(RHIPipeline* pipeline, const char* expectedName)
+    {
+        ASSERT_NE(pipeline, nullptr);
+        const auto* fakePipeline = dynamic_cast<const FakePipeline*>(pipeline);
+        ASSERT_NE(fakePipeline, nullptr);
+        EXPECT_EQ(fakePipeline->debugName, expectedName);
     }
 
     class RenderPassValidationFixture : public ::testing::Test
@@ -1773,28 +1788,62 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
-    EXPECT_EQ(stats.totalPasses, 1u);
+    EXPECT_EQ(stats.totalPasses, 7u);
     EXPECT_EQ(stats.culledPasses, 0u);
     EXPECT_EQ(stats.emptyPassUsageCount, 0u);
 
     RecordingCommandContext ctx;
     graph.Execute(ctx);
 
-    EXPECT_EQ(ctx.beginRenderPassCount, 1u);
-    EXPECT_EQ(ctx.endRenderPassCount, 1u);
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
-    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetBloomPipeline(RHIFormat::RGBA16_FLOAT));
-    ASSERT_EQ(ctx.descriptorSetSequence.size(), static_cast<size_t>(1));
-    EXPECT_EQ(ctx.descriptorSetSequence[0], 0u);
-    EXPECT_EQ(ctx.drawCount, 1u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 7u);
+    EXPECT_EQ(ctx.endRenderPassCount, 7u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(7));
+    for (size_t i = 0; i < 4; ++i)
+    {
+        ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomPipeline");
+    }
+    for (size_t i = 4; i < 7; ++i)
+    {
+        ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomAdditivePipeline");
+    }
+    ASSERT_EQ(ctx.descriptorSetSequence.size(), static_cast<size_t>(7));
+    EXPECT_TRUE(std::all_of(ctx.descriptorSetSequence.begin(),
+                            ctx.descriptorSetSequence.end(),
+                            [](uint32 set) { return set == 0u; }));
+    EXPECT_EQ(ctx.drawCount, 7u);
     EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
     EXPECT_EQ(ctx.drawIndexedCount, 0u);
 
-    ASSERT_EQ(ctx.renderPasses.size(), static_cast<size_t>(1));
-    EXPECT_EQ(ctx.renderPasses[0].colorAttachmentCount, 1u);
-    EXPECT_FALSE(ctx.renderPasses[0].hasDepthStencil);
-    EXPECT_EQ(ctx.renderPasses[0].renderArea.width, 64u);
-    EXPECT_EQ(ctx.renderPasses[0].renderArea.height, 64u);
+    std::vector<RHITextureDesc> pyramidDescs;
+    for (const RHITextureDesc& desc : device.createdTextureDescs)
+    {
+        if (desc.debugName && std::string(desc.debugName) == "BloomPyramidLevel")
+        {
+            pyramidDescs.push_back(desc);
+        }
+    }
+    ASSERT_EQ(pyramidDescs.size(), static_cast<size_t>(3));
+    const uint32 expectedPyramidWidths[] = {32u, 16u, 8u};
+    const uint32 expectedPyramidHeights[] = {32u, 16u, 8u};
+    for (size_t i = 0; i < pyramidDescs.size(); ++i)
+    {
+        EXPECT_EQ(pyramidDescs[i].format, RHIFormat::RGBA16_FLOAT);
+        EXPECT_EQ(pyramidDescs[i].width, expectedPyramidWidths[i]);
+        EXPECT_EQ(pyramidDescs[i].height, expectedPyramidHeights[i]);
+    }
+
+    ASSERT_EQ(ctx.renderPasses.size(), static_cast<size_t>(7));
+    const uint32 expectedWidths[] = {32u, 64u, 16u, 8u, 64u, 64u, 64u};
+    const uint32 expectedHeights[] = {32u, 64u, 16u, 8u, 64u, 64u, 64u};
+    for (size_t i = 0; i < ctx.renderPasses.size(); ++i)
+    {
+        EXPECT_EQ(ctx.renderPasses[i].colorAttachmentCount, 1u);
+        EXPECT_FALSE(ctx.renderPasses[i].hasDepthStencil);
+        EXPECT_EQ(ctx.renderPasses[i].renderArea.width, expectedWidths[i]);
+        EXPECT_EQ(ctx.renderPasses[i].renderArea.height, expectedHeights[i]);
+        EXPECT_EQ(ctx.renderPasses[i].colorAttachments[0].loadOp,
+                  i >= 4 ? RHILoadOp::Load : RHILoadOp::DontCare);
+    }
 
     ASSERT_FALSE(ctx.viewports.empty());
     EXPECT_EQ(ctx.viewports.back().width, 64.0f);
@@ -1843,6 +1892,54 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
     ASSERT_NE(drawCall, ctx.callSequence.end());
     EXPECT_LT(std::distance(ctx.callSequence.begin(), descriptorCall),
               std::distance(ctx.callSequence.begin(), drawCall));
+}
+
+TEST_F(RenderPassValidationFixture, BloomZeroIntensityCopiesSceneOnly)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    BloomPass pass;
+    PostProcessSettings settings;
+    settings.enableBloom = true;
+    settings.bloomIntensity = 0.0f;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    ASSERT_TRUE(pass.IsEnabled());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.compileValid);
+    EXPECT_EQ(stats.totalPasses, 1u);
+    EXPECT_EQ(stats.totalTransientTextures, 0u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetBloomPipeline(RHIFormat::RGBA16_FLOAT));
+    EXPECT_EQ(ctx.drawCount, 1u);
+    ASSERT_EQ(ctx.renderPasses.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.renderPasses[0].renderArea.width, 64u);
+    EXPECT_EQ(ctx.renderPasses[0].renderArea.height, 64u);
+    EXPECT_EQ(ctx.renderPasses[0].colorAttachments[0].loadOp, RHILoadOp::DontCare);
 }
 
 TEST_F(RenderPassValidationFixture, BloomSkipsDrawWhenConstantsCannotMap)
@@ -2820,18 +2917,25 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingTh
     graph.Compile();
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 2u);
+    EXPECT_EQ(graphStats.totalPasses, 8u);
 
     RecordingCommandContext ctx;
     graph.Execute(ctx);
 
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(2));
-    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetBloomPipeline(RHIFormat::RGBA16_FLOAT));
-    EXPECT_EQ(ctx.pipelineSequence[1], pipelineCache.GetToneMappingPipeline());
-    EXPECT_EQ(ctx.drawCount, 2u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(8));
+    for (size_t i = 0; i < 4; ++i)
+    {
+        ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomPipeline");
+    }
+    for (size_t i = 4; i < 7; ++i)
+    {
+        ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomAdditivePipeline");
+    }
+    EXPECT_EQ(ctx.pipelineSequence[7], pipelineCache.GetToneMappingPipeline());
+    EXPECT_EQ(ctx.drawCount, 8u);
     EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
-    EXPECT_EQ(ctx.beginRenderPassCount, 2u);
-    EXPECT_EQ(ctx.endRenderPassCount, 2u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 8u);
+    EXPECT_EQ(ctx.endRenderPassCount, 8u);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGradingChromaticVignetteFXAAWithHDRAndLDRIntermediates)
@@ -2899,22 +3003,29 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     graph.Compile();
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 6u);
+    EXPECT_EQ(graphStats.totalPasses, 12u);
 
     RecordingCommandContext ctx;
     graph.Execute(ctx);
 
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(6));
-    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetBloomPipeline(RHIFormat::RGBA16_FLOAT));
-    EXPECT_EQ(ctx.pipelineSequence[1], pipelineCache.GetToneMappingPipeline());
-    EXPECT_EQ(ctx.pipelineSequence[2], pipelineCache.GetColorGradingPipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.pipelineSequence[3], pipelineCache.GetChromaticAberrationPipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.pipelineSequence[4], pipelineCache.GetVignettePipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.pipelineSequence[5], pipelineCache.GetFXAAPipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.drawCount, 6u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(12));
+    for (size_t i = 0; i < 4; ++i)
+    {
+        ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomPipeline");
+    }
+    for (size_t i = 4; i < 7; ++i)
+    {
+        ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomAdditivePipeline");
+    }
+    EXPECT_EQ(ctx.pipelineSequence[7], pipelineCache.GetToneMappingPipeline());
+    EXPECT_EQ(ctx.pipelineSequence[8], pipelineCache.GetColorGradingPipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.pipelineSequence[9], pipelineCache.GetChromaticAberrationPipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.pipelineSequence[10], pipelineCache.GetVignettePipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.pipelineSequence[11], pipelineCache.GetFXAAPipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.drawCount, 12u);
     EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
-    EXPECT_EQ(ctx.beginRenderPassCount, 6u);
-    EXPECT_EQ(ctx.endRenderPassCount, 6u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 12u);
+    EXPECT_EQ(ctx.endRenderPassCount, 12u);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessStackKeepsZeroIntensityVignetteAsPassThrough)

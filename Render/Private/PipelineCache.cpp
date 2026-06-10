@@ -652,6 +652,7 @@ void PipelineCache::Shutdown()
     m_skyboxPipeline.Reset();
     m_toneMappingPipeline.Reset();
     m_bloomPipeline.Reset();
+    m_bloomAdditivePipeline.Reset();
     m_colorGradingPipeline.Reset();
     m_chromaticAberrationPipeline.Reset();
     m_fxaaPipeline.Reset();
@@ -1745,6 +1746,22 @@ RHIPipeline* PipelineCache::GetBloomPipeline(RHIFormat outputFormat)
     return GetOrCreateBloomPipeline(outputFormat).Get();
 }
 
+RHIPipeline* PipelineCache::GetBloomAdditivePipeline(RHIFormat outputFormat)
+{
+    const RHIFormat resolvedFormat =
+        outputFormat == RHIFormat::Unknown ? m_postProcessIntermediateFormat : outputFormat;
+    if (resolvedFormat == m_postProcessIntermediateFormat)
+    {
+        if (!m_bloomAdditivePipeline)
+        {
+            m_bloomAdditivePipeline = GetOrCreateBloomAdditivePipeline(resolvedFormat);
+        }
+        return m_bloomAdditivePipeline.Get();
+    }
+
+    return GetOrCreateBloomAdditivePipeline(resolvedFormat).Get();
+}
+
 RHIPipeline* PipelineCache::GetColorGradingPipeline(RHIFormat outputFormat)
 {
     if (outputFormat == RHIFormat::Unknown || outputFormat == m_toneMappingOutputFormat)
@@ -2343,6 +2360,53 @@ RHIPipelineRef PipelineCache::GetOrCreateBloomPipeline(RHIFormat outputFormat)
     return pipeline;
 }
 
+RHIPipelineRef PipelineCache::GetOrCreateBloomAdditivePipeline(RHIFormat outputFormat)
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildBloomAdditivePipelineDesc(outputFormat);
+    if (!pipelineDesc.vertexShader)
+    {
+        SetLastError("Cannot create additive Bloom pipeline without vertex shader");
+        return {};
+    }
+    if (!pipelineDesc.pixelShader)
+    {
+        SetLastError("Cannot create additive Bloom pipeline without pixel shader");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError("Cannot create additive Bloom pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.numRenderTargets != 1 || pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create additive Bloom pipeline with invalid render target format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc, MaterialPipelineVariant::Transparent);
+    m_stats.lastPipelineStateHash = stateHash;
+
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create additive Bloom pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
 RHIPipelineRef PipelineCache::GetOrCreateColorGradingPipeline(RHIFormat outputFormat)
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildColorGradingPipelineDesc(outputFormat);
@@ -2670,6 +2734,19 @@ RHIGraphicsPipelineDesc PipelineCache::BuildBloomPipelineDesc(RHIFormat outputFo
     pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
     pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
 
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildBloomAdditivePipelineDesc(RHIFormat outputFormat) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildBloomPipelineDesc(outputFormat);
+    pipelineDesc.debugName = "BloomAdditivePipeline";
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.blendState.renderTargets[0].blendEnable = true;
+    pipelineDesc.blendState.renderTargets[0].srcColorBlend = RHIBlendFactor::One;
+    pipelineDesc.blendState.renderTargets[0].dstColorBlend = RHIBlendFactor::One;
+    pipelineDesc.blendState.renderTargets[0].srcAlphaBlend = RHIBlendFactor::Zero;
+    pipelineDesc.blendState.renderTargets[0].dstAlphaBlend = RHIBlendFactor::One;
     return pipelineDesc;
 }
 

@@ -695,7 +695,7 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingShaderUsesSingleDisplayConvers
     EXPECT_EQ(countOccurrences(shaderSource, "pow("), static_cast<size_t>(1));
 }
 
-TEST_F(PipelineCacheValidationFixture, BloomShaderUsesWideSoftThresholdKernel)
+TEST_F(PipelineCacheValidationFixture, BloomShaderUsesMipChainCompositeModes)
 {
     if (!HasCompilerAvailable())
     {
@@ -719,16 +719,23 @@ TEST_F(PipelineCacheValidationFixture, BloomShaderUsesWideSoftThresholdKernel)
 
     EXPECT_NE(shaderSource.find("ApplySoftThreshold"), std::string::npos);
     EXPECT_NE(shaderSource.find("SampleBloomThreshold"), std::string::npos);
-    EXPECT_NE(shaderSource.find("Intensity <= 0.0"), std::string::npos);
+    EXPECT_NE(shaderSource.find("float Mode;"), std::string::npos);
+    EXPECT_NE(shaderSource.find("BLOOM_MODE_COPY_SCENE"), std::string::npos);
+    EXPECT_NE(shaderSource.find("BLOOM_MODE_EXTRACT"), std::string::npos);
+    EXPECT_NE(shaderSource.find("BLOOM_MODE_DOWNSAMPLE"), std::string::npos);
+    EXPECT_NE(shaderSource.find("BLOOM_MODE_COMPOSITE_ADDITIVE"), std::string::npos);
+    EXPECT_NE(shaderSource.find("SampleBloomWideKernel"), std::string::npos);
     EXPECT_NE(shaderSource.find("return scene;"), std::string::npos);
     EXPECT_NE(shaderSource.find("ring1"), std::string::npos);
     EXPECT_NE(shaderSource.find("ring2"), std::string::npos);
     EXPECT_NE(shaderSource.find("float2 ring2 = radius * 2.0;"), std::string::npos);
-    EXPECT_GE(countOccurrences(shaderSource, "SampleBloomThreshold(input.TexCoord"),
+    EXPECT_GE(countOccurrences(shaderSource, "SampleBloomThreshold("),
               static_cast<size_t>(13));
+    EXPECT_NE(shaderSource.find("return float4(bloom * max(Intensity, 0.0), 0.0);"), std::string::npos);
     EXPECT_EQ(shaderSource.find("tiny fullscreen-neighborhood"), std::string::npos);
     EXPECT_EQ(shaderSource.find("deliberately small one-pass"), std::string::npos);
     EXPECT_EQ(shaderSource.find("Minimum fullscreen bloom path"), std::string::npos);
+    EXPECT_EQ(shaderSource.find("single-pass wide-kernel bloom approximation"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, FXAAShaderUsesPostProcessDescriptorLayout)
@@ -1883,6 +1890,43 @@ TEST_F(PipelineCacheValidationFixture, SplitRenderTargetFormatsRouteSceneBloomAn
     EXPECT_NE(cache.GetStats().chromaticAberrationPipelineHash, cache.GetStats().bloomPipelineHash);
     EXPECT_NE(cache.GetStats().vignettePipelineHash, cache.GetStats().bloomPipelineHash);
     EXPECT_NE(cache.GetStats().fxaaPipelineHash, cache.GetStats().bloomPipelineHash);
+}
+
+TEST_F(PipelineCacheValidationFixture, BloomAdditivePipelineUsesAdditiveColorAndPreservesAlpha)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    cache.SetRenderTargetFormats(RVX::RHIFormat::RGBA16_FLOAT,
+                                 RVX::RHIFormat::RGBA16_FLOAT,
+                                 RVX::RHIFormat::BGRA8_UNORM);
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    RVX::RHIPipeline* opaqueBloom = cache.GetBloomPipeline(RVX::RHIFormat::RGBA16_FLOAT);
+    RVX::RHIPipeline* additiveBloom = cache.GetBloomAdditivePipeline(RVX::RHIFormat::RGBA16_FLOAT);
+    ASSERT_NE(opaqueBloom, nullptr);
+    ASSERT_NE(additiveBloom, nullptr);
+    EXPECT_NE(opaqueBloom, additiveBloom);
+
+    auto it = std::find_if(device.capturedGraphicsPipelines.begin(),
+                           device.capturedGraphicsPipelines.end(),
+                           [](const RVX::RHIGraphicsPipelineDesc& desc)
+                           {
+                               return desc.debugName && std::string(desc.debugName) == "BloomAdditivePipeline";
+                           });
+    ASSERT_NE(it, device.capturedGraphicsPipelines.end());
+
+    const RVX::RHIRenderTargetBlendState& blend = it->blendState.renderTargets[0];
+    EXPECT_TRUE(blend.blendEnable);
+    EXPECT_EQ(blend.srcColorBlend, RVX::RHIBlendFactor::One);
+    EXPECT_EQ(blend.dstColorBlend, RVX::RHIBlendFactor::One);
+    EXPECT_EQ(blend.srcAlphaBlend, RVX::RHIBlendFactor::Zero);
+    EXPECT_EQ(blend.dstAlphaBlend, RVX::RHIBlendFactor::One);
+    EXPECT_EQ(it->renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
 }
 
 TEST_F(PipelineCacheValidationFixture, RuntimeOutputFormatRequestsCreateMatchingPipelines)
