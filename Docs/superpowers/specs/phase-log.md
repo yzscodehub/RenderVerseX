@@ -5863,6 +5863,99 @@ git diff --check
 
 ---
 
+### RQ27: Bloom Mip-Chain Composite Path
+
+**Date:** 2026-06-11
+**Commit:** `3f00b39 feat(render): composite bloom mip chain`
+**Spark plan review agent:** Spark/Mill (`gpt-5.5 xhigh`)
+**Spark code review agent:** Spark/Mill (`gpt-5.5 xhigh`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-11-rq27-bloom-mip-chain-composite-plan.md`
+- Section: `6. Execution Plan` through `10. Acceptance Criteria`
+- Lines checked: whole stage plan before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ26 ModelViewer Bloom Runtime Controls
+- Evidence: RQ26 committed as `72f9e8a` with phase-log commit `7d56e07`; Bloom controls were available
+  for runtime smoke before RQ27 started.
+
+**Approved scope:**
+
+- Replace the one-pass Bloom approximation with a bounded 3-level HDR pyramid.
+- Add copy, extract, downsample, and additive composite modes to the Bloom shader.
+- Add a distinct additive Bloom pipeline that uses color `One + One` blending while preserving destination alpha.
+- Express additive destination dependencies in RenderGraph and keep zero-intensity Bloom as copy-only.
+- Extend RenderPass and PipelineCache validations for pass count, pipeline type, load op, pyramid texture format,
+  shader guardrails, and additive blend state.
+
+**Out of scope:**
+
+- Quality presets or runtime mip-count controls.
+- Compute Bloom, async compute, or backend-specific screenshot expansion.
+- Golden image changes; default visual output remains covered by the existing gate.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-11-rq27-bloom-mip-chain-composite-plan.md`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Include/Render/PostProcess/Bloom.h`
+- `Render/Private/PostProcess/Bloom.cpp`
+- `Render/Shaders/PostProcess/Bloom.hlsl`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target RenderPassValidation PipelineCacheValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderPassValidation|PipelineCacheValidation"
+build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --model Tests\Fixtures\ModelViewer\R7Triangle.gltf --tonemap aces --bloom-intensity 0.75 --bloom-threshold 0.25 --bloom-radius 2.0 --backend dx11 --width 320 --height 180 --frames 4 --no-ibl --validation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 146/146 selected `RenderPassValidation` and `PipelineCacheValidation` tests passed.
+- Runtime smoke: PASS, ModelViewer DX11 smoke completed with the RQ26 Bloom CLI settings and no `Unknown RHIFormat`
+  after the graph texture-desc lifetime fix.
+- Visual gate: PASS, 9/9 selected default visual tests passed.
+- Diff check: PASS, with CRLF warnings only.
+- Golden update: not needed; default visual output stayed stable.
+
+**Artifacts:**
+
+- Tests: `RenderPassValidation`, `PipelineCacheValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`,
+  `ModelViewerShadowSmoke`, `ShadowVisualGoldenValidation`, `ImageCompareValidation`.
+- Runtime smoke: ModelViewer DX11 smoke with `--tonemap aces --bloom-intensity 0.75 --bloom-threshold 0.25
+  --bloom-radius 2.0`.
+- Diffs: RQ27 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Residual risk accepted: explicit destination-read dependency may add an extra barrier, but it keeps fixed-function
+  additive blending ordered in the current RenderGraph model.
+
+**Notes / follow-ups:**
+
+- RQ27 improves Bloom quality from a single wide blur to a small HDR pyramid while keeping the existing post-process
+  descriptor layout.
+- A later quality stage can expose preset-controlled mip count, compute path, or backend-specific screenshot gates.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
