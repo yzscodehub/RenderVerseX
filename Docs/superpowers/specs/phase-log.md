@@ -4530,6 +4530,103 @@ git diff --check
 
 ---
 
+### R-SP: RQ12 - ChromaticAberration LDR Post-Process Activation
+
+**Date:** 2026-06-10
+**Commit:** `c84fa3b feat(render): enable chromatic aberration postprocess pass`
+**Spark plan review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+**Spark code review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-10-rq12-chromatic-aberration-ldr-postprocess-plan.md`
+- Section: full RQ12 stage document
+- Lines checked: full document before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ11 ColorGrading LDR post-process activation.
+- Evidence: RQ11 committed and recorded; RQ12 implementation started only after Spark plan review PASS.
+
+**Approved scope:**
+
+- Convert `ChromaticAberrationPass` from an unsupported compute TODO into an LDR fullscreen graphics post-process pass.
+- Add `Render/Shaders/PostProcess/ChromaticAberration.hlsl` using the shared post-process descriptor layout.
+- Compile, cache, hash, manifest, and expose ChromaticAberration pipelines in `PipelineCache`.
+- Treat ChromaticAberration as an LDR post-ToneMapping pass after ColorGrading and before Vignette/FXAA.
+- Wire the pass in `SceneRenderer` while keeping runtime default `enableChromaticAberration = false`.
+- Keep spectral sampling visibly unsupported and schedule no graph pass for spectral requests.
+- Add tests for missing shader/pipeline visibility, descriptor layout, manifest invalidation, supported/resource behavior,
+  zero-intensity pass-through, constant upload packing, invalid ordering, and ModelViewer visual stability.
+
+**Out of scope:**
+
+- Spectral/seven-tap chromatic aberration, FilmGrain, HDR-domain chromatic aberration, default visual tuning, UI/editor
+  controls, TAA, SSAO, SSR, DOF, motion blur, volumetrics, and generalized post-process domain graph work.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-10-rq12-chromatic-aberration-ldr-postprocess-plan.md`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Shaders/PostProcess/ChromaticAberration.hlsl`
+- `Render/Include/Render/PostProcess/ChromaticAberration.h`
+- `Render/Private/PostProcess/ChromaticAberration.cpp`
+- `Render/Private/PostProcess/PostProcessStack.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/RenderHonestyValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation RenderHonestyValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderPassValidation|RenderHonestyValidation"
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation RenderSceneValidation RenderHonestyValidation ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|RenderSceneValidation|RenderHonestyValidation|ModelViewerSmoke|VisualGoldenValidation|ModelViewerPBRMaterialSmoke|PBRMaterialVisualGoldenValidation|ModelViewerIBLSmoke|ModelViewerShadowSmoke|ShadowVisualGoldenValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|MaterialSystemValidation|ClusteredLightingValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused RQ12 gate: PASS, `PipelineCacheValidation` 65/65 passed.
+- Focused pass/honesty gate: PASS, `RenderPassValidation|RenderHonestyValidation` 93/93 passed.
+- Core and visual gate: PASS, 186/186 selected tests passed.
+- Additional render regression: PASS, 66/66 selected tests passed.
+- Visual gate: PASS, `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerPBRMaterialSmoke`,
+  `PBRMaterialVisualGoldenValidation`, `ModelViewerIBLSmoke`, `ModelViewerShadowSmoke`, and
+  `ShadowVisualGoldenValidation` passed.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `RenderPassValidation`, `RenderSceneValidation`, `RenderHonestyValidation`,
+  `RenderGraphValidation`, `MaterialSystemValidation`, `ClusteredLightingValidation`, `ImageCompareValidation`,
+  `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerPBRMaterialSmoke`, `PBRMaterialVisualGoldenValidation`,
+  `ModelViewerIBLSmoke`, `ModelViewerShadowSmoke`, `ShadowVisualGoldenValidation`.
+- Diffs: RQ12 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+
+**Notes / follow-ups:**
+
+- ChromaticAberration is wired but disabled by default, so existing ModelViewer goldens remain stable.
+- Spectral mode remains an honest follow-up instead of silently falling back to the simple RGB path.
+- Zero-intensity ChromaticAberration stays in the graph as a pass-through fullscreen pass when explicitly enabled.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
