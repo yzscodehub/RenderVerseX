@@ -1640,15 +1640,26 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
     EXPECT_NE(source.find("range [-16.0, 16.0]"), std::string::npos);
     EXPECT_NE(source.find("--display-gamma <value>"), std::string::npos);
     EXPECT_NE(source.find("range [0.1, 10.0]"), std::string::npos);
+    EXPECT_NE(source.find("--bloom-intensity <value>"), std::string::npos);
+    EXPECT_NE(source.find("range [0.0, 16.0]"), std::string::npos);
+    EXPECT_NE(source.find("--bloom-threshold <value>"), std::string::npos);
+    EXPECT_NE(source.find("range [0.0, 64.0]"), std::string::npos);
+    EXPECT_NE(source.find("--bloom-radius <texels>"), std::string::npos);
     EXPECT_NE(source.find("enum class ToneMapSelection"), std::string::npos);
     EXPECT_NE(source.find("bool postExposureSet = false;"), std::string::npos);
     EXPECT_NE(source.find("bool displayGammaSet = false;"), std::string::npos);
     EXPECT_NE(source.find("bool cameraEV100Set = false;"), std::string::npos);
     EXPECT_NE(source.find("bool exposureCompensationSet = false;"), std::string::npos);
+    EXPECT_NE(source.find("bool bloomIntensitySet = false;"), std::string::npos);
+    EXPECT_NE(source.find("bool bloomThresholdSet = false;"), std::string::npos);
+    EXPECT_NE(source.find("bool bloomRadiusSet = false;"), std::string::npos);
     EXPECT_NE(source.find("float postExposure = 1.0f;"), std::string::npos);
     EXPECT_NE(source.find("float displayGamma = 2.2f;"), std::string::npos);
     EXPECT_NE(source.find("float cameraEV100 = 0.0f;"), std::string::npos);
     EXPECT_NE(source.find("float exposureCompensationEV = 0.0f;"), std::string::npos);
+    EXPECT_NE(source.find("float bloomIntensity = 0.0f;"), std::string::npos);
+    EXPECT_NE(source.find("float bloomThreshold = 1.0f;"), std::string::npos);
+    EXPECT_NE(source.find("float bloomRadius = 0.5f;"), std::string::npos);
 
     const auto parseStart = source.find("bool ParseToneMapSelection");
     ASSERT_NE(parseStart, std::string::npos);
@@ -1700,6 +1711,13 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
     EXPECT_NE(source.find("arg == \"--display-gamma\""), std::string::npos);
     EXPECT_NE(source.find("parsed < 0.1f || parsed > 10.0f"), std::string::npos);
     EXPECT_NE(source.find("Invalid --display-gamma value"), std::string::npos);
+    EXPECT_NE(source.find("arg == \"--bloom-intensity\""), std::string::npos);
+    EXPECT_NE(source.find("parsed < 0.0f || parsed > 16.0f"), std::string::npos);
+    EXPECT_NE(source.find("Invalid --bloom-intensity value"), std::string::npos);
+    EXPECT_NE(source.find("arg == \"--bloom-threshold\""), std::string::npos);
+    EXPECT_NE(source.find("Invalid --bloom-threshold value"), std::string::npos);
+    EXPECT_NE(source.find("arg == \"--bloom-radius\""), std::string::npos);
+    EXPECT_NE(source.find("Invalid --bloom-radius value"), std::string::npos);
     EXPECT_NE(source.find("PostProcessSettings postProcessSettings = sceneRenderer->GetPostProcessSettings();"),
               std::string::npos);
     EXPECT_NE(source.find("postProcessSettings.toneMappingOperator = tonemapOperator;"), std::string::npos);
@@ -1713,12 +1731,21 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
               std::string::npos);
     EXPECT_NE(source.find("postProcessSettings.exposure = options.postExposure;"), std::string::npos);
     EXPECT_NE(source.find("postProcessSettings.gamma = options.displayGamma;"), std::string::npos);
+    EXPECT_NE(source.find("postProcessSettings.enableBloom = true;"), std::string::npos);
+    EXPECT_NE(source.find("postProcessSettings.bloomIntensity = options.bloomIntensity;"), std::string::npos);
+    EXPECT_NE(source.find("postProcessSettings.bloomThreshold = options.bloomThreshold;"), std::string::npos);
+    EXPECT_NE(source.find("postProcessSettings.bloomRadius = options.bloomRadius;"), std::string::npos);
+    EXPECT_NE(source.find("bloomIntensity={:.3f}"), std::string::npos);
+    EXPECT_NE(source.find("bloomThreshold={:.3f}"), std::string::npos);
+    EXPECT_NE(source.find("bloomRadius={:.3f}"), std::string::npos);
     EXPECT_NE(source.find("sceneRenderer->ApplyPostProcessSettings(postProcessSettings);"), std::string::npos);
     EXPECT_NE(source.find("TryGetToneMappingOperator(options.tonemapSelection, tonemapOperator)"),
               std::string::npos);
     EXPECT_NE(source.find("bool applyPostProcessSettings ="), std::string::npos);
     EXPECT_NE(source.find("tonemapSet || options.postExposureSet || options.cameraEV100Set ||"), std::string::npos);
-    EXPECT_NE(source.find("options.exposureCompensationSet || options.displayGammaSet;"), std::string::npos);
+    EXPECT_NE(source.find("options.exposureCompensationSet || options.displayGammaSet ||"), std::string::npos);
+    EXPECT_NE(source.find("options.bloomIntensitySet || options.bloomThresholdSet || options.bloomRadiusSet;"),
+              std::string::npos);
     EXPECT_NE(source.find("Invalid --tonemap value"), std::string::npos);
     EXPECT_EQ(source.find("options.tonemapSelection = ToneMapSelection::ACES"), std::string::npos);
 

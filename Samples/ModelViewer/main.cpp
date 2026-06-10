@@ -134,10 +134,16 @@ struct ModelViewerOptions
     bool displayGammaSet = false;
     bool cameraEV100Set = false;
     bool exposureCompensationSet = false;
+    bool bloomIntensitySet = false;
+    bool bloomThresholdSet = false;
+    bool bloomRadiusSet = false;
     float postExposure = 1.0f;
     float displayGamma = 2.2f;
     float cameraEV100 = 0.0f;
     float exposureCompensationEV = 0.0f;
+    float bloomIntensity = 0.0f;
+    float bloomThreshold = 1.0f;
+    float bloomRadius = 0.5f;
 };
 
 struct ProceduralIBLResources
@@ -218,6 +224,12 @@ namespace
             << "                       Set camera exposure compensation, range [-16.0, 16.0]\n"
             << "  --display-gamma <value>\n"
             << "                       Set tone mapping display gamma, range [0.1, 10.0]\n"
+            << "  --bloom-intensity <value>\n"
+            << "                       Set Bloom intensity, range [0.0, 16.0]\n"
+            << "  --bloom-threshold <value>\n"
+            << "                       Set HDR Bloom threshold, range [0.0, 64.0]\n"
+            << "  --bloom-radius <texels>\n"
+            << "                       Set Bloom sample radius in texels, range [0.0, 16.0]\n"
             << "  --expect-ibl-ready   Smoke mode fails unless texture IBL becomes ready\n"
             << "  --expect-skybox-ready Smoke mode fails unless SkyboxPass becomes ready\n"
             << "  --expect-shadow-ready Smoke mode fails unless directional shadow sampling is ready\n"
@@ -665,6 +677,45 @@ namespace
                 }
                 options.displayGamma = parsed;
                 options.displayGammaSet = true;
+            }
+            else if (arg == "--bloom-intensity")
+            {
+                const char* value = requireValue("--bloom-intensity");
+                float parsed = 0.0f;
+                if (!ParseFloat(value, parsed) || parsed < 0.0f || parsed > 16.0f)
+                {
+                    RVX_CORE_ERROR("Invalid --bloom-intensity value: {} (expected finite range [0.0, 16.0])",
+                                   value ? value : "");
+                    return false;
+                }
+                options.bloomIntensity = parsed;
+                options.bloomIntensitySet = true;
+            }
+            else if (arg == "--bloom-threshold")
+            {
+                const char* value = requireValue("--bloom-threshold");
+                float parsed = 0.0f;
+                if (!ParseFloat(value, parsed) || parsed < 0.0f || parsed > 64.0f)
+                {
+                    RVX_CORE_ERROR("Invalid --bloom-threshold value: {} (expected finite range [0.0, 64.0])",
+                                   value ? value : "");
+                    return false;
+                }
+                options.bloomThreshold = parsed;
+                options.bloomThresholdSet = true;
+            }
+            else if (arg == "--bloom-radius")
+            {
+                const char* value = requireValue("--bloom-radius");
+                float parsed = 0.0f;
+                if (!ParseFloat(value, parsed) || parsed < 0.0f || parsed > 16.0f)
+                {
+                    RVX_CORE_ERROR("Invalid --bloom-radius value: {} (expected finite range [0.0, 16.0])",
+                                   value ? value : "");
+                    return false;
+                }
+                options.bloomRadius = parsed;
+                options.bloomRadiusSet = true;
             }
             else if (arg == "--expect-ibl-ready")
             {
@@ -1879,7 +1930,8 @@ int main(int argc, char* argv[])
         const bool tonemapSet = TryGetToneMappingOperator(options.tonemapSelection, tonemapOperator);
         bool applyPostProcessSettings =
             tonemapSet || options.postExposureSet || options.cameraEV100Set ||
-            options.exposureCompensationSet || options.displayGammaSet;
+            options.exposureCompensationSet || options.displayGammaSet ||
+            options.bloomIntensitySet || options.bloomThresholdSet || options.bloomRadiusSet;
         if (applyPostProcessSettings)
         {
             PostProcessSettings postProcessSettings = sceneRenderer->GetPostProcessSettings();
@@ -1903,17 +1955,37 @@ int main(int argc, char* argv[])
             {
                 postProcessSettings.gamma = options.displayGamma;
             }
+            if (options.bloomIntensitySet || options.bloomThresholdSet || options.bloomRadiusSet)
+            {
+                postProcessSettings.enableBloom = true;
+                if (options.bloomIntensitySet)
+                {
+                    postProcessSettings.bloomIntensity = options.bloomIntensity;
+                }
+                if (options.bloomThresholdSet)
+                {
+                    postProcessSettings.bloomThreshold = options.bloomThreshold;
+                }
+                if (options.bloomRadiusSet)
+                {
+                    postProcessSettings.bloomRadius = options.bloomRadius;
+                }
+            }
             sceneRenderer->ApplyPostProcessSettings(postProcessSettings);
             const char* exposureModeName =
                 postProcessSettings.exposureMode == ToneMappingExposureMode::CameraEV100 ? "camera-ev100" : "manual";
             RVX_CORE_INFO("ModelViewer post-process toneMapping='{}', exposureMode='{}', manualExposure={:.3f}, "
-                          "cameraEV100={:.3f}, compensationEV={:.3f}, gamma={:.3f}",
+                          "cameraEV100={:.3f}, compensationEV={:.3f}, gamma={:.3f}, bloomIntensity={:.3f}, "
+                          "bloomThreshold={:.3f}, bloomRadius={:.3f}",
                           GetToneMapSelectionName(options.tonemapSelection),
                           exposureModeName,
                           postProcessSettings.exposure,
                           postProcessSettings.cameraEV100,
                           postProcessSettings.exposureCompensationEV,
-                          postProcessSettings.gamma);
+                          postProcessSettings.gamma,
+                          postProcessSettings.bloomIntensity,
+                          postProcessSettings.bloomThreshold,
+                          postProcessSettings.bloomRadius);
         }
 
         const ShadowPassConfig shadowConfig = MakeShadowQualityConfig(options.shadowQualityPreset);
@@ -1935,7 +2007,10 @@ int main(int argc, char* argv[])
             options.postExposureSet ||
             options.cameraEV100Set ||
             options.exposureCompensationSet ||
-            options.displayGammaSet)
+            options.displayGammaSet ||
+            options.bloomIntensitySet ||
+            options.bloomThresholdSet ||
+            options.bloomRadiusSet)
         {
             RVX_CORE_WARN("ModelViewer post-process settings could not be applied: SceneRenderer unavailable");
         }
