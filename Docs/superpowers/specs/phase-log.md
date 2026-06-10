@@ -5022,6 +5022,86 @@ git diff --check
 
 ---
 
+### R-SP: `RQ17 - Directional Shadow Poisson PCF Kernel`
+
+**Date:** 2026-06-11
+**Commit:** `e5a7539 feat(render): use poisson pcf for directional shadows`
+**Spark plan review agent:** Bernoulli (`019eb2ba-f88d-7631-8af3-9f32f285e6b3`, `gpt-5.5`, xhigh)
+**Spark code review agent:** Bernoulli (`019eb2ba-f88d-7631-8af3-9f32f285e6b3`, `gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-11-rq17-directional-shadow-poisson-pcf-plan.md`
+- Section: RQ17 scope, required tests, validation plan, Spark review
+- Lines checked: full stage document before implementation continuation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ16 Directional Shadow Caster Depth-Bias Pipeline (`3809a41`)
+- Evidence: RQ16 implementation and phase-log commits completed, Spark plan/code review PASS.
+
+**Approved scope:**
+
+- Replace directional shadow fixed 3x3 grid PCF with a deterministic 16-tap Poisson-disc kernel.
+- Preserve `DirectionalShadowParams.w` / `filterRadiusTexels` semantics and the zero/tiny-radius single-compare fallback.
+- Continue averaging only valid shadow-map UV taps.
+- Add source guards requiring the Poisson kernel and rejecting the old nested 3x3 loops.
+- Update the single shadow visual golden only after inspecting the intended edge-only diff.
+
+**Out of scope:**
+
+- PCSS, contact shadows, random/temporal rotation, shadow map atlas/resource changes, descriptor/layout changes,
+  ViewConstants changes, CSM split/fade changes, or caster/receiver bias semantic changes.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-11-rq17-directional-shadow-poisson-pcf-plan.md`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/Golden/ModelViewer/RQ3d_Shadow_DX11_320x180.ppm`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 68/68 `PipelineCacheValidation` tests passed.
+- Visual gate: PASS, 9/9 selected visual tests passed after updating the inspected shadow golden.
+- Golden update: `RQ3d_Shadow_DX11_320x180.ppm` updated; actual/diff inspection showed the change was limited to the intended shadow edge region.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerShadowSmoke`,
+  `ShadowVisualGoldenValidation`, `ImageCompareValidation`.
+- Visual inspection: expected/actual/diff for `RQ3d_Shadow_DX11_320x180.ppm`; temporary BMP conversion artifacts were removed from the source tree.
+- Diffs: RQ17 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none. Non-blocking suggestions were incorporated into the plan before implementation:
+  fixed 16 taps, unit-disc offsets multiplied by existing filter step, and source guard for the tiny-radius fallback.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Notes / follow-ups:**
+
+- RQ17 improves deterministic shadow-edge quality without changing shadow resources or CPU-side layout.
+- Later stages can address PCSS/contact shadows or temporal sampling after more shadow visual coverage exists.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
