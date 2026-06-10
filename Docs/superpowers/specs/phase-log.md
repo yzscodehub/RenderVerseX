@@ -5435,6 +5435,90 @@ git diff --check
 
 ---
 
+### R-SP: RQ22 - ModelViewer Tone Mapping Exposure/Gamma CLI
+
+**Date:** 2026-06-11
+**Commit:** `25e320d feat(samples): expose tonemap exposure controls`
+**Spark plan review agent:** Mill (`019eb337-0a0a-7a12-a030-d4969ed4c87a`, gpt-5.5 xhigh)
+**Spark code review agent:** Mill (`019eb337-0a0a-7a12-a030-d4969ed4c87a`, gpt-5.5 xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-11-rq22-modelviewer-tonemap-exposure-gamma-cli-plan.md`
+- Section: RQ22 full stage plan, §§1-11
+- Lines checked: full document before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ21 - ModelViewer Tone Mapping Operator CLI
+- Evidence: RQ21 implementation commit `84458e2`, phase-log commit `3689017`, focused and visual gates passed.
+
+**Approved scope:**
+
+- Add opt-in ModelViewer `--post-exposure <linear>` and `--display-gamma <value>`.
+- Parse finite full-token floats and reject invalid or out-of-range values visibly.
+- Apply explicit tonemap/exposure/gamma controls through one `SceneRenderer::ApplyPostProcessSettings()` path.
+- Leave default/no-flag behavior unchanged.
+- Add source guards, combined ACES/exposure/gamma smoke, and an expected-failure invalid parser check.
+
+**Out of scope:**
+
+- Default exposure/gamma/operator changes, golden recapture, auto exposure, camera EV, eye adaptation, color grading
+  controls, LUTs, shader math changes, or UI controls.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-11-rq22-modelviewer-tonemap-exposure-gamma-cli-plan.md`
+- `Samples/ModelViewer/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation"
+build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --model Tests\Fixtures\ModelViewer\R7Triangle.gltf --tonemap aces --post-exposure 1.25 --display-gamma 2.0 --backend dx11 --width 320 --height 180 --frames 4 --no-ibl --validation
+& build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --model Tests\Fixtures\ModelViewer\R7Triangle.gltf --post-exposure 1.0abc --backend dx11 --width 320 --height 180 --frames 1 --no-ibl --validation; if ($LASTEXITCODE -eq 0) { exit 1 } else { exit 0 }
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 72/72 `PipelineCacheValidation` tests passed.
+- Combined smoke: PASS; log confirmed `ModelViewer post-process toneMapping='aces', exposure=1.250, gamma=2.000`.
+- Invalid parser check: PASS; `--post-exposure 1.0abc` failed visibly with the expected range error.
+- Visual gate: PASS, 9/9 selected default visual tests passed.
+- Diff check: PASS, with CRLF warnings only.
+- Golden update: not needed; default visual output stayed stable.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerShadowSmoke`,
+  `ShadowVisualGoldenValidation`, `ImageCompareValidation`.
+- Runtime smoke: ModelViewer DX11 smoke with `--tonemap aces --post-exposure 1.25 --display-gamma 2.0`.
+- Diffs: RQ22 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Non-blocking guidance adopted: full-token float parsing, range text in help/errors, single post-process apply path,
+  and a combined effective settings log line.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Notes / follow-ups:**
+
+- This stage exposes manual tone mapping controls for inspection while keeping the default visual baseline unchanged.
+- Future work can add auto exposure/camera EV as an engine feature instead of another sample-only knob.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
