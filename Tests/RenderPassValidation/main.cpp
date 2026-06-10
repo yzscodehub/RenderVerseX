@@ -853,6 +853,22 @@ TEST_F(RenderPassValidationFixture, ShadowPassReportsSupportedWithDepthPipelineA
     EXPECT_FALSE(pass.GetUnsupportedReason().empty());
 }
 
+TEST_F(RenderPassValidationFixture, ShadowPassRejectsUnsupportedCascadeCounts)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    ShadowPassConfig config;
+    config.numCascades = RVX_MAX_DIRECTIONAL_SHADOW_CASCADES + 1;
+
+    ShadowPass pass;
+    pass.SetResources(&gpuResources, &pipelineCache);
+    pass.SetConfig(config);
+    pass.SetDirectionalLight(Vec3{0.0f, -1.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_NE(pass.GetUnsupportedReason().find("cascade"), std::string::npos);
+}
+
 TEST_F(RenderPassValidationFixture, ShadowPassDisabledDoesNotDeclareOrDrawCascadeResources)
 {
     ASSERT_NO_FATAL_FAILURE(Initialize());
@@ -923,15 +939,23 @@ TEST_F(RenderPassValidationFixture, ShadowPassSetupDeclaresCascadeDepthResources
 
     const auto& handles = pass.GetCascadeTextureHandles();
     ASSERT_EQ(handles.size(), static_cast<size_t>(3));
+    ASSERT_TRUE(pass.GetShadowMapTextureHandle().IsValid());
     EXPECT_EQ(pass.GetStats().configuredCascadeCount, 3u);
     EXPECT_EQ(pass.GetStats().declaredCascadeResourceCount, 3u);
 
-    for (const RGTextureHandle& handle : handles)
+    for (uint32 i = 0; i < static_cast<uint32>(handles.size()); ++i)
     {
+        const RGTextureHandle& handle = handles[i];
+        EXPECT_EQ(handle.index, pass.GetShadowMapTextureHandle().index);
+        EXPECT_TRUE(handle.hasSubresourceRange);
+        EXPECT_EQ(handle.subresourceRange.baseArrayLayer, i);
+        EXPECT_EQ(handle.subresourceRange.arrayLayerCount, 1u);
+        EXPECT_EQ(handle.subresourceRange.aspect, RHITextureAspect::Depth);
         const RHITextureDesc* desc = graph.GetTextureDesc(handle);
         ASSERT_NE(desc, nullptr);
         EXPECT_EQ(desc->width, 128u);
         EXPECT_EQ(desc->height, 128u);
+        EXPECT_EQ(desc->arraySize, 3u);
         EXPECT_EQ(desc->format, PipelineCache::GetDefaultDepthStencilFormat());
         EXPECT_TRUE(HasFlag(desc->usage, RHITextureUsage::DepthStencil));
     }
@@ -953,6 +977,46 @@ TEST_F(RenderPassValidationFixture, ShadowPassSetupDeclaresCascadeDepthResources
     EXPECT_EQ(stats.totalPasses, 1u);
     EXPECT_EQ(stats.culledPasses, 0u);
     EXPECT_EQ(stats.emptyPassUsageCount, 0u);
+}
+
+TEST_F(RenderPassValidationFixture, ShadowPassSingleCascadeStillDeclaresArrayCompatibleTexture)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+    view.aspectRatio = 1.0f;
+    view.fieldOfView = 1.0472f;
+    view.nearPlane = 0.1f;
+    view.farPlane = 100.0f;
+    view.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+    view.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    view.inverseViewMatrix = Mat4Identity();
+
+    ShadowPassConfig config;
+    config.numCascades = 1;
+    config.shadowMapSize = 64;
+
+    ShadowPass pass;
+    pass.SetResources(&gpuResources, &pipelineCache);
+    pass.SetRenderScene(&scene);
+    pass.SetConfig(config);
+    pass.SetDirectionalLight(Vec3{-0.4f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 2.0f);
+
+    pass.AddToGraph(graph, view);
+
+    ASSERT_TRUE(pass.GetShadowMapTextureHandle().IsValid());
+    const RHITextureDesc* desc = graph.GetTextureDesc(pass.GetShadowMapTextureHandle());
+    ASSERT_NE(desc, nullptr);
+    EXPECT_EQ(desc->arraySize, RVX_MIN_DIRECTIONAL_SHADOW_ARRAY_LAYERS);
+    ASSERT_EQ(pass.GetCascadeTextureHandles().size(), static_cast<size_t>(1));
+    EXPECT_EQ(pass.GetCascadeTextureHandles()[0].subresourceRange.baseArrayLayer, 0u);
+    EXPECT_EQ(pass.GetCascadeTextureHandles()[0].subresourceRange.aspect, RHITextureAspect::Depth);
 }
 
 TEST_F(RenderPassValidationFixture, ShadowPassExecuteResolvesCascadeViewsAndDrawsOnlyShadowCasters)
@@ -1001,11 +1065,15 @@ TEST_F(RenderPassValidationFixture, ShadowPassExecuteResolvesCascadeViewsAndDraw
     EXPECT_EQ(pass.GetStats().shadowCasterCount, 2u);
     EXPECT_EQ(pass.GetStats().drawCount, 2u);
     ASSERT_EQ(ctx.renderPasses.size(), static_cast<size_t>(2));
-    for (const RHIRenderPassDesc& renderPass : ctx.renderPasses)
+    for (uint32 i = 0; i < static_cast<uint32>(ctx.renderPasses.size()); ++i)
     {
+        const RHIRenderPassDesc& renderPass = ctx.renderPasses[i];
         EXPECT_EQ(renderPass.colorAttachmentCount, 0u);
         EXPECT_TRUE(renderPass.hasDepthStencil);
         ASSERT_NE(renderPass.depthStencilAttachment.view, nullptr);
+        EXPECT_EQ(renderPass.depthStencilAttachment.view->GetSubresourceRange().baseArrayLayer, i);
+        EXPECT_EQ(renderPass.depthStencilAttachment.view->GetSubresourceRange().arrayLayerCount, 1u);
+        EXPECT_EQ(renderPass.depthStencilAttachment.view->GetSubresourceRange().aspect, RHITextureAspect::Depth);
     }
 }
 
@@ -3170,7 +3238,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDurin
     view.inverseViewMatrix = Mat4Identity();
 
     ShadowPassConfig shadowConfig;
-    shadowConfig.numCascades = 1;
+    shadowConfig.numCascades = 3;
     shadowConfig.shadowMapSize = 64;
     shadowConfig.filterRadiusTexels = 2.0f;
     shadowConfig.normalBias = 0.0375f;
@@ -3221,7 +3289,32 @@ TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDurin
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w,
                     shadowConfig.filterRadiusTexels / static_cast<float>(shadowConfig.shadowMapSize));
     EXPECT_FLOAT_EQ(uploaded.directionalShadowReceiverParams.x, shadowConfig.normalBias);
-    EXPECT_FALSE(IsIdentityMatrix(uploaded.directionalShadowViewProjection));
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.w, 3.0f);
+    EXPECT_FALSE(IsIdentityMatrix(uploaded.directionalShadowViewProjections[0]));
+    EXPECT_FALSE(IsIdentityMatrix(uploaded.directionalShadowViewProjections[1]));
+    EXPECT_FALSE(IsIdentityMatrix(uploaded.directionalShadowViewProjections[2]));
+    const auto& cascades = shadowPass.GetCascades();
+    ASSERT_EQ(cascades.size(), static_cast<size_t>(3));
+    const float splitRange = view.farPlane - view.nearPlane;
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.x,
+                    view.nearPlane + cascades[0].splitDepth * splitRange);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.y,
+                    view.nearPlane + cascades[1].splitDepth * splitRange);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.z,
+                    view.nearPlane + cascades[2].splitDepth * splitRange);
+
+    const auto shadowSrvIt = std::find_if(device.createdTextureViewDescs.begin(),
+                                          device.createdTextureViewDescs.end(),
+                                          [](const RHITextureViewDesc& desc)
+                                          {
+                                              return desc.debugName &&
+                                                     std::string(desc.debugName) == "DirectionalShadowSRV";
+                                          });
+    ASSERT_NE(shadowSrvIt, device.createdTextureViewDescs.end());
+    EXPECT_EQ(shadowSrvIt->type, RHITextureViewType::ShaderResource);
+    EXPECT_EQ(shadowSrvIt->subresourceRange.baseArrayLayer, 0u);
+    EXPECT_EQ(shadowSrvIt->subresourceRange.arrayLayerCount, RVX_ALL_LAYERS);
+    EXPECT_EQ(shadowSrvIt->subresourceRange.aspect, RHITextureAspect::Depth);
 }
 
 TEST_F(RenderPassValidationFixture, OpaquePassReportsMissingShadowSRVWhenRequestedReadCannotResolveView)

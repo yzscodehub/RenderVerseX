@@ -9,6 +9,9 @@
 #include "Core/Types.h"
 #include "RHI/RHI.h"
 #include "Render/Graph/RenderGraph.h"
+#include "Render/Renderer/ShadowConstants.h"
+
+#include <array>
 
 namespace RVX
 {
@@ -84,6 +87,15 @@ namespace RVX
 
         /// Directional shadow matrix for the selected primary light and cascade 0
         Mat4 directionalShadowViewProjection = Mat4Identity();
+
+        /// Directional shadow matrices for active CSM cascades
+        std::array<Mat4, RVX_MAX_DIRECTIONAL_SHADOW_CASCADES> directionalShadowViewProjections{};
+
+        /// Absolute camera-forward split distances for active CSM cascades
+        Vec4 directionalShadowCascadeSplits{0.0f, 0.0f, 0.0f, 0.0f};
+
+        /// Number of active CSM cascades in directionalShadowViewProjections
+        uint32 directionalShadowCascadeCount = 0;
 
         /// Directional shadow depth bias for manual shadow compare
         float directionalShadowDepthBias = 0.005f;

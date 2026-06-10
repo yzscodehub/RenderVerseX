@@ -1,6 +1,7 @@
 #include "Core/Core.h"
 #include "RHI/RHI.h"
 #include "Common/GpuTestUtils.h"
+#include "DX12Resources.h"
 
 #include <gtest/gtest.h>
 
@@ -193,6 +194,39 @@ TEST(DX12Validation, TextureViewRolesAndStorageTextureBinding)
     RHIDescriptorSetDesc invalidInitialSetDesc;
     invalidInitialSetDesc.SetLayout(layout.Get()).BindTexture(0, storageSRV.Get());
     EXPECT_EQ(nullptr, device->CreateDescriptorSet(invalidInitialSetDesc).Get());
+}
+
+TEST(DX12Validation, Texture2DArrayLayerViewsCreateNativeDescriptors)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    auto depthArrayDesc = RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT);
+    depthArrayDesc.arraySize = 3;
+    depthArrayDesc.debugName = "TestDepthArray";
+    auto depthArray = device->CreateTexture(depthArrayDesc);
+    ASSERT_NE(nullptr, depthArray.Get());
+
+    RHITextureViewDesc dsvDesc;
+    dsvDesc.format = RHIFormat::D32_FLOAT;
+    dsvDesc.type = RHITextureViewType::DepthStencil;
+    dsvDesc.subresourceRange = RHISubresourceRange{0, 1, 2, 1, RHITextureAspect::Depth};
+    auto dsv = device->CreateTextureView(depthArray.Get(), dsvDesc);
+    ASSERT_NE(nullptr, dsv.Get());
+
+    auto* dx12Dsv = dynamic_cast<DX12TextureView*>(dsv.Get());
+    ASSERT_NE(nullptr, dx12Dsv);
+    EXPECT_TRUE(dx12Dsv->GetDSVHandle().IsValid());
+
+    RHITextureViewDesc srvDesc = dsvDesc;
+    srvDesc.type = RHITextureViewType::ShaderResource;
+    auto srv = device->CreateTextureView(depthArray.Get(), srvDesc);
+    ASSERT_NE(nullptr, srv.Get());
+
+    auto* dx12Srv = dynamic_cast<DX12TextureView*>(srv.Get());
+    ASSERT_NE(nullptr, dx12Srv);
+    EXPECT_TRUE(dx12Srv->GetSRVHandle().IsValid());
 }
 
 TEST(DX12Validation, Sampler)

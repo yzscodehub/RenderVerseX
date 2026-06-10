@@ -59,9 +59,13 @@ namespace
         void BeginEvent(const char*, uint32 = 0) override {}
         void EndEvent() override {}
         void SetMarker(const char*, uint32 = 0) override {}
-        void BufferBarrier(const RHIBufferBarrier&) override {}
-        void TextureBarrier(const RHITextureBarrier&) override {}
-        void Barriers(std::span<const RHIBufferBarrier>, std::span<const RHITextureBarrier>) override {}
+        void BufferBarrier(const RHIBufferBarrier& barrier) override { bufferBarriers.push_back(barrier); }
+        void TextureBarrier(const RHITextureBarrier& barrier) override { textureBarriers.push_back(barrier); }
+        void Barriers(std::span<const RHIBufferBarrier> buffers, std::span<const RHITextureBarrier> textures) override
+        {
+            bufferBarriers.insert(bufferBarriers.end(), buffers.begin(), buffers.end());
+            textureBarriers.insert(textureBarriers.end(), textures.begin(), textures.end());
+        }
         void BeginBarrier(const RHIBufferBarrier&) override {}
         void BeginBarrier(const RHITextureBarrier&) override {}
         void EndBarrier(const RHIBufferBarrier&) override {}
@@ -101,6 +105,9 @@ namespace
         void SetLineWidth(float) override {}
         void SignalFence(RHIFence*, uint64) override {}
         void WaitFence(RHIFence*, uint64) override {}
+
+        std::vector<RHIBufferBarrier> bufferBarriers;
+        std::vector<RHITextureBarrier> textureBarriers;
     };
 
     class FakeFence final : public RHIFence
@@ -118,6 +125,55 @@ namespace
 
     private:
         uint64 m_completedValue = 0;
+    };
+
+    class FakeDevice final : public IRHIDevice
+    {
+    public:
+        RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
+        {
+            return RHIBufferRef(new FakeBuffer(desc));
+        }
+
+        RHITextureRef CreateTexture(const RHITextureDesc& desc) override
+        {
+            return RHITextureRef(new FakeTexture(desc));
+        }
+
+        RHITextureViewRef CreateTextureView(RHITexture*, const RHITextureViewDesc& = {}) override { return {}; }
+        RHISamplerRef CreateSampler(const RHISamplerDesc&) override { return {}; }
+        RHIShaderRef CreateShader(const RHIShaderDesc&) override { return {}; }
+        RHIHeapRef CreateHeap(const RHIHeapDesc&) override { return {}; }
+        RHITextureRef CreatePlacedTexture(RHIHeap*, uint64, const RHITextureDesc&) override { return {}; }
+        RHIBufferRef CreatePlacedBuffer(RHIHeap*, uint64, const RHIBufferDesc&) override { return {}; }
+        MemoryRequirements GetTextureMemoryRequirements(const RHITextureDesc&) override { return {}; }
+        MemoryRequirements GetBufferMemoryRequirements(const RHIBufferDesc&) override { return {}; }
+        RHIDescriptorSetLayoutRef CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc&) override { return {}; }
+        RHIPipelineLayoutRef CreatePipelineLayout(const RHIPipelineLayoutDesc&) override { return {}; }
+        RHIPipelineRef CreateGraphicsPipeline(const RHIGraphicsPipelineDesc&) override { return {}; }
+        RHIPipelineRef CreateComputePipeline(const RHIComputePipelineDesc&) override { return {}; }
+        RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc&) override { return {}; }
+        RHIQueryPoolRef CreateQueryPool(const RHIQueryPoolDesc&) override { return {}; }
+        RHICommandContextRef CreateCommandContext(RHICommandQueueType) override { return {}; }
+        uint64 SubmitCommandContext(RHICommandContext*, RHIFence*) override { return 0; }
+        uint64 SubmitCommandContexts(std::span<RHICommandContext* const>, RHIFence*) override { return 0; }
+        RHISwapChainRef CreateSwapChain(const RHISwapChainDesc&) override { return {}; }
+        RHIFenceRef CreateFence(uint64 initialValue = 0) override { return RHIFenceRef(new FakeFence(initialValue)); }
+        void WaitForFence(RHIFence*, uint64) override {}
+        void WaitIdle() override {}
+        void BeginFrame() override {}
+        void EndFrame() override {}
+        uint32 GetCurrentFrameIndex() const override { return 0; }
+        RHIStagingBufferRef CreateStagingBuffer(const RHIStagingBufferDesc&) override { return {}; }
+        RHIRingBufferRef CreateRingBuffer(const RHIRingBufferDesc&) override { return {}; }
+        RHIMemoryStats GetMemoryStats() const override { return {}; }
+        void BeginResourceGroup(const char*) override {}
+        void EndResourceGroup() override {}
+        const RHICapabilities& GetCapabilities() const override { return m_capabilities; }
+        RHIBackendType GetBackendType() const override { return RHIBackendType::DX12; }
+
+    private:
+        RHICapabilities m_capabilities;
     };
 
     class LogEnvironment final : public ::testing::Environment
@@ -224,6 +280,88 @@ TEST(RenderGraphValidation, SinglePass)
 
     graph.SetExportState(texture, RHIResourceState::ShaderResource);
     graph.Compile();
+}
+
+TEST(RenderGraphValidation, DepthTextureArrayLayerWritesFullReadAndExportUseDepthAspect)
+{
+    FakeDevice device;
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureDesc shadowDesc = RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT);
+    shadowDesc.arraySize = 2;
+    shadowDesc.debugName = "DepthArrayForAspectValidation";
+    RGTextureHandle shadowArray = graph.CreateTexture(shadowDesc);
+
+    auto makeDepthLayer = [shadowArray](uint32 layer)
+    {
+        RGTextureHandle handle = shadowArray;
+        handle.hasSubresourceRange = true;
+        handle.subresourceRange = RHISubresourceRange{0, 1, layer, 1, RHITextureAspect::Depth};
+        return handle;
+    };
+
+    struct DepthLayerPassData
+    {
+        RGTextureHandle layer;
+    };
+    struct DepthReadPassData
+    {
+        RGTextureHandle shadowArray;
+    };
+
+    graph.AddPass<DepthLayerPassData>(
+        "WriteDepthLayer0",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, DepthLayerPassData& data)
+        {
+            data.layer = makeDepthLayer(0);
+            builder.SetDepthStencil(data.layer, true, false);
+        },
+        [](const DepthLayerPassData&, RHICommandContext&)
+        {
+        });
+
+    graph.AddPass<DepthLayerPassData>(
+        "WriteDepthLayer1",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, DepthLayerPassData& data)
+        {
+            data.layer = makeDepthLayer(1);
+            builder.SetDepthStencil(data.layer, true, false);
+        },
+        [](const DepthLayerPassData&, RHICommandContext&)
+        {
+        });
+
+    graph.AddPass<DepthReadPassData>(
+        "ReadFullDepthArray",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, DepthReadPassData& data)
+        {
+            data.shadowArray = shadowArray;
+            data.shadowArray.hasSubresourceRange = true;
+            data.shadowArray.subresourceRange = RHISubresourceRange{0, RVX_ALL_MIPS, 0, RVX_ALL_LAYERS, RHITextureAspect::Depth};
+            builder.Read(data.shadowArray, RHIShaderStage::Pixel);
+        },
+        [](const DepthReadPassData&, RHICommandContext&)
+        {
+        });
+
+    graph.SetExportState(shadowArray, RHIResourceState::ShaderResource);
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.compileValid);
+
+    FakeCommandContext ctx;
+    graph.Execute(ctx);
+
+    ASSERT_FALSE(ctx.textureBarriers.empty());
+    for (const RHITextureBarrier& barrier : ctx.textureBarriers)
+    {
+        EXPECT_EQ(barrier.subresourceRange.aspect, RHITextureAspect::Depth);
+    }
 }
 
 struct MultiPassData

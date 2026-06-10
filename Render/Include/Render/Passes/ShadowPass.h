@@ -11,6 +11,7 @@
 
 #include "Render/Passes/IRenderPass.h"
 #include "Core/MathTypes.h"
+#include "Render/Renderer/ShadowConstants.h"
 
 #include <vector>
 
@@ -110,6 +111,7 @@ namespace RVX
          * @brief Get the shadow map texture (after execution)
          */
         RHITexture* GetShadowMap() const { return m_shadowMapTexture; }
+        RGTextureHandle GetShadowMapTextureHandle() const { return m_shadowMapTextureHandle; }
         const std::vector<RGTextureHandle>& GetCascadeTextureHandles() const { return m_cascadeTextureHandles; }
         const ShadowPassStats& GetStats() const { return m_stats; }
 
@@ -137,6 +139,7 @@ namespace RVX
         std::vector<ShadowCascade> m_cascades;
 
         // Shadow map resources
+        RGTextureHandle m_shadowMapTextureHandle;
         RHITexture* m_shadowMapTexture = nullptr;
         std::vector<RGTextureHandle> m_cascadeTextureHandles;
         std::vector<RHITextureView*> m_cascadeViews;

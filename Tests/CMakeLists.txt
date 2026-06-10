@@ -109,7 +109,9 @@ if(RVX_ENABLE_DX12)
             RVX::RHI
             ${RVX_ALL_BACKENDS}
             glfw
-        INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
+        INCLUDES
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/RHI_DX12/Private
         LABELS gpu
         TIMEOUT 120
     )
@@ -144,7 +146,9 @@ if(RVX_ENABLE_DX11)
             RVX::ShaderCompiler
             ${RVX_ALL_BACKENDS}
             glfw
-        INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
+        INCLUDES
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/RHI_DX11/Private
         LABELS gpu
         TIMEOUT 120
     )

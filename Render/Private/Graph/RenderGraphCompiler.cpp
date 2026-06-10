@@ -15,6 +15,18 @@ namespace RVX
                    range.arrayLayerCount == RVX_ALL_LAYERS;
         }
 
+        RHITextureAspect GetDefaultTextureAspect(const RHITextureDesc& desc)
+        {
+            return IsDepthFormat(desc.format) ? RHITextureAspect::Depth : RHITextureAspect::Color;
+        }
+
+        RHISubresourceRange AllSubresourcesForTexture(const RHITextureDesc& desc)
+        {
+            RHISubresourceRange range = RHISubresourceRange::All();
+            range.aspect = GetDefaultTextureAspect(desc);
+            return range;
+        }
+
         void ResolveSubresourceRange(
             const RHISubresourceRange& range,
             const TextureResource& resource,
@@ -222,6 +234,7 @@ namespace RVX
                     if (IsAllRange(barrier.subresourceRange))
                     {
                         last.subresourceRange = RHISubresourceRange::All();
+                        last.subresourceRange.aspect = barrier.subresourceRange.aspect;
                         continue;
                     }
 
@@ -1417,7 +1430,9 @@ namespace RVX
                     if (!resource.GetTexture())
                         continue;
 
-                    RHISubresourceRange range = usage.hasSubresourceRange ? usage.subresourceRange : RHISubresourceRange::All();
+                    RHISubresourceRange range = usage.hasSubresourceRange
+                                                    ? usage.subresourceRange
+                                                    : AllSubresourcesForTexture(resource.desc);
                     bool rangeIsAll = IsAllSubresourceRange(range);
 
                     if (resource.hasSubresourceTracking || !rangeIsAll)
@@ -1458,7 +1473,10 @@ namespace RVX
                     else if (resource.currentState != usage.desiredState)
                     {
                         pass.textureBarriers.push_back(
-                            {resource.GetTexture(), resource.currentState, usage.desiredState, RHISubresourceRange::All()});
+                            {resource.GetTexture(),
+                             resource.currentState,
+                             usage.desiredState,
+                             AllSubresourcesForTexture(resource.desc)});
                         resource.currentState = usage.desiredState;
                     }
                 }

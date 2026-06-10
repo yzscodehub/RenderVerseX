@@ -807,6 +807,8 @@ void SceneRenderer::PreparePassesForFrame()
     m_viewData.directionalLightDirection = Vec3{0.5f, -0.8f, 0.3f};
     m_viewData.directionalLightIntensity = 4.0f;
     m_viewData.directionalShadowEnabled = 0;
+    m_viewData.directionalShadowCascadeCount = 0;
+    m_viewData.directionalShadowCascadeSplits = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
     m_viewData.directionalShadowViewProjection = Mat4Identity();
     m_viewData.directionalShadowInvMapSize = 0.0f;
     m_viewData.directionalShadowFilterRadiusTexels = 1.0f;

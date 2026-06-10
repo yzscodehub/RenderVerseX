@@ -162,6 +162,12 @@ bool ShadowPass::IsSupported() const
         return false;
     }
 
+    if (m_config.numCascades > RVX_MAX_DIRECTIONAL_SHADOW_CASCADES)
+    {
+        m_unsupportedReason = "ShadowPass exceeds the supported directional cascade count";
+        return false;
+    }
+
     if (m_config.shadowMapSize == 0)
     {
         m_unsupportedReason = "ShadowPass requires a non-zero shadow map size";
@@ -229,6 +235,7 @@ void ShadowPass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         return;
 
     m_stats = {};
+    m_shadowMapTextureHandle = {};
     m_shadowMapTexture = nullptr;
     m_cascadeTextureHandles.clear();
     m_cascadeViews.clear();
@@ -245,17 +252,23 @@ void ShadowPass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 
     const RHIFormat depthFormat = m_pipelineCache ? m_pipelineCache->GetConfig().depthStencilFormat
                                                   : PipelineCache::GetDefaultDepthStencilFormat();
+    RHITextureDesc shadowDesc = RHITextureDesc::DepthStencil(m_config.shadowMapSize,
+                                                             m_config.shadowMapSize,
+                                                             depthFormat);
+    shadowDesc.arraySize = std::max(RVX_MIN_DIRECTIONAL_SHADOW_ARRAY_LAYERS,
+                                    static_cast<uint32>(m_cascades.size()));
+    shadowDesc.debugName = "DirectionalShadowCascadeArray";
+
+    m_shadowMapTextureHandle = view.renderGraph->CreateTexture(shadowDesc);
+    view.renderGraph->SetExportState(m_shadowMapTextureHandle, RHIResourceState::ShaderResource);
+
     for (uint32_t i = 0; i < static_cast<uint32_t>(m_cascades.size()); ++i)
     {
-        RHITextureDesc shadowDesc = RHITextureDesc::DepthStencil(m_config.shadowMapSize,
-                                                                 m_config.shadowMapSize,
-                                                                 depthFormat);
-        shadowDesc.debugName = "ShadowCascadeDepth";
-
-        RGTextureHandle shadowMap = view.renderGraph->CreateTexture(shadowDesc);
-        view.renderGraph->SetExportState(shadowMap, RHIResourceState::ShaderResource);
-        builder.SetDepthStencil(shadowMap, true, false);
-        m_cascadeTextureHandles.push_back(shadowMap);
+        RGTextureHandle shadowLayer = m_shadowMapTextureHandle;
+        shadowLayer.hasSubresourceRange = true;
+        shadowLayer.subresourceRange = RHISubresourceRange{0, 1, i, 1, RHITextureAspect::Depth};
+        builder.SetDepthStencil(shadowLayer, true, false);
+        m_cascadeTextureHandles.push_back(shadowLayer);
     }
 
     m_stats.declaredCascadeResourceCount = static_cast<uint32_t>(m_cascadeTextureHandles.size());
@@ -319,7 +332,14 @@ bool ShadowPass::ResolveCascadeViews(const ViewData& view)
         if (!texture)
             continue;
 
-        RHITextureView* viewHandle = view.viewCache->GetDefaultDSV(texture);
+        RHITextureViewDesc viewDesc;
+        viewDesc.format = texture->GetFormat();
+        viewDesc.dimension = texture->GetDimension();
+        viewDesc.subresourceRange = RHISubresourceRange{0, 1, i, 1, RHITextureAspect::Depth};
+        viewDesc.type = RHITextureViewType::DepthStencil;
+        viewDesc.debugName = "ShadowCascadeLayerDSV";
+
+        RHITextureView* viewHandle = view.viewCache->GetTextureView(texture, viewDesc);
         if (!viewHandle)
             continue;
 

@@ -14,6 +14,7 @@
 #include "Core/Assert.h"
 #include "Core/MathTypes.h"
 #include "Render/Material/MaterialClassification.h"
+#include "Render/Renderer/ShadowConstants.h"
 #include "RHI/RHI.h"
 
 #include <array>
@@ -44,9 +45,11 @@ namespace RVX
         Vec4 iblDiffuseAmbient;
         Vec4 iblSpecularAmbient;
         Vec4 iblTextureParams;
-        Mat4 directionalShadowViewProjection;
+        Vec4 cameraForwardAndShadowCascadeCount;
+        std::array<Mat4, RVX_MAX_DIRECTIONAL_SHADOW_CASCADES> directionalShadowViewProjections;
         Vec4 directionalShadowParams;
         Vec4 directionalShadowReceiverParams;
+        Vec4 directionalShadowCascadeSplits;
     };
 
     enum class DirectionalShadowFallbackReason : uint8

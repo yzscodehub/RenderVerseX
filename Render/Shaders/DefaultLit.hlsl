@@ -40,9 +40,11 @@ cbuffer ViewConstants : register(b0, space0)
     float4 IBLDiffuseAmbient;   // rgb: color, a: diffuse intensity
     float4 IBLSpecularAmbient;  // rgb: color, a: specular intensity
     float4 IBLTextureParams;    // x: enabled, y: prefiltered mip count, z: intensity, w: ambient floor intensity
-    float4x4 DirectionalShadowViewProjection;
+    float4 CameraForwardAndShadowCascadeCount; // xyz: camera forward, w: active cascade count
+    float4x4 DirectionalShadowViewProjections[4];
     float4 DirectionalShadowParams; // x: enabled, y: depth bias, z: strength, w: UV-space PCF filter step
     float4 DirectionalShadowReceiverParams; // x: receiver normal bias in world units
+    float4 DirectionalShadowCascadeSplits; // absolute camera-forward split distances
 };
 
 cbuffer ObjectConstants : register(b0, space1)
@@ -77,7 +79,7 @@ SamplerState MaterialSampler : register(s6, space2);
 TextureCube IrradianceTexture : register(t7, space2);
 TextureCube PrefilteredEnvironmentTexture : register(t8, space2);
 Texture2D BRDFLUTTexture : register(t9, space2);
-Texture2D<float> DirectionalShadowMapTexture : register(t1, space0);
+Texture2DArray<float> DirectionalShadowMapTexture : register(t1, space0);
 SamplerState DirectionalShadowSampler : register(s2, space0);
 
 // =============================================================================
@@ -145,18 +147,40 @@ float3 SampleNormalMap(float2 uv, float3 worldNormal, float4 worldTangent)
     return SafeNormalize(mul(tangentNormal, tbn), n);
 }
 
-float CompareDirectionalShadowDepth(float2 uv, float compareDepth)
+int SelectDirectionalShadowCascade(float3 worldPos)
 {
-    float storedDepth = DirectionalShadowMapTexture.SampleLevel(DirectionalShadowSampler, uv, 0).r;
+    int cascadeCount = (int)clamp(round(CameraForwardAndShadowCascadeCount.w), 1.0, 4.0);
+    float3 cameraForward = SafeNormalize(CameraForwardAndShadowCascadeCount.xyz, float3(0.0, 0.0, -1.0));
+    float viewDepth = dot(worldPos - CameraPosition, cameraForward);
+    int cascadeIndex = 0;
+
+    [unroll]
+    for (int i = 0; i < 3; ++i)
+    {
+        if (i + 1 < cascadeCount && viewDepth > DirectionalShadowCascadeSplits[i])
+        {
+            cascadeIndex = i + 1;
+        }
+    }
+
+    return cascadeIndex;
+}
+
+float CompareDirectionalShadowDepth(float2 uv, float compareDepth, int cascadeIndex)
+{
+    float storedDepth = DirectionalShadowMapTexture.SampleLevel(
+        DirectionalShadowSampler,
+        float3(uv, (float)cascadeIndex),
+        0).r;
     return compareDepth <= storedDepth ? 1.0 : 0.0;
 }
 
-float SampleDirectionalShadowPCF(float2 shadowUV, float compareDepth, float filterStep)
+float SampleDirectionalShadowPCF(float2 shadowUV, float compareDepth, float filterStep, int cascadeIndex)
 {
     float filterStepUv = max(filterStep, 0.0);
     if (filterStepUv <= 1.0e-7)
     {
-        return CompareDirectionalShadowDepth(shadowUV, compareDepth);
+        return CompareDirectionalShadowDepth(shadowUV, compareDepth, cascadeIndex);
     }
 
     float visibility = 0.0;
@@ -171,7 +195,7 @@ float SampleDirectionalShadowPCF(float2 shadowUV, float compareDepth, float filt
             float2 tapUV = shadowUV + float2((float)x, (float)y) * filterStepUv;
             if (!any(tapUV < 0.0) && !any(tapUV > 1.0))
             {
-                visibility += CompareDirectionalShadowDepth(tapUV, compareDepth);
+                visibility += CompareDirectionalShadowDepth(tapUV, compareDepth, cascadeIndex);
                 tapCount += 1.0;
             }
         }
@@ -190,7 +214,8 @@ float SampleDirectionalShadow(float3 worldPos, float3 worldNormal)
     float3 receiverNormal = SafeNormalize(worldNormal, float3(0.0, 1.0, 0.0));
     float normalBias = max(DirectionalShadowReceiverParams.x, 0.0);
     float3 biasedWorldPos = worldPos + receiverNormal * normalBias;
-    float4 shadowClip = mul(DirectionalShadowViewProjection, float4(biasedWorldPos, 1.0));
+    int cascadeIndex = SelectDirectionalShadowCascade(worldPos);
+    float4 shadowClip = mul(DirectionalShadowViewProjections[cascadeIndex], float4(biasedWorldPos, 1.0));
     if (abs(shadowClip.w) <= 1.0e-6)
     {
         return 1.0;
@@ -204,7 +229,7 @@ float SampleDirectionalShadow(float3 worldPos, float3 worldNormal)
     }
 
     float compareDepth = shadowNdc.z - max(DirectionalShadowParams.y, 0.0);
-    float lit = SampleDirectionalShadowPCF(shadowUV, compareDepth, DirectionalShadowParams.w);
+    float lit = SampleDirectionalShadowPCF(shadowUV, compareDepth, DirectionalShadowParams.w, cascadeIndex);
     return lerp(1.0 - saturate(DirectionalShadowParams.z), 1.0, lit);
 }
 

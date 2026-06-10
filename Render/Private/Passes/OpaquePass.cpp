@@ -124,10 +124,12 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 
     if (m_shadowPass && m_shadowPass->IsEnabled())
     {
-        const auto& handles = m_shadowPass->GetCascadeTextureHandles();
-        if (!handles.empty() && handles[0].IsValid())
+        RGTextureHandle shadowMap = m_shadowPass->GetShadowMapTextureHandle();
+        if (shadowMap.IsValid())
         {
-            m_directionalShadowReadHandle = builder.Read(handles[0], RHIShaderStage::Pixel);
+            shadowMap.hasSubresourceRange = true;
+            shadowMap.subresourceRange = RHISubresourceRange{0, RVX_ALL_MIPS, 0, RVX_ALL_LAYERS, RHITextureAspect::Depth};
+            m_directionalShadowReadHandle = builder.Read(shadowMap, RHIShaderStage::Pixel);
             m_shadowStats.requested = true;
             m_shadowStats.renderGraphReadDeclared = true;
         }
@@ -202,8 +204,21 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         RHITextureView* shadowView = shadowTexture ? view.viewCache->GetTextureView(shadowTexture, shadowViewDesc)
                                                    : nullptr;
         const ShadowPassConfig& shadowConfig = m_shadowPass->GetConfig();
+        const auto& cascades = m_shadowPass->GetCascades();
+        const uint32 cascadeCount = std::min(static_cast<uint32>(cascades.size()),
+                                             RVX_MAX_DIRECTIONAL_SHADOW_CASCADES);
+        const float nearClip = std::max(0.001f, view.nearPlane);
+        const float farClip = std::max(nearClip + 1.0f, view.farPlane);
+        const float clipRange = farClip - nearClip;
         drawView.directionalShadowEnabled = shadowView ? 1 : 0;
-        drawView.directionalShadowViewProjection = m_shadowPass->GetCascades()[0].viewProjection;
+        drawView.directionalShadowCascadeCount = shadowView ? cascadeCount : 0;
+        drawView.directionalShadowCascadeSplits = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        for (uint32 i = 0; i < cascadeCount; ++i)
+        {
+            drawView.directionalShadowViewProjections[i] = cascades[i].viewProjection;
+            drawView.directionalShadowCascadeSplits[i] = nearClip + cascades[i].splitDepth * clipRange;
+        }
+        drawView.directionalShadowViewProjection = cascadeCount > 0 ? cascades[0].viewProjection : Mat4Identity();
         drawView.directionalShadowDepthBias = shadowConfig.shadowBias;
         drawView.directionalShadowStrength = 1.0f;
         drawView.directionalShadowInvMapSize = shadowConfig.shadowMapSize > 0
@@ -217,6 +232,7 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     else
     {
         drawView.directionalShadowEnabled = 0;
+        drawView.directionalShadowCascadeCount = 0;
     }
 
     const DirectionalShadowFrameBindingResult shadowBinding =

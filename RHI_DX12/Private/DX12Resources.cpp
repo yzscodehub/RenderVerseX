@@ -12,6 +12,12 @@ namespace RVX
         {
             return (size + 255ull) & ~255ull;
         }
+
+        bool IsTexture2DArrayViewRequired(const RHITexture& texture)
+        {
+            return texture.GetDimension() == RHITextureDimension::Texture2D &&
+                   GetTexturePhysicalLayerCount(texture) > 1;
+        }
     } // namespace
 
     // =============================================================================
@@ -725,7 +731,20 @@ namespace RVX
                     }
                     break;
                 case RHITextureDimension::Texture2D:
-                    if (arrayLayerCount > 1)
+                    if (static_cast<uint32>(texture->GetSampleCount()) > 1)
+                    {
+                        if (IsTexture2DArrayViewRequired(*texture))
+                        {
+                            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
+                            srvDesc.Texture2DMSArray.FirstArraySlice = desc.subresourceRange.baseArrayLayer;
+                            srvDesc.Texture2DMSArray.ArraySize = arrayLayerCount;
+                        }
+                        else
+                        {
+                            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+                        }
+                    }
+                    else if (IsTexture2DArrayViewRequired(*texture))
                     {
                         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
                         srvDesc.Texture2DArray.MostDetailedMip = desc.subresourceRange.baseMipLevel;
@@ -757,7 +776,22 @@ namespace RVX
             D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
             rtvDesc.Format = dxgiFormat;
             
-            if (arrayLayerCount > 1 || texture->GetDimension() == RHITextureDimension::TextureCube)
+            const bool useTextureArrayView = texture->GetDimension() == RHITextureDimension::TextureCube ||
+                                             IsTexture2DArrayViewRequired(*texture);
+            if (static_cast<uint32>(texture->GetSampleCount()) > 1)
+            {
+                if (useTextureArrayView)
+                {
+                    rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY;
+                    rtvDesc.Texture2DMSArray.FirstArraySlice = desc.subresourceRange.baseArrayLayer;
+                    rtvDesc.Texture2DMSArray.ArraySize = arrayLayerCount;
+                }
+                else
+                {
+                    rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMS;
+                }
+            }
+            else if (useTextureArrayView)
             {
                 rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
                 rtvDesc.Texture2DArray.MipSlice = desc.subresourceRange.baseMipLevel;
@@ -788,9 +822,26 @@ namespace RVX
             dsvDesc.Format = dxgiFormat;
             dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
 
+            const bool useTextureArrayView = IsTexture2DArrayViewRequired(*texture);
             if (static_cast<uint32>(texture->GetSampleCount()) > 1)
             {
-                dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMS;
+                if (useTextureArrayView)
+                {
+                    dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMSARRAY;
+                    dsvDesc.Texture2DMSArray.FirstArraySlice = desc.subresourceRange.baseArrayLayer;
+                    dsvDesc.Texture2DMSArray.ArraySize = arrayLayerCount;
+                }
+                else
+                {
+                    dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMS;
+                }
+            }
+            else if (useTextureArrayView)
+            {
+                dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+                dsvDesc.Texture2DArray.MipSlice = desc.subresourceRange.baseMipLevel;
+                dsvDesc.Texture2DArray.FirstArraySlice = desc.subresourceRange.baseArrayLayer;
+                dsvDesc.Texture2DArray.ArraySize = arrayLayerCount;
             }
             else
             {
@@ -808,7 +859,7 @@ namespace RVX
             D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
             uavDesc.Format = dxgiFormat;
 
-            if (arrayLayerCount > 1 || texture->GetDimension() == RHITextureDimension::TextureCube)
+            if (texture->GetDimension() == RHITextureDimension::TextureCube || IsTexture2DArrayViewRequired(*texture))
             {
                 uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
                 uavDesc.Texture2DArray.MipSlice = desc.subresourceRange.baseMipLevel;

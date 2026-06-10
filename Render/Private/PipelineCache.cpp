@@ -1811,6 +1811,7 @@ bool PipelineCache::EnsureFrameShadowFallbackResources()
     if (!m_fallbackDirectionalShadowTexture)
     {
         RHITextureDesc textureDesc = RHITextureDesc::Texture2D(1, 1, RHIFormat::R32_FLOAT);
+        textureDesc.arraySize = RVX_MAX_DIRECTIONAL_SHADOW_CASCADES;
         textureDesc.debugName = "FallbackDirectionalShadowMap";
         m_fallbackDirectionalShadowTexture = m_device->CreateTexture(textureDesc);
         if (!m_fallbackDirectionalShadowTexture)
@@ -2880,13 +2881,14 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
     if (!m_viewConstantBuffer)
         return;
 
-    ViewConstants constants;
+    ViewConstants constants{};
     const RHIBackendType backend = m_device ? m_device->GetBackendType() : RHIBackendType::None;
     constants.viewProjection = ApplyBackendClipConvention(view.viewProjectionMatrix, backend);
 
     constants.cameraPosition = view.cameraPosition;
     constants.time = view.time;
     constants.lightDirection = NormalizeOr(view.directionalLightDirection, Vec3(0.5f, -0.8f, 0.3f));
+    const Vec3 cameraForward = NormalizeOr(view.cameraForward, Vec3(0.0f, 0.0f, -1.0f));
     constants.directionalLightIntensity = ClampFiniteNonNegative(view.directionalLightIntensity, 4.0f);
     const bool iblAmbientEnabled = view.iblAmbientEnabled != 0;
     const float iblDiffuseIntensity = iblAmbientEnabled ? view.iblDiffuseIntensity : 0.0f;
@@ -2898,9 +2900,29 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
         static_cast<float>(std::max(1u, view.textureIBLPrefilteredMipLevels)),
         view.textureIBLIntensity,
         ClampFiniteNonNegative(view.ambientFloorIntensity, 0.08f));
-    constants.directionalShadowViewProjection =
-        ApplyBackendClipConvention(view.directionalShadowViewProjection, backend);
+    uint32 shadowCascadeCount = view.directionalShadowEnabled != 0 ? view.directionalShadowCascadeCount : 0;
+    if (view.directionalShadowEnabled != 0 && shadowCascadeCount == 0)
+    {
+        shadowCascadeCount = 1;
+    }
+    shadowCascadeCount = std::min(shadowCascadeCount, RVX_MAX_DIRECTIONAL_SHADOW_CASCADES);
+
+    constants.cameraForwardAndShadowCascadeCount =
+        Vec4(cameraForward, static_cast<float>(shadowCascadeCount));
+    for (uint32 i = 0; i < RVX_MAX_DIRECTIONAL_SHADOW_CASCADES; ++i)
+    {
+        const Mat4& sourceMatrix = view.directionalShadowCascadeCount > 0
+                                       ? view.directionalShadowViewProjections[i]
+                                       : (i == 0 ? view.directionalShadowViewProjection : Mat4Identity());
+        constants.directionalShadowViewProjections[i] = ApplyBackendClipConvention(sourceMatrix, backend);
+    }
+    constants.directionalShadowCascadeSplits = Vec4(
+        ClampFiniteNonNegative(view.directionalShadowCascadeSplits.x, 0.0f),
+        ClampFiniteNonNegative(view.directionalShadowCascadeSplits.y, 0.0f),
+        ClampFiniteNonNegative(view.directionalShadowCascadeSplits.z, 0.0f),
+        ClampFiniteNonNegative(view.directionalShadowCascadeSplits.w, 0.0f));
     const bool directionalShadowEnabled = view.directionalShadowEnabled != 0 &&
+                                          shadowCascadeCount > 0 &&
                                           !m_config.reverseZ;
     const float shadowInvMapSize = ClampFiniteNonNegative(view.directionalShadowInvMapSize, 0.0f);
     const float shadowFilterRadiusTexels =

@@ -5,6 +5,21 @@
 
 namespace RVX
 {
+    namespace
+    {
+        RHITextureAspect GetDefaultTextureAspect(const RHITextureDesc& desc)
+        {
+            return IsDepthFormat(desc.format) ? RHITextureAspect::Depth : RHITextureAspect::Color;
+        }
+
+        RHISubresourceRange AllSubresourcesForTexture(const RHITextureDesc& desc)
+        {
+            RHISubresourceRange range = RHISubresourceRange::All();
+            range.aspect = GetDefaultTextureAspect(desc);
+            return range;
+        }
+    } // namespace
+
     void ExecuteRenderGraph(RenderGraphImpl& graph, RHICommandContext& ctx)
     {
         if (!graph.stats.compileValid)
@@ -90,7 +105,7 @@ namespace RVX
                                 {resource.GetTexture(),
                                  current,
                                  desired,
-                                 RHISubresourceRange{mip, 1, layer, 1, RHITextureAspect::Color}});
+                                 RHISubresourceRange{mip, 1, layer, 1, GetDefaultTextureAspect(resource.desc)}});
                         }
                     }
                 }
@@ -101,7 +116,10 @@ namespace RVX
             else if (resource.currentState != desired)
             {
                 exportTextureBarriers.push_back(
-                    {resource.GetTexture(), resource.currentState, desired, RHISubresourceRange::All()});
+                    {resource.GetTexture(),
+                     resource.currentState,
+                     desired,
+                     AllSubresourcesForTexture(resource.desc)});
                 resource.currentState = desired;
             }
         }

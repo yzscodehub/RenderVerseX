@@ -5,6 +5,15 @@
 
 namespace RVX
 {
+    namespace
+    {
+        bool IsTexture2DArrayViewRequired(const RHITexture& texture)
+        {
+            return texture.GetDimension() == RHITextureDimension::Texture2D &&
+                   GetTexturePhysicalLayerCount(texture) > 1;
+        }
+    } // namespace
+
     // =============================================================================
     // DX11 Buffer Implementation
     // =============================================================================
@@ -697,7 +706,7 @@ namespace RVX
                 case RHITextureDimension::Texture2D:
                     if (texture->GetSampleCount() != RHISampleCount::Count1)
                     {
-                        if (arraySize > 1)
+                        if (IsTexture2DArrayViewRequired(*texture))
                         {
                             srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DMSARRAY;
                             srvDesc.Texture2DMSArray.FirstArraySlice = baseArray;
@@ -708,7 +717,7 @@ namespace RVX
                             srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DMS;
                         }
                     }
-                    else if (arraySize > 1)
+                    else if (IsTexture2DArrayViewRequired(*texture))
                     {
                         srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
                         srvDesc.Texture2DArray.MostDetailedMip = baseMip;
@@ -765,7 +774,7 @@ namespace RVX
             {
                 case RHITextureDimension::Texture2D:
                 case RHITextureDimension::TextureCube:
-                    if (arraySize > 1 || dimension == RHITextureDimension::TextureCube)
+                    if (dimension == RHITextureDimension::TextureCube || IsTexture2DArrayViewRequired(*texture))
                     {
                         rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
                         rtvDesc.Texture2DArray.MipSlice = baseMip;
@@ -802,7 +811,20 @@ namespace RVX
             switch (dimension)
             {
                 case RHITextureDimension::Texture2D:
-                    if (arraySize > 1)
+                    if (texture->GetSampleCount() != RHISampleCount::Count1)
+                    {
+                        if (IsTexture2DArrayViewRequired(*texture))
+                        {
+                            dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DMSARRAY;
+                            dsvDesc.Texture2DMSArray.FirstArraySlice = baseArray;
+                            dsvDesc.Texture2DMSArray.ArraySize = arraySize;
+                        }
+                        else
+                        {
+                            dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DMS;
+                        }
+                    }
+                    else if (IsTexture2DArrayViewRequired(*texture))
                     {
                         dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
                         dsvDesc.Texture2DArray.MipSlice = baseMip;
@@ -836,7 +858,7 @@ namespace RVX
             {
                 case RHITextureDimension::Texture2D:
                 case RHITextureDimension::TextureCube:
-                    if (arraySize > 1 || dimension == RHITextureDimension::TextureCube)
+                    if (dimension == RHITextureDimension::TextureCube || IsTexture2DArrayViewRequired(*texture))
                     {
                         uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
                         uavDesc.Texture2DArray.MipSlice = baseMip;

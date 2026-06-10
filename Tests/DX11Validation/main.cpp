@@ -2,6 +2,7 @@
 #include "RHI/RHI.h"
 #include "Common/GpuTestUtils.h"
 #include "ShaderCompiler/ShaderCompiler.h"
+#include "DX11Resources.h"
 
 #include <gtest/gtest.h>
 
@@ -263,6 +264,49 @@ TEST(DX11Validation, TextureViewRolesAreExplicit)
     rtvDesc.type = RHITextureViewType::RenderTarget;
     auto rtv = device->CreateTextureView(renderTarget.Get(), rtvDesc);
     ASSERT_NE(nullptr, rtv.Get());
+}
+
+TEST(DX11Validation, Texture2DArrayLayerViewsPreserveArraySlice)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    auto depthArrayDesc = RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT);
+    depthArrayDesc.arraySize = 3;
+    depthArrayDesc.debugName = "TestDepthArray";
+    auto depthArray = device->CreateTexture(depthArrayDesc);
+    ASSERT_NE(nullptr, depthArray.Get());
+
+    RHITextureViewDesc dsvDesc;
+    dsvDesc.format = RHIFormat::D32_FLOAT;
+    dsvDesc.type = RHITextureViewType::DepthStencil;
+    dsvDesc.subresourceRange = RHISubresourceRange{0, 1, 2, 1, RHITextureAspect::Depth};
+    auto dsv = device->CreateTextureView(depthArray.Get(), dsvDesc);
+    ASSERT_NE(nullptr, dsv.Get());
+
+    auto* dx11Dsv = dynamic_cast<DX11TextureView*>(dsv.Get());
+    ASSERT_NE(nullptr, dx11Dsv);
+    ASSERT_NE(nullptr, dx11Dsv->GetDSV());
+    D3D11_DEPTH_STENCIL_VIEW_DESC nativeDsv = {};
+    dx11Dsv->GetDSV()->GetDesc(&nativeDsv);
+    EXPECT_EQ(nativeDsv.ViewDimension, D3D11_DSV_DIMENSION_TEXTURE2DARRAY);
+    EXPECT_EQ(nativeDsv.Texture2DArray.FirstArraySlice, 2u);
+    EXPECT_EQ(nativeDsv.Texture2DArray.ArraySize, 1u);
+
+    RHITextureViewDesc srvDesc = dsvDesc;
+    srvDesc.type = RHITextureViewType::ShaderResource;
+    auto srv = device->CreateTextureView(depthArray.Get(), srvDesc);
+    ASSERT_NE(nullptr, srv.Get());
+
+    auto* dx11Srv = dynamic_cast<DX11TextureView*>(srv.Get());
+    ASSERT_NE(nullptr, dx11Srv);
+    ASSERT_NE(nullptr, dx11Srv->GetSRV());
+    D3D11_SHADER_RESOURCE_VIEW_DESC nativeSrv = {};
+    dx11Srv->GetSRV()->GetDesc(&nativeSrv);
+    EXPECT_EQ(nativeSrv.ViewDimension, D3D11_SRV_DIMENSION_TEXTURE2DARRAY);
+    EXPECT_EQ(nativeSrv.Texture2DArray.FirstArraySlice, 2u);
+    EXPECT_EQ(nativeSrv.Texture2DArray.ArraySize, 1u);
 }
 
 TEST(DX11Validation, Sampler)

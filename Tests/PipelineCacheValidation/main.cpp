@@ -803,6 +803,11 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     const auto* fallbackShadowTexture = FindDescriptorBinding(frameSetDesc, 1);
     ASSERT_NE(fallbackShadowTexture, nullptr);
     EXPECT_NE(fallbackShadowTexture->textureView, nullptr);
+    ASSERT_NE(fallbackShadowTexture->textureView->GetTexture(), nullptr);
+    EXPECT_EQ(fallbackShadowTexture->textureView->GetTexture()->GetArraySize(),
+              RVX::RVX_MAX_DIRECTIONAL_SHADOW_CASCADES);
+    EXPECT_EQ(fallbackShadowTexture->textureView->GetSubresourceRange().arrayLayerCount,
+              RVX::RVX_ALL_LAYERS);
     const auto* fallbackShadowSampler = FindDescriptorBinding(frameSetDesc, 2);
     ASSERT_NE(fallbackShadowSampler, nullptr);
     EXPECT_NE(fallbackShadowSampler->sampler, nullptr);
@@ -885,10 +890,12 @@ TEST_F(PipelineCacheValidationFixture, ViewConstantsLayoutMatchesDefaultLitCBuff
     EXPECT_EQ(offsetof(RVX::ViewConstants, iblDiffuseAmbient), 96u);
     EXPECT_EQ(offsetof(RVX::ViewConstants, iblSpecularAmbient), 112u);
     EXPECT_EQ(offsetof(RVX::ViewConstants, iblTextureParams), 128u);
-    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowViewProjection), 144u);
-    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowParams), 208u);
-    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowReceiverParams), 224u);
-    EXPECT_EQ(sizeof(RVX::ViewConstants), 240u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, cameraForwardAndShadowCascadeCount), 144u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowViewProjections), 160u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowParams), 416u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowReceiverParams), 432u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowCascadeSplits), 448u);
+    EXPECT_EQ(sizeof(RVX::ViewConstants), 464u);
 }
 
 TEST_F(PipelineCacheValidationFixture, ObjectConstantsLayoutMatchesDefaultLitCBufferPacking)
@@ -1031,10 +1038,14 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDefaultIBLAmbie
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.y, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.z, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.08f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[0][0], 1.0f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[1][1], 1.0f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[2][2], 1.0f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[3][3], 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.x, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.y, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.z, -1.0f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.w, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][0][0], 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][1], 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][2][2], 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][3][3], 1.0f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 0.0f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.y, 0.005f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.z, 1.0f);
@@ -1143,11 +1154,18 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
 
     RVX::ViewData view;
     view.directionalShadowEnabled = 1;
-    view.directionalShadowViewProjection = RVX::Mat4Identity();
-    view.directionalShadowViewProjection[1][1] = 2.0f;
-    view.directionalShadowViewProjection[1][0] = 0.25f;
-    view.directionalShadowViewProjection[1][2] = -0.5f;
-    view.directionalShadowViewProjection[3][2] = 0.75f;
+    view.cameraForward = RVX::Vec3(0.0f, 0.0f, -4.0f);
+    view.directionalShadowCascadeCount = 3;
+    view.directionalShadowCascadeSplits = RVX::Vec4(8.0f, 42.0f, 100.0f, 0.0f);
+    view.directionalShadowViewProjections[0] = RVX::Mat4Identity();
+    view.directionalShadowViewProjections[0][1][1] = 2.0f;
+    view.directionalShadowViewProjections[0][1][0] = 0.25f;
+    view.directionalShadowViewProjections[0][1][2] = -0.5f;
+    view.directionalShadowViewProjections[0][3][2] = 0.75f;
+    view.directionalShadowViewProjections[1] = RVX::Mat4Identity();
+    view.directionalShadowViewProjections[1][0][0] = 3.0f;
+    view.directionalShadowViewProjections[2] = RVX::Mat4Identity();
+    view.directionalShadowViewProjections[2][2][2] = 4.0f;
     view.directionalShadowDepthBias = 0.0125f;
     view.directionalShadowStrength = 0.6f;
     view.directionalShadowInvMapSize = 1.0f / 512.0f;
@@ -1164,16 +1182,25 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
 
     RVX::ViewConstants uploaded{};
     std::memcpy(&uploaded, dxViewBuffer->GetStorage().data(), sizeof(uploaded));
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[1][0], 0.25f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[1][1], 2.0f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[1][2], -0.5f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[3][2], 0.75f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.x, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.y, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.z, -1.0f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.w, 3.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][0], 0.25f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][1], 2.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][2], -0.5f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][3][2], 0.75f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[1][0][0], 3.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[2][2][2], 4.0f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.y, 0.0125f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.z, 0.6f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w, 2.0f / 512.0f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowReceiverParams.x, 0.03125f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowReceiverParams.y, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.x, 8.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.y, 42.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.z, 100.0f);
 
     FakeDevice vkDevice(RVX::RHIBackendType::Vulkan);
     RVX::PipelineCache vkCache;
@@ -1183,12 +1210,13 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
     const FakeBuffer* vkViewBuffer = FindCapturedBuffer(vkDevice, "ViewConstantBuffer");
     ASSERT_NE(vkViewBuffer, nullptr);
     std::memcpy(&uploaded, vkViewBuffer->GetStorage().data(), sizeof(uploaded));
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[1][0], -0.25f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[1][1], -2.0f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjection[1][2], 0.5f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][0], -0.25f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][1], -2.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][2], 0.5f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w, 2.0f / 512.0f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowReceiverParams.x, 0.03125f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.w, 3.0f);
 
     FakeDevice reverseZDevice(RVX::RHIBackendType::DX12);
     RVX::PipelineCache reverseZCache;
@@ -1228,6 +1256,7 @@ TEST_F(PipelineCacheValidationFixture, DirectionalShadowFrameResourcesReportFall
     EXPECT_EQ(result.fallbackReason, RVX::DirectionalShadowFallbackReason::MissingShadowSRV);
 
     RVX::RHITextureDesc textureDesc = RVX::RHITextureDesc::DepthStencil(32, 32, RVX::RHIFormat::D32_FLOAT);
+    textureDesc.arraySize = RVX::RVX_MAX_DIRECTIONAL_SHADOW_CASCADES;
     RVX::RHITextureRef texture = device.CreateTexture(textureDesc);
     ASSERT_NE(texture, nullptr);
     RVX::RHITextureViewDesc viewDesc;
@@ -1268,6 +1297,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLighti
 
     RVX::ViewData view;
     view.directionalLightDirection = RVX::Vec3(0.0f, 0.0f, 0.0f);
+    view.cameraForward = RVX::Vec3(0.0f, 0.0f, 0.0f);
     view.directionalLightIntensity = -3.0f;
     view.ambientFloorIntensity = -1.0f;
     cache.UpdateViewConstants(view);
@@ -1281,6 +1311,9 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLighti
     EXPECT_NEAR(uploaded.lightDirection.y, -0.808122f, 0.00001f);
     EXPECT_NEAR(uploaded.lightDirection.z, 0.303046f, 0.00001f);
     EXPECT_FLOAT_EQ(uploaded.directionalLightIntensity, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.x, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.y, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.z, -1.0f);
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.0f);
 
     view.directionalShadowEnabled = 1;
@@ -1298,6 +1331,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLighti
     EXPECT_FLOAT_EQ(uploaded.directionalShadowReceiverParams.x, 0.0f);
 
     view.directionalLightDirection = RVX::Vec3(std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f);
+    view.cameraForward = RVX::Vec3(std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f);
     view.directionalLightIntensity = std::numeric_limits<float>::infinity();
     view.ambientFloorIntensity = std::numeric_limits<float>::quiet_NaN();
     view.directionalShadowDepthBias = std::numeric_limits<float>::quiet_NaN();
@@ -1311,6 +1345,9 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLighti
     EXPECT_NEAR(uploaded.lightDirection.y, -0.808122f, 0.00001f);
     EXPECT_NEAR(uploaded.lightDirection.z, 0.303046f, 0.00001f);
     EXPECT_FLOAT_EQ(uploaded.directionalLightIntensity, 4.0f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.x, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.y, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.z, -1.0f);
     EXPECT_FLOAT_EQ(uploaded.iblTextureParams.w, 0.08f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.y, 0.005f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.z, 1.0f);
@@ -1331,24 +1368,32 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
     EXPECT_NE(shader.find("TextureCube IrradianceTexture : register(t7, space2);"), std::string::npos);
     EXPECT_NE(shader.find("TextureCube PrefilteredEnvironmentTexture : register(t8, space2);"), std::string::npos);
     EXPECT_NE(shader.find("Texture2D BRDFLUTTexture : register(t9, space2);"), std::string::npos);
-    EXPECT_NE(shader.find("Texture2D<float> DirectionalShadowMapTexture : register(t1, space0);"),
+    EXPECT_NE(shader.find("Texture2DArray<float> DirectionalShadowMapTexture : register(t1, space0);"),
               std::string::npos);
     EXPECT_NE(shader.find("SamplerState DirectionalShadowSampler : register(s2, space0);"), std::string::npos);
+    EXPECT_NE(shader.find("float4 CameraForwardAndShadowCascadeCount;"), std::string::npos);
+    EXPECT_NE(shader.find("float4x4 DirectionalShadowViewProjections[4];"), std::string::npos);
+    EXPECT_NE(shader.find("float4 DirectionalShadowCascadeSplits;"), std::string::npos);
+    EXPECT_NE(shader.find("int SelectDirectionalShadowCascade(float3 worldPos)"), std::string::npos);
     EXPECT_NE(shader.find("float4 DirectionalShadowReceiverParams;"), std::string::npos);
     EXPECT_NE(shader.find("float SampleDirectionalShadow(float3 worldPos, float3 worldNormal)"), std::string::npos);
-    EXPECT_NE(shader.find("float CompareDirectionalShadowDepth(float2 uv, float compareDepth)"), std::string::npos);
-    EXPECT_NE(shader.find("float SampleDirectionalShadowPCF(float2 shadowUV, float compareDepth, float filterStep)"),
+    EXPECT_NE(shader.find("float CompareDirectionalShadowDepth(float2 uv, float compareDepth, int cascadeIndex)"),
+              std::string::npos);
+    EXPECT_NE(shader.find("float SampleDirectionalShadowPCF(float2 shadowUV, float compareDepth, float filterStep, int cascadeIndex)"),
               std::string::npos);
     EXPECT_NE(shader.find("float DirectionalLightIntensity;"), std::string::npos);
     EXPECT_NE(shader.find("if (IBLTextureParams.x > 0.5)"), std::string::npos);
     EXPECT_NE(shader.find("IBLTextureParams.w"), std::string::npos);
     EXPECT_NE(shader.find("DirectionalShadowParams.w"), std::string::npos);
+    EXPECT_NE(shader.find("dot(worldPos - CameraPosition, cameraForward)"), std::string::npos);
+    EXPECT_NE(shader.find("viewDepth > DirectionalShadowCascadeSplits[i]"), std::string::npos);
+    EXPECT_NE(shader.find("float3(uv, (float)cascadeIndex)"), std::string::npos);
     EXPECT_NE(shader.find("float normalBias = max(DirectionalShadowReceiverParams.x, 0.0);"), std::string::npos);
     EXPECT_NE(shader.find("receiverNormal * normalBias"), std::string::npos);
     EXPECT_NE(shader.find("for (int y = -1; y <= 1; ++y)"), std::string::npos);
     EXPECT_NE(shader.find("for (int x = -1; x <= 1; ++x)"), std::string::npos);
     EXPECT_NE(shader.find("tapCount > 0.5 ? visibility / tapCount : 1.0"), std::string::npos);
-    EXPECT_NE(shader.find("SampleDirectionalShadowPCF(shadowUV, compareDepth, DirectionalShadowParams.w)"),
+    EXPECT_NE(shader.find("SampleDirectionalShadowPCF(shadowUV, compareDepth, DirectionalShadowParams.w, cascadeIndex)"),
               std::string::npos);
     EXPECT_NE(shader.find("float shadowVisibility = SampleDirectionalShadow(input.WorldPos, normal);"), std::string::npos);
     EXPECT_NE(shader.find("float3(DirectionalLightIntensity, DirectionalLightIntensity, DirectionalLightIntensity)"),
