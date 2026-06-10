@@ -14,6 +14,7 @@
 #include "Render/GPUResourceManager.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/IRenderPass.h"
+#include "Render/Passes/ShadowPass.h"
 #include "Render/PipelineCache.h"
 #include "Render/PostProcess/PostProcessStack.h"
 #include "Render/Renderer/RenderDrawItem.h"
@@ -282,6 +283,13 @@ namespace RVX
         PostProcessSettings& GetPostProcessSettings() { return m_postProcessSettings; }
         const PostProcessSettings& GetPostProcessSettings() const { return m_postProcessSettings; }
 
+        /// Apply persistent directional shadow quality settings.
+        /// Invalid values are left to ShadowPass support checks and pipeline sanitizers.
+        void ApplyShadowPassConfig(const ShadowPassConfig& config);
+
+        /// Get persistent directional shadow quality settings.
+        const ShadowPassConfig& GetShadowPassConfig() const { return m_shadowPassConfig; }
+
         /// Get draw items for material-aware passes
         const std::vector<RenderDrawItem>& GetOpaqueDrawItems() const { return m_opaqueDrawItems; }
         const std::vector<RenderDrawItem>& GetMaskedDrawItems() const { return m_maskedDrawItems; }
@@ -326,6 +334,7 @@ namespace RVX
         SceneEnvironmentIBLStats m_environmentIBLStats;
         SceneColorFormatPolicy m_sceneColorFormatPolicy;
         PostProcessSettings m_postProcessSettings;
+        ShadowPassConfig m_shadowPassConfig;
         std::vector<uint32_t> m_visibleObjectIndices;
         std::vector<RenderDrawItem> m_opaqueDrawItems;
         std::vector<RenderDrawItem> m_maskedDrawItems;

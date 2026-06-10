@@ -1476,6 +1476,26 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererUsesSamePrimaryDirectionalLi
               std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture, SceneRendererAppliesShadowQualityConfigToShadowPass)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path renderRoot = FindShaderDirectory().parent_path();
+    const std::string header = ReadTextFile(renderRoot / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
+    const std::string source = ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+
+    EXPECT_NE(header.find("void ApplyShadowPassConfig(const ShadowPassConfig& config);"), std::string::npos);
+    EXPECT_NE(header.find("const ShadowPassConfig& GetShadowPassConfig() const"), std::string::npos);
+    EXPECT_NE(header.find("ShadowPassConfig m_shadowPassConfig;"), std::string::npos);
+    EXPECT_NE(source.find("m_shadowPassConfig = config;"), std::string::npos);
+    EXPECT_NE(source.find("if (m_shadowPass)"), std::string::npos);
+    EXPECT_NE(source.find("m_shadowPass->SetConfig(m_shadowPassConfig);"), std::string::npos);
+    EXPECT_NE(source.find("shadowPass->SetConfig(m_shadowPassConfig);"), std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAware)
 {
     if (!HasCompilerAvailable())

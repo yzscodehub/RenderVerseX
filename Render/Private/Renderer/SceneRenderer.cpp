@@ -637,6 +637,15 @@ void SceneRenderer::ApplyPostProcessSettings(const PostProcessSettings& settings
     }
 }
 
+void SceneRenderer::ApplyShadowPassConfig(const ShadowPassConfig& config)
+{
+    m_shadowPassConfig = config;
+    if (m_shadowPass)
+    {
+        m_shadowPass->SetConfig(m_shadowPassConfig);
+    }
+}
+
 void SceneRenderer::Render()
 {
     if (!m_initialized || !m_renderGraph || !m_renderContext)
@@ -1151,6 +1160,7 @@ void SceneRenderer::SetupDefaultPasses()
 
     auto shadowPass = std::make_unique<ShadowPass>();
     shadowPass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get());
+    shadowPass->SetConfig(m_shadowPassConfig);
     m_shadowPass = shadowPass.get();
     AddPass(std::move(shadowPass));
 
