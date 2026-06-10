@@ -5863,6 +5863,97 @@ git diff --check
 
 ---
 
+### RQ28: Directional Light Color in DefaultLit
+
+**Date:** 2026-06-11
+**Commit:** `ef796fa feat(render): shade directional lights with color`
+**Spark plan review agent:** Spark/Mill (`gpt-5.5 xhigh`)
+**Spark code review agent:** Spark/Mill (`gpt-5.5 xhigh`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-11-rq28-directional-light-color-plan.md`
+- Section: full stage plan, including the shadow golden amendment
+- Lines checked: whole stage plan before implementation and before golden recapture
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ27 Bloom Mip-Chain Composite Path
+- Evidence: RQ27 committed as `3f00b39` with phase-log commit `fa6b513`; focused and visual gates passed.
+
+**Approved scope:**
+
+- Add `directionalLightColor` to `ViewData` and `ViewConstants`.
+- Upload sanitized directional light color to the DefaultLit view cbuffer.
+- Copy selected primary `RenderLight::color` from `SceneRenderer` into both DefaultLit constants and the existing
+  `ShadowPass` light path.
+- Use `DirectionalLightColor * DirectionalLightIntensity` in `DefaultLit.hlsl`.
+- Update `PipelineCacheValidation` layout, upload, sanitize, shader, and SceneRenderer source guards.
+- Recapture only the shadow-specific golden because the shadow fixture intentionally uses a warm directional light.
+
+**Out of scope:**
+
+- Multiple directional lights, point/spot light changes, clustered lighting, physical light units, default cinematic
+  presets, and main R7 golden recapture.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-11-rq28-directional-light-color-plan.md`
+- `Render/Include/Render/Renderer/ViewData.h`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/Golden/ModelViewer/RQ3d_Shadow_DX11_320x180.ppm`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 74/74 selected `PipelineCacheValidation` tests passed.
+- Initial visual gate: PASS except `ShadowVisualGoldenValidation`, which changed because the shadow fixture uses
+  non-white light color `Vec3(1.0f, 0.96f, 0.88f)`.
+- Shadow golden recapture: PASS after Spark/Mill plan amendment review.
+- Final visual gate: PASS, 9/9 selected default visual tests passed.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerShadowSmoke`,
+  `ShadowVisualGoldenValidation`, `ImageCompareValidation`.
+- Golden: `Tests/Golden/ModelViewer/RQ3d_Shadow_DX11_320x180.ppm` updated for the intended warm directional light
+  correction.
+- Diffs: RQ28 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Amendment verdict: PASS for shadow golden recapture after confirming the non-white shadow fixture light.
+- Blockers resolved: none.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Residual risk accepted: shader/source guards remain string-based but cover the intended contract.
+
+**Notes / follow-ups:**
+
+- RQ28 fixes an engine-level PBR correctness gap: directional light color now reaches DefaultLit instead of being
+  collapsed to white intensity.
+- Later work can build on this by calibrating physical light units or adding multi-light DefaultLit/clustered shading.
+
+---
+
 ### RQ27: Bloom Mip-Chain Composite Path
 
 **Date:** 2026-06-11
