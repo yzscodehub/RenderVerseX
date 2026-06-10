@@ -196,7 +196,11 @@ namespace RVX
         uint32 enabledEffectCount = 0;
         uint32 graphPassCount = 0;
         uint32 transientIntermediateCount = 0;
+        uint32 hdrIntermediateCount = 0;
+        uint32 ldrIntermediateCount = 0;
         RHIFormat transientIntermediateFormat = RHIFormat::Unknown;
+        RHIFormat hdrIntermediateFormat = RHIFormat::Unknown;
+        RHIFormat ldrIntermediateFormat = RHIFormat::Unknown;
         RHIFormat finalOutputFormat = RHIFormat::Unknown;
         bool toneMappingBoundaryValid = true;
         std::string toneMappingBoundaryWarning;

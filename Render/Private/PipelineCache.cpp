@@ -28,7 +28,7 @@ namespace
     constexpr uint64 RVX_MAX_DRAW_CONSTANTS_PER_FRAME = 8192;
     constexpr uint64 RVX_PIPELINE_HASH_OFFSET_BASIS = 0xcbf29ce484222325ull;
     constexpr uint64 RVX_PIPELINE_HASH_PRIME = 0x100000001b3ull;
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 6;
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 7;
     constexpr const char* RVX_PIPELINE_MANIFEST_MAGIC = "RVX_PIPELINE_CACHE_MANIFEST";
 
     struct PipelineCacheManifest
@@ -41,6 +41,8 @@ namespace
         uint64 toneMappingPixelShaderHash = 0;
         uint64 bloomVertexShaderHash = 0;
         uint64 bloomPixelShaderHash = 0;
+        uint64 fxaaVertexShaderHash = 0;
+        uint64 fxaaPixelShaderHash = 0;
         uint64 skyboxVertexShaderHash = 0;
         uint64 skyboxPixelShaderHash = 0;
         uint32 renderTargetFormat = 0;
@@ -54,6 +56,7 @@ namespace
         uint64 skyboxPipelineHash = 0;
         uint64 toneMappingPipelineHash = 0;
         uint64 bloomPipelineHash = 0;
+        uint64 fxaaPipelineHash = 0;
     };
 
     uint64 AlignConstantBufferSize(uint64 size)
@@ -175,6 +178,8 @@ namespace
                key == "toneMappingPixelShaderHash" ||
                key == "bloomVertexShaderHash" ||
                key == "bloomPixelShaderHash" ||
+               key == "fxaaVertexShaderHash" ||
+               key == "fxaaPixelShaderHash" ||
                key == "skyboxVertexShaderHash" ||
                key == "skyboxPixelShaderHash" ||
                key == "renderTargetFormat" ||
@@ -187,7 +192,8 @@ namespace
                key == "transparentPipelineHash" ||
                key == "skyboxPipelineHash" ||
                key == "toneMappingPipelineHash" ||
-               key == "bloomPipelineHash";
+               key == "bloomPipelineHash" ||
+               key == "fxaaPipelineHash";
     }
 
     bool ParseManifestUint64(const std::string& value, uint64& out)
@@ -277,7 +283,7 @@ namespace
             fields.emplace(std::move(key), std::move(value));
         }
 
-        if (fields.size() != 21)
+        if (fields.size() != 24)
         {
             return false;
         }
@@ -290,6 +296,8 @@ namespace
             !ReadRequiredManifestUint64(fields, "toneMappingPixelShaderHash", manifest.toneMappingPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomVertexShaderHash", manifest.bloomVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomPixelShaderHash", manifest.bloomPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "fxaaVertexShaderHash", manifest.fxaaVertexShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "fxaaPixelShaderHash", manifest.fxaaPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "skyboxVertexShaderHash", manifest.skyboxVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "skyboxPixelShaderHash", manifest.skyboxPixelShaderHash) ||
             !ReadRequiredManifestUint32(fields, "renderTargetFormat", manifest.renderTargetFormat) ||
@@ -302,7 +310,8 @@ namespace
             !ReadRequiredManifestUint64(fields, "transparentPipelineHash", manifest.transparentPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "skyboxPipelineHash", manifest.skyboxPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "toneMappingPipelineHash", manifest.toneMappingPipelineHash) ||
-            !ReadRequiredManifestUint64(fields, "bloomPipelineHash", manifest.bloomPipelineHash))
+            !ReadRequiredManifestUint64(fields, "bloomPipelineHash", manifest.bloomPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "fxaaPipelineHash", manifest.fxaaPipelineHash))
         {
             return false;
         }
@@ -336,6 +345,8 @@ namespace
             file << "toneMappingPixelShaderHash=" << manifest.toneMappingPixelShaderHash << '\n';
             file << "bloomVertexShaderHash=" << manifest.bloomVertexShaderHash << '\n';
             file << "bloomPixelShaderHash=" << manifest.bloomPixelShaderHash << '\n';
+            file << "fxaaVertexShaderHash=" << manifest.fxaaVertexShaderHash << '\n';
+            file << "fxaaPixelShaderHash=" << manifest.fxaaPixelShaderHash << '\n';
             file << "skyboxVertexShaderHash=" << manifest.skyboxVertexShaderHash << '\n';
             file << "skyboxPixelShaderHash=" << manifest.skyboxPixelShaderHash << '\n';
             file << "renderTargetFormat=" << manifest.renderTargetFormat << '\n';
@@ -349,6 +360,7 @@ namespace
             file << "skyboxPipelineHash=" << manifest.skyboxPipelineHash << '\n';
             file << "toneMappingPipelineHash=" << manifest.toneMappingPipelineHash << '\n';
             file << "bloomPipelineHash=" << manifest.bloomPipelineHash << '\n';
+            file << "fxaaPipelineHash=" << manifest.fxaaPipelineHash << '\n';
             if (!file)
             {
                 return false;
@@ -411,6 +423,8 @@ namespace
                a.toneMappingPixelShaderHash == b.toneMappingPixelShaderHash &&
                a.bloomVertexShaderHash == b.bloomVertexShaderHash &&
                a.bloomPixelShaderHash == b.bloomPixelShaderHash &&
+               a.fxaaVertexShaderHash == b.fxaaVertexShaderHash &&
+               a.fxaaPixelShaderHash == b.fxaaPixelShaderHash &&
                a.skyboxVertexShaderHash == b.skyboxVertexShaderHash &&
                a.skyboxPixelShaderHash == b.skyboxPixelShaderHash &&
                a.renderTargetFormat == b.renderTargetFormat &&
@@ -423,7 +437,8 @@ namespace
                a.transparentPipelineHash == b.transparentPipelineHash &&
                a.skyboxPipelineHash == b.skyboxPipelineHash &&
                a.toneMappingPipelineHash == b.toneMappingPipelineHash &&
-               a.bloomPipelineHash == b.bloomPipelineHash;
+               a.bloomPipelineHash == b.bloomPipelineHash &&
+               a.fxaaPipelineHash == b.fxaaPipelineHash;
     }
 } // namespace
 
@@ -588,6 +603,7 @@ void PipelineCache::Shutdown()
     m_skyboxPipeline.Reset();
     m_toneMappingPipeline.Reset();
     m_bloomPipeline.Reset();
+    m_fxaaPipeline.Reset();
     m_pipelineCache.clear();
     m_frameDescriptorSet.Reset();
     m_objectDescriptorSet.Reset();
@@ -611,6 +627,8 @@ void PipelineCache::Shutdown()
     m_toneMappingPixelShader.Reset();
     m_bloomVertexShader.Reset();
     m_bloomPixelShader.Reset();
+    m_fxaaVertexShader.Reset();
+    m_fxaaPixelShader.Reset();
     m_vsCompileResult.reset();
     m_psCompileResult.reset();
     m_depthOnlyVsCompileResult.reset();
@@ -620,6 +638,8 @@ void PipelineCache::Shutdown()
     m_toneMappingPsCompileResult.reset();
     m_bloomVsCompileResult.reset();
     m_bloomPsCompileResult.reset();
+    m_fxaaVsCompileResult.reset();
+    m_fxaaPsCompileResult.reset();
     m_shaderManager.reset();
     m_device = nullptr;
     m_initialized = false;
@@ -633,6 +653,7 @@ bool PipelineCache::CompileShaders()
     std::string depthOnlyShaderPath = m_shaderDir + "/DepthOnly.hlsl";
     std::string toneMappingShaderPath = m_shaderDir + "/PostProcess/ToneMapping.hlsl";
     std::string bloomShaderPath = m_shaderDir + "/PostProcess/Bloom.hlsl";
+    std::string fxaaShaderPath = m_shaderDir + "/PostProcess/FXAA.hlsl";
     std::string skyboxShaderPath = m_shaderDir + "/Skybox.hlsl";
 
     RVX_CORE_INFO("PipelineCache: Compiling shaders...");
@@ -697,6 +718,16 @@ bool PipelineCache::CompileShaders()
         SetLastError("Bloom shader file not found: " + bloomShaderPath);
 
         std::filesystem::path absPath = std::filesystem::absolute(bloomShaderPath);
+        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
+        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
+        return false;
+    }
+
+    if (!std::filesystem::exists(fxaaShaderPath))
+    {
+        SetLastError("FXAA shader file not found: " + fxaaShaderPath);
+
+        std::filesystem::path absPath = std::filesystem::absolute(fxaaShaderPath);
         RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
         RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
         return false;
@@ -856,6 +887,51 @@ bool PipelineCache::CompileShaders()
     }
     m_bloomPixelShader = bloomPsResult.shader;
     m_bloomPsCompileResult = std::make_unique<ShaderCompileResult>(std::move(bloomPsResult.compileResult));
+
+    ShaderLoadDesc fxaaVsDesc = vsDesc;
+    fxaaVsDesc.path = fxaaShaderPath;
+    fxaaVsDesc.entryPoint = "VSMain";
+    fxaaVsDesc.stage = RHIShaderStage::Vertex;
+    if (backend == RHIBackendType::DX11)
+    {
+        fxaaVsDesc.targetProfile = "vs_5_0";
+    }
+
+    auto fxaaVsResult = m_shaderManager->LoadFromFile(m_device, fxaaVsDesc);
+    if (!fxaaVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile FXAA vertex shader: " + fxaaVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!fxaaVsResult.shader)
+    {
+        SetLastError("Failed to create FXAA vertex shader");
+        return false;
+    }
+    m_fxaaVertexShader = fxaaVsResult.shader;
+    m_fxaaVsCompileResult = std::make_unique<ShaderCompileResult>(std::move(fxaaVsResult.compileResult));
+
+    ShaderLoadDesc fxaaPsDesc = fxaaVsDesc;
+    fxaaPsDesc.entryPoint = "PSMain";
+    fxaaPsDesc.stage = RHIShaderStage::Pixel;
+    if (backend == RHIBackendType::DX11)
+    {
+        fxaaPsDesc.targetProfile = "ps_5_0";
+    }
+
+    auto fxaaPsResult = m_shaderManager->LoadFromFile(m_device, fxaaPsDesc);
+    if (!fxaaPsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile FXAA pixel shader: " + fxaaPsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!fxaaPsResult.shader)
+    {
+        SetLastError("Failed to create FXAA pixel shader");
+        return false;
+    }
+    m_fxaaPixelShader = fxaaPsResult.shader;
+    m_fxaaPsCompileResult = std::make_unique<ShaderCompileResult>(std::move(fxaaPsResult.compileResult));
 
     ShaderLoadDesc skyboxVsDesc = vsDesc;
     skyboxVsDesc.path = skyboxShaderPath;
@@ -1155,6 +1231,8 @@ void PipelineCache::ProcessPipelineManifest()
     expected.toneMappingPixelShaderHash = ComputeShaderHash(m_toneMappingPsCompileResult.get());
     expected.bloomVertexShaderHash = ComputeShaderHash(m_bloomVsCompileResult.get());
     expected.bloomPixelShaderHash = ComputeShaderHash(m_bloomPsCompileResult.get());
+    expected.fxaaVertexShaderHash = ComputeShaderHash(m_fxaaVsCompileResult.get());
+    expected.fxaaPixelShaderHash = ComputeShaderHash(m_fxaaPsCompileResult.get());
     expected.skyboxVertexShaderHash = ComputeShaderHash(m_skyboxVsCompileResult.get());
     expected.skyboxPixelShaderHash = ComputeShaderHash(m_skyboxPsCompileResult.get());
     expected.renderTargetFormat = static_cast<uint32>(m_renderTargetFormat);
@@ -1168,6 +1246,7 @@ void PipelineCache::ProcessPipelineManifest()
     expected.skyboxPipelineHash = m_stats.skyboxPipelineHash;
     expected.toneMappingPipelineHash = m_stats.toneMappingPipelineHash;
     expected.bloomPipelineHash = m_stats.bloomPipelineHash;
+    expected.fxaaPipelineHash = m_stats.fxaaPipelineHash;
 
     const std::filesystem::path manifestPath = GetManifestPath(m_config.manifestDirectory);
     std::error_code ec;
@@ -1394,6 +1473,16 @@ RHIPipeline* PipelineCache::GetBloomPipeline(RHIFormat outputFormat)
     return GetOrCreateBloomPipeline(outputFormat).Get();
 }
 
+RHIPipeline* PipelineCache::GetFXAAPipeline(RHIFormat outputFormat)
+{
+    if (outputFormat == RHIFormat::Unknown || outputFormat == m_toneMappingOutputFormat)
+    {
+        return GetFXAAPipeline();
+    }
+
+    return GetOrCreateFXAAPipeline(outputFormat).Get();
+}
+
 bool PipelineCache::CreateViewConstantBuffer()
 {
     RHIBufferDesc cbDesc;
@@ -1607,7 +1696,17 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
-    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, Skybox pipeline, ToneMapping pipeline, and Bloom pipeline");
+    m_fxaaPipeline = GetOrCreateFXAAPipeline(m_toneMappingOutputFormat);
+    if (!m_fxaaPipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create FXAA pipeline");
+        }
+        return false;
+    }
+
+    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, Skybox pipeline, ToneMapping pipeline, Bloom pipeline, and FXAA pipeline");
     return true;
 }
 
@@ -1866,6 +1965,54 @@ RHIPipelineRef PipelineCache::GetOrCreateBloomPipeline(RHIFormat outputFormat)
     return pipeline;
 }
 
+RHIPipelineRef PipelineCache::GetOrCreateFXAAPipeline(RHIFormat outputFormat)
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildFXAAPipelineDesc(outputFormat);
+    if (!pipelineDesc.vertexShader)
+    {
+        SetLastError("Cannot create FXAA pipeline without vertex shader");
+        return {};
+    }
+    if (!pipelineDesc.pixelShader)
+    {
+        SetLastError("Cannot create FXAA pipeline without pixel shader");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError("Cannot create FXAA pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.numRenderTargets != 1 || pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create FXAA pipeline with invalid render target format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc, MaterialPipelineVariant::Transparent);
+    m_stats.fxaaPipelineHash = stateHash;
+    m_stats.lastPipelineStateHash = stateHash;
+
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create FXAA pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
 RHIGraphicsPipelineDesc PipelineCache::BuildDefaultLitPipelineDesc(const char* debugName,
                                                                    const RHIDepthStencilState& depthStencilState,
                                                                    const RHIBlendState& blendState,
@@ -1993,6 +2140,28 @@ RHIGraphicsPipelineDesc PipelineCache::BuildBloomPipelineDesc(RHIFormat outputFo
     return pipelineDesc;
 }
 
+RHIGraphicsPipelineDesc PipelineCache::BuildFXAAPipelineDesc(RHIFormat outputFormat) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc;
+
+    pipelineDesc.vertexShader = m_fxaaVertexShader.Get();
+    pipelineDesc.pixelShader = m_fxaaPixelShader.Get();
+    pipelineDesc.pipelineLayout = m_postProcessPipelineLayout.Get();
+    pipelineDesc.debugName = "FXAAPipeline";
+
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets = 1;
+    pipelineDesc.renderTargetFormats[0] = outputFormat;
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+
+    return pipelineDesc;
+}
+
 uint64 PipelineCache::StoreVariantHash(MaterialPipelineVariant variant, uint64 hash)
 {
     switch (variant)
@@ -2063,6 +2232,10 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_bloomVsCompileResult.get());
         if (shader == m_bloomPixelShader.Get())
             return ComputeShaderHash(m_bloomPsCompileResult.get());
+        if (shader == m_fxaaVertexShader.Get())
+            return ComputeShaderHash(m_fxaaVsCompileResult.get());
+        if (shader == m_fxaaPixelShader.Get())
+            return ComputeShaderHash(m_fxaaPsCompileResult.get());
         if (shader == m_skyboxVertexShader.Get())
             return ComputeShaderHash(m_skyboxVsCompileResult.get());
         if (shader == m_skyboxPixelShader.Get())

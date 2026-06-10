@@ -31,6 +31,7 @@ namespace RVX
     class World;
     class Camera;
     class BloomPass;
+    class FXAAPass;
     class IRenderPass;
     class DepthPrepass;
     class OpaquePass;
@@ -336,6 +337,7 @@ namespace RVX
         SkyboxPass* m_skyboxPass = nullptr;  // Cached pointer to skybox pass
         BloomPass* m_bloomPostProcess = nullptr;
         ToneMappingPass* m_toneMappingPostProcess = nullptr;
+        FXAAPass* m_fxaaPostProcess = nullptr;
         
         // Depth buffer
         RHITextureRef m_depthTexture;

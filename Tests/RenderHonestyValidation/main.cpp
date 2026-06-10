@@ -654,7 +654,6 @@ TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDis
     settings.enableFilmGrain = true;
     settings.enableVolumetricLighting = true;
 
-    RVX::FXAAPass fxaa;
     RVX::ColorGradingPass colorGrading;
     RVX::DOFPass dof;
     RVX::MotionBlurPass motionBlur;
@@ -664,7 +663,6 @@ TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDis
     RVX::VolumetricLightingPass volumetricLighting;
 
     RVX::IPostProcessPass* passes[] = {
-        &fxaa,
         &colorGrading,
         &dof,
         &motionBlur,
@@ -682,6 +680,20 @@ TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDis
         EXPECT_FALSE(pass->IsEnabled()) << pass->GetName();
         EXPECT_FALSE(pass->GetUnsupportedReason().empty()) << pass->GetName();
     }
+}
+
+TEST_F(RenderHonestyValidationFixture, FXAARequiresResourcesBeforeSupported)
+{
+    RVX::PostProcessSettings settings;
+    settings.enableFXAA = true;
+
+    RVX::FXAAPass fxaa;
+    fxaa.Configure(settings);
+
+    EXPECT_TRUE(fxaa.IsRequestedEnabled());
+    EXPECT_FALSE(fxaa.IsSupported());
+    EXPECT_FALSE(fxaa.IsEnabled());
+    EXPECT_FALSE(fxaa.GetUnsupportedReason().empty());
 }
 
 TEST_F(RenderHonestyValidationFixture, BloomRequiresResourcesBeforeSupported)

@@ -12,6 +12,7 @@
 #include "Render/Passes/SkyboxPass.h"
 #include "Render/Passes/TransparentPass.h"
 #include "Render/PostProcess/Bloom.h"
+#include "Render/PostProcess/FXAA.h"
 #include "Render/PostProcess/ToneMapping.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/TextureResource.h"
@@ -267,6 +268,7 @@ void SceneRenderer::Shutdown()
     m_skyboxPass = nullptr;
     m_bloomPostProcess = nullptr;
     m_toneMappingPostProcess = nullptr;
+    m_fxaaPostProcess = nullptr;
     if (m_postProcessStack)
     {
         m_postProcessStack->Shutdown();
@@ -1088,6 +1090,7 @@ void SceneRenderer::SetupDefaultPostProcess()
     m_postProcessStack->Initialize(m_renderContext->GetDevice());
     m_bloomPostProcess = m_postProcessStack->AddEffect<BloomPass>();
     m_toneMappingPostProcess = m_postProcessStack->AddEffect<ToneMappingPass>();
+    m_fxaaPostProcess = m_postProcessStack->AddEffect<FXAAPass>();
 
     if (m_bloomPostProcess)
     {
@@ -1097,6 +1100,11 @@ void SceneRenderer::SetupDefaultPostProcess()
     if (m_toneMappingPostProcess)
     {
         m_toneMappingPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
+    }
+
+    if (m_fxaaPostProcess)
+    {
+        m_fxaaPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
     }
 
     ApplyPostProcessSettings(MakeDefaultRuntimePostProcessSettings());

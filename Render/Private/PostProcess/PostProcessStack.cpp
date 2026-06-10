@@ -10,6 +10,19 @@
 namespace RVX
 {
 
+namespace
+{
+    bool IsToneMappingEffect(const IPostProcessPass* effect)
+    {
+        return effect && std::string(effect->GetName()) == "ToneMapping";
+    }
+
+    bool IsLDRPostToneMappingEffect(const IPostProcessPass* effect)
+    {
+        return effect && std::string(effect->GetName()) == "FXAA";
+    }
+} // namespace
+
 PostProcessStack::~PostProcessStack()
 {
     Shutdown();
@@ -124,37 +137,83 @@ void PostProcessStack::Execute(RenderGraph& graph, RGTextureHandle sceneColor, R
         m_lastExecuteStats.finalOutputFormat = outputDesc->format;
     }
 
-    for (size_t i = 0; i + 1 < enabledEffects.size(); ++i)
+    bool seenToneMapping = false;
+    bool invalidToneMappingBoundary = false;
+    for (IPostProcessPass* effect : enabledEffects)
     {
-        if (std::string(enabledEffects[i]->GetName()) == "ToneMapping")
+        if (IsLDRPostToneMappingEffect(effect) && !seenToneMapping)
         {
             m_lastExecuteStats.toneMappingBoundaryValid = false;
             m_lastExecuteStats.toneMappingBoundaryWarning =
-                "ToneMapping must remain the HDR-to-LDR boundary and run after HDR effects";
+                "LDR post-process effects require ToneMapping before them";
             RVX_CORE_WARN("PostProcessStack: {}", m_lastExecuteStats.toneMappingBoundaryWarning);
+            invalidToneMappingBoundary = true;
             break;
         }
+
+        if (IsToneMappingEffect(effect))
+        {
+            seenToneMapping = true;
+            continue;
+        }
+
+        if (seenToneMapping && !IsLDRPostToneMappingEffect(effect))
+        {
+            m_lastExecuteStats.toneMappingBoundaryValid = false;
+            m_lastExecuteStats.toneMappingBoundaryWarning =
+                "Only LDR post-process effects may run after ToneMapping";
+            RVX_CORE_WARN("PostProcessStack: {}", m_lastExecuteStats.toneMappingBoundaryWarning);
+            invalidToneMappingBoundary = true;
+            break;
+        }
+    }
+
+    if (invalidToneMappingBoundary)
+    {
+        RVX_CORE_WARN("PostProcessStack: invalid ToneMapping boundary; skipping post-process execution");
+        return;
     }
 
     std::vector<RGTextureHandle> intermediates;
     if (enabledEffects.size() > 1)
     {
-        const RHITextureDesc* sceneDesc = graph.GetTextureDesc(sceneColor);
-        if (!sceneDesc)
+        const RHITextureDesc* sceneDescPtr = graph.GetTextureDesc(sceneColor);
+        const RHITextureDesc* outputDescPtr = graph.GetTextureDesc(output);
+        if (!sceneDescPtr || !outputDescPtr)
         {
             m_lastExecuteStats.noEffectNoWork = true;
-            RVX_CORE_WARN("PostProcessStack: cannot create intermediate textures without a valid scene color description");
+            RVX_CORE_WARN("PostProcessStack: cannot create intermediate textures without valid scene and output descriptions");
             return;
         }
 
+        const RHITextureDesc sceneDesc = *sceneDescPtr;
+        const RHITextureDesc outputDesc = *outputDescPtr;
+
         intermediates.reserve(enabledEffects.size() - 1);
+        bool ldrDomain = false;
         for (size_t i = 0; i + 1 < enabledEffects.size(); ++i)
         {
-            RHITextureDesc intermediateDesc = *sceneDesc;
+            const bool writesLDR = ldrDomain || IsToneMappingEffect(enabledEffects[i]);
+            RHITextureDesc intermediateDesc = writesLDR ? outputDesc : sceneDesc;
             intermediateDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
             intermediateDesc.debugName = "PostProcessIntermediate";
             intermediates.push_back(graph.CreateTexture(intermediateDesc));
             m_lastExecuteStats.transientIntermediateFormat = intermediateDesc.format;
+            if (writesLDR)
+            {
+                m_lastExecuteStats.ldrIntermediateCount++;
+                m_lastExecuteStats.ldrIntermediateFormat = intermediateDesc.format;
+            }
+            else
+            {
+                m_lastExecuteStats.hdrIntermediateCount++;
+                m_lastExecuteStats.hdrIntermediateFormat = intermediateDesc.format;
+            }
+
+            if (IsToneMappingEffect(enabledEffects[i]))
+            {
+                ldrDomain = true;
+            }
         }
         m_lastExecuteStats.transientIntermediateCount = static_cast<uint32>(intermediates.size());
     }

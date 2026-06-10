@@ -40,7 +40,7 @@
 // Constant Buffer
 // =============================================================================
 
-cbuffer FXAAConstants : register(b0)
+cbuffer FXAAConstants : register(b0, space0)
 {
     float2 TextureSize;
     float2 InvTextureSize;
@@ -54,8 +54,8 @@ cbuffer FXAAConstants : register(b0)
 // Textures and Samplers
 // =============================================================================
 
-Texture2D<float4> InputTexture : register(t0);
-SamplerState LinearSampler : register(s0);
+Texture2D<float4> InputTexture : register(t1, space0);
+SamplerState LinearSampler : register(s2, space0);
 
 // =============================================================================
 // Utility Functions

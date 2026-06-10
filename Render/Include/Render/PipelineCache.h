@@ -98,6 +98,7 @@ namespace RVX
         uint64 skyboxPipelineHash = 0;
         uint64 toneMappingPipelineHash = 0;
         uint64 bloomPipelineHash = 0;
+        uint64 fxaaPipelineHash = 0;
         uint32 pipelineCreateCount = 0;
         uint32 pipelineCacheHitCount = 0;
         uint32 pipelineCacheMissCount = 0;
@@ -212,6 +213,12 @@ namespace RVX
          */
         RHIPipeline* GetBloomPipeline() const { return m_bloomPipeline.Get(); }
         RHIPipeline* GetBloomPipeline(RHIFormat outputFormat);
+
+        /**
+         * @brief Get the fullscreen FXAA LDR post-process pipeline
+         */
+        RHIPipeline* GetFXAAPipeline() const { return m_fxaaPipeline.Get(); }
+        RHIPipeline* GetFXAAPipeline(RHIFormat outputFormat);
 
         /**
          * @brief Get the default pipeline layout
@@ -380,6 +387,7 @@ namespace RVX
                                                  bool updatePrimaryStats = true);
         RHIPipelineRef GetOrCreateToneMappingPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateBloomPipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateFXAAPipeline(RHIFormat outputFormat);
         RHIGraphicsPipelineDesc BuildDefaultLitPipelineDesc(const char* debugName,
                                                             const RHIDepthStencilState& depthStencilState,
                                                             const RHIBlendState& blendState,
@@ -388,6 +396,7 @@ namespace RVX
         RHIGraphicsPipelineDesc BuildSkyboxPipelineDesc(RHIFormat outputFormat, bool depthTest = true) const;
         RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomPipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildFXAAPipelineDesc(RHIFormat outputFormat) const;
         bool CreateViewConstantBuffer();
         bool CreateObjectConstantBuffer();
         bool EnsureFrameShadowFallbackResources();
@@ -422,6 +431,8 @@ namespace RVX
         RHIShaderRef m_toneMappingPixelShader;
         RHIShaderRef m_bloomVertexShader;
         RHIShaderRef m_bloomPixelShader;
+        RHIShaderRef m_fxaaVertexShader;
+        RHIShaderRef m_fxaaPixelShader;
         std::unique_ptr<ShaderCompileResult> m_vsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_psCompileResult;
         std::unique_ptr<ShaderCompileResult> m_depthOnlyVsCompileResult;
@@ -431,6 +442,8 @@ namespace RVX
         std::unique_ptr<ShaderCompileResult> m_toneMappingPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_bloomVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_bloomPsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_fxaaVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_fxaaPsCompileResult;
 
         // Descriptor set layouts and pipeline layout
         std::vector<RHIDescriptorSetLayoutRef> m_setLayouts;
@@ -448,6 +461,7 @@ namespace RVX
         RHIPipelineRef m_skyboxPipeline;
         RHIPipelineRef m_toneMappingPipeline;
         RHIPipelineRef m_bloomPipeline;
+        RHIPipelineRef m_fxaaPipeline;
         std::unordered_map<uint64, RHIPipelineRef> m_pipelineCache;
 
         // Frame and object constants
