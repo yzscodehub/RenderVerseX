@@ -4837,6 +4837,103 @@ git diff --check
 
 ---
 
+### R-SP: `RQ15 - Directional CSM Stabilization and Fade Bands`
+
+**Date:** 2026-06-11
+**Commit:** `d3532b1 feat(render): stabilize directional csm transitions`
+**Spark plan review agent:** `019eb28b-c416-7f31-8c37-146a590624b5` (`gpt-5.5`, xhigh)
+**Spark code review agent:** `019eb29d-f254-70f2-9b3e-f395698e18cc` (`gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-11-rq15-directional-csm-stabilization-and-fade-plan.md`
+- Section: full RQ15 stage plan, especially scope, required tests, validation plan, and Spark review status.
+- Lines checked: plan re-read before implementation; code review status updated to PASS before commit.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ14 directional CSM texture-array consumption.
+- Evidence: RQ14 implementation and phase-log commits were complete; shadow array consumption was already wired.
+
+**Approved scope:**
+
+- Stabilize directional CSM projections by snapping cascade XY centers in a world-anchored light basis.
+- Add per-cascade fade-band distances and upload them through `ViewConstants`.
+- Blend only from `cascadeIndex` to `cascadeIndex + 1` inside valid split fade bands.
+- Reset shadow splits/fades on disabled and binding fallback paths.
+- Update focused tests and the intended shadow golden after visual inspection.
+
+**Out of scope:**
+
+- New shadow filtering algorithms, PCSS/contact shadows, EVSM/MSM, variance shadows, or atlas packing.
+- ECS/Object refactors.
+- Non-directional shadow support.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-11-rq15-directional-csm-stabilization-and-fade-plan.md`
+- `Render/Include/Render/Passes/ShadowPass.h`
+- `Render/Private/Passes/ShadowPass.cpp`
+- `Render/Include/Render/Renderer/ViewData.h`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Passes/TransparentPass.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/Golden/ModelViewer/RQ3d_Shadow_DX11_320x180.ppm`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target RenderPassValidation PipelineCacheValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation"
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation RenderSceneValidation RenderHonestyValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderSceneValidation|RenderHonestyValidation|ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Focused build: PASS.
+- Focused tests: PASS, 130/130 selected tests passed.
+- Full render/visual build: PASS.
+- Visual/regression gate: PASS, 62/62 selected tests passed.
+- Shadow visual inspection: PASS; the final golden mismatch was limited to 37 shadow-edge pixels
+  with PSNR 50.7473 after the world-anchored stabilization fix.
+- Golden update: updated `Tests/Golden/ModelViewer/RQ3d_Shadow_DX11_320x180.ppm`.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `RenderPassValidation`, `RenderSceneValidation`, `RenderHonestyValidation`,
+  `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerShadowSmoke`, `ShadowVisualGoldenValidation`,
+  `ImageCompareValidation`.
+- Visual actual: `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/RQ3d_Shadow_DX11_320x180.ppm`.
+- Visual diff: `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/RQ3d_Shadow_DX11_320x180.diff.ppm`.
+- Diffs: RQ15 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: plan clarified world-units-per-texel invariant, fade width units, and shader guard expectations.
+
+**Spark code review result:**
+
+- Verdict: PASS after one BLOCKED review and fix pass.
+- Blockers resolved: `ShadowPass` now uses a world-anchored light basis for stable texel snapping, and
+  `OpaquePass` clears splits/fades/view-projection data after final shadow binding fallback.
+
+**Notes / follow-ups:**
+
+- RQ15 improves first-order CSM stability and transition seams. Higher-quality soft shadows, PCSS/contact shadows,
+  and temporal shadow filtering remain later quality stages.
+- The shadow golden changed only along the receiver shadow edge, which is expected after changing the CSM texel grid.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
