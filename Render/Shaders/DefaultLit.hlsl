@@ -182,6 +182,27 @@ float CompareDirectionalShadowDepth(float2 uv, float compareDepth, int cascadeIn
     return compareDepth <= storedDepth ? 1.0 : 0.0;
 }
 
+static const int RVX_DIRECTIONAL_SHADOW_POISSON_TAP_COUNT = 16;
+static const float2 RVX_DIRECTIONAL_SHADOW_POISSON_DISK[16] =
+{
+    float2(0.000000, 0.000000),
+    float2(-0.326212, -0.405810),
+    float2(-0.840144, -0.073580),
+    float2(-0.695914, 0.457137),
+    float2(-0.203345, 0.620716),
+    float2(0.962340, -0.194983),
+    float2(0.473434, -0.480026),
+    float2(0.519456, 0.767022),
+    float2(0.185461, -0.893124),
+    float2(0.507431, 0.064425),
+    float2(0.896420, 0.412458),
+    float2(-0.321940, -0.932615),
+    float2(-0.791559, -0.597710),
+    float2(-0.040088, 0.536087),
+    float2(0.342312, -0.217275),
+    float2(-0.620000, 0.000000)
+};
+
 float SampleDirectionalShadowPCF(float2 shadowUV, float compareDepth, float filterStep, int cascadeIndex)
 {
     float filterStepUv = max(filterStep, 0.0);
@@ -194,17 +215,13 @@ float SampleDirectionalShadowPCF(float2 shadowUV, float compareDepth, float filt
     float tapCount = 0.0;
 
     [unroll]
-    for (int y = -1; y <= 1; ++y)
+    for (int i = 0; i < RVX_DIRECTIONAL_SHADOW_POISSON_TAP_COUNT; ++i)
     {
-        [unroll]
-        for (int x = -1; x <= 1; ++x)
+        float2 tapUV = shadowUV + RVX_DIRECTIONAL_SHADOW_POISSON_DISK[i] * filterStepUv;
+        if (!any(tapUV < 0.0) && !any(tapUV > 1.0))
         {
-            float2 tapUV = shadowUV + float2((float)x, (float)y) * filterStepUv;
-            if (!any(tapUV < 0.0) && !any(tapUV > 1.0))
-            {
-                visibility += CompareDirectionalShadowDepth(tapUV, compareDepth, cascadeIndex);
-                tapCount += 1.0;
-            }
+            visibility += CompareDirectionalShadowDepth(tapUV, compareDepth, cascadeIndex);
+            tapCount += 1.0;
         }
     }
 

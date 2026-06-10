@@ -1417,8 +1417,14 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
     EXPECT_NE(shader.find("shadow = lerp(shadow, nextShadow, fadeT);"), std::string::npos);
     EXPECT_NE(shader.find("float normalBias = max(DirectionalShadowReceiverParams.x, 0.0);"), std::string::npos);
     EXPECT_NE(shader.find("receiverNormal * normalBias"), std::string::npos);
-    EXPECT_NE(shader.find("for (int y = -1; y <= 1; ++y)"), std::string::npos);
-    EXPECT_NE(shader.find("for (int x = -1; x <= 1; ++x)"), std::string::npos);
+    EXPECT_NE(shader.find("static const int RVX_DIRECTIONAL_SHADOW_POISSON_TAP_COUNT = 16;"), std::string::npos);
+    EXPECT_NE(shader.find("static const float2 RVX_DIRECTIONAL_SHADOW_POISSON_DISK[16]"), std::string::npos);
+    EXPECT_NE(shader.find("for (int i = 0; i < RVX_DIRECTIONAL_SHADOW_POISSON_TAP_COUNT; ++i)"),
+              std::string::npos);
+    EXPECT_NE(shader.find("RVX_DIRECTIONAL_SHADOW_POISSON_DISK[i] * filterStepUv"), std::string::npos);
+    EXPECT_NE(shader.find("if (filterStepUv <= 1.0e-7)"), std::string::npos);
+    EXPECT_EQ(shader.find("for (int y = -1; y <= 1; ++y)"), std::string::npos);
+    EXPECT_EQ(shader.find("for (int x = -1; x <= 1; ++x)"), std::string::npos);
     EXPECT_NE(shader.find("tapCount > 0.5 ? visibility / tapCount : 1.0"), std::string::npos);
     EXPECT_NE(shader.find("SampleDirectionalShadowPCF(shadowUV, compareDepth, DirectionalShadowParams.w, cascadeIndex)"),
               std::string::npos);
