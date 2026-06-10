@@ -2914,6 +2914,11 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
         ClampFiniteNonNegative(view.directionalShadowDepthBias, 0.005f),
         std::min(ClampFiniteNonNegative(view.directionalShadowStrength, 1.0f), 1.0f),
         shadowFilterStep);
+    constants.directionalShadowReceiverParams = Vec4(
+        ClampFiniteNonNegative(view.directionalShadowNormalBias, 0.02f),
+        0.0f,
+        0.0f,
+        0.0f);
 
     void* mapped = m_viewConstantBuffer->Map();
     if (mapped)

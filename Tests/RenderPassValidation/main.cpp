@@ -3173,6 +3173,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDurin
     shadowConfig.numCascades = 1;
     shadowConfig.shadowMapSize = 64;
     shadowConfig.filterRadiusTexels = 2.0f;
+    shadowConfig.normalBias = 0.0375f;
 
     ShadowPass shadowPass;
     shadowPass.SetResources(&gpuResources, &pipelineCache);
@@ -3219,6 +3220,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDurin
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.y, shadowConfig.shadowBias);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w,
                     shadowConfig.filterRadiusTexels / static_cast<float>(shadowConfig.shadowMapSize));
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowReceiverParams.x, shadowConfig.normalBias);
     EXPECT_FALSE(IsIdentityMatrix(uploaded.directionalShadowViewProjection));
 }
 

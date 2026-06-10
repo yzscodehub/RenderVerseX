@@ -46,6 +46,7 @@ namespace RVX
         Vec4 iblTextureParams;
         Mat4 directionalShadowViewProjection;
         Vec4 directionalShadowParams;
+        Vec4 directionalShadowReceiverParams;
     };
 
     enum class DirectionalShadowFallbackReason : uint8

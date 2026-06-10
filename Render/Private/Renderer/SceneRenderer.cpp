@@ -810,6 +810,7 @@ void SceneRenderer::PreparePassesForFrame()
     m_viewData.directionalShadowViewProjection = Mat4Identity();
     m_viewData.directionalShadowInvMapSize = 0.0f;
     m_viewData.directionalShadowFilterRadiusTexels = 1.0f;
+    m_viewData.directionalShadowNormalBias = 0.0f;
 
     if (m_shadowPass)
     {

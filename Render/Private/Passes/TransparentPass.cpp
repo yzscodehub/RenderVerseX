@@ -106,6 +106,7 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
     // before binding the frame descriptor for transparent draws.
     ViewData transparentView = view;
     transparentView.directionalShadowEnabled = 0;
+    transparentView.directionalShadowNormalBias = 0.0f;
     m_pipelineCache->UpdateDirectionalShadowFrameResources({});
     m_pipelineCache->UpdateViewConstants(transparentView);
 

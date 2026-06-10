@@ -97,6 +97,9 @@ namespace RVX
         /// Shadow PCF radius in texels; multiplied by the inverse map size during upload
         float directionalShadowFilterRadiusTexels = 1.0f;
 
+        /// Receiver normal offset in world units before projecting into the directional shadow map
+        float directionalShadowNormalBias = 0.02f;
+
         /// Enables directional shadow sampling when the frame descriptor has a valid map
         uint8 directionalShadowEnabled = 0;
 

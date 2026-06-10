@@ -42,6 +42,7 @@ cbuffer ViewConstants : register(b0, space0)
     float4 IBLTextureParams;    // x: enabled, y: prefiltered mip count, z: intensity, w: ambient floor intensity
     float4x4 DirectionalShadowViewProjection;
     float4 DirectionalShadowParams; // x: enabled, y: depth bias, z: strength, w: UV-space PCF filter step
+    float4 DirectionalShadowReceiverParams; // x: receiver normal bias in world units
 };
 
 cbuffer ObjectConstants : register(b0, space1)
@@ -179,14 +180,17 @@ float SampleDirectionalShadowPCF(float2 shadowUV, float compareDepth, float filt
     return tapCount > 0.5 ? visibility / tapCount : 1.0;
 }
 
-float SampleDirectionalShadow(float3 worldPos)
+float SampleDirectionalShadow(float3 worldPos, float3 worldNormal)
 {
     if (DirectionalShadowParams.x <= 0.5)
     {
         return 1.0;
     }
 
-    float4 shadowClip = mul(DirectionalShadowViewProjection, float4(worldPos, 1.0));
+    float3 receiverNormal = SafeNormalize(worldNormal, float3(0.0, 1.0, 0.0));
+    float normalBias = max(DirectionalShadowReceiverParams.x, 0.0);
+    float3 biasedWorldPos = worldPos + receiverNormal * normalBias;
+    float4 shadowClip = mul(DirectionalShadowViewProjection, float4(biasedWorldPos, 1.0));
     if (abs(shadowClip.w) <= 1.0e-6)
     {
         return 1.0;
@@ -249,7 +253,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     float clampedRoughness = clamp(roughness, 0.04, 1.0);
     float3 f0 = ComputeF0(baseColor.rgb, metallic);
 
-    float shadowVisibility = SampleDirectionalShadow(input.WorldPos);
+    float shadowVisibility = SampleDirectionalShadow(input.WorldPos, normal);
     float3 directLight = EvaluatePBR(
         normal,
         viewDir,
