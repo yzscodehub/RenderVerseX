@@ -4263,6 +4263,94 @@ git diff --check
 
 ---
 
+### R-SP: `RQ9 - FXAA Post-Process Activation`
+
+**Date:** 2026-06-10
+**Commit:** `49c2136 feat(render): enable fxaa postprocess pass`
+**Spark plan review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43`
+**Spark code review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-10-rq9-fxaa-postprocess-activation-plan.md`
+- Section: RQ9 scope and validation plan.
+- Lines checked: full document reread before implementation.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ8 tangent basis and normal-map honesty.
+- Evidence: RQ8 committed and recorded; RQ9 implementation started only after plan review PASS.
+
+**Approved scope:**
+
+- Compile, cache, hash, and manifest the FXAA fullscreen post-process pipeline.
+- Implement `FXAAPass` runtime resources and fullscreen draw path.
+- Allow `Bloom -> ToneMapping -> FXAA` while enforcing the HDR/LDR boundary.
+- Keep `SceneRenderer` runtime default `enableFXAA = false`.
+- Add tests for missing shader/pipeline visibility, descriptor layout, supported/resource behavior, invalid ordering, manifest invalidation, and ModelViewer visual stability.
+
+**Out of scope:**
+
+- TAA, SMAA, MSAA resolve, sharpening, SSAO, SSR, DOF, volumetrics, FXAA quality presets UI, and generalized post-process domain graph.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-10-rq9-fxaa-postprocess-activation-plan.md`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Shaders/PostProcess/FXAA.hlsl`
+- `Render/Include/Render/PostProcess/FXAA.h`
+- `Render/Private/PostProcess/FXAA.cpp`
+- `Render/Include/Render/PostProcess/PostProcessStack.h`
+- `Render/Private/PostProcess/PostProcessStack.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/RenderHonestyValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation RenderSceneValidation RenderHonestyValidation ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|RenderHonestyValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderSceneValidation|ModelViewerSmoke|VisualGoldenValidation|ModelViewerPBRMaterialSmoke|PBRMaterialVisualGoldenValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|MaterialSystemValidation|ClusteredLightingValidation|ImageCompareValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|RenderSceneValidation|RenderHonestyValidation|ModelViewerSmoke|VisualGoldenValidation|ModelViewerPBRMaterialSmoke|PBRMaterialVisualGoldenValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused RQ9 gate: PASS, 115/115 selected tests passed before review; PASS, 141/141 selected tests passed after blocker fix.
+- Additional render regression: PASS, 66/66 selected tests passed.
+- Visual gate: PASS, `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerPBRMaterialSmoke`, and `PBRMaterialVisualGoldenValidation` passed.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `RenderPassValidation`, `RenderSceneValidation`, `RenderHonestyValidation`, `RenderGraphValidation`, `MaterialSystemValidation`, `ClusteredLightingValidation`, `ImageCompareValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerPBRMaterialSmoke`, `PBRMaterialVisualGoldenValidation`.
+- Diffs: RQ9 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: plan clarified FXAA as an explicit LDR post-process after ToneMapping, with default SceneRenderer FXAA still disabled.
+
+**Spark code review result:**
+
+- Initial verdict: BLOCKED.
+- Blocker resolved: invalid ToneMapping boundaries now prevent post-process graph scheduling instead of only logging a warning; tests assert no offending graph pass is added.
+- Final verdict: PASS.
+
+**Notes / follow-ups:**
+
+- `PostProcessStack` now copies scene/output texture descriptors before creating transient intermediates, avoiding dangling descriptor pointers if RenderGraph storage reallocates.
+- RQ9 does not change ModelViewer visual output by default because runtime FXAA remains disabled.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
