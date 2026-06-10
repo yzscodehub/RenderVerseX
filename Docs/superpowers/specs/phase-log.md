@@ -5519,6 +5519,91 @@ git diff --check
 
 ---
 
+### R-SP: RQ23 - Tone Mapping Camera EV100 Exposure Model
+
+**Date:** 2026-06-11
+**Commit:** `b8d716e feat(render): add camera ev exposure mode`
+**Spark plan review agent:** Mill (`019eb337-0a0a-7a12-a030-d4969ed4c87a`, gpt-5.5 xhigh)
+**Spark code review agent:** Mill (`019eb337-0a0a-7a12-a030-d4969ed4c87a`, gpt-5.5 xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-11-rq23-tonemapping-camera-ev100-exposure-plan.md`
+- Section: RQ23 full stage plan, §§1-11
+- Lines checked: full document before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ22 - ModelViewer Tone Mapping Exposure/Gamma CLI
+- Evidence: RQ22 implementation commit `25e320d`, phase-log commit `85b9d83`, focused and visual gates passed.
+
+**Approved scope:**
+
+- Add engine-level `ToneMappingExposureMode` with manual multiplier and Camera EV100 modes.
+- Extend `PostProcessSettings` with `exposureMode`, `cameraEV100`, and `exposureCompensationEV`.
+- Resolve tone mapping exposure on the CPU into the existing shader linear exposure constant.
+- Sanitize invalid manual/EV inputs.
+- Add behavior tests and source guards.
+- Leave ModelViewer CLI, shader constant layout, defaults, and golden images unchanged.
+
+**Out of scope:**
+
+- Auto exposure, histogram/luminance passes, eye adaptation, camera aperture/shutter/ISO, physical light calibration,
+  ModelViewer EV CLI, shader layout changes, default visual changes, or golden recapture.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-11-rq23-tonemapping-camera-ev100-exposure-plan.md`
+- `Render/Include/Render/PostProcess/ToneMappingTypes.h`
+- `Render/Include/Render/PostProcess/PostProcessStack.h`
+- `Render/Private/PostProcess/ToneMapping.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target RenderPassValidation PipelineCacheValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderPassValidation|PipelineCacheValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 143/143 selected `RenderPassValidation` and `PipelineCacheValidation` tests passed.
+- Visual gate: PASS, 9/9 selected default visual tests passed.
+- Diff check: PASS, with CRLF warnings only.
+- Golden update: not needed; default visual output stayed stable.
+
+**Artifacts:**
+
+- Tests: `RenderPassValidation`, `PipelineCacheValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`,
+  `ModelViewerShadowSmoke`, `ShadowVisualGoldenValidation`, `ImageCompareValidation`.
+- Diffs: RQ23 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Non-blocking guidance adopted: enum uses explicit `uint8`; direct tests cover manual sanitization and EV math uses
+  tolerant comparisons.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Notes / follow-ups:**
+
+- Camera EV100 is now representable in engine settings, but sample UI/CLI exposure for EV mode is intentionally
+  deferred.
+- Future stages can add ModelViewer `--camera-ev100` / `--exposure-compensation`, then build true auto exposure on
+  top of this shared contract.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
