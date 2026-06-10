@@ -816,6 +816,7 @@ void SceneRenderer::PreparePassesForFrame()
 {
     m_viewData.directionalLightDirection = Vec3{0.5f, -0.8f, 0.3f};
     m_viewData.directionalLightIntensity = 4.0f;
+    m_viewData.directionalLightColor = Vec3{1.0f, 1.0f, 1.0f};
     m_viewData.directionalShadowEnabled = 0;
     m_viewData.directionalShadowCascadeCount = 0;
     m_viewData.directionalShadowCascadeSplits = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -842,6 +843,7 @@ void SceneRenderer::PreparePassesForFrame()
 
         m_viewData.directionalLightDirection = light.direction;
         m_viewData.directionalLightIntensity = light.intensity;
+        m_viewData.directionalLightColor = light.color;
 
         if (m_shadowPass && light.castsShadow)
         {

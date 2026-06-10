@@ -98,6 +98,19 @@ namespace
         return std::max(0.0f, value);
     }
 
+    Vec3 SanitizeLightColor(const Vec3& value)
+    {
+        if (!std::isfinite(value.x) || !std::isfinite(value.y) || !std::isfinite(value.z))
+        {
+            return Vec3(1.0f, 1.0f, 1.0f);
+        }
+
+        return Vec3(
+            std::max(0.0f, value.x),
+            std::max(0.0f, value.y),
+            std::max(0.0f, value.z));
+    }
+
     void HashBytes(uint64& hash, const void* data, size_t size)
     {
         const auto* bytes = static_cast<const uint8*>(data);
@@ -3058,6 +3071,7 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
     constants.lightDirection = NormalizeOr(view.directionalLightDirection, Vec3(0.5f, -0.8f, 0.3f));
     const Vec3 cameraForward = NormalizeOr(view.cameraForward, Vec3(0.0f, 0.0f, -1.0f));
     constants.directionalLightIntensity = ClampFiniteNonNegative(view.directionalLightIntensity, 4.0f);
+    constants.directionalLightColor = SanitizeLightColor(view.directionalLightColor);
     const bool iblAmbientEnabled = view.iblAmbientEnabled != 0;
     const float iblDiffuseIntensity = iblAmbientEnabled ? view.iblDiffuseIntensity : 0.0f;
     const float iblSpecularIntensity = iblAmbientEnabled ? view.iblSpecularIntensity : 0.0f;

@@ -85,6 +85,9 @@ namespace RVX
         /// Primary directional light intensity; matches the previous hard-coded DefaultLit radiance
         float directionalLightIntensity = 4.0f;
 
+        /// Primary directional light RGB color; defaults to white for the existing visual baseline
+        Vec3 directionalLightColor{1.0f, 1.0f, 1.0f};
+
         /// Directional shadow matrix for the selected primary light and cascade 0
         Mat4 directionalShadowViewProjection = Mat4Identity();
 

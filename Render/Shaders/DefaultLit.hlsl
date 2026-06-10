@@ -37,6 +37,8 @@ cbuffer ViewConstants : register(b0, space0)
     float Time;
     float3 LightDirection;
     float DirectionalLightIntensity;
+    float3 DirectionalLightColor;
+    float DirectionalLightColorPadding;
     float4 IBLDiffuseAmbient;   // rgb: color, a: diffuse intensity
     float4 IBLSpecularAmbient;  // rgb: color, a: specular intensity
     float4 IBLTextureParams;    // x: enabled, y: prefiltered mip count, z: intensity, w: ambient floor intensity
@@ -337,7 +339,7 @@ float4 PSMain(PSInput input) : SV_TARGET
         baseColor.rgb,
         metallic,
         clampedRoughness,
-        float3(DirectionalLightIntensity, DirectionalLightIntensity, DirectionalLightIntensity),
+        DirectionalLightColor * DirectionalLightIntensity,
         shadowVisibility);
 
     float nDotV = max(dot(normal, viewDir), 0.001);

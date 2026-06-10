@@ -930,16 +930,18 @@ TEST_F(PipelineCacheValidationFixture, ViewConstantsLayoutMatchesDefaultLitCBuff
     EXPECT_EQ(offsetof(RVX::ViewConstants, time), 76u);
     EXPECT_EQ(offsetof(RVX::ViewConstants, lightDirection), 80u);
     EXPECT_EQ(offsetof(RVX::ViewConstants, directionalLightIntensity), 92u);
-    EXPECT_EQ(offsetof(RVX::ViewConstants, iblDiffuseAmbient), 96u);
-    EXPECT_EQ(offsetof(RVX::ViewConstants, iblSpecularAmbient), 112u);
-    EXPECT_EQ(offsetof(RVX::ViewConstants, iblTextureParams), 128u);
-    EXPECT_EQ(offsetof(RVX::ViewConstants, cameraForwardAndShadowCascadeCount), 144u);
-    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowViewProjections), 160u);
-    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowParams), 416u);
-    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowReceiverParams), 432u);
-    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowCascadeSplits), 448u);
-    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowCascadeFadeDistances), 464u);
-    EXPECT_EQ(sizeof(RVX::ViewConstants), 480u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalLightColor), 96u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalLightColorPadding), 108u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, iblDiffuseAmbient), 112u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, iblSpecularAmbient), 128u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, iblTextureParams), 144u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, cameraForwardAndShadowCascadeCount), 160u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowViewProjections), 176u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowParams), 432u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowReceiverParams), 448u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowCascadeSplits), 464u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowCascadeFadeDistances), 480u);
+    EXPECT_EQ(sizeof(RVX::ViewConstants), 496u);
 }
 
 TEST_F(PipelineCacheValidationFixture, ObjectConstantsLayoutMatchesDefaultLitCBufferPacking)
@@ -1110,6 +1112,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabl
     RVX::ViewData view;
     view.directionalLightDirection = RVX::Vec3(0.0f, -2.0f, 0.0f);
     view.directionalLightIntensity = 2.5f;
+    view.directionalLightColor = RVX::Vec3(1.0f, 0.72f, 0.45f);
     view.iblDiffuseColor = RVX::Vec3(0.25f, 0.5f, 0.75f);
     view.iblDiffuseIntensity = 0.8f;
     view.iblSpecularColor = RVX::Vec3(0.1f, 0.2f, 0.3f);
@@ -1131,6 +1134,10 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabl
     EXPECT_FLOAT_EQ(uploaded.lightDirection.y, -1.0f);
     EXPECT_FLOAT_EQ(uploaded.lightDirection.z, 0.0f);
     EXPECT_FLOAT_EQ(uploaded.directionalLightIntensity, 2.5f);
+    EXPECT_FLOAT_EQ(uploaded.directionalLightColor.x, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalLightColor.y, 0.72f);
+    EXPECT_FLOAT_EQ(uploaded.directionalLightColor.z, 0.45f);
+    EXPECT_FLOAT_EQ(uploaded.directionalLightColorPadding, 0.0f);
     EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.x, 0.25f);
     EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.y, 0.5f);
     EXPECT_FLOAT_EQ(uploaded.iblDiffuseAmbient.z, 0.75f);
@@ -1347,6 +1354,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLighti
     view.directionalLightDirection = RVX::Vec3(0.0f, 0.0f, 0.0f);
     view.cameraForward = RVX::Vec3(0.0f, 0.0f, 0.0f);
     view.directionalLightIntensity = -3.0f;
+    view.directionalLightColor = RVX::Vec3(0.25f, -1.0f, 2.0f);
     view.ambientFloorIntensity = -1.0f;
     cache.UpdateViewConstants(view);
 
@@ -1359,6 +1367,9 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLighti
     EXPECT_NEAR(uploaded.lightDirection.y, -0.808122f, 0.00001f);
     EXPECT_NEAR(uploaded.lightDirection.z, 0.303046f, 0.00001f);
     EXPECT_FLOAT_EQ(uploaded.directionalLightIntensity, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalLightColor.x, 0.25f);
+    EXPECT_FLOAT_EQ(uploaded.directionalLightColor.y, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalLightColor.z, 2.0f);
     EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.x, 0.0f);
     EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.y, 0.0f);
     EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.z, -1.0f);
@@ -1384,6 +1395,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLighti
     view.directionalLightDirection = RVX::Vec3(std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f);
     view.cameraForward = RVX::Vec3(std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f);
     view.directionalLightIntensity = std::numeric_limits<float>::infinity();
+    view.directionalLightColor = RVX::Vec3(0.5f, std::numeric_limits<float>::quiet_NaN(), 0.75f);
     view.ambientFloorIntensity = std::numeric_limits<float>::quiet_NaN();
     view.directionalShadowDepthBias = std::numeric_limits<float>::quiet_NaN();
     view.directionalShadowStrength = std::numeric_limits<float>::quiet_NaN();
@@ -1401,6 +1413,9 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLighti
     EXPECT_NEAR(uploaded.lightDirection.y, -0.808122f, 0.00001f);
     EXPECT_NEAR(uploaded.lightDirection.z, 0.303046f, 0.00001f);
     EXPECT_FLOAT_EQ(uploaded.directionalLightIntensity, 4.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalLightColor.x, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalLightColor.y, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalLightColor.z, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.x, 0.0f);
     EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.y, 0.0f);
     EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.z, -1.0f);
@@ -1449,6 +1464,7 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
     EXPECT_NE(shader.find("if (IBLTextureParams.x > 0.5)"), std::string::npos);
     EXPECT_NE(shader.find("IBLTextureParams.w"), std::string::npos);
     EXPECT_NE(shader.find("DirectionalShadowParams.w"), std::string::npos);
+    EXPECT_NE(shader.find("float3 DirectionalLightColor;"), std::string::npos);
     EXPECT_NE(shader.find("dot(worldPos - CameraPosition, cameraForward)"), std::string::npos);
     EXPECT_NE(shader.find("viewDepth > DirectionalShadowCascadeSplits[i]"), std::string::npos);
     EXPECT_NE(shader.find("float3(uv, (float)cascadeIndex)"), std::string::npos);
@@ -1472,7 +1488,9 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
     EXPECT_NE(shader.find("SampleDirectionalShadowPCF(shadowUV, compareDepth, DirectionalShadowParams.w, cascadeIndex)"),
               std::string::npos);
     EXPECT_NE(shader.find("float shadowVisibility = SampleDirectionalShadow(input.WorldPos, normal);"), std::string::npos);
-    EXPECT_NE(shader.find("float3(DirectionalLightIntensity, DirectionalLightIntensity, DirectionalLightIntensity)"),
+    EXPECT_NE(shader.find("DirectionalLightColor * DirectionalLightIntensity"),
+              std::string::npos);
+    EXPECT_EQ(shader.find("float3(DirectionalLightIntensity, DirectionalLightIntensity, DirectionalLightIntensity)"),
               std::string::npos);
     EXPECT_EQ(shader.find("float3(DirectionalLightIntensity, DirectionalLightIntensity, DirectionalLightIntensity),\n        1.0"),
               std::string::npos);
@@ -1513,8 +1531,10 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererUsesSamePrimaryDirectionalLi
     const std::string source = ReadTextFile(sceneRendererPath);
     EXPECT_NE(source.find("m_viewData.directionalLightDirection = Vec3{0.5f, -0.8f, 0.3f};"),
               std::string::npos);
+    EXPECT_NE(source.find("m_viewData.directionalLightColor = Vec3{1.0f, 1.0f, 1.0f};"), std::string::npos);
     EXPECT_NE(source.find("m_viewData.directionalLightDirection = light.direction;"), std::string::npos);
     EXPECT_NE(source.find("m_viewData.directionalLightIntensity = light.intensity;"), std::string::npos);
+    EXPECT_NE(source.find("m_viewData.directionalLightColor = light.color;"), std::string::npos);
     EXPECT_NE(source.find("m_shadowPass->SetDirectionalLight(light.direction, light.color, light.intensity);"),
               std::string::npos);
 }

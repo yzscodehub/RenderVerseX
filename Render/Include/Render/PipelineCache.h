@@ -42,6 +42,8 @@ namespace RVX
         float time;
         Vec3 lightDirection;
         float directionalLightIntensity;
+        Vec3 directionalLightColor;
+        float directionalLightColorPadding = 0.0f;
         Vec4 iblDiffuseAmbient;
         Vec4 iblSpecularAmbient;
         Vec4 iblTextureParams;
