@@ -1598,13 +1598,21 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
               std::string::npos);
     EXPECT_NE(source.find("--post-exposure <linear>"), std::string::npos);
     EXPECT_NE(source.find("range [0.0, 64.0]"), std::string::npos);
+    EXPECT_NE(source.find("--camera-ev100 <value>"), std::string::npos);
+    EXPECT_NE(source.find("range [-16.0, 32.0]"), std::string::npos);
+    EXPECT_NE(source.find("--exposure-compensation <ev>"), std::string::npos);
+    EXPECT_NE(source.find("range [-16.0, 16.0]"), std::string::npos);
     EXPECT_NE(source.find("--display-gamma <value>"), std::string::npos);
     EXPECT_NE(source.find("range [0.1, 10.0]"), std::string::npos);
     EXPECT_NE(source.find("enum class ToneMapSelection"), std::string::npos);
     EXPECT_NE(source.find("bool postExposureSet = false;"), std::string::npos);
     EXPECT_NE(source.find("bool displayGammaSet = false;"), std::string::npos);
+    EXPECT_NE(source.find("bool cameraEV100Set = false;"), std::string::npos);
+    EXPECT_NE(source.find("bool exposureCompensationSet = false;"), std::string::npos);
     EXPECT_NE(source.find("float postExposure = 1.0f;"), std::string::npos);
     EXPECT_NE(source.find("float displayGamma = 2.2f;"), std::string::npos);
+    EXPECT_NE(source.find("float cameraEV100 = 0.0f;"), std::string::npos);
+    EXPECT_NE(source.find("float exposureCompensationEV = 0.0f;"), std::string::npos);
 
     const auto parseStart = source.find("bool ParseToneMapSelection");
     ASSERT_NE(parseStart, std::string::npos);
@@ -1643,19 +1651,38 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
     EXPECT_NE(source.find("arg == \"--post-exposure\""), std::string::npos);
     EXPECT_NE(source.find("parsed < 0.0f || parsed > 64.0f"), std::string::npos);
     EXPECT_NE(source.find("Invalid --post-exposure value"), std::string::npos);
+    EXPECT_NE(source.find("arg == \"--camera-ev100\""), std::string::npos);
+    EXPECT_NE(source.find("parsed < -16.0f || parsed > 32.0f"), std::string::npos);
+    EXPECT_NE(source.find("Invalid --camera-ev100 value"), std::string::npos);
+    EXPECT_NE(source.find("arg == \"--exposure-compensation\""), std::string::npos);
+    EXPECT_NE(source.find("parsed < -16.0f || parsed > 16.0f"), std::string::npos);
+    EXPECT_NE(source.find("Invalid --exposure-compensation value"), std::string::npos);
+    EXPECT_NE(source.find("options.cameraEV100Set && options.postExposureSet"), std::string::npos);
+    EXPECT_NE(source.find("--camera-ev100 cannot be combined with --post-exposure"), std::string::npos);
+    EXPECT_NE(source.find("options.exposureCompensationSet && !options.cameraEV100Set"), std::string::npos);
+    EXPECT_NE(source.find("--exposure-compensation requires --camera-ev100"), std::string::npos);
     EXPECT_NE(source.find("arg == \"--display-gamma\""), std::string::npos);
     EXPECT_NE(source.find("parsed < 0.1f || parsed > 10.0f"), std::string::npos);
     EXPECT_NE(source.find("Invalid --display-gamma value"), std::string::npos);
     EXPECT_NE(source.find("PostProcessSettings postProcessSettings = sceneRenderer->GetPostProcessSettings();"),
               std::string::npos);
     EXPECT_NE(source.find("postProcessSettings.toneMappingOperator = tonemapOperator;"), std::string::npos);
+    EXPECT_NE(source.find("postProcessSettings.exposureMode = ToneMappingExposureMode::CameraEV100;"),
+              std::string::npos);
+    EXPECT_NE(source.find("postProcessSettings.cameraEV100 = options.cameraEV100;"), std::string::npos);
+    EXPECT_NE(source.find("postProcessSettings.exposureCompensationEV ="), std::string::npos);
+    EXPECT_NE(source.find("options.exposureCompensationSet ? options.exposureCompensationEV : 0.0f"),
+              std::string::npos);
+    EXPECT_NE(source.find("postProcessSettings.exposureMode = ToneMappingExposureMode::ManualMultiplier;"),
+              std::string::npos);
     EXPECT_NE(source.find("postProcessSettings.exposure = options.postExposure;"), std::string::npos);
     EXPECT_NE(source.find("postProcessSettings.gamma = options.displayGamma;"), std::string::npos);
     EXPECT_NE(source.find("sceneRenderer->ApplyPostProcessSettings(postProcessSettings);"), std::string::npos);
     EXPECT_NE(source.find("TryGetToneMappingOperator(options.tonemapSelection, tonemapOperator)"),
               std::string::npos);
-    EXPECT_NE(source.find("bool applyPostProcessSettings = tonemapSet || options.postExposureSet || options.displayGammaSet;"),
-              std::string::npos);
+    EXPECT_NE(source.find("bool applyPostProcessSettings ="), std::string::npos);
+    EXPECT_NE(source.find("tonemapSet || options.postExposureSet || options.cameraEV100Set ||"), std::string::npos);
+    EXPECT_NE(source.find("options.exposureCompensationSet || options.displayGammaSet;"), std::string::npos);
     EXPECT_NE(source.find("Invalid --tonemap value"), std::string::npos);
     EXPECT_EQ(source.find("options.tonemapSelection = ToneMapSelection::ACES"), std::string::npos);
 

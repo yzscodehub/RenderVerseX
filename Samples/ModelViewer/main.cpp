@@ -132,8 +132,12 @@ struct ModelViewerOptions
     ToneMapSelection tonemapSelection = ToneMapSelection::Default;
     bool postExposureSet = false;
     bool displayGammaSet = false;
+    bool cameraEV100Set = false;
+    bool exposureCompensationSet = false;
     float postExposure = 1.0f;
     float displayGamma = 2.2f;
+    float cameraEV100 = 0.0f;
+    float exposureCompensationEV = 0.0f;
 };
 
 struct ProceduralIBLResources
@@ -208,6 +212,10 @@ namespace
             << "                       Select tone mapping operator without changing default smoke/golden behavior\n"
             << "  --post-exposure <linear>\n"
             << "                       Set tone mapping exposure multiplier, range [0.0, 64.0]\n"
+            << "  --camera-ev100 <value>\n"
+            << "                       Set tone mapping camera EV100, range [-16.0, 32.0]\n"
+            << "  --exposure-compensation <ev>\n"
+            << "                       Set camera exposure compensation, range [-16.0, 16.0]\n"
             << "  --display-gamma <value>\n"
             << "                       Set tone mapping display gamma, range [0.1, 10.0]\n"
             << "  --expect-ibl-ready   Smoke mode fails unless texture IBL becomes ready\n"
@@ -619,6 +627,32 @@ namespace
                 options.postExposure = parsed;
                 options.postExposureSet = true;
             }
+            else if (arg == "--camera-ev100")
+            {
+                const char* value = requireValue("--camera-ev100");
+                float parsed = 0.0f;
+                if (!ParseFloat(value, parsed) || parsed < -16.0f || parsed > 32.0f)
+                {
+                    RVX_CORE_ERROR("Invalid --camera-ev100 value: {} (expected finite range [-16.0, 32.0])",
+                                   value ? value : "");
+                    return false;
+                }
+                options.cameraEV100 = parsed;
+                options.cameraEV100Set = true;
+            }
+            else if (arg == "--exposure-compensation")
+            {
+                const char* value = requireValue("--exposure-compensation");
+                float parsed = 0.0f;
+                if (!ParseFloat(value, parsed) || parsed < -16.0f || parsed > 16.0f)
+                {
+                    RVX_CORE_ERROR("Invalid --exposure-compensation value: {} (expected finite range [-16.0, 16.0])",
+                                   value ? value : "");
+                    return false;
+                }
+                options.exposureCompensationEV = parsed;
+                options.exposureCompensationSet = true;
+            }
             else if (arg == "--display-gamma")
             {
                 const char* value = requireValue("--display-gamma");
@@ -710,6 +744,18 @@ namespace
         if (options.materialTestScene && options.shadowTestScene)
         {
             RVX_CORE_ERROR("--material-test-scene cannot be combined with --shadow-test-scene");
+            return false;
+        }
+
+        if (options.cameraEV100Set && options.postExposureSet)
+        {
+            RVX_CORE_ERROR("--camera-ev100 cannot be combined with --post-exposure");
+            return false;
+        }
+
+        if (options.exposureCompensationSet && !options.cameraEV100Set)
+        {
+            RVX_CORE_ERROR("--exposure-compensation requires --camera-ev100");
             return false;
         }
 
@@ -1831,7 +1877,9 @@ int main(int argc, char* argv[])
     {
         ToneMappingOperator tonemapOperator = ToneMappingOperator::None;
         const bool tonemapSet = TryGetToneMappingOperator(options.tonemapSelection, tonemapOperator);
-        bool applyPostProcessSettings = tonemapSet || options.postExposureSet || options.displayGammaSet;
+        bool applyPostProcessSettings =
+            tonemapSet || options.postExposureSet || options.cameraEV100Set ||
+            options.exposureCompensationSet || options.displayGammaSet;
         if (applyPostProcessSettings)
         {
             PostProcessSettings postProcessSettings = sceneRenderer->GetPostProcessSettings();
@@ -1839,8 +1887,16 @@ int main(int argc, char* argv[])
             {
                 postProcessSettings.toneMappingOperator = tonemapOperator;
             }
-            if (options.postExposureSet)
+            if (options.cameraEV100Set)
             {
+                postProcessSettings.exposureMode = ToneMappingExposureMode::CameraEV100;
+                postProcessSettings.cameraEV100 = options.cameraEV100;
+                postProcessSettings.exposureCompensationEV =
+                    options.exposureCompensationSet ? options.exposureCompensationEV : 0.0f;
+            }
+            else if (options.postExposureSet)
+            {
+                postProcessSettings.exposureMode = ToneMappingExposureMode::ManualMultiplier;
                 postProcessSettings.exposure = options.postExposure;
             }
             if (options.displayGammaSet)
@@ -1848,9 +1904,15 @@ int main(int argc, char* argv[])
                 postProcessSettings.gamma = options.displayGamma;
             }
             sceneRenderer->ApplyPostProcessSettings(postProcessSettings);
-            RVX_CORE_INFO("ModelViewer post-process toneMapping='{}', exposure={:.3f}, gamma={:.3f}",
+            const char* exposureModeName =
+                postProcessSettings.exposureMode == ToneMappingExposureMode::CameraEV100 ? "camera-ev100" : "manual";
+            RVX_CORE_INFO("ModelViewer post-process toneMapping='{}', exposureMode='{}', manualExposure={:.3f}, "
+                          "cameraEV100={:.3f}, compensationEV={:.3f}, gamma={:.3f}",
                           GetToneMapSelectionName(options.tonemapSelection),
+                          exposureModeName,
                           postProcessSettings.exposure,
+                          postProcessSettings.cameraEV100,
+                          postProcessSettings.exposureCompensationEV,
                           postProcessSettings.gamma);
         }
 
@@ -1871,6 +1933,8 @@ int main(int argc, char* argv[])
     {
         if (options.tonemapSelection != ToneMapSelection::Default ||
             options.postExposureSet ||
+            options.cameraEV100Set ||
+            options.exposureCompensationSet ||
             options.displayGammaSet)
         {
             RVX_CORE_WARN("ModelViewer post-process settings could not be applied: SceneRenderer unavailable");
