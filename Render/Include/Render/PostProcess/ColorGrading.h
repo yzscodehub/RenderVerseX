@@ -10,8 +10,12 @@
 #include "Core/MathTypes.h"
 #include "Render/PostProcess/PostProcessStack.h"
 
+#include <deque>
+
 namespace RVX
 {
+    class PipelineCache;
+    class ResourceViewCache;
     class RHITexture;
 
     /**
@@ -30,7 +34,7 @@ namespace RVX
     struct ColorGradingConfig
     {
         // Mode
-        ColorGradingMode mode = ColorGradingMode::HDR;
+        ColorGradingMode mode = ColorGradingMode::LDR;
         
         // White balance
         float temperature = 0.0f;           ///< Color temperature offset (-100 to 100)
@@ -38,6 +42,7 @@ namespace RVX
         
         // Global adjustments
         float exposure = 0.0f;              ///< Exposure offset in EV
+        float brightness = 0.0f;            ///< Additive LDR brightness offset
         float contrast = 1.0f;              ///< Contrast (0 to 2)
         float saturation = 1.0f;            ///< Saturation (0 to 2)
         float hueShift = 0.0f;              ///< Hue shift in degrees (-180 to 180)
@@ -87,16 +92,22 @@ namespace RVX
         ~ColorGradingPass() override = default;
 
         const char* GetName() const override { return "ColorGrading"; }
-        int32 GetPriority() const override { return 800; }  // Just before tone mapping
+        int32 GetPriority() const override { return 930; }  // LDR, after tone mapping and before vignette
+        bool IsEnabled() const override;
 
         void Configure(const PostProcessSettings& settings) override;
         void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override;
+
+        /**
+         * @brief Provide GPU resources required by the fullscreen ColorGrading path
+         */
+        void SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache);
 
         // =========================================================================
         // Configuration
         // =========================================================================
 
-        void SetConfig(const ColorGradingConfig& config) { m_config = config; }
+        void SetConfig(const ColorGradingConfig& config);
         const ColorGradingConfig& GetConfig() const { return m_config; }
 
         // White balance
@@ -136,7 +147,7 @@ namespace RVX
         void SetLUTContribution(float contribution) { m_config.lutContribution = contribution; }
         float GetLUTContribution() const { return m_config.lutContribution; }
 
-        void SetUseLUT(bool enable) { m_config.useLUT = enable; }
+        void SetUseLUT(bool enable);
         bool IsUsingLUT() const { return m_config.useLUT; }
 
         // Split toning
@@ -150,7 +161,7 @@ namespace RVX
         float GetSplitToningBalance() const { return m_config.splitToningBalance; }
 
         // Mode
-        void SetMode(ColorGradingMode mode) { m_config.mode = mode; }
+        void SetMode(ColorGradingMode mode);
         ColorGradingMode GetMode() const { return m_config.mode; }
 
         // =========================================================================
@@ -166,7 +177,17 @@ namespace RVX
         RHITextureRef BakeToLUT(IRHIDevice* device, uint32 size = 32);
 
     private:
+        bool EnsureRuntimeResources();
+        bool UpdateConstants(uint32 width, uint32 height, const ColorGradingConfig& config);
+        void RefreshSupportState();
+
         ColorGradingConfig m_config;
+        PipelineCache* m_pipelineCache = nullptr;
+        ResourceViewCache* m_viewCache = nullptr;
+        IRHIDevice* m_resourceDevice = nullptr;
+        RHIBufferRef m_constantBuffer;
+        RHISamplerRef m_sampler;
+        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
         RHITexture* m_lutTexture = nullptr;
     };
 

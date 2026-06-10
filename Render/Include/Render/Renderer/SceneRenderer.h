@@ -31,6 +31,7 @@ namespace RVX
     class World;
     class Camera;
     class BloomPass;
+    class ColorGradingPass;
     class FXAAPass;
     class VignettePass;
     class IRenderPass;
@@ -338,6 +339,7 @@ namespace RVX
         SkyboxPass* m_skyboxPass = nullptr;  // Cached pointer to skybox pass
         BloomPass* m_bloomPostProcess = nullptr;
         ToneMappingPass* m_toneMappingPostProcess = nullptr;
+        ColorGradingPass* m_colorGradingPostProcess = nullptr;
         VignettePass* m_vignettePostProcess = nullptr;
         FXAAPass* m_fxaaPostProcess = nullptr;
         

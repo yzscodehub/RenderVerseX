@@ -653,7 +653,6 @@ TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDis
     settings.enableFilmGrain = true;
     settings.enableVolumetricLighting = true;
 
-    RVX::ColorGradingPass colorGrading;
     RVX::DOFPass dof;
     RVX::MotionBlurPass motionBlur;
     RVX::ChromaticAberrationPass chromaticAberration;
@@ -661,7 +660,6 @@ TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDis
     RVX::VolumetricLightingPass volumetricLighting;
 
     RVX::IPostProcessPass* passes[] = {
-        &colorGrading,
         &dof,
         &motionBlur,
         &chromaticAberration,
@@ -677,6 +675,44 @@ TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDis
         EXPECT_FALSE(pass->IsEnabled()) << pass->GetName();
         EXPECT_FALSE(pass->GetUnsupportedReason().empty()) << pass->GetName();
     }
+}
+
+TEST_F(RenderHonestyValidationFixture, ColorGradingRequiresResourcesBeforeSupported)
+{
+    RVX::PostProcessSettings settings;
+    settings.enableColorGrading = true;
+
+    RVX::ColorGradingPass colorGrading;
+    colorGrading.Configure(settings);
+
+    EXPECT_TRUE(colorGrading.IsRequestedEnabled());
+    EXPECT_EQ(colorGrading.GetMode(), RVX::ColorGradingMode::LDR);
+    EXPECT_FALSE(colorGrading.IsSupported());
+    EXPECT_FALSE(colorGrading.IsEnabled());
+    EXPECT_FALSE(colorGrading.GetUnsupportedReason().empty());
+}
+
+TEST_F(RenderHonestyValidationFixture, ColorGradingRejectsHDRAndLUTRequests)
+{
+    RVX::PostProcessSettings settings;
+    settings.enableColorGrading = true;
+
+    RVX::ColorGradingPass hdrMode;
+    hdrMode.Configure(settings);
+    hdrMode.SetMode(RVX::ColorGradingMode::HDR);
+    EXPECT_TRUE(hdrMode.IsRequestedEnabled());
+    EXPECT_FALSE(hdrMode.IsSupported());
+    EXPECT_FALSE(hdrMode.IsEnabled());
+    EXPECT_NE(hdrMode.GetUnsupportedReason().find("HDR"), std::string::npos);
+
+    RVX::ColorGradingPass lutMode;
+    lutMode.Configure(settings);
+    lutMode.SetUseLUT(true);
+    EXPECT_TRUE(lutMode.IsRequestedEnabled());
+    EXPECT_FALSE(lutMode.IsSupported());
+    EXPECT_FALSE(lutMode.IsEnabled());
+    EXPECT_NE(lutMode.GetUnsupportedReason().find("LUT"), std::string::npos);
+    EXPECT_EQ(lutMode.BakeToLUT(nullptr), nullptr);
 }
 
 TEST_F(RenderHonestyValidationFixture, FXAARequiresResourcesBeforeSupported)

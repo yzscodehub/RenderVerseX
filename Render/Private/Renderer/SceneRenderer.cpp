@@ -12,6 +12,7 @@
 #include "Render/Passes/SkyboxPass.h"
 #include "Render/Passes/TransparentPass.h"
 #include "Render/PostProcess/Bloom.h"
+#include "Render/PostProcess/ColorGrading.h"
 #include "Render/PostProcess/FXAA.h"
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
@@ -269,6 +270,7 @@ void SceneRenderer::Shutdown()
     m_skyboxPass = nullptr;
     m_bloomPostProcess = nullptr;
     m_toneMappingPostProcess = nullptr;
+    m_colorGradingPostProcess = nullptr;
     m_vignettePostProcess = nullptr;
     m_fxaaPostProcess = nullptr;
     if (m_postProcessStack)
@@ -1092,6 +1094,7 @@ void SceneRenderer::SetupDefaultPostProcess()
     m_postProcessStack->Initialize(m_renderContext->GetDevice());
     m_bloomPostProcess = m_postProcessStack->AddEffect<BloomPass>();
     m_toneMappingPostProcess = m_postProcessStack->AddEffect<ToneMappingPass>();
+    m_colorGradingPostProcess = m_postProcessStack->AddEffect<ColorGradingPass>();
     m_vignettePostProcess = m_postProcessStack->AddEffect<VignettePass>();
     m_fxaaPostProcess = m_postProcessStack->AddEffect<FXAAPass>();
 
@@ -1103,6 +1106,11 @@ void SceneRenderer::SetupDefaultPostProcess()
     if (m_toneMappingPostProcess)
     {
         m_toneMappingPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
+    }
+
+    if (m_colorGradingPostProcess)
+    {
+        m_colorGradingPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
     }
 
     if (m_vignettePostProcess)

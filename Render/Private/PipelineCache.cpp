@@ -28,7 +28,7 @@ namespace
     constexpr uint64 RVX_MAX_DRAW_CONSTANTS_PER_FRAME = 8192;
     constexpr uint64 RVX_PIPELINE_HASH_OFFSET_BASIS = 0xcbf29ce484222325ull;
     constexpr uint64 RVX_PIPELINE_HASH_PRIME = 0x100000001b3ull;
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 8;
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 9;
     constexpr const char* RVX_PIPELINE_MANIFEST_MAGIC = "RVX_PIPELINE_CACHE_MANIFEST";
 
     struct PipelineCacheManifest
@@ -41,6 +41,8 @@ namespace
         uint64 toneMappingPixelShaderHash = 0;
         uint64 bloomVertexShaderHash = 0;
         uint64 bloomPixelShaderHash = 0;
+        uint64 colorGradingVertexShaderHash = 0;
+        uint64 colorGradingPixelShaderHash = 0;
         uint64 fxaaVertexShaderHash = 0;
         uint64 fxaaPixelShaderHash = 0;
         uint64 vignetteVertexShaderHash = 0;
@@ -58,6 +60,7 @@ namespace
         uint64 skyboxPipelineHash = 0;
         uint64 toneMappingPipelineHash = 0;
         uint64 bloomPipelineHash = 0;
+        uint64 colorGradingPipelineHash = 0;
         uint64 fxaaPipelineHash = 0;
         uint64 vignettePipelineHash = 0;
     };
@@ -181,6 +184,8 @@ namespace
                key == "toneMappingPixelShaderHash" ||
                key == "bloomVertexShaderHash" ||
                key == "bloomPixelShaderHash" ||
+               key == "colorGradingVertexShaderHash" ||
+               key == "colorGradingPixelShaderHash" ||
                key == "fxaaVertexShaderHash" ||
                key == "fxaaPixelShaderHash" ||
                key == "vignetteVertexShaderHash" ||
@@ -198,6 +203,7 @@ namespace
                key == "skyboxPipelineHash" ||
                key == "toneMappingPipelineHash" ||
                key == "bloomPipelineHash" ||
+               key == "colorGradingPipelineHash" ||
                key == "fxaaPipelineHash" ||
                key == "vignettePipelineHash";
     }
@@ -289,7 +295,7 @@ namespace
             fields.emplace(std::move(key), std::move(value));
         }
 
-        if (fields.size() != 27)
+        if (fields.size() != 30)
         {
             return false;
         }
@@ -302,6 +308,8 @@ namespace
             !ReadRequiredManifestUint64(fields, "toneMappingPixelShaderHash", manifest.toneMappingPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomVertexShaderHash", manifest.bloomVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomPixelShaderHash", manifest.bloomPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "colorGradingVertexShaderHash", manifest.colorGradingVertexShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "colorGradingPixelShaderHash", manifest.colorGradingPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "fxaaVertexShaderHash", manifest.fxaaVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "fxaaPixelShaderHash", manifest.fxaaPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "vignetteVertexShaderHash", manifest.vignetteVertexShaderHash) ||
@@ -319,6 +327,7 @@ namespace
             !ReadRequiredManifestUint64(fields, "skyboxPipelineHash", manifest.skyboxPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "toneMappingPipelineHash", manifest.toneMappingPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "bloomPipelineHash", manifest.bloomPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "colorGradingPipelineHash", manifest.colorGradingPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "fxaaPipelineHash", manifest.fxaaPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "vignettePipelineHash", manifest.vignettePipelineHash))
         {
@@ -354,6 +363,8 @@ namespace
             file << "toneMappingPixelShaderHash=" << manifest.toneMappingPixelShaderHash << '\n';
             file << "bloomVertexShaderHash=" << manifest.bloomVertexShaderHash << '\n';
             file << "bloomPixelShaderHash=" << manifest.bloomPixelShaderHash << '\n';
+            file << "colorGradingVertexShaderHash=" << manifest.colorGradingVertexShaderHash << '\n';
+            file << "colorGradingPixelShaderHash=" << manifest.colorGradingPixelShaderHash << '\n';
             file << "fxaaVertexShaderHash=" << manifest.fxaaVertexShaderHash << '\n';
             file << "fxaaPixelShaderHash=" << manifest.fxaaPixelShaderHash << '\n';
             file << "vignetteVertexShaderHash=" << manifest.vignetteVertexShaderHash << '\n';
@@ -371,6 +382,7 @@ namespace
             file << "skyboxPipelineHash=" << manifest.skyboxPipelineHash << '\n';
             file << "toneMappingPipelineHash=" << manifest.toneMappingPipelineHash << '\n';
             file << "bloomPipelineHash=" << manifest.bloomPipelineHash << '\n';
+            file << "colorGradingPipelineHash=" << manifest.colorGradingPipelineHash << '\n';
             file << "fxaaPipelineHash=" << manifest.fxaaPipelineHash << '\n';
             file << "vignettePipelineHash=" << manifest.vignettePipelineHash << '\n';
             if (!file)
@@ -435,6 +447,8 @@ namespace
                a.toneMappingPixelShaderHash == b.toneMappingPixelShaderHash &&
                a.bloomVertexShaderHash == b.bloomVertexShaderHash &&
                a.bloomPixelShaderHash == b.bloomPixelShaderHash &&
+               a.colorGradingVertexShaderHash == b.colorGradingVertexShaderHash &&
+               a.colorGradingPixelShaderHash == b.colorGradingPixelShaderHash &&
                a.fxaaVertexShaderHash == b.fxaaVertexShaderHash &&
                a.fxaaPixelShaderHash == b.fxaaPixelShaderHash &&
                a.vignetteVertexShaderHash == b.vignetteVertexShaderHash &&
@@ -452,6 +466,7 @@ namespace
                a.skyboxPipelineHash == b.skyboxPipelineHash &&
                a.toneMappingPipelineHash == b.toneMappingPipelineHash &&
                a.bloomPipelineHash == b.bloomPipelineHash &&
+               a.colorGradingPipelineHash == b.colorGradingPipelineHash &&
                a.fxaaPipelineHash == b.fxaaPipelineHash &&
                a.vignettePipelineHash == b.vignettePipelineHash;
     }
@@ -618,6 +633,7 @@ void PipelineCache::Shutdown()
     m_skyboxPipeline.Reset();
     m_toneMappingPipeline.Reset();
     m_bloomPipeline.Reset();
+    m_colorGradingPipeline.Reset();
     m_fxaaPipeline.Reset();
     m_vignettePipeline.Reset();
     m_pipelineCache.clear();
@@ -643,6 +659,8 @@ void PipelineCache::Shutdown()
     m_toneMappingPixelShader.Reset();
     m_bloomVertexShader.Reset();
     m_bloomPixelShader.Reset();
+    m_colorGradingVertexShader.Reset();
+    m_colorGradingPixelShader.Reset();
     m_fxaaVertexShader.Reset();
     m_fxaaPixelShader.Reset();
     m_vignetteVertexShader.Reset();
@@ -656,6 +674,8 @@ void PipelineCache::Shutdown()
     m_toneMappingPsCompileResult.reset();
     m_bloomVsCompileResult.reset();
     m_bloomPsCompileResult.reset();
+    m_colorGradingVsCompileResult.reset();
+    m_colorGradingPsCompileResult.reset();
     m_fxaaVsCompileResult.reset();
     m_fxaaPsCompileResult.reset();
     m_vignetteVsCompileResult.reset();
@@ -673,6 +693,7 @@ bool PipelineCache::CompileShaders()
     std::string depthOnlyShaderPath = m_shaderDir + "/DepthOnly.hlsl";
     std::string toneMappingShaderPath = m_shaderDir + "/PostProcess/ToneMapping.hlsl";
     std::string bloomShaderPath = m_shaderDir + "/PostProcess/Bloom.hlsl";
+    std::string colorGradingShaderPath = m_shaderDir + "/PostProcess/ColorGrading.hlsl";
     std::string fxaaShaderPath = m_shaderDir + "/PostProcess/FXAA.hlsl";
     std::string vignetteShaderPath = m_shaderDir + "/PostProcess/Vignette.hlsl";
     std::string skyboxShaderPath = m_shaderDir + "/Skybox.hlsl";
@@ -739,6 +760,16 @@ bool PipelineCache::CompileShaders()
         SetLastError("Bloom shader file not found: " + bloomShaderPath);
 
         std::filesystem::path absPath = std::filesystem::absolute(bloomShaderPath);
+        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
+        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
+        return false;
+    }
+
+    if (!std::filesystem::exists(colorGradingShaderPath))
+    {
+        SetLastError("ColorGrading shader file not found: " + colorGradingShaderPath);
+
+        std::filesystem::path absPath = std::filesystem::absolute(colorGradingShaderPath);
         RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
         RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
         return false;
@@ -918,6 +949,53 @@ bool PipelineCache::CompileShaders()
     }
     m_bloomPixelShader = bloomPsResult.shader;
     m_bloomPsCompileResult = std::make_unique<ShaderCompileResult>(std::move(bloomPsResult.compileResult));
+
+    ShaderLoadDesc colorGradingVsDesc = vsDesc;
+    colorGradingVsDesc.path = colorGradingShaderPath;
+    colorGradingVsDesc.entryPoint = "VSMain";
+    colorGradingVsDesc.stage = RHIShaderStage::Vertex;
+    if (backend == RHIBackendType::DX11)
+    {
+        colorGradingVsDesc.targetProfile = "vs_5_0";
+    }
+
+    auto colorGradingVsResult = m_shaderManager->LoadFromFile(m_device, colorGradingVsDesc);
+    if (!colorGradingVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile ColorGrading vertex shader: " + colorGradingVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!colorGradingVsResult.shader)
+    {
+        SetLastError("Failed to create ColorGrading vertex shader");
+        return false;
+    }
+    m_colorGradingVertexShader = colorGradingVsResult.shader;
+    m_colorGradingVsCompileResult =
+        std::make_unique<ShaderCompileResult>(std::move(colorGradingVsResult.compileResult));
+
+    ShaderLoadDesc colorGradingPsDesc = colorGradingVsDesc;
+    colorGradingPsDesc.entryPoint = "PSMain";
+    colorGradingPsDesc.stage = RHIShaderStage::Pixel;
+    if (backend == RHIBackendType::DX11)
+    {
+        colorGradingPsDesc.targetProfile = "ps_5_0";
+    }
+
+    auto colorGradingPsResult = m_shaderManager->LoadFromFile(m_device, colorGradingPsDesc);
+    if (!colorGradingPsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile ColorGrading pixel shader: " + colorGradingPsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!colorGradingPsResult.shader)
+    {
+        SetLastError("Failed to create ColorGrading pixel shader");
+        return false;
+    }
+    m_colorGradingPixelShader = colorGradingPsResult.shader;
+    m_colorGradingPsCompileResult =
+        std::make_unique<ShaderCompileResult>(std::move(colorGradingPsResult.compileResult));
 
     ShaderLoadDesc fxaaVsDesc = vsDesc;
     fxaaVsDesc.path = fxaaShaderPath;
@@ -1309,6 +1387,8 @@ void PipelineCache::ProcessPipelineManifest()
     expected.toneMappingPixelShaderHash = ComputeShaderHash(m_toneMappingPsCompileResult.get());
     expected.bloomVertexShaderHash = ComputeShaderHash(m_bloomVsCompileResult.get());
     expected.bloomPixelShaderHash = ComputeShaderHash(m_bloomPsCompileResult.get());
+    expected.colorGradingVertexShaderHash = ComputeShaderHash(m_colorGradingVsCompileResult.get());
+    expected.colorGradingPixelShaderHash = ComputeShaderHash(m_colorGradingPsCompileResult.get());
     expected.fxaaVertexShaderHash = ComputeShaderHash(m_fxaaVsCompileResult.get());
     expected.fxaaPixelShaderHash = ComputeShaderHash(m_fxaaPsCompileResult.get());
     expected.vignetteVertexShaderHash = ComputeShaderHash(m_vignetteVsCompileResult.get());
@@ -1326,6 +1406,7 @@ void PipelineCache::ProcessPipelineManifest()
     expected.skyboxPipelineHash = m_stats.skyboxPipelineHash;
     expected.toneMappingPipelineHash = m_stats.toneMappingPipelineHash;
     expected.bloomPipelineHash = m_stats.bloomPipelineHash;
+    expected.colorGradingPipelineHash = m_stats.colorGradingPipelineHash;
     expected.fxaaPipelineHash = m_stats.fxaaPipelineHash;
     expected.vignettePipelineHash = m_stats.vignettePipelineHash;
 
@@ -1552,6 +1633,16 @@ RHIPipeline* PipelineCache::GetBloomPipeline(RHIFormat outputFormat)
     }
 
     return GetOrCreateBloomPipeline(outputFormat).Get();
+}
+
+RHIPipeline* PipelineCache::GetColorGradingPipeline(RHIFormat outputFormat)
+{
+    if (outputFormat == RHIFormat::Unknown || outputFormat == m_toneMappingOutputFormat)
+    {
+        return GetColorGradingPipeline();
+    }
+
+    return GetOrCreateColorGradingPipeline(outputFormat).Get();
 }
 
 RHIPipeline* PipelineCache::GetFXAAPipeline(RHIFormat outputFormat)
@@ -1807,7 +1898,17 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
-    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, Skybox pipeline, ToneMapping pipeline, Bloom pipeline, Vignette pipeline, and FXAA pipeline");
+    m_colorGradingPipeline = GetOrCreateColorGradingPipeline(m_toneMappingOutputFormat);
+    if (!m_colorGradingPipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create ColorGrading pipeline");
+        }
+        return false;
+    }
+
+    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, Skybox pipeline, ToneMapping pipeline, Bloom pipeline, Vignette pipeline, FXAA pipeline, and ColorGrading pipeline");
     return true;
 }
 
@@ -2066,6 +2167,54 @@ RHIPipelineRef PipelineCache::GetOrCreateBloomPipeline(RHIFormat outputFormat)
     return pipeline;
 }
 
+RHIPipelineRef PipelineCache::GetOrCreateColorGradingPipeline(RHIFormat outputFormat)
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildColorGradingPipelineDesc(outputFormat);
+    if (!pipelineDesc.vertexShader)
+    {
+        SetLastError("Cannot create ColorGrading pipeline without vertex shader");
+        return {};
+    }
+    if (!pipelineDesc.pixelShader)
+    {
+        SetLastError("Cannot create ColorGrading pipeline without pixel shader");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError("Cannot create ColorGrading pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.numRenderTargets != 1 || pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create ColorGrading pipeline with invalid render target format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc, MaterialPipelineVariant::Transparent);
+    m_stats.colorGradingPipelineHash = stateHash;
+    m_stats.lastPipelineStateHash = stateHash;
+
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create ColorGrading pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
 RHIPipelineRef PipelineCache::GetOrCreateVignettePipeline(RHIFormat outputFormat)
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildVignettePipelineDesc(outputFormat);
@@ -2289,6 +2438,28 @@ RHIGraphicsPipelineDesc PipelineCache::BuildBloomPipelineDesc(RHIFormat outputFo
     return pipelineDesc;
 }
 
+RHIGraphicsPipelineDesc PipelineCache::BuildColorGradingPipelineDesc(RHIFormat outputFormat) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc;
+
+    pipelineDesc.vertexShader = m_colorGradingVertexShader.Get();
+    pipelineDesc.pixelShader = m_colorGradingPixelShader.Get();
+    pipelineDesc.pipelineLayout = m_postProcessPipelineLayout.Get();
+    pipelineDesc.debugName = "ColorGradingPipeline";
+
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets = 1;
+    pipelineDesc.renderTargetFormats[0] = outputFormat;
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+
+    return pipelineDesc;
+}
+
 RHIGraphicsPipelineDesc PipelineCache::BuildFXAAPipelineDesc(RHIFormat outputFormat) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
@@ -2403,6 +2574,10 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_bloomVsCompileResult.get());
         if (shader == m_bloomPixelShader.Get())
             return ComputeShaderHash(m_bloomPsCompileResult.get());
+        if (shader == m_colorGradingVertexShader.Get())
+            return ComputeShaderHash(m_colorGradingVsCompileResult.get());
+        if (shader == m_colorGradingPixelShader.Get())
+            return ComputeShaderHash(m_colorGradingPsCompileResult.get());
         if (shader == m_fxaaVertexShader.Get())
             return ComputeShaderHash(m_fxaaVsCompileResult.get());
         if (shader == m_fxaaPixelShader.Get())

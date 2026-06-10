@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <filesystem>
 #include <iterator>
@@ -30,6 +31,7 @@
 #include "Render/Passes/SkyboxPass.h"
 #include "Render/Passes/TransparentPass.h"
 #include "Render/PostProcess/Bloom.h"
+#include "Render/PostProcess/ColorGrading.h"
 #include "Render/PostProcess/FXAA.h"
 #include "Render/PostProcess/PostProcessStack.h"
 #include "Render/PostProcess/ToneMapping.h"
@@ -1719,6 +1721,371 @@ TEST_F(RenderPassValidationFixture, FXAASkipsDrawWhenConstantsCannotMap)
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
 }
 
+TEST_F(RenderPassValidationFixture, ColorGradingRequiresResourcesBeforeReportingSupported)
+{
+    ColorGradingPass pass;
+    PostProcessSettings settings;
+    settings.enableColorGrading = true;
+    pass.Configure(settings);
+
+    EXPECT_TRUE(pass.IsRequestedEnabled());
+    EXPECT_EQ(pass.GetMode(), ColorGradingMode::LDR);
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_FALSE(pass.IsEnabled());
+    EXPECT_FALSE(pass.GetUnsupportedReason().empty());
+}
+
+TEST_F(RenderPassValidationFixture, ColorGradingDefaultConfiguredPathIsLDRAndSupportedWithResources)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    ColorGradingPass pass;
+    PostProcessSettings settings;
+    settings.enableColorGrading = true;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    EXPECT_EQ(pass.GetMode(), ColorGradingMode::LDR);
+    EXPECT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    EXPECT_TRUE(pass.IsEnabled());
+}
+
+TEST_F(RenderPassValidationFixture, ColorGradingRejectsHDRModeBeforeGraphScheduling)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    ColorGradingPass pass;
+    PostProcessSettings settings;
+    settings.enableColorGrading = true;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+    pass.SetMode(ColorGradingMode::HDR);
+
+    EXPECT_TRUE(pass.IsRequestedEnabled());
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_FALSE(pass.IsEnabled());
+    EXPECT_NE(pass.GetUnsupportedReason().find("HDR"), std::string::npos);
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+    EXPECT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+    EXPECT_EQ(ctx.drawCount, 0u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 0u);
+}
+
+TEST_F(RenderPassValidationFixture, ColorGradingRejectsRequestedLUTBeforeGraphScheduling)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    ColorGradingPass pass;
+    PostProcessSettings settings;
+    settings.enableColorGrading = true;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+    pass.SetUseLUT(true);
+
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_FALSE(pass.IsEnabled());
+    EXPECT_NE(pass.GetUnsupportedReason().find("LUT"), std::string::npos);
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+    EXPECT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
+}
+
+TEST_F(RenderPassValidationFixture, ColorGradingRejectsSetLUTBeforeGraphScheduling)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    ColorGradingPass pass;
+    PostProcessSettings settings;
+    settings.enableColorGrading = true;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    RHITextureRef lutTexture =
+        device.CreateTexture(RHITextureDesc::Texture2D(4, 4, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(lutTexture);
+    pass.SetLUT(lutTexture.Get());
+
+    EXPECT_TRUE(pass.IsUsingLUT());
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_FALSE(pass.IsEnabled());
+    EXPECT_NE(pass.GetUnsupportedReason().find("LUT"), std::string::npos);
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+    EXPECT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
+}
+
+TEST_F(RenderPassValidationFixture, ColorGradingNeutralSettingsStillWritesFullscreenPass)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    ColorGradingPass pass;
+    PostProcessSettings settings;
+    settings.enableColorGrading = true;
+    settings.contrast = 1.0f;
+    settings.saturation = 1.0f;
+    settings.brightness = 0.0f;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    ASSERT_TRUE(pass.IsEnabled());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.compileValid);
+    EXPECT_EQ(stats.totalPasses, 1u);
+    EXPECT_EQ(stats.culledPasses, 0u);
+    EXPECT_EQ(stats.emptyPassUsageCount, 0u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.beginRenderPassCount, 1u);
+    EXPECT_EQ(ctx.endRenderPassCount, 1u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetColorGradingPipeline(RHIFormat::RGBA8_UNORM));
+    ASSERT_EQ(ctx.descriptorSetSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.descriptorSetSequence[0], 0u);
+    EXPECT_EQ(ctx.drawCount, 1u);
+    EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
+    EXPECT_EQ(ctx.drawIndexedCount, 0u);
+
+    ASSERT_EQ(ctx.renderPasses.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.renderPasses[0].colorAttachmentCount, 1u);
+    EXPECT_FALSE(ctx.renderPasses[0].hasDepthStencil);
+    EXPECT_EQ(ctx.renderPasses[0].renderArea.width, 64u);
+    EXPECT_EQ(ctx.renderPasses[0].renderArea.height, 64u);
+
+    auto descriptorIt = std::find_if(
+        device.createdDescriptorSetDescs.begin(),
+        device.createdDescriptorSetDescs.end(),
+        [](const RHIDescriptorSetDesc& desc)
+        {
+            return desc.debugName && std::string(desc.debugName) == "ColorGradingDescriptorSet";
+        });
+    ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
+    EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
+}
+
+TEST_F(RenderPassValidationFixture, ColorGradingUploadsConstantsWithHLSLPacking)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    ColorGradingPass pass;
+    PostProcessSettings settings;
+    settings.enableColorGrading = true;
+    pass.Configure(settings);
+
+    ColorGradingConfig config;
+    config.mode = ColorGradingMode::LDR;
+    config.temperature = 11.0f;
+    config.tint = -7.0f;
+    config.exposure = 0.25f;
+    config.contrast = 1.35f;
+    config.saturation = 1.45f;
+    config.hueShift = 17.5f;
+    config.brightness = 0.27f;
+    config.lift = Vec4(1.1f, 1.2f, 1.3f, 0.1f);
+    config.gamma = Vec4(0.9f, 0.8f, 0.7f, 0.2f);
+    config.gain = Vec4(1.4f, 1.5f, 1.6f, 0.3f);
+    config.redChannel = Vec3(0.8f, 0.1f, 0.2f);
+    config.greenChannel = Vec3(0.3f, 0.9f, 0.4f);
+    config.blueChannel = Vec3(0.5f, 0.6f, 1.0f);
+    config.shadowsTint = Vec3(0.2f, 0.3f, 0.4f);
+    config.highlightsTint = Vec3(0.7f, 0.8f, 0.9f);
+    config.splitToningBalance = -0.25f;
+    pass.SetConfig(config);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    ASSERT_TRUE(pass.IsEnabled());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 24, RHIFormat::RGBA8_UNORM));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 24, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    ASSERT_EQ(ctx.drawCount, 1u);
+
+    const FakeBuffer* constants = FindCreatedBuffer(device, "ColorGradingConstants");
+    ASSERT_NE(constants, nullptr);
+    const std::vector<uint8>& storage = constants->GetStorage();
+    ASSERT_GE(storage.size(), static_cast<size_t>(176));
+
+    auto readFloat = [&storage](size_t byteOffset)
+    {
+        float value = 0.0f;
+        std::memcpy(&value, storage.data() + byteOffset, sizeof(float));
+        return value;
+    };
+
+    EXPECT_FLOAT_EQ(readFloat(0), 32.0f);
+    EXPECT_FLOAT_EQ(readFloat(4), 24.0f);
+    EXPECT_FLOAT_EQ(readFloat(8), 1.0f / 32.0f);
+    EXPECT_FLOAT_EQ(readFloat(12), 1.0f / 24.0f);
+    EXPECT_FLOAT_EQ(readFloat(16), config.temperature);
+    EXPECT_FLOAT_EQ(readFloat(20), config.tint);
+    EXPECT_FLOAT_EQ(readFloat(24), config.exposure);
+    EXPECT_FLOAT_EQ(readFloat(28), config.contrast);
+    EXPECT_FLOAT_EQ(readFloat(32), config.saturation);
+    EXPECT_FLOAT_EQ(readFloat(36), config.hueShift);
+    EXPECT_FLOAT_EQ(readFloat(40), 0.0f);
+    EXPECT_FLOAT_EQ(readFloat(44), 0.0f);
+
+    EXPECT_FLOAT_EQ(readFloat(48), config.lift.x);
+    EXPECT_FLOAT_EQ(readFloat(52), config.lift.y);
+    EXPECT_FLOAT_EQ(readFloat(56), config.lift.z);
+    EXPECT_FLOAT_EQ(readFloat(60), config.lift.w);
+    EXPECT_FLOAT_EQ(readFloat(64), config.gamma.x);
+    EXPECT_FLOAT_EQ(readFloat(68), config.gamma.y);
+    EXPECT_FLOAT_EQ(readFloat(72), config.gamma.z);
+    EXPECT_FLOAT_EQ(readFloat(76), config.gamma.w);
+    EXPECT_FLOAT_EQ(readFloat(80), config.gain.x);
+    EXPECT_FLOAT_EQ(readFloat(84), config.gain.y);
+    EXPECT_FLOAT_EQ(readFloat(88), config.gain.z);
+    EXPECT_FLOAT_EQ(readFloat(92), config.gain.w);
+
+    EXPECT_FLOAT_EQ(readFloat(96), config.redChannel.x);
+    EXPECT_FLOAT_EQ(readFloat(100), config.redChannel.y);
+    EXPECT_FLOAT_EQ(readFloat(104), config.redChannel.z);
+    EXPECT_FLOAT_EQ(readFloat(108), 0.0f);
+    EXPECT_FLOAT_EQ(readFloat(112), config.greenChannel.x);
+    EXPECT_FLOAT_EQ(readFloat(116), config.greenChannel.y);
+    EXPECT_FLOAT_EQ(readFloat(120), config.greenChannel.z);
+    EXPECT_FLOAT_EQ(readFloat(124), 0.0f);
+    EXPECT_FLOAT_EQ(readFloat(128), config.blueChannel.x);
+    EXPECT_FLOAT_EQ(readFloat(132), config.blueChannel.y);
+    EXPECT_FLOAT_EQ(readFloat(136), config.blueChannel.z);
+    EXPECT_FLOAT_EQ(readFloat(140), 0.0f);
+
+    EXPECT_FLOAT_EQ(readFloat(144), config.shadowsTint.x);
+    EXPECT_FLOAT_EQ(readFloat(148), config.shadowsTint.y);
+    EXPECT_FLOAT_EQ(readFloat(152), config.shadowsTint.z);
+    EXPECT_FLOAT_EQ(readFloat(156), config.splitToningBalance);
+    EXPECT_FLOAT_EQ(readFloat(160), config.highlightsTint.x);
+    EXPECT_FLOAT_EQ(readFloat(164), config.highlightsTint.y);
+    EXPECT_FLOAT_EQ(readFloat(168), config.highlightsTint.z);
+    EXPECT_FLOAT_EQ(readFloat(172), config.brightness);
+}
+
+TEST_F(RenderPassValidationFixture, ColorGradingSkipsDrawWhenConstantsCannotMap)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+
+    ColorGradingPass pass;
+    PostProcessSettings settings;
+    settings.enableColorGrading = true;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.drawCount, 0u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 0u);
+}
+
 TEST_F(RenderPassValidationFixture, VignetteRequiresResourcesBeforeReportingSupported)
 {
     VignettePass pass;
@@ -1919,7 +2286,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingTh
     EXPECT_EQ(ctx.endRenderPassCount, 2u);
 }
 
-TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingVignetteFXAAWithHDRAndLDRIntermediates)
+TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGradingVignetteFXAAWithHDRAndLDRIntermediates)
 {
     ASSERT_NO_FATAL_FAILURE(Initialize());
 
@@ -1940,20 +2307,24 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingVignette
     PostProcessSettings settings;
     settings.enableBloom = true;
     settings.enableToneMapping = true;
+    settings.enableColorGrading = true;
     settings.enableVignette = true;
     settings.enableFXAA = true;
 
     PostProcessStack stack;
     auto* bloom = stack.AddEffect<BloomPass>();
     auto* toneMapping = stack.AddEffect<ToneMappingPass>();
+    auto* colorGrading = stack.AddEffect<ColorGradingPass>();
     auto* vignette = stack.AddEffect<VignettePass>();
     auto* fxaa = stack.AddEffect<FXAAPass>();
     bloom->Configure(settings);
     toneMapping->Configure(settings);
+    colorGrading->Configure(settings);
     vignette->Configure(settings);
     fxaa->Configure(settings);
     bloom->SetResources(&pipelineCache, &viewCache);
     toneMapping->SetResources(&pipelineCache, &viewCache);
+    colorGrading->SetResources(&pipelineCache, &viewCache);
     vignette->SetResources(&pipelineCache, &viewCache);
     fxaa->SetResources(&pipelineCache, &viewCache);
 
@@ -1961,12 +2332,12 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingVignette
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.noEffectNoWork);
-    EXPECT_EQ(executeStats.enabledEffectCount, 4u);
-    EXPECT_EQ(executeStats.graphPassCount, 4u);
-    EXPECT_EQ(executeStats.transientIntermediateCount, 3u);
+    EXPECT_EQ(executeStats.enabledEffectCount, 5u);
+    EXPECT_EQ(executeStats.graphPassCount, 5u);
+    EXPECT_EQ(executeStats.transientIntermediateCount, 4u);
     EXPECT_EQ(executeStats.hdrIntermediateCount, 1u);
     EXPECT_EQ(executeStats.hdrIntermediateFormat, RHIFormat::RGBA16_FLOAT);
-    EXPECT_EQ(executeStats.ldrIntermediateCount, 2u);
+    EXPECT_EQ(executeStats.ldrIntermediateCount, 3u);
     EXPECT_EQ(executeStats.ldrIntermediateFormat, RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(executeStats.transientIntermediateFormat, RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
@@ -1976,20 +2347,21 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingVignette
     graph.Compile();
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 4u);
+    EXPECT_EQ(graphStats.totalPasses, 5u);
 
     RecordingCommandContext ctx;
     graph.Execute(ctx);
 
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(4));
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(5));
     EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetBloomPipeline(RHIFormat::RGBA16_FLOAT));
     EXPECT_EQ(ctx.pipelineSequence[1], pipelineCache.GetToneMappingPipeline());
-    EXPECT_EQ(ctx.pipelineSequence[2], pipelineCache.GetVignettePipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.pipelineSequence[3], pipelineCache.GetFXAAPipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.drawCount, 4u);
+    EXPECT_EQ(ctx.pipelineSequence[2], pipelineCache.GetColorGradingPipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.pipelineSequence[3], pipelineCache.GetVignettePipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.pipelineSequence[4], pipelineCache.GetFXAAPipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.drawCount, 5u);
     EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
-    EXPECT_EQ(ctx.beginRenderPassCount, 4u);
-    EXPECT_EQ(ctx.endRenderPassCount, 4u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 5u);
+    EXPECT_EQ(ctx.endRenderPassCount, 5u);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessStackKeepsZeroIntensityVignetteAsPassThrough)
@@ -2130,6 +2502,43 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterLD
     EXPECT_EQ(graphStats.totalPasses, 0u);
 }
 
+TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterColorGradingLDRChain)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+
+    PostProcessStack stack;
+    (void)stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 100);
+    (void)stack.AddEffect<RecordingPostProcessPass>("ColorGrading", 200);
+    (void)stack.AddEffect<RecordingPostProcessPass>("Bloom", 300);
+
+    stack.Execute(graph, input, output);
+
+    const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
+    EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
+    EXPECT_FALSE(executeStats.toneMappingBoundaryWarning.empty());
+    EXPECT_EQ(executeStats.graphPassCount, 0u);
+    EXPECT_EQ(executeStats.transientIntermediateCount, 0u);
+    EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
+
+    graph.Compile();
+    const auto& graphStats = graph.GetCompileStats();
+    EXPECT_TRUE(graphStats.compileValid);
+    EXPECT_EQ(graphStats.totalPasses, 0u);
+}
+
 TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidLDREffectBeforeToneMapping)
 {
     ASSERT_NO_FATAL_FAILURE(Initialize());
@@ -2149,6 +2558,41 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidLDREffectBefor
 
     PostProcessStack stack;
     (void)stack.AddEffect<RecordingPostProcessPass>("FXAA", 100);
+
+    stack.Execute(graph, input, output);
+
+    const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
+    EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
+    EXPECT_FALSE(executeStats.toneMappingBoundaryWarning.empty());
+    EXPECT_EQ(executeStats.graphPassCount, 0u);
+    EXPECT_EQ(executeStats.transientIntermediateCount, 0u);
+    EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
+
+    graph.Compile();
+    const auto& graphStats = graph.GetCompileStats();
+    EXPECT_TRUE(graphStats.compileValid);
+    EXPECT_EQ(graphStats.totalPasses, 0u);
+}
+
+TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidColorGradingBeforeToneMapping)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+
+    PostProcessStack stack;
+    (void)stack.AddEffect<RecordingPostProcessPass>("ColorGrading", 100);
 
     stack.Execute(graph, input, output);
 
@@ -2237,8 +2681,13 @@ TEST(RenderPostProcessStackValidation, SceneRendererWiresLDREffectsWithoutFlippi
         "Private" / "Renderer" / "SceneRenderer.cpp";
     const std::string source = ReadTextFile(sceneRendererPath);
 
+    EXPECT_NE(source.find("settings.enableColorGrading = false;"), std::string::npos);
     EXPECT_NE(source.find("settings.enableFXAA = false;"), std::string::npos);
     EXPECT_NE(source.find("settings.enableVignette = false;"), std::string::npos);
+    EXPECT_NE(source.find("m_colorGradingPostProcess = m_postProcessStack->AddEffect<ColorGradingPass>();"),
+              std::string::npos);
+    EXPECT_NE(source.find("m_colorGradingPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());"),
+              std::string::npos);
     EXPECT_NE(source.find("m_vignettePostProcess = m_postProcessStack->AddEffect<VignettePass>();"),
               std::string::npos);
     EXPECT_NE(source.find("m_vignettePostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());"),
