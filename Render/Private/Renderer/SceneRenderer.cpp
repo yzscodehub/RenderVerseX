@@ -41,6 +41,7 @@ namespace
         settings.enableToneMapping = true;
         settings.exposure = 1.0f;
         settings.gamma = 2.2f;
+        settings.toneMappingOperator = ToneMappingOperator::None;
         settings.enableBloom = true;
         settings.bloomIntensity = 0.0f;
         settings.enableFXAA = false;
@@ -1145,10 +1146,6 @@ void SceneRenderer::SetupDefaultPostProcess()
     }
 
     ApplyPostProcessSettings(MakeDefaultRuntimePostProcessSettings());
-    if (m_toneMappingPostProcess)
-    {
-        m_toneMappingPostProcess->SetOperator(ToneMappingOperator::None);
-    }
 }
 
 void SceneRenderer::SetupDefaultPasses()

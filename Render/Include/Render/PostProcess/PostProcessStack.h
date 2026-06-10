@@ -7,6 +7,7 @@
 
 #include "Core/Types.h"
 #include "Render/Graph/RenderGraph.h"
+#include "Render/PostProcess/ToneMappingTypes.h"
 #include <vector>
 #include <memory>
 #include <functional>
@@ -29,6 +30,7 @@ namespace RVX
         bool enableToneMapping = true;
         float exposure = 1.0f;
         float gamma = 2.2f;
+        ToneMappingOperator toneMappingOperator = ToneMappingOperator::ACES;
 
         // =========================================================================
         // Bloom

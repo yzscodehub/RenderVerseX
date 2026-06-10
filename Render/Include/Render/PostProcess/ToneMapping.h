@@ -6,6 +6,7 @@
  */
 
 #include "Render/PostProcess/PostProcessStack.h"
+#include "Render/PostProcess/ToneMappingTypes.h"
 
 #include <deque>
 
@@ -13,19 +14,6 @@ namespace RVX
 {
     class PipelineCache;
     class ResourceViewCache;
-
-    /**
-     * @brief Tone mapping operator types
-     */
-    enum class ToneMappingOperator : uint8
-    {
-        Reinhard,           // Simple Reinhard
-        ReinhardExtended,   // Extended Reinhard with white point
-        ACES,               // ACES filmic
-        Uncharted2,         // Filmic curve from Uncharted 2
-        Neutral,            // Neutral tonemapper
-        None                // No tone mapping (pass-through)
-    };
 
     /**
      * @brief Tone mapping post-process pass

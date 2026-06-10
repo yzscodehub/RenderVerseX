@@ -45,6 +45,7 @@ void ToneMappingPass::Configure(const PostProcessSettings& settings)
     m_enabled = settings.enableToneMapping;
     m_exposure = settings.exposure;
     m_gamma = settings.gamma;
+    m_operator = settings.toneMappingOperator;
 }
 
 void ToneMappingPass::SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache)

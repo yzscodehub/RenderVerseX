@@ -1496,6 +1496,47 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererAppliesShadowQualityConfigTo
     EXPECT_NE(source.find("shadowPass->SetConfig(m_shadowPassConfig);"), std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture, ToneMappingOperatorUsesSharedRuntimeSettings)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path renderRoot = FindShaderDirectory().parent_path();
+    const fs::path postProcessIncludeDir = renderRoot / "Include" / "Render" / "PostProcess";
+    const std::string settingsHeader = ReadTextFile(postProcessIncludeDir / "PostProcessStack.h");
+    const std::string toneMappingHeader = ReadTextFile(postProcessIncludeDir / "ToneMapping.h");
+    const std::string toneMappingTypesHeader = ReadTextFile(postProcessIncludeDir / "ToneMappingTypes.h");
+    const std::string toneMappingSource =
+        ReadTextFile(renderRoot / "Private" / "PostProcess" / "ToneMapping.cpp");
+    const std::string sceneRendererSource =
+        ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+
+    EXPECT_NE(toneMappingTypesHeader.find("enum class ToneMappingOperator : uint8"), std::string::npos);
+    EXPECT_EQ(toneMappingHeader.find("enum class ToneMappingOperator"), std::string::npos);
+    EXPECT_NE(settingsHeader.find("#include \"Render/PostProcess/ToneMappingTypes.h\""), std::string::npos);
+    EXPECT_NE(toneMappingHeader.find("#include \"Render/PostProcess/ToneMappingTypes.h\""), std::string::npos);
+    EXPECT_EQ(settingsHeader.find("#include \"Render/PostProcess/ToneMapping.h\""), std::string::npos);
+    EXPECT_NE(settingsHeader.find("ToneMappingOperator toneMappingOperator = ToneMappingOperator::ACES;"),
+              std::string::npos);
+    EXPECT_NE(toneMappingSource.find("m_operator = settings.toneMappingOperator;"), std::string::npos);
+
+    const auto defaultsStart = sceneRendererSource.find("PostProcessSettings MakeDefaultRuntimePostProcessSettings()");
+    ASSERT_NE(defaultsStart, std::string::npos);
+    const auto defaultsEnd = sceneRendererSource.find("SceneRenderer::SceneRenderer()", defaultsStart);
+    ASSERT_NE(defaultsEnd, std::string::npos);
+    const std::string defaultsBody = sceneRendererSource.substr(defaultsStart, defaultsEnd - defaultsStart);
+    EXPECT_NE(defaultsBody.find("settings.toneMappingOperator = ToneMappingOperator::None;"), std::string::npos);
+
+    const auto setupStart = sceneRendererSource.find("void SceneRenderer::SetupDefaultPostProcess()");
+    ASSERT_NE(setupStart, std::string::npos);
+    const auto setupEnd = sceneRendererSource.find("void SceneRenderer::SetupDefaultPasses()", setupStart);
+    ASSERT_NE(setupEnd, std::string::npos);
+    const std::string setupBody = sceneRendererSource.substr(setupStart, setupEnd - setupStart);
+    EXPECT_EQ(setupBody.find("SetOperator(ToneMappingOperator::None)"), std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, ModelViewerExposesShadowQualityPresets)
 {
     if (!HasCompilerAvailable())

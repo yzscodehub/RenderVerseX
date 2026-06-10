@@ -1494,6 +1494,27 @@ TEST_F(RenderPassValidationFixture, ToneMappingRequiresResourcesBeforeReportingS
     EXPECT_FALSE(pass.GetUnsupportedReason().empty());
 }
 
+TEST_F(RenderPassValidationFixture, PostProcessSettingsDefaultToneMappingOperatorIsACES)
+{
+    PostProcessSettings settings;
+    EXPECT_EQ(settings.toneMappingOperator, ToneMappingOperator::ACES);
+}
+
+TEST_F(RenderPassValidationFixture, ToneMappingConfigureAppliesOperatorFromSettings)
+{
+    ToneMappingPass pass;
+    PostProcessSettings settings;
+    settings.enableToneMapping = true;
+    settings.toneMappingOperator = ToneMappingOperator::Neutral;
+
+    pass.Configure(settings);
+    EXPECT_EQ(pass.GetOperator(), ToneMappingOperator::Neutral);
+
+    settings.toneMappingOperator = ToneMappingOperator::None;
+    pass.Configure(settings);
+    EXPECT_EQ(pass.GetOperator(), ToneMappingOperator::None);
+}
+
 TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscreenTriangle)
 {
     ASSERT_NO_FATAL_FAILURE(Initialize());
