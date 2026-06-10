@@ -16,11 +16,32 @@
 #include "Resource/Types/TextureResource.h"
 #include "RHI/RHIRenderPass.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace RVX
 {
 
 namespace
 {
+    float SanitizeUnitRatio(float value)
+    {
+        return std::isfinite(value) ? clamp(value, 0.0f, 1.0f) : 0.0f;
+    }
+
+    void ClearDirectionalShadowViewData(ViewData& drawView)
+    {
+        drawView.directionalShadowEnabled = 0;
+        drawView.directionalShadowCascadeCount = 0;
+        drawView.directionalShadowCascadeSplits = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        drawView.directionalShadowCascadeFadeDistances = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        drawView.directionalShadowViewProjection = Mat4Identity();
+        for (Mat4& viewProjection : drawView.directionalShadowViewProjections)
+        {
+            viewProjection = Mat4Identity();
+        }
+    }
+
     const Resource::MaterialResource* ResolveMaterialResource(const RenderObject& obj, size_t submeshIndex)
     {
         if (submeshIndex >= obj.materialResources.size())
@@ -213,10 +234,19 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         drawView.directionalShadowEnabled = shadowView ? 1 : 0;
         drawView.directionalShadowCascadeCount = shadowView ? cascadeCount : 0;
         drawView.directionalShadowCascadeSplits = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        drawView.directionalShadowCascadeFadeDistances = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
         for (uint32 i = 0; i < cascadeCount; ++i)
         {
             drawView.directionalShadowViewProjections[i] = cascades[i].viewProjection;
             drawView.directionalShadowCascadeSplits[i] = nearClip + cascades[i].splitDepth * clipRange;
+        }
+        const float blendRatio = SanitizeUnitRatio(shadowConfig.cascadeBlendRatio);
+        for (uint32 i = 0; i + 1 < cascadeCount; ++i)
+        {
+            const float splitDistance = drawView.directionalShadowCascadeSplits[i];
+            const float previousSplit = i == 0 ? nearClip : drawView.directionalShadowCascadeSplits[i - 1];
+            const float cascadeSpan = std::max(0.0f, splitDistance - previousSplit);
+            drawView.directionalShadowCascadeFadeDistances[i] = std::min(cascadeSpan, cascadeSpan * blendRatio);
         }
         drawView.directionalShadowViewProjection = cascadeCount > 0 ? cascades[0].viewProjection : Mat4Identity();
         drawView.directionalShadowDepthBias = shadowConfig.shadowBias;
@@ -231,13 +261,19 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     }
     else
     {
-        drawView.directionalShadowEnabled = 0;
-        drawView.directionalShadowCascadeCount = 0;
+        ClearDirectionalShadowViewData(drawView);
     }
 
     const DirectionalShadowFrameBindingResult shadowBinding =
         m_pipelineCache->UpdateDirectionalShadowFrameResources(shadowResources);
-    drawView.directionalShadowEnabled = shadowBinding.shadowSamplingEnabled ? 1 : 0;
+    if (shadowBinding.shadowSamplingEnabled)
+    {
+        drawView.directionalShadowEnabled = 1;
+    }
+    else
+    {
+        ClearDirectionalShadowViewData(drawView);
+    }
     m_shadowStats.frameShadowReady = shadowBinding.shadowSamplingEnabled;
     m_pipelineCache->UpdateViewConstants(drawView);
 

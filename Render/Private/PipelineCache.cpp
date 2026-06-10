@@ -2921,6 +2921,11 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
         ClampFiniteNonNegative(view.directionalShadowCascadeSplits.y, 0.0f),
         ClampFiniteNonNegative(view.directionalShadowCascadeSplits.z, 0.0f),
         ClampFiniteNonNegative(view.directionalShadowCascadeSplits.w, 0.0f));
+    constants.directionalShadowCascadeFadeDistances = Vec4(
+        ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.x, 0.0f),
+        ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.y, 0.0f),
+        ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.z, 0.0f),
+        ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.w, 0.0f));
     const bool directionalShadowEnabled = view.directionalShadowEnabled != 0 &&
                                           shadowCascadeCount > 0 &&
                                           !m_config.reverseZ;

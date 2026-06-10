@@ -668,6 +668,27 @@ namespace
         return true;
     }
 
+    bool IsAlignedToTexel(float value, float texelSize, float epsilon = 0.0001f)
+    {
+        if (texelSize <= 0.0f)
+            return false;
+
+        const float rounded = std::round(value / texelSize) * texelSize;
+        return std::abs(value - rounded) <= epsilon;
+    }
+
+    Vec2 ProjectShadowUV(const ShadowCascade& cascade, const Vec3& worldPosition)
+    {
+        const Vec4 clipPosition = cascade.viewProjection * Vec4(worldPosition, 1.0f);
+        if (std::abs(clipPosition.w) <= 0.000001f)
+        {
+            return Vec2(0.0f, 0.0f);
+        }
+
+        const Vec2 ndc(clipPosition.x / clipPosition.w, clipPosition.y / clipPosition.w);
+        return Vec2(ndc.x * 0.5f + 0.5f, ndc.y * -0.5f + 0.5f);
+    }
+
     const FakeBuffer* FindCreatedBuffer(const FakeDevice& device, const char* debugName)
     {
         for (size_t i = 0; i < device.createdBufferDescs.size() && i < device.createdBuffers.size(); ++i)
@@ -977,6 +998,126 @@ TEST_F(RenderPassValidationFixture, ShadowPassSetupDeclaresCascadeDepthResources
     EXPECT_EQ(stats.totalPasses, 1u);
     EXPECT_EQ(stats.culledPasses, 0u);
     EXPECT_EQ(stats.emptyPassUsageCount, 0u);
+}
+
+TEST_F(RenderPassValidationFixture, ShadowPassStabilizesCascadeCentersToShadowTexels)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+    view.viewportWidth = 320;
+    view.viewportHeight = 180;
+    view.aspectRatio = 16.0f / 9.0f;
+    view.fieldOfView = 1.0472f;
+    view.nearPlane = 0.1f;
+    view.farPlane = 100.0f;
+    view.cameraPosition = Vec3(0.37f, 0.0f, 5.19f);
+    view.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    view.inverseViewMatrix = Mat4Identity();
+
+    ShadowPassConfig config;
+    config.numCascades = 3;
+    config.shadowMapSize = 128;
+    config.stabilizeCascades = true;
+
+    ShadowPass stabilizedPass;
+    stabilizedPass.SetResources(&gpuResources, &pipelineCache);
+    stabilizedPass.SetRenderScene(&scene);
+    stabilizedPass.SetConfig(config);
+    stabilizedPass.SetDirectionalLight(Vec3{-0.4f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 2.0f);
+    stabilizedPass.AddToGraph(graph, view);
+
+    ASSERT_EQ(stabilizedPass.GetCascades().size(), static_cast<size_t>(3));
+    for (const ShadowCascade& cascade : stabilizedPass.GetCascades())
+    {
+        EXPECT_GT(cascade.stableExtent, 0.0f);
+        EXPECT_GT(cascade.texelWorldSize, 0.0f);
+        EXPECT_TRUE(IsAlignedToTexel(cascade.lightSpaceCenter.x, cascade.texelWorldSize));
+        EXPECT_TRUE(IsAlignedToTexel(cascade.lightSpaceCenter.y, cascade.texelWorldSize));
+    }
+
+    RenderGraph unsnappedGraph;
+    unsnappedGraph.SetDevice(&device);
+    view.renderGraph = &unsnappedGraph;
+    config.stabilizeCascades = false;
+
+    ShadowPass unsnappedPass;
+    unsnappedPass.SetResources(&gpuResources, &pipelineCache);
+    unsnappedPass.SetRenderScene(&scene);
+    unsnappedPass.SetConfig(config);
+    unsnappedPass.SetDirectionalLight(Vec3{-0.4f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 2.0f);
+    unsnappedPass.AddToGraph(unsnappedGraph, view);
+
+    ASSERT_EQ(unsnappedPass.GetCascades().size(), stabilizedPass.GetCascades().size());
+    const Vec2 stabilizedCenter = stabilizedPass.GetCascades()[0].lightSpaceCenter;
+    const Vec2 unsnappedCenter = unsnappedPass.GetCascades()[0].lightSpaceCenter;
+    EXPECT_GT(length(stabilizedCenter - unsnappedCenter), 0.0001f);
+}
+
+TEST_F(RenderPassValidationFixture, ShadowPassStableCascadeIgnoresSubTexelCameraMotion)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    auto buildFirstCascade = [&](const ViewData& inputView)
+    {
+        RenderGraph graph;
+        graph.SetDevice(&device);
+
+        ViewData localView = inputView;
+        localView.renderGraph = &graph;
+        localView.viewCache = &viewCache;
+
+        ShadowPassConfig config;
+        config.numCascades = 3;
+        config.shadowMapSize = 128;
+        config.stabilizeCascades = true;
+
+        ShadowPass pass;
+        pass.SetResources(&gpuResources, &pipelineCache);
+        pass.SetRenderScene(&scene);
+        pass.SetConfig(config);
+        pass.SetDirectionalLight(Vec3{-0.4f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 2.0f);
+        pass.AddToGraph(graph, localView);
+
+        EXPECT_FALSE(pass.GetCascades().empty());
+        return pass.GetCascades()[0];
+    };
+
+    ViewData baseView = view;
+    baseView.viewportWidth = 320;
+    baseView.viewportHeight = 180;
+    baseView.aspectRatio = 16.0f / 9.0f;
+    baseView.fieldOfView = 1.0472f;
+    baseView.nearPlane = 0.1f;
+    baseView.farPlane = 100.0f;
+    baseView.cameraPosition = Vec3(0.37f, 0.0f, 5.19f);
+    baseView.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    baseView.inverseViewMatrix = Mat4Identity();
+
+    const ShadowCascade baseCascade = buildFirstCascade(baseView);
+    ASSERT_GT(baseCascade.texelWorldSize, 0.0f);
+    const Vec3 fixedWorldPoint = baseView.cameraPosition + baseView.cameraForward * 1.0f;
+    const Vec2 baseShadowUV = ProjectShadowUV(baseCascade, fixedWorldPoint);
+
+    ViewData smallMoveView = baseView;
+    smallMoveView.cameraPosition.x += baseCascade.texelWorldSize * 0.1f;
+    const ShadowCascade smallMoveCascade = buildFirstCascade(smallMoveView);
+    EXPECT_NEAR(smallMoveCascade.lightSpaceCenter.x, baseCascade.lightSpaceCenter.x, 0.0001f);
+    EXPECT_NEAR(smallMoveCascade.lightSpaceCenter.y, baseCascade.lightSpaceCenter.y, 0.0001f);
+    const Vec2 smallMoveShadowUV = ProjectShadowUV(smallMoveCascade, fixedWorldPoint);
+    EXPECT_NEAR(smallMoveShadowUV.x, baseShadowUV.x, 0.00001f);
+    EXPECT_NEAR(smallMoveShadowUV.y, baseShadowUV.y, 0.00001f);
+
+    ViewData largeMoveView = baseView;
+    largeMoveView.cameraPosition.x += baseCascade.texelWorldSize * 8.0f;
+    const ShadowCascade largeMoveCascade = buildFirstCascade(largeMoveView);
+    EXPECT_GT(length(largeMoveCascade.lightSpaceCenter - baseCascade.lightSpaceCenter), 0.0f);
+    const Vec2 largeMoveShadowUV = ProjectShadowUV(largeMoveCascade, fixedWorldPoint);
+    EXPECT_GT(length(largeMoveShadowUV - baseShadowUV), 0.001f);
 }
 
 TEST_F(RenderPassValidationFixture, ShadowPassSingleCascadeStillDeclaresArrayCompatibleTexture)
@@ -3242,6 +3383,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDurin
     shadowConfig.shadowMapSize = 64;
     shadowConfig.filterRadiusTexels = 2.0f;
     shadowConfig.normalBias = 0.0375f;
+    shadowConfig.cascadeBlendRatio = 0.1f;
 
     ShadowPass shadowPass;
     shadowPass.SetResources(&gpuResources, &pipelineCache);
@@ -3302,6 +3444,13 @@ TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDurin
                     view.nearPlane + cascades[1].splitDepth * splitRange);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.z,
                     view.nearPlane + cascades[2].splitDepth * splitRange);
+    const float split0 = uploaded.directionalShadowCascadeSplits.x;
+    const float split1 = uploaded.directionalShadowCascadeSplits.y;
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeFadeDistances.x,
+                    (split0 - view.nearPlane) * shadowConfig.cascadeBlendRatio);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeFadeDistances.y,
+                    (split1 - split0) * shadowConfig.cascadeBlendRatio);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeFadeDistances.z, 0.0f);
 
     const auto shadowSrvIt = std::find_if(device.createdTextureViewDescs.begin(),
                                           device.createdTextureViewDescs.end(),
@@ -3341,8 +3490,9 @@ TEST_F(RenderPassValidationFixture, OpaquePassReportsMissingShadowSRVWhenRequest
     view.inverseViewMatrix = Mat4Identity();
 
     ShadowPassConfig shadowConfig;
-    shadowConfig.numCascades = 1;
+    shadowConfig.numCascades = 2;
     shadowConfig.shadowMapSize = 64;
+    shadowConfig.cascadeBlendRatio = 0.1f;
 
     ShadowPass shadowPass;
     shadowPass.SetResources(&gpuResources, &pipelineCache);
@@ -3374,6 +3524,18 @@ TEST_F(RenderPassValidationFixture, OpaquePassReportsMissingShadowSRVWhenRequest
         pipelineCache.GetLastDirectionalShadowFrameBindingResult();
     EXPECT_FALSE(binding.shadowSamplingEnabled);
     EXPECT_EQ(binding.fallbackReason, DirectionalShadowFallbackReason::MissingShadowSRV);
+
+    const FakeBuffer* viewBuffer = FindCreatedBuffer(device, "ViewConstantBuffer");
+    ASSERT_NE(viewBuffer, nullptr);
+    ASSERT_GE(viewBuffer->GetStorage().size(), sizeof(ViewConstants));
+    ViewConstants uploaded{};
+    std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.w, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.x, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.y, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeFadeDistances.x, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeFadeDistances.y, 0.0f);
 }
 
 TEST_F(RenderPassValidationFixture, OpaquePassSkipsMaskedItemsWhenMaskedPipelineIsMissing)

@@ -50,6 +50,7 @@ namespace RVX
         Vec4 directionalShadowParams;
         Vec4 directionalShadowReceiverParams;
         Vec4 directionalShadowCascadeSplits;
+        Vec4 directionalShadowCascadeFadeDistances;
     };
 
     enum class DirectionalShadowFallbackReason : uint8

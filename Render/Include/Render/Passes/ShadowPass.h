@@ -28,6 +28,9 @@ namespace RVX
     {
         Mat4 viewProjection;
         float splitDepth = 0.0f;
+        Vec2 lightSpaceCenter{0.0f, 0.0f};
+        float stableExtent = 0.0f;
+        float texelWorldSize = 0.0f;
     };
 
     /**
@@ -41,6 +44,8 @@ namespace RVX
         float shadowBias = 0.005f;           // Depth bias to reduce shadow acne
         float normalBias = 0.02f;            // Normal offset bias
         float filterRadiusTexels = 1.0f;     // PCF radius in shadow-map texels
+        bool stabilizeCascades = true;        // Snap cascades to shadow texels
+        float cascadeBlendRatio = 0.05f;      // Fraction of cascade span used for transition fade
     };
 
     struct ShadowPassStats

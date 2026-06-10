@@ -37,6 +37,15 @@ namespace
         return std::isfinite(value) && value > RVX_SHADOW_EPSILON;
     }
 
+    float RoundToTexel(float value, float texelSize)
+    {
+        if (!IsFinitePositive(texelSize))
+        {
+            return value;
+        }
+        return std::floor(value / texelSize + 0.5f) * texelSize;
+    }
+
     struct FrustumSlice
     {
         std::array<Vec3, 8> corners{};
@@ -191,6 +200,8 @@ void ShadowPass::CalculateCascades(const ViewData& view)
     const Vec3 lightDir = NormalizeOr(m_lightDirection, Vec3(0.0f, -1.0f, 0.0f));
     const Vec3 worldUp(0.0f, 1.0f, 0.0f);
     const Vec3 lightUp = std::abs(dot(lightDir, worldUp)) > 0.95f ? Vec3(1.0f, 0.0f, 0.0f) : worldUp;
+    const Vec3 lightRight = NormalizeOr(cross(lightDir, lightUp), Vec3(1.0f, 0.0f, 0.0f));
+    const Vec3 lightOrthoUp = NormalizeOr(cross(lightRight, lightDir), lightUp);
 
     float previousSplitDistance = nearClip;
     for (uint32_t i = 0; i < m_cascades.size(); ++i)
@@ -204,28 +215,51 @@ void ShadowPass::CalculateCascades(const ViewData& view)
         const FrustumSlice slice = BuildFrustumSlice(view, previousSplitDistance, splitDistance);
         previousSplitDistance = splitDistance;
 
-        const Vec3 lightPosition = slice.center - lightDir * (slice.radius * 2.0f);
-        const Mat4 lightView = lookAt(lightPosition, slice.center, lightUp);
-
         Vec3 minLight(std::numeric_limits<float>::max());
         Vec3 maxLight(std::numeric_limits<float>::lowest());
         for (const Vec3& corner : slice.corners)
         {
-            const Vec4 lightSpaceCorner = lightView * Vec4(corner, 1.0f);
+            const Vec3 lightSpaceCorner(dot(lightRight, corner),
+                                        dot(lightOrthoUp, corner),
+                                        dot(-lightDir, corner));
             minLight = min(minLight, Vec3(lightSpaceCorner));
             maxLight = max(maxLight, Vec3(lightSpaceCorner));
         }
 
         const float padding = std::max(1.0f, slice.radius * 0.1f);
-        const float zNear = std::max(0.001f, -maxLight.z - padding);
-        const float zFar = std::max(zNear + 1.0f, -minLight.z + padding);
-        const Mat4 lightProjection = ortho(minLight.x - padding,
-                                           maxLight.x + padding,
-                                           minLight.y - padding,
-                                           maxLight.y + padding,
+        const float fittedWidth = maxLight.x - minLight.x;
+        const float fittedHeight = maxLight.y - minLight.y;
+        const float stableExtent = std::max(1.0f, std::max(fittedWidth, fittedHeight) + padding * 2.0f);
+        const float texelWorldSize = stableExtent / static_cast<float>(std::max(1u, m_config.shadowMapSize));
+        Vec2 lightSpaceCenter((minLight.x + maxLight.x) * 0.5f,
+                              (minLight.y + maxLight.y) * 0.5f);
+
+        if (m_config.stabilizeCascades)
+        {
+            lightSpaceCenter.x = RoundToTexel(lightSpaceCenter.x, texelWorldSize);
+            lightSpaceCenter.y = RoundToTexel(lightSpaceCenter.y, texelWorldSize);
+        }
+
+        const float halfExtent = stableExtent * 0.5f;
+        const float lightEyeZ = maxLight.z + padding * 2.0f;
+        const float localMinZ = minLight.z - lightEyeZ;
+        const float localMaxZ = maxLight.z - lightEyeZ;
+        const float zNear = std::max(0.001f, -localMaxZ - padding);
+        const float zFar = std::max(zNear + 1.0f, -localMinZ + padding);
+        const Vec3 lightPosition = lightRight * lightSpaceCenter.x +
+                                   lightOrthoUp * lightSpaceCenter.y -
+                                   lightDir * lightEyeZ;
+        const Mat4 lightView = lookAt(lightPosition, lightPosition + lightDir, lightOrthoUp);
+        const Mat4 lightProjection = ortho(-halfExtent,
+                                           halfExtent,
+                                           -halfExtent,
+                                           halfExtent,
                                            zNear,
                                            zFar);
         m_cascades[i].viewProjection = lightProjection * lightView;
+        m_cascades[i].lightSpaceCenter = lightSpaceCenter;
+        m_cascades[i].stableExtent = stableExtent;
+        m_cascades[i].texelWorldSize = texelWorldSize;
     }
 }
 

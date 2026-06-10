@@ -94,6 +94,9 @@ namespace RVX
         /// Absolute camera-forward split distances for active CSM cascades
         Vec4 directionalShadowCascadeSplits{0.0f, 0.0f, 0.0f, 0.0f};
 
+        /// Absolute camera-forward fade widths before active CSM split boundaries
+        Vec4 directionalShadowCascadeFadeDistances{0.0f, 0.0f, 0.0f, 0.0f};
+
         /// Number of active CSM cascades in directionalShadowViewProjections
         uint32 directionalShadowCascadeCount = 0;
 
