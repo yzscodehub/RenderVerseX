@@ -695,6 +695,42 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingShaderUsesSingleDisplayConvers
     EXPECT_EQ(countOccurrences(shaderSource, "pow("), static_cast<size_t>(1));
 }
 
+TEST_F(PipelineCacheValidationFixture, BloomShaderUsesWideSoftThresholdKernel)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const std::string shaderSource =
+        ReadTextFile(FindShaderDirectory() / "PostProcess" / "Bloom.hlsl");
+
+    auto countOccurrences = [](const std::string& text, const std::string& needle)
+    {
+        size_t count = 0;
+        size_t offset = 0;
+        while ((offset = text.find(needle, offset)) != std::string::npos)
+        {
+            ++count;
+            offset += needle.size();
+        }
+        return count;
+    };
+
+    EXPECT_NE(shaderSource.find("ApplySoftThreshold"), std::string::npos);
+    EXPECT_NE(shaderSource.find("SampleBloomThreshold"), std::string::npos);
+    EXPECT_NE(shaderSource.find("Intensity <= 0.0"), std::string::npos);
+    EXPECT_NE(shaderSource.find("return scene;"), std::string::npos);
+    EXPECT_NE(shaderSource.find("ring1"), std::string::npos);
+    EXPECT_NE(shaderSource.find("ring2"), std::string::npos);
+    EXPECT_NE(shaderSource.find("float2 ring2 = radius * 2.0;"), std::string::npos);
+    EXPECT_GE(countOccurrences(shaderSource, "SampleBloomThreshold(input.TexCoord"),
+              static_cast<size_t>(13));
+    EXPECT_EQ(shaderSource.find("tiny fullscreen-neighborhood"), std::string::npos);
+    EXPECT_EQ(shaderSource.find("deliberately small one-pass"), std::string::npos);
+    EXPECT_EQ(shaderSource.find("Minimum fullscreen bloom path"), std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, FXAAShaderUsesPostProcessDescriptorLayout)
 {
     if (!HasCompilerAvailable())
