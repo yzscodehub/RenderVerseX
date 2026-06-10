@@ -5692,6 +5692,88 @@ git diff --check
 
 ---
 
+### R-SP: RQ25 - Bloom Wide-Kernel Quality Pass
+
+**Date:** 2026-06-11
+**Commit:** `195a98e feat(render): widen bloom quality kernel`
+**Spark plan review agent:** Mill (`019eb337-0a0a-7a12-a030-d4969ed4c87a`, gpt-5.5 xhigh)
+**Spark code review agent:** Mill (`019eb337-0a0a-7a12-a030-d4969ed4c87a`, gpt-5.5 xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-11-rq25-bloom-wide-kernel-quality-plan.md`
+- Section: RQ25 full stage plan, §§1-11
+- Lines checked: full document before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ24 - ModelViewer Camera EV100 Exposure CLI
+- Evidence: RQ24 implementation commit `18ab6b2`, phase-log commit `6d6b2ee`, focused and visual gates passed.
+
+**Approved scope:**
+
+- Improve the existing HDR Bloom shader from the tiny 5-tap cross approximation to a wider single-pass kernel.
+- Preserve soft-threshold extraction.
+- Add a zero-intensity shader pass-through branch to protect default visual output.
+- Keep the existing `BloomPass` graphics pipeline, descriptor layout, render graph shape, and public settings.
+- Add source guards for the wider Bloom shader contract.
+- Keep default visual/golden behavior unchanged.
+
+**Out of scope:**
+
+- Multi-mip downsample/upsample bloom, additive blending, multi-input descriptor layouts, dirt masks, anamorphic
+  streaks, lens ghosts, ModelViewer Bloom CLI, auto exposure, luminance histograms, default output changes, or golden
+  recapture.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-11-rq25-bloom-wide-kernel-quality-plan.md`
+- `Render/Shaders/PostProcess/Bloom.hlsl`
+- `Tests/PipelineCacheValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target RenderPassValidation PipelineCacheValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderPassValidation|PipelineCacheValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 144/144 selected `RenderPassValidation` and `PipelineCacheValidation` tests passed.
+- Visual gate: PASS, 9/9 selected default visual tests passed.
+- Diff check: PASS, with CRLF warnings only.
+- Golden update: not needed; default visual output stayed stable.
+
+**Artifacts:**
+
+- Tests: `RenderPassValidation`, `PipelineCacheValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`,
+  `ModelViewerShadowSmoke`, `ShadowVisualGoldenValidation`, `ImageCompareValidation`.
+- Shader guard: `PipelineCacheValidationFixture.BloomShaderUsesWideSoftThresholdKernel`.
+- Diffs: RQ25 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Non-blocking guidance adopted: none required.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Notes / follow-ups:**
+
+- Bloom remains a single-pass approximation, but the nonzero Bloom path now has a broader normalized thresholded
+  response.
+- Future stages can expose Bloom controls in ModelViewer, then move to multi-mip Bloom or auto exposure.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
