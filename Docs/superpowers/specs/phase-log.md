@@ -4934,6 +4934,94 @@ git diff --check
 
 ---
 
+### R-SP: `RQ16 - Directional Shadow Caster Depth-Bias Pipeline`
+
+**Date:** 2026-06-11
+**Commit:** `3809a41 feat(render): add shadow caster depth bias pipeline`
+**Spark plan review agent:** `019eb2ba-f88d-7631-8af3-9f32f285e6b3` (`gpt-5.5`, xhigh)
+**Spark code review agent:** `019eb2ba-f88d-7631-8af3-9f32f285e6b3` (`gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-11-rq16-directional-shadow-caster-depth-bias-plan.md`
+- Section: full RQ16 stage plan, especially scope, backend risk, tests, validation plan, and Spark review status.
+- Lines checked: plan re-read before implementation; plan/code review status updated to PASS before commit.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ15 directional CSM stabilization and fade bands.
+- Evidence: RQ15 implementation and phase-log commits were complete; CSM sampling and visual gate were green.
+
+**Approved scope:**
+
+- Add explicit caster-side shadow raster-bias configuration with safe zero defaults.
+- Add a shadow-purpose depth-only pipeline variant so shadow zero-bias does not alias the generic depth prepass pipeline.
+- Keep generic `DepthOnlyPipeline` unbiased for `DepthPrepass`.
+- Sanitize caster bias values before desc/hash use; clamp is sanitized to zero until RHI exposes a capability.
+- Fix Vulkan rasterizer depth-bias enable logic so slope-only bias is not silently ignored.
+- Prove `ShadowPass` binds the shadow pipeline and does not use dynamic `SetDepthBias()` as a fallback.
+
+**Out of scope:**
+
+- PCSS/contact shadows, EVSM/MSM, variance shadows, or temporal shadow filtering.
+- Changing receiver compare bias semantics.
+- Changing CSM split/fade/PCF behavior.
+- Enabling depth-bias clamp before a cross-backend capability bit exists.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-11-rq16-directional-shadow-caster-depth-bias-plan.md`
+- `Render/Include/Render/Passes/ShadowPass.h`
+- `Render/Private/Passes/ShadowPass.cpp`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `RHI_Vulkan/Private/VulkanPipeline.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation"
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Focused build: PASS.
+- Focused tests: PASS, 133/133 selected tests passed.
+- Visual build: PASS.
+- Visual gate: PASS, 9/9 selected tests passed.
+- Golden update: not needed; default caster bias is zero and visual output stayed stable.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `RenderPassValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`,
+  `ModelViewerShadowSmoke`, `ShadowVisualGoldenValidation`, `ImageCompareValidation`.
+- Diffs: RQ16 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS after one BLOCKED review and plan fix pass.
+- Blockers resolved: plan added a shadow-purpose pipeline key, zero defaults, explicit sanitization bounds,
+  Vulkan slope/clamp handling, and a test forbidding dynamic `SetDepthBias()` fallback.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none. Non-blocking clamp comment clarification was applied and rechecked.
+
+**Notes / follow-ups:**
+
+- `casterDepthBiasClamp` is retained as a future API hook but sanitized to zero until RHI exposes a real capability.
+- RQ16 adds caster-bias infrastructure without changing default ModelViewer visuals; future stages can opt in per scene/sample.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
