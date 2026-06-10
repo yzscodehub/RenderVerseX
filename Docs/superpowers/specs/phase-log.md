@@ -5354,6 +5354,87 @@ git diff --check
 
 ---
 
+### R-SP: RQ21 - ModelViewer Tone Mapping Operator CLI
+
+**Date:** 2026-06-11
+**Commit:** `84458e2 feat(samples): expose model viewer tonemap operators`
+**Spark plan review agent:** Cicero (`019eb313-51bf-7611-966d-343fff2c8371`, gpt-5.5 xhigh)
+**Spark code review agent:** Cicero (`019eb313-51bf-7611-966d-343fff2c8371`, gpt-5.5 xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-11-rq21-modelviewer-tonemap-operator-cli-plan.md`
+- Section: RQ21 full stage plan, §§1-11
+- Lines checked: full document before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ20 - Tone Mapping Runtime Operator Settings
+- Evidence: RQ20 implementation commit `b28c6ec`, phase-log commit `2087efc`, focused and visual gates passed.
+
+**Approved scope:**
+
+- Add opt-in ModelViewer `--tonemap <default|none|reinhard|reinhard-extended|aces|uncharted2|neutral>`.
+- Parse invalid tonemap values with visible failure.
+- Apply explicit non-default tonemap selections through `SceneRenderer::GetPostProcessSettings()` and
+  `ApplyPostProcessSettings()`.
+- Leave default/no-flag and explicit `--tonemap default` behavior unchanged.
+- Add source guards and one non-golden ACES smoke run.
+
+**Out of scope:**
+
+- Default ACES enablement, golden recapture, exposure/gamma/color grading CLI, UI controls, shader math changes,
+  AgX, or post-process stack reordering.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-11-rq21-modelviewer-tonemap-operator-cli-plan.md`
+- `Samples/ModelViewer/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation"
+build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --model Tests\Fixtures\ModelViewer\R7Triangle.gltf --tonemap aces --backend dx11 --width 320 --height 180 --frames 4 --no-ibl --validation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 72/72 `PipelineCacheValidation` tests passed.
+- ACES smoke: PASS; log confirmed `ModelViewer tonemap operator 'aces'`.
+- Visual gate: PASS, 9/9 selected default visual tests passed.
+- Diff check: PASS, with CRLF warnings only.
+- Golden update: not needed; default visual output stayed stable.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerShadowSmoke`,
+  `ShadowVisualGoldenValidation`, `ImageCompareValidation`.
+- Runtime smoke: ModelViewer DX11 smoke with `--tonemap aces`.
+- Diffs: RQ21 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Notes / follow-ups:**
+
+- This stage exposes existing tone mapping operators for inspection without changing the default visual baseline.
+- Future stages can add exposure/gamma controls or decide on a default filmic operator with explicit golden recapture.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
