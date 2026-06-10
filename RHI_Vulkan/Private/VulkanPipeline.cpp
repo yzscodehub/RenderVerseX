@@ -276,7 +276,9 @@ namespace RVX
         rasterizer.cullMode = ToVkCullMode(desc.rasterizerState.cullMode);
         rasterizer.frontFace = (desc.rasterizerState.frontFace == RHIFrontFace::CounterClockwise) ?
             VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
-        rasterizer.depthBiasEnable = (desc.rasterizerState.depthBias != 0.0f);
+        rasterizer.depthBiasEnable = (desc.rasterizerState.depthBias != 0.0f ||
+                                      desc.rasterizerState.slopeScaledDepthBias != 0.0f ||
+                                      desc.rasterizerState.depthBiasClamp != 0.0f);
         rasterizer.depthBiasConstantFactor = desc.rasterizerState.depthBias;
         rasterizer.depthBiasClamp = desc.rasterizerState.depthBiasClamp;
         rasterizer.depthBiasSlopeFactor = desc.rasterizerState.slopeScaledDepthBias;

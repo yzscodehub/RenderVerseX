@@ -75,6 +75,13 @@ namespace RVX
         DirectionalShadowFallbackReason fallbackReason = DirectionalShadowFallbackReason::DisabledNoDirectionalLight;
     };
 
+    struct ShadowDepthBiasState
+    {
+        float constantBias = 0.0f;
+        float slopeScaledBias = 0.0f;
+        float biasClamp = 0.0f;
+    };
+
     /**
      * @brief Object constants structure (matches HLSL cbuffer)
      */
@@ -202,6 +209,12 @@ namespace RVX
          * @return Depth-only pipeline or nullptr if not available
          */
         RHIPipeline* GetDepthOnlyPipeline() const { return m_depthOnlyPipeline.Get(); }
+
+        /**
+         * @brief Get the shadow-map depth-only pipeline for caster raster bias
+         */
+        RHIPipeline* GetShadowDepthPipeline(const ShadowDepthBiasState& biasState);
+        static ShadowDepthBiasState SanitizeShadowDepthBiasState(const ShadowDepthBiasState& biasState);
 
         /**
          * @brief Get the procedural skybox fullscreen pipeline
@@ -408,6 +421,7 @@ namespace RVX
                                                      RHIFormat renderTargetFormat,
                                                      bool updatePrimaryStats);
         RHIPipelineRef GetOrCreateDepthOnlyPipeline();
+        RHIPipelineRef GetOrCreateShadowDepthPipeline(const ShadowDepthBiasState& biasState);
         RHIPipelineRef GetOrCreateSkyboxPipeline(RHIFormat outputFormat,
                                                  bool depthTest = true,
                                                  bool updatePrimaryStats = true);
@@ -422,6 +436,7 @@ namespace RVX
                                                             const RHIBlendState& blendState,
                                                             RHIFormat renderTargetFormat) const;
         RHIGraphicsPipelineDesc BuildDepthOnlyPipelineDesc() const;
+        RHIGraphicsPipelineDesc BuildShadowDepthPipelineDesc(const ShadowDepthBiasState& biasState) const;
         RHIGraphicsPipelineDesc BuildSkyboxPipelineDesc(RHIFormat outputFormat, bool depthTest = true) const;
         RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomPipelineDesc(RHIFormat outputFormat) const;
@@ -440,6 +455,9 @@ namespace RVX
         void ProcessPipelineManifest();
         void SetLastError(std::string message);
         uint64 ComputePipelineStateHash(const RHIGraphicsPipelineDesc& desc, MaterialPipelineVariant variant) const;
+        uint64 ComputePipelineStateHash(const RHIGraphicsPipelineDesc& desc,
+                                        MaterialPipelineVariant variant,
+                                        uint32 purposeSalt) const;
         uint64 ComputeShaderHash(const ShaderCompileResult* result) const;
         uint64 StoreVariantHash(MaterialPipelineVariant variant, uint64 hash);
 

@@ -44,6 +44,9 @@ namespace RVX
         float shadowBias = 0.005f;           // Depth bias to reduce shadow acne
         float normalBias = 0.02f;            // Normal offset bias
         float filterRadiusTexels = 1.0f;     // PCF radius in shadow-map texels
+        float casterDepthBias = 0.0f;         // Raster depth bias when writing shadow maps
+        float casterSlopeScaledDepthBias = 0.0f; // Slope-scaled raster bias for shadow casters
+        float casterDepthBiasClamp = 0.0f;    // Reserved for future clamp capability; sanitized to 0 for now
         bool stabilizeCascades = true;        // Snap cascades to shadow texels
         float cascadeBlendRatio = 0.05f;      // Fraction of cascade span used for transition fade
     };

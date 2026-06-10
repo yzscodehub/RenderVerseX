@@ -46,6 +46,15 @@ namespace
         return std::floor(value / texelSize + 0.5f) * texelSize;
     }
 
+    ShadowDepthBiasState MakeShadowDepthBiasState(const ShadowPassConfig& config)
+    {
+        ShadowDepthBiasState biasState;
+        biasState.constantBias = config.casterDepthBias;
+        biasState.slopeScaledBias = config.casterSlopeScaledDepthBias;
+        biasState.biasClamp = config.casterDepthBiasClamp;
+        return biasState;
+    }
+
     struct FrustumSlice
     {
         std::array<Vec3, 8> corners{};
@@ -153,9 +162,9 @@ bool ShadowPass::IsSupported() const
         return false;
     }
 
-    if (!m_pipelineCache->GetDepthOnlyPipeline())
+    if (!m_pipelineCache->GetShadowDepthPipeline(MakeShadowDepthBiasState(m_config)))
     {
-        m_unsupportedReason = "Depth-only pipeline is not available";
+        m_unsupportedReason = "Shadow depth pipeline is not available";
         return false;
     }
 
@@ -326,8 +335,8 @@ void ShadowPass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    // Get depth-only pipeline for shadow rendering
-    RHIPipeline* shadowPipeline = m_pipelineCache->GetDepthOnlyPipeline();
+    // Get shadow depth-only pipeline for shadow rendering
+    RHIPipeline* shadowPipeline = m_pipelineCache->GetShadowDepthPipeline(MakeShadowDepthBiasState(m_config));
     if (!shadowPipeline)
     {
         // Shadow pipeline not available yet
@@ -416,7 +425,7 @@ void ShadowPass::RenderCascade(RHICommandContext& ctx, const ViewData& view, uin
     ctx.SetScissor(scissor);
 
     // Bind shadow pipeline
-    RHIPipeline* pipeline = m_pipelineCache->GetDepthOnlyPipeline();
+    RHIPipeline* pipeline = m_pipelineCache->GetShadowDepthPipeline(MakeShadowDepthBiasState(m_config));
     if (pipeline)
     {
         ctx.SetPipeline(pipeline);

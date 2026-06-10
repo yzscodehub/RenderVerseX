@@ -29,6 +29,10 @@ namespace
     constexpr uint64 RVX_PIPELINE_HASH_OFFSET_BASIS = 0xcbf29ce484222325ull;
     constexpr uint64 RVX_PIPELINE_HASH_PRIME = 0x100000001b3ull;
     constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 10;
+    constexpr uint32 RVX_PIPELINE_PURPOSE_DEFAULT = 0x50445354u; // PDST
+    constexpr uint32 RVX_PIPELINE_PURPOSE_SHADOW_DEPTH = 0x53484457u; // SHDW
+    constexpr float RVX_MAX_SHADOW_CASTER_DEPTH_BIAS = 10000.0f;
+    constexpr float RVX_MAX_SHADOW_CASTER_SLOPE_BIAS = 16.0f;
     constexpr const char* RVX_PIPELINE_MANIFEST_MAGIC = "RVX_PIPELINE_CACHE_MANIFEST";
 
     struct PipelineCacheManifest
@@ -1680,6 +1684,29 @@ RHIPipeline* PipelineCache::GetPipelineForVariant(MaterialPipelineVariant varian
     }
 }
 
+ShadowDepthBiasState PipelineCache::SanitizeShadowDepthBiasState(const ShadowDepthBiasState& biasState)
+{
+    const auto sanitize = [](float value, float maxValue)
+    {
+        if (!std::isfinite(value) || value <= 0.0f)
+        {
+            return 0.0f;
+        }
+        return std::min(value, maxValue);
+    };
+
+    ShadowDepthBiasState sanitized;
+    sanitized.constantBias = sanitize(biasState.constantBias, RVX_MAX_SHADOW_CASTER_DEPTH_BIAS);
+    sanitized.slopeScaledBias = sanitize(biasState.slopeScaledBias, RVX_MAX_SHADOW_CASTER_SLOPE_BIAS);
+    sanitized.biasClamp = 0.0f;
+    return sanitized;
+}
+
+RHIPipeline* PipelineCache::GetShadowDepthPipeline(const ShadowDepthBiasState& biasState)
+{
+    return GetOrCreateShadowDepthPipeline(biasState).Get();
+}
+
 RHIPipeline* PipelineCache::GetSkyboxPipeline(RHIFormat outputFormat)
 {
     return GetSkyboxPipeline(outputFormat, true);
@@ -2122,6 +2149,51 @@ RHIPipelineRef PipelineCache::GetOrCreateDepthOnlyPipeline()
     return pipeline;
 }
 
+RHIPipelineRef PipelineCache::GetOrCreateShadowDepthPipeline(const ShadowDepthBiasState& biasState)
+{
+    const ShadowDepthBiasState sanitizedBias = SanitizeShadowDepthBiasState(biasState);
+    RHIGraphicsPipelineDesc pipelineDesc = BuildShadowDepthPipelineDesc(sanitizedBias);
+    if (!pipelineDesc.vertexShader)
+    {
+        SetLastError("Cannot create shadow depth pipeline without vertex shader");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError("Cannot create shadow depth pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create shadow depth pipeline with invalid depth stencil format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc,
+                                                      MaterialPipelineVariant::Opaque,
+                                                      RVX_PIPELINE_PURPOSE_SHADOW_DEPTH);
+    m_stats.lastPipelineStateHash = stateHash;
+
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create shadow depth pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
 RHIPipelineRef PipelineCache::GetOrCreateSkyboxPipeline(RHIFormat outputFormat,
                                                         bool depthTest,
                                                         bool updatePrimaryStats)
@@ -2523,6 +2595,17 @@ RHIGraphicsPipelineDesc PipelineCache::BuildDepthOnlyPipelineDesc() const
     return pipelineDesc;
 }
 
+RHIGraphicsPipelineDesc PipelineCache::BuildShadowDepthPipelineDesc(const ShadowDepthBiasState& biasState) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
+    const ShadowDepthBiasState sanitizedBias = SanitizeShadowDepthBiasState(biasState);
+    pipelineDesc.debugName = "ShadowDepthPipeline";
+    pipelineDesc.rasterizerState.depthBias = sanitizedBias.constantBias;
+    pipelineDesc.rasterizerState.slopeScaledDepthBias = sanitizedBias.slopeScaledBias;
+    pipelineDesc.rasterizerState.depthBiasClamp = sanitizedBias.biasClamp;
+    return pipelineDesc;
+}
+
 RHIGraphicsPipelineDesc PipelineCache::BuildSkyboxPipelineDesc(RHIFormat outputFormat, bool depthTest) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
@@ -2726,11 +2809,19 @@ uint64 PipelineCache::ComputeShaderHash(const ShaderCompileResult* result) const
 uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& desc,
                                                MaterialPipelineVariant variant) const
 {
+    return ComputePipelineStateHash(desc, variant, RVX_PIPELINE_PURPOSE_DEFAULT);
+}
+
+uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& desc,
+                                               MaterialPipelineVariant variant,
+                                               uint32 purposeSalt) const
+{
     uint64 hash = RVX_PIPELINE_HASH_OFFSET_BASIS;
 
     const RHIBackendType backend = m_device ? m_device->GetBackendType() : RHIBackendType::None;
     HashValue(hash, backend);
     HashValue(hash, variant);
+    HashValue(hash, purposeSalt);
 
     auto shaderHashFor = [this](const RHIShader* shader) -> uint64
     {

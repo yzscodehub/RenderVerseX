@@ -1778,6 +1778,95 @@ TEST_F(PipelineCacheValidationFixture, ReverseZOptInChangesDepthCompareAndClearC
     EXPECT_FALSE(skyboxDesc.depthStencilState.depthWriteEnable);
 }
 
+TEST_F(PipelineCacheValidationFixture, ShadowDepthBiasStateSanitizesUnsafeValues)
+{
+    RVX::ShadowDepthBiasState unsafe;
+    unsafe.constantBias = -0.0f;
+    unsafe.slopeScaledBias = std::numeric_limits<float>::infinity();
+    unsafe.biasClamp = std::numeric_limits<float>::quiet_NaN();
+
+    RVX::ShadowDepthBiasState sanitized = RVX::PipelineCache::SanitizeShadowDepthBiasState(unsafe);
+    EXPECT_FLOAT_EQ(sanitized.constantBias, 0.0f);
+    EXPECT_FLOAT_EQ(sanitized.slopeScaledBias, 0.0f);
+    EXPECT_FLOAT_EQ(sanitized.biasClamp, 0.0f);
+
+    unsafe.constantBias = 50000.0f;
+    unsafe.slopeScaledBias = 64.0f;
+    unsafe.biasClamp = 2.0f;
+
+    sanitized = RVX::PipelineCache::SanitizeShadowDepthBiasState(unsafe);
+    EXPECT_FLOAT_EQ(sanitized.constantBias, 10000.0f);
+    EXPECT_FLOAT_EQ(sanitized.slopeScaledBias, 16.0f);
+    EXPECT_FLOAT_EQ(sanitized.biasClamp, 0.0f);
+}
+
+TEST_F(PipelineCacheValidationFixture, ShadowDepthPipelineUsesPurposeKeyAndSanitizedCasterBias)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    const size_t initialPipelineCount = device.capturedGraphicsPipelines.size();
+    ASSERT_NE(cache.GetDepthOnlyPipeline(), nullptr);
+    ASSERT_GT(initialPipelineCount, 3u);
+    const RVX::RHIGraphicsPipelineDesc& genericDepthDesc = device.capturedGraphicsPipelines[3];
+    EXPECT_FLOAT_EQ(genericDepthDesc.rasterizerState.depthBias, 0.0f);
+    EXPECT_FLOAT_EQ(genericDepthDesc.rasterizerState.slopeScaledDepthBias, 0.0f);
+    EXPECT_FLOAT_EQ(genericDepthDesc.rasterizerState.depthBiasClamp, 0.0f);
+
+    RVX::ShadowDepthBiasState zeroBias;
+    ASSERT_NE(cache.GetShadowDepthPipeline(zeroBias), nullptr);
+    const RVX::uint64 zeroShadowHash = cache.GetStats().lastPipelineStateHash;
+    ASSERT_EQ(device.capturedGraphicsPipelines.size(), initialPipelineCount + 1u);
+
+    const RVX::RHIGraphicsPipelineDesc& zeroShadowDesc = device.capturedGraphicsPipelines.back();
+    EXPECT_STREQ(zeroShadowDesc.debugName, "ShadowDepthPipeline");
+    EXPECT_FLOAT_EQ(zeroShadowDesc.rasterizerState.depthBias, 0.0f);
+    EXPECT_FLOAT_EQ(zeroShadowDesc.rasterizerState.slopeScaledDepthBias, 0.0f);
+    EXPECT_FLOAT_EQ(zeroShadowDesc.rasterizerState.depthBiasClamp, 0.0f);
+
+    RVX::ShadowDepthBiasState configuredBias;
+    configuredBias.constantBias = 50000.0f;
+    configuredBias.slopeScaledBias = 2.5f;
+    configuredBias.biasClamp = 2.0f;
+    ASSERT_NE(cache.GetShadowDepthPipeline(configuredBias), nullptr);
+    const RVX::uint64 configuredShadowHash = cache.GetStats().lastPipelineStateHash;
+    ASSERT_EQ(device.capturedGraphicsPipelines.size(), initialPipelineCount + 2u);
+    EXPECT_NE(configuredShadowHash, zeroShadowHash);
+
+    const RVX::RHIGraphicsPipelineDesc& configuredShadowDesc = device.capturedGraphicsPipelines.back();
+    EXPECT_STREQ(configuredShadowDesc.debugName, "ShadowDepthPipeline");
+    EXPECT_FLOAT_EQ(configuredShadowDesc.rasterizerState.depthBias, 10000.0f);
+    EXPECT_FLOAT_EQ(configuredShadowDesc.rasterizerState.slopeScaledDepthBias, 2.5f);
+    EXPECT_FLOAT_EQ(configuredShadowDesc.rasterizerState.depthBiasClamp, 0.0f);
+
+    ASSERT_NE(cache.GetShadowDepthPipeline(configuredBias), nullptr);
+    EXPECT_EQ(device.capturedGraphicsPipelines.size(), initialPipelineCount + 2u);
+    EXPECT_EQ(cache.GetStats().lastPipelineStateHash, configuredShadowHash);
+}
+
+TEST_F(PipelineCacheValidationFixture, VulkanRasterizerEnablesDepthBiasForSlopeAndClamp)
+{
+    const fs::path shaderDir = FindShaderDirectory();
+    if (shaderDir.empty())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path vulkanPipelinePath = shaderDir.parent_path().parent_path() /
+                                        "RHI_Vulkan" / "Private" / "VulkanPipeline.cpp";
+    const std::string source = ReadTextFile(vulkanPipelinePath);
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("desc.rasterizerState.depthBias != 0.0f"), std::string::npos);
+    EXPECT_NE(source.find("desc.rasterizerState.slopeScaledDepthBias != 0.0f"), std::string::npos);
+    EXPECT_NE(source.find("desc.rasterizerState.depthBiasClamp != 0.0f"), std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata)
 {
     if (!HasCompilerAvailable())

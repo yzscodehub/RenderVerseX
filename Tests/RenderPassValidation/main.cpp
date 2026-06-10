@@ -328,7 +328,7 @@ namespace
         void ResetQueries(RHIQueryPool*, uint32, uint32) override {}
         void SetStencilReference(uint32) override {}
         void SetBlendConstants(const float[4]) override {}
-        void SetDepthBias(float, float, float = 0.0f) override {}
+        void SetDepthBias(float, float, float = 0.0f) override { ++depthBiasSetCount; }
         void SetDepthBounds(float, float) override {}
         void SetStencilReferenceSeparate(uint32, uint32) override {}
         void SetLineWidth(float) override {}
@@ -343,6 +343,7 @@ namespace
         uint32 textureBarrierCount = 0;
         uint32 copyBufferCount = 0;
         uint32 copyBufferToTextureCount = 0;
+        uint32 depthBiasSetCount = 0;
         uint32 drawCount = 0;
         uint32 drawIndexedCount = 0;
         uint32 lastDrawVertexCount = 0;
@@ -869,7 +870,8 @@ TEST_F(RenderPassValidationFixture, ShadowPassReportsSupportedWithDepthPipelineA
     EXPECT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
     EXPECT_TRUE(pass.IsEnabled());
 
-    pipelineCache.m_depthOnlyPipeline.Reset();
+    pipelineCache.m_pipelineCache.clear();
+    pipelineCache.m_depthOnlyVertexShader.Reset();
     EXPECT_FALSE(pass.IsSupported());
     EXPECT_FALSE(pass.GetUnsupportedReason().empty());
 }
@@ -1186,6 +1188,9 @@ TEST_F(RenderPassValidationFixture, ShadowPassExecuteResolvesCascadeViewsAndDraw
     ShadowPassConfig config;
     config.numCascades = 2;
     config.shadowMapSize = 64;
+    config.casterDepthBias = 1.25f;
+    config.casterSlopeScaledDepthBias = 2.0f;
+    config.casterDepthBiasClamp = 0.5f;
 
     ShadowPass pass;
     pass.SetResources(&gpuResources, &pipelineCache);
@@ -1205,6 +1210,16 @@ TEST_F(RenderPassValidationFixture, ShadowPassExecuteResolvesCascadeViewsAndDraw
     EXPECT_EQ(pass.GetStats().resolvedCascadeViewCount, 2u);
     EXPECT_EQ(pass.GetStats().shadowCasterCount, 2u);
     EXPECT_EQ(pass.GetStats().drawCount, 2u);
+    EXPECT_EQ(ctx.depthBiasSetCount, 0u);
+    RHIPipeline* shadowPipeline = pipelineCache.GetShadowDepthPipeline(
+        ShadowDepthBiasState{config.casterDepthBias,
+                             config.casterSlopeScaledDepthBias,
+                             config.casterDepthBiasClamp});
+    ASSERT_NE(shadowPipeline, nullptr);
+    EXPECT_NE(shadowPipeline, pipelineCache.GetDepthOnlyPipeline());
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(2));
+    EXPECT_EQ(ctx.pipelineSequence[0], shadowPipeline);
+    EXPECT_EQ(ctx.pipelineSequence[1], shadowPipeline);
     ASSERT_EQ(ctx.renderPasses.size(), static_cast<size_t>(2));
     for (uint32 i = 0; i < static_cast<uint32>(ctx.renderPasses.size()); ++i)
     {
