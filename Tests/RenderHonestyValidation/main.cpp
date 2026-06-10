@@ -649,7 +649,6 @@ TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDis
     RVX::PostProcessSettings settings;
     settings.enableDOF = true;
     settings.enableMotionBlur = true;
-    settings.enableVignette = true;
     settings.enableChromaticAberration = true;
     settings.enableFilmGrain = true;
     settings.enableVolumetricLighting = true;
@@ -657,7 +656,6 @@ TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDis
     RVX::ColorGradingPass colorGrading;
     RVX::DOFPass dof;
     RVX::MotionBlurPass motionBlur;
-    RVX::VignettePass vignette;
     RVX::ChromaticAberrationPass chromaticAberration;
     RVX::FilmGrainPass filmGrain;
     RVX::VolumetricLightingPass volumetricLighting;
@@ -666,7 +664,6 @@ TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDis
         &colorGrading,
         &dof,
         &motionBlur,
-        &vignette,
         &chromaticAberration,
         &filmGrain,
         &volumetricLighting,
@@ -694,6 +691,20 @@ TEST_F(RenderHonestyValidationFixture, FXAARequiresResourcesBeforeSupported)
     EXPECT_FALSE(fxaa.IsSupported());
     EXPECT_FALSE(fxaa.IsEnabled());
     EXPECT_FALSE(fxaa.GetUnsupportedReason().empty());
+}
+
+TEST_F(RenderHonestyValidationFixture, VignetteRequiresResourcesBeforeSupported)
+{
+    RVX::PostProcessSettings settings;
+    settings.enableVignette = true;
+
+    RVX::VignettePass vignette;
+    vignette.Configure(settings);
+
+    EXPECT_TRUE(vignette.IsRequestedEnabled());
+    EXPECT_FALSE(vignette.IsSupported());
+    EXPECT_FALSE(vignette.IsEnabled());
+    EXPECT_FALSE(vignette.GetUnsupportedReason().empty());
 }
 
 TEST_F(RenderHonestyValidationFixture, BloomRequiresResourcesBeforeSupported)

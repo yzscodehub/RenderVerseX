@@ -19,7 +19,13 @@ namespace
 
     bool IsLDRPostToneMappingEffect(const IPostProcessPass* effect)
     {
-        return effect && std::string(effect->GetName()) == "FXAA";
+        if (!effect)
+        {
+            return false;
+        }
+
+        const std::string name = effect->GetName();
+        return name == "FXAA" || name == "Vignette";
     }
 } // namespace
 

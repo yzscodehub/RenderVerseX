@@ -10,8 +10,13 @@
 #include "Core/MathTypes.h"
 #include "Render/PostProcess/PostProcessStack.h"
 
+#include <deque>
+
 namespace RVX
 {
+    class PipelineCache;
+    class ResourceViewCache;
+
     /**
      * @brief Vignette shape modes
      */
@@ -52,10 +57,15 @@ namespace RVX
         ~VignettePass() override = default;
 
         const char* GetName() const override { return "Vignette"; }
-        int32 GetPriority() const override { return 850; }  // Late in pipeline
+        int32 GetPriority() const override { return 940; }  // LDR, after tone mapping and before FXAA
 
         void Configure(const PostProcessSettings& settings) override;
         void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override;
+
+        /**
+         * @brief Provide GPU resources required by the fullscreen Vignette path
+         */
+        void SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache);
 
         // =========================================================================
         // Configuration
@@ -83,7 +93,23 @@ namespace RVX
         VignetteMode GetMode() const { return m_config.mode; }
 
     private:
+        bool EnsureRuntimeResources();
+        bool UpdateConstants(uint32 width,
+                             uint32 height,
+                             float intensity,
+                             float smoothness,
+                             float roundness,
+                             const Vec2& center,
+                             const Vec3& color,
+                             uint32 mode);
+
         VignetteConfig m_config;
+        PipelineCache* m_pipelineCache = nullptr;
+        ResourceViewCache* m_viewCache = nullptr;
+        IRHIDevice* m_resourceDevice = nullptr;
+        RHIBufferRef m_constantBuffer;
+        RHISamplerRef m_sampler;
+        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
     };
 
 } // namespace RVX
