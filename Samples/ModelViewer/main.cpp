@@ -83,6 +83,15 @@ struct OrbitCamera
     }
 };
 
+enum class ShadowQualityPreset
+{
+    Default = 0,
+    Low,
+    Medium,
+    High,
+    Ultra
+};
+
 struct ModelViewerOptions
 {
     std::string modelPath;
@@ -107,6 +116,7 @@ struct ModelViewerOptions
     bool widthSet = false;
     bool heightSet = false;
     bool framesSet = false;
+    ShadowQualityPreset shadowQualityPreset = ShadowQualityPreset::Default;
 };
 
 struct ProceduralIBLResources
@@ -175,6 +185,8 @@ namespace
             << "  --no-ibl             Disable procedural ModelViewer IBL wiring\n"
             << "  --material-test-scene Add deterministic lighting for PBR material visual gates\n"
             << "  --shadow-test-scene  Add a deterministic shadow-casting directional light\n"
+            << "  --shadow-quality <default|low|medium|high|ultra>\n"
+            << "                       Select directional shadow quality preset\n"
             << "  --expect-ibl-ready   Smoke mode fails unless texture IBL becomes ready\n"
             << "  --expect-skybox-ready Smoke mode fails unless SkyboxPass becomes ready\n"
             << "  --expect-shadow-ready Smoke mode fails unless directional shadow sampling is ready\n"
@@ -225,6 +237,107 @@ namespace
         }
 
         return true;
+    }
+
+    const char* GetShadowQualityPresetName(ShadowQualityPreset preset)
+    {
+        switch (preset)
+        {
+            case ShadowQualityPreset::Default: return "default";
+            case ShadowQualityPreset::Low: return "low";
+            case ShadowQualityPreset::Medium: return "medium";
+            case ShadowQualityPreset::High: return "high";
+            case ShadowQualityPreset::Ultra: return "ultra";
+        }
+
+        return "default";
+    }
+
+    bool ParseShadowQualityPreset(const std::string& text, ShadowQualityPreset& outPreset)
+    {
+        const std::string value = ToLower(text);
+        if (value == "default")
+        {
+            outPreset = ShadowQualityPreset::Default;
+        }
+        else if (value == "low")
+        {
+            outPreset = ShadowQualityPreset::Low;
+        }
+        else if (value == "medium")
+        {
+            outPreset = ShadowQualityPreset::Medium;
+        }
+        else if (value == "high")
+        {
+            outPreset = ShadowQualityPreset::High;
+        }
+        else if (value == "ultra")
+        {
+            outPreset = ShadowQualityPreset::Ultra;
+        }
+        else
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    ShadowPassConfig MakeShadowQualityConfig(ShadowQualityPreset preset)
+    {
+        if (preset == ShadowQualityPreset::Default)
+        {
+            return ShadowPassConfig{};
+        }
+
+        ShadowPassConfig config{};
+        switch (preset)
+        {
+            case ShadowQualityPreset::Low:
+                config.shadowMapSize = 1024;
+                config.numCascades = 2;
+                config.cascadeSplitLambda = 0.85f;
+                config.filterRadiusTexels = 0.75f;
+                config.shadowBias = 0.0050f;
+                config.normalBias = 0.0200f;
+                config.cascadeBlendRatio = 0.04f;
+                break;
+            case ShadowQualityPreset::Medium:
+                config.shadowMapSize = 2048;
+                config.numCascades = 3;
+                config.cascadeSplitLambda = 0.90f;
+                config.filterRadiusTexels = 1.00f;
+                config.shadowBias = 0.0040f;
+                config.normalBias = 0.0200f;
+                config.cascadeBlendRatio = 0.05f;
+                break;
+            case ShadowQualityPreset::High:
+                config.shadowMapSize = 4096;
+                config.numCascades = 4;
+                config.cascadeSplitLambda = 0.95f;
+                config.filterRadiusTexels = 1.50f;
+                config.shadowBias = 0.0030f;
+                config.normalBias = 0.0250f;
+                config.cascadeBlendRatio = 0.06f;
+                break;
+            case ShadowQualityPreset::Ultra:
+                config.shadowMapSize = 4096;
+                config.numCascades = 4;
+                config.cascadeSplitLambda = 0.98f;
+                config.filterRadiusTexels = 2.00f;
+                config.shadowBias = 0.0025f;
+                config.normalBias = 0.0300f;
+                config.cascadeBlendRatio = 0.08f;
+                break;
+            case ShadowQualityPreset::Default:
+                break;
+        }
+
+        config.casterDepthBias = 0.0f;
+        config.casterSlopeScaledDepthBias = 0.0f;
+        config.casterDepthBiasClamp = 0.0f;
+        return config;
     }
 
     bool ParseUInt(const char* text, uint32& outValue)
@@ -342,6 +455,15 @@ namespace
             else if (arg == "--shadow-test-scene")
             {
                 options.shadowTestScene = true;
+            }
+            else if (arg == "--shadow-quality")
+            {
+                const char* value = requireValue("--shadow-quality");
+                if (!value || !ParseShadowQualityPreset(value, options.shadowQualityPreset))
+                {
+                    RVX_CORE_ERROR("Invalid --shadow-quality value: {}", value ? value : "");
+                    return false;
+                }
             }
             else if (arg == "--expect-ibl-ready")
             {
@@ -1536,6 +1658,27 @@ int main(int argc, char* argv[])
     {
         RVX_CORE_ERROR("Failed to initialize engine");
         return -1;
+    }
+
+    if (SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer())
+    {
+        const ShadowPassConfig shadowConfig = MakeShadowQualityConfig(options.shadowQualityPreset);
+        sceneRenderer->ApplyShadowPassConfig(shadowConfig);
+        RVX_CORE_INFO("ModelViewer shadow quality preset '{}': mapSize={}, cascades={}, lambda={:.2f}, "
+                      "filterRadius={:.2f}, shadowBias={:.4f}, normalBias={:.4f}, blend={:.2f}",
+                      GetShadowQualityPresetName(options.shadowQualityPreset),
+                      shadowConfig.shadowMapSize,
+                      shadowConfig.numCascades,
+                      shadowConfig.cascadeSplitLambda,
+                      shadowConfig.filterRadiusTexels,
+                      shadowConfig.shadowBias,
+                      shadowConfig.normalBias,
+                      shadowConfig.cascadeBlendRatio);
+    }
+    else
+    {
+        RVX_CORE_WARN("ModelViewer shadow quality preset '{}' could not be applied: SceneRenderer unavailable",
+                      GetShadowQualityPresetName(options.shadowQualityPreset));
     }
 
     if (options.smoke)

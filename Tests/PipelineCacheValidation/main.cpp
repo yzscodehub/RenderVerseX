@@ -1496,6 +1496,33 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererAppliesShadowQualityConfigTo
     EXPECT_NE(source.find("shadowPass->SetConfig(m_shadowPassConfig);"), std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture, ModelViewerExposesShadowQualityPresets)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path repoRoot = FindShaderDirectory().parent_path().parent_path();
+    const std::string source = ReadTextFile(repoRoot / "Samples" / "ModelViewer" / "main.cpp");
+
+    EXPECT_NE(source.find("--shadow-quality <default|low|medium|high|ultra>"), std::string::npos);
+    EXPECT_NE(source.find("enum class ShadowQualityPreset"), std::string::npos);
+    EXPECT_NE(source.find("bool ParseShadowQualityPreset"), std::string::npos);
+    EXPECT_NE(source.find("value == \"default\""), std::string::npos);
+    EXPECT_NE(source.find("value == \"low\""), std::string::npos);
+    EXPECT_NE(source.find("value == \"medium\""), std::string::npos);
+    EXPECT_NE(source.find("value == \"high\""), std::string::npos);
+    EXPECT_NE(source.find("value == \"ultra\""), std::string::npos);
+    EXPECT_NE(source.find("ShadowPassConfig MakeShadowQualityConfig"), std::string::npos);
+    EXPECT_NE(source.find("return ShadowPassConfig{};"), std::string::npos);
+    EXPECT_NE(source.find("config.casterDepthBias = 0.0f;"), std::string::npos);
+    EXPECT_NE(source.find("config.casterSlopeScaledDepthBias = 0.0f;"), std::string::npos);
+    EXPECT_NE(source.find("config.casterDepthBiasClamp = 0.0f;"), std::string::npos);
+    EXPECT_NE(source.find("MakeShadowQualityConfig(options.shadowQualityPreset)"), std::string::npos);
+    EXPECT_NE(source.find("sceneRenderer->ApplyShadowPassConfig(shadowConfig);"), std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAware)
 {
     if (!HasCompilerAvailable())
