@@ -4439,6 +4439,97 @@ git diff --check
 
 ---
 
+### R-SP: RQ11 - ColorGrading LDR Post-Process Activation
+
+**Date:** 2026-06-10
+**Commit:** `b9273fe feat(render): enable color grading postprocess pass`
+**Spark plan review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+**Spark code review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-10-rq11-color-grading-ldr-postprocess-plan.md`
+- Section: full RQ11 stage document
+- Lines checked: full document before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ10 Vignette LDR post-process activation.
+- Evidence: RQ10 committed and recorded; RQ11 implementation started only after Spark plan review PASS.
+
+**Approved scope:**
+
+- Convert ColorGrading from a stub/compute placeholder into an LDR fullscreen graphics post-process pass.
+- Compile, cache, hash, manifest, and expose ColorGrading vertex/pixel shaders and pipelines.
+- Keep the supported RQ11 path strictly LDR after ToneMapping and before Vignette/FXAA.
+- Keep runtime default `enableColorGrading = false` so existing ModelViewer goldens remain stable.
+- Make HDR mode, LUT mode, `SetLUT(...)`, and `BakeToLUT(...)` visibly unsupported until later phases.
+- Add tests for missing shader/pipeline visibility, descriptor layout, manifest invalidation, graph ordering, unsupported modes, constant upload, and ModelViewer visual stability.
+
+**Out of scope:**
+
+- HDR ColorGrading, LUT sampling/baking, FilmGrain, ChromaticAberration, compute post-process infrastructure, TAA, SSAO, SSR, volumetrics, and default visual tuning.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-10-rq11-color-grading-ldr-postprocess-plan.md`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Shaders/PostProcess/ColorGrading.hlsl`
+- `Render/Include/Render/PostProcess/ColorGrading.h`
+- `Render/Private/PostProcess/ColorGrading.cpp`
+- `Render/Private/PostProcess/PostProcessStack.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/RenderHonestyValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target RenderPassValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderPassValidation"
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation RenderSceneValidation RenderHonestyValidation ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|RenderSceneValidation|RenderHonestyValidation|ModelViewerSmoke|VisualGoldenValidation|ModelViewerPBRMaterialSmoke|PBRMaterialVisualGoldenValidation|ModelViewerIBLSmoke|ModelViewerShadowSmoke|ShadowVisualGoldenValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|MaterialSystemValidation|ClusteredLightingValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused RQ11 gate: PASS, `RenderPassValidation` 54/54 passed after blocker fix.
+- Core and visual gate: PASS, 172/172 selected tests passed.
+- Additional render regression: PASS, 66/66 selected tests passed.
+- Visual gate: PASS, `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerPBRMaterialSmoke`, `PBRMaterialVisualGoldenValidation`, `ModelViewerIBLSmoke`, `ModelViewerShadowSmoke`, and `ShadowVisualGoldenValidation` passed.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `RenderPassValidation`, `RenderSceneValidation`, `RenderHonestyValidation`, `RenderGraphValidation`, `MaterialSystemValidation`, `ClusteredLightingValidation`, `ImageCompareValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerPBRMaterialSmoke`, `PBRMaterialVisualGoldenValidation`, `ModelViewerIBLSmoke`, `ModelViewerShadowSmoke`, `ShadowVisualGoldenValidation`.
+- Diffs: RQ11 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Initial verdict: BLOCKED.
+- Blockers resolved: plan now makes the supported path explicitly LDR-only and makes LUT requests visibly unsupported/rejected before graph scheduling.
+- Final verdict: PASS.
+
+**Spark code review result:**
+
+- Initial verdict: BLOCKED.
+- Blocker resolved: `ColorGradingGPUConstants` now matches HLSL cbuffer packing with explicit padding before `Lift/Gamma/Gain`, and `ColorGradingUploadsConstantsWithHLSLPacking` validates the uploaded byte offsets.
+- Final verdict: PASS.
+
+**Notes / follow-ups:**
+
+- ColorGrading is wired but disabled by default, so existing ModelViewer goldens remain stable.
+- HDR and LUT ColorGrading paths remain honest follow-ups instead of silent placeholders.
+- The pass captures configuration during graph construction and uploads the captured values during execution, matching the other fullscreen post-process passes.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
