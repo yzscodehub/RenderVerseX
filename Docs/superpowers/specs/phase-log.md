@@ -5774,6 +5774,95 @@ git diff --check
 
 ---
 
+### R-SP: RQ26 - ModelViewer Bloom Runtime Controls
+
+**Date:** 2026-06-11
+**Commit:** `72f9e8a feat(samples): expose bloom runtime controls`
+**Spark plan review agent:** Mill (`019eb337-0a0a-7a12-a030-d4969ed4c87a`, gpt-5.5 xhigh)
+**Spark code review agent:** Mill (`019eb337-0a0a-7a12-a030-d4969ed4c87a`, gpt-5.5 xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-11-rq26-modelviewer-bloom-cli-plan.md`
+- Section: RQ26 full stage plan, §§1-11
+- Lines checked: full document before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ25 - Bloom Wide-Kernel Quality Pass
+- Evidence: RQ25 implementation commit `195a98e`, phase-log commit `fd5914f`, focused and visual gates passed.
+
+**Approved scope:**
+
+- Add ModelViewer Bloom CLI controls for intensity, threshold, and radius.
+- Reuse full-token finite float parsing and visible range validation.
+- Route explicit Bloom settings through the existing single `SceneRenderer::ApplyPostProcessSettings()` path.
+- Enable Bloom when any Bloom flag is explicit and copy only explicit values.
+- Extend the post-process log with effective Bloom intensity, threshold, and radius.
+- Add source guards for the ModelViewer Bloom CLI contract.
+- Keep default visual/golden behavior unchanged.
+
+**Out of scope:**
+
+- Multi-mip Bloom, soft-knee public settings, dirt masks, anamorphic streaks, lens ghosts, starbursts, temporal Bloom,
+  auto exposure, luminance histograms, default output changes, golden recapture, or a full UI panel.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-11-rq26-modelviewer-bloom-cli-plan.md`
+- `Samples/ModelViewer/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation"
+build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --model Tests\Fixtures\ModelViewer\R7Triangle.gltf --tonemap aces --bloom-intensity 0.75 --bloom-threshold 0.25 --bloom-radius 2.0 --backend dx11 --width 320 --height 180 --frames 4 --no-ibl --validation
+& build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --model Tests\Fixtures\ModelViewer\R7Triangle.gltf --bloom-intensity 17.0 --backend dx11 --width 320 --height 180 --frames 1 --no-ibl --validation; if ($LASTEXITCODE -eq 0) { exit 1 } else { exit 0 }
+& build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --model Tests\Fixtures\ModelViewer\R7Triangle.gltf --bloom-threshold -1.0 --backend dx11 --width 320 --height 180 --frames 1 --no-ibl --validation; if ($LASTEXITCODE -eq 0) { exit 1 } else { exit 0 }
+& build\win_x64_debug\Samples\ModelViewer\Debug\ModelViewer.exe --smoke --model Tests\Fixtures\ModelViewer\R7Triangle.gltf --bloom-radius 17.0 --backend dx11 --width 320 --height 180 --frames 1 --no-ibl --validation; if ($LASTEXITCODE -eq 0) { exit 1 } else { exit 0 }
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 73/73 selected `PipelineCacheValidation` tests passed.
+- Runtime smoke: PASS, ModelViewer logged `bloomIntensity=0.750`, `bloomThreshold=0.250`, and
+  `bloomRadius=2.000`.
+- Expected-failure tests: PASS, invalid Bloom intensity, threshold, and radius values failed visibly.
+- Visual gate: PASS, 9/9 selected default visual tests passed.
+- Diff check: PASS, with CRLF warnings only.
+- Golden update: not needed; default visual output stayed stable.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerShadowSmoke`,
+  `ShadowVisualGoldenValidation`, `ImageCompareValidation`.
+- Runtime smoke: ModelViewer DX11 smoke with `--tonemap aces --bloom-intensity 0.75 --bloom-threshold 0.25
+  --bloom-radius 2.0`.
+- Diffs: RQ26 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Non-blocking guidance adopted: none required.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Notes / follow-ups:**
+
+- RQ26 makes the RQ25 Bloom quality path inspectable from ModelViewer while preserving default golden behavior.
+- Future stages can add a multi-mip Bloom implementation or auto exposure now that Bloom is tunable at runtime.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
