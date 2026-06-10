@@ -5102,6 +5102,89 @@ git diff --check
 
 ---
 
+### R-SP: `RQ18 - Directional Shadow Quality Settings API`
+
+**Date:** 2026-06-11
+**Commit:** `17d1489 feat(render): expose directional shadow quality settings`
+**Spark plan review agent:** Bernoulli (`019eb2ba-f88d-7631-8af3-9f32f285e6b3`, `gpt-5.5`, xhigh)
+**Spark code review agent:** Bernoulli (`019eb2ba-f88d-7631-8af3-9f32f285e6b3`, `gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-11-rq18-directional-shadow-quality-settings-plan.md`
+- Section: RQ18 goal, scope, tests, validation plan, Spark review
+- Lines checked: full stage document before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ17 Directional Shadow Poisson PCF Kernel (`e5a7539`)
+- Evidence: RQ17 implementation and phase-log commits completed, Spark plan/code review PASS.
+
+**Approved scope:**
+
+- Add a `SceneRenderer`-owned persistent `ShadowPassConfig`.
+- Expose `ApplyShadowPassConfig()` and `GetShadowPassConfig()` as renderer-level directional shadow quality API.
+- Forward settings to a live `ShadowPass` and apply stored settings when default passes are created.
+- Keep default values and visual output unchanged.
+- Add source guardrails for API/member/default-pass/live-pass wiring while keeping existing OpaquePass behavior coverage.
+
+**Out of scope:**
+
+- Changing shadow quality defaults, adding ModelViewer CLI/presets/UI, updating visual goldens, changing shaders,
+  changing ViewConstants/descriptors, or adding PCSS/contact shadows.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-11-rq18-directional-shadow-quality-settings-plan.md`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 134/134 selected tests passed.
+- Visual gate: PASS, 9/9 selected visual tests passed.
+- Golden update: not needed; defaults stayed unchanged and visual output matched existing goldens.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `RenderPassValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`,
+  `ModelViewerShadowSmoke`, `ShadowVisualGoldenValidation`, `ImageCompareValidation`.
+- Diffs: RQ18 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+- Non-blocking guidance adopted where practical: no CLI/preset in RQ18; API comment documents that invalid config is
+  handled by `ShadowPass` support checks and pipeline sanitizers.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Notes / follow-ups:**
+
+- Direct `SceneRenderer` behavior tests were not added to lightweight validation targets because including
+  `SceneRenderer.h` there pulls in `RenderContext` and RHI backend factory linkage. The source guard plus existing
+  OpaquePass behavior test cover this stage without expanding test target dependencies.
+- RQ18 creates the renderer-level hook needed for later ModelViewer shadow quality CLI/presets or PCSS/contact shadow
+  stages.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
