@@ -5267,6 +5267,93 @@ git diff --check
 
 ---
 
+### R-SP: RQ20 - Tone Mapping Runtime Operator Settings
+
+**Date:** 2026-06-11
+**Commit:** `b28c6ec feat(render): route tonemap operator through settings`
+**Spark plan review agent:** Cicero (`019eb313-51bf-7611-966d-343fff2c8371`, gpt-5.5 xhigh)
+**Spark code review agent:** Cicero (`019eb313-51bf-7611-966d-343fff2c8371`, gpt-5.5 xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-11-rq20-tonemapping-runtime-operator-settings-plan.md`
+- Section: RQ20 full stage plan, §§1-11
+- Lines checked: full document before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ19 - ModelViewer Shadow Quality Presets
+- Evidence: RQ19 implementation commit `a2fc3a3`, phase-log commit `563c4d2`, default visual gate passed.
+
+**Approved scope:**
+
+- Move `ToneMappingOperator` into shared `ToneMappingTypes.h`.
+- Add `PostProcessSettings::toneMappingOperator` with shared default `ToneMappingOperator::ACES`.
+- Route `ToneMappingPass::Configure()` through the shared settings contract.
+- Keep SceneRenderer's runtime default visual baseline by setting `ToneMappingOperator::None`.
+- Remove the old hidden `SetupDefaultPostProcess()` default `SetOperator(None)` override.
+- Add focused behavior tests and source guards for the split defaults and scoped override removal.
+
+**Out of scope:**
+
+- ModelViewer tonemap CLI, default ACES enablement, golden recapture, shader curve changes, AgX, auto exposure,
+  color grading LUTs, or post-process stack reordering.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-11-rq20-tonemapping-runtime-operator-settings-plan.md`
+- `Render/Include/Render/PostProcess/PostProcessStack.h`
+- `Render/Include/Render/PostProcess/ToneMapping.h`
+- `Render/Include/Render/PostProcess/ToneMappingTypes.h`
+- `Render/Private/PostProcess/ToneMapping.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target RenderPassValidation PipelineCacheValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderPassValidation|PipelineCacheValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused tests: PASS, 138/138 selected `RenderPassValidation` and `PipelineCacheValidation` tests passed.
+- Visual gate: PASS, 9/9 selected default visual tests passed.
+- Diff check: PASS, with CRLF warnings only.
+- Golden update: not needed; default visual output stayed stable.
+
+**Artifacts:**
+
+- Tests: `RenderPassValidation`, `PipelineCacheValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`,
+  `ModelViewerShadowSmoke`, `ShadowVisualGoldenValidation`, `ImageCompareValidation`.
+- Diffs: RQ20 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS after blocker fixes.
+- Blockers resolved: enum dependency strategy was made concrete with `ToneMappingTypes.h`; split defaults were
+  explicitly preserved (`PostProcessSettings` default ACES, SceneRenderer runtime default None); tests/source guards
+  were expanded for both defaults and scoped old override removal.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Notes / follow-ups:**
+
+- Future stages can expose runtime tonemap selection to ModelViewer or change the default visual operator after an
+  explicit golden recapture.
+- RQ20 intentionally keeps the current default image stable while creating the settings contract needed for later
+  cinematic output controls.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
