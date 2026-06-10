@@ -4627,6 +4627,105 @@ git diff --check
 
 ---
 
+### R-SP: RQ13 - Directional Shadow Receiver Normal Bias
+
+**Date:** 2026-06-10
+**Commit:** `8e6ae05 feat(render): apply directional shadow normal bias`
+**Spark plan review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+**Spark code review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-10-rq13-directional-shadow-normal-bias-plan.md`
+- Section: full RQ13 stage document
+- Lines checked: full document before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ12 ChromaticAberration LDR post-process activation.
+- Evidence: RQ12 committed and recorded; RQ13 implementation started only after Spark plan review PASS.
+
+**Approved scope:**
+
+- Wire existing `ShadowPassConfig::normalBias` into the directional shadow receiver path.
+- Add `ViewData::directionalShadowNormalBias` and `ViewConstants::directionalShadowReceiverParams`.
+- Upload finite non-negative receiver normal bias from `PipelineCache::UpdateViewConstants`.
+- Forward `ShadowPassConfig::normalBias` from `OpaquePass` when a directional shadow map is bound.
+- Reset receiver normal bias on disabled transparent/default shadow paths.
+- Update `DefaultLit.hlsl` so directional shadow sampling offsets the projected receiver position along the
+  final pixel normal after normal-map evaluation.
+- Add layout, upload, clamp, shader source guard, and OpaquePass forwarding tests.
+- Update only the affected shadow golden after inspecting the 3-pixel intended shadow-edge delta.
+
+**Out of scope:**
+
+- Full CSM cascade selection, multi-cascade sampling, texture arrays, descriptor arrays, PCSS/contact shadows,
+  VSM/EVSM/MSM, shadow atlas packing, rasterizer bias changes, UI/editor controls, and broad shadow tuning.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-10-rq13-directional-shadow-normal-bias-plan.md`
+- `Render/Include/Render/Renderer/ViewData.h`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Passes/TransparentPass.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/Golden/ModelViewer/RQ3d_Shadow_DX11_320x180.ppm`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation"
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation RenderSceneValidation RenderHonestyValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderSceneValidation|RenderHonestyValidation|ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused RQ13 gate: PASS, `PipelineCacheValidation|RenderPassValidation` 126/126 passed.
+- Core and visual gate before golden update: 61/62 passed; only `ShadowVisualGoldenValidation` failed with
+  3 changed pixels, MSE `0.00668403`, PSNR `69.8804`.
+- Visual inspection: PASS; actual and diff images showed only tiny intended shadow-edge changes from receiver
+  normal bias.
+- Updated golden: `Tests/Golden/ModelViewer/RQ3d_Shadow_DX11_320x180.ppm`.
+- Core and visual gate after golden update: PASS, 62/62 selected tests passed.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `RenderPassValidation`, `RenderSceneValidation`, `RenderHonestyValidation`,
+  `ModelViewerSmoke`, `VisualGoldenValidation`, `ModelViewerShadowSmoke`, `ShadowVisualGoldenValidation`,
+  `ImageCompareValidation`.
+- Visual actual: `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/RQ3d_Shadow_DX11_320x180.ppm`.
+- Visual diff: `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/RQ3d_Shadow_DX11_320x180.diff.ppm`.
+- Diffs: RQ13 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Non-blocking suggestions incorporated: shader guard now requires the final normal-map shading normal call site,
+  and `ViewConstantsLayoutMatchesDefaultLitCBufferPacking` checks the new receiver params offset/size.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers: none.
+
+**Notes / follow-ups:**
+
+- Full CSM consumption remains a later stage because the current frame binding still consumes one
+  `Texture2D<float>` shadow map.
+- Future shadow tuning should watch for peter-panning on aggressive normal maps.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
