@@ -649,20 +649,17 @@ TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDis
     RVX::PostProcessSettings settings;
     settings.enableDOF = true;
     settings.enableMotionBlur = true;
-    settings.enableChromaticAberration = true;
     settings.enableFilmGrain = true;
     settings.enableVolumetricLighting = true;
 
     RVX::DOFPass dof;
     RVX::MotionBlurPass motionBlur;
-    RVX::ChromaticAberrationPass chromaticAberration;
     RVX::FilmGrainPass filmGrain;
     RVX::VolumetricLightingPass volumetricLighting;
 
     RVX::IPostProcessPass* passes[] = {
         &dof,
         &motionBlur,
-        &chromaticAberration,
         &filmGrain,
         &volumetricLighting,
     };
@@ -690,6 +687,36 @@ TEST_F(RenderHonestyValidationFixture, ColorGradingRequiresResourcesBeforeSuppor
     EXPECT_FALSE(colorGrading.IsSupported());
     EXPECT_FALSE(colorGrading.IsEnabled());
     EXPECT_FALSE(colorGrading.GetUnsupportedReason().empty());
+}
+
+TEST_F(RenderHonestyValidationFixture, ChromaticAberrationRequiresResourcesBeforeSupported)
+{
+    RVX::PostProcessSettings settings;
+    settings.enableChromaticAberration = true;
+
+    RVX::ChromaticAberrationPass chromaticAberration;
+    chromaticAberration.Configure(settings);
+
+    EXPECT_TRUE(chromaticAberration.IsRequestedEnabled());
+    EXPECT_FALSE(chromaticAberration.IsSupported());
+    EXPECT_FALSE(chromaticAberration.IsEnabled());
+    EXPECT_FALSE(chromaticAberration.GetUnsupportedReason().empty());
+}
+
+TEST_F(RenderHonestyValidationFixture, ChromaticAberrationRejectsSpectralRequests)
+{
+    RVX::PostProcessSettings settings;
+    settings.enableChromaticAberration = true;
+
+    RVX::ChromaticAberrationPass chromaticAberration;
+    chromaticAberration.Configure(settings);
+    chromaticAberration.SetSpectralSampling(true);
+
+    EXPECT_TRUE(chromaticAberration.IsRequestedEnabled());
+    EXPECT_TRUE(chromaticAberration.IsSpectralSampling());
+    EXPECT_FALSE(chromaticAberration.IsSupported());
+    EXPECT_FALSE(chromaticAberration.IsEnabled());
+    EXPECT_NE(chromaticAberration.GetUnsupportedReason().find("spectral"), std::string::npos);
 }
 
 TEST_F(RenderHonestyValidationFixture, ColorGradingRejectsHDRAndLUTRequests)

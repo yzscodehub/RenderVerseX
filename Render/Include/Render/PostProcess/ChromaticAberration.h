@@ -10,8 +10,13 @@
 #include "Core/MathTypes.h"
 #include "Render/PostProcess/PostProcessStack.h"
 
+#include <deque>
+
 namespace RVX
 {
+    class PipelineCache;
+    class ResourceViewCache;
+
     /**
      * @brief Chromatic aberration configuration
      */
@@ -42,26 +47,41 @@ namespace RVX
         ~ChromaticAberrationPass() override = default;
 
         const char* GetName() const override { return "ChromaticAberration"; }
-        int32 GetPriority() const override { return 860; }  // Late in pipeline
+        int32 GetPriority() const override { return 935; }  // LDR, after color grading and before vignette/FXAA
 
         void Configure(const PostProcessSettings& settings) override;
         void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override;
+
+        /**
+         * @brief Provide GPU resources required by the fullscreen ChromaticAberration path
+         */
+        void SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache);
 
         // =========================================================================
         // Configuration
         // =========================================================================
 
-        void SetConfig(const ChromaticAberrationConfig& config) { m_config = config; }
+        void SetConfig(const ChromaticAberrationConfig& config);
         const ChromaticAberrationConfig& GetConfig() const { return m_config; }
 
         void SetIntensity(float intensity) { m_config.intensity = intensity; }
         float GetIntensity() const { return m_config.intensity; }
 
-        void SetSpectralSampling(bool enable) { m_config.useSpectral = enable; }
+        void SetSpectralSampling(bool enable);
         bool IsSpectralSampling() const { return m_config.useSpectral; }
 
     private:
+        bool EnsureRuntimeResources();
+        bool UpdateConstants(uint32 width, uint32 height, const ChromaticAberrationConfig& config);
+        void RefreshSupportState();
+
         ChromaticAberrationConfig m_config;
+        PipelineCache* m_pipelineCache = nullptr;
+        ResourceViewCache* m_viewCache = nullptr;
+        IRHIDevice* m_resourceDevice = nullptr;
+        RHIBufferRef m_constantBuffer;
+        RHISamplerRef m_sampler;
+        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
     };
 
 } // namespace RVX

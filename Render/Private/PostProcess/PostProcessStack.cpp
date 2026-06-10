@@ -25,7 +25,7 @@ namespace
         }
 
         const std::string name = effect->GetName();
-        return name == "ColorGrading" || name == "FXAA" || name == "Vignette";
+        return name == "ChromaticAberration" || name == "ColorGrading" || name == "FXAA" || name == "Vignette";
     }
 } // namespace
 

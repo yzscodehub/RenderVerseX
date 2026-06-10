@@ -31,6 +31,7 @@ namespace RVX
     class World;
     class Camera;
     class BloomPass;
+    class ChromaticAberrationPass;
     class ColorGradingPass;
     class FXAAPass;
     class VignettePass;
@@ -340,6 +341,7 @@ namespace RVX
         BloomPass* m_bloomPostProcess = nullptr;
         ToneMappingPass* m_toneMappingPostProcess = nullptr;
         ColorGradingPass* m_colorGradingPostProcess = nullptr;
+        ChromaticAberrationPass* m_chromaticAberrationPostProcess = nullptr;
         VignettePass* m_vignettePostProcess = nullptr;
         FXAAPass* m_fxaaPostProcess = nullptr;
         
