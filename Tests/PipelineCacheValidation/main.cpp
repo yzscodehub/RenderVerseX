@@ -1564,6 +1564,56 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesShadowQualityPresets)
     EXPECT_NE(source.find("sceneRenderer->ApplyShadowPassConfig(shadowConfig);"), std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelection)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path repoRoot = FindShaderDirectory().parent_path().parent_path();
+    const std::string source = ReadTextFile(repoRoot / "Samples" / "ModelViewer" / "main.cpp");
+
+    EXPECT_NE(source.find("#include \"Render/PostProcess/ToneMappingTypes.h\""), std::string::npos);
+    EXPECT_NE(source.find("--tonemap <default|none|reinhard|reinhard-extended|aces|uncharted2|neutral>"),
+              std::string::npos);
+    EXPECT_NE(source.find("enum class ToneMapSelection"), std::string::npos);
+
+    const auto parseStart = source.find("bool ParseToneMapSelection");
+    ASSERT_NE(parseStart, std::string::npos);
+    const auto parseEnd = source.find("bool TryGetToneMappingOperator", parseStart);
+    ASSERT_NE(parseEnd, std::string::npos);
+    const std::string parseBody = source.substr(parseStart, parseEnd - parseStart);
+    EXPECT_NE(parseBody.find("value == \"default\""), std::string::npos);
+    EXPECT_NE(parseBody.find("value == \"none\""), std::string::npos);
+    EXPECT_NE(parseBody.find("value == \"reinhard\""), std::string::npos);
+    EXPECT_NE(parseBody.find("value == \"reinhard-extended\""), std::string::npos);
+    EXPECT_NE(parseBody.find("value == \"aces\""), std::string::npos);
+    EXPECT_NE(parseBody.find("value == \"uncharted2\""), std::string::npos);
+    EXPECT_NE(parseBody.find("value == \"neutral\""), std::string::npos);
+
+    const auto operatorStart = source.find("bool TryGetToneMappingOperator");
+    ASSERT_NE(operatorStart, std::string::npos);
+    const auto operatorEnd = source.find("ShadowPassConfig MakeShadowQualityConfig", operatorStart);
+    ASSERT_NE(operatorEnd, std::string::npos);
+    const std::string operatorBody = source.substr(operatorStart, operatorEnd - operatorStart);
+    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::None;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::Reinhard;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::ReinhardExtended;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::ACES;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::Uncharted2;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::Neutral;"), std::string::npos);
+
+    EXPECT_NE(source.find("PostProcessSettings postProcessSettings = sceneRenderer->GetPostProcessSettings();"),
+              std::string::npos);
+    EXPECT_NE(source.find("postProcessSettings.toneMappingOperator = tonemapOperator;"), std::string::npos);
+    EXPECT_NE(source.find("sceneRenderer->ApplyPostProcessSettings(postProcessSettings);"), std::string::npos);
+    EXPECT_NE(source.find("TryGetToneMappingOperator(options.tonemapSelection, tonemapOperator)"),
+              std::string::npos);
+    EXPECT_NE(source.find("Invalid --tonemap value"), std::string::npos);
+    EXPECT_EQ(source.find("options.tonemapSelection = ToneMapSelection::ACES"), std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAware)
 {
     if (!HasCompilerAvailable())

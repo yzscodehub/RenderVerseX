@@ -23,6 +23,7 @@
 #include "Render/Context/RenderContext.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
+#include "Render/PostProcess/ToneMappingTypes.h"
 #include "Render/Renderer/SceneRenderer.h"
 #include "Render/RenderSubsystem.h"
 #include "Runtime/Window/WindowSubsystem.h"
@@ -92,6 +93,17 @@ enum class ShadowQualityPreset
     Ultra
 };
 
+enum class ToneMapSelection
+{
+    Default = 0,
+    None,
+    Reinhard,
+    ReinhardExtended,
+    ACES,
+    Uncharted2,
+    Neutral
+};
+
 struct ModelViewerOptions
 {
     std::string modelPath;
@@ -117,6 +129,7 @@ struct ModelViewerOptions
     bool heightSet = false;
     bool framesSet = false;
     ShadowQualityPreset shadowQualityPreset = ShadowQualityPreset::Default;
+    ToneMapSelection tonemapSelection = ToneMapSelection::Default;
 };
 
 struct ProceduralIBLResources
@@ -187,6 +200,8 @@ namespace
             << "  --shadow-test-scene  Add a deterministic shadow-casting directional light\n"
             << "  --shadow-quality <default|low|medium|high|ultra>\n"
             << "                       Select directional shadow quality preset\n"
+            << "  --tonemap <default|none|reinhard|reinhard-extended|aces|uncharted2|neutral>\n"
+            << "                       Select tone mapping operator without changing default smoke/golden behavior\n"
             << "  --expect-ibl-ready   Smoke mode fails unless texture IBL becomes ready\n"
             << "  --expect-skybox-ready Smoke mode fails unless SkyboxPass becomes ready\n"
             << "  --expect-shadow-ready Smoke mode fails unless directional shadow sampling is ready\n"
@@ -282,6 +297,90 @@ namespace
         }
 
         return true;
+    }
+
+    const char* GetToneMapSelectionName(ToneMapSelection selection)
+    {
+        switch (selection)
+        {
+            case ToneMapSelection::Default: return "default";
+            case ToneMapSelection::None: return "none";
+            case ToneMapSelection::Reinhard: return "reinhard";
+            case ToneMapSelection::ReinhardExtended: return "reinhard-extended";
+            case ToneMapSelection::ACES: return "aces";
+            case ToneMapSelection::Uncharted2: return "uncharted2";
+            case ToneMapSelection::Neutral: return "neutral";
+        }
+
+        return "default";
+    }
+
+    bool ParseToneMapSelection(const std::string& text, ToneMapSelection& outSelection)
+    {
+        const std::string value = ToLower(text);
+        if (value == "default")
+        {
+            outSelection = ToneMapSelection::Default;
+        }
+        else if (value == "none")
+        {
+            outSelection = ToneMapSelection::None;
+        }
+        else if (value == "reinhard")
+        {
+            outSelection = ToneMapSelection::Reinhard;
+        }
+        else if (value == "reinhard-extended")
+        {
+            outSelection = ToneMapSelection::ReinhardExtended;
+        }
+        else if (value == "aces")
+        {
+            outSelection = ToneMapSelection::ACES;
+        }
+        else if (value == "uncharted2")
+        {
+            outSelection = ToneMapSelection::Uncharted2;
+        }
+        else if (value == "neutral")
+        {
+            outSelection = ToneMapSelection::Neutral;
+        }
+        else
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    bool TryGetToneMappingOperator(ToneMapSelection selection, ToneMappingOperator& outOperator)
+    {
+        switch (selection)
+        {
+            case ToneMapSelection::None:
+                outOperator = ToneMappingOperator::None;
+                return true;
+            case ToneMapSelection::Reinhard:
+                outOperator = ToneMappingOperator::Reinhard;
+                return true;
+            case ToneMapSelection::ReinhardExtended:
+                outOperator = ToneMappingOperator::ReinhardExtended;
+                return true;
+            case ToneMapSelection::ACES:
+                outOperator = ToneMappingOperator::ACES;
+                return true;
+            case ToneMapSelection::Uncharted2:
+                outOperator = ToneMappingOperator::Uncharted2;
+                return true;
+            case ToneMapSelection::Neutral:
+                outOperator = ToneMappingOperator::Neutral;
+                return true;
+            case ToneMapSelection::Default:
+                break;
+        }
+
+        return false;
     }
 
     ShadowPassConfig MakeShadowQualityConfig(ShadowQualityPreset preset)
@@ -462,6 +561,15 @@ namespace
                 if (!value || !ParseShadowQualityPreset(value, options.shadowQualityPreset))
                 {
                     RVX_CORE_ERROR("Invalid --shadow-quality value: {}", value ? value : "");
+                    return false;
+                }
+            }
+            else if (arg == "--tonemap")
+            {
+                const char* value = requireValue("--tonemap");
+                if (!value || !ParseToneMapSelection(value, options.tonemapSelection))
+                {
+                    RVX_CORE_ERROR("Invalid --tonemap value: {}", value ? value : "");
                     return false;
                 }
             }
@@ -1662,6 +1770,16 @@ int main(int argc, char* argv[])
 
     if (SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer())
     {
+        ToneMappingOperator tonemapOperator = ToneMappingOperator::None;
+        if (TryGetToneMappingOperator(options.tonemapSelection, tonemapOperator))
+        {
+            PostProcessSettings postProcessSettings = sceneRenderer->GetPostProcessSettings();
+            postProcessSettings.toneMappingOperator = tonemapOperator;
+            sceneRenderer->ApplyPostProcessSettings(postProcessSettings);
+            RVX_CORE_INFO("ModelViewer tonemap operator '{}'",
+                          GetToneMapSelectionName(options.tonemapSelection));
+        }
+
         const ShadowPassConfig shadowConfig = MakeShadowQualityConfig(options.shadowQualityPreset);
         sceneRenderer->ApplyShadowPassConfig(shadowConfig);
         RVX_CORE_INFO("ModelViewer shadow quality preset '{}': mapSize={}, cascades={}, lambda={:.2f}, "
@@ -1677,6 +1795,12 @@ int main(int argc, char* argv[])
     }
     else
     {
+        if (options.tonemapSelection != ToneMapSelection::Default)
+        {
+            RVX_CORE_WARN("ModelViewer tonemap operator '{}' could not be applied: SceneRenderer unavailable",
+                          GetToneMapSelectionName(options.tonemapSelection));
+        }
+
         RVX_CORE_WARN("ModelViewer shadow quality preset '{}' could not be applied: SceneRenderer unavailable",
                       GetShadowQualityPresetName(options.shadowQualityPreset));
     }
