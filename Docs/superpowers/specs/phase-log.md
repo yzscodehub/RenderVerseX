@@ -4726,6 +4726,117 @@ git diff --check
 
 ---
 
+### R-SP: RQ14 - Directional CSM Array Consumption
+
+**Date:** 2026-06-10
+**Commit:** `40e00f6 feat(render): consume directional csm texture array`
+**Spark plan review agent:** Pauli `019ead8c-e21b-78c3-add0-12e95fc7bb43` (`gpt-5.5`, xhigh)
+**Spark code review agent:** Kuhn `019eb27b-272c-76d1-ab82-7ecce9ba913b` (`gpt-5.5`, xhigh)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-10-rq14-directional-csm-array-consumption-plan.md`
+- Section: full RQ14 stage document
+- Lines checked: full document before implementation
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ13 Directional Shadow Receiver Normal Bias.
+- Evidence: RQ13 implementation and phase-log were committed before RQ14 implementation started; Spark plan
+  review passed before RQ14 code changes.
+
+**Approved scope:**
+
+- Convert the primary directional shadow path from independent per-cascade 2D depth textures to one depth
+  `Texture2DArray`.
+- Add shared directional cascade constants and extend `ViewData` / `ViewConstants` with up to four cascade
+  matrices, absolute camera-forward split distances, and cascade count.
+- Update `DefaultLit.hlsl` to sample `Texture2DArray<float>` with camera-forward cascade selection while
+  preserving RQ13 receiver normal bias, PCF, and depth bias.
+- Update `OpaquePass` to read and bind the full shadow array SRV and upload all active cascade data.
+- Fix RenderGraph depth-aspect handling for CSM layer writes, full-array shader reads, and export barriers.
+- Fix DX11/DX12 single-layer 2D-array view creation so per-cascade layer DSV/SRV views preserve array-slice
+  semantics.
+- Add validation coverage for CSM array setup, shader constants, RenderGraph depth-array barriers, and backend
+  array-layer view creation.
+
+**Out of scope:**
+
+- Cascade blending/fade bands, stabilized texel snapping, PCSS/contact shadows, VSM/EVSM/MSM, shadow atlas
+  packing, descriptor arrays/bindless shadow maps, point/spot light shadows, transparent shadow receiving,
+  UI/editor controls, and broad artistic shadow retuning.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-10-rq14-directional-csm-array-consumption-plan.md`
+- `Render/Include/Render/Renderer/ShadowConstants.h`
+- `Render/Include/Render/Renderer/ViewData.h`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Include/Render/Passes/ShadowPass.h`
+- `Render/Private/Passes/ShadowPass.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Passes/TransparentPass.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Private/Graph/RenderGraphCompiler.cpp`
+- `Render/Private/Graph/RenderGraphExecutor.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `RHI_DX11/Private/DX11Resources.cpp`
+- `RHI_DX12/Private/DX12Resources.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/DX11Validation/main.cpp`
+- `Tests/DX12Validation/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/RenderGraphValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation RenderGraphValidation RenderSceneValidation RenderHonestyValidation DX11Validation DX12Validation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|RenderGraphValidation|DX11Validation\.Texture2DArrayLayerViewsPreserveArraySlice|DX12Validation\.Texture2DArrayLayerViewsCreateNativeDescriptors"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderSceneValidation|RenderHonestyValidation|DX11Validation\.Texture2DArrayLayerViewsPreserveArraySlice|DX12Validation\.Texture2DArrayLayerViewsCreateNativeDescriptors|ModelViewerSmoke|VisualGoldenValidation|ModelViewerShadowSmoke|ShadowVisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused RQ14 gate: PASS, 158/158 selected tests passed.
+- Visual/regression gate: PASS, 64/64 selected tests passed.
+- Shadow visual inspection: PASS; an intermediate failure exposed the backend single-layer array view bug,
+  and after the DX11/DX12 fix the shadow actual matched the existing golden.
+- Golden update: not needed; `ShadowVisualGoldenValidation` passed after relinking `ModelViewer`.
+- Diff check: PASS, with CRLF warnings only.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `RenderPassValidation`, `RenderGraphValidation`, `RenderSceneValidation`,
+  `RenderHonestyValidation`, `DX11Validation.Texture2DArrayLayerViewsPreserveArraySlice`,
+  `DX12Validation.Texture2DArrayLayerViewsCreateNativeDescriptors`, `ModelViewerSmoke`,
+  `VisualGoldenValidation`, `ModelViewerShadowSmoke`, `ShadowVisualGoldenValidation`,
+  `ImageCompareValidation`.
+- Visual actual: `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/RQ3d_Shadow_DX11_320x180.ppm`.
+- Diffs: RQ14 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: plan clarified absolute split-distance units and added RenderGraph depth-aspect validation.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Notes / follow-ups:**
+
+- Cascade blending and fade bands remain follow-up work; RQ14 establishes honest array consumption first.
+- DX12 native descriptor validation cannot introspect descriptors the way DX11 can, so the DX12 test asserts
+  valid native handles while DX11 asserts the exact native array descriptor fields.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
