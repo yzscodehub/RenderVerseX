@@ -22,4 +22,13 @@ namespace RVX
         None                // No tone mapping (pass-through)
     };
 
+    /**
+     * @brief Exposure source used by the tone mapping pass
+     */
+    enum class ToneMappingExposureMode : uint8
+    {
+        ManualMultiplier,   // Use PostProcessSettings::exposure as a linear multiplier
+        CameraEV100         // Resolve exposure from camera EV100 and compensation stops
+    };
+
 } // namespace RVX

@@ -1515,6 +1515,74 @@ TEST_F(RenderPassValidationFixture, ToneMappingConfigureAppliesOperatorFromSetti
     EXPECT_EQ(pass.GetOperator(), ToneMappingOperator::None);
 }
 
+TEST_F(RenderPassValidationFixture, ToneMappingConfigureResolvesManualExposureSettings)
+{
+    ToneMappingPass pass;
+    PostProcessSettings settings;
+    pass.Configure(settings);
+    EXPECT_FLOAT_EQ(pass.GetExposure(), 1.0f);
+
+    settings.exposure = 1.25f;
+    pass.Configure(settings);
+    EXPECT_FLOAT_EQ(pass.GetExposure(), 1.25f);
+}
+
+TEST_F(RenderPassValidationFixture, ToneMappingConfigureSanitizesManualExposureSettings)
+{
+    ToneMappingPass pass;
+    PostProcessSettings settings;
+
+    settings.exposure = std::numeric_limits<float>::quiet_NaN();
+    pass.Configure(settings);
+    EXPECT_FLOAT_EQ(pass.GetExposure(), 1.0f);
+
+    settings.exposure = std::numeric_limits<float>::infinity();
+    pass.Configure(settings);
+    EXPECT_FLOAT_EQ(pass.GetExposure(), 1.0f);
+
+    settings.exposure = -1.0f;
+    pass.Configure(settings);
+    EXPECT_FLOAT_EQ(pass.GetExposure(), 0.0f);
+
+    settings.exposure = 70000.0f;
+    pass.Configure(settings);
+    EXPECT_FLOAT_EQ(pass.GetExposure(), 65536.0f);
+}
+
+TEST_F(RenderPassValidationFixture, ToneMappingConfigureResolvesCameraEV100ExposureSettings)
+{
+    ToneMappingPass pass;
+    PostProcessSettings settings;
+    settings.exposureMode = ToneMappingExposureMode::CameraEV100;
+    settings.cameraEV100 = 2.0f;
+    settings.exposureCompensationEV = 1.0f;
+
+    pass.Configure(settings);
+    EXPECT_NEAR(pass.GetExposure(), 0.5f, 0.00001f);
+
+    settings.cameraEV100 = -20.0f;
+    settings.exposureCompensationEV = 20.0f;
+    pass.Configure(settings);
+    EXPECT_NEAR(pass.GetExposure(), 65536.0f, 0.01f);
+}
+
+TEST_F(RenderPassValidationFixture, ToneMappingConfigureFallsBackForInvalidCameraEV100ExposureSettings)
+{
+    ToneMappingPass pass;
+    PostProcessSettings settings;
+    settings.exposureMode = ToneMappingExposureMode::CameraEV100;
+
+    settings.cameraEV100 = std::numeric_limits<float>::quiet_NaN();
+    settings.exposureCompensationEV = 0.0f;
+    pass.Configure(settings);
+    EXPECT_FLOAT_EQ(pass.GetExposure(), 1.0f);
+
+    settings.cameraEV100 = 0.0f;
+    settings.exposureCompensationEV = std::numeric_limits<float>::infinity();
+    pass.Configure(settings);
+    EXPECT_FLOAT_EQ(pass.GetExposure(), 1.0f);
+}
+
 TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscreenTriangle)
 {
     ASSERT_NO_FATAL_FAILURE(Initialize());

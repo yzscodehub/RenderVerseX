@@ -8,6 +8,8 @@
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/PipelineCache.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace RVX
@@ -16,11 +18,43 @@ namespace RVX
 namespace
 {
     constexpr uint64 RVX_POST_PROCESS_CONSTANT_BUFFER_ALIGNMENT = 256;
+    constexpr float RVX_TONE_MAPPING_FALLBACK_EXPOSURE = 1.0f;
+    constexpr float RVX_TONE_MAPPING_MAX_EXPOSURE = 65536.0f;
+    constexpr float RVX_TONE_MAPPING_MIN_EV_DELTA = -16.0f;
+    constexpr float RVX_TONE_MAPPING_MAX_EV_DELTA = 16.0f;
 
     uint64 AlignPostProcessConstantBufferSize(uint64 size)
     {
         return (size + RVX_POST_PROCESS_CONSTANT_BUFFER_ALIGNMENT - 1) &
                ~(RVX_POST_PROCESS_CONSTANT_BUFFER_ALIGNMENT - 1);
+    }
+
+    float SanitizeManualExposure(float exposure)
+    {
+        if (!std::isfinite(exposure))
+        {
+            return RVX_TONE_MAPPING_FALLBACK_EXPOSURE;
+        }
+
+        return std::clamp(exposure, 0.0f, RVX_TONE_MAPPING_MAX_EXPOSURE);
+    }
+
+    float ResolveToneMappingExposure(const PostProcessSettings& settings)
+    {
+        if (settings.exposureMode == ToneMappingExposureMode::CameraEV100)
+        {
+            if (!std::isfinite(settings.cameraEV100) || !std::isfinite(settings.exposureCompensationEV))
+            {
+                return RVX_TONE_MAPPING_FALLBACK_EXPOSURE;
+            }
+
+            const float evDelta = std::clamp(settings.exposureCompensationEV - settings.cameraEV100,
+                                             RVX_TONE_MAPPING_MIN_EV_DELTA,
+                                             RVX_TONE_MAPPING_MAX_EV_DELTA);
+            return std::pow(2.0f, evDelta);
+        }
+
+        return SanitizeManualExposure(settings.exposure);
     }
 
     struct ToneMappingGPUConstants
@@ -43,7 +77,7 @@ ToneMappingPass::ToneMappingPass()
 void ToneMappingPass::Configure(const PostProcessSettings& settings)
 {
     m_enabled = settings.enableToneMapping;
-    m_exposure = settings.exposure;
+    m_exposure = ResolveToneMappingExposure(settings);
     m_gamma = settings.gamma;
     m_operator = settings.toneMappingOperator;
 }

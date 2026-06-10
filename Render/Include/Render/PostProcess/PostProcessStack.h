@@ -29,6 +29,9 @@ namespace RVX
         // =========================================================================
         bool enableToneMapping = true;
         float exposure = 1.0f;
+        ToneMappingExposureMode exposureMode = ToneMappingExposureMode::ManualMultiplier;
+        float cameraEV100 = 0.0f;
+        float exposureCompensationEV = 0.0f;
         float gamma = 2.2f;
         ToneMappingOperator toneMappingOperator = ToneMappingOperator::ACES;
 

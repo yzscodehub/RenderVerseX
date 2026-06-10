@@ -1514,12 +1514,31 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingOperatorUsesSharedRuntimeSetti
         ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
 
     EXPECT_NE(toneMappingTypesHeader.find("enum class ToneMappingOperator : uint8"), std::string::npos);
+    EXPECT_NE(toneMappingTypesHeader.find("enum class ToneMappingExposureMode : uint8"), std::string::npos);
+    EXPECT_NE(toneMappingTypesHeader.find("ManualMultiplier"), std::string::npos);
+    EXPECT_NE(toneMappingTypesHeader.find("CameraEV100"), std::string::npos);
     EXPECT_EQ(toneMappingHeader.find("enum class ToneMappingOperator"), std::string::npos);
     EXPECT_NE(settingsHeader.find("#include \"Render/PostProcess/ToneMappingTypes.h\""), std::string::npos);
     EXPECT_NE(toneMappingHeader.find("#include \"Render/PostProcess/ToneMappingTypes.h\""), std::string::npos);
     EXPECT_EQ(settingsHeader.find("#include \"Render/PostProcess/ToneMapping.h\""), std::string::npos);
+    EXPECT_NE(settingsHeader.find("ToneMappingExposureMode exposureMode = ToneMappingExposureMode::ManualMultiplier;"),
+              std::string::npos);
+    EXPECT_NE(settingsHeader.find("float cameraEV100 = 0.0f;"), std::string::npos);
+    EXPECT_NE(settingsHeader.find("float exposureCompensationEV = 0.0f;"), std::string::npos);
     EXPECT_NE(settingsHeader.find("ToneMappingOperator toneMappingOperator = ToneMappingOperator::ACES;"),
               std::string::npos);
+    EXPECT_NE(toneMappingSource.find("float ResolveToneMappingExposure(const PostProcessSettings& settings)"),
+              std::string::npos);
+    EXPECT_NE(toneMappingSource.find("settings.exposureMode == ToneMappingExposureMode::CameraEV100"),
+              std::string::npos);
+    EXPECT_NE(toneMappingSource.find("settings.exposureCompensationEV - settings.cameraEV100"),
+              std::string::npos);
+    EXPECT_NE(toneMappingSource.find("std::clamp(settings.exposureCompensationEV - settings.cameraEV100"),
+              std::string::npos);
+    EXPECT_NE(toneMappingSource.find("std::pow(2.0f, evDelta)"), std::string::npos);
+    EXPECT_NE(toneMappingSource.find("RVX_TONE_MAPPING_FALLBACK_EXPOSURE"), std::string::npos);
+    EXPECT_NE(toneMappingSource.find("return SanitizeManualExposure(settings.exposure);"), std::string::npos);
+    EXPECT_NE(toneMappingSource.find("m_exposure = ResolveToneMappingExposure(settings);"), std::string::npos);
     EXPECT_NE(toneMappingSource.find("m_operator = settings.toneMappingOperator;"), std::string::npos);
 
     const auto defaultsStart = sceneRendererSource.find("PostProcessSettings MakeDefaultRuntimePostProcessSettings()");
