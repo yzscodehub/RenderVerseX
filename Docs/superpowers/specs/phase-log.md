@@ -6162,6 +6162,107 @@ git diff --check
 
 ---
 
+### R-SP: RQ30 - CPU Billboard Particle Render Bridge
+
+**Date:** 2026-06-13
+**Commit:** `965909f feat(particle): add CPU billboard render bridge`
+**Spark plan review agent:** Dalton / Spark, `gpt-5.5 xhigh`
+**Spark code review agent:** Popper / Spark, `gpt-5.5 xhigh`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-13-rq30-cpu-billboard-particle-render-bridge-plan.md`
+- Section: full RQ30 plan
+- Lines checked: plan was reread before implementation; accepted Spark plan-review fixes for shader bindings, renderer config,
+  ParticlePass render pass scope, and quad index format.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ29 local lights in default lit
+- Evidence: implementation and phase-log commits were complete before RQ30 implementation started.
+
+**Approved scope:**
+
+- Attach a CPU particle simulator to `ParticleSystemInstance` through `ParticleSubsystem`.
+- Create an explicit billboard `ParticleRendererConfig`, descriptor layout, fallback texture/sampler, and billboard pipelines.
+- Bind render constants, particle buffer, alive-index buffer, fallback texture, and sampler before billboard draw.
+- Change billboard quad indices to `uint16` and bind with `RHIFormat::R16_UINT`.
+- Wrap `ParticlePass` draws in a resolved RenderGraph color/depth render pass.
+- Add `ParticleValidation` tests for CPU simulation, shader binding guardrails, descriptors, draw order, render pass scope,
+  invalid config rejection, and out-of-scope mode/blend rejection.
+
+**Out of scope:**
+
+- GPU simulation and GPU indirect as the required path.
+- Mesh particles, trails, stretched billboards, and soft particles.
+- Texture asset loading for particle materials.
+- Engine-level automatic registration into `SceneRenderer` / ModelViewer scene content.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-13-rq30-cpu-billboard-particle-render-bridge-plan.md`
+- `Particle/CMakeLists.txt`
+- `Particle/Include/Particle/ParticleSystemInstance.h`
+- `Particle/Private/ParticleSystemInstance.cpp`
+- `Particle/Include/Particle/ParticleSubsystem.h`
+- `Particle/Private/ParticleSubsystem.cpp`
+- `Particle/Include/Particle/Rendering/ParticleRenderer.h`
+- `Particle/Private/Rendering/ParticleRenderer.cpp`
+- `Particle/Private/Rendering/ParticlePass.cpp`
+- `Particle/Private/GPU/CPUParticleSimulator.cpp`
+- `Particle/Shaders/ParticleBillboard.hlsl`
+- `Tests/CMakeLists.txt`
+- `Tests/ParticleValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target ParticleValidation RenderHonestyValidation RenderPassValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ParticleValidation|RenderHonestyValidation|RenderPassValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+cmake --build build\win_x64_debug --config Debug --target RenderGraphValidation MaterialSystemValidation PipelineCacheValidation ClusteredLightingValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|MaterialSystemValidation|PipelineCacheValidation|ClusteredLightingValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused particle tests: PASS, 7/7 selected `ParticleValidation` tests passed after Spark blocker fixes.
+- RQ30 render/visual regression: PASS, 120/120 selected particle, honesty, pass, ModelViewer smoke/golden, and image-compare tests passed.
+- Core rendering regression: PASS, 142/142 selected RenderGraph, MaterialSystem, PipelineCache, and ClusteredLighting tests passed.
+- Diff check: PASS, with an unrelated `RenderSubsystem.cpp` CRLF warning only.
+- Visual gate: PASS, ModelViewer smoke and existing visual golden checks passed.
+
+**Artifacts:**
+
+- Tests: `ParticleValidation`, `RenderHonestyValidation`, `RenderPassValidation`, `ModelViewerSmoke`,
+  `VisualGoldenValidation`, `ImageCompareValidation`, `RenderGraphValidation`, `MaterialSystemValidation`,
+  `PipelineCacheValidation`, `ClusteredLightingValidation`.
+- Diffs: RQ30 intended file set only; unrelated pre-existing dirty files and old untracked docs were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: shader binding conflicts with soft particles, explicit renderer config/device injection, descriptor/draw
+  assertions, render pass attachment scope, and quad index format mismatch.
+
+**Spark code review result:**
+
+- Initial verdict: FAIL.
+- Blockers resolved: invalid renderer config no longer reports supported, and tests now assert invalid config rejection plus
+  out-of-scope render/blend rejection on a supported renderer.
+- Final verdict: PASS.
+
+**Notes / follow-ups:**
+
+- RQ30 turns the particle module from disconnected/unsupported-only into a real CPU billboard draw path without binding it
+  to ECS or SceneRenderer registration.
+- A later particle-quality stage can add soft particles, texture material binding, trails, GPU simulation, and automatic scene
+  integration.
+- Spark suggested a future explicit invalid `sampleCount` test; current code already validates sample count.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
