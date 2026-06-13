@@ -15,6 +15,7 @@
 // =============================================================================
 
 #include "Include/BRDF.hlsli"
+#include "Include/Lighting.hlsli"
 
 #define MATERIAL_TEXTURE_BASE_COLOR 0x01
 #define MATERIAL_TEXTURE_NORMAL 0x02
@@ -56,6 +57,14 @@ cbuffer ObjectConstants : register(b0, space1)
     float4x4 NormalMatrix;
 };
 
+cbuffer LightConstants : register(b3, space0)
+{
+    DirectionalLight MainLight;
+    uint NumPointLights;
+    uint NumSpotLights;
+    float2 LightPadding;
+};
+
 cbuffer MaterialConstants : register(b0, space2)
 {
     float4 BaseColorFactor;
@@ -84,6 +93,8 @@ TextureCube PrefilteredEnvironmentTexture : register(t8, space2);
 Texture2D BRDFLUTTexture : register(t9, space2);
 Texture2DArray<float> DirectionalShadowMapTexture : register(t1, space0);
 SamplerState DirectionalShadowSampler : register(s2, space0);
+StructuredBuffer<PointLight> PointLights : register(t4, space0);
+StructuredBuffer<SpotLight> SpotLights : register(t5, space0);
 
 // =============================================================================
 // Vertex Shader Input/Output
@@ -341,6 +352,35 @@ float4 PSMain(PSInput input) : SV_TARGET
         clampedRoughness,
         DirectionalLightColor * DirectionalLightIntensity,
         shadowVisibility);
+
+    const uint pointLightCount = min(NumPointLights, 256u);
+    [loop]
+    for (uint pointLightIndex = 0; pointLightIndex < pointLightCount; ++pointLightIndex)
+    {
+        directLight += EvaluatePointLight(
+            PointLights[pointLightIndex],
+            normal,
+            viewDir,
+            input.WorldPos,
+            baseColor.rgb,
+            metallic,
+            clampedRoughness);
+    }
+
+    const uint spotLightCount = min(NumSpotLights, 128u);
+    [loop]
+    for (uint spotLightIndex = 0; spotLightIndex < spotLightCount; ++spotLightIndex)
+    {
+        directLight += EvaluateSpotLight(
+            SpotLights[spotLightIndex],
+            normal,
+            viewDir,
+            input.WorldPos,
+            baseColor.rgb,
+            metallic,
+            clampedRoughness,
+            1.0);
+    }
 
     float nDotV = max(dot(normal, viewDir), 0.001);
     float3 fresnel = F_SchlickRoughness(nDotV, f0, clampedRoughness);

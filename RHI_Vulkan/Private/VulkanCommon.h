@@ -460,6 +460,7 @@ namespace RVX
         {
             case RHIBindingType::UniformBuffer:        return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             case RHIBindingType::DynamicUniformBuffer: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+            case RHIBindingType::ShaderResourceBuffer: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             case RHIBindingType::StorageBuffer:        return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             case RHIBindingType::DynamicStorageBuffer: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
             case RHIBindingType::SampledTexture:       return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;

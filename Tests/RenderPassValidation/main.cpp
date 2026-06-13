@@ -3534,6 +3534,38 @@ TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassGateNormalMapsOnTang
               std::string::npos);
 }
 
+TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassBindFrameLightResources)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    const fs::path passesDir = FindShaderDirectory().parent_path() / "Private" / "Passes";
+    const std::string opaquePass = ReadTextFile(passesDir / "OpaquePass.cpp");
+    const std::string transparentPass = ReadTextFile(passesDir / "TransparentPass.cpp");
+
+    EXPECT_NE(opaquePass.find("#include \"Render/Lighting/LightManager.h\""), std::string::npos);
+    EXPECT_NE(opaquePass.find("lightResources.lightConstantsBuffer = m_lightManager->GetLightConstantsBuffer();"),
+              std::string::npos);
+    EXPECT_NE(opaquePass.find("lightResources.pointLightsBuffer = m_lightManager->GetPointLightsBuffer();"),
+              std::string::npos);
+    EXPECT_NE(opaquePass.find("lightResources.spotLightsBuffer = m_lightManager->GetSpotLightsBuffer();"),
+              std::string::npos);
+    EXPECT_NE(opaquePass.find("m_pipelineCache->UpdateFrameLightResources(lightResources);"), std::string::npos);
+
+    EXPECT_NE(transparentPass.find("#include \"Render/Lighting/LightManager.h\""), std::string::npos);
+    EXPECT_NE(transparentPass.find("lightResources.lightConstantsBuffer = m_lightManager->GetLightConstantsBuffer();"),
+              std::string::npos);
+    EXPECT_NE(transparentPass.find("lightResources.pointLightsBuffer = m_lightManager->GetPointLightsBuffer();"),
+              std::string::npos);
+    EXPECT_NE(transparentPass.find("lightResources.spotLightsBuffer = m_lightManager->GetSpotLightsBuffer();"),
+              std::string::npos);
+
+    const size_t shadowUpdate = transparentPass.find("m_pipelineCache->UpdateDirectionalShadowFrameResources({});");
+    const size_t lightUpdate = transparentPass.find("m_pipelineCache->UpdateFrameLightResources(lightResources);");
+    ASSERT_NE(shadowUpdate, std::string::npos);
+    ASSERT_NE(lightUpdate, std::string::npos);
+    EXPECT_LT(shadowUpdate, lightUpdate);
+}
+
 TEST_F(RenderPassValidationFixture, OpaquePassResolvesRenderGraphColorTargetView)
 {
     ASSERT_NO_FATAL_FAILURE(Initialize());

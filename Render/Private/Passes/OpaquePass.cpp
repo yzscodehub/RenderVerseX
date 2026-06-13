@@ -7,6 +7,7 @@
 #include "Core/Log.h"
 #include "Render/GPUResourceManager.h"
 #include "Render/Graph/ResourceViewCache.h"
+#include "Render/Lighting/LightManager.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
 #include "Render/Passes/ShadowPass.h"
@@ -92,17 +93,22 @@ void OpaquePass::OnRemove()
     m_gpuResources = nullptr;
     m_pipelineCache = nullptr;
     m_materialSystem = nullptr;
+    m_lightManager = nullptr;
     m_renderScene = nullptr;
     m_shadowPass = nullptr;
     m_opaqueDrawItems = nullptr;
     m_maskedDrawItems = nullptr;
 }
 
-void OpaquePass::SetResources(GPUResourceManager* gpuMgr, PipelineCache* pipelines, MaterialSystem* materialSystem)
+void OpaquePass::SetResources(GPUResourceManager* gpuMgr,
+                              PipelineCache* pipelines,
+                              MaterialSystem* materialSystem,
+                              LightManager* lightManager)
 {
     m_gpuResources = gpuMgr;
     m_pipelineCache = pipelines;
     m_materialSystem = materialSystem;
+    m_lightManager = lightManager;
 }
 
 void OpaquePass::SetRenderScene(const RenderScene* scene,
@@ -263,6 +269,15 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     {
         ClearDirectionalShadowViewData(drawView);
     }
+
+    FrameLightResources lightResources;
+    if (m_lightManager)
+    {
+        lightResources.lightConstantsBuffer = m_lightManager->GetLightConstantsBuffer();
+        lightResources.pointLightsBuffer = m_lightManager->GetPointLightsBuffer();
+        lightResources.spotLightsBuffer = m_lightManager->GetSpotLightsBuffer();
+    }
+    m_pipelineCache->UpdateFrameLightResources(lightResources);
 
     const DirectionalShadowFrameBindingResult shadowBinding =
         m_pipelineCache->UpdateDirectionalShadowFrameResources(shadowResources);

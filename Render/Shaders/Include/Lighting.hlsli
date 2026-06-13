@@ -10,7 +10,7 @@
 #ifndef LIGHTING_HLSLI
 #define LIGHTING_HLSLI
 
-#include "BRDF.hlsli"
+#include "Include/BRDF.hlsli"
 
 // =============================================================================
 // Light Structures

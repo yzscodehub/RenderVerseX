@@ -77,6 +77,7 @@ namespace RVX
                 case RHIBindingType::DynamicUniformBuffer:
                     info.glBinding = uboIndex++;
                     break;
+                case RHIBindingType::ShaderResourceBuffer:
                 case RHIBindingType::StorageBuffer:
                 case RHIBindingType::DynamicStorageBuffer:
                     info.glBinding = ssboIndex++;

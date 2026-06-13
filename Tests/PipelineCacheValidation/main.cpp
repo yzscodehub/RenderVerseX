@@ -1,5 +1,6 @@
 #include "Core/Log.h"
 #include "Render/PipelineCache.h"
+#include "Render/Lighting/LightManager.h"
 #include "Render/Renderer/ViewData.h"
 #include "RHI/RHI.h"
 
@@ -207,6 +208,8 @@ namespace
             return true;
         }
 
+        const std::vector<RVX::RHIDescriptorBinding>& GetBindings() const { return m_bindings; }
+
     private:
         std::vector<RVX::RHIDescriptorBinding> m_bindings;
     };
@@ -289,7 +292,9 @@ namespace
         RVX::RHIDescriptorSetRef CreateDescriptorSet(const RVX::RHIDescriptorSetDesc& desc) override
         {
             capturedDescriptorSetDescs.push_back(desc);
-            return RVX::MakeRef<FakeDescriptorSet>(desc);
+            auto descriptorSet = RVX::MakeRef<FakeDescriptorSet>(desc);
+            capturedDescriptorSets.push_back(descriptorSet.Get());
+            return descriptorSet;
         }
         RVX::RHIQueryPoolRef CreateQueryPool(const RVX::RHIQueryPoolDesc&) override { return {}; }
         RVX::RHICommandContextRef CreateCommandContext(RVX::RHICommandQueueType) override { return {}; }
@@ -325,6 +330,7 @@ namespace
         std::vector<RVX::RHITextureViewDesc> capturedTextureViewDescs;
         std::vector<RVX::RHISamplerDesc> capturedSamplerDescs;
         std::vector<RVX::RHIDescriptorSetDesc> capturedDescriptorSetDescs;
+        std::vector<FakeDescriptorSet*> capturedDescriptorSets;
         std::vector<RVX::RHIDescriptorSetLayoutDesc> capturedSetLayouts;
         std::vector<RVX::RHIGraphicsPipelineDesc> capturedGraphicsPipelines;
 
@@ -839,6 +845,18 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     ASSERT_NE(frameShadowSampler, nullptr);
     EXPECT_EQ(frameShadowSampler->type, RVX::RHIBindingType::Sampler);
     EXPECT_TRUE(RVX::HasFlag(frameShadowSampler->visibility, RVX::RHIShaderStage::Pixel));
+    const auto* frameLightConstants = FindBinding(frameLayout, 3);
+    ASSERT_NE(frameLightConstants, nullptr);
+    EXPECT_EQ(frameLightConstants->type, RVX::RHIBindingType::UniformBuffer);
+    EXPECT_TRUE(RVX::HasFlag(frameLightConstants->visibility, RVX::RHIShaderStage::Pixel));
+    const auto* framePointLights = FindBinding(frameLayout, 4);
+    ASSERT_NE(framePointLights, nullptr);
+    EXPECT_EQ(framePointLights->type, RVX::RHIBindingType::ShaderResourceBuffer);
+    EXPECT_TRUE(RVX::HasFlag(framePointLights->visibility, RVX::RHIShaderStage::Pixel));
+    const auto* frameSpotLights = FindBinding(frameLayout, 5);
+    ASSERT_NE(frameSpotLights, nullptr);
+    EXPECT_EQ(frameSpotLights->type, RVX::RHIBindingType::ShaderResourceBuffer);
+    EXPECT_TRUE(RVX::HasFlag(frameSpotLights->visibility, RVX::RHIShaderStage::Pixel));
 
     ASSERT_FALSE(device.capturedDescriptorSetDescs.empty());
     const RVX::RHIDescriptorSetDesc& frameSetDesc = device.capturedDescriptorSetDescs.front();
@@ -854,6 +872,22 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     const auto* fallbackShadowSampler = FindDescriptorBinding(frameSetDesc, 2);
     ASSERT_NE(fallbackShadowSampler, nullptr);
     EXPECT_NE(fallbackShadowSampler->sampler, nullptr);
+    const auto* fallbackLightConstants = FindDescriptorBinding(frameSetDesc, 3);
+    ASSERT_NE(fallbackLightConstants, nullptr);
+    ASSERT_NE(fallbackLightConstants->buffer, nullptr);
+    EXPECT_TRUE(RVX::HasFlag(fallbackLightConstants->buffer->GetUsage(), RVX::RHIBufferUsage::Constant));
+    const auto* fallbackPointLights = FindDescriptorBinding(frameSetDesc, 4);
+    ASSERT_NE(fallbackPointLights, nullptr);
+    ASSERT_NE(fallbackPointLights->buffer, nullptr);
+    EXPECT_TRUE(RVX::HasFlag(fallbackPointLights->buffer->GetUsage(), RVX::RHIBufferUsage::Structured));
+    EXPECT_TRUE(RVX::HasFlag(fallbackPointLights->buffer->GetUsage(), RVX::RHIBufferUsage::ShaderResource));
+    EXPECT_EQ(fallbackPointLights->buffer->GetStride(), sizeof(RVX::GPUPointLight));
+    const auto* fallbackSpotLights = FindDescriptorBinding(frameSetDesc, 5);
+    ASSERT_NE(fallbackSpotLights, nullptr);
+    ASSERT_NE(fallbackSpotLights->buffer, nullptr);
+    EXPECT_TRUE(RVX::HasFlag(fallbackSpotLights->buffer->GetUsage(), RVX::RHIBufferUsage::Structured));
+    EXPECT_TRUE(RVX::HasFlag(fallbackSpotLights->buffer->GetUsage(), RVX::RHIBufferUsage::ShaderResource));
+    EXPECT_EQ(fallbackSpotLights->buffer->GetStride(), sizeof(RVX::GPUSpotLight));
 
     const auto* object = FindBinding(objectLayout, 0);
     ASSERT_NE(object, nullptr);
@@ -917,6 +951,31 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_TRUE(RVX::HasFlag(skyboxSampler->visibility, RVX::RHIShaderStage::Pixel));
     EXPECT_NE(cache.GetSkyboxSetLayout(), nullptr);
     EXPECT_NE(cache.GetSkyboxLayout(), nullptr);
+}
+
+TEST_F(PipelineCacheValidationFixture, DX11DefaultLitContractBuildsLocalLightBindings)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device(RVX::RHIBackendType::DX11);
+    RVX::PipelineCache cache;
+
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+    ASSERT_FALSE(device.capturedSetLayouts.empty());
+
+    const auto& frameLayout = device.capturedSetLayouts[0];
+    const auto* frameLightConstants = FindBinding(frameLayout, 3);
+    ASSERT_NE(frameLightConstants, nullptr);
+    EXPECT_EQ(frameLightConstants->type, RVX::RHIBindingType::UniformBuffer);
+    const auto* framePointLights = FindBinding(frameLayout, 4);
+    ASSERT_NE(framePointLights, nullptr);
+    EXPECT_EQ(framePointLights->type, RVX::RHIBindingType::ShaderResourceBuffer);
+    const auto* frameSpotLights = FindBinding(frameLayout, 5);
+    ASSERT_NE(frameSpotLights, nullptr);
+    EXPECT_EQ(frameSpotLights->type, RVX::RHIBindingType::ShaderResourceBuffer);
 }
 
 TEST_F(PipelineCacheValidationFixture, ViewConstantsLayoutMatchesDefaultLitCBufferPacking)
@@ -1339,6 +1398,82 @@ TEST_F(PipelineCacheValidationFixture, DirectionalShadowFrameResourcesReportFall
     EXPECT_EQ(result.fallbackReason, RVX::DirectionalShadowFallbackReason::ReverseZUnsupported);
 }
 
+TEST_F(PipelineCacheValidationFixture, FrameLightResourcesUseFallbacksAndSurviveShadowUpdates)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    ASSERT_FALSE(device.capturedDescriptorSets.empty());
+    FakeDescriptorSet* frameSet = device.capturedDescriptorSets.front();
+    ASSERT_NE(frameSet, nullptr);
+
+    RVX::FrameLightBindingResult fallbackResult = cache.UpdateFrameLightResources({});
+    EXPECT_TRUE(fallbackResult.lightResourcesBound);
+    EXPECT_EQ(fallbackResult.fallbackReason, RVX::FrameLightFallbackReason::MissingLightConstants);
+
+    const auto& fallbackBindings = frameSet->GetBindings();
+    EXPECT_NE(FindDescriptorBinding({nullptr, fallbackBindings, nullptr}, 0), nullptr);
+    EXPECT_NE(FindDescriptorBinding({nullptr, fallbackBindings, nullptr}, 1), nullptr);
+    EXPECT_NE(FindDescriptorBinding({nullptr, fallbackBindings, nullptr}, 2), nullptr);
+    EXPECT_NE(FindDescriptorBinding({nullptr, fallbackBindings, nullptr}, 3), nullptr);
+    EXPECT_NE(FindDescriptorBinding({nullptr, fallbackBindings, nullptr}, 4), nullptr);
+    EXPECT_NE(FindDescriptorBinding({nullptr, fallbackBindings, nullptr}, 5), nullptr);
+
+    RVX::RHIBufferDesc lightConstantsDesc;
+    lightConstantsDesc.size = 256;
+    lightConstantsDesc.usage = RVX::RHIBufferUsage::Constant;
+    lightConstantsDesc.memoryType = RVX::RHIMemoryType::Upload;
+    lightConstantsDesc.debugName = "TestLightConstantsBuffer";
+    RVX::RHIBufferRef lightConstants = device.CreateBuffer(lightConstantsDesc);
+
+    RVX::RHIBufferDesc pointLightsDesc;
+    pointLightsDesc.size = sizeof(RVX::GPUPointLight);
+    pointLightsDesc.usage = RVX::RHIBufferUsage::Structured | RVX::RHIBufferUsage::ShaderResource;
+    pointLightsDesc.memoryType = RVX::RHIMemoryType::Upload;
+    pointLightsDesc.stride = sizeof(RVX::GPUPointLight);
+    pointLightsDesc.debugName = "TestPointLightsBuffer";
+    RVX::RHIBufferRef pointLights = device.CreateBuffer(pointLightsDesc);
+
+    RVX::RHIBufferDesc spotLightsDesc;
+    spotLightsDesc.size = sizeof(RVX::GPUSpotLight);
+    spotLightsDesc.usage = RVX::RHIBufferUsage::Structured | RVX::RHIBufferUsage::ShaderResource;
+    spotLightsDesc.memoryType = RVX::RHIMemoryType::Upload;
+    spotLightsDesc.stride = sizeof(RVX::GPUSpotLight);
+    spotLightsDesc.debugName = "TestSpotLightsBuffer";
+    RVX::RHIBufferRef spotLights = device.CreateBuffer(spotLightsDesc);
+    ASSERT_TRUE(lightConstants);
+    ASSERT_TRUE(pointLights);
+    ASSERT_TRUE(spotLights);
+
+    RVX::FrameLightResources resources;
+    resources.lightConstantsBuffer = lightConstants.Get();
+    resources.pointLightsBuffer = pointLights.Get();
+    resources.spotLightsBuffer = spotLights.Get();
+    RVX::FrameLightBindingResult realResult = cache.UpdateFrameLightResources(resources);
+    EXPECT_TRUE(realResult.lightResourcesBound);
+    EXPECT_EQ(realResult.fallbackReason, RVX::FrameLightFallbackReason::None);
+
+    auto bindingsDesc = RVX::RHIDescriptorSetDesc{nullptr, frameSet->GetBindings(), nullptr};
+    ASSERT_EQ(FindDescriptorBinding(bindingsDesc, 3)->buffer, lightConstants.Get());
+    ASSERT_EQ(FindDescriptorBinding(bindingsDesc, 4)->buffer, pointLights.Get());
+    ASSERT_EQ(FindDescriptorBinding(bindingsDesc, 5)->buffer, spotLights.Get());
+
+    RVX::DirectionalShadowFrameBindingResult shadowFallback = cache.UpdateDirectionalShadowFrameResources({});
+    EXPECT_FALSE(shadowFallback.shadowSamplingEnabled);
+    EXPECT_EQ(shadowFallback.fallbackReason, RVX::DirectionalShadowFallbackReason::DisabledNoDirectionalLight);
+
+    bindingsDesc = RVX::RHIDescriptorSetDesc{nullptr, frameSet->GetBindings(), nullptr};
+    ASSERT_EQ(FindDescriptorBinding(bindingsDesc, 3)->buffer, lightConstants.Get());
+    ASSERT_EQ(FindDescriptorBinding(bindingsDesc, 4)->buffer, pointLights.Get());
+    ASSERT_EQ(FindDescriptorBinding(bindingsDesc, 5)->buffer, spotLights.Get());
+}
+
 TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLightingControls)
 {
     if (!HasCompilerAvailable())
@@ -1503,6 +1638,60 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
               std::string::npos);
     EXPECT_EQ(shader.find("ambientSpecular = f0 * occlusion * (1.0 - clampedRoughness) * 0.04;"),
               std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, DefaultLitUsesFrameLocalLightResources)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const std::string shader = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
+    EXPECT_NE(shader.find("#include \"Include/Lighting.hlsli\""), std::string::npos);
+    EXPECT_NE(shader.find("cbuffer LightConstants : register(b3, space0)"), std::string::npos);
+    EXPECT_NE(shader.find("StructuredBuffer<PointLight> PointLights : register(t4, space0);"), std::string::npos);
+    EXPECT_NE(shader.find("StructuredBuffer<SpotLight> SpotLights : register(t5, space0);"), std::string::npos);
+    EXPECT_NE(shader.find("const uint pointLightCount = min(NumPointLights, 256u);"), std::string::npos);
+    EXPECT_NE(shader.find("const uint spotLightCount = min(NumSpotLights, 128u);"), std::string::npos);
+    EXPECT_NE(shader.find("directLight += EvaluatePointLight("), std::string::npos);
+    EXPECT_NE(shader.find("directLight += EvaluateSpotLight("), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, SceneRendererWiresLightManagerIntoDefaultLitPasses)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path rendererPath = FindShaderDirectory().parent_path() / "Private" / "Renderer" / "SceneRenderer.cpp";
+    const std::string source = ReadTextFile(rendererPath);
+    EXPECT_NE(source.find("#include \"Render/Lighting/LightManager.h\""), std::string::npos);
+    EXPECT_NE(source.find("m_lightManager = std::make_unique<LightManager>();"), std::string::npos);
+    EXPECT_NE(source.find("m_lightManager->Initialize(renderContext->GetDevice());"), std::string::npos);
+    EXPECT_NE(source.find("m_lightManager->CollectLights(m_renderScene);"), std::string::npos);
+    EXPECT_NE(source.find("m_lightManager->UpdateGPUBuffers();"), std::string::npos);
+    EXPECT_NE(source.find("opaquePass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get(), m_materialSystem.get(), m_lightManager.get());"),
+              std::string::npos);
+    EXPECT_NE(source.find("transparentPass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get(), m_materialSystem.get(), m_lightManager.get());"),
+              std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, LightManagerCreatesStructuredLocalLightBuffers)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path lightManagerPath = FindShaderDirectory().parent_path() / "Private" / "Lighting" / "LightManager.cpp";
+    const std::string source = ReadTextFile(lightManagerPath);
+    EXPECT_NE(source.find("desc.size = AlignLightConstantsSize(sizeof(LightConstants));"), std::string::npos);
+    EXPECT_NE(source.find("desc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;"),
+              std::string::npos);
+    EXPECT_NE(source.find("desc.stride = sizeof(GPUPointLight);"), std::string::npos);
+    EXPECT_NE(source.find("desc.stride = sizeof(GPUSpotLight);"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, SceneRendererClearsAmbientFloorWhenTextureIBLIsReady)

@@ -4,6 +4,7 @@
  */
 
 #include "Render/Renderer/SceneRenderer.h"
+#include "Render/Lighting/LightManager.h"
 #include "Core/Log.h"
 #include "Render/Passes/DepthPrepass.h"
 #include "Render/Passes/IRenderPass.h"
@@ -153,6 +154,8 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
 
     // Create material system after pipeline layouts are available.
     m_materialSystem = std::make_unique<MaterialSystem>();
+    m_lightManager = std::make_unique<LightManager>();
+    m_lightManager->Initialize(renderContext->GetDevice());
 
     // Create transient resource pool for RenderGraph
     m_transientResourcePool = std::make_unique<TransientResourcePool>();
@@ -285,7 +288,12 @@ void SceneRenderer::Shutdown()
     if (m_materialSystem)
     {
         m_materialSystem->Shutdown();
-        m_materialSystem.reset();
+    if (m_lightManager)
+    {
+        m_lightManager->Shutdown();
+    }
+    m_lightManager.reset();
+    m_materialSystem.reset();
     }
 
     if (m_pipelineCache)
@@ -836,6 +844,12 @@ void SceneRenderer::PreparePassesForFrame()
         m_opaquePass->SetDirectionalShadowSource(m_shadowPass);
     }
 
+    if (m_lightManager)
+    {
+        m_lightManager->CollectLights(m_renderScene);
+        m_lightManager->UpdateGPUBuffers();
+    }
+
     for (const RenderLight& light : m_renderScene.GetLights())
     {
         if (light.type != RenderLight::Type::Directional || light.intensity <= 0.0f)
@@ -1164,7 +1178,7 @@ void SceneRenderer::SetupDefaultPasses()
     AddPass(std::move(shadowPass));
 
     auto opaquePass = std::make_unique<OpaquePass>();
-    opaquePass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get(), m_materialSystem.get());
+    opaquePass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get(), m_materialSystem.get(), m_lightManager.get());
     m_opaquePass = opaquePass.get();
     AddPass(std::move(opaquePass));
 
@@ -1174,7 +1188,7 @@ void SceneRenderer::SetupDefaultPasses()
     AddPass(std::move(skyboxPass));
 
     auto transparentPass = std::make_unique<TransparentPass>();
-    transparentPass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get(), m_materialSystem.get());
+    transparentPass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get(), m_materialSystem.get(), m_lightManager.get());
     m_transparentPass = transparentPass.get();
     AddPass(std::move(transparentPass));
 

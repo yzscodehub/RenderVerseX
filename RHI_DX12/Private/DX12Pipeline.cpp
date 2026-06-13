@@ -162,6 +162,7 @@ namespace RVX
             switch (entry.type)
             {
                 case RHIBindingType::SampledTexture:
+                case RHIBindingType::ShaderResourceBuffer:
                 case RHIBindingType::StorageTexture:
                 case RHIBindingType::StorageBuffer:
                 case RHIBindingType::DynamicStorageBuffer:
@@ -284,6 +285,7 @@ namespace RVX
                     cbvRegister++;
                 }
                 else if (entry.type == RHIBindingType::SampledTexture ||
+                         entry.type == RHIBindingType::ShaderResourceBuffer ||
                          entry.type == RHIBindingType::CombinedTextureSampler)
                 {
                     D3D12_DESCRIPTOR_RANGE1 range = {};
@@ -861,19 +863,38 @@ namespace RVX
         if (binding.buffer && m_cbvSrvUavHandle.IsValid())
         {
             auto* dx12Buffer = static_cast<DX12Buffer*>(binding.buffer);
-            // Prefer UAV if available, otherwise use SRV
-            const DX12DescriptorHandle& srcHandle =
-                dx12Buffer->GetUAVHandle().IsValid() ? dx12Buffer->GetUAVHandle() : dx12Buffer->GetSRVHandle();
+            const RHIBindingLayoutEntry* entry = m_layout ? m_layout->FindEntry(binding.binding) : nullptr;
+            const DX12DescriptorHandle* srcHandle = nullptr;
+            if (entry && entry->type == RHIBindingType::ShaderResourceBuffer)
+            {
+                srcHandle = &dx12Buffer->GetSRVHandle();
+            }
+            else if (entry && (entry->type == RHIBindingType::StorageBuffer ||
+                               entry->type == RHIBindingType::DynamicStorageBuffer))
+            {
+                srcHandle = &dx12Buffer->GetUAVHandle();
+            }
+            else
+            {
+                return true;
+            }
 
-            if (srcHandle.IsValid())
+            if (srcHandle && srcHandle->IsValid())
             {
                 uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
                 if (dstIndex != UINT32_MAX)
                 {
                     D3D12_CPU_DESCRIPTOR_HANDLE dst = m_cbvSrvUavHandle.cpuHandle;
                     dst.ptr += static_cast<SIZE_T>(dstIndex) * cbvSrvUavSize;
-                    d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                    d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle->cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
                 }
+            }
+            else if (entry)
+            {
+                RVX_RHI_ERROR("DX12DescriptorSet: missing native buffer descriptor for binding {} type {}",
+                              binding.binding,
+                              static_cast<uint32>(entry->type));
+                return false;
             }
         }
 

@@ -35,6 +35,7 @@ namespace RVX
     class ChromaticAberrationPass;
     class ColorGradingPass;
     class FXAAPass;
+    class LightManager;
     class VignettePass;
     class IRenderPass;
     class DepthPrepass;
@@ -251,6 +252,10 @@ namespace RVX
         /// Get the material system
         MaterialSystem* GetMaterialSystem() { return m_materialSystem.get(); }
 
+        /// Get the frame light manager.
+        LightManager* GetLightManager() { return m_lightManager.get(); }
+        const LightManager* GetLightManager() const { return m_lightManager.get(); }
+
         /// Get the transient resource pool
         TransientResourcePool* GetTransientResourcePool() { return m_transientResourcePool.get(); }
 
@@ -318,6 +323,7 @@ namespace RVX
         std::unique_ptr<GPUResourceManager> m_gpuResourceManager;
         std::unique_ptr<PipelineCache> m_pipelineCache;
         std::unique_ptr<MaterialSystem> m_materialSystem;
+        std::unique_ptr<LightManager> m_lightManager;
         std::unique_ptr<TransientResourcePool> m_transientResourcePool;
         std::unique_ptr<ResourceViewCache> m_resourceViewCache;
         std::unique_ptr<RenderPassRegistry> m_passRegistry;

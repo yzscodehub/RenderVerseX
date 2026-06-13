@@ -322,6 +322,7 @@ namespace RVX
         StorageTexture,
         Sampler,
         CombinedTextureSampler,
+        ShaderResourceBuffer,
     };
 
     // =============================================================================

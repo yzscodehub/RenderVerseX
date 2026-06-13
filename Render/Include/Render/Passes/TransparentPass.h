@@ -15,6 +15,7 @@
 
 namespace RVX
 {
+    class LightManager;
     class MaterialSystem;
     class RenderScene;
 
@@ -55,8 +56,10 @@ namespace RVX
         /**
          * @brief Set resources needed for rendering
          */
-        void SetResources(GPUResourceManager* gpuResources, PipelineCache* pipelineCache,
-                          MaterialSystem* materialSystem);
+        void SetResources(GPUResourceManager* gpuResources,
+                          PipelineCache* pipelineCache,
+                          MaterialSystem* materialSystem,
+                          LightManager* lightManager = nullptr);
 
         /**
          * @brief Set render scene and visible transparent objects
@@ -85,6 +88,7 @@ namespace RVX
         GPUResourceManager* m_gpuResources = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         MaterialSystem* m_materialSystem = nullptr;
+        LightManager* m_lightManager = nullptr;
         const RenderScene* m_renderScene = nullptr;
         const std::vector<RenderDrawItem>* m_transparentDrawItems = nullptr;
         RHITextureView* m_colorTargetView = nullptr;

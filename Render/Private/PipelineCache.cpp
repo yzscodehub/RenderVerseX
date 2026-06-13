@@ -4,6 +4,7 @@
  */
 
 #include "Render/PipelineCache.h"
+#include "Render/Lighting/LightManager.h"
 #include "Core/Log.h"
 #include "Render/Renderer/ViewData.h"
 #include "ShaderCompiler/ShaderCompiler.h"
@@ -155,7 +156,7 @@ namespace
 
     bool IsRequiredDefaultLitBinding(uint32 set, uint32 binding)
     {
-        if (set == 0 && binding <= 2)
+        if (set == 0 && binding <= 5)
         {
             return true;
         }
@@ -177,6 +178,38 @@ namespace
 
         return expected == RHIBindingType::DynamicUniformBuffer &&
                actual == RHIBindingType::UniformBuffer;
+    }
+
+    void BuildDefaultLitContractLayouts(std::vector<RHIDescriptorSetLayoutDesc>& outLayouts)
+    {
+        outLayouts.clear();
+        outLayouts.resize(3);
+
+        auto& frameLayout = outLayouts[0];
+        frameLayout.debugName = "DefaultFrameSetLayout";
+        frameLayout.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Vertex | RHIShaderStage::Pixel);
+        frameLayout.AddBinding(1, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayout.AddBinding(2, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        frameLayout.AddBinding(3, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
+        frameLayout.AddBinding(4, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+        frameLayout.AddBinding(5, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+
+        auto& objectLayout = outLayouts[1];
+        objectLayout.debugName = "DefaultObjectSetLayout";
+        objectLayout.AddDynamicBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Vertex);
+
+        auto& materialLayout = outLayouts[2];
+        materialLayout.debugName = "DefaultMaterialSetLayout";
+        materialLayout.AddDynamicBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(1, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(2, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(3, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(4, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(5, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(6, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(7, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(8, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(9, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
     }
 
     Mat4 ApplyBackendClipConvention(const Mat4& matrix, RHIBackendType backend)
@@ -678,6 +711,15 @@ void PipelineCache::Shutdown()
     m_fallbackDirectionalShadowView.Reset();
     m_fallbackDirectionalShadowTexture.Reset();
     m_directionalShadowSampler.Reset();
+    m_fallbackLightConstantsBuffer.Reset();
+    m_fallbackPointLightsBuffer.Reset();
+    m_fallbackSpotLightsBuffer.Reset();
+    m_currentDirectionalShadowView = nullptr;
+    m_currentDirectionalShadowSampler = nullptr;
+    m_currentLightConstantsBuffer = nullptr;
+    m_currentPointLightsBuffer = nullptr;
+    m_currentSpotLightsBuffer = nullptr;
+    m_lastFrameLightBindingResult = {};
     m_postProcessPipelineLayout.Reset();
     m_postProcessSetLayout.Reset();
     m_skyboxPipelineLayout.Reset();
@@ -1342,6 +1384,15 @@ bool PipelineCache::BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSet
         return false;
     }
 
+    if (m_device && m_device->GetBackendType() == RHIBackendType::DX11)
+    {
+        // DX11 shader reflection does not reliably preserve HLSL register spaces.
+        // DefaultLit has a stable public set0/set1/set2 contract, so keep that
+        // contract explicit instead of trusting a lossy reflection remap.
+        BuildDefaultLitContractLayouts(outLayouts);
+        return ValidateDefaultLitLayouts(outLayouts);
+    }
+
     if (m_vsCompileResult->reflection.resources.empty() &&
         m_psCompileResult->reflection.resources.empty())
     {
@@ -1365,6 +1416,33 @@ bool PipelineCache::BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSet
     outLayouts[0].debugName = "DefaultFrameSetLayout";
     outLayouts[1].debugName = "DefaultObjectSetLayout";
     outLayouts[2].debugName = "DefaultMaterialSetLayout";
+
+    auto ensureBinding = [](RHIDescriptorSetLayoutDesc& layout,
+                            uint32 binding,
+                            RHIBindingType type,
+                            RHIShaderStage visibility)
+    {
+        auto it = std::find_if(layout.entries.begin(), layout.entries.end(),
+            [binding](const RHIBindingLayoutEntry& entry)
+            {
+                return entry.binding == binding;
+            });
+
+        if (it == layout.entries.end())
+        {
+            layout.entries.push_back({binding, type, visibility, 1, false});
+            return;
+        }
+
+        it->type = type;
+        it->visibility = it->visibility | visibility;
+        it->count = 1;
+        it->isDynamic = false;
+    };
+
+    ensureBinding(outLayouts[0], 3, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
+    ensureBinding(outLayouts[0], 4, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+    ensureBinding(outLayouts[0], 5, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
 
     for (uint32 setIndex = 0; setIndex < static_cast<uint32>(outLayouts.size()); ++setIndex)
     {
@@ -1445,6 +1523,12 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
     if (!requireBinding(0, 1, RHIBindingType::SampledTexture))
         return false;
     if (!requireBinding(0, 2, RHIBindingType::Sampler))
+        return false;
+    if (!requireBinding(0, 3, RHIBindingType::UniformBuffer))
+        return false;
+    if (!requireBinding(0, 4, RHIBindingType::ShaderResourceBuffer))
+        return false;
+    if (!requireBinding(0, 5, RHIBindingType::ShaderResourceBuffer))
         return false;
     if (!requireBinding(1, 0, RHIBindingType::DynamicUniformBuffer))
         return false;
@@ -1566,6 +1650,19 @@ const char* PipelineCache::GetDirectionalShadowFallbackReasonName(DirectionalSha
     }
 }
 
+const char* PipelineCache::GetFrameLightFallbackReasonName(FrameLightFallbackReason reason)
+{
+    switch (reason)
+    {
+        case FrameLightFallbackReason::None: return "None";
+        case FrameLightFallbackReason::MissingLightConstants: return "MissingLightConstants";
+        case FrameLightFallbackReason::MissingPointLights: return "MissingPointLights";
+        case FrameLightFallbackReason::MissingSpotLights: return "MissingSpotLights";
+        case FrameLightFallbackReason::FallbackUnavailable: return "FallbackUnavailable";
+        default: return "Unknown";
+    }
+}
+
 RHIDescriptorSet* PipelineCache::GetFrameDescriptorSet()
 {
     return m_frameDescriptorSet.Get();
@@ -1576,7 +1673,8 @@ DirectionalShadowFrameBindingResult PipelineCache::UpdateDirectionalShadowFrameR
 {
     DirectionalShadowFrameBindingResult result;
 
-    if (!m_frameDescriptorSet || !m_viewConstantBuffer || !EnsureFrameShadowFallbackResources())
+    if (!m_frameDescriptorSet || !m_viewConstantBuffer ||
+        !EnsureFrameShadowFallbackResources() || !EnsureFrameLightFallbackResources())
     {
         result.fallbackReason = DirectionalShadowFallbackReason::FallbackUnavailable;
         m_lastDirectionalShadowFrameBindingResult = result;
@@ -1609,19 +1707,67 @@ DirectionalShadowFrameBindingResult PipelineCache::UpdateDirectionalShadowFrameR
         result.fallbackReason = DirectionalShadowFallbackReason::None;
     }
 
-    std::vector<RHIDescriptorBinding> bindings;
-    bindings.reserve(3);
-    bindings.push_back({0, m_viewConstantBuffer.Get(), 0, AlignConstantBufferSize(sizeof(ViewConstants)), nullptr, nullptr});
-    bindings.push_back({1, nullptr, 0, 0, textureView, nullptr});
-    bindings.push_back({2, nullptr, 0, 0, nullptr, sampler});
+    m_currentDirectionalShadowView = textureView;
+    m_currentDirectionalShadowSampler = sampler;
 
-    if (!m_frameDescriptorSet->Update(bindings))
+    if (!UpdateDefaultFrameDescriptorSet())
     {
         result.shadowSamplingEnabled = false;
         result.fallbackReason = DirectionalShadowFallbackReason::FallbackUnavailable;
     }
 
     m_lastDirectionalShadowFrameBindingResult = result;
+    return result;
+}
+
+FrameLightBindingResult PipelineCache::UpdateFrameLightResources(const FrameLightResources& resources)
+{
+    FrameLightBindingResult result;
+
+    if (!m_frameDescriptorSet || !m_viewConstantBuffer ||
+        !EnsureFrameShadowFallbackResources() || !EnsureFrameLightFallbackResources())
+    {
+        result.fallbackReason = FrameLightFallbackReason::FallbackUnavailable;
+        m_lastFrameLightBindingResult = result;
+        return result;
+    }
+
+    result.fallbackReason = FrameLightFallbackReason::None;
+    m_currentLightConstantsBuffer = resources.lightConstantsBuffer;
+    m_currentPointLightsBuffer = resources.pointLightsBuffer;
+    m_currentSpotLightsBuffer = resources.spotLightsBuffer;
+
+    if (!m_currentLightConstantsBuffer)
+    {
+        m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer.Get();
+        result.fallbackReason = FrameLightFallbackReason::MissingLightConstants;
+    }
+
+    if (!m_currentPointLightsBuffer)
+    {
+        m_currentPointLightsBuffer = m_fallbackPointLightsBuffer.Get();
+        if (result.fallbackReason == FrameLightFallbackReason::None)
+        {
+            result.fallbackReason = FrameLightFallbackReason::MissingPointLights;
+        }
+    }
+
+    if (!m_currentSpotLightsBuffer)
+    {
+        m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer.Get();
+        if (result.fallbackReason == FrameLightFallbackReason::None)
+        {
+            result.fallbackReason = FrameLightFallbackReason::MissingSpotLights;
+        }
+    }
+
+    result.lightResourcesBound = UpdateDefaultFrameDescriptorSet();
+    if (!result.lightResourcesBound)
+    {
+        result.fallbackReason = FrameLightFallbackReason::FallbackUnavailable;
+    }
+
+    m_lastFrameLightBindingResult = result;
     return result;
 }
 
@@ -1907,11 +2053,129 @@ bool PipelineCache::EnsureFrameShadowFallbackResources()
     return true;
 }
 
+bool PipelineCache::EnsureFrameLightFallbackResources()
+{
+    if (m_fallbackLightConstantsBuffer && m_fallbackPointLightsBuffer && m_fallbackSpotLightsBuffer)
+    {
+        return true;
+    }
+
+    if (!m_device)
+    {
+        return false;
+    }
+
+    RHIBufferDesc lightConstantsDesc;
+    lightConstantsDesc.size = AlignConstantBufferSize(sizeof(LightConstants));
+    lightConstantsDesc.usage = RHIBufferUsage::Constant;
+    lightConstantsDesc.memoryType = RHIMemoryType::Upload;
+    lightConstantsDesc.debugName = "FallbackLightConstantsBuffer";
+
+    RHIBufferDesc pointLightsDesc;
+    pointLightsDesc.size = sizeof(GPUPointLight);
+    pointLightsDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
+    pointLightsDesc.memoryType = RHIMemoryType::Upload;
+    pointLightsDesc.stride = sizeof(GPUPointLight);
+    pointLightsDesc.debugName = "FallbackPointLightsBuffer";
+
+    RHIBufferDesc spotLightsDesc;
+    spotLightsDesc.size = sizeof(GPUSpotLight);
+    spotLightsDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
+    spotLightsDesc.memoryType = RHIMemoryType::Upload;
+    spotLightsDesc.stride = sizeof(GPUSpotLight);
+    spotLightsDesc.debugName = "FallbackSpotLightsBuffer";
+
+    RHIBufferRef lightConstants = m_device->CreateBuffer(lightConstantsDesc);
+    RHIBufferRef pointLights = m_device->CreateBuffer(pointLightsDesc);
+    RHIBufferRef spotLights = m_device->CreateBuffer(spotLightsDesc);
+    if (!lightConstants || !pointLights || !spotLights)
+    {
+        m_fallbackLightConstantsBuffer.Reset();
+        m_fallbackPointLightsBuffer.Reset();
+        m_fallbackSpotLightsBuffer.Reset();
+        return false;
+    }
+
+    const auto clearBuffer = [](RHIBuffer* buffer, uint64 size)
+    {
+        void* mapped = buffer ? buffer->Map() : nullptr;
+        if (mapped)
+        {
+            std::memset(mapped, 0, static_cast<size_t>(size));
+            buffer->Unmap();
+        }
+    };
+
+    clearBuffer(lightConstants.Get(), lightConstantsDesc.size);
+    clearBuffer(pointLights.Get(), pointLightsDesc.size);
+    clearBuffer(spotLights.Get(), spotLightsDesc.size);
+
+    m_fallbackLightConstantsBuffer = std::move(lightConstants);
+    m_fallbackPointLightsBuffer = std::move(pointLights);
+    m_fallbackSpotLightsBuffer = std::move(spotLights);
+
+    if (!m_currentLightConstantsBuffer)
+        m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer.Get();
+    if (!m_currentPointLightsBuffer)
+        m_currentPointLightsBuffer = m_fallbackPointLightsBuffer.Get();
+    if (!m_currentSpotLightsBuffer)
+        m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer.Get();
+
+    return true;
+}
+
+bool PipelineCache::UpdateDefaultFrameDescriptorSet()
+{
+    if (!m_frameDescriptorSet || !m_viewConstantBuffer ||
+        !EnsureFrameShadowFallbackResources() || !EnsureFrameLightFallbackResources())
+    {
+        return false;
+    }
+
+    RHITextureView* shadowView = m_currentDirectionalShadowView
+                                     ? m_currentDirectionalShadowView
+                                     : m_fallbackDirectionalShadowView.Get();
+    RHISampler* shadowSampler = m_currentDirectionalShadowSampler
+                                    ? m_currentDirectionalShadowSampler
+                                    : m_directionalShadowSampler.Get();
+    RHIBuffer* lightConstants = m_currentLightConstantsBuffer
+                                    ? m_currentLightConstantsBuffer
+                                    : m_fallbackLightConstantsBuffer.Get();
+    RHIBuffer* pointLights = m_currentPointLightsBuffer
+                                 ? m_currentPointLightsBuffer
+                                 : m_fallbackPointLightsBuffer.Get();
+    RHIBuffer* spotLights = m_currentSpotLightsBuffer
+                                ? m_currentSpotLightsBuffer
+                                : m_fallbackSpotLightsBuffer.Get();
+
+    if (!shadowView || !shadowSampler || !lightConstants || !pointLights || !spotLights)
+    {
+        return false;
+    }
+
+    std::vector<RHIDescriptorBinding> bindings;
+    bindings.reserve(6);
+    bindings.push_back({0, m_viewConstantBuffer.Get(), 0, AlignConstantBufferSize(sizeof(ViewConstants)), nullptr, nullptr});
+    bindings.push_back({1, nullptr, 0, 0, shadowView, nullptr});
+    bindings.push_back({2, nullptr, 0, 0, nullptr, shadowSampler});
+    bindings.push_back({3, lightConstants, 0, AlignConstantBufferSize(sizeof(LightConstants)), nullptr, nullptr});
+    bindings.push_back({4, pointLights, 0, RVX_WHOLE_SIZE, nullptr, nullptr});
+    bindings.push_back({5, spotLights, 0, RVX_WHOLE_SIZE, nullptr, nullptr});
+
+    return m_frameDescriptorSet->Update(bindings);
+}
+
 RHIDescriptorSetRef PipelineCache::CreateFrameDescriptorSet()
 {
     if (m_setLayouts.empty() || !m_setLayouts[0] || !m_viewConstantBuffer ||
-        !EnsureFrameShadowFallbackResources())
+        !EnsureFrameShadowFallbackResources() || !EnsureFrameLightFallbackResources())
         return {};
+
+    m_currentDirectionalShadowView = m_fallbackDirectionalShadowView.Get();
+    m_currentDirectionalShadowSampler = m_directionalShadowSampler.Get();
+    m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer.Get();
+    m_currentPointLightsBuffer = m_fallbackPointLightsBuffer.Get();
+    m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer.Get();
 
     RHIDescriptorSetDesc descSetDesc;
     descSetDesc.layout = m_setLayouts[0].Get();
@@ -1919,6 +2183,9 @@ RHIDescriptorSetRef PipelineCache::CreateFrameDescriptorSet()
     descSetDesc.BindBuffer(0, m_viewConstantBuffer.Get(), 0, AlignConstantBufferSize(sizeof(ViewConstants)));
     descSetDesc.BindTexture(1, m_fallbackDirectionalShadowView.Get());
     descSetDesc.BindSampler(2, m_directionalShadowSampler.Get());
+    descSetDesc.BindBuffer(3, m_fallbackLightConstantsBuffer.Get(), 0, AlignConstantBufferSize(sizeof(LightConstants)));
+    descSetDesc.BindBuffer(4, m_fallbackPointLightsBuffer.Get());
+    descSetDesc.BindBuffer(5, m_fallbackSpotLightsBuffer.Get());
 
     return m_device->CreateDescriptorSet(descSetDesc);
 }

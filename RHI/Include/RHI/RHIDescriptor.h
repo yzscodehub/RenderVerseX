@@ -194,6 +194,7 @@ namespace RVX
     inline bool IsRHIBufferBindingType(RHIBindingType type)
     {
         return type == RHIBindingType::UniformBuffer ||
+               type == RHIBindingType::ShaderResourceBuffer ||
                type == RHIBindingType::StorageBuffer ||
                type == RHIBindingType::DynamicUniformBuffer ||
                type == RHIBindingType::DynamicStorageBuffer;

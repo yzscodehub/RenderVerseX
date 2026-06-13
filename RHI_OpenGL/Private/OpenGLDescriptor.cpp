@@ -107,6 +107,7 @@ namespace RVX
                 break;
             }
 
+            case RHIBindingType::ShaderResourceBuffer:
             case RHIBindingType::StorageBuffer:
             case RHIBindingType::DynamicStorageBuffer:
             {
@@ -249,6 +250,7 @@ namespace RVX
                     }
                     break;
 
+                case RHIBindingType::ShaderResourceBuffer:
                 case RHIBindingType::StorageBuffer:
                     if (entry.buffer != 0)
                     {

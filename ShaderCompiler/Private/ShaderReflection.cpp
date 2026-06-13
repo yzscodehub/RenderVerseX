@@ -230,9 +230,11 @@ namespace RVX
                     break;
                 case D3D_SIT_UAV_RWSTRUCTURED:
                 case D3D_SIT_UAV_RWBYTEADDRESS:
+                    res.type = RHIBindingType::StorageBuffer;
+                    break;
                 case D3D_SIT_STRUCTURED:
                 case D3D_SIT_BYTEADDRESS:
-                    res.type = RHIBindingType::StorageBuffer;
+                    res.type = RHIBindingType::ShaderResourceBuffer;
                     break;
                 default:
                     res.type = RHIBindingType::UniformBuffer;
@@ -326,9 +328,11 @@ namespace RVX
                     break;
                 case D3D_SIT_UAV_RWSTRUCTURED:
                 case D3D_SIT_UAV_RWBYTEADDRESS:
+                    res.type = RHIBindingType::StorageBuffer;
+                    break;
                 case D3D_SIT_STRUCTURED:
                 case D3D_SIT_BYTEADDRESS:
-                    res.type = RHIBindingType::StorageBuffer;
+                    res.type = RHIBindingType::ShaderResourceBuffer;
                     break;
                 default:
                     res.type = RHIBindingType::UniformBuffer;

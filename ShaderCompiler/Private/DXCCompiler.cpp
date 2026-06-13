@@ -121,6 +121,7 @@ namespace RVX
                     }
                     break;
                 case RHIBindingType::SampledTexture:
+                case RHIBindingType::ShaderResourceBuffer:
                     if (restoreFromRange(0, 0, 32) ||
                         restoreFromRange(1, 32, 32) ||
                         restoreFromRange(2, 64, 32) ||
@@ -731,6 +732,7 @@ namespace RVX
                             result.glslBindings.uboBindings[remap.name] = remap.glBinding;
                             break;
                         case RHIBindingType::StorageBuffer:
+                        case RHIBindingType::ShaderResourceBuffer:
                             result.glslBindings.ssboBindings[remap.name] = remap.glBinding;
                             break;
                         case RHIBindingType::SampledTexture:

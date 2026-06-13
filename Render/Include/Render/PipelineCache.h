@@ -77,6 +77,28 @@ namespace RVX
         DirectionalShadowFallbackReason fallbackReason = DirectionalShadowFallbackReason::DisabledNoDirectionalLight;
     };
 
+    enum class FrameLightFallbackReason : uint8
+    {
+        None = 0,
+        MissingLightConstants,
+        MissingPointLights,
+        MissingSpotLights,
+        FallbackUnavailable,
+    };
+
+    struct FrameLightResources
+    {
+        RHIBuffer* lightConstantsBuffer = nullptr;
+        RHIBuffer* pointLightsBuffer = nullptr;
+        RHIBuffer* spotLightsBuffer = nullptr;
+    };
+
+    struct FrameLightBindingResult
+    {
+        bool lightResourcesBound = false;
+        FrameLightFallbackReason fallbackReason = FrameLightFallbackReason::FallbackUnavailable;
+    };
+
     struct ShadowDepthBiasState
     {
         float constantBias = 0.0f;
@@ -312,12 +334,23 @@ namespace RVX
         DirectionalShadowFrameBindingResult UpdateDirectionalShadowFrameResources(
             const DirectionalShadowFrameResources& resources);
 
+        /**
+         * @brief Update frame-scope local light buffer bindings.
+         */
+        FrameLightBindingResult UpdateFrameLightResources(const FrameLightResources& resources);
+
         const DirectionalShadowFrameBindingResult& GetLastDirectionalShadowFrameBindingResult() const
         {
             return m_lastDirectionalShadowFrameBindingResult;
         }
 
+        const FrameLightBindingResult& GetLastFrameLightBindingResult() const
+        {
+            return m_lastFrameLightBindingResult;
+        }
+
         static const char* GetDirectionalShadowFallbackReasonName(DirectionalShadowFallbackReason reason);
+        static const char* GetFrameLightFallbackReasonName(FrameLightFallbackReason reason);
 
         /**
          * @brief Backward-compatible alias for frame constants
@@ -452,6 +485,8 @@ namespace RVX
         bool CreateViewConstantBuffer();
         bool CreateObjectConstantBuffer();
         bool EnsureFrameShadowFallbackResources();
+        bool EnsureFrameLightFallbackResources();
+        bool UpdateDefaultFrameDescriptorSet();
         RHIDescriptorSetRef CreateFrameDescriptorSet();
         RHIDescriptorSetRef CreateObjectDescriptorSet();
         uint64 AllocateObjectConstantSlot();
@@ -543,7 +578,16 @@ namespace RVX
         RHITextureRef m_fallbackDirectionalShadowTexture;
         RHITextureViewRef m_fallbackDirectionalShadowView;
         RHISamplerRef m_directionalShadowSampler;
+        RHIBufferRef m_fallbackLightConstantsBuffer;
+        RHIBufferRef m_fallbackPointLightsBuffer;
+        RHIBufferRef m_fallbackSpotLightsBuffer;
+        RHITextureView* m_currentDirectionalShadowView = nullptr;
+        RHISampler* m_currentDirectionalShadowSampler = nullptr;
+        RHIBuffer* m_currentLightConstantsBuffer = nullptr;
+        RHIBuffer* m_currentPointLightsBuffer = nullptr;
+        RHIBuffer* m_currentSpotLightsBuffer = nullptr;
         DirectionalShadowFrameBindingResult m_lastDirectionalShadowFrameBindingResult;
+        FrameLightBindingResult m_lastFrameLightBindingResult;
         uint64 m_objectConstantStride = 0;
         uint64 m_objectConstantCursor = 0;
         uint64 m_currentObjectConstantOffset = 0;

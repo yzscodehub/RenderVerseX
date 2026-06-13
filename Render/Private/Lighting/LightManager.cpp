@@ -10,6 +10,15 @@
 namespace RVX
 {
 
+namespace
+{
+    uint64 AlignLightConstantsSize(uint64 size)
+    {
+        constexpr uint64 alignment = 256;
+        return (size + alignment - 1) & ~(alignment - 1);
+    }
+} // namespace
+
 LightManager::~LightManager()
 {
     Shutdown();
@@ -55,7 +64,7 @@ void LightManager::EnsureBuffers()
     // Light constants buffer
     {
         RHIBufferDesc desc;
-        desc.size = sizeof(LightConstants);
+        desc.size = AlignLightConstantsSize(sizeof(LightConstants));
         desc.usage = RHIBufferUsage::Constant;
         desc.memoryType = RHIMemoryType::Upload;
         desc.debugName = "LightConstantsBuffer";
@@ -66,7 +75,7 @@ void LightManager::EnsureBuffers()
     {
         RHIBufferDesc desc;
         desc.size = sizeof(GPUPointLight) * MaxPointLights;
-        desc.usage = RHIBufferUsage::ShaderResource;
+        desc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
         desc.memoryType = RHIMemoryType::Upload;
         desc.stride = sizeof(GPUPointLight);
         desc.debugName = "PointLightsBuffer";
@@ -77,7 +86,7 @@ void LightManager::EnsureBuffers()
     {
         RHIBufferDesc desc;
         desc.size = sizeof(GPUSpotLight) * MaxSpotLights;
-        desc.usage = RHIBufferUsage::ShaderResource;
+        desc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
         desc.memoryType = RHIMemoryType::Upload;
         desc.stride = sizeof(GPUSpotLight);
         desc.debugName = "SpotLightsBuffer";

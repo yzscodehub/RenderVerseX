@@ -29,6 +29,7 @@ namespace RVX
             case RHIBindingType::DynamicStorageBuffer:
             case RHIBindingType::StorageTexture:
                 return RegisterSpace::UAV;
+            case RHIBindingType::ShaderResourceBuffer:
             case RHIBindingType::SampledTexture:
             case RHIBindingType::CombinedTextureSampler:
             default:

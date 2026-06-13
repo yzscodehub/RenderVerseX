@@ -15,6 +15,7 @@ namespace RVX
 {
     // Forward declarations
     class GPUResourceManager;
+    class LightManager;
     class MaterialSystem;
     class PipelineCache;
     class RenderScene;
@@ -62,7 +63,10 @@ namespace RVX
          * @param gpuMgr GPU resource manager for mesh buffers
          * @param pipelines Pipeline cache for shaders and pipelines
          */
-        void SetResources(GPUResourceManager* gpuMgr, PipelineCache* pipelines, MaterialSystem* materialSystem);
+        void SetResources(GPUResourceManager* gpuMgr,
+                          PipelineCache* pipelines,
+                          MaterialSystem* materialSystem,
+                          LightManager* lightManager = nullptr);
 
         /**
          * @brief Set render scene data for this frame
@@ -96,6 +100,7 @@ namespace RVX
         GPUResourceManager* m_gpuResources = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         MaterialSystem* m_materialSystem = nullptr;
+        LightManager* m_lightManager = nullptr;
         const RenderScene* m_renderScene = nullptr;
         const ShadowPass* m_shadowPass = nullptr;
         const std::vector<RenderDrawItem>* m_opaqueDrawItems = nullptr;

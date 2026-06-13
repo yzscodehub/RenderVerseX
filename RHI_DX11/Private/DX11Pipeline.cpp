@@ -255,6 +255,25 @@ namespace RVX
                     break;
                 }
 
+                case RHIBindingType::ShaderResourceBuffer:
+                {
+                    if (binding.buffer)
+                    {
+                        auto* dx11Buffer = static_cast<DX11Buffer*>(binding.buffer);
+                        ID3D11ShaderResourceView* srv = dx11Buffer->GetSRV();
+                        UINT slot = remapper.GetSRVSlot(setIndex, binding.binding);
+                        if (slot == UINT32_MAX) slot = binding.binding;
+
+                        if (HasFlag(stages, RHIShaderStage::Vertex))
+                            context->VSSetShaderResources(slot, 1, &srv);
+                        if (HasFlag(stages, RHIShaderStage::Pixel))
+                            context->PSSetShaderResources(slot, 1, &srv);
+                        if (HasFlag(stages, RHIShaderStage::Compute))
+                            context->CSSetShaderResources(slot, 1, &srv);
+                    }
+                    break;
+                }
+
                 case RHIBindingType::StorageBuffer:
                 case RHIBindingType::DynamicStorageBuffer:
                 {

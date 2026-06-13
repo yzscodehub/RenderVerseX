@@ -518,6 +518,9 @@ namespace RVX
                     case RHIBindingType::DynamicUniformBuffer:
                         write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
                         break;
+                    case RHIBindingType::ShaderResourceBuffer:
+                        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                        break;
                     case RHIBindingType::StorageBuffer:
                         write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                         break;

@@ -7,6 +7,7 @@
 #include "Core/Log.h"
 #include "Render/GPUResourceManager.h"
 #include "Render/Graph/ResourceViewCache.h"
+#include "Render/Lighting/LightManager.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderDrawItem.h"
@@ -34,12 +35,15 @@ namespace
     }
 } // namespace
 
-void TransparentPass::SetResources(GPUResourceManager* gpuResources, PipelineCache* pipelineCache,
-                                   MaterialSystem* materialSystem)
+void TransparentPass::SetResources(GPUResourceManager* gpuResources,
+                                   PipelineCache* pipelineCache,
+                                   MaterialSystem* materialSystem,
+                                   LightManager* lightManager)
 {
     m_gpuResources = gpuResources;
     m_pipelineCache = pipelineCache;
     m_materialSystem = materialSystem;
+    m_lightManager = lightManager;
 }
 void TransparentPass::SetRenderScene(const RenderScene* scene, const std::vector<RenderDrawItem>* transparentDrawItems)
 {
@@ -111,6 +115,14 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
     transparentView.directionalShadowCascadeFadeDistances = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
     transparentView.directionalShadowNormalBias = 0.0f;
     m_pipelineCache->UpdateDirectionalShadowFrameResources({});
+    FrameLightResources lightResources;
+    if (m_lightManager)
+    {
+        lightResources.lightConstantsBuffer = m_lightManager->GetLightConstantsBuffer();
+        lightResources.pointLightsBuffer = m_lightManager->GetPointLightsBuffer();
+        lightResources.spotLightsBuffer = m_lightManager->GetSpotLightsBuffer();
+    }
+    m_pipelineCache->UpdateFrameLightResources(lightResources);
     m_pipelineCache->UpdateViewConstants(transparentView);
 
     // Begin render pass with alpha blending
