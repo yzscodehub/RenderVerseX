@@ -5863,6 +5863,121 @@ git diff --check
 
 ---
 
+### RQ29: DefaultLit Local Light Frame Resources
+
+**Date:** 2026-06-11
+**Commit:** `a1c56ef feat(render): bind local lights in default lit`
+**Spark plan review agent:** Spark/Mill (`gpt-5.5 xhigh`)
+**Spark code review agent:** Spark/Carson + Spark/Darwin (`gpt-5.5 xhigh`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-11-rq29-defaultlit-local-light-frame-resources-plan.md`
+- Section: `Stage Decision` through `Acceptance Criteria`
+- Lines checked: whole stage plan before implementation and SRV/UAV amendment before blocker fix
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ28 Directional Light Color
+- Evidence: RQ28 committed as `ef796fa` with phase-log commit `7f4591b`; DefaultLit directional-light color
+  correctness was already in place before local lights were wired.
+
+**Approved scope:**
+
+- Add `DefaultLit` set 0 frame bindings for light constants plus point/spot light read-only structured buffers.
+- Add complete fallback light resources so no-light scenes keep a fully bound frame descriptor set.
+- Add `PipelineCache::UpdateFrameLightResources()` and preserve view/shadow/local-light bindings across frame updates.
+- Wire `SceneRenderer` to own/update `LightManager` and pass it into opaque/transparent draw passes.
+- Accumulate bounded point and spot lights in `DefaultLit.hlsl`.
+- Add `ShaderResourceBuffer` so HLSL `StructuredBuffer` bindings use SRV/t-register semantics instead of UAV/storage semantics.
+- Stabilize the DX11 `DefaultLit` set 0/1/2 descriptor contract when reflection loses HLSL register spaces.
+
+**Out of scope:**
+
+- Clustered light list consumption in `DefaultLit`.
+- Point/spot shadow maps.
+- Volumetric integration with local lights.
+- Replacing `DefaultLit` with the old `PBRLit` path.
+- Visual golden recapture; the deterministic visual gate stayed stable after the real DX11 issue was fixed.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-11-rq29-defaultlit-local-light-frame-resources-plan.md`
+- `RHI/Include/RHI/RHIDefinitions.h`
+- `RHI/Include/RHI/RHIDescriptor.h`
+- `RHI_DX11/Private/DX11Pipeline.cpp`
+- `RHI_DX12/Private/DX12Pipeline.cpp`
+- `RHI_OpenGL/Private/OpenGLDescriptor.cpp`
+- `RHI_OpenGL/Private/OpenGLPipeline.cpp`
+- `RHI_Vulkan/Private/VulkanCommon.h`
+- `RHI_Vulkan/Private/VulkanPipeline.cpp`
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Include/Render/Passes/TransparentPass.h`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Lighting/LightManager.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Passes/TransparentPass.cpp`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Render/Shaders/Include/Lighting.hlsli`
+- `ShaderCompiler/Private/DX11SlotMapper.cpp`
+- `ShaderCompiler/Private/DXCCompiler.cpp`
+- `ShaderCompiler/Private/ShaderLayout.cpp`
+- `ShaderCompiler/Private/ShaderReflection.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target PipelineCacheValidation RenderPassValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "PipelineCacheValidation|RenderPassValidation|ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+cmake --build build\win_x64_debug --config Debug --target RenderGraphValidation RenderHonestyValidation RenderSceneValidation MaterialSystemValidation ClusteredLightingValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|RenderHonestyValidation|RenderSceneValidation|MaterialSystemValidation|ClusteredLightingValidation"
+git diff --check
+git diff --cached --check
+```
+
+**Validation result:**
+
+- Focused build: PASS.
+- Focused tests and visual gate: PASS, 160/160 selected tests passed.
+- Regression build: PASS.
+- Regression tests: PASS, 116/116 selected tests passed.
+- Diff checks: PASS, with CRLF warnings only.
+- Golden update: not needed; `VisualGoldenValidation` passed after DX11 `DefaultLit` initialization was fixed.
+
+**Artifacts:**
+
+- Tests: `PipelineCacheValidation`, `RenderPassValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`,
+  `ImageCompareValidation`, `RenderGraphValidation`, `RenderHonestyValidation`, `RenderSceneValidation`,
+  `MaterialSystemValidation`, `ClusteredLightingValidation`.
+- Review: Spark/Carson found the SRV/UAV structured-buffer binding mismatch; Spark/Darwin confirmed the
+  `ShaderResourceBuffer` fix removed the blocker.
+- Diffs: RQ29 intended file set only; unrelated pre-existing dirty files were left unstaged.
+
+**Spark plan review result:**
+
+- Verdict: PASS.
+- Blockers resolved: initial plan gaps for DX11 layout guardrails and structured-buffer validation were folded
+  into the stage plan before implementation.
+
+**Spark code review result:**
+
+- Verdict: PASS after blocker fix.
+- Blockers resolved: `DefaultLit` point/spot `StructuredBuffer` bindings now use SRV-compatible
+  `ShaderResourceBuffer` layout semantics instead of UAV-style `StorageBuffer` semantics.
+
+**Notes / follow-ups:**
+
+- RQ29 connects the existing scene light manager to the active material shader path, so local point and spot lights
+  now reach normal opaque/transparent DefaultLit draws.
+- Clustered list consumption, local-light shadows, and physical light-unit calibration remain follow-up quality stages.
+
+---
+
 ### RQ28: Directional Light Color in DefaultLit
 
 **Date:** 2026-06-11

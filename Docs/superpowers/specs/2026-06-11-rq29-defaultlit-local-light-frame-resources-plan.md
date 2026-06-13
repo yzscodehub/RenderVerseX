@@ -142,5 +142,5 @@ git diff --check
 - Focused and regression validation commands pass.
 - Spark plan review: PASS (Mill/Spark, gpt-5.5 xhigh standard, 2026-06-11).
 - Spark code review: PASS (Darwin/Spark, gpt-5.5 xhigh standard, 2026-06-11).
-- Implementation commit: pending.
+- Implementation commit: `a1c56ef feat(render): bind local lights in default lit`.
 - Phase-log commit: pending.
