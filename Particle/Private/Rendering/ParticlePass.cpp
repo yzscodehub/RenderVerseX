@@ -6,7 +6,9 @@
 #include "Particle/ParticleSystemInstance.h"
 #include "Particle/Rendering/ParticleRenderer.h"
 #include "Render/Graph/RenderGraph.h"
+#include "Render/Graph/ResourceViewCache.h"
 #include "Render/Renderer/ViewData.h"
+#include "RHI/RHIRenderPass.h"
 
 #include <unordered_map>
 
@@ -101,13 +103,13 @@ void ParticlePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     if (m_colorTarget.IsValid())
     {
         m_colorTarget = builder.Read(m_colorTarget);
-        m_colorTarget = builder.Write(m_colorTarget);
+        m_colorTarget = builder.Write(m_colorTarget, RHIResourceState::RenderTarget);
     }
 
     // Read depth for soft particles
-    if (m_softParticlesEnabled && m_depthTarget.IsValid())
+    if (m_depthTarget.IsValid())
     {
-        m_depthTarget = builder.Read(m_depthTarget);
+        builder.SetDepthStencil(m_depthTarget, false, false);
     }
 }
 
@@ -128,13 +130,44 @@ void ParticlePass::Execute(RHICommandContext& ctx, const ViewData& view)
         SortParticlesByDistance(view);
     }
 
-    // Get depth texture for soft particles
-    RHITexture* depthTexture = nullptr;
-    if (m_softParticlesEnabled)
+    RHITextureView* colorTargetView = nullptr;
+    RHITextureView* depthTargetView = nullptr;
+    if (view.renderGraph && view.viewCache && m_colorTarget.IsValid())
     {
-        // Would get from render graph resources
-        // depthTexture = m_resourcePool->GetTexture(m_depthTarget);
+        if (RHITexture* colorTarget = view.renderGraph->GetTexture(m_colorTarget))
+        {
+            colorTargetView = view.viewCache->GetDefaultRTV(colorTarget);
+        }
     }
+
+    if (!colorTargetView)
+    {
+        RVX_CORE_WARN("ParticlePass: execute skipped: color target view is unavailable");
+        return;
+    }
+
+    RHITexture* depthTexture = nullptr;
+    if (view.renderGraph && view.viewCache && m_depthTarget.IsValid())
+    {
+        depthTexture = view.renderGraph->GetTexture(m_depthTarget);
+        if (depthTexture)
+        {
+            depthTargetView = view.viewCache->GetDefaultDSV(depthTexture);
+        }
+    }
+
+    RHIRenderPassDesc rpDesc;
+    rpDesc.AddColorAttachment(colorTargetView, RHILoadOp::Load, RHIStoreOp::Store,
+                              {0.0f, 0.0f, 0.0f, 0.0f});
+    if (depthTargetView)
+    {
+        rpDesc.SetDepthStencil(depthTargetView, RHILoadOp::Load, RHIStoreOp::Store, 1.0f, 0);
+        rpDesc.depthStencilAttachment.readOnly = true;
+    }
+
+    ctx.BeginRenderPass(rpDesc);
+    ctx.SetViewport(view.GetRHIViewport());
+    ctx.SetScissor(view.GetRHIScissor());
 
     // Render each batch
     for (const auto& batch : m_batches)
@@ -165,6 +198,8 @@ void ParticlePass::Execute(RHICommandContext& ctx, const ViewData& view)
             }
         }
     }
+
+    ctx.EndRenderPass();
 }
 
 void ParticlePass::SortParticlesByDistance(const ViewData& view)

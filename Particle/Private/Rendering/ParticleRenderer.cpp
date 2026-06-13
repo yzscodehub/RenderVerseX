@@ -5,11 +5,80 @@
 #include "Particle/ParticleSystemInstance.h"
 #include "Particle/Rendering/TrailRenderer.h"
 #include "Render/Renderer/ViewData.h"
+#include "ShaderCompiler/ShaderCompiler.h"
 
+#include <algorithm>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 
 namespace RVX::Particle
 {
+namespace
+{
+    std::filesystem::path FindParticleShaderDirectory()
+    {
+        std::filesystem::path cursor = std::filesystem::current_path();
+        for (uint32 i = 0; i < 8; ++i)
+        {
+            const std::filesystem::path sourceCandidate = cursor / "Particle" / "Shaders";
+            if (std::filesystem::exists(sourceCandidate / "ParticleBillboard.hlsl"))
+            {
+                return sourceCandidate;
+            }
+
+            const std::filesystem::path buildCandidate = cursor / "Shaders" / "Particle";
+            if (std::filesystem::exists(buildCandidate / "ParticleBillboard.hlsl"))
+            {
+                return buildCandidate;
+            }
+
+            if (!cursor.has_parent_path() || cursor == cursor.parent_path())
+                break;
+
+            cursor = cursor.parent_path();
+        }
+
+        return {};
+    }
+
+    std::string ReadTextFile(const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    }
+
+    RHIBlendState BuildParticleBlendState(ParticleBlendMode blend)
+    {
+        RHIBlendState state = RHIBlendState::Default();
+        switch (blend)
+        {
+        case ParticleBlendMode::Additive:
+            state.renderTargets[0] = RHIRenderTargetBlendState::Additive();
+            break;
+        case ParticleBlendMode::AlphaBlend:
+            state.renderTargets[0] = RHIRenderTargetBlendState::AlphaBlend();
+            break;
+        default:
+            break;
+        }
+        return state;
+    }
+
+    RHIDepthStencilState BuildParticleDepthState(bool reverseZ, RHIFormat depthFormat)
+    {
+        if (depthFormat == RHIFormat::Unknown)
+        {
+            return RHIDepthStencilState::Disabled();
+        }
+
+        RHIDepthStencilState state = RHIDepthStencilState::ReadOnly();
+        state.depthCompareOp = reverseZ ? RHICompareOp::GreaterEqual : RHICompareOp::LessEqual;
+        return state;
+    }
+
+} // namespace
 
 ParticleRenderer::~ParticleRenderer()
 {
@@ -18,21 +87,45 @@ ParticleRenderer::~ParticleRenderer()
 
 void ParticleRenderer::Initialize(IRHIDevice* device)
 {
+    ParticleRendererConfig config;
+    Initialize(device, config);
+}
+
+void ParticleRenderer::Initialize(IRHIDevice* device, const ParticleRendererConfig& config)
+{
     if (m_device)
         Shutdown();
 
     if (!device)
     {
         RVX_CORE_ERROR("ParticleRenderer: Cannot initialize without an RHI device");
-        m_unsupportedReason = "No RHI device";
+        SetUnsupported("No RHI device");
         return;
     }
 
     m_device = device;
+    m_config = config;
     m_renderingSupported = false;
-    m_unsupportedReason = "Particle render pipelines are not implemented";
+    m_unsupportedReason = "Particle render pipelines are not initialized";
+    if (m_config.shaderDirectory.empty())
+    {
+        const std::filesystem::path shaderDirectory = FindParticleShaderDirectory();
+        if (!shaderDirectory.empty())
+        {
+            m_config.shaderDirectory = shaderDirectory.string();
+        }
+    }
+    if (!ValidateConfig())
+    {
+        return;
+    }
 
     CreateQuadBuffers();
+    if (!m_quadVertexBuffer || !m_quadIndexBuffer)
+    {
+        SetUnsupported("Particle quad buffers could not be created");
+        return;
+    }
 
     // Render constants buffer
     RHIBufferDesc constDesc;
@@ -41,23 +134,51 @@ void ParticleRenderer::Initialize(IRHIDevice* device)
     constDesc.memoryType = RHIMemoryType::Upload;
     constDesc.debugName = "ParticleRenderConstants";
     m_renderConstantsBuffer = m_device->CreateBuffer(constDesc);
+    if (!m_renderConstantsBuffer)
+    {
+        SetUnsupported("Particle render constants buffer could not be created");
+        return;
+    }
 
     // Initialize trail renderer
     m_trailRenderer = std::make_unique<TrailRenderer>();
     m_trailRenderer->Initialize(device, 100000);  // 100k trail vertices
 
+    if (!CreateSharedResources())
+    {
+        return;
+    }
+
+    if (!CreatePipelineIfNeeded(ParticleRenderMode::Billboard, ParticleBlendMode::AlphaBlend, false) ||
+        !CreatePipelineIfNeeded(ParticleRenderMode::Billboard, ParticleBlendMode::Additive, false))
+    {
+        SetUnsupported("Particle billboard pipelines could not be created");
+        return;
+    }
+
+    m_renderingSupported = true;
+    m_unsupportedReason.clear();
     RVX_CORE_INFO("ParticleRenderer: Initialized");
 }
 
 void ParticleRenderer::Shutdown()
 {
     m_pipelineCache.clear();
+    m_vertexShader.Reset();
+    m_pixelShader.Reset();
+    m_descriptorSetLayout.Reset();
+    m_pipelineLayout.Reset();
     m_quadVertexBuffer.Reset();
     m_quadIndexBuffer.Reset();
     m_renderConstantsBuffer.Reset();
+    m_fallbackTextureView.Reset();
+    m_fallbackTexture.Reset();
+    m_sampler.Reset();
+    m_retainedDescriptorSets.clear();
     m_trailRenderer.reset();
     m_device = nullptr;
     m_renderingSupported = false;
+    m_unsupportedReason = "Particle renderer is shut down";
 }
 
 void ParticleRenderer::CreateQuadBuffers()
@@ -76,7 +197,7 @@ void ParticleRenderer::CreateQuadBuffers()
         { Vec3(-1.0f,  1.0f, 0.0f), Vec2(0.0f, 0.0f) }
     };
 
-    uint32 indices[6] = { 0, 1, 2, 0, 2, 3 };
+    uint16 indices[6] = { 0, 1, 2, 0, 2, 3 };
 
     // Create vertex buffer
     RHIBufferDesc vbDesc;
@@ -111,11 +232,40 @@ void ParticleRenderer::CreateQuadBuffers()
     }
 }
 
+bool ParticleRenderer::ValidateConfig()
+{
+    if (m_config.colorTargetFormat == RHIFormat::Unknown || IsDepthFormat(m_config.colorTargetFormat))
+    {
+        SetUnsupported("Particle renderer requires a valid color render target format");
+        return false;
+    }
+
+    if (m_config.depthStencilFormat != RHIFormat::Unknown && !IsDepthFormat(m_config.depthStencilFormat))
+    {
+        SetUnsupported("Particle renderer depthStencilFormat must be Unknown or a depth format");
+        return false;
+    }
+
+    switch (m_config.sampleCount)
+    {
+    case RHISampleCount::Count1:
+    case RHISampleCount::Count2:
+    case RHISampleCount::Count4:
+    case RHISampleCount::Count8:
+    case RHISampleCount::Count16:
+        return true;
+    default:
+        SetUnsupported("Particle renderer sampleCount is invalid");
+        return false;
+    }
+}
+
 bool ParticleRenderer::DrawParticles(RHICommandContext& ctx,
                                      ParticleSystemInstance* instance,
                                      const ViewData& view,
                                      RHITexture* depthTexture)
 {
+    (void)depthTexture;
     if (!instance || !instance->HasSystem())
         return false;
 
@@ -143,32 +293,34 @@ bool ParticleRenderer::DrawParticles(RHICommandContext& ctx,
         return false;
     }
 
-    // Upload render constants
-    UploadRenderConstants(view, system->softParticleConfig);
+    if (system->renderMode != ParticleRenderMode::Billboard)
+    {
+        RVX_CORE_WARN("ParticleRenderer: draw skipped: render mode {} is unsupported in RQ30",
+                      static_cast<int>(system->renderMode));
+        return false;
+    }
+
+    if (system->blendMode != ParticleBlendMode::AlphaBlend &&
+        system->blendMode != ParticleBlendMode::Additive)
+    {
+        RVX_CORE_WARN("ParticleRenderer: draw skipped: blend mode {} is unsupported in RQ30",
+                      static_cast<int>(system->blendMode));
+        return false;
+    }
+
+    SoftParticleConfig softConfig = system->softParticleConfig;
+    softConfig.enabled = false;
+    UploadRenderConstants(view, softConfig);
+
+    RHIDescriptorSetRef descriptorSet = CreateParticleDescriptorSet(instance);
+    if (!descriptorSet)
+    {
+        RVX_CORE_WARN("ParticleRenderer: draw skipped: descriptor set is unavailable");
+        return false;
+    }
 
     // Get appropriate pipeline
-    RHIPipeline* pipeline = nullptr;
-    switch (system->renderMode)
-    {
-    case ParticleRenderMode::Billboard:
-        pipeline = GetBillboardPipeline(system->blendMode, 
-                                        system->softParticleConfig.enabled && depthTexture);
-        break;
-    case ParticleRenderMode::StretchedBillboard:
-        pipeline = GetStretchedBillboardPipeline(system->blendMode,
-                                                  system->softParticleConfig.enabled && depthTexture);
-        break;
-    case ParticleRenderMode::Mesh:
-        pipeline = GetMeshPipeline(system->blendMode);
-        break;
-    case ParticleRenderMode::Trail:
-        pipeline = GetTrailPipeline(system->blendMode,
-                                    system->softParticleConfig.enabled && depthTexture);
-        break;
-    default:
-        pipeline = GetBillboardPipeline(system->blendMode, false);
-        break;
-    }
+    RHIPipeline* pipeline = GetBillboardPipeline(system->blendMode, false);
 
     if (!pipeline)
     {
@@ -176,29 +328,29 @@ bool ParticleRenderer::DrawParticles(RHICommandContext& ctx,
         return false;
     }
 
-    // Bind pipeline
+    ctx.SetDescriptorSet(0, descriptorSet.Get());
     ctx.SetPipeline(pipeline);
-
-    // Bind resources
-    // ctx.BindConstantBuffer(0, m_renderConstantsBuffer.Get());
-    // ctx.BindBuffer(0, simulator->GetParticleBuffer());
-    // ctx.BindBuffer(1, simulator->GetAliveIndexBuffer());
-    // if (depthTexture) ctx.BindTexture(1, depthTexture);
 
     // Bind quad geometry
     ctx.SetVertexBuffer(0, m_quadVertexBuffer.Get());
-    ctx.SetIndexBuffer(m_quadIndexBuffer.Get(), RHIFormat::R16_UINT, 0);
+    ctx.SetIndexBuffer(m_quadIndexBuffer.Get(), GetQuadIndexFormat(), 0);
 
     // Draw instanced
     ctx.DrawIndexed(6, aliveCount, 0, 0, 0);
+    m_retainedDescriptorSets.push_back(descriptorSet);
+    if (m_retainedDescriptorSets.size() > 256)
+    {
+        m_retainedDescriptorSets.pop_front();
+    }
     return true;
 }
 
 bool ParticleRenderer::DrawParticlesIndirect(RHICommandContext& ctx,
-                                             ParticleSystemInstance* instance,
-                                             const ViewData& view,
-                                             RHITexture* depthTexture)
+                                     ParticleSystemInstance* instance,
+                                     const ViewData& view,
+                                     RHITexture* depthTexture)
 {
+    (void)depthTexture;
     if (!instance || !instance->HasSystem())
         return false;
 
@@ -225,12 +377,26 @@ bool ParticleRenderer::DrawParticlesIndirect(RHICommandContext& ctx,
         return false;
     }
 
-    // Upload render constants
-    UploadRenderConstants(view, system->softParticleConfig);
+    if (system->renderMode != ParticleRenderMode::Billboard)
+    {
+        RVX_CORE_WARN("ParticleRenderer: indirect draw skipped: render mode {} is unsupported in RQ30",
+                      static_cast<int>(system->renderMode));
+        return false;
+    }
+
+    SoftParticleConfig softConfig = system->softParticleConfig;
+    softConfig.enabled = false;
+    UploadRenderConstants(view, softConfig);
+
+    RHIDescriptorSetRef descriptorSet = CreateParticleDescriptorSet(instance);
+    if (!descriptorSet)
+    {
+        RVX_CORE_WARN("ParticleRenderer: indirect draw skipped: descriptor set is unavailable");
+        return false;
+    }
 
     // Get pipeline (same as DrawParticles)
-    RHIPipeline* pipeline = GetBillboardPipeline(system->blendMode,
-                                                  system->softParticleConfig.enabled && depthTexture);
+    RHIPipeline* pipeline = GetBillboardPipeline(system->blendMode, false);
     if (!pipeline)
     {
         RVX_CORE_WARN("ParticleRenderer: indirect draw skipped: pipeline is unavailable");
@@ -244,12 +410,18 @@ bool ParticleRenderer::DrawParticlesIndirect(RHICommandContext& ctx,
         return false;
     }
 
+    ctx.SetDescriptorSet(0, descriptorSet.Get());
     ctx.SetPipeline(pipeline);
     ctx.SetVertexBuffer(0, m_quadVertexBuffer.Get());
-    ctx.SetIndexBuffer(m_quadIndexBuffer.Get(), RHIFormat::R16_UINT, 0);
+    ctx.SetIndexBuffer(m_quadIndexBuffer.Get(), GetQuadIndexFormat(), 0);
 
     // Indirect draw (1 draw call, stride = 0 for single draw)
     ctx.DrawIndexedIndirect(indirectDrawBuffer, 0, 1, 0);
+    m_retainedDescriptorSets.push_back(descriptorSet);
+    if (m_retainedDescriptorSets.size() > 256)
+    {
+        m_retainedDescriptorSets.pop_front();
+    }
     return true;
 }
 
@@ -264,14 +436,216 @@ void ParticleRenderer::UploadRenderConstants(const ViewData& view,
     data.cameraRight = Vec4(GetRightFromMatrix(view.inverseViewMatrix), 0.0f);
     data.cameraUp = Vec4(GetUpFromMatrix(view.inverseViewMatrix), 0.0f);
     data.cameraForward = Vec4(view.cameraForward, 0.0f);
-    data.screenSize = Vec2(static_cast<float>(view.viewportWidth), 
-                           static_cast<float>(view.viewportHeight));
+    data.screenSize = Vec2(static_cast<float>(std::max(1u, view.viewportWidth)),
+                           static_cast<float>(std::max(1u, view.viewportHeight)));
     data.invScreenSize = Vec2(1.0f / data.screenSize.x, 1.0f / data.screenSize.y);
     data.softParticleFadeDistance = softConfig.fadeDistance;
     data.softParticleContrast = softConfig.contrastPower;
     data.softParticleEnabled = softConfig.enabled ? 1 : 0;
 
     m_renderConstantsBuffer->Upload(&data, 1);
+}
+
+bool ParticleRenderer::CreateSharedResources()
+{
+    if (!CreateDescriptorLayout())
+    {
+        return false;
+    }
+    if (!CreateFallbackTextureResources())
+    {
+        return false;
+    }
+    if (!CreateShaders())
+    {
+        return false;
+    }
+    return true;
+}
+
+bool ParticleRenderer::CreateShaders()
+{
+    const auto createShaderFromBytecode = [this](RHIShaderStage stage,
+                                                 const std::vector<uint8>& bytecode,
+                                                 const char* entryPoint,
+                                                 const char* debugName) -> RHIShaderRef
+    {
+        if (bytecode.empty())
+            return {};
+
+        RHIShaderDesc desc;
+        desc.stage = stage;
+        desc.bytecode = bytecode.data();
+        desc.bytecodeSize = bytecode.size();
+        desc.entryPoint = entryPoint;
+        desc.debugName = debugName;
+        return m_device->CreateShader(desc);
+    };
+
+    m_vertexShader = createShaderFromBytecode(RHIShaderStage::Vertex,
+                                              m_config.vertexShaderBytecode,
+                                              "VSMain",
+                                              "ParticleBillboardVS");
+    m_pixelShader = createShaderFromBytecode(RHIShaderStage::Pixel,
+                                             m_config.pixelShaderBytecode,
+                                             "PSMain",
+                                             "ParticleBillboardPS");
+    if (m_vertexShader && m_pixelShader)
+    {
+        return true;
+    }
+
+    if (m_config.shaderDirectory.empty())
+    {
+        SetUnsupported("Particle shader directory is not configured");
+        return false;
+    }
+
+    const std::filesystem::path shaderPath =
+        std::filesystem::path(m_config.shaderDirectory) / "ParticleBillboard.hlsl";
+    const std::string sourceCode = ReadTextFile(shaderPath);
+    if (sourceCode.empty())
+    {
+        SetUnsupported("Particle billboard shader source is unavailable");
+        return false;
+    }
+
+    std::unique_ptr<IShaderCompiler> compiler = CreateShaderCompiler();
+    if (!compiler)
+    {
+        SetUnsupported("Particle shader compiler is unavailable");
+        return false;
+    }
+
+    const auto compileShader = [&](RHIShaderStage stage,
+                                   const char* entryPoint,
+                                   const char* debugName) -> RHIShaderRef
+    {
+        ShaderCompileOptions options;
+        options.stage = stage;
+        options.entryPoint = entryPoint;
+        options.sourceCode = sourceCode.c_str();
+        const std::string pathString = shaderPath.string();
+        options.sourcePath = pathString.c_str();
+        options.targetBackend = m_device->GetBackendType();
+        options.enableDebugInfo = false;
+        options.enableOptimization = true;
+
+        ShaderCompileResult result = compiler->Compile(options);
+        if (!result.success || result.bytecode.empty())
+        {
+            SetUnsupported("Particle shader compile failed: " + result.errorMessage);
+            return {};
+        }
+
+        RHIShaderDesc desc;
+        desc.stage = stage;
+        desc.bytecode = result.bytecode.data();
+        desc.bytecodeSize = result.bytecode.size();
+        desc.entryPoint = entryPoint;
+        desc.debugName = debugName;
+        return m_device->CreateShader(desc);
+    };
+
+    m_vertexShader = compileShader(RHIShaderStage::Vertex, "VSMain", "ParticleBillboardVS");
+    m_pixelShader = compileShader(RHIShaderStage::Pixel, "PSMain", "ParticleBillboardPS");
+    if (!m_vertexShader || !m_pixelShader)
+    {
+        if (m_unsupportedReason.empty())
+        {
+            SetUnsupported("Particle shaders could not be created");
+        }
+        return false;
+    }
+
+    return true;
+}
+
+bool ParticleRenderer::CreateDescriptorLayout()
+{
+    RHIDescriptorSetLayoutDesc layoutDesc;
+    layoutDesc.debugName = "ParticleBillboardSetLayout";
+    layoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Vertex | RHIShaderStage::Pixel);
+    layoutDesc.AddBinding(1, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
+    layoutDesc.AddBinding(2, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
+    layoutDesc.AddBinding(3, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    layoutDesc.AddBinding(4, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+
+    m_descriptorSetLayout = m_device->CreateDescriptorSetLayout(layoutDesc);
+    if (!m_descriptorSetLayout)
+    {
+        SetUnsupported("Particle descriptor set layout could not be created");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc pipelineLayoutDesc;
+    pipelineLayoutDesc.debugName = "ParticleBillboardPipelineLayout";
+    pipelineLayoutDesc.setLayouts.push_back(m_descriptorSetLayout.Get());
+    m_pipelineLayout = m_device->CreatePipelineLayout(pipelineLayoutDesc);
+    if (!m_pipelineLayout)
+    {
+        SetUnsupported("Particle pipeline layout could not be created");
+        return false;
+    }
+
+    return true;
+}
+
+bool ParticleRenderer::CreateFallbackTextureResources()
+{
+    RHITextureDesc textureDesc = RHITextureDesc::Texture2D(1, 1, RHIFormat::RGBA8_UNORM,
+                                                          RHITextureUsage::ShaderResource);
+    textureDesc.debugName = "ParticleFallbackWhiteTexture";
+    m_fallbackTexture = m_device->CreateTexture(textureDesc);
+    if (!m_fallbackTexture)
+    {
+        SetUnsupported("Particle fallback texture could not be created");
+        return false;
+    }
+
+    RHITextureViewDesc viewDesc;
+    viewDesc.format = m_fallbackTexture->GetFormat();
+    viewDesc.dimension = m_fallbackTexture->GetDimension();
+    viewDesc.type = RHITextureViewType::ShaderResource;
+    viewDesc.debugName = "ParticleFallbackWhiteTextureSRV";
+    m_fallbackTextureView = m_device->CreateTextureView(m_fallbackTexture.Get(), viewDesc);
+    if (!m_fallbackTextureView)
+    {
+        SetUnsupported("Particle fallback texture view could not be created");
+        return false;
+    }
+
+    RHISamplerDesc samplerDesc = RHISamplerDesc::LinearClamp();
+    samplerDesc.debugName = "ParticleLinearClampSampler";
+    m_sampler = m_device->CreateSampler(samplerDesc);
+    if (!m_sampler)
+    {
+        SetUnsupported("Particle sampler could not be created");
+        return false;
+    }
+
+    return true;
+}
+
+RHIDescriptorSetRef ParticleRenderer::CreateParticleDescriptorSet(ParticleSystemInstance* instance)
+{
+    if (!m_descriptorSetLayout || !m_renderConstantsBuffer || !m_fallbackTextureView || !m_sampler || !instance)
+        return {};
+
+    IParticleSimulator* simulator = instance->GetSimulator();
+    if (!simulator || !simulator->GetParticleBuffer() || !simulator->GetAliveIndexBuffer())
+        return {};
+
+    RHIDescriptorSetDesc desc;
+    desc.debugName = "ParticleBillboardDescriptorSet";
+    desc.SetLayout(m_descriptorSetLayout.Get())
+        .BindBuffer(0, m_renderConstantsBuffer.Get())
+        .BindBuffer(1, simulator->GetParticleBuffer())
+        .BindBuffer(2, simulator->GetAliveIndexBuffer())
+        .BindTexture(3, m_fallbackTextureView.Get())
+        .BindSampler(4, m_sampler.Get());
+
+    return m_device->CreateDescriptorSet(desc);
 }
 
 uint32 ParticleRenderer::MakePipelineKey(ParticleRenderMode mode, 
@@ -307,20 +681,58 @@ RHIPipeline* ParticleRenderer::CreatePipelineIfNeeded(ParticleRenderMode mode,
                                                       ParticleBlendMode blend,
                                                       bool soft)
 {
+    if (mode != ParticleRenderMode::Billboard || soft)
+    {
+        RVX_CORE_WARN("ParticleRenderer: Unsupported pipeline request mode={}, soft={}",
+                      static_cast<int>(mode), soft);
+        return nullptr;
+    }
+
+    if (blend != ParticleBlendMode::AlphaBlend && blend != ParticleBlendMode::Additive)
+    {
+        RVX_CORE_WARN("ParticleRenderer: Unsupported billboard blend mode={}", static_cast<int>(blend));
+        return nullptr;
+    }
+
     uint32 key = MakePipelineKey(mode, blend, soft);
     auto it = m_pipelineCache.find(key);
     if (it != m_pipelineCache.end())
         return it->second.Get();
 
-    // Pipeline not found - log warning to help debugging
-    RVX_CORE_WARN("ParticleRenderer: Pipeline not found for mode={}, blend={}, soft={}",
-        static_cast<int>(mode), static_cast<int>(blend), soft);
+    if (!m_vertexShader || !m_pixelShader || !m_pipelineLayout)
+    {
+        RVX_CORE_WARN("ParticleRenderer: Pipeline dependencies are unavailable for mode={}, blend={}",
+                      static_cast<int>(mode), static_cast<int>(blend));
+        return nullptr;
+    }
 
-    // TODO: Implement full pipeline creation when shader system is ready
-    // This requires loading shaders and creating pipeline state
-    // For now, return nullptr
+    RHIGraphicsPipelineDesc desc;
+    desc.vertexShader = m_vertexShader.Get();
+    desc.pixelShader = m_pixelShader.Get();
+    desc.pipelineLayout = m_pipelineLayout.Get();
+    desc.rasterizerState = RHIRasterizerState::NoCull();
+    desc.depthStencilState = BuildParticleDepthState(m_config.reverseZ, m_config.depthStencilFormat);
+    desc.blendState = BuildParticleBlendState(blend);
+    desc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+    desc.numRenderTargets = 1;
+    desc.renderTargetFormats[0] = m_config.colorTargetFormat;
+    desc.depthStencilFormat = m_config.depthStencilFormat;
+    desc.sampleCount = m_config.sampleCount;
 
-    return nullptr;
+    const std::string debugName = std::string("ParticleBillboard") +
+                                  (blend == ParticleBlendMode::Additive ? "Additive" : "AlphaBlend") +
+                                  "Pipeline";
+    desc.debugName = debugName.c_str();
+
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(desc);
+    if (!pipeline)
+    {
+        RVX_CORE_WARN("ParticleRenderer: Failed to create {}", debugName);
+        return nullptr;
+    }
+
+    m_pipelineCache[key] = pipeline;
+    return pipeline.Get();
 }
 
 const char* ParticleRenderer::GetShaderNameForMode(ParticleRenderMode mode) const
@@ -348,6 +760,13 @@ RHIBuffer* ParticleRenderer::GetQuadVertexBuffer()
 RHIBuffer* ParticleRenderer::GetQuadIndexBuffer()
 {
     return m_quadIndexBuffer.Get();
+}
+
+void ParticleRenderer::SetUnsupported(const std::string& reason)
+{
+    m_renderingSupported = false;
+    m_unsupportedReason = reason;
+    RVX_CORE_WARN("ParticleRenderer: {}", m_unsupportedReason);
 }
 
 } // namespace RVX::Particle

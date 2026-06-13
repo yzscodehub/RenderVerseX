@@ -145,6 +145,7 @@ target_link_libraries(${MODULE_NAME}
         RVX_Render
         RVX_Scene
         RVX_Resource
+        RVX_ShaderCompiler
 )
 
 # ==============================================================================

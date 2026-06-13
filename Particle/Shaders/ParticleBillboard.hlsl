@@ -4,15 +4,17 @@
  */
 
 #include "Include/ParticleCommon.hlsli"
+#if defined(RVX_PARTICLE_ENABLE_SOFT_PARTICLES)
 #include "Include/SoftParticle.hlsli"
+#endif
 
 // Particle buffer
-StructuredBuffer<GPUParticle> g_Particles : register(t0);
-StructuredBuffer<uint> g_AliveList : register(t1);
+StructuredBuffer<GPUParticle> g_Particles : register(t1);
+StructuredBuffer<uint> g_AliveList : register(t2);
 
 // Particle texture
-Texture2D g_ParticleTexture : register(t2);
-SamplerState g_LinearSampler : register(s0);
+Texture2D g_ParticleTexture : register(t3);
+SamplerState g_LinearSampler : register(s4);
 
 // Constants
 ConstantBuffer<RenderData> g_Render : register(b0);
@@ -100,6 +102,7 @@ PSOutput PSMain(VSOutput input)
     float4 finalColor = texColor * input.color;
     
     // Apply soft particle fade
+#if defined(RVX_PARTICLE_ENABLE_SOFT_PARTICLES)
     if (g_Render.softParticleEnabled)
     {
         float fade = ComputeSoftParticleFade(
@@ -110,6 +113,7 @@ PSOutput PSMain(VSOutput input)
         );
         finalColor.a *= fade;
     }
+#endif
     
     // Alpha test
     if (finalColor.a < 0.01)

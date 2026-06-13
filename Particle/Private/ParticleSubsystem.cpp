@@ -1,14 +1,17 @@
 #include "Particle/ParticleSubsystem.h"
-#include "Particle/Rendering/ParticleRenderer.h"
-#include "Particle/Rendering/ParticlePass.h"
+#include "Particle/GPU/CPUParticleSimulator.h"
 #include "Particle/GPU/IParticleSimulator.h"
 #include "Particle/GPU/ParticleSorter.h"
+#include "Particle/Rendering/ParticlePass.h"
+#include "Particle/Rendering/ParticleRenderer.h"
 #include "RHI/RHI.h"
 #include "Core/Log.h"
 #include <algorithm>
 
 namespace RVX::Particle
 {
+
+ParticleSubsystem::ParticleSubsystem() = default;
 
 ParticleSubsystem::~ParticleSubsystem()
 {
@@ -100,8 +103,16 @@ ParticleSystemInstance* ParticleSubsystem::CreateInstance(ParticleSystem::Ptr sy
         return nullptr;
 
     auto instance = std::make_unique<ParticleSystemInstance>(system);
-    instance->SetSimulationUnsupported(
-        "ParticleSubsystem does not connect GPU/CPU simulators to instances yet");
+    if (m_device)
+    {
+        auto simulator = std::make_unique<CPUParticleSimulator>();
+        simulator->Initialize(m_device, system->maxParticles);
+        instance->SetSimulator(std::move(simulator), "CPU");
+    }
+    else
+    {
+        instance->SetSimulationUnsupported("ParticleSubsystem has no RHI device for CPU particle simulation");
+    }
 
     ParticleSystemInstance* ptr = instance.get();
     m_instances.push_back(std::move(instance));

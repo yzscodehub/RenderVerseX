@@ -1,4 +1,5 @@
 #include "Particle/ParticleSystemInstance.h"
+#include "Particle/Emitters/IEmitter.h"
 #include "Particle/Events/ParticleEventHandler.h"
 #include "Particle/GPU/IParticleSimulator.h"
 #include "Core/Log.h"
@@ -53,8 +54,30 @@ void ParticleSystemInstance::Initialize()
 void ParticleSystemInstance::SetSimulationUnsupported(const char* reason)
 {
     m_simulationSupported = false;
+    m_simulationBackendName = "None";
     m_simulationUnsupportedReason = reason ? reason : "Particle simulation unsupported";
     m_loggedUnsupportedSimulation = false;
+}
+
+void ParticleSystemInstance::SetSimulator(std::unique_ptr<IParticleSimulator> simulator, const char* backendName)
+{
+    m_simulator = std::move(simulator);
+    m_aliveCount = m_simulator ? m_simulator->GetAliveCount() : 0;
+    m_simulationSupported = m_simulator && m_simulator->IsInitialized();
+    m_loggedUnsupportedSimulation = false;
+
+    if (m_simulationSupported)
+    {
+        m_simulationBackendName = backendName && backendName[0] ? backendName : "ParticleSimulator";
+        m_simulationUnsupportedReason.clear();
+    }
+    else
+    {
+        m_simulationBackendName = "None";
+        m_simulationUnsupportedReason = "Particle simulator is not initialized";
+    }
+
+    m_boundsDirty = true;
 }
 
 void ParticleSystemInstance::Play()
@@ -104,12 +127,12 @@ void ParticleSystemInstance::Clear()
 {
     m_aliveCount = 0;
     m_emissionAccumulator = 0.0f;
-    
+
     if (m_simulator)
     {
-        // Clear simulator state
+        m_simulator->Clear();
     }
-    
+
     m_boundsDirty = true;
 }
 
@@ -166,11 +189,19 @@ void ParticleSystemInstance::Simulate(float deltaTime)
         UpdateEmission(effectiveDeltaTime);
     }
     
-    // Simulation would be done by the simulator
     if (m_simulator)
     {
-        // m_simulator->Simulate(effectiveDeltaTime, params);
-        // m_aliveCount = m_simulator->GetAliveCount();
+        SimulateParams params{};
+        params.deltaTime = effectiveDeltaTime;
+        params.totalTime = m_simulationTime;
+        params.simulationData.deltaTime = effectiveDeltaTime;
+        params.simulationData.totalTime = m_simulationTime;
+        params.simulationData.aliveCount = m_simulator->GetAliveCount();
+        params.simulationData.maxParticles = m_simulator->GetMaxParticles();
+        params.simulationData.gravity = Vec4(0.0f, -9.81f, 0.0f, 0.0f);
+
+        m_simulator->Simulate(effectiveDeltaTime, params);
+        m_aliveCount = m_simulator->GetAliveCount();
     }
     
     m_boundsDirty = true;
@@ -298,8 +329,10 @@ void ParticleSystemInstance::UpdateLOD(float distanceToCamera)
 
 void ParticleSystemInstance::UpdateEmission(float deltaTime)
 {
-    if (!m_system)
+    if (!m_system || !m_simulator)
         return;
+
+    m_aliveCount = m_simulator->GetAliveCount();
     
     // Get LOD multiplier
     float lodMultiplier = 1.0f;
@@ -321,11 +354,21 @@ void ParticleSystemInstance::UpdateEmission(float deltaTime)
         m_emissionAccumulator -= static_cast<float>(toEmit);
         
         // Clamp to available space
-        uint32 available = GetMaxParticles() - m_aliveCount;
+        uint32 available = GetMaxParticles() > m_aliveCount ? GetMaxParticles() - m_aliveCount : 0;
         toEmit = std::min(toEmit, available);
-        
-        // Emit particles would be done via simulator
-        // m_simulator->Emit(toEmit, emitter->GetEmitParams());
+        if (toEmit == 0)
+            continue;
+
+        EmitParams params{};
+        emitter->GetEmitParams(params.emitterData);
+        params.emitterData.transform = m_worldTransform * params.emitterData.transform;
+        params.emitterData.emitCount = toEmit;
+        params.emitterData.randomSeed = static_cast<uint32>(m_instanceId + m_simulationTime * 1000.0f);
+        params.emitCount = toEmit;
+        params.randomSeed = params.emitterData.randomSeed;
+
+        m_simulator->Emit(params);
+        m_aliveCount = m_simulator->GetAliveCount();
     }
 }
 

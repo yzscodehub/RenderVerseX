@@ -399,7 +399,7 @@ Vec3 CPUParticleSimulator::GenerateEmitterVelocity(const EmitterGPUData& data, f
 
 void CPUParticleSimulator::Simulate(float deltaTime, const SimulateParams& params)
 {
-    if (m_aliveIndices.empty())
+    if (!m_initialized || m_aliveIndices.empty())
         return;
 
     // Use parallel simulation if JobSystem is available

@@ -52,7 +52,7 @@ namespace RVX::Particle
     class ParticleSubsystem : public EngineSubsystem
     {
     public:
-        ParticleSubsystem() = default;
+        ParticleSubsystem();
         ~ParticleSubsystem() override;
 
         // =====================================================================
@@ -124,6 +124,9 @@ namespace RVX::Particle
 
         /// Check if GPU simulation is supported
         bool IsGPUSimulationSupported() const { return m_gpuSimulationSupported; }
+
+        /// Set an RHI device before Initialize; intended for validation and bootstrap paths.
+        void SetDeviceForTesting(IRHIDevice* device) { m_device = device; }
 
         // =====================================================================
         // Rendering Components

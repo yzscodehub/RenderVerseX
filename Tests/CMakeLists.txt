@@ -359,6 +359,23 @@ rvx_add_gtest(
     TIMEOUT 120
 )
 
+# Particle system validation tests
+rvx_add_gtest(
+    NAME ParticleValidation
+    SOURCES ParticleValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::Render
+        RVX::RHI
+        Particle
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Particle/Include
+        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/RHI/Include
+    LABELS unit
+    TIMEOUT 120
+)
+
 # Actor component validation tests
 rvx_add_gtest(
     NAME ActorComponentValidation
