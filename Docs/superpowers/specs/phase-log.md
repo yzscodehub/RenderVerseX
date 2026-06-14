@@ -6362,6 +6362,104 @@ git diff --check
 
 ---
 
+### R-SP: RQ32 - Soft Particle Depth Fade
+
+**Date:** 2026-06-14
+**Commit:** `e7ec6eb feat(particle): add soft particle depth fade`
+**Spark plan review agent:** Heisenberg, Ramanujan, Laplace, Hume (`gpt-5.5`, `xhigh`)
+**Spark code review agent:** Peirce (`gpt-5.5`, `xhigh`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-14-rq32-soft-particle-depth-fade-plan.md`
+- Section: full RQ32 plan
+- Lines checked: implementation reread the full document before code edits
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ31 - Particle Main-Frame Integration
+- Evidence: RQ31 implementation and phase-log commits were complete before RQ32 implementation started.
+
+**Approved scope:**
+
+- Make the persistent SceneRenderer depth buffer shader-readable and export it back to `DepthWrite`.
+- Add shader-depth and fixed-function-depth particle pipeline variants.
+- Extend particle descriptors with scene-depth SRV/sampler bindings.
+- Honor `ParticleSystem::softParticleConfig` only when a real scene-depth SRV is available.
+- Use shader-side hard depth occlusion when drawing particles in the color-only depth-SRV path.
+- Preserve read-only DSV fallback when scene-depth SRV is unavailable.
+- Add focused ParticleValidation coverage for shader bindings, constant layout, pipeline variants, depth-SRV path, and fallback path.
+
+**Out of scope:**
+
+- GPU particle simulation, texture-sheet/flipbook materials, trails, mesh/stretched billboards, particle lights, volumetric particles, and ECS/Object refactors.
+- Backend read-only DSV plus SRV support for binding the same depth resource both ways in one pass.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-14-rq32-soft-particle-depth-fade-plan.md`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Particle/Include/Particle/ParticleTypes.h`
+- `Particle/Include/Particle/Rendering/ParticlePass.h`
+- `Particle/Include/Particle/Rendering/ParticleRenderer.h`
+- `Particle/Private/ParticleSubsystem.cpp`
+- `Particle/Private/Rendering/ParticlePass.cpp`
+- `Particle/Private/Rendering/ParticleRenderer.cpp`
+- `Particle/Shaders/ParticleBillboard.hlsl`
+- `Particle/Shaders/Include/ParticleCommon.hlsli`
+- `Particle/Shaders/Include/SoftParticle.hlsli`
+- `Tests/ParticleValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target ParticleValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ParticleValidation"
+cmake --build build\win_x64_debug --config Debug --target ParticleValidation RenderPassValidation RenderGraphValidation RenderSceneValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ParticleValidation|RenderPassValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|RenderSceneValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused particle tests: PASS, 17/17 selected tests passed.
+- Focused/render pass regression: PASS, 90/90 selected tests passed.
+- Render graph/scene regression: PASS, 49/49 selected tests passed.
+- Conditional local visual gate: PASS, 8/8 selected ModelViewer/golden/image-compare tests passed.
+- Diff check: PASS, with CRLF warnings only.
+- Visual gate: PASS.
+
+**Artifacts:**
+
+- Tests: `ParticleValidation`, `RenderPassValidation`, `RenderGraphValidation`, `RenderSceneValidation`,
+  `ModelViewerSmoke`, `VisualGoldenValidation`, `ShadowVisualGoldenValidation`,
+  `PBRMaterialVisualGoldenValidation`, `ImageCompareValidation`.
+- Diffs: RQ32 intended file set only; unrelated pre-existing dirty files and old untracked docs were left unstaged.
+
+**Spark plan review result:**
+
+- Initial verdicts: FAIL, FAIL, FAIL.
+- Blockers resolved: simultaneous DSV+SRV was replaced with separate shader-depth and DSV fallback paths;
+  `RenderGPUData`/HLSL constant layout work was added; shader-depth pipelines were made depth-disabled with unknown
+  depth format; fixed-function fallback depth format was aligned to production `D32_FLOAT`; depth export back to
+  `DepthWrite` was required; soft-disabled systems with valid depth SRV still use shader hard-depth occlusion.
+- Final verdict: PASS.
+
+**Spark code review result:**
+
+- Verdict: PASS.
+- Blockers resolved: none.
+
+**Notes / follow-ups:**
+
+- RQ32 makes soft billboard particles real on the CPU billboard path without expanding RenderGraph/RHI backend support for simultaneous DSV/SRV binding.
+- Future particle-quality stages can build on this for texture/flipbook particles, GPU sorting, stretched billboards, trails, lit particles, and visible sample content.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
