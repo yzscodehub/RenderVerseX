@@ -17,6 +17,7 @@ target_link_libraries(ModelViewer PRIVATE
     RVX::RHI
     RVX::ShaderCompiler
     RVX::HAL
+    Particle
 )
 
 # Link all enabled backends

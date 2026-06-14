@@ -9,15 +9,18 @@
 #include "Particle/ParticleSystem.h"
 #include "Particle/ParticleSystemInstance.h"
 #include "Particle/ParticlePool.h"
+#include "Particle/Rendering/ParticleRenderer.h"
 #include "Render/Renderer/ViewData.h"
 #include "Render/RenderSubsystem.h"
 #include "Resource/ResourceSubsystem.h"
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace RVX
 {
     class IRHIDevice;
+    class SceneRenderer;
 }
 
 namespace RVX::Particle
@@ -128,13 +131,30 @@ namespace RVX::Particle
         /// Set an RHI device before Initialize; intended for validation and bootstrap paths.
         void SetDeviceForTesting(IRHIDevice* device) { m_device = device; }
 
+        /// Set a scene renderer before Initialize; intended for focused validation/bootstrap paths.
+        void SetSceneRendererForTesting(SceneRenderer* renderer) { m_sceneRenderer = renderer; }
+
+        /// Set renderer creation config before Initialize; intended for focused validation/bootstrap paths.
+        void SetRendererConfigForTesting(const ParticleRendererConfig& config)
+        {
+            m_rendererConfigOverride = config;
+            m_hasRendererConfigOverride = true;
+        }
+
+        /// Check whether the subsystem is connected to the main render frame.
+        bool IsRenderIntegrationReady() const { return m_renderIntegrationReady; }
+
+        /// Human-readable reason when render integration is unavailable.
+        const std::string& GetRenderIntegrationUnsupportedReason() const { return m_renderIntegrationUnsupportedReason; }
+
         // =====================================================================
         // Rendering Components
         // =====================================================================
 
         ParticleRenderer* GetRenderer() { return m_renderer.get(); }
         ParticleSorter* GetSorter() { return m_sorter.get(); }
-        ParticlePass* GetRenderPass() { return m_renderPass.get(); }
+        ParticlePass* GetRenderPass() { return m_renderPass; }
+        const ParticlePass* GetRenderPass() const { return m_renderPass; }
 
         // =====================================================================
         // Statistics
@@ -147,18 +167,28 @@ namespace RVX::Particle
             uint32 totalParticles = 0;
             uint32 gpuSimulatedParticles = 0;
             uint32 cpuSimulatedParticles = 0;
+            uint64 prepareFrameCount = 0;
+            uint64 skippedPrepareFrameCount = 0;
+            bool renderPassRegistered = false;
+            bool preGraphCallbackRegistered = false;
         };
 
         const Statistics& GetStatistics() const { return m_stats; }
 
     private:
         void CheckCapabilities();
+        void AcquireRenderDependencies();
         void CreateRenderComponents();
+        void RegisterRenderIntegration();
+        void MarkRenderIntegrationUnsupported(const std::string& reason);
         void CullInstances(const ViewData& view);
         void UpdateLODs(const ViewData& view);
 
         ParticleSubsystemConfig m_config;
         IRHIDevice* m_device = nullptr;
+        SceneRenderer* m_sceneRenderer = nullptr;
+        ParticleRendererConfig m_rendererConfigOverride;
+        bool m_hasRendererConfigOverride = false;
 
         // Simulation capability
         bool m_gpuSimulationSupported = false;
@@ -173,7 +203,11 @@ namespace RVX::Particle
         // Rendering components
         std::unique_ptr<ParticleRenderer> m_renderer;
         std::unique_ptr<ParticleSorter> m_sorter;
-        std::unique_ptr<ParticlePass> m_renderPass;
+        ParticlePass* m_renderPass = nullptr;
+        bool m_renderPassRegistered = false;
+        bool m_preGraphCallbackRegistered = false;
+        bool m_renderIntegrationReady = false;
+        std::string m_renderIntegrationUnsupportedReason = "Particle render integration is not initialized";
 
         // Statistics
         Statistics m_stats;

@@ -21,6 +21,7 @@
 #include "Render/Renderer/RenderProxy.h"
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -224,6 +225,21 @@ namespace RVX
          */
         size_t GetPassCount() const;
 
+        /// Callback invoked after per-frame pass preparation and before RenderGraph build.
+        using PreGraphPrepareCallback = std::function<void(const ViewData&)>;
+
+        /// Register a pre-graph prepare callback by owner token.
+        bool AddPreGraphPrepareCallback(const void* owner, PreGraphPrepareCallback callback);
+
+        /// Remove a pre-graph prepare callback by owner token.
+        bool RemovePreGraphPrepareCallback(const void* owner);
+
+        /// Get number of registered pre-graph prepare callbacks.
+        size_t GetPreGraphPrepareCallbackCount() const { return m_preGraphPrepareCallbacks.size(); }
+
+        /// Execute pre-graph callbacks for focused validation without running a full frame.
+        void RunPreGraphPrepareCallbacksForTesting() { RunPreGraphPrepareCallbacks(); }
+
         // =====================================================================
         // Accessors
         // =====================================================================
@@ -315,8 +331,15 @@ namespace RVX
                                                              bool postProcessActive) const;
         bool SupportsHDRSceneColor() const;
         void UpdatePassResources();
+        void RunPreGraphPrepareCallbacks();
         void ExecutePasses(RHICommandContext& ctx);
         void EnsureDepthBuffer(uint32_t width, uint32_t height);
+
+        struct PreGraphPrepareCallbackEntry
+        {
+            const void* owner = nullptr;
+            PreGraphPrepareCallback callback;
+        };
 
         RenderContext* m_renderContext = nullptr;
         std::unique_ptr<RenderGraph> m_renderGraph;
@@ -346,6 +369,7 @@ namespace RVX
         std::vector<RenderDrawItem> m_maskedDrawItems;
         std::vector<RenderDrawItem> m_transparentDrawItems;
         std::vector<std::string> m_loggedUnsupportedPassNames;
+        std::vector<PreGraphPrepareCallbackEntry> m_preGraphPrepareCallbacks;
         
         std::string m_shaderDir;
         DepthPrepass* m_depthPrepass = nullptr;  // Cached pointer to optional depth prepass

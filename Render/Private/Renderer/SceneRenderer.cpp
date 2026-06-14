@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <utility>
 
 namespace RVX
 {
@@ -324,6 +325,7 @@ void SceneRenderer::Shutdown()
     m_passRegistry.reset();
     m_proxyBridge.reset();
     m_skyboxBridge.reset();
+    m_preGraphPrepareCallbacks.clear();
     m_renderContext = nullptr;
     m_initialized = false;
 
@@ -694,6 +696,7 @@ void SceneRenderer::Render()
     }
 
     PreparePassesForFrame();
+    RunPreGraphPrepareCallbacks();
 
     // Clear the render graph for this frame
     m_renderGraph->Clear();
@@ -1115,6 +1118,69 @@ void SceneRenderer::ClearPasses()
 size_t SceneRenderer::GetPassCount() const
 {
     return m_passRegistry ? m_passRegistry->GetPassCount() : 0;
+}
+
+bool SceneRenderer::AddPreGraphPrepareCallback(const void* owner, PreGraphPrepareCallback callback)
+{
+    if (!owner || !callback)
+        return false;
+
+    const auto it = std::find_if(
+        m_preGraphPrepareCallbacks.begin(),
+        m_preGraphPrepareCallbacks.end(),
+        [owner](const PreGraphPrepareCallbackEntry& entry)
+        {
+            return entry.owner == owner;
+        });
+    if (it != m_preGraphPrepareCallbacks.end())
+        return false;
+
+    PreGraphPrepareCallbackEntry entry;
+    entry.owner = owner;
+    entry.callback = std::move(callback);
+    m_preGraphPrepareCallbacks.push_back(std::move(entry));
+    return true;
+}
+
+bool SceneRenderer::RemovePreGraphPrepareCallback(const void* owner)
+{
+    if (!owner)
+        return false;
+
+    const auto it = std::find_if(
+        m_preGraphPrepareCallbacks.begin(),
+        m_preGraphPrepareCallbacks.end(),
+        [owner](const PreGraphPrepareCallbackEntry& entry)
+        {
+            return entry.owner == owner;
+        });
+    if (it == m_preGraphPrepareCallbacks.end())
+        return false;
+
+    m_preGraphPrepareCallbacks.erase(it);
+    return true;
+}
+
+void SceneRenderer::RunPreGraphPrepareCallbacks()
+{
+    const auto callbacks = m_preGraphPrepareCallbacks;
+    for (const PreGraphPrepareCallbackEntry& entry : callbacks)
+    {
+        if (!entry.owner || !entry.callback)
+            continue;
+
+        const auto stillRegistered = std::find_if(
+            m_preGraphPrepareCallbacks.begin(),
+            m_preGraphPrepareCallbacks.end(),
+            [&entry](const PreGraphPrepareCallbackEntry& current)
+            {
+                return current.owner == entry.owner;
+            });
+        if (stillRegistered == m_preGraphPrepareCallbacks.end())
+            continue;
+
+        entry.callback(m_viewData);
+    }
 }
 
 void SceneRenderer::SetupDefaultPostProcess()

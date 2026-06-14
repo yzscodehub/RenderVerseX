@@ -1,5 +1,7 @@
 #include "Core/Log.h"
+#include "Engine/Engine.h"
 #include "Particle/GPU/CPUParticleSimulator.h"
+#include "Particle/ParticleComponent.h"
 #include "Particle/ParticleSystem.h"
 #include "Particle/ParticleSystemInstance.h"
 #include "Particle/ParticleSubsystem.h"
@@ -7,11 +9,13 @@
 #include "Particle/Rendering/ParticleRenderer.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Graph/ResourceViewCache.h"
+#include "Render/Renderer/SceneRenderer.h"
 #include "Render/Renderer/ViewData.h"
 #include "RHI/RHI.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
 #include "RHI/RHIRenderPass.h"
+#include "Scene/SceneEntity.h"
 
 #include <gtest/gtest.h>
 
@@ -302,6 +306,10 @@ namespace
         RHIPipelineRef CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc) override
         {
             createdGraphicsPipelineDescs.push_back(desc);
+            if (failGraphicsPipelineCreation)
+            {
+                return nullptr;
+            }
             return RHIPipelineRef(new FakePipeline(desc));
         }
 
@@ -347,6 +355,7 @@ namespace
         RHIBackendType GetBackendType() const override { return RHIBackendType::DX11; }
 
         RHICapabilities capabilities;
+        bool failGraphicsPipelineCreation = false;
         std::vector<RHIBufferDesc> createdBufferDescs;
         std::vector<RHITextureDesc> createdTextureDescs;
         std::vector<RHITextureViewDesc> createdTextureViewDescs;
@@ -449,7 +458,211 @@ namespace
 
         return {};
     }
+
+    std::string ReadParticleSubsystemSource()
+    {
+        std::filesystem::path cursor = std::filesystem::current_path();
+        for (uint32 i = 0; i < 8; ++i)
+        {
+            const std::filesystem::path candidate = cursor / "Particle" / "Private" / "ParticleSubsystem.cpp";
+            if (std::filesystem::exists(candidate))
+            {
+                std::ifstream stream(candidate, std::ios::binary);
+                return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+            }
+
+            if (!cursor.has_parent_path() || cursor == cursor.parent_path())
+                break;
+
+            cursor = cursor.parent_path();
+        }
+
+        return {};
+    }
 } // namespace
+
+TEST(ParticleValidation, SceneRendererPreGraphCallbacksUseOwnerTokens)
+{
+    EnsureLogInitialized();
+    SceneRenderer renderer;
+    int ownerA = 0;
+    int ownerB = 0;
+    uint32 callsA = 0;
+    uint32 callsB = 0;
+
+    EXPECT_FALSE(renderer.AddPreGraphPrepareCallback(nullptr, [](const ViewData&) {}));
+    EXPECT_FALSE(renderer.AddPreGraphPrepareCallback(&ownerA, {}));
+    EXPECT_TRUE(renderer.AddPreGraphPrepareCallback(
+        &ownerA,
+        [&callsA](const ViewData& view)
+        {
+            EXPECT_EQ(view.viewportWidth, 77u);
+            ++callsA;
+        }));
+    EXPECT_FALSE(renderer.AddPreGraphPrepareCallback(&ownerA, [](const ViewData&) {}));
+    EXPECT_TRUE(renderer.AddPreGraphPrepareCallback(
+        &ownerB,
+        [&callsB](const ViewData&)
+        {
+            ++callsB;
+        }));
+    EXPECT_EQ(renderer.GetPreGraphPrepareCallbackCount(), 2u);
+
+    renderer.GetViewData().viewportWidth = 77;
+    renderer.RunPreGraphPrepareCallbacksForTesting();
+    EXPECT_EQ(callsA, 1u);
+    EXPECT_EQ(callsB, 1u);
+
+    EXPECT_TRUE(renderer.RemovePreGraphPrepareCallback(&ownerA));
+    EXPECT_FALSE(renderer.RemovePreGraphPrepareCallback(&ownerA));
+    EXPECT_EQ(renderer.GetPreGraphPrepareCallbackCount(), 1u);
+
+    renderer.RunPreGraphPrepareCallbacksForTesting();
+    EXPECT_EQ(callsA, 1u);
+    EXPECT_EQ(callsB, 2u);
+
+    EXPECT_TRUE(renderer.RemovePreGraphPrepareCallback(&ownerB));
+    EXPECT_EQ(renderer.GetPreGraphPrepareCallbackCount(), 0u);
+}
+
+TEST(ParticleValidation, ParticleSubsystemRegistersPassAndCallbackIntoSceneRenderer)
+{
+    EnsureLogInitialized();
+    FakeDevice device;
+    SceneRenderer renderer;
+    ParticleSubsystem subsystem;
+    subsystem.SetDeviceForTesting(&device);
+    subsystem.SetSceneRendererForTesting(&renderer);
+    subsystem.SetRendererConfigForTesting(MakeRendererConfig());
+    subsystem.GetConfig().enableGPUSimulation = false;
+    subsystem.Initialize();
+
+    EXPECT_TRUE(subsystem.IsRenderIntegrationReady()) << subsystem.GetRenderIntegrationUnsupportedReason();
+    EXPECT_EQ(renderer.GetPassCount(), 1u);
+    EXPECT_EQ(renderer.GetPreGraphPrepareCallbackCount(), 1u);
+    EXPECT_NE(subsystem.GetRenderPass(), nullptr);
+    EXPECT_TRUE(subsystem.GetStatistics().renderPassRegistered);
+    EXPECT_TRUE(subsystem.GetStatistics().preGraphCallbackRegistered);
+
+    auto system = ParticleSystem::CreateSimple("SubsystemRenderIntegration");
+    system->maxParticles = 32;
+    ParticleSystemInstance* instance = subsystem.CreateInstance(system);
+    ASSERT_NE(instance, nullptr);
+    instance->Play();
+    subsystem.Simulate(0.25f);
+    ASSERT_GT(instance->GetAliveCount(), 0u);
+
+    renderer.GetViewData().cameraPosition = Vec3(0.0f, 0.0f, 0.0f);
+    renderer.RunPreGraphPrepareCallbacksForTesting();
+    EXPECT_EQ(subsystem.GetStatistics().prepareFrameCount, 1u);
+    EXPECT_EQ(subsystem.GetStatistics().visibleInstances, 1u);
+    EXPECT_EQ(subsystem.GetVisibleInstances().size(), 1u);
+
+    subsystem.Deinitialize();
+    EXPECT_FALSE(subsystem.IsRenderIntegrationReady());
+    EXPECT_EQ(renderer.GetPreGraphPrepareCallbackCount(), 0u);
+    EXPECT_EQ(renderer.GetPassCount(), 0u);
+    const uint64 prepareFramesAfterDeinit = subsystem.GetStatistics().prepareFrameCount;
+    renderer.RunPreGraphPrepareCallbacksForTesting();
+    EXPECT_EQ(subsystem.GetStatistics().prepareFrameCount, prepareFramesAfterDeinit);
+}
+
+TEST(ParticleValidation, ParticleSubsystemDoesNotReportReadyWhenRendererUnsupported)
+{
+    EnsureLogInitialized();
+    FakeDevice device;
+    device.failGraphicsPipelineCreation = true;
+    SceneRenderer renderer;
+    ParticleSubsystem subsystem;
+    subsystem.SetDeviceForTesting(&device);
+    subsystem.SetSceneRendererForTesting(&renderer);
+    subsystem.SetRendererConfigForTesting(MakeRendererConfig());
+    subsystem.GetConfig().enableGPUSimulation = false;
+    subsystem.Initialize();
+
+    EXPECT_FALSE(subsystem.IsRenderIntegrationReady());
+    EXPECT_EQ(subsystem.GetRenderPass(), nullptr);
+    EXPECT_EQ(renderer.GetPassCount(), 0u);
+    EXPECT_EQ(renderer.GetPreGraphPrepareCallbackCount(), 0u);
+    EXPECT_FALSE(subsystem.GetStatistics().renderPassRegistered);
+    EXPECT_FALSE(subsystem.GetStatistics().preGraphCallbackRegistered);
+    EXPECT_NE(subsystem.GetRenderIntegrationUnsupportedReason().find("Particle renderer is unsupported"),
+              std::string::npos);
+    EXPECT_NE(subsystem.GetRenderIntegrationUnsupportedReason().find("pipeline"),
+              std::string::npos);
+
+    subsystem.Deinitialize();
+}
+
+TEST(ParticleValidation, ParticleSubsystemProductionDeviceAcquisitionSourceGuard)
+{
+    EnsureLogInitialized();
+    const std::string source = ReadParticleSubsystemSource();
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("GetSubsystem<RenderSubsystem>"), std::string::npos);
+    EXPECT_NE(source.find("GetDevice()"), std::string::npos);
+    EXPECT_NE(source.find("GetSceneRenderer()"), std::string::npos);
+    EXPECT_NE(source.find("AddPreGraphPrepareCallback"), std::string::npos);
+    EXPECT_NE(source.find("RemovePreGraphPrepareCallback"), std::string::npos);
+}
+
+TEST(ParticleValidation, ParticleComponentUsesSubsystemOwnedInstanceWhenRenderReady)
+{
+    EnsureLogInitialized();
+    Engine engine;
+    FakeDevice device;
+    SceneRenderer renderer;
+    auto* subsystem = engine.AddSubsystem<ParticleSubsystem>();
+    subsystem->SetDeviceForTesting(&device);
+    subsystem->SetSceneRendererForTesting(&renderer);
+    subsystem->SetRendererConfigForTesting(MakeRendererConfig());
+    subsystem->GetConfig().enableGPUSimulation = false;
+    subsystem->Initialize();
+    ASSERT_TRUE(subsystem->IsRenderIntegrationReady()) << subsystem->GetRenderIntegrationUnsupportedReason();
+
+    SceneEntity entity("ParticleComponentOwner");
+    auto* component = entity.AddComponent<ParticleComponent>();
+    ASSERT_NE(component, nullptr);
+
+    auto system = ParticleSystem::CreateSimple("ComponentSubsystemPath");
+    system->maxParticles = 32;
+    component->SetParticleSystem(system);
+
+    ASSERT_NE(component->GetInstance(), nullptr);
+    EXPECT_EQ(component->GetInstanceOwnership(), ParticleInstanceOwnership::SubsystemOwned);
+    EXPECT_FALSE(component->IsUsingLegacyFallback());
+    EXPECT_TRUE(component->GetInstance()->IsSimulationSupported());
+    EXPECT_EQ(subsystem->GetInstances().size(), 1u);
+
+    component->SetParticleSystem(nullptr);
+    EXPECT_EQ(component->GetInstance(), nullptr);
+    EXPECT_EQ(component->GetInstanceOwnership(), ParticleInstanceOwnership::None);
+    EXPECT_EQ(subsystem->GetInstances().size(), 0u);
+
+    subsystem->Deinitialize();
+}
+
+TEST(ParticleValidation, ParticleComponentFallbackWithoutRenderReadySubsystemIsObservable)
+{
+    EnsureLogInitialized();
+    Engine engine;
+    SceneEntity entity("ParticleComponentFallbackOwner");
+    auto* component = entity.AddComponent<ParticleComponent>();
+    ASSERT_NE(component, nullptr);
+
+    auto system = ParticleSystem::CreateSimple("ComponentFallbackPath");
+    component->SetParticleSystem(system);
+
+    ASSERT_NE(component->GetInstance(), nullptr);
+    EXPECT_EQ(component->GetInstanceOwnership(), ParticleInstanceOwnership::LegacyFallback);
+    EXPECT_TRUE(component->IsUsingLegacyFallback());
+    EXPECT_FALSE(component->GetInstance()->IsSimulationSupported());
+
+    component->SetParticleSystem(nullptr);
+    EXPECT_EQ(component->GetInstance(), nullptr);
+    EXPECT_EQ(component->GetInstanceOwnership(), ParticleInstanceOwnership::None);
+}
 
 TEST(ParticleValidation, ParticleSubsystemCreatesCpuSimulatorWhenDeviceIsInjected)
 {

@@ -1,4 +1,5 @@
 #include "Particle/ParticleComponent.h"
+#include "Engine/Engine.h"
 #include "Particle/ParticleSubsystem.h"
 #include "Scene/SceneEntity.h"
 #include "Core/Log.h"
@@ -86,15 +87,38 @@ void ParticleComponent::CreateInstance()
     if (m_instance || !m_particleSystem)
         return;
 
-    // Get subsystem and create instance
-    // auto* subsystem = ParticleSubsystem::Get();
-    // if (subsystem)
-    // {
-    //     m_instance = subsystem->CreateInstance(m_particleSystem);
-    // }
-    
-    // For now, create directly
-    m_instance = new ParticleSystemInstance(m_particleSystem);
+    m_instanceOwnership = ParticleInstanceOwnership::None;
+    m_instanceSubsystem = nullptr;
+
+    if (Engine* engine = Engine::Get())
+    {
+        if (auto* subsystem = engine->GetSubsystem<ParticleSubsystem>())
+        {
+            if (subsystem->IsRenderIntegrationReady())
+            {
+                m_instance = subsystem->CreateInstance(m_particleSystem);
+                if (m_instance)
+                {
+                    m_instanceSubsystem = subsystem;
+                    m_instanceOwnership = ParticleInstanceOwnership::SubsystemOwned;
+                }
+            }
+            else
+            {
+                RVX_CORE_WARN("ParticleComponent: ParticleSubsystem fallback for '{}': {}",
+                              GetOwner() ? GetOwner()->GetName() : "<no-owner>",
+                              subsystem->GetRenderIntegrationUnsupportedReason());
+            }
+        }
+    }
+
+    if (!m_instance)
+    {
+        RVX_CORE_WARN("ParticleComponent: Using legacy direct particle instance fallback for '{}'",
+                      GetOwner() ? GetOwner()->GetName() : "<no-owner>");
+        m_instance = new ParticleSystemInstance(m_particleSystem);
+        m_instanceOwnership = ParticleInstanceOwnership::LegacyFallback;
+    }
 
     // Apply overrides
     if (m_instance)
@@ -121,17 +145,19 @@ void ParticleComponent::DestroyInstance()
 {
     if (m_instance)
     {
-        // auto* subsystem = ParticleSubsystem::Get();
-        // if (subsystem)
-        // {
-        //     subsystem->DestroyInstance(m_instance);
-        // }
-        // else
-        // {
+        if (m_instanceOwnership == ParticleInstanceOwnership::SubsystemOwned && m_instanceSubsystem)
+        {
+            m_instanceSubsystem->DestroyInstance(m_instance);
+        }
+        else
+        {
             delete m_instance;
-        // }
+        }
         m_instance = nullptr;
     }
+
+    m_instanceSubsystem = nullptr;
+    m_instanceOwnership = ParticleInstanceOwnership::None;
 }
 
 void ParticleComponent::UpdateTransform()

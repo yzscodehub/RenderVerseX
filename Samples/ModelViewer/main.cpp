@@ -20,6 +20,7 @@
  */
 
 #include "Engine/Engine.h"
+#include "Particle/ParticleSubsystem.h"
 #include "Render/Context/RenderContext.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
@@ -1914,6 +1915,10 @@ int main(int argc, char* argv[])
     renderConfig.autoBindWindow = true;
     renderConfig.autoRender = !options.smoke;  // Smoke mode renders manually for capture timing.
     renderSubsystem->SetConfig(renderConfig);
+
+    // Add particle subsystem after its render/resource dependencies are registered.
+    auto* particleSubsystem = engine.AddSubsystem<Particle::ParticleSubsystem>();
+    (void)particleSubsystem;
 
     // Initialize engine
     engine.Initialize();

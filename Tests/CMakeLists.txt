@@ -365,8 +365,10 @@ rvx_add_gtest(
     SOURCES ParticleValidation/main.cpp
     LIBS
         RVX::Core
+        RVX::Engine
         RVX::Render
         RVX::RHI
+        RVX::Scene
         Particle
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Particle/Include
@@ -375,6 +377,18 @@ rvx_add_gtest(
     LABELS unit
     TIMEOUT 120
 )
+if(RVX_ENABLE_DX11)
+    target_link_libraries(ParticleValidation PRIVATE RVX::RHI_DX11)
+endif()
+if(RVX_ENABLE_DX12)
+    target_link_libraries(ParticleValidation PRIVATE RVX::RHI_DX12)
+endif()
+if(RVX_ENABLE_VULKAN)
+    target_link_libraries(ParticleValidation PRIVATE RVX::RHI_Vulkan)
+endif()
+if(RVX_ENABLE_OPENGL)
+    target_link_libraries(ParticleValidation PRIVATE RVX::RHI_OpenGL)
+endif()
 
 # Actor component validation tests
 rvx_add_gtest(
