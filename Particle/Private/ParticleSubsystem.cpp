@@ -74,7 +74,10 @@ void ParticleSubsystem::CreateRenderComponents()
     }
     else
     {
-        m_renderer->Initialize(m_device);
+        ParticleRendererConfig rendererConfig;
+        // Matches PipelineCache::GetDefaultDepthStencilFormat() used by SceneRenderer.
+        rendererConfig.depthStencilFormat = RHIFormat::D32_FLOAT;
+        m_renderer->Initialize(m_device, rendererConfig);
     }
 
     // Create sorter (if GPU simulation supported)

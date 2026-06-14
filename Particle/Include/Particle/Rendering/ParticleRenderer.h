@@ -28,7 +28,9 @@ namespace RVX::Particle
     {
         std::string shaderDirectory;
         RHIFormat colorTargetFormat = RHIFormat::RGBA16_FLOAT;
-        RHIFormat depthStencilFormat = RHIFormat::D24_UNORM_S8_UINT;
+        // Matches PipelineCache::GetDefaultDepthStencilFormat() without pulling
+        // the full render pipeline cache into this public Particle header.
+        RHIFormat depthStencilFormat = RHIFormat::D32_FLOAT;
         RHISampleCount sampleCount = RHISampleCount::Count1;
         bool reverseZ = false;
 
@@ -36,6 +38,18 @@ namespace RVX::Particle
         // platform shader compiler while production uses shaderDirectory.
         std::vector<uint8> vertexShaderBytecode;
         std::vector<uint8> pixelShaderBytecode;
+    };
+
+    /**
+     * @brief Test-visible state from the most recent particle draw attempt.
+     */
+    struct ParticleRendererDrawStats
+    {
+        ParticleDepthMode depthMode = ParticleDepthMode::None;
+        bool usedRealSceneDepth = false;
+        bool sceneDepthTestEnabled = false;
+        bool softParticlesEnabled = false;
+        std::string softParticleFallbackReason;
     };
 
     /**
@@ -62,6 +76,7 @@ namespace RVX::Particle
         bool IsRenderingSupported() const { return m_renderingSupported; }
         const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
         const ParticleRendererConfig& GetConfig() const { return m_config; }
+        const ParticleRendererDrawStats& GetLastDrawStats() const { return m_lastDrawStats; }
 
         // =====================================================================
         // Rendering
@@ -77,7 +92,9 @@ namespace RVX::Particle
         bool DrawParticles(RHICommandContext& ctx,
                           ParticleSystemInstance* instance,
                           const ViewData& view,
-                          RHITexture* depthTexture);
+                          RHITextureView* sceneDepthView,
+                          ParticleDepthMode depthMode = ParticleDepthMode::FixedFunction,
+                          bool allowSoftParticles = true);
 
         /**
          * @brief Draw particles with indirect draw
@@ -85,16 +102,18 @@ namespace RVX::Particle
         bool DrawParticlesIndirect(RHICommandContext& ctx,
                                    ParticleSystemInstance* instance,
                                    const ViewData& view,
-                                   RHITexture* depthTexture);
+                                   RHITextureView* sceneDepthView,
+                                   ParticleDepthMode depthMode = ParticleDepthMode::FixedFunction,
+                                   bool allowSoftParticles = true);
 
         // =====================================================================
         // Pipeline Access
         // =====================================================================
 
-        RHIPipeline* GetBillboardPipeline(ParticleBlendMode blend, bool softParticle);
-        RHIPipeline* GetStretchedBillboardPipeline(ParticleBlendMode blend, bool softParticle);
+        RHIPipeline* GetBillboardPipeline(ParticleBlendMode blend, ParticleDepthMode depthMode);
+        RHIPipeline* GetStretchedBillboardPipeline(ParticleBlendMode blend, ParticleDepthMode depthMode);
         RHIPipeline* GetMeshPipeline(ParticleBlendMode blend);
-        RHIPipeline* GetTrailPipeline(ParticleBlendMode blend, bool softParticle);
+        RHIPipeline* GetTrailPipeline(ParticleBlendMode blend, ParticleDepthMode depthMode);
 
         // =====================================================================
         // Resource Management
@@ -116,8 +135,8 @@ namespace RVX::Particle
         TrailRenderer* GetTrailRenderer() { return m_trailRenderer.get(); }
 
     private:
-        uint32 MakePipelineKey(ParticleRenderMode mode, ParticleBlendMode blend, bool soft);
-        RHIPipeline* CreatePipelineIfNeeded(ParticleRenderMode mode, ParticleBlendMode blend, bool soft);
+        uint32 MakePipelineKey(ParticleRenderMode mode, ParticleBlendMode blend, ParticleDepthMode depthMode);
+        RHIPipeline* CreatePipelineIfNeeded(ParticleRenderMode mode, ParticleBlendMode blend, ParticleDepthMode depthMode);
         const char* GetShaderNameForMode(ParticleRenderMode mode) const;
         void CreateQuadBuffers();
         bool ValidateConfig();
@@ -125,8 +144,15 @@ namespace RVX::Particle
         bool CreateShaders();
         bool CreateDescriptorLayout();
         bool CreateFallbackTextureResources();
-        RHIDescriptorSetRef CreateParticleDescriptorSet(ParticleSystemInstance* instance);
-        void UploadRenderConstants(const ViewData& view, const SoftParticleConfig& softConfig);
+        RHIDescriptorSetRef CreateParticleDescriptorSet(ParticleSystemInstance* instance,
+                                                        RHITextureView* sceneDepthView);
+        void UploadRenderConstants(const ViewData& view,
+                                   const SoftParticleConfig& softConfig,
+                                   bool sceneDepthTestEnabled);
+        SoftParticleConfig ResolveSoftParticleConfig(const ParticleSystemInstance& instance,
+                                                     RHITextureView* sceneDepthView,
+                                                     ParticleDepthMode depthMode,
+                                                     bool allowSoftParticles);
         void SetUnsupported(const std::string& reason);
 
         IRHIDevice* m_device = nullptr;
@@ -153,8 +179,12 @@ namespace RVX::Particle
         // Default particle texture resources
         RHITextureRef m_fallbackTexture;
         RHITextureViewRef m_fallbackTextureView;
+        RHITextureRef m_fallbackDepthTexture;
+        RHITextureViewRef m_fallbackDepthTextureView;
         RHISamplerRef m_sampler;
+        RHISamplerRef m_depthSampler;
         std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
+        ParticleRendererDrawStats m_lastDrawStats;
 
         // Trail renderer
         std::unique_ptr<TrailRenderer> m_trailRenderer;

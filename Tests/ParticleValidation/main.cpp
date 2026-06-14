@@ -9,6 +9,7 @@
 #include "Particle/Rendering/ParticleRenderer.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Graph/ResourceViewCache.h"
+#include "Render/PipelineCache.h"
 #include "Render/Renderer/SceneRenderer.h"
 #include "Render/Renderer/ViewData.h"
 #include "RHI/RHI.h"
@@ -369,7 +370,7 @@ namespace
     {
         ParticleRendererConfig config;
         config.colorTargetFormat = RHIFormat::RGBA16_FLOAT;
-        config.depthStencilFormat = RHIFormat::D24_UNORM_S8_UINT;
+        config.depthStencilFormat = PipelineCache::GetDefaultDepthStencilFormat();
         config.sampleCount = RHISampleCount::Count1;
         config.vertexShaderBytecode = {1, 2, 3, 4};
         config.pixelShaderBytecode = {5, 6, 7, 8};
@@ -438,12 +439,12 @@ namespace
         return it == calls.end() ? calls.size() : static_cast<size_t>(std::distance(calls.begin(), it));
     }
 
-    std::string ReadShaderSource()
+    std::string ReadSourceFile(const std::filesystem::path& relativePath)
     {
         std::filesystem::path cursor = std::filesystem::current_path();
         for (uint32 i = 0; i < 8; ++i)
         {
-            const std::filesystem::path candidate = cursor / "Particle" / "Shaders" / "ParticleBillboard.hlsl";
+            const std::filesystem::path candidate = cursor / relativePath;
             if (std::filesystem::exists(candidate))
             {
                 std::ifstream stream(candidate, std::ios::binary);
@@ -459,25 +460,34 @@ namespace
         return {};
     }
 
+    std::string ReadShaderSource()
+    {
+        return ReadSourceFile("Particle/Shaders/ParticleBillboard.hlsl");
+    }
+
+    std::string ReadSoftParticleSource()
+    {
+        return ReadSourceFile("Particle/Shaders/Include/SoftParticle.hlsli");
+    }
+
+    std::string ReadParticleCommonSource()
+    {
+        return ReadSourceFile("Particle/Shaders/Include/ParticleCommon.hlsli");
+    }
+
+    std::string ReadParticleTypesSource()
+    {
+        return ReadSourceFile("Particle/Include/Particle/ParticleTypes.h");
+    }
+
+    std::string ReadSceneRendererSource()
+    {
+        return ReadSourceFile("Render/Private/Renderer/SceneRenderer.cpp");
+    }
+
     std::string ReadParticleSubsystemSource()
     {
-        std::filesystem::path cursor = std::filesystem::current_path();
-        for (uint32 i = 0; i < 8; ++i)
-        {
-            const std::filesystem::path candidate = cursor / "Particle" / "Private" / "ParticleSubsystem.cpp";
-            if (std::filesystem::exists(candidate))
-            {
-                std::ifstream stream(candidate, std::ios::binary);
-                return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
-            }
-
-            if (!cursor.has_parent_path() || cursor == cursor.parent_path())
-                break;
-
-            cursor = cursor.parent_path();
-        }
-
-        return {};
+        return ReadSourceFile("Particle/Private/ParticleSubsystem.cpp");
     }
 } // namespace
 
@@ -704,7 +714,7 @@ TEST(ParticleValidation, CpuSimulationEmitsUploadsAndClears)
     EXPECT_EQ(instance.GetSimulator()->GetAliveCount(), 0u);
 }
 
-TEST(ParticleValidation, ParticleBillboardShaderUsesUniqueRQ30Bindings)
+TEST(ParticleValidation, ParticleBillboardShaderUsesUniqueRQ32Bindings)
 {
     EnsureLogInitialized();
     const std::string source = ReadShaderSource();
@@ -716,7 +726,46 @@ TEST(ParticleValidation, ParticleBillboardShaderUsesUniqueRQ30Bindings)
     EXPECT_NE(source.find("register(t3)"), std::string::npos);
     EXPECT_NE(source.find("register(s4)"), std::string::npos);
     EXPECT_EQ(source.find("register(t0)"), std::string::npos);
-    EXPECT_NE(source.find("RVX_PARTICLE_ENABLE_SOFT_PARTICLES"), std::string::npos);
+    EXPECT_EQ(source.find("RVX_PARTICLE_ENABLE_SOFT_PARTICLES"), std::string::npos);
+    EXPECT_NE(source.find("g_Render.sceneDepthTestEnabled"), std::string::npos);
+    EXPECT_NE(source.find("g_Render.softParticleEnabled"), std::string::npos);
+    EXPECT_NE(source.find("sceneViewDepth <= input.viewDepth"), std::string::npos);
+    EXPECT_NE(source.find("g_Render.nearPlane"), std::string::npos);
+    EXPECT_NE(source.find("g_Render.farPlane"), std::string::npos);
+    EXPECT_EQ(source.find("1000.0"), std::string::npos);
+}
+
+TEST(ParticleValidation, ParticleSoftDepthSourceGuardrails)
+{
+    EnsureLogInitialized();
+
+    const std::string softSource = ReadSoftParticleSource();
+    ASSERT_FALSE(softSource.empty());
+    EXPECT_NE(softSource.find("register(t5)"), std::string::npos);
+    EXPECT_NE(softSource.find("register(s6)"), std::string::npos);
+    EXPECT_EQ(softSource.find("register(t1)"), std::string::npos);
+    EXPECT_EQ(softSource.find("register(s1)"), std::string::npos);
+    EXPECT_EQ(softSource.find("register(b2)"), std::string::npos);
+    EXPECT_NE(softSource.find("reverseZ"), std::string::npos);
+    EXPECT_NE(softSource.find("fadeDistance"), std::string::npos);
+
+    const std::string commonSource = ReadParticleCommonSource();
+    const std::string typesSource = ReadParticleTypesSource();
+    ASSERT_FALSE(commonSource.empty());
+    ASSERT_FALSE(typesSource.empty());
+    EXPECT_EQ(sizeof(RenderGPUData) % 16u, 0u);
+    for (const char* field : {"sceneDepthTestEnabled", "nearPlane", "farPlane", "reverseZ"})
+    {
+        EXPECT_NE(commonSource.find(field), std::string::npos);
+        EXPECT_NE(typesSource.find(field), std::string::npos);
+    }
+
+    const std::string sceneRendererSource = ReadSceneRendererSource();
+    ASSERT_FALSE(sceneRendererSource.empty());
+    EXPECT_NE(sceneRendererSource.find("RHITextureUsage::DepthStencil | RHITextureUsage::ShaderResource"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("SetExportState(m_viewData.depthTarget, RHIResourceState::DepthWrite)"),
+              std::string::npos);
 }
 
 TEST(ParticleValidation, ParticleRendererCreatesDescriptorLayoutAndDrawsBillboards)
@@ -729,7 +778,7 @@ TEST(ParticleValidation, ParticleRendererCreatesDescriptorLayoutAndDrawsBillboar
 
     ASSERT_FALSE(device.createdSetLayoutDescs.empty());
     const RHIDescriptorSetLayoutDesc& layout = device.createdSetLayoutDescs.front();
-    ASSERT_EQ(layout.entries.size(), 5u);
+    ASSERT_EQ(layout.entries.size(), 7u);
     ASSERT_NE(FindLayoutEntry(layout, 0), nullptr);
     EXPECT_EQ(FindLayoutEntry(layout, 0)->type, RHIBindingType::UniformBuffer);
     ASSERT_NE(FindLayoutEntry(layout, 1), nullptr);
@@ -740,6 +789,10 @@ TEST(ParticleValidation, ParticleRendererCreatesDescriptorLayoutAndDrawsBillboar
     EXPECT_EQ(FindLayoutEntry(layout, 3)->type, RHIBindingType::SampledTexture);
     ASSERT_NE(FindLayoutEntry(layout, 4), nullptr);
     EXPECT_EQ(FindLayoutEntry(layout, 4)->type, RHIBindingType::Sampler);
+    ASSERT_NE(FindLayoutEntry(layout, 5), nullptr);
+    EXPECT_EQ(FindLayoutEntry(layout, 5)->type, RHIBindingType::SampledTexture);
+    ASSERT_NE(FindLayoutEntry(layout, 6), nullptr);
+    EXPECT_EQ(FindLayoutEntry(layout, 6)->type, RHIBindingType::Sampler);
 
     ParticleSystemInstance instance = MakeCpuInstance(device);
     RecordingCommandContext ctx;
@@ -754,22 +807,124 @@ TEST(ParticleValidation, ParticleRendererCreatesDescriptorLayoutAndDrawsBillboar
     const RHIDescriptorBinding* aliveBuffer = FindDescriptorBinding(descriptorSet, 2);
     const RHIDescriptorBinding* fallbackTexture = FindDescriptorBinding(descriptorSet, 3);
     const RHIDescriptorBinding* sampler = FindDescriptorBinding(descriptorSet, 4);
+    const RHIDescriptorBinding* depthTexture = FindDescriptorBinding(descriptorSet, 5);
+    const RHIDescriptorBinding* depthSampler = FindDescriptorBinding(descriptorSet, 6);
 
     ASSERT_NE(renderConstants, nullptr);
     ASSERT_NE(particleBuffer, nullptr);
     ASSERT_NE(aliveBuffer, nullptr);
     ASSERT_NE(fallbackTexture, nullptr);
     ASSERT_NE(sampler, nullptr);
+    ASSERT_NE(depthTexture, nullptr);
+    ASSERT_NE(depthSampler, nullptr);
     EXPECT_NE(renderConstants->buffer, nullptr);
     EXPECT_EQ(particleBuffer->buffer, instance.GetSimulator()->GetParticleBuffer());
     EXPECT_EQ(aliveBuffer->buffer, instance.GetSimulator()->GetAliveIndexBuffer());
     EXPECT_NE(fallbackTexture->textureView, nullptr);
     EXPECT_NE(sampler->sampler, nullptr);
+    EXPECT_NE(depthTexture->textureView, nullptr);
+    EXPECT_NE(depthSampler->sampler, nullptr);
+    EXPECT_FALSE(renderer.GetLastDrawStats().usedRealSceneDepth);
+    EXPECT_FALSE(renderer.GetLastDrawStats().sceneDepthTestEnabled);
+    EXPECT_FALSE(renderer.GetLastDrawStats().softParticlesEnabled);
+    EXPECT_NE(renderer.GetLastDrawStats().softParticleFallbackReason.find("Scene depth SRV unavailable"),
+              std::string::npos);
 
     EXPECT_EQ(ctx.indexBufferFormat, RHIFormat::R16_UINT);
     EXPECT_EQ(ctx.lastDrawIndexCount, 6u);
     EXPECT_EQ(ctx.lastDrawInstanceCount, aliveCount);
     EXPECT_LT(FindCall(ctx.callSequence, "SetDescriptorSet"), FindCall(ctx.callSequence, "SetPipeline"));
+}
+
+TEST(ParticleValidation, ParticleRendererCreatesFixedAndShaderDepthPipelines)
+{
+    EnsureLogInitialized();
+    FakeDevice device;
+    ParticleRenderer renderer;
+    renderer.Initialize(&device, MakeRendererConfig());
+    ASSERT_TRUE(renderer.IsRenderingSupported()) << renderer.GetUnsupportedReason();
+
+    uint32 fixedDepthPipelines = 0;
+    uint32 shaderDepthPipelines = 0;
+    for (const RHIGraphicsPipelineDesc& desc : device.createdGraphicsPipelineDescs)
+    {
+        if (desc.depthStencilFormat == PipelineCache::GetDefaultDepthStencilFormat())
+        {
+            ++fixedDepthPipelines;
+            EXPECT_TRUE(desc.depthStencilState.depthTestEnable);
+            EXPECT_FALSE(desc.depthStencilState.depthWriteEnable);
+        }
+        else if (desc.depthStencilFormat == RHIFormat::Unknown)
+        {
+            ++shaderDepthPipelines;
+            EXPECT_FALSE(desc.depthStencilState.depthTestEnable);
+            EXPECT_FALSE(desc.depthStencilState.depthWriteEnable);
+        }
+    }
+
+    EXPECT_EQ(fixedDepthPipelines, 2u);
+    EXPECT_EQ(shaderDepthPipelines, 2u);
+}
+
+TEST(ParticleValidation, ParticleRendererBindsRealDepthSrvForShaderDepthPath)
+{
+    EnsureLogInitialized();
+    FakeDevice device;
+    ParticleRenderer renderer;
+    renderer.Initialize(&device, MakeRendererConfig());
+    ASSERT_TRUE(renderer.IsRenderingSupported()) << renderer.GetUnsupportedReason();
+
+    RHITextureRef sceneDepth = device.CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat()));
+    RHITextureViewDesc sceneDepthSrvDesc;
+    sceneDepthSrvDesc.format = sceneDepth->GetFormat();
+    sceneDepthSrvDesc.dimension = sceneDepth->GetDimension();
+    sceneDepthSrvDesc.type = RHITextureViewType::ShaderResource;
+    sceneDepthSrvDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+    RHITextureViewRef sceneDepthSrv = device.CreateTextureView(sceneDepth.Get(), sceneDepthSrvDesc);
+    ASSERT_NE(sceneDepthSrv, nullptr);
+
+    ParticleSystemInstance softInstance = MakeCpuInstance(device);
+    RecordingCommandContext softCtx;
+    softInstance.GetSimulator()->PrepareRender(softCtx);
+    EXPECT_TRUE(renderer.DrawParticles(softCtx,
+                                       &softInstance,
+                                       MakeView(),
+                                       sceneDepthSrv.Get(),
+                                       ParticleDepthMode::ShaderDepth,
+                                       true));
+
+    ASSERT_FALSE(device.createdDescriptorSetDescs.empty());
+    const RHIDescriptorSetDesc& softDescriptorSet = device.createdDescriptorSetDescs.back();
+    const RHIDescriptorBinding* softDepth = FindDescriptorBinding(softDescriptorSet, 5);
+    ASSERT_NE(softDepth, nullptr);
+    EXPECT_EQ(softDepth->textureView, sceneDepthSrv.Get());
+    EXPECT_TRUE(renderer.GetLastDrawStats().usedRealSceneDepth);
+    EXPECT_TRUE(renderer.GetLastDrawStats().sceneDepthTestEnabled);
+    EXPECT_TRUE(renderer.GetLastDrawStats().softParticlesEnabled);
+    EXPECT_TRUE(renderer.GetLastDrawStats().softParticleFallbackReason.empty());
+    EXPECT_EQ(renderer.GetLastDrawStats().depthMode, ParticleDepthMode::ShaderDepth);
+
+    ParticleSystemInstance hardInstance = MakeCpuInstance(device);
+    hardInstance.GetSystem()->softParticleConfig.enabled = false;
+    RecordingCommandContext hardCtx;
+    hardInstance.GetSimulator()->PrepareRender(hardCtx);
+    EXPECT_TRUE(renderer.DrawParticles(hardCtx,
+                                       &hardInstance,
+                                       MakeView(),
+                                       sceneDepthSrv.Get(),
+                                       ParticleDepthMode::ShaderDepth,
+                                       true));
+
+    const RHIDescriptorSetDesc& hardDescriptorSet = device.createdDescriptorSetDescs.back();
+    const RHIDescriptorBinding* hardDepth = FindDescriptorBinding(hardDescriptorSet, 5);
+    ASSERT_NE(hardDepth, nullptr);
+    EXPECT_EQ(hardDepth->textureView, sceneDepthSrv.Get());
+    EXPECT_TRUE(renderer.GetLastDrawStats().usedRealSceneDepth);
+    EXPECT_TRUE(renderer.GetLastDrawStats().sceneDepthTestEnabled);
+    EXPECT_FALSE(renderer.GetLastDrawStats().softParticlesEnabled);
+    EXPECT_NE(renderer.GetLastDrawStats().softParticleFallbackReason.find("ParticleSystem"),
+              std::string::npos);
 }
 
 TEST(ParticleValidation, ParticleRendererRejectsInvalidPipelineConfig)
@@ -818,7 +973,7 @@ TEST(ParticleValidation, SupportedParticleRendererRejectsOutOfScopeModesWithoutD
     EXPECT_EQ(blendCtx.lastDrawIndexCount, 0u);
 }
 
-TEST(ParticleValidation, ParticlePassOpensRenderPassAroundParticleDraw)
+TEST(ParticleValidation, ParticlePassUsesDepthSrvColorOnlyPathWhenAvailable)
 {
     EnsureLogInitialized();
     FakeDevice device;
@@ -837,7 +992,7 @@ TEST(ParticleValidation, ParticlePassOpensRenderPassAroundParticleDraw)
     viewCache.Initialize(&device);
 
     RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
-    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, RHIFormat::D24_UNORM_S8_UINT);
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
     RHITextureRef colorTexture = device.CreateTexture(colorDesc);
     RHITextureRef depthTexture = device.CreateTexture(depthDesc);
     ViewData view = MakeView(&graph, &viewCache);
@@ -863,11 +1018,21 @@ TEST(ParticleValidation, ParticlePassOpensRenderPassAroundParticleDraw)
 
     ASSERT_EQ(ctx.renderPasses.size(), 1u);
     EXPECT_EQ(ctx.renderPasses.front().colorAttachmentCount, 1u);
-    EXPECT_TRUE(ctx.renderPasses.front().hasDepthStencil);
-    EXPECT_TRUE(ctx.renderPasses.front().depthStencilAttachment.readOnly);
+    EXPECT_FALSE(ctx.renderPasses.front().hasDepthStencil);
     EXPECT_EQ(ctx.indexBufferFormat, RHIFormat::R16_UINT);
     EXPECT_EQ(ctx.lastDrawIndexCount, 6u);
     EXPECT_EQ(ctx.lastDrawInstanceCount, instance.GetAliveCount());
+    EXPECT_TRUE(renderer.GetLastDrawStats().usedRealSceneDepth);
+    EXPECT_TRUE(renderer.GetLastDrawStats().sceneDepthTestEnabled);
+    EXPECT_TRUE(renderer.GetLastDrawStats().softParticlesEnabled);
+    EXPECT_EQ(renderer.GetLastDrawStats().depthMode, ParticleDepthMode::ShaderDepth);
+
+    ASSERT_FALSE(device.createdDescriptorSetDescs.empty());
+    const RHIDescriptorBinding* depthBinding =
+        FindDescriptorBinding(device.createdDescriptorSetDescs.back(), 5);
+    ASSERT_NE(depthBinding, nullptr);
+    ASSERT_NE(depthBinding->textureView, nullptr);
+    EXPECT_EQ(depthBinding->textureView->GetTexture(), depthTexture.Get());
 
     EXPECT_LT(FindCall(ctx.callSequence, "BeginRenderPass"), FindCall(ctx.callSequence, "SetViewport"));
     EXPECT_LT(FindCall(ctx.callSequence, "SetViewport"), FindCall(ctx.callSequence, "SetScissor"));
@@ -875,4 +1040,71 @@ TEST(ParticleValidation, ParticlePassOpensRenderPassAroundParticleDraw)
     EXPECT_LT(FindCall(ctx.callSequence, "SetDescriptorSet"), FindCall(ctx.callSequence, "SetPipeline"));
     EXPECT_LT(FindCall(ctx.callSequence, "SetPipeline"), FindCall(ctx.callSequence, "DrawIndexed"));
     EXPECT_LT(FindCall(ctx.callSequence, "DrawIndexed"), FindCall(ctx.callSequence, "EndRenderPass"));
+}
+
+TEST(ParticleValidation, ParticlePassFallsBackToReadOnlyDsvWhenDepthSrvUnavailable)
+{
+    EnsureLogInitialized();
+    FakeDevice device;
+    ParticleRenderer renderer;
+    renderer.Initialize(&device, MakeRendererConfig());
+    ASSERT_TRUE(renderer.IsRenderingSupported()) << renderer.GetUnsupportedReason();
+
+    ParticleSystemInstance instance = MakeCpuInstance(device);
+    ParticlePass pass;
+    pass.SetRenderer(&renderer);
+    pass.SetParticleSystems(std::vector<ParticleSystemInstance*>{&instance});
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    ResourceViewCache viewCache;
+    viewCache.Initialize(&device);
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
+    RHITextureDesc depthDesc = RHITextureDesc::Texture2D(64,
+                                                        64,
+                                                        PipelineCache::GetDefaultDepthStencilFormat(),
+                                                        RHITextureUsage::DepthStencil);
+    RHITextureRef colorTexture = device.CreateTexture(colorDesc);
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    ViewData view = MakeView(&graph, &viewCache);
+    view.colorTarget = graph.ImportTexture(colorTexture.Get(), RHIResourceState::RenderTarget);
+    view.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+    graph.SetExportState(view.colorTarget, RHIResourceState::RenderTarget);
+
+    graph.AddPass<int>(
+        "ParticlePassDsvFallbackValidation",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, int&)
+        {
+            pass.Setup(builder, view);
+        },
+        [&](const int&, RHICommandContext& ctx)
+        {
+            pass.Execute(ctx, view);
+        });
+
+    graph.Compile();
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    ASSERT_EQ(ctx.renderPasses.size(), 1u);
+    EXPECT_EQ(ctx.renderPasses.front().colorAttachmentCount, 1u);
+    EXPECT_TRUE(ctx.renderPasses.front().hasDepthStencil);
+    EXPECT_TRUE(ctx.renderPasses.front().depthStencilAttachment.readOnly);
+    EXPECT_EQ(ctx.lastDrawIndexCount, 6u);
+    EXPECT_EQ(ctx.lastDrawInstanceCount, instance.GetAliveCount());
+    EXPECT_EQ(renderer.GetLastDrawStats().depthMode, ParticleDepthMode::FixedFunction);
+    EXPECT_FALSE(renderer.GetLastDrawStats().usedRealSceneDepth);
+    EXPECT_FALSE(renderer.GetLastDrawStats().sceneDepthTestEnabled);
+    EXPECT_FALSE(renderer.GetLastDrawStats().softParticlesEnabled);
+    EXPECT_NE(renderer.GetLastDrawStats().softParticleFallbackReason.find("Scene depth SRV unavailable"),
+              std::string::npos);
+
+    ASSERT_FALSE(device.createdDescriptorSetDescs.empty());
+    const RHIDescriptorBinding* depthBinding =
+        FindDescriptorBinding(device.createdDescriptorSetDescs.back(), 5);
+    ASSERT_NE(depthBinding, nullptr);
+    ASSERT_NE(depthBinding->textureView, nullptr);
+    EXPECT_NE(depthBinding->textureView->GetTexture(), depthTexture.Get());
 }

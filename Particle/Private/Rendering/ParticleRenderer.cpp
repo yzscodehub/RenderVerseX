@@ -149,8 +149,10 @@ void ParticleRenderer::Initialize(IRHIDevice* device, const ParticleRendererConf
         return;
     }
 
-    if (!CreatePipelineIfNeeded(ParticleRenderMode::Billboard, ParticleBlendMode::AlphaBlend, false) ||
-        !CreatePipelineIfNeeded(ParticleRenderMode::Billboard, ParticleBlendMode::Additive, false))
+    if (!CreatePipelineIfNeeded(ParticleRenderMode::Billboard, ParticleBlendMode::AlphaBlend, ParticleDepthMode::FixedFunction) ||
+        !CreatePipelineIfNeeded(ParticleRenderMode::Billboard, ParticleBlendMode::Additive, ParticleDepthMode::FixedFunction) ||
+        !CreatePipelineIfNeeded(ParticleRenderMode::Billboard, ParticleBlendMode::AlphaBlend, ParticleDepthMode::ShaderDepth) ||
+        !CreatePipelineIfNeeded(ParticleRenderMode::Billboard, ParticleBlendMode::Additive, ParticleDepthMode::ShaderDepth))
     {
         SetUnsupported("Particle billboard pipelines could not be created");
         return;
@@ -173,8 +175,12 @@ void ParticleRenderer::Shutdown()
     m_renderConstantsBuffer.Reset();
     m_fallbackTextureView.Reset();
     m_fallbackTexture.Reset();
+    m_fallbackDepthTextureView.Reset();
+    m_fallbackDepthTexture.Reset();
     m_sampler.Reset();
+    m_depthSampler.Reset();
     m_retainedDescriptorSets.clear();
+    m_lastDrawStats = {};
     m_trailRenderer.reset();
     m_device = nullptr;
     m_renderingSupported = false;
@@ -263,9 +269,11 @@ bool ParticleRenderer::ValidateConfig()
 bool ParticleRenderer::DrawParticles(RHICommandContext& ctx,
                                      ParticleSystemInstance* instance,
                                      const ViewData& view,
-                                     RHITexture* depthTexture)
+                                     RHITextureView* sceneDepthView,
+                                     ParticleDepthMode depthMode,
+                                     bool allowSoftParticles)
 {
-    (void)depthTexture;
+    m_lastDrawStats = {};
     if (!instance || !instance->HasSystem())
         return false;
 
@@ -295,7 +303,7 @@ bool ParticleRenderer::DrawParticles(RHICommandContext& ctx,
 
     if (system->renderMode != ParticleRenderMode::Billboard)
     {
-        RVX_CORE_WARN("ParticleRenderer: draw skipped: render mode {} is unsupported in RQ30",
+        RVX_CORE_WARN("ParticleRenderer: draw skipped: render mode {} is unsupported in RQ32",
                       static_cast<int>(system->renderMode));
         return false;
     }
@@ -303,16 +311,22 @@ bool ParticleRenderer::DrawParticles(RHICommandContext& ctx,
     if (system->blendMode != ParticleBlendMode::AlphaBlend &&
         system->blendMode != ParticleBlendMode::Additive)
     {
-        RVX_CORE_WARN("ParticleRenderer: draw skipped: blend mode {} is unsupported in RQ30",
+        RVX_CORE_WARN("ParticleRenderer: draw skipped: blend mode {} is unsupported in RQ32",
                       static_cast<int>(system->blendMode));
         return false;
     }
 
-    SoftParticleConfig softConfig = system->softParticleConfig;
-    softConfig.enabled = false;
-    UploadRenderConstants(view, softConfig);
+    if (depthMode == ParticleDepthMode::ShaderDepth && !sceneDepthView)
+    {
+        depthMode = ParticleDepthMode::None;
+    }
 
-    RHIDescriptorSetRef descriptorSet = CreateParticleDescriptorSet(instance);
+    RHITextureView* shaderDepthView = depthMode == ParticleDepthMode::ShaderDepth ? sceneDepthView : nullptr;
+    SoftParticleConfig softConfig =
+        ResolveSoftParticleConfig(*instance, shaderDepthView, depthMode, allowSoftParticles);
+    UploadRenderConstants(view, softConfig, m_lastDrawStats.sceneDepthTestEnabled);
+
+    RHIDescriptorSetRef descriptorSet = CreateParticleDescriptorSet(instance, shaderDepthView);
     if (!descriptorSet)
     {
         RVX_CORE_WARN("ParticleRenderer: draw skipped: descriptor set is unavailable");
@@ -320,7 +334,7 @@ bool ParticleRenderer::DrawParticles(RHICommandContext& ctx,
     }
 
     // Get appropriate pipeline
-    RHIPipeline* pipeline = GetBillboardPipeline(system->blendMode, false);
+    RHIPipeline* pipeline = GetBillboardPipeline(system->blendMode, depthMode);
 
     if (!pipeline)
     {
@@ -348,9 +362,11 @@ bool ParticleRenderer::DrawParticles(RHICommandContext& ctx,
 bool ParticleRenderer::DrawParticlesIndirect(RHICommandContext& ctx,
                                      ParticleSystemInstance* instance,
                                      const ViewData& view,
-                                     RHITexture* depthTexture)
+                                     RHITextureView* sceneDepthView,
+                                     ParticleDepthMode depthMode,
+                                     bool allowSoftParticles)
 {
-    (void)depthTexture;
+    m_lastDrawStats = {};
     if (!instance || !instance->HasSystem())
         return false;
 
@@ -379,16 +395,30 @@ bool ParticleRenderer::DrawParticlesIndirect(RHICommandContext& ctx,
 
     if (system->renderMode != ParticleRenderMode::Billboard)
     {
-        RVX_CORE_WARN("ParticleRenderer: indirect draw skipped: render mode {} is unsupported in RQ30",
+        RVX_CORE_WARN("ParticleRenderer: indirect draw skipped: render mode {} is unsupported in RQ32",
                       static_cast<int>(system->renderMode));
         return false;
     }
 
-    SoftParticleConfig softConfig = system->softParticleConfig;
-    softConfig.enabled = false;
-    UploadRenderConstants(view, softConfig);
+    if (system->blendMode != ParticleBlendMode::AlphaBlend &&
+        system->blendMode != ParticleBlendMode::Additive)
+    {
+        RVX_CORE_WARN("ParticleRenderer: indirect draw skipped: blend mode {} is unsupported in RQ32",
+                      static_cast<int>(system->blendMode));
+        return false;
+    }
 
-    RHIDescriptorSetRef descriptorSet = CreateParticleDescriptorSet(instance);
+    if (depthMode == ParticleDepthMode::ShaderDepth && !sceneDepthView)
+    {
+        depthMode = ParticleDepthMode::None;
+    }
+
+    RHITextureView* shaderDepthView = depthMode == ParticleDepthMode::ShaderDepth ? sceneDepthView : nullptr;
+    SoftParticleConfig softConfig =
+        ResolveSoftParticleConfig(*instance, shaderDepthView, depthMode, allowSoftParticles);
+    UploadRenderConstants(view, softConfig, m_lastDrawStats.sceneDepthTestEnabled);
+
+    RHIDescriptorSetRef descriptorSet = CreateParticleDescriptorSet(instance, shaderDepthView);
     if (!descriptorSet)
     {
         RVX_CORE_WARN("ParticleRenderer: indirect draw skipped: descriptor set is unavailable");
@@ -396,7 +426,7 @@ bool ParticleRenderer::DrawParticlesIndirect(RHICommandContext& ctx,
     }
 
     // Get pipeline (same as DrawParticles)
-    RHIPipeline* pipeline = GetBillboardPipeline(system->blendMode, false);
+    RHIPipeline* pipeline = GetBillboardPipeline(system->blendMode, depthMode);
     if (!pipeline)
     {
         RVX_CORE_WARN("ParticleRenderer: indirect draw skipped: pipeline is unavailable");
@@ -425,8 +455,9 @@ bool ParticleRenderer::DrawParticlesIndirect(RHICommandContext& ctx,
     return true;
 }
 
-void ParticleRenderer::UploadRenderConstants(const ViewData& view, 
-                                             const SoftParticleConfig& softConfig)
+void ParticleRenderer::UploadRenderConstants(const ViewData& view,
+                                             const SoftParticleConfig& softConfig,
+                                             bool sceneDepthTestEnabled)
 {
     RenderGPUData data;
     data.viewMatrix = view.viewMatrix;
@@ -442,8 +473,62 @@ void ParticleRenderer::UploadRenderConstants(const ViewData& view,
     data.softParticleFadeDistance = softConfig.fadeDistance;
     data.softParticleContrast = softConfig.contrastPower;
     data.softParticleEnabled = softConfig.enabled ? 1 : 0;
+    data.sceneDepthTestEnabled = sceneDepthTestEnabled ? 1 : 0;
+    data.nearPlane = view.nearPlane;
+    data.farPlane = view.farPlane;
+    data.reverseZ = m_config.reverseZ ? 1 : 0;
+    data.pad = 0;
 
     m_renderConstantsBuffer->Upload(&data, 1);
+}
+
+SoftParticleConfig ParticleRenderer::ResolveSoftParticleConfig(const ParticleSystemInstance& instance,
+                                                               RHITextureView* sceneDepthView,
+                                                               ParticleDepthMode depthMode,
+                                                               bool allowSoftParticles)
+{
+    SoftParticleConfig softConfig;
+    const auto system = instance.GetSystem();
+    if (system)
+    {
+        softConfig = system->softParticleConfig;
+    }
+
+    const bool usingRealSceneDepth =
+        depthMode == ParticleDepthMode::ShaderDepth && sceneDepthView != nullptr;
+    m_lastDrawStats.depthMode = usingRealSceneDepth ? ParticleDepthMode::ShaderDepth : depthMode;
+    m_lastDrawStats.usedRealSceneDepth = usingRealSceneDepth;
+    m_lastDrawStats.sceneDepthTestEnabled = usingRealSceneDepth;
+
+    if (!usingRealSceneDepth)
+    {
+        softConfig.enabled = false;
+        m_lastDrawStats.softParticlesEnabled = false;
+        m_lastDrawStats.softParticleFallbackReason =
+            "Scene depth SRV unavailable; soft particles disabled";
+        return softConfig;
+    }
+
+    if (!allowSoftParticles)
+    {
+        softConfig.enabled = false;
+        m_lastDrawStats.softParticlesEnabled = false;
+        m_lastDrawStats.softParticleFallbackReason =
+            "Soft particles disabled by ParticlePass configuration";
+        return softConfig;
+    }
+
+    if (!softConfig.enabled)
+    {
+        m_lastDrawStats.softParticlesEnabled = false;
+        m_lastDrawStats.softParticleFallbackReason =
+            "Soft particles disabled by ParticleSystem configuration";
+        return softConfig;
+    }
+
+    m_lastDrawStats.softParticlesEnabled = true;
+    m_lastDrawStats.softParticleFallbackReason.clear();
+    return softConfig;
 }
 
 bool ParticleRenderer::CreateSharedResources()
@@ -570,6 +655,8 @@ bool ParticleRenderer::CreateDescriptorLayout()
     layoutDesc.AddBinding(2, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
     layoutDesc.AddBinding(3, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
     layoutDesc.AddBinding(4, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+    layoutDesc.AddBinding(5, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    layoutDesc.AddBinding(6, RHIBindingType::Sampler, RHIShaderStage::Pixel);
 
     m_descriptorSetLayout = m_device->CreateDescriptorSetLayout(layoutDesc);
     if (!m_descriptorSetLayout)
@@ -624,17 +711,52 @@ bool ParticleRenderer::CreateFallbackTextureResources()
         return false;
     }
 
+    RHITextureDesc depthDesc = RHITextureDesc::Texture2D(1, 1, RHIFormat::R32_FLOAT,
+                                                        RHITextureUsage::ShaderResource);
+    depthDesc.debugName = "ParticleFallbackDepthTexture";
+    m_fallbackDepthTexture = m_device->CreateTexture(depthDesc);
+    if (!m_fallbackDepthTexture)
+    {
+        SetUnsupported("Particle fallback depth texture could not be created");
+        return false;
+    }
+
+    RHITextureViewDesc depthViewDesc;
+    depthViewDesc.format = m_fallbackDepthTexture->GetFormat();
+    depthViewDesc.dimension = m_fallbackDepthTexture->GetDimension();
+    depthViewDesc.type = RHITextureViewType::ShaderResource;
+    depthViewDesc.debugName = "ParticleFallbackDepthTextureSRV";
+    m_fallbackDepthTextureView = m_device->CreateTextureView(m_fallbackDepthTexture.Get(), depthViewDesc);
+    if (!m_fallbackDepthTextureView)
+    {
+        SetUnsupported("Particle fallback depth texture view could not be created");
+        return false;
+    }
+
+    RHISamplerDesc depthSamplerDesc = RHISamplerDesc::PointClamp();
+    depthSamplerDesc.debugName = "ParticleDepthPointClampSampler";
+    m_depthSampler = m_device->CreateSampler(depthSamplerDesc);
+    if (!m_depthSampler)
+    {
+        SetUnsupported("Particle depth sampler could not be created");
+        return false;
+    }
+
     return true;
 }
 
-RHIDescriptorSetRef ParticleRenderer::CreateParticleDescriptorSet(ParticleSystemInstance* instance)
+RHIDescriptorSetRef ParticleRenderer::CreateParticleDescriptorSet(ParticleSystemInstance* instance,
+                                                                  RHITextureView* sceneDepthView)
 {
-    if (!m_descriptorSetLayout || !m_renderConstantsBuffer || !m_fallbackTextureView || !m_sampler || !instance)
+    if (!m_descriptorSetLayout || !m_renderConstantsBuffer || !m_fallbackTextureView || !m_sampler ||
+        !m_fallbackDepthTextureView || !m_depthSampler || !instance)
         return {};
 
     IParticleSimulator* simulator = instance->GetSimulator();
     if (!simulator || !simulator->GetParticleBuffer() || !simulator->GetAliveIndexBuffer())
         return {};
+
+    RHITextureView* depthView = sceneDepthView ? sceneDepthView : m_fallbackDepthTextureView.Get();
 
     RHIDescriptorSetDesc desc;
     desc.debugName = "ParticleBillboardDescriptorSet";
@@ -643,48 +765,50 @@ RHIDescriptorSetRef ParticleRenderer::CreateParticleDescriptorSet(ParticleSystem
         .BindBuffer(1, simulator->GetParticleBuffer())
         .BindBuffer(2, simulator->GetAliveIndexBuffer())
         .BindTexture(3, m_fallbackTextureView.Get())
-        .BindSampler(4, m_sampler.Get());
+        .BindSampler(4, m_sampler.Get())
+        .BindTexture(5, depthView)
+        .BindSampler(6, m_depthSampler.Get());
 
     return m_device->CreateDescriptorSet(desc);
 }
 
-uint32 ParticleRenderer::MakePipelineKey(ParticleRenderMode mode, 
-                                         ParticleBlendMode blend, 
-                                         bool soft)
+uint32 ParticleRenderer::MakePipelineKey(ParticleRenderMode mode,
+                                         ParticleBlendMode blend,
+                                         ParticleDepthMode depthMode)
 {
-    return (static_cast<uint32>(mode) << 16) | 
-           (static_cast<uint32>(blend) << 8) | 
-           (soft ? 1 : 0);
+    const uint32 depthKey = depthMode == ParticleDepthMode::FixedFunction ? 0u : 1u;
+    return (static_cast<uint32>(mode) << 16) |
+           (static_cast<uint32>(blend) << 8) |
+           depthKey;
 }
 
-RHIPipeline* ParticleRenderer::GetBillboardPipeline(ParticleBlendMode blend, bool softParticle)
+RHIPipeline* ParticleRenderer::GetBillboardPipeline(ParticleBlendMode blend, ParticleDepthMode depthMode)
 {
-    return CreatePipelineIfNeeded(ParticleRenderMode::Billboard, blend, softParticle);
+    return CreatePipelineIfNeeded(ParticleRenderMode::Billboard, blend, depthMode);
 }
 
-RHIPipeline* ParticleRenderer::GetStretchedBillboardPipeline(ParticleBlendMode blend, bool softParticle)
+RHIPipeline* ParticleRenderer::GetStretchedBillboardPipeline(ParticleBlendMode blend, ParticleDepthMode depthMode)
 {
-    return CreatePipelineIfNeeded(ParticleRenderMode::StretchedBillboard, blend, softParticle);
+    return CreatePipelineIfNeeded(ParticleRenderMode::StretchedBillboard, blend, depthMode);
 }
 
 RHIPipeline* ParticleRenderer::GetMeshPipeline(ParticleBlendMode blend)
 {
-    return CreatePipelineIfNeeded(ParticleRenderMode::Mesh, blend, false);
+    return CreatePipelineIfNeeded(ParticleRenderMode::Mesh, blend, ParticleDepthMode::FixedFunction);
 }
 
-RHIPipeline* ParticleRenderer::GetTrailPipeline(ParticleBlendMode blend, bool softParticle)
+RHIPipeline* ParticleRenderer::GetTrailPipeline(ParticleBlendMode blend, ParticleDepthMode depthMode)
 {
-    return CreatePipelineIfNeeded(ParticleRenderMode::Trail, blend, softParticle);
+    return CreatePipelineIfNeeded(ParticleRenderMode::Trail, blend, depthMode);
 }
 
 RHIPipeline* ParticleRenderer::CreatePipelineIfNeeded(ParticleRenderMode mode,
                                                       ParticleBlendMode blend,
-                                                      bool soft)
+                                                      ParticleDepthMode depthMode)
 {
-    if (mode != ParticleRenderMode::Billboard || soft)
+    if (mode != ParticleRenderMode::Billboard)
     {
-        RVX_CORE_WARN("ParticleRenderer: Unsupported pipeline request mode={}, soft={}",
-                      static_cast<int>(mode), soft);
+        RVX_CORE_WARN("ParticleRenderer: Unsupported pipeline request mode={}", static_cast<int>(mode));
         return nullptr;
     }
 
@@ -694,7 +818,8 @@ RHIPipeline* ParticleRenderer::CreatePipelineIfNeeded(ParticleRenderMode mode,
         return nullptr;
     }
 
-    uint32 key = MakePipelineKey(mode, blend, soft);
+    const bool fixedFunctionDepth = depthMode == ParticleDepthMode::FixedFunction;
+    uint32 key = MakePipelineKey(mode, blend, depthMode);
     auto it = m_pipelineCache.find(key);
     if (it != m_pipelineCache.end())
         return it->second.Get();
@@ -711,16 +836,19 @@ RHIPipeline* ParticleRenderer::CreatePipelineIfNeeded(ParticleRenderMode mode,
     desc.pixelShader = m_pixelShader.Get();
     desc.pipelineLayout = m_pipelineLayout.Get();
     desc.rasterizerState = RHIRasterizerState::NoCull();
-    desc.depthStencilState = BuildParticleDepthState(m_config.reverseZ, m_config.depthStencilFormat);
+    desc.depthStencilState = fixedFunctionDepth
+                                 ? BuildParticleDepthState(m_config.reverseZ, m_config.depthStencilFormat)
+                                 : RHIDepthStencilState::Disabled();
     desc.blendState = BuildParticleBlendState(blend);
     desc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
     desc.numRenderTargets = 1;
     desc.renderTargetFormats[0] = m_config.colorTargetFormat;
-    desc.depthStencilFormat = m_config.depthStencilFormat;
+    desc.depthStencilFormat = fixedFunctionDepth ? m_config.depthStencilFormat : RHIFormat::Unknown;
     desc.sampleCount = m_config.sampleCount;
 
     const std::string debugName = std::string("ParticleBillboard") +
                                   (blend == ParticleBlendMode::Additive ? "Additive" : "AlphaBlend") +
+                                  (fixedFunctionDepth ? "FixedDepth" : "ShaderDepth") +
                                   "Pipeline";
     desc.debugName = debugName.c_str();
 

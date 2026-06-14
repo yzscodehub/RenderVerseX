@@ -893,7 +893,7 @@ void SceneRenderer::EnsureDepthBuffer(uint32_t width, uint32_t height)
         depthDesc.arraySize = 1;
         depthDesc.format = PipelineCache::GetDefaultDepthStencilFormat();
         depthDesc.dimension = RHITextureDimension::Texture2D;
-        depthDesc.usage = RHITextureUsage::DepthStencil;
+        depthDesc.usage = RHITextureUsage::DepthStencil | RHITextureUsage::ShaderResource;
         depthDesc.debugName = "SceneDepthBuffer";
         
         m_depthTexture = device->CreateTexture(depthDesc);
@@ -986,6 +986,7 @@ void SceneRenderer::BuildRenderGraph()
         m_viewData.depthTarget = m_renderGraph->ImportTexture(
             m_depthTexture.Get(), 
             m_depthBufferState);
+        m_renderGraph->SetExportState(m_viewData.depthTarget, RHIResourceState::DepthWrite);
     }
 
     if (m_postProcessStack)

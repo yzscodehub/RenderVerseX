@@ -84,6 +84,7 @@ namespace RVX::Particle
 
         RGTextureHandle m_colorTarget;
         RGTextureHandle m_depthTarget;
+        ParticleDepthMode m_depthMode = ParticleDepthMode::None;
 
         bool m_sortingEnabled = true;
         bool m_softParticlesEnabled = true;

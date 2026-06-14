@@ -125,6 +125,16 @@ namespace RVX::Particle
     };
 
     /**
+     * @brief Depth strategy used by particle draws
+     */
+    enum class ParticleDepthMode : uint8
+    {
+        FixedFunction,      ///< A read-only DSV is bound for hardware depth testing
+        ShaderDepth,        ///< Scene depth is sampled in shader; no DSV is bound
+        None                ///< No scene depth is available for this draw
+    };
+
+    /**
      * @brief Particle simulation space
      */
     enum class ParticleSpace : uint8
@@ -275,6 +285,10 @@ namespace RVX::Particle
         float softParticleFadeDistance;
         float softParticleContrast;
         uint32 softParticleEnabled;
+        uint32 sceneDepthTestEnabled;
+        float nearPlane;
+        float farPlane;
+        uint32 reverseZ;
         uint32 pad;
     };
 

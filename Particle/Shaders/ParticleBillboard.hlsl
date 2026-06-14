@@ -4,9 +4,7 @@
  */
 
 #include "Include/ParticleCommon.hlsli"
-#if defined(RVX_PARTICLE_ENABLE_SOFT_PARTICLES)
 #include "Include/SoftParticle.hlsli"
-#endif
 
 // Particle buffer
 StructuredBuffer<GPUParticle> g_Particles : register(t1);
@@ -101,20 +99,35 @@ PSOutput PSMain(VSOutput input)
     // Apply particle color
     float4 finalColor = texColor * input.color;
     
+    if (g_Render.sceneDepthTestEnabled)
+    {
+        float sceneViewDepth = SampleSceneViewDepth(
+            input.clipPos,
+            g_Render.nearPlane,
+            g_Render.farPlane,
+            g_Render.reverseZ
+        );
+        if (sceneViewDepth <= input.viewDepth)
+        {
+            discard;
+        }
+    }
+
     // Apply soft particle fade
-#if defined(RVX_PARTICLE_ENABLE_SOFT_PARTICLES)
     if (g_Render.softParticleEnabled)
     {
         float fade = ComputeSoftParticleFade(
-            input.clipPos, 
-            input.viewDepth, 
-            0.1,    // Near plane (should come from constants)
-            1000.0  // Far plane
+            input.clipPos,
+            input.viewDepth,
+            g_Render.nearPlane,
+            g_Render.farPlane,
+            g_Render.reverseZ,
+            g_Render.softParticleFadeDistance,
+            g_Render.softParticleContrast
         );
         finalColor.a *= fade;
     }
-#endif
-    
+
     // Alpha test
     if (finalColor.a < 0.01)
         discard;

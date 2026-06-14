@@ -89,6 +89,7 @@ void ParticlePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
     m_colorTarget = view.colorTarget;
     m_depthTarget = view.depthTarget;
+    m_depthMode = ParticleDepthMode::None;
 
     if (!IsEnabled())
     {
@@ -106,10 +107,25 @@ void ParticlePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         m_colorTarget = builder.Write(m_colorTarget, RHIResourceState::RenderTarget);
     }
 
-    // Read depth for soft particles
     if (m_depthTarget.IsValid())
     {
-        builder.SetDepthStencil(m_depthTarget, false, false);
+        RHITexture* depthTexture = view.renderGraph ? view.renderGraph->GetTexture(m_depthTarget) : nullptr;
+        const bool depthSrvAvailable =
+            depthTexture &&
+            HasFlag(depthTexture->GetUsage(), RHITextureUsage::ShaderResource) &&
+            view.viewCache &&
+            view.viewCache->GetDefaultSRV(depthTexture);
+
+        if (depthSrvAvailable)
+        {
+            m_depthTarget = builder.Read(m_depthTarget, RHIShaderStage::Pixel);
+            m_depthMode = ParticleDepthMode::ShaderDepth;
+        }
+        else
+        {
+            builder.SetDepthStencil(m_depthTarget, false, false);
+            m_depthMode = ParticleDepthMode::FixedFunction;
+        }
     }
 }
 
@@ -146,20 +162,37 @@ void ParticlePass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    RHITexture* depthTexture = nullptr;
+    RHITextureView* sceneDepthView = nullptr;
     if (view.renderGraph && view.viewCache && m_depthTarget.IsValid())
     {
-        depthTexture = view.renderGraph->GetTexture(m_depthTarget);
+        RHITexture* depthTexture = view.renderGraph->GetTexture(m_depthTarget);
         if (depthTexture)
         {
-            depthTargetView = view.viewCache->GetDefaultDSV(depthTexture);
+            if (m_depthMode == ParticleDepthMode::ShaderDepth)
+            {
+                sceneDepthView = view.viewCache->GetDefaultSRV(depthTexture);
+                if (!sceneDepthView)
+                {
+                    RVX_CORE_WARN("ParticlePass: scene depth SRV unavailable during execute; shader depth disabled");
+                    m_depthMode = ParticleDepthMode::None;
+                }
+            }
+            else if (m_depthMode == ParticleDepthMode::FixedFunction)
+            {
+                depthTargetView = view.viewCache->GetDefaultDSV(depthTexture);
+                if (!depthTargetView)
+                {
+                    RVX_CORE_WARN("ParticlePass: depth target view unavailable during execute; fixed depth disabled");
+                    m_depthMode = ParticleDepthMode::None;
+                }
+            }
         }
     }
 
     RHIRenderPassDesc rpDesc;
     rpDesc.AddColorAttachment(colorTargetView, RHILoadOp::Load, RHIStoreOp::Store,
                               {0.0f, 0.0f, 0.0f, 0.0f});
-    if (depthTargetView)
+    if (m_depthMode == ParticleDepthMode::FixedFunction && depthTargetView)
     {
         rpDesc.SetDepthStencil(depthTargetView, RHILoadOp::Load, RHIStoreOp::Store, 1.0f, 0);
         rpDesc.depthStencilAttachment.readOnly = true;
@@ -190,11 +223,11 @@ void ParticlePass::Execute(RHICommandContext& ctx, const ViewData& view)
             // Use indirect draw if GPU simulator
             if (simulator->IsGPUBased())
             {
-                m_renderer->DrawParticlesIndirect(ctx, instance, view, depthTexture);
+                m_renderer->DrawParticlesIndirect(ctx, instance, view, sceneDepthView, m_depthMode, m_softParticlesEnabled);
             }
             else
             {
-                m_renderer->DrawParticles(ctx, instance, view, depthTexture);
+                m_renderer->DrawParticles(ctx, instance, view, sceneDepthView, m_depthMode, m_softParticlesEnabled);
             }
         }
     }
