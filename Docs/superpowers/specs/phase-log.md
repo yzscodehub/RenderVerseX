@@ -6263,6 +6263,105 @@ git diff --check
 
 ---
 
+### R-SP: RQ31 - Particle Main-Frame Integration
+
+**Date:** 2026-06-13
+**Commit:** `4973259 feat(particle): integrate particles into main frame`
+**Spark plan review agent:** Erdos / Spark, `gpt-5.5 xhigh`
+**Spark code review agent:** Harvey / Spark, `gpt-5.5 xhigh`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/specs/2026-06-13-rq31-particle-main-frame-integration-plan.md`
+- Section: full RQ31 plan
+- Lines checked: plan was reread before implementation; accepted Spark plan-review fixes for the Render-owned callback seam,
+  Particle readiness/status, callback deinit order, `Particle -> Engine` dependency, and conditional visual gates.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: RQ30 CPU billboard particle render bridge
+- Evidence: RQ30 implementation and phase-log commits were complete before RQ31 implementation started.
+
+**Approved scope:**
+
+- Add a generic `SceneRenderer` pre-graph prepare callback seam that does not depend on Particle.
+- Have `ParticleSubsystem` acquire the production RenderSubsystem device/SceneRenderer or use focused test injection.
+- Transfer `ParticlePass` ownership to `SceneRenderer`, while `ParticleSubsystem` keeps only a non-owning pointer.
+- Register/unregister the pre-graph callback with strict deinit ordering before clearing render state.
+- Expose explicit particle render-integration readiness/status and avoid false-ready reporting.
+- Route `ParticleComponent` instances through `ParticleSubsystem` when render integration is ready, with observable legacy fallback.
+- Register/link `ParticleSubsystem` in ModelViewer.
+- Add focused validation for callback ownership, pass/callback registration, deinit cleanup, unsupported renderer readiness, and component ownership.
+
+**Out of scope:**
+
+- Soft particles, texture/flipbook materials, GPU simulation/sorting/indirect draw, trails, mesh/stretched billboards, particle lights, and default ModelViewer particle content.
+- ECS/Object/SceneEntity removal or a new component ownership model.
+- Any Render-to-Particle dependency.
+
+**Files changed:**
+
+- `Docs/superpowers/specs/2026-06-13-rq31-particle-main-frame-integration-plan.md`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Particle/CMakeLists.txt`
+- `Particle/Include/Particle/ParticleSubsystem.h`
+- `Particle/Private/ParticleSubsystem.cpp`
+- `Particle/Include/Particle/ParticleComponent.h`
+- `Particle/Private/ParticleComponent.cpp`
+- `Samples/ModelViewer/CMakeLists.txt`
+- `Samples/ModelViewer/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/ParticleValidation/main.cpp`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target ParticleValidation RenderHonestyValidation RenderPassValidation RenderGraphValidation RenderSceneValidation PipelineCacheValidation ModelViewer VisualGoldenValidation ImageCompareValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ParticleValidation|RenderHonestyValidation|RenderPassValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "RenderGraphValidation|RenderSceneValidation|PipelineCacheValidation"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -R "ModelViewerSmoke|VisualGoldenValidation|ImageCompareValidation"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS.
+- Focused/render pass regression: PASS, 118/118 selected tests passed.
+- Core rendering regression: PASS, 128/128 selected tests passed.
+- Conditional local visual gate: PASS, 8/8 selected ModelViewer/golden/image-compare tests passed.
+- Diff check: PASS, with CRLF warnings only.
+- Visual gate: PASS.
+
+**Artifacts:**
+
+- Tests: `ParticleValidation`, `RenderHonestyValidation`, `RenderPassValidation`, `RenderGraphValidation`,
+  `RenderSceneValidation`, `PipelineCacheValidation`, `ModelViewerSmoke`, `VisualGoldenValidation`,
+  `ImageCompareValidation`.
+- Diffs: RQ31 intended file set only; unrelated pre-existing dirty files and old untracked docs were left unstaged.
+
+**Spark plan review result:**
+
+- Initial verdicts: FAIL, FAIL.
+- Blockers resolved: direct Render-to-Particle call was replaced with a Render-owned callback seam, readiness/status was made
+  explicit, callback removal on deinit was required, `Particle -> Engine` CMake dependency was made explicit, and visual
+  gates were made conditional on local DX11/window availability.
+- Final verdict: PASS.
+
+**Spark code review result:**
+
+- Initial verdict: FAIL.
+- Blocker resolved: `ParticleSubsystem` now gates render integration on `ParticleRenderer::IsRenderingSupported()` and
+  propagates the renderer unsupported reason; a fake pipeline-creation failure test verifies no ready/pass/callback false success.
+- Final verdict: PASS.
+
+**Notes / follow-ups:**
+
+- RQ31 makes CPU billboard particles schedulable in the main frame without binding Render to Particle.
+- Future particle-quality stages can build on this seam for soft particles, texture materials, trails, GPU simulation, and sample content.
+
+---
+
 ## Entry Template
 
 ### R-SP: `<id and title>`
