@@ -33,6 +33,15 @@ struct EvaluationOptions
     
     /// Bone mask (optional, nullptr = all bones)
     const std::vector<float>* boneMask = nullptr;
+
+    /// Evaluate transform tracks through the JobSystem when enough tracks exist
+    bool jobifiedTransformEvaluation = false;
+
+    /// Minimum transform track count before jobified evaluation is used
+    size_t jobifiedMinTransformTrackCount = 32;
+
+    /// Number of transform tracks per job (0 = JobSystem auto)
+    size_t jobifiedBatchSize = 0;
 };
 
 /**
@@ -51,6 +60,12 @@ struct EvaluationResult
     
     /// Event triggers at this time (event names)
     std::vector<std::string> triggeredEvents;
+
+    /// Whether transform tracks were evaluated through the JobSystem
+    bool usedJobifiedEvaluation = false;
+
+    /// Number of transform tracks considered during evaluation
+    size_t evaluatedTransformTrackCount = 0;
 };
 
 /**

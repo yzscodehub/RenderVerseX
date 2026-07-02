@@ -29,6 +29,7 @@ namespace RVX::Animation
  */
 struct PlaybackInstance
 {
+    uint32_t id = 0;
     AnimationClip::ConstPtr clip;
     TimeUs currentTime = 0;
     float speed = 1.0f;
@@ -215,6 +216,21 @@ public:
     void InvalidatePose() { m_poseDirty = true; }
 
     // =========================================================================
+    // Evaluation Settings
+    // =========================================================================
+
+    /// Enable JobSystem-backed transform track evaluation for large clips
+    void EnableJobifiedPoseEvaluation(bool enable,
+                                      size_t minTransformTrackCount = 32,
+                                      size_t batchSize = 0);
+
+    /// Check whether jobified pose evaluation is enabled
+    bool IsJobifiedPoseEvaluationEnabled() const { return m_jobifiedPoseEvaluation; }
+
+    /// Check whether the most recent pose evaluation used the JobSystem path
+    bool DidLastEvaluationUseJobifiedPoseEvaluation() const { return m_lastEvaluationUsedJobified; }
+
+    // =========================================================================
     // Layers (Additive)
     // =========================================================================
 
@@ -272,12 +288,16 @@ private:
     
     SkeletonPose m_currentPose;
     SkeletonPose m_tempPose;      // Temp pose for blending
-    
+
     float m_globalSpeed = 1.0f;
     bool m_poseDirty = true;
-    
+    bool m_jobifiedPoseEvaluation = false;
+    size_t m_jobifiedMinTransformTrackCount = 32;
+    size_t m_jobifiedBatchSize = 0;
+    bool m_lastEvaluationUsedJobified = false;
+
     uint32_t m_nextInstanceId = 1;
-    
+
     EventCallback m_eventCallback;
     CompletionCallback m_completionCallback;
 };

@@ -5,6 +5,7 @@
 
 #include "Animation/Runtime/AnimationEvaluator.h"
 #include "Animation/Core/Interpolation.h"
+#include "Core/Job/JobSystem.h"
 
 namespace RVX::Animation
 {
@@ -21,26 +22,79 @@ EvaluationResult AnimationEvaluator::Evaluate(
     // Apply wrap mode
     WrapMode wrapMode = options.wrapModeOverride.value_or(clip.defaultWrapMode);
     TimeUs wrappedTime = ApplyTimeWrapping(time, clip.duration, wrapMode);
-    
+
     // Check if finished
     result.finished = IsAnimationFinished(time, clip.duration, wrapMode);
+    result.evaluatedTransformTrackCount = clip.transformTracks.size();
+
+    struct EvaluatedTransformTrack
+    {
+        TransformSample sample;
+        int boneIndex = -1;
+        bool valid = false;
+    };
+
+    auto skeleton = outPose.GetSkeleton();
+    const bool useJobifiedTransformEvaluation =
+        options.jobifiedTransformEvaluation &&
+        clip.transformTracks.size() >= options.jobifiedMinTransformTrackCount &&
+        JobSystem::Get().IsInitialized() &&
+        JobSystem::Get().GetWorkerCount() > 0;
 
     // Evaluate transform tracks
-    for (const auto& track : clip.transformTracks)
+    if (useJobifiedTransformEvaluation)
     {
-        TransformSample sample = EvaluateTransformTrack(track, wrappedTime);
+        std::vector<EvaluatedTransformTrack> evaluatedTracks(clip.transformTracks.size());
 
-        // Find bone index
-        int boneIndex = -1;
-        auto skeleton = outPose.GetSkeleton();
-        if (skeleton)
+        JobSystem::Get().ParallelFor(
+            0,
+            clip.transformTracks.size(),
+            [&clip, wrappedTime, skeleton, &evaluatedTracks](size_t index) {
+                const TransformTrack& track = clip.transformTracks[index];
+
+                int boneIndex = -1;
+                if (skeleton)
+                {
+                    boneIndex = skeleton->FindBoneIndex(track.targetName);
+                }
+
+                if (boneIndex >= 0)
+                {
+                    AnimationEvaluator evaluator;
+                    evaluatedTracks[index].sample = evaluator.EvaluateTransformTrack(track, wrappedTime);
+                    evaluatedTracks[index].boneIndex = boneIndex;
+                    evaluatedTracks[index].valid = true;
+                }
+            },
+            options.jobifiedBatchSize);
+
+        for (const EvaluatedTransformTrack& evaluatedTrack : evaluatedTracks)
         {
-            boneIndex = skeleton->FindBoneIndex(track.targetName);
+            if (evaluatedTrack.valid)
+            {
+                outPose.SetLocalTransform(static_cast<size_t>(evaluatedTrack.boneIndex), evaluatedTrack.sample);
+            }
         }
 
-        if (boneIndex >= 0)
+        result.usedJobifiedEvaluation = true;
+    }
+    else
+    {
+        for (const auto& track : clip.transformTracks)
         {
-            outPose.SetLocalTransform(static_cast<size_t>(boneIndex), sample);
+            TransformSample sample = EvaluateTransformTrack(track, wrappedTime);
+
+            // Find bone index
+            int boneIndex = -1;
+            if (skeleton)
+            {
+                boneIndex = skeleton->FindBoneIndex(track.targetName);
+            }
+
+            if (boneIndex >= 0)
+            {
+                outPose.SetLocalTransform(static_cast<size_t>(boneIndex), sample);
+            }
         }
     }
 

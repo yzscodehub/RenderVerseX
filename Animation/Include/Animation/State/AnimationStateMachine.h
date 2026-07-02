@@ -222,6 +222,18 @@ public:
     const SkeletonPose& GetOutputPose() const { return m_outputPose; }
     SkeletonPose& GetOutputPose() { return m_outputPose; }
 
+    // =========================================================================
+    // Evaluation Settings
+    // =========================================================================
+
+    /// Enable JobSystem-backed transform track evaluation for clip states
+    void EnableJobifiedPoseEvaluation(bool enable,
+                                      size_t minTransformTrackCount = 32,
+                                      size_t batchSize = 0);
+
+    /// Check whether the most recent pose evaluation used the JobSystem path
+    bool DidLastEvaluationUseJobifiedPoseEvaluation() const { return m_lastEvaluationUsedJobified; }
+
     /**
      * @brief Reset to default state
      */
@@ -247,10 +259,14 @@ public:
     // =========================================================================
 
     using StateChangeCallback = std::function<void(AnimationState* from, AnimationState* to)>;
+    using AnimationEventCallback = std::function<void(const AnimationEvent& event)>;
 
     void SetOnStateChange(StateChangeCallback callback) { m_onStateChange = std::move(callback); }
+    void SetOnAnimationEvent(AnimationEventCallback callback);
 
 private:
+    void BindStateCallbacks(AnimationState* state);
+    void ApplyEvaluationSettings(AnimationState* state);
     void CheckTransitions();
     void StartTransition(StateTransition* transition);
     void UpdateTransition(float deltaTime);
@@ -285,10 +301,15 @@ private:
     SkeletonPose m_outputPose;
     SkeletonPose m_currentPose;
     SkeletonPose m_nextPose;
+    bool m_jobifiedPoseEvaluation = false;
+    size_t m_jobifiedMinTransformTrackCount = 32;
+    size_t m_jobifiedBatchSize = 0;
+    bool m_lastEvaluationUsedJobified = false;
 
     bool m_running = false;
 
     StateChangeCallback m_onStateChange;
+    AnimationEventCallback m_onAnimationEvent;
 };
 
 } // namespace RVX::Animation
