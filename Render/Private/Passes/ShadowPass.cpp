@@ -22,6 +22,16 @@ namespace
 {
     constexpr float RVX_SHADOW_EPSILON = 0.0001f;
 
+    std::span<const Mat4> ResolveSkinningMatrices(const RenderObject& object, const MeshGPUBuffers& buffers)
+    {
+        if (!object.HasSkinningData() || !buffers.HasSkinningVertexData())
+        {
+            return {};
+        }
+
+        return std::span<const Mat4>(object.skinningMatrices.data(), object.skinningMatrices.size());
+    }
+
     Vec3 NormalizeOr(const Vec3& value, const Vec3& fallback)
     {
         const float valueLength = length(value);
@@ -454,7 +464,14 @@ void ShadowPass::RenderCascade(RHICommandContext& ctx, const ViewData& view, uin
         // Update per-object constants
         if (m_pipelineCache)
         {
-            m_pipelineCache->UpdateObjectConstants(obj.worldMatrix, obj.normalMatrix);
+            m_pipelineCache->UpdateObjectConstants(obj.worldMatrix,
+                                                   obj.normalMatrix,
+                                                   obj.previousWorldMatrix,
+                                                   view.previousViewProjectionMatrix,
+                                                   obj.previousWorldMatrixValid != 0 &&
+                                                       view.previousViewProjectionValid != 0 &&
+                                                       !view.resetTemporalHistory,
+                                                   ResolveSkinningMatrices(obj, buffers));
         }
 
         RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
@@ -466,6 +483,14 @@ void ShadowPass::RenderCascade(RHICommandContext& ctx, const ViewData& view, uin
 
         // Bind vertex buffers
         ctx.SetVertexBuffer(0, buffers.positionBuffer);
+        if (buffers.boneIndicesBuffer)
+        {
+            ctx.SetVertexBuffer(4, buffers.boneIndicesBuffer);
+        }
+        if (buffers.boneWeightsBuffer)
+        {
+            ctx.SetVertexBuffer(5, buffers.boneWeightsBuffer);
+        }
         ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
 
         // Draw

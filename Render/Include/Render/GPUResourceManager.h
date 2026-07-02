@@ -78,6 +78,8 @@ namespace RVX
      *   Slot 1: Normal (float3) - optional
      *   Slot 2: UV (float2) - optional
      *   Slot 3: Tangent (float4) - optional
+     *   Slot 4: Bone indices (uint4) - optional
+     *   Slot 5: Bone weights (float4) - optional
      */
     struct MeshGPUBuffers
     {
@@ -85,18 +87,27 @@ namespace RVX
         RHIBuffer* normalBuffer = nullptr;    // Slot 1 - optional
         RHIBuffer* uvBuffer = nullptr;        // Slot 2 - optional
         RHIBuffer* tangentBuffer = nullptr;   // Slot 3 - optional
+        RHIBuffer* boneIndicesBuffer = nullptr;  // Slot 4 - optional
+        RHIBuffer* boneWeightsBuffer = nullptr;  // Slot 5 - optional
         RHIBuffer* indexBuffer = nullptr;
         std::vector<SubmeshGPUInfo> submeshes;
         bool isResident = false;
         bool hasNormals = false;
         bool hasUVs = false;
         bool hasTangents = false;
+        bool hasBoneIndices = false;
+        bool hasBoneWeights = false;
 
         bool IsValid() const { return positionBuffer && indexBuffer && isResident; }
         bool HasNormalMapTangentBasis() const
         {
             return normalBuffer && uvBuffer && tangentBuffer &&
                    hasNormals && hasUVs && hasTangents;
+        }
+        bool HasSkinningVertexData() const
+        {
+            return boneIndicesBuffer && boneWeightsBuffer &&
+                   hasBoneIndices && hasBoneWeights;
         }
     };
 
@@ -110,6 +121,8 @@ namespace RVX
         RHIBufferRef normalBuffer;      // Slot 1 - optional
         RHIBufferRef uvBuffer;          // Slot 2 - optional
         RHIBufferRef tangentBuffer;     // Slot 3 - optional
+        RHIBufferRef boneIndicesBuffer; // Slot 4 - optional
+        RHIBufferRef boneWeightsBuffer; // Slot 5 - optional
         RHIBufferRef indexBuffer;
         
         std::vector<SubmeshGPUInfo> submeshes;
@@ -122,6 +135,8 @@ namespace RVX
         bool hasNormals = false;
         bool hasUVs = false;
         bool hasTangents = false;
+        bool hasBoneIndices = false;
+        bool hasBoneWeights = false;
     };
 
     /**

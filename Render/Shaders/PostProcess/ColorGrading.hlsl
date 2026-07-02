@@ -12,17 +12,23 @@ cbuffer ColorGradingConstants : register(b0, space0)
     float4 Lift;
     float4 Gamma;
     float4 Gain;
-    float3 RedChannel;
-    float Padding0;
-    float3 GreenChannel;
-    float Padding1;
-    float3 BlueChannel;
-    float Padding2;
-    float3 ShadowsTint;
-    float SplitToningBalance;
-    float3 HighlightsTint;
-    float Brightness;
+    float4 RedChannel_Padding0;
+    float4 GreenChannel_Padding1;
+    float4 BlueChannel_Padding2;
+    float4 ShadowsTint_SplitToningBalance;
+    float4 HighlightsTint_Brightness;
 };
+
+#define RedChannel RedChannel_Padding0.xyz
+#define Padding0 RedChannel_Padding0.w
+#define GreenChannel GreenChannel_Padding1.xyz
+#define Padding1 GreenChannel_Padding1.w
+#define BlueChannel BlueChannel_Padding2.xyz
+#define Padding2 BlueChannel_Padding2.w
+#define ShadowsTint ShadowsTint_SplitToningBalance.xyz
+#define SplitToningBalance ShadowsTint_SplitToningBalance.w
+#define HighlightsTint HighlightsTint_Brightness.xyz
+#define Brightness HighlightsTint_Brightness.w
 
 Texture2D<float4> InputTexture : register(t1, space0);
 SamplerState LinearSampler : register(s2, space0);

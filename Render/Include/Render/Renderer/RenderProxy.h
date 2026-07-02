@@ -41,11 +41,15 @@ namespace RVX
         std::vector<uint64> materialIds;
         std::vector<Resource::MaterialResource*> materialResources;
 
+        std::vector<Mat4> skinningMatrices;
+
         uint64 sortKey = 0;
         uint32 layerMask = ~0u;
         bool visible = true;
         bool castsShadow = true;
         bool receivesShadow = true;
+
+        bool HasSkinningData() const { return !skinningMatrices.empty(); }
     };
 
     struct RenderLightProxy

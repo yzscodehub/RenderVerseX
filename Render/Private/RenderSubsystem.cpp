@@ -236,7 +236,12 @@ void RenderSubsystem::SetWindow(void* windowHandle, uint32_t width, uint32_t hei
         }
         else
         {
-            // If swap chain exists, just resize
+            // Ensure no submitted frame still references views/resources before releasing them.
+            m_renderContext->WaitIdle();
+            if (m_sceneRenderer)
+            {
+                m_sceneRenderer->PrepareForSwapChainResize();
+            }
             m_renderContext->ResizeSwapChain(width, height);
         }
     }
@@ -248,6 +253,12 @@ void RenderSubsystem::OnResize(uint32_t width, uint32_t height)
 
     if (m_renderContext)
     {
+        // Ensure no submitted frame still references views/resources before releasing them.
+        m_renderContext->WaitIdle();
+        if (m_sceneRenderer)
+        {
+            m_sceneRenderer->PrepareForSwapChainResize();
+        }
         m_renderContext->ResizeSwapChain(width, height);
     }
 }
@@ -308,7 +319,15 @@ void RenderSubsystem::AutoBindWindow()
         return;
     }
 
-    void* handle = windowSubsystem->GetNativeHandle();
+    RHIBackendType backendType = RHIBackendType::None;
+    if (m_renderContext && m_renderContext->GetDevice())
+    {
+        backendType = m_renderContext->GetDevice()->GetBackendType();
+    }
+
+    void* handle = backendType == RHIBackendType::OpenGL ?
+        windowSubsystem->GetInternalHandle() :
+        windowSubsystem->GetNativeHandle();
     if (!handle)
     {
         RVX_CORE_WARN("RenderSubsystem: WindowSubsystem has no valid window handle");

@@ -50,6 +50,11 @@ namespace RVX
         m_impl->device = device;
     }
 
+    void RenderGraph::SetTransientResourcePool(TransientResourcePool* pool)
+    {
+        m_impl->transientResourcePool = pool;
+    }
+
     RGTextureHandle RenderGraph::CreateTexture(const RHITextureDesc& desc)
     {
         TextureResource resource;
@@ -186,13 +191,20 @@ namespace RVX
 
     RGTextureHandle RenderGraphBuilder::Read(RGTextureHandle texture, RHIShaderStage stages)
     {
+        return Read(texture, RHIResourceState::ShaderResource, stages);
+    }
+
+    RGTextureHandle RenderGraphBuilder::Read(RGTextureHandle texture,
+                                             RHIResourceState state,
+                                             RHIShaderStage stages)
+    {
         if (!m_impl || !m_impl->pass || !texture.IsValid())
             return texture;
 
         ResourceUsage usage;
         usage.type = ResourceType::Texture;
         usage.index = texture.index;
-        usage.desiredState = RHIResourceState::ShaderResource;
+        usage.desiredState = state;
         usage.access = RGAccessType::Read;
         usage.stages = stages;  // Use the stages parameter for fine-grained barrier optimization
         usage.hasSubresourceRange = texture.hasSubresourceRange;
@@ -204,13 +216,20 @@ namespace RVX
 
     RGBufferHandle RenderGraphBuilder::Read(RGBufferHandle buffer, RHIShaderStage stages)
     {
+        return Read(buffer, RHIResourceState::ShaderResource, stages);
+    }
+
+    RGBufferHandle RenderGraphBuilder::Read(RGBufferHandle buffer,
+                                            RHIResourceState state,
+                                            RHIShaderStage stages)
+    {
         if (!m_impl || !m_impl->pass || !buffer.IsValid())
             return buffer;
 
         ResourceUsage usage;
         usage.type = ResourceType::Buffer;
         usage.index = buffer.index;
-        usage.desiredState = RHIResourceState::ShaderResource;
+        usage.desiredState = state;
         usage.access = RGAccessType::Read;
         usage.stages = stages;  // Use the stages parameter for fine-grained barrier optimization
         usage.hasRange = buffer.hasRange;
@@ -342,6 +361,11 @@ namespace RVX
         return m_impl->stats;
     }
 
+    const std::vector<std::string>& RenderGraph::GetCompileDiagnostics() const
+    {
+        return m_impl->compileDiagnostics;
+    }
+
     void RenderGraph::SetMemoryAliasingEnabled(bool enabled)
     {
         m_impl->memoryAliasingRequested = enabled;
@@ -362,6 +386,15 @@ namespace RVX
         Impl::RetiredFrameResources retiredResources;
         for (auto& texture : m_impl->textures)
         {
+            if (!texture.imported && texture.pooled && texture.pooledRaw)
+            {
+                if (m_impl->transientResourcePool)
+                {
+                    m_impl->transientResourcePool->ReleaseTexture(texture.pooledRaw);
+                }
+                texture.pooledRaw = nullptr;
+                texture.pooled = false;
+            }
             if (!texture.imported && texture.texture)
             {
                 retiredResources.textures.push_back(std::move(texture.texture));
@@ -369,6 +402,15 @@ namespace RVX
         }
         for (auto& buffer : m_impl->buffers)
         {
+            if (!buffer.imported && buffer.pooled && buffer.pooledRaw)
+            {
+                if (m_impl->transientResourcePool)
+                {
+                    m_impl->transientResourcePool->ReleaseBuffer(buffer.pooledRaw);
+                }
+                buffer.pooledRaw = nullptr;
+                buffer.pooled = false;
+            }
             if (!buffer.imported && buffer.buffer)
             {
                 retiredResources.buffers.push_back(std::move(buffer.buffer));
@@ -396,6 +438,7 @@ namespace RVX
         m_impl->textures.clear();
         m_impl->buffers.clear();
         m_impl->executionOrder.clear();
+        m_impl->compileDiagnostics.clear();
         m_impl->transientHeaps.clear();
         m_impl->stats = {};
         m_impl->totalMemoryWithoutAliasing = 0;
@@ -465,6 +508,8 @@ namespace RVX
                 color = "#e0e0e0";
             else if (pass.type == RenderGraphPassType::Compute)
                 color = "#fff2cc";
+            else if (pass.type == RenderGraphPassType::RayTracing)
+                color = "#d9d2e9";
             else if (pass.type == RenderGraphPassType::Copy)
                 color = "#d9ead3";
             else
@@ -530,8 +575,9 @@ namespace RVX
         ss << "    legend_aliased [shape=ellipse, style=filled, fillcolor=\"#ffffb3\", label=\"Aliased\"];\n";
         ss << "    legend_graphics [shape=box, style=filled, fillcolor=\"#f4cccc\", label=\"Graphics\"];\n";
         ss << "    legend_compute [shape=box, style=filled, fillcolor=\"#fff2cc\", label=\"Compute\"];\n";
+        ss << "    legend_raytracing [shape=box, style=filled, fillcolor=\"#d9d2e9\", label=\"RayTracing\"];\n";
         ss << "    legend_copy [shape=box, style=filled, fillcolor=\"#d9ead3\", label=\"Copy\"];\n";
-        ss << "    legend_imported -> legend_transient -> legend_aliased -> legend_graphics -> legend_compute -> legend_copy [style=invis];\n";
+        ss << "    legend_imported -> legend_transient -> legend_aliased -> legend_graphics -> legend_compute -> legend_raytracing -> legend_copy [style=invis];\n";
         ss << "  }\n";
         
         ss << "}\n";

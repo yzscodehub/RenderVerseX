@@ -21,9 +21,10 @@ cbuffer BloomConstants : register(b0, space0)
     float Radius;
     float2 TextureSize;
     float2 InvTextureSize;
-    float Mode;
-    float3 Padding;
+    float4 Mode_Padding;
 };
+
+#define Mode Mode_Padding.x
 
 Texture2D<float4> InputTexture : register(t1, space0);
 SamplerState LinearSampler : register(s2, space0);

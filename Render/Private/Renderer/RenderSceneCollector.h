@@ -23,6 +23,7 @@ namespace RVX
     {
     public:
         static void Collect(RenderScene& outScene, World* world);
+        static void Collect(RenderScene& outScene, SceneManager* sceneManager);
 
     private:
         static std::unordered_set<SceneEntity::Handle> CollectRegisteredPrimitives(

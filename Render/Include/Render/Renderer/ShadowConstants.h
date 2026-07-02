@@ -12,4 +12,10 @@ namespace RVX
     constexpr uint32 RVX_MAX_DIRECTIONAL_SHADOW_CASCADES = 4;
     constexpr uint32 RVX_MIN_DIRECTIONAL_SHADOW_ARRAY_LAYERS = 2;
 
+    enum class RayTracedShadowMode : uint8
+    {
+        ComplementRaster = 0,
+        ReplaceRaster = 1
+    };
+
 } // namespace RVX

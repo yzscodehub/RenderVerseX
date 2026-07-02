@@ -49,6 +49,15 @@ namespace RVX
         float casterDepthBiasClamp = 0.0f;    // Reserved for future clamp capability; sanitized to 0 for now
         bool stabilizeCascades = true;        // Snap cascades to shadow texels
         float cascadeBlendRatio = 0.05f;      // Fraction of cascade span used for transition fade
+        bool rayTracedTemporalAccumulation = true; // Enable RT shadow history blending when the view is stable
+        float rayTracedLightAngularRadius = 0.00465f; // Directional-light angular radius in radians (~sun disk)
+        uint32_t rayTracedSamplesPerPixel = 1; // Per-pixel RT shadow rays, clamped to [1, 8]
+        float rayTracedTemporalBlendFactor = 0.75f; // Weight of previous RT shadow mask in [0, 0.95]
+        float rayTracedHistoryDepthThreshold = 0.01f; // Clip-space depth delta allowed for RT history reprojection
+        float rayTracedHistoryNormalThreshold = 0.85f; // Minimum normal dot product allowed for RT history reprojection
+        float rayTracedHistoryVelocityRejectionScale = 8.0f; // Reduces RT shadow history weight in moving regions
+        uint32_t rayTracedInstanceMask = 0xFF; // Instance visibility mask used by RT shadow rays
+        RayTracedShadowMode rayTracedShadowMode = RayTracedShadowMode::ComplementRaster; // RT mask composition strategy
     };
 
     struct ShadowPassStats

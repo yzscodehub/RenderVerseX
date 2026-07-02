@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -31,6 +32,8 @@ namespace RVX
     class ShaderManager;
     struct ShaderCompileResult;
     struct ViewData;
+
+    constexpr uint32 RVX_MAX_OBJECT_SKINNING_MATRICES = 128;
 
     /**
      * @brief View constants structure (matches HLSL cbuffer)
@@ -53,6 +56,7 @@ namespace RVX
         Vec4 directionalShadowReceiverParams;
         Vec4 directionalShadowCascadeSplits;
         Vec4 directionalShadowCascadeFadeDistances;
+        Vec4 rayTracedShadowParams;
     };
 
     enum class DirectionalShadowFallbackReason : uint8
@@ -77,6 +81,26 @@ namespace RVX
         DirectionalShadowFallbackReason fallbackReason = DirectionalShadowFallbackReason::DisabledNoDirectionalLight;
     };
 
+    enum class RayTracedShadowFallbackReason : uint8
+    {
+        None = 0,
+        Disabled,
+        MissingShadowMaskSRV,
+        FallbackUnavailable,
+    };
+
+    struct RayTracedShadowFrameResources
+    {
+        bool enabled = false;
+        RHITextureView* shadowMaskView = nullptr;
+    };
+
+    struct RayTracedShadowFrameBindingResult
+    {
+        bool shadowMaskSamplingEnabled = false;
+        RayTracedShadowFallbackReason fallbackReason = RayTracedShadowFallbackReason::Disabled;
+    };
+
     enum class FrameLightFallbackReason : uint8
     {
         None = 0,
@@ -86,17 +110,32 @@ namespace RVX
         FallbackUnavailable,
     };
 
+    enum class FrameClusteredLightFallbackReason : uint8
+    {
+        None = 0,
+        MissingClusterConstants,
+        MissingClusterData,
+        MissingClusterLightIndices,
+        FallbackUnavailable,
+    };
+
     struct FrameLightResources
     {
         RHIBuffer* lightConstantsBuffer = nullptr;
         RHIBuffer* pointLightsBuffer = nullptr;
         RHIBuffer* spotLightsBuffer = nullptr;
+        RHIBuffer* clusterConstantsBuffer = nullptr;
+        RHIBuffer* clusterBuffer = nullptr;
+        RHIBuffer* clusterLightIndexBuffer = nullptr;
     };
 
     struct FrameLightBindingResult
     {
         bool lightResourcesBound = false;
+        bool clusteredLightResourcesBound = false;
         FrameLightFallbackReason fallbackReason = FrameLightFallbackReason::FallbackUnavailable;
+        FrameClusteredLightFallbackReason clusteredFallbackReason =
+            FrameClusteredLightFallbackReason::FallbackUnavailable;
     };
 
     struct ShadowDepthBiasState
@@ -113,6 +152,10 @@ namespace RVX
     {
         Mat4 world;
         Mat4 normalMatrix;
+        Mat4 previousWorldViewProjection;
+        Vec4 objectVelocityParams;
+        Vec4 skinningParams;
+        Mat4 skinningMatrices[RVX_MAX_OBJECT_SKINNING_MATRICES];
     };
 
     struct PipelineCacheConfig
@@ -138,6 +181,7 @@ namespace RVX
         uint64 chromaticAberrationPipelineHash = 0;
         uint64 fxaaPipelineHash = 0;
         uint64 vignettePipelineHash = 0;
+        uint64 uiPipelineHash = 0;
         uint32 pipelineCreateCount = 0;
         uint32 pipelineCacheHitCount = 0;
         uint32 pipelineCacheMissCount = 0;
@@ -227,12 +271,14 @@ namespace RVX
          */
         RHIPipeline* GetPipelineForVariant(MaterialPipelineVariant variant) const;
         RHIPipeline* GetPipelineForVariant(MaterialPipelineVariant variant, RHIFormat renderTargetFormat);
+        RHIPipeline* GetGPUDrivenPipelineForVariant(MaterialPipelineVariant variant, RHIFormat renderTargetFormat);
 
         /**
          * @brief Get the depth-only pipeline for depth prepass
          * @return Depth-only pipeline or nullptr if not available
          */
         RHIPipeline* GetDepthOnlyPipeline() const { return m_depthOnlyPipeline.Get(); }
+        RHIPipeline* GetGPUDrivenDepthOnlyPipeline();
 
         /**
          * @brief Get the shadow-map depth-only pipeline for caster raster bias
@@ -261,6 +307,38 @@ namespace RVX
         RHIPipeline* GetBloomAdditivePipeline(RHIFormat outputFormat);
 
         /**
+         * @brief Get the camera/depth motion-vector pipeline
+         */
+        RHIPipeline* GetCameraVelocityPipeline() const { return m_cameraVelocityPipeline.Get(); }
+        RHIPipeline* GetCameraVelocityPipeline(RHIFormat outputFormat);
+
+        /**
+         * @brief Get the object motion-vector pipeline
+         */
+        RHIPipeline* GetObjectVelocityPipeline() const { return m_objectVelocityPipeline.Get(); }
+        RHIPipeline* GetObjectVelocityPipeline(RHIFormat outputFormat);
+        RHIPipeline* GetMaskedObjectVelocityPipeline() const { return m_maskedObjectVelocityPipeline.Get(); }
+        RHIPipeline* GetMaskedObjectVelocityPipeline(RHIFormat outputFormat);
+
+        /**
+         * @brief Get the fullscreen alpha-composite pipeline for ray-traced reflections
+         */
+        RHIPipeline* GetRayTracedReflectionCompositePipeline() const
+        {
+            return m_rayTracedReflectionCompositePipeline.Get();
+        }
+        RHIPipeline* GetRayTracedReflectionCompositePipeline(RHIFormat outputFormat);
+
+        /**
+         * @brief Get the fullscreen spatial denoise pipeline for ray-traced reflections
+         */
+        RHIPipeline* GetRayTracedReflectionDenoisePipeline() const
+        {
+            return m_rayTracedReflectionDenoisePipeline.Get();
+        }
+        RHIPipeline* GetRayTracedReflectionDenoisePipeline(RHIFormat outputFormat);
+
+        /**
          * @brief Get the fullscreen ColorGrading LDR post-process pipeline
          */
         RHIPipeline* GetColorGradingPipeline() const { return m_colorGradingPipeline.Get(); }
@@ -285,6 +363,32 @@ namespace RVX
         RHIPipeline* GetVignettePipeline(RHIFormat outputFormat);
 
         /**
+         * @brief Get the RHI-backed UI overlay pipeline
+         */
+        RHIPipeline* GetUIPipeline() const { return m_uiPipeline.Get(); }
+        RHIPipeline* GetUIPipeline(RHIFormat outputFormat);
+
+        /**
+         * @brief Get the ray-traced directional shadow pipeline, when supported by the backend.
+         */
+        RHIPipeline* GetRayTracedShadowPipeline() const { return m_rayTracedShadowPipeline.Get(); }
+
+        /**
+         * @brief Get the ray-traced reflection pipeline, when supported by the backend.
+         */
+        RHIPipeline* GetRayTracedReflectionPipeline() const { return m_rayTracedReflectionPipeline.Get(); }
+
+        /**
+         * @brief Get the shader table for the ray-traced directional shadow pipeline.
+         */
+        RHIShaderTable* GetRayTracedShadowShaderTable() const { return m_rayTracedShadowShaderTable.Get(); }
+
+        /**
+         * @brief Get the shader table for the ray-traced reflection pipeline.
+         */
+        RHIShaderTable* GetRayTracedReflectionShaderTable() const { return m_rayTracedReflectionShaderTable.Get(); }
+
+        /**
          * @brief Get the default pipeline layout
          */
         RHIPipelineLayout* GetDefaultLayout() const { return m_pipelineLayout.Get(); }
@@ -295,9 +399,33 @@ namespace RVX
         RHIPipelineLayout* GetPostProcessLayout() const { return m_postProcessPipelineLayout.Get(); }
 
         /**
+         * @brief Get the runtime UI overlay pipeline layout
+         */
+        RHIPipelineLayout* GetUILayout() const { return m_uiPipelineLayout.Get(); }
+        RHIDescriptorSetLayout* GetUITextureSetLayout() const { return m_uiTextureSetLayout.Get(); }
+
+        /**
+         * @brief Get the ray-traced reflection denoise fullscreen pipeline layout
+         */
+        RHIPipelineLayout* GetRayTracedReflectionDenoiseLayout() const
+        {
+            return m_rayTracedReflectionDenoisePipelineLayout.Get();
+        }
+
+        /**
          * @brief Get the procedural skybox fullscreen pipeline layout
          */
         RHIPipelineLayout* GetSkyboxLayout() const { return m_skyboxPipelineLayout.Get(); }
+
+        /**
+         * @brief Get the ray-traced shadow global pipeline layout.
+         */
+        RHIPipelineLayout* GetRayTracedShadowLayout() const { return m_rayTracedShadowPipelineLayout.Get(); }
+
+        /**
+         * @brief Get the ray-traced reflection global pipeline layout.
+         */
+        RHIPipelineLayout* GetRayTracedReflectionLayout() const { return m_rayTracedReflectionPipelineLayout.Get(); }
 
         /**
          * @brief Get the descriptor set layout used by fullscreen post-process passes
@@ -305,9 +433,27 @@ namespace RVX
         RHIDescriptorSetLayout* GetPostProcessSetLayout() const { return m_postProcessSetLayout.Get(); }
 
         /**
+         * @brief Get the descriptor set layout used by ray-traced reflection denoise pass
+         */
+        RHIDescriptorSetLayout* GetRayTracedReflectionDenoiseSetLayout() const
+        {
+            return m_rayTracedReflectionDenoiseSetLayout.Get();
+        }
+
+        /**
          * @brief Get the descriptor set layout used by the procedural skybox pass
          */
         RHIDescriptorSetLayout* GetSkyboxSetLayout() const { return m_skyboxSetLayout.Get(); }
+
+        /**
+         * @brief Get the descriptor set layout used by ray-traced shadow dispatch.
+         */
+        RHIDescriptorSetLayout* GetRayTracedShadowSetLayout() const { return m_rayTracedShadowSetLayout.Get(); }
+
+        /**
+         * @brief Get the descriptor set layout used by ray-traced reflection dispatch.
+         */
+        RHIDescriptorSetLayout* GetRayTracedReflectionSetLayout() const { return m_rayTracedReflectionSetLayout.Get(); }
 
         /**
          * @brief Get the owning RHI device for pass-local resources
@@ -324,6 +470,11 @@ namespace RVX
         void BeginFrame();
 
         /**
+         * @brief Reset frame-scope resource bindings to internal fallbacks.
+         */
+        void ResetFrameResourceBindings();
+
+        /**
          * @brief Get the frame constants descriptor set (set 0)
          */
         RHIDescriptorSet* GetFrameDescriptorSet();
@@ -333,6 +484,12 @@ namespace RVX
          */
         DirectionalShadowFrameBindingResult UpdateDirectionalShadowFrameResources(
             const DirectionalShadowFrameResources& resources);
+
+        /**
+         * @brief Update frame-scope ray-traced shadow mask binding.
+         */
+        RayTracedShadowFrameBindingResult UpdateRayTracedShadowFrameResources(
+            const RayTracedShadowFrameResources& resources);
 
         /**
          * @brief Update frame-scope local light buffer bindings.
@@ -349,7 +506,13 @@ namespace RVX
             return m_lastFrameLightBindingResult;
         }
 
+        const RayTracedShadowFrameBindingResult& GetLastRayTracedShadowFrameBindingResult() const
+        {
+            return m_lastRayTracedShadowFrameBindingResult;
+        }
+
         static const char* GetDirectionalShadowFallbackReasonName(DirectionalShadowFallbackReason reason);
+        static const char* GetRayTracedShadowFallbackReasonName(RayTracedShadowFallbackReason reason);
         static const char* GetFrameLightFallbackReasonName(FrameLightFallbackReason reason);
 
         /**
@@ -361,6 +524,15 @@ namespace RVX
          * @brief Get the object constants descriptor set (set 1)
          */
         RHIDescriptorSet* GetObjectDescriptorSet();
+        RHIDescriptorSetLayout* GetObjectSetLayout() const;
+
+        /**
+         * @brief Bind the GPU-driven instance buffer in the object descriptor set.
+         *
+         * Passing nullptr restores the internal fallback binding. The dynamic
+         * object constants binding remains valid for non-GPU-driven draws.
+         */
+        bool UpdateObjectInstanceBuffer(RHIBuffer* instanceBuffer);
 
         /**
          * @brief Get the material descriptor set layout (set 2)
@@ -387,10 +559,30 @@ namespace RVX
         void UpdateViewConstants(const ViewData& view);
 
         /**
-         * @brief Update per-object constants
-         * @param worldMatrix The object's world matrix
+         * @brief Update per-object constants without previous-frame motion data.
          */
         void UpdateObjectConstants(const Mat4& worldMatrix, const Mat4& normalMatrix);
+
+        /**
+         * @brief Update per-object constants with previous-frame motion data.
+         */
+        void UpdateObjectConstants(const Mat4& worldMatrix,
+                                   const Mat4& normalMatrix,
+                                   const Mat4& previousWorldMatrix,
+                                   const Mat4& previousViewProjectionMatrix,
+                                   bool previousWorldViewProjectionValid,
+                                   std::span<const Mat4> skinningMatrices = {});
+
+        /**
+         * @brief Update per-object constants with previous-frame motion and render flags.
+         */
+        void UpdateObjectConstants(const Mat4& worldMatrix,
+                                   const Mat4& normalMatrix,
+                                   const Mat4& previousWorldMatrix,
+                                   const Mat4& previousViewProjectionMatrix,
+                                   bool previousWorldViewProjectionValid,
+                                   bool receivesShadow,
+                                   std::span<const Mat4> skinningMatrices = {});
 
         // =====================================================================
         // Render Target Format
@@ -448,7 +640,11 @@ namespace RVX
         bool CompileShaders();
         bool CreatePipelineLayout();
         bool CreatePostProcessPipelineLayout();
+        bool CreateUIPipelineLayout();
+        bool CreateRayTracedReflectionDenoisePipelineLayout();
         bool CreateSkyboxPipelineLayout();
+        bool CreateRayTracedShadowPipelineLayout();
+        bool CreateRayTracedReflectionPipelineLayout();
         bool CreatePipeline();
         RHIPipelineRef GetOrCreateDefaultLitPipeline(MaterialPipelineVariant variant,
                                                      const char* debugName,
@@ -456,7 +652,13 @@ namespace RVX
                                                      const RHIBlendState& blendState,
                                                      RHIFormat renderTargetFormat,
                                                      bool updatePrimaryStats);
+        RHIPipelineRef GetOrCreateGPUDrivenDefaultLitPipeline(MaterialPipelineVariant variant,
+                                                              const char* debugName,
+                                                              const RHIDepthStencilState& depthStencilState,
+                                                              const RHIBlendState& blendState,
+                                                              RHIFormat renderTargetFormat);
         RHIPipelineRef GetOrCreateDepthOnlyPipeline();
+        RHIPipelineRef GetOrCreateGPUDrivenDepthOnlyPipeline();
         RHIPipelineRef GetOrCreateShadowDepthPipeline(const ShadowDepthBiasState& biasState);
         RHIPipelineRef GetOrCreateSkyboxPipeline(RHIFormat outputFormat,
                                                  bool depthTest = true,
@@ -464,28 +666,50 @@ namespace RVX
         RHIPipelineRef GetOrCreateToneMappingPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateBloomPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateBloomAdditivePipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateCameraVelocityPipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateObjectVelocityPipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateMaskedObjectVelocityPipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateRayTracedReflectionCompositePipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateRayTracedReflectionDenoisePipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateColorGradingPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateChromaticAberrationPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateFXAAPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateVignettePipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateUIPipeline(RHIFormat outputFormat);
+        bool CreateRayTracedShadowPipeline();
+        bool CreateRayTracedReflectionPipeline();
         RHIGraphicsPipelineDesc BuildDefaultLitPipelineDesc(const char* debugName,
                                                             const RHIDepthStencilState& depthStencilState,
                                                             const RHIBlendState& blendState,
                                                             RHIFormat renderTargetFormat) const;
+        RHIGraphicsPipelineDesc BuildGPUDrivenDefaultLitPipelineDesc(const char* debugName,
+                                                                     const RHIDepthStencilState& depthStencilState,
+                                                                     const RHIBlendState& blendState,
+                                                                     RHIFormat renderTargetFormat) const;
         RHIGraphicsPipelineDesc BuildDepthOnlyPipelineDesc() const;
+        RHIGraphicsPipelineDesc BuildGPUDrivenDepthOnlyPipelineDesc() const;
         RHIGraphicsPipelineDesc BuildShadowDepthPipelineDesc(const ShadowDepthBiasState& biasState) const;
         RHIGraphicsPipelineDesc BuildSkyboxPipelineDesc(RHIFormat outputFormat, bool depthTest = true) const;
         RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomAdditivePipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildCameraVelocityPipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildObjectVelocityPipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildMaskedObjectVelocityPipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildRayTracedReflectionCompositePipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildRayTracedReflectionDenoisePipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildColorGradingPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildChromaticAberrationPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildFXAAPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildVignettePipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildUIPipelineDesc(RHIFormat outputFormat) const;
         bool CreateViewConstantBuffer();
         bool CreateObjectConstantBuffer();
         bool EnsureFrameShadowFallbackResources();
+        bool EnsureFrameRayTracedShadowFallbackResources();
         bool EnsureFrameLightFallbackResources();
+        bool EnsureFrameClusteredLightFallbackResources();
+        bool EnsureObjectInstanceFallbackBuffer();
         bool UpdateDefaultFrameDescriptorSet();
         RHIDescriptorSetRef CreateFrameDescriptorSet();
         RHIDescriptorSetRef CreateObjectDescriptorSet();
@@ -513,14 +737,25 @@ namespace RVX
 
         // Shaders
         RHIShaderRef m_vertexShader;
+        RHIShaderRef m_gpuDrivenVertexShader;
         RHIShaderRef m_pixelShader;
         RHIShaderRef m_depthOnlyVertexShader;
+        RHIShaderRef m_gpuDrivenDepthOnlyVertexShader;
         RHIShaderRef m_skyboxVertexShader;
         RHIShaderRef m_skyboxPixelShader;
         RHIShaderRef m_toneMappingVertexShader;
         RHIShaderRef m_toneMappingPixelShader;
         RHIShaderRef m_bloomVertexShader;
         RHIShaderRef m_bloomPixelShader;
+        RHIShaderRef m_cameraVelocityPixelShader;
+        RHIShaderRef m_objectVelocityVertexShader;
+        RHIShaderRef m_objectVelocityPixelShader;
+        RHIShaderRef m_maskedObjectVelocityVertexShader;
+        RHIShaderRef m_maskedObjectVelocityPixelShader;
+        RHIShaderRef m_rayTracedReflectionCompositeVertexShader;
+        RHIShaderRef m_rayTracedReflectionCompositePixelShader;
+        RHIShaderRef m_rayTracedReflectionDenoiseVertexShader;
+        RHIShaderRef m_rayTracedReflectionDenoisePixelShader;
         RHIShaderRef m_colorGradingVertexShader;
         RHIShaderRef m_colorGradingPixelShader;
         RHIShaderRef m_chromaticAberrationVertexShader;
@@ -529,15 +764,36 @@ namespace RVX
         RHIShaderRef m_fxaaPixelShader;
         RHIShaderRef m_vignetteVertexShader;
         RHIShaderRef m_vignettePixelShader;
+        RHIShaderRef m_uiVertexShader;
+        RHIShaderRef m_uiPixelShader;
+        RHIShaderRef m_rayTracedShadowRayGenShader;
+        RHIShaderRef m_rayTracedShadowMissShader;
+        RHIShaderRef m_rayTracedShadowClosestHitShader;
+        RHIShaderRef m_rayTracedShadowAnyHitShader;
+        RHIShaderRef m_rayTracedReflectionRayGenShader;
+        RHIShaderRef m_rayTracedReflectionMissShader;
+        RHIShaderRef m_rayTracedReflectionClosestHitShader;
+        RHIShaderRef m_rayTracedReflectionAnyHitShader;
         std::unique_ptr<ShaderCompileResult> m_vsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_gpuDrivenVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_psCompileResult;
         std::unique_ptr<ShaderCompileResult> m_depthOnlyVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_gpuDrivenDepthOnlyVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_skyboxVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_skyboxPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_toneMappingVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_toneMappingPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_bloomVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_bloomPsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_cameraVelocityPsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_objectVelocityVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_objectVelocityPsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_maskedObjectVelocityVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_maskedObjectVelocityPsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionCompositeVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionCompositePsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionDenoiseVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionDenoisePsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_colorGradingVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_colorGradingPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_chromaticAberrationVsCompileResult;
@@ -546,47 +802,88 @@ namespace RVX
         std::unique_ptr<ShaderCompileResult> m_fxaaPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_vignetteVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_vignettePsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_uiVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_uiPsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rayTracedShadowRayGenCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rayTracedShadowMissCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rayTracedShadowClosestHitCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rayTracedShadowAnyHitCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionRayGenCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionMissCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionClosestHitCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionAnyHitCompileResult;
 
         // Descriptor set layouts and pipeline layout
         std::vector<RHIDescriptorSetLayoutRef> m_setLayouts;
         RHIPipelineLayoutRef m_pipelineLayout;
         RHIDescriptorSetLayoutRef m_postProcessSetLayout;
         RHIPipelineLayoutRef m_postProcessPipelineLayout;
+        RHIDescriptorSetLayoutRef m_uiTextureSetLayout;
+        RHIPipelineLayoutRef m_uiPipelineLayout;
+        RHIDescriptorSetLayoutRef m_rayTracedReflectionDenoiseSetLayout;
+        RHIPipelineLayoutRef m_rayTracedReflectionDenoisePipelineLayout;
         RHIDescriptorSetLayoutRef m_skyboxSetLayout;
         RHIPipelineLayoutRef m_skyboxPipelineLayout;
+        RHIDescriptorSetLayoutRef m_rayTracedShadowSetLayout;
+        RHIPipelineLayoutRef m_rayTracedShadowPipelineLayout;
+        RHIDescriptorSetLayoutRef m_rayTracedReflectionSetLayout;
+        RHIPipelineLayoutRef m_rayTracedReflectionPipelineLayout;
 
         // Graphics pipelines
         RHIPipelineRef m_opaquePipeline;
         RHIPipelineRef m_maskedPipeline;
         RHIPipelineRef m_transparentPipeline;
         RHIPipelineRef m_depthOnlyPipeline;
+        RHIPipelineRef m_gpuDrivenDepthOnlyPipeline;
         RHIPipelineRef m_skyboxPipeline;
         RHIPipelineRef m_toneMappingPipeline;
         RHIPipelineRef m_bloomPipeline;
         RHIPipelineRef m_bloomAdditivePipeline;
+        RHIPipelineRef m_cameraVelocityPipeline;
+        RHIPipelineRef m_objectVelocityPipeline;
+        RHIPipelineRef m_maskedObjectVelocityPipeline;
+        RHIPipelineRef m_rayTracedReflectionCompositePipeline;
+        RHIPipelineRef m_rayTracedReflectionDenoisePipeline;
         RHIPipelineRef m_colorGradingPipeline;
         RHIPipelineRef m_chromaticAberrationPipeline;
         RHIPipelineRef m_fxaaPipeline;
         RHIPipelineRef m_vignettePipeline;
+        RHIPipelineRef m_uiPipeline;
+        RHIPipelineRef m_rayTracedShadowPipeline;
+        RHIShaderTableRef m_rayTracedShadowShaderTable;
+        RHIPipelineRef m_rayTracedReflectionPipeline;
+        RHIShaderTableRef m_rayTracedReflectionShaderTable;
         std::unordered_map<uint64, RHIPipelineRef> m_pipelineCache;
 
         // Frame and object constants
         RHIBufferRef m_viewConstantBuffer;
         RHIBufferRef m_objectConstantBuffer;
+        RHIBufferRef m_objectInstanceFallbackBuffer;
         RHIDescriptorSetRef m_frameDescriptorSet;
         RHIDescriptorSetRef m_objectDescriptorSet;
         RHITextureRef m_fallbackDirectionalShadowTexture;
         RHITextureViewRef m_fallbackDirectionalShadowView;
+        RHITextureRef m_fallbackRayTracedShadowMaskTexture;
+        RHITextureViewRef m_fallbackRayTracedShadowMaskView;
         RHISamplerRef m_directionalShadowSampler;
         RHIBufferRef m_fallbackLightConstantsBuffer;
         RHIBufferRef m_fallbackPointLightsBuffer;
         RHIBufferRef m_fallbackSpotLightsBuffer;
+        RHIBufferRef m_fallbackClusterConstantsBuffer;
+        RHIBufferRef m_fallbackClusterBuffer;
+        RHIBufferRef m_fallbackClusterLightIndexBuffer;
         RHITextureView* m_currentDirectionalShadowView = nullptr;
+        RHITextureView* m_currentRayTracedShadowMaskView = nullptr;
         RHISampler* m_currentDirectionalShadowSampler = nullptr;
         RHIBuffer* m_currentLightConstantsBuffer = nullptr;
         RHIBuffer* m_currentPointLightsBuffer = nullptr;
         RHIBuffer* m_currentSpotLightsBuffer = nullptr;
+        RHIBuffer* m_currentClusterConstantsBuffer = nullptr;
+        RHIBuffer* m_currentClusterBuffer = nullptr;
+        RHIBuffer* m_currentClusterLightIndexBuffer = nullptr;
+        bool m_frameResourceBindingsDirty = false;
         DirectionalShadowFrameBindingResult m_lastDirectionalShadowFrameBindingResult;
+        RayTracedShadowFrameBindingResult m_lastRayTracedShadowFrameBindingResult;
         FrameLightBindingResult m_lastFrameLightBindingResult;
         uint64 m_objectConstantStride = 0;
         uint64 m_objectConstantCursor = 0;

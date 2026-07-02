@@ -24,6 +24,7 @@ namespace RVX
             const std::vector<RenderDrawItem>& opaqueDrawItems,
             const std::vector<RenderDrawItem>& maskedDrawItems,
             const std::vector<RenderDrawItem>& transparentDrawItems,
+            RHITextureView* colorTargetViewOverride,
             RHITextureView* depthTargetView,
             DepthPrepass* depthPrepass,
             OpaquePass* opaquePass,

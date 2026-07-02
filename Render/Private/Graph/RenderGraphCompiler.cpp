@@ -2,6 +2,7 @@
 #include "Core/Assert.h"
 #include "Core/Log.h"
 #include <algorithm>
+#include <string>
 
 namespace RVX
 {
@@ -25,6 +26,48 @@ namespace RVX
             RHISubresourceRange range = RHISubresourceRange::All();
             range.aspect = GetDefaultTextureAspect(desc);
             return range;
+        }
+
+        bool AcquireTransientTexture(RenderGraphImpl& graph,
+                                     TextureResource& resource)
+        {
+            if (!graph.transientResourcePool ||
+                !graph.transientResourcePool->IsInitialized())
+            {
+                return false;
+            }
+
+            RHITexture* pooledTexture =
+                graph.transientResourcePool->AcquireTexture(resource.desc);
+            if (!pooledTexture)
+            {
+                return false;
+            }
+
+            resource.pooledRaw = pooledTexture;
+            resource.pooled = true;
+            return true;
+        }
+
+        bool AcquireTransientBuffer(RenderGraphImpl& graph,
+                                    BufferResource& resource)
+        {
+            if (!graph.transientResourcePool ||
+                !graph.transientResourcePool->IsInitialized())
+            {
+                return false;
+            }
+
+            RHIBuffer* pooledBuffer =
+                graph.transientResourcePool->AcquireBuffer(resource.desc);
+            if (!pooledBuffer)
+            {
+                return false;
+            }
+
+            resource.pooledRaw = pooledBuffer;
+            resource.pooled = true;
+            return true;
         }
 
         void ResolveSubresourceRange(
@@ -157,12 +200,16 @@ namespace RVX
                        state == RHIResourceState::Undefined;
             }
 
-            if (passType == RenderGraphPassType::Compute)
+            if (passType == RenderGraphPassType::Compute || passType == RenderGraphPassType::RayTracing)
             {
                 return state == RHIResourceState::ShaderResource ||
                        state == RHIResourceState::UnorderedAccess ||
                        state == RHIResourceState::ConstantBuffer ||
                        state == RHIResourceState::IndirectArgument ||
+                       state == RHIResourceState::AccelerationStructureBuildRead ||
+                       state == RHIResourceState::AccelerationStructureBuildWrite ||
+                       state == RHIResourceState::AccelerationStructureRead ||
+                       state == RHIResourceState::ShaderBindingTable ||
                        state == RHIResourceState::CopySource ||
                        state == RHIResourceState::CopyDest ||
                        state == RHIResourceState::Common ||
@@ -170,6 +217,44 @@ namespace RVX
             }
 
             return true;
+        }
+
+        bool IsShaderVisibleState(RHIResourceState state)
+        {
+            return state == RHIResourceState::ShaderResource ||
+                   state == RHIResourceState::UnorderedAccess ||
+                   state == RHIResourceState::ConstantBuffer ||
+                   state == RHIResourceState::AccelerationStructureRead ||
+                   state == RHIResourceState::ShaderBindingTable;
+        }
+
+        bool HasShaderStageBits(RHIShaderStage stages, RHIShaderStage mask)
+        {
+            return (static_cast<uint32>(stages) & static_cast<uint32>(mask)) != 0u;
+        }
+
+        bool HasOnlyShaderStageBits(RHIShaderStage stages, RHIShaderStage mask)
+        {
+            const uint32 stageBits = static_cast<uint32>(stages);
+            const uint32 maskBits = static_cast<uint32>(mask);
+            return stageBits != 0u && (stageBits & ~maskBits) == 0u;
+        }
+
+        bool AreShaderStagesCompatibleWithPass(RenderGraphPassType passType, RHIShaderStage stages)
+        {
+            switch (passType)
+            {
+                case RenderGraphPassType::Graphics:
+                    return HasOnlyShaderStageBits(stages, RHIShaderStage::AllGraphics);
+                case RenderGraphPassType::Compute:
+                    return stages == RHIShaderStage::Compute;
+                case RenderGraphPassType::RayTracing:
+                    return HasShaderStageBits(stages, RHIShaderStage::AllRayTracing) &&
+                           HasOnlyShaderStageBits(stages, RHIShaderStage::AllRayTracing);
+                case RenderGraphPassType::Copy:
+                default:
+                    return true;
+            }
         }
 
         bool IsAllRange(const RHISubresourceRange& range)
@@ -450,6 +535,18 @@ namespace RVX
             return !(a.lastUsePass < b.firstUsePass || b.lastUsePass < a.firstUsePass);
         }
 
+        void AddCompileWarning(RenderGraphImpl& graph, const std::string& message)
+        {
+            graph.compileDiagnostics.push_back(message);
+            RVX_CORE_WARN("{}", message);
+        }
+
+        void AddCompileError(RenderGraphImpl& graph, const std::string& message)
+        {
+            graph.compileDiagnostics.push_back(message);
+            RVX_CORE_ERROR("{}", message);
+        }
+
         void ValidatePassUsages(RenderGraphImpl& graph)
         {
             for (uint32 passIndex = 0; passIndex < graph.passes.size(); ++passIndex)
@@ -460,7 +557,9 @@ namespace RVX
                 {
                     graph.stats.emptyPassUsageCount++;
                     graph.stats.validationWarningCount++;
-                    RVX_CORE_WARN("RenderGraph pass '{}' declares no resource usage and may be culled", pass.name);
+                    AddCompileWarning(graph,
+                                      "RenderGraph pass '" + pass.name +
+                                          "' declares no resource usage and may be culled");
                 }
 
                 for (const auto& usage : pass.usages)
@@ -471,8 +570,10 @@ namespace RVX
                         {
                             graph.stats.invalidResourceUsageCount++;
                             graph.stats.validationErrorCount++;
-                            RVX_CORE_ERROR("RenderGraph pass '{}' references invalid texture handle {}",
-                                           pass.name, usage.index);
+                            AddCompileError(graph,
+                                            "RenderGraph pass '" + pass.name +
+                                                "' references invalid texture handle " +
+                                                std::to_string(usage.index));
                         }
                     }
                     else
@@ -481,8 +582,10 @@ namespace RVX
                         {
                             graph.stats.invalidResourceUsageCount++;
                             graph.stats.validationErrorCount++;
-                            RVX_CORE_ERROR("RenderGraph pass '{}' references invalid buffer handle {}",
-                                           pass.name, usage.index);
+                            AddCompileError(graph,
+                                            "RenderGraph pass '" + pass.name +
+                                                "' references invalid buffer handle " +
+                                                std::to_string(usage.index));
                         }
                     }
 
@@ -490,10 +593,24 @@ namespace RVX
                     {
                         graph.stats.incompatibleStateUsageCount++;
                         graph.stats.validationErrorCount++;
-                        RVX_CORE_ERROR("RenderGraph pass '{}' requests state {} that is incompatible with pass type {}",
-                                       pass.name,
-                                       static_cast<int>(usage.desiredState),
-                                       static_cast<int>(pass.type));
+                        AddCompileError(graph,
+                                        "RenderGraph pass '" + pass.name + "' requests state " +
+                                            std::to_string(static_cast<int>(usage.desiredState)) +
+                                            " that is incompatible with pass type " +
+                                            std::to_string(static_cast<int>(pass.type)));
+                    }
+
+                    if (usage.access == RGAccessType::Read &&
+                        IsShaderVisibleState(usage.desiredState) &&
+                        !AreShaderStagesCompatibleWithPass(pass.type, usage.stages))
+                    {
+                        graph.stats.shaderStageMismatchUsageCount++;
+                        graph.stats.validationWarningCount++;
+                        AddCompileWarning(graph,
+                                          "RenderGraph pass '" + pass.name + "' reads resource with shader stage mask " +
+                                              std::to_string(static_cast<uint32>(usage.stages)) +
+                                              " that does not match pass type " +
+                                              std::to_string(static_cast<int>(pass.type)));
                     }
                 }
             }
@@ -561,9 +678,11 @@ namespace RVX
                         {
                             graph.stats.readBeforeWriteHazardCount++;
                             graph.stats.validationErrorCount++;
-                            RVX_CORE_ERROR("RenderGraph pass '{}' reads transient texture {} before any producing write",
-                                           pass.name,
-                                           usage.index);
+                            AddCompileError(graph,
+                                            "RenderGraph pass '" + pass.name +
+                                                "' reads transient texture " +
+                                                std::to_string(usage.index) +
+                                                " before any producing write");
                         }
 
                         if (!resource.imported && writesResource &&
@@ -582,9 +701,11 @@ namespace RVX
                         {
                             graph.stats.readBeforeWriteHazardCount++;
                             graph.stats.validationErrorCount++;
-                            RVX_CORE_ERROR("RenderGraph pass '{}' reads transient buffer {} before any producing write",
-                                           pass.name,
-                                           usage.index);
+                            AddCompileError(graph,
+                                            "RenderGraph pass '" + pass.name +
+                                                "' reads transient buffer " +
+                                                std::to_string(usage.index) +
+                                                " before any producing write");
                         }
 
                         if (!resource.imported && writesResource &&
@@ -613,8 +734,10 @@ namespace RVX
                 {
                     graph.stats.uninitializedExportCount++;
                     graph.stats.validationErrorCount++;
-                    RVX_CORE_ERROR("RenderGraph exports transient texture {} without any producing write",
-                                   textureIndex);
+                    AddCompileError(graph,
+                                    "RenderGraph exports transient texture " +
+                                        std::to_string(textureIndex) +
+                                        " without any producing write");
                 }
             }
 
@@ -626,8 +749,10 @@ namespace RVX
                 {
                     graph.stats.uninitializedExportCount++;
                     graph.stats.validationErrorCount++;
-                    RVX_CORE_ERROR("RenderGraph exports transient buffer {} without any producing write",
-                                   bufferIndex);
+                    AddCompileError(graph,
+                                    "RenderGraph exports transient buffer " +
+                                        std::to_string(bufferIndex) +
+                                        " without any producing write");
                 }
             }
         }
@@ -1107,7 +1232,10 @@ namespace RVX
             {
                 if (!texture.imported && !texture.texture)
                 {
-                    texture.texture = graph.device->CreateTexture(texture.desc);
+                    if (!AcquireTransientTexture(graph, texture))
+                    {
+                        texture.texture = graph.device->CreateTexture(texture.desc);
+                    }
                     texture.initialState = RHIResourceState::Undefined;
                     texture.currentState = texture.initialState;
                 }
@@ -1117,7 +1245,10 @@ namespace RVX
             {
                 if (!buffer.imported && !buffer.buffer)
                 {
-                    buffer.buffer = graph.device->CreateBuffer(buffer.desc);
+                    if (!AcquireTransientBuffer(graph, buffer))
+                    {
+                        buffer.buffer = graph.device->CreateBuffer(buffer.desc);
+                    }
                     buffer.initialState = RHIResourceState::Undefined;
                     buffer.currentState = buffer.initialState;
                 }
@@ -1130,6 +1261,7 @@ namespace RVX
     // =============================================================================
     void CompileRenderGraph(RenderGraphImpl& graph)
     {
+        graph.compileDiagnostics.clear();
         graph.stats = {};
         graph.stats.totalPasses = static_cast<uint32>(graph.passes.size());
         graph.stats.compileValid = true;
@@ -1386,7 +1518,7 @@ namespace RVX
             graph.stats.compileValid = false;
             graph.stats.executionOrderFallbackUsed = false;
             graph.stats.validationErrorCount++;
-            RVX_CORE_ERROR("RenderGraph compile failed: execution order topology is incomplete");
+            AddCompileError(graph, "RenderGraph compile failed: execution order topology is incomplete");
             graph.executionOrder.clear();
             return;
         }

@@ -14,6 +14,7 @@ namespace RVX
 {
     class World;
     class Camera;
+    class SceneManager;
     struct RenderProxySnapshot;
     namespace Resource
     {
@@ -28,35 +29,49 @@ namespace RVX
     {
         /// World transform matrix
         Mat4 worldMatrix = Mat4Identity();
-        
+
+        /// Previous rendered frame world transform for motion-vector generation.
+        Mat4 previousWorldMatrix = Mat4Identity();
+
+        /// Whether previousWorldMatrix contains a valid rendered frame transform.
+        uint8 previousWorldMatrixValid = 0;
+
         /// Inverse transpose for normal transformation
         Mat4 normalMatrix = Mat4Identity();
-        
+
         /// World-space bounding box
         AABB bounds;
-        
+
         /// Mesh resource ID (0 = invalid)
         uint64_t meshId = 0;
 
         /// Source CPU mesh resource, used to request GPU residency.
         Resource::MeshResource* meshResource = nullptr;
-        
+
         /// Material resource IDs (one per submesh)
         std::vector<uint64_t> materialIds;
 
         /// Source CPU material resources, used to request texture residency.
         std::vector<Resource::MaterialResource*> materialResources;
-        
+
+        /// CPU snapshot of skinning matrices for GPU upload.
+        std::vector<Mat4> skinningMatrices;
+
         /// Entity handle for picking/identification
         uint64_t entityId = 0;
-        
+
         /// Sort key for batching (usually first material ID)
         uint64_t sortKey = 0;
-        
+
+        /// Visibility layer mask; low 8 bits are also used for ray-tracing instance masks.
+        uint32_t layerMask = ~0u;
+
         /// Visibility flags
         bool visible = true;
         bool castsShadow = true;
         bool receivesShadow = true;
+
+        bool HasSkinningData() const { return !skinningMatrices.empty(); }
     };
 
     /**
@@ -84,11 +99,11 @@ namespace RVX
 
     /**
      * @brief Render scene - contains all renderable objects for a frame
-     * 
+     *
      * RenderScene is a snapshot of the game world's renderable state.
      * It is collected from the World/Scene each frame and passed to
      * the SceneRenderer for rendering.
-     * 
+     *
      * This separation allows:
      * - Thread-safe rendering (scene snapshot is immutable)
      * - Multiple views of the same scene
@@ -109,6 +124,12 @@ namespace RVX
          * @param world The world to collect from
          */
         void CollectFromWorld(World* world);
+
+        /**
+         * @brief Collect renderable objects from a SceneManager through the legacy fallback collector.
+         * @param sceneManager The scene manager to collect from
+         */
+        void CollectFromSceneManager(SceneManager* sceneManager);
 
         /**
          * @brief Populate the render scene from a render-only proxy snapshot.
@@ -143,6 +164,7 @@ namespace RVX
         size_t GetLightCount() const { return m_lights.size(); }
 
         const RenderObject& GetObject(size_t index) const { return m_objects[index]; }
+        RenderObject& GetMutableObject(size_t index) { return m_objects[index]; }
         const RenderLight& GetLight(size_t index) const { return m_lights[index]; }
 
     private:

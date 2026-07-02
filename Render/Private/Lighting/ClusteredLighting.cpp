@@ -21,13 +21,6 @@ namespace
     constexpr uint64 RVX_MAX_CLUSTERED_LIGHTING_INDICES = 1ull << 24;
     constexpr float RVX_CLUSTERING_EPSILON = 0.0001f;
 
-    struct ClusterConstants
-    {
-        Vec4 clusterSize;  // x, y, z counts, total
-        Vec4 screenParams; // width, height, near, far
-        Mat4 invProj;
-    };
-
     bool CheckedMultiply(uint64 a, uint64 b, uint64& out)
     {
         if (a != 0 && b > std::numeric_limits<uint64>::max() / a)
@@ -492,6 +485,11 @@ bool ClusteredLighting::UpdateGPUBuffers(RHICommandContext& ctx)
 {
     (void)ctx;
 
+    return UploadFrameData();
+}
+
+bool ClusteredLighting::UploadFrameData()
+{
     if (!m_initialized)
     {
         SetLastError("ClusteredLighting must be initialized before UpdateGPUBuffers");
@@ -529,7 +527,7 @@ bool ClusteredLighting::UpdateGPUBuffers(RHICommandContext& ctx)
         return false;
     }
 
-    ClusterConstants constants;
+    GPUClusterConstants constants;
     constants.clusterSize = Vec4(
         static_cast<float>(m_config.clusterCountX),
         static_cast<float>(m_config.clusterCountY),
@@ -546,7 +544,7 @@ bool ClusteredLighting::UpdateGPUBuffers(RHICommandContext& ctx)
 
     if (!UploadBuffer(m_clusterConstantsBuffer.Get(),
                       &constants,
-                      sizeof(ClusterConstants),
+                      sizeof(GPUClusterConstants),
                       "cluster constants buffer"))
     {
         return false;

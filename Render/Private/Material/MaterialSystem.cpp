@@ -273,8 +273,6 @@ void MaterialSystem::SetEnvironmentIBLResources(const EnvironmentIBLResources& r
         m_environmentIBL.irradianceMap != resources.irradianceMap ||
         m_environmentIBL.prefilteredMap != resources.prefilteredMap ||
         m_environmentIBL.brdfLUT != resources.brdfLUT ||
-        m_environmentIBL.prefilteredMipLevels != resources.prefilteredMipLevels ||
-        m_environmentIBL.intensity != resources.intensity ||
         m_environmentIBL.textureIBLEnabled != resources.textureIBLEnabled;
 
     m_environmentIBL = resources;

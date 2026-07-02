@@ -52,6 +52,9 @@ namespace RVX
         uint16 lightType;  // 0 = point, 1 = spot
     };
 
+    static_assert(sizeof(LightIndex) == sizeof(uint32),
+                  "Clustered light indices are read as packed uint values in shaders");
+
     /**
      * @brief Cluster data for GPU
      */
@@ -61,6 +64,16 @@ namespace RVX
         uint32 count;       ///< Number of lights in this cluster
         uint32 pointCount;  ///< Number of point lights
         uint32 spotCount;   ///< Number of spot lights
+    };
+
+    /**
+     * @brief Clustered lighting constants uploaded to the GPU
+     */
+    struct GPUClusterConstants
+    {
+        Vec4 clusterSize;  ///< x/y/z cluster counts, w total cluster count
+        Vec4 screenParams; ///< x/y viewport size, z/w near/far planes
+        Mat4 invProj;
     };
 
     /**
@@ -151,6 +164,11 @@ namespace RVX
          * @param ctx Command context for buffer updates
          */
         bool UpdateGPUBuffers(RHICommandContext& ctx);
+
+        /**
+         * @brief Upload current frame cluster data to GPU-visible buffers
+         */
+        bool UploadFrameData();
 
         // =========================================================================
         // GPU Resources

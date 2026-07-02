@@ -34,6 +34,7 @@ namespace RVX
         float exposureCompensationEV = 0.0f;
         float gamma = 2.2f;
         ToneMappingOperator toneMappingOperator = ToneMappingOperator::ACES;
+        ToneMappingOutputColorSpace toneMappingOutputColorSpace = ToneMappingOutputColorSpace::SRGB;
 
         // =========================================================================
         // Bloom
@@ -110,6 +111,35 @@ namespace RVX
         bool enableSSR = false;
         float ssrMaxDistance = 50.0f;
         float ssrThickness = 0.1f;
+
+        // =========================================================================
+        // Ray-traced reflections
+        // =========================================================================
+        bool enableRayTracedReflections = false;
+        bool enableRayTracedReflectionDenoise = true;
+        float rayTracedReflectionIntensity = 1.0f;
+        float rayTracedReflectionResolutionScale = 1.0f;
+        float rayTracedReflectionMaxDistance = 50.0f;
+        float rayTracedReflectionMaxRoughness = 1.0f;
+        float rayTracedReflectionDistanceFadeStart = 0.8f;
+        uint32 rayTracedReflectionInstanceMask = 0xFFu;
+        uint32 rayTracedReflectionSamplesPerPixel = 1;
+        float rayTracedReflectionRoughnessConeSpread = 1.0f;
+        float rayTracedReflectionNormalBias = 0.02f;
+        float rayTracedReflectionRayMinT = 0.001f;
+        float rayTracedReflectionFireflyClamp = 64.0f;
+        float rayTracedReflectionTemporalBlendFactor = 0.85f;
+        float rayTracedReflectionHistoryDepthThreshold = 0.01f;
+        float rayTracedReflectionHistoryNormalThreshold = 0.85f;
+        float rayTracedReflectionHistoryLuminanceTolerance = 4.0f;
+        float rayTracedReflectionHistoryConfidenceThreshold = 0.05f;
+        float rayTracedReflectionHistoryVelocityRejectionScale = 8.0f;
+        uint32 rayTracedReflectionDenoiseRadius = 1;
+        float rayTracedReflectionDenoiseDepthSigma = 0.01f;
+        float rayTracedReflectionDenoiseNormalThreshold = 0.85f;
+        float rayTracedReflectionDenoiseConfidencePower = 1.0f;
+        float rayTracedReflectionDenoiseCenterWeight = 1.0f;
+        float rayTracedReflectionDenoiseLowConfidenceDepthScale = 4.0f;
 
         // =========================================================================
         // TAA
@@ -210,6 +240,9 @@ namespace RVX
         bool toneMappingBoundaryValid = true;
         std::string toneMappingBoundaryWarning;
         bool noEffectNoWork = false;
+        bool fallbackCopyApplied = false;
+        uint32 fallbackCopyPassCount = 0;
+        std::string fallbackCopyReason;
     };
 
     class PostProcessStack

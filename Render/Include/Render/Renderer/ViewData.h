@@ -20,7 +20,7 @@ namespace RVX
 
     /**
      * @brief View data collected for rendering a single view/camera
-     * 
+     *
      * ViewData encapsulates all the information needed to render from a single
      * viewpoint, including camera matrices, viewport, and render targets.
      */
@@ -29,49 +29,55 @@ namespace RVX
         // =====================================================================
         // Camera Data
         // =====================================================================
-        
+
         /// View matrix (world to camera)
         Mat4 viewMatrix = Mat4Identity();
-        
+
         /// Projection matrix (camera to clip)
         Mat4 projectionMatrix = Mat4Identity();
-        
+
         /// Combined view-projection matrix
         Mat4 viewProjectionMatrix = Mat4Identity();
-        
+
+        /// Previous rendered frame view-projection matrix, used for temporal reprojection
+        Mat4 previousViewProjectionMatrix = Mat4Identity();
+
+        /// Whether previousViewProjectionMatrix contains a valid rendered frame
+        uint8 previousViewProjectionValid = 0;
+
         /// Inverse view matrix
         Mat4 inverseViewMatrix = Mat4Identity();
-        
+
         /// Inverse projection matrix
         Mat4 inverseProjectionMatrix = Mat4Identity();
-        
+
         /// Camera world position
         Vec3 cameraPosition{0.0f, 0.0f, 0.0f};
-        
+
         /// Camera forward direction
         Vec3 cameraForward{0.0f, 0.0f, -1.0f};
-        
+
         /// Near clip plane
         float nearPlane = 0.1f;
-        
+
         /// Far clip plane
         float farPlane = 1000.0f;
-        
+
         /// Field of view (radians, for perspective)
         float fieldOfView = 1.0472f;  // ~60 degrees
 
         // =====================================================================
         // Viewport
         // =====================================================================
-        
+
         /// Viewport dimensions
         uint32_t viewportWidth = 0;
         uint32_t viewportHeight = 0;
-        
+
         /// Viewport offset
         int32_t viewportX = 0;
         int32_t viewportY = 0;
-        
+
         /// Aspect ratio
         float aspectRatio = 1.0f;
 
@@ -121,15 +127,27 @@ namespace RVX
         /// Enables directional shadow sampling when the frame descriptor has a valid map
         uint8 directionalShadowEnabled = 0;
 
+        /// Enables ray-traced directional shadow mask sampling when the frame descriptor has a valid mask
+        uint8 rayTracedShadowEnabled = 0;
+
+        /// Screen-space filter radius in pixels for ray-traced shadow mask softening
+        float rayTracedShadowFilterRadiusPixels = 1.0f;
+
+        /// Composition strategy used when a ray-traced directional shadow mask is available
+        RayTracedShadowMode rayTracedShadowMode = RayTracedShadowMode::ComplementRaster;
+
         // =====================================================================
         // Render Targets
         // =====================================================================
-        
+
         /// Main color target
         RGTextureHandle colorTarget;
 
         /// Depth target
         RGTextureHandle depthTarget;
+
+        /// Optional motion-vector target for temporal reprojection
+        RGTextureHandle velocityTarget;
 
         // =====================================================================
         // Environment / IBL-Approximate Ambient
@@ -177,20 +195,23 @@ namespace RVX
         // =====================================================================
         // Frame Info
         // =====================================================================
-        
+
         /// Current frame number
         uint64_t frameNumber = 0;
-        
+
+        /// Reset temporal histories for this view, e.g. after camera cuts or large scene jumps
+        bool resetTemporalHistory = false;
+
         /// Time since start (seconds)
         float time = 0.0f;
-        
+
         /// Delta time (seconds)
         float deltaTime = 0.0f;
 
         // =====================================================================
         // Methods
         // =====================================================================
-        
+
         /**
          * @brief Setup view data from a camera
          * @param camera The camera to extract data from

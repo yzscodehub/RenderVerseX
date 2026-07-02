@@ -108,9 +108,17 @@ void LightManager::CollectLights(const RenderScene& scene)
             SetMainLight(light.direction, light.color, light.intensity);
             break;
         case RenderLight::Type::Point:
+            if (light.castsShadow)
+            {
+                ++m_pointShadowRequestCount;
+            }
             AddPointLight(light.position, light.color, light.intensity, light.range);
             break;
         case RenderLight::Type::Spot:
+            if (light.castsShadow)
+            {
+                ++m_spotShadowRequestCount;
+            }
             AddSpotLight(light.position, light.direction, light.color,
                         light.intensity, light.range, light.innerConeAngle, light.outerConeAngle);
             break;
@@ -165,6 +173,8 @@ void LightManager::Clear()
 {
     m_pointLights.clear();
     m_spotLights.clear();
+    m_pointShadowRequestCount = 0;
+    m_spotShadowRequestCount = 0;
     m_mainLight = GPUDirectionalLight{};
 }
 

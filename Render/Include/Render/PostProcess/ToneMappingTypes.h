@@ -31,4 +31,13 @@ namespace RVX
         CameraEV100         // Resolve exposure from camera EV100 and compensation stops
     };
 
+    /**
+     * @brief Display/output color space written by the tone mapping pass
+     */
+    enum class ToneMappingOutputColorSpace : uint8
+    {
+        Linear,             // Keep the tone-mapped value linear for HDR or offscreen consumers
+        SRGB                // Apply gamma display conversion for standard UNORM back buffers
+    };
+
 } // namespace RVX

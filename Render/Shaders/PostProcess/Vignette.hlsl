@@ -13,9 +13,11 @@ cbuffer VignetteConstants : register(b0, space0)
     float2 Center;
     float AspectRatio;
     float Padding0;
-    float3 VignetteColor;
-    float Padding1;
+    float4 VignetteColor_Padding1;
 };
+
+#define VignetteColor VignetteColor_Padding1.xyz
+#define Padding1 VignetteColor_Padding1.w
 
 Texture2D<float4> InputTexture : register(t1, space0);
 SamplerState LinearSampler : register(s2, space0);

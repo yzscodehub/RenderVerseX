@@ -32,12 +32,21 @@ target_sources(RVX_Render PRIVATE
     Private/Renderer/RenderProxySceneBridge.cpp
     Private/Renderer/SceneSkyboxPassBridge.cpp
     Private/Renderer/SceneRenderer.cpp
+    # Ray tracing
+    Private/RayTracing/RayTracingScene.cpp
+    Private/RayTracing/RayTracingSceneManager.cpp
     # Passes
     Private/Passes/OpaquePass.cpp
     Private/Passes/DepthPrepass.cpp
     Private/Passes/TransparentPass.cpp
+    Private/Passes/CameraVelocityPass.cpp
+    Private/Passes/ObjectVelocityPass.cpp
     Private/Passes/SkyboxPass.cpp
     Private/Passes/ShadowPass.cpp
+    Private/Passes/RayTracedShadowPass.cpp
+    Private/Passes/RayTracedReflectionPass.cpp
+    Private/Passes/RayTracedReflectionDenoisePass.cpp
+    Private/Passes/RayTracedReflectionCompositePass.cpp
     Private/Passes/GBufferPass.cpp
     # Graph (merged from RenderGraph module)
     Private/Graph/RenderGraph.cpp
@@ -92,6 +101,7 @@ target_include_directories(RVX_Render PUBLIC
 target_include_directories(RVX_Render PRIVATE
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Engine/Include>
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/World/Include>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Physics/Include>
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Resource/Include>
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Scene/Include>
 )

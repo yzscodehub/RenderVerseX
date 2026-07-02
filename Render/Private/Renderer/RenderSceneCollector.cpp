@@ -8,6 +8,7 @@
 #include "Render/Renderer/RenderScene.h"
 #include "Scene/Components/LightComponent.h"
 #include "Scene/Components/MeshRendererComponent.h"
+#include "Scene/Components/SkeletonComponent.h"
 #include "Scene/Components/StaticMeshComponent.h"
 #include "Scene/PrimitiveComponent.h"
 #include "Scene/SceneEntity.h"
@@ -26,7 +27,13 @@ void RenderSceneCollector::Collect(RenderScene& outScene, World* world)
     if (!world)
         return;
 
-    SceneManager* sceneManager = world->GetSceneManager();
+    Collect(outScene, world->GetSceneManager());
+}
+
+void RenderSceneCollector::Collect(RenderScene& outScene, SceneManager* sceneManager)
+{
+    outScene.Clear();
+
     if (!sceneManager)
         return;
 
@@ -100,6 +107,11 @@ void RenderSceneCollector::CollectEntity(
                 obj.castsShadow = renderer->CastsShadow();
                 obj.receivesShadow = renderer->ReceivesShadow();
                 obj.visible = true;
+
+                if (auto* skeleton = entity->GetComponent<SkeletonComponent>())
+                {
+                    obj.skinningMatrices = skeleton->GetSkinningMatrices();
+                }
 
                 size_t submeshCount = renderer->GetSubmeshCount();
                 obj.materialIds.resize(submeshCount);

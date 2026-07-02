@@ -14,7 +14,12 @@ cbuffer ToneMappingConstants : register(b0, space0)
     uint OperatorType;  // 0=Reinhard, 1=ReinhardExt, 2=ACES, 3=Uncharted2, 4=Neutral, other=Pass-through
     float2 TextureSize;
     float2 InvTextureSize;
+    uint OutputColorSpace; // 0=Linear, 1=sRGB
+    float3 ToneMappingPadding;
 };
+
+#define TONE_MAPPING_OUTPUT_LINEAR 0
+#define TONE_MAPPING_OUTPUT_SRGB 1
 
 // =============================================================================
 // Textures and Samplers
@@ -93,9 +98,14 @@ float3 NeutralTonemap(float3 x)
 // =============================================================================
 
 // RQ1 guardrail: for UNORM back buffers, this shader owns the single
-// linear-to-display conversion. Do not also apply an sRGB conversion here.
-float3 ApplyDisplayConversion(float3 linearColor, float gamma)
+// linear-to-display conversion. HDR/offscreen consumers can request linear output.
+float3 ApplyDisplayConversion(float3 linearColor, float gamma, uint outputColorSpace)
 {
+    if (outputColorSpace == TONE_MAPPING_OUTPUT_LINEAR)
+    {
+        return linearColor;
+    }
+
     return pow(linearColor, 1.0 / gamma);
 }
 
@@ -156,8 +166,8 @@ float4 PSMain(VSOutput input) : SV_TARGET
         break;
     }
     
-    // Single display conversion for the final LDR back buffer write
-    float3 output = ApplyDisplayConversion(ldr, Gamma);
+    // Single display conversion for the final display write; linear consumers opt out explicitly.
+    float3 output = ApplyDisplayConversion(ldr, Gamma, OutputColorSpace);
     
     return float4(output, 1.0);
 }

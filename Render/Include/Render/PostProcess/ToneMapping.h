@@ -53,16 +53,21 @@ namespace RVX
         void SetWhitePoint(float whitePoint) { m_whitePoint = whitePoint; }
         float GetWhitePoint() const { return m_whitePoint; }
 
+        void SetOutputColorSpace(ToneMappingOutputColorSpace colorSpace) { m_outputColorSpace = colorSpace; }
+        ToneMappingOutputColorSpace GetOutputColorSpace() const { return m_outputColorSpace; }
+
     private:
         bool EnsureRuntimeResources();
         bool UpdateConstants(uint32 width,
                              uint32 height,
                              ToneMappingOperator op,
+                             ToneMappingOutputColorSpace outputColorSpace,
                              float exposure,
                              float gamma,
                              float whitePoint);
 
         ToneMappingOperator m_operator = ToneMappingOperator::ACES;
+        ToneMappingOutputColorSpace m_outputColorSpace = ToneMappingOutputColorSpace::SRGB;
         float m_exposure = 1.0f;
         float m_gamma = 2.2f;
         float m_whitePoint = 11.2f;

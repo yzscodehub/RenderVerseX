@@ -65,7 +65,12 @@ namespace
         uint32 operatorType = 0;
         float textureSize[2] = {1.0f, 1.0f};
         float invTextureSize[2] = {1.0f, 1.0f};
+        uint32 outputColorSpace = static_cast<uint32>(ToneMappingOutputColorSpace::SRGB);
+        float padding[3] = {0.0f, 0.0f, 0.0f};
     };
+
+    static_assert(sizeof(ToneMappingGPUConstants) == 48,
+                  "ToneMappingGPUConstants must match ToneMapping.hlsl cbuffer packing");
 } // namespace
 
 ToneMappingPass::ToneMappingPass()
@@ -80,6 +85,7 @@ void ToneMappingPass::Configure(const PostProcessSettings& settings)
     m_exposure = ResolveToneMappingExposure(settings);
     m_gamma = settings.gamma;
     m_operator = settings.toneMappingOperator;
+    m_outputColorSpace = settings.toneMappingOutputColorSpace;
 }
 
 void ToneMappingPass::SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache)
@@ -141,6 +147,7 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
         RGTextureHandle input;
         RGTextureHandle output;
         ToneMappingOperator op;
+        ToneMappingOutputColorSpace outputColorSpace;
         float exposure;
         float gamma;
         float whitePoint;
@@ -154,6 +161,7 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
             data.input = builder.Read(input, RHIShaderStage::Pixel);
             data.output = builder.Write(output, RHIResourceState::RenderTarget);
             data.op = m_operator;
+            data.outputColorSpace = m_outputColorSpace;
             data.exposure = m_exposure;
             data.gamma = m_gamma;
             data.whitePoint = m_whitePoint;
@@ -201,6 +209,7 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
                 !UpdateConstants(inputTexture->GetWidth(),
                                  inputTexture->GetHeight(),
                                  data.op,
+                                 data.outputColorSpace,
                                  data.exposure,
                                  data.gamma,
                                  data.whitePoint))
@@ -298,6 +307,7 @@ bool ToneMappingPass::EnsureRuntimeResources()
 bool ToneMappingPass::UpdateConstants(uint32 width,
                                       uint32 height,
                                       ToneMappingOperator op,
+                                      ToneMappingOutputColorSpace outputColorSpace,
                                       float exposure,
                                       float gamma,
                                       float whitePoint)
@@ -317,6 +327,7 @@ bool ToneMappingPass::UpdateConstants(uint32 width,
     constants.textureSize[1] = safeHeight;
     constants.invTextureSize[0] = 1.0f / safeWidth;
     constants.invTextureSize[1] = 1.0f / safeHeight;
+    constants.outputColorSpace = static_cast<uint32>(outputColorSpace);
 
     void* mapped = m_constantBuffer->Map();
     if (!mapped)

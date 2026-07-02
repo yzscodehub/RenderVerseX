@@ -1,7 +1,7 @@
 /**
  * @file GPUCulling.h
  * @brief GPU-driven visibility culling
- * 
+ *
  * Implements GPU-based frustum and occlusion culling using compute shaders.
  */
 
@@ -9,6 +9,7 @@
 
 #include "Core/Types.h"
 #include "Core/MathTypes.h"
+#include "Render/Material/MaterialClassification.h"
 #include "RHI/RHI.h"
 #include <vector>
 
@@ -17,6 +18,18 @@ namespace RVX
     class IRHIDevice;
     class RHICommandContext;
     class RenderScene;
+    struct RenderDrawItem;
+    namespace Resource { class MaterialResource; }
+
+    /**
+     * @brief Indexed draw arguments associated with a render draw item
+     */
+    struct GPUIndexedDrawDesc
+    {
+        uint32 indexCount = 0;
+        uint32 firstIndex = 0;
+        int32 vertexOffset = 0;
+    };
 
     /**
      * @brief GPU instance data for culling
@@ -24,39 +37,33 @@ namespace RVX
     struct GPUInstanceData
     {
         Mat4 worldMatrix;
+        Mat4 normalMatrix;
         Vec4 boundingSphere;  // xyz = center, w = radius
         Vec4 aabbMin;         // xyz = min, w = unused
         Vec4 aabbMax;         // xyz = max, w = unused
         uint32 meshId;
         uint32 materialId;
-        uint32 flags;
-        uint32 pad;
+        uint32 indexCount;
+        uint32 firstIndex;
+        int32 vertexOffset;
+        uint32 sourceIndex = RVX_INVALID_INDEX;
+        uint32 drawGroupIndex;
+        uint32 drawGroupCommandOffset;
     };
 
     /**
-     * @brief Indirect draw command (matches D3D12/Vulkan structures)
+     * @brief Contiguous indirect command range for a mesh-compatible draw group
      */
-    struct IndirectDrawCommand
+    struct GPUCullingDrawGroup
     {
-        uint32 indexCount;
-        uint32 instanceCount;
-        uint32 firstIndex;
-        int32 vertexOffset;
-        uint32 firstInstance;
-    };
-
-    /**
-     * @brief Indirect indexed draw command with instance ID
-     */
-    struct IndirectDrawIndexedCommand
-    {
-        uint32 indexCount;
-        uint32 instanceCount;
-        uint32 firstIndex;
-        int32 vertexOffset;
-        uint32 firstInstance;
-        uint32 instanceId;  // Custom: index into instance buffer
-        uint32 pad[2];
+        uint64 meshId = 0;
+        uint64 materialId = 0;
+        const Resource::MaterialResource* materialResource = nullptr;
+        MaterialPipelineVariant pipelineVariant = MaterialPipelineVariant::Opaque;
+        uint32 commandOffset = 0;
+        uint32 countBufferOffset = 0;
+        uint32 maxDrawCount = 0;
+        uint32 visibleDrawCount = 0;
     };
 
     /**
@@ -74,13 +81,13 @@ namespace RVX
 
     /**
      * @brief GPU-driven culling system
-     * 
+     *
      * Performs visibility determination entirely on the GPU:
      * 1. Upload instance data to GPU
      * 2. Run culling compute shader
      * 3. Generate indirect draw commands
      * 4. Execute indirect draws
-     * 
+     *
      * Benefits:
      * - Minimal CPU overhead
      * - Scales to millions of instances
@@ -122,6 +129,20 @@ namespace RVX
         void BeginFrame();
 
         /**
+         * @brief Begin a mesh-compatible draw group for subsequent instances
+         * @return Group index, or RVX_INVALID_INDEX when the group cannot be created
+         */
+        uint32 BeginDrawGroup(uint64 meshId,
+                              uint64 materialId = 0,
+                              MaterialPipelineVariant pipelineVariant = MaterialPipelineVariant::Opaque,
+                              const Resource::MaterialResource* materialResource = nullptr);
+
+        /**
+         * @brief End the current draw group
+         */
+        void EndDrawGroup();
+
+        /**
          * @brief Add an instance to be culled
          * @return Instance index
          */
@@ -133,6 +154,19 @@ namespace RVX
         void AddInstances(const GPUInstanceData* instances, uint32 count);
 
         /**
+         * @brief Add a render draw item as a cullable GPU instance
+         * @param scene Render scene containing the draw item object
+         * @param drawItem Material-aware draw item to map back after culling
+         * @param drawDesc Indexed draw arguments for the item submesh
+         * @param sourceIndex Caller-owned draw item index returned by GetVisibleSourceIndices()
+         * @return Instance index, or RVX_INVALID_INDEX when the item cannot be represented
+         */
+        uint32 AddDrawItemInstance(const RenderScene& scene,
+                                   const RenderDrawItem& drawItem,
+                                   const GPUIndexedDrawDesc& drawDesc,
+                                   uint32 sourceIndex);
+
+        /**
          * @brief End instance collection and upload to GPU
          */
         void EndFrame();
@@ -141,6 +175,11 @@ namespace RVX
          * @brief Get current instance count
          */
         uint32 GetInstanceCount() const { return m_instanceCount; }
+
+        /**
+         * @brief Get mesh-compatible indirect draw groups
+         */
+        const std::vector<GPUCullingDrawGroup>& GetDrawGroups() const { return m_drawGroups; }
 
         // =========================================================================
         // Culling
@@ -159,9 +198,33 @@ namespace RVX
                   RHITexture* hiZTexture = nullptr);
 
         /**
+         * @brief Perform CPU fallback culling and upload the same output buffers
+         *
+         * This is used until compute culling/compaction pipelines are available,
+         * and by higher-level render paths that need draw-list filtering before
+         * command recording.
+         */
+        void CullCpuFallback(const Mat4& viewMatrix, const Mat4& projMatrix);
+
+        /**
          * @brief Get the indirect draw buffer
          */
         RHIBuffer* GetIndirectBuffer() const { return m_indirectBuffer.Get(); }
+
+        /**
+         * @brief Get the instance input buffer
+         */
+        RHIBuffer* GetInstanceBuffer() const { return m_instanceBuffer.Get(); }
+
+        /**
+         * @brief Get the culling constants buffer
+         */
+        RHIBuffer* GetCullingConstantsBuffer() const { return m_cullingConstantsBuffer.Get(); }
+
+        /**
+         * @brief Get visibility flag buffer
+         */
+        RHIBuffer* GetVisibilityBuffer() const { return m_visibilityBuffer.Get(); }
 
         /**
          * @brief Get the draw count buffer (for indirect count)
@@ -172,6 +235,48 @@ namespace RVX
          * @brief Get visible instance buffer
          */
         RHIBuffer* GetVisibleInstanceBuffer() const { return m_visibleInstanceBuffer.Get(); }
+
+        /**
+         * @brief Get CPU-visible indices generated by the last cull pass
+         */
+        const std::vector<uint32>& GetVisibleInstanceIndices() const { return m_visibleInstanceIndices; }
+
+        /**
+         * @brief Get caller-owned source indices for visible draw-item instances
+         */
+        const std::vector<uint32>& GetVisibleSourceIndices() const { return m_visibleSourceIndices; }
+
+        /**
+         * @brief Get CPU-visible indirect commands generated by the last cull pass
+         */
+        const std::vector<IndirectDrawIndexedCommand>& GetIndirectCommands() const { return m_indirectCommands; }
+
+        /**
+         * @brief Get draw count generated by the last cull pass
+         */
+        uint32 GetDrawCount() const { return m_drawCount; }
+
+        /**
+         * @brief Whether the last cull used the CPU fallback path
+         */
+        bool WasCpuFallbackUsedLastCull() const { return m_usedCpuFallbackLastCull; }
+
+        /**
+         * @brief Whether the last cull recorded GPU compute culling/compaction work
+         */
+        bool WasGpuExecutionUsedLastCull() const { return m_usedGpuExecutionLastCull; }
+
+        /**
+         * @brief Submit the generated indexed indirect draw buffer
+         * @return Number of indirect draw commands submitted
+         */
+        uint32 DrawIndexedIndirect(RHICommandContext& ctx, uint32 maxDrawCount = 0) const;
+
+        /**
+         * @brief Submit one mesh-compatible indirect draw group
+         * @return Number of indirect draw commands submitted, or max submitted for GPU count draws
+         */
+        uint32 DrawIndexedIndirectGroup(RHICommandContext& ctx, uint32 groupIndex) const;
 
         // =========================================================================
         // Statistics
@@ -199,24 +304,48 @@ namespace RVX
 
     private:
         void CreateResources();
+        void CreatePipelineResources();
+        bool SupportsGpuExecution() const;
+        uint32 EnsureDefaultDrawGroup();
         void UploadInstances();
         void ExtractFrustumPlanes(const Mat4& viewProj, Vec4* planes);
+        void BuildCpuCullResults(const Mat4& viewMatrix, const Vec4* frustumPlanes);
+        void UploadCullOutputs(RHICommandContext* ctx = nullptr);
+        bool UploadBufferData(RHIBuffer* buffer,
+                              const void* data,
+                              uint64 size,
+                              RHICommandContext* ctx);
 
         IRHIDevice* m_device = nullptr;
         GPUCullingConfig m_config;
-
         // CPU-side instance data
         std::vector<GPUInstanceData> m_instances;
+        std::vector<uint32> m_visibleInstanceIndices;
+        std::vector<uint32> m_visibleSourceIndices;
+        std::vector<IndirectDrawIndexedCommand> m_indirectCommands;
+        std::vector<uint32> m_groupDrawCounts;
+        std::vector<GPUCullingDrawGroup> m_drawGroups;
         uint32 m_instanceCount = 0;
+        uint32 m_drawCount = 0;
+        uint32 m_activeDrawGroupIndex = RVX_INVALID_INDEX;
+        bool m_usedCpuFallbackLastCull = false;
+        bool m_usedGpuExecutionLastCull = false;
+        std::vector<RHIBufferRef> m_transientUploadBuffers;
 
         // GPU buffers
         RHIBufferRef m_instanceBuffer;           // All instance data
+        RHIBufferRef m_visibilityBuffer;         // Per-instance visibility flags
         RHIBufferRef m_visibleInstanceBuffer;    // Visible instance indices
         RHIBufferRef m_indirectBuffer;           // Indirect draw commands
         RHIBufferRef m_drawCountBuffer;          // Number of draws
         RHIBufferRef m_cullingConstantsBuffer;   // View/proj, frustum planes
 
         // Pipelines
+        RHIShaderRef m_frustumCullShader;
+        RHIShaderRef m_compactShader;
+        RHIDescriptorSetLayoutRef m_cullingDescriptorSetLayout;
+        RHIPipelineLayoutRef m_cullingPipelineLayout;
+        RHIDescriptorSetRef m_cullingDescriptorSet;
         RHIPipelineRef m_frustumCullPipeline;
         RHIPipelineRef m_occlusionCullPipeline;
         RHIPipelineRef m_compactPipeline;

@@ -7,6 +7,7 @@
 #include "Core/Log.h"
 #include "Render/GPUResourceManager.h"
 #include "Render/Graph/ResourceViewCache.h"
+#include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
@@ -18,6 +19,19 @@
 
 namespace RVX
 {
+
+namespace
+{
+    std::span<const Mat4> ResolveSkinningMatrices(const RenderObject& object, const MeshGPUBuffers& buffers)
+    {
+        if (!object.HasSkinningData() || !buffers.HasSkinningVertexData())
+        {
+            return {};
+        }
+
+        return std::span<const Mat4>(object.skinningMatrices.data(), object.skinningMatrices.size());
+    }
+} // namespace
 
 TransparentPass::TransparentPass()
 {
@@ -38,12 +52,14 @@ namespace
 void TransparentPass::SetResources(GPUResourceManager* gpuResources,
                                    PipelineCache* pipelineCache,
                                    MaterialSystem* materialSystem,
-                                   LightManager* lightManager)
+                                   LightManager* lightManager,
+                                   ClusteredLighting* clusteredLighting)
 {
     m_gpuResources = gpuResources;
     m_pipelineCache = pipelineCache;
     m_materialSystem = materialSystem;
     m_lightManager = lightManager;
+    m_clusteredLighting = clusteredLighting;
 }
 void TransparentPass::SetRenderScene(const RenderScene* scene, const std::vector<RenderDrawItem>* transparentDrawItems)
 {
@@ -105,6 +121,15 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
+    RHITextureView* depthTargetView = m_depthTargetView;
+    if (view.renderGraph && view.viewCache && m_depthTargetHandle.IsValid())
+    {
+        if (RHITexture* depthTarget = view.renderGraph->GetTexture(m_depthTargetHandle))
+        {
+            depthTargetView = view.viewCache->GetDefaultDSV(depthTarget);
+        }
+    }
+
     // RQ3a keeps directional shadow sampling scoped to OpaquePass. Transparent
     // shading reuses DefaultLit, so reset the frame shadow state explicitly
     // before binding the frame descriptor for transparent draws.
@@ -122,6 +147,12 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
         lightResources.pointLightsBuffer = m_lightManager->GetPointLightsBuffer();
         lightResources.spotLightsBuffer = m_lightManager->GetSpotLightsBuffer();
     }
+    if (m_clusteredLighting && m_clusteredLighting->IsInitialized())
+    {
+        lightResources.clusterConstantsBuffer = m_clusteredLighting->GetClusterConstantsBuffer();
+        lightResources.clusterBuffer = m_clusteredLighting->GetClusterBuffer();
+        lightResources.clusterLightIndexBuffer = m_clusteredLighting->GetLightIndexBuffer();
+    }
     m_pipelineCache->UpdateFrameLightResources(lightResources);
     m_pipelineCache->UpdateViewConstants(transparentView);
 
@@ -130,10 +161,10 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
     rpDesc.AddColorAttachment(colorTargetView, RHILoadOp::Load, RHIStoreOp::Store,
                               {0.0f, 0.0f, 0.0f, 0.0f});  // Load existing content
 
-    if (m_depthTargetView)
+    if (depthTargetView)
     {
         // Depth read-only: Load existing depth, don't store (or store if other passes need it)
-        rpDesc.SetDepthStencil(m_depthTargetView, RHILoadOp::Load, RHIStoreOp::Store, 1.0f, 0);
+        rpDesc.SetDepthStencil(depthTargetView, RHILoadOp::Load, RHIStoreOp::Store, 1.0f, 0);
     }
 
     ctx.BeginRenderPass(rpDesc);
@@ -177,7 +208,15 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
             }
 
             // Update per-object constants
-            m_pipelineCache->UpdateObjectConstants(obj.worldMatrix, obj.normalMatrix);
+            m_pipelineCache->UpdateObjectConstants(obj.worldMatrix,
+                                                   obj.normalMatrix,
+                                                   obj.previousWorldMatrix,
+                                                   view.previousViewProjectionMatrix,
+                                                   obj.previousWorldMatrixValid != 0 &&
+                                                       view.previousViewProjectionValid != 0 &&
+                                                       !view.resetTemporalHistory,
+                                                   obj.receivesShadow,
+                                                   ResolveSkinningMatrices(obj, buffers));
             RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
             if (objectSet)
             {
@@ -187,12 +226,12 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
 
             // Bind vertex buffers
             ctx.SetVertexBuffer(0, buffers.positionBuffer);
-            
+
             if (buffers.normalBuffer)
             {
                 ctx.SetVertexBuffer(1, buffers.normalBuffer);
             }
-            
+
             if (buffers.uvBuffer)
             {
                 ctx.SetVertexBuffer(2, buffers.uvBuffer);
@@ -201,6 +240,16 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
             if (buffers.tangentBuffer)
             {
                 ctx.SetVertexBuffer(3, buffers.tangentBuffer);
+            }
+
+            if (buffers.boneIndicesBuffer)
+            {
+                ctx.SetVertexBuffer(4, buffers.boneIndicesBuffer);
+            }
+
+            if (buffers.boneWeightsBuffer)
+            {
+                ctx.SetVertexBuffer(5, buffers.boneWeightsBuffer);
             }
 
             // Bind index buffer

@@ -61,6 +61,7 @@ namespace RVX
             uint32 subresource = 0;
             uint32 width = 0;
             uint32 height = 0;
+            uint32 rowCount = 0;
             uint64 sourceOffset = 0;
             uint64 sourceRowPitch = 0;
             uint64 sourceSize = 0;
@@ -69,17 +70,40 @@ namespace RVX
             uint64 uploadSize = 0;
         };
 
+        struct TextureFormatUploadBlock
+        {
+            uint32 width = 1;
+            uint32 height = 1;
+            uint32 bytes = 0;
+        };
+
         uint64 AlignUp(uint64 value, uint64 alignment)
         {
             return (value + alignment - 1) & ~(alignment - 1);
         }
 
+        TextureFormatUploadBlock GetTextureFormatUploadBlock(RHIFormat format)
+        {
+            const uint32 bytes = GetFormatBytesPerPixel(format);
+            if (bytes == 0)
+            {
+                return {};
+            }
+
+            if (IsCompressedFormat(format))
+            {
+                return {4, 4, bytes};
+            }
+
+            return {1, 1, bytes};
+        }
+
         bool IsSupportedTextureUploadFormat(RHIFormat format)
         {
-            if (format == RHIFormat::Unknown || IsDepthFormat(format) || IsCompressedFormat(format))
+            if (format == RHIFormat::Unknown || IsDepthFormat(format))
                 return false;
 
-            return GetFormatBytesPerPixel(format) > 0;
+            return GetTextureFormatUploadBlock(format).bytes > 0;
         }
     } // namespace
 
@@ -419,10 +443,13 @@ namespace RVX
 
     GPUUploadTextureResult GPUUploadService::TryUploadTextureStaged(const GPUUploadTextureDesc& desc, const void* data)
     {
-        const uint32 bytesPerPixel = GetFormatBytesPerPixel(desc.textureDesc.format);
+        const bool isCompressed = IsCompressedFormat(desc.textureDesc.format);
+        const bool useTightRows = isCompressed && m_device && m_device->GetBackendType() == RHIBackendType::OpenGL;
+
+        const TextureFormatUploadBlock block = GetTextureFormatUploadBlock(desc.textureDesc.format);
         if ((desc.textureDesc.dimension != RHITextureDimension::Texture2D &&
              desc.textureDesc.dimension != RHITextureDimension::TextureCube) ||
-            bytesPerPixel == 0)
+            block.bytes == 0)
         {
             GPUUploadTextureResult result;
             result.failureReason = GPUUploadFailureReason::Unsupported;
@@ -443,11 +470,17 @@ namespace RVX
             {
                 const uint32 mipWidth = std::max(1u, desc.textureDesc.width >> mipLevel);
                 const uint32 mipHeight = std::max(1u, desc.textureDesc.height >> mipLevel);
-                const uint64 sourceRowPitch = static_cast<uint64>(mipWidth) * bytesPerPixel;
-                const uint64 uploadRowPitch = AlignUp(sourceRowPitch, RVX_TEXTURE_UPLOAD_ROW_PITCH_ALIGNMENT);
-                const uint64 subresourceSourceSize = sourceRowPitch * mipHeight;
-                const uint64 subresourceUploadSize = uploadRowPitch * mipHeight;
-                const uint64 uploadOffset = AlignUp(uploadSize, RVX_TEXTURE_UPLOAD_PLACEMENT_ALIGNMENT);
+                const uint32 rowBlockCount = (mipWidth + block.width - 1u) / block.width;
+                const uint32 rowCount = (mipHeight + block.height - 1u) / block.height;
+                const uint64 sourceRowPitch = static_cast<uint64>(rowBlockCount) * block.bytes;
+                const uint64 uploadRowPitch = useTightRows
+                    ? sourceRowPitch
+                    : AlignUp(sourceRowPitch, RVX_TEXTURE_UPLOAD_ROW_PITCH_ALIGNMENT);
+                const uint64 subresourceSourceSize = sourceRowPitch * rowCount;
+                const uint64 subresourceUploadSize = uploadRowPitch * rowCount;
+                const uint64 uploadOffset = useTightRows
+                    ? uploadSize
+                    : AlignUp(uploadSize, RVX_TEXTURE_UPLOAD_PLACEMENT_ALIGNMENT);
                 if (subresourceSourceSize > std::numeric_limits<uint64>::max() - sourceSize ||
                     subresourceUploadSize > std::numeric_limits<uint64>::max() - uploadOffset)
                 {
@@ -460,6 +493,7 @@ namespace RVX
                 layout.subresource = EncodeTextureSubresource(mipLevel, physicalLayer, mipLevels);
                 layout.width = mipWidth;
                 layout.height = mipHeight;
+                layout.rowCount = rowCount;
                 layout.sourceOffset = sourceSize;
                 layout.sourceRowPitch = sourceRowPitch;
                 layout.sourceSize = subresourceSourceSize;
@@ -521,7 +555,7 @@ namespace RVX
         const auto* srcBytes = static_cast<const uint8*>(data);
         for (const auto& layout : layouts)
         {
-            for (uint32 row = 0; row < layout.height; ++row)
+            for (uint32 row = 0; row < layout.rowCount; ++row)
             {
                 std::memcpy(dstBytes + layout.uploadOffset + row * layout.uploadRowPitch,
                             srcBytes + layout.sourceOffset + row * layout.sourceRowPitch,
@@ -535,7 +569,7 @@ namespace RVX
             RHIBufferTextureCopyDesc copyDesc;
             copyDesc.bufferOffset = layout.uploadOffset;
             copyDesc.bufferRowPitch = static_cast<uint32>(layout.uploadRowPitch);
-            copyDesc.bufferImageHeight = layout.height;
+            copyDesc.bufferImageHeight = layout.rowCount;
             copyDesc.textureSubresource = layout.subresource;
             copyDesc.textureRegion = {0, 0, layout.width, layout.height};
             copyDesc.textureDepthSlice = 0;

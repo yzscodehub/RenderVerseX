@@ -28,6 +28,11 @@ void RenderScene::CollectFromWorld(World* world)
     RenderSceneCollector::Collect(*this, world);
 }
 
+void RenderScene::CollectFromSceneManager(SceneManager* sceneManager)
+{
+    RenderSceneCollector::Collect(*this, sceneManager);
+}
+
 void RenderScene::ApplyProxySnapshot(const RenderProxySnapshot& snapshot)
 {
     Clear();
@@ -43,8 +48,10 @@ void RenderScene::ApplyProxySnapshot(const RenderProxySnapshot& snapshot)
         object.meshResource = proxy.meshResource;
         object.materialIds = proxy.materialIds;
         object.materialResources = proxy.materialResources;
+        object.skinningMatrices = proxy.skinningMatrices;
         object.entityId = proxy.ownerId;
         object.sortKey = proxy.sortKey;
+        object.layerMask = proxy.layerMask;
         object.visible = proxy.visible;
         object.castsShadow = proxy.castsShadow;
         object.receivesShadow = proxy.receivesShadow;
@@ -92,7 +99,7 @@ void RenderScene::CullAgainstCamera(const Camera& camera, std::vector<uint32_t>&
     for (uint32_t i = 0; i < static_cast<uint32_t>(m_objects.size()); ++i)
     {
         const RenderObject& obj = m_objects[i];
-        
+
         if (!obj.visible)
             continue;
 

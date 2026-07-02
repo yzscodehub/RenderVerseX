@@ -5,27 +5,53 @@
  * @brief Opaque geometry render pass
  */
 
-#include "Render/Passes/IRenderPass.h"
 #include "Render/Graph/RenderGraph.h"
+#include "Render/Passes/IRenderPass.h"
 #include "Render/Renderer/RenderDrawItem.h"
+#include "RHI/RHICommandContext.h"
 #include <cstdint>
 #include <vector>
 
 namespace RVX
 {
     // Forward declarations
+    class ClusteredLighting;
+    class GPUCulling;
     class GPUResourceManager;
     class LightManager;
     class MaterialSystem;
     class PipelineCache;
+    class RayTracedShadowPass;
     class RenderScene;
     class ShadowPass;
+    struct GPUCullingDrawGroup;
 
     struct OpaquePassShadowStats
     {
         bool requested = false;
         bool renderGraphReadDeclared = false;
         bool frameShadowReady = false;
+        bool rayTracedRequested = false;
+        bool rayTracedRenderGraphReadDeclared = false;
+        bool rayTracedFrameMaskReady = false;
+        uint32 receiverCandidateDrawItemCount = 0;
+        uint32 shadowReceivingDrawItemCount = 0;
+        uint32 shadowReceiverOptOutDrawItemCount = 0;
+    };
+
+    struct OpaquePassDrawStats
+    {
+        uint32 directDrawCount = 0;
+        uint32 indirectBatchCount = 0;
+        uint32 indirectDrawCount = 0;
+        bool gpuDrivenRequested = false;
+        bool gpuDrivenEligible = false;
+        uint32 gpuDrivenIndirectBatchCount = 0;
+        uint32 gpuDrivenIndirectDrawCount = 0;
+        uint32 skippedInvalidObjectCount = 0;
+        uint32 skippedMissingMeshCount = 0;
+        uint32 skippedInvalidSubmeshCount = 0;
+        uint32 skippedMaterialBindingCount = 0;
     };
 
     /**
@@ -66,7 +92,8 @@ namespace RVX
         void SetResources(GPUResourceManager* gpuMgr,
                           PipelineCache* pipelines,
                           MaterialSystem* materialSystem,
-                          LightManager* lightManager = nullptr);
+                          LightManager* lightManager = nullptr,
+                          ClusteredLighting* clusteredLighting = nullptr);
 
         /**
          * @brief Set render scene data for this frame
@@ -79,7 +106,15 @@ namespace RVX
                             const std::vector<RenderDrawItem>* maskedDrawItems);
 
         void SetDirectionalShadowSource(const ShadowPass* shadowPass);
+        void SetRayTracedShadowSource(const RayTracedShadowPass* shadowPass);
+        void SetGPUDrivenCullingSource(const GPUCulling* gpuCulling);
+        void SetGPUDrivenRenderGraphResources(RGBufferHandle instanceBuffer,
+                                              RGBufferHandle indirectDrawBuffer,
+                                              RGBufferHandle drawCountBuffer);
         const OpaquePassShadowStats& GetShadowStats() const { return m_shadowStats; }
+        const OpaquePassDrawStats& GetDrawStats() const { return m_drawStats; }
+        void SetIndirectBatchingEnabled(bool enabled) { m_indirectBatchingEnabled = enabled; }
+        void SetGPUDrivenOpaqueIndirectEnabled(bool enabled) { m_gpuDrivenOpaqueIndirectEnabled = enabled; }
 
         // =====================================================================
         // Render Targets
@@ -94,15 +129,23 @@ namespace RVX
         RGTextureHandle m_colorTargetHandle;
         RGTextureHandle m_depthTargetHandle;
         RGTextureHandle m_directionalShadowReadHandle;
+        RGTextureHandle m_rayTracedShadowMaskReadHandle;
+        RGBufferHandle m_gpuDrivenInstanceHandle;
+        RGBufferHandle m_gpuDrivenIndirectHandle;
+        RGBufferHandle m_gpuDrivenDrawCountHandle;
         OpaquePassShadowStats m_shadowStats;
+        OpaquePassDrawStats m_drawStats;
 
         // Resource dependencies
         GPUResourceManager* m_gpuResources = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         MaterialSystem* m_materialSystem = nullptr;
         LightManager* m_lightManager = nullptr;
+        ClusteredLighting* m_clusteredLighting = nullptr;
         const RenderScene* m_renderScene = nullptr;
         const ShadowPass* m_shadowPass = nullptr;
+        const RayTracedShadowPass* m_rayTracedShadowPass = nullptr;
+        const GPUCulling* m_gpuCulling = nullptr;
         const std::vector<RenderDrawItem>* m_opaqueDrawItems = nullptr;
         const std::vector<RenderDrawItem>* m_maskedDrawItems = nullptr;
 
@@ -112,6 +155,22 @@ namespace RVX
 
         // Device reference
         IRHIDevice* m_device = nullptr;
+
+        bool m_indirectBatchingEnabled = true;
+        bool m_gpuDrivenOpaqueIndirectEnabled = true;
+        RHIBufferRef m_indirectDrawBuffer;
+        uint32 m_indirectDrawBufferCapacity = 0;
+        std::vector<IndirectDrawIndexedCommand> m_indirectDrawCommands;
+
+        uint32 FindIndirectBatchLength(const std::vector<RenderDrawItem>& drawItems,
+                                       size_t startIndex) const;
+        bool EnsureIndirectDrawCapacity(uint32 commandCount);
+        const RenderDrawItem* FindGPUDrivenGroupRepresentative(const GPUCullingDrawGroup& group) const;
+        bool AreGPUDrivenOpaqueGroupsDrawable(uint32& outDrawItemCount) const;
+        bool TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
+                                      const ViewData& view,
+                                      RHIFormat colorTargetFormat,
+                                      RHIDescriptorSet* frameSet);
 
     };
 
