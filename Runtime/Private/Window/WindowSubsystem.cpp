@@ -20,6 +20,8 @@ void WindowSubsystem::Initialize()
     desc.title = m_config.title;
     desc.resizable = m_config.resizable;
     desc.fullscreen = m_config.fullscreen;
+    desc.vsync = m_config.vsync;
+    desc.graphicsApi = m_config.graphicsApi;
 
     m_window = HAL::CreateWindow(desc);
 
@@ -96,6 +98,11 @@ float WindowSubsystem::GetDpiScale() const
 void* WindowSubsystem::GetNativeHandle() const
 {
     return m_window ? m_window->GetNativeHandle() : nullptr;
+}
+
+void* WindowSubsystem::GetInternalHandle() const
+{
+    return m_window ? m_window->GetInternalHandle() : nullptr;
 }
 
 } // namespace RVX

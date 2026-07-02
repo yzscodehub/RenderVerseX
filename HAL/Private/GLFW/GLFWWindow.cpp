@@ -32,7 +32,23 @@ namespace RVX::HAL
         ++s_glfwInitCount;
 
         // Set window hints
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);  // No OpenGL context
+        glfwDefaultWindowHints();
+        if (desc.graphicsApi == WindowGraphicsApi::OpenGL)
+        {
+            glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
+            glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+
+#ifdef __APPLE__
+            glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+#endif
+        }
+        else
+        {
+            glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        }
+
         glfwWindowHint(GLFW_RESIZABLE, desc.resizable ? GLFW_TRUE : GLFW_FALSE);
 
         // Create window
@@ -48,6 +64,12 @@ namespace RVX::HAL
         {
             LOG_ERROR("Failed to create GLFW window");
             return;
+        }
+
+        if (desc.graphicsApi == WindowGraphicsApi::OpenGL)
+        {
+            glfwMakeContextCurrent(m_window);
+            glfwSwapInterval(desc.vsync ? 1 : 0);
         }
 
         // Set user pointer for callbacks
