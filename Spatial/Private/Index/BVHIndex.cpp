@@ -16,6 +16,7 @@ BVHIndex::~BVHIndex() = default;
 void BVHIndex::Build(std::span<ISpatialEntity*> entities)
 {
     Clear();
+    ++m_buildCount;
 
     if (entities.empty()) return;
 
@@ -52,7 +53,9 @@ void BVHIndex::Clear()
     m_entityIndex.clear();
     m_pendingInserts.clear();
     m_pendingRemoves.clear();
+    m_pendingUpdates.clear();
     m_needsRebuild = false;
+    m_needsRefit = false;
 }
 
 void BVHIndex::Insert(ISpatialEntity* entity)
@@ -71,14 +74,28 @@ void BVHIndex::Remove(EntityHandle handle)
 void BVHIndex::Update(ISpatialEntity* entity)
 {
     if (!entity) return;
-    // For now, mark for rebuild
-    // TODO: Implement incremental update
-    m_needsRebuild = true;
+
+    if (m_entityIndex.find(entity->GetHandle()) == m_entityIndex.end())
+        return;
+
+    m_pendingUpdates.push_back(entity->GetHandle());
+    m_needsRefit = true;
 }
 
 void BVHIndex::Commit()
 {
-    if (!m_needsRebuild) return;
+    if (!m_needsRebuild)
+    {
+        if (m_needsRefit && !m_nodes.empty())
+        {
+            RefitNodeBounds(0);
+            ++m_refitCount;
+        }
+
+        m_pendingUpdates.clear();
+        m_needsRefit = false;
+        return;
+    }
 
     // Process removals
     for (auto handle : m_pendingRemoves)
@@ -108,6 +125,33 @@ void BVHIndex::Commit()
     // Rebuild
     Build(newEntities);
     m_needsRebuild = false;
+    m_pendingUpdates.clear();
+    m_needsRefit = false;
+}
+
+AABB BVHIndex::RefitNodeBounds(int nodeIdx)
+{
+    Node& node = m_nodes[nodeIdx];
+    node.bounds.Reset();
+
+    if (node.IsLeaf())
+    {
+        for (int i = 0; i < node.primitiveCount; ++i)
+        {
+            ISpatialEntity* entity = m_entities[m_primitiveIndices[node.firstPrimitive + i]];
+            if (entity)
+            {
+                node.bounds.Expand(entity->GetWorldBounds());
+            }
+        }
+    }
+    else
+    {
+        node.bounds.Expand(RefitNodeBounds(node.leftChild));
+        node.bounds.Expand(RefitNodeBounds(node.rightChild));
+    }
+
+    return node.bounds;
 }
 
 int BVHIndex::BuildRecursive(int start, int end, int depth)
@@ -560,6 +604,8 @@ IndexStats BVHIndex::GetStats() const
     stats.memoryBytes = m_nodes.capacity() * sizeof(Node) +
                         m_entities.capacity() * sizeof(ISpatialEntity*) +
                         m_primitiveIndices.capacity() * sizeof(int);
+    stats.buildCount = m_buildCount;
+    stats.refitCount = m_refitCount;
 
     // Calculate max depth and avg entities per leaf
     int maxDepth = 0;

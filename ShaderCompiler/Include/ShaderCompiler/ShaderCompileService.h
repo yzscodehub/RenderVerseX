@@ -10,15 +10,102 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <utility>
 
 namespace RVX
 {
+    // =========================================================================
+    // Owned Shader Compile Options
+    // =========================================================================
+    struct OwnedShaderCompileOptions
+    {
+        ShaderCompileOptions options;
+
+        OwnedShaderCompileOptions() = default;
+        explicit OwnedShaderCompileOptions(const ShaderCompileOptions& source) { Assign(source); }
+
+        OwnedShaderCompileOptions(const OwnedShaderCompileOptions& other) { Assign(other.options); }
+        OwnedShaderCompileOptions& operator=(const OwnedShaderCompileOptions& other)
+        {
+            if (this != &other)
+            {
+                Assign(other.options);
+            }
+            return *this;
+        }
+
+        OwnedShaderCompileOptions(OwnedShaderCompileOptions&& other) noexcept
+        {
+            MoveFrom(std::move(other));
+        }
+
+        OwnedShaderCompileOptions& operator=(OwnedShaderCompileOptions&& other) noexcept
+        {
+            if (this != &other)
+            {
+                MoveFrom(std::move(other));
+            }
+            return *this;
+        }
+
+        void Assign(const ShaderCompileOptions& source)
+        {
+            options = source;
+
+            m_hasSourceCode = source.sourceCode != nullptr;
+            m_hasEntryPoint = source.entryPoint != nullptr;
+            m_hasSourcePath = source.sourcePath != nullptr;
+            m_hasTargetProfile = source.targetProfile != nullptr;
+
+            m_sourceCode = m_hasSourceCode ? source.sourceCode : "";
+            m_entryPoint = m_hasEntryPoint ? source.entryPoint : "";
+            m_sourcePath = m_hasSourcePath ? source.sourcePath : "";
+            m_targetProfile = m_hasTargetProfile ? source.targetProfile : "";
+
+            RefreshPointers();
+        }
+
+        const ShaderCompileOptions& Get() const { return options; }
+
+    private:
+        void MoveFrom(OwnedShaderCompileOptions&& other)
+        {
+            options = std::move(other.options);
+            m_sourceCode = std::move(other.m_sourceCode);
+            m_entryPoint = std::move(other.m_entryPoint);
+            m_sourcePath = std::move(other.m_sourcePath);
+            m_targetProfile = std::move(other.m_targetProfile);
+            m_hasSourceCode = other.m_hasSourceCode;
+            m_hasEntryPoint = other.m_hasEntryPoint;
+            m_hasSourcePath = other.m_hasSourcePath;
+            m_hasTargetProfile = other.m_hasTargetProfile;
+            RefreshPointers();
+        }
+
+        void RefreshPointers()
+        {
+            options.sourceCode = m_hasSourceCode ? m_sourceCode.c_str() : nullptr;
+            options.entryPoint = m_hasEntryPoint ? m_entryPoint.c_str() : nullptr;
+            options.sourcePath = m_hasSourcePath ? m_sourcePath.c_str() : nullptr;
+            options.targetProfile = m_hasTargetProfile ? m_targetProfile.c_str() : nullptr;
+        }
+
+        std::string m_sourceCode;
+        std::string m_entryPoint;
+        std::string m_sourcePath;
+        std::string m_targetProfile;
+        bool m_hasSourceCode = false;
+        bool m_hasEntryPoint = false;
+        bool m_hasSourcePath = false;
+        bool m_hasTargetProfile = false;
+    };
+
     // =========================================================================
     // Compile Request
     // =========================================================================
     struct CompileRequest
     {
-        ShaderCompileOptions options;
+        OwnedShaderCompileOptions options;
         CompileCallback callback;
         CompilePriority priority = CompilePriority::Normal;
         CompileHandle handle = RVX_INVALID_COMPILE_HANDLE;
@@ -55,7 +142,10 @@ namespace RVX
         // =====================================================================
         // Construction
         // =====================================================================
-        explicit ShaderCompileService(const Config& config = {});
+        ShaderCompileService();
+        explicit ShaderCompileService(const Config& config);
+        explicit ShaderCompileService(std::unique_ptr<IShaderCompiler> compiler);
+        ShaderCompileService(std::unique_ptr<IShaderCompiler> compiler, const Config& config);
         ~ShaderCompileService();
 
         // Non-copyable

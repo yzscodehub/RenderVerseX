@@ -34,8 +34,63 @@ AnimationState::Ptr AnimationStateMachine::AddState(const std::string& name)
 
     auto state = AnimationState::Create(name);
     state->SetId(static_cast<uint32_t>(m_states.size()));
+    BindStateCallbacks(state.get());
+    ApplyEvaluationSettings(state.get());
     m_states[name] = state;
     return state;
+}
+
+void AnimationStateMachine::SetOnAnimationEvent(AnimationEventCallback callback)
+{
+    m_onAnimationEvent = std::move(callback);
+
+    for (auto& [name, state] : m_states)
+    {
+        (void)name;
+        BindStateCallbacks(state.get());
+    }
+}
+
+void AnimationStateMachine::BindStateCallbacks(AnimationState* state)
+{
+    if (!state)
+    {
+        return;
+    }
+
+    state->SetOnAnimationEvent([this](const AnimationEvent& event) {
+        if (m_onAnimationEvent)
+        {
+            m_onAnimationEvent(event);
+        }
+    });
+}
+
+void AnimationStateMachine::EnableJobifiedPoseEvaluation(bool enable,
+                                                         size_t minTransformTrackCount,
+                                                         size_t batchSize)
+{
+    m_jobifiedPoseEvaluation = enable;
+    m_jobifiedMinTransformTrackCount = minTransformTrackCount;
+    m_jobifiedBatchSize = batchSize;
+
+    for (auto& [name, state] : m_states)
+    {
+        (void)name;
+        ApplyEvaluationSettings(state.get());
+    }
+}
+
+void AnimationStateMachine::ApplyEvaluationSettings(AnimationState* state)
+{
+    if (!state)
+    {
+        return;
+    }
+
+    state->EnableJobifiedPoseEvaluation(m_jobifiedPoseEvaluation,
+                                        m_jobifiedMinTransformTrackCount,
+                                        m_jobifiedBatchSize);
 }
 
 void AnimationStateMachine::RemoveState(const std::string& name)
@@ -363,6 +418,8 @@ void AnimationStateMachine::CompleteTransition()
 
 void AnimationStateMachine::EvaluatePose()
 {
+    m_lastEvaluationUsedJobified = false;
+
     if (!m_currentState)
     {
         m_outputPose.ResetToBindPose();
@@ -376,7 +433,12 @@ void AnimationStateMachine::EvaluatePose()
         m_nextPose.ResetToBindPose();
 
         m_currentState->Evaluate(m_context, m_currentPose);
+        m_lastEvaluationUsedJobified =
+            m_lastEvaluationUsedJobified || m_currentState->DidLastEvaluationUseJobifiedPoseEvaluation();
+
         m_nextState->Evaluate(m_context, m_nextPose);
+        m_lastEvaluationUsedJobified =
+            m_lastEvaluationUsedJobified || m_nextState->DidLastEvaluationUseJobifiedPoseEvaluation();
 
         // Apply blend curve
         float t = m_transitionProgress;
@@ -402,6 +464,7 @@ void AnimationStateMachine::EvaluatePose()
         // Just evaluate current state
         m_outputPose.ResetToBindPose();
         m_currentState->Evaluate(m_context, m_outputPose);
+        m_lastEvaluationUsedJobified = m_currentState->DidLastEvaluationUseJobifiedPoseEvaluation();
     }
 }
 

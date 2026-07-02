@@ -25,6 +25,11 @@ namespace RVX
         m_currentValue.store(value, std::memory_order_release);
     }
 
+    void MetalFence::SignalOnQueue(uint64 value, RHICommandQueueType /*queueType*/)
+    {
+        Signal(value);
+    }
+
     void MetalFence::Wait(uint64 value, uint64 timeoutNs)
     {
         // Fast path: check if already signaled
@@ -51,11 +56,12 @@ namespace RVX
         dispatch_semaphore_wait(semaphore, timeout);
     }
 
-    void MetalFence::SignalFromCommandBuffer(id<MTLCommandBuffer> commandBuffer)
+    uint64 MetalFence::SignalFromCommandBuffer(id<MTLCommandBuffer> commandBuffer)
     {
         // Thread-safe increment using atomic fetch_add
         uint64 newValue = m_currentValue.fetch_add(1, std::memory_order_acq_rel) + 1;
         [commandBuffer encodeSignalEvent:m_event value:newValue];
+        return newValue;
     }
 
 } // namespace RVX

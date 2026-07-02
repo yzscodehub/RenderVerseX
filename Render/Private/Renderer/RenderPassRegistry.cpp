@@ -11,7 +11,10 @@ namespace RVX
         if (!pass)
             return;
 
-        RVX_CORE_DEBUG("SceneRenderer: Adding pass '{}'", pass->GetName());
+        if (Log::GetCoreLogger())
+        {
+            RVX_CORE_DEBUG("SceneRenderer: Adding pass '{}'", pass->GetName());
+        }
         pass->OnAdd(device);
         m_passes.push_back(std::move(pass));
 
@@ -40,7 +43,10 @@ namespace RVX
         if (it == m_passes.end())
             return false;
 
-        RVX_CORE_DEBUG("SceneRenderer: Removing pass '{}'", name);
+        if (Log::GetCoreLogger())
+        {
+            RVX_CORE_DEBUG("SceneRenderer: Removing pass '{}'", name);
+        }
         (*it)->OnRemove();
         m_passes.erase(it);
         return true;
@@ -56,6 +62,30 @@ namespace RVX
             }
         }
         m_passes.clear();
+    }
+
+    std::vector<RenderPassStatus> RenderPassRegistry::GetPassStatuses() const
+    {
+        std::vector<RenderPassStatus> statuses;
+        statuses.reserve(m_passes.size());
+
+        for (const auto& pass : m_passes)
+        {
+            if (pass)
+            {
+                statuses.push_back(pass->GetStatus());
+            }
+        }
+
+        std::stable_sort(
+            statuses.begin(),
+            statuses.end(),
+            [](const RenderPassStatus& a, const RenderPassStatus& b)
+            {
+                return a.priority < b.priority;
+            });
+
+        return statuses;
     }
 
 } // namespace RVX

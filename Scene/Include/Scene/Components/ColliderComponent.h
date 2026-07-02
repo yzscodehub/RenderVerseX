@@ -108,17 +108,20 @@ public:
 
     /// Is this a trigger (non-physical, events only)?
     bool IsTrigger() const { return m_isTrigger; }
-    void SetTrigger(bool trigger) { m_isTrigger = trigger; }
+    void SetTrigger(bool trigger);
 
     // =========================================================================
     // Physics Material
     // =========================================================================
 
     float GetFriction() const { return m_friction; }
-    void SetFriction(float friction) { m_friction = friction; }
+    void SetFriction(float friction);
 
     float GetRestitution() const { return m_restitution; }
-    void SetRestitution(float restitution) { m_restitution = restitution; }
+    void SetRestitution(float restitution);
+
+    float GetDensity() const { return m_density; }
+    void SetDensity(float density);
 
     // =========================================================================
     // Internal Shape Access
@@ -134,6 +137,7 @@ private:
     void CreateBoxShape();
     void CreateSphereShape();
     void CreateCapsuleShape();
+    void NotifyRigidBodyShapeChanged();
 
     ColliderType m_colliderType = ColliderType::Box;
     Vec3 m_center{0.0f};
@@ -142,6 +146,7 @@ private:
     bool m_isTrigger = false;
     float m_friction = 0.5f;
     float m_restitution = 0.3f;
+    float m_density = 1000.0f;
 
     std::shared_ptr<Physics::CollisionShape> m_shape;
 };

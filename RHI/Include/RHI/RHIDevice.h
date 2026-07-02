@@ -5,6 +5,7 @@
 #include "RHI/RHITexture.h"
 #include "RHI/RHISampler.h"
 #include "RHI/RHIShader.h"
+#include "RHI/RHIRayTracing.h"
 #include "RHI/RHIPipeline.h"
 #include "RHI/RHIDescriptor.h"
 #include "RHI/RHISwapChain.h"
@@ -89,6 +90,39 @@ namespace RVX
         virtual RHIPipelineRef CreateComputePipeline(const RHIComputePipelineDesc& desc) = 0;
 
         // =========================================================================
+        // Ray Tracing
+        // =========================================================================
+        virtual RHIAccelerationStructureBuildSizes GetBottomLevelASBuildSizes(const RHIBottomLevelASDesc& desc)
+        {
+            (void)desc;
+            return {};
+        }
+
+        virtual RHIAccelerationStructureBuildSizes GetTopLevelASBuildSizes(const RHITopLevelASDesc& desc)
+        {
+            (void)desc;
+            return {};
+        }
+
+        virtual RHIAccelerationStructureRef CreateAccelerationStructure(const RHIAccelerationStructureDesc& desc)
+        {
+            (void)desc;
+            return {};
+        }
+
+        virtual RHIPipelineRef CreateRayTracingPipeline(const RHIRayTracingPipelineDesc& desc)
+        {
+            (void)desc;
+            return {};
+        }
+
+        virtual RHIShaderTableRef CreateShaderTable(const RHIShaderTableDesc& desc)
+        {
+            (void)desc;
+            return {};
+        }
+
+        // =========================================================================
         // Descriptor Set
         // =========================================================================
         virtual RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) = 0;
@@ -102,8 +136,22 @@ namespace RVX
         // Command Context
         // =========================================================================
         virtual RHICommandContextRef CreateCommandContext(RHICommandQueueType type) = 0;
-        virtual void SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence = nullptr) = 0;
-        virtual void SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence = nullptr) = 0;
+
+        /**
+         * @brief Submit a command context for execution.
+         * @param context Recorded command context to submit.
+         * @param signalFence Optional fence to signal after submitted work completes.
+         * @return Submitted fence value when signalFence is provided and queued; 0 when no fence was signaled or submission failed.
+         */
+        virtual uint64 SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence = nullptr) = 0;
+
+        /**
+         * @brief Submit multiple command contexts for execution.
+         * @param contexts Recorded command contexts to submit.
+         * @param signalFence Optional fence to signal after submitted work completes.
+         * @return Submitted fence value when signalFence is provided and queued; 0 when no fence was signaled or submission failed.
+         */
+        virtual uint64 SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence = nullptr) = 0;
 
         // =========================================================================
         // SwapChain

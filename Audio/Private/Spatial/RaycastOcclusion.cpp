@@ -4,10 +4,21 @@
  */
 
 #include "Audio/Spatial/IOcclusionProvider.h"
+#include "Physics/PhysicsWorld.h"
+
+#include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace RVX::Audio
 {
+namespace
+{
+    bool IsFiniteVec3(const Vec3& value)
+    {
+        return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    }
+} // namespace
 
 OcclusionResult RaycastOcclusionProvider::CalculateOcclusion(
     const Vec3& sourcePosition,
@@ -28,9 +39,8 @@ OcclusionResult RaycastOcclusionProvider::CalculateOcclusion(
         result.occlusion = std::min(1.0f, hitCount * m_occlusionPerHit);
         result.obstruction = result.occlusion;
         result.transmission = 1.0f - result.occlusion;
-        
-        // Reduce cutoff based on occlusion
-        result.lowPassCutoff = 20000.0f - (result.occlusion * (20000.0f - 500.0f));
+
+        result.lowPassCutoff = std::max(500.0f, 20000.0f - hitCount * m_lowPassReduction);
         result.volumeScale = 1.0f - (result.occlusion * 0.5f);  // Max 50% volume reduction
     }
 
@@ -109,23 +119,32 @@ OcclusionResult RaycastOcclusionProvider::CalculateOcclusionMultiSample(
 
 bool RaycastOcclusionProvider::Raycast(const Vec3& start, const Vec3& end, int& hitCount)
 {
-    // This is a stub implementation
-    // In a real implementation, this would integrate with the Physics module:
-    //
-    // PhysicsWorld* physics = ...;
-    // RaycastResult result;
-    // if (physics->Raycast(start, end, result))
-    // {
-    //     hitCount = result.hitCount;
-    //     return true;
-    // }
-    //
-    // For now, return no hits
-
-    (void)start;
-    (void)end;
     hitCount = 0;
-    return false;
+    if (!m_physicsWorld || !IsFiniteVec3(start) || !IsFiniteVec3(end))
+    {
+        return false;
+    }
+
+    const Vec3 delta = end - start;
+    const float distanceSq = dot(delta, delta);
+    if (!std::isfinite(distanceSq) || distanceSq <= 0.000001f)
+    {
+        return false;
+    }
+
+    const float distance = std::sqrt(distanceSq);
+    if (!std::isfinite(distance) || distance > m_maxDistance)
+    {
+        return false;
+    }
+
+    std::vector<Physics::RaycastHit> hits;
+    hitCount = static_cast<int>(m_physicsWorld->RaycastAll(start,
+                                                           delta / distance,
+                                                           distance,
+                                                           hits,
+                                                           m_layerMask));
+    return hitCount > 0;
 }
 
 } // namespace RVX::Audio

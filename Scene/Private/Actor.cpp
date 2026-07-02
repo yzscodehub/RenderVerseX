@@ -171,6 +171,11 @@ ActorComponent* Actor::AddOwnedComponent(std::unique_ptr<ActorComponent> compone
     return ptr;
 }
 
+bool Actor::RemoveOwnedComponent(ActorComponent* component)
+{
+    return RemoveComponentInstance(component);
+}
+
 void Actor::RegisterAllComponents()
 {
     for (auto& component : m_components)

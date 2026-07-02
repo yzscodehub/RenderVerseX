@@ -6,12 +6,13 @@
 #pragma once
 
 #include "Core/Types.h"
-#include <string>
-#include <vector>
-#include <unordered_map>
-#include <functional>
-#include <typeindex>
 #include <any>
+#include <functional>
+#include <memory>
+#include <string>
+#include <typeindex>
+#include <unordered_map>
+#include <vector>
 
 namespace RVX
 {
@@ -48,15 +49,15 @@ struct PropertyMeta
     std::string displayName;
     std::string tooltip;
     std::string category;
-    
+
     float minValue = 0.0f;
     float maxValue = 1.0f;
     float step = 0.1f;
-    
+
     bool readOnly = false;
     bool hidden = false;
     bool transient = false;  // Don't serialize
-    
+
     std::vector<std::string> enumValues;  // For enum properties
 };
 
@@ -83,6 +84,35 @@ public:
     T GetValue(void* instance) const
     {
         return std::any_cast<T>(m_getter(instance));
+    }
+
+    std::any GetValueAny(void* instance) const
+    {
+        if (!instance || !m_getter)
+        {
+            return {};
+        }
+
+        return m_getter(instance);
+    }
+
+    bool SetValueAny(void* instance, const std::any& value) const
+    {
+        if (!instance || m_meta.readOnly || !m_setter)
+        {
+            return false;
+        }
+
+        try
+        {
+            m_setter(instance, value);
+        }
+        catch (const std::bad_any_cast&)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     template<typename T>

@@ -117,6 +117,7 @@ namespace RVX
 
     private:
         void ApplyDescriptorSets();
+        void UnbindShaderResourceAliasesForRenderTargets();
 
         DX11Device* m_device = nullptr;
         RHICommandQueueType m_queueType = RHICommandQueueType::Graphics;

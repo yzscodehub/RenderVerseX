@@ -4,6 +4,7 @@
  */
 
 #include "Animation/Runtime/AnimationPlayer.h"
+#include "Animation/Core/AnimationEvent.h"
 #include "Animation/Core/Interpolation.h"
 #include <algorithm>
 
@@ -28,18 +29,29 @@ void AnimationPlayer::SetSkeleton(Skeleton::ConstPtr skeleton)
     m_currentPose.SetSkeleton(skeleton);
     m_tempPose.SetSkeleton(skeleton);
 }
-
+void AnimationPlayer::EnableJobifiedPoseEvaluation(bool enable,
+                                                   size_t minTransformTrackCount,
+                                                   size_t batchSize)
+{
+    m_jobifiedPoseEvaluation = enable;
+    m_jobifiedMinTransformTrackCount = minTransformTrackCount;
+    m_jobifiedBatchSize = batchSize;
+    m_poseDirty = true;
+}
 uint32_t AnimationPlayer::Play(AnimationClip::ConstPtr clip, float fadeInTime)
 {
+    if (!clip) return 0;
     return Play(clip, clip->defaultWrapMode, clip->defaultSpeed, fadeInTime);
 }
-
-uint32_t AnimationPlayer::Play(AnimationClip::ConstPtr clip, WrapMode wrapMode, 
+uint32_t AnimationPlayer::Play(AnimationClip::ConstPtr clip, WrapMode wrapMode,
                                 float speed, float fadeInTime)
 {
     if (!clip) return 0;
 
+    uint32_t id = GenerateInstanceId();
+
     PlaybackInstance instance;
+    instance.id = id;
     instance.clip = clip;
     instance.currentTime = 0;
     instance.speed = speed;
@@ -54,8 +66,6 @@ uint32_t AnimationPlayer::Play(AnimationClip::ConstPtr clip, WrapMode wrapMode,
         instance.fadeProgress = 0.0f;
     }
 
-    uint32_t id = GenerateInstanceId();
-    
     // If we're starting fresh, just add
     if (m_instances.empty())
     {
@@ -113,9 +123,7 @@ void AnimationPlayer::Stop(float fadeOutTime)
 
 void AnimationPlayer::Stop(uint32_t instanceId, float fadeOutTime)
 {
-    // Find instance by id (simplified - just use index for now)
-    for (auto& instance : m_instances)
-    {
+    auto stopInstance = [fadeOutTime](PlaybackInstance& instance) {
         if (fadeOutTime > 0.0f)
         {
             instance.isFadingOut = true;
@@ -126,7 +134,26 @@ void AnimationPlayer::Stop(uint32_t instanceId, float fadeOutTime)
         {
             instance.state = PlaybackState::Stopped;
         }
-        break;  // Only affect first match
+    };
+
+    for (auto& instance : m_instances)
+    {
+        if (instance.id != instanceId)
+        {
+            continue;
+        }
+
+        stopInstance(instance);
+        return;
+    }
+
+    for (auto& instance : m_additiveInstances)
+    {
+        if (instance.id == instanceId)
+        {
+            stopInstance(instance);
+            return;
+        }
     }
 }
 
@@ -170,8 +197,8 @@ bool AnimationPlayer::IsPlaying() const
 
 bool AnimationPlayer::IsPlaying(uint32_t instanceId) const
 {
-    // Simplified
-    return !m_instances.empty() && m_instances[0].IsPlaying();
+    const PlaybackInstance* instance = GetInstance(instanceId);
+    return instance && instance->IsPlaying();
 }
 
 PlaybackState AnimationPlayer::GetState() const
@@ -222,9 +249,10 @@ void AnimationPlayer::SetSpeed(float speed)
 
 void AnimationPlayer::SetSpeed(uint32_t instanceId, float speed)
 {
-    if (!m_instances.empty())
+    PlaybackInstance* instance = GetInstance(instanceId);
+    if (instance)
     {
-        m_instances[0].speed = speed;
+        instance->speed = speed;
     }
 }
 
@@ -258,37 +286,103 @@ void AnimationPlayer::UpdateInstance(PlaybackInstance& instance, float deltaTime
     float speed = instance.speed * m_globalSpeed;
     TimeUs deltaUs = SecondsToTimeUs(static_cast<double>(deltaTime * speed));
     
-    TimeUs previousTime = instance.currentTime;
-    instance.currentTime += deltaUs;
+    const TimeUs previousTime = instance.currentTime;
+    const TimeUs duration = instance.clip->duration;
+    const TimeUs rawTime = instance.currentTime + deltaUs;
+    bool looped = false;
+    bool completed = false;
+    bool reversePlayback = deltaUs < 0;
 
-    // Handle wrap mode
-    if (instance.currentTime >= instance.clip->duration)
+    if (duration <= 0)
     {
+        instance.currentTime = 0;
+    }
+    else
+    {
+        // Handle wrap mode
         switch (instance.wrapMode)
         {
             case WrapMode::Once:
-                instance.currentTime = instance.clip->duration;
-                instance.state = PlaybackState::Stopped;
-                if (instance.onComplete)
-                    instance.onComplete();
+                if (rawTime >= duration)
+                {
+                    instance.currentTime = duration;
+                    instance.state = PlaybackState::Stopped;
+                    completed = true;
+                }
+                else if (rawTime <= 0)
+                {
+                    instance.currentTime = 0;
+                    if (reversePlayback)
+                    {
+                        instance.state = PlaybackState::Stopped;
+                        completed = true;
+                    }
+                }
+                else
+                {
+                    instance.currentTime = rawTime;
+                }
                 break;
 
             case WrapMode::Loop:
-                instance.currentTime = instance.currentTime % instance.clip->duration;
-                if (instance.onLoop)
+                looped = rawTime >= duration || rawTime < 0;
+                instance.currentTime = ApplyWrapMode(rawTime, duration, WrapMode::Loop);
+                if (looped && instance.onLoop)
+                {
                     instance.onLoop();
+                }
                 break;
 
             case WrapMode::PingPong:
                 instance.currentTime = ApplyWrapMode(
-                    instance.currentTime, 
-                    instance.clip->duration, 
+                    rawTime,
+                    duration,
                     WrapMode::PingPong);
                 break;
 
             case WrapMode::ClampForever:
-                instance.currentTime = instance.clip->duration;
+                instance.currentTime = ApplyWrapMode(rawTime, duration, WrapMode::ClampForever);
                 break;
+        }
+    }
+
+    if (m_eventCallback && duration > 0 && (previousTime != instance.currentTime || looped))
+    {
+        AnimationEventDispatcher dispatcher;
+        dispatcher.SetGlobalHandler([this](const AnimationEvent& event) {
+            if (m_eventCallback)
+            {
+                m_eventCallback(event.name);
+            }
+        });
+
+        if (reversePlayback)
+        {
+            if (looped)
+            {
+                dispatcher.DispatchReverse(instance.clip->eventTrack, previousTime, 0);
+                dispatcher.DispatchReverse(instance.clip->eventTrack, duration, instance.currentTime);
+            }
+            else
+            {
+                dispatcher.DispatchReverse(instance.clip->eventTrack, previousTime, instance.currentTime);
+            }
+        }
+        else
+        {
+            dispatcher.Dispatch(instance.clip->eventTrack, previousTime, instance.currentTime, looped, duration);
+        }
+    }
+
+    if (completed)
+    {
+        if (instance.onComplete)
+        {
+            instance.onComplete();
+        }
+        if (m_completionCallback)
+        {
+            m_completionCallback(instance.id);
         }
     }
 
@@ -336,6 +430,8 @@ void AnimationPlayer::EvaluateAndBlend()
     if (!m_poseDirty)
         return;
 
+    m_lastEvaluationUsedJobified = false;
+
     if (m_instances.empty())
     {
         m_currentPose.ResetToBindPose();
@@ -372,13 +468,18 @@ void AnimationPlayer::EvaluateAndBlend()
         EvaluationOptions options;
         options.wrapModeOverride = instance.wrapMode;
         options.speed = instance.speed;
+        options.jobifiedTransformEvaluation = m_jobifiedPoseEvaluation;
+        options.jobifiedMinTransformTrackCount = m_jobifiedMinTransformTrackCount;
+        options.jobifiedBatchSize = m_jobifiedBatchSize;
 
-        m_evaluator.EvaluateBlended(
-            *instance.clip, 
-            instance.currentTime, 
+        EvaluationResult evalResult = m_evaluator.EvaluateBlended(
+            *instance.clip,
+            instance.currentTime,
             normalizedWeight,
-            m_currentPose, 
+            m_currentPose,
             options);
+        m_lastEvaluationUsedJobified =
+            m_lastEvaluationUsedJobified || evalResult.usedJobifiedEvaluation;
     }
 
     // Apply additive animations
@@ -388,12 +489,18 @@ void AnimationPlayer::EvaluateAndBlend()
             continue;
 
         EvaluationOptions options;
-        m_evaluator.EvaluateAdditive(
+        options.jobifiedTransformEvaluation = m_jobifiedPoseEvaluation;
+        options.jobifiedMinTransformTrackCount = m_jobifiedMinTransformTrackCount;
+        options.jobifiedBatchSize = m_jobifiedBatchSize;
+
+        EvaluationResult evalResult = m_evaluator.EvaluateAdditive(
             *instance.clip,
             instance.currentTime,
             instance.weight,
             m_currentPose,
             options);
+        m_lastEvaluationUsedJobified =
+            m_lastEvaluationUsedJobified || evalResult.usedJobifiedEvaluation;
     }
 
     m_poseDirty = false;
@@ -421,6 +528,7 @@ uint32_t AnimationPlayer::PlayAdditive(AnimationClip::ConstPtr clip, float weigh
     if (!clip) return 0;
 
     PlaybackInstance instance;
+    instance.id = GenerateInstanceId();
     instance.clip = clip;
     instance.currentTime = 0;
     instance.speed = 1.0f;
@@ -432,29 +540,62 @@ uint32_t AnimationPlayer::PlayAdditive(AnimationClip::ConstPtr clip, float weigh
     m_additiveInstances.push_back(std::move(instance));
     m_poseDirty = true;
 
-    return GenerateInstanceId();
+    return instance.id;
 }
 
 void AnimationPlayer::SetAdditiveWeight(uint32_t instanceId, float weight)
 {
-    if (!m_additiveInstances.empty())
+    PlaybackInstance* instance = GetInstance(instanceId);
+    if (instance)
     {
-        m_additiveInstances[0].weight = weight;
+        instance->weight = weight;
         m_poseDirty = true;
     }
 }
 
 PlaybackInstance* AnimationPlayer::GetInstance(uint32_t instanceId)
 {
-    if (!m_instances.empty())
-        return &m_instances[0];
+    auto it = std::find_if(m_instances.begin(), m_instances.end(),
+        [instanceId](const PlaybackInstance& instance) {
+            return instance.id == instanceId;
+        });
+    if (it != m_instances.end())
+    {
+        return &(*it);
+    }
+
+    auto additiveIt = std::find_if(m_additiveInstances.begin(), m_additiveInstances.end(),
+        [instanceId](const PlaybackInstance& instance) {
+            return instance.id == instanceId;
+        });
+    if (additiveIt != m_additiveInstances.end())
+    {
+        return &(*additiveIt);
+    }
+
     return nullptr;
 }
 
 const PlaybackInstance* AnimationPlayer::GetInstance(uint32_t instanceId) const
 {
-    if (!m_instances.empty())
-        return &m_instances[0];
+    auto it = std::find_if(m_instances.begin(), m_instances.end(),
+        [instanceId](const PlaybackInstance& instance) {
+            return instance.id == instanceId;
+        });
+    if (it != m_instances.end())
+    {
+        return &(*it);
+    }
+
+    auto additiveIt = std::find_if(m_additiveInstances.begin(), m_additiveInstances.end(),
+        [instanceId](const PlaybackInstance& instance) {
+            return instance.id == instanceId;
+        });
+    if (additiveIt != m_additiveInstances.end())
+    {
+        return &(*additiveIt);
+    }
+
     return nullptr;
 }
 

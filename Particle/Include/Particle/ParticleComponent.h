@@ -13,6 +13,15 @@
 
 namespace RVX::Particle
 {
+    class ParticleSubsystem;
+
+    enum class ParticleInstanceOwnership
+    {
+        None = 0,
+        SubsystemOwned,
+        LegacyFallback
+    };
+
     /**
      * @brief Scene component that attaches a particle system to an entity
      */
@@ -49,6 +58,12 @@ namespace RVX::Particle
 
         /// Get the runtime instance
         ParticleSystemInstance* GetInstance() const { return m_instance; }
+
+        /// Get how the current runtime instance is owned.
+        ParticleInstanceOwnership GetInstanceOwnership() const { return m_instanceOwnership; }
+
+        /// Whether the current instance uses the compatibility fallback path.
+        bool IsUsingLegacyFallback() const { return m_instanceOwnership == ParticleInstanceOwnership::LegacyFallback; }
 
         // =====================================================================
         // Playback Control
@@ -126,6 +141,8 @@ namespace RVX::Particle
 
         ParticleSystem::Ptr m_particleSystem;
         ParticleSystemInstance* m_instance = nullptr;
+        ParticleSubsystem* m_instanceSubsystem = nullptr;
+        ParticleInstanceOwnership m_instanceOwnership = ParticleInstanceOwnership::None;
         std::string m_particleSystemPath;
 
         // Settings

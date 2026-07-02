@@ -6,11 +6,13 @@
 #pragma once
 
 #include "Core/Types.h"
+#include "RHI/RHIDefinitions.h"
 #include <string>
 #include <vector>
 #include <memory>
 #include <functional>
 #include <filesystem>
+#include <unordered_map>
 
 namespace RVX::Tools
 {
@@ -47,6 +49,41 @@ struct ImportResult
 };
 
 /**
+ * @brief One entry in a cooked asset manifest
+ */
+struct CookManifestEntry
+{
+    std::string sourcePath;
+    std::string outputPath;
+    AssetType type = AssetType::Unknown;
+    bool success = false;
+    std::string error;
+    std::vector<std::string> warnings;
+    uint64 sourceModTime = 0;
+    uint64 outputModTime = 0;
+    uint64 outputSize = 0;
+};
+
+/**
+ * @brief Deterministic manifest produced by a directory cook
+ */
+struct CookManifest
+{
+    static constexpr uint32 Version = 1;
+
+    std::string sourceRoot;
+    std::string outputRoot;
+    bool recursive = true;
+    bool manifestWritten = false;
+    std::string manifestError;
+    std::vector<CookManifestEntry> entries;
+
+    size_t GetSuccessCount() const;
+    size_t GetFailureCount() const;
+    bool Save(const fs::path& manifestPath, std::string& outError) const;
+};
+
+/**
  * @brief Base class for asset importers
  */
 class IAssetImporter
@@ -64,6 +101,19 @@ public:
 };
 
 /**
+ * @brief Texture compression mode selection
+ */
+enum class TextureCompressionMode : uint8
+{
+    Auto,
+    None,
+    BC1,
+    BC3,
+    BC5,
+    BC7
+};
+
+/**
  * @brief Texture import options
  */
 struct TextureImportOptions
@@ -71,6 +121,7 @@ struct TextureImportOptions
     bool generateMipmaps = true;
     bool sRGB = true;
     bool compress = true;
+    TextureCompressionMode compressionMode = TextureCompressionMode::Auto;
     int maxSize = 4096;
     bool flipY = true;
 };
@@ -91,12 +142,26 @@ struct MeshImportOptions
 };
 
 /**
+ * @brief Shader import options
+ */
+struct ShaderImportOptions
+{
+    RHIShaderStage stage = RHIShaderStage::None;
+    RHIBackendType targetBackend = RHIBackendType::DX12;
+    std::string entryPoint = "main";
+    std::string targetProfile;
+    bool enableDebugInfo = false;
+    bool enableOptimization = true;
+};
+
+/**
  * @brief Asset pipeline for batch processing
  */
 class AssetPipeline
 {
 public:
     using ProgressCallback = std::function<void(float progress, const std::string& status)>;
+    using ImportOptionsProvider = std::function<const void*(const fs::path& sourcePath, AssetType assetType)>;
 
     AssetPipeline() = default;
 
@@ -124,6 +189,16 @@ public:
                                                const fs::path& outputDir,
                                                bool recursive = true,
                                                ProgressCallback callback = nullptr);
+
+    /**
+     * @brief Import a directory and optionally write a deterministic cook manifest
+     */
+    CookManifest CookDirectory(const fs::path& sourceDir,
+                               const fs::path& outputDir,
+                               bool recursive = true,
+                               const fs::path& manifestPath = {},
+                               ProgressCallback callback = nullptr,
+                               ImportOptionsProvider optionsProvider = nullptr);
 
     /**
      * @brief Check if file needs reimport
@@ -161,7 +236,7 @@ public:
 };
 
 /**
- * @brief Mesh importer (FBX, OBJ, GLTF)
+ * @brief Mesh importer
  */
 class MeshImporter : public IAssetImporter
 {
@@ -170,7 +245,7 @@ public:
 
     std::vector<std::string> GetSupportedExtensions() const override
     {
-        return {".fbx", ".obj", ".gltf", ".glb", ".dae"};
+        return {".gltf", ".glb"};
     }
 
     AssetType GetAssetType() const override { return AssetType::Mesh; }

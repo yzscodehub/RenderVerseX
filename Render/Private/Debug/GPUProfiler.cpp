@@ -22,12 +22,26 @@ void GPUProfiler::Initialize(IRHIDevice* device)
         return;
     }
 
+    if (!device)
+    {
+        RVX_CORE_ERROR("GPUProfiler: Cannot initialize without an RHI device");
+        return;
+    }
+
     m_device = device;
     m_currentScopes.reserve(32);
     m_results.reserve(32);
 
-    // TODO: Create timestamp query pool based on RHI capabilities
-    // This would use device->CreateQueryPool() when available
+    RHIQueryPoolDesc queryDesc;
+    queryDesc.type = RHIQueryType::Timestamp;
+    queryDesc.count = MaxQueries;
+    queryDesc.debugName = "GPUProfilerTimestampQueries";
+    m_queryPool = m_device->CreateQueryPool(queryDesc);
+    m_timestampQueriesSupported = m_queryPool != nullptr;
+    if (!m_timestampQueriesSupported)
+    {
+        RVX_CORE_WARN("GPUProfiler: Timestamp queries are unavailable; GPU profiling disabled");
+    }
 
     RVX_CORE_DEBUG("GPUProfiler: Initialized");
 }
@@ -40,6 +54,8 @@ void GPUProfiler::Shutdown()
     m_currentScopes.clear();
     m_results.clear();
     m_scopeTimings.clear();
+    m_queryPool.Reset();
+    m_timestampQueriesSupported = false;
     m_device = nullptr;
 
     RVX_CORE_DEBUG("GPUProfiler: Shutdown");
@@ -47,7 +63,7 @@ void GPUProfiler::Shutdown()
 
 void GPUProfiler::BeginFrame()
 {
-    if (!m_enabled)
+    if (!m_enabled || !m_timestampQueriesSupported)
         return;
 
     m_currentScopes.clear();
@@ -57,45 +73,16 @@ void GPUProfiler::BeginFrame()
 
 void GPUProfiler::EndFrame()
 {
-    if (!m_enabled)
+    if (!m_enabled || !m_timestampQueriesSupported)
         return;
 
-    // Read back timestamp query results from previous frame
-    // TODO: Actual implementation would:
-    // 1. Wait for query results to be available
-    // 2. Read timestamp values
-    // 3. Convert to milliseconds using GPU timestamp frequency
-    // 4. Store in m_results
-
-    // For now, just clear and prepare for next frame
     m_results.clear();
-    
-    for (const auto& scope : m_currentScopes)
-    {
-        GPUTimingResult result;
-        result.name = scope.name;
-        result.depth = scope.depth;
-        result.gpuTimeMs = 0.0f;  // Would be calculated from timestamps
-        m_results.push_back(result);
-    }
-
-    // Calculate total frame time
-    if (!m_results.empty())
-    {
-        m_frameTimeMs = 0.0f;
-        for (const auto& result : m_results)
-        {
-            if (result.depth == 0)
-            {
-                m_frameTimeMs += result.gpuTimeMs;
-            }
-        }
-    }
+    m_frameTimeMs = 0.0f;
 }
 
 void GPUProfiler::BeginScope(RHICommandContext& ctx, const char* name)
 {
-    if (!m_enabled)
+    if (!m_enabled || !m_timestampQueriesSupported)
         return;
 
     (void)ctx;  // Would write timestamp query
@@ -110,7 +97,7 @@ void GPUProfiler::BeginScope(RHICommandContext& ctx, const char* name)
 
 void GPUProfiler::EndScope(RHICommandContext& ctx)
 {
-    if (!m_enabled || m_currentScopes.empty())
+    if (!m_enabled || !m_timestampQueriesSupported || m_currentScopes.empty())
         return;
 
     (void)ctx;  // Would write timestamp query

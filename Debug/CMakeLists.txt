@@ -30,7 +30,6 @@ target_link_libraries(RVX_Debug PUBLIC
 
 # Debug-only features
 target_compile_definitions(RVX_Debug PRIVATE
-    $<$<CONFIG:Debug>:RVX_DEBUG=1>
     $<$<CONFIG:Debug>:RVX_ENABLE_PROFILING=1>
 )
 

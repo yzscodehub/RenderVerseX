@@ -92,6 +92,7 @@ namespace RVX
                     }
 
                     case RHIBindingType::SampledTexture:
+                    case RHIBindingType::ShaderResourceBuffer:
                     case RHIBindingType::CombinedTextureSampler:
                     {
                         if (nextSRV < DX11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT)
@@ -206,6 +207,7 @@ namespace RVX
                         break;
 
                     case RHIBindingType::SampledTexture:
+                    case RHIBindingType::ShaderResourceBuffer:
                     case RHIBindingType::CombinedTextureSampler:
                         merged.srvSlots[res.name] = nextSRV;
                         merged.setBindingToSRV[key] = nextSRV++;
@@ -253,6 +255,7 @@ namespace RVX
                 }
 
                 case RHIBindingType::SampledTexture:
+                case RHIBindingType::ShaderResourceBuffer:
                 case RHIBindingType::CombinedTextureSampler:
                 {
                     auto it = mapping.setBindingToSRV.find(key);
@@ -292,6 +295,7 @@ namespace RVX
                 }
 
                 case RHIBindingType::SampledTexture:
+                case RHIBindingType::ShaderResourceBuffer:
                 case RHIBindingType::CombinedTextureSampler:
                 {
                     auto it = mapping.srvSlots.find(name);

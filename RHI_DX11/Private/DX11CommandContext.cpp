@@ -8,6 +8,66 @@
 
 namespace RVX
 {
+    namespace
+    {
+        bool ShaderResourceAliasesAnyTarget(
+            ID3D11ShaderResourceView* view,
+            const std::array<ID3D11Resource*, DX11_MAX_RENDER_TARGETS + 1>& targetResources,
+            uint32 targetResourceCount)
+        {
+            if (!view)
+            {
+                return false;
+            }
+
+            ComPtr<ID3D11Resource> resource;
+            view->GetResource(resource.GetAddressOf());
+            ID3D11Resource* rawResource = resource.Get();
+
+            for (uint32 targetIndex = 0; targetIndex < targetResourceCount; ++targetIndex)
+            {
+                if (targetResources[targetIndex] == rawResource)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        template <typename GetShaderResources, typename SetShaderResources>
+        void UnbindShaderResourceAliasesForStage(
+            ID3D11DeviceContext* context,
+            GetShaderResources getShaderResources,
+            SetShaderResources setShaderResources,
+            const std::array<ID3D11Resource*, DX11_MAX_RENDER_TARGETS + 1>& targetResources,
+            uint32 targetResourceCount)
+        {
+            if (!context || targetResourceCount == 0)
+            {
+                return;
+            }
+
+            std::array<ID3D11ShaderResourceView*, DX11_MAX_SRV_SLOTS> shaderResources = {};
+            getShaderResources(context, shaderResources.data());
+
+            ID3D11ShaderResourceView* nullShaderResource = nullptr;
+            for (uint32 slot = 0; slot < DX11_MAX_SRV_SLOTS; ++slot)
+            {
+                ID3D11ShaderResourceView* shaderResource = shaderResources[slot];
+                if (ShaderResourceAliasesAnyTarget(shaderResource, targetResources, targetResourceCount))
+                {
+                    setShaderResources(context, slot, &nullShaderResource);
+                }
+
+                if (shaderResource)
+                {
+                    shaderResource->Release();
+                }
+            }
+        }
+    } // namespace
+
     DX11CommandContext::DX11CommandContext(DX11Device* device, RHICommandQueueType queueType)
         : m_device(device)
         , m_queueType(queueType)
@@ -242,6 +302,7 @@ namespace RVX
         }
 
         // Bind render targets
+        UnbindShaderResourceAliasesForRenderTargets();
         m_context->OMSetRenderTargets(m_rtvCount, m_rtvs.data(), m_dsv);
     }
 
@@ -360,6 +421,130 @@ namespace RVX
                 m_descriptorSets[i]->Apply(m_context.Get(), RHIShaderStage::All, i, m_dynamicOffsets[i]);
             }
         }
+    }
+
+    void DX11CommandContext::UnbindShaderResourceAliasesForRenderTargets()
+    {
+        std::array<ID3D11Resource*, DX11_MAX_RENDER_TARGETS + 1> targetResources = {};
+        uint32 targetResourceCount = 0;
+
+        auto addTargetResource = [&](ID3D11Resource* resource)
+        {
+            if (!resource)
+            {
+                return;
+            }
+
+            for (uint32 targetIndex = 0; targetIndex < targetResourceCount; ++targetIndex)
+            {
+                if (targetResources[targetIndex] == resource)
+                {
+                    return;
+                }
+            }
+
+            if (targetResourceCount < targetResources.size())
+            {
+                targetResources[targetResourceCount++] = resource;
+            }
+        };
+
+        for (uint32 rtvIndex = 0; rtvIndex < m_rtvCount; ++rtvIndex)
+        {
+            if (!m_rtvs[rtvIndex])
+            {
+                continue;
+            }
+
+            ComPtr<ID3D11Resource> resource;
+            m_rtvs[rtvIndex]->GetResource(resource.GetAddressOf());
+            addTargetResource(resource.Get());
+        }
+
+        if (m_dsv)
+        {
+            ComPtr<ID3D11Resource> resource;
+            m_dsv->GetResource(resource.GetAddressOf());
+            addTargetResource(resource.Get());
+        }
+
+        if (targetResourceCount == 0)
+        {
+            return;
+        }
+
+        UnbindShaderResourceAliasesForStage(
+            m_context.Get(),
+            [](ID3D11DeviceContext* context, ID3D11ShaderResourceView** views)
+            {
+                context->VSGetShaderResources(0, DX11_MAX_SRV_SLOTS, views);
+            },
+            [](ID3D11DeviceContext* context, uint32 slot, ID3D11ShaderResourceView* const* view)
+            {
+                context->VSSetShaderResources(slot, 1, view);
+            },
+            targetResources,
+            targetResourceCount);
+        UnbindShaderResourceAliasesForStage(
+            m_context.Get(),
+            [](ID3D11DeviceContext* context, ID3D11ShaderResourceView** views)
+            {
+                context->HSGetShaderResources(0, DX11_MAX_SRV_SLOTS, views);
+            },
+            [](ID3D11DeviceContext* context, uint32 slot, ID3D11ShaderResourceView* const* view)
+            {
+                context->HSSetShaderResources(slot, 1, view);
+            },
+            targetResources,
+            targetResourceCount);
+        UnbindShaderResourceAliasesForStage(
+            m_context.Get(),
+            [](ID3D11DeviceContext* context, ID3D11ShaderResourceView** views)
+            {
+                context->DSGetShaderResources(0, DX11_MAX_SRV_SLOTS, views);
+            },
+            [](ID3D11DeviceContext* context, uint32 slot, ID3D11ShaderResourceView* const* view)
+            {
+                context->DSSetShaderResources(slot, 1, view);
+            },
+            targetResources,
+            targetResourceCount);
+        UnbindShaderResourceAliasesForStage(
+            m_context.Get(),
+            [](ID3D11DeviceContext* context, ID3D11ShaderResourceView** views)
+            {
+                context->GSGetShaderResources(0, DX11_MAX_SRV_SLOTS, views);
+            },
+            [](ID3D11DeviceContext* context, uint32 slot, ID3D11ShaderResourceView* const* view)
+            {
+                context->GSSetShaderResources(slot, 1, view);
+            },
+            targetResources,
+            targetResourceCount);
+        UnbindShaderResourceAliasesForStage(
+            m_context.Get(),
+            [](ID3D11DeviceContext* context, ID3D11ShaderResourceView** views)
+            {
+                context->PSGetShaderResources(0, DX11_MAX_SRV_SLOTS, views);
+            },
+            [](ID3D11DeviceContext* context, uint32 slot, ID3D11ShaderResourceView* const* view)
+            {
+                context->PSSetShaderResources(slot, 1, view);
+            },
+            targetResources,
+            targetResourceCount);
+        UnbindShaderResourceAliasesForStage(
+            m_context.Get(),
+            [](ID3D11DeviceContext* context, ID3D11ShaderResourceView** views)
+            {
+                context->CSGetShaderResources(0, DX11_MAX_SRV_SLOTS, views);
+            },
+            [](ID3D11DeviceContext* context, uint32 slot, ID3D11ShaderResourceView* const* view)
+            {
+                context->CSSetShaderResources(slot, 1, view);
+            },
+            targetResources,
+            targetResourceCount);
     }
 
     // =============================================================================
@@ -984,18 +1169,20 @@ namespace RVX
     // =============================================================================
     void DX11CommandContext::SignalFence(RHIFence* fence, uint64 value)
     {
-        // DX11 is inherently synchronous - all operations complete before returning
-        // No fence signaling needed as the API serializes all work
+        RVX_RHI_WARN(
+            "DX11CommandContext::SignalFence is unsupported as explicit queue sync; "
+            "use device SubmitCommandContext signal fences instead (requested value {})",
+            value);
         (void)fence;
-        (void)value;
     }
 
     void DX11CommandContext::WaitFence(RHIFence* fence, uint64 value)
     {
-        // DX11 is inherently synchronous - all operations complete before returning
-        // No fence waiting needed as the API serializes all work
         (void)fence;
-        (void)value;
+        RVX_RHI_WARN(
+            "DX11CommandContext::WaitFence is unsupported; "
+            "RHICapabilities::supportsQueueFenceWait is false (requested value {})",
+            value);
     }
 
     // =============================================================================

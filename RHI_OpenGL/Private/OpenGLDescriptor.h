@@ -20,6 +20,7 @@ namespace RVX
     struct OpenGLBindingEntry
     {
         uint32 glBinding = 0;          // OpenGL binding point
+        uint32 rhiBinding = 0;         // Original RHI binding number
         RHIBindingType type = RHIBindingType::UniformBuffer;
 
         // Buffer info
@@ -53,7 +54,7 @@ namespace RVX
         ~OpenGLDescriptorSet() override = default;
 
         // RHIDescriptorSet interface
-        void Update(const std::vector<RHIDescriptorBinding>& bindings) override;
+        bool Update(const std::vector<RHIDescriptorBinding>& bindings) override;
 
         // OpenGL specific
         const std::vector<OpenGLBindingEntry>& GetBindings() const { return m_bindings; }

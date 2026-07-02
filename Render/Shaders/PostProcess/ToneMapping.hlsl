@@ -6,22 +6,27 @@
 // Constant Buffer
 // =============================================================================
 
-cbuffer ToneMappingConstants : register(b0)
+cbuffer ToneMappingConstants : register(b0, space0)
 {
     float Exposure;
     float Gamma;
     float WhitePoint;
-    uint OperatorType;  // 0=Reinhard, 1=ReinhardExt, 2=ACES, 3=Uncharted2, 4=Neutral
+    uint OperatorType;  // 0=Reinhard, 1=ReinhardExt, 2=ACES, 3=Uncharted2, 4=Neutral, other=Pass-through
     float2 TextureSize;
     float2 InvTextureSize;
+    uint OutputColorSpace; // 0=Linear, 1=sRGB
+    float3 ToneMappingPadding;
 };
+
+#define TONE_MAPPING_OUTPUT_LINEAR 0
+#define TONE_MAPPING_OUTPUT_SRGB 1
 
 // =============================================================================
 // Textures and Samplers
 // =============================================================================
 
-Texture2D<float4> InputTexture : register(t0);
-SamplerState LinearSampler : register(s0);
+Texture2D<float4> InputTexture : register(t1, space0);
+SamplerState LinearSampler : register(s2, space0);
 
 // =============================================================================
 // Tone Mapping Operators
@@ -89,17 +94,19 @@ float3 NeutralTonemap(float3 x)
 }
 
 // =============================================================================
-// Gamma Correction
+// Display Conversion
 // =============================================================================
 
-float3 LinearToSRGB(float3 linear)
+// RQ1 guardrail: for UNORM back buffers, this shader owns the single
+// linear-to-display conversion. HDR/offscreen consumers can request linear output.
+float3 ApplyDisplayConversion(float3 linearColor, float gamma, uint outputColorSpace)
 {
-    return pow(linear, 1.0 / 2.2);
-}
+    if (outputColorSpace == TONE_MAPPING_OUTPUT_LINEAR)
+    {
+        return linearColor;
+    }
 
-float3 GammaCorrect(float3 linear, float gamma)
-{
-    return pow(linear, 1.0 / gamma);
+    return pow(linearColor, 1.0 / gamma);
 }
 
 // =============================================================================
@@ -120,8 +127,6 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
     // Vertex 0: (-1, -1), Vertex 1: (3, -1), Vertex 2: (-1, 3)
     output.TexCoord = float2((vertexID << 1) & 2, vertexID & 2);
     output.Position = float4(output.TexCoord * 2.0 - 1.0, 0.0, 1.0);
-    output.TexCoord.y = 1.0 - output.TexCoord.y;  // Flip Y for texture coords
-    
     return output;
 }
 
@@ -161,8 +166,8 @@ float4 PSMain(VSOutput input) : SV_TARGET
         break;
     }
     
-    // Gamma correction
-    float3 output = GammaCorrect(ldr, Gamma);
+    // Single display conversion for the final display write; linear consumers opt out explicitly.
+    float3 output = ApplyDisplayConversion(ldr, Gamma, OutputColorSpace);
     
     return float4(output, 1.0);
 }

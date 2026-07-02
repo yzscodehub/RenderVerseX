@@ -15,6 +15,12 @@
 
 namespace RVX::HAL
 {
+    enum class WindowGraphicsApi : uint8
+    {
+        None = 0,
+        OpenGL
+    };
+
     /**
      * @brief Window creation descriptor
      */
@@ -25,6 +31,8 @@ namespace RVX::HAL
         const char* title = "RenderVerseX";
         bool resizable = true;
         bool fullscreen = false;
+        bool vsync = true;
+        WindowGraphicsApi graphicsApi = WindowGraphicsApi::None;
     };
 
     /**
@@ -70,6 +78,7 @@ namespace RVX::HAL
 namespace RVX
 {
     using WindowDesc = HAL::WindowDesc;
+    using WindowGraphicsApi = HAL::WindowGraphicsApi;
     using Window = HAL::IWindow;
     using HAL::CreateWindow;
 }

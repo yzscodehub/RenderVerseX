@@ -9,6 +9,7 @@
 #include "Audio/AudioTypes.h"
 #include "Audio/AudioClip.h"
 #include "Audio/AudioSource.h"
+#include "Audio/Spatial/IOcclusionProvider.h"
 #include <string>
 
 namespace RVX
@@ -18,6 +19,7 @@ namespace RVX
 namespace Audio
 {
     class AudioEngine;
+    class AudioSubsystem;
 }
 
 /**
@@ -41,6 +43,9 @@ struct AudioComponentSettings
     float coneInnerAngle = 360.0f;
     float coneOuterAngle = 360.0f;
     float coneOuterGain = 0.0f;
+
+    // Routing
+    uint32 busId = 0;
 };
 
 /**
@@ -152,6 +157,9 @@ public:
     void SetSpatialize(bool spatialize);
     bool IsSpatializing() const { return m_settings.spatialize; }
 
+    void SetBusId(uint32 busId);
+    uint32 GetBusId() const { return m_settings.busId; }
+
     // =========================================================================
     // 3D Settings
     // =========================================================================
@@ -168,9 +176,32 @@ public:
     // =========================================================================
 
     /**
+     * @brief Get the world-space position used for spatial audio
+     */
+    Vec3 GetAudioWorldPosition() const;
+
+    /**
      * @brief Get the internal handle
      */
     Audio::AudioHandle GetHandle() const { return m_handle; }
+
+    /**
+     * @brief Bind this component to an explicit audio engine
+     * @note Passing nullptr restores the global engine fallback.
+     */
+    void SetAudioEngine(Audio::AudioEngine* engine);
+    Audio::AudioEngine* GetBoundAudioEngine() const { return m_audioEngine; }
+
+    /**
+     * @brief Bind this component to an audio subsystem's engine
+     */
+    void SetAudioSubsystem(Audio::AudioSubsystem* subsystem);
+    Audio::AudioSubsystem* GetBoundAudioSubsystem() const { return m_audioSubsystem; }
+
+    /**
+     * @brief Last occlusion result applied to this component
+     */
+    const Audio::OcclusionResult& GetLastOcclusionResult() const { return m_lastOcclusion; }
 
     /**
      * @brief Get playback position in seconds
@@ -189,10 +220,14 @@ private:
     
     Audio::AudioHandle m_handle;
     Audio::AudioSource m_source;
+    Audio::AudioEngine* m_audioEngine = nullptr;
+    Audio::AudioSubsystem* m_audioSubsystem = nullptr;
+    Audio::OcclusionResult m_lastOcclusion;
     
     bool m_needsPositionUpdate = true;
 
     void UpdatePosition();
+    void ApplySpatialOcclusion();
     Audio::AudioEngine* GetAudioEngine() const;
 };
 

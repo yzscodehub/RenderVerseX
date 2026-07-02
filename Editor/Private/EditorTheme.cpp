@@ -4,7 +4,12 @@
  */
 
 #include "Editor/EditorTheme.h"
+#ifndef RVX_EDITOR_ENABLE_LEGACY_IMGUI
+#define RVX_EDITOR_ENABLE_LEGACY_IMGUI 1
+#endif
+#if RVX_EDITOR_ENABLE_LEGACY_IMGUI
 #include <imgui.h>
+#endif
 
 namespace RVX::Editor
 {
@@ -13,6 +18,34 @@ EditorTheme& EditorTheme::Get()
 {
     static EditorTheme instance;
     return instance;
+}
+
+UI::UITheme EditorTheme::CreateNativeDarkUITheme()
+{
+    UI::UITheme theme = UI::UITheme::RuntimeDark();
+    theme.name = "RenderVerseX Editor Dark";
+
+    theme.metrics.fontSize = 14.0f;
+    theme.metrics.smallFontSize = 12.0f;
+    theme.metrics.largeFontSize = 18.0f;
+    theme.metrics.controlHeight = 28.0f;
+    theme.metrics.toolbarHeight = 34.0f;
+    theme.metrics.statusBarHeight = 24.0f;
+    theme.metrics.spacing = 6.0f;
+    theme.metrics.padding = 7.0f;
+    theme.metrics.borderWidth = 1.0f;
+    theme.metrics.cornerRadius = 2.0f;
+
+    theme.colors.windowBackground = UI::UIColor{0.075f, 0.082f, 0.092f, 1.0f};
+    theme.colors.panelBackground = UI::UIColor{0.105f, 0.112f, 0.124f, 1.0f};
+    theme.colors.surface = UI::UIColor{0.150f, 0.160f, 0.176f, 1.0f};
+    theme.colors.surfaceHover = UI::UIColor{0.190f, 0.205f, 0.225f, 1.0f};
+    theme.colors.surfaceActive = UI::UIColor{0.225f, 0.250f, 0.280f, 1.0f};
+    theme.colors.text = UI::UIColor{0.88f, 0.91f, 0.94f, 1.0f};
+    theme.colors.textMuted = UI::UIColor{0.58f, 0.64f, 0.70f, 1.0f};
+    theme.colors.border = UI::UIColor{0.205f, 0.230f, 0.265f, 1.0f};
+
+    return theme;
 }
 
 void EditorTheme::ApplyTheme()
@@ -30,6 +63,7 @@ void EditorTheme::ApplyDarkTheme()
 {
     m_colors = EditorColors{};
 
+#if RVX_EDITOR_ENABLE_LEGACY_IMGUI
     ImGuiStyle& style = ImGui::GetStyle();
     ImVec4* colors = style.Colors;
 
@@ -122,10 +156,12 @@ void EditorTheme::ApplyDarkTheme()
     colors[ImGuiCol_NavWindowingHighlight] = ImVec4(1.00f, 1.00f, 1.00f, 0.70f);
     colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0.80f, 0.80f, 0.80f, 0.20f);
     colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.80f, 0.80f, 0.80f, 0.35f);
+#endif
 }
 
 void EditorTheme::ApplyLightTheme()
 {
+#if RVX_EDITOR_ENABLE_LEGACY_IMGUI
     ImGuiStyle& style = ImGui::GetStyle();
     ImVec4* colors = style.Colors;
 
@@ -158,6 +194,7 @@ void EditorTheme::ApplyLightTheme()
     colors[ImGuiCol_Header] = ImVec4(0.78f, 0.78f, 0.78f, 1.00f);
     colors[ImGuiCol_HeaderHovered] = ImVec4(0.26f, 0.59f, 0.98f, 0.60f);
     colors[ImGuiCol_HeaderActive] = ImVec4(0.26f, 0.59f, 0.98f, 0.80f);
+#endif
 
     m_colors.background = Vec4(0.94f, 0.94f, 0.94f, 1.0f);
     m_colors.text = Vec4(0.1f, 0.1f, 0.1f, 1.0f);

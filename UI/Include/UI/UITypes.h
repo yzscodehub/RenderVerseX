@@ -57,6 +57,16 @@ enum class VerticalAlign : uint8
 };
 
 /**
+ * @brief Text overflow policy for single-line widgets.
+ */
+enum class TextOverflowMode : uint8
+{
+    Clip,
+    EndEllipsis,
+    MiddleEllipsis
+};
+
+/**
  * @brief Size mode for widgets
  */
 enum class SizeMode : uint8

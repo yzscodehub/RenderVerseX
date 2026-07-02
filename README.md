@@ -124,8 +124,8 @@ cmake --preset macos-release # Release on macOS
 
 # Build specific targets
 cmake --build --preset debug --target ModelViewer
-cmake --build --preset debug --target Triangle
-cmake --build --preset debug --target Cube3D
+cmake --build --preset debug --target BasicRHI
+cmake --build --preset debug --target RenderingShowcase
 ```
 
 #### Manual Configuration
@@ -175,11 +175,13 @@ Tests are standalone executables (no GoogleTest framework).
 
 | Sample | Description |
 |--------|-------------|
-| **Triangle** | Basic triangle rendering (getting started) |
-| **Cube3D** | 3D cube with lighting and camera controls |
-| **TexturedQuad** | Textured quad with shader support |
-| **ModelViewer** | Full-featured glTF model viewer |
-| **ComputeDemo** | GPU compute shader demonstration |
+| **Basic/BasicRHI** | Consolidated basic RHI sample for triangle, textured quad, and cube fundamentals |
+| **Basic/ComputeDemo** | GPU compute shader demonstration |
+| **Showcase/ModelViewer** | Full-featured glTF model viewer |
+| **Showcase/RenderingShowcase** | Integrated PBR, lighting, shadows, skybox, camera, and post-process showcase |
+| **Showcase/SceneInteractionShowcase** | Scene, camera, input, and picking-oriented showcase entry |
+| **Showcase/TerrainWaterShowcase** | Terrain/water showcase entry point |
+| **Showcase/ParticleFXShowcase** | Particle FX showcase entry point |
 
 ## Project Structure
 
@@ -217,7 +219,16 @@ RenderVerseX/
 ├── Water/             # Water simulation and effects
 └── Editor/            # Editor application with ImGui
 
-Samples/               # Sample applications
+Samples/
+├── Basic/             # Focused low-level samples
+│   ├── BasicRHI/
+│   └── ComputeDemo/
+└── Showcase/          # Integrated engine feature samples
+    ├── ModelViewer/
+    ├── RenderingShowcase/
+    ├── SceneInteractionShowcase/
+    ├── TerrainWaterShowcase/
+    └── ParticleFXShowcase/
 Tests/                 # Validation tests
 Docs/                  # Design documents and plans
 ```

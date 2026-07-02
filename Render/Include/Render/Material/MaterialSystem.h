@@ -12,6 +12,7 @@
 
 #include <array>
 #include <limits>
+#include <string>
 #include <unordered_map>
 
 namespace RVX
@@ -24,6 +25,49 @@ namespace RVX
         class MaterialResource;
         class TextureResource;
     } // namespace Resource
+
+    enum class MaterialBindingStatus : uint8
+    {
+        None = 0,
+        Ready,
+        Fallback,
+        NotInitialized,
+        Unavailable,
+        Error
+    };
+
+    struct MaterialBindingResult
+    {
+        MaterialBindingStatus status = MaterialBindingStatus::None;
+        RHIDescriptorSet* descriptorSet = nullptr;
+        std::array<uint32, 1> dynamicOffsets = {0};
+        uint32 textureFlags = 0;
+        uint32 fallbackTextureFlags = 0;
+        bool constantsUpdated = false;
+        bool usedFallback = false;
+        std::string materialName;
+        std::string message;
+
+        bool IsDrawable() const
+        {
+            return constantsUpdated &&
+                   descriptorSet &&
+                   (status == MaterialBindingStatus::Ready ||
+                    status == MaterialBindingStatus::Fallback);
+        }
+
+        bool IsError() const
+        {
+            return status == MaterialBindingStatus::NotInitialized ||
+                   status == MaterialBindingStatus::Unavailable ||
+                   status == MaterialBindingStatus::Error;
+        }
+    };
+
+    struct MaterialBindingOptions
+    {
+        bool allowNormalMap = true;
+    };
 
     /**
      * @brief Owns material GPU constants, fallback textures, and set 2 descriptors.
@@ -56,13 +100,34 @@ namespace RVX
         // Material Binding Data
         // =====================================================================
 
-        void UpdateMaterialConstants(const Resource::MaterialResource* materialResource,
-                                     ResourceViewCache* viewCache);
+        MaterialBindingResult PrepareMaterialBinding(const Resource::MaterialResource* materialResource,
+                                                     ResourceViewCache* viewCache,
+                                                     MaterialBindingOptions options = {});
+        bool UpdateMaterialConstants(const Resource::MaterialResource* materialResource,
+                                     ResourceViewCache* viewCache,
+                                     MaterialBindingOptions options = {});
         RHIDescriptorSet* GetOrCreateMaterialSet(const Resource::MaterialResource* materialResource,
-                                                 ResourceViewCache* viewCache);
+                                                 ResourceViewCache* viewCache,
+                                                 MaterialBindingOptions options = {});
         RHIDescriptorSet* GetDefaultMaterialSet();
 
         std::array<uint32, 1> GetCurrentMaterialDynamicOffset() const;
+        const MaterialBindingResult& GetLastBindingResult() const { return m_lastBindingResult; }
+        const std::string& GetLastBindingMessage() const { return m_lastBindingResult.message; }
+
+        struct EnvironmentIBLResources
+        {
+            const Resource::TextureResource* irradianceMap = nullptr;
+            const Resource::TextureResource* prefilteredMap = nullptr;
+            const Resource::TextureResource* brdfLUT = nullptr;
+            uint32 prefilteredMipLevels = 1;
+            float intensity = 1.0f;
+            bool textureIBLEnabled = false;
+        };
+
+        void SetEnvironmentIBLResources(const EnvironmentIBLResources& resources);
+        void ClearEnvironmentIBLResources();
+        const EnvironmentIBLResources& GetEnvironmentIBLResources() const { return m_environmentIBL; }
 
     private:
         static uint64 AlignConstantBufferSize(uint64 size);
@@ -86,8 +151,15 @@ namespace RVX
             RHITextureView* metallicRoughness = nullptr;
             RHITextureView* occlusion = nullptr;
             RHITextureView* emissive = nullptr;
+            RHITextureView* irradiance = nullptr;
+            RHITextureView* prefilteredEnvironment = nullptr;
+            RHITextureView* brdfLUT = nullptr;
             uint32 textureFlags = 0;
+            uint32 fallbackTextureFlags = 0;
             uint64 viewGeneration = 0;
+            bool textureIBLEnabled = false;
+            bool usedFallback = false;
+            bool normalMapDisabled = false;
         };
 
         struct MaterialDescriptorKey
@@ -97,7 +169,11 @@ namespace RVX
             RHITextureView* metallicRoughness = nullptr;
             RHITextureView* occlusion = nullptr;
             RHITextureView* emissive = nullptr;
+            RHITextureView* irradiance = nullptr;
+            RHITextureView* prefilteredEnvironment = nullptr;
+            RHITextureView* brdfLUT = nullptr;
             uint64 viewGeneration = 0;
+            bool textureIBLEnabled = false;
 
             bool operator==(const MaterialDescriptorKey& other) const
             {
@@ -106,7 +182,11 @@ namespace RVX
                        metallicRoughness == other.metallicRoughness &&
                        occlusion == other.occlusion &&
                        emissive == other.emissive &&
-                       viewGeneration == other.viewGeneration;
+                       irradiance == other.irradiance &&
+                       prefilteredEnvironment == other.prefilteredEnvironment &&
+                       brdfLUT == other.brdfLUT &&
+                       viewGeneration == other.viewGeneration &&
+                       textureIBLEnabled == other.textureIBLEnabled;
             }
         };
 
@@ -115,18 +195,31 @@ namespace RVX
             size_t operator()(const MaterialDescriptorKey& key) const;
         };
 
+        struct MaterialSetResolveResult
+        {
+            RHIDescriptorSet* descriptorSet = nullptr;
+            bool usedFallback = false;
+            MaterialBindingStatus status = MaterialBindingStatus::None;
+            std::string message;
+        };
+
         bool CreateConstantBuffer();
         bool CreateDefaultResources();
         RHITextureView* ResolveTextureView(const Resource::TextureResource* textureResource,
                                            RHITextureView* fallbackView,
                                            ResourceViewCache* viewCache,
                                            uint32 textureFlag,
-                                           uint32& textureFlags) const;
+                                           uint32& textureFlags,
+                                           uint32& fallbackTextureFlags,
+                                           bool& usedFallback) const;
         ResolvedMaterialTextures ResolveMaterialTextures(const Resource::MaterialResource* materialResource,
-                                                        ResourceViewCache* viewCache) const;
+                                                        ResourceViewCache* viewCache,
+                                                        MaterialBindingOptions options) const;
         MaterialGPUConstants BuildConstants(const Resource::MaterialResource* materialResource,
                                             const ResolvedMaterialTextures& textures) const;
+        MaterialSetResolveResult GetOrCreateMaterialSetForResolved(const ResolvedMaterialTextures& textures);
         RHIDescriptorSetRef CreateMaterialDescriptorSet(const ResolvedMaterialTextures& textures);
+        const MaterialBindingResult& SetLastBindingResult(MaterialBindingResult result);
         uint64 AllocateMaterialConstantSlot();
 
         IRHIDevice* m_device = nullptr;
@@ -146,9 +239,13 @@ namespace RVX
         RHITextureViewRef m_defaultNormalTextureView;
         RHITextureViewRef m_defaultBlackTextureView;
         RHISamplerRef m_defaultSampler;
+        RHITextureRef m_defaultBlackCubemap;
+        RHITextureViewRef m_defaultBlackCubemapView;
         RHIDescriptorSetRef m_defaultMaterialSet;
         std::unordered_map<MaterialDescriptorKey, RHIDescriptorSetRef, MaterialDescriptorKeyHash> m_materialDescriptorCache;
         uint64 m_materialDescriptorCacheGeneration = ~uint64{0};
+        EnvironmentIBLResources m_environmentIBL;
+        MaterialBindingResult m_lastBindingResult;
     };
 
 } // namespace RVX

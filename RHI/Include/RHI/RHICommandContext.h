@@ -3,6 +3,7 @@
 #include "RHI/RHIResources.h"
 #include "RHI/RHIRenderPass.h"
 #include "RHI/RHIQuery.h"
+#include "RHI/RHIRayTracing.h"
 #include <span>
 
 namespace RVX
@@ -36,8 +37,8 @@ namespace RVX
     struct RHIBufferTextureCopyDesc
     {
         uint64 bufferOffset = 0;
-        uint32 bufferRowPitch = 0;    // 0 = tightly packed
-        uint32 bufferImageHeight = 0; // 0 = tightly packed
+        uint32 bufferRowPitch = 0;    // Bytes per row; 0 = tightly packed
+        uint32 bufferImageHeight = 0; // Rows per image, or compressed block rows; 0 = tightly packed
         uint32 textureSubresource = 0;
         RHIRect textureRegion = {0, 0, 0, 0};  // 0,0,0,0 = full texture
         uint32 textureDepthSlice = 0;
@@ -53,6 +54,20 @@ namespace RVX
         uint32 dstSubresource = 0;
         uint32 dstX = 0, dstY = 0, dstZ = 0;
         uint32 width = 0, height = 0, depth = 0;  // 0 = full size
+    };
+
+    /**
+     * @brief Standard indexed indirect draw command argument layout.
+     *
+     * Matches D3D12_DRAW_INDEXED_ARGUMENTS and VkDrawIndexedIndirectCommand.
+     */
+    struct IndirectDrawIndexedCommand
+    {
+        uint32 indexCount = 0;
+        uint32 instanceCount = 0;
+        uint32 firstIndex = 0;
+        int32 vertexOffset = 0;
+        uint32 firstInstance = 0;
     };
 
     // =============================================================================
@@ -80,8 +95,22 @@ namespace RVX
         // =========================================================================
         // Resource Barriers
         // =========================================================================
+        /**
+         * @brief Transition a buffer between resource states.
+         * @note Null resources and same-state transitions are no-work and must not emit backend API calls.
+         */
         virtual void BufferBarrier(const RHIBufferBarrier& barrier) = 0;
+
+        /**
+         * @brief Transition a texture between resource states.
+         * @note Null resources and same-state transitions are no-work and must not emit backend API calls.
+         */
         virtual void TextureBarrier(const RHITextureBarrier& barrier) = 0;
+
+        /**
+         * @brief Batch resource barriers.
+         * @note Empty spans, null resources, and same-state transitions are valid no-work inputs.
+         */
         virtual void Barriers(
             std::span<const RHIBufferBarrier> bufferBarriers,
             std::span<const RHITextureBarrier> textureBarriers) = 0;
@@ -104,9 +133,9 @@ namespace RVX
         /**
          * @brief Begin a resource state transition (asynchronous)
          * 
-         * After calling this, the resource is in an intermediate state and must
-         * have EndBarrier called before use. Backends that don't support split
-         * barriers will ignore this call and perform full transition in EndBarrier.
+         * Requires RHICapabilities::supportsSplitBarrier for real split-barrier
+         * behavior. Backends without split barriers must leave BeginBarrier as
+         * visible no-work and perform any full barrier fallback in EndBarrier.
          * 
          * @param barrier Buffer barrier description
          */
@@ -121,8 +150,10 @@ namespace RVX
         /**
          * @brief Complete a resource state transition
          * 
-         * If BeginBarrier was called earlier, this completes the transition.
-         * Otherwise, performs a full transition.
+         * If split barriers are supported and BeginBarrier was called earlier,
+         * this completes the transition. If split barriers are unsupported,
+         * this may perform a full barrier when the backend supports explicit
+         * resource barriers, otherwise it is an emulated/no-work path.
          * 
          * @param barrier Buffer barrier description
          */
@@ -173,12 +204,59 @@ namespace RVX
         virtual void DrawIndexed(uint32 indexCount, uint32 instanceCount = 1, uint32 firstIndex = 0, int32 vertexOffset = 0, uint32 firstInstance = 0) = 0;
         virtual void DrawIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride) = 0;
         virtual void DrawIndexedIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride) = 0;
+        virtual void DrawIndexedIndirectCount(RHIBuffer* buffer,
+                                              uint64 offset,
+                                              RHIBuffer* countBuffer,
+                                              uint64 countOffset,
+                                              uint32 maxDrawCount,
+                                              uint32 stride)
+        {
+            (void)countBuffer;
+            (void)countOffset;
+            DrawIndexedIndirect(buffer, offset, maxDrawCount, stride);
+        }
 
         // =========================================================================
         // Compute Commands
         // =========================================================================
         virtual void Dispatch(uint32 groupCountX, uint32 groupCountY, uint32 groupCountZ) = 0;
         virtual void DispatchIndirect(RHIBuffer* buffer, uint64 offset) = 0;
+
+        // =========================================================================
+        // Ray Tracing Commands
+        // =========================================================================
+        virtual void BuildBottomLevelAccelerationStructure(
+            RHIAccelerationStructure* dst,
+            const RHIBottomLevelASDesc& desc,
+            RHIBuffer* scratchBuffer,
+            uint64 scratchOffset = 0,
+            RHIAccelerationStructure* src = nullptr)
+        {
+            (void)dst;
+            (void)desc;
+            (void)scratchBuffer;
+            (void)scratchOffset;
+            (void)src;
+        }
+
+        virtual void BuildTopLevelAccelerationStructure(
+            RHIAccelerationStructure* dst,
+            const RHITopLevelASDesc& desc,
+            RHIBuffer* scratchBuffer,
+            uint64 scratchOffset = 0,
+            RHIAccelerationStructure* src = nullptr)
+        {
+            (void)dst;
+            (void)desc;
+            (void)scratchBuffer;
+            (void)scratchOffset;
+            (void)src;
+        }
+
+        virtual void DispatchRays(const RHIDispatchRaysDesc& desc)
+        {
+            (void)desc;
+        }
 
         // =========================================================================
         // Copy Commands
@@ -286,7 +364,7 @@ namespace RVX
          * @brief Signal a fence after all commands in this context complete
          * @param fence The fence to signal
          * @param value The fence value to signal
-         * @note This signals on the queue this context will be submitted to
+         * @note Requires RHICapabilities::supportsExplicitQueueFenceSignal for real queue synchronization.
          */
         virtual void SignalFence(RHIFence* fence, uint64 value) = 0;
 
@@ -294,7 +372,7 @@ namespace RVX
          * @brief Wait for a fence to reach a value before proceeding
          * @param fence The fence to wait on
          * @param value The fence value to wait for
-         * @note This inserts a wait in the command buffer
+         * @note Requires RHICapabilities::supportsQueueFenceWait for real queue synchronization.
          */
         virtual void WaitFence(RHIFence* fence, uint64 value) = 0;
     };

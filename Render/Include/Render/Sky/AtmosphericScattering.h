@@ -12,6 +12,7 @@
 #include "Core/MathTypes.h"
 #include "RHI/RHI.h"
 #include <memory>
+#include <string>
 
 namespace RVX
 {
@@ -129,7 +130,10 @@ namespace RVX
         float GetViewerHeight() const { return m_viewerHeight; }
 
         void SetEnabled(bool enabled) { m_enabled = enabled; }
-        bool IsEnabled() const { return m_enabled; }
+        bool IsEnabled() const { return m_enabled && m_supported; }
+        bool IsRequestedEnabled() const { return m_enabled; }
+        bool IsSupported() const { return m_supported; }
+        const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
 
         // =========================================================================
         // LUT Management
@@ -230,6 +234,8 @@ namespace RVX
         IRHIDevice* m_device = nullptr;
         AtmosphericScatteringConfig m_config;
         bool m_enabled = true;
+        bool m_supported = false;
+        std::string m_unsupportedReason = "Atmospheric scattering compute and sky render pipelines are not implemented";
 
         float m_viewerHeight = 1.0f;  // Above planet surface
         bool m_lutsNeedUpdate = true;

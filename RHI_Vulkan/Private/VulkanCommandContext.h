@@ -108,7 +108,7 @@ namespace RVX
 
     // Factory and submit functions
     RHICommandContextRef CreateVulkanCommandContext(VulkanDevice* device, RHICommandQueueType type);
-    void SubmitVulkanCommandContext(VulkanDevice* device, RHICommandContext* context, RHIFence* signalFence);
-    void SubmitVulkanCommandContexts(VulkanDevice* device, std::span<RHICommandContext* const> contexts, RHIFence* signalFence);
+    uint64 SubmitVulkanCommandContext(VulkanDevice* device, RHICommandContext* context, RHIFence* signalFence);
+    uint64 SubmitVulkanCommandContexts(VulkanDevice* device, std::span<RHICommandContext* const> contexts, RHIFence* signalFence);
 
 } // namespace RVX

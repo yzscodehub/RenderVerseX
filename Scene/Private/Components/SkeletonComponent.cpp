@@ -6,6 +6,10 @@
 namespace RVX
 {
 
+SkeletonComponent::SkeletonComponent() = default;
+
+SkeletonComponent::~SkeletonComponent() = default;
+
 void SkeletonComponent::OnAttach()
 {
     // Initialize to bind pose if skeleton is set

@@ -12,11 +12,26 @@
 #include "RHI/RHIDevice.h"
 #include "Render/Graph/RenderGraph.h"
 
+#include <string>
+
 namespace RVX
 {
     class RenderGraphBuilder;
     class RenderGraph;
     struct ViewData;
+
+    /**
+     * @brief Observable state for one render pass in the main chain.
+     */
+    struct RenderPassStatus
+    {
+        std::string name;
+        int32_t priority = 0;
+        bool requestedEnabled = false;
+        bool supported = true;
+        bool enabled = false;
+        std::string unsupportedReason;
+    };
 
     /**
      * @brief Render pass interface
@@ -95,10 +110,44 @@ namespace RVX
         virtual int32_t GetPriority() const { return 0; }
 
         /**
+         * @brief Check if the pass was requested even when unsupported
+         */
+        virtual bool IsRequestedEnabled() const { return true; }
+
+        /**
+         * @brief Check whether this pass has a real executable implementation
+         */
+        virtual bool IsSupported() const { return true; }
+
+        /**
+         * @brief Human-readable reason when unsupported
+         */
+        virtual const std::string& GetUnsupportedReason() const
+        {
+            static const std::string emptyReason;
+            return emptyReason;
+        }
+
+        /**
          * @brief Check if the pass is enabled
          * @return true if the pass should execute
          */
-        virtual bool IsEnabled() const { return true; }
+        virtual bool IsEnabled() const { return IsRequestedEnabled() && IsSupported(); }
+
+        /**
+         * @brief Get a snapshot of this pass' chain status
+         */
+        virtual RenderPassStatus GetStatus() const
+        {
+            RenderPassStatus status;
+            status.name = GetName() ? GetName() : "";
+            status.priority = GetPriority();
+            status.requestedEnabled = IsRequestedEnabled();
+            status.supported = IsSupported();
+            status.enabled = IsEnabled();
+            status.unsupportedReason = GetUnsupportedReason();
+            return status;
+        }
 
         /**
          * @brief Called when the pass is added to the renderer

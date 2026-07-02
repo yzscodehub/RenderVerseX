@@ -44,8 +44,8 @@ namespace RVX
         RHIQueryPoolRef CreateQueryPool(const RHIQueryPoolDesc& desc) override;
 
         RHICommandContextRef CreateCommandContext(RHICommandQueueType type) override;
-        void SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence) override;
-        void SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence) override;
+        uint64 SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence) override;
+        uint64 SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence) override;
 
         RHISwapChainRef CreateSwapChain(const RHISwapChainDesc& desc) override;
 

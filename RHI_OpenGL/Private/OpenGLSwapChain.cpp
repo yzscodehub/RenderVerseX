@@ -79,6 +79,7 @@ namespace RVX
 
             RHITextureViewDesc viewDesc;
             viewDesc.format = m_format;
+            viewDesc.type = RHITextureViewType::RenderTarget;
             viewDesc.debugName = "SwapChain_BackBufferView";
             
             // Create a view that just wraps the texture

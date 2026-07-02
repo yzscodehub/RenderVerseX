@@ -141,6 +141,7 @@ namespace RVX
         uint64 TrackPendingUpload(RHIStagingBufferRef stagingBuffer, RHICommandContextRef commandContext,
                                   RHIFenceRef fence, uint64 fenceValue, uint64 stagingBytes);
         uint32 CompleteBatchUploadsWithoutFence(RHICommandContext* commandContext);
+        uint32 CompleteAllPendingUploadsAfterWaitIdle();
         GPUUploadBufferResult MakeBufferFailure(GPUUploadFailureReason reason);
         GPUUploadTextureResult MakeTextureFailure(GPUUploadFailureReason reason);
         void RecordFailure(GPUUploadFailureReason reason);

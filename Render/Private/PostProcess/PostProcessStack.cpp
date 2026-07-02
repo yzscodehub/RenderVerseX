@@ -5,10 +5,175 @@
 
 #include "Render/PostProcess/PostProcessStack.h"
 #include "Core/Log.h"
+#include "RHI/RHICommandContext.h"
 #include <algorithm>
 
 namespace RVX
 {
+
+namespace
+{
+    bool IsToneMappingEffect(const IPostProcessPass* effect)
+    {
+        return effect && std::string(effect->GetName()) == "ToneMapping";
+    }
+
+    bool IsLDRPostToneMappingEffect(const IPostProcessPass* effect)
+    {
+        if (!effect)
+        {
+            return false;
+        }
+
+        const std::string name = effect->GetName();
+        return name == "ChromaticAberration" || name == "ColorGrading" || name == "FXAA" || name == "Vignette";
+    }
+
+    bool IsLDROutputFormat(RHIFormat format)
+    {
+        switch (format)
+        {
+            case RHIFormat::RGBA8_UNORM:
+            case RHIFormat::RGBA8_UNORM_SRGB:
+            case RHIFormat::BGRA8_UNORM:
+            case RHIFormat::BGRA8_UNORM_SRGB:
+            case RHIFormat::RGB10A2_UNORM:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    bool ValidateToneMappingBoundary(const std::vector<IPostProcessPass*>& enabledEffects,
+                                     RHIFormat finalOutputFormat,
+                                     PostProcessStackExecuteStats& stats,
+                                     bool logWarnings)
+    {
+        bool seenToneMapping = false;
+        for (IPostProcessPass* effect : enabledEffects)
+        {
+            if (IsLDRPostToneMappingEffect(effect) && !seenToneMapping)
+            {
+                stats.toneMappingBoundaryValid = false;
+                stats.toneMappingBoundaryWarning =
+                    "LDR post-process effects require ToneMapping before them";
+                if (logWarnings)
+                {
+                    RVX_CORE_WARN("PostProcessStack: {}", stats.toneMappingBoundaryWarning);
+                }
+                return false;
+            }
+
+            if (IsToneMappingEffect(effect))
+            {
+                seenToneMapping = true;
+                continue;
+            }
+
+            if (seenToneMapping && !IsLDRPostToneMappingEffect(effect))
+            {
+                stats.toneMappingBoundaryValid = false;
+                stats.toneMappingBoundaryWarning =
+                    "Only LDR post-process effects may run after ToneMapping";
+                if (logWarnings)
+                {
+                    RVX_CORE_WARN("PostProcessStack: {}", stats.toneMappingBoundaryWarning);
+                }
+                return false;
+            }
+        }
+
+        if (!seenToneMapping && IsLDROutputFormat(finalOutputFormat))
+        {
+            stats.toneMappingBoundaryValid = false;
+            stats.toneMappingBoundaryWarning =
+                "HDR post-process output requires ToneMapping before writing an LDR target";
+            if (logWarnings)
+            {
+                RVX_CORE_WARN("PostProcessStack: {}", stats.toneMappingBoundaryWarning);
+            }
+            return false;
+        }
+
+        stats.toneMappingBoundaryValid = true;
+        stats.toneMappingBoundaryWarning.clear();
+        return true;
+    }
+
+    bool AreCopyCompatible(const RHITextureDesc& srcDesc, const RHITextureDesc& dstDesc)
+    {
+        return srcDesc.dimension == dstDesc.dimension &&
+               srcDesc.width == dstDesc.width &&
+               srcDesc.height == dstDesc.height &&
+               srcDesc.depth == dstDesc.depth &&
+               srcDesc.mipLevels == dstDesc.mipLevels &&
+               srcDesc.arraySize == dstDesc.arraySize &&
+               srcDesc.sampleCount == dstDesc.sampleCount &&
+               srcDesc.format == dstDesc.format;
+    }
+
+    bool AddFallbackCopyPass(RenderGraph& graph,
+                             RGTextureHandle input,
+                             RGTextureHandle output,
+                             PostProcessStackExecuteStats& stats,
+                             const char* reason)
+    {
+        if (!input.IsValid() || !output.IsValid())
+        {
+            stats.fallbackCopyReason = "fallback copy skipped because input or output handle is invalid";
+            return false;
+        }
+
+        const RHITextureDesc* inputDesc = graph.GetTextureDesc(input);
+        const RHITextureDesc* outputDesc = graph.GetTextureDesc(output);
+        if (!inputDesc || !outputDesc)
+        {
+            stats.fallbackCopyReason = "fallback copy skipped because texture descriptions are unavailable";
+            return false;
+        }
+
+        stats.finalOutputFormat = outputDesc->format;
+        if (!AreCopyCompatible(*inputDesc, *outputDesc))
+        {
+            stats.fallbackCopyReason = "fallback copy skipped because input and output textures are not copy-compatible";
+            RVX_CORE_WARN("PostProcessStack: {}", stats.fallbackCopyReason);
+            return false;
+        }
+
+        struct FallbackCopyData
+        {
+            RGTextureHandle input;
+            RGTextureHandle output;
+        };
+
+        graph.AddPass<FallbackCopyData>(
+            "PostProcessFallbackCopy",
+            RenderGraphPassType::Copy,
+            [input, output](RenderGraphBuilder& builder, FallbackCopyData& data)
+            {
+                data.input = builder.Read(input, RHIResourceState::CopySource);
+                data.output = builder.Write(output, RHIResourceState::CopyDest);
+            },
+            [&graph](const FallbackCopyData& data, RHICommandContext& ctx)
+            {
+                RHITexture* inputTexture = graph.GetTexture(data.input);
+                RHITexture* outputTexture = graph.GetTexture(data.output);
+                if (!inputTexture || !outputTexture)
+                {
+                    RVX_CORE_WARN("PostProcessStack: fallback copy skipped because textures are unavailable");
+                    return;
+                }
+
+                ctx.CopyTexture(inputTexture, outputTexture);
+            });
+
+        stats.fallbackCopyApplied = true;
+        stats.fallbackCopyPassCount++;
+        stats.graphPassCount++;
+        stats.fallbackCopyReason = reason ? reason : "fallback copy";
+        return true;
+    }
+} // namespace
 
 PostProcessStack::~PostProcessStack()
 {
@@ -61,39 +226,141 @@ void PostProcessStack::ApplySettings(const PostProcessSettings& settings)
     }
 }
 
-void PostProcessStack::Execute(RenderGraph& graph, RGTextureHandle sceneColor, RGTextureHandle output)
+std::vector<IPostProcessPass*> PostProcessStack::GatherEnabledEffects(PostProcessStackExecuteStats& stats,
+                                                                      bool logUnsupported) const
 {
-    // Count enabled effects
     std::vector<IPostProcessPass*> enabledEffects;
-    for (auto& effect : m_effects)
+    for (const auto& effect : m_effects)
     {
+        if (effect->IsRequestedEnabled())
+        {
+            stats.requestedEffectCount++;
+        }
+
+        if (effect->IsRequestedEnabled() && !effect->IsSupported())
+        {
+            stats.unsupportedSkippedCount++;
+            if (logUnsupported)
+            {
+                RVX_CORE_WARN(
+                    "PostProcessStack: Skipping unsupported effect '{}': {}",
+                    effect->GetName(),
+                    effect->GetUnsupportedReason());
+            }
+        }
+
         if (effect->IsEnabled())
         {
             enabledEffects.push_back(effect.get());
         }
     }
+    stats.enabledEffectCount = static_cast<uint32>(enabledEffects.size());
 
     if (enabledEffects.empty())
     {
-        // No effects - just copy input to output
-        // In a real implementation, we'd add a copy pass
-        (void)graph;
-        (void)sceneColor;
-        (void)output;
+        stats.noEffectNoWork = true;
+    }
+
+    return enabledEffects;
+}
+
+PostProcessStackExecuteStats PostProcessStack::EvaluateEffects() const
+{
+    PostProcessStackExecuteStats stats;
+    std::vector<IPostProcessPass*> enabledEffects = GatherEnabledEffects(stats, false);
+    if (!enabledEffects.empty())
+    {
+        (void)ValidateToneMappingBoundary(enabledEffects, RHIFormat::Unknown, stats, false);
+    }
+    return stats;
+}
+
+void PostProcessStack::Execute(RenderGraph& graph, RGTextureHandle sceneColor, RGTextureHandle output)
+{
+    m_lastExecuteStats = {};
+
+    std::vector<IPostProcessPass*> enabledEffects = GatherEnabledEffects(m_lastExecuteStats, true);
+
+    if (enabledEffects.empty())
+    {
+        m_lastExecuteStats.noEffectNoWork = true;
+        AddFallbackCopyPass(graph,
+                            sceneColor,
+                            output,
+                            m_lastExecuteStats,
+                            "no supported enabled effects; copied scene color to output");
         return;
     }
 
-    // Execute effect chain
-    // For now, simplified: just call each effect's AddToGraph
-    // A proper implementation would manage ping-pong buffers
+    if (const RHITextureDesc* outputDesc = graph.GetTextureDesc(output))
+    {
+        m_lastExecuteStats.finalOutputFormat = outputDesc->format;
+    }
+
+    if (!ValidateToneMappingBoundary(enabledEffects, m_lastExecuteStats.finalOutputFormat, m_lastExecuteStats, true))
+    {
+        RVX_CORE_WARN("PostProcessStack: invalid ToneMapping boundary; skipping post-process execution");
+        AddFallbackCopyPass(graph,
+                            sceneColor,
+                            output,
+                            m_lastExecuteStats,
+                            "invalid ToneMapping boundary; copied scene color to output");
+        return;
+    }
+
+    std::vector<RGTextureHandle> intermediates;
+    if (enabledEffects.size() > 1)
+    {
+        const RHITextureDesc* sceneDescPtr = graph.GetTextureDesc(sceneColor);
+        const RHITextureDesc* outputDescPtr = graph.GetTextureDesc(output);
+        if (!sceneDescPtr || !outputDescPtr)
+        {
+            m_lastExecuteStats.noEffectNoWork = true;
+            RVX_CORE_WARN("PostProcessStack: cannot create intermediate textures without valid scene and output descriptions");
+            return;
+        }
+
+        const RHITextureDesc sceneDesc = *sceneDescPtr;
+        const RHITextureDesc outputDesc = *outputDescPtr;
+
+        intermediates.reserve(enabledEffects.size() - 1);
+        bool ldrDomain = false;
+        for (size_t i = 0; i + 1 < enabledEffects.size(); ++i)
+        {
+            const bool writesLDR = ldrDomain || IsToneMappingEffect(enabledEffects[i]);
+            RHITextureDesc intermediateDesc = writesLDR ? outputDesc : sceneDesc;
+            intermediateDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+            intermediateDesc.debugName = "PostProcessIntermediate";
+            intermediates.push_back(graph.CreateTexture(intermediateDesc));
+            m_lastExecuteStats.transientIntermediateFormat = intermediateDesc.format;
+            if (writesLDR)
+            {
+                m_lastExecuteStats.ldrIntermediateCount++;
+                m_lastExecuteStats.ldrIntermediateFormat = intermediateDesc.format;
+            }
+            else
+            {
+                m_lastExecuteStats.hdrIntermediateCount++;
+                m_lastExecuteStats.hdrIntermediateFormat = intermediateDesc.format;
+            }
+
+            if (IsToneMappingEffect(enabledEffects[i]))
+            {
+                ldrDomain = true;
+            }
+        }
+        m_lastExecuteStats.transientIntermediateCount = static_cast<uint32>(intermediates.size());
+    }
+
     RGTextureHandle currentInput = sceneColor;
-    
+
     for (size_t i = 0; i < enabledEffects.size(); ++i)
     {
         bool isLast = (i == enabledEffects.size() - 1);
-        RGTextureHandle currentOutput = isLast ? output : sceneColor;  // Would use intermediate buffer
-        
+        RGTextureHandle currentOutput = isLast ? output : intermediates[i];
+
         enabledEffects[i]->AddToGraph(graph, currentInput, currentOutput);
+        m_lastExecuteStats.graphPassCount++;
         currentInput = currentOutput;
     }
 }

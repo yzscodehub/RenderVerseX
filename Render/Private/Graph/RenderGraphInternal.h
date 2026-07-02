@@ -1,7 +1,9 @@
 #pragma once
 
 #include "Render/Graph/RenderGraph.h"
+#include "Render/Graph/TransientResourcePool.h"
 #include "RHI/RHIHeap.h"
+#include <deque>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -61,19 +63,28 @@ namespace RVX
         RHITextureDesc desc;
         RHITextureRef texture;           // Owned texture (for transient/created textures)
         RHITexture* importedRaw = nullptr; // Non-owning pointer for imported textures
+        RHITexture* pooledRaw = nullptr; // Non-owning pointer for pooled transient textures
         RHIResourceState initialState = RHIResourceState::Undefined;
         RHIResourceState currentState = RHIResourceState::Undefined;
         std::unordered_map<uint32, RHIResourceState> subresourceStates;
         bool hasSubresourceTracking = false;
         std::optional<RHIResourceState> exportState;
         bool imported = false;
+        bool pooled = false;
         
         // Memory aliasing
         ResourceLifetime lifetime;
         MemoryAlias alias;
         
         // Get the actual texture pointer (either owned or imported)
-        RHITexture* GetTexture() const { return imported ? importedRaw : texture.Get(); }
+        RHITexture* GetTexture() const
+        {
+            if (imported)
+            {
+                return importedRaw;
+            }
+            return pooled ? pooledRaw : texture.Get();
+        }
     };
 
     struct BufferResource
@@ -81,6 +92,7 @@ namespace RVX
         RHIBufferDesc desc;
         RHIBufferRef buffer;               // Owned buffer (for transient/created buffers)
         RHIBuffer* importedRaw = nullptr;  // Non-owning pointer for imported buffers
+        RHIBuffer* pooledRaw = nullptr;    // Non-owning pointer for pooled transient buffers
         RHIResourceState initialState = RHIResourceState::Undefined;
         RHIResourceState currentState = RHIResourceState::Undefined;
         std::optional<RHIResourceState> exportState;
@@ -93,13 +105,21 @@ namespace RVX
         std::vector<RangeState> rangeStates;
         bool hasRangeTracking = false;
         bool imported = false;
+        bool pooled = false;
         
         // Memory aliasing
         ResourceLifetime lifetime;
         MemoryAlias alias;
         
         // Get the actual buffer pointer (either owned or imported)
-        RHIBuffer* GetBuffer() const { return imported ? importedRaw : buffer.Get(); }
+        RHIBuffer* GetBuffer() const
+        {
+            if (imported)
+            {
+                return importedRaw;
+            }
+            return pooled ? pooledRaw : buffer.Get();
+        }
     };
 
     struct ResourceUsage
@@ -144,16 +164,28 @@ namespace RVX
 
     struct RenderGraphImpl
     {
+        struct RetiredFrameResources
+        {
+            // Keep heaps after placed resources so destruction releases resources first.
+            std::vector<RHIHeapRef> heaps;
+            std::vector<RHITextureRef> textures;
+            std::vector<RHIBufferRef> buffers;
+        };
+
         IRHIDevice* device = nullptr;
+        TransientResourcePool* transientResourcePool = nullptr;
         std::vector<TextureResource> textures;
         std::vector<BufferResource> buffers;
         std::vector<Pass> passes;
         std::vector<uint32> executionOrder;
         RenderGraph::CompileStats stats;
-        
+        std::vector<std::string> compileDiagnostics;
+        std::deque<RetiredFrameResources> retiredFrameResources;
+
         // Memory aliasing
         std::vector<TransientHeap> transientHeaps;
-        bool enableMemoryAliasing = true;
+        bool enableMemoryAliasing = false;
+        bool memoryAliasingRequested = false;
         
         // Aliasing statistics
         uint64 totalMemoryWithoutAliasing = 0;

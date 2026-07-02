@@ -2,14 +2,13 @@
 #include "Render/GPUUploadService.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
-#include "TestFramework/TestRunner.h"
+#include <gtest/gtest.h>
 
 #include <cstring>
 #include <memory>
 #include <vector>
 
 using namespace RVX;
-using namespace RVX::Test;
 
 namespace
 {
@@ -97,6 +96,7 @@ namespace
         uint32 copyBufferToTextureCount = 0;
         uint32 bufferBarrierCount = 0;
         uint32 textureBarrierCount = 0;
+        std::vector<RHIBufferTextureCopyDesc> copyBufferToTextureDescs;
 
         void Begin() override { ++beginCount; }
         void End() override { ++endCount; }
@@ -131,7 +131,11 @@ namespace
         void DispatchIndirect(RHIBuffer*, uint64) override {}
         void CopyBuffer(RHIBuffer*, RHIBuffer*, uint64, uint64, uint64) override { ++copyBufferCount; }
         void CopyTexture(RHITexture*, RHITexture*, const RHITextureCopyDesc& = {}) override {}
-        void CopyBufferToTexture(RHIBuffer*, RHITexture*, const RHIBufferTextureCopyDesc&) override { ++copyBufferToTextureCount; }
+        void CopyBufferToTexture(RHIBuffer*, RHITexture*, const RHIBufferTextureCopyDesc& desc) override
+        {
+            ++copyBufferToTextureCount;
+            copyBufferToTextureDescs.push_back(desc);
+        }
         void CopyTextureToBuffer(RHITexture*, RHIBuffer*, const RHIBufferTextureCopyDesc&) override {}
         void BeginQuery(RHIQueryPool*, uint32) override {}
         void EndQuery(RHIQueryPool*, uint32) override {}
@@ -153,16 +157,26 @@ namespace
     public:
         explicit FakeFence(uint64 initialValue)
             : m_completedValue(initialValue)
+            , m_nextSignalValue(initialValue + 1)
         {
         }
 
         uint64 GetCompletedValue() const override { return m_completedValue; }
-        void Signal(uint64 value) override { m_completedValue = value; }
-        void SignalOnQueue(uint64 value, RHICommandQueueType) override { m_completedValue = value; }
-        void Wait(uint64 value, uint64 = UINT64_MAX) override { m_completedValue = value; }
+        void Signal(uint64 value) override
+        {
+            m_completedValue = value;
+            if (m_nextSignalValue <= value)
+            {
+                m_nextSignalValue = value + 1;
+            }
+        }
+        void SignalOnQueue(uint64 value, RHICommandQueueType) override { Signal(value); }
+        void Wait(uint64 value, uint64 = UINT64_MAX) override { Signal(value); }
+        uint64 AllocateSignalValue() { return m_nextSignalValue++; }
 
     private:
         uint64 m_completedValue = 0;
+        uint64 m_nextSignalValue = 1;
     };
 
     class FakeDevice final : public IRHIDevice
@@ -177,6 +191,7 @@ namespace
         RHITextureRef CreateTexture(const RHITextureDesc& desc) override
         {
             ++createdTextureCount;
+            lastCreatedTextureDesc = desc;
             return RHITextureRef(new FakeTexture(desc));
         }
 
@@ -203,14 +218,18 @@ namespace
             return retainedCommandContext;
         }
 
-        void SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence) override
+        uint64 SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence) override
         {
             ++submittedCommandContextCount;
             lastSubmittedContext = context;
             lastSubmittedFence = signalFence;
+            return signalFence ? static_cast<FakeFence*>(signalFence)->AllocateSignalValue() : 0;
         }
 
-        void SubmitCommandContexts(std::span<RHICommandContext* const>, RHIFence*) override {}
+        uint64 SubmitCommandContexts(std::span<RHICommandContext* const>, RHIFence* signalFence) override
+        {
+            return signalFence ? static_cast<FakeFence*>(signalFence)->AllocateSignalValue() : 0;
+        }
         RHISwapChainRef CreateSwapChain(const RHISwapChainDesc&) override { return nullptr; }
         RHIFenceRef CreateFence(uint64 initialValue) override
         {
@@ -242,7 +261,7 @@ namespace
         void BeginResourceGroup(const char*) override {}
         void EndResourceGroup() override {}
         const RHICapabilities& GetCapabilities() const override { return capabilities; }
-        RHIBackendType GetBackendType() const override { return RHIBackendType::None; }
+        RHIBackendType GetBackendType() const override { return backendType; }
 
         uint32 createdBufferCount = 0;
         uint32 createdTextureCount = 0;
@@ -259,12 +278,57 @@ namespace
         RHICommandContextRef retainedCommandContext;
         std::vector<RHIFenceRef> retainedFences;
         RHICapabilities capabilities;
+        RHITextureDesc lastCreatedTextureDesc;
+        RHIBackendType backendType = RHIBackendType::None;
         uint64 fenceInitialValueOverride = 0;
         bool signalLastFenceOnWaitIdle = false;
     };
+
+    class LogEnvironment final : public ::testing::Environment
+    {
+    public:
+        void SetUp() override
+        {
+            Log::Initialize();
+        }
+
+        void TearDown() override
+        {
+            Log::Shutdown();
+        }
+    };
+
+    [[maybe_unused]] ::testing::Environment* const g_logEnvironment =
+        ::testing::AddGlobalTestEnvironment(new LogEnvironment());
 } // namespace
 
-bool Test_StagedBufferUploadsBatchUntilFlush()
+TEST(GPUUploadServiceValidation, RHITextureSubresourceHelpersUsePhysicalCubeLayers)
+{
+    RHITextureDesc cubeDesc;
+    cubeDesc.dimension = RHITextureDimension::TextureCube;
+    cubeDesc.arraySize = 1;
+    cubeDesc.mipLevels = 2;
+
+    EXPECT_EQ(GetTexturePhysicalLayerCount(cubeDesc), 6u);
+    EXPECT_EQ(GetTextureSubresourceCount(cubeDesc), 12u);
+    EXPECT_EQ(EncodeTextureSubresource(1, 5, cubeDesc.mipLevels), 11u);
+
+    const auto decoded = DecodeTextureSubresource(11, cubeDesc.mipLevels);
+    EXPECT_EQ(decoded.mipLevel, 1u);
+    EXPECT_EQ(decoded.physicalLayer, 5u);
+    EXPECT_EQ(ResolveTextureArrayLayerCount(cubeDesc, RHISubresourceRange::All()), 6u);
+
+    RHITextureDesc arrayDesc;
+    arrayDesc.dimension = RHITextureDimension::Texture2D;
+    arrayDesc.arraySize = 3;
+    arrayDesc.mipLevels = 4;
+
+    EXPECT_EQ(GetTexturePhysicalLayerCount(arrayDesc), 3u);
+    EXPECT_EQ(GetTextureSubresourceCount(arrayDesc), 12u);
+    EXPECT_EQ(EncodeTextureSubresource(2, 1, arrayDesc.mipLevels), 6u);
+}
+
+TEST(GPUUploadServiceValidation, StagedBufferUploadsBatchUntilFlush)
 {
     FakeDevice device;
     GPUUploadService uploadService;
@@ -281,45 +345,44 @@ bool Test_StagedBufferUploadsBatchUntilFlush()
     auto firstResult = uploadService.UploadBufferDataWithResult(desc, first, sizeof(first));
     auto secondResult = uploadService.UploadBufferDataWithResult(desc, second, sizeof(second));
 
-    TEST_ASSERT_TRUE(firstResult.succeeded);
-    TEST_ASSERT_TRUE(secondResult.succeeded);
-    TEST_ASSERT_TRUE(firstResult.isPending);
-    TEST_ASSERT_TRUE(secondResult.isPending);
-    TEST_ASSERT_TRUE(uploadService.IsUploadPending(firstResult.uploadId));
-    TEST_ASSERT_TRUE(uploadService.IsUploadPending(secondResult.uploadId));
-    TEST_ASSERT_EQ(device.createdCommandContextCount, 1u);
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 0u);
-    TEST_ASSERT_EQ(device.createdFenceCount, 0u);
-    TEST_ASSERT_NOT_NULL(device.lastCommandContext);
-    TEST_ASSERT_EQ(device.lastCommandContext->beginCount, 1u);
-    TEST_ASSERT_EQ(device.lastCommandContext->endCount, 0u);
-    TEST_ASSERT_EQ(device.lastCommandContext->copyBufferCount, 2u);
+    EXPECT_TRUE(firstResult.succeeded);
+    EXPECT_TRUE(secondResult.succeeded);
+    EXPECT_TRUE(firstResult.isPending);
+    EXPECT_TRUE(secondResult.isPending);
+    EXPECT_TRUE(uploadService.IsUploadPending(firstResult.uploadId));
+    EXPECT_TRUE(uploadService.IsUploadPending(secondResult.uploadId));
+    EXPECT_EQ(device.createdCommandContextCount, 1u);
+    EXPECT_EQ(device.submittedCommandContextCount, 0u);
+    EXPECT_EQ(device.createdFenceCount, 0u);
+    ASSERT_NE(nullptr, device.lastCommandContext);
+    EXPECT_EQ(device.lastCommandContext->beginCount, 1u);
+    EXPECT_EQ(device.lastCommandContext->endCount, 0u);
+    EXPECT_EQ(device.lastCommandContext->copyBufferCount, 2u);
 
     uploadService.FlushBatchUploads();
 
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 1u);
-    TEST_ASSERT_EQ(device.createdFenceCount, 1u);
-    TEST_ASSERT_EQ(device.lastCommandContext->endCount, 1u);
-    TEST_ASSERT_EQ(device.lastSubmittedContext, device.lastCommandContext);
-    TEST_ASSERT_EQ(device.lastSubmittedFence, device.lastFence);
+    EXPECT_EQ(device.submittedCommandContextCount, 1u);
+    EXPECT_EQ(device.createdFenceCount, 1u);
+    EXPECT_EQ(device.lastCommandContext->endCount, 1u);
+    EXPECT_EQ(device.lastSubmittedContext, device.lastCommandContext);
+    EXPECT_EQ(device.lastSubmittedFence, device.lastFence);
 
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 0u);
-    TEST_ASSERT_NOT_NULL(device.lastFence);
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 0u);
+    ASSERT_NE(nullptr, device.lastFence);
     device.lastFence->Signal(1);
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 2u);
-    TEST_ASSERT_TRUE(uploadService.IsUploadComplete(firstResult.uploadId));
-    TEST_ASSERT_TRUE(uploadService.IsUploadComplete(secondResult.uploadId));
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 2u);
+    EXPECT_TRUE(uploadService.IsUploadComplete(firstResult.uploadId));
+    EXPECT_TRUE(uploadService.IsUploadComplete(secondResult.uploadId));
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.pendingUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.completedUploadCount, 2u);
-    TEST_ASSERT_EQ(stats.stagingBytesInFlight, 0ull);
+    EXPECT_EQ(stats.pendingUploadCount, 0u);
+    EXPECT_EQ(stats.completedUploadCount, 2u);
+    EXPECT_EQ(stats.stagingBytesInFlight, 0ull);
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_ShutdownFlushesDirtyBatchAndWaitsForPendingUploads()
+TEST(GPUUploadServiceValidation, ShutdownFlushesDirtyBatchAndWaitsForPendingUploads)
 {
     FakeDevice device;
     GPUUploadService uploadService;
@@ -334,21 +397,20 @@ bool Test_ShutdownFlushesDirtyBatchAndWaitsForPendingUploads()
 
     auto result = uploadService.UploadBufferDataWithResult(desc, source, sizeof(source));
 
-    TEST_ASSERT_TRUE(result.succeeded);
-    TEST_ASSERT_TRUE(result.isPending);
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 0u);
-    TEST_ASSERT_EQ(device.waitIdleCount, 0u);
+    EXPECT_TRUE(result.succeeded);
+    EXPECT_TRUE(result.isPending);
+    EXPECT_EQ(device.submittedCommandContextCount, 0u);
+    EXPECT_EQ(device.waitIdleCount, 0u);
 
     uploadService.Shutdown();
 
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 1u);
-    TEST_ASSERT_EQ(device.createdFenceCount, 1u);
-    TEST_ASSERT_EQ(device.waitIdleCount, 1u);
-    TEST_ASSERT_EQ(device.lastCommandContext->endCount, 1u);
-    return true;
+    EXPECT_EQ(device.submittedCommandContextCount, 1u);
+    EXPECT_EQ(device.createdFenceCount, 1u);
+    EXPECT_EQ(device.waitIdleCount, 1u);
+    EXPECT_EQ(device.lastCommandContext->endCount, 1u);
 }
 
-bool Test_FlushTracksFenceNextCompletedValue()
+TEST(GPUUploadServiceValidation, FlushTracksFenceNextCompletedValue)
 {
     FakeDevice device;
     device.fenceInitialValueOverride = 4;
@@ -364,29 +426,28 @@ bool Test_FlushTracksFenceNextCompletedValue()
     desc.stride = sizeof(uint32);
 
     auto result = uploadService.UploadBufferDataWithResult(desc, source, sizeof(source));
-    TEST_ASSERT_TRUE(result.succeeded);
+    EXPECT_TRUE(result.succeeded);
 
     uploadService.FlushBatchUploads();
 
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 0u);
-    TEST_ASSERT_NOT_NULL(device.lastFence);
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 0u);
+    ASSERT_NE(nullptr, device.lastFence);
 
     device.lastFence->Signal(4);
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 0u);
-    TEST_ASSERT_TRUE(uploadService.IsUploadPending(result.uploadId));
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 0u);
+    EXPECT_TRUE(uploadService.IsUploadPending(result.uploadId));
 
     device.lastFence->Signal(5);
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 1u);
-    TEST_ASSERT_TRUE(uploadService.IsUploadComplete(result.uploadId));
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 1u);
+    EXPECT_TRUE(uploadService.IsUploadComplete(result.uploadId));
 
     uploadService.ForgetCompletedUpload(result.uploadId);
-    TEST_ASSERT_TRUE(!uploadService.IsUploadComplete(result.uploadId));
+    EXPECT_TRUE(!uploadService.IsUploadComplete(result.uploadId));
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_CompletedFenceIsReusedForNextBatch()
+TEST(GPUUploadServiceValidation, CompletedFenceIsReusedForNextBatch)
 {
     FakeDevice device;
     GPUUploadService uploadService;
@@ -401,37 +462,36 @@ bool Test_CompletedFenceIsReusedForNextBatch()
     desc.stride = sizeof(uint32);
 
     auto firstResult = uploadService.UploadBufferDataWithResult(desc, first, sizeof(first));
-    TEST_ASSERT_TRUE(firstResult.succeeded);
+    EXPECT_TRUE(firstResult.succeeded);
     uploadService.FlushBatchUploads();
 
-    TEST_ASSERT_EQ(device.createdFenceCount, 1u);
-    TEST_ASSERT_NOT_NULL(device.lastFence);
+    EXPECT_EQ(device.createdFenceCount, 1u);
+    ASSERT_NE(nullptr, device.lastFence);
     RHIFence* firstFence = device.lastFence;
 
     device.lastFence->Signal(1);
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 1u);
-    TEST_ASSERT_TRUE(uploadService.IsUploadComplete(firstResult.uploadId));
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 1u);
+    EXPECT_TRUE(uploadService.IsUploadComplete(firstResult.uploadId));
 
     auto secondResult = uploadService.UploadBufferDataWithResult(desc, second, sizeof(second));
-    TEST_ASSERT_TRUE(secondResult.succeeded);
+    EXPECT_TRUE(secondResult.succeeded);
     uploadService.FlushBatchUploads();
 
-    TEST_ASSERT_EQ(device.createdFenceCount, 1u);
-    TEST_ASSERT_EQ(device.lastSubmittedFence, firstFence);
+    EXPECT_EQ(device.createdFenceCount, 1u);
+    EXPECT_EQ(device.lastSubmittedFence, firstFence);
 
     device.lastFence->Signal(1);
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 0u);
-    TEST_ASSERT_TRUE(uploadService.IsUploadPending(secondResult.uploadId));
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 0u);
+    EXPECT_TRUE(uploadService.IsUploadPending(secondResult.uploadId));
 
     device.lastFence->Signal(2);
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 1u);
-    TEST_ASSERT_TRUE(uploadService.IsUploadComplete(secondResult.uploadId));
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 1u);
+    EXPECT_TRUE(uploadService.IsUploadComplete(secondResult.uploadId));
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_FlushAndWaitSubmitsDirtyBatchAndCompletesUploads()
+TEST(GPUUploadServiceValidation, FlushAndWaitSubmitsDirtyBatchAndCompletesUploads)
 {
     FakeDevice device;
     device.signalLastFenceOnWaitIdle = true;
@@ -447,28 +507,189 @@ bool Test_FlushAndWaitSubmitsDirtyBatchAndCompletesUploads()
     desc.stride = sizeof(uint32);
 
     auto result = uploadService.UploadBufferDataWithResult(desc, source, sizeof(source));
-    TEST_ASSERT_TRUE(result.succeeded);
-    TEST_ASSERT_TRUE(result.isPending);
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 0u);
-    TEST_ASSERT_TRUE(uploadService.IsUploadPending(result.uploadId));
+    EXPECT_TRUE(result.succeeded);
+    EXPECT_TRUE(result.isPending);
+    EXPECT_EQ(device.submittedCommandContextCount, 0u);
+    EXPECT_TRUE(uploadService.IsUploadPending(result.uploadId));
 
-    TEST_ASSERT_EQ(uploadService.FlushAndWaitForUploads(), 1u);
+    EXPECT_EQ(uploadService.FlushAndWaitForUploads(), 1u);
 
-    TEST_ASSERT_EQ(device.submittedCommandContextCount, 1u);
-    TEST_ASSERT_EQ(device.waitIdleCount, 1u);
-    TEST_ASSERT_TRUE(!uploadService.IsUploadPending(result.uploadId));
-    TEST_ASSERT_TRUE(uploadService.IsUploadComplete(result.uploadId));
+    EXPECT_EQ(device.submittedCommandContextCount, 1u);
+    EXPECT_EQ(device.waitIdleCount, 1u);
+    EXPECT_TRUE(!uploadService.IsUploadPending(result.uploadId));
+    EXPECT_TRUE(uploadService.IsUploadComplete(result.uploadId));
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.pendingUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.completedUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.stagingBytesInFlight, 0ull);
+    EXPECT_EQ(stats.pendingUploadCount, 0u);
+    EXPECT_EQ(stats.completedUploadCount, 1u);
+    EXPECT_EQ(stats.stagingBytesInFlight, 0ull);
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_UnsupportedTextureLayoutDoesNotCreateEmptyTexture()
+TEST(GPUUploadServiceValidation, StagedTextureUploadCopiesEveryMipSubresource)
+{
+    FakeDevice device;
+    GPUUploadService uploadService;
+    uploadService.Initialize(&device);
+
+    std::vector<uint8> pixels(84, 7);
+
+    GPUUploadTextureDesc desc;
+    desc.textureDesc = RHITextureDesc::Texture2D(4, 4, RHIFormat::RGBA8_UNORM);
+    desc.textureDesc.mipLevels = 3;
+    desc.dataSize = pixels.size();
+
+    auto result = uploadService.UploadTextureDataWithResult(desc, pixels.data());
+
+    ASSERT_TRUE(result.succeeded);
+    EXPECT_EQ(device.createdTextureCount, 1u);
+    ASSERT_NE(nullptr, device.lastCommandContext);
+    EXPECT_EQ(device.lastCommandContext->copyBufferToTextureCount, 3u);
+    ASSERT_EQ(device.lastCommandContext->copyBufferToTextureDescs.size(), 3u);
+
+    const auto& mip0 = device.lastCommandContext->copyBufferToTextureDescs[0];
+    EXPECT_EQ(mip0.textureSubresource, 0u);
+    EXPECT_EQ(mip0.bufferOffset, 0ull);
+    EXPECT_EQ(mip0.bufferRowPitch, 256u);
+    EXPECT_EQ(mip0.bufferImageHeight, 4u);
+    EXPECT_EQ(mip0.textureRegion.width, 4u);
+    EXPECT_EQ(mip0.textureRegion.height, 4u);
+
+    const auto& mip1 = device.lastCommandContext->copyBufferToTextureDescs[1];
+    EXPECT_EQ(mip1.textureSubresource, 1u);
+    EXPECT_EQ(mip1.bufferOffset, 1024ull);
+    EXPECT_EQ(mip1.bufferRowPitch, 256u);
+    EXPECT_EQ(mip1.bufferImageHeight, 2u);
+    EXPECT_EQ(mip1.textureRegion.width, 2u);
+    EXPECT_EQ(mip1.textureRegion.height, 2u);
+
+    const auto& mip2 = device.lastCommandContext->copyBufferToTextureDescs[2];
+    EXPECT_EQ(mip2.textureSubresource, 2u);
+    EXPECT_EQ(mip2.bufferOffset, 1536ull);
+    EXPECT_EQ(mip2.bufferRowPitch, 256u);
+    EXPECT_EQ(mip2.bufferImageHeight, 1u);
+    EXPECT_EQ(mip2.textureRegion.width, 1u);
+    EXPECT_EQ(mip2.textureRegion.height, 1u);
+
+    EXPECT_EQ(result.bytesUploaded, pixels.size());
+    uploadService.Shutdown();
+}
+
+TEST(GPUUploadServiceValidation, StagedOpenGLCompressedTextureUploadUsesTightBlockRows)
+{
+    FakeDevice device;
+    device.backendType = RHIBackendType::OpenGL;
+    GPUUploadService uploadService;
+    uploadService.Initialize(&device);
+
+    std::vector<uint8> blocks(24, 0xBC);
+
+    GPUUploadTextureDesc desc;
+    desc.textureDesc = RHITextureDesc::Texture2D(4, 4, RHIFormat::BC1_UNORM);
+    desc.textureDesc.mipLevels = 3;
+    desc.dataSize = blocks.size();
+
+    auto result = uploadService.UploadTextureDataWithResult(desc, blocks.data());
+
+    ASSERT_TRUE(result.succeeded);
+    EXPECT_EQ(device.createdTextureCount, 1u);
+    ASSERT_NE(nullptr, device.lastCommandContext);
+    ASSERT_EQ(device.lastCommandContext->copyBufferToTextureDescs.size(), 3u);
+
+    const auto& mip0 = device.lastCommandContext->copyBufferToTextureDescs[0];
+    const auto& mip1 = device.lastCommandContext->copyBufferToTextureDescs[1];
+    const auto& mip2 = device.lastCommandContext->copyBufferToTextureDescs[2];
+    EXPECT_EQ(mip0.bufferOffset, 0ull);
+    EXPECT_EQ(mip0.bufferRowPitch, 8u);
+    EXPECT_EQ(mip0.bufferImageHeight, 1u);
+    EXPECT_EQ(mip1.bufferOffset, 8ull);
+    EXPECT_EQ(mip1.bufferRowPitch, 8u);
+    EXPECT_EQ(mip1.bufferImageHeight, 1u);
+    EXPECT_EQ(mip2.bufferOffset, 16ull);
+    EXPECT_EQ(mip2.bufferRowPitch, 8u);
+    EXPECT_EQ(mip2.bufferImageHeight, 1u);
+
+    EXPECT_EQ(result.bytesUploaded, 24ull);
+    EXPECT_EQ(uploadService.GetStats().stagingBytesInFlight, 24ull);
+    uploadService.Shutdown();
+}
+
+TEST(GPUUploadServiceValidation, StagedTextureArrayUploadCopiesEveryLayer)
+{
+    FakeDevice device;
+    GPUUploadService uploadService;
+    uploadService.Initialize(&device);
+
+    const uint8 pixels[] = {
+        1, 2, 3, 4,
+        5, 6, 7, 8
+    };
+
+    GPUUploadTextureDesc desc;
+    desc.textureDesc = RHITextureDesc::Texture2D(1, 1, RHIFormat::RGBA8_UNORM);
+    desc.textureDesc.arraySize = 2;
+    desc.dataSize = sizeof(pixels);
+
+    auto result = uploadService.UploadTextureDataWithResult(desc, pixels);
+
+    ASSERT_TRUE(result.succeeded);
+    ASSERT_NE(nullptr, device.lastCommandContext);
+    ASSERT_EQ(device.lastCommandContext->copyBufferToTextureDescs.size(), 2u);
+    EXPECT_EQ(device.lastCommandContext->copyBufferToTextureDescs[0].textureSubresource, 0u);
+    EXPECT_EQ(device.lastCommandContext->copyBufferToTextureDescs[0].bufferOffset, 0ull);
+    EXPECT_EQ(device.lastCommandContext->copyBufferToTextureDescs[1].textureSubresource, 1u);
+    EXPECT_EQ(device.lastCommandContext->copyBufferToTextureDescs[1].bufferOffset, 512ull);
+
+    uploadService.Shutdown();
+}
+
+TEST(GPUUploadServiceValidation, StagedCubemapUploadUsesPhysicalLayerMipOrder)
+{
+    FakeDevice device;
+    GPUUploadService uploadService;
+    uploadService.Initialize(&device);
+
+    std::vector<uint8> pixels(120, 3);
+
+    GPUUploadTextureDesc desc;
+    desc.textureDesc = RHITextureDesc::Texture2D(2, 2, RHIFormat::RGBA8_UNORM);
+    desc.textureDesc.dimension = RHITextureDimension::TextureCube;
+    desc.textureDesc.arraySize = 1;
+    desc.textureDesc.mipLevels = 2;
+    desc.dataSize = pixels.size();
+
+    auto result = uploadService.UploadTextureDataWithResult(desc, pixels.data());
+
+    ASSERT_TRUE(result.succeeded);
+    EXPECT_EQ(device.createdTextureCount, 1u);
+    EXPECT_EQ(device.lastCreatedTextureDesc.dimension, RHITextureDimension::TextureCube);
+    EXPECT_EQ(device.lastCreatedTextureDesc.arraySize, 1u);
+    EXPECT_EQ(device.lastCreatedTextureDesc.mipLevels, 2u);
+    ASSERT_NE(nullptr, device.lastCommandContext);
+    ASSERT_EQ(device.lastCommandContext->copyBufferToTextureDescs.size(), 12u);
+
+    for (uint32 physicalLayer = 0; physicalLayer < 6; ++physicalLayer)
+    {
+        const uint32 baseIndex = physicalLayer * 2;
+        const auto& mip0 = device.lastCommandContext->copyBufferToTextureDescs[baseIndex + 0];
+        const auto& mip1 = device.lastCommandContext->copyBufferToTextureDescs[baseIndex + 1];
+
+        EXPECT_EQ(mip0.textureSubresource, EncodeTextureSubresource(0, physicalLayer, 2));
+        EXPECT_EQ(mip0.textureRegion.width, 2u);
+        EXPECT_EQ(mip0.textureRegion.height, 2u);
+
+        EXPECT_EQ(mip1.textureSubresource, EncodeTextureSubresource(1, physicalLayer, 2));
+        EXPECT_EQ(mip1.textureRegion.width, 1u);
+        EXPECT_EQ(mip1.textureRegion.height, 1u);
+        EXPECT_GT(mip1.bufferOffset, mip0.bufferOffset);
+    }
+
+    EXPECT_EQ(result.bytesUploaded, pixels.size());
+    uploadService.Shutdown();
+}
+
+TEST(GPUUploadServiceValidation, TooSmallMippedTextureDataDoesNotCreateEmptyTexture)
 {
     FakeDevice device;
     GPUUploadService uploadService;
@@ -488,22 +709,21 @@ bool Test_UnsupportedTextureLayoutDoesNotCreateEmptyTexture()
 
     auto result = uploadService.UploadTextureDataWithResult(desc, pixels);
 
-    TEST_ASSERT_TRUE(!result.succeeded);
-    TEST_ASSERT_TRUE(!result.resource);
-    TEST_ASSERT_EQ(result.mode, GPUUploadMode::None);
-    TEST_ASSERT_EQ(result.failureReason, GPUUploadFailureReason::Unsupported);
-    TEST_ASSERT_EQ(device.createdTextureCount, 0u);
+    EXPECT_TRUE(!result.succeeded);
+    EXPECT_TRUE(!result.resource);
+    EXPECT_EQ(result.mode, GPUUploadMode::None);
+    EXPECT_EQ(result.failureReason, GPUUploadFailureReason::Unsupported);
+    EXPECT_EQ(device.createdTextureCount, 0u);
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.failedUploadCount, 1u);
-    TEST_ASSERT_EQ(stats.textureUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.uploadedBytes, 0ull);
+    EXPECT_EQ(stats.failedUploadCount, 1u);
+    EXPECT_EQ(stats.textureUploadCount, 0u);
+    EXPECT_EQ(stats.uploadedBytes, 0ull);
 
     uploadService.Shutdown();
-    return true;
 }
 
-bool Test_AbandonedUploadDoesNotRemainCompleted()
+TEST(GPUUploadServiceValidation, AbandonedUploadDoesNotRemainCompleted)
 {
     FakeDevice device;
     GPUUploadService uploadService;
@@ -517,50 +737,21 @@ bool Test_AbandonedUploadDoesNotRemainCompleted()
     desc.stride = sizeof(uint32);
 
     auto result = uploadService.UploadBufferDataWithResult(desc, source, sizeof(source));
-    TEST_ASSERT_TRUE(result.succeeded);
-    TEST_ASSERT_TRUE(result.isPending);
+    EXPECT_TRUE(result.succeeded);
+    EXPECT_TRUE(result.isPending);
 
     uploadService.AbandonUpload(result.uploadId);
     uploadService.FlushBatchUploads();
 
-    TEST_ASSERT_NOT_NULL(device.lastFence);
+    ASSERT_NE(nullptr, device.lastFence);
     device.lastFence->Signal(1);
-    TEST_ASSERT_EQ(uploadService.ProcessCompletedUploads(), 1u);
-    TEST_ASSERT_TRUE(!uploadService.IsUploadPending(result.uploadId));
-    TEST_ASSERT_TRUE(!uploadService.IsUploadComplete(result.uploadId));
+    EXPECT_EQ(uploadService.ProcessCompletedUploads(), 1u);
+    EXPECT_TRUE(!uploadService.IsUploadPending(result.uploadId));
+    EXPECT_TRUE(!uploadService.IsUploadComplete(result.uploadId));
 
     const auto stats = uploadService.GetStats();
-    TEST_ASSERT_EQ(stats.pendingUploadCount, 0u);
-    TEST_ASSERT_EQ(stats.stagingBytesInFlight, 0ull);
+    EXPECT_EQ(stats.pendingUploadCount, 0u);
+    EXPECT_EQ(stats.stagingBytesInFlight, 0ull);
 
     uploadService.Shutdown();
-    return true;
-}
-
-int main()
-{
-    Log::Initialize();
-    RVX_CORE_INFO("GPUUploadService Validation Tests");
-
-    TestSuite suite;
-    suite.AddTest("StagedBufferUploadsBatchUntilFlush", Test_StagedBufferUploadsBatchUntilFlush);
-    suite.AddTest("ShutdownFlushesDirtyBatchAndWaitsForPendingUploads", Test_ShutdownFlushesDirtyBatchAndWaitsForPendingUploads);
-    suite.AddTest("FlushTracksFenceNextCompletedValue", Test_FlushTracksFenceNextCompletedValue);
-    suite.AddTest("CompletedFenceIsReusedForNextBatch", Test_CompletedFenceIsReusedForNextBatch);
-    suite.AddTest("FlushAndWaitSubmitsDirtyBatchAndCompletesUploads", Test_FlushAndWaitSubmitsDirtyBatchAndCompletesUploads);
-    suite.AddTest("UnsupportedTextureLayoutDoesNotCreateEmptyTexture", Test_UnsupportedTextureLayoutDoesNotCreateEmptyTexture);
-    suite.AddTest("AbandonedUploadDoesNotRemainCompleted", Test_AbandonedUploadDoesNotRemainCompleted);
-
-    auto results = suite.Run();
-    suite.PrintResults(results);
-
-    Log::Shutdown();
-
-    for (const auto& result : results)
-    {
-        if (!result.passed)
-            return 1;
-    }
-
-    return 0;
 }

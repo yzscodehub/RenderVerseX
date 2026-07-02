@@ -5,7 +5,7 @@
  * @brief GPU-side material constant structures
  * 
  * Defines the GPU constant buffer layout for PBR materials,
- * matching the HLSL cbuffer in PBRLit.hlsl.
+ * matching the HLSL cbuffer in DefaultLit.hlsl.
  */
 
 #include "Core/Types.h"
@@ -17,7 +17,7 @@ namespace RVX
      * @brief Texture flags for material shader
      * 
      * Bitmask indicating which textures are bound for the material.
-     * Must match the defines in PBRLit.hlsl.
+     * Must match the defines in DefaultLit.hlsl.
      */
     enum class MaterialTextureFlags : uint32
     {
@@ -47,7 +47,7 @@ namespace RVX
      * @brief GPU constant buffer layout for PBR materials
      * 
      * This structure is uploaded to the GPU and must match
-     * the MaterialConstants cbuffer in PBRLit.hlsl exactly.
+     * the MaterialConstants cbuffer in DefaultLit.hlsl exactly.
      * 
      * Note: Padding is added to maintain 16-byte alignment
      * required by constant buffers.

@@ -9,7 +9,7 @@
 # - ResourceRegistry metadata database
 # - DependencyGraph dependency resolution
 # - ResourceSubsystem engine integration
-# - Concrete resource types (MeshResource, TextureResource, MaterialResource, AudioResource)
+# - Concrete resource types (MeshResource, TextureResource, ShaderResource, MaterialResource, AudioResource)
 # - Hot-reload support with file watching
 # - FBX import via ufbx
 # - HDR/EXR loading with IBL precomputation
@@ -32,11 +32,14 @@ target_sources(RVX_Resource PRIVATE
     # Concrete resource types
     Private/Types/MeshResource.cpp
     Private/Types/TextureResource.cpp
+    Private/Types/ShaderResource.cpp
     Private/Types/MaterialResource.cpp
     Private/Types/ModelResource.cpp
     Private/Types/AudioResource.cpp
 
     # Loaders
+    Private/Loader/MeshLoader.cpp
+    Private/Loader/ShaderLoader.cpp
     Private/Loader/TextureLoader.cpp
     Private/Loader/ModelLoader.cpp
     Private/Loader/AudioLoader.cpp
@@ -65,6 +68,7 @@ endif()
 
 target_link_libraries(RVX_Resource PUBLIC
     RVX_Core
+    RVX::RHI
     RVX::Scene
 )
 
@@ -129,13 +133,19 @@ if(TINYEXR_INCLUDE_DIR)
     target_compile_definitions(RVX_Resource PRIVATE HAS_TINYEXR=1)
     message(STATUS "RVX_Resource: Using tinyexr from ${TINYEXR_INCLUDE_DIR}")
     
-    # tinyexr may need miniz
-    find_path(MINIZ_INCLUDE_DIR miniz.h PATH_SUFFIXES miniz)
-    if(MINIZ_INCLUDE_DIR)
-        target_include_directories(RVX_Resource PRIVATE ${MINIZ_INCLUDE_DIR})
-        message(STATUS "RVX_Resource: Using miniz from ${MINIZ_INCLUDE_DIR}")
+    # tinyexr uses miniz for ZIP compression/decompression.
+    find_package(miniz CONFIG QUIET)
+    if(miniz_FOUND)
+        target_link_libraries(RVX_Resource PRIVATE miniz::miniz)
+        message(STATUS "RVX_Resource: Using miniz target")
     else()
-        message(WARNING "RVX_Resource: miniz not found. EXR loading may fail.")
+        find_path(MINIZ_INCLUDE_DIR miniz.h PATH_SUFFIXES miniz)
+        if(MINIZ_INCLUDE_DIR)
+            target_include_directories(RVX_Resource PRIVATE ${MINIZ_INCLUDE_DIR})
+            message(WARNING "RVX_Resource: miniz library target not found. EXR loading may fail to link.")
+        else()
+            message(WARNING "RVX_Resource: miniz not found. EXR loading may fail.")
+        endif()
     endif()
 else()
     message(STATUS "RVX_Resource: tinyexr not found. EXR loading will not be available (HDR still works).")

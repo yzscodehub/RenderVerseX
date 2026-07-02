@@ -18,8 +18,7 @@ cbuffer MotionBlurConstants : register(b0)
     float4 MotionParams2;       // x: softZDistance, y: jitterStrength, z: sampleCount, w: depthAware
     float4 ScreenSize;          // x: width, y: height, z: 1/width, w: 1/height
     float4 TileParams;          // x: tileSize, y: tileCountX, z: tileCountY, w: unused
-    float FrameTime;
-    float3 _Padding;
+    float4 FrameTime_Padding;
 }
 
 #define Intensity       MotionParams.x
@@ -31,6 +30,7 @@ cbuffer MotionBlurConstants : register(b0)
 #define SampleCount     (uint)MotionParams2.z
 #define DepthAware      (MotionParams2.w > 0.5)
 #define TileSize        (uint)TileParams.x
+#define FrameTime       FrameTime_Padding.x
 
 Texture2D<float4> InputColor : register(t0);
 Texture2D<float2> VelocityTexture : register(t1);

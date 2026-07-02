@@ -265,6 +265,7 @@ private:
     std::vector<void*> m_nodeStack;
     int m_indent = 0;
     std::string m_output;
+    bool m_parseSucceeded = false;
 };
 
 /**

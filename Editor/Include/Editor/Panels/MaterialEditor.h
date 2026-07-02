@@ -117,6 +117,7 @@ public:
     const char* GetIcon() const override { return "material"; }
     void OnInit() override;
     void OnGUI() override;
+    void OnNativeInput(const UI::UIInputState& input) override;
 
     // =========================================================================
     // Material Management
@@ -140,6 +141,7 @@ private:
     void DrawPreviewPanel();
 
     void HandleNodeInteraction();
+    int HitTestNode(const Vec2& screenPosition) const;
     void HandleLinkCreation();
     void HandleNodeDeletion();
 
@@ -163,9 +165,12 @@ private:
     // Editor state
     Vec2 m_canvasOffset{0.0f, 0.0f};
     float m_canvasZoom = 1.0f;
+    UI::UIInputState m_nativeInputState;
+    UI::Rect m_nodeGraphBounds;
     int m_selectedNode = -1;
     int m_hoveredNode = -1;
     int m_hoveredPin = -1;
+    bool m_nodeGraphHovered = false;
     bool m_isDraggingNode = false;
     bool m_isDraggingCanvas = false;
     bool m_isCreatingLink = false;

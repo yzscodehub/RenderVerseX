@@ -12,6 +12,7 @@
 
 #include "Animation/Core/Types.h"
 #include "Core/MathTypes.h"
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <string>

@@ -1,6 +1,8 @@
 #include "MetalResources.h"
 #include "MetalConversions.h"
 
+#include <utility>
+
 namespace RVX
 {
     // =============================================================================
@@ -168,7 +170,7 @@ namespace RVX
                 texDesc.textureType = MTLTextureType3D;
                 break;
             case RHITextureDimension::TextureCube:
-                texDesc.textureType = MTLTextureTypeCube;
+                texDesc.textureType = desc.arraySize > 1 ? MTLTextureTypeCubeArray : MTLTextureTypeCube;
                 break;
         }
 
@@ -255,7 +257,7 @@ namespace RVX
                 texDesc.textureType = MTLTextureType3D;
                 break;
             case RHITextureDimension::TextureCube:
-                texDesc.textureType = MTLTextureTypeCube;
+                texDesc.textureType = desc.arraySize > 1 ? MTLTextureTypeCubeArray : MTLTextureTypeCube;
                 break;
         }
 
@@ -488,16 +490,33 @@ namespace RVX
         }
     }
 
-    void MetalDescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
+    bool MetalDescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
     {
+        if (!m_desc.layout)
+        {
+            RVX_RHI_ERROR("MetalDescriptorSet::Update failed: descriptor set has no layout");
+            return false;
+        }
+
+        auto validation = ValidateRHIDescriptorBindings(*m_desc.layout, bindings);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("MetalDescriptorSet::Update failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return false;
+        }
+
+        auto updatedBindings = m_bindings;
         for (const auto& updateDesc : bindings)
         {
-            if (updateDesc.binding >= m_bindings.size())
+            const uint32 slot = updateDesc.binding + updateDesc.arrayElement;
+            if (slot >= updatedBindings.size())
             {
-                m_bindings.resize(updateDesc.binding + 1);
+                updatedBindings.resize(slot + 1);
             }
 
-            BindingData& binding = m_bindings[updateDesc.binding];
+            BindingData& binding = updatedBindings[slot];
 
             if (updateDesc.buffer)
             {
@@ -513,6 +532,9 @@ namespace RVX
                 binding.sampler = static_cast<MetalSampler*>(updateDesc.sampler)->GetMTLSampler();
             }
         }
+
+        m_bindings = std::move(updatedBindings);
+        return true;
     }
 
 } // namespace RVX

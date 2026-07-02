@@ -85,6 +85,11 @@ namespace RVX
         RHIPipelineLayoutRef CreatePipelineLayout(const RHIPipelineLayoutDesc& desc) override;
         RHIPipelineRef CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc) override;
         RHIPipelineRef CreateComputePipeline(const RHIComputePipelineDesc& desc) override;
+        RHIPipelineRef CreateRayTracingPipeline(const RHIRayTracingPipelineDesc& desc) override;
+        RHIShaderTableRef CreateShaderTable(const RHIShaderTableDesc& desc) override;
+        RHIAccelerationStructureBuildSizes GetBottomLevelASBuildSizes(const RHIBottomLevelASDesc& desc) override;
+        RHIAccelerationStructureBuildSizes GetTopLevelASBuildSizes(const RHITopLevelASDesc& desc) override;
+        RHIAccelerationStructureRef CreateAccelerationStructure(const RHIAccelerationStructureDesc& desc) override;
 
         // Descriptor Set
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) override;
@@ -94,8 +99,8 @@ namespace RVX
 
         // Command Context
         RHICommandContextRef CreateCommandContext(RHICommandQueueType type) override;
-        void SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence) override;
-        void SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence) override;
+        uint64 SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence) override;
+        uint64 SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence) override;
 
         // SwapChain
         RHISwapChainRef CreateSwapChain(const RHISwapChainDesc& desc) override;

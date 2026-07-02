@@ -1,5 +1,6 @@
 #include "DX12Resources.h"
 #include "DX12Device.h"
+#include "RHI/RHITexture.h"
 
 namespace RVX
 {
@@ -10,6 +11,12 @@ namespace RVX
         uint64 AlignCBVSize(uint64 size)
         {
             return (size + 255ull) & ~255ull;
+        }
+
+        bool IsTexture2DArrayViewRequired(const RHITexture& texture)
+        {
+            return texture.GetDimension() == RHITextureDimension::Texture2D &&
+                   GetTexturePhysicalLayerCount(texture) > 1;
         }
     } // namespace
 
@@ -40,7 +47,8 @@ namespace RVX
         resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess))
+        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess) ||
+            HasFlag(desc.usage, RHIBufferUsage::AccelerationStructureStorage))
         {
             resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         }
@@ -48,7 +56,11 @@ namespace RVX
         D3D12_HEAP_TYPE heapType = ToD3D12HeapType(desc.memoryType);
 
         D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
-        if (desc.memoryType == RHIMemoryType::Upload)
+        if (HasFlag(desc.usage, RHIBufferUsage::AccelerationStructureStorage))
+        {
+            initialState = D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
+        }
+        else if (desc.memoryType == RHIMemoryType::Upload)
         {
             initialState = D3D12_RESOURCE_STATE_GENERIC_READ;
         }
@@ -309,6 +321,52 @@ namespace RVX
     }
 
     // =============================================================================
+    // DX12 Acceleration Structure Implementation
+    // =============================================================================
+    DX12AccelerationStructure::DX12AccelerationStructure(DX12Device* device, const RHIAccelerationStructureDesc& desc)
+        : m_device(device)
+        , m_desc(desc)
+    {
+        if (desc.debugName)
+        {
+            SetDebugName(desc.debugName);
+        }
+
+        if (!m_device || desc.size == 0)
+        {
+            RVX_RHI_ERROR("DX12AccelerationStructure: invalid device or zero-sized acceleration structure");
+            return;
+        }
+
+        RHIBufferDesc bufferDesc;
+        bufferDesc.size = desc.size;
+        bufferDesc.usage = RHIBufferUsage::AccelerationStructureStorage |
+                           RHIBufferUsage::UnorderedAccess |
+                           RHIBufferUsage::ShaderResource |
+                           RHIBufferUsage::DeviceAddress;
+        bufferDesc.memoryType = RHIMemoryType::Default;
+        bufferDesc.debugName = desc.debugName ? desc.debugName : "DX12AccelerationStructure";
+
+        m_storageBuffer = m_device->CreateBuffer(bufferDesc);
+        if (!m_storageBuffer)
+        {
+            RVX_RHI_ERROR("DX12AccelerationStructure: failed to create storage buffer");
+        }
+    }
+
+    uint64 DX12AccelerationStructure::GetGPUVirtualAddress() const
+    {
+        auto* buffer = static_cast<DX12Buffer*>(m_storageBuffer.Get());
+        return buffer ? buffer->GetGPUVirtualAddress() : 0;
+    }
+
+    ID3D12Resource* DX12AccelerationStructure::GetResource() const
+    {
+        auto* buffer = static_cast<DX12Buffer*>(m_storageBuffer.Get());
+        return buffer ? buffer->GetResource() : nullptr;
+    }
+
+    // =============================================================================
     // DX12 Texture Implementation
     // =============================================================================
     DX12Texture::DX12Texture(DX12Device* device, const RHITextureDesc& desc)
@@ -348,9 +406,12 @@ namespace RVX
                 resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.arraySize);
                 break;
             case RHITextureDimension::Texture2D:
-            case RHITextureDimension::TextureCube:
                 resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
                 resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.arraySize);
+                break;
+            case RHITextureDimension::TextureCube:
+                resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                resourceDesc.DepthOrArraySize = static_cast<UINT16>(GetTexturePhysicalLayerCount(desc));
                 break;
             case RHITextureDimension::Texture3D:
                 resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
@@ -534,11 +595,11 @@ namespace RVX
                     break;
 
                 case RHITextureDimension::TextureCube:
-                    if (m_desc.arraySize > 6)
+                    if (m_desc.arraySize > 1)
                     {
                         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
                         srvDesc.TextureCubeArray.MipLevels = m_desc.mipLevels;
-                        srvDesc.TextureCubeArray.NumCubes = m_desc.arraySize / 6;
+                        srvDesc.TextureCubeArray.NumCubes = m_desc.arraySize;
                     }
                     else
                     {
@@ -579,7 +640,6 @@ namespace RVX
                     break;
 
                 case RHITextureDimension::Texture2D:
-                case RHITextureDimension::TextureCube:
                     if (m_desc.arraySize > 1)
                     {
                         uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
@@ -589,6 +649,11 @@ namespace RVX
                     {
                         uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
                     }
+                    break;
+
+                case RHITextureDimension::TextureCube:
+                    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+                    uavDesc.Texture2DArray.ArraySize = GetTexturePhysicalLayerCount(m_desc);
                     break;
 
                 case RHITextureDimension::Texture3D:
@@ -603,7 +668,7 @@ namespace RVX
         // RTV
         if (HasFlag(m_desc.usage, RHITextureUsage::RenderTarget))
         {
-            uint32 rtvCount = m_desc.arraySize;
+            uint32 rtvCount = GetTexturePhysicalLayerCount(m_desc);
             m_rtvHandles.resize(rtvCount);
 
             for (uint32 i = 0; i < rtvCount; ++i)
@@ -613,7 +678,7 @@ namespace RVX
                 D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
                 rtvDesc.Format = m_dxgiFormat;
 
-                if (m_desc.arraySize > 1)
+                if (rtvCount > 1)
                 {
                     rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
                     rtvDesc.Texture2DArray.FirstArraySlice = i;
@@ -662,6 +727,7 @@ namespace RVX
     // =============================================================================
     DX12TextureView::DX12TextureView(DX12Device* device, RHITexture* texture, const RHITextureViewDesc& desc)
         : m_device(device)
+        , m_textureRef(texture)
         , m_texture(texture)
         , m_format(desc.format == RHIFormat::Unknown ? texture->GetFormat() : desc.format)
         , m_subresourceRange(desc.subresourceRange)
@@ -676,11 +742,15 @@ namespace RVX
         auto* dx12Texture = static_cast<DX12Texture*>(texture);
 
         DXGI_FORMAT dxgiFormat = ToDXGIFormat(m_format);
-        RHITextureUsage usage = texture->GetUsage();
+        const uint32 mipCount = (desc.subresourceRange.mipLevelCount == 0 || desc.subresourceRange.mipLevelCount == RVX_ALL_MIPS)
+            ? texture->GetMipLevels() - desc.subresourceRange.baseMipLevel
+            : desc.subresourceRange.mipLevelCount;
+        const uint32 arrayLayerCount = ResolveTextureArrayLayerCount(*texture, desc.subresourceRange);
 
-        // Create SRV for shader resource textures
-        if (HasFlag(usage, RHITextureUsage::ShaderResource) || 
-            HasFlag(usage, RHITextureUsage::RenderTarget))  // RT textures may also be sampled
+        // Create only the requested native view role. The RHI view type is part
+        // of cache identity, so SRV/RTV/DSV/UAV wrappers must not all carry
+        // unrelated descriptor handles.
+        if (desc.type == RHITextureViewType::ShaderResource)
         {
             DXGI_FORMAT srvFormat = dxgiFormat;
             if (IsDepthFormat(m_format))
@@ -693,31 +763,91 @@ namespace RVX
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
             srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
             srvDesc.Format = srvFormat;
-            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            srvDesc.Texture2D.MostDetailedMip = desc.subresourceRange.baseMipLevel;
-            srvDesc.Texture2D.MipLevels = desc.subresourceRange.mipLevelCount == RVX_ALL_MIPS
-                ? texture->GetMipLevels() - desc.subresourceRange.baseMipLevel
-                : desc.subresourceRange.mipLevelCount;
+            switch (texture->GetDimension())
+            {
+                case RHITextureDimension::TextureCube:
+                    if (arrayLayerCount > 6)
+                    {
+                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+                        srvDesc.TextureCubeArray.MostDetailedMip = desc.subresourceRange.baseMipLevel;
+                        srvDesc.TextureCubeArray.MipLevels = mipCount;
+                        srvDesc.TextureCubeArray.First2DArrayFace = desc.subresourceRange.baseArrayLayer;
+                        srvDesc.TextureCubeArray.NumCubes = arrayLayerCount / 6;
+                    }
+                    else
+                    {
+                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                        srvDesc.TextureCube.MostDetailedMip = desc.subresourceRange.baseMipLevel;
+                        srvDesc.TextureCube.MipLevels = mipCount;
+                    }
+                    break;
+                case RHITextureDimension::Texture2D:
+                    if (static_cast<uint32>(texture->GetSampleCount()) > 1)
+                    {
+                        if (IsTexture2DArrayViewRequired(*texture))
+                        {
+                            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
+                            srvDesc.Texture2DMSArray.FirstArraySlice = desc.subresourceRange.baseArrayLayer;
+                            srvDesc.Texture2DMSArray.ArraySize = arrayLayerCount;
+                        }
+                        else
+                        {
+                            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+                        }
+                    }
+                    else if (IsTexture2DArrayViewRequired(*texture))
+                    {
+                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+                        srvDesc.Texture2DArray.MostDetailedMip = desc.subresourceRange.baseMipLevel;
+                        srvDesc.Texture2DArray.MipLevels = mipCount;
+                        srvDesc.Texture2DArray.FirstArraySlice = desc.subresourceRange.baseArrayLayer;
+                        srvDesc.Texture2DArray.ArraySize = arrayLayerCount;
+                    }
+                    else
+                    {
+                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                        srvDesc.Texture2D.MostDetailedMip = desc.subresourceRange.baseMipLevel;
+                        srvDesc.Texture2D.MipLevels = mipCount;
+                    }
+                    break;
+                default:
+                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    srvDesc.Texture2D.MostDetailedMip = desc.subresourceRange.baseMipLevel;
+                    srvDesc.Texture2D.MipLevels = mipCount;
+                    break;
+            }
 
             d3dDevice->CreateShaderResourceView(dx12Texture->GetResource(), &srvDesc, m_srvHandle.cpuHandle);
         }
 
-        // Create RTV for render target textures
-        if (HasFlag(usage, RHITextureUsage::RenderTarget))
+        if (desc.type == RHITextureViewType::RenderTarget)
         {
             m_rtvHandle = heapManager.AllocateRTV();
 
             D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
             rtvDesc.Format = dxgiFormat;
-            
-            if (texture->GetArraySize() > 1)
+
+            const bool useTextureArrayView = texture->GetDimension() == RHITextureDimension::TextureCube ||
+                                             IsTexture2DArrayViewRequired(*texture);
+            if (static_cast<uint32>(texture->GetSampleCount()) > 1)
+            {
+                if (useTextureArrayView)
+                {
+                    rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY;
+                    rtvDesc.Texture2DMSArray.FirstArraySlice = desc.subresourceRange.baseArrayLayer;
+                    rtvDesc.Texture2DMSArray.ArraySize = arrayLayerCount;
+                }
+                else
+                {
+                    rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMS;
+                }
+            }
+            else if (useTextureArrayView)
             {
                 rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
                 rtvDesc.Texture2DArray.MipSlice = desc.subresourceRange.baseMipLevel;
                 rtvDesc.Texture2DArray.FirstArraySlice = desc.subresourceRange.baseArrayLayer;
-                rtvDesc.Texture2DArray.ArraySize = desc.subresourceRange.arrayLayerCount == RVX_ALL_LAYERS
-                    ? texture->GetArraySize() - desc.subresourceRange.baseArrayLayer
-                    : desc.subresourceRange.arrayLayerCount;
+                rtvDesc.Texture2DArray.ArraySize = arrayLayerCount;
             }
             else
             {
@@ -735,8 +865,7 @@ namespace RVX
             d3dDevice->CreateRenderTargetView(dx12Texture->GetResource(), &rtvDesc, m_rtvHandle.cpuHandle);
         }
 
-        // Create DSV for depth stencil textures
-        if (HasFlag(usage, RHITextureUsage::DepthStencil))
+        if (desc.type == RHITextureViewType::DepthStencil)
         {
             m_dsvHandle = heapManager.AllocateDSV();
 
@@ -744,9 +873,26 @@ namespace RVX
             dsvDesc.Format = dxgiFormat;
             dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
 
+            const bool useTextureArrayView = IsTexture2DArrayViewRequired(*texture);
             if (static_cast<uint32>(texture->GetSampleCount()) > 1)
             {
-                dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMS;
+                if (useTextureArrayView)
+                {
+                    dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMSARRAY;
+                    dsvDesc.Texture2DMSArray.FirstArraySlice = desc.subresourceRange.baseArrayLayer;
+                    dsvDesc.Texture2DMSArray.ArraySize = arrayLayerCount;
+                }
+                else
+                {
+                    dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMS;
+                }
+            }
+            else if (useTextureArrayView)
+            {
+                dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+                dsvDesc.Texture2DArray.MipSlice = desc.subresourceRange.baseMipLevel;
+                dsvDesc.Texture2DArray.FirstArraySlice = desc.subresourceRange.baseArrayLayer;
+                dsvDesc.Texture2DArray.ArraySize = arrayLayerCount;
             }
             else
             {
@@ -757,22 +903,19 @@ namespace RVX
             d3dDevice->CreateDepthStencilView(dx12Texture->GetResource(), &dsvDesc, m_dsvHandle.cpuHandle);
         }
 
-        // Create UAV for unordered access textures
-        if (HasFlag(usage, RHITextureUsage::UnorderedAccess))
+        if (desc.type == RHITextureViewType::UnorderedAccess)
         {
             m_uavHandle = heapManager.AllocateCbvSrvUav();
 
             D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
             uavDesc.Format = dxgiFormat;
 
-            if (texture->GetArraySize() > 1)
+            if (texture->GetDimension() == RHITextureDimension::TextureCube || IsTexture2DArrayViewRequired(*texture))
             {
                 uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
                 uavDesc.Texture2DArray.MipSlice = desc.subresourceRange.baseMipLevel;
                 uavDesc.Texture2DArray.FirstArraySlice = desc.subresourceRange.baseArrayLayer;
-                uavDesc.Texture2DArray.ArraySize = desc.subresourceRange.arrayLayerCount == RVX_ALL_LAYERS
-                    ? texture->GetArraySize() - desc.subresourceRange.baseArrayLayer
-                    : desc.subresourceRange.arrayLayerCount;
+                uavDesc.Texture2DArray.ArraySize = arrayLayerCount;
             }
             else
             {
@@ -811,7 +954,7 @@ namespace RVX
 
         auto toD3D12Filter = [](RHIFilterMode min, RHIFilterMode mag, RHIFilterMode mip, bool anisotropic) -> D3D12_FILTER {
             if (anisotropic) return D3D12_FILTER_ANISOTROPIC;
-            
+
             int filter = 0;
             if (min == RHIFilterMode::Linear) filter |= 0x10;
             if (mag == RHIFilterMode::Linear) filter |= 0x04;
@@ -857,6 +1000,7 @@ namespace RVX
     // =============================================================================
     DX12Shader::DX12Shader(DX12Device* device, const RHIShaderDesc& desc)
         : m_stage(desc.stage)
+        , m_entryPoint(desc.entryPoint ? desc.entryPoint : "main")
     {
         if (desc.debugName)
         {
@@ -874,6 +1018,7 @@ namespace RVX
     // =============================================================================
     DX12Fence::DX12Fence(DX12Device* device, uint64 initialValue)
         : m_device(device)
+        , m_nextSignalValue(initialValue + 1)
     {
         DX12_CHECK(device->GetD3DDevice()->CreateFence(initialValue, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)));
         m_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -894,6 +1039,7 @@ namespace RVX
 
     void DX12Fence::Signal(uint64 value)
     {
+        TrackSubmittedValue(value);
         m_device->GetGraphicsQueue()->Signal(m_fence.Get(), value);
     }
 
@@ -902,6 +1048,7 @@ namespace RVX
         ID3D12CommandQueue* queue = m_device->GetQueue(queueType);
         if (queue)
         {
+            TrackSubmittedValue(value);
             queue->Signal(m_fence.Get(), value);
         }
         else
@@ -917,6 +1064,22 @@ namespace RVX
             m_fence->SetEventOnCompletion(value, m_event);
             DWORD timeoutMs = (timeoutNs == UINT64_MAX) ? INFINITE : static_cast<DWORD>(timeoutNs / 1000000);
             WaitForSingleObjectEx(m_event, timeoutMs, FALSE);
+        }
+    }
+
+    uint64 DX12Fence::AllocateSignalValue()
+    {
+        return m_nextSignalValue.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void DX12Fence::TrackSubmittedValue(uint64 value)
+    {
+        uint64 expected = m_nextSignalValue.load(std::memory_order_relaxed);
+        while (expected <= value &&
+               !m_nextSignalValue.compare_exchange_weak(expected, value + 1,
+                                                        std::memory_order_relaxed,
+                                                        std::memory_order_relaxed))
+        {
         }
     }
 
@@ -940,7 +1103,34 @@ namespace RVX
 
     RHITextureViewRef CreateDX12TextureView(DX12Device* device, RHITexture* texture, const RHITextureViewDesc& desc)
     {
-        return Ref<DX12TextureView>(new DX12TextureView(device, texture, desc));
+        if (!texture)
+        {
+            RVX_RHI_ERROR("DX12: Cannot create texture view from null texture");
+            return nullptr;
+        }
+        if (!IsTextureViewTypeCompatible(texture->GetUsage(), texture->GetFormat(), desc))
+        {
+            RVX_RHI_ERROR("DX12: Cannot create {} texture view for texture usage {} format {}",
+                          GetTextureViewTypeName(desc.type),
+                          static_cast<uint32>(texture->GetUsage()),
+                          static_cast<uint32>(desc.format == RHIFormat::Unknown ? texture->GetFormat() : desc.format));
+            return nullptr;
+        }
+
+        auto view = Ref<DX12TextureView>(new DX12TextureView(device, texture, desc));
+        const bool nativeViewCreated =
+            (desc.type == RHITextureViewType::ShaderResource && view->GetSRVHandle().IsValid()) ||
+            (desc.type == RHITextureViewType::RenderTarget && view->GetRTVHandle().IsValid()) ||
+            (desc.type == RHITextureViewType::DepthStencil && view->GetDSVHandle().IsValid()) ||
+            (desc.type == RHITextureViewType::UnorderedAccess && view->GetUAVHandle().IsValid());
+        if (!nativeViewCreated)
+        {
+            RVX_RHI_ERROR("DX12: Failed to create native {} texture view",
+                          GetTextureViewTypeName(desc.type));
+            return nullptr;
+        }
+
+        return view;
     }
 
     RHISamplerRef CreateDX12Sampler(DX12Device* device, const RHISamplerDesc& desc)
@@ -951,6 +1141,24 @@ namespace RVX
     RHIShaderRef CreateDX12Shader(DX12Device* device, const RHIShaderDesc& desc)
     {
         return Ref<DX12Shader>(new DX12Shader(device, desc));
+    }
+
+    RHIAccelerationStructureRef CreateDX12AccelerationStructure(DX12Device* device, const RHIAccelerationStructureDesc& desc)
+    {
+        if (!device || !device->GetCapabilities().supportsRaytracing)
+        {
+            RVX_RHI_ERROR("DX12: Cannot create acceleration structure without ray tracing support");
+            return nullptr;
+        }
+
+        auto validation = ValidateRHIAccelerationStructureDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12: Cannot create acceleration structure: {}", validation.message);
+            return nullptr;
+        }
+
+        return Ref<DX12AccelerationStructure>(new DX12AccelerationStructure(device, desc));
     }
 
     RHIFenceRef CreateDX12Fence(DX12Device* device, uint64 initialValue)
@@ -998,7 +1206,7 @@ namespace RVX
 
         // Set heap flags based on allowed resource types
         heapDesc.Flags = D3D12_HEAP_FLAG_NONE;
-        
+
         bool allowTextures = HasFlag(desc.flags, RHIHeapFlags::AllowTextures);
         bool allowBuffers = HasFlag(desc.flags, RHIHeapFlags::AllowBuffers);
         bool allowRT = HasFlag(desc.flags, RHIHeapFlags::AllowRenderTargets);
@@ -1096,9 +1304,12 @@ namespace RVX
                 resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.arraySize);
                 break;
             case RHITextureDimension::Texture2D:
-            case RHITextureDimension::TextureCube:
                 resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
                 resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.arraySize);
+                break;
+            case RHITextureDimension::TextureCube:
+                resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                resourceDesc.DepthOrArraySize = static_cast<UINT16>(GetTexturePhysicalLayerCount(desc));
                 break;
             case RHITextureDimension::Texture3D:
                 resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
@@ -1193,13 +1404,18 @@ namespace RVX
         resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess))
+        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess) ||
+            HasFlag(desc.usage, RHIBufferUsage::AccelerationStructureStorage))
         {
             resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         }
 
         D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
-        if (desc.memoryType == RHIMemoryType::Upload)
+        if (HasFlag(desc.usage, RHIBufferUsage::AccelerationStructureStorage))
+        {
+            initialState = D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
+        }
+        else if (desc.memoryType == RHIMemoryType::Upload)
         {
             initialState = D3D12_RESOURCE_STATE_GENERIC_READ;
         }

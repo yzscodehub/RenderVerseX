@@ -201,7 +201,7 @@ public:
      * @brief Sweep a box through the world
      */
     static bool SweepBox(const Vec3& start, const Vec3& halfExtents,
-                         const Quat& rotation,
+                         const Quat& /*rotation*/,
                          const Vec3& direction, float maxDistance,
                          const std::vector<RigidBody*>& bodies,
                          ShapeCastHit& outHit,

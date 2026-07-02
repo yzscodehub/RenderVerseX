@@ -3,7 +3,7 @@
 /**
  * @file DepthPrepass.h
  * @brief Depth-only prepass for early-Z rejection optimization
- * 
+ *
  * DepthPrepass renders all opaque geometry to the depth buffer only,
  * enabling early-Z rejection in subsequent passes to reduce overdraw.
  */
@@ -15,15 +15,28 @@
 
 namespace RVX
 {
+    class GPUCulling;
     class RenderScene;
+
+    struct DepthPrepassDrawStats
+    {
+        uint32 directDrawCount = 0;
+        uint32 gpuDrivenIndirectBatchCount = 0;
+        uint32 gpuDrivenIndirectDrawCount = 0;
+        uint32 skippedInvalidObjectCount = 0;
+        uint32 skippedMissingMeshCount = 0;
+        uint32 skippedInvalidSubmeshCount = 0;
+        bool gpuDrivenRequested = false;
+        bool gpuDrivenEligible = false;
+    };
 
     /**
      * @brief Depth prepass for early-Z optimization
-     * 
+     *
      * Renders opaque geometry with a minimal depth-only shader before
      * the main opaque pass. This populates the depth buffer, allowing
      * the GPU to skip shading for occluded fragments.
-     * 
+     *
      * Benefits:
      * - Reduces pixel shader invocations for occluded geometry
      * - Particularly effective for complex scenes with high overdraw
@@ -40,9 +53,9 @@ namespace RVX
         // =========================================================================
 
         const char* GetName() const override { return "DepthPrepass"; }
-        
+
         int32_t GetPriority() const override { return 50; }  // Run before opaque (100)
-        
+
         RenderGraphPassType GetPassType() const override { return RenderGraphPassType::Graphics; }
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
@@ -70,6 +83,22 @@ namespace RVX
                             const std::vector<RenderDrawItem>* maskedDrawItems);
 
         /**
+         * @brief Set GPU-driven culling outputs for indirect depth rendering
+         */
+        void SetGPUDrivenCullingSource(const GPUCulling* gpuCulling);
+
+        /**
+         * @brief Set RenderGraph handles for GPU-driven culling outputs
+         */
+        void SetGPUDrivenRenderGraphResources(RGBufferHandle instanceBuffer,
+                                              RGBufferHandle indirectDrawBuffer,
+                                              RGBufferHandle drawCountBuffer);
+
+        const DepthPrepassDrawStats& GetDrawStats() const { return m_drawStats; }
+
+        void SetGPUDrivenDepthIndirectEnabled(bool enabled) { m_gpuDrivenDepthIndirectEnabled = enabled; }
+
+        /**
          * @brief Set the depth target view
          * @param depthView The depth texture view to render to
          */
@@ -80,16 +109,30 @@ namespace RVX
          */
         void SetEnabled(bool enabled) { m_enabled = enabled; }
 
-        bool IsEnabled() const override { return m_enabled; }
+        bool IsRequestedEnabled() const override { return m_enabled; }
+        bool IsSupported() const override;
+        const std::string& GetUnsupportedReason() const override { return m_unsupportedReason; }
+        bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
 
     private:
+        bool AreGPUDrivenDepthGroupsDrawable(uint32& outDrawItemCount) const;
+        bool TryDrawGPUDrivenIndirect(RHICommandContext& ctx, const ViewData& view);
+
         bool m_enabled = false;  // Disabled by default until depth-only pipeline is ready
+        std::string m_unsupportedReason = "Depth-only pipeline is not available";
         GPUResourceManager* m_gpuResources = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         const RenderScene* m_renderScene = nullptr;
+        const GPUCulling* m_gpuCulling = nullptr;
         const std::vector<RenderDrawItem>* m_opaqueDrawItems = nullptr;
         const std::vector<RenderDrawItem>* m_maskedDrawItems = nullptr;
         RHITextureView* m_depthTargetView = nullptr;
+        RGTextureHandle m_depthTargetHandle;
+        RGBufferHandle m_gpuDrivenInstanceHandle;
+        RGBufferHandle m_gpuDrivenIndirectHandle;
+        RGBufferHandle m_gpuDrivenDrawCountHandle;
+        DepthPrepassDrawStats m_drawStats;
+        bool m_gpuDrivenDepthIndirectEnabled = true;
     };
 
 } // namespace RVX

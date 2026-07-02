@@ -61,6 +61,7 @@ namespace RVX
         // =====================================================================
 
         bool HasRenderData() const override;
+        bool CreateRenderProxy(RenderPrimitiveProxy& outProxy) const override;
         void CollectRenderData(RenderScene& scene) const override;
 
     private:

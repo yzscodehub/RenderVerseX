@@ -7,9 +7,11 @@
 
 #include "Core/Types.h"
 #include "Render/Graph/RenderGraph.h"
+#include "Render/PostProcess/ToneMappingTypes.h"
 #include <vector>
 #include <memory>
 #include <functional>
+#include <string>
 
 namespace RVX
 {
@@ -27,7 +29,12 @@ namespace RVX
         // =========================================================================
         bool enableToneMapping = true;
         float exposure = 1.0f;
+        ToneMappingExposureMode exposureMode = ToneMappingExposureMode::ManualMultiplier;
+        float cameraEV100 = 0.0f;
+        float exposureCompensationEV = 0.0f;
         float gamma = 2.2f;
+        ToneMappingOperator toneMappingOperator = ToneMappingOperator::ACES;
+        ToneMappingOutputColorSpace toneMappingOutputColorSpace = ToneMappingOutputColorSpace::SRGB;
 
         // =========================================================================
         // Bloom
@@ -106,6 +113,35 @@ namespace RVX
         float ssrThickness = 0.1f;
 
         // =========================================================================
+        // Ray-traced reflections
+        // =========================================================================
+        bool enableRayTracedReflections = false;
+        bool enableRayTracedReflectionDenoise = true;
+        float rayTracedReflectionIntensity = 1.0f;
+        float rayTracedReflectionResolutionScale = 1.0f;
+        float rayTracedReflectionMaxDistance = 50.0f;
+        float rayTracedReflectionMaxRoughness = 1.0f;
+        float rayTracedReflectionDistanceFadeStart = 0.8f;
+        uint32 rayTracedReflectionInstanceMask = 0xFFu;
+        uint32 rayTracedReflectionSamplesPerPixel = 1;
+        float rayTracedReflectionRoughnessConeSpread = 1.0f;
+        float rayTracedReflectionNormalBias = 0.02f;
+        float rayTracedReflectionRayMinT = 0.001f;
+        float rayTracedReflectionFireflyClamp = 64.0f;
+        float rayTracedReflectionTemporalBlendFactor = 0.85f;
+        float rayTracedReflectionHistoryDepthThreshold = 0.01f;
+        float rayTracedReflectionHistoryNormalThreshold = 0.85f;
+        float rayTracedReflectionHistoryLuminanceTolerance = 4.0f;
+        float rayTracedReflectionHistoryConfidenceThreshold = 0.05f;
+        float rayTracedReflectionHistoryVelocityRejectionScale = 8.0f;
+        uint32 rayTracedReflectionDenoiseRadius = 1;
+        float rayTracedReflectionDenoiseDepthSigma = 0.01f;
+        float rayTracedReflectionDenoiseNormalThreshold = 0.85f;
+        float rayTracedReflectionDenoiseConfidencePower = 1.0f;
+        float rayTracedReflectionDenoiseCenterWeight = 1.0f;
+        float rayTracedReflectionDenoiseLowConfidenceDepthScale = 4.0f;
+
+        // =========================================================================
         // TAA
         // =========================================================================
         bool enableTAA = true;
@@ -133,12 +169,27 @@ namespace RVX
         /**
          * @brief Check if this effect is enabled
          */
-        virtual bool IsEnabled() const { return m_enabled; }
+        virtual bool IsEnabled() const { return m_enabled && m_supported; }
+
+        /**
+         * @brief Check if this effect was requested even when unsupported
+         */
+        bool IsRequestedEnabled() const { return m_enabled; }
 
         /**
          * @brief Enable/disable the effect
          */
         virtual void SetEnabled(bool enabled) { m_enabled = enabled; }
+
+        /**
+         * @brief Check whether the pass has a real GPU implementation
+         */
+        bool IsSupported() const { return m_supported; }
+
+        /**
+         * @brief Human-readable reason when unsupported
+         */
+        const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
 
         /**
          * @brief Configure the effect based on settings
@@ -154,7 +205,15 @@ namespace RVX
         virtual void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) = 0;
 
     protected:
+        void MarkUnsupported(const char* reason)
+        {
+            m_supported = false;
+            m_unsupportedReason = reason ? reason : "Unsupported";
+        }
+
         bool m_enabled = true;
+        bool m_supported = true;
+        std::string m_unsupportedReason;
     };
 
     /**
@@ -165,6 +224,27 @@ namespace RVX
      * - Ping-pong buffer management
      * - Integration with RenderGraph
      */
+    struct PostProcessStackExecuteStats
+    {
+        uint32 requestedEffectCount = 0;
+        uint32 unsupportedSkippedCount = 0;
+        uint32 enabledEffectCount = 0;
+        uint32 graphPassCount = 0;
+        uint32 transientIntermediateCount = 0;
+        uint32 hdrIntermediateCount = 0;
+        uint32 ldrIntermediateCount = 0;
+        RHIFormat transientIntermediateFormat = RHIFormat::Unknown;
+        RHIFormat hdrIntermediateFormat = RHIFormat::Unknown;
+        RHIFormat ldrIntermediateFormat = RHIFormat::Unknown;
+        RHIFormat finalOutputFormat = RHIFormat::Unknown;
+        bool toneMappingBoundaryValid = true;
+        std::string toneMappingBoundaryWarning;
+        bool noEffectNoWork = false;
+        bool fallbackCopyApplied = false;
+        uint32 fallbackCopyPassCount = 0;
+        std::string fallbackCopyReason;
+    };
+
     class PostProcessStack
     {
     public:
@@ -237,16 +317,29 @@ namespace RVX
         void Execute(RenderGraph& graph, RGTextureHandle sceneColor, RGTextureHandle output);
 
         /**
+         * @brief Evaluate currently configured effects without adding graph passes
+         */
+        PostProcessStackExecuteStats EvaluateEffects() const;
+
+        /**
          * @brief Get current settings
          */
         PostProcessSettings& GetSettings() { return m_settings; }
         const PostProcessSettings& GetSettings() const { return m_settings; }
 
+        /**
+         * @brief Get statistics from the last Execute() call
+         */
+        const PostProcessStackExecuteStats& GetLastExecuteStats() const { return m_lastExecuteStats; }
+
     private:
+        std::vector<IPostProcessPass*> GatherEnabledEffects(PostProcessStackExecuteStats& stats,
+                                                            bool logUnsupported) const;
         void SortEffects();
 
         IRHIDevice* m_device = nullptr;
         PostProcessSettings m_settings;
+        PostProcessStackExecuteStats m_lastExecuteStats;
         std::vector<std::unique_ptr<IPostProcessPass>> m_effects;
     };
 

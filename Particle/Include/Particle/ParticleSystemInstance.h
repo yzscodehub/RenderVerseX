@@ -11,6 +11,7 @@
 #include <memory>
 #include <functional>
 #include <cmath>
+#include <string>
 
 namespace RVX::Particle
 {
@@ -138,6 +139,21 @@ namespace RVX::Particle
         /// Get particle simulator
         IParticleSimulator* GetSimulator() const { return m_simulator.get(); }
 
+        /// Attach a simulation backend
+        void SetSimulator(std::unique_ptr<IParticleSimulator> simulator, const char* backendName = nullptr);
+
+        /// Check if this instance has a connected simulation backend
+        bool IsSimulationSupported() const { return m_simulationSupported && m_simulator != nullptr; }
+
+        /// Get the connected simulation backend name
+        const std::string& GetSimulationBackendName() const { return m_simulationBackendName; }
+
+        /// Get the reason simulation is unavailable
+        const std::string& GetSimulationUnsupportedReason() const { return m_simulationUnsupportedReason; }
+
+        /// Mark the instance simulation path as unavailable
+        void SetSimulationUnsupported(const char* reason);
+
         // =====================================================================
         // Transform
         // =====================================================================
@@ -240,6 +256,10 @@ namespace RVX::Particle
         ParticleSystem::Ptr m_system;
         std::unique_ptr<IParticleSimulator> m_simulator;
         std::unique_ptr<ParticleEventHandler> m_eventHandler;
+        bool m_simulationSupported = false;
+        bool m_loggedUnsupportedSimulation = false;
+        std::string m_simulationBackendName = "None";
+        std::string m_simulationUnsupportedReason = "Particle simulator is not connected";
 
         // State
         PlaybackState m_playbackState = PlaybackState::Stopped;

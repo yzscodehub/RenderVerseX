@@ -43,25 +43,9 @@ namespace RVX
         // Allocate storage (no initial data - must be uploaded separately)
         GL_CHECK(glNamedBufferStorage(m_buffer, desc.size, nullptr, flags));
 
-        // Set up persistent mapping for upload/readback buffers
-        if (desc.memoryType == RHIMemoryType::Upload)
-        {
-            GLbitfield mapFlags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_FLUSH_EXPLICIT_BIT;
-            m_mappedPtr = glMapNamedBufferRange(m_buffer, 0, desc.size, mapFlags);
-            m_persistentlyMapped = (m_mappedPtr != nullptr);
-            
-            if (!m_persistentlyMapped)
-            {
-                RVX_RHI_WARN("Failed to create persistent mapping for upload buffer '{}', will use transient mapping",
-                            desc.debugName ? desc.debugName : "");
-            }
-        }
-        else if (desc.memoryType == RHIMemoryType::Readback)
-        {
-            GLbitfield mapFlags = GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT;
-            m_mappedPtr = glMapNamedBufferRange(m_buffer, 0, desc.size, mapFlags);
-            m_persistentlyMapped = (m_mappedPtr != nullptr);
-        }
+        // Upload/readback buffers are mapped on demand. Some GL drivers reject
+        // persistent maps for immutable storage in debug contexts, which makes
+        // transient mapping the more reliable baseline path for editor uploads.
 
         // Debug labeling
         if (desc.debugName && desc.debugName[0])
@@ -80,6 +64,22 @@ namespace RVX
                      static_cast<int>(desc.memoryType));
     }
 
+    OpenGLBuffer::OpenGLBuffer(OpenGLDevice* device,
+                               const RHIBufferDesc& desc,
+                               GLuint existingBuffer,
+                               GLenum target)
+        : m_device(device)
+        , m_desc(desc)
+        , m_buffer(existingBuffer)
+        , m_target(target)
+        , m_ownsBuffer(false)
+    {
+        if (desc.debugName && desc.debugName[0])
+        {
+            SetDebugName(desc.debugName);
+        }
+    }
+
     OpenGLBuffer::~OpenGLBuffer()
     {
         if (m_buffer != 0)
@@ -91,23 +91,27 @@ namespace RVX
                 m_mappedPtr = nullptr;
             }
 
-            ++OpenGLDebug::Get().GetStats().buffersDestroyed;
-            OpenGLDebug::Get().GetStats().totalBufferMemory -= m_desc.size;
-
-            // Queue for deferred deletion to avoid GPU race conditions
-            if (m_device)
+            if (m_ownsBuffer)
             {
-                m_device->GetDeletionQueue().QueueBuffer(m_buffer, m_device->GetTotalFrameIndex(), 
-                                                         GetDebugName().c_str());
-            }
-            else
-            {
-                // Fallback: immediate deletion if device is already gone
-                glDeleteBuffers(1, &m_buffer);
-                GL_DEBUG_UNTRACK(m_buffer, GLResourceType::Buffer);
+                ++OpenGLDebug::Get().GetStats().buffersDestroyed;
+                OpenGLDebug::Get().GetStats().totalBufferMemory -= m_desc.size;
+
+                // Queue for deferred deletion to avoid GPU race conditions
+                if (m_device)
+                {
+                    m_device->GetDeletionQueue().QueueBuffer(m_buffer, m_device->GetTotalFrameIndex(),
+                                                             GetDebugName().c_str());
+                }
+                else
+                {
+                    // Fallback: immediate deletion if device is already gone
+                    glDeleteBuffers(1, &m_buffer);
+                    GL_DEBUG_UNTRACK(m_buffer, GLResourceType::Buffer);
+                }
+
+                RVX_RHI_DEBUG("Queued OpenGL Buffer #{} '{}' for deletion", m_buffer, GetDebugName());
             }
 
-            RVX_RHI_DEBUG("Queued OpenGL Buffer #{} '{}' for deletion", m_buffer, GetDebugName());
             m_buffer = 0;
         }
     }
@@ -127,7 +131,7 @@ namespace RVX
 
         GLbitfield access = 0;
         if (m_desc.memoryType == RHIMemoryType::Upload)
-            access = GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT;
+            access = GL_MAP_WRITE_BIT;
         else if (m_desc.memoryType == RHIMemoryType::Readback)
             access = GL_MAP_READ_BIT;
         else
@@ -151,8 +155,11 @@ namespace RVX
     {
         if (m_persistentlyMapped)
         {
-            // For persistent mapping, flush the written range
-            GL_CHECK(glFlushMappedNamedBufferRange(m_buffer, 0, m_desc.size));
+            // Upload buffers use explicit flushing; readback buffers are read-only maps.
+            if (m_desc.memoryType == RHIMemoryType::Upload)
+            {
+                GL_CHECK(glFlushMappedNamedBufferRange(m_buffer, 0, m_desc.size));
+            }
             return;
         }
 
@@ -270,9 +277,9 @@ namespace RVX
         ++OpenGLDebug::Get().GetStats().texturesCreated;
 
         // Estimate memory size
-        uint64 textureSize = static_cast<uint64>(desc.width) * desc.height * 
-                            GetFormatBytesPerPixel(desc.format) * 
-                            std::max(1u, desc.arraySize) * std::max(1u, desc.depth);
+        uint64 textureSize = static_cast<uint64>(desc.width) * desc.height *
+                            GetFormatBytesPerPixel(desc.format) *
+                            GetTexturePhysicalLayerCount(desc) * std::max(1u, desc.depth);
         OpenGLDebug::Get().SetResourceSize(m_texture, GLResourceType::Texture, textureSize);
         OpenGLDebug::Get().GetStats().totalTextureMemory += textureSize;
 
@@ -345,13 +352,14 @@ namespace RVX
         const auto& texDesc = texture->GetDesc();
         const auto& sr = desc.subresourceRange;
         
-        uint32 mipCount = (sr.mipLevelCount == RVX_ALL_MIPS) ? texDesc.mipLevels : sr.mipLevelCount;
-        uint32 arrayCount = (sr.arrayLayerCount == RVX_ALL_LAYERS) ? texDesc.arraySize : sr.arrayLayerCount;
+        const uint32 physicalLayerCount = GetTexturePhysicalLayerCount(texDesc);
+        uint32 mipCount = (sr.mipLevelCount == RVX_ALL_MIPS) ? texDesc.mipLevels - sr.baseMipLevel : sr.mipLevelCount;
+        uint32 arrayCount = (sr.arrayLayerCount == RVX_ALL_LAYERS) ? physicalLayerCount - sr.baseArrayLayer : sr.arrayLayerCount;
         
         bool needsView = (sr.baseMipLevel != 0 || 
                          mipCount != texDesc.mipLevels ||
                          sr.baseArrayLayer != 0 ||
-                         arrayCount != texDesc.arraySize ||
+                         arrayCount != physicalLayerCount ||
                          m_desc.format != texDesc.format);
 
         if (!needsView)
@@ -364,7 +372,8 @@ namespace RVX
         }
 
         // Create a texture view
-        m_target = ToGLTextureTarget(texDesc.dimension, arrayCount > 1, false);
+        const bool isArrayView = texDesc.dimension == RHITextureDimension::TextureCube ? arrayCount > 6 : arrayCount > 1;
+        m_target = ToGLTextureTarget(texDesc.dimension, isArrayView, false);
         auto glFormat = ToGLFormat(m_desc.format);
 
         GL_CHECK(glGenTextures(1, &m_textureView));

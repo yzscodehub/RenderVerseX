@@ -4,10 +4,327 @@
  */
 
 #include "Core/Serialization/Serialization.h"
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 
 namespace RVX
 {
+namespace
+{
+    class JsonSyntaxValidator
+    {
+    public:
+        explicit JsonSyntaxValidator(const std::string& json)
+            : m_json(json)
+        {
+        }
+
+        bool Validate()
+        {
+            SkipWhitespace();
+            if (!ParseValue())
+            {
+                return false;
+            }
+            SkipWhitespace();
+            return m_pos == m_json.size();
+        }
+
+    private:
+        bool ParseValue()
+        {
+            SkipWhitespace();
+            if (m_pos >= m_json.size())
+            {
+                return false;
+            }
+
+            const char ch = m_json[m_pos];
+            if (ch == '{')
+            {
+                return ParseObject();
+            }
+            if (ch == '[')
+            {
+                return ParseArray();
+            }
+            if (ch == '"')
+            {
+                return ParseString();
+            }
+            if (ch == '-' || IsDigit(ch))
+            {
+                return ParseNumber();
+            }
+            return MatchLiteral("true") || MatchLiteral("false") || MatchLiteral("null");
+        }
+
+        bool ParseObject()
+        {
+            if (!Consume('{'))
+            {
+                return false;
+            }
+
+            SkipWhitespace();
+            if (Consume('}'))
+            {
+                return true;
+            }
+
+            while (true)
+            {
+                SkipWhitespace();
+                if (!ParseString())
+                {
+                    return false;
+                }
+
+                SkipWhitespace();
+                if (!Consume(':'))
+                {
+                    return false;
+                }
+
+                if (!ParseValue())
+                {
+                    return false;
+                }
+
+                SkipWhitespace();
+                if (Consume('}'))
+                {
+                    return true;
+                }
+                if (!Consume(','))
+                {
+                    return false;
+                }
+
+                SkipWhitespace();
+                if (m_pos >= m_json.size() || m_json[m_pos] == '}')
+                {
+                    return false;
+                }
+            }
+        }
+
+        bool ParseArray()
+        {
+            if (!Consume('['))
+            {
+                return false;
+            }
+
+            SkipWhitespace();
+            if (Consume(']'))
+            {
+                return true;
+            }
+
+            while (true)
+            {
+                if (!ParseValue())
+                {
+                    return false;
+                }
+
+                SkipWhitespace();
+                if (Consume(']'))
+                {
+                    return true;
+                }
+                if (!Consume(','))
+                {
+                    return false;
+                }
+
+                SkipWhitespace();
+                if (m_pos >= m_json.size() || m_json[m_pos] == ']')
+                {
+                    return false;
+                }
+            }
+        }
+
+        bool ParseString()
+        {
+            if (!Consume('"'))
+            {
+                return false;
+            }
+
+            while (m_pos < m_json.size())
+            {
+                const unsigned char ch = static_cast<unsigned char>(m_json[m_pos++]);
+                if (ch == '"')
+                {
+                    return true;
+                }
+                if (ch < 0x20)
+                {
+                    return false;
+                }
+                if (ch != '\\')
+                {
+                    continue;
+                }
+
+                if (m_pos >= m_json.size())
+                {
+                    return false;
+                }
+
+                const char escaped = m_json[m_pos++];
+                switch (escaped)
+                {
+                    case '"':
+                    case '\\':
+                    case '/':
+                    case 'b':
+                    case 'f':
+                    case 'n':
+                    case 'r':
+                    case 't':
+                        break;
+                    case 'u':
+                        for (int i = 0; i < 4; ++i)
+                        {
+                            if (m_pos >= m_json.size() || !IsHexDigit(m_json[m_pos]))
+                            {
+                                return false;
+                            }
+                            ++m_pos;
+                        }
+                        break;
+                    default:
+                        return false;
+                }
+            }
+
+            return false;
+        }
+
+        bool ParseNumber()
+        {
+            if (Consume('-') && m_pos >= m_json.size())
+            {
+                return false;
+            }
+
+            if (Consume('0'))
+            {
+                if (m_pos < m_json.size() && IsDigit(m_json[m_pos]))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                if (m_pos >= m_json.size() || !IsDigitOneToNine(m_json[m_pos]))
+                {
+                    return false;
+                }
+                while (m_pos < m_json.size() && IsDigit(m_json[m_pos]))
+                {
+                    ++m_pos;
+                }
+            }
+
+            if (Consume('.'))
+            {
+                if (m_pos >= m_json.size() || !IsDigit(m_json[m_pos]))
+                {
+                    return false;
+                }
+                while (m_pos < m_json.size() && IsDigit(m_json[m_pos]))
+                {
+                    ++m_pos;
+                }
+            }
+
+            if (m_pos < m_json.size() && (m_json[m_pos] == 'e' || m_json[m_pos] == 'E'))
+            {
+                ++m_pos;
+                if (m_pos < m_json.size() && (m_json[m_pos] == '+' || m_json[m_pos] == '-'))
+                {
+                    ++m_pos;
+                }
+                if (m_pos >= m_json.size() || !IsDigit(m_json[m_pos]))
+                {
+                    return false;
+                }
+                while (m_pos < m_json.size() && IsDigit(m_json[m_pos]))
+                {
+                    ++m_pos;
+                }
+            }
+
+            return true;
+        }
+
+        bool MatchLiteral(const char* literal)
+        {
+            const size_t start = m_pos;
+            for (const char* cursor = literal; *cursor != '\0'; ++cursor)
+            {
+                if (m_pos >= m_json.size() || m_json[m_pos] != *cursor)
+                {
+                    m_pos = start;
+                    return false;
+                }
+                ++m_pos;
+            }
+            return true;
+        }
+
+        bool Consume(char expected)
+        {
+            if (m_pos < m_json.size() && m_json[m_pos] == expected)
+            {
+                ++m_pos;
+                return true;
+            }
+            return false;
+        }
+
+        void SkipWhitespace()
+        {
+            while (m_pos < m_json.size() &&
+                   std::isspace(static_cast<unsigned char>(m_json[m_pos])) != 0)
+            {
+                ++m_pos;
+            }
+        }
+
+        static bool IsDigit(char ch)
+        {
+            return ch >= '0' && ch <= '9';
+        }
+
+        static bool IsDigitOneToNine(char ch)
+        {
+            return ch >= '1' && ch <= '9';
+        }
+
+        static bool IsHexDigit(char ch)
+        {
+            return (ch >= '0' && ch <= '9') ||
+                   (ch >= 'a' && ch <= 'f') ||
+                   (ch >= 'A' && ch <= 'F');
+        }
+
+        const std::string& m_json;
+        size_t m_pos = 0;
+    };
+
+    bool IsValidJsonSyntax(const std::string& json)
+    {
+        JsonSyntaxValidator validator(json);
+        return validator.Validate();
+    }
+}
 
 // ============================================================================
 // TypeRegistry
@@ -281,9 +598,8 @@ std::string JsonArchive::ToString() const
 
 bool JsonArchive::Parse(const std::string& json)
 {
-    // TODO: Parse JSON using library
-    (void)json;
-    return true;
+    m_parseSucceeded = IsValidJsonSyntax(json);
+    return m_parseSucceeded;
 }
 
 void JsonArchive::Serialize(const char* name, bool& value)

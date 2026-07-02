@@ -6,9 +6,10 @@
 #pragma once
 
 #include "Audio/AudioTypes.h"
-#include <string>
-#include <vector>
 #include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace RVX::Audio
 {
@@ -133,6 +134,7 @@ public:
      */
     void SetSend(uint32 targetBusId, float amount);
     float GetSend(uint32 targetBusId) const;
+    const std::unordered_map<uint32, float>& GetSends() const { return m_sends; }
 
 private:
     uint32 m_id;

@@ -6,6 +6,7 @@
 #include "MetalSynchronization.h"
 #include "MetalConversions.h"
 #include "MetalQuery.h"
+#include "RHI/RHITexture.h"
 
 namespace RVX
 {
@@ -136,7 +137,7 @@ namespace RVX
     // =============================================================================
     void MetalCommandContext::BufferBarrier(const RHIBufferBarrier& barrier)
     {
-        if (!barrier.buffer) return;
+        if (!barrier.buffer || barrier.stateBefore == barrier.stateAfter) return;
 
         auto* metalBuffer = static_cast<MetalBuffer*>(barrier.buffer);
 
@@ -168,7 +169,7 @@ namespace RVX
 
     void MetalCommandContext::TextureBarrier(const RHITextureBarrier& barrier)
     {
-        if (!barrier.texture) return;
+        if (!barrier.texture || barrier.stateBefore == barrier.stateAfter) return;
 
         auto* metalTexture = static_cast<MetalTexture*>(barrier.texture);
 
@@ -219,7 +220,7 @@ namespace RVX
 
             for (const auto& barrier : bufferBarriers)
             {
-                if (barrier.buffer)
+                if (barrier.buffer && barrier.stateBefore != barrier.stateAfter)
                 {
                     auto* metalBuffer = static_cast<MetalBuffer*>(barrier.buffer);
                     resources.push_back(metalBuffer->GetMTLBuffer());
@@ -228,7 +229,7 @@ namespace RVX
 
             for (const auto& barrier : textureBarriers)
             {
-                if (barrier.texture)
+                if (barrier.texture && barrier.stateBefore != barrier.stateAfter)
                 {
                     auto* metalTexture = static_cast<MetalTexture*>(barrier.texture);
                     resources.push_back(metalTexture->GetMTLTexture());
@@ -674,15 +675,17 @@ namespace RVX
         uint32 width = desc.width ? desc.width : src->GetWidth();
         uint32 height = desc.height ? desc.height : src->GetHeight();
         uint32 depth = desc.depth ? desc.depth : src->GetDepth();
+        const auto srcSubresource = DecodeTextureSubresource(desc.srcSubresource, src->GetMipLevels());
+        const auto dstSubresource = DecodeTextureSubresource(desc.dstSubresource, dst->GetMipLevels());
 
         [m_blitEncoder copyFromTexture:srcTex->GetMTLTexture()
-                           sourceSlice:0
-                           sourceLevel:desc.srcSubresource
+                           sourceSlice:srcSubresource.physicalLayer
+                           sourceLevel:srcSubresource.mipLevel
                           sourceOrigin:MTLOriginMake(desc.srcX, desc.srcY, desc.srcZ)
                             sourceSize:MTLSizeMake(width, height, depth)
                              toTexture:dstTex->GetMTLTexture()
-                      destinationSlice:0
-                      destinationLevel:desc.dstSubresource
+                      destinationSlice:dstSubresource.physicalLayer
+                      destinationLevel:dstSubresource.mipLevel
                      destinationOrigin:MTLOriginMake(desc.dstX, desc.dstY, desc.dstZ)];
     }
 
@@ -698,6 +701,7 @@ namespace RVX
         uint32 bytesPerPixel = GetFormatBytesPerPixel(dst->GetFormat());
         uint32 bytesPerRow = desc.bufferRowPitch ? desc.bufferRowPitch : width * bytesPerPixel;
         uint32 bytesPerImage = desc.bufferImageHeight ? desc.bufferImageHeight * bytesPerRow : height * bytesPerRow;
+        const auto subresource = DecodeTextureSubresource(desc.textureSubresource, dst->GetMipLevels());
 
         [m_blitEncoder copyFromBuffer:srcBuffer->GetMTLBuffer()
                          sourceOffset:desc.bufferOffset
@@ -705,8 +709,8 @@ namespace RVX
                   sourceBytesPerImage:bytesPerImage
                            sourceSize:MTLSizeMake(width, height, 1)
                             toTexture:dstTex->GetMTLTexture()
-                     destinationSlice:0
-                     destinationLevel:desc.textureSubresource
+                     destinationSlice:subresource.physicalLayer
+                     destinationLevel:subresource.mipLevel
                     destinationOrigin:MTLOriginMake(desc.textureRegion.x, desc.textureRegion.y, 0)];
     }
 
@@ -722,10 +726,11 @@ namespace RVX
         uint32 bytesPerPixel = GetFormatBytesPerPixel(src->GetFormat());
         uint32 bytesPerRow = desc.bufferRowPitch ? desc.bufferRowPitch : width * bytesPerPixel;
         uint32 bytesPerImage = desc.bufferImageHeight ? desc.bufferImageHeight * bytesPerRow : height * bytesPerRow;
+        const auto subresource = DecodeTextureSubresource(desc.textureSubresource, src->GetMipLevels());
 
         [m_blitEncoder copyFromTexture:srcTex->GetMTLTexture()
-                           sourceSlice:0
-                           sourceLevel:desc.textureSubresource
+                           sourceSlice:subresource.physicalLayer
+                           sourceLevel:subresource.mipLevel
                           sourceOrigin:MTLOriginMake(desc.textureRegion.x, desc.textureRegion.y, 0)
                             sourceSize:MTLSizeMake(width, height, 1)
                               toBuffer:dstBuffer->GetMTLBuffer()
@@ -952,20 +957,20 @@ namespace RVX
     // =============================================================================
     void MetalCommandContext::SignalFence(RHIFence* fence, uint64 value)
     {
-        if (fence)
-        {
-            // Signal the fence from CPU - actual GPU signal happens at command buffer completion
-            fence->Signal(value);
-        }
+        (void)fence;
+        RVX_RHI_WARN(
+            "MetalCommandContext::SignalFence is unsupported; "
+            "RHICapabilities::supportsExplicitQueueFenceSignal is false (requested value {})",
+            value);
     }
 
     void MetalCommandContext::WaitFence(RHIFence* fence, uint64 value)
     {
-        if (fence)
-        {
-            // CPU wait for fence - this will block the calling thread
-            fence->Wait(value);
-        }
+        (void)fence;
+        RVX_RHI_WARN(
+            "MetalCommandContext::WaitFence is unsupported; "
+            "RHICapabilities::supportsQueueFenceWait is false (requested value {})",
+            value);
     }
 
     // =============================================================================
@@ -973,32 +978,30 @@ namespace RVX
     // =============================================================================
     void MetalCommandContext::BeginBarrier(const RHIBufferBarrier& barrier)
     {
-        // Metal handles resource tracking automatically
         (void)barrier;
+        RVX_RHI_WARN("MetalCommandContext::BeginBarrier is unsupported; RHICapabilities::supportsSplitBarrier is false");
     }
 
     void MetalCommandContext::BeginBarrier(const RHITextureBarrier& barrier)
     {
-        // Metal handles resource tracking automatically
         (void)barrier;
+        RVX_RHI_WARN("MetalCommandContext::BeginBarrier is unsupported; RHICapabilities::supportsSplitBarrier is false");
     }
 
     void MetalCommandContext::EndBarrier(const RHIBufferBarrier& barrier)
     {
-        // Metal handles resource tracking automatically
-        (void)barrier;
+        BufferBarrier(barrier);
     }
 
     void MetalCommandContext::EndBarrier(const RHITextureBarrier& barrier)
     {
-        // Metal handles resource tracking automatically
-        (void)barrier;
+        TextureBarrier(barrier);
     }
 
     // =============================================================================
     // Submission
     // =============================================================================
-    void MetalCommandContext::Submit(RHIFence* signalFence)
+    uint64 MetalCommandContext::Submit(RHIFence* signalFence)
     {
         EndCurrentEncoder();
 
@@ -1010,13 +1013,15 @@ namespace RVX
             m_pendingDrawable = nil;
         }
 
+        uint64 submittedValue = 0;
         if (signalFence)
         {
             auto* metalFence = static_cast<MetalFence*>(signalFence);
-            metalFence->SignalFromCommandBuffer(m_commandBuffer);
+            submittedValue = metalFence->SignalFromCommandBuffer(m_commandBuffer);
         }
 
         [m_commandBuffer commit];
+        return submittedValue;
     }
 
 } // namespace RVX

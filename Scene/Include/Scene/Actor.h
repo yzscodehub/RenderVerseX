@@ -76,6 +76,9 @@ namespace RVX
         /// Legacy Component subclasses must use SceneEntity::AddComponent<T>().
         ActorComponent* AddOwnedComponent(std::unique_ptr<ActorComponent> component);
 
+        /// Remove an owned pure actor component instance.
+        bool RemoveOwnedComponent(ActorComponent* component);
+
         template<typename T>
         T* GetComponent() const;
 

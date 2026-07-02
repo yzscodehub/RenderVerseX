@@ -12,6 +12,7 @@ namespace RVX
 FilmGrainPass::FilmGrainPass()
 {
     m_enabled = false;
+    MarkUnsupported("Film grain shader and compute pipeline are not implemented");
 }
 
 void FilmGrainPass::Configure(const PostProcessSettings& settings)
@@ -22,8 +23,14 @@ void FilmGrainPass::Configure(const PostProcessSettings& settings)
 
 void FilmGrainPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output)
 {
-    if (!m_enabled || m_config.intensity <= 0.0f)
+    if (!IsEnabled() || m_config.intensity <= 0.0f)
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("FilmGrain: unsupported pass skipped: {}", GetUnsupportedReason());
+        }
         return;
+    }
 
     struct FilmGrainData
     {

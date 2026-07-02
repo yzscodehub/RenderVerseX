@@ -8,6 +8,7 @@
 #include "Resource/IResource.h"
 #include "Resource/Loader/TextureReference.h"
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace RVX::Resource
@@ -82,9 +83,12 @@ namespace RVX::Resource
         bool IsCubemap() const { return m_metadata.isCubemap; }
         bool IsSRGB() const { return m_metadata.isSRGB; }
         TextureUsage GetUsage() const { return m_metadata.usage; }
+        bool IsDefaultFallback() const { return m_isDefaultFallback; }
+        const std::string& GetFallbackReason() const { return m_fallbackReason; }
 
         void SetSRGB(bool isSRGB) { m_metadata.isSRGB = isSRGB; }
         void SetUsage(TextureUsage usage) { m_metadata.usage = usage; }
+        void MarkDefaultFallback(std::string reason);
 
         // =====================================================================
         // Data Access
@@ -105,6 +109,8 @@ namespace RVX::Resource
     private:
         TextureMetadata m_metadata;
         std::vector<uint8_t> m_data;
+        bool m_isDefaultFallback = false;
+        std::string m_fallbackReason;
 
         // GPU resources (future)
         // RHI::TextureHandle m_texture;

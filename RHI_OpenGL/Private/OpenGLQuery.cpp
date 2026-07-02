@@ -9,6 +9,14 @@ namespace RVX
         , m_type(desc.type)
         , m_count(desc.count)
     {
+        auto validation = ValidateRHIQueryPoolDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("OpenGL: Invalid query pool description: {}", validation.message);
+            m_count = 0;
+            return;
+        }
+
         if (desc.debugName)
         {
             SetDebugName(desc.debugName);
@@ -40,9 +48,6 @@ namespace RVX
         // Get timestamp frequency (in Hz, typically 1 GHz on modern GPUs)
         if (m_type == RHIQueryType::Timestamp)
         {
-            // Query the GPU timestamp counter frequency
-            GLint64 frequency = 0;
-            
             // OpenGL doesn't have a direct way to query timestamp frequency
             // The standard says timestamps are in nanoseconds on most implementations
             // We can verify by checking if GL_TIMESTAMP_PERIOD_NV is available (NVIDIA extension)
@@ -55,18 +60,8 @@ namespace RVX
 
         // Create query objects
         m_queries.resize(m_count);
+        m_debugLabelsApplied.resize(m_count, 0);
         GL_CHECK(glGenQueries(static_cast<GLsizei>(m_count), m_queries.data()));
-
-        // Set debug labels if available
-        if (desc.debugName && device->GetExtensions().GL_KHR_debug)
-        {
-            for (uint32 i = 0; i < m_count; ++i)
-            {
-                std::string label = std::string(desc.debugName) + "[" + std::to_string(i) + "]";
-                GL_CHECK(glObjectLabel(GL_QUERY, m_queries[i], 
-                                       static_cast<GLsizei>(label.length()), label.c_str()));
-            }
-        }
 
         RVX_RHI_DEBUG("OpenGL: Created query pool '{}' with {} queries of type {}", 
                      desc.debugName ? desc.debugName : "", m_count, static_cast<int>(m_type));
@@ -97,6 +92,31 @@ namespace RVX
             return m_queries[index];
         }
         return 0;
+    }
+
+    void OpenGLQueryPool::ApplyDebugLabel(uint32 index)
+    {
+        if (index >= m_queries.size() || index >= m_debugLabelsApplied.size())
+        {
+            return;
+        }
+
+        if (m_debugLabelsApplied[index] || !m_device || GetDebugName().empty() ||
+            !m_device->GetExtensions().GL_KHR_debug)
+        {
+            return;
+        }
+
+        const GLuint query = m_queries[index];
+        if (query == 0 || glIsQuery(query) != GL_TRUE)
+        {
+            return;
+        }
+
+        const std::string label = GetDebugName() + "[" + std::to_string(index) + "]";
+        GL_CHECK(glObjectLabel(GL_QUERY, query,
+                               static_cast<GLsizei>(label.length()), label.c_str()));
+        m_debugLabelsApplied[index] = 1;
     }
 
     bool OpenGLQueryPool::IsResultAvailable(uint32 index) const

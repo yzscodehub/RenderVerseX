@@ -6,9 +6,142 @@
 #include "DX12Query.h"
 #include "DX12Upload.h"
 #include "Core/Log.h"
+#include "RHI/RHITexture.h"
+
+#include <limits>
 
 namespace RVX
 {
+    namespace
+    {
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS ToD3D12ASBuildFlags(
+            RHIAccelerationStructureBuildFlags flags)
+        {
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS result =
+                D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+
+            if (HasFlag(flags, RHIAccelerationStructureBuildFlags::AllowUpdate))
+                result |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+            if (HasFlag(flags, RHIAccelerationStructureBuildFlags::AllowCompaction))
+                result |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION;
+            if (HasFlag(flags, RHIAccelerationStructureBuildFlags::PreferFastTrace))
+                result |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+            if (HasFlag(flags, RHIAccelerationStructureBuildFlags::PreferFastBuild))
+                result |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+            if (HasFlag(flags, RHIAccelerationStructureBuildFlags::MinimizeMemory))
+                result |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_MINIMIZE_MEMORY;
+
+            return result;
+        }
+
+        bool ValidateDX12ASBuildFlags(const RHICapabilities& capabilities,
+                                      RHIAccelerationStructureBuildFlags flags,
+                                      const char* operation)
+        {
+            if (HasFlag(flags, RHIAccelerationStructureBuildFlags::AllowCompaction) &&
+                !capabilities.supportsAccelerationStructureCompaction)
+            {
+                RVX_RHI_ERROR("DX12 {} rejected: AllowCompaction requires acceleration structure compaction support",
+                              operation);
+                return false;
+            }
+
+            return true;
+        }
+        D3D12_RAYTRACING_GEOMETRY_FLAGS ToD3D12GeometryFlags(RHIRayTracingGeometryFlags flags)
+        {
+            D3D12_RAYTRACING_GEOMETRY_FLAGS result = D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
+            if (HasFlag(flags, RHIRayTracingGeometryFlags::Opaque))
+                result |= D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+            if (HasFlag(flags, RHIRayTracingGeometryFlags::NoDuplicateAnyHitInvocation))
+                result |= D3D12_RAYTRACING_GEOMETRY_FLAG_NO_DUPLICATE_ANYHIT_INVOCATION;
+            return result;
+        }
+
+        bool TryAddDX12GPUVirtualAddress(D3D12_GPU_VIRTUAL_ADDRESS baseAddress,
+                                         uint64 offset,
+                                         D3D12_GPU_VIRTUAL_ADDRESS& result)
+        {
+            result = 0;
+            if (baseAddress == 0)
+            {
+                return false;
+            }
+
+            const uint64 baseAddress64 = static_cast<uint64>(baseAddress);
+            if (offset > std::numeric_limits<uint64>::max() - baseAddress64)
+            {
+                return false;
+            }
+
+            result = static_cast<D3D12_GPU_VIRTUAL_ADDRESS>(baseAddress64 + offset);
+            return result != 0;
+        }
+
+        D3D12_GPU_VIRTUAL_ADDRESS GetDX12BufferAddress(RHIBuffer* buffer, uint64 offset = 0)
+        {
+            auto* dx12Buffer = static_cast<DX12Buffer*>(buffer);
+            if (!dx12Buffer || !dx12Buffer->GetResource())
+                return 0;
+
+            D3D12_GPU_VIRTUAL_ADDRESS address = 0;
+            return TryAddDX12GPUVirtualAddress(dx12Buffer->GetGPUVirtualAddress(), offset, address) ? address : 0;
+        }
+
+        std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> BuildDX12GeometryDescs(
+            const RHIBottomLevelASDesc& desc)
+        {
+            std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometries;
+            geometries.reserve(desc.geometries.size());
+
+            for (const RHIRayTracingGeometryDesc& geometry : desc.geometries)
+            {
+                D3D12_RAYTRACING_GEOMETRY_DESC d3dGeometry = {};
+                d3dGeometry.Flags = ToD3D12GeometryFlags(geometry.flags);
+
+                if (geometry.type == RHIRayTracingGeometryType::Triangles)
+                {
+                    const RHIRayTracingTrianglesDesc& triangles = geometry.triangles;
+                    d3dGeometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+                    d3dGeometry.Triangles.VertexBuffer.StartAddress =
+                        GetDX12BufferAddress(triangles.vertexBuffer, triangles.vertexOffset);
+                    d3dGeometry.Triangles.VertexBuffer.StrideInBytes = triangles.vertexStride;
+                    d3dGeometry.Triangles.VertexCount = triangles.vertexCount;
+                    d3dGeometry.Triangles.VertexFormat = ToDXGIFormat(triangles.vertexFormat);
+                    d3dGeometry.Triangles.IndexBuffer =
+                        triangles.indexBuffer ? GetDX12BufferAddress(triangles.indexBuffer, triangles.indexOffset) : 0;
+                    d3dGeometry.Triangles.IndexCount = triangles.indexBuffer ? triangles.indexCount : 0;
+                    d3dGeometry.Triangles.IndexFormat =
+                        triangles.indexBuffer ? ToDXGIFormat(triangles.indexFormat) : DXGI_FORMAT_UNKNOWN;
+                    d3dGeometry.Triangles.Transform3x4 =
+                        triangles.transformBuffer ? GetDX12BufferAddress(triangles.transformBuffer, triangles.transformOffset) : 0;
+                }
+                else
+                {
+                    const RHIRayTracingAABBDesc& aabbs = geometry.aabbs;
+                    d3dGeometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
+                    d3dGeometry.AABBs.AABBCount = aabbs.count;
+                    d3dGeometry.AABBs.AABBs.StartAddress = GetDX12BufferAddress(aabbs.aabbBuffer, aabbs.offset);
+                    d3dGeometry.AABBs.AABBs.StrideInBytes = aabbs.stride;
+                }
+
+                geometries.push_back(d3dGeometry);
+            }
+
+            return geometries;
+        }
+
+        RHIAccelerationStructureBuildSizes ToRHIBuildSizes(
+            const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO& info)
+        {
+            RHIAccelerationStructureBuildSizes sizes;
+            sizes.accelerationStructureSize = info.ResultDataMaxSizeInBytes;
+            sizes.buildScratchSize = info.ScratchDataSizeInBytes;
+            sizes.updateScratchSize = info.UpdateScratchDataSizeInBytes;
+            return sizes;
+        }
+    } // namespace
+
     // =============================================================================
     // Factory Function
     // =============================================================================
@@ -748,6 +881,18 @@ namespace RVX
         if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5))))
         {
             m_capabilities.supportsRaytracing = (options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0);
+            m_capabilities.supportsRaytracingPipeline = m_capabilities.supportsRaytracing;
+            m_capabilities.supportsRayQuery = (options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1);
+            m_capabilities.supportsAccelerationStructureUpdate = m_capabilities.supportsRaytracing;
+            // Compaction needs a public postbuild-info/compact command contract before upper layers can rely on it.
+            m_capabilities.supportsAccelerationStructureCompaction = false;
+            if (m_capabilities.supportsRaytracing)
+            {
+                m_capabilities.maxRayRecursionDepth = D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH;
+                m_capabilities.shaderGroupHandleSize = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+                m_capabilities.shaderGroupHandleAlignment = D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT;
+                m_capabilities.shaderTableBaseAlignment = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
+            }
         }
 
         // Mesh shaders
@@ -770,8 +915,28 @@ namespace RVX
         m_capabilities.supportsSeparateStencilRef = false;      // DX12 doesn't support separate stencil refs
         m_capabilities.supportsSplitBarrier = true;             // DX12 supports split barriers
         m_capabilities.supportsSecondaryCommandBuffer = true;   // DX12 supports bundles
+        m_capabilities.supportsIndirectDrawCount = true;        // ExecuteIndirect supports count buffers
+        m_capabilities.supportsDescriptorSets = true;
+        m_capabilities.supportsDynamicDescriptorOffsets = true;
+        m_capabilities.maxDescriptorSets = 4;
+        m_capabilities.supportsExplicitResourceBarriers = true;
+        m_capabilities.emulatesResourceBarriers = false;
         m_capabilities.supportsMemoryBudgetQuery = true;        // DXGI supports memory budget
         m_capabilities.supportsPersistentMapping = true;        // DX12 supports persistent mapping
+        m_capabilities.supportsExplicitHeapManagement = true;   // DX12 supports explicit heaps
+        m_capabilities.supportsTimestampQueries = true;
+        m_capabilities.supportsOcclusionQueries = true;
+        m_capabilities.supportsPipelineStatisticsQueries = true;
+        if (m_graphicsQueue)
+        {
+            m_graphicsQueue->GetTimestampFrequency(&m_capabilities.timestampFrequency);
+        }
+        m_capabilities.supportsHostFenceSignal = false;
+        m_capabilities.supportsDefaultQueueFenceSignal = true;
+        m_capabilities.supportsExplicitQueueFenceSignal = true;
+        m_capabilities.supportsQueueFenceWait = true;
+        m_capabilities.supportsMultiQueueBatchSubmit = false;
+        m_capabilities.emulatesQueueFences = false;
 
         return true;
     }
@@ -882,9 +1047,12 @@ namespace RVX
                 resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.arraySize);
                 break;
             case RHITextureDimension::Texture2D:
-            case RHITextureDimension::TextureCube:
                 resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
                 resourceDesc.DepthOrArraySize = static_cast<UINT16>(desc.arraySize);
+                break;
+            case RHITextureDimension::TextureCube:
+                resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                resourceDesc.DepthOrArraySize = static_cast<UINT16>(GetTexturePhysicalLayerCount(desc));
                 break;
             case RHITextureDimension::Texture3D:
                 resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
@@ -927,7 +1095,8 @@ namespace RVX
         resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
         
-        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess))
+        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess) ||
+            HasFlag(desc.usage, RHIBufferUsage::AccelerationStructureStorage))
             resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
         D3D12_RESOURCE_ALLOCATION_INFO allocInfo = m_device->GetResourceAllocationInfo(0, 1, &resourceDesc);
@@ -958,6 +1127,109 @@ namespace RVX
         return CreateDX12ComputePipeline(this, desc);
     }
 
+    RHIPipelineRef DX12Device::CreateRayTracingPipeline(const RHIRayTracingPipelineDesc& desc)
+    {
+        if (!m_capabilities.supportsRaytracingPipeline)
+        {
+            RVX_RHI_WARN("DX12 ray tracing pipeline creation skipped because DXR pipelines are unsupported");
+            return nullptr;
+        }
+
+        return CreateDX12RayTracingPipeline(this, desc);
+    }
+
+    RHIShaderTableRef DX12Device::CreateShaderTable(const RHIShaderTableDesc& desc)
+    {
+        if (!m_capabilities.supportsRaytracingPipeline)
+        {
+            RVX_RHI_WARN("DX12 shader table creation skipped because DXR pipelines are unsupported");
+            return nullptr;
+        }
+
+        return CreateDX12ShaderTable(this, desc);
+    }
+
+    RHIAccelerationStructureBuildSizes DX12Device::GetBottomLevelASBuildSizes(const RHIBottomLevelASDesc& desc)
+    {
+        if (!m_capabilities.supportsRaytracing)
+        {
+            return {};
+        }
+
+        auto validation = ValidateRHIBottomLevelASDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12 BLAS size query failed: {}", validation.message);
+            return {};
+        }
+
+        if (!ValidateDX12ASBuildFlags(m_capabilities, desc.buildFlags, "BLAS size query"))
+        {
+            return {};
+        }
+
+        ComPtr<ID3D12Device5> device5;
+        if (FAILED(m_device.As(&device5)) || !device5)
+        {
+            RVX_RHI_ERROR("DX12 BLAS size query requires ID3D12Device5");
+            return {};
+        }
+
+        std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometries = BuildDX12GeometryDescs(desc);
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
+        inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+        inputs.Flags = ToD3D12ASBuildFlags(desc.buildFlags);
+        inputs.NumDescs = static_cast<UINT>(geometries.size());
+        inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        inputs.pGeometryDescs = geometries.data();
+
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
+        device5->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
+        return ToRHIBuildSizes(info);
+    }
+
+    RHIAccelerationStructureBuildSizes DX12Device::GetTopLevelASBuildSizes(const RHITopLevelASDesc& desc)
+    {
+        if (!m_capabilities.supportsRaytracing)
+        {
+            return {};
+        }
+
+        auto validation = ValidateRHITopLevelASDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12 TLAS size query failed: {}", validation.message);
+            return {};
+        }
+
+        if (!ValidateDX12ASBuildFlags(m_capabilities, desc.buildFlags, "TLAS size query"))
+        {
+            return {};
+        }
+
+        ComPtr<ID3D12Device5> device5;
+        if (FAILED(m_device.As(&device5)) || !device5)
+        {
+            RVX_RHI_ERROR("DX12 TLAS size query requires ID3D12Device5");
+            return {};
+        }
+
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
+        inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+        inputs.Flags = ToD3D12ASBuildFlags(desc.buildFlags);
+        inputs.NumDescs = desc.GetInstanceCount();
+        inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
+        device5->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
+        return ToRHIBuildSizes(info);
+    }
+
+    RHIAccelerationStructureRef DX12Device::CreateAccelerationStructure(const RHIAccelerationStructureDesc& desc)
+    {
+        return CreateDX12AccelerationStructure(this, desc);
+    }
+
     RHIDescriptorSetRef DX12Device::CreateDescriptorSet(const RHIDescriptorSetDesc& desc)
     {
         return CreateDX12DescriptorSet(this, desc);
@@ -976,14 +1248,14 @@ namespace RVX
         return CreateDX12CommandContext(this, type);
     }
 
-    void DX12Device::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
+    uint64 DX12Device::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
     {
-        SubmitDX12CommandContext(this, context, signalFence);
+        return SubmitDX12CommandContext(this, context, signalFence);
     }
 
-    void DX12Device::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
+    uint64 DX12Device::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
     {
-        SubmitDX12CommandContexts(this, contexts, signalFence);
+        return SubmitDX12CommandContexts(this, contexts, signalFence);
     }
 
     // =============================================================================

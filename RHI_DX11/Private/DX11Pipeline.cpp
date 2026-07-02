@@ -86,9 +86,25 @@ namespace RVX
     {
     }
 
-    void DX11DescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
+    bool DX11DescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
     {
+        if (!m_layout)
+        {
+            RVX_RHI_ERROR("DX11DescriptorSet::Update failed: descriptor set has no layout");
+            return false;
+        }
+
+        auto validation = ValidateRHIDescriptorBindings(*m_layout, bindings);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX11DescriptorSet::Update failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return false;
+        }
+
         m_bindings = bindings;
+        return true;
     }
 
     void DX11DescriptorSet::Apply(ID3D11DeviceContext* context, RHIShaderStage stages, uint32 setIndex,
@@ -235,6 +251,25 @@ namespace RVX
                             if (HasFlag(stages, RHIShaderStage::Compute))
                                 context->CSSetConstantBuffers(slot, 1, &cb);
                         }
+                    }
+                    break;
+                }
+
+                case RHIBindingType::ShaderResourceBuffer:
+                {
+                    if (binding.buffer)
+                    {
+                        auto* dx11Buffer = static_cast<DX11Buffer*>(binding.buffer);
+                        ID3D11ShaderResourceView* srv = dx11Buffer->GetSRV();
+                        UINT slot = remapper.GetSRVSlot(setIndex, binding.binding);
+                        if (slot == UINT32_MAX) slot = binding.binding;
+
+                        if (HasFlag(stages, RHIShaderStage::Vertex))
+                            context->VSSetShaderResources(slot, 1, &srv);
+                        if (HasFlag(stages, RHIShaderStage::Pixel))
+                            context->PSSetShaderResources(slot, 1, &srv);
+                        if (HasFlag(stages, RHIShaderStage::Compute))
+                            context->CSSetShaderResources(slot, 1, &srv);
                     }
                     break;
                 }

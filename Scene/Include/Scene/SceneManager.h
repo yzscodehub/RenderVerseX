@@ -184,6 +184,8 @@ namespace RVX
 
         void RegisterPrimitive(PrimitiveComponent* primitive);
         void UnregisterPrimitive(PrimitiveComponent* primitive);
+        void MarkEntitySpatialDirty(SceneEntity* entity);
+        void MarkPrimitiveSpatialDirty(PrimitiveComponent* primitive);
         const std::vector<PrimitiveComponent*>& GetPrimitives() const { return m_primitives; }
 
         // =====================================================================
@@ -269,6 +271,9 @@ namespace RVX
         /// Force rebuild of spatial index
         void RebuildSpatialIndex();
 
+        /// Apply pending spatial index structural/dirty updates before queries
+        void SynchronizeSpatialIndex();
+
         // =====================================================================
         // Spatial Index Configuration
         // =====================================================================
@@ -296,6 +301,9 @@ namespace RVX
             size_t entityCount = 0;
             size_t activeEntityCount = 0;
             size_t dirtyEntityCount = 0;
+            size_t pendingDirtyEntityCount = 0;
+            size_t pendingDirtyPrimitiveCount = 0;
+            size_t ownerPrimitiveLinkCount = 0;
             Spatial::IndexStats spatialStats;
         };
 
@@ -317,12 +325,18 @@ namespace RVX
         std::unordered_set<PrimitiveComponent*> m_registeredPrimitives;
         std::unordered_map<PrimitiveComponent*, std::unique_ptr<PrimitiveSpatialProxy>> m_primitiveSpatialProxies;
         std::unordered_map<Spatial::EntityHandle, PrimitiveSpatialProxy*> m_spatialProxyByHandle;
+        std::unordered_map<SceneEntity::Handle, std::unordered_set<PrimitiveComponent*>> m_primitivesByOwner;
         std::vector<std::unique_ptr<PrimitiveSpatialProxy>> m_retiredPrimitiveSpatialProxies;
+        std::unordered_set<PrimitiveComponent*> m_indexedPrimitives;
         Spatial::EntityHandle m_nextPrimitiveSpatialHandle = s_primitiveSpatialHandleStart;
 
         // Spatial indexing
         Spatial::SpatialIndexPtr m_spatialIndex;
         std::vector<SceneEntity*> m_dirtyEntities;
+        std::vector<PrimitiveComponent*> m_dirtyPrimitives;
+        std::unordered_set<SceneEntity::Handle> m_dirtyEntityHandles;
+        std::unordered_set<PrimitiveComponent*> m_dirtyPrimitiveSet;
+        std::unordered_set<SceneEntity::Handle> m_indexedEntityHandles;
         bool m_indexNeedsRebuild = false;
 
         // Runtime lifecycle dispatch
@@ -333,7 +347,7 @@ namespace RVX
         Spatial::EntityHandle AllocatePrimitiveSpatialHandle();
         PrimitiveSpatialProxy* GetPrimitiveSpatialProxy(PrimitiveComponent* primitive) const;
         bool IsPrimitiveSpatiallyIndexable(const PrimitiveComponent* primitive) const;
-        bool HasDirtyPrimitiveSpatialProxy() const;
+        bool HasIndexablePrimitiveForOwner(const SceneEntity* owner) const;
         void AppendUniqueEntity(const SpatialQueryTarget& target,
                                 std::vector<SceneEntity*>& outEntities) const;
         void AppendUniquePrimitive(const SpatialQueryTarget& target,
@@ -345,6 +359,7 @@ namespace RVX
         void DestroyEntityImmediate(SceneEntity::Handle handle);
         void UpdateDirtyEntities();
         void CollectDirtyEntities();
+        void CollectDirtyPrimitives();
     };
 
 } // namespace RVX

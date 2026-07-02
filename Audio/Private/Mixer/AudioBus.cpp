@@ -84,7 +84,14 @@ void AudioBusNode::RemoveEffect(size_t index)
 
 void AudioBusNode::SetSend(uint32 targetBusId, float amount)
 {
-    m_sends[targetBusId] = std::clamp(amount, 0.0f, 1.0f);
+    const float clampedAmount = std::clamp(amount, 0.0f, 1.0f);
+    if (clampedAmount <= 0.0f)
+    {
+        m_sends.erase(targetBusId);
+        return;
+    }
+
+    m_sends[targetBusId] = clampedAmount;
 }
 
 float AudioBusNode::GetSend(uint32 targetBusId) const

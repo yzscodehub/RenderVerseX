@@ -1,8 +1,9 @@
 #include "Scene/Components/AnimatorComponent.h"
-#include "Scene/SceneEntity.h"
-#include "Scene/Components/SkeletonComponent.h"
-#include "Animation/State/AnimationStateMachine.h"
+#include "Animation/Core/AnimationEvent.h"
 #include "Animation/Runtime/SkeletonPose.h"
+#include "Animation/State/AnimationStateMachine.h"
+#include "Scene/Components/SkeletonComponent.h"
+#include "Scene/SceneEntity.h"
 
 namespace RVX
 {
@@ -59,6 +60,13 @@ void AnimatorComponent::SetStateMachine(std::shared_ptr<Animation::AnimationStat
     }
 
     m_stateMachine = fsm;
+    BindStateMachineCallbacks();
+    if (m_stateMachine)
+    {
+        m_stateMachine->EnableJobifiedPoseEvaluation(m_jobifiedPoseEvaluation,
+                                                     m_jobifiedMinTransformTrackCount,
+                                                     m_jobifiedBatchSize);
+    }
 
     // Start new state machine if we're playing
     if (m_stateMachine && m_playing)
@@ -205,6 +213,25 @@ float AnimatorComponent::GetCurrentStateLength() const
     return 0.0f;
 }
 
+void AnimatorComponent::EnableJobifiedPoseEvaluation(bool enable,
+                                                     size_t minTransformTrackCount,
+                                                     size_t batchSize)
+{
+    m_jobifiedPoseEvaluation = enable;
+    m_jobifiedMinTransformTrackCount = minTransformTrackCount;
+    m_jobifiedBatchSize = batchSize;
+
+    if (m_stateMachine)
+    {
+        m_stateMachine->EnableJobifiedPoseEvaluation(enable, minTransformTrackCount, batchSize);
+    }
+}
+
+bool AnimatorComponent::DidLastEvaluationUseJobifiedPoseEvaluation() const
+{
+    return m_stateMachine && m_stateMachine->DidLastEvaluationUseJobifiedPoseEvaluation();
+}
+
 Vec3 AnimatorComponent::ConsumeRootMotion()
 {
     Vec3 delta = m_rootMotionDelta;
@@ -280,24 +307,37 @@ void AnimatorComponent::SetLookAtWeight(float weight)
 void AnimatorComponent::SetOnAnimationEvent(AnimationEventCallback callback)
 {
     m_onAnimationEvent = std::move(callback);
+    BindStateMachineCallbacks();
 }
 
 void AnimatorComponent::SetOnStateChange(std::function<void(const std::string&, const std::string&)> callback)
 {
     m_onStateChange = std::move(callback);
+    BindStateMachineCallbacks();
+}
 
-    // Register with state machine
-    if (m_stateMachine)
+void AnimatorComponent::BindStateMachineCallbacks()
+{
+    if (!m_stateMachine)
     {
-        m_stateMachine->SetOnStateChange([this](Animation::AnimationState* from, Animation::AnimationState* to) {
-            if (m_onStateChange)
-            {
-                std::string fromName = from ? from->GetName() : "";
-                std::string toName = to ? to->GetName() : "";
-                m_onStateChange(fromName, toName);
-            }
-        });
+        return;
     }
+
+    m_stateMachine->SetOnStateChange([this](Animation::AnimationState* from, Animation::AnimationState* to) {
+        if (m_onStateChange)
+        {
+            std::string fromName = from ? from->GetName() : "";
+            std::string toName = to ? to->GetName() : "";
+            m_onStateChange(fromName, toName);
+        }
+    });
+
+    m_stateMachine->SetOnAnimationEvent([this](const Animation::AnimationEvent& event) {
+        if (m_onAnimationEvent)
+        {
+            m_onAnimationEvent(event.name);
+        }
+    });
 }
 
 const Animation::SkeletonPose* AnimatorComponent::GetOutputPose() const
@@ -363,8 +403,7 @@ void AnimatorComponent::ExtractRootMotion()
 
 void AnimatorComponent::ProcessAnimationEvents()
 {
-    // TODO: Check for animation events in current clip
-    // and fire callbacks
+    // AnimationStateMachine forwards clip events during Update().
 }
 
 } // namespace RVX

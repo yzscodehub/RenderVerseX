@@ -26,6 +26,7 @@ class IConstraint;
  */
 enum class PhysicsBackendType : uint8
 {
+    Auto,       ///< Select the best available backend
     BuiltIn,    ///< Simple built-in physics engine
     Jolt,       ///< Jolt Physics backend
     PhysX,      ///< NVIDIA PhysX (future)

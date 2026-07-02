@@ -10,11 +10,13 @@
 
 #include "Animation/Blend/BlendNode.h"
 #include "Animation/Blend/BlendTree.h"
-#include "Animation/Runtime/SkeletonPose.h"
+#include "Animation/Core/AnimationEvent.h"
 #include "Animation/Core/Types.h"
+#include "Animation/Runtime/SkeletonPose.h"
 #include <memory>
 #include <string>
 #include <functional>
+#include <utility>
 #include <vector>
 
 namespace RVX::Animation
@@ -118,10 +120,12 @@ public:
     // =========================================================================
 
     using StateCallback = std::function<void(AnimationState*)>;
+    using AnimationEventCallback = std::function<void(const AnimationEvent&)>;
 
     void SetOnEnter(StateCallback callback) { m_onEnter = std::move(callback); }
     void SetOnExit(StateCallback callback) { m_onExit = std::move(callback); }
     void SetOnUpdate(StateCallback callback) { m_onUpdate = std::move(callback); }
+    void SetOnAnimationEvent(AnimationEventCallback callback) { m_onAnimationEvent = std::move(callback); }
 
     // =========================================================================
     // Evaluation
@@ -149,10 +153,27 @@ public:
      */
     float Evaluate(const BlendContext& context, SkeletonPose& outPose);
 
+    // =========================================================================
+    // Evaluation Settings
+    // =========================================================================
+
+    /// Enable JobSystem-backed transform track evaluation for large clips
+    void EnableJobifiedPoseEvaluation(bool enable,
+                                      size_t minTransformTrackCount = 32,
+                                      size_t batchSize = 0);
+
+    /// Check whether the most recent evaluation used the JobSystem path
+    bool DidLastEvaluationUseJobifiedPoseEvaluation() const { return m_lastEvaluationUsedJobified; }
+
     /**
      * @brief Get normalized time (0-1)
      */
     float GetNormalizedTime() const;
+
+    /**
+     * @brief Get current playback time
+     */
+    TimeUs GetCurrentTime() const { return m_currentTime; }
 
     /**
      * @brief Set normalized time
@@ -188,6 +209,8 @@ public:
     const std::vector<std::string>& GetTags() const { return m_tags; }
 
 private:
+    void DispatchAnimationEvents(TimeUs previousTime, TimeUs currentTime, bool looped, bool reversePlayback);
+
     std::string m_name;
     uint32_t m_id = 0;
     
@@ -201,12 +224,17 @@ private:
     bool m_loop = true;
     bool m_hasRootMotion = false;
     bool m_finished = false;
+    bool m_jobifiedPoseEvaluation = false;
+    size_t m_jobifiedMinTransformTrackCount = 32;
+    size_t m_jobifiedBatchSize = 0;
+    bool m_lastEvaluationUsedJobified = false;
     
     TimeUs m_currentTime = 0;
     
     StateCallback m_onEnter;
     StateCallback m_onExit;
     StateCallback m_onUpdate;
+    AnimationEventCallback m_onAnimationEvent;
     
     std::vector<std::string> m_tags;
 };

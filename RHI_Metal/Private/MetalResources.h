@@ -169,6 +169,7 @@ namespace RVX
         ~MetalDescriptorSetLayout() override = default;
 
         const RHIDescriptorSetLayoutDesc& GetDesc() const { return m_desc; }
+        const std::vector<RHIBindingLayoutEntry>& GetEntries() const override { return m_desc.entries; }
 
     private:
         RHIDescriptorSetLayoutDesc m_desc;
@@ -183,7 +184,7 @@ namespace RVX
         MetalDescriptorSet(const RHIDescriptorSetDesc& desc);
         ~MetalDescriptorSet() override = default;
 
-        void Update(const std::vector<RHIDescriptorBinding>& bindings) override;
+        bool Update(const std::vector<RHIDescriptorBinding>& bindings) override;
 
         const RHIDescriptorSetDesc& GetDesc() const { return m_desc; }
 

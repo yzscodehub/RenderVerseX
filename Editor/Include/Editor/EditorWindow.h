@@ -53,7 +53,7 @@ public:
     /**
      * @brief Called when window is created
      */
-    virtual void OnCreate(EditorContext& context) {}
+    virtual void OnCreate(EditorContext& context) { (void)context; }
 
     /**
      * @brief Called when window is destroyed
@@ -63,7 +63,7 @@ public:
     /**
      * @brief Update logic
      */
-    virtual void OnUpdate(float deltaTime) {}
+    virtual void OnUpdate(float deltaTime) { (void)deltaTime; }
 
     /**
      * @brief Render the window using ImGui

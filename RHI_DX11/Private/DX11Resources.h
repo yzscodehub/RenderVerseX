@@ -8,6 +8,7 @@
 #include "RHI/RHIQuery.h"
 #include "RHI/RHISynchronization.h"
 
+#include <atomic>
 #include <vector>
 
 namespace RVX
@@ -21,6 +22,7 @@ namespace RVX
     {
     public:
         DX11Buffer(DX11Device* device, const RHIBufferDesc& desc);
+        DX11Buffer(DX11Device* device, ComPtr<ID3D11Buffer> buffer, const RHIBufferDesc& desc);
         ~DX11Buffer() override;
 
         // RHIBuffer interface
@@ -41,6 +43,7 @@ namespace RVX
 
         DX11Device* m_device = nullptr;
         RHIBufferDesc m_desc;
+        bool m_useStagingUpload = false;
 
         ComPtr<ID3D11Buffer> m_buffer;
         ComPtr<ID3D11ShaderResourceView> m_srv;
@@ -219,10 +222,14 @@ namespace RVX
         // DX11 Specific
         ID3D11Fence* GetFence() const { return m_fence.Get(); }
         bool HasNativeFence() const { return m_fence != nullptr; }
+        uint64 AllocateSignalValue();
 
     private:
+        void TrackSubmittedValue(uint64 value);
+
         DX11Device* m_device = nullptr;
         uint64 m_value = 0;
+        std::atomic<uint64> m_nextSignalValue{1};
 
         ComPtr<ID3D11Fence> m_fence;
         HANDLE m_event = nullptr;

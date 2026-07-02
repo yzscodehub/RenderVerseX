@@ -3,6 +3,7 @@
 #include "VulkanResources.h"
 #include "VulkanPipeline.h"
 #include "VulkanSwapChain.h"
+#include "RHI/RHITexture.h"
 
 #include <utility>
 
@@ -110,7 +111,16 @@ namespace RVX
 
     void VulkanCommandContext::BufferBarrier(const RHIBufferBarrier& barrier)
     {
+        if (!barrier.buffer || barrier.stateBefore == barrier.stateAfter)
+        {
+            return;
+        }
+
         auto* vkBuffer = static_cast<VulkanBuffer*>(barrier.buffer);
+        if (!vkBuffer || vkBuffer->GetBuffer() == VK_NULL_HANDLE)
+        {
+            return;
+        }
 
         VkBufferMemoryBarrier2 bufferBarrier = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
         bufferBarrier.srcStageMask = ToVkPipelineStageFlags(barrier.stateBefore);
@@ -129,7 +139,16 @@ namespace RVX
 
     void VulkanCommandContext::TextureBarrier(const RHITextureBarrier& barrier)
     {
+        if (!barrier.texture || barrier.stateBefore == barrier.stateAfter)
+        {
+            return;
+        }
+
         auto* vkTexture = static_cast<VulkanTexture*>(barrier.texture);
+        if (!vkTexture || vkTexture->GetImage() == VK_NULL_HANDLE)
+        {
+            return;
+        }
 
         VkImageMemoryBarrier2 imageBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
         imageBarrier.srcStageMask = ToVkPipelineStageFlags(barrier.stateBefore);
@@ -220,7 +239,7 @@ namespace RVX
             VkRenderingAttachmentInfo attachInfo = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
             attachInfo.imageView = vkView->GetImageView();
             attachInfo.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            
+
             switch (attach.loadOp)
             {
                 case RHILoadOp::Load:    attachInfo.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; break;
@@ -234,14 +253,14 @@ namespace RVX
                 case RHIStoreOp::DontCare: attachInfo.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; break;
             }
 
-            attachInfo.clearValue.color = {{attach.clearColor.r, attach.clearColor.g, 
+            attachInfo.clearValue.color = {{attach.clearColor.r, attach.clearColor.g,
                                             attach.clearColor.b, attach.clearColor.a}};
 
             colorAttachments.push_back(attachInfo);
         }
 
         VkRenderingInfo renderingInfo = {VK_STRUCTURE_TYPE_RENDERING_INFO};
-        
+
         // Get render area from first color attachment
         if (desc.colorAttachmentCount > 0 && desc.colorAttachments[0].view)
         {
@@ -258,10 +277,10 @@ namespace RVX
         if (desc.depthStencilAttachment.view)
         {
             auto* vkView = static_cast<VulkanTextureView*>(desc.depthStencilAttachment.view);
-            
+
             depthAttachInfo.imageView = vkView->GetImageView();
             depthAttachInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            
+
             switch (desc.depthStencilAttachment.depthLoadOp)
             {
                 case RHILoadOp::Load:    depthAttachInfo.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; break;
@@ -275,7 +294,7 @@ namespace RVX
                 case RHIStoreOp::DontCare: depthAttachInfo.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; break;
             }
 
-            depthAttachInfo.clearValue.depthStencil = {desc.depthStencilAttachment.clearValue.depth, 
+            depthAttachInfo.clearValue.depthStencil = {desc.depthStencilAttachment.clearValue.depth,
                                                         desc.depthStencilAttachment.clearValue.stencil};
 
             renderingInfo.pDepthAttachment = &depthAttachInfo;
@@ -297,7 +316,7 @@ namespace RVX
     void VulkanCommandContext::SetPipeline(RHIPipeline* pipeline)
     {
         m_currentPipeline = static_cast<VulkanPipeline*>(pipeline);
-        
+
         VkPipelineBindPoint bindPoint = m_currentPipeline->IsCompute() ?
             VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
 
@@ -312,7 +331,7 @@ namespace RVX
         vkCmdBindVertexBuffers(m_commandBuffer, slot, 1, buffers, offsets);
     }
 
-    void VulkanCommandContext::SetVertexBuffers(uint32 startSlot, std::span<RHIBuffer* const> buffers, 
+    void VulkanCommandContext::SetVertexBuffers(uint32 startSlot, std::span<RHIBuffer* const> buffers,
                                                  std::span<const uint64> offsets)
     {
         std::vector<VkBuffer> vkBuffers(buffers.size());
@@ -335,7 +354,7 @@ namespace RVX
         vkCmdBindIndexBuffer(m_commandBuffer, vkBuffer->GetBuffer(), offset, indexType);
     }
 
-    void VulkanCommandContext::SetDescriptorSet(uint32 slot, RHIDescriptorSet* set, 
+    void VulkanCommandContext::SetDescriptorSet(uint32 slot, RHIDescriptorSet* set,
                                                  std::span<const uint32> dynamicOffsets)
     {
         if (!m_currentPipeline || !set)
@@ -348,7 +367,7 @@ namespace RVX
             VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
 
         vkCmdBindDescriptorSets(m_commandBuffer, bindPoint, m_currentPipeline->GetPipelineLayout(),
-            slot, 1, &descriptorSet, 
+            slot, 1, &descriptorSet,
             static_cast<uint32>(dynamicOffsets.size()), dynamicOffsets.data());
     }
 
@@ -411,14 +430,14 @@ namespace RVX
         vkCmdSetScissor(m_commandBuffer, 0, static_cast<uint32>(rects.size()), rects.data());
     }
 
-    void VulkanCommandContext::Draw(uint32 vertexCount, uint32 instanceCount, 
+    void VulkanCommandContext::Draw(uint32 vertexCount, uint32 instanceCount,
                                      uint32 firstVertex, uint32 firstInstance)
     {
         FlushBarriers();
         vkCmdDraw(m_commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
     }
 
-    void VulkanCommandContext::DrawIndexed(uint32 indexCount, uint32 instanceCount, 
+    void VulkanCommandContext::DrawIndexed(uint32 indexCount, uint32 instanceCount,
                                             uint32 firstIndex, int32 vertexOffset, uint32 firstInstance)
     {
         FlushBarriers();
@@ -452,7 +471,7 @@ namespace RVX
         vkCmdDispatchIndirect(m_commandBuffer, vkBuffer->GetBuffer(), offset);
     }
 
-    void VulkanCommandContext::CopyBuffer(RHIBuffer* src, RHIBuffer* dst, 
+    void VulkanCommandContext::CopyBuffer(RHIBuffer* src, RHIBuffer* dst,
                                            uint64 srcOffset, uint64 dstOffset, uint64 size)
     {
         FlushBarriers();
@@ -474,46 +493,58 @@ namespace RVX
 
         auto* vkSrc = static_cast<VulkanTexture*>(src);
         auto* vkDst = static_cast<VulkanTexture*>(dst);
+        const auto srcSubresource = DecodeTextureSubresource(desc.srcSubresource, src->GetMipLevels());
+        const auto dstSubresource = DecodeTextureSubresource(desc.dstSubresource, dst->GetMipLevels());
 
         VkImageCopy copyRegion = {};
         copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copyRegion.srcSubresource.mipLevel = desc.srcSubresource;
-        copyRegion.srcSubresource.baseArrayLayer = 0;
+        copyRegion.srcSubresource.mipLevel = srcSubresource.mipLevel;
+        copyRegion.srcSubresource.baseArrayLayer = srcSubresource.physicalLayer;
         copyRegion.srcSubresource.layerCount = 1;
         copyRegion.srcOffset = {static_cast<int32>(desc.srcX), static_cast<int32>(desc.srcY), static_cast<int32>(desc.srcZ)};
         copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copyRegion.dstSubresource.mipLevel = desc.dstSubresource;
-        copyRegion.dstSubresource.baseArrayLayer = 0;
+        copyRegion.dstSubresource.mipLevel = dstSubresource.mipLevel;
+        copyRegion.dstSubresource.baseArrayLayer = dstSubresource.physicalLayer;
         copyRegion.dstSubresource.layerCount = 1;
         copyRegion.dstOffset = {static_cast<int32>(desc.dstX), static_cast<int32>(desc.dstY), static_cast<int32>(desc.dstZ)};
-        copyRegion.extent = {desc.width ? desc.width : src->GetWidth(), 
-                             desc.height ? desc.height : src->GetHeight(), 
+        copyRegion.extent = {desc.width ? desc.width : src->GetWidth(),
+                             desc.height ? desc.height : src->GetHeight(),
                              desc.depth ? desc.depth : src->GetDepth()};
 
-        vkCmdCopyImage(m_commandBuffer, 
+        vkCmdCopyImage(m_commandBuffer,
             vkSrc->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             vkDst->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             1, &copyRegion);
     }
 
-    void VulkanCommandContext::CopyBufferToTexture(RHIBuffer* src, RHITexture* dst, 
+    void VulkanCommandContext::CopyBufferToTexture(RHIBuffer* src, RHITexture* dst,
                                                     const RHIBufferTextureCopyDesc& desc)
     {
         FlushBarriers();
 
         auto* vkSrc = static_cast<VulkanBuffer*>(src);
         auto* vkDst = static_cast<VulkanTexture*>(dst);
+        const auto subresource = DecodeTextureSubresource(desc.textureSubresource, dst->GetMipLevels());
+        const RHIFormat format = dst->GetFormat();
+        const uint32 formatBytes = GetFormatBytesPerPixel(format);
+        const bool compressed = IsCompressedFormat(format);
+        const uint32 bufferRowLength = (desc.bufferRowPitch != 0 && formatBytes != 0)
+            ? (compressed ? (desc.bufferRowPitch / formatBytes) * 4u : desc.bufferRowPitch / formatBytes)
+            : 0u;
+        const uint32 bufferImageHeight = (desc.bufferImageHeight != 0 && compressed)
+            ? desc.bufferImageHeight * 4u
+            : desc.bufferImageHeight;
 
         VkBufferImageCopy copyRegion = {};
         copyRegion.bufferOffset = desc.bufferOffset;
-        copyRegion.bufferRowLength = desc.bufferRowPitch;
-        copyRegion.bufferImageHeight = desc.bufferImageHeight;
+        copyRegion.bufferRowLength = bufferRowLength;
+        copyRegion.bufferImageHeight = bufferImageHeight;
         copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copyRegion.imageSubresource.mipLevel = desc.textureSubresource;
-        copyRegion.imageSubresource.baseArrayLayer = 0;
+        copyRegion.imageSubresource.mipLevel = subresource.mipLevel;
+        copyRegion.imageSubresource.baseArrayLayer = subresource.physicalLayer;
         copyRegion.imageSubresource.layerCount = 1;
-        copyRegion.imageOffset = {static_cast<int32>(desc.textureRegion.x), 
-                                  static_cast<int32>(desc.textureRegion.y), 
+        copyRegion.imageOffset = {static_cast<int32>(desc.textureRegion.x),
+                                  static_cast<int32>(desc.textureRegion.y),
                                   static_cast<int32>(desc.textureDepthSlice)};
         copyRegion.imageExtent = {desc.textureRegion.width ? desc.textureRegion.width : dst->GetWidth(),
                                   desc.textureRegion.height ? desc.textureRegion.height : dst->GetHeight(),
@@ -530,17 +561,27 @@ namespace RVX
 
         auto* vkSrc = static_cast<VulkanTexture*>(src);
         auto* vkDst = static_cast<VulkanBuffer*>(dst);
+        const auto subresource = DecodeTextureSubresource(desc.textureSubresource, src->GetMipLevels());
+        const RHIFormat format = src->GetFormat();
+        const uint32 formatBytes = GetFormatBytesPerPixel(format);
+        const bool compressed = IsCompressedFormat(format);
+        const uint32 bufferRowLength = (desc.bufferRowPitch != 0 && formatBytes != 0)
+            ? (compressed ? (desc.bufferRowPitch / formatBytes) * 4u : desc.bufferRowPitch / formatBytes)
+            : 0u;
+        const uint32 bufferImageHeight = (desc.bufferImageHeight != 0 && compressed)
+            ? desc.bufferImageHeight * 4u
+            : desc.bufferImageHeight;
 
         VkBufferImageCopy copyRegion = {};
         copyRegion.bufferOffset = desc.bufferOffset;
-        copyRegion.bufferRowLength = desc.bufferRowPitch;
-        copyRegion.bufferImageHeight = desc.bufferImageHeight;
+        copyRegion.bufferRowLength = bufferRowLength;
+        copyRegion.bufferImageHeight = bufferImageHeight;
         copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copyRegion.imageSubresource.mipLevel = desc.textureSubresource;
-        copyRegion.imageSubresource.baseArrayLayer = 0;
+        copyRegion.imageSubresource.mipLevel = subresource.mipLevel;
+        copyRegion.imageSubresource.baseArrayLayer = subresource.physicalLayer;
         copyRegion.imageSubresource.layerCount = 1;
-        copyRegion.imageOffset = {static_cast<int32>(desc.textureRegion.x), 
-                                  static_cast<int32>(desc.textureRegion.y), 
+        copyRegion.imageOffset = {static_cast<int32>(desc.textureRegion.x),
+                                  static_cast<int32>(desc.textureRegion.y),
                                   static_cast<int32>(desc.textureDepthSlice)};
         copyRegion.imageExtent = {desc.textureRegion.width ? desc.textureRegion.width : src->GetWidth(),
                                   desc.textureRegion.height ? desc.textureRegion.height : src->GetHeight(),
@@ -551,39 +592,34 @@ namespace RVX
     }
 
     // =============================================================================
-    // Query Commands (Vulkan stubs - queries not yet implemented)
+    // Query Commands (Vulkan unsupported path)
     // =============================================================================
     void VulkanCommandContext::BeginQuery(RHIQueryPool* /*pool*/, uint32 /*index*/)
     {
-        // TODO: Implement Vulkan query support using vkCmdBeginQuery
-        RVX_RHI_WARN("VulkanCommandContext::BeginQuery not yet implemented");
+        RVX_RHI_ERROR("VulkanCommandContext::BeginQuery called while RHICapabilities reports queries unsupported");
     }
 
     void VulkanCommandContext::EndQuery(RHIQueryPool* /*pool*/, uint32 /*index*/)
     {
-        // TODO: Implement Vulkan query support using vkCmdEndQuery
-        RVX_RHI_WARN("VulkanCommandContext::EndQuery not yet implemented");
+        RVX_RHI_ERROR("VulkanCommandContext::EndQuery called while RHICapabilities reports queries unsupported");
     }
 
     void VulkanCommandContext::WriteTimestamp(RHIQueryPool* /*pool*/, uint32 /*index*/)
     {
-        // TODO: Implement Vulkan timestamp queries using vkCmdWriteTimestamp
-        RVX_RHI_WARN("VulkanCommandContext::WriteTimestamp not yet implemented");
+        RVX_RHI_ERROR("VulkanCommandContext::WriteTimestamp called while RHICapabilities reports timestamp queries unsupported");
     }
 
     void VulkanCommandContext::ResolveQueries(RHIQueryPool* /*pool*/, uint32 /*firstQuery*/,
                                               uint32 /*queryCount*/, RHIBuffer* /*destBuffer*/,
                                               uint64 /*destOffset*/)
     {
-        // TODO: Implement query result retrieval using vkCmdCopyQueryPoolResults
-        RVX_RHI_WARN("VulkanCommandContext::ResolveQueries not yet implemented");
+        RVX_RHI_ERROR("VulkanCommandContext::ResolveQueries called while RHICapabilities reports queries unsupported");
     }
 
     void VulkanCommandContext::ResetQueries(RHIQueryPool* /*pool*/, uint32 /*firstQuery*/,
                                             uint32 /*queryCount*/)
     {
-        // TODO: Implement query reset using vkCmdResetQueryPool
-        RVX_RHI_WARN("VulkanCommandContext::ResetQueries not yet implemented");
+        RVX_RHI_ERROR("VulkanCommandContext::ResetQueries called while RHICapabilities reports queries unsupported");
     }
 
     // =============================================================================
@@ -605,8 +641,13 @@ namespace RVX
         }
     }
 
-    void SubmitVulkanCommandContext(VulkanDevice* device, RHICommandContext* context, RHIFence* signalFence)
+    uint64 SubmitVulkanCommandContext(VulkanDevice* device, RHICommandContext* context, RHIFence* signalFence)
     {
+        if (!device || !context)
+        {
+            return 0;
+        }
+
         auto* vkContext = static_cast<VulkanCommandContext*>(context);
 
         std::lock_guard<std::mutex> lock(device->GetSubmitMutex());
@@ -665,13 +706,14 @@ namespace RVX
         submitInfo.pSignalSemaphores = signalSemaphores.empty() ? nullptr : signalSemaphores.data();
 
         VK_CHECK(vkQueueSubmit(queue, 1, &submitInfo, fence));
+        return signalFenceValue;
     }
 
-    void SubmitVulkanCommandContexts(VulkanDevice* device, std::span<RHICommandContext* const> contexts, 
+    uint64 SubmitVulkanCommandContexts(VulkanDevice* device, std::span<RHICommandContext* const> contexts,
                                       RHIFence* signalFence)
     {
-        if (contexts.empty())
-            return;
+        if (!device || contexts.empty())
+            return 0;
 
         std::lock_guard<std::mutex> lock(device->GetSubmitMutex());
 
@@ -682,6 +724,12 @@ namespace RVX
 
         for (auto* context : contexts)
         {
+            if (!context)
+            {
+                RVX_RHI_ERROR("SubmitVulkanCommandContexts: null command context");
+                return 0;
+            }
+
             auto* vkContext = static_cast<VulkanCommandContext*>(context);
             VkCommandBuffer cmdBuffer = vkContext->GetCommandBuffer();
 
@@ -879,8 +927,8 @@ namespace RVX
             VK_CHECK(vkQueueSubmit(device->GetGraphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE));
         }
 
-        if (copyToComputeSemaphore != VK_NULL_HANDLE || 
-            copyToGraphicsSemaphore != VK_NULL_HANDLE || 
+        if (copyToComputeSemaphore != VK_NULL_HANDLE ||
+            copyToGraphicsSemaphore != VK_NULL_HANDLE ||
             computeToGraphicsSemaphore != VK_NULL_HANDLE)
         {
             std::vector<VkSemaphore> semaphoresToDestroy;
@@ -899,6 +947,7 @@ namespace RVX
 
             device->EnqueueDeferredSemaphoreDestroy(std::move(semaphoresToDestroy), finalQueue);
         }
+        return signalFenceValue;
     }
 
     // =============================================================================
@@ -942,7 +991,7 @@ namespace RVX
     {
         if (fence)
         {
-            fence->Signal(value);
+            fence->SignalOnQueue(value, m_queueType);
         }
     }
 
@@ -950,8 +999,10 @@ namespace RVX
     {
         if (fence)
         {
-            // CPU wait for fence - this will block the calling thread
-            fence->Wait(value);
+            RVX_RHI_ERROR(
+                "VulkanCommandContext::WaitFence is unsupported in this backend revision; "
+                "RHICapabilities::supportsQueueFenceWait is false (requested value {})",
+                value);
         }
     }
 
@@ -960,31 +1011,24 @@ namespace RVX
     // =============================================================================
     void VulkanCommandContext::BeginBarrier(const RHIBufferBarrier& barrier)
     {
-        // Vulkan split barriers work by specifying srcStageMask in the begin
-        // and dstStageMask in the end. For simplicity, we add to pending barriers
-        // and they will be flushed together. The actual split is handled by
-        // the barrier batching system.
-        // TODO: Implement proper split barrier with separate dependency tracking
-        BufferBarrier(barrier);
+        (void)barrier;
+        RVX_RHI_WARN("VulkanCommandContext::BeginBarrier is unsupported; RHICapabilities::supportsSplitBarrier is false");
     }
 
     void VulkanCommandContext::BeginBarrier(const RHITextureBarrier& barrier)
     {
-        // Same as buffer - add to pending barriers
-        TextureBarrier(barrier);
+        (void)barrier;
+        RVX_RHI_WARN("VulkanCommandContext::BeginBarrier is unsupported; RHICapabilities::supportsSplitBarrier is false");
     }
 
     void VulkanCommandContext::EndBarrier(const RHIBufferBarrier& barrier)
     {
-        // For now, this is a no-op since we did full barrier in BeginBarrier
-        // TODO: Implement proper split barrier with END_ONLY semantics
-        (void)barrier;
+        BufferBarrier(barrier);
     }
 
     void VulkanCommandContext::EndBarrier(const RHITextureBarrier& barrier)
     {
-        // No-op - barrier was done in BeginBarrier
-        (void)barrier;
+        TextureBarrier(barrier);
     }
 
 } // namespace RVX

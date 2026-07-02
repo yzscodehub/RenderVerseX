@@ -11,6 +11,9 @@
 
 #include "Render/Passes/IRenderPass.h"
 #include "Core/MathTypes.h"
+#include "Render/Renderer/ShadowConstants.h"
+
+#include <vector>
 
 namespace RVX
 {
@@ -25,6 +28,9 @@ namespace RVX
     {
         Mat4 viewProjection;
         float splitDepth = 0.0f;
+        Vec2 lightSpaceCenter{0.0f, 0.0f};
+        float stableExtent = 0.0f;
+        float texelWorldSize = 0.0f;
     };
 
     /**
@@ -37,6 +43,30 @@ namespace RVX
         float cascadeSplitLambda = 0.95f;    // PSSM split scheme parameter
         float shadowBias = 0.005f;           // Depth bias to reduce shadow acne
         float normalBias = 0.02f;            // Normal offset bias
+        float filterRadiusTexels = 1.0f;     // PCF radius in shadow-map texels
+        float casterDepthBias = 0.0f;         // Raster depth bias when writing shadow maps
+        float casterSlopeScaledDepthBias = 0.0f; // Slope-scaled raster bias for shadow casters
+        float casterDepthBiasClamp = 0.0f;    // Reserved for future clamp capability; sanitized to 0 for now
+        bool stabilizeCascades = true;        // Snap cascades to shadow texels
+        float cascadeBlendRatio = 0.05f;      // Fraction of cascade span used for transition fade
+        bool rayTracedTemporalAccumulation = true; // Enable RT shadow history blending when the view is stable
+        float rayTracedLightAngularRadius = 0.00465f; // Directional-light angular radius in radians (~sun disk)
+        uint32_t rayTracedSamplesPerPixel = 1; // Per-pixel RT shadow rays, clamped to [1, 8]
+        float rayTracedTemporalBlendFactor = 0.75f; // Weight of previous RT shadow mask in [0, 0.95]
+        float rayTracedHistoryDepthThreshold = 0.01f; // Clip-space depth delta allowed for RT history reprojection
+        float rayTracedHistoryNormalThreshold = 0.85f; // Minimum normal dot product allowed for RT history reprojection
+        float rayTracedHistoryVelocityRejectionScale = 8.0f; // Reduces RT shadow history weight in moving regions
+        uint32_t rayTracedInstanceMask = 0xFF; // Instance visibility mask used by RT shadow rays
+        RayTracedShadowMode rayTracedShadowMode = RayTracedShadowMode::ComplementRaster; // RT mask composition strategy
+    };
+
+    struct ShadowPassStats
+    {
+        uint32_t configuredCascadeCount = 0;
+        uint32_t declaredCascadeResourceCount = 0;
+        uint32_t resolvedCascadeViewCount = 0;
+        uint32_t shadowCasterCount = 0;
+        uint32_t drawCount = 0;
     };
 
     /**
@@ -90,20 +120,30 @@ namespace RVX
          * @brief Get cascade info for shader binding
          */
         const std::vector<ShadowCascade>& GetCascades() const { return m_cascades; }
+        const ShadowPassConfig& GetConfig() const { return m_config; }
+        const Vec3& GetLightDirection() const { return m_lightDirection; }
+        float GetLightIntensity() const { return m_lightIntensity; }
 
         /**
          * @brief Get the shadow map texture (after execution)
          */
         RHITexture* GetShadowMap() const { return m_shadowMapTexture; }
+        RGTextureHandle GetShadowMapTextureHandle() const { return m_shadowMapTextureHandle; }
+        const std::vector<RGTextureHandle>& GetCascadeTextureHandles() const { return m_cascadeTextureHandles; }
+        const ShadowPassStats& GetStats() const { return m_stats; }
 
         void SetEnabled(bool enabled) { m_enabled = enabled; }
-        bool IsEnabled() const override { return m_enabled; }
+        bool IsRequestedEnabled() const override { return m_enabled; }
+        bool IsSupported() const override;
+        const std::string& GetUnsupportedReason() const override { return m_unsupportedReason; }
+        bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
 
     private:
-        void CreateShadowMap();
-        void RenderCascade(RHICommandContext& ctx, uint32_t cascadeIndex);
+        bool ResolveCascadeViews(const ViewData& view);
+        void RenderCascade(RHICommandContext& ctx, const ViewData& view, uint32_t cascadeIndex);
 
         bool m_enabled = false;  // Disabled by default until light is configured
+        mutable std::string m_unsupportedReason = "ShadowPass has not been configured";
         GPUResourceManager* m_gpuResources = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         const RenderScene* m_renderScene = nullptr;
@@ -114,11 +154,13 @@ namespace RVX
         float m_lightIntensity = 1.0f;
 
         std::vector<ShadowCascade> m_cascades;
-        
+
         // Shadow map resources
+        RGTextureHandle m_shadowMapTextureHandle;
         RHITexture* m_shadowMapTexture = nullptr;
-        RHITextureRef m_ownedShadowMap;
-        std::vector<RHITextureViewRef> m_cascadeViews;
+        std::vector<RGTextureHandle> m_cascadeTextureHandles;
+        std::vector<RHITextureView*> m_cascadeViews;
+        ShadowPassStats m_stats;
     };
 
 } // namespace RVX

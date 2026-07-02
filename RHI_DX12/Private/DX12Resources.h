@@ -6,9 +6,13 @@
 #include "RHI/RHITexture.h"
 #include "RHI/RHISampler.h"
 #include "RHI/RHIShader.h"
+#include "RHI/RHIRayTracing.h"
 #include "RHI/RHIDescriptor.h"
 #include "RHI/RHISynchronization.h"
 #include "RHI/RHIHeap.h"
+
+#include <atomic>
+#include <string>
 
 namespace RVX
 {
@@ -35,7 +39,7 @@ namespace RVX
 
         // DX12 Specific
         ID3D12Resource* GetResource() const { return m_resource.Get(); }
-        D3D12_GPU_VIRTUAL_ADDRESS GetGPUVirtualAddress() const { return m_resource->GetGPUVirtualAddress(); }
+        D3D12_GPU_VIRTUAL_ADDRESS GetGPUVirtualAddress() const { return m_resource ? m_resource->GetGPUVirtualAddress() : 0; }
 
         const DX12DescriptorHandle& GetCBVHandle() const { return m_cbvHandle; }
         const DX12DescriptorHandle& GetSRVHandle() const { return m_srvHandle; }
@@ -131,6 +135,7 @@ namespace RVX
 
     private:
         DX12Device* m_device = nullptr;
+        RHITextureRef m_textureRef;
         RHITexture* m_texture = nullptr;
         RHIFormat m_format = RHIFormat::Unknown;
         RHISubresourceRange m_subresourceRange;
@@ -169,6 +174,7 @@ namespace RVX
         // RHIShader interface
         RHIShaderStage GetStage() const override { return m_stage; }
         const std::vector<uint8>& GetBytecode() const override { return m_bytecode; }
+        const char* GetEntryPoint() const { return m_entryPoint.c_str(); }
 
         D3D12_SHADER_BYTECODE GetD3D12Bytecode() const
         {
@@ -178,6 +184,7 @@ namespace RVX
     private:
         RHIShaderStage m_stage = RHIShaderStage::None;
         std::vector<uint8> m_bytecode;
+        std::string m_entryPoint = "main";
     };
 
     // =============================================================================
@@ -197,11 +204,36 @@ namespace RVX
 
         // DX12 Specific
         ID3D12Fence* GetFence() const { return m_fence.Get(); }
+        uint64 AllocateSignalValue();
 
     private:
+        void TrackSubmittedValue(uint64 value);
+
         DX12Device* m_device = nullptr;
         ComPtr<ID3D12Fence> m_fence;
         HANDLE m_event = nullptr;
+        std::atomic<uint64> m_nextSignalValue{1};
+    };
+
+    // =============================================================================
+    // DX12 Acceleration Structure
+    // =============================================================================
+    class DX12AccelerationStructure : public RHIAccelerationStructure
+    {
+    public:
+        DX12AccelerationStructure(DX12Device* device, const RHIAccelerationStructureDesc& desc);
+        ~DX12AccelerationStructure() override = default;
+
+        RHIAccelerationStructureType GetType() const override { return m_desc.type; }
+        uint64 GetSize() const override { return m_desc.size; }
+        uint64 GetGPUVirtualAddress() const override;
+
+        ID3D12Resource* GetResource() const;
+
+    private:
+        DX12Device* m_device = nullptr;
+        RHIAccelerationStructureDesc m_desc;
+        RHIBufferRef m_storageBuffer;
     };
 
     // =============================================================================
@@ -238,6 +270,7 @@ namespace RVX
     RHITextureViewRef CreateDX12TextureView(DX12Device* device, RHITexture* texture, const RHITextureViewDesc& desc);
     RHISamplerRef CreateDX12Sampler(DX12Device* device, const RHISamplerDesc& desc);
     RHIShaderRef CreateDX12Shader(DX12Device* device, const RHIShaderDesc& desc);
+    RHIAccelerationStructureRef CreateDX12AccelerationStructure(DX12Device* device, const RHIAccelerationStructureDesc& desc);
     RHIFenceRef CreateDX12Fence(DX12Device* device, uint64 initialValue);
     void WaitForDX12Fence(DX12Device* device, RHIFence* fence, uint64 value);
 

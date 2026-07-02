@@ -4,6 +4,19 @@
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/ModelResource.h"
 #include "Scene/Actor.h"
+#include "Scene/Components/AnimatorComponent.h"
+#include "Scene/Components/AudioComponent.h"
+#include "Scene/Components/CameraComponent.h"
+#include "Scene/Components/ColliderComponent.h"
+#include "Scene/Components/DecalComponent.h"
+#include "Scene/Components/LODComponent.h"
+#include "Scene/Components/LightComponent.h"
+#include "Scene/Components/LightProbeComponent.h"
+#include "Scene/Components/MeshRendererComponent.h"
+#include "Scene/Components/ReflectionProbeComponent.h"
+#include "Scene/Components/RigidBodyComponent.h"
+#include "Scene/Components/SkeletonComponent.h"
+#include "Scene/Components/SkyboxComponent.h"
 #include "Scene/Components/StaticMeshComponent.h"
 
 #include <utility>
@@ -41,6 +54,35 @@ namespace RVX
 
     void ComponentFactory::RegisterDefaults()
     {
+        RegisterComponentClass<AnimatorComponent>(
+            ComponentClassDesc{"Animator", "Animator", "Animation", false});
+        RegisterComponentClass<AudioComponent>(
+            ComponentClassDesc{"Audio", "Audio", "Audio", true});
+        RegisterComponentClass<CameraComponent>(
+            ComponentClassDesc{"Camera", "Camera", "Rendering", true});
+        RegisterComponentClass<ColliderComponent>(
+            ComponentClassDesc{"Collider", "Collider", "Physics", true});
+        RegisterComponentClass<DecalComponent>(
+            ComponentClassDesc{"Decal", "Decal", "Rendering", true});
+        RegisterComponentClass<LODComponent>(
+            ComponentClassDesc{"LOD", "LOD", "Rendering", false});
+        RegisterComponentClass<LightComponent>(
+            ComponentClassDesc{"Light", "Light", "Rendering", true});
+        RegisterComponentClass<LightProbeComponent>(
+            ComponentClassDesc{"LightProbe", "Light Probe", "Rendering", true});
+        RegisterComponentClass<MeshRendererComponent>(
+            ComponentClassDesc{"MeshRenderer", "Mesh Renderer", "Rendering", true});
+        RegisterComponentClass<ReflectionProbeComponent>(
+            ComponentClassDesc{"ReflectionProbe", "Reflection Probe", "Rendering", true});
+        RegisterComponentClass<RigidBodyComponent>(
+            ComponentClassDesc{"RigidBody", "Rigid Body", "Physics", false});
+        RegisterComponentClass<SkeletonComponent>(
+            ComponentClassDesc{"Skeleton", "Skeleton", "Animation", false});
+        RegisterComponentClass<SkyboxComponent>(
+            ComponentClassDesc{"Skybox", "Skybox", "Rendering", false});
+        RegisterComponentClass<StaticMeshComponent>(
+            ComponentClassDesc{"StaticMeshComponent", "Static Mesh", "Rendering", true});
+
         Register("StaticMesh", [](SceneEntity* entity, const Node* node,
                                     const Resource::ModelResource* model) -> ActorComponent* {
             if (!entity || !node || !model || node->GetMeshIndex() < 0)

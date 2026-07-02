@@ -4,9 +4,24 @@
 
 namespace RVX
 {
+    ShaderCompileService::ShaderCompileService()
+        : ShaderCompileService(Config{})
+    {
+    }
+
     ShaderCompileService::ShaderCompileService(const Config& config)
+        : ShaderCompileService(CreateShaderCompiler(), config)
+    {
+    }
+
+    ShaderCompileService::ShaderCompileService(std::unique_ptr<IShaderCompiler> compiler)
+        : ShaderCompileService(std::move(compiler), Config{})
+    {
+    }
+
+    ShaderCompileService::ShaderCompileService(std::unique_ptr<IShaderCompiler> compiler, const Config& config)
         : m_config(config)
-        , m_compiler(CreateShaderCompiler())
+        , m_compiler(std::move(compiler))
     {
         // Start worker threads
         uint32 workerCount = std::max(1u, config.maxConcurrentCompiles);
@@ -83,7 +98,7 @@ namespace RVX
         {
             std::lock_guard<std::mutex> lock(m_queueMutex);
             CompileRequest request;
-            request.options = options;
+            request.options.Assign(options);
             request.callback = onComplete;
             request.priority = priority;
             request.handle = handle;
@@ -346,7 +361,7 @@ namespace RVX
             
             if (m_compiler)
             {
-                result = m_compiler->Compile(request.options);
+                result = m_compiler->Compile(request.options.Get());
             }
             else
             {

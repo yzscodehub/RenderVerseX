@@ -17,20 +17,22 @@ namespace RVX
          * @brief Get the last completed fence value
          */
         virtual uint64 GetCompletedValue() const = 0;
-        
+
         /**
-         * @brief Signal the fence from CPU (graphics queue by default)
+         * @brief Signal the fence using the backend default signal path.
          * @param value The value to signal
+         * @note Check RHICapabilities before assuming this is a host-only signal or a queue signal.
          */
         virtual void Signal(uint64 value) = 0;
-        
+
         /**
          * @brief Signal the fence on a specific GPU queue
          * @param value The value to signal
          * @param queueType The queue to signal on
+         * @note Only real when RHICapabilities::supportsExplicitQueueFenceSignal is true.
          */
         virtual void SignalOnQueue(uint64 value, RHICommandQueueType queueType) = 0;
-        
+
         /**
          * @brief Wait for the fence to reach a value (CPU wait)
          * @param value The value to wait for

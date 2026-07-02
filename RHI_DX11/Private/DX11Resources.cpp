@@ -1,9 +1,19 @@
 #include "DX11Resources.h"
 #include "DX11Device.h"
 #include "DX11Conversions.h"
+#include "RHI/RHITexture.h"
 
 namespace RVX
 {
+    namespace
+    {
+        bool IsTexture2DArrayViewRequired(const RHITexture& texture)
+        {
+            return texture.GetDimension() == RHITextureDimension::Texture2D &&
+                   GetTexturePhysicalLayerCount(texture) > 1;
+        }
+    } // namespace
+
     // =============================================================================
     // DX11 Buffer Implementation
     // =============================================================================
@@ -17,12 +27,20 @@ namespace RVX
         bufferDesc.BindFlags = ToD3D11BindFlags(desc.usage);
         bufferDesc.CPUAccessFlags = ToD3D11CPUAccessFlags(desc.memoryType);
         bufferDesc.MiscFlags = 0;
-        bufferDesc.StructureByteStride = desc.stride;
+        bufferDesc.StructureByteStride = 0;
+
+        if (desc.memoryType == RHIMemoryType::Upload && bufferDesc.BindFlags == 0)
+        {
+            bufferDesc.Usage = D3D11_USAGE_STAGING;
+            bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
+            m_useStagingUpload = true;
+        }
 
         // Structured buffer needs StructureByteStride and MiscFlags
         if (HasFlag(desc.usage, RHIBufferUsage::Structured) && desc.stride > 0)
         {
             bufferDesc.MiscFlags |= D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+            bufferDesc.StructureByteStride = desc.stride;
         }
 
         // IndirectArgs buffer
@@ -70,6 +88,20 @@ namespace RVX
     {
     }
 
+    DX11Buffer::DX11Buffer(DX11Device* device, ComPtr<ID3D11Buffer> buffer, const RHIBufferDesc& desc)
+        : m_device(device)
+        , m_desc(desc)
+        , m_buffer(buffer)
+    {
+        // Wrap an existing DX11 staging buffer for copy operations without creating a second backing resource.
+        if (desc.memoryType == RHIMemoryType::Upload && !HasFlag(desc.usage, RHIBufferUsage::Constant) &&
+            !HasFlag(desc.usage, RHIBufferUsage::Vertex) && !HasFlag(desc.usage, RHIBufferUsage::Index) &&
+            !HasFlag(desc.usage, RHIBufferUsage::ShaderResource) && !HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess))
+        {
+            m_useStagingUpload = true;
+        }
+    }
+
     void* DX11Buffer::Map()
     {
         if (!m_buffer) return nullptr;
@@ -78,7 +110,7 @@ namespace RVX
         switch (m_desc.memoryType)
         {
             case RHIMemoryType::Upload:
-                mapType = D3D11_MAP_WRITE_DISCARD;
+                mapType = m_useStagingUpload ? D3D11_MAP_READ_WRITE : D3D11_MAP_WRITE_DISCARD;
                 break;
             case RHIMemoryType::Readback:
                 mapType = D3D11_MAP_READ;
@@ -636,19 +668,21 @@ namespace RVX
                               m_format == RHIFormat::D32_FLOAT ||
                               m_format == RHIFormat::D32_FLOAT_S8_UINT);
 
-        RHITextureUsage usage = texture->GetUsage();
         RHITextureDimension dimension = texture->GetDimension();
+        uint32 baseMip = m_subresourceRange.baseMipLevel;
+        uint32 mipCount = (m_subresourceRange.mipLevelCount == 0 || m_subresourceRange.mipLevelCount == RVX_ALL_MIPS)
+            ? texture->GetMipLevels() - baseMip
+            : m_subresourceRange.mipLevelCount;
+        uint32 baseArray = m_subresourceRange.baseArrayLayer;
+        uint32 arraySize = ResolveTextureArrayLayerCount(*texture, m_subresourceRange);
 
-        // Create SRV
-        if (HasFlag(usage, RHITextureUsage::ShaderResource))
+        // Create only the requested native view role. ResourceViewCache keys the
+        // RHI view role separately, so a DSV and SRV for the same texture must
+        // not collapse into one multi-role wrapper.
+        if (desc.type == RHITextureViewType::ShaderResource)
         {
             D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
             srvDesc.Format = isDepthFormat ? GetDepthSRVFormat(viewFormat) : viewFormat;
-
-            uint32 baseMip = m_subresourceRange.baseMipLevel;
-            uint32 mipCount = m_subresourceRange.mipLevelCount;
-            uint32 baseArray = m_subresourceRange.baseArrayLayer;
-            uint32 arraySize = m_subresourceRange.arrayLayerCount;
 
             switch (dimension)
             {
@@ -672,7 +706,7 @@ namespace RVX
                 case RHITextureDimension::Texture2D:
                     if (texture->GetSampleCount() != RHISampleCount::Count1)
                     {
-                        if (arraySize > 1)
+                        if (IsTexture2DArrayViewRequired(*texture))
                         {
                             srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DMSARRAY;
                             srvDesc.Texture2DMSArray.FirstArraySlice = baseArray;
@@ -683,7 +717,7 @@ namespace RVX
                             srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DMS;
                         }
                     }
-                    else if (arraySize > 1)
+                    else if (IsTexture2DArrayViewRequired(*texture))
                     {
                         srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
                         srvDesc.Texture2DArray.MostDetailedMip = baseMip;
@@ -706,7 +740,7 @@ namespace RVX
                     break;
 
                 case RHITextureDimension::TextureCube:
-                    if (texture->GetArraySize() > 1)
+                    if (arraySize > 6)
                     {
                         srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBEARRAY;
                         srvDesc.TextureCubeArray.MostDetailedMip = baseMip;
@@ -731,8 +765,7 @@ namespace RVX
             }
         }
 
-        // Create RTV if render target
-        if (HasFlag(usage, RHITextureUsage::RenderTarget))
+        if (desc.type == RHITextureViewType::RenderTarget)
         {
             D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
             rtvDesc.Format = viewFormat;
@@ -741,17 +774,17 @@ namespace RVX
             {
                 case RHITextureDimension::Texture2D:
                 case RHITextureDimension::TextureCube:
-                    if (m_subresourceRange.arrayLayerCount > 1 || dimension == RHITextureDimension::TextureCube)
+                    if (dimension == RHITextureDimension::TextureCube || IsTexture2DArrayViewRequired(*texture))
                     {
                         rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
-                        rtvDesc.Texture2DArray.MipSlice = m_subresourceRange.baseMipLevel;
-                        rtvDesc.Texture2DArray.FirstArraySlice = m_subresourceRange.baseArrayLayer;
-                        rtvDesc.Texture2DArray.ArraySize = m_subresourceRange.arrayLayerCount;
+                        rtvDesc.Texture2DArray.MipSlice = baseMip;
+                        rtvDesc.Texture2DArray.FirstArraySlice = baseArray;
+                        rtvDesc.Texture2DArray.ArraySize = arraySize;
                     }
                     else
                     {
                         rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-                        rtvDesc.Texture2D.MipSlice = m_subresourceRange.baseMipLevel;
+                        rtvDesc.Texture2D.MipSlice = baseMip;
                     }
                     break;
                 default:
@@ -769,14 +802,7 @@ namespace RVX
                 RVX_RHI_DEBUG("DX11: Created texture view RTV for format {}", static_cast<int>(m_format));
             }
         }
-        else
-        {
-            RVX_RHI_DEBUG("DX11: Skipping RTV creation - texture usage does not include RenderTarget (usage={})", 
-                static_cast<uint32>(usage));
-        }
-
-        // Create DSV if depth stencil
-        if (HasFlag(usage, RHITextureUsage::DepthStencil))
+        if (desc.type == RHITextureViewType::DepthStencil)
         {
             D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
             dsvDesc.Format = viewFormat;
@@ -785,17 +811,30 @@ namespace RVX
             switch (dimension)
             {
                 case RHITextureDimension::Texture2D:
-                    if (m_subresourceRange.arrayLayerCount > 1)
+                    if (texture->GetSampleCount() != RHISampleCount::Count1)
+                    {
+                        if (IsTexture2DArrayViewRequired(*texture))
+                        {
+                            dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DMSARRAY;
+                            dsvDesc.Texture2DMSArray.FirstArraySlice = baseArray;
+                            dsvDesc.Texture2DMSArray.ArraySize = arraySize;
+                        }
+                        else
+                        {
+                            dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DMS;
+                        }
+                    }
+                    else if (IsTexture2DArrayViewRequired(*texture))
                     {
                         dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
-                        dsvDesc.Texture2DArray.MipSlice = m_subresourceRange.baseMipLevel;
-                        dsvDesc.Texture2DArray.FirstArraySlice = m_subresourceRange.baseArrayLayer;
-                        dsvDesc.Texture2DArray.ArraySize = m_subresourceRange.arrayLayerCount;
+                        dsvDesc.Texture2DArray.MipSlice = baseMip;
+                        dsvDesc.Texture2DArray.FirstArraySlice = baseArray;
+                        dsvDesc.Texture2DArray.ArraySize = arraySize;
                     }
                     else
                     {
                         dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
-                        dsvDesc.Texture2D.MipSlice = m_subresourceRange.baseMipLevel;
+                        dsvDesc.Texture2D.MipSlice = baseMip;
                     }
                     break;
                 default:
@@ -810,8 +849,7 @@ namespace RVX
             }
         }
 
-        // Create UAV if unordered access
-        if (HasFlag(usage, RHITextureUsage::UnorderedAccess))
+        if (desc.type == RHITextureViewType::UnorderedAccess)
         {
             D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
             uavDesc.Format = viewFormat;
@@ -820,17 +858,17 @@ namespace RVX
             {
                 case RHITextureDimension::Texture2D:
                 case RHITextureDimension::TextureCube:
-                    if (m_subresourceRange.arrayLayerCount > 1 || dimension == RHITextureDimension::TextureCube)
+                    if (dimension == RHITextureDimension::TextureCube || IsTexture2DArrayViewRequired(*texture))
                     {
                         uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
-                        uavDesc.Texture2DArray.MipSlice = m_subresourceRange.baseMipLevel;
-                        uavDesc.Texture2DArray.FirstArraySlice = m_subresourceRange.baseArrayLayer;
-                        uavDesc.Texture2DArray.ArraySize = m_subresourceRange.arrayLayerCount;
+                        uavDesc.Texture2DArray.MipSlice = baseMip;
+                        uavDesc.Texture2DArray.FirstArraySlice = baseArray;
+                        uavDesc.Texture2DArray.ArraySize = arraySize;
                     }
                     else
                     {
                         uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
-                        uavDesc.Texture2D.MipSlice = m_subresourceRange.baseMipLevel;
+                        uavDesc.Texture2D.MipSlice = baseMip;
                     }
                     break;
 
@@ -973,6 +1011,7 @@ namespace RVX
     DX11Fence::DX11Fence(DX11Device* device, uint64 initialValue)
         : m_device(device)
         , m_value(initialValue)
+        , m_nextSignalValue(initialValue + 1)
     {
         // Try to create ID3D11Fence (Win10+)
         if (auto device5 = device->GetD3DDevice5())
@@ -1017,6 +1056,7 @@ namespace RVX
 
     void DX11Fence::Signal(uint64 value)
     {
+        TrackSubmittedValue(value);
         m_value = value;
         if (m_fence)
         {
@@ -1060,6 +1100,22 @@ namespace RVX
     {
         (void)queueType;  // DX11 only has one queue
         Signal(value);
+    }
+
+    uint64 DX11Fence::AllocateSignalValue()
+    {
+        return m_nextSignalValue.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void DX11Fence::TrackSubmittedValue(uint64 value)
+    {
+        uint64 expected = m_nextSignalValue.load(std::memory_order_relaxed);
+        while (expected <= value &&
+               !m_nextSignalValue.compare_exchange_weak(expected, value + 1,
+                                                        std::memory_order_relaxed,
+                                                        std::memory_order_relaxed))
+        {
+        }
     }
 
     // =============================================================================

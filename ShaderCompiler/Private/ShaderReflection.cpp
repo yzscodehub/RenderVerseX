@@ -43,6 +43,8 @@ namespace RVX
                     return RHIBindingType::Sampler;
                 case SPV_REFLECT_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
                     return RHIBindingType::CombinedTextureSampler;
+                case SPV_REFLECT_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+                    return RHIBindingType::AccelerationStructure;
                 default:
                     return RHIBindingType::UniformBuffer;
             }
@@ -230,9 +232,11 @@ namespace RVX
                     break;
                 case D3D_SIT_UAV_RWSTRUCTURED:
                 case D3D_SIT_UAV_RWBYTEADDRESS:
+                    res.type = RHIBindingType::StorageBuffer;
+                    break;
                 case D3D_SIT_STRUCTURED:
                 case D3D_SIT_BYTEADDRESS:
-                    res.type = RHIBindingType::StorageBuffer;
+                    res.type = RHIBindingType::ShaderResourceBuffer;
                     break;
                 default:
                     res.type = RHIBindingType::UniformBuffer;
@@ -326,9 +330,11 @@ namespace RVX
                     break;
                 case D3D_SIT_UAV_RWSTRUCTURED:
                 case D3D_SIT_UAV_RWBYTEADDRESS:
+                    res.type = RHIBindingType::StorageBuffer;
+                    break;
                 case D3D_SIT_STRUCTURED:
                 case D3D_SIT_BYTEADDRESS:
-                    res.type = RHIBindingType::StorageBuffer;
+                    res.type = RHIBindingType::ShaderResourceBuffer;
                     break;
                 default:
                     res.type = RHIBindingType::UniformBuffer;

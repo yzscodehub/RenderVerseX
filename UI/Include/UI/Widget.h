@@ -6,9 +6,10 @@
 #pragma once
 
 #include "UI/UITypes.h"
+
 #include <memory>
-#include <vector>
 #include <string>
+#include <vector>
 
 namespace RVX::UI
 {
@@ -41,6 +42,13 @@ public:
     uint64 GetId() const { return m_id; }
 
     virtual const char* GetTypeName() const { return "Widget"; }
+
+    // =========================================================================
+    // Metadata
+    // =========================================================================
+
+    const std::string& GetTooltipText() const { return m_tooltipText; }
+    void SetTooltipText(const std::string& text) { m_tooltipText = text; }
 
     // =========================================================================
     // Hierarchy
@@ -114,6 +122,9 @@ public:
     bool IsInteractive() const { return m_interactive; }
     void SetInteractive(bool interactive) { m_interactive = interactive; }
 
+    bool IsTabStop() const { return m_tabStop; }
+    void SetTabStop(bool tabStop) { m_tabStop = tabStop; }
+
     bool IsFocused() const { return m_focused; }
     void Focus();
     void Blur();
@@ -150,13 +161,14 @@ public:
     // =========================================================================
 
     virtual bool HandleEvent(const UIEvent& event);
-    Widget* HitTest(const Vec2& point);
+    virtual Widget* HitTest(const Vec2& point);
 
 protected:
     virtual void OnRender(UIRenderer& renderer);
     virtual void OnLayoutChildren();
 
     std::string m_name;
+    std::string m_tooltipText;
     uint64 m_id = 0;
     
     Widget* m_parent = nullptr;
@@ -171,6 +183,7 @@ protected:
     Visibility m_visibility = Visibility::Visible;
 
     bool m_interactive = true;
+    bool m_tabStop = false;
     bool m_focused = false;
     bool m_hovered = false;
     bool m_pressed = false;

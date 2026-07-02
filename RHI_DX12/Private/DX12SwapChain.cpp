@@ -116,6 +116,7 @@ namespace RVX
             // Create view for the back buffer
             RHITextureViewDesc viewDesc;
             viewDesc.format = m_format;
+            viewDesc.type = RHITextureViewType::RenderTarget;
             m_backBufferViews[i] = m_device->CreateTextureView(m_backBuffers[i].Get(), viewDesc);
         }
     }

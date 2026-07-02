@@ -20,7 +20,7 @@ namespace RVX
         DX11DescriptorSetLayout(DX11Device* device, const RHIDescriptorSetLayoutDesc& desc);
         ~DX11DescriptorSetLayout() override;
 
-        const std::vector<RHIBindingLayoutEntry>& GetEntries() const { return m_entries; }
+        const std::vector<RHIBindingLayoutEntry>& GetEntries() const override { return m_entries; }
 
     private:
         std::vector<RHIBindingLayoutEntry> m_entries;
@@ -54,7 +54,7 @@ namespace RVX
         DX11DescriptorSet(DX11Device* device, const RHIDescriptorSetDesc& desc);
         ~DX11DescriptorSet() override;
 
-        void Update(const std::vector<RHIDescriptorBinding>& bindings) override;
+        bool Update(const std::vector<RHIDescriptorBinding>& bindings) override;
 
         // Apply bindings to context
         // setIndex is used for slot remapping when using multiple descriptor sets

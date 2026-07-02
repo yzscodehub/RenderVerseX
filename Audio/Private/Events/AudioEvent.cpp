@@ -155,6 +155,7 @@ AudioPlaySettings AudioEvent::GenerateSettings() const
 
     settings.loop = m_desc.loop;
     settings.fadeInTime = m_desc.fadeInTime;
+    settings.busId = m_desc.targetBus;
 
     return settings;
 }

@@ -35,6 +35,11 @@ namespace RVX
         }
     }
 
+    ShaderCacheManager::ShaderCacheManager()
+        : ShaderCacheManager(Config{})
+    {
+    }
+
     ShaderCacheManager::ShaderCacheManager(const Config& config)
         : m_config(config)
     {
@@ -60,13 +65,31 @@ namespace RVX
         // Try memory cache first
         if (m_config.enableMemoryCache)
         {
-            std::shared_lock<std::shared_mutex> lock(m_cacheMutex);
-            auto it = m_memoryCache.find(key);
-            if (it != m_memoryCache.end())
+            std::optional<ShaderCacheEntry> memoryEntry;
             {
+                std::shared_lock<std::shared_mutex> lock(m_cacheMutex);
+                auto it = m_memoryCache.find(key);
+                if (it != m_memoryCache.end())
+                {
+                    memoryEntry = it->second;
+                }
+            }
+
+            if (memoryEntry)
+            {
+                if (m_config.validateOnLoad && !memoryEntry->sourceInfo.IsEmpty() &&
+                    memoryEntry->sourceInfo.HasChanged())
+                {
+                    RVX_CORE_DEBUG("ShaderCacheManager: Memory cache invalidated due to source changes: {:016X}", key);
+                    Invalidate(key);
+                    std::lock_guard<std::mutex> statsLock(m_statsMutex);
+                    m_stats.misses++;
+                    return std::nullopt;
+                }
+
                 std::lock_guard<std::mutex> statsLock(m_statsMutex);
                 m_stats.memoryHits++;
-                return it->second;
+                return memoryEntry;
             }
         }
 
@@ -401,6 +424,7 @@ namespace RVX
         // Build header
         ShaderCacheHeader header;
         header.timestamp = GetCurrentTimestamp();
+        header.compilerVersion = RVX_SHADER_COMPILER_CACHE_ABI_VERSION;
         header.backend = entry.backend;
         header.stage = entry.stage;
 
@@ -463,6 +487,11 @@ namespace RVX
         }
 
         if (header.version > RVX_SHADER_CACHE_VERSION)
+        {
+            return false;
+        }
+
+        if (header.compilerVersion != RVX_SHADER_COMPILER_CACHE_ABI_VERSION)
         {
             return false;
         }

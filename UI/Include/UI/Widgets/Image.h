@@ -6,12 +6,16 @@
 #pragma once
 
 #include "UI/Widget.h"
+
 #include <algorithm>
+
+namespace RVX
+{
+    class RHITextureView;
+}
 
 namespace RVX::UI
 {
-
-class RHITexture;
 
 /**
  * @brief Image display mode
@@ -44,7 +48,7 @@ class Image : public Widget
 public:
     using Ptr = std::shared_ptr<Image>;
 
-    Image() = default;
+    Image() { SetInteractive(false); }
 
     const char* GetTypeName() const override { return "Image"; }
 
@@ -52,8 +56,11 @@ public:
     // Texture
     // =========================================================================
 
-    void SetTexture(std::shared_ptr<RHITexture> texture) { m_texture = texture; }
-    std::shared_ptr<RHITexture> GetTexture() const { return m_texture; }
+    void SetTextureView(RHITextureView* textureView) { m_textureView = textureView; }
+    RHITextureView* GetTextureView() const { return m_textureView; }
+
+    void SetTexture(RHITextureView* textureView) { SetTextureView(textureView); }
+    RHITextureView* GetTexture() const { return GetTextureView(); }
 
     // =========================================================================
     // Display Mode
@@ -113,7 +120,7 @@ protected:
     void OnRender(UIRenderer& renderer) override;
 
 private:
-    std::shared_ptr<RHITexture> m_texture;
+    RHITextureView* m_textureView = nullptr;
     ImageMode m_mode = ImageMode::Simple;
     UIColor m_color = UIColor::White();
     Rect m_uvRect = Rect(0, 0, 1, 1);

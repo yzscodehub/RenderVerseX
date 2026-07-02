@@ -5,6 +5,7 @@
 
 #include "Audio/Spatial/AudioZoneManager.h"
 #include "Audio/AudioEngine.h"
+#include "Audio/Mixer/AudioBus.h"
 #include "Core/Log.h"
 #include <algorithm>
 
@@ -139,8 +140,11 @@ AudioZone* AudioZoneManager::GetPrimaryZone()
 ReverbSettings AudioZoneManager::GetBlendedReverbSettings() const
 {
     ReverbSettings result;
+    result.roomSize = 0.0f;
+    result.damping = 0.0f;
     result.wetLevel = 0.0f;
-    result.dryLevel = 1.0f;
+    result.dryLevel = 0.0f;
+    result.width = 0.0f;
 
     float totalWeight = 0.0f;
 
@@ -168,6 +172,12 @@ ReverbSettings AudioZoneManager::GetBlendedReverbSettings() const
         result.wetLevel /= totalWeight;
         result.dryLevel /= totalWeight;
         result.width /= totalWeight;
+    }
+    else
+    {
+        result = ReverbSettings{};
+        result.wetLevel = 0.0f;
+        result.dryLevel = 1.0f;
     }
 
     return result;
@@ -306,6 +316,7 @@ void AudioZoneManager::UpdateAmbientSounds()
                 AudioPlaySettings settings;
                 settings.volume = az.blendWeight * az.zone->GetAmbientVolume();
                 settings.loop = true;
+                settings.busId = BusId::Ambient;
 
                 auto handle = m_engine->Play(ambientClip, settings);
                 m_ambientHandles[zoneName] = handle;
@@ -341,6 +352,11 @@ void AudioZoneManager::UpdateEffects()
     m_reverbEffect.SetParameter("dryLevel", blended.dryLevel);
     m_reverbEffect.SetParameter("width", blended.width);
 
+    if (m_engine)
+    {
+        m_engine->SetBusReverb(BusId::Ambient, blended, blended.wetLevel > 0.0f);
+    }
+
     // Update low-pass from active zones
     float minCutoff = 20000.0f;
     for (const auto& az : m_activeZones)
@@ -355,6 +371,11 @@ void AudioZoneManager::UpdateEffects()
 
     m_lowPassEffect.SetParameter("cutoff", minCutoff);
     m_lowPassEffect.SetEnabled(minCutoff < 20000.0f);
+
+    if (m_engine)
+    {
+        m_engine->SetBusLowPassCutoff(BusId::Ambient, minCutoff);
+    }
 }
 
 } // namespace RVX::Audio

@@ -145,16 +145,20 @@ namespace RVX
     // =============================================================================
     enum class RHIBufferUsage : uint32
     {
-        None            = 0,
-        Vertex          = 1 << 0,
-        Index           = 1 << 1,
-        Constant        = 1 << 2,
-        Structured      = 1 << 3,
-        IndirectArgs    = 1 << 4,
-        ShaderResource  = 1 << 5,
-        UnorderedAccess = 1 << 6,
-        CopySrc         = 1 << 7,
-        CopyDst         = 1 << 8,
+        None                         = 0,
+        Vertex                       = 1 << 0,
+        Index                        = 1 << 1,
+        Constant                     = 1 << 2,
+        Structured                   = 1 << 3,
+        IndirectArgs                 = 1 << 4,
+        ShaderResource               = 1 << 5,
+        UnorderedAccess              = 1 << 6,
+        CopySrc                      = 1 << 7,
+        CopyDst                      = 1 << 8,
+        DeviceAddress                = 1 << 9,
+        AccelerationStructureStorage = 1 << 10,
+        AccelerationStructureInput   = 1 << 11,
+        ShaderBindingTable           = 1 << 12,
     };
 
     inline RHIBufferUsage operator|(RHIBufferUsage a, RHIBufferUsage b)
@@ -251,6 +255,10 @@ namespace RVX
         CopySource,
         Present,
         IndirectArgument,
+        AccelerationStructureBuildRead,
+        AccelerationStructureBuildWrite,
+        AccelerationStructureRead,
+        ShaderBindingTable,
     };
 
     // =============================================================================
@@ -267,9 +275,16 @@ namespace RVX
         Compute      = 1 << 5,
         Mesh         = 1 << 6,  // DX12 Mesh Shader
         Amplification = 1 << 7,  // DX12 Amplification Shader
+        RayGeneration = 1 << 8,
+        AnyHit        = 1 << 9,
+        ClosestHit    = 1 << 10,
+        Miss          = 1 << 11,
+        Intersection  = 1 << 12,
+        Callable      = 1 << 13,
 
         AllGraphics = Vertex | Hull | Domain | Geometry | Pixel | Mesh | Amplification,
-        All         = AllGraphics | Compute,
+        AllRayTracing = RayGeneration | AnyHit | ClosestHit | Miss | Intersection | Callable,
+        All         = AllGraphics | Compute | AllRayTracing,
     };
 
     inline RHIShaderStage operator|(RHIShaderStage a, RHIShaderStage b)
@@ -322,6 +337,8 @@ namespace RVX
         StorageTexture,
         Sampler,
         CombinedTextureSampler,
+        ShaderResourceBuffer,
+        AccelerationStructure,
     };
 
     // =============================================================================

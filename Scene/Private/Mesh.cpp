@@ -3,6 +3,41 @@
 
 namespace RVX
 {
+    namespace
+    {
+        constexpr float RVX_TANGENT_EPSILON = 1.0e-8f;
+
+        bool IsFiniteVec3(const Vec3& value)
+        {
+            return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+        }
+
+        Vec3 NormalizeOr(const Vec3& value, const Vec3& fallback)
+        {
+            if (!IsFiniteVec3(value))
+            {
+                return fallback;
+            }
+
+            const float lengthSq = dot(value, value);
+            if (!std::isfinite(lengthSq) || lengthSq <= RVX_TANGENT_EPSILON)
+            {
+                return fallback;
+            }
+
+            const Vec3 normalized = normalize(value);
+            return IsFiniteVec3(normalized) ? normalized : fallback;
+        }
+
+        Vec3 BuildFallbackTangent(const Vec3& normal)
+        {
+            const Vec3 n = NormalizeOr(normal, Vec3(0.0f, 0.0f, 1.0f));
+            const Vec3 axis = std::abs(n.z) < 0.999f ? Vec3(0.0f, 0.0f, 1.0f)
+                                                     : Vec3(0.0f, 1.0f, 0.0f);
+            return NormalizeOr(cross(axis, n), Vec3(1.0f, 0.0f, 0.0f));
+        }
+    } // namespace
+
     // =========================================================================
     // Mesh Implementation
     // =========================================================================
@@ -136,10 +171,15 @@ namespace RVX
         if (!posAttr) return;
 
         const float* positions = static_cast<const float*>(posAttr->GetData());
-        std::vector<uint32_t> indices = GetTypedIndices<uint32_t>();
-        
+        std::vector<uint32_t> indices = GetIndices32();
+
         for (auto& sm : m_subMeshes)
         {
+            if (sm.indexOffset + sm.indexCount > indices.size())
+            {
+                continue;
+            }
+
             BoundingBox bounds;
             for (uint32_t i = 0; i < sm.indexCount; ++i)
             {
@@ -175,7 +215,7 @@ namespace RVX
             positions.emplace_back(data[i * 3], data[i * 3 + 1], data[i * 3 + 2]);
         }
 
-        std::vector<uint32_t> indices = GetTypedIndices<uint32_t>();
+        std::vector<uint32_t> indices = GetIndices32();
         std::vector<Vec3> normals = ComputeVertexNormalsTriList(positions, indices);
         
         if (normals.empty())
@@ -193,8 +233,9 @@ namespace RVX
         const VertexAttribute* posAttr = GetAttribute(VertexBufferNames::Position);
         const VertexAttribute* normAttr = GetAttribute(VertexBufferNames::Normal);
         const VertexAttribute* uvAttr = GetAttribute(VertexBufferNames::UV);
-        
-        if (!posAttr || !normAttr || !uvAttr || m_indexCount == 0)
+
+        if (!posAttr || !normAttr || !uvAttr || m_indexCount == 0 ||
+            m_primitiveType != PrimitiveType::Triangles)
         {
             return false;
         }
@@ -206,14 +247,19 @@ namespace RVX
         const float* positions = static_cast<const float*>(posAttr->GetData());
         const float* normals = static_cast<const float*>(normAttr->GetData());
         const float* uvs = static_cast<const float*>(uvAttr->GetData());
-        std::vector<uint32_t> indices = GetTypedIndices<uint32_t>();
+        std::vector<uint32_t> indices = GetIndices32();
 
         // Compute tangents per triangle
-        for (size_t i = 0; i + 2 < m_indexCount; i += 3)
+        for (size_t i = 0; i + 2 < indices.size(); i += 3)
         {
             uint32_t i0 = indices[i];
             uint32_t i1 = indices[i + 1];
             uint32_t i2 = indices[i + 2];
+
+            if (i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount)
+            {
+                continue;
+            }
 
             Vec3 v0(positions[i0 * 3], positions[i0 * 3 + 1], positions[i0 * 3 + 2]);
             Vec3 v1(positions[i1 * 3], positions[i1 * 3 + 1], positions[i1 * 3 + 2]);
@@ -247,15 +293,22 @@ namespace RVX
         std::vector<Vec4> finalTangents(vertexCount);
         for (size_t i = 0; i < vertexCount; ++i)
         {
-            Vec3 n(normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]);
+            Vec3 n = NormalizeOr(Vec3(normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]),
+                                 Vec3(0.0f, 0.0f, 1.0f));
             Vec3 t = tangents[i];
-            
+
             // Gram-Schmidt orthogonalize
-            t = normalize(t - n * dot(n, t));
-            
+            t = t - n * dot(n, t);
+            t = NormalizeOr(t, BuildFallbackTangent(n));
+
             // Calculate handedness
-            float w = (dot(cross(n, t), bitangents[i]) < 0.0f) ? -1.0f : 1.0f;
-            
+            const Vec3 bitangent = bitangents[i];
+            float w = 1.0f;
+            if (IsFiniteVec3(bitangent) && dot(bitangent, bitangent) > RVX_TANGENT_EPSILON)
+            {
+                w = (dot(cross(n, t), bitangent) < 0.0f) ? -1.0f : 1.0f;
+            }
+
             finalTangents[i] = Vec4(t.x, t.y, t.z, w);
         }
 

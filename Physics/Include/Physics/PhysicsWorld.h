@@ -5,12 +5,14 @@
 
 #pragma once
 
+#include "Physics/Backend/IPhysicsBackend.h"
 #include "Physics/PhysicsTypes.h"
 #include "Physics/RigidBody.h"
 #include <functional>
 #include <memory>
-#include <vector>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace RVX::Physics
 {
@@ -24,6 +26,7 @@ using Constraint = IConstraint;  // Alias for compatibility
  */
 struct PhysicsWorldConfig
 {
+    PhysicsBackendType backend = PhysicsBackendType::Auto;
     Vec3 gravity{0.0f, -9.81f, 0.0f};
     uint32 maxBodies = 65536;
     uint32 maxBodyPairs = 65536;
@@ -31,6 +34,9 @@ struct PhysicsWorldConfig
     int velocitySteps = 10;
     int positionSteps = 2;
     float fixedTimeStep = 1.0f / 60.0f;
+    uint32 maxSubSteps = 4;
+    float sleepVelocityThreshold = 0.1f;
+    float sleepTimeThreshold = 0.5f;
 };
 
 /**
@@ -113,12 +119,18 @@ public:
      * @brief Get current time step
      */
     float GetTimeStep() const { return m_config.fixedTimeStep; }
+    uint32 GetLastStepCount() const { return m_lastStepCount; }
+    float GetAccumulatedTime() const { return m_accumulatedTime; }
 
     /**
      * @brief Set gravity
      */
     void SetGravity(const Vec3& gravity);
     Vec3 GetGravity() const { return m_config.gravity; }
+    PhysicsBackendType GetRequestedBackendType() const { return m_requestedBackend; }
+    PhysicsBackendType GetActiveBackendType() const { return m_activeBackend; }
+    const char* GetActiveBackendName() const;
+    bool IsBackendFallbackActive() const { return m_backendFallbackActive; }
 
     // =========================================================================
     // Body Management
@@ -144,6 +156,7 @@ public:
      */
     RigidBody* GetBody(BodyHandle handle);
     const RigidBody* GetBody(BodyHandle handle) const;
+    std::shared_ptr<RigidBody> GetBodyRef(BodyHandle handle) const;
 
     // =========================================================================
     // Body Properties (convenience methods)
@@ -189,9 +202,20 @@ public:
      */
     void DestroyConstraint(uint64 constraintId);
 
+    /**
+     * @brief Get active constraint count
+     */
+    size_t GetConstraintCount() const { return m_constraints.size(); }
     // =========================================================================
     // Queries
     // =========================================================================
+
+    struct QueryStats
+    {
+        size_t broadphaseNodeVisits = 0;
+        size_t broadphaseCandidateCount = 0;
+        size_t narrowphaseTestCount = 0;
+    };
 
     /**
      * @brief Cast a ray into the world
@@ -222,6 +246,29 @@ public:
      */
     size_t OverlapSphere(const Vec3& center, float radius,
                          std::vector<BodyHandle>& bodies, uint32 layerMask = 0xFFFFFFFF) const;
+
+    /**
+     * @brief Check for bodies overlapping an axis-aligned box
+     */
+    size_t OverlapBox(const Vec3& center, const Vec3& halfExtents,
+                      std::vector<BodyHandle>& bodies, uint32 layerMask = 0xFFFFFFFF) const;
+
+    /**
+     * @brief Check for bodies overlapping an oriented box
+     */
+    size_t OverlapBox(const Vec3& center, const Vec3& halfExtents, const Quat& rotation,
+                      std::vector<BodyHandle>& bodies, uint32 layerMask = 0xFFFFFFFF) const;
+
+    /**
+     * @brief Check for bodies overlapping a capsule segment
+     */
+    size_t OverlapCapsule(const Vec3& pointA, const Vec3& pointB, float radius,
+                          std::vector<BodyHandle>& bodies, uint32 layerMask = 0xFFFFFFFF) const;
+
+    /**
+     * @brief Get diagnostic counters for the last physics query
+     */
+    const QueryStats& GetLastQueryStats() const { return m_lastQueryStats; }
 
     // =========================================================================
     // Callbacks
@@ -263,8 +310,9 @@ public:
     /**
      * @brief Get debug draw data
      */
+    void GetDebugDrawData(std::vector<Vec3>& lines, std::vector<Vec4>& colors) const;
     void GetDebugDrawData(std::vector<Vec3>& lines, std::vector<Vec4>& colors,
-                          const DebugDrawOptions& options = {}) const;
+                          const DebugDrawOptions& options) const;
 
 private:
     // =========================================================================
@@ -279,7 +327,56 @@ private:
     /**
      * @brief Update body sleep states
      */
-    void UpdateSleepStates();
+    void UpdateSleepStates(float deltaTime);
+
+    /**
+     * @brief Resolve built-in AABB contacts for dynamic bodies
+     */
+    void ResolveBodyCollisions();
+
+    /**
+     * @brief Sweep a linear-cast body through the current body AABBs
+     */
+    bool TryLinearCastBody(const RigidBody& movingBody,
+                           const Vec3& displacement,
+                           float& hitFraction,
+                           Vec3& hitNormal) const;
+
+    /**
+     * @brief Mark constraints broken when applied force exceeds their threshold
+     */
+    void UpdateConstraintBreakage(float deltaTime);
+
+    /**
+     * @brief Update collision and trigger enter/exit callbacks
+     */
+    void UpdateCollisionEvents();
+
+    /**
+     * @brief Remove cached collision pairs containing a body id
+     */
+    void RemoveActivePairsForBody(uint64 bodyId);
+
+    struct BodyPairKey
+    {
+        uint64 bodyA = 0;
+        uint64 bodyB = 0;
+
+        bool operator==(const BodyPairKey& other) const
+        {
+            return bodyA == other.bodyA && bodyB == other.bodyB;
+        }
+    };
+
+    struct BodyPairKeyHash
+    {
+        size_t operator()(const BodyPairKey& key) const
+        {
+            const size_t hashA = std::hash<uint64>{}(key.bodyA);
+            const size_t hashB = std::hash<uint64>{}(key.bodyB);
+            return hashA ^ (hashB + 0x9e3779b9u + (hashA << 6u) + (hashA >> 2u));
+        }
+    };
 
     // =========================================================================
     // Data Members
@@ -288,7 +385,7 @@ private:
     PhysicsWorldConfig m_config;
     bool m_initialized = false;
 
-    std::vector<std::unique_ptr<RigidBody>> m_bodies;
+    std::vector<std::shared_ptr<RigidBody>> m_bodies;
     std::unordered_map<uint64, size_t> m_bodyLookup;
     uint64 m_nextBodyId = 1;
 
@@ -296,14 +393,19 @@ private:
     uint64 m_nextConstraintId = 1;
 
     float m_accumulatedTime = 0.0f;
+    uint32 m_lastStepCount = 0;
 
     CollisionCallback m_onCollisionEnter;
     CollisionCallback m_onCollisionExit;
     CollisionCallback m_onTriggerEnter;
     CollisionCallback m_onTriggerExit;
+    std::unordered_set<BodyPairKey, BodyPairKeyHash> m_activeCollisionPairs;
+    mutable QueryStats m_lastQueryStats;
 
-    // Backend-specific implementation pointer
-    void* m_backendData = nullptr;
+    IPhysicsBackend::Ptr m_backend;
+    PhysicsBackendType m_requestedBackend = PhysicsBackendType::Auto;
+    PhysicsBackendType m_activeBackend = PhysicsBackendType::BuiltIn;
+    bool m_backendFallbackActive = false;
 };
 
 } // namespace RVX::Physics

@@ -1,160 +1,321 @@
 #include "Core/Core.h"
 #include "RHI/RHI.h"
-#include "TestFramework/TestRunner.h"
+#include "Common/GpuTestUtils.h"
+#include "ShaderCompiler/ShaderCompiler.h"
+#include "DX11Device.h"
+#include "DX11Resources.h"
+
+#include <gtest/gtest.h>
+
+#include <cstring>
+#include <vector>
 
 using namespace RVX;
-using namespace RVX::Test;
 
 // =============================================================================
 // DX11 Validation Tests
 // =============================================================================
 
-bool Test_DeviceCreation()
+TEST(DX11Validation, DeviceCreation)
 {
     RHIDeviceDesc desc;
     desc.enableDebugLayer = true;
-    
+
     auto device = CreateRHIDevice(RHIBackendType::DX11, desc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    TEST_ASSERT_EQ(device->GetBackendType(), RHIBackendType::DX11);
-    
-    return true;
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+    EXPECT_EQ(device->GetBackendType(), RHIBackendType::DX11);
 }
 
-bool Test_Capabilities()
+TEST(DX11Validation, Capabilities)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
     const auto& caps = device->GetCapabilities();
-    
+
     // DX11 should NOT support bindless or raytracing
-    TEST_ASSERT_FALSE(caps.supportsBindless);
-    TEST_ASSERT_FALSE(caps.supportsRaytracing);
-    
+    EXPECT_FALSE(caps.supportsBindless);
+    EXPECT_FALSE(caps.supportsRaytracing);
+
     // Should have an adapter name
-    TEST_ASSERT_FALSE(caps.adapterName.empty());
-    
+    EXPECT_FALSE(caps.adapterName.empty());
+
     RVX_CORE_INFO("DX11 Adapter: {}", caps.adapterName);
-    
-    return true;
 }
 
-bool Test_BufferCreation()
+TEST(DX11Validation, BufferCreation)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 1024;
     bufferDesc.usage = RHIBufferUsage::Vertex;
     bufferDesc.memoryType = RHIMemoryType::Default;
     bufferDesc.debugName = "TestVertexBuffer";
-    
+
     auto buffer = device->CreateBuffer(bufferDesc);
-    TEST_ASSERT_NOT_NULL(buffer.Get());
-    TEST_ASSERT_EQ(buffer->GetSize(), 1024u);
-    
-    return true;
+    ASSERT_NE(nullptr, buffer.Get());
+    EXPECT_EQ(buffer->GetSize(), 1024u);
 }
 
-bool Test_UploadBuffer()
+TEST(DX11Validation, VertexBufferCreationAllowsInputAssemblerStride)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 36;
+    bufferDesc.usage = RHIBufferUsage::Vertex;
+    bufferDesc.memoryType = RHIMemoryType::Default;
+    bufferDesc.stride = 12;
+    bufferDesc.debugName = "TestVertexBufferWithStride";
+
+    auto buffer = device->CreateBuffer(bufferDesc);
+    ASSERT_NE(nullptr, buffer.Get());
+    EXPECT_EQ(buffer->GetStride(), 12u);
+}
+
+TEST(DX11Validation, RegisterSpaceShaderIsRuntimeCompatible)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    const char* source = R"(
+cbuffer Camera : register(b0, space0)
+{
+    float4x4 gViewProjection;
+};
+
+struct VSInput
+{
+    float3 position : POSITION;
+};
+
+struct VSOutput
+{
+    float4 position : SV_POSITION;
+};
+
+VSOutput main(VSInput input)
+{
+    VSOutput output;
+    output.position = mul(gViewProjection, float4(input.position, 1.0));
+    return output;
+}
+)";
+
+    auto compiler = CreateShaderCompiler();
+    ASSERT_NE(nullptr, compiler);
+
+    ShaderCompileOptions options;
+    options.stage = RHIShaderStage::Vertex;
+    options.entryPoint = "main";
+    options.sourceCode = source;
+    options.sourcePath = "DX11RegisterSpaceRuntimeTest.hlsl";
+    options.targetBackend = RHIBackendType::DX11;
+    options.enableOptimization = false;
+
+    ShaderCompileResult result = compiler->Compile(options);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    ASSERT_FALSE(result.bytecode.empty());
+
+    RHIShaderDesc shaderDesc;
+    shaderDesc.stage = RHIShaderStage::Vertex;
+    shaderDesc.bytecode = result.bytecode.data();
+    shaderDesc.bytecodeSize = result.bytecode.size();
+    shaderDesc.debugName = "DX11RegisterSpaceRuntimeShader";
+
+    auto shader = device->CreateShader(shaderDesc);
+    ASSERT_NE(nullptr, shader.Get());
+}
+
+TEST(DX11Validation, UploadBuffer)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 256;
     bufferDesc.usage = RHIBufferUsage::Constant;
     bufferDesc.memoryType = RHIMemoryType::Upload;
     bufferDesc.debugName = "TestUploadBuffer";
-    
+
     auto buffer = device->CreateBuffer(bufferDesc);
-    TEST_ASSERT_NOT_NULL(buffer.Get());
-    
+    ASSERT_NE(nullptr, buffer.Get());
+
     void* mappedData = buffer->Map();
-    TEST_ASSERT_NOT_NULL(mappedData);
-    
+    ASSERT_NE(nullptr, mappedData);
+
     float testData[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     std::memcpy(mappedData, testData, sizeof(testData));
     buffer->Unmap();
-    
-    return true;
 }
 
-bool Test_TextureCreation()
+TEST(DX11Validation, UploadCopySourceBufferMaps)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 16;
+    bufferDesc.usage = RHIBufferUsage::CopySrc;
+    bufferDesc.memoryType = RHIMemoryType::Upload;
+    bufferDesc.debugName = "TestUploadCopySourceBuffer";
+
+    auto buffer = device->CreateBuffer(bufferDesc);
+    ASSERT_NE(nullptr, buffer.Get());
+
+    void* mappedData = buffer->Map();
+    ASSERT_NE(nullptr, mappedData);
+
+    uint32 testData[4] = {0xFFFFFFFFu, 0x8080FFFFu, 0x000000FFu, 0x12345678u};
+    std::memcpy(mappedData, testData, sizeof(testData));
+    buffer->Unmap();
+}
+
+TEST(DX11Validation, TextureCreation)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
     auto textureDesc = RHITextureDesc::Texture2D(512, 512, RHIFormat::RGBA8_UNORM);
     textureDesc.debugName = "TestTexture";
     auto texture = device->CreateTexture(textureDesc);
-    TEST_ASSERT_NOT_NULL(texture.Get());
-    TEST_ASSERT_EQ(texture->GetWidth(), 512u);
-    TEST_ASSERT_EQ(texture->GetHeight(), 512u);
-    
-    return true;
+    ASSERT_NE(nullptr, texture.Get());
+    EXPECT_EQ(texture->GetWidth(), 512u);
+    EXPECT_EQ(texture->GetHeight(), 512u);
 }
 
-bool Test_RenderTargetTexture()
+TEST(DX11Validation, RenderTargetTexture)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
     auto textureDesc = RHITextureDesc::RenderTarget(1920, 1080, RHIFormat::RGBA16_FLOAT);
     textureDesc.debugName = "TestRenderTarget";
     auto texture = device->CreateTexture(textureDesc);
-    TEST_ASSERT_NOT_NULL(texture.Get());
-    TEST_ASSERT_TRUE(HasFlag(texture->GetUsage(), RHITextureUsage::RenderTarget));
-    
-    return true;
+    ASSERT_NE(nullptr, texture.Get());
+    EXPECT_TRUE(HasFlag(texture->GetUsage(), RHITextureUsage::RenderTarget));
 }
 
-bool Test_DepthStencilTexture()
+TEST(DX11Validation, DepthStencilTexture)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
     auto textureDesc = RHITextureDesc::DepthStencil(1920, 1080, RHIFormat::D24_UNORM_S8_UINT);
     textureDesc.debugName = "TestDepthStencil";
     auto texture = device->CreateTexture(textureDesc);
-    TEST_ASSERT_NOT_NULL(texture.Get());
-    TEST_ASSERT_TRUE(HasFlag(texture->GetUsage(), RHITextureUsage::DepthStencil));
-    
-    return true;
+    ASSERT_NE(nullptr, texture.Get());
+    EXPECT_TRUE(HasFlag(texture->GetUsage(), RHITextureUsage::DepthStencil));
 }
 
-bool Test_TextureView()
+TEST(DX11Validation, TextureView)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
     auto textureDesc = RHITextureDesc::Texture2D(256, 256, RHIFormat::RGBA8_UNORM);
     auto texture = device->CreateTexture(textureDesc);
-    TEST_ASSERT_NOT_NULL(texture.Get());
-    
+    ASSERT_NE(nullptr, texture.Get());
+
     RHITextureViewDesc viewDesc;
     viewDesc.format = RHIFormat::RGBA8_UNORM;
     auto view = device->CreateTextureView(texture.Get(), viewDesc);
-    TEST_ASSERT_NOT_NULL(view.Get());
-    
-    return true;
+    ASSERT_NE(nullptr, view.Get());
 }
 
-bool Test_Sampler()
+TEST(DX11Validation, TextureViewRolesAreExplicit)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    auto sampledTextureDesc = RHITextureDesc::Texture2D(64, 64, RHIFormat::RGBA8_UNORM);
+    auto sampledTexture = device->CreateTexture(sampledTextureDesc);
+    ASSERT_NE(nullptr, sampledTexture.Get());
+
+    RHITextureViewDesc sampledViewDesc;
+    sampledViewDesc.format = RHIFormat::RGBA8_UNORM;
+    sampledViewDesc.type = RHITextureViewType::ShaderResource;
+    auto sampledView = device->CreateTextureView(sampledTexture.Get(), sampledViewDesc);
+    ASSERT_NE(nullptr, sampledView.Get());
+
+    RHITextureViewDesc invalidRTVDesc = sampledViewDesc;
+    invalidRTVDesc.type = RHITextureViewType::RenderTarget;
+    EXPECT_EQ(nullptr, device->CreateTextureView(sampledTexture.Get(), invalidRTVDesc).Get());
+
+    auto renderTargetDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
+    auto renderTarget = device->CreateTexture(renderTargetDesc);
+    ASSERT_NE(nullptr, renderTarget.Get());
+
+    RHITextureViewDesc rtvDesc;
+    rtvDesc.format = RHIFormat::RGBA8_UNORM;
+    rtvDesc.type = RHITextureViewType::RenderTarget;
+    auto rtv = device->CreateTextureView(renderTarget.Get(), rtvDesc);
+    ASSERT_NE(nullptr, rtv.Get());
+}
+
+TEST(DX11Validation, Texture2DArrayLayerViewsPreserveArraySlice)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    auto depthArrayDesc = RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT);
+    depthArrayDesc.arraySize = 3;
+    depthArrayDesc.debugName = "TestDepthArray";
+    auto depthArray = device->CreateTexture(depthArrayDesc);
+    ASSERT_NE(nullptr, depthArray.Get());
+
+    RHITextureViewDesc dsvDesc;
+    dsvDesc.format = RHIFormat::D32_FLOAT;
+    dsvDesc.type = RHITextureViewType::DepthStencil;
+    dsvDesc.subresourceRange = RHISubresourceRange{0, 1, 2, 1, RHITextureAspect::Depth};
+    auto dsv = device->CreateTextureView(depthArray.Get(), dsvDesc);
+    ASSERT_NE(nullptr, dsv.Get());
+
+    auto* dx11Dsv = dynamic_cast<DX11TextureView*>(dsv.Get());
+    ASSERT_NE(nullptr, dx11Dsv);
+    ASSERT_NE(nullptr, dx11Dsv->GetDSV());
+    D3D11_DEPTH_STENCIL_VIEW_DESC nativeDsv = {};
+    dx11Dsv->GetDSV()->GetDesc(&nativeDsv);
+    EXPECT_EQ(nativeDsv.ViewDimension, D3D11_DSV_DIMENSION_TEXTURE2DARRAY);
+    EXPECT_EQ(nativeDsv.Texture2DArray.FirstArraySlice, 2u);
+    EXPECT_EQ(nativeDsv.Texture2DArray.ArraySize, 1u);
+
+    RHITextureViewDesc srvDesc = dsvDesc;
+    srvDesc.type = RHITextureViewType::ShaderResource;
+    auto srv = device->CreateTextureView(depthArray.Get(), srvDesc);
+    ASSERT_NE(nullptr, srv.Get());
+
+    auto* dx11Srv = dynamic_cast<DX11TextureView*>(srv.Get());
+    ASSERT_NE(nullptr, dx11Srv);
+    ASSERT_NE(nullptr, dx11Srv->GetSRV());
+    D3D11_SHADER_RESOURCE_VIEW_DESC nativeSrv = {};
+    dx11Srv->GetSRV()->GetDesc(&nativeSrv);
+    EXPECT_EQ(nativeSrv.ViewDimension, D3D11_SRV_DIMENSION_TEXTURE2DARRAY);
+    EXPECT_EQ(nativeSrv.Texture2DArray.FirstArraySlice, 2u);
+    EXPECT_EQ(nativeSrv.Texture2DArray.ArraySize, 1u);
+}
+
+TEST(DX11Validation, Sampler)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
     RHISamplerDesc samplerDesc;
     samplerDesc.magFilter = RHIFilterMode::Linear;
     samplerDesc.minFilter = RHIFilterMode::Linear;
@@ -163,37 +324,243 @@ bool Test_Sampler()
     samplerDesc.addressV = RHIAddressMode::Repeat;
     samplerDesc.addressW = RHIAddressMode::Repeat;
     samplerDesc.debugName = "TestSampler";
-    
+
     auto sampler = device->CreateSampler(samplerDesc);
-    TEST_ASSERT_NOT_NULL(sampler.Get());
-    
-    return true;
+    ASSERT_NE(nullptr, sampler.Get());
 }
 
-bool Test_CommandContext()
+TEST(DX11Validation, CommandContext)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
     auto ctx = device->CreateCommandContext(RHICommandQueueType::Graphics);
-    TEST_ASSERT_NOT_NULL(ctx.Get());
-    
+    ASSERT_NE(nullptr, ctx.Get());
+
     ctx->Begin();
     ctx->End();
-    
+
     device->SubmitCommandContext(ctx.Get(), nullptr);
     device->WaitIdle();
-    
-    return true;
 }
 
-bool Test_MultipleBufferTypes()
+TEST(DX11Validation, RenderPassUnbindsShaderResourceAliasesForRenderTargets)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    auto* dx11Device = dynamic_cast<DX11Device*>(device.get());
+    ASSERT_NE(nullptr, dx11Device);
+    ID3D11DeviceContext* nativeContext = dx11Device->GetImmediateContext();
+    ASSERT_NE(nullptr, nativeContext);
+
+    auto textureDesc = RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM);
+    textureDesc.debugName = "DX11AliasedRenderTarget";
+    auto texture = device->CreateTexture(textureDesc);
+    ASSERT_NE(nullptr, texture.Get());
+
+    RHITextureViewDesc srvDesc;
+    srvDesc.type = RHITextureViewType::ShaderResource;
+    srvDesc.format = RHIFormat::RGBA8_UNORM;
+    srvDesc.debugName = "DX11AliasedRenderTargetSRV";
+    auto srvView = device->CreateTextureView(texture.Get(), srvDesc);
+    ASSERT_NE(nullptr, srvView.Get());
+
+    RHITextureViewDesc rtvDesc;
+    rtvDesc.type = RHITextureViewType::RenderTarget;
+    rtvDesc.format = RHIFormat::RGBA8_UNORM;
+    rtvDesc.debugName = "DX11AliasedRenderTargetRTV";
+    auto rtvView = device->CreateTextureView(texture.Get(), rtvDesc);
+    ASSERT_NE(nullptr, rtvView.Get());
+
+    auto* dx11SrvView = dynamic_cast<DX11TextureView*>(srvView.Get());
+    ASSERT_NE(nullptr, dx11SrvView);
+    ID3D11ShaderResourceView* nativeSrv = dx11SrvView->GetSRV();
+    ASSERT_NE(nullptr, nativeSrv);
+
+    nativeContext->VSSetShaderResources(1, 1, &nativeSrv);
+    nativeContext->PSSetShaderResources(1, 1, &nativeSrv);
+    nativeContext->CSSetShaderResources(1, 1, &nativeSrv);
+
+    auto expectShaderResourceSlot = [](ID3D11ShaderResourceView* view, ID3D11ShaderResourceView* expected)
+    {
+        EXPECT_EQ(expected, view);
+        if (view)
+        {
+            view->Release();
+        }
+    };
+
+    ID3D11ShaderResourceView* boundVsSrv = nullptr;
+    ID3D11ShaderResourceView* boundPsSrv = nullptr;
+    ID3D11ShaderResourceView* boundCsSrv = nullptr;
+    nativeContext->VSGetShaderResources(1, 1, &boundVsSrv);
+    nativeContext->PSGetShaderResources(1, 1, &boundPsSrv);
+    nativeContext->CSGetShaderResources(1, 1, &boundCsSrv);
+    expectShaderResourceSlot(boundVsSrv, nativeSrv);
+    expectShaderResourceSlot(boundPsSrv, nativeSrv);
+    expectShaderResourceSlot(boundCsSrv, nativeSrv);
+
+    auto commandContext = device->CreateCommandContext(RHICommandQueueType::Graphics);
+    ASSERT_NE(nullptr, commandContext.Get());
+    commandContext->Begin();
+
+    RHIRenderPassDesc renderPassDesc;
+    renderPassDesc.AddColorAttachment(
+        rtvView.Get(),
+        RHILoadOp::Clear,
+        RHIStoreOp::Store,
+        {0.0f, 0.0f, 0.0f, 1.0f});
+    commandContext->BeginRenderPass(renderPassDesc);
+
+    boundVsSrv = nullptr;
+    boundPsSrv = nullptr;
+    boundCsSrv = nullptr;
+    nativeContext->VSGetShaderResources(1, 1, &boundVsSrv);
+    nativeContext->PSGetShaderResources(1, 1, &boundPsSrv);
+    nativeContext->CSGetShaderResources(1, 1, &boundCsSrv);
+    expectShaderResourceSlot(boundVsSrv, nullptr);
+    expectShaderResourceSlot(boundPsSrv, nullptr);
+    expectShaderResourceSlot(boundCsSrv, nullptr);
+
+    commandContext->EndRenderPass();
+    commandContext->End();
+    device->SubmitCommandContext(commandContext.Get(), nullptr);
+    device->WaitIdle();
+}
+
+TEST(DX11Validation, SynchronizationCapabilities)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    const RHICapabilities& caps = device->GetCapabilities();
+    EXPECT_FALSE(caps.supportsHostFenceSignal);
+    EXPECT_TRUE(caps.supportsDefaultQueueFenceSignal);
+    EXPECT_FALSE(caps.supportsExplicitQueueFenceSignal);
+    EXPECT_FALSE(caps.supportsQueueFenceWait);
+    EXPECT_FALSE(caps.supportsMultiQueueBatchSubmit);
+    EXPECT_TRUE(caps.emulatesQueueFences);
+}
+
+TEST(DX11Validation, DescriptorAndBarrierCapabilities)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    const RHICapabilities& caps = device->GetCapabilities();
+    EXPECT_TRUE(caps.supportsDescriptorSets);
+    EXPECT_GE(caps.maxDescriptorSets, 4u);
+    EXPECT_FALSE(caps.supportsExplicitResourceBarriers);
+    EXPECT_TRUE(caps.emulatesResourceBarriers);
+    EXPECT_FALSE(caps.supportsSplitBarrier);
+}
+
+TEST(DX11Validation, DescriptorValidationRejectsInvalidInputs)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    RHIDescriptorSetLayoutDesc duplicateLayout;
+    duplicateLayout.AddBinding(0, RHIBindingType::UniformBuffer);
+    duplicateLayout.AddBinding(0, RHIBindingType::SampledTexture);
+    EXPECT_EQ(device->CreateDescriptorSetLayout(duplicateLayout).Get(), nullptr);
+
+    RHIDescriptorSetDesc nullSetDesc;
+    EXPECT_EQ(device->CreateDescriptorSet(nullSetDesc).Get(), nullptr);
+
+    RHIDescriptorSetLayoutDesc validLayoutDesc;
+    validLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer);
+    auto layout = device->CreateDescriptorSetLayout(validLayoutDesc);
+    ASSERT_NE(nullptr, layout.Get());
+
+    RHIPipelineLayoutDesc invalidPipelineLayout;
+    invalidPipelineLayout.setLayouts.push_back(nullptr);
+    EXPECT_EQ(device->CreatePipelineLayout(invalidPipelineLayout).Get(), nullptr);
+
+    RHIDescriptorSetDesc validSetDesc;
+    validSetDesc.SetLayout(layout.Get());
+    auto set = device->CreateDescriptorSet(validSetDesc);
+    ASSERT_NE(nullptr, set.Get());
+    EXPECT_TRUE(set->Update({}));
+
+    RHIDescriptorBinding unknownBinding;
+    unknownBinding.binding = 99;
+    EXPECT_FALSE(set->Update(std::vector<RHIDescriptorBinding>{unknownBinding}));
+
+    RHIDescriptorBinding nullBufferBinding;
+    nullBufferBinding.binding = 0;
+    EXPECT_FALSE(set->Update(std::vector<RHIDescriptorBinding>{nullBufferBinding}));
+}
+
+TEST(DX11Validation, SubmitReturnsMonotonicFenceValues)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    auto fence = device->CreateFence(0);
+    ASSERT_NE(nullptr, fence.Get());
+
+    auto firstContext = device->CreateCommandContext(RHICommandQueueType::Graphics);
+    ASSERT_NE(nullptr, firstContext.Get());
+    firstContext->Begin();
+    firstContext->End();
+    uint64 firstValue = device->SubmitCommandContext(firstContext.Get(), fence.Get());
+
+    auto secondContext = device->CreateCommandContext(RHICommandQueueType::Graphics);
+    ASSERT_NE(nullptr, secondContext.Get());
+    secondContext->Begin();
+    secondContext->End();
+    uint64 secondValue = device->SubmitCommandContext(secondContext.Get(), fence.Get());
+
+    EXPECT_NE(firstValue, 0u);
+    EXPECT_GT(secondValue, firstValue);
+
+    device->WaitForFence(fence.Get(), secondValue);
+    EXPECT_GE(fence->GetCompletedValue(), secondValue);
+}
+
+TEST(DX11Validation, BarrierNoWorkInputsAreSafe)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    auto ctx = device->CreateCommandContext(RHICommandQueueType::Graphics);
+    ASSERT_NE(nullptr, ctx.Get());
+    ctx->Begin();
+
+    ctx->BufferBarrier({nullptr, RHIResourceState::Common, RHIResourceState::CopyDest});
+    ctx->TextureBarrier({nullptr, RHIResourceState::Common, RHIResourceState::ShaderResource});
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 256;
+    bufferDesc.usage = RHIBufferUsage::Vertex;
+    bufferDesc.memoryType = RHIMemoryType::Default;
+    bufferDesc.stride = sizeof(float);
+    auto buffer = device->CreateBuffer(bufferDesc);
+    ASSERT_NE(nullptr, buffer.Get());
+    ctx->BufferBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
+    ctx->BeginBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
+    ctx->EndBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
+
+    ctx->End();
+    EXPECT_EQ(device->SubmitCommandContext(ctx.Get(), nullptr), 0u);
+    device->WaitIdle();
+}
+
+TEST(DX11Validation, MultipleBufferTypes)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
     // Vertex buffer
     RHIBufferDesc vbDesc;
     vbDesc.size = 4096;
@@ -201,99 +568,46 @@ bool Test_MultipleBufferTypes()
     vbDesc.memoryType = RHIMemoryType::Upload;
     vbDesc.stride = 32;
     auto vb = device->CreateBuffer(vbDesc);
-    TEST_ASSERT_NOT_NULL(vb.Get());
-    
+    ASSERT_NE(nullptr, vb.Get());
+
     // Index buffer
     RHIBufferDesc ibDesc;
     ibDesc.size = 2048;
     ibDesc.usage = RHIBufferUsage::Index;
     ibDesc.memoryType = RHIMemoryType::Upload;
     auto ib = device->CreateBuffer(ibDesc);
-    TEST_ASSERT_NOT_NULL(ib.Get());
-    
+    ASSERT_NE(nullptr, ib.Get());
+
     // Constant buffer
     RHIBufferDesc cbDesc;
     cbDesc.size = 256;
     cbDesc.usage = RHIBufferUsage::Constant;
     cbDesc.memoryType = RHIMemoryType::Upload;
     auto cb = device->CreateBuffer(cbDesc);
-    TEST_ASSERT_NOT_NULL(cb.Get());
-    
-    return true;
+    ASSERT_NE(nullptr, cb.Get());
 }
 
-bool Test_BarrierOperations()
+TEST(DX11Validation, BarrierOperations)
 {
     RHIDeviceDesc deviceDesc;
     auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
-    TEST_ASSERT_NOT_NULL(device.get());
-    
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
     // DX11 doesn't have explicit barriers like DX12/Vulkan
     // But our abstraction should still accept them gracefully (as no-ops)
-    
+
     auto rtDesc = RHITextureDesc::RenderTarget(512, 512, RHIFormat::RGBA8_UNORM);
     auto texture = device->CreateTexture(rtDesc);
-    TEST_ASSERT_NOT_NULL(texture.Get());
-    
+    ASSERT_NE(nullptr, texture.Get());
+
     auto ctx = device->CreateCommandContext(RHICommandQueueType::Graphics);
     ctx->Begin();
-    
+
     // These should be no-ops on DX11 but shouldn't crash
     ctx->TextureBarrier({texture.Get(), RHIResourceState::Undefined, RHIResourceState::RenderTarget});
     ctx->TextureBarrier({texture.Get(), RHIResourceState::RenderTarget, RHIResourceState::ShaderResource});
-    
+
     ctx->End();
     device->SubmitCommandContext(ctx.Get(), nullptr);
     device->WaitIdle();
-    
-    return true;
-}
-
-int main()
-{
-    Log::Initialize();
-
-#if !defined(_WIN32)
-    // DX11 is only available on Windows
-    RVX_CORE_INFO("DX11 Validation Tests - SKIPPED (only available on Windows)");
-    Log::Shutdown();
-    return 0;
-#endif
-
-    RVX_CORE_INFO("DX11 Validation Tests");
-    
-    TestSuite suite;
-    
-    // Device tests
-    suite.AddTest("DeviceCreation", Test_DeviceCreation);
-    suite.AddTest("Capabilities", Test_Capabilities);
-    
-    // Buffer tests
-    suite.AddTest("BufferCreation", Test_BufferCreation);
-    suite.AddTest("UploadBuffer", Test_UploadBuffer);
-    suite.AddTest("MultipleBufferTypes", Test_MultipleBufferTypes);
-    
-    // Texture tests
-    suite.AddTest("TextureCreation", Test_TextureCreation);
-    suite.AddTest("RenderTargetTexture", Test_RenderTargetTexture);
-    suite.AddTest("DepthStencilTexture", Test_DepthStencilTexture);
-    suite.AddTest("TextureView", Test_TextureView);
-    
-    // Other resources
-    suite.AddTest("Sampler", Test_Sampler);
-    suite.AddTest("CommandContext", Test_CommandContext);
-    suite.AddTest("BarrierOperations", Test_BarrierOperations);
-    
-    auto results = suite.Run();
-    suite.PrintResults(results);
-    
-    Log::Shutdown();
-    
-    for (const auto& result : results)
-    {
-        if (!result.passed)
-            return 1;
-    }
-    
-    return 0;
 }

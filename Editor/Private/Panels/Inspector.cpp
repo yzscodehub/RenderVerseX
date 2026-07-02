@@ -8,10 +8,14 @@
 #include "Core/Log.h"
 #include "Scene/Component.h"
 #include "Scene/ComponentFactory.h"
+#include "Scene/SceneEntity.h"
 
 #include <imgui.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
+
+#include <any>
+#include <cstdio>
 
 namespace RVX::Editor
 {
@@ -19,6 +23,25 @@ namespace RVX::Editor
 InspectorPanel::InspectorPanel()
 {
     m_entityNameBuffer.resize(256);
+}
+
+bool InspectorPanel::SetAssetReferenceProperty(const Property& prop,
+                                               void* instance,
+                                               const Tools::AssetGUID& guid)
+{
+    if (!instance || prop.GetType() != PropertyType::AssetRef || prop.IsReadOnly())
+    {
+        return false;
+    }
+
+    try
+    {
+        return prop.SetValueAny(instance, guid);
+    }
+    catch (const std::bad_any_cast&)
+    {
+        return false;
+    }
 }
 
 void InspectorPanel::OnGUI()
@@ -41,7 +64,7 @@ void InspectorPanel::OnGUI()
     {
         case SelectionType::Entity:
         {
-            Entity* entity = context.GetSelectedEntity();
+            SceneEntity* entity = context.GetSelectedEntity();
             if (entity)
             {
                 DrawEntityInspector(entity);
@@ -67,53 +90,74 @@ void InspectorPanel::OnGUI()
     ImGui::End();
 }
 
-void InspectorPanel::DrawEntityHeader(Entity* entity)
+namespace
 {
-    (void)entity;
-    
+    int GetFirstLayerIndex(uint32 layerMask)
+    {
+        for (int layer = 0; layer < 31; ++layer)
+        {
+            if ((layerMask & (1u << layer)) != 0)
+            {
+                return layer;
+            }
+        }
+        return 0;
+    }
+}
+
+void InspectorPanel::DrawEntityHeader(SceneEntity* entity)
+{
+    if (!entity)
+        return;
+
     // Active checkbox
-    bool active = true;  // TODO: entity->IsActive();
+    auto& context = EditorContext::Get();
+    bool active = entity->IsActive();
     if (ImGui::Checkbox("##Active", &active))
     {
-        // TODO: entity->SetActive(active);
-        EditorContext::Get().MarkSceneDirty();
+        context.SetEntityActiveUndoable(entity, active);
     }
 
     ImGui::SameLine();
 
     // Entity name
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 100);
-    strcpy(m_entityNameBuffer.data(), "Entity");  // TODO: entity->GetName().c_str()
+    std::snprintf(m_entityNameBuffer.data(),
+                  m_entityNameBuffer.size(),
+                  "%s",
+                  entity->GetName().c_str());
     if (ImGui::InputText("##Name", m_entityNameBuffer.data(), m_entityNameBuffer.size()))
     {
-        // TODO: entity->SetName(m_entityNameBuffer.data());
-        EditorContext::Get().MarkSceneDirty();
+        context.SetEntityNameUndoable(entity, m_entityNameBuffer.data());
     }
 
-    ImGui::SameLine();
-
-    // Static checkbox
-    bool isStatic = false;  // TODO: entity->IsStatic();
-    if (ImGui::Checkbox("Static", &isStatic))
+    const char* layers[] = {
+        "Default", "TransparentFX", "UI", "Ignore Raycast",
+        "Layer 4", "Layer 5", "Layer 6", "Layer 7"
+    };
+    constexpr int layerCount = static_cast<int>(sizeof(layers) / sizeof(layers[0]));
+    int layerIndex = GetFirstLayerIndex(entity->GetLayerMask());
+    if (layerIndex >= layerCount)
     {
-        // TODO: entity->SetStatic(isStatic);
-        EditorContext::Get().MarkSceneDirty();
+        layerIndex = 0;
+    }
+    ImGui::SetNextItemWidth(160);
+    if (ImGui::Combo("Layer", &layerIndex, layers, layerCount))
+    {
+        context.SetEntityLayerMaskUndoable(entity, 1u << static_cast<uint32>(layerIndex));
     }
 
-    // Tag and Layer
-    ImGui::SetNextItemWidth(100);
-    const char* tags[] = { "Untagged", "Player", "Enemy", "Pickup", "Environment" };
-    int tagIndex = 0;
-    ImGui::Combo("Tag", &tagIndex, tags, 5);
-
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(100);
-    const char* layers[] = { "Default", "TransparentFX", "UI", "Ignore Raycast" };
-    int layerIndex = 0;
-    ImGui::Combo("Layer", &layerIndex, layers, 4);
+    if (m_showDebugInfo)
+    {
+        ImGui::TextDisabled("Handle: %u", entity->GetHandle());
+        ImGui::TextDisabled("Class: %s", entity->GetClassName());
+        ImGui::TextDisabled("Components: %zu legacy, %zu actor",
+                            entity->GetComponentCount(),
+                            entity->GetActorComponentCount());
+    }
 }
 
-void InspectorPanel::DrawEntityInspector(Entity* entity)
+void InspectorPanel::DrawEntityInspector(SceneEntity* entity)
 {
     DrawEntityHeader(entity);
 
@@ -122,12 +166,25 @@ void InspectorPanel::DrawEntityInspector(Entity* entity)
     // Transform component (always present)
     DrawTransformComponent(entity);
 
-    // Other components
-    // TODO: Iterate through entity components
-    // for (auto& component : entity->GetComponents())
-    // {
-    //     DrawComponentInspector(component.get());
-    // }
+    for (const auto& [type, component] : entity->GetComponents())
+    {
+        (void)type;
+        DrawComponentInspector(component.get());
+    }
+
+    for (const auto& component : entity->GetActorComponents())
+    {
+        if (component && !dynamic_cast<Component*>(component.get()))
+        {
+            bool enabled = component->IsEnabled();
+            if (ImGui::Checkbox((std::string("##") + component->GetName()).c_str(), &enabled))
+            {
+                EditorContext::Get().SetComponentEnabledUndoable(component.get(), enabled);
+            }
+            ImGui::SameLine();
+            ImGui::Text("%s", component->GetClassName());
+        }
+    }
 
     ImGui::Separator();
 
@@ -141,10 +198,11 @@ void InspectorPanel::DrawEntityInspector(Entity* entity)
     DrawAddComponentMenu(entity);
 }
 
-void InspectorPanel::DrawTransformComponent(Entity* entity)
+void InspectorPanel::DrawTransformComponent(SceneEntity* entity)
 {
-    (void)entity;
-    
+    if (!entity)
+        return;
+
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed |
                                ImGuiTreeNodeFlags_AllowOverlap | ImGuiTreeNodeFlags_SpanAvailWidth;
 
@@ -163,8 +221,12 @@ void InspectorPanel::DrawTransformComponent(Entity* entity)
     {
         if (ImGui::MenuItem("Reset"))
         {
-            // Reset transform
-            EditorContext::Get().MarkSceneDirty();
+            EditorContext::Get().SetEntityTransformUndoable(
+                entity,
+                Vec3(0.0f),
+                Quat(1.0f, 0.0f, 0.0f, 0.0f),
+                Vec3(1.0f),
+                "Reset Transform");
         }
         if (ImGui::MenuItem("Copy"))
         {
@@ -182,36 +244,48 @@ void InspectorPanel::DrawTransformComponent(Entity* entity)
     if (open)
     {
         // Position
-        Vec3 position(0.0f);  // TODO: entity->GetPosition();
+        Vec3 position = entity->GetPosition();
         ImGui::Text("Position");
         ImGui::SameLine(100);
         ImGui::SetNextItemWidth(-1);
         if (ImGui::DragFloat3("##Position", glm::value_ptr(position), 0.1f))
         {
-            // TODO: entity->SetPosition(position);
-            EditorContext::Get().MarkSceneDirty();
+            EditorContext::Get().SetEntityTransformUndoable(
+                entity,
+                position,
+                entity->GetRotation(),
+                entity->GetScale(),
+                "Move Entity");
         }
 
         // Rotation
-        Vec3 rotation(0.0f);  // TODO: entity->GetEulerAngles();
+        Vec3 rotation = degrees(QuatToEuler(entity->GetRotation()));
         ImGui::Text("Rotation");
         ImGui::SameLine(100);
         ImGui::SetNextItemWidth(-1);
         if (ImGui::DragFloat3("##Rotation", glm::value_ptr(rotation), 0.5f))
         {
-            // TODO: entity->SetEulerAngles(rotation);
-            EditorContext::Get().MarkSceneDirty();
+            EditorContext::Get().SetEntityTransformUndoable(
+                entity,
+                entity->GetPosition(),
+                QuatFromEuler(radians(rotation)),
+                entity->GetScale(),
+                "Rotate Entity");
         }
 
         // Scale
-        Vec3 scale(1.0f);  // TODO: entity->GetScale();
+        Vec3 scale = entity->GetScale();
         ImGui::Text("Scale");
         ImGui::SameLine(100);
         ImGui::SetNextItemWidth(-1);
         if (ImGui::DragFloat3("##Scale", glm::value_ptr(scale), 0.01f))
         {
-            // TODO: entity->SetScale(scale);
-            EditorContext::Get().MarkSceneDirty();
+            EditorContext::Get().SetEntityTransformUndoable(
+                entity,
+                entity->GetPosition(),
+                entity->GetRotation(),
+                scale,
+                "Scale Entity");
         }
 
         ImGui::TreePop();
@@ -262,13 +336,17 @@ void InspectorPanel::DrawComponentInspector(Component* component)
 
 void InspectorPanel::DrawComponentHeader(Component* component, bool& removeRequested)
 {
-    (void)component;
-    
+    if (!component)
+        return;
+
     ImVec2 contentRegion = ImGui::GetContentRegionAvail();
 
     // Enabled checkbox
-    bool enabled = true;  // TODO: component->IsEnabled();
-    ImGui::Checkbox("##Enabled", &enabled);
+    bool enabled = component->IsEnabled();
+    if (ImGui::Checkbox("##Enabled", &enabled))
+    {
+        EditorContext::Get().SetComponentEnabledUndoable(component, enabled);
+    }
     ImGui::SameLine();
 
     // Context menu button
@@ -300,10 +378,10 @@ void InspectorPanel::DrawComponentHeader(Component* component, bool& removeReque
     }
 }
 
-void InspectorPanel::DrawAddComponentMenu(Entity* entity)
+void InspectorPanel::DrawAddComponentMenu(SceneEntity* entity)
 {
     (void)entity;
-    
+
     if (ImGui::BeginPopup("AddComponentPopup"))
     {
         ImGui::Text("Add Component");
@@ -438,7 +516,7 @@ void InspectorPanel::DrawPropertyLabel(const Property& prop)
 {
     const auto& meta = prop.GetMeta();
     const char* label = meta.displayName.empty() ? prop.GetName().c_str() : meta.displayName.c_str();
-    
+
     ImGui::Text("%s", label);
 
     if (!meta.tooltip.empty() && ImGui::IsItemHovered())
@@ -452,8 +530,8 @@ void InspectorPanel::DrawBoolProperty(const Property& prop, void* instance)
     bool value = prop.GetValue<bool>(instance);
     if (ImGui::Checkbox(("##" + prop.GetName()).c_str(), &value))
     {
-        prop.SetValue(instance, value);
-        EditorContext::Get().MarkSceneDirty();
+        EditorContext::Get().SetReflectedPropertyUndoable(
+            prop, instance, value, "Edit " + prop.GetName());
     }
 }
 
@@ -461,12 +539,12 @@ void InspectorPanel::DrawIntProperty(const Property& prop, void* instance)
 {
     int value = prop.GetValue<int>(instance);
     const auto& meta = prop.GetMeta();
-    
+
     if (ImGui::DragInt(("##" + prop.GetName()).c_str(), &value, 1.0f,
                        static_cast<int>(meta.minValue), static_cast<int>(meta.maxValue)))
     {
-        prop.SetValue(instance, value);
-        EditorContext::Get().MarkSceneDirty();
+        EditorContext::Get().SetReflectedPropertyUndoable(
+            prop, instance, value, "Edit " + prop.GetName());
     }
 }
 
@@ -474,12 +552,12 @@ void InspectorPanel::DrawFloatProperty(const Property& prop, void* instance)
 {
     float value = prop.GetValue<float>(instance);
     const auto& meta = prop.GetMeta();
-    
+
     if (ImGui::DragFloat(("##" + prop.GetName()).c_str(), &value, meta.step,
                          meta.minValue, meta.maxValue))
     {
-        prop.SetValue(instance, value);
-        EditorContext::Get().MarkSceneDirty();
+        EditorContext::Get().SetReflectedPropertyUndoable(
+            prop, instance, value, "Edit " + prop.GetName());
     }
 }
 
@@ -488,71 +566,70 @@ void InspectorPanel::DrawDoubleProperty(const Property& prop, void* instance)
     double value = prop.GetValue<double>(instance);
     float fValue = static_cast<float>(value);
     const auto& meta = prop.GetMeta();
-    
+
     if (ImGui::DragFloat(("##" + prop.GetName()).c_str(), &fValue, meta.step,
                          meta.minValue, meta.maxValue))
     {
-        prop.SetValue(instance, static_cast<double>(fValue));
-        EditorContext::Get().MarkSceneDirty();
+        EditorContext::Get().SetReflectedPropertyUndoable(
+            prop, instance, static_cast<double>(fValue), "Edit " + prop.GetName());
     }
 }
 
 void InspectorPanel::DrawVec2Property(const Property& prop, void* instance)
 {
     Vec2 value = prop.GetValue<Vec2>(instance);
-    
+
     if (ImGui::DragFloat2(("##" + prop.GetName()).c_str(), glm::value_ptr(value), 0.1f))
     {
-        prop.SetValue(instance, value);
-        EditorContext::Get().MarkSceneDirty();
+        EditorContext::Get().SetReflectedPropertyUndoable(
+            prop, instance, value, "Edit " + prop.GetName());
     }
 }
 
 void InspectorPanel::DrawVec3Property(const Property& prop, void* instance)
 {
     Vec3 value = prop.GetValue<Vec3>(instance);
-    
+
     if (ImGui::DragFloat3(("##" + prop.GetName()).c_str(), glm::value_ptr(value), 0.1f))
     {
-        prop.SetValue(instance, value);
-        EditorContext::Get().MarkSceneDirty();
+        EditorContext::Get().SetReflectedPropertyUndoable(
+            prop, instance, value, "Edit " + prop.GetName());
     }
 }
 
 void InspectorPanel::DrawVec4Property(const Property& prop, void* instance)
 {
     Vec4 value = prop.GetValue<Vec4>(instance);
-    
+
     if (ImGui::DragFloat4(("##" + prop.GetName()).c_str(), glm::value_ptr(value), 0.1f))
     {
-        prop.SetValue(instance, value);
-        EditorContext::Get().MarkSceneDirty();
+        EditorContext::Get().SetReflectedPropertyUndoable(
+            prop, instance, value, "Edit " + prop.GetName());
     }
 }
 
 void InspectorPanel::DrawColorProperty(const Property& prop, void* instance)
 {
     Vec4 value = prop.GetValue<Vec4>(instance);
-    
+
     if (ImGui::ColorEdit4(("##" + prop.GetName()).c_str(), glm::value_ptr(value)))
     {
-        prop.SetValue(instance, value);
-        EditorContext::Get().MarkSceneDirty();
+        EditorContext::Get().SetReflectedPropertyUndoable(
+            prop, instance, value, "Edit " + prop.GetName());
     }
 }
 
 void InspectorPanel::DrawStringProperty(const Property& prop, void* instance)
 {
     std::string value = prop.GetValue<std::string>(instance);
-    
+
     char buffer[256];
-    strncpy(buffer, value.c_str(), sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0';
-    
+    std::snprintf(buffer, sizeof(buffer), "%s", value.c_str());
+
     if (ImGui::InputText(("##" + prop.GetName()).c_str(), buffer, sizeof(buffer)))
     {
-        prop.SetValue(instance, std::string(buffer));
-        EditorContext::Get().MarkSceneDirty();
+        EditorContext::Get().SetReflectedPropertyUndoable(
+            prop, instance, std::string(buffer), "Edit " + prop.GetName());
     }
 }
 
@@ -560,7 +637,7 @@ void InspectorPanel::DrawEnumProperty(const Property& prop, void* instance)
 {
     int value = prop.GetValue<int>(instance);
     const auto& enumValues = prop.GetMeta().enumValues;
-    
+
     if (!enumValues.empty())
     {
         std::vector<const char*> items;
@@ -569,30 +646,51 @@ void InspectorPanel::DrawEnumProperty(const Property& prop, void* instance)
             items.push_back(str.c_str());
         }
 
-        if (ImGui::Combo(("##" + prop.GetName()).c_str(), &value, items.data(), 
+        if (ImGui::Combo(("##" + prop.GetName()).c_str(), &value, items.data(),
                          static_cast<int>(items.size())))
         {
-            prop.SetValue(instance, value);
-            EditorContext::Get().MarkSceneDirty();
+            EditorContext::Get().SetReflectedPropertyUndoable(
+                prop, instance, value, "Edit " + prop.GetName());
         }
     }
 }
 
 void InspectorPanel::DrawAssetRefProperty(const Property& prop, void* instance)
 {
-    (void)prop;
-    (void)instance;
-    
+    Tools::AssetGUID currentGuid;
+    bool hasGuidValue = false;
+    try
+    {
+        currentGuid = prop.GetValue<Tools::AssetGUID>(instance);
+        hasGuidValue = true;
+    }
+    catch (const std::bad_any_cast&)
+    {
+    }
+
     // Asset reference field with drag-drop support
-    ImGui::Button("None (Asset)", ImVec2(-1, 0));
+    std::string label = "None (Asset)";
+    if (hasGuidValue && currentGuid.IsValid())
+    {
+        const auto* entry = EditorContext::Get().GetAssetDatabase().GetAsset(currentGuid);
+        label = entry ? entry->name : currentGuid.ToString();
+    }
+    ImGui::Button(label.c_str(), ImVec2(-1, 0));
 
     // Accept drag-drop
     if (ImGui::BeginDragDropTarget())
     {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_GUID"))
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("RVX_ASSET_GUID"))
         {
-            // TODO: Set asset reference
-            EditorContext::Get().MarkSceneDirty();
+            if (payload->DataSize == sizeof(Tools::AssetGUID))
+            {
+                const auto* guid = static_cast<const Tools::AssetGUID*>(payload->Data);
+                if (guid)
+                {
+                    EditorContext::Get().SetReflectedPropertyUndoable(
+                        prop, instance, *guid, "Set Asset Reference");
+                }
+            }
         }
         ImGui::EndDragDropTarget();
     }
@@ -602,13 +700,13 @@ void InspectorPanel::DrawAssetInspector()
 {
     auto& context = EditorContext::Get();
     auto guid = context.GetSelectedAsset();
-    
+
     // TODO: Get asset info from database
     // auto* entry = context.GetAssetDatabase().GetAsset(guid);
-    
+
     ImGui::Text("Asset Inspector");
     ImGui::Separator();
-    
+
     // Asset preview
     ImGui::Text("Preview:");
     ImVec2 previewSize(200, 200);

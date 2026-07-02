@@ -27,6 +27,7 @@ namespace RVX
         // OpenGL specific
         GLuint GetQuery(uint32 index) const;
         GLenum GetGLQueryTarget() const { return m_glTarget; }
+        void ApplyDebugLabel(uint32 index);
 
         // Check if query result is available (non-blocking)
         bool IsResultAvailable(uint32 index) const;
@@ -44,6 +45,7 @@ namespace RVX
         uint64 m_timestampFrequency = 0;
         GLenum m_glTarget = GL_TIMESTAMP;
         std::vector<GLuint> m_queries;
+        std::vector<uint8> m_debugLabelsApplied;
     };
 
 } // namespace RVX

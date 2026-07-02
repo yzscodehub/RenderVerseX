@@ -7,6 +7,7 @@ target_sources(RVX_Core PRIVATE
     # Core
     Private/Memory.cpp
     Private/Log.cpp
+    Private/PathUtils.cpp
     Private/SystemManager.cpp
     
     # Event System
@@ -31,6 +32,7 @@ target_include_directories(RVX_Core PUBLIC
 )
 
 target_link_libraries(RVX_Core PUBLIC
+    RVX::Options
     spdlog::spdlog
     glm::glm
 )

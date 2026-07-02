@@ -13,6 +13,7 @@
 #include "Core/Subsystem/SubsystemCollection.h"
 #include "Core/Subsystem/WorldSubsystem.h"
 #include "Core/Math/Geometry.h"
+#include "Physics/PhysicsWorld.h"
 #include "Scene/Actor.h"
 #include "Scene/SceneManager.h"
 #include <functional>
@@ -31,6 +32,7 @@ namespace RVX
     namespace Spatial { class ISpatialIndex; }
 
     class SpatialSubsystem;
+    class PhysicsSubsystem;
 
     /**
      * @brief World configuration
@@ -39,6 +41,8 @@ namespace RVX
     {
         std::string name = "World";
         bool autoInitializeSpatial = true;
+        bool autoInitializePhysics = true;
+        Physics::PhysicsWorldConfig physics;
     };
 
     /**
@@ -177,6 +181,9 @@ namespace RVX
 
         /// Get the spatial subsystem
         SpatialSubsystem* GetSpatial() const;
+
+        /// Get the physics subsystem
+        PhysicsSubsystem* GetPhysics() const;
 
         // =====================================================================
         // Picking (convenience methods)

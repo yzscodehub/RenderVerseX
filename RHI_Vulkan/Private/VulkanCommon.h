@@ -9,7 +9,9 @@
 #endif
 
 // Define VK_USE_PLATFORM before including Vulkan
+#if defined(_WIN32) && !defined(VK_USE_PLATFORM_WIN32_KHR)
 #define VK_USE_PLATFORM_WIN32_KHR
+#endif
 #include <vulkan/vulkan.h>
 
 // Include RHI definitions after Vulkan to ensure proper ordering
@@ -253,6 +255,18 @@ namespace RVX
             case RHIResourceState::IndirectArgument:
                 flags = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
                 break;
+            case RHIResourceState::AccelerationStructureBuildRead:
+                flags = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT;
+                break;
+            case RHIResourceState::AccelerationStructureBuildWrite:
+                flags = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+                break;
+            case RHIResourceState::AccelerationStructureRead:
+                flags = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT;
+                break;
+            case RHIResourceState::ShaderBindingTable:
+                flags = VK_ACCESS_SHADER_READ_BIT;
+                break;
             default:
                 break;
         }
@@ -281,6 +295,11 @@ namespace RVX
                 return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
             case RHIResourceState::Present:
                 return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            case RHIResourceState::AccelerationStructureBuildRead:
+            case RHIResourceState::AccelerationStructureBuildWrite:
+            case RHIResourceState::AccelerationStructureRead:
+            case RHIResourceState::ShaderBindingTable:
+                return VK_IMAGE_LAYOUT_GENERAL;
             default:
                 return VK_IMAGE_LAYOUT_UNDEFINED;
         }
@@ -312,6 +331,12 @@ namespace RVX
                 return VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
             case RHIResourceState::IndirectArgument:
                 return VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+            case RHIResourceState::AccelerationStructureBuildRead:
+            case RHIResourceState::AccelerationStructureBuildWrite:
+                return VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+            case RHIResourceState::AccelerationStructureRead:
+            case RHIResourceState::ShaderBindingTable:
+                return VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
             default:
                 return VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
         }
@@ -458,12 +483,14 @@ namespace RVX
         {
             case RHIBindingType::UniformBuffer:        return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             case RHIBindingType::DynamicUniformBuffer: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+            case RHIBindingType::ShaderResourceBuffer: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             case RHIBindingType::StorageBuffer:        return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             case RHIBindingType::DynamicStorageBuffer: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
             case RHIBindingType::SampledTexture:       return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
             case RHIBindingType::StorageTexture:       return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
             case RHIBindingType::Sampler:              return VK_DESCRIPTOR_TYPE_SAMPLER;
             case RHIBindingType::CombinedTextureSampler: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            case RHIBindingType::AccelerationStructure: return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
             default: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         }
     }
@@ -477,6 +504,12 @@ namespace RVX
         if (HasFlag(stage, RHIShaderStage::Hull))     flags |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
         if (HasFlag(stage, RHIShaderStage::Domain))   flags |= VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
         if (HasFlag(stage, RHIShaderStage::Compute))  flags |= VK_SHADER_STAGE_COMPUTE_BIT;
+        if (HasFlag(stage, RHIShaderStage::RayGeneration)) flags |= VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        if (HasFlag(stage, RHIShaderStage::AnyHit))        flags |= VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+        if (HasFlag(stage, RHIShaderStage::ClosestHit))    flags |= VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+        if (HasFlag(stage, RHIShaderStage::Miss))          flags |= VK_SHADER_STAGE_MISS_BIT_KHR;
+        if (HasFlag(stage, RHIShaderStage::Intersection))  flags |= VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
+        if (HasFlag(stage, RHIShaderStage::Callable))      flags |= VK_SHADER_STAGE_CALLABLE_BIT_KHR;
         if (stage == RHIShaderStage::All)             flags = VK_SHADER_STAGE_ALL;
         return flags;
     }

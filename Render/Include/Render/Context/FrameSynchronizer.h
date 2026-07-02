@@ -12,19 +12,19 @@ namespace RVX
 {
     /**
      * @brief Manages GPU/CPU synchronization for multi-frame in-flight rendering
-     * 
+     *
      * Handles fence creation and waiting to ensure proper synchronization
      * when using multiple frames in flight (typically 2-3 frames).
-     * 
+     *
      * Usage:
      * @code
      * FrameSynchronizer sync;
      * sync.Initialize(device, 3);  // 3 frames in flight
-     * 
+     *
      * // Frame loop
      * sync.WaitForFrame(frameIndex);  // Wait for frame to complete
      * // ... record commands ...
-     * sync.SignalFrame(frameIndex);   // Signal when submitted
+     * sync.SignalFrame(frameIndex, submittedValue);   // Record submitted fence value
      * @endcode
      */
     class FrameSynchronizer
@@ -53,23 +53,24 @@ namespace RVX
         /**
          * @brief Wait for a specific frame to complete
          * @param frameIndex The frame index to wait for
-         * 
+         *
          * Call this at the beginning of a frame before reusing resources
          * from that frame index.
          */
         void WaitForFrame(uint32_t frameIndex);
 
         /**
-         * @brief Signal that a frame has been submitted
+         * @brief Record that a frame has been submitted
          * @param frameIndex The frame index that was submitted
-         * 
+         * @param submittedFenceValue Fence value returned by IRHIDevice::SubmitCommandContext
+         *
          * Call this after submitting command buffers for the frame.
          */
-        void SignalFrame(uint32_t frameIndex);
+        void SignalFrame(uint32_t frameIndex, uint64_t submittedFenceValue);
 
         /**
          * @brief Wait for all frames to complete
-         * 
+         *
          * Useful during shutdown or when needing to flush all GPU work.
          */
         void WaitForAllFrames();
@@ -103,7 +104,7 @@ namespace RVX
     private:
         IRHIDevice* m_device = nullptr;
         uint32_t m_frameCount = 0;
-        
+
         std::array<RHIFenceRef, RVX_MAX_FRAME_COUNT> m_fences;
         std::array<uint64_t, RVX_MAX_FRAME_COUNT> m_fenceValues = {};
     };

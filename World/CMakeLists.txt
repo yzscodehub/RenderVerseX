@@ -10,6 +10,7 @@ add_library(RVX_World STATIC)
 
 target_sources(RVX_World PRIVATE
     Private/World.cpp
+    Private/PhysicsSubsystem.cpp
     Private/SpatialSubsystem.cpp
     Private/PickingService.cpp
 )
@@ -21,6 +22,7 @@ target_include_directories(RVX_World PUBLIC
 
 target_link_libraries(RVX_World PUBLIC
     RVX_Core
+    RVX::Physics
     RVX_Scene
     RVX_Resource
     Spatial

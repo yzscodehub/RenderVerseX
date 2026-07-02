@@ -233,7 +233,7 @@ namespace RVX
         imageInfo.extent.height = desc.height;
         imageInfo.extent.depth = desc.depth;
         imageInfo.mipLevels = desc.mipLevels;
-        imageInfo.arrayLayers = desc.arraySize;
+        imageInfo.arrayLayers = GetTexturePhysicalLayerCount(desc);
         imageInfo.format = ToVkFormat(desc.format);
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -333,7 +333,7 @@ namespace RVX
                 viewInfo.viewType = VK_IMAGE_VIEW_TYPE_3D;
                 break;
             case RHITextureDimension::TextureCube:
-                viewInfo.viewType = (desc.subresourceRange.arrayLayerCount > 6) ?
+                viewInfo.viewType = (ResolveTextureArrayLayerCount(*texture, desc.subresourceRange) > 6) ?
                     VK_IMAGE_VIEW_TYPE_CUBE_ARRAY : VK_IMAGE_VIEW_TYPE_CUBE;
                 break;
         }
@@ -346,15 +346,29 @@ namespace RVX
         viewInfo.subresourceRange.layerCount = (desc.subresourceRange.arrayLayerCount == 0 || desc.subresourceRange.arrayLayerCount == RVX_ALL_LAYERS) ?
             VK_REMAINING_ARRAY_LAYERS : desc.subresourceRange.arrayLayerCount;
 
-        // Aspect mask
-        if (HasFlag(texture->GetUsage(), RHITextureUsage::DepthStencil))
+        // Aspect mask follows the requested view, not just the source texture
+        // usage. A depth SRV should not inherit stencil bits from a DSV path.
+        if (IsDepthFormat(m_format))
         {
-            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-            // Add stencil aspect for formats that have it
-            VkFormat vkFormat = ToVkFormat(m_format);
-            if (vkFormat == VK_FORMAT_D24_UNORM_S8_UINT || vkFormat == VK_FORMAT_D32_SFLOAT_S8_UINT)
+            switch (desc.subresourceRange.aspect)
             {
-                viewInfo.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+                case RHITextureAspect::Stencil:
+                    viewInfo.subresourceRange.aspectMask = IsStencilFormat(m_format)
+                                                               ? VK_IMAGE_ASPECT_STENCIL_BIT
+                                                               : VK_IMAGE_ASPECT_DEPTH_BIT;
+                    break;
+                case RHITextureAspect::DepthStencil:
+                    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                    if (IsStencilFormat(m_format))
+                    {
+                        viewInfo.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+                    }
+                    break;
+                case RHITextureAspect::Depth:
+                case RHITextureAspect::Color:
+                default:
+                    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                    break;
             }
         }
         else
@@ -601,7 +615,28 @@ namespace RVX
 
     RHITextureViewRef CreateVulkanTextureView(VulkanDevice* device, RHITexture* texture, const RHITextureViewDesc& desc)
     {
-        return Ref<VulkanTextureView>(new VulkanTextureView(device, texture, desc));
+        if (!texture)
+        {
+            RVX_RHI_ERROR("Vulkan: Cannot create texture view from null texture");
+            return nullptr;
+        }
+        if (!IsTextureViewTypeCompatible(texture->GetUsage(), texture->GetFormat(), desc))
+        {
+            RVX_RHI_ERROR("Vulkan: Cannot create {} texture view for texture usage {} format {}",
+                          GetTextureViewTypeName(desc.type),
+                          static_cast<uint32>(texture->GetUsage()),
+                          static_cast<uint32>(desc.format == RHIFormat::Unknown ? texture->GetFormat() : desc.format));
+            return nullptr;
+        }
+
+        auto view = Ref<VulkanTextureView>(new VulkanTextureView(device, texture, desc));
+        if (view->GetImageView() == VK_NULL_HANDLE)
+        {
+            RVX_RHI_ERROR("Vulkan: Failed to create native {} texture view",
+                          GetTextureViewTypeName(desc.type));
+            return nullptr;
+        }
+        return view;
     }
 
     RHISamplerRef CreateVulkanSampler(VulkanDevice* device, const RHISamplerDesc& desc)
@@ -756,7 +791,7 @@ namespace RVX
         imageInfo.extent.height = desc.height;
         imageInfo.extent.depth = desc.depth;
         imageInfo.mipLevels = desc.mipLevels;
-        imageInfo.arrayLayers = desc.arraySize;
+        imageInfo.arrayLayers = GetTexturePhysicalLayerCount(desc);
         imageInfo.format = ToVkFormat(desc.format);
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;

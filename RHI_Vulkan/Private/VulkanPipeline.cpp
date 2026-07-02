@@ -276,7 +276,9 @@ namespace RVX
         rasterizer.cullMode = ToVkCullMode(desc.rasterizerState.cullMode);
         rasterizer.frontFace = (desc.rasterizerState.frontFace == RHIFrontFace::CounterClockwise) ?
             VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
-        rasterizer.depthBiasEnable = (desc.rasterizerState.depthBias != 0.0f);
+        rasterizer.depthBiasEnable = (desc.rasterizerState.depthBias != 0.0f ||
+                                      desc.rasterizerState.slopeScaledDepthBias != 0.0f ||
+                                      desc.rasterizerState.depthBiasClamp != 0.0f);
         rasterizer.depthBiasConstantFactor = desc.rasterizerState.depthBias;
         rasterizer.depthBiasClamp = desc.rasterizerState.depthBiasClamp;
         rasterizer.depthBiasSlopeFactor = desc.rasterizerState.slopeScaledDepthBias;
@@ -445,8 +447,10 @@ namespace RVX
             m_device->SetObjectName(VK_OBJECT_TYPE_DESCRIPTOR_SET, reinterpret_cast<uint64>(m_descriptorSet), desc.debugName);
         }
 
-        // Initial update
-        Update(desc.bindings);
+        if (!desc.bindings.empty())
+        {
+            Update(desc.bindings);
+        }
     }
 
     VulkanDescriptorSet::~VulkanDescriptorSet()
@@ -457,8 +461,23 @@ namespace RVX
         }
     }
 
-    void VulkanDescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
+    bool VulkanDescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
     {
+        if (!m_layoutWrapper || m_descriptorSet == VK_NULL_HANDLE)
+        {
+            RVX_RHI_ERROR("VulkanDescriptorSet::Update failed: descriptor set has no valid layout");
+            return false;
+        }
+
+        auto validation = ValidateRHIDescriptorBindings(*m_layoutWrapper, bindings);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("VulkanDescriptorSet::Update failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return false;
+        }
+
         std::vector<VkWriteDescriptorSet> writes;
         std::vector<VkDescriptorBufferInfo> bufferInfos;
         std::vector<VkDescriptorImageInfo> imageInfos;
@@ -478,7 +497,7 @@ namespace RVX
             VkWriteDescriptorSet write = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             write.dstSet = m_descriptorSet;
             write.dstBinding = binding.binding;
-            write.dstArrayElement = 0;
+            write.dstArrayElement = binding.arrayElement;
             write.descriptorCount = 1;
 
             if (binding.buffer)
@@ -498,6 +517,9 @@ namespace RVX
                         break;
                     case RHIBindingType::DynamicUniformBuffer:
                         write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+                        break;
+                    case RHIBindingType::ShaderResourceBuffer:
+                        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                         break;
                     case RHIBindingType::StorageBuffer:
                         write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -569,6 +591,11 @@ namespace RVX
                 write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
                 write.pImageInfo = &imageInfos.back();
             }
+            else if (binding.accelerationStructure)
+            {
+                RVX_RHI_WARN("VulkanDescriptorSet: acceleration structure binding {} requires backend AS support", binding.binding);
+                return false;
+            }
             else
             {
                 continue;  // Skip empty bindings
@@ -582,6 +609,7 @@ namespace RVX
             vkUpdateDescriptorSets(m_device->GetDevice(), static_cast<uint32>(writes.size()),
                 writes.data(), 0, nullptr);
         }
+        return true;
     }
 
     // =============================================================================
@@ -589,11 +617,25 @@ namespace RVX
     // =============================================================================
     RHIDescriptorSetLayoutRef CreateVulkanDescriptorSetLayout(VulkanDevice* device, const RHIDescriptorSetLayoutDesc& desc)
     {
+        auto validation = ValidateRHIDescriptorSetLayoutDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("Vulkan descriptor set layout creation failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return nullptr;
+        }
         return Ref<VulkanDescriptorSetLayout>(new VulkanDescriptorSetLayout(device, desc));
     }
 
     RHIPipelineLayoutRef CreateVulkanPipelineLayout(VulkanDevice* device, const RHIPipelineLayoutDesc& desc)
     {
+        auto validation = ValidateRHIPipelineLayoutDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("Vulkan pipeline layout creation failed: {}", validation.message);
+            return nullptr;
+        }
         return Ref<VulkanPipelineLayout>(new VulkanPipelineLayout(device, desc));
     }
 
@@ -609,6 +651,14 @@ namespace RVX
 
     RHIDescriptorSetRef CreateVulkanDescriptorSet(VulkanDevice* device, const RHIDescriptorSetDesc& desc)
     {
+        auto validation = ValidateRHIDescriptorSetDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("Vulkan descriptor set creation failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return nullptr;
+        }
         return Ref<VulkanDescriptorSet>(new VulkanDescriptorSet(device, desc));
     }
 

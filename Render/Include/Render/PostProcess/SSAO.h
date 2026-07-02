@@ -11,6 +11,7 @@
 #include "Core/MathTypes.h"
 #include "RHI/RHI.h"
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace RVX
@@ -116,7 +117,10 @@ namespace RVX
          * @brief Enable/disable SSAO
          */
         void SetEnabled(bool enabled) { m_enabled = enabled; }
-        bool IsEnabled() const { return m_enabled; }
+        bool IsEnabled() const { return m_enabled && m_supported; }
+        bool IsRequestedEnabled() const { return m_enabled; }
+        bool IsSupported() const { return m_supported; }
+        const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
 
         // =========================================================================
         // Rendering
@@ -156,6 +160,8 @@ namespace RVX
         IRHIDevice* m_device = nullptr;
         SSAOConfig m_config;
         bool m_enabled = true;
+        bool m_supported = false;
+        std::string m_unsupportedReason = "SSAO noise upload, AO, blur, and temporal pipelines are not implemented";
 
         uint32 m_width = 0;
         uint32 m_height = 0;

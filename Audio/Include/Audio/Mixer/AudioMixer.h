@@ -9,8 +9,9 @@
 #include "Audio/Mixer/AudioBus.h"
 #include "Audio/Mixer/VoicePool.h"
 #include <memory>
-#include <unordered_map>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace RVX::Audio
 {
@@ -90,6 +91,11 @@ public:
      * @brief Get the master bus
      */
     AudioBusNode* GetMasterBus() { return m_masterBus.get(); }
+
+    /**
+     * @brief Get all bus IDs currently registered in the mixer
+     */
+    std::vector<uint32> GetBusIds() const;
 
     // =========================================================================
     // Volume Control (Convenience)

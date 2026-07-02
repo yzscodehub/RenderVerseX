@@ -1,6 +1,7 @@
 #include "Resource/Loader/HDRTextureLoader.h"
-#include "Resource/ResourceCache.h"
+
 #include "Core/Log.h"
+#include "Resource/ResourceCache.h"
 
 #include <stb_image.h>
 
@@ -13,10 +14,14 @@
     #define HAS_TINYEXR 0
 #endif
 
-#include <filesystem>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <filesystem>
 #include <functional>
+#include <iomanip>
+#include <limits>
+#include <sstream>
 
 namespace RVX::Resource
 {
@@ -27,6 +32,262 @@ namespace RVX::Resource
     static constexpr float PI = 3.14159265358979323846f;
     static constexpr float TWO_PI = 2.0f * PI;
     static constexpr float HALF_PI = PI / 2.0f;
+
+    namespace
+    {
+        class GeneratedHDRTextureResource final : public TextureResource
+        {
+        public:
+            void MarkLoaded()
+            {
+                NotifyLoaded();
+            }
+        };
+
+        Vec3 SampleCubemapNearest(const CubemapFaces& envMap, const Vec3& direction)
+        {
+            if (envMap.faceSize == 0)
+            {
+                return Vec3(0.0f);
+            }
+
+            const Vec3 sampleVec = glm::normalize(direction);
+            const float maxAxis = std::max({std::abs(sampleVec.x),
+                                            std::abs(sampleVec.y),
+                                            std::abs(sampleVec.z)});
+
+            if (maxAxis <= 0.0f || !std::isfinite(maxAxis))
+            {
+                return Vec3(0.0f);
+            }
+
+            int sampleFace = 0;
+            float sc = 0.0f;
+            float tc = 0.0f;
+            float ma = 1.0f;
+
+            if (sampleVec.x > 0.0f && std::abs(sampleVec.x) >= maxAxis)
+            {
+                sampleFace = CubemapFaces::PositiveX;
+                sc = -sampleVec.z;
+                tc = -sampleVec.y;
+                ma = sampleVec.x;
+            }
+            else if (sampleVec.x < 0.0f && std::abs(sampleVec.x) >= maxAxis)
+            {
+                sampleFace = CubemapFaces::NegativeX;
+                sc = sampleVec.z;
+                tc = -sampleVec.y;
+                ma = -sampleVec.x;
+            }
+            else if (sampleVec.y > 0.0f && std::abs(sampleVec.y) >= maxAxis)
+            {
+                sampleFace = CubemapFaces::PositiveY;
+                sc = sampleVec.x;
+                tc = sampleVec.z;
+                ma = sampleVec.y;
+            }
+            else if (sampleVec.y < 0.0f && std::abs(sampleVec.y) >= maxAxis)
+            {
+                sampleFace = CubemapFaces::NegativeY;
+                sc = sampleVec.x;
+                tc = -sampleVec.z;
+                ma = -sampleVec.y;
+            }
+            else if (sampleVec.z > 0.0f && std::abs(sampleVec.z) >= maxAxis)
+            {
+                sampleFace = CubemapFaces::PositiveZ;
+                sc = sampleVec.x;
+                tc = -sampleVec.y;
+                ma = sampleVec.z;
+            }
+            else
+            {
+                sampleFace = CubemapFaces::NegativeZ;
+                sc = -sampleVec.x;
+                tc = -sampleVec.y;
+                ma = -sampleVec.z;
+            }
+
+            const std::vector<float>& faceData = envMap.faces[static_cast<size_t>(sampleFace)];
+            if (faceData.empty())
+            {
+                return Vec3(0.0f);
+            }
+
+            const float sampleU = 0.5f * (sc / ma + 1.0f);
+            const float sampleV = 0.5f * (tc / ma + 1.0f);
+            const int px = std::clamp(static_cast<int>(sampleU * envMap.faceSize),
+                                      0,
+                                      static_cast<int>(envMap.faceSize) - 1);
+            const int py = std::clamp(static_cast<int>(sampleV * envMap.faceSize),
+                                      0,
+                                      static_cast<int>(envMap.faceSize) - 1);
+
+            const size_t idx = (static_cast<size_t>(py) * envMap.faceSize + static_cast<size_t>(px)) * 4u;
+            if (idx + 2 >= faceData.size())
+            {
+                return Vec3(0.0f);
+            }
+
+            return Vec3(faceData[idx], faceData[idx + 1], faceData[idx + 2]);
+        }
+
+        Vec3 SanitizeFiniteColor(const Vec3& color)
+        {
+            return Vec3(std::isfinite(color.r) ? color.r : 0.0f,
+                        std::isfinite(color.g) ? color.g : 0.0f,
+                        std::isfinite(color.b) ? color.b : 0.0f);
+        }
+
+        float SanitizeFiniteNonNegative(float value)
+        {
+            return std::isfinite(value) ? std::max(0.0f, value) : 0.0f;
+        }
+
+        float GeometrySchlickGGX(float nDot, float roughness)
+        {
+            const float alpha = roughness * roughness;
+            const float k = alpha * 0.5f;
+            return nDot / std::max(nDot * (1.0f - k) + k, 1.0e-6f);
+        }
+
+        float GeometrySmithIBL(float nDotV, float nDotL, float roughness)
+        {
+            return GeometrySchlickGGX(nDotV, roughness) * GeometrySchlickGGX(nDotL, roughness);
+        }
+
+        uint16_t FloatToHalfBits(float value)
+        {
+            const float sanitized = SanitizeFiniteNonNegative(value);
+            if (sanitized == 0.0f)
+            {
+                return 0;
+            }
+
+            uint32_t bits = 0;
+            std::memcpy(&bits, &sanitized, sizeof(bits));
+            const uint16_t sign = static_cast<uint16_t>((bits >> 16) & 0x8000u);
+            int32_t exp = static_cast<int32_t>((bits >> 23) & 0xFFu) - 127 + 15;
+            uint32_t mant = bits & 0x007FFFFFu;
+
+            if (exp <= 0)
+            {
+                if (exp < -10)
+                {
+                    return sign;
+                }
+
+                mant |= 0x00800000u;
+                const uint32_t shift = static_cast<uint32_t>(14 - exp);
+                uint16_t half = static_cast<uint16_t>(mant >> shift);
+                if ((mant >> (shift - 1u)) & 1u)
+                {
+                    ++half;
+                }
+                return static_cast<uint16_t>(sign | half);
+            }
+
+            if (exp >= 31)
+            {
+                return static_cast<uint16_t>(sign | 0x7C00u);
+            }
+
+            uint16_t half = static_cast<uint16_t>(sign |
+                                                  (static_cast<uint16_t>(exp) << 10) |
+                                                  static_cast<uint16_t>(mant >> 13));
+            if (mant & 0x00001000u)
+            {
+                ++half;
+            }
+            return half;
+        }
+
+        void AppendFloatOption(std::ostringstream& stream, const char* name, float value)
+        {
+            stream << '|' << name << '=';
+            if (std::isfinite(value))
+            {
+                stream << std::setprecision(std::numeric_limits<float>::max_digits10) << value;
+            }
+            else
+            {
+                stream << "nonfinite";
+            }
+        }
+
+        void AppendBoolOption(std::ostringstream& stream, const char* name, bool value)
+        {
+            stream << '|' << name << '=' << (value ? 1 : 0);
+        }
+
+        std::string BuildHDREquirectCacheKey(const std::string& absolutePath,
+                                             const HDRLoadOptions& options)
+        {
+            std::ostringstream stream;
+            stream << "hdr_equirect_v1|path=" << absolutePath;
+            AppendBoolOption(stream, "applyGamma", options.applyGamma);
+            AppendFloatOption(stream, "exposure", options.exposure);
+            return stream.str();
+        }
+
+        std::string BuildHDRCubemapCacheKey(const std::string& absolutePath,
+                                            const HDRLoadOptions& options)
+        {
+            std::ostringstream stream;
+            stream << "hdr_cubemap_v1|path=" << absolutePath
+                   << "|resolution=" << options.cubemapResolution;
+            AppendBoolOption(stream, "applyGamma", options.applyGamma);
+            AppendFloatOption(stream, "exposure", options.exposure);
+            return stream.str();
+        }
+
+        std::string BuildIBLEnvironmentCacheKey(const std::string& absolutePath,
+                                                const HDRLoadOptions& options)
+        {
+            std::ostringstream stream;
+            stream << "ibl_environment_v1|path=" << absolutePath
+                   << "|resolution=" << options.cubemapResolution;
+            AppendBoolOption(stream, "applyGamma", options.applyGamma);
+            AppendFloatOption(stream, "exposure", options.exposure);
+            return stream.str();
+        }
+
+        std::string BuildIBLIrradianceCacheKey(const std::string& absolutePath,
+                                               const HDRLoadOptions& options)
+        {
+            std::ostringstream stream;
+            stream << "ibl_irradiance_v1|path=" << absolutePath
+                   << "|envResolution=" << options.cubemapResolution
+                   << "|irradianceResolution=" << options.irradianceResolution
+                   << "|samples=" << std::max(1u, options.convolutionSamples);
+            AppendBoolOption(stream, "applyGamma", options.applyGamma);
+            AppendFloatOption(stream, "exposure", options.exposure);
+            return stream.str();
+        }
+
+        std::string BuildIBLPrefilteredCacheKey(const std::string& absolutePath,
+                                                const HDRLoadOptions& options)
+        {
+            std::ostringstream stream;
+            stream << "ibl_prefiltered_v1|path=" << absolutePath
+                   << "|envResolution=" << options.cubemapResolution
+                   << "|prefilteredResolution=" << options.prefilteredResolution
+                   << "|mips=" << options.prefilteredMipLevels
+                   << "|samples=" << std::max(1u, options.convolutionSamples);
+            AppendBoolOption(stream, "applyGamma", options.applyGamma);
+            AppendFloatOption(stream, "exposure", options.exposure);
+            return stream.str();
+        }
+
+        std::string BuildBRDFLUTCacheKey(uint32_t resolution, uint32_t numSamples)
+        {
+            std::ostringstream stream;
+            stream << "ibl_brdf_lut_v1|resolution=" << resolution
+                   << "|samples=" << std::max(1u, numSamples);
+            return stream.str();
+        }
+    } // namespace
 
     // =========================================================================
     // Construction
@@ -81,7 +342,8 @@ namespace RVX::Resource
 
         // Load HDR data
         std::vector<float> pixels;
-        uint32_t width, height;
+        uint32_t width = 0;
+        uint32_t height = 0;
 
         std::string ext = absPath.extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
@@ -98,7 +360,10 @@ namespace RVX::Resource
 
         if (!loaded)
         {
-            RVX_CORE_WARN("HDRTextureLoader: Failed to load: {}", absolutePath);
+            if (Log::GetCoreLogger())
+            {
+                RVX_CORE_WARN("HDRTextureLoader: Failed to load: {}", absolutePath);
+            }
             return GetDefaultEnvironmentMap();
         }
 
@@ -121,12 +386,13 @@ namespace RVX::Resource
             CubemapFaces cubemap = EquirectangularToCubemap(
                 pixels.data(), width, height, options.cubemapResolution);
 
-            return CreateCubemapTexture(cubemap, absolutePath + "_cubemap");
+            return CreateCubemapTexture(cubemap, BuildHDRCubemapCacheKey(absolutePath, options));
         }
         else
         {
             // Create equirectangular texture
-            ResourceId texId = GenerateHDRTextureId(absolutePath);
+            const std::string cacheKey = BuildHDREquirectCacheKey(absolutePath, options);
+            ResourceId texId = GenerateHDRTextureId(cacheKey);
 
             // Check cache
             if (m_manager && m_manager->IsInitialized())
@@ -137,7 +403,7 @@ namespace RVX::Resource
                 }
             }
 
-            auto* texture = new TextureResource();
+            auto* texture = new GeneratedHDRTextureResource();
             texture->SetId(texId);
             texture->SetPath(absolutePath);
             texture->SetName(absPath.stem().string());
@@ -157,6 +423,7 @@ namespace RVX::Resource
             std::memcpy(byteData.data(), pixels.data(), byteData.size());
 
             texture->SetData(std::move(byteData), metadata);
+            texture->MarkLoaded();
 
             if (m_manager && m_manager->IsInitialized())
             {
@@ -177,7 +444,8 @@ namespace RVX::Resource
 
         // Load HDR data
         std::vector<float> pixels;
-        uint32_t width, height;
+        uint32_t width = 0;
+        uint32_t height = 0;
 
         std::string ext = absPath.extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
@@ -194,11 +462,17 @@ namespace RVX::Resource
 
         if (!loaded)
         {
-            RVX_CORE_WARN("HDRTextureLoader: Failed to load for IBL: {}", absolutePath);
+            if (Log::GetCoreLogger())
+            {
+                RVX_CORE_WARN("HDRTextureLoader: Failed to load for IBL: {}", absolutePath);
+            }
             return ibl;
         }
 
-        RVX_CORE_INFO("HDRTextureLoader: Generating IBL from {}...", absPath.filename().string());
+        if (Log::GetCoreLogger())
+        {
+            RVX_CORE_INFO("HDRTextureLoader: Generating IBL from {}...", absPath.filename().string());
+        }
 
         // Apply exposure
         if (options.exposure != 1.0f)
@@ -215,24 +489,32 @@ namespace RVX::Resource
         // Generate environment cubemap
         CubemapFaces envCubemap = EquirectangularToCubemap(
             pixels.data(), width, height, options.cubemapResolution);
-        ibl.environmentMap = CreateCubemapTexture(envCubemap, absolutePath + "_env");
+        ibl.environmentMap = CreateCubemapTexture(
+            envCubemap, BuildIBLEnvironmentCacheKey(absolutePath, options));
 
         // Generate irradiance map
         CubemapFaces irradianceCubemap = GenerateIrradianceMap(
             envCubemap, options.irradianceResolution, options.convolutionSamples);
-        ibl.irradianceMap = CreateCubemapTexture(irradianceCubemap, absolutePath + "_irradiance");
+        ibl.irradianceMap = CreateCubemapTexture(
+            irradianceCubemap, BuildIBLIrradianceCacheKey(absolutePath, options));
 
         // Generate prefiltered map with mip chain
         std::vector<CubemapFaces> prefilteredMips = GeneratePrefilteredMap(
             envCubemap, options.prefilteredResolution, 
             options.prefilteredMipLevels, options.convolutionSamples);
-        ibl.prefilteredMap = CreateCubemapTextureWithMips(prefilteredMips, absolutePath + "_prefiltered");
-        ibl.prefilteredMipLevels = options.prefilteredMipLevels;
+        ibl.prefilteredMap = CreateCubemapTextureWithMips(
+            prefilteredMips, BuildIBLPrefilteredCacheKey(absolutePath, options));
+        ibl.prefilteredMipLevels = ibl.prefilteredMap
+            ? ibl.prefilteredMap->GetMipLevels()
+            : static_cast<uint32_t>(prefilteredMips.size());
 
         // Generate BRDF LUT
         ibl.brdfLUT = GenerateBRDFLUT(options.brdfLUTResolution, options.convolutionSamples);
 
-        RVX_CORE_INFO("HDRTextureLoader: IBL generation complete for {}", absPath.filename().string());
+        if (Log::GetCoreLogger())
+        {
+            RVX_CORE_INFO("HDRTextureLoader: IBL generation complete for {}", absPath.filename().string());
+        }
 
         return ibl;
     }
@@ -357,72 +639,22 @@ namespace RVX::Resource
                     Vec3 right = glm::normalize(glm::cross(up, N));
                     up = glm::cross(N, right);
 
-                    float sampleDelta = 0.025f;
-                    int nSamples = 0;
-
-                    for (float phi = 0.0f; phi < TWO_PI; phi += sampleDelta)
+                    const uint32_t sampleCount = std::max(1u, numSamples);
+                    for (uint32_t i = 0; i < sampleCount; ++i)
                     {
-                        for (float theta = 0.0f; theta < HALF_PI; theta += sampleDelta)
-                        {
-                            // Spherical to cartesian in tangent space
-                            Vec3 tangentSample(
-                                std::sin(theta) * std::cos(phi),
-                                std::sin(theta) * std::sin(phi),
-                                std::cos(theta)
-                            );
-
-                            // Transform to world space
-                            Vec3 sampleVec = tangentSample.x * right + 
-                                            tangentSample.y * up + 
-                                            tangentSample.z * N;
-
-                            // Sample environment map
-                            // (simplified - in production, sample the actual cubemap)
-                            Vec2 envUV = DirectionToEquirectangular(sampleVec);
-                            
-                            // Find which face and coordinates
-                            float maxAxis = std::max({std::abs(sampleVec.x), 
-                                                      std::abs(sampleVec.y), 
-                                                      std::abs(sampleVec.z)});
-                            
-                            int sampleFace = 0;
-                            float sc, tc, ma;
-                            
-                            if (sampleVec.x > 0 && std::abs(sampleVec.x) >= maxAxis) {
-                                sampleFace = 0; sc = -sampleVec.z; tc = -sampleVec.y; ma = sampleVec.x;
-                            } else if (sampleVec.x < 0 && std::abs(sampleVec.x) >= maxAxis) {
-                                sampleFace = 1; sc = sampleVec.z; tc = -sampleVec.y; ma = -sampleVec.x;
-                            } else if (sampleVec.y > 0 && std::abs(sampleVec.y) >= maxAxis) {
-                                sampleFace = 2; sc = sampleVec.x; tc = sampleVec.z; ma = sampleVec.y;
-                            } else if (sampleVec.y < 0 && std::abs(sampleVec.y) >= maxAxis) {
-                                sampleFace = 3; sc = sampleVec.x; tc = -sampleVec.z; ma = -sampleVec.y;
-                            } else if (sampleVec.z > 0 && std::abs(sampleVec.z) >= maxAxis) {
-                                sampleFace = 4; sc = sampleVec.x; tc = -sampleVec.y; ma = sampleVec.z;
-                            } else {
-                                sampleFace = 5; sc = -sampleVec.x; tc = -sampleVec.y; ma = -sampleVec.z;
-                            }
-
-                            float sampleU = 0.5f * (sc / ma + 1.0f);
-                            float sampleV = 0.5f * (tc / ma + 1.0f);
-
-                            int px = std::clamp(static_cast<int>(sampleU * envMap.faceSize), 
-                                               0, static_cast<int>(envMap.faceSize) - 1);
-                            int py = std::clamp(static_cast<int>(sampleV * envMap.faceSize), 
-                                               0, static_cast<int>(envMap.faceSize) - 1);
-
-                            size_t idx = (py * envMap.faceSize + px) * 4;
-                            Vec3 envColor(
-                                envMap.faces[sampleFace][idx],
-                                envMap.faces[sampleFace][idx + 1],
-                                envMap.faces[sampleFace][idx + 2]
-                            );
-
-                            irradiance += envColor * std::cos(theta) * std::sin(theta);
-                            nSamples++;
-                        }
+                        const Vec2 xi = Hammersley(i, sampleCount);
+                        const float radius = std::sqrt(xi.y);
+                        const float phi = TWO_PI * xi.x;
+                        const Vec3 tangentSample(radius * std::cos(phi),
+                                                 radius * std::sin(phi),
+                                                 std::sqrt(std::max(0.0f, 1.0f - xi.y)));
+                        const Vec3 sampleVec = glm::normalize(tangentSample.x * right +
+                                                              tangentSample.y * up +
+                                                              tangentSample.z * N);
+                        irradiance += SampleCubemapNearest(envMap, sampleVec);
                     }
 
-                    irradiance = PI * irradiance / static_cast<float>(nSamples);
+                    irradiance = SanitizeFiniteColor(PI * irradiance / static_cast<float>(sampleCount));
 
                     size_t dstIdx = (y * outputSize + x) * 4;
                     result.faces[face][dstIdx] = irradiance.r;
@@ -443,11 +675,14 @@ namespace RVX::Resource
     {
         std::vector<CubemapFaces> mipChain;
         mipChain.reserve(numMipLevels);
+        const uint32_t sampleCount = std::max(1u, numSamples);
 
         for (uint32_t mip = 0; mip < numMipLevels; ++mip)
         {
-            float roughness = static_cast<float>(mip) / static_cast<float>(numMipLevels - 1);
-            uint32_t mipSize = std::max(1u, outputSize >> mip);
+            const float roughness = numMipLevels > 1 ?
+                static_cast<float>(mip) / static_cast<float>(numMipLevels - 1) :
+                0.0f;
+            const uint32_t mipSize = std::max(1u, outputSize >> mip);
 
             CubemapFaces mipFaces;
             mipFaces.faceSize = mipSize;
@@ -471,55 +706,31 @@ namespace RVX::Resource
                         Vec3 prefilteredColor(0.0f);
                         float totalWeight = 0.0f;
 
-                        for (uint32_t i = 0; i < numSamples; ++i)
+                        for (uint32_t i = 0; i < sampleCount; ++i)
                         {
-                            Vec2 xi = Hammersley(i, numSamples);
+                            Vec2 xi = Hammersley(i, sampleCount);
                             Vec3 H = ImportanceSampleGGX(xi, N, roughness);
                             Vec3 L = glm::normalize(2.0f * glm::dot(V, H) * H - V);
 
                             float NdotL = std::max(glm::dot(N, L), 0.0f);
                             if (NdotL > 0.0f)
                             {
-                                // Sample environment (simplified)
-                                float maxAxis = std::max({std::abs(L.x), std::abs(L.y), std::abs(L.z)});
-                                int sampleFace = 0;
-                                float sc, tc, ma;
-
-                                if (L.x > 0 && std::abs(L.x) >= maxAxis) {
-                                    sampleFace = 0; sc = -L.z; tc = -L.y; ma = L.x;
-                                } else if (L.x < 0 && std::abs(L.x) >= maxAxis) {
-                                    sampleFace = 1; sc = L.z; tc = -L.y; ma = -L.x;
-                                } else if (L.y > 0 && std::abs(L.y) >= maxAxis) {
-                                    sampleFace = 2; sc = L.x; tc = L.z; ma = L.y;
-                                } else if (L.y < 0 && std::abs(L.y) >= maxAxis) {
-                                    sampleFace = 3; sc = L.x; tc = -L.z; ma = -L.y;
-                                } else if (L.z > 0 && std::abs(L.z) >= maxAxis) {
-                                    sampleFace = 4; sc = L.x; tc = -L.y; ma = L.z;
-                                } else {
-                                    sampleFace = 5; sc = -L.x; tc = -L.y; ma = -L.z;
-                                }
-
-                                float sampleU = 0.5f * (sc / ma + 1.0f);
-                                float sampleV = 0.5f * (tc / ma + 1.0f);
-
-                                int px = std::clamp(static_cast<int>(sampleU * envMap.faceSize),
-                                                   0, static_cast<int>(envMap.faceSize) - 1);
-                                int py = std::clamp(static_cast<int>(sampleV * envMap.faceSize),
-                                                   0, static_cast<int>(envMap.faceSize) - 1);
-
-                                size_t idx = (py * envMap.faceSize + px) * 4;
-                                Vec3 envColor(
-                                    envMap.faces[sampleFace][idx],
-                                    envMap.faces[sampleFace][idx + 1],
-                                    envMap.faces[sampleFace][idx + 2]
-                                );
-
+                                const Vec3 envColor = SampleCubemapNearest(envMap, L);
                                 prefilteredColor += envColor * NdotL;
                                 totalWeight += NdotL;
                             }
                         }
 
-                        prefilteredColor /= totalWeight;
+                        if (totalWeight > 0.0f && std::isfinite(totalWeight))
+                        {
+                            prefilteredColor /= totalWeight;
+                        }
+                        else
+                        {
+                            prefilteredColor = SampleCubemapNearest(envMap, N);
+                        }
+
+                        prefilteredColor = SanitizeFiniteColor(prefilteredColor);
 
                         size_t dstIdx = (y * mipSize + x) * 4;
                         mipFaces.faces[face][dstIdx] = prefilteredColor.r;
@@ -538,7 +749,8 @@ namespace RVX::Resource
 
     TextureResource* HDRTextureLoader::GenerateBRDFLUT(uint32_t resolution, uint32_t numSamples)
     {
-        ResourceId lutId = GenerateHDRTextureId("__brdf_lut__");
+        const std::string cacheKey = BuildBRDFLUTCacheKey(resolution, numSamples);
+        ResourceId lutId = GenerateHDRTextureId(cacheKey);
 
         // Check cache
         if (m_manager && m_manager->IsInitialized())
@@ -550,6 +762,7 @@ namespace RVX::Resource
         }
 
         std::vector<float> lutData(resolution * resolution * 2);  // RG16F
+        const uint32_t sampleCount = std::max(1u, numSamples);
 
         for (uint32_t y = 0; y < resolution; ++y)
         {
@@ -569,9 +782,9 @@ namespace RVX::Resource
 
                 Vec3 N(0.0f, 0.0f, 1.0f);
 
-                for (uint32_t i = 0; i < numSamples; ++i)
+                for (uint32_t i = 0; i < sampleCount; ++i)
                 {
-                    Vec2 xi = Hammersley(i, numSamples);
+                    Vec2 xi = Hammersley(i, sampleCount);
                     Vec3 H = ImportanceSampleGGX(xi, N, roughness);
                     Vec3 L = glm::normalize(2.0f * glm::dot(V, H) * H - V);
 
@@ -581,8 +794,8 @@ namespace RVX::Resource
 
                     if (NdotL > 0.0f)
                     {
-                        float G = NdotL * NdotV;  // Simplified geometry term
-                        float G_Vis = (G * VdotH) / (NdotH * NdotV + 0.0001f);
+                        float G = GeometrySmithIBL(NdotV, NdotL, roughness);
+                        float G_Vis = (G * VdotH) / std::max(NdotH * NdotV, 1.0e-6f);
                         float Fc = std::pow(1.0f - VdotH, 5.0f);
 
                         A += (1.0f - Fc) * G_Vis;
@@ -590,19 +803,19 @@ namespace RVX::Resource
                     }
                 }
 
-                A /= static_cast<float>(numSamples);
-                B /= static_cast<float>(numSamples);
+                A /= static_cast<float>(sampleCount);
+                B /= static_cast<float>(sampleCount);
 
                 size_t idx = (y * resolution + x) * 2;
-                lutData[idx] = A;
-                lutData[idx + 1] = B;
+                lutData[idx] = SanitizeFiniteNonNegative(A);
+                lutData[idx + 1] = SanitizeFiniteNonNegative(B);
             }
         }
 
         // Create texture
-        auto* texture = new TextureResource();
+        auto* texture = new GeneratedHDRTextureResource();
         texture->SetId(lutId);
-        texture->SetPath("__brdf_lut__");
+        texture->SetPath(cacheKey);
         texture->SetName("BRDF_LUT");
 
         TextureMetadata metadata;
@@ -619,26 +832,14 @@ namespace RVX::Resource
 
         for (uint32_t i = 0; i < resolution * resolution; ++i)
         {
-            // Simple float to half conversion (approximate)
-            auto floatToHalf = [](float f) -> uint16_t {
-                // Simplified conversion - for production use proper half-float conversion
-                if (f == 0.0f) return 0;
-                uint32_t bits = *reinterpret_cast<uint32_t*>(&f);
-                uint16_t sign = (bits >> 16) & 0x8000;
-                int32_t exp = ((bits >> 23) & 0xFF) - 127 + 15;
-                uint16_t mant = (bits >> 13) & 0x3FF;
-                if (exp <= 0) return sign;
-                if (exp >= 31) return sign | 0x7C00;
-                return sign | (static_cast<uint16_t>(exp) << 10) | mant;
-            };
-
-            halfData[i * 4 + 0] = floatToHalf(lutData[i * 2]);
-            halfData[i * 4 + 1] = floatToHalf(lutData[i * 2 + 1]);
+            halfData[i * 4 + 0] = FloatToHalfBits(lutData[i * 2]);
+            halfData[i * 4 + 1] = FloatToHalfBits(lutData[i * 2 + 1]);
             halfData[i * 4 + 2] = 0;
-            halfData[i * 4 + 3] = floatToHalf(1.0f);
+            halfData[i * 4 + 3] = FloatToHalfBits(1.0f);
         }
 
         texture->SetData(std::move(byteData), metadata);
+        texture->MarkLoaded();
 
         if (m_manager && m_manager->IsInitialized())
         {
@@ -700,7 +901,10 @@ namespace RVX::Resource
 
         if (!data)
         {
-            RVX_CORE_WARN("HDRTextureLoader: stbi_loadf failed: {}", stbi_failure_reason());
+            if (Log::GetCoreLogger())
+            {
+                RVX_CORE_WARN("HDRTextureLoader: stbi_loadf failed: {}", stbi_failure_reason());
+            }
             return false;
         }
 
@@ -729,7 +933,10 @@ namespace RVX::Resource
         {
             if (err)
             {
-                RVX_CORE_WARN("HDRTextureLoader: tinyexr failed: {}", err);
+                if (Log::GetCoreLogger())
+                {
+                    RVX_CORE_WARN("HDRTextureLoader: tinyexr failed: {}", err);
+                }
                 ::FreeEXRErrorMessage(err);
             }
             return false;
@@ -744,7 +951,10 @@ namespace RVX::Resource
         free(data);
         return true;
 #else
-        RVX_CORE_WARN("HDRTextureLoader: EXR support not compiled in (missing tinyexr)");
+        if (Log::GetCoreLogger())
+        {
+            RVX_CORE_WARN("HDRTextureLoader: EXR support not compiled in (missing tinyexr)");
+        }
         return false;
 #endif
     }
@@ -767,7 +977,7 @@ namespace RVX::Resource
             }
         }
 
-        auto* texture = new TextureResource();
+        auto* texture = new GeneratedHDRTextureResource();
         texture->SetId(texId);
         texture->SetPath(uniqueKey);
         
@@ -797,6 +1007,7 @@ namespace RVX::Resource
         metadata.usage = TextureUsage::Color;
 
         texture->SetData(std::move(cubemapData), metadata);
+        texture->MarkLoaded();
 
         if (m_manager && m_manager->IsInitialized())
         {
@@ -826,7 +1037,7 @@ namespace RVX::Resource
             }
         }
 
-        auto* texture = new TextureResource();
+        auto* texture = new GeneratedHDRTextureResource();
         texture->SetId(texId);
         texture->SetPath(uniqueKey);
 
@@ -867,6 +1078,7 @@ namespace RVX::Resource
         metadata.usage = TextureUsage::Color;
 
         texture->SetData(std::move(cubemapData), metadata);
+        texture->MarkLoaded();
 
         if (m_manager && m_manager->IsInitialized())
         {

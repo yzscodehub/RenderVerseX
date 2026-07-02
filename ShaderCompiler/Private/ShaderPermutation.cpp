@@ -30,6 +30,43 @@ namespace RVX
         {
             return a ^ (b + 0x9e3779b9ull + (a << 6) + (a >> 2));
         }
+
+        bool PopulateShaderDescBytecode(
+            const ShaderCompileResult& result,
+            RHIBackendType backend,
+            RHIShaderDesc& shaderDesc,
+            std::string& errorMessage)
+        {
+            if (backend == RHIBackendType::OpenGL)
+            {
+                if (result.glslSource.empty())
+                {
+                    errorMessage = "OpenGL shader variant compilation failed: no GLSL source generated";
+                    return false;
+                }
+
+                shaderDesc.bytecode = result.glslSource.data();
+                shaderDesc.bytecodeSize = result.glslSource.size();
+                return true;
+            }
+
+            if (backend == RHIBackendType::Metal)
+            {
+                if (result.mslSource.empty())
+                {
+                    errorMessage = "Metal shader variant compilation failed: no MSL source generated";
+                    return false;
+                }
+
+                shaderDesc.bytecode = result.mslSource.data();
+                shaderDesc.bytecodeSize = result.mslSource.size();
+                return true;
+            }
+
+            shaderDesc.bytecode = result.bytecode.data();
+            shaderDesc.bytecodeSize = result.bytecode.size();
+            return true;
+        }
     }
 
     // =========================================================================
@@ -303,9 +340,14 @@ namespace RVX
                     RHIShaderDesc shaderDesc;
                     shaderDesc.stage = entry->baseDesc.stage;
                     shaderDesc.entryPoint = entry->baseDesc.entryPoint.c_str();
-                    shaderDesc.bytecode = result.bytecode.data();
-                    shaderDesc.bytecodeSize = result.bytecode.size();
                     shaderDesc.debugName = shaderPath.c_str();
+
+                    std::string shaderError;
+                    if (!PopulateShaderDescBytecode(result, entry->baseDesc.backend, shaderDesc, shaderError))
+                    {
+                        RVX_CORE_ERROR("ShaderPermutationSystem: {}", shaderError);
+                        return nullptr;
+                    }
 
                     RHIShaderRef shader = device->CreateShader(shaderDesc);
                     if (shader)
@@ -344,9 +386,14 @@ namespace RVX
         RHIShaderDesc shaderDesc;
         shaderDesc.stage = entry->baseDesc.stage;
         shaderDesc.entryPoint = entry->baseDesc.entryPoint.c_str();
-        shaderDesc.bytecode = result.bytecode.data();
-        shaderDesc.bytecodeSize = result.bytecode.size();
         shaderDesc.debugName = shaderPath.c_str();
+
+        std::string shaderError;
+        if (!PopulateShaderDescBytecode(result, entry->baseDesc.backend, shaderDesc, shaderError))
+        {
+            RVX_CORE_ERROR("ShaderPermutationSystem: {}", shaderError);
+            return nullptr;
+        }
 
         RHIShaderRef shader = device->CreateShader(shaderDesc);
         if (shader)
@@ -430,9 +477,20 @@ namespace RVX
                     RHIShaderDesc shaderDesc;
                     shaderDesc.stage = entryPtr->baseDesc.stage;
                     shaderDesc.entryPoint = entryPtr->baseDesc.entryPoint.c_str();
-                    shaderDesc.bytecode = result.bytecode.data();
-                    shaderDesc.bytecodeSize = result.bytecode.size();
                     shaderDesc.debugName = shaderPathCopy.c_str();
+
+                    std::string shaderError;
+                    if (!PopulateShaderDescBytecode(result, entryPtr->baseDesc.backend, shaderDesc, shaderError))
+                    {
+                        RVX_CORE_ERROR("ShaderPermutationSystem: {}", shaderError);
+                        std::lock_guard<std::mutex> lock(entryPtr->mutex);
+                        entryPtr->pendingCompiles.erase(variantKey);
+                        if (callback)
+                        {
+                            callback(nullptr);
+                        }
+                        return;
+                    }
 
                     RHIShaderRef shader = devicePtr->CreateShader(shaderDesc);
                     if (shader)

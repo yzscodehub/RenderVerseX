@@ -4,11 +4,15 @@
  */
 
 #include "Render/Renderer/RenderScene.h"
+
+#include "Render/Renderer/RenderProxy.h"
 #include "RenderSceneCollector.h"
-#include "Runtime/Camera/Camera.h"
-#include "Core/Math/Frustum.h"
 #include "Core/Log.h"
+#include "Core/Math/Frustum.h"
+#include "Runtime/Camera/Camera.h"
+
 #include <algorithm>
+#include <utility>
 
 namespace RVX
 {
@@ -24,6 +28,65 @@ void RenderScene::CollectFromWorld(World* world)
     RenderSceneCollector::Collect(*this, world);
 }
 
+void RenderScene::CollectFromSceneManager(SceneManager* sceneManager)
+{
+    RenderSceneCollector::Collect(*this, sceneManager);
+}
+
+void RenderScene::ApplyProxySnapshot(const RenderProxySnapshot& snapshot)
+{
+    Clear();
+
+    m_objects.reserve(snapshot.primitives.size());
+    for (const RenderPrimitiveProxy& proxy : snapshot.primitives)
+    {
+        RenderObject object;
+        object.worldMatrix = proxy.worldMatrix;
+        object.normalMatrix = proxy.normalMatrix;
+        object.bounds = proxy.bounds;
+        object.meshId = proxy.meshId;
+        object.meshResource = proxy.meshResource;
+        object.materialIds = proxy.materialIds;
+        object.materialResources = proxy.materialResources;
+        object.skinningMatrices = proxy.skinningMatrices;
+        object.entityId = proxy.ownerId;
+        object.sortKey = proxy.sortKey;
+        object.layerMask = proxy.layerMask;
+        object.visible = proxy.visible;
+        object.castsShadow = proxy.castsShadow;
+        object.receivesShadow = proxy.receivesShadow;
+        m_objects.push_back(std::move(object));
+    }
+
+    m_lights.reserve(snapshot.lights.size());
+    for (const RenderLightProxy& proxy : snapshot.lights)
+    {
+        RenderLight light;
+        switch (proxy.type)
+        {
+            case RenderLightProxy::Type::Directional:
+                light.type = RenderLight::Type::Directional;
+                break;
+            case RenderLightProxy::Type::Point:
+                light.type = RenderLight::Type::Point;
+                break;
+            case RenderLightProxy::Type::Spot:
+                light.type = RenderLight::Type::Spot;
+                break;
+        }
+
+        light.position = proxy.position;
+        light.direction = proxy.direction;
+        light.color = proxy.color;
+        light.intensity = proxy.intensity;
+        light.range = proxy.range;
+        light.innerConeAngle = proxy.innerConeAngle;
+        light.outerConeAngle = proxy.outerConeAngle;
+        light.castsShadow = proxy.castsShadow;
+        m_lights.push_back(light);
+    }
+}
+
 void RenderScene::CullAgainstCamera(const Camera& camera, std::vector<uint32_t>& outVisibleIndices) const
 {
     outVisibleIndices.clear();
@@ -36,7 +99,7 @@ void RenderScene::CullAgainstCamera(const Camera& camera, std::vector<uint32_t>&
     for (uint32_t i = 0; i < static_cast<uint32_t>(m_objects.size()); ++i)
     {
         const RenderObject& obj = m_objects[i];
-        
+
         if (!obj.visible)
             continue;
 

@@ -149,6 +149,12 @@ namespace RVX
 
         uint32 GetPointLightCount() const { return static_cast<uint32>(m_pointLights.size()); }
         uint32 GetSpotLightCount() const { return static_cast<uint32>(m_spotLights.size()); }
+        uint32 GetPointShadowRequestCount() const { return m_pointShadowRequestCount; }
+        uint32 GetSpotShadowRequestCount() const { return m_spotShadowRequestCount; }
+        uint32 GetLocalShadowRequestCount() const
+        {
+            return m_pointShadowRequestCount + m_spotShadowRequestCount;
+        }
 
         static constexpr uint32 MaxPointLights = 256;
         static constexpr uint32 MaxSpotLights = 128;
@@ -162,6 +168,8 @@ namespace RVX
         GPUDirectionalLight m_mainLight;
         std::vector<GPUPointLight> m_pointLights;
         std::vector<GPUSpotLight> m_spotLights;
+        uint32 m_pointShadowRequestCount = 0;
+        uint32 m_spotShadowRequestCount = 0;
 
         // GPU buffers
         RHIBufferRef m_lightConstantsBuffer;

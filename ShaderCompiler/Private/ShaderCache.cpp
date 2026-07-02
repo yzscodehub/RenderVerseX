@@ -107,6 +107,13 @@ namespace RVX
                 return false;
             }
 
+            if (header.compilerVersion != RVX_SHADER_COMPILER_CACHE_ABI_VERSION)
+            {
+                RVX_CORE_WARN("ShaderCache: Compiler cache ABI mismatch (file: {}, current: {})",
+                    header.compilerVersion, RVX_SHADER_COMPILER_CACHE_ABI_VERSION);
+                return false;
+            }
+
             return true;
         }
 

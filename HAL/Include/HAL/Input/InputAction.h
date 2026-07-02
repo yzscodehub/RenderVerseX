@@ -10,9 +10,11 @@
 
 #include "Core/Types.h"
 #include "HAL/Input/KeyCodes.h"
+
+#include <cmath>
+#include <functional>
 #include <string>
 #include <vector>
-#include <functional>
 
 namespace RVX::HAL
 {

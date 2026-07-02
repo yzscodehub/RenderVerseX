@@ -9,9 +9,15 @@
 
 #include <imgui.h>
 #include <algorithm>
+#include <cctype>
+#include <system_error>
 
 namespace RVX::Editor
 {
+namespace
+{
+    constexpr const char* RVX_ASSET_GUID_PAYLOAD_TYPE = "RVX_ASSET_GUID";
+}
 
 AssetBrowserPanel::AssetBrowserPanel()
 {
@@ -36,6 +42,9 @@ void AssetBrowserPanel::OnInit()
 
 void AssetBrowserPanel::OnGUI()
 {
+    m_directoryRowHits.clear();
+    m_assetItemHits.clear();
+
     if (!ImGui::Begin(GetName()))
     {
         ImGui::End();
@@ -44,7 +53,7 @@ void AssetBrowserPanel::OnGUI()
 
     DrawToolbar();
     DrawBreadcrumbs();
-    
+
     ImGui::Separator();
 
     // Split view: directory tree on left, content on right
@@ -79,6 +88,125 @@ void AssetBrowserPanel::OnGUI()
     }
 
     ImGui::End();
+}
+
+void AssetBrowserPanel::OnNativeInput(const UI::UIInputState& input)
+{
+    if (!input.WasMouseButtonPressed(UI::UIMouseButton::Left))
+    {
+        return;
+    }
+
+    const Vec2 mousePosition = input.current.mousePosition;
+    const bool doubleClick = input.WasMouseButtonDoubleClicked(UI::UIMouseButton::Left);
+
+    for (auto it = m_assetItemHits.rbegin(); it != m_assetItemHits.rend(); ++it)
+    {
+        if (it->bounds.Contains(mousePosition))
+        {
+            HandleNativeAssetClick(it->path, it->isDirectory, doubleClick);
+            return;
+        }
+    }
+
+    for (auto it = m_directoryRowHits.rbegin(); it != m_directoryRowHits.rend(); ++it)
+    {
+        if (!it->bounds.Contains(mousePosition))
+        {
+            continue;
+        }
+
+        if (it->hasToggle && it->toggleBounds.Contains(mousePosition))
+        {
+            return;
+        }
+
+        NavigateTo(it->path);
+        return;
+    }
+}
+
+std::string AssetBrowserPanel::MakeAssetDatabasePath(const std::filesystem::path& path,
+                                                     const std::filesystem::path& rootPath)
+{
+    if (path.empty() || rootPath.empty())
+    {
+        return {};
+    }
+
+    std::error_code ec;
+    std::filesystem::path normalizedRoot = std::filesystem::weakly_canonical(rootPath, ec);
+    if (ec)
+    {
+        normalizedRoot = std::filesystem::absolute(rootPath, ec).lexically_normal();
+    }
+    if (ec || normalizedRoot.empty())
+    {
+        return {};
+    }
+
+    ec.clear();
+    std::filesystem::path normalizedPath = std::filesystem::weakly_canonical(path, ec);
+    if (ec)
+    {
+        normalizedPath = std::filesystem::absolute(path, ec).lexically_normal();
+    }
+    if (ec || normalizedPath.empty())
+    {
+        return {};
+    }
+
+    ec.clear();
+    std::filesystem::path relativePath = std::filesystem::relative(normalizedPath, normalizedRoot, ec);
+    if (ec || relativePath.empty() || relativePath == ".")
+    {
+        return {};
+    }
+
+    for (const auto& part : relativePath)
+    {
+        if (part == "..")
+        {
+            return {};
+        }
+    }
+
+    return relativePath.generic_string();
+}
+
+const char* AssetBrowserPanel::GetAssetGuidDragDropPayloadType()
+{
+    return RVX_ASSET_GUID_PAYLOAD_TYPE;
+}
+
+Tools::AssetGUID AssetBrowserPanel::ResolveAssetGuid(const std::filesystem::path& path) const
+{
+    if (path.empty() || std::filesystem::is_directory(path))
+    {
+        return {};
+    }
+
+    const std::string databasePath = MakeAssetDatabasePath(path, m_rootPath);
+    if (databasePath.empty())
+    {
+        return {};
+    }
+
+    const auto* entry = EditorContext::Get().GetAssetDatabase().GetAssetByPath(databasePath);
+    return entry ? entry->guid : Tools::AssetGUID{};
+}
+
+bool AssetBrowserPanel::SelectAssetPath(const std::filesystem::path& path)
+{
+    const Tools::AssetGUID guid = ResolveAssetGuid(path);
+    if (!guid.IsValid())
+    {
+        return false;
+    }
+
+    m_selectedPath = path;
+    EditorContext::Get().SelectAsset(guid);
+    return true;
 }
 
 void AssetBrowserPanel::DrawToolbar()
@@ -251,14 +379,19 @@ void AssetBrowserPanel::DrawDirectoryNode(const std::filesystem::path& path, boo
     }
 
     bool open = ImGui::TreeNodeEx(name.c_str(), flags);
-
-    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
-    {
-        NavigateTo(path);
-    }
+    const ImVec2 itemMin = ImGui::GetItemRectMin();
+    const ImVec2 itemMax = ImGui::GetItemRectMax();
+    const float rowWidth = itemMax.x - itemMin.x;
+    const float rowHeight = itemMax.y - itemMin.y;
+    DirectoryRowHit rowHit;
+    rowHit.path = path;
+    rowHit.bounds = UI::Rect(itemMin.x, itemMin.y, rowWidth, rowHeight);
+    rowHit.toggleBounds = UI::Rect(itemMin.x, itemMin.y, std::min(22.0f, rowWidth), rowHeight);
+    rowHit.hasToggle = hasSubdirs;
+    m_directoryRowHits.push_back(rowHit);
 
     // Context menu
-    if (ImGui::BeginPopupContextItem())
+    if (ImGui::BeginPopupContextItem("DirectoryContext"))
     {
         if (ImGui::MenuItem("Show in Explorer"))
         {
@@ -319,7 +452,7 @@ void AssetBrowserPanel::DrawAssetGrid()
     for (const auto& entry : m_cachedEntries)
     {
         std::string filename = entry.filename().string();
-        
+
         // Apply search filter
         if (!searchLower.empty())
         {
@@ -334,7 +467,7 @@ void AssetBrowserPanel::DrawAssetGrid()
         bool isDirectory = std::filesystem::is_directory(entry);
 
         ImGui::PushID(filename.c_str());
-        
+
         ImGui::BeginGroup();
 
         // Draw thumbnail/icon
@@ -346,41 +479,25 @@ void AssetBrowserPanel::DrawAssetGrid()
         {
             displayName = displayName.substr(0, 10) + "...";
         }
-        
+
         float textWidth = ImGui::CalcTextSize(displayName.c_str()).x;
         float offset = (m_thumbnailSize - textWidth) * 0.5f;
         if (offset > 0)
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
-        
+
         ImGui::TextWrapped("%s", displayName.c_str());
 
         ImGui::EndGroup();
+        const ImVec2 itemMin = ImGui::GetItemRectMin();
+        const ImVec2 itemMax = ImGui::GetItemRectMax();
+        m_assetItemHits.push_back(AssetItemHit{
+            entry,
+            UI::Rect(itemMin.x, itemMin.y, itemMax.x - itemMin.x, itemMax.y - itemMin.y),
+            isDirectory});
 
-        // Handle interaction
         if (ImGui::IsItemHovered())
         {
             ImGui::SetTooltip("%s", filename.c_str());
-
-            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-            {
-                if (isDirectory)
-                {
-                    NavigateTo(entry);
-                }
-                else
-                {
-                    // Open asset
-                    EditorContext::Get().SelectAsset(Tools::AssetGUID{});  // TODO: Get real GUID
-                }
-            }
-            else if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-            {
-                m_selectedPath = entry;
-                if (!isDirectory)
-                {
-                    EditorContext::Get().SelectAsset(Tools::AssetGUID{});  // TODO: Get real GUID
-                }
-            }
         }
 
         // Context menu
@@ -421,18 +538,13 @@ void AssetBrowserPanel::DrawAssetList()
         ImGui::TableNextColumn();
 
         bool selected = (m_selectedPath == entry);
-        if (ImGui::Selectable(filename.c_str(), selected, ImGuiSelectableFlags_SpanAllColumns))
-        {
-            m_selectedPath = entry;
-        }
-
-        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-        {
-            if (isDirectory)
-            {
-                NavigateTo(entry);
-            }
-        }
+        ImGui::Selectable(filename.c_str(), selected, ImGuiSelectableFlags_SpanAllColumns);
+        const ImVec2 itemMin = ImGui::GetItemRectMin();
+        const ImVec2 itemMax = ImGui::GetItemRectMax();
+        m_assetItemHits.push_back(AssetItemHit{
+            entry,
+            UI::Rect(itemMin.x, itemMin.y, itemMax.x - itemMin.x, itemMax.y - itemMin.y),
+            isDirectory});
 
         ImGui::TableNextColumn();
         ImGui::Text("%s", isDirectory ? "Folder" : entry.extension().string().c_str());
@@ -480,7 +592,7 @@ void AssetBrowserPanel::DrawAssetIcon(const std::filesystem::path& path, bool is
         ImVec2 tl(center.x - w, center.y - h);
         ImVec2 br(center.x + w, center.y + h);
         drawList->AddRectFilled(tl, br, iconColor, 2.0f);
-        drawList->AddRectFilled(ImVec2(tl.x, tl.y - h * 0.3f), 
+        drawList->AddRectFilled(ImVec2(tl.x, tl.y - h * 0.3f),
                                  ImVec2(center.x - w * 0.2f, tl.y), iconColor, 2.0f);
     }
     else
@@ -508,7 +620,7 @@ void AssetBrowserPanel::DrawAssetIcon(const std::filesystem::path& path, bool is
 
 void AssetBrowserPanel::DrawAssetContextMenu(const std::filesystem::path& path)
 {
-    if (ImGui::BeginPopupContextItem())
+    if (ImGui::BeginPopupContextItem("AssetContext"))
     {
         bool isDirectory = std::filesystem::is_directory(path);
 
@@ -561,14 +673,46 @@ void AssetBrowserPanel::DrawAssetContextMenu(const std::filesystem::path& path)
 
 void AssetBrowserPanel::HandleDragDrop(const std::filesystem::path& path)
 {
-    (void)path;
-    
     if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None))
     {
-        std::string pathStr = path.string();
-        ImGui::SetDragDropPayload("ASSET_PATH", pathStr.c_str(), pathStr.size() + 1);
-        ImGui::Text("%s", path.filename().string().c_str());
+        const Tools::AssetGUID guid = ResolveAssetGuid(path);
+        if (guid.IsValid())
+        {
+            ImGui::SetDragDropPayload(RVX_ASSET_GUID_PAYLOAD_TYPE, &guid, sizeof(guid));
+            ImGui::Text("%s", path.filename().string().c_str());
+            ImGui::TextDisabled("%s", guid.ToString().c_str());
+        }
+        else
+        {
+            std::string pathStr = path.string();
+            ImGui::SetDragDropPayload("ASSET_PATH", pathStr.c_str(), pathStr.size() + 1);
+            ImGui::Text("%s", path.filename().string().c_str());
+        }
         ImGui::EndDragDropSource();
+    }
+}
+
+void AssetBrowserPanel::HandleNativeAssetClick(const std::filesystem::path& path,
+                                               bool isDirectory,
+                                               bool doubleClick)
+{
+    if (doubleClick)
+    {
+        if (isDirectory)
+        {
+            NavigateTo(path);
+        }
+        else
+        {
+            SelectAssetPath(path);
+        }
+        return;
+    }
+
+    m_selectedPath = path;
+    if (!isDirectory)
+    {
+        SelectAssetPath(path);
     }
 }
 
@@ -606,7 +750,7 @@ void AssetBrowserPanel::Refresh()
         for (const auto& entry : std::filesystem::directory_iterator(m_currentPath))
         {
             std::string filename = entry.path().filename().string();
-            
+
             // Skip hidden files
             if (!m_showHiddenFiles && filename.starts_with("."))
                 continue;
@@ -644,7 +788,7 @@ bool AssetBrowserPanel::IsAssetFile(const std::filesystem::path& path) const
 
     std::string ext = path.extension().string();
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    
+
     return std::find(assetExtensions.begin(), assetExtensions.end(), ext) != assetExtensions.end();
 }
 

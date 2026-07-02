@@ -32,6 +32,10 @@ ShaderCache/
 *.cso
 *.dxil
 *.spv
+vulkan_pipeline_cache.bin
+
+# CTest runtime data
+Testing/Temporary/
 
 # Logs
 *.log

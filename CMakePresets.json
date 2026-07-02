@@ -2,10 +2,12 @@
   "version": 6,
   "configurePresets": [
     {
-      "name": "windows-base",
+      "name": "win_x64_base",
       "hidden": true,
-      "environment": {
-        "VCPKG_ROOT": "E:/WorkSpace/vcpkg"
+      "generator": "Visual Studio 17 2022",
+      "architecture": {
+        "value": "x64",
+        "strategy": "set"
       },
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
@@ -19,7 +21,8 @@
         "RVX_ENABLE_METAL": "OFF",
         "RVX_ENABLE_OPENGL": "ON",
         "RVX_BUILD_SAMPLES": "ON",
-        "RVX_BUILD_TESTS": "ON"
+        "RVX_BUILD_TESTS": "ON",
+        "VCPKG_TARGET_TRIPLET": "x64-windows"
       },
       "condition": {
         "type": "equals",
@@ -28,8 +31,34 @@
       }
     },
     {
-      "name": "macos-base",
+      "name": "linux_x64_base",
       "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_TOOLCHAIN_FILE": {
+          "value": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+          "type": "FILEPATH"
+        },
+        "RVX_ENABLE_DX11": "OFF",
+        "RVX_ENABLE_DX12": "OFF",
+        "RVX_ENABLE_VULKAN": "ON",
+        "RVX_ENABLE_METAL": "OFF",
+        "RVX_ENABLE_OPENGL": "ON",
+        "RVX_BUILD_SAMPLES": "ON",
+        "RVX_BUILD_TESTS": "ON",
+        "VCPKG_TARGET_TRIPLET": "x64-linux"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "mac_arm64_base",
+      "hidden": true,
+      "generator": "Ninja",
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_TOOLCHAIN_FILE": {
@@ -40,6 +69,8 @@
         "RVX_ENABLE_DX12": "OFF",
         "RVX_ENABLE_VULKAN": "OFF",
         "RVX_ENABLE_METAL": "ON",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "VCPKG_TARGET_TRIPLET": "arm64-osx",
         "RVX_BUILD_SAMPLES": "ON",
         "RVX_BUILD_TESTS": "ON"
       },
@@ -50,37 +81,55 @@
       }
     },
     {
-      "name": "debug",
-      "displayName": "Debug (Windows)",
-      "inherits": "windows-base",
-      "binaryDir": "${sourceDir}/build/Debug",
+      "name": "win_x64_debug",
+      "displayName": "Windows x64 Debug",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug"
       }
     },
     {
-      "name": "release",
-      "displayName": "Release (Windows)",
-      "inherits": "windows-base",
-      "binaryDir": "${sourceDir}/build/Release",
+      "name": "win_x64_release",
+      "displayName": "Windows x64 Release",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
     },
     {
-      "name": "macos-debug",
-      "displayName": "Debug (macOS)",
-      "inherits": "macos-base",
-      "binaryDir": "${sourceDir}/build/Debug",
+      "name": "linux_x64_debug",
+      "displayName": "Linux x64 Debug",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug"
       }
     },
     {
-      "name": "macos-release",
-      "displayName": "Release (macOS)",
-      "inherits": "macos-base",
-      "binaryDir": "${sourceDir}/build/Release",
+      "name": "linux_x64_release",
+      "displayName": "Linux x64 Release",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "mac_arm64_debug",
+      "displayName": "macOS arm64 Debug",
+      "inherits": "mac_arm64_base",
+      "binaryDir": "${sourceDir}/build/mac_arm64_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "mac_arm64_release",
+      "displayName": "macOS arm64 Release",
+      "inherits": "mac_arm64_base",
+      "binaryDir": "${sourceDir}/build/mac_arm64_release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
@@ -88,20 +137,106 @@
   ],
   "buildPresets": [
     {
-      "name": "debug",
-      "configurePreset": "debug"
+      "name": "win_x64_debug",
+      "configurePreset": "win_x64_debug",
+      "configuration": "Debug"
     },
     {
-      "name": "release",
-      "configurePreset": "release"
+      "name": "win_x64_release",
+      "configurePreset": "win_x64_release",
+      "configuration": "Release"
     },
     {
-      "name": "macos-debug",
-      "configurePreset": "macos-debug"
+      "name": "linux_x64_debug",
+      "configurePreset": "linux_x64_debug"
     },
     {
-      "name": "macos-release",
-      "configurePreset": "macos-release"
+      "name": "linux_x64_release",
+      "configurePreset": "linux_x64_release"
+    },
+    {
+      "name": "mac_arm64_debug",
+      "configurePreset": "mac_arm64_debug"
+    },
+    {
+      "name": "mac_arm64_release",
+      "configurePreset": "mac_arm64_release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "win_x64_debug_unit_lint",
+      "configurePreset": "win_x64_debug",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "unit|lint"
+        }
+      }
+    },
+    {
+      "name": "win_x64_release_unit_lint",
+      "configurePreset": "win_x64_release",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "unit|lint"
+        }
+      }
+    },
+    {
+      "name": "linux_x64_debug_unit_lint",
+      "configurePreset": "linux_x64_debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "unit|lint"
+        }
+      }
+    },
+    {
+      "name": "linux_x64_release_unit_lint",
+      "configurePreset": "linux_x64_release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "unit|lint"
+        }
+      }
+    },
+    {
+      "name": "mac_arm64_debug_unit_lint",
+      "configurePreset": "mac_arm64_debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "unit|lint"
+        }
+      }
+    },
+    {
+      "name": "mac_arm64_release_unit_lint",
+      "configurePreset": "mac_arm64_release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "unit|lint"
+        }
+      }
     }
   ]
 }

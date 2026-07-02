@@ -352,8 +352,23 @@ namespace RVX
         m_capabilities.supportsSeparateStencilRef = false;      // DX11 doesn't support separate stencil refs
         m_capabilities.supportsSplitBarrier = false;            // DX11 doesn't have explicit barriers
         m_capabilities.supportsSecondaryCommandBuffer = false;  // DX11 uses deferred context instead
+        m_capabilities.supportsDescriptorSets = true;           // Implemented through DX11 binding remapping
+        m_capabilities.supportsDynamicDescriptorOffsets = m_immediateContext1 != nullptr;
+        m_capabilities.maxDescriptorSets = 4;
+        m_capabilities.supportsExplicitResourceBarriers = false;
+        m_capabilities.emulatesResourceBarriers = true;
         m_capabilities.supportsMemoryBudgetQuery = false;       // DX11 doesn't support memory budget
         m_capabilities.supportsPersistentMapping = false;       // DX11 doesn't support persistent mapping
+        m_capabilities.supportsExplicitHeapManagement = false;  // DX11 backend has no explicit heap API
+        m_capabilities.supportsTimestampQueries = true;
+        m_capabilities.supportsOcclusionQueries = true;
+        m_capabilities.supportsPipelineStatisticsQueries = true;
+        m_capabilities.supportsHostFenceSignal = false;
+        m_capabilities.supportsDefaultQueueFenceSignal = true;
+        m_capabilities.supportsExplicitQueueFenceSignal = false;
+        m_capabilities.supportsQueueFenceWait = false;
+        m_capabilities.supportsMultiQueueBatchSubmit = false;
+        m_capabilities.emulatesQueueFences = true;
 
         // Set threading mode
         m_capabilities.dx11.threadingMode = DX11ThreadingMode::SingleThreaded;
@@ -430,7 +445,29 @@ namespace RVX
             RVX_RHI_ERROR("DX11: Cannot create texture view from null texture");
             return nullptr;
         }
-        return MakeRef<DX11TextureView>(this, texture, desc);
+        if (!IsTextureViewTypeCompatible(texture->GetUsage(), texture->GetFormat(), desc))
+        {
+            RVX_RHI_ERROR("DX11: Cannot create {} texture view for texture usage {} format {}",
+                          GetTextureViewTypeName(desc.type),
+                          static_cast<uint32>(texture->GetUsage()),
+                          static_cast<uint32>(desc.format == RHIFormat::Unknown ? texture->GetFormat() : desc.format));
+            return nullptr;
+        }
+
+        auto view = MakeRef<DX11TextureView>(this, texture, desc);
+        const bool nativeViewCreated =
+            (desc.type == RHITextureViewType::ShaderResource && view->GetSRV()) ||
+            (desc.type == RHITextureViewType::RenderTarget && view->GetRTV()) ||
+            (desc.type == RHITextureViewType::DepthStencil && view->GetDSV()) ||
+            (desc.type == RHITextureViewType::UnorderedAccess && view->GetUAV());
+        if (!nativeViewCreated)
+        {
+            RVX_RHI_ERROR("DX11: Failed to create native {} texture view",
+                          GetTextureViewTypeName(desc.type));
+            return nullptr;
+        }
+
+        return view;
     }
 
     RHISamplerRef DX11Device::CreateSampler(const RHISamplerDesc& desc)
@@ -509,11 +546,25 @@ namespace RVX
     // =============================================================================
     RHIDescriptorSetLayoutRef DX11Device::CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc& desc)
     {
+        auto validation = ValidateRHIDescriptorSetLayoutDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX11 descriptor set layout creation failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return nullptr;
+        }
         return MakeRef<DX11DescriptorSetLayout>(this, desc);
     }
 
     RHIPipelineLayoutRef DX11Device::CreatePipelineLayout(const RHIPipelineLayoutDesc& desc)
     {
+        auto validation = ValidateRHIPipelineLayoutDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX11 pipeline layout creation failed: {}", validation.message);
+            return nullptr;
+        }
         return MakeRef<DX11PipelineLayout>(this, desc);
     }
 
@@ -529,6 +580,14 @@ namespace RVX
 
     RHIDescriptorSetRef DX11Device::CreateDescriptorSet(const RHIDescriptorSetDesc& desc)
     {
+        auto validation = ValidateRHIDescriptorSetDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX11 descriptor set creation failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return nullptr;
+        }
         return MakeRef<DX11DescriptorSet>(this, desc);
     }
 
@@ -549,36 +608,49 @@ namespace RVX
         return MakeRef<DX11CommandContext>(this, type);
     }
 
-    void DX11Device::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
+    uint64 DX11Device::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
     {
-        if (!context) return;
+        if (!context) return 0;
 
         auto* dx11Context = static_cast<DX11CommandContext*>(context);
         dx11Context->Submit();
 
+        uint64 submittedValue = 0;
         if (signalFence)
         {
             auto* dx11Fence = static_cast<DX11Fence*>(signalFence);
-            dx11Fence->Signal(dx11Fence->GetCompletedValue() + 1);
+            submittedValue = dx11Fence->AllocateSignalValue();
+            dx11Fence->Signal(submittedValue);
         }
+        return submittedValue;
     }
 
-    void DX11Device::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
+    uint64 DX11Device::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
     {
+        bool submittedAny = false;
         for (auto* context : contexts)
         {
             if (context)
             {
                 auto* dx11Context = static_cast<DX11CommandContext*>(context);
                 dx11Context->Submit();
+                submittedAny = true;
             }
         }
 
+        if (!submittedAny)
+        {
+            return 0;
+        }
+
+        uint64 submittedValue = 0;
         if (signalFence)
         {
             auto* dx11Fence = static_cast<DX11Fence*>(signalFence);
-            dx11Fence->Signal(dx11Fence->GetCompletedValue() + 1);
+            submittedValue = dx11Fence->AllocateSignalValue();
+            dx11Fence->Signal(submittedValue);
         }
+        return submittedValue;
     }
 
     // =============================================================================

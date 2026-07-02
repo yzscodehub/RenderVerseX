@@ -6,6 +6,8 @@
 #pragma once
 
 #include "Core/Types.h"
+#include "UI/UIContext.h"
+
 #include <string>
 
 namespace RVX::Editor
@@ -13,7 +15,7 @@ namespace RVX::Editor
 
 /**
  * @brief Interface for editor panels
- * 
+ *
  * All editor panels inherit from this interface to provide
  * a consistent API for the editor window manager.
  */
@@ -56,9 +58,14 @@ public:
     virtual void OnUpdate(float deltaTime) { (void)deltaTime; }
 
     /**
-     * @brief Called to render the panel UI with ImGui
+     * @brief Called to render the legacy panel UI through the debug ImGui bridge
      */
     virtual void OnGUI() = 0;
+
+    /**
+     * @brief Called after legacy UI has updated panel-local hover/focus state.
+     */
+    virtual void OnNativeInput(const UI::UIInputState& input) { (void)input; }
 
     // =========================================================================
     // Visibility

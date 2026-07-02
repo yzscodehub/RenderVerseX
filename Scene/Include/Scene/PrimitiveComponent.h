@@ -11,6 +11,7 @@
 
 namespace RVX
 {
+    struct RenderPrimitiveProxy;
     class RenderScene;
 
     /**
@@ -55,6 +56,10 @@ namespace RVX
         // Render Extraction
         // =====================================================================
 
+        virtual bool HasRenderProxy() const { return HasRenderData(); }
+        virtual bool CreateRenderProxy(RenderPrimitiveProxy& outProxy) const { (void)outProxy; return false; }
+
+        /** @brief Legacy render extraction path; use RenderProxy for the main renderer path. */
         virtual bool HasRenderData() const { return false; }
         virtual void CollectRenderData(RenderScene& scene) const { (void)scene; }
 

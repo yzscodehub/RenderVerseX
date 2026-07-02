@@ -5,20 +5,58 @@
 
 #include "Render/Passes/OpaquePass.h"
 #include "Core/Log.h"
+#include "Render/GPUDriven/GPUCulling.h"
 #include "Render/GPUResourceManager.h"
+#include "Render/Graph/ResourceViewCache.h"
+#include "Render/Lighting/ClusteredLighting.h"
+#include "Render/Lighting/LightManager.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
+#include "Render/Passes/RayTracedShadowPass.h"
+#include "Render/Passes/ShadowPass.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/TextureResource.h"
 #include "RHI/RHIRenderPass.h"
 
+#include <algorithm>
+#include <cmath>
+#include <utility>
+
 namespace RVX
 {
 
 namespace
 {
+    std::span<const Mat4> ResolveSkinningMatrices(const RenderObject& object, const MeshGPUBuffers& buffers)
+    {
+        if (!object.HasSkinningData() || !buffers.HasSkinningVertexData())
+        {
+            return {};
+        }
+
+        return std::span<const Mat4>(object.skinningMatrices.data(), object.skinningMatrices.size());
+    }
+
+    float SanitizeUnitRatio(float value)
+    {
+        return std::isfinite(value) ? clamp(value, 0.0f, 1.0f) : 0.0f;
+    }
+
+    void ClearDirectionalShadowViewData(ViewData& drawView)
+    {
+        drawView.directionalShadowEnabled = 0;
+        drawView.directionalShadowCascadeCount = 0;
+        drawView.directionalShadowCascadeSplits = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        drawView.directionalShadowCascadeFadeDistances = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        drawView.directionalShadowViewProjection = Mat4Identity();
+        for (Mat4& viewProjection : drawView.directionalShadowViewProjections)
+        {
+            viewProjection = Mat4Identity();
+        }
+    }
+
     const Resource::MaterialResource* ResolveMaterialResource(const RenderObject& obj, size_t submeshIndex)
     {
         if (submeshIndex >= obj.materialResources.size())
@@ -54,27 +92,6 @@ namespace
         }
     }
 
-    template <typename DrawFunc>
-    void ForEachOpaqueDrawItem(const std::vector<RenderDrawItem>* opaqueDrawItems,
-                               const std::vector<RenderDrawItem>* maskedDrawItems,
-                               DrawFunc&& drawFunc)
-    {
-        if (opaqueDrawItems)
-        {
-            for (const RenderDrawItem& item : *opaqueDrawItems)
-            {
-                drawFunc(item);
-            }
-        }
-
-        if (maskedDrawItems)
-        {
-            for (const RenderDrawItem& item : *maskedDrawItems)
-            {
-                drawFunc(item);
-            }
-        }
-    }
 } // namespace
 
 void OpaquePass::OnAdd(IRHIDevice* device)
@@ -86,20 +103,34 @@ void OpaquePass::OnAdd(IRHIDevice* device)
 void OpaquePass::OnRemove()
 {
     RVX_CORE_DEBUG("OpaquePass removed");
+    m_indirectDrawBuffer.Reset();
+    m_indirectDrawBufferCapacity = 0;
+    m_indirectDrawCommands.clear();
     m_device = nullptr;
     m_gpuResources = nullptr;
     m_pipelineCache = nullptr;
     m_materialSystem = nullptr;
+    m_lightManager = nullptr;
+    m_clusteredLighting = nullptr;
     m_renderScene = nullptr;
+    m_shadowPass = nullptr;
+    m_rayTracedShadowPass = nullptr;
+    m_gpuCulling = nullptr;
     m_opaqueDrawItems = nullptr;
     m_maskedDrawItems = nullptr;
 }
 
-void OpaquePass::SetResources(GPUResourceManager* gpuMgr, PipelineCache* pipelines, MaterialSystem* materialSystem)
+void OpaquePass::SetResources(GPUResourceManager* gpuMgr,
+                              PipelineCache* pipelines,
+                              MaterialSystem* materialSystem,
+                              LightManager* lightManager,
+                              ClusteredLighting* clusteredLighting)
 {
     m_gpuResources = gpuMgr;
     m_pipelineCache = pipelines;
     m_materialSystem = materialSystem;
+    m_lightManager = lightManager;
+    m_clusteredLighting = clusteredLighting;
 }
 
 void OpaquePass::SetRenderScene(const RenderScene* scene,
@@ -111,14 +142,127 @@ void OpaquePass::SetRenderScene(const RenderScene* scene,
     m_maskedDrawItems = maskedDrawItems;
 }
 
+void OpaquePass::SetDirectionalShadowSource(const ShadowPass* shadowPass)
+{
+    m_shadowPass = shadowPass;
+}
+
+void OpaquePass::SetRayTracedShadowSource(const RayTracedShadowPass* shadowPass)
+{
+    m_rayTracedShadowPass = shadowPass;
+}
+
+void OpaquePass::SetGPUDrivenCullingSource(const GPUCulling* gpuCulling)
+{
+    m_gpuCulling = gpuCulling;
+}
+
+void OpaquePass::SetGPUDrivenRenderGraphResources(RGBufferHandle instanceBuffer,
+                                                  RGBufferHandle indirectDrawBuffer,
+                                                  RGBufferHandle drawCountBuffer)
+{
+    m_gpuDrivenInstanceHandle = instanceBuffer;
+    m_gpuDrivenIndirectHandle = indirectDrawBuffer;
+    m_gpuDrivenDrawCountHandle = drawCountBuffer;
+}
+
 void OpaquePass::SetRenderTargets(RHITextureView* colorTargetView, RHITextureView* depthTargetView)
 {
     m_colorTargetView = colorTargetView;
     m_depthTargetView = depthTargetView;
 }
 
+uint32 OpaquePass::FindIndirectBatchLength(const std::vector<RenderDrawItem>& drawItems,
+                                           size_t startIndex) const
+{
+    if (startIndex >= drawItems.size())
+    {
+        return 0;
+    }
+
+    const RenderDrawItem& first = drawItems[startIndex];
+    uint32 count = 1;
+    for (size_t i = startIndex + 1; i < drawItems.size(); ++i)
+    {
+        const RenderDrawItem& item = drawItems[i];
+        if (item.objectIndex != first.objectIndex ||
+            item.meshId != first.meshId ||
+            item.materialId != first.materialId ||
+            item.materialResource != first.materialResource)
+        {
+            break;
+        }
+
+        ++count;
+    }
+
+    return count;
+}
+
+bool OpaquePass::EnsureIndirectDrawCapacity(uint32 commandCount)
+{
+    if (commandCount == 0)
+    {
+        return true;
+    }
+
+    if (m_indirectDrawBuffer && m_indirectDrawBufferCapacity >= commandCount)
+    {
+        return true;
+    }
+
+    if (!m_device)
+    {
+        return false;
+    }
+
+    RHIBufferDesc desc;
+    desc.size = static_cast<uint64>(commandCount) * sizeof(IndirectDrawIndexedCommand);
+    desc.usage = RHIBufferUsage::IndirectArgs | RHIBufferUsage::CopyDst;
+    desc.memoryType = RHIMemoryType::Upload;
+    desc.stride = sizeof(IndirectDrawIndexedCommand);
+    desc.debugName = "OpaquePass.IndirectDrawBuffer";
+
+    m_indirectDrawBuffer = m_device->CreateBuffer(desc);
+    m_indirectDrawBufferCapacity = m_indirectDrawBuffer ? commandCount : 0;
+    return m_indirectDrawBuffer != nullptr;
+}
+
 void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
+    m_directionalShadowReadHandle = {};
+    m_rayTracedShadowMaskReadHandle = {};
+    m_shadowStats = {};
+
+    const auto accumulateShadowReceivers = [this](const std::vector<RenderDrawItem>* drawItems)
+    {
+        if (!drawItems || !m_renderScene)
+        {
+            return;
+        }
+
+        for (const RenderDrawItem& item : *drawItems)
+        {
+            if (item.objectIndex >= m_renderScene->GetObjectCount())
+            {
+                continue;
+            }
+
+            m_shadowStats.receiverCandidateDrawItemCount++;
+            const RenderObject& object = m_renderScene->GetObject(item.objectIndex);
+            if (object.receivesShadow)
+            {
+                m_shadowStats.shadowReceivingDrawItemCount++;
+            }
+            else
+            {
+                m_shadowStats.shadowReceiverOptOutDrawItemCount++;
+            }
+        }
+    };
+    accumulateShadowReceivers(m_opaqueDrawItems);
+    accumulateShadowReceivers(m_maskedDrawItems);
+
     // Declare that we write to the color target
     if (view.colorTarget.IsValid())
     {
@@ -131,10 +275,289 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         builder.SetDepthStencil(view.depthTarget, true, false);
         m_depthTargetHandle = view.depthTarget;
     }
+
+    if (m_shadowPass && m_shadowPass->IsEnabled())
+    {
+        RGTextureHandle shadowMap = m_shadowPass->GetShadowMapTextureHandle();
+        if (shadowMap.IsValid())
+        {
+            shadowMap.hasSubresourceRange = true;
+            shadowMap.subresourceRange = RHISubresourceRange{0, RVX_ALL_MIPS, 0, RVX_ALL_LAYERS, RHITextureAspect::Depth};
+            m_directionalShadowReadHandle = builder.Read(shadowMap, RHIShaderStage::Pixel);
+            m_shadowStats.requested = true;
+            m_shadowStats.renderGraphReadDeclared = true;
+        }
+    }
+
+    if (m_rayTracedShadowPass && m_rayTracedShadowPass->IsEnabled())
+    {
+        RGTextureHandle shadowMask = m_rayTracedShadowPass->GetShadowMaskHandle();
+        if (shadowMask.IsValid())
+        {
+            m_rayTracedShadowMaskReadHandle = builder.Read(shadowMask, RHIShaderStage::Pixel);
+            m_shadowStats.rayTracedRequested = true;
+            m_shadowStats.rayTracedRenderGraphReadDeclared = true;
+        }
+    }
+
+    if (m_gpuDrivenOpaqueIndirectEnabled && m_gpuCulling)
+    {
+        if (m_gpuDrivenInstanceHandle.IsValid())
+        {
+            builder.Read(m_gpuDrivenInstanceHandle, RHIShaderStage::Vertex);
+        }
+        if (m_gpuDrivenIndirectHandle.IsValid())
+        {
+            builder.Read(m_gpuDrivenIndirectHandle, RHIResourceState::IndirectArgument);
+        }
+        if (m_gpuDrivenDrawCountHandle.IsValid())
+        {
+            builder.Read(m_gpuDrivenDrawCountHandle, RHIResourceState::IndirectArgument);
+        }
+    }
+}
+
+const RenderDrawItem* OpaquePass::FindGPUDrivenGroupRepresentative(const GPUCullingDrawGroup& group) const
+{
+    const std::vector<RenderDrawItem>* drawItems = nullptr;
+    switch (group.pipelineVariant)
+    {
+        case MaterialPipelineVariant::Masked:
+            drawItems = m_maskedDrawItems;
+            break;
+        case MaterialPipelineVariant::Opaque:
+            drawItems = m_opaqueDrawItems;
+            break;
+        case MaterialPipelineVariant::Transparent:
+        default:
+            return nullptr;
+    }
+
+    if (!drawItems)
+    {
+        return nullptr;
+    }
+
+    for (const RenderDrawItem& item : *drawItems)
+    {
+        if (item.meshId != group.meshId ||
+            item.materialId != group.materialId ||
+            GetPipelineVariantForRenderMode(item.renderMode) != group.pipelineVariant)
+        {
+            continue;
+        }
+
+        if (group.materialResource && item.materialResource != group.materialResource)
+        {
+            continue;
+        }
+
+        return &item;
+    }
+
+    return nullptr;
+}
+
+bool OpaquePass::AreGPUDrivenOpaqueGroupsDrawable(uint32& outDrawItemCount) const
+{
+    outDrawItemCount = 0;
+    if (!m_renderScene || !m_gpuResources || !m_gpuCulling)
+    {
+        return false;
+    }
+
+    const auto& groups = m_gpuCulling->GetDrawGroups();
+    if (groups.empty())
+    {
+        return false;
+    }
+
+    uint32 sourceDrawItemCount = 0;
+    const auto countDrawItems = [&sourceDrawItemCount](const std::vector<RenderDrawItem>* drawItems)
+    {
+        sourceDrawItemCount += drawItems ? static_cast<uint32>(drawItems->size()) : 0;
+    };
+    countDrawItems(m_opaqueDrawItems);
+    countDrawItems(m_maskedDrawItems);
+
+    for (const GPUCullingDrawGroup& group : groups)
+    {
+        if (group.pipelineVariant != MaterialPipelineVariant::Opaque &&
+            group.pipelineVariant != MaterialPipelineVariant::Masked)
+        {
+            return false;
+        }
+
+        outDrawItemCount += group.maxDrawCount;
+        MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(group.meshId);
+        if (!buffers.IsValid() || group.maxDrawCount == 0)
+        {
+            return false;
+        }
+
+        if (buffers.HasSkinningVertexData())
+        {
+            return false;
+        }
+
+        if (!FindGPUDrivenGroupRepresentative(group))
+        {
+            return false;
+        }
+    }
+
+    return outDrawItemCount > 0 &&
+        outDrawItemCount == sourceDrawItemCount &&
+        m_gpuCulling->GetInstanceCount() == outDrawItemCount;
+}
+
+bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
+                                          const ViewData& view,
+                                          RHIFormat colorTargetFormat,
+                                          RHIDescriptorSet* frameSet)
+{
+    m_drawStats.gpuDrivenRequested = m_gpuDrivenOpaqueIndirectEnabled && m_gpuCulling != nullptr;
+    if (!m_gpuDrivenOpaqueIndirectEnabled ||
+        !m_pipelineCache ||
+        !m_materialSystem ||
+        !m_gpuCulling ||
+        !m_gpuCulling->GetInstanceBuffer() ||
+        (!m_gpuCulling->WasGpuExecutionUsedLastCull() && !m_gpuCulling->WasCpuFallbackUsedLastCull()))
+    {
+        return false;
+    }
+
+    uint32 drawItemCount = 0;
+    if (!AreGPUDrivenOpaqueGroupsDrawable(drawItemCount))
+    {
+        return false;
+    }
+
+    struct GPUDrivenOpaqueBatch
+    {
+        uint32 groupIndex = 0;
+        MeshGPUBuffers buffers;
+        RHIPipeline* pipeline = nullptr;
+        MaterialBindingResult materialBinding;
+    };
+
+    const auto& groups = m_gpuCulling->GetDrawGroups();
+    std::vector<GPUDrivenOpaqueBatch> batches;
+    batches.reserve(groups.size());
+
+    for (uint32 groupIndex = 0; groupIndex < static_cast<uint32>(groups.size()); ++groupIndex)
+    {
+        const GPUCullingDrawGroup& group = groups[groupIndex];
+        const RenderDrawItem* representativeItem = FindGPUDrivenGroupRepresentative(group);
+        if (!representativeItem || representativeItem->objectIndex >= m_renderScene->GetObjectCount())
+        {
+            return false;
+        }
+
+        const RenderObject& obj = m_renderScene->GetObject(representativeItem->objectIndex);
+        MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(group.meshId);
+        if (!buffers.IsValid())
+        {
+            return false;
+        }
+
+        RHIPipeline* pipeline =
+            m_pipelineCache->GetGPUDrivenPipelineForVariant(group.pipelineVariant, colorTargetFormat);
+        if (!pipeline)
+        {
+            return false;
+        }
+
+        const Resource::MaterialResource* materialResource = group.materialResource;
+        if (!materialResource)
+        {
+            materialResource = representativeItem->materialResource
+                ? representativeItem->materialResource
+                : ResolveMaterialResource(obj, representativeItem->submeshIndex);
+        }
+
+        MaterialBindingOptions materialOptions;
+        materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();
+        MaterialBindingResult materialBinding =
+            m_materialSystem->PrepareMaterialBinding(materialResource, view.viewCache, materialOptions);
+        if (!materialBinding.IsDrawable())
+        {
+            return false;
+        }
+
+        GPUDrivenOpaqueBatch batch;
+        batch.groupIndex = groupIndex;
+        batch.buffers = std::move(buffers);
+        batch.pipeline = pipeline;
+        batch.materialBinding = std::move(materialBinding);
+        batches.push_back(std::move(batch));
+    }
+
+    m_pipelineCache->UpdateObjectConstants(Mat4Identity(),
+                                           Mat4Identity(),
+                                           Mat4Identity(),
+                                           view.previousViewProjectionMatrix,
+                                           false);
+    if (!m_pipelineCache->UpdateObjectInstanceBuffer(m_gpuCulling->GetInstanceBuffer()))
+    {
+        return false;
+    }
+
+    RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
+    const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
+    m_drawStats.gpuDrivenEligible = true;
+
+    for (const GPUDrivenOpaqueBatch& batch : batches)
+    {
+        ctx.SetPipeline(batch.pipeline);
+        if (frameSet)
+        {
+            ctx.SetDescriptorSet(0, frameSet);
+        }
+        if (objectSet)
+        {
+            ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
+        }
+
+        ctx.SetVertexBuffer(0, batch.buffers.positionBuffer);
+        if (batch.buffers.normalBuffer)
+        {
+            ctx.SetVertexBuffer(1, batch.buffers.normalBuffer);
+        }
+        if (batch.buffers.uvBuffer)
+        {
+            ctx.SetVertexBuffer(2, batch.buffers.uvBuffer);
+        }
+        if (batch.buffers.tangentBuffer)
+        {
+            ctx.SetVertexBuffer(3, batch.buffers.tangentBuffer);
+        }
+        if (batch.buffers.boneIndicesBuffer)
+        {
+            ctx.SetVertexBuffer(4, batch.buffers.boneIndicesBuffer);
+        }
+        if (batch.buffers.boneWeightsBuffer)
+        {
+            ctx.SetVertexBuffer(5, batch.buffers.boneWeightsBuffer);
+        }
+        ctx.SetIndexBuffer(batch.buffers.indexBuffer, RHIFormat::R32_UINT);
+        ctx.SetDescriptorSet(2, batch.materialBinding.descriptorSet, batch.materialBinding.dynamicOffsets);
+
+        const uint32 submittedDraws = m_gpuCulling->DrawIndexedIndirectGroup(ctx, batch.groupIndex);
+        if (submittedDraws > 0)
+        {
+            ++m_drawStats.gpuDrivenIndirectBatchCount;
+            m_drawStats.gpuDrivenIndirectDrawCount += submittedDraws;
+        }
+    }
+
+    return true;
 }
 
 void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
 {
+    m_drawStats = {};
+
     // Validate dependencies
     if (!m_pipelineCache || !m_pipelineCache->IsInitialized())
     {
@@ -149,7 +572,21 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    if (!m_colorTargetView)
+    RHITextureView* colorTargetView = m_colorTargetView;
+    RHIFormat colorTargetFormat = RHIFormat::Unknown;
+    if (view.renderGraph && view.viewCache && m_colorTargetHandle.IsValid())
+    {
+        if (const RHITextureDesc* colorTargetDesc = view.renderGraph->GetTextureDesc(m_colorTargetHandle))
+        {
+            colorTargetFormat = colorTargetDesc->format;
+        }
+        if (RHITexture* colorTarget = view.renderGraph->GetTexture(m_colorTargetHandle))
+        {
+            colorTargetView = view.viewCache->GetDefaultRTV(colorTarget);
+        }
+    }
+
+    if (!colorTargetView)
     {
         RVX_CORE_WARN("OpaquePass: No color target view set");
         return;
@@ -163,15 +600,144 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
             TransitionVisibleMaterialTextures(*m_maskedDrawItems, *m_gpuResources, ctx);
     }
 
+    ViewData drawView = view;
+    drawView.rayTracedShadowEnabled = 0;
+    drawView.rayTracedShadowMode = RayTracedShadowMode::ComplementRaster;
+    DirectionalShadowFrameResources shadowResources;
+    if (m_shadowPass && m_directionalShadowReadHandle.IsValid() &&
+        view.renderGraph && view.viewCache &&
+        !m_shadowPass->GetCascades().empty())
+    {
+        RHITexture* shadowTexture = view.renderGraph->GetTexture(m_directionalShadowReadHandle);
+        RHITextureViewDesc shadowViewDesc;
+        if (shadowTexture)
+        {
+            shadowViewDesc.format = shadowTexture->GetFormat();
+            shadowViewDesc.dimension = shadowTexture->GetDimension();
+            shadowViewDesc.subresourceRange = RHISubresourceRange::All();
+            shadowViewDesc.type = RHITextureViewType::ShaderResource;
+            if (IsDepthFormat(shadowViewDesc.format))
+            {
+                shadowViewDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+            }
+            shadowViewDesc.debugName = "DirectionalShadowSRV";
+        }
+
+        RHITextureView* shadowView = shadowTexture ? view.viewCache->GetTextureView(shadowTexture, shadowViewDesc)
+                                                   : nullptr;
+        const ShadowPassConfig& shadowConfig = m_shadowPass->GetConfig();
+        const auto& cascades = m_shadowPass->GetCascades();
+        const uint32 cascadeCount = std::min(static_cast<uint32>(cascades.size()),
+                                             RVX_MAX_DIRECTIONAL_SHADOW_CASCADES);
+        const float nearClip = std::max(0.001f, view.nearPlane);
+        const float farClip = std::max(nearClip + 1.0f, view.farPlane);
+        const float clipRange = farClip - nearClip;
+        drawView.directionalShadowEnabled = shadowView ? 1 : 0;
+        drawView.directionalShadowCascadeCount = shadowView ? cascadeCount : 0;
+        drawView.directionalShadowCascadeSplits = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        drawView.directionalShadowCascadeFadeDistances = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        for (uint32 i = 0; i < cascadeCount; ++i)
+        {
+            drawView.directionalShadowViewProjections[i] = cascades[i].viewProjection;
+            drawView.directionalShadowCascadeSplits[i] = nearClip + cascades[i].splitDepth * clipRange;
+        }
+        const float blendRatio = SanitizeUnitRatio(shadowConfig.cascadeBlendRatio);
+        for (uint32 i = 0; i + 1 < cascadeCount; ++i)
+        {
+            const float splitDistance = drawView.directionalShadowCascadeSplits[i];
+            const float previousSplit = i == 0 ? nearClip : drawView.directionalShadowCascadeSplits[i - 1];
+            const float cascadeSpan = std::max(0.0f, splitDistance - previousSplit);
+            drawView.directionalShadowCascadeFadeDistances[i] = std::min(cascadeSpan, cascadeSpan * blendRatio);
+        }
+        drawView.directionalShadowViewProjection = cascadeCount > 0 ? cascades[0].viewProjection : Mat4Identity();
+        drawView.directionalShadowDepthBias = shadowConfig.shadowBias;
+        drawView.directionalShadowStrength = 1.0f;
+        drawView.directionalShadowInvMapSize = shadowConfig.shadowMapSize > 0
+                                                   ? 1.0f / static_cast<float>(shadowConfig.shadowMapSize)
+                                                   : 0.0f;
+        drawView.directionalShadowFilterRadiusTexels = shadowConfig.filterRadiusTexels;
+        drawView.directionalShadowNormalBias = shadowConfig.normalBias;
+        shadowResources.enabled = true;
+        shadowResources.shadowMapView = shadowView;
+    }
+    else
+    {
+        ClearDirectionalShadowViewData(drawView);
+    }
+
+    FrameLightResources lightResources;
+    if (m_lightManager)
+    {
+        lightResources.lightConstantsBuffer = m_lightManager->GetLightConstantsBuffer();
+        lightResources.pointLightsBuffer = m_lightManager->GetPointLightsBuffer();
+        lightResources.spotLightsBuffer = m_lightManager->GetSpotLightsBuffer();
+    }
+    if (m_clusteredLighting && m_clusteredLighting->IsInitialized())
+    {
+        lightResources.clusterConstantsBuffer = m_clusteredLighting->GetClusterConstantsBuffer();
+        lightResources.clusterBuffer = m_clusteredLighting->GetClusterBuffer();
+        lightResources.clusterLightIndexBuffer = m_clusteredLighting->GetLightIndexBuffer();
+    }
+    m_pipelineCache->UpdateFrameLightResources(lightResources);
+
+    const DirectionalShadowFrameBindingResult shadowBinding =
+        m_pipelineCache->UpdateDirectionalShadowFrameResources(shadowResources);
+    if (shadowBinding.shadowSamplingEnabled)
+    {
+        drawView.directionalShadowEnabled = 1;
+    }
+    else
+    {
+        ClearDirectionalShadowViewData(drawView);
+    }
+    m_shadowStats.frameShadowReady = shadowBinding.shadowSamplingEnabled;
+
+    RayTracedShadowFrameResources rayTracedShadowResources;
+    if (m_rayTracedShadowMaskReadHandle.IsValid() && view.renderGraph && view.viewCache)
+    {
+        RHITexture* shadowMask = view.renderGraph->GetTexture(m_rayTracedShadowMaskReadHandle);
+        if (shadowMask)
+        {
+            RHITextureViewDesc viewDesc;
+            viewDesc.format = shadowMask->GetFormat();
+            viewDesc.dimension = shadowMask->GetDimension();
+            viewDesc.subresourceRange = RHISubresourceRange::All();
+            viewDesc.type = RHITextureViewType::ShaderResource;
+            viewDesc.debugName = "RayTracedShadowMaskSRV";
+
+            rayTracedShadowResources.shadowMaskView = view.viewCache->GetTextureView(shadowMask, viewDesc);
+            rayTracedShadowResources.enabled = rayTracedShadowResources.shadowMaskView != nullptr;
+        }
+    }
+    const RayTracedShadowFrameBindingResult rayTracedShadowBinding =
+        m_pipelineCache->UpdateRayTracedShadowFrameResources(rayTracedShadowResources);
+    drawView.rayTracedShadowEnabled = rayTracedShadowBinding.shadowMaskSamplingEnabled ? 1 : 0;
+    if (rayTracedShadowBinding.shadowMaskSamplingEnabled && m_rayTracedShadowPass)
+    {
+        const ShadowPassConfig& rayTracedShadowConfig = m_rayTracedShadowPass->GetConfig();
+        drawView.rayTracedShadowFilterRadiusPixels =
+            std::max(0.0f, rayTracedShadowConfig.filterRadiusTexels);
+        drawView.rayTracedShadowMode = rayTracedShadowConfig.rayTracedShadowMode;
+        if (drawView.rayTracedShadowMode == RayTracedShadowMode::ReplaceRaster)
+        {
+            ClearDirectionalShadowViewData(drawView);
+        }
+    }
+    m_shadowStats.rayTracedFrameMaskReady = rayTracedShadowBinding.shadowMaskSamplingEnabled;
+
+    m_pipelineCache->UpdateViewConstants(drawView);
+
     // 1. Begin render pass using builder pattern
     RHIRenderPassDesc rpDesc;
-    rpDesc.AddColorAttachment(m_colorTargetView, RHILoadOp::Clear, RHIStoreOp::Store,
+    rpDesc.AddColorAttachment(colorTargetView, RHILoadOp::Clear, RHIStoreOp::Store,
                               {0.1f, 0.1f, 0.15f, 1.0f});
 
     if (m_depthTargetView)
     {
+        const float clearDepth = m_pipelineCache ? m_pipelineCache->GetDepthClearValue()
+                                                 : PipelineCache::GetDepthClearValue(false);
         rpDesc.SetDepthStencil(m_depthTargetView, RHILoadOp::Clear, RHIStoreOp::Store,
-                               1.0f, 0);
+                               clearDepth, 0);
     }
 
     ctx.BeginRenderPass(rpDesc);
@@ -180,92 +746,261 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     ctx.SetViewport(view.GetRHIViewport());
     ctx.SetScissor(view.GetRHIScissor());
 
-    // 3. Bind pipeline
-    RHIPipeline* pipeline = m_pipelineCache->GetOpaquePipeline();
-    if (!pipeline)
-    {
-        RVX_CORE_WARN("OpaquePass: No opaque pipeline available");
-        ctx.EndRenderPass();
-        return;
-    }
-    ctx.SetPipeline(pipeline);
-
-    // 4. Bind frame constants descriptor set
+    // 3. Cache frame constants descriptor set. DX12 needs descriptor sets bound after the pipeline root signature.
     RHIDescriptorSet* frameSet = m_pipelineCache->GetFrameDescriptorSet();
-    if (frameSet)
-    {
-        ctx.SetDescriptorSet(0, frameSet);
-    }
 
-    // 5. Draw each visible object
+    // 4. Draw each visible object group with its material variant pipeline.
     if (m_renderScene && m_gpuResources)
     {
-        ForEachOpaqueDrawItem(
-            m_opaqueDrawItems, m_maskedDrawItems,
-            [&](const RenderDrawItem& item)
+        if (TryDrawGPUDrivenIndirect(ctx, view, colorTargetFormat, frameSet))
         {
-            if (item.objectIndex >= m_renderScene->GetObjectCount())
+            ctx.EndRenderPass();
+            return;
+        }
+
+        const auto drawGroup = [&](const std::vector<RenderDrawItem>* drawItems,
+                                   MaterialPipelineVariant variant,
+                                   const char* groupName)
+        {
+            if (!drawItems || drawItems->empty())
                 return;
 
-            const RenderObject& obj = m_renderScene->GetObject(item.objectIndex);
-
-            // Get GPU buffers for this mesh
-            MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(obj.meshId);
-            if (!buffers.IsValid())
+            RHIPipeline* pipeline = m_pipelineCache->GetPipelineForVariant(variant, colorTargetFormat);
+            if (!pipeline)
             {
-                return;  // Mesh not uploaded yet
-            }
-
-            // Update per-object constants (world matrix)
-            m_pipelineCache->UpdateObjectConstants(obj.worldMatrix);
-            RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
-            if (objectSet)
-            {
-                const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
-                ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
-            }
-
-            // Bind SEPARATE vertex buffers to different slots
-            ctx.SetVertexBuffer(0, buffers.positionBuffer);  // Slot 0: Position
-            
-            if (buffers.normalBuffer)
-            {
-                ctx.SetVertexBuffer(1, buffers.normalBuffer);  // Slot 1: Normal
-            }
-            
-            if (buffers.uvBuffer)
-            {
-                ctx.SetVertexBuffer(2, buffers.uvBuffer);  // Slot 2: UV
-            }
-
-            if (buffers.tangentBuffer)
-            {
-                ctx.SetVertexBuffer(3, buffers.tangentBuffer);  // Slot 3: Tangent
-            }
-
-            // Bind index buffer
-            ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
-
-            if (item.submeshIndex >= buffers.submeshes.size())
-            {
+                RVX_CORE_WARN("OpaquePass: Missing {} pipeline; skipping {} draw items",
+                              groupName, drawItems->size());
                 return;
             }
 
-            const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
-            const Resource::MaterialResource* materialResource =
-                item.materialResource ? item.materialResource : ResolveMaterialResource(obj, item.submeshIndex);
-            m_materialSystem->UpdateMaterialConstants(materialResource, view.viewCache);
-
-            RHIDescriptorSet* materialSet = m_materialSystem->GetOrCreateMaterialSet(materialResource, view.viewCache);
-            if (materialSet)
+            ctx.SetPipeline(pipeline);
+            if (frameSet)
             {
-                const auto materialDynamicOffsets = m_materialSystem->GetCurrentMaterialDynamicOffset();
-                ctx.SetDescriptorSet(2, materialSet, materialDynamicOffsets);
+                ctx.SetDescriptorSet(0, frameSet);
             }
 
-            ctx.DrawIndexed(submesh.indexCount, 1,
-                            submesh.indexOffset, submesh.baseVertex, 0);
-        });
+            const auto drawDirectItem = [&](const RenderDrawItem& item)
+            {
+                if (item.objectIndex >= m_renderScene->GetObjectCount())
+                {
+                    ++m_drawStats.skippedInvalidObjectCount;
+                    return;
+                }
+
+                const RenderObject& obj = m_renderScene->GetObject(item.objectIndex);
+
+                // Get GPU buffers for this mesh
+                MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(obj.meshId);
+                if (!buffers.IsValid())
+                {
+                    ++m_drawStats.skippedMissingMeshCount;
+                    return;  // Mesh not uploaded yet
+                }
+
+                // Update per-object constants
+                m_pipelineCache->UpdateObjectConstants(obj.worldMatrix,
+                                                       obj.normalMatrix,
+                                                       obj.previousWorldMatrix,
+                                                       view.previousViewProjectionMatrix,
+                                                       obj.previousWorldMatrixValid != 0 &&
+                                                           view.previousViewProjectionValid != 0 &&
+                                                           !view.resetTemporalHistory,
+                                                       obj.receivesShadow,
+                                                       ResolveSkinningMatrices(obj, buffers));
+                RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
+                if (objectSet)
+                {
+                    const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
+                    ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
+                }
+
+                // Bind SEPARATE vertex buffers to different slots
+                ctx.SetVertexBuffer(0, buffers.positionBuffer);  // Slot 0: Position
+
+                if (buffers.normalBuffer)
+                {
+                    ctx.SetVertexBuffer(1, buffers.normalBuffer);  // Slot 1: Normal
+                }
+
+                if (buffers.uvBuffer)
+                {
+                    ctx.SetVertexBuffer(2, buffers.uvBuffer);  // Slot 2: UV
+                }
+
+                if (buffers.tangentBuffer)
+                {
+                    ctx.SetVertexBuffer(3, buffers.tangentBuffer);  // Slot 3: Tangent
+                }
+                if (buffers.boneIndicesBuffer)
+                {
+                    ctx.SetVertexBuffer(4, buffers.boneIndicesBuffer);  // Slot 4: Bone indices
+                }
+                if (buffers.boneWeightsBuffer)
+                {
+                    ctx.SetVertexBuffer(5, buffers.boneWeightsBuffer);  // Slot 5: Bone weights
+                }
+
+                // Bind index buffer
+                ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
+
+                if (item.submeshIndex >= buffers.submeshes.size())
+                {
+                    ++m_drawStats.skippedInvalidSubmeshCount;
+                    return;
+                }
+
+                const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
+                const Resource::MaterialResource* materialResource =
+                    item.materialResource ? item.materialResource : ResolveMaterialResource(obj, item.submeshIndex);
+                MaterialBindingOptions materialOptions;
+                materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();
+                const MaterialBindingResult materialBinding =
+                    m_materialSystem->PrepareMaterialBinding(materialResource, view.viewCache, materialOptions);
+                if (!materialBinding.IsDrawable())
+                {
+                    ++m_drawStats.skippedMaterialBindingCount;
+                    RVX_CORE_WARN("OpaquePass: Skipping {} draw item because material binding failed: {}",
+                                  groupName,
+                                  materialBinding.message);
+                    return;
+                }
+
+                ctx.SetDescriptorSet(2, materialBinding.descriptorSet, materialBinding.dynamicOffsets);
+
+                ctx.DrawIndexed(submesh.indexCount, 1,
+                                submesh.indexOffset, submesh.baseVertex, 0);
+                ++m_drawStats.directDrawCount;
+            };
+
+            const auto tryDrawIndirectBatch = [&](size_t startIndex, uint32 batchLength) -> bool
+            {
+                if (batchLength < 2 || !EnsureIndirectDrawCapacity(batchLength))
+                {
+                    return false;
+                }
+
+                const RenderDrawItem& firstItem = (*drawItems)[startIndex];
+                if (firstItem.objectIndex >= m_renderScene->GetObjectCount())
+                {
+                    return false;
+                }
+
+                const RenderObject& obj = m_renderScene->GetObject(firstItem.objectIndex);
+                MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(obj.meshId);
+                if (!buffers.IsValid())
+                {
+                    return false;
+                }
+
+                m_indirectDrawCommands.clear();
+                m_indirectDrawCommands.reserve(batchLength);
+                const Resource::MaterialResource* batchMaterialResource = nullptr;
+                for (uint32 i = 0; i < batchLength; ++i)
+                {
+                    const RenderDrawItem& item = (*drawItems)[startIndex + i];
+                    if (item.objectIndex != firstItem.objectIndex ||
+                        item.submeshIndex >= buffers.submeshes.size())
+                    {
+                        return false;
+                    }
+
+                    const Resource::MaterialResource* materialResource =
+                        item.materialResource ? item.materialResource : ResolveMaterialResource(obj, item.submeshIndex);
+                    if (i == 0)
+                    {
+                        batchMaterialResource = materialResource;
+                    }
+                    else if (materialResource != batchMaterialResource)
+                    {
+                        return false;
+                    }
+
+                    const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
+                    IndirectDrawIndexedCommand command = {};
+                    command.indexCount = submesh.indexCount;
+                    command.instanceCount = 1;
+                    command.firstIndex = submesh.indexOffset;
+                    command.vertexOffset = submesh.baseVertex;
+                    command.firstInstance = 0;
+                    m_indirectDrawCommands.push_back(command);
+                }
+
+                MaterialBindingOptions materialOptions;
+                materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();
+                const MaterialBindingResult materialBinding =
+                    m_materialSystem->PrepareMaterialBinding(batchMaterialResource, view.viewCache, materialOptions);
+                if (!materialBinding.IsDrawable())
+                {
+                    return false;
+                }
+
+                m_pipelineCache->UpdateObjectConstants(obj.worldMatrix, obj.normalMatrix,
+                                                       obj.previousWorldMatrix,
+                                                       view.previousViewProjectionMatrix,
+                                                       obj.previousWorldMatrixValid != 0 &&
+                                                       view.previousViewProjectionValid != 0 &&
+                                                       !view.resetTemporalHistory,
+                                                       obj.receivesShadow,
+                                                       ResolveSkinningMatrices(obj, buffers));
+                RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
+                if (objectSet)
+                {
+                    const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
+                    ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
+                }
+
+                ctx.SetVertexBuffer(0, buffers.positionBuffer);
+                if (buffers.normalBuffer)
+                {
+                    ctx.SetVertexBuffer(1, buffers.normalBuffer);
+                }
+                if (buffers.uvBuffer)
+                {
+                    ctx.SetVertexBuffer(2, buffers.uvBuffer);
+                }
+                if (buffers.tangentBuffer)
+                {
+                    ctx.SetVertexBuffer(3, buffers.tangentBuffer);
+                }
+                if (buffers.boneIndicesBuffer)
+                {
+                    ctx.SetVertexBuffer(4, buffers.boneIndicesBuffer);
+                }
+                if (buffers.boneWeightsBuffer)
+                {
+                    ctx.SetVertexBuffer(5, buffers.boneWeightsBuffer);
+                }
+                ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
+                ctx.SetDescriptorSet(2, materialBinding.descriptorSet, materialBinding.dynamicOffsets);
+
+                m_indirectDrawBuffer->Upload(m_indirectDrawCommands.data(), m_indirectDrawCommands.size());
+                ctx.DrawIndexedIndirect(m_indirectDrawBuffer.Get(),
+                                        0,
+                                        static_cast<uint32>(m_indirectDrawCommands.size()),
+                                        sizeof(IndirectDrawIndexedCommand));
+                ++m_drawStats.indirectBatchCount;
+                m_drawStats.indirectDrawCount += static_cast<uint32>(m_indirectDrawCommands.size());
+                return true;
+            };
+
+            for (size_t drawIndex = 0; drawIndex < drawItems->size();)
+            {
+                const uint32 batchLength = m_indirectBatchingEnabled
+                    ? FindIndirectBatchLength(*drawItems, drawIndex)
+                    : 1;
+                if (tryDrawIndirectBatch(drawIndex, batchLength))
+                {
+                    drawIndex += batchLength;
+                    continue;
+                }
+
+                drawDirectItem((*drawItems)[drawIndex]);
+                ++drawIndex;
+            }
+        };
+
+        drawGroup(m_opaqueDrawItems, MaterialPipelineVariant::Opaque, "opaque");
+        drawGroup(m_maskedDrawItems, MaterialPipelineVariant::Masked, "masked");
     }
     else
     {

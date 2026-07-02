@@ -142,6 +142,18 @@ AudioBusNode* AudioMixer::GetBus(const std::string& name)
     return GetBus(it->second);
 }
 
+std::vector<uint32> AudioMixer::GetBusIds() const
+{
+    std::vector<uint32> ids;
+    ids.reserve(m_buses.size());
+    for (const auto& pair : m_buses)
+    {
+        ids.push_back(pair.first);
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
+
 void AudioMixer::SetMasterVolume(float volume)
 {
     if (m_masterBus)

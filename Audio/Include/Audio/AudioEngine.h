@@ -16,6 +16,7 @@ namespace RVX::Audio
 
 class AudioSource;
 class AudioListener;
+class IAudioEffect;
 
 /**
  * @brief Audio engine configuration
@@ -26,7 +27,10 @@ struct AudioEngineConfig
     uint32 channels = 2;
     uint32 bufferSizeFrames = 256;
     uint32 maxVoices = 64;
+    uint32 maxCachedClips = 128;
+    uint32 resourceManagerJobThreadCount = 1;
     bool enableSpatialization = true;
+    bool enableDevice = true;
 };
 
 /**
@@ -57,7 +61,7 @@ class AudioEngine
 public:
     using Ptr = std::shared_ptr<AudioEngine>;
 
-    AudioEngine() = default;
+    AudioEngine();
     ~AudioEngine();
 
     // Non-copyable
@@ -76,6 +80,12 @@ public:
      * @brief Update the audio engine (call each frame)
      */
     void Update(float deltaTime);
+
+    /**
+     * @brief Read mixed PCM frames from a no-device engine for offline validation
+     * @return Number of frames read into output
+     */
+    uint64 ReadMixedFrames(float* output, uint64 frameCount);
 
     // =========================================================================
     // Clip Management
@@ -152,6 +162,7 @@ public:
 
     void SetPosition(AudioHandle handle, const Vec3& position);
     void SetVelocity(AudioHandle handle, const Vec3& velocity);
+    void SetLowPassCutoff(AudioHandle handle, float cutoffFrequency);
 
     // =========================================================================
     // Listener
@@ -196,6 +207,77 @@ public:
      */
     void SetBusMuted(uint32 busId, bool muted);
 
+    /**
+     * @brief Set a bus-level low-pass cutoff in Hz
+     */
+    void SetBusLowPassCutoff(uint32 busId, float cutoffFrequency);
+
+    /**
+     * @brief Set bus-level reverb processing
+     */
+    void SetBusReverb(uint32 busId, const ReverbSettings& settings, bool enabled);
+
+    /**
+     * @brief Apply an effect list to a runtime bus
+     */
+    void ApplyBusEffects(uint32 busId, const std::vector<std::shared_ptr<IAudioEffect>>& effects);
+
+    /**
+     * @brief Set runtime bus send routes
+     */
+    void SetBusSends(uint32 busId, const std::vector<AudioBusSend>& sends);
+
+    /**
+     * @brief Check whether a bus id exists
+     */
+    bool HasBus(uint32 busId) const;
+
+    /**
+     * @brief Get a bus id by name
+     * @return Bus id, or RVX_INVALID_INDEX when no bus with that name exists
+     */
+    uint32 GetBusId(const std::string& name) const;
+
+    /**
+     * @brief Get number of created buses
+     */
+    uint32 GetBusCount() const { return static_cast<uint32>(m_buses.size()); }
+
+    /**
+     * @brief Get the bus id currently assigned to a sound handle
+     */
+    uint32 GetSoundBus(AudioHandle handle) const;
+
+    /**
+     * @brief Get the current bus-level low-pass cutoff request in Hz
+     */
+    float GetBusLowPassCutoff(uint32 busId) const;
+
+    /**
+     * @brief Get current bus-level reverb settings
+     */
+    ReverbSettings GetBusReverbSettings(uint32 busId) const;
+
+    /**
+     * @brief Check whether bus-level reverb is enabled
+     */
+    bool IsBusReverbEnabled(uint32 busId) const;
+
+    /**
+     * @brief Get the current world position assigned to a 3D sound
+     */
+    Vec3 GetSoundPosition(AudioHandle handle) const;
+
+    /**
+     * @brief Get the current per-sound volume before master mute/volume scaling
+     */
+    float GetSoundVolume(AudioHandle handle) const;
+
+    /**
+     * @brief Get the current per-sound low-pass cutoff request in Hz
+     */
+    float GetSoundLowPassCutoff(AudioHandle handle) const;
+
     // =========================================================================
     // Statistics
     // =========================================================================
@@ -206,6 +288,12 @@ public:
         uint32 totalVoices = 0;
         float cpuUsage = 0.0f;
         size_t memoryUsed = 0;
+        uint32 busCount = 0;
+        uint32 cachedClipFiles = 0;
+        uint32 routedVoices = 0;
+        uint32 activeBusSends = 0;
+        uint32 droppedBusSends = 0;
+        bool resourceManagerActive = false;
     };
 
     Statistics GetStatistics() const;

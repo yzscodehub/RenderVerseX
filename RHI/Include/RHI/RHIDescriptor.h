@@ -1,6 +1,9 @@
 #pragma once
 
+#include "RHI/RHIRayTracing.h"
 #include "RHI/RHIResources.h"
+
+#include <algorithm>
 #include <vector>
 
 namespace RVX
@@ -42,7 +45,18 @@ namespace RVX
         {
             RHIBindingLayoutEntry entry;
             entry.binding = binding;
-            entry.type = type;
+            if (type == RHIBindingType::UniformBuffer)
+            {
+                entry.type = RHIBindingType::DynamicUniformBuffer;
+            }
+            else if (type == RHIBindingType::StorageBuffer)
+            {
+                entry.type = RHIBindingType::DynamicStorageBuffer;
+            }
+            else
+            {
+                entry.type = type;
+            }
             entry.visibility = visibility;
             entry.isDynamic = true;
             entries.push_back(entry);
@@ -57,6 +71,8 @@ namespace RVX
     {
     public:
         virtual ~RHIDescriptorSetLayout() = default;
+
+        virtual const std::vector<RHIBindingLayoutEntry>& GetEntries() const = 0;
     };
 
     // =============================================================================
@@ -96,6 +112,12 @@ namespace RVX
 
         // Sampler binding
         RHISampler* sampler = nullptr;
+
+        // Ray tracing acceleration structure binding
+        RHIAccelerationStructure* accelerationStructure = nullptr;
+
+        // Descriptor array element within the layout binding range.
+        uint32 arrayElement = 0;
     };
 
     // =============================================================================
@@ -109,27 +131,42 @@ namespace RVX
 
         RHIDescriptorSetDesc& SetLayout(RHIDescriptorSetLayout* l) { layout = l; return *this; }
 
-        RHIDescriptorSetDesc& BindBuffer(uint32 binding, RHIBuffer* buffer, uint64 offset = 0, uint64 range = RVX_WHOLE_SIZE)
+        RHIDescriptorSetDesc& BindBuffer(uint32 binding,
+                                         RHIBuffer* buffer,
+                                         uint64 offset = 0,
+                                         uint64 range = RVX_WHOLE_SIZE,
+                                         uint32 arrayElement = 0)
         {
-            bindings.push_back({binding, buffer, offset, range, nullptr, nullptr});
+            bindings.push_back({binding, buffer, offset, range, nullptr, nullptr, nullptr, arrayElement});
             return *this;
         }
 
-        RHIDescriptorSetDesc& BindTexture(uint32 binding, RHITextureView* view)
+        RHIDescriptorSetDesc& BindTexture(uint32 binding, RHITextureView* view, uint32 arrayElement = 0)
         {
-            bindings.push_back({binding, nullptr, 0, 0, view, nullptr});
+            bindings.push_back({binding, nullptr, 0, 0, view, nullptr, nullptr, arrayElement});
             return *this;
         }
 
-        RHIDescriptorSetDesc& BindSampler(uint32 binding, RHISampler* sampler)
+        RHIDescriptorSetDesc& BindSampler(uint32 binding, RHISampler* sampler, uint32 arrayElement = 0)
         {
-            bindings.push_back({binding, nullptr, 0, 0, nullptr, sampler});
+            bindings.push_back({binding, nullptr, 0, 0, nullptr, sampler, nullptr, arrayElement});
             return *this;
         }
 
-        RHIDescriptorSetDesc& BindCombined(uint32 binding, RHITextureView* view, RHISampler* sampler)
+        RHIDescriptorSetDesc& BindCombined(uint32 binding,
+                                           RHITextureView* view,
+                                           RHISampler* sampler,
+                                           uint32 arrayElement = 0)
         {
-            bindings.push_back({binding, nullptr, 0, 0, view, sampler});
+            bindings.push_back({binding, nullptr, 0, 0, view, sampler, nullptr, arrayElement});
+            return *this;
+        }
+
+        RHIDescriptorSetDesc& BindAccelerationStructure(uint32 binding,
+                                                        RHIAccelerationStructure* accelerationStructure,
+                                                        uint32 arrayElement = 0)
+        {
+            bindings.push_back({binding, nullptr, 0, 0, nullptr, nullptr, accelerationStructure, arrayElement});
             return *this;
         }
     };
@@ -143,7 +180,215 @@ namespace RVX
         virtual ~RHIDescriptorSet() = default;
 
         // Update bindings
-        virtual void Update(const std::vector<RHIDescriptorBinding>& bindings) = 0;
+        virtual bool Update(const std::vector<RHIDescriptorBinding>& bindings) = 0;
     };
+
+    // =============================================================================
+    // Descriptor Validation Helpers
+    // =============================================================================
+    struct RHIDescriptorValidationResult
+    {
+        bool valid = true;
+        const char* message = "";
+        uint32 binding = RVX_INVALID_INDEX;
+
+        explicit operator bool() const { return valid; }
+    };
+
+    inline RHIDescriptorValidationResult RHIDescriptorValidationPass()
+    {
+        return {};
+    }
+
+    inline RHIDescriptorValidationResult RHIDescriptorValidationFail(
+        const char* message,
+        uint32 binding = RVX_INVALID_INDEX)
+    {
+        return {false, message, binding};
+    }
+
+    inline bool IsRHIDynamicBindingType(RHIBindingType type)
+    {
+        return type == RHIBindingType::DynamicUniformBuffer ||
+               type == RHIBindingType::DynamicStorageBuffer;
+    }
+
+    inline bool IsRHIBufferBindingType(RHIBindingType type)
+    {
+        return type == RHIBindingType::UniformBuffer ||
+               type == RHIBindingType::ShaderResourceBuffer ||
+               type == RHIBindingType::StorageBuffer ||
+               type == RHIBindingType::DynamicUniformBuffer ||
+               type == RHIBindingType::DynamicStorageBuffer;
+    }
+
+    inline bool IsRHIAccelerationStructureBindingType(RHIBindingType type)
+    {
+        return type == RHIBindingType::AccelerationStructure;
+    }
+
+    inline const RHIBindingLayoutEntry* FindRHIBindingLayoutEntry(
+        const RHIDescriptorSetLayout& layout,
+        uint32 binding)
+    {
+        const auto& entries = layout.GetEntries();
+        auto it = std::find_if(entries.begin(), entries.end(),
+            [binding](const RHIBindingLayoutEntry& entry)
+            {
+                return entry.binding == binding;
+            });
+        return it != entries.end() ? &(*it) : nullptr;
+    }
+
+    inline RHIDescriptorValidationResult ValidateRHIDescriptorSetLayoutDesc(
+        const RHIDescriptorSetLayoutDesc& desc)
+    {
+        for (size_t i = 0; i < desc.entries.size(); ++i)
+        {
+            const RHIBindingLayoutEntry& entry = desc.entries[i];
+            if (entry.count == 0)
+            {
+                return RHIDescriptorValidationFail("descriptor layout binding count must be greater than zero", entry.binding);
+            }
+
+            if (entry.isDynamic && !IsRHIDynamicBindingType(entry.type))
+            {
+                return RHIDescriptorValidationFail("dynamic descriptor binding must use a dynamic buffer binding type", entry.binding);
+            }
+
+            if (!entry.isDynamic && IsRHIDynamicBindingType(entry.type))
+            {
+                return RHIDescriptorValidationFail("dynamic buffer binding type must be marked dynamic", entry.binding);
+            }
+
+            for (size_t j = i + 1; j < desc.entries.size(); ++j)
+            {
+                if (desc.entries[j].binding == entry.binding)
+                {
+                    return RHIDescriptorValidationFail("duplicate descriptor layout binding", entry.binding);
+                }
+            }
+        }
+
+        return RHIDescriptorValidationPass();
+    }
+
+    inline RHIDescriptorValidationResult ValidateRHIPipelineLayoutDesc(
+        const RHIPipelineLayoutDesc& desc,
+        uint32 maxDescriptorSets = 4)
+    {
+        if (desc.setLayouts.size() > maxDescriptorSets)
+        {
+            return RHIDescriptorValidationFail("pipeline layout has too many descriptor sets");
+        }
+
+        for (auto* layout : desc.setLayouts)
+        {
+            if (!layout)
+            {
+                return RHIDescriptorValidationFail("pipeline layout contains a null descriptor set layout");
+            }
+        }
+
+        return RHIDescriptorValidationPass();
+    }
+
+    inline RHIDescriptorValidationResult ValidateRHIDescriptorBindings(
+        const RHIDescriptorSetLayout& layout,
+        const std::vector<RHIDescriptorBinding>& bindings)
+    {
+        for (size_t i = 0; i < bindings.size(); ++i)
+        {
+            const RHIDescriptorBinding& binding = bindings[i];
+            for (size_t j = i + 1; j < bindings.size(); ++j)
+            {
+                if (bindings[j].binding == binding.binding &&
+                    bindings[j].arrayElement == binding.arrayElement)
+                {
+                    return RHIDescriptorValidationFail("duplicate descriptor binding update", binding.binding);
+                }
+            }
+
+            const RHIBindingLayoutEntry* entry = FindRHIBindingLayoutEntry(layout, binding.binding);
+            if (!entry)
+            {
+                return RHIDescriptorValidationFail("descriptor binding is not declared in the layout", binding.binding);
+            }
+
+            if (binding.arrayElement >= entry->count)
+            {
+                return RHIDescriptorValidationFail("descriptor binding array element is out of range", binding.binding);
+            }
+
+            const bool hasBuffer = binding.buffer != nullptr;
+            const bool hasTexture = binding.textureView != nullptr;
+            const bool hasSampler = binding.sampler != nullptr;
+            const bool hasAccelerationStructure = binding.accelerationStructure != nullptr;
+
+            if (IsRHIBufferBindingType(entry->type))
+            {
+                if (!hasBuffer || hasTexture || hasSampler || hasAccelerationStructure)
+                {
+                    return RHIDescriptorValidationFail("descriptor binding must contain exactly one buffer resource", binding.binding);
+                }
+            }
+            else if (entry->type == RHIBindingType::SampledTexture ||
+                     entry->type == RHIBindingType::StorageTexture)
+            {
+                if (!hasTexture || hasBuffer || hasSampler || hasAccelerationStructure)
+                {
+                    return RHIDescriptorValidationFail("descriptor binding must contain exactly one texture view", binding.binding);
+                }
+            }
+            else if (entry->type == RHIBindingType::Sampler)
+            {
+                if (!hasSampler || hasBuffer || hasTexture || hasAccelerationStructure)
+                {
+                    return RHIDescriptorValidationFail("descriptor binding must contain exactly one sampler", binding.binding);
+                }
+            }
+            else if (entry->type == RHIBindingType::CombinedTextureSampler)
+            {
+                if (!hasTexture || !hasSampler || hasBuffer || hasAccelerationStructure)
+                {
+                    return RHIDescriptorValidationFail("combined texture-sampler binding requires a texture view and sampler", binding.binding);
+                }
+            }
+            else if (IsRHIAccelerationStructureBindingType(entry->type))
+            {
+                if (!hasAccelerationStructure || hasBuffer || hasTexture || hasSampler)
+                {
+                    return RHIDescriptorValidationFail("descriptor binding must contain exactly one acceleration structure", binding.binding);
+                }
+
+                if (binding.accelerationStructure->GetType() != RHIAccelerationStructureType::TopLevel)
+                {
+                    return RHIDescriptorValidationFail(
+                        "descriptor acceleration structure binding requires a top-level acceleration structure",
+                        binding.binding);
+                }
+
+                if (binding.accelerationStructure->GetGPUVirtualAddress() == 0)
+                {
+                    return RHIDescriptorValidationFail(
+                        "descriptor acceleration structure binding requires a non-zero GPU address",
+                        binding.binding);
+                }
+            }
+        }
+
+        return RHIDescriptorValidationPass();
+    }
+
+    inline RHIDescriptorValidationResult ValidateRHIDescriptorSetDesc(
+        const RHIDescriptorSetDesc& desc)
+    {
+        if (!desc.layout)
+        {
+            return RHIDescriptorValidationFail("descriptor set layout is null");
+        }
+
+        return ValidateRHIDescriptorBindings(*desc.layout, desc.bindings);
+    }
 
 } // namespace RVX

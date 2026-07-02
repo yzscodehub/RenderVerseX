@@ -6,6 +6,10 @@
 #include "Render/Material/MaterialBinder.h"
 #include "Render/GPUResourceManager.h"
 #include "Core/Log.h"
+#include "Scene/Material.h"
+
+#include <cstring>
+#include <utility>
 
 namespace RVX
 {
@@ -23,12 +27,25 @@ void MaterialBinder::Initialize(IRHIDevice* device, GPUResourceManager* gpuResou
         return;
     }
 
+    if (!device)
+    {
+        RVX_CORE_ERROR("MaterialBinder: Cannot initialize without an RHI device");
+        SetBindResult(MaterialBindStatus::Error, "Cannot initialize MaterialBinder without an RHI device");
+        return;
+    }
+
     m_device = device;
     m_gpuResources = gpuResources;
     m_defaultConstants = GetDefaultConstants();
 
-    EnsureConstantBuffer();
+    if (!EnsureConstantBuffer())
+    {
+        m_device = nullptr;
+        m_gpuResources = nullptr;
+        return;
+    }
 
+    SetBindResult(MaterialBindStatus::None, {});
     RVX_CORE_DEBUG("MaterialBinder: Initialized");
 }
 
@@ -41,14 +58,22 @@ void MaterialBinder::Shutdown()
     m_device = nullptr;
     m_gpuResources = nullptr;
     m_currentMaterialId = 0;
+    m_lastBindStatus = MaterialBindStatus::None;
+    m_lastBindMessage.clear();
 
     RVX_CORE_DEBUG("MaterialBinder: Shutdown");
 }
 
-void MaterialBinder::EnsureConstantBuffer()
+bool MaterialBinder::EnsureConstantBuffer()
 {
     if (m_constantBuffer)
-        return;
+        return true;
+
+    if (!m_device)
+    {
+        SetBindResult(MaterialBindStatus::Error, "Cannot create material constant buffer without an RHI device");
+        return false;
+    }
 
     RHIBufferDesc desc;
     desc.size = sizeof(MaterialGPUConstants);
@@ -59,21 +84,32 @@ void MaterialBinder::EnsureConstantBuffer()
     m_constantBuffer = m_device->CreateBuffer(desc);
     if (!m_constantBuffer)
     {
-        RVX_CORE_ERROR("MaterialBinder: Failed to create constant buffer");
+        SetBindResult(MaterialBindStatus::Error, "Failed to create material constant buffer");
+        RVX_CORE_ERROR("MaterialBinder: {}", m_lastBindMessage);
+        return false;
     }
+
+    return true;
 }
 
-void MaterialBinder::UpdateConstantBuffer(const MaterialGPUConstants& constants)
+bool MaterialBinder::UpdateConstantBuffer(const MaterialGPUConstants& constants)
 {
-    if (!m_constantBuffer)
-        return;
+    if (!EnsureConstantBuffer())
+    {
+        return false;
+    }
 
     void* mappedData = m_constantBuffer->Map();
-    if (mappedData)
+    if (!mappedData)
     {
-        memcpy(mappedData, &constants, sizeof(MaterialGPUConstants));
-        m_constantBuffer->Unmap();
+        SetBindResult(MaterialBindStatus::Error, "Failed to map material constant buffer");
+        RVX_CORE_ERROR("MaterialBinder: {}", m_lastBindMessage);
+        return false;
     }
+
+    std::memcpy(mappedData, &constants, sizeof(MaterialGPUConstants));
+    m_constantBuffer->Unmap();
+    return true;
 }
 
 void MaterialBinder::Bind(RHICommandContext& ctx, const Material& material, uint32 setIndex)
@@ -81,8 +117,22 @@ void MaterialBinder::Bind(RHICommandContext& ctx, const Material& material, uint
     (void)ctx;
     (void)setIndex;
 
+    if (!m_device || !m_constantBuffer)
+    {
+        RVX_CORE_ERROR("MaterialBinder: Cannot bind material before successful initialization");
+        SetBindResult(MaterialBindStatus::Error, "Cannot bind material before successful initialization");
+        return;
+    }
+
     MaterialGPUConstants constants = ConvertToGPU(material);
-    UpdateConstantBuffer(constants);
+    if (!UpdateConstantBuffer(constants))
+    {
+        return;
+    }
+
+    SetBindResult(MaterialBindStatus::Unsupported,
+                  "Material constants were updated, but descriptor/pipeline binding is not wired until R5b");
+    RVX_CORE_WARN("MaterialBinder: {}", m_lastBindMessage);
 
     // Bind constant buffer
     // Note: Actual binding depends on pipeline layout
@@ -99,8 +149,7 @@ void MaterialBinder::Bind(RHICommandContext& ctx, uint64 materialId, uint32 setI
     (void)materialId;
     (void)setIndex;
 
-    // TODO: Look up material by ID and bind
-    // For now, bind default
+    RVX_CORE_WARN("MaterialBinder: Binding material by ID is not implemented; using explicit default fallback");
     BindDefault(ctx, setIndex);
 }
 
@@ -109,26 +158,84 @@ void MaterialBinder::BindDefault(RHICommandContext& ctx, uint32 setIndex)
     (void)ctx;
     (void)setIndex;
 
-    UpdateConstantBuffer(m_defaultConstants);
+    if (!m_device || !m_constantBuffer)
+    {
+        RVX_CORE_ERROR("MaterialBinder: Cannot bind default material before successful initialization");
+        SetBindResult(MaterialBindStatus::Error, "Cannot bind default material before successful initialization");
+        return;
+    }
+
+    if (!UpdateConstantBuffer(m_defaultConstants))
+    {
+        return;
+    }
+
+    SetBindResult(MaterialBindStatus::BoundDefaultMaterial, "Explicit default material fallback bound");
     // ctx.SetConstantBuffer(setIndex, 0, m_constantBuffer.Get());
 }
 
 MaterialGPUConstants MaterialBinder::ConvertToGPU(const Material& material)
 {
-    (void)material;
-    
-    // TODO: Convert Material class properties to GPU constants
-    // This requires access to the Material class definition
-    
     MaterialGPUConstants constants;
-    constants.baseColorFactor = {1.0f, 1.0f, 1.0f, 1.0f};
-    constants.metallicFactor = 0.0f;
-    constants.roughnessFactor = 0.5f;
-    constants.normalScale = 1.0f;
-    constants.occlusionStrength = 1.0f;
-    constants.emissiveColor = {0.0f, 0.0f, 0.0f};
-    constants.emissiveStrength = 0.0f;
+    constants.baseColorFactor = material.GetBaseColor();
+    constants.metallicFactor = material.GetMetallicFactor();
+    constants.roughnessFactor = material.GetRoughnessFactor();
+    constants.normalScale = material.GetNormalScale();
+    constants.occlusionStrength = material.GetOcclusionStrength();
+    constants.emissiveColor = material.GetEmissiveColor();
+    constants.emissiveStrength = material.GetEmissiveStrength();
     constants.textureFlags = 0;
+    constants.alphaCutoff = material.GetAlphaCutoff();
+    constants.doubleSided = material.IsDoubleSided() ? 1u : 0u;
+
+    if (material.GetBaseColorTexture())
+    {
+        constants.textureFlags |= static_cast<uint32>(MaterialTextureFlags::HasBaseColor);
+    }
+    if (material.GetNormalTexture())
+    {
+        constants.textureFlags |= static_cast<uint32>(MaterialTextureFlags::HasNormal);
+    }
+    if (material.GetMetallicRoughnessTexture())
+    {
+        constants.textureFlags |= static_cast<uint32>(MaterialTextureFlags::HasMetallicRoughness);
+    }
+    if (material.GetOcclusionTexture())
+    {
+        constants.textureFlags |= static_cast<uint32>(MaterialTextureFlags::HasOcclusion);
+    }
+    if (material.GetEmissiveTexture())
+    {
+        constants.textureFlags |= static_cast<uint32>(MaterialTextureFlags::HasEmissive);
+    }
+
+    switch (material.GetAlphaMode())
+    {
+        case Material::AlphaMode::Mask:
+            constants.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Mask);
+            break;
+        case Material::AlphaMode::Blend:
+            constants.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Blend);
+            break;
+        case Material::AlphaMode::Opaque:
+        default:
+            constants.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Opaque);
+            break;
+    }
+
+    switch (material.GetWorkflow())
+    {
+        case MaterialWorkflow::SpecularGlossiness:
+            constants.workflow = static_cast<uint32>(MaterialGPUWorkflow::SpecularGlossiness);
+            break;
+        case MaterialWorkflow::Unlit:
+            constants.workflow = static_cast<uint32>(MaterialGPUWorkflow::Unlit);
+            break;
+        case MaterialWorkflow::MetallicRoughness:
+        default:
+            constants.workflow = static_cast<uint32>(MaterialGPUWorkflow::MetallicRoughness);
+            break;
+    }
 
     return constants;
 }
@@ -146,6 +253,12 @@ MaterialGPUConstants MaterialBinder::GetDefaultConstants()
     constants.textureFlags = 0;
 
     return constants;
+}
+
+void MaterialBinder::SetBindResult(MaterialBindStatus status, std::string message)
+{
+    m_lastBindStatus = status;
+    m_lastBindMessage = std::move(message);
 }
 
 } // namespace RVX

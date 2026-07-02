@@ -47,6 +47,7 @@ public:
 
     void Step(float deltaTime) override
     {
+        (void)deltaTime;
         // Built-in stepping is handled in PhysicsWorld directly
     }
 
@@ -63,16 +64,21 @@ public:
 
     void DestroyBackendBody(void* backendBody) override
     {
+        (void)backendBody;
         // Nothing to do
     }
 
     void SyncBodyFromBackend(void* backendBody, RigidBody* body) override
     {
+        (void)backendBody;
+        (void)body;
         // Nothing to sync - built-in operates directly on RigidBody
     }
 
     void SyncBodyToBackend(RigidBody* body, void* backendBody) override
     {
+        (void)body;
+        (void)backendBody;
         // Nothing to sync
     }
 
@@ -83,6 +89,7 @@ public:
 
     void DestroyBackendShape(void* backendShape) override
     {
+        (void)backendShape;
         // Nothing to do
     }
 
@@ -93,6 +100,7 @@ public:
 
     void DestroyBackendConstraint(void* backendConstraint) override
     {
+        (void)backendConstraint;
         // Nothing to do
     }
 
@@ -100,6 +108,10 @@ public:
                  float maxDistance, RaycastHit& hit,
                  uint32 layerMask = 0xFFFFFFFF) override
     {
+        (void)origin;
+        (void)direction;
+        (void)maxDistance;
+        (void)layerMask;
         // Raycast implementation is in PhysicsWorld
         hit = RaycastHit{};
         return false;
@@ -110,6 +122,11 @@ public:
                     ShapeCastHit& hit,
                     uint32 layerMask = 0xFFFFFFFF) override
     {
+        (void)origin;
+        (void)radius;
+        (void)direction;
+        (void)maxDistance;
+        (void)layerMask;
         hit = ShapeCastHit{};
         return false;
     }
@@ -118,6 +135,9 @@ public:
                          std::vector<BodyHandle>& bodies,
                          uint32 layerMask = 0xFFFFFFFF) override
     {
+        (void)center;
+        (void)radius;
+        (void)layerMask;
         bodies.clear();
         return 0;
     }
@@ -133,28 +153,24 @@ private:
 
 IPhysicsBackend::Ptr PhysicsBackendFactory::CreateDefault()
 {
-#ifdef RVX_PHYSICS_JOLT
-    return Create(PhysicsBackendType::Jolt);
-#else
     return Create(PhysicsBackendType::BuiltIn);
-#endif
 }
 
 IPhysicsBackend::Ptr PhysicsBackendFactory::Create(PhysicsBackendType type)
 {
     switch (type)
     {
+        case PhysicsBackendType::Auto:
+            return CreateDefault();
+
         case PhysicsBackendType::BuiltIn:
             return std::make_unique<BuiltInBackend>();
 
-#ifdef RVX_PHYSICS_JOLT
         case PhysicsBackendType::Jolt:
-            // Would create JoltBackend here
-            return std::make_unique<BuiltInBackend>();  // Fallback for now
-#endif
+            return nullptr;
 
         default:
-            return std::make_unique<BuiltInBackend>();
+            return nullptr;
     }
 }
 
@@ -162,15 +178,14 @@ bool PhysicsBackendFactory::IsAvailable(PhysicsBackendType type)
 {
     switch (type)
     {
+        case PhysicsBackendType::Auto:
+            return true;
+
         case PhysicsBackendType::BuiltIn:
             return true;
 
         case PhysicsBackendType::Jolt:
-#ifdef RVX_PHYSICS_JOLT
-            return true;
-#else
             return false;
-#endif
 
         default:
             return false;

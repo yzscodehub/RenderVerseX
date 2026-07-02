@@ -24,6 +24,13 @@ namespace RVX
 
     ShaderHotReloader::ShaderHotReloader(
         ShaderCompileService* compileService,
+        ShaderCacheManager* cacheManager)
+        : ShaderHotReloader(compileService, cacheManager, Config{})
+    {
+    }
+
+    ShaderHotReloader::ShaderHotReloader(
+        ShaderCompileService* compileService,
         ShaderCacheManager* cacheManager,
         const Config& config)
         : m_config(config)
@@ -85,7 +92,8 @@ namespace RVX
         const std::string& shaderPath,
         RHIShaderRef shader,
         const ShaderPermutationLoadDesc& loadDesc,
-        ShaderReloadCallback callback)
+        ShaderReloadCallback callback,
+        std::vector<std::string> dependencies)
     {
         std::lock_guard<std::mutex> lock(m_shadersMutex);
 
@@ -97,6 +105,11 @@ namespace RVX
             if (callback)
             {
                 it->second.callbacks.push_back(callback);
+            }
+            if (!dependencies.empty())
+            {
+                it->second.dependencies.clear();
+                it->second.dependencies.insert(dependencies.begin(), dependencies.end());
             }
         }
         else
@@ -112,6 +125,7 @@ namespace RVX
             }
             ws.device = device;
             ws.lastModifiedTime = GetFileModificationTime(shaderPath);
+            ws.dependencies.insert(dependencies.begin(), dependencies.end());
 
             m_watchedShaders[shaderPath] = std::move(ws);
         }
@@ -374,34 +388,74 @@ namespace RVX
             RHIShaderDesc shaderDesc;
             shaderDesc.stage = shader.loadDesc.stage;
             shaderDesc.entryPoint = shader.loadDesc.entryPoint.c_str();
-            shaderDesc.bytecode = result.bytecode.data();
-            shaderDesc.bytecodeSize = result.bytecode.size();
             shaderDesc.debugName = shader.path.c_str();
 
-            RHIShaderRef newShader = shader.device->CreateShader(shaderDesc);
-            if (newShader)
+            if (shader.loadDesc.backend == RHIBackendType::OpenGL)
             {
-                reloadInfo.newShader = newShader;
-
-                // Update all instances
-                for (auto& instance : shader.instances)
+                if (result.glslSource.empty())
                 {
-                    reloadInfo.oldShader = instance;
-                    instance = newShader;
+                    reloadInfo.success = false;
+                    reloadInfo.errorMessage = "OpenGL shader reload failed: no GLSL source generated";
                 }
-
-                shader.lastModifiedTime = GetFileModificationTime(shader.path);
-                m_stats.successCount++;
-
-                RVX_CORE_INFO("ShaderHotReloader: Successfully reloaded: {}", shader.path);
+                else
+                {
+                    shaderDesc.bytecode = result.glslSource.data();
+                    shaderDesc.bytecodeSize = result.glslSource.size();
+                }
+            }
+            else if (shader.loadDesc.backend == RHIBackendType::Metal)
+            {
+                if (result.mslSource.empty())
+                {
+                    reloadInfo.success = false;
+                    reloadInfo.errorMessage = "Metal shader reload failed: no MSL source generated";
+                }
+                else
+                {
+                    shaderDesc.bytecode = result.mslSource.data();
+                    shaderDesc.bytecodeSize = result.mslSource.size();
+                }
             }
             else
             {
-                reloadInfo.success = false;
-                reloadInfo.errorMessage = "Failed to create shader from compiled bytecode";
-                m_stats.failureCount++;
+                shaderDesc.bytecode = result.bytecode.data();
+                shaderDesc.bytecodeSize = result.bytecode.size();
+            }
 
-                RVX_CORE_ERROR("ShaderHotReloader: Failed to create shader: {}", shader.path);
+            if (!reloadInfo.success)
+            {
+                m_stats.failureCount++;
+                RVX_CORE_ERROR("ShaderHotReloader: {}", reloadInfo.errorMessage);
+            }
+            else
+            {
+                RHIShaderRef newShader = shader.device->CreateShader(shaderDesc);
+                if (newShader)
+                {
+                    reloadInfo.newShader = newShader;
+
+                    // Update all instances
+                    for (auto& instance : shader.instances)
+                    {
+                        reloadInfo.oldShader = instance;
+                        instance = newShader;
+                    }
+
+                    shader.lastModifiedTime = GetFileModificationTime(shader.path);
+                    shader.dependencies.clear();
+                    shader.dependencies.insert(result.sourceInfo.includeFiles.begin(), result.sourceInfo.includeFiles.end());
+                    m_stats.successCount++;
+
+                    RVX_CORE_INFO("ShaderHotReloader: Successfully reloaded: {}", shader.path);
+                }
+                else
+                {
+                    reloadInfo.success = false;
+                    reloadInfo.errorMessage = "Failed to create shader from compiled bytecode";
+                    m_stats.failureCount++;
+
+                    RVX_CORE_ERROR("ShaderHotReloader: Failed to create shader: {}", shader.path);
+                }
             }
         }
         else

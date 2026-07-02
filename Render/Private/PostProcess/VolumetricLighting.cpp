@@ -13,6 +13,7 @@ namespace RVX
 VolumetricLightingPass::VolumetricLightingPass()
 {
     m_enabled = false;
+    MarkUnsupported("Volumetric lighting ray march, reprojection, upscale, and composite shaders are not implemented");
 }
 
 void VolumetricLightingPass::Configure(const PostProcessSettings& settings)
@@ -47,8 +48,14 @@ void VolumetricLightingPass::SetCameraMatrices(const Mat4& view, const Mat4& pro
 void VolumetricLightingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output)
 {
     // Fallback without depth/shadow - no volumetric effect
-    if (!m_enabled)
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("VolumetricLighting: unsupported fallback pass skipped: {}", GetUnsupportedReason());
+        }
         return;
+    }
 
     struct VolumetricFallbackData
     {
@@ -78,8 +85,14 @@ void VolumetricLightingPass::AddToGraph(RenderGraph& graph,
                                          RGTextureHandle shadowMap,
                                          RGTextureHandle output)
 {
-    if (!m_enabled)
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("VolumetricLighting: unsupported pass skipped: {}", GetUnsupportedReason());
+        }
         return;
+    }
 
     // Get sample count based on quality
     uint32 sampleCount = 32;

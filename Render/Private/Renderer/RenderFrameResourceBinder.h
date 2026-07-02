@@ -11,6 +11,7 @@ namespace RVX
     class OpaquePass;
     class RenderContext;
     class RenderScene;
+    class ShadowPass;
     class SkyboxPass;
     class TransparentPass;
 
@@ -23,9 +24,11 @@ namespace RVX
             const std::vector<RenderDrawItem>& opaqueDrawItems,
             const std::vector<RenderDrawItem>& maskedDrawItems,
             const std::vector<RenderDrawItem>& transparentDrawItems,
+            RHITextureView* colorTargetViewOverride,
             RHITextureView* depthTargetView,
             DepthPrepass* depthPrepass,
             OpaquePass* opaquePass,
+            ShadowPass* shadowPass,
             TransparentPass* transparentPass,
             SkyboxPass* skyboxPass);
     };

@@ -9,8 +9,7 @@
  * - Character controller for kinematic movement
  * - Raycasting and shape queries
  * 
- * Primary backend: Jolt Physics (MIT license, high performance)
- * Fallback: Built-in simple physics engine
+ * Active backend: built-in physics engine until the Jolt adapter is completed
  */
 
 #pragma once
@@ -47,13 +46,8 @@ struct PhysicsSystemInfo
     static constexpr int kMajorVersion = 1;
     static constexpr int kMinorVersion = 0;
     
-#ifdef RVX_PHYSICS_JOLT
-    static constexpr const char* kBackendName = "Jolt";
-    static constexpr bool kUsingJolt = true;
-#else
     static constexpr const char* kBackendName = "Built-in";
     static constexpr bool kUsingJolt = false;
-#endif
 };
 
 /**

@@ -7,8 +7,13 @@
 
 #include "Render/PostProcess/PostProcessStack.h"
 
+#include <deque>
+
 namespace RVX
 {
+    class PipelineCache;
+    class ResourceViewCache;
+
     /**
      * @brief FXAA quality presets
      */
@@ -37,6 +42,11 @@ namespace RVX
 
         void Configure(const PostProcessSettings& settings) override;
         void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override;
+
+        /**
+         * @brief Provide GPU resources required by the fullscreen FXAA path
+         */
+        void SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache);
 
         // =========================================================================
         // Configuration
@@ -67,10 +77,23 @@ namespace RVX
         float GetSubpixelQuality() const { return m_subpixelQuality; }
 
     private:
+        bool EnsureRuntimeResources();
+        bool UpdateConstants(uint32 width,
+                             uint32 height,
+                             float edgeThreshold,
+                             float edgeThresholdMin,
+                             float subpixelQuality);
+
         FXAAQuality m_quality = FXAAQuality::Medium;
         float m_edgeThreshold = 0.166f;
         float m_edgeThresholdMin = 0.0833f;
         float m_subpixelQuality = 0.75f;
+        PipelineCache* m_pipelineCache = nullptr;
+        ResourceViewCache* m_viewCache = nullptr;
+        IRHIDevice* m_resourceDevice = nullptr;
+        RHIBufferRef m_constantBuffer;
+        RHISamplerRef m_sampler;
+        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
     };
 
 } // namespace RVX

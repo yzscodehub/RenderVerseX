@@ -1,4 +1,6 @@
 #include "Render/Renderer/RenderDrawItem.h"
+#include "Render/Renderer/RenderScene.h"
+#include "Resource/Types/MaterialResource.h"
 
 #include <algorithm>
 #include <cmath>
@@ -18,6 +20,73 @@ namespace RVX
             return value;
         }
     } // namespace
+
+    void BuildMaterialDrawLists(const RenderScene& scene,
+                                const std::vector<uint32_t>& visibleObjectIndices,
+                                const Vec3& cameraPosition,
+                                std::vector<RenderDrawItem>& outOpaqueDrawItems,
+                                std::vector<RenderDrawItem>& outMaskedDrawItems,
+                                std::vector<RenderDrawItem>& outTransparentDrawItems)
+    {
+        outOpaqueDrawItems.clear();
+        outMaskedDrawItems.clear();
+        outTransparentDrawItems.clear();
+
+        for (uint32_t objectIndex : visibleObjectIndices)
+        {
+            if (objectIndex >= scene.GetObjectCount())
+                continue;
+
+            const RenderObject& obj = scene.GetObject(objectIndex);
+            const size_t submeshCount = obj.materialResources.empty() ? 1 : obj.materialResources.size();
+
+            for (size_t submeshIndex = 0; submeshIndex < submeshCount; ++submeshIndex)
+            {
+                Resource::MaterialResource* materialResource =
+                    submeshIndex < obj.materialResources.size() ? obj.materialResources[submeshIndex] : nullptr;
+                const Material* material = materialResource ? materialResource->GetMaterial().get() : nullptr;
+                const MaterialRenderMode mode = ClassifyMaterialRenderMode(material);
+
+                RenderDrawItem item;
+                item.objectIndex = objectIndex;
+                item.submeshIndex = static_cast<uint32>(submeshIndex);
+                item.meshId = obj.meshId;
+                item.materialId = submeshIndex < obj.materialIds.size() ? obj.materialIds[submeshIndex] : 0;
+                item.materialResource = materialResource;
+                item.renderMode = mode;
+                item.depthFromCamera = length(Vec3(obj.worldMatrix[3]) - cameraPosition);
+
+                if (mode == MaterialRenderMode::Transparent)
+                {
+                    item.sortKey = BuildTransparentDrawSortKey(item);
+                    outTransparentDrawItems.push_back(item);
+                }
+                else if (mode == MaterialRenderMode::Masked)
+                {
+                    item.sortKey = BuildOpaqueDrawSortKey(item);
+                    outMaskedDrawItems.push_back(item);
+                }
+                else
+                {
+                    item.sortKey = BuildOpaqueDrawSortKey(item);
+                    outOpaqueDrawItems.push_back(item);
+                }
+            }
+        }
+
+        const auto sortFrontToBack = [](const RenderDrawItem& lhs, const RenderDrawItem& rhs)
+        {
+            return lhs.sortKey < rhs.sortKey;
+        };
+        std::sort(outOpaqueDrawItems.begin(), outOpaqueDrawItems.end(), sortFrontToBack);
+        std::sort(outMaskedDrawItems.begin(), outMaskedDrawItems.end(), sortFrontToBack);
+
+        std::sort(outTransparentDrawItems.begin(), outTransparentDrawItems.end(),
+                  [](const RenderDrawItem& lhs, const RenderDrawItem& rhs)
+                  {
+                      return lhs.depthFromCamera > rhs.depthFromCamera;
+                  });
+    }
 
     uint64 BuildOpaqueDrawSortKey(const RenderDrawItem& item)
     {

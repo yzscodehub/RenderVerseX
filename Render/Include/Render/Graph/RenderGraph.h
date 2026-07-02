@@ -11,9 +11,12 @@
 #include "RHI/RHI.h"
 #include <functional>
 #include <memory>
-
+#include <string>
+#include <vector>
 namespace RVX
 {
+    class TransientResourcePool;
+
     // =============================================================================
     // Render Graph Handle Types
     // =============================================================================
@@ -50,6 +53,7 @@ namespace RVX
     {
         Graphics,
         Compute,
+        RayTracing,
         Copy,
     };
 
@@ -61,7 +65,13 @@ namespace RVX
     public:
         // Read resources
         RGTextureHandle Read(RGTextureHandle texture, RHIShaderStage stages = RHIShaderStage::AllGraphics);
+        RGTextureHandle Read(RGTextureHandle texture,
+                             RHIResourceState state,
+                             RHIShaderStage stages = RHIShaderStage::AllGraphics);
         RGBufferHandle Read(RGBufferHandle buffer, RHIShaderStage stages = RHIShaderStage::AllGraphics);
+        RGBufferHandle Read(RGBufferHandle buffer,
+                            RHIResourceState state,
+                            RHIShaderStage stages = RHIShaderStage::AllGraphics);
 
         // Write resources
         RGTextureHandle Write(RGTextureHandle texture, RHIResourceState state = RHIResourceState::RenderTarget);
@@ -94,6 +104,7 @@ namespace RVX
         ~RenderGraph();
 
         void SetDevice(IRHIDevice* device);
+        void SetTransientResourcePool(TransientResourcePool* pool);
 
         // Create transient resources
         RGTextureHandle CreateTexture(const RHITextureDesc& desc);
@@ -146,6 +157,15 @@ namespace RVX
 
         struct CompileStats
         {
+            // Compile validity / capability honesty
+            bool compileValid = true;
+            bool executionOrderFallbackUsed = false;
+            bool asyncComputeSupported = false;
+            bool asyncFallbackUsed = false;
+            bool memoryAliasingEnabled = false;
+            bool memoryAliasingUnsupportedRequested = false;
+            bool explicitAliasingBarriersSupported = false;
+
             // Pass statistics
             uint32 totalPasses = 0;
             uint32 culledPasses = 0;
@@ -156,7 +176,10 @@ namespace RVX
             uint32 emptyPassUsageCount = 0;
             uint32 invalidResourceUsageCount = 0;
             uint32 incompatibleStateUsageCount = 0;
-            
+            uint32 shaderStageMismatchUsageCount = 0;
+            uint32 readBeforeWriteHazardCount = 0;
+            uint32 uninitializedExportCount = 0;
+
             // Barrier statistics
             uint32 barrierCount = 0;
             uint32 textureBarrierCount = 0;
@@ -184,6 +207,7 @@ namespace RVX
         };
 
         const CompileStats& GetCompileStats() const;
+        const std::vector<std::string>& GetCompileDiagnostics() const;
 
         // Memory aliasing control
         void SetMemoryAliasingEnabled(bool enabled);

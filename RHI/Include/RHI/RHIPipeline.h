@@ -185,6 +185,18 @@ namespace RVX
         virtual ~RHIPipeline() = default;
 
         virtual bool IsCompute() const = 0;
+        virtual bool IsRayTracing() const { return false; }
+        virtual uint32 GetRayTracingShaderGroupCount() const { return 0; }
+        virtual RHIShaderStage GetRayTracingShaderGroupStage(uint32 shaderGroupIndex) const
+        {
+            (void)shaderGroupIndex;
+            return RHIShaderStage::None;
+        }
+        virtual bool IsRayTracingHitGroup(uint32 shaderGroupIndex) const
+        {
+            (void)shaderGroupIndex;
+            return false;
+        }
     };
 
 } // namespace RVX

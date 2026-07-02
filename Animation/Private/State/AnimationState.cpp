@@ -4,8 +4,8 @@
  */
 
 #include "Animation/State/AnimationState.h"
-#include "Animation/Runtime/AnimationEvaluator.h"
 #include "Animation/Core/Interpolation.h"
+#include "Animation/Runtime/AnimationEvaluator.h"
 #include <algorithm>
 
 namespace RVX::Animation
@@ -38,6 +38,15 @@ void AnimationState::SetMotion(BlendNodePtr blendNode)
     m_clip = nullptr;
     m_blendTree = nullptr;
     m_motionType = StateMotionType::BlendTree;
+}
+
+void AnimationState::EnableJobifiedPoseEvaluation(bool enable,
+                                                  size_t minTransformTrackCount,
+                                                  size_t batchSize)
+{
+    m_jobifiedPoseEvaluation = enable;
+    m_jobifiedMinTransformTrackCount = minTransformTrackCount;
+    m_jobifiedBatchSize = batchSize;
 }
 
 void AnimationState::Enter()
@@ -74,21 +83,41 @@ void AnimationState::Update(const BlendContext& context, float deltaTime)
         case StateMotionType::Clip:
             if (m_clip)
             {
-                TimeUs deltaUs = SecondsToTimeUs(static_cast<double>(deltaTime * actualSpeed));
-                m_currentTime += deltaUs;
+                const TimeUs previousTime = m_currentTime;
+                const TimeUs duration = m_clip->duration;
+                const TimeUs deltaUs = SecondsToTimeUs(static_cast<double>(deltaTime * actualSpeed));
+                const TimeUs rawTime = m_currentTime + deltaUs;
+                const bool reversePlayback = deltaUs < 0;
+                bool looped = false;
 
-                if (m_loop)
+                if (duration <= 0)
                 {
-                    m_currentTime = ApplyWrapMode(m_currentTime, m_clip->duration, WrapMode::Loop);
+                    m_currentTime = 0;
                 }
-                else
+                else if (m_loop)
                 {
-                    if (m_currentTime >= m_clip->duration)
+                    looped = rawTime >= duration || rawTime < 0;
+                    m_currentTime = ApplyWrapMode(rawTime, duration, WrapMode::Loop);
+                }
+                else if (rawTime >= duration)
+                {
+                    m_currentTime = duration;
+                    m_finished = true;
+                }
+                else if (rawTime <= 0)
+                {
+                    m_currentTime = 0;
+                    if (reversePlayback)
                     {
-                        m_currentTime = m_clip->duration;
                         m_finished = true;
                     }
                 }
+                else
+                {
+                    m_currentTime = rawTime;
+                }
+
+                DispatchAnimationEvents(previousTime, m_currentTime, looped, reversePlayback);
             }
             break;
 
@@ -117,6 +146,8 @@ void AnimationState::Update(const BlendContext& context, float deltaTime)
 
 float AnimationState::Evaluate(const BlendContext& context, SkeletonPose& outPose)
 {
+    m_lastEvaluationUsedJobified = false;
+
     switch (m_motionType)
     {
         case StateMotionType::Clip:
@@ -125,8 +156,12 @@ float AnimationState::Evaluate(const BlendContext& context, SkeletonPose& outPos
                 AnimationEvaluator evaluator;
                 EvaluationOptions options;
                 options.wrapModeOverride = m_loop ? WrapMode::Loop : WrapMode::ClampForever;
-                evaluator.Evaluate(*m_clip, m_currentTime, outPose, options);
-                return 1.0f;
+                options.jobifiedTransformEvaluation = m_jobifiedPoseEvaluation;
+                options.jobifiedMinTransformTrackCount = m_jobifiedMinTransformTrackCount;
+                options.jobifiedBatchSize = m_jobifiedBatchSize;
+                EvaluationResult result = evaluator.Evaluate(*m_clip, m_currentTime, outPose, options);
+                m_lastEvaluationUsedJobified = result.usedJobifiedEvaluation;
+                return result.success ? 1.0f : 0.0f;
             }
             break;
 
@@ -221,6 +256,48 @@ float AnimationState::GetLength() const
             break;
     }
     return 0.0f;
+}
+
+void AnimationState::DispatchAnimationEvents(TimeUs previousTime,
+                                             TimeUs currentTime,
+                                             bool looped,
+                                             bool reversePlayback)
+{
+    if (!m_onAnimationEvent || !m_clip || m_clip->eventTrack.IsEmpty())
+    {
+        return;
+    }
+
+    if (previousTime == currentTime && !looped)
+    {
+        return;
+    }
+
+    const TimeUs duration = m_clip->duration;
+    if (duration <= 0)
+    {
+        return;
+    }
+
+    AnimationEventDispatcher dispatcher;
+    dispatcher.SetGlobalHandler(m_onAnimationEvent);
+
+    if (reversePlayback)
+    {
+        if (looped)
+        {
+            dispatcher.DispatchReverse(m_clip->eventTrack, previousTime, 0);
+            dispatcher.DispatchReverse(m_clip->eventTrack, duration, currentTime);
+        }
+        else
+        {
+            dispatcher.DispatchReverse(m_clip->eventTrack, previousTime, currentTime);
+        }
+    }
+    else
+    {
+        dispatcher.Dispatch(m_clip->eventTrack, previousTime, currentTime, looped, duration);
+    }
 }
 
 } // namespace RVX::Animation

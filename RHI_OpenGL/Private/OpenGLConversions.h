@@ -328,11 +328,12 @@ namespace RVX
         {
             case RHIMemoryType::Upload:
                 // CPU writable, for staging uploads
-                flags |= GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_DYNAMIC_STORAGE_BIT;
+                flags |= GL_MAP_WRITE_BIT |
+                         GL_DYNAMIC_STORAGE_BIT;
                 break;
             case RHIMemoryType::Readback:
                 // CPU readable, for reading back from GPU
-                flags |= GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT;
+                flags |= GL_MAP_READ_BIT;
                 break;
             case RHIMemoryType::Default:
             default:

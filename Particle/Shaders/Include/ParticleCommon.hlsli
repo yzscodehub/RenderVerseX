@@ -75,6 +75,10 @@ struct RenderData
     float softParticleFadeDistance;
     float softParticleContrast;
     uint softParticleEnabled;
+    uint sceneDepthTestEnabled;
+    float nearPlane;
+    float farPlane;
+    uint reverseZ;
     uint pad;
 };
 

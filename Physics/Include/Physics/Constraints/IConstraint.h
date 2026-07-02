@@ -171,6 +171,16 @@ public:
      */
     bool IsBroken() const { return m_broken; }
 
+    /**
+     * @brief Mark constraint as broken or restore it
+     */
+    void SetBroken(bool broken) { m_broken = broken; }
+
+    /**
+     * @brief Mark constraint as broken
+     */
+    void Break() { m_broken = true; }
+
     // =========================================================================
     // Solver Interface
     // =========================================================================

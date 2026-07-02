@@ -2,6 +2,7 @@
 #include "Render/Context/RenderContext.h"
 #include "Render/Passes/DepthPrepass.h"
 #include "Render/Passes/OpaquePass.h"
+#include "Render/Passes/ShadowPass.h"
 #include "Render/Passes/SkyboxPass.h"
 #include "Render/Passes/TransparentPass.h"
 #include "Render/Renderer/RenderScene.h"
@@ -14,13 +15,17 @@ namespace RVX
         const std::vector<RenderDrawItem>& opaqueDrawItems,
         const std::vector<RenderDrawItem>& maskedDrawItems,
         const std::vector<RenderDrawItem>& transparentDrawItems,
+        RHITextureView* colorTargetViewOverride,
         RHITextureView* depthTargetView,
         DepthPrepass* depthPrepass,
         OpaquePass* opaquePass,
+        ShadowPass* shadowPass,
         TransparentPass* transparentPass,
         SkyboxPass* skyboxPass)
     {
-        RHITextureView* colorTargetView = renderContext.GetCurrentBackBufferView();
+        RHITextureView* colorTargetView = colorTargetViewOverride
+                                              ? colorTargetViewOverride
+                                              : renderContext.GetCurrentBackBufferView();
 
         if (depthPrepass)
         {
@@ -32,6 +37,11 @@ namespace RVX
         {
             opaquePass->SetRenderScene(&renderScene, &opaqueDrawItems, &maskedDrawItems);
             opaquePass->SetRenderTargets(colorTargetView, depthTargetView);
+        }
+
+        if (shadowPass)
+        {
+            shadowPass->SetRenderScene(&renderScene);
         }
 
         if (transparentPass)

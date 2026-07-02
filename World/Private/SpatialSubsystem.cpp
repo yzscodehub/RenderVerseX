@@ -20,8 +20,17 @@ void SpatialSubsystem::Initialize()
 {
     RVX_CORE_INFO("SpatialSubsystem initializing...");
 
-    // Create default BVH index
-    m_index = Spatial::SpatialFactory::Create(Spatial::SpatialIndexType::BVH);
+    World* world = GetWorld();
+    SceneManager* scene = world ? world->GetSceneManager() : nullptr;
+    if (!scene)
+    {
+        // Fallback for tests or custom embedding without a SceneManager.
+        m_index = Spatial::SpatialFactory::Create(Spatial::SpatialIndexType::BVH);
+    }
+    else
+    {
+        m_index.reset();
+    }
 
     RVX_CORE_INFO("SpatialSubsystem initialized");
 }
@@ -37,7 +46,14 @@ void SpatialSubsystem::Tick(float deltaTime)
 {
     (void)deltaTime;
 
-    // Rebuild index if needed
+    World* world = GetWorld();
+    SceneManager* scene = world ? world->GetSceneManager() : nullptr;
+    if (scene)
+    {
+        m_needsRebuild = false;
+        return;
+    }
+
     if (m_needsRebuild && m_index)
     {
         RebuildIndex();
@@ -45,29 +61,55 @@ void SpatialSubsystem::Tick(float deltaTime)
     }
 }
 
+Spatial::ISpatialIndex* SpatialSubsystem::GetIndex()
+{
+    World* world = GetWorld();
+    SceneManager* scene = world ? world->GetSceneManager() : nullptr;
+    return scene ? scene->GetSpatialIndex() : m_index.get();
+}
+
+const Spatial::ISpatialIndex* SpatialSubsystem::GetIndex() const
+{
+    World* world = GetWorld();
+    SceneManager* scene = world ? world->GetSceneManager() : nullptr;
+    return scene ? scene->GetSpatialIndex() : m_index.get();
+}
+
 void SpatialSubsystem::SetIndex(Spatial::SpatialIndexPtr index)
 {
-    m_index = std::move(index);
+    World* world = GetWorld();
+    SceneManager* scene = world ? world->GetSceneManager() : nullptr;
+    if (scene)
+    {
+        scene->SetSpatialIndex(std::move(index));
+        m_index.reset();
+    }
+    else
+    {
+        m_index = std::move(index);
+    }
     m_needsRebuild = true;
 }
 
 void SpatialSubsystem::RebuildIndex()
 {
-    if (!m_index)
-        return;
-
     World* world = GetWorld();
     if (!world)
         return;
 
     SceneManager* scene = world->GetSceneManager();
-    if (!scene)
+    if (scene)
+    {
+        scene->RebuildSpatialIndex();
+        m_needsRebuild = false;
+        return;
+    }
+
+    if (!m_index)
         return;
 
-    std::vector<Spatial::ISpatialEntity*> entities;
-    scene->CollectSpatialEntities(entities);
-
-    m_index->Build(entities);
+    m_index->Clear();
+    m_needsRebuild = false;
 }
 
 void SpatialSubsystem::QueryVisible(const Camera& camera, std::vector<SceneEntity*>& outEntities)
@@ -89,11 +131,17 @@ void SpatialSubsystem::QueryVisible(const Frustum& frustum,
 {
     World* world = GetWorld();
     auto* scene = world ? world->GetSceneManager() : nullptr;
-    if (!m_index || !scene)
+    if (scene)
+    {
+        scene->SynchronizeSpatialIndex();
+    }
+
+    auto* index = GetIndex();
+    if (!index || !scene)
         return;
 
     std::vector<Spatial::QueryResult> results;
-    m_index->QueryFrustum(frustum, filter, results);
+    index->QueryFrustum(frustum, filter, results);
 
     outEntities.clear();
     outEntities.reserve(results.size());
@@ -119,11 +167,17 @@ bool SpatialSubsystem::Raycast(const Ray& ray,
 {
     World* world = GetWorld();
     auto* scene = world ? world->GetSceneManager() : nullptr;
-    if (!m_index || !scene)
+    if (scene)
+    {
+        scene->SynchronizeSpatialIndex();
+    }
+
+    auto* index = GetIndex();
+    if (!index || !scene)
         return false;
 
     Spatial::QueryResult result;
-    if (m_index->QueryRay(ray, filter, result))
+    if (index->QueryRay(ray, filter, result))
     {
         auto target = scene->ResolveSpatialQueryTarget(result);
         outHit.entity = target.entity;
@@ -147,11 +201,17 @@ void SpatialSubsystem::RaycastAll(const Ray& ray,
 {
     World* world = GetWorld();
     auto* scene = world ? world->GetSceneManager() : nullptr;
-    if (!m_index || !scene)
+    if (scene)
+    {
+        scene->SynchronizeSpatialIndex();
+    }
+
+    auto* index = GetIndex();
+    if (!index || !scene)
         return;
 
     std::vector<Spatial::QueryResult> results;
-    m_index->QueryRayAll(ray, filter, results);
+    index->QueryRayAll(ray, filter, results);
 
     outHits.clear();
     outHits.reserve(results.size());
@@ -209,11 +269,17 @@ void SpatialSubsystem::QuerySphere(const Vec3& center, float radius,
 {
     World* world = GetWorld();
     auto* scene = world ? world->GetSceneManager() : nullptr;
-    if (!m_index || !scene)
+    if (scene)
+    {
+        scene->SynchronizeSpatialIndex();
+    }
+
+    auto* index = GetIndex();
+    if (!index || !scene)
         return;
 
     std::vector<Spatial::QueryResult> results;
-    m_index->QuerySphere(center, radius, Spatial::QueryFilter{}, results);
+    index->QuerySphere(center, radius, Spatial::QueryFilter{}, results);
 
     outEntities.clear();
     outEntities.reserve(results.size());
@@ -232,11 +298,17 @@ void SpatialSubsystem::QueryBox(const AABB& box, std::vector<SceneEntity*>& outE
 {
     World* world = GetWorld();
     auto* scene = world ? world->GetSceneManager() : nullptr;
-    if (!m_index || !scene)
+    if (scene)
+    {
+        scene->SynchronizeSpatialIndex();
+    }
+
+    auto* index = GetIndex();
+    if (!index || !scene)
         return;
 
     std::vector<Spatial::QueryResult> results;
-    m_index->QueryBox(box, Spatial::QueryFilter{}, results);
+    index->QueryBox(box, Spatial::QueryFilter{}, results);
 
     outEntities.clear();
     outEntities.reserve(results.size());

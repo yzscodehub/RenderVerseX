@@ -34,7 +34,7 @@ namespace RVX::Bindings
                 {
                     oss << (v.as<bool>() ? "true" : "false");
                 }
-                else if (v.is<sol::nil_t>())
+                else if (v.get_type() == sol::type::lua_nil)
                 {
                     oss << "nil";
                 }
@@ -130,7 +130,7 @@ namespace RVX::Bindings
         // =====================================================================
 
         // Type checking helpers
-        rvx["IsNil"] = [](sol::object obj) { return obj.is<sol::nil_t>(); };
+        rvx["IsNil"] = [](sol::object obj) { return obj.get_type() == sol::type::lua_nil; };
         rvx["IsNumber"] = [](sol::object obj) { return obj.is<double>(); };
         rvx["IsString"] = [](sol::object obj) { return obj.is<std::string>(); };
         rvx["IsBool"] = [](sol::object obj) { return obj.is<bool>(); };

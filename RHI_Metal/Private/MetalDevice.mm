@@ -103,8 +103,20 @@ namespace RVX
         m_capabilities.supportsSeparateStencilRef = true;       // Metal supports separate stencil refs
         m_capabilities.supportsSplitBarrier = false;            // Metal uses automatic barriers
         m_capabilities.supportsSecondaryCommandBuffer = true;   // Metal supports parallel encoders
+        m_capabilities.supportsDescriptorSets = true;           // Implemented through Metal binding metadata
+        m_capabilities.supportsDynamicDescriptorOffsets = true;
+        m_capabilities.maxDescriptorSets = 4;
+        m_capabilities.supportsExplicitResourceBarriers = true;
+        m_capabilities.emulatesResourceBarriers = false;
         m_capabilities.supportsMemoryBudgetQuery = true;        // Metal supports memory budget
         m_capabilities.supportsPersistentMapping = true;        // Metal supports persistent mapping
+        m_capabilities.supportsExplicitHeapManagement = true;   // Metal heaps are implemented
+        m_capabilities.supportsHostFenceSignal = true;
+        m_capabilities.supportsDefaultQueueFenceSignal = true;
+        m_capabilities.supportsExplicitQueueFenceSignal = false;
+        m_capabilities.supportsQueueFenceWait = false;
+        m_capabilities.supportsMultiQueueBatchSubmit = false;
+        m_capabilities.emulatesQueueFences = false;
 
         RVX_RHI_INFO("Metal Capabilities:");
         RVX_RHI_INFO("  Adapter: {}", m_capabilities.adapterName);
@@ -126,7 +138,28 @@ namespace RVX
 
     RHITextureViewRef MetalDevice::CreateTextureView(RHITexture* texture, const RHITextureViewDesc& desc)
     {
-        return MakeRef<MetalTextureView>(static_cast<MetalTexture*>(texture), desc);
+        if (!texture)
+        {
+            RVX_RHI_ERROR("Metal: Cannot create texture view from null texture");
+            return nullptr;
+        }
+        if (!IsTextureViewTypeCompatible(texture->GetUsage(), texture->GetFormat(), desc))
+        {
+            RVX_RHI_ERROR("Metal: Cannot create {} texture view for texture usage {} format {}",
+                          GetTextureViewTypeName(desc.type),
+                          static_cast<uint32>(texture->GetUsage()),
+                          static_cast<uint32>(desc.format == RHIFormat::Unknown ? texture->GetFormat() : desc.format));
+            return nullptr;
+        }
+
+        auto view = MakeRef<MetalTextureView>(static_cast<MetalTexture*>(texture), desc);
+        if (!view->GetMTLTexture())
+        {
+            RVX_RHI_ERROR("Metal: Failed to create native {} texture view",
+                          GetTextureViewTypeName(desc.type));
+            return nullptr;
+        }
+        return view;
     }
 
     RHISamplerRef MetalDevice::CreateSampler(const RHISamplerDesc& desc)
@@ -194,7 +227,7 @@ namespace RVX
                 texDesc.textureType = MTLTextureType3D;
                 break;
             case RHITextureDimension::TextureCube:
-                texDesc.textureType = MTLTextureTypeCube;
+                texDesc.textureType = desc.arraySize > 1 ? MTLTextureTypeCubeArray : MTLTextureTypeCube;
                 break;
         }
 
@@ -247,11 +280,25 @@ namespace RVX
     // =============================================================================
     RHIDescriptorSetLayoutRef MetalDevice::CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc& desc)
     {
+        auto validation = ValidateRHIDescriptorSetLayoutDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("Metal descriptor set layout creation failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return nullptr;
+        }
         return MakeRef<MetalDescriptorSetLayout>(desc);
     }
 
     RHIPipelineLayoutRef MetalDevice::CreatePipelineLayout(const RHIPipelineLayoutDesc& desc)
     {
+        auto validation = ValidateRHIPipelineLayoutDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("Metal pipeline layout creation failed: {}", validation.message);
+            return nullptr;
+        }
         return MakeRef<MetalPipelineLayout>(desc);
     }
 
@@ -270,6 +317,14 @@ namespace RVX
     // =============================================================================
     RHIDescriptorSetRef MetalDevice::CreateDescriptorSet(const RHIDescriptorSetDesc& desc)
     {
+        auto validation = ValidateRHIDescriptorSetDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("Metal descriptor set creation failed: {} (binding {})",
+                          validation.message,
+                          validation.binding);
+            return nullptr;
+        }
         return MakeRef<MetalDescriptorSet>(desc);
     }
 
@@ -296,9 +351,14 @@ namespace RVX
         return MakeRef<MetalCommandContext>(this, type);
     }
 
-    void MetalDevice::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
+    uint64 MetalDevice::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
     {
         std::lock_guard<std::mutex> lock(m_submitMutex);
+
+        if (!context)
+        {
+            return 0;
+        }
 
         auto* metalContext = static_cast<MetalCommandContext*>(context);
 
@@ -315,19 +375,27 @@ namespace RVX
             }
         }
 
-        metalContext->Submit(signalFence);
+        return metalContext->Submit(signalFence);
     }
 
-    void MetalDevice::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
+    uint64 MetalDevice::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
     {
         std::lock_guard<std::mutex> lock(m_submitMutex);
 
+        uint64 submittedValue = 0;
         for (size_t i = 0; i < contexts.size(); ++i)
         {
+            if (!contexts[i])
+            {
+                RVX_RHI_ERROR("MetalDevice::SubmitCommandContexts: null command context");
+                return 0;
+            }
+
             auto* metalContext = static_cast<MetalCommandContext*>(contexts[i]);
             // Only signal fence on last submission
-            metalContext->Submit(i == contexts.size() - 1 ? signalFence : nullptr);
+            submittedValue = metalContext->Submit(i == contexts.size() - 1 ? signalFence : nullptr);
         }
+        return submittedValue;
     }
 
     // =============================================================================

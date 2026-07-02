@@ -18,7 +18,7 @@
 namespace RVX::Animation
 {
     class AnimationStateMachine;
-    class AnimationClip;
+    struct AnimationClip;
     struct Skeleton;
     class SkeletonPose;
 }
@@ -152,6 +152,21 @@ public:
     float GetCurrentStateLength() const;
 
     // =========================================================================
+    // Evaluation Settings
+    // =========================================================================
+
+    /// Enable JobSystem-backed transform track evaluation for large clips
+    void EnableJobifiedPoseEvaluation(bool enable,
+                                      size_t minTransformTrackCount = 32,
+                                      size_t batchSize = 0);
+
+    /// Check whether jobified pose evaluation is enabled
+    bool IsJobifiedPoseEvaluationEnabled() const { return m_jobifiedPoseEvaluation; }
+
+    /// Check whether the most recent state machine evaluation used the JobSystem path
+    bool DidLastEvaluationUseJobifiedPoseEvaluation() const;
+
+    // =========================================================================
     // Root Motion
     // =========================================================================
 
@@ -224,6 +239,7 @@ public:
     bool HasValidPose() const;
 
 private:
+    void BindStateMachineCallbacks();
     void UpdateAnimation(float deltaTime);
     void ApplyPoseToSkeleton();
     void ExtractRootMotion();
@@ -236,6 +252,9 @@ private:
     // Playback state
     bool m_playing = true;
     float m_speed = 1.0f;
+    bool m_jobifiedPoseEvaluation = false;
+    size_t m_jobifiedMinTransformTrackCount = 32;
+    size_t m_jobifiedBatchSize = 0;
 
     // Root motion
     bool m_applyRootMotion = false;

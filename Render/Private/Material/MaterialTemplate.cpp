@@ -104,17 +104,31 @@ int32 MaterialTemplate::GetParameterIndex(const std::string& name) const
 
 bool MaterialTemplate::Compile(IRHIDevice* device)
 {
+    m_compiled = false;
+    m_pipeline.Reset();
+    m_lastCompileError.clear();
+
     if (!device)
+    {
+        m_lastCompileError = "Cannot compile material template without an RHI device";
         return false;
+    }
 
-    // TODO: Compile shaders and create pipeline
-    // This would involve:
-    // 1. Loading and compiling shaders based on paths
-    // 2. Creating pipeline state based on blend mode, etc.
-    // 3. Setting up descriptor layouts for parameters
+    if (m_vertexShaderPath.empty())
+    {
+        m_lastCompileError = "MaterialTemplate::Compile requires a vertex shader path";
+        return false;
+    }
 
-    m_compiled = true;
-    return true;
+    if (m_pixelShaderPath.empty())
+    {
+        m_lastCompileError = "MaterialTemplate::Compile requires a pixel shader path";
+        return false;
+    }
+
+    m_lastCompileError =
+        "MaterialTemplate::Compile cannot create a standalone material pipeline yet; missing R5b pipeline binding integration";
+    return false;
 }
 
 void MaterialTemplate::CalculateParameterOffsets()

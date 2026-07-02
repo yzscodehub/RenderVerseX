@@ -46,16 +46,18 @@ target_include_directories(RVX_Scene PUBLIC
 
 target_link_libraries(RVX_Scene PUBLIC
     RVX::Core
+    RVX::Physics
+    RVX::Audio
     Spatial
 )
+target_link_libraries(RVX_Scene PRIVATE
+    RVX::Animation
+)
 
-# Include headers for components that use external resources
-# Using PRIVATE to avoid circular dependency (Resource/Physics/Animation link to Scene)
+# Include headers for components that use private resource/render/animation implementation details.
 target_include_directories(RVX_Scene PRIVATE
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Render/Include>
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Resource/Include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Audio/Include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Physics/Include>
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Animation/Include>
 )
 

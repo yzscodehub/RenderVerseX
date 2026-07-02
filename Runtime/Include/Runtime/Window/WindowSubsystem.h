@@ -25,6 +25,7 @@ namespace RVX
         bool resizable = true;
         bool fullscreen = false;
         bool vsync = true;
+        WindowGraphicsApi graphicsApi = WindowGraphicsApi::None;
     };
 
     /**
@@ -74,6 +75,9 @@ namespace RVX
 
         /// Get native window handle
         void* GetNativeHandle() const;
+
+        /// Get backend implementation handle (for APIs that need the windowing object)
+        void* GetInternalHandle() const;
 
     private:
         WindowConfig m_config;

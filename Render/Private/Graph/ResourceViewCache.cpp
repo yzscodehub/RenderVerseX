@@ -88,6 +88,11 @@ RHITextureView* ResourceViewCache::GetDefaultSRV(RHITexture* texture)
     desc.format = texture->GetFormat();
     desc.dimension = texture->GetDimension();
     desc.subresourceRange = RHISubresourceRange::All();
+    if (IsDepthFormat(desc.format))
+    {
+        desc.subresourceRange.aspect = RHITextureAspect::Depth;
+    }
+    desc.type = RHITextureViewType::ShaderResource;
     desc.debugName = "DefaultSRV";
 
     return GetTextureView(texture, desc);
@@ -102,6 +107,7 @@ RHITextureView* ResourceViewCache::GetDefaultRTV(RHITexture* texture)
     desc.format = texture->GetFormat();
     desc.dimension = texture->GetDimension();
     desc.subresourceRange = RHISubresourceRange::All();
+    desc.type = RHITextureViewType::RenderTarget;
     desc.debugName = "DefaultRTV";
 
     return GetTextureView(texture, desc);
@@ -116,6 +122,7 @@ RHITextureView* ResourceViewCache::GetDefaultDSV(RHITexture* texture)
     desc.format = texture->GetFormat();
     desc.dimension = texture->GetDimension();
     desc.subresourceRange = RHISubresourceRange::All();
+    desc.type = RHITextureViewType::DepthStencil;
     // Mark as depth aspect for depth formats
     if (IsDepthFormat(desc.format))
     {
@@ -136,6 +143,7 @@ RHITextureView* ResourceViewCache::GetDefaultUAV(RHITexture* texture)
     desc.dimension = texture->GetDimension();
     // UAV typically only covers first mip
     desc.subresourceRange = RHISubresourceRange::Mip(0);
+    desc.type = RHITextureViewType::UnorderedAccess;
     desc.debugName = "DefaultUAV";
 
     return GetTextureView(texture, desc);
@@ -144,6 +152,29 @@ RHITextureView* ResourceViewCache::GetDefaultUAV(RHITexture* texture)
 void ResourceViewCache::BeginFrame()
 {
     m_currentFrame++;
+    constexpr uint32 kViewRetireFrameLag = RVX_MAX_FRAME_COUNT + 1;
+    bool evicted = false;
+    for (auto it = m_textureViews.begin(); it != m_textureViews.end(); )
+    {
+        if ((m_currentFrame - it->second.lastUsedFrame) > kViewRetireFrameLag)
+        {
+            it = m_textureViews.erase(it);
+            evicted = true;
+            if (m_stats.textureViewCount > 0)
+            {
+                m_stats.textureViewCount--;
+            }
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    if (evicted)
+    {
+        ++m_generation;
+    }
+
     ResetFrameStats();
 }
 
@@ -204,6 +235,7 @@ ResourceViewCache::TextureViewKey ResourceViewCache::MakeTextureViewKey(RHITextu
     key.format = desc.format;
     key.dimension = desc.dimension;
     key.subresourceRange = desc.subresourceRange;
+    key.type = desc.type;
     return key;
 }
 
@@ -217,6 +249,7 @@ size_t ResourceViewCache::TextureViewKeyHash::operator()(const TextureViewKey& k
 
     hashCombine(std::hash<uint32>{}(static_cast<uint32>(key.format)));
     hashCombine(std::hash<uint32>{}(static_cast<uint32>(key.dimension)));
+    hashCombine(std::hash<uint32>{}(static_cast<uint32>(key.type)));
     hashCombine(std::hash<uint32>{}(key.subresourceRange.baseMipLevel));
     hashCombine(std::hash<uint32>{}(key.subresourceRange.mipLevelCount));
     hashCombine(std::hash<uint32>{}(key.subresourceRange.baseArrayLayer));

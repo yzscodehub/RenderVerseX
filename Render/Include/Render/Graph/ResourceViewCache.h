@@ -149,12 +149,14 @@ namespace RVX
             RHIFormat format = RHIFormat::Unknown;
             RHITextureDimension dimension = RHITextureDimension::Texture2D;
             RHISubresourceRange subresourceRange;
+            RHITextureViewType type = RHITextureViewType::ShaderResource;
 
             bool operator==(const TextureViewKey& other) const
             {
                 return texture == other.texture &&
                        format == other.format &&
                        dimension == other.dimension &&
+                       type == other.type &&
                        subresourceRange.baseMipLevel == other.subresourceRange.baseMipLevel &&
                        subresourceRange.mipLevelCount == other.subresourceRange.mipLevelCount &&
                        subresourceRange.baseArrayLayer == other.subresourceRange.baseArrayLayer &&

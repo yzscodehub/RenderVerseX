@@ -10,12 +10,53 @@
 #include "Particle/Rendering/TrailRenderer.h"
 #include "RHI/RHI.h"
 #include "Render/Renderer/ViewData.h"
-#include <unordered_map>
+
+#include <deque>
 #include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace RVX::Particle
 {
     class ParticleSystemInstance;
+
+    /**
+     * @brief Explicit renderer creation contract for billboard particle pipelines.
+     */
+    struct ParticleRendererConfig
+    {
+        std::string shaderDirectory;
+        RHIFormat colorTargetFormat = RHIFormat::RGBA16_FLOAT;
+        // Matches PipelineCache::GetDefaultDepthStencilFormat() without pulling
+        // the full render pipeline cache into this public Particle header.
+        RHIFormat depthStencilFormat = RHIFormat::D32_FLOAT;
+        RHISampleCount sampleCount = RHISampleCount::Count1;
+        bool reverseZ = false;
+
+        // Optional bytecode overrides keep validation tests independent from a
+        // platform shader compiler while production uses shaderDirectory.
+        std::vector<uint8> vertexShaderBytecode;
+        std::vector<uint8> pixelShaderBytecode;
+    };
+
+    /**
+     * @brief Test-visible state from the most recent particle draw attempt.
+     */
+    struct ParticleRendererDrawStats
+    {
+        ParticleDepthMode depthMode = ParticleDepthMode::None;
+        uint32 submittedVertexCount = 0;
+        uint32 submittedIndexCount = 0;
+        uint32 submittedInstanceCount = 0;
+        bool usedRealSceneDepth = false;
+        bool sceneDepthTestEnabled = false;
+        bool softParticlesEnabled = false;
+        bool drawSubmitted = false;
+        bool indexedDraw = false;
+        bool indirectDraw = false;
+        std::string softParticleFallbackReason;
+    };
 
     /**
      * @brief Particle renderer - handles all particle rendering modes
@@ -35,8 +76,13 @@ namespace RVX::Particle
         // =====================================================================
 
         void Initialize(IRHIDevice* device);
+        void Initialize(IRHIDevice* device, const ParticleRendererConfig& config);
         void Shutdown();
         bool IsInitialized() const { return m_device != nullptr; }
+        bool IsRenderingSupported() const { return m_renderingSupported; }
+        const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
+        const ParticleRendererConfig& GetConfig() const { return m_config; }
+        const ParticleRendererDrawStats& GetLastDrawStats() const { return m_lastDrawStats; }
 
         // =====================================================================
         // Rendering
@@ -49,27 +95,31 @@ namespace RVX::Particle
          * @param view View data
          * @param depthTexture Scene depth texture (for soft particles)
          */
-        void DrawParticles(RHICommandContext& ctx,
+        bool DrawParticles(RHICommandContext& ctx,
                           ParticleSystemInstance* instance,
                           const ViewData& view,
-                          RHITexture* depthTexture);
+                          RHITextureView* sceneDepthView,
+                          ParticleDepthMode depthMode = ParticleDepthMode::FixedFunction,
+                          bool allowSoftParticles = true);
 
         /**
          * @brief Draw particles with indirect draw
          */
-        void DrawParticlesIndirect(RHICommandContext& ctx,
+        bool DrawParticlesIndirect(RHICommandContext& ctx,
                                    ParticleSystemInstance* instance,
                                    const ViewData& view,
-                                   RHITexture* depthTexture);
+                                   RHITextureView* sceneDepthView,
+                                   ParticleDepthMode depthMode = ParticleDepthMode::FixedFunction,
+                                   bool allowSoftParticles = true);
 
         // =====================================================================
         // Pipeline Access
         // =====================================================================
 
-        RHIPipeline* GetBillboardPipeline(ParticleBlendMode blend, bool softParticle);
-        RHIPipeline* GetStretchedBillboardPipeline(ParticleBlendMode blend, bool softParticle);
+        RHIPipeline* GetBillboardPipeline(ParticleBlendMode blend, ParticleDepthMode depthMode);
+        RHIPipeline* GetStretchedBillboardPipeline(ParticleBlendMode blend, ParticleDepthMode depthMode);
         RHIPipeline* GetMeshPipeline(ParticleBlendMode blend);
-        RHIPipeline* GetTrailPipeline(ParticleBlendMode blend, bool softParticle);
+        RHIPipeline* GetTrailPipeline(ParticleBlendMode blend, ParticleDepthMode depthMode);
 
         // =====================================================================
         // Resource Management
@@ -81,6 +131,9 @@ namespace RVX::Particle
         /// Get or create quad index buffer
         RHIBuffer* GetQuadIndexBuffer();
 
+        /// Index format used by the shared quad index buffer
+        RHIFormat GetQuadIndexFormat() const { return RHIFormat::R16_UINT; }
+
         // =====================================================================
         // Trail Renderer
         // =====================================================================
@@ -88,13 +141,36 @@ namespace RVX::Particle
         TrailRenderer* GetTrailRenderer() { return m_trailRenderer.get(); }
 
     private:
-        uint32 MakePipelineKey(ParticleRenderMode mode, ParticleBlendMode blend, bool soft);
-        RHIPipeline* CreatePipelineIfNeeded(ParticleRenderMode mode, ParticleBlendMode blend, bool soft);
+        uint32 MakePipelineKey(ParticleRenderMode mode, ParticleBlendMode blend, ParticleDepthMode depthMode);
+        RHIPipeline* CreatePipelineIfNeeded(ParticleRenderMode mode, ParticleBlendMode blend, ParticleDepthMode depthMode);
         const char* GetShaderNameForMode(ParticleRenderMode mode) const;
         void CreateQuadBuffers();
-        void UploadRenderConstants(const ViewData& view, const SoftParticleConfig& softConfig);
+        bool ValidateConfig();
+        bool CreateSharedResources();
+        bool CreateShaders();
+        bool CreateDescriptorLayout();
+        bool CreateFallbackTextureResources();
+        RHIDescriptorSetRef CreateParticleDescriptorSet(ParticleSystemInstance* instance,
+                                                        RHITextureView* sceneDepthView);
+        void UploadRenderConstants(const ViewData& view,
+                                   const SoftParticleConfig& softConfig,
+                                   bool sceneDepthTestEnabled);
+        SoftParticleConfig ResolveSoftParticleConfig(const ParticleSystemInstance& instance,
+                                                     RHITextureView* sceneDepthView,
+                                                     ParticleDepthMode depthMode,
+                                                     bool allowSoftParticles);
+        void SetUnsupported(const std::string& reason);
 
         IRHIDevice* m_device = nullptr;
+        ParticleRendererConfig m_config;
+        bool m_renderingSupported = false;
+        std::string m_unsupportedReason = "Particle render pipelines are not implemented";
+
+        // Shaders and layout
+        RHIShaderRef m_vertexShader;
+        RHIShaderRef m_pixelShader;
+        RHIDescriptorSetLayoutRef m_descriptorSetLayout;
+        RHIPipelineLayoutRef m_pipelineLayout;
 
         // Pipeline cache
         std::unordered_map<uint32, RHIPipelineRef> m_pipelineCache;
@@ -105,6 +181,16 @@ namespace RVX::Particle
 
         // Render constants
         RHIBufferRef m_renderConstantsBuffer;
+
+        // Default particle texture resources
+        RHITextureRef m_fallbackTexture;
+        RHITextureViewRef m_fallbackTextureView;
+        RHITextureRef m_fallbackDepthTexture;
+        RHITextureViewRef m_fallbackDepthTextureView;
+        RHISamplerRef m_sampler;
+        RHISamplerRef m_depthSampler;
+        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
+        ParticleRendererDrawStats m_lastDrawStats;
 
         // Trail renderer
         std::unique_ptr<TrailRenderer> m_trailRenderer;

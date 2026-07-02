@@ -48,10 +48,33 @@ namespace RVX
 
         // Advanced features
         bool supportsRaytracing = false;
+        bool supportsRaytracingPipeline = false;
+        bool supportsRayQuery = false;
+        bool supportsAccelerationStructureUpdate = false;
+        bool supportsAccelerationStructureCompaction = false;
+        uint32 maxRayRecursionDepth = 0;
+        uint32 shaderGroupHandleSize = 0;
+        uint32 shaderGroupHandleAlignment = 0;
+        uint32 shaderTableBaseAlignment = 0;
         bool supportsMeshShaders = false;
         bool supportsVariableRateShading = false;
         bool supportsAsyncCompute = false;
+        bool supportsIndirectDrawCount = false;
         bool supportsConservativeRasterization = false;
+
+        // Query support
+        bool supportsTimestampQueries = false;
+        bool supportsOcclusionQueries = false;
+        bool supportsPipelineStatisticsQueries = false;
+        uint64 timestampFrequency = 0;
+
+        // Synchronization support
+        bool supportsHostFenceSignal = false;          // Fence value can be set directly by the host/CPU.
+        bool supportsDefaultQueueFenceSignal = false;  // Fence signal through the backend's default submit path.
+        bool supportsExplicitQueueFenceSignal = false; // Fence signal on an explicitly selected GPU queue.
+        bool supportsQueueFenceWait = false;           // GPU queue can wait on a fence value without CPU blocking.
+        bool supportsMultiQueueBatchSubmit = false;    // SubmitCommandContexts can submit mixed queue types in one batch.
+        bool emulatesQueueFences = false;              // Queue fence behavior is emulated rather than native GPU sync.
 
         // Dynamic state support
         bool supportsDepthBounds = false;           // DX12/Vulkan only
@@ -62,9 +85,17 @@ namespace RVX
         bool supportsSplitBarrier = false;          // DX12/Vulkan only
         bool supportsSecondaryCommandBuffer = false;// DX12/Vulkan/Metal
 
+        // Descriptor and barrier contract support
+        bool supportsDescriptorSets = false;        // Descriptor-set style binding is implemented directly or through backend emulation.
+        bool supportsDynamicDescriptorOffsets = false; // Dynamic buffer offsets are supported by descriptor-set binding.
+        uint32 maxDescriptorSets = 0;               // Maximum descriptor set slots supported by the base contract.
+        bool supportsExplicitResourceBarriers = false; // Backend requires/supports explicit resource barrier commands.
+        bool emulatesResourceBarriers = false;      // Barrier API is emulated/no-op because backend tracks transitions implicitly.
+
         // Memory features
         bool supportsMemoryBudgetQuery = false;     // DX12(DXGI)/Vulkan(VK_EXT_memory_budget)
         bool supportsPersistentMapping = false;     // Vulkan/DX12/OpenGL4.4+
+        bool supportsExplicitHeapManagement = false;// Explicit heap/placed resource APIs are implemented.
 
         // DX11-specific
         struct DX11Specific

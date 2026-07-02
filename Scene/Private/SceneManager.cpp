@@ -124,9 +124,15 @@ void SceneManager::Shutdown()
     m_registeredPrimitives.clear();
     m_primitiveSpatialProxies.clear();
     m_spatialProxyByHandle.clear();
+    m_primitivesByOwner.clear();
     m_retiredPrimitiveSpatialProxies.clear();
+    m_indexedPrimitives.clear();
     m_nextPrimitiveSpatialHandle = s_primitiveSpatialHandleStart;
     m_dirtyEntities.clear();
+    m_dirtyPrimitives.clear();
+    m_dirtyEntityHandles.clear();
+    m_dirtyPrimitiveSet.clear();
+    m_indexedEntityHandles.clear();
     m_spatialIndex.reset();
 
     m_initialized = false;
@@ -195,7 +201,7 @@ SceneEntity* SceneManager::AddEntity(SceneEntity::Ptr entity)
     SceneEntity::Handle handle = entity->GetHandle();
     m_entities[handle] = entity;
     entity->RegisterAllComponents();
-    m_dirtyEntities.push_back(entity.get());
+    MarkEntitySpatialDirty(entity.get());
     m_indexNeedsRebuild = true;
 
     return entity.get();
@@ -239,11 +245,6 @@ void SceneManager::DestroyEntityImmediate(SceneEntity::Handle handle)
         it->second->SetSceneManager(nullptr);
         m_entities.erase(it);
         m_indexNeedsRebuild = true;
-
-        if (m_initialized && m_spatialIndex)
-        {
-            RebuildSpatialIndex();
-        }
     }
 }
 
@@ -303,6 +304,13 @@ void SceneManager::RegisterPrimitive(PrimitiveComponent* primitive)
     auto* proxyPtr = proxy.get();
     m_spatialProxyByHandle[proxyPtr->GetHandle()] = proxyPtr;
     m_primitiveSpatialProxies[primitive] = std::move(proxy);
+
+    if (auto* owner = proxyPtr->GetOwnerEntity())
+    {
+        m_primitivesByOwner[owner->GetHandle()].insert(primitive);
+    }
+
+    MarkPrimitiveSpatialDirty(primitive);
     m_indexNeedsRebuild = true;
 }
 
@@ -320,6 +328,19 @@ void SceneManager::UnregisterPrimitive(PrimitiveComponent* primitive)
     {
         if (proxyIt->second)
         {
+            if (auto* owner = proxyIt->second->GetOwnerEntity())
+            {
+                auto ownerIt = m_primitivesByOwner.find(owner->GetHandle());
+                if (ownerIt != m_primitivesByOwner.end())
+                {
+                    ownerIt->second.erase(primitive);
+                    if (ownerIt->second.empty())
+                    {
+                        m_primitivesByOwner.erase(ownerIt);
+                    }
+                }
+            }
+
             m_spatialProxyByHandle.erase(proxyIt->second->GetHandle());
         }
         retiredProxy = std::move(proxyIt->second);
@@ -327,17 +348,49 @@ void SceneManager::UnregisterPrimitive(PrimitiveComponent* primitive)
     }
 
     m_primitives.erase(std::remove(m_primitives.begin(), m_primitives.end(), primitive), m_primitives.end());
+    m_dirtyPrimitiveSet.erase(primitive);
+    m_dirtyPrimitives.erase(std::remove(m_dirtyPrimitives.begin(), m_dirtyPrimitives.end(), primitive),
+                            m_dirtyPrimitives.end());
     m_indexNeedsRebuild = true;
-
-    if (m_initialized && m_spatialIndex)
-    {
-        RebuildSpatialIndex();
-    }
 
     if (retiredProxy)
     {
         retiredProxy->Retire();
         m_retiredPrimitiveSpatialProxies.push_back(std::move(retiredProxy));
+    }
+}
+
+void SceneManager::MarkEntitySpatialDirty(SceneEntity* entity)
+{
+    if (!entity || GetEntity(entity->GetHandle()) != entity)
+        return;
+
+    if (m_dirtyEntityHandles.insert(entity->GetHandle()).second)
+    {
+        m_dirtyEntities.push_back(entity);
+    }
+
+    auto ownerIt = m_primitivesByOwner.find(entity->GetHandle());
+    if (ownerIt == m_primitivesByOwner.end())
+        return;
+
+    for (auto* primitive : ownerIt->second)
+    {
+        if (primitive)
+        {
+            MarkPrimitiveSpatialDirty(primitive);
+        }
+    }
+}
+
+void SceneManager::MarkPrimitiveSpatialDirty(PrimitiveComponent* primitive)
+{
+    if (!primitive || m_registeredPrimitives.find(primitive) == m_registeredPrimitives.end())
+        return;
+
+    if (m_dirtyPrimitiveSet.insert(primitive).second)
+    {
+        m_dirtyPrimitives.push_back(primitive);
     }
 }
 
@@ -388,16 +441,26 @@ bool SceneManager::IsPrimitiveSpatiallyIndexable(const PrimitiveComponent* primi
     return primitive->GetWorldBounds().IsValid();
 }
 
-bool SceneManager::HasDirtyPrimitiveSpatialProxy() const
+bool SceneManager::HasIndexablePrimitiveForOwner(const SceneEntity* owner) const
 {
-    for (const auto& [primitive, proxy] : m_primitiveSpatialProxies)
+    if (!owner)
+        return false;
+
+    auto ownerIt = m_primitivesByOwner.find(owner->GetHandle());
+    if (ownerIt == m_primitivesByOwner.end())
+        return false;
+
+    for (auto* primitive : ownerIt->second)
     {
-        (void)primitive;
-        if (proxy && proxy->IsSpatialDirty())
+        if (!primitive)
+            continue;
+
+        if (IsPrimitiveSpatiallyIndexable(primitive))
         {
             return true;
         }
     }
+
     return false;
 }
 
@@ -554,10 +617,11 @@ void SceneManager::QueryVisible(const Frustum& frustum, std::vector<SceneEntity*
     QueryVisible(frustum, Spatial::QueryFilter::All(), outEntities);
 }
 
-void SceneManager::QueryVisible(const Frustum& frustum, 
+void SceneManager::QueryVisible(const Frustum& frustum,
                                 const Spatial::QueryFilter& filter,
                                 std::vector<SceneEntity*>& outEntities)
 {
+    SynchronizeSpatialIndex();
     if (!m_spatialIndex) return;
 
     std::vector<Spatial::QueryResult> results;
@@ -584,6 +648,7 @@ void SceneManager::QueryVisiblePrimitives(const Frustum& frustum,
                                           const Spatial::QueryFilter& filter,
                                           std::vector<PrimitiveComponent*>& outPrimitives)
 {
+    SynchronizeSpatialIndex();
     if (!m_spatialIndex) return;
 
     std::vector<Spatial::QueryResult> results;
@@ -601,10 +666,11 @@ bool SceneManager::Raycast(const Ray& ray, RaycastHit& outHit)
     return Raycast(ray, Spatial::QueryFilter::All(), outHit);
 }
 
-bool SceneManager::Raycast(const Ray& ray, 
-                           const Spatial::QueryFilter& filter, 
+bool SceneManager::Raycast(const Ray& ray,
+                           const Spatial::QueryFilter& filter,
                            RaycastHit& outHit)
 {
+    SynchronizeSpatialIndex();
     if (!m_spatialIndex) return false;
 
     Spatial::QueryResult result;
@@ -619,6 +685,7 @@ bool SceneManager::Raycast(const Ray& ray,
 
 void SceneManager::RaycastAll(const Ray& ray, std::vector<RaycastHit>& outHits)
 {
+    SynchronizeSpatialIndex();
     if (!m_spatialIndex) return;
 
     std::vector<Spatial::QueryResult> results;
@@ -637,6 +704,7 @@ void SceneManager::RaycastAll(const Ray& ray, std::vector<RaycastHit>& outHits)
 
 void SceneManager::QuerySphere(const Vec3& center, float radius, std::vector<SceneEntity*>& outEntities)
 {
+    SynchronizeSpatialIndex();
     if (!m_spatialIndex) return;
 
     std::vector<Spatial::QueryResult> results;
@@ -653,6 +721,7 @@ void SceneManager::QuerySpherePrimitives(const Vec3& center,
                                          float radius,
                                          std::vector<PrimitiveComponent*>& outPrimitives)
 {
+    SynchronizeSpatialIndex();
     if (!m_spatialIndex) return;
 
     std::vector<Spatial::QueryResult> results;
@@ -667,6 +736,7 @@ void SceneManager::QuerySpherePrimitives(const Vec3& center,
 
 void SceneManager::QueryBox(const AABB& box, std::vector<SceneEntity*>& outEntities)
 {
+    SynchronizeSpatialIndex();
     if (!m_spatialIndex) return;
 
     std::vector<Spatial::QueryResult> results;
@@ -681,6 +751,7 @@ void SceneManager::QueryBox(const AABB& box, std::vector<SceneEntity*>& outEntit
 
 void SceneManager::QueryBoxPrimitives(const AABB& box, std::vector<PrimitiveComponent*>& outPrimitives)
 {
+    SynchronizeSpatialIndex();
     if (!m_spatialIndex) return;
 
     std::vector<Spatial::QueryResult> results;
@@ -699,14 +770,9 @@ void SceneManager::Update(float deltaTime)
 
     UpdateEntityLifecycles(deltaTime);
 
-    // Collect dirty entities after gameplay/component ticks so transform
-    // changes made during the frame are visible to the spatial index update.
-    CollectDirtyEntities();
-
-    // Update spatial index if needed
     if (m_config.autoRebuildIndex)
     {
-        UpdateDirtyEntities();
+        SynchronizeSpatialIndex();
     }
 }
 
@@ -754,6 +820,27 @@ void SceneManager::RebuildSpatialIndex()
 
     m_spatialIndex->Build(entities);
     m_indexNeedsRebuild = false;
+    m_indexedEntityHandles.clear();
+    m_indexedPrimitives.clear();
+
+    for (auto* spatialEntity : entities)
+    {
+        if (!spatialEntity)
+            continue;
+
+        const auto handle = spatialEntity->GetHandle();
+        auto proxyIt = m_spatialProxyByHandle.find(handle);
+        if (proxyIt != m_spatialProxyByHandle.end() && proxyIt->second)
+        {
+            if (auto* primitive = proxyIt->second->GetPrimitive())
+            {
+                m_indexedPrimitives.insert(primitive);
+            }
+            continue;
+        }
+
+        m_indexedEntityHandles.insert(handle);
+    }
 
     // Clear dirty flags
     for (auto& [handle, entity] : m_entities)
@@ -773,11 +860,39 @@ void SceneManager::RebuildSpatialIndex()
         }
     }
     m_dirtyEntities.clear();
+    m_dirtyPrimitives.clear();
+    m_dirtyEntityHandles.clear();
+    m_dirtyPrimitiveSet.clear();
+}
+
+void SceneManager::SynchronizeSpatialIndex()
+{
+    if (!m_spatialIndex)
+        return;
+
+    if (m_indexNeedsRebuild)
+    {
+        RebuildSpatialIndex();
+        return;
+    }
+
+    if (!m_config.autoRebuildIndex)
+        return;
+
+    CollectDirtyEntities();
+    CollectDirtyPrimitives();
+    UpdateDirtyEntities();
 }
 
 void SceneManager::SetSpatialIndex(Spatial::SpatialIndexPtr index)
 {
     m_spatialIndex = std::move(index);
+    m_indexedEntityHandles.clear();
+    m_indexedPrimitives.clear();
+    m_dirtyEntities.clear();
+    m_dirtyPrimitives.clear();
+    m_dirtyEntityHandles.clear();
+    m_dirtyPrimitiveSet.clear();
     m_indexNeedsRebuild = true;
 }
 
@@ -815,54 +930,142 @@ SceneManager::Stats SceneManager::GetStats() const
     {
         stats.spatialStats = m_spatialIndex->GetStats();
     }
+    stats.pendingDirtyEntityCount = m_dirtyEntityHandles.size();
+    stats.pendingDirtyPrimitiveCount = m_dirtyPrimitiveSet.size();
+    for (const auto& [handle, primitives] : m_primitivesByOwner)
+    {
+        (void)handle;
+        stats.ownerPrimitiveLinkCount += primitives.size();
+    }
 
     return stats;
 }
 
 void SceneManager::CollectDirtyEntities()
 {
-    m_dirtyEntities.clear();
+    std::vector<SceneEntity*> compacted;
+    compacted.reserve(m_dirtyEntities.size());
+    std::unordered_set<SceneEntity::Handle> compactedHandles;
 
-    for (auto& [handle, entity] : m_entities)
+    for (auto* entity : m_dirtyEntities)
     {
-        if (entity->IsSpatialDirty())
+        if (!entity || GetEntity(entity->GetHandle()) != entity || !entity->IsSpatialDirty())
+            continue;
+
+        if (compactedHandles.insert(entity->GetHandle()).second)
         {
-            m_dirtyEntities.push_back(entity.get());
+            compacted.push_back(entity);
         }
     }
+
+    m_dirtyEntities = std::move(compacted);
+    m_dirtyEntityHandles = std::move(compactedHandles);
+}
+
+void SceneManager::CollectDirtyPrimitives()
+{
+    std::vector<PrimitiveComponent*> compacted;
+    compacted.reserve(m_dirtyPrimitives.size());
+    std::unordered_set<PrimitiveComponent*> compactedSet;
+
+    for (auto* primitive : m_dirtyPrimitives)
+    {
+        auto* proxy = GetPrimitiveSpatialProxy(primitive);
+        if (!primitive || !proxy || m_registeredPrimitives.find(primitive) == m_registeredPrimitives.end() ||
+            !proxy->IsSpatialDirty())
+        {
+            continue;
+        }
+
+        if (compactedSet.insert(primitive).second)
+        {
+            compacted.push_back(primitive);
+        }
+    }
+
+    m_dirtyPrimitives = std::move(compacted);
+    m_dirtyPrimitiveSet = std::move(compactedSet);
 }
 
 void SceneManager::UpdateDirtyEntities()
 {
-    const bool hasPrimitiveSpatial = !m_primitiveSpatialProxies.empty();
-    const bool primitiveDirty = HasDirtyPrimitiveSpatialProxy();
+    if (!m_spatialIndex) return;
+
+    const bool primitiveDirty = !m_dirtyPrimitives.empty();
 
     if (m_dirtyEntities.empty() && !m_indexNeedsRebuild && !primitiveDirty) return;
 
-    if (hasPrimitiveSpatial && (m_indexNeedsRebuild || primitiveDirty))
+    if (m_indexNeedsRebuild)
     {
         RebuildSpatialIndex();
         return;
     }
 
     // Check if we should do incremental update or full rebuild
-    float dirtyRatio = static_cast<float>(m_dirtyEntities.size()) /
-                       std::max(1.0f, static_cast<float>(m_entities.size()));
+    const size_t totalSpatialItems = std::max<size_t>(
+        1,
+        m_entities.size() + m_primitiveSpatialProxies.size());
+    float dirtyRatio = static_cast<float>(m_dirtyEntities.size() + m_dirtyPrimitives.size()) /
+                       static_cast<float>(totalSpatialItems);
 
-    if (m_indexNeedsRebuild || dirtyRatio > m_config.rebuildThreshold)
+    if (dirtyRatio > m_config.rebuildThreshold)
     {
         RebuildSpatialIndex();
     }
     else
     {
-        // Incremental update
+        for (auto* primitive : m_dirtyPrimitives)
+        {
+            auto* proxy = GetPrimitiveSpatialProxy(primitive);
+            const bool wasIndexed = m_indexedPrimitives.find(primitive) != m_indexedPrimitives.end();
+            const bool shouldIndex = IsPrimitiveSpatiallyIndexable(primitive);
+
+            if (wasIndexed != shouldIndex)
+            {
+                RebuildSpatialIndex();
+                return;
+            }
+
+            if (shouldIndex && proxy)
+            {
+                m_spatialIndex->Update(proxy);
+            }
+
+            if (proxy)
+            {
+                proxy->ClearSpatialDirty();
+            }
+        }
+
         for (auto* entity : m_dirtyEntities)
         {
-            m_spatialIndex->Update(entity);
+            if (!entity)
+                continue;
+
+            const bool wasIndexed = m_indexedEntityHandles.find(entity->GetHandle()) !=
+                                    m_indexedEntityHandles.end();
+            const bool shouldIndex = entity->IsActive() &&
+                                     entity->GetWorldBounds().IsValid() &&
+                                     !HasIndexablePrimitiveForOwner(entity);
+
+            if (wasIndexed != shouldIndex)
+            {
+                RebuildSpatialIndex();
+                return;
+            }
+
+            if (shouldIndex)
+            {
+                m_spatialIndex->Update(entity);
+            }
             entity->ClearSpatialDirty();
         }
+
         m_spatialIndex->Commit();
         m_dirtyEntities.clear();
+        m_dirtyPrimitives.clear();
+        m_dirtyEntityHandles.clear();
+        m_dirtyPrimitiveSet.clear();
     }
 }
 

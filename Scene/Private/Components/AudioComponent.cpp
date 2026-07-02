@@ -6,6 +6,7 @@
 #include "Scene/Components/AudioComponent.h"
 #include "Scene/SceneEntity.h"
 #include "Audio/AudioEngine.h"
+#include "Audio/AudioSubsystem.h"
 #include "Core/Log.h"
 
 namespace RVX
@@ -70,16 +71,14 @@ void AudioComponent::Play()
     playSettings.volume = m_settings.volume;
     playSettings.pitch = m_settings.pitch;
     playSettings.loop = m_settings.loop;
+    playSettings.busId = m_settings.busId;
 
     if (m_settings.spatialize && GetOwner())
     {
         // 3D playback
         Audio::Audio3DSettings spatial;
-        
-        // Get position from owner entity
-        // Note: This assumes SceneEntity has GetWorldPosition()
-        // Adjust based on actual SceneEntity API
-        spatial.position = Vec3(0.0f);  // Will be updated in UpdatePosition()
+
+        spatial.position = GetAudioWorldPosition();
         spatial.minDistance = m_settings.minDistance;
         spatial.maxDistance = m_settings.maxDistance;
         spatial.rolloffFactor = m_settings.rolloffFactor;
@@ -183,9 +182,18 @@ void AudioComponent::SetSettings(const AudioComponentSettings& settings)
     {
         if (auto* engine = GetAudioEngine())
         {
-            engine->SetVolume(m_handle, m_settings.volume);
             engine->SetPitch(m_handle, m_settings.pitch);
             engine->SetLooping(m_handle, m_settings.loop);
+            if (m_settings.spatialize)
+            {
+                ApplySpatialOcclusion();
+            }
+            else
+            {
+                m_lastOcclusion = Audio::OcclusionResult{};
+                engine->SetVolume(m_handle, m_settings.volume);
+                engine->SetLowPassCutoff(m_handle, m_lastOcclusion.lowPassCutoff);
+            }
         }
     }
 }
@@ -195,7 +203,11 @@ void AudioComponent::SetVolume(float volume)
     m_settings.volume = volume;
     if (m_handle.IsValid())
     {
-        if (auto* engine = GetAudioEngine())
+        if (m_settings.spatialize)
+        {
+            ApplySpatialOcclusion();
+        }
+        else if (auto* engine = GetAudioEngine())
         {
             engine->SetVolume(m_handle, volume);
         }
@@ -229,6 +241,23 @@ void AudioComponent::SetLoop(bool loop)
 void AudioComponent::SetSpatialize(bool spatialize)
 {
     m_settings.spatialize = spatialize;
+    if (!m_settings.spatialize)
+    {
+        m_lastOcclusion = Audio::OcclusionResult{};
+        if (m_handle.IsValid())
+        {
+            if (auto* engine = GetAudioEngine())
+            {
+                engine->SetVolume(m_handle, m_settings.volume);
+                engine->SetLowPassCutoff(m_handle, m_lastOcclusion.lowPassCutoff);
+            }
+        }
+    }
+}
+
+void AudioComponent::SetBusId(uint32 busId)
+{
+    m_settings.busId = busId;
 }
 
 void AudioComponent::SetMinDistance(float distance)
@@ -258,6 +287,12 @@ void AudioComponent::SetConeAngles(float innerAngle, float outerAngle, float out
     m_settings.coneOuterGain = outerGain;
 }
 
+Vec3 AudioComponent::GetAudioWorldPosition() const
+{
+    const SceneEntity* owner = GetOwner();
+    return owner ? owner->GetWorldPosition() : Vec3(0.0f);
+}
+
 float AudioComponent::GetPlaybackPosition() const
 {
     if (m_handle.IsValid())
@@ -268,6 +303,32 @@ float AudioComponent::GetPlaybackPosition() const
         }
     }
     return 0.0f;
+}
+
+void AudioComponent::SetAudioEngine(Audio::AudioEngine* engine)
+{
+    if (m_audioEngine == engine && !m_audioSubsystem)
+    {
+        return;
+    }
+
+    Stop();
+    m_audioSubsystem = nullptr;
+    m_lastOcclusion = Audio::OcclusionResult{};
+    m_audioEngine = engine;
+}
+
+void AudioComponent::SetAudioSubsystem(Audio::AudioSubsystem* subsystem)
+{
+    if (m_audioSubsystem == subsystem)
+    {
+        return;
+    }
+
+    Stop();
+    m_audioSubsystem = subsystem;
+    m_audioEngine = subsystem ? &subsystem->GetEngine() : nullptr;
+    m_lastOcclusion = Audio::OcclusionResult{};
 }
 
 void AudioComponent::SetPlaybackPosition(float position)
@@ -300,21 +361,39 @@ void AudioComponent::UpdatePosition()
         return;
     }
 
-    // Get world position from the entity
-    // Note: Adjust this based on actual SceneEntity API
-    // For now, we assume there's a way to get the world position
-    Vec3 position = Vec3(0.0f);  // owner->GetWorldPosition();
-    
-    // TODO: Get actual position from entity transform
-    // This will need to be connected to SceneEntity's transform system
-    
-    engine->SetPosition(m_handle, position);
+    engine->SetPosition(m_handle, GetAudioWorldPosition());
+    ApplySpatialOcclusion();
+}
+
+void AudioComponent::ApplySpatialOcclusion()
+{
+    if (!m_handle.IsValid() || !m_settings.spatialize)
+    {
+        return;
+    }
+
+    auto* engine = GetAudioEngine();
+    if (!engine)
+    {
+        return;
+    }
+
+    if (!m_audioSubsystem)
+    {
+        m_lastOcclusion = Audio::OcclusionResult{};
+        engine->SetVolume(m_handle, m_settings.volume);
+        engine->SetLowPassCutoff(m_handle, m_lastOcclusion.lowPassCutoff);
+        return;
+    }
+
+    m_lastOcclusion = m_audioSubsystem->GetOcclusion(GetAudioWorldPosition());
+    engine->SetVolume(m_handle, m_settings.volume * m_lastOcclusion.volumeScale);
+    engine->SetLowPassCutoff(m_handle, m_lastOcclusion.lowPassCutoff);
 }
 
 Audio::AudioEngine* AudioComponent::GetAudioEngine() const
 {
-    // Get the global audio engine
-    return &Audio::GetAudioEngine();
+    return m_audioEngine ? m_audioEngine : &Audio::GetAudioEngine();
 }
 
 } // namespace RVX
