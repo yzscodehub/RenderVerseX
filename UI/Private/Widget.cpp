@@ -229,6 +229,7 @@ Widget* Widget::HitTest(const Vec2& point)
 
 void Widget::OnRender(UIRenderer& renderer)
 {
+    (void)renderer;
     // Base widget renders background if set
     // Derived classes override this
 }

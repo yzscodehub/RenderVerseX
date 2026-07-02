@@ -5,12 +5,14 @@
 
 #include "UI/Widgets/Image.h"
 
+#include "UI/UIRenderer.h"
+
 namespace RVX::UI
 {
 
 void Image::OnRender(UIRenderer& renderer)
 {
-    // TODO: Render image using UIRenderer
+    renderer.DrawImage(m_textureView, GetGlobalRect(), m_uvRect, m_color);
 }
 
 } // namespace RVX::UI

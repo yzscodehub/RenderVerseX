@@ -6,7 +6,9 @@
 #pragma once
 
 #include "UI/Widget.h"
+
 #include <memory>
+#include <string>
 
 namespace RVX::UI
 {
@@ -53,8 +55,8 @@ public:
     // =========================================================================
 
     Widget::Ptr GetRoot() const { return m_root; }
-    
-    void SetRoot(Widget::Ptr root) { m_root = root; }
+
+    void SetRoot(Widget::Ptr root);
 
     /**
      * @brief Add a widget to the canvas root
@@ -78,6 +80,10 @@ public:
     Widget* GetFocusedWidget() const { return m_focusedWidget; }
     void SetFocusedWidget(Widget* widget);
     void ClearFocus();
+    Widget* GetFocusScopeRoot() const { return m_focusScopeRoot; }
+    void SetFocusScopeRoot(Widget* widget);
+    void ClearFocusScopeRoot();
+    bool FocusNextWidget(bool reverse = false);
 
     // =========================================================================
     // Update & Render
@@ -123,6 +129,8 @@ public:
 
 private:
     void UpdateLayout();
+    Widget* ResolveFocusTraversalRoot();
+    bool TryDispatchReleaseToRebuiltPressedWidget(const UIEvent& event);
 
     float m_width = 0.0f;
     float m_height = 0.0f;
@@ -130,9 +138,11 @@ private:
     bool m_enabled = true;
 
     Widget::Ptr m_root;
+    Widget* m_focusScopeRoot = nullptr;
     Widget* m_focusedWidget = nullptr;
     Widget* m_hoveredWidget = nullptr;
     Widget* m_pressedWidget = nullptr;
+    std::string m_rebuiltPressedWidgetName;
 };
 
 } // namespace RVX::UI

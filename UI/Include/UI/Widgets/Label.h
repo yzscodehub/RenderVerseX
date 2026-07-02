@@ -46,6 +46,9 @@ public:
     VerticalAlign GetVerticalAlign() const { return m_verticalAlign; }
     void SetVerticalAlign(VerticalAlign align) { m_verticalAlign = align; }
 
+    TextOverflowMode GetOverflowMode() const { return m_overflowMode; }
+    void SetOverflowMode(TextOverflowMode mode) { m_overflowMode = mode; }
+
     // =========================================================================
     // Word Wrap
     // =========================================================================
@@ -72,9 +75,13 @@ protected:
     void OnRender(UIRenderer& renderer) override;
 
 private:
+    std::string ResolveRenderText(UIRenderer& renderer,
+                                  const Rect& bounds) const;
+
     std::string m_text;
     TextAlign m_textAlign = TextAlign::Left;
     VerticalAlign m_verticalAlign = VerticalAlign::Top;
+    TextOverflowMode m_overflowMode = TextOverflowMode::Clip;
     bool m_wordWrap = false;
 };
 
