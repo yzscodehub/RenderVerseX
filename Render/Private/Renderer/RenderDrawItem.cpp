@@ -1,6 +1,5 @@
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderScene.h"
-#include "Resource/Types/MaterialResource.h"
 
 #include <algorithm>
 #include <cmath>
@@ -38,14 +37,20 @@ namespace RVX
                 continue;
 
             const RenderObject& obj = scene.GetObject(objectIndex);
-            const size_t submeshCount = obj.materialResources.empty() ? 1 : obj.materialResources.size();
+            const size_t submeshCount = std::max({
+                size_t{1},
+                obj.materialIds.size(),
+                obj.materialModes.size(),
+                obj.materialResources.size()
+            });
 
             for (size_t submeshIndex = 0; submeshIndex < submeshCount; ++submeshIndex)
             {
-                Resource::MaterialResource* materialResource =
+                IRenderMaterialSource* materialResource =
                     submeshIndex < obj.materialResources.size() ? obj.materialResources[submeshIndex] : nullptr;
-                const Material* material = materialResource ? materialResource->GetMaterial().get() : nullptr;
-                const MaterialRenderMode mode = ClassifyMaterialRenderMode(material);
+                const MaterialRenderMode mode =
+                    submeshIndex < obj.materialModes.size() ? obj.materialModes[submeshIndex]
+                                                            : MaterialRenderMode::Opaque;
 
                 RenderDrawItem item;
                 item.objectIndex = objectIndex;

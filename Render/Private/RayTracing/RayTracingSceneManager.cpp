@@ -82,11 +82,11 @@ namespace
     }
 
     uint32 FindOrAddAlphaTextureIndex(
-        std::vector<Resource::ResourceId>& textureIds,
-        std::unordered_map<Resource::ResourceId, uint32>& textureIndexLookup,
-        Resource::ResourceId textureId)
+        std::vector<uint64>& textureIds,
+        std::unordered_map<uint64, uint32>& textureIndexLookup,
+        uint64 textureId)
     {
-        if (textureId == Resource::InvalidResourceId)
+        if (textureId == 0)
         {
             return RVX_INVALID_INDEX;
         }
@@ -104,11 +104,11 @@ namespace
     }
 
     uint32 FindOrAddMaterialTextureIndex(
-        std::vector<Resource::ResourceId>& textureIds,
-        std::unordered_map<Resource::ResourceId, uint32>& textureIndexLookup,
-        Resource::ResourceId textureId)
+        std::vector<uint64>& textureIds,
+        std::unordered_map<uint64, uint32>& textureIndexLookup,
+        uint64 textureId)
     {
-        if (textureId == Resource::InvalidResourceId)
+        if (textureId == 0)
         {
             return RVX_INVALID_INDEX;
         }
@@ -424,8 +424,8 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
     m_instanceRecords.reserve(cpuTopLevelDesc.instances.size());
     m_instanceMaterialMetadataRecords.reserve(cpuTopLevelDesc.instances.size());
     m_instanceAlphaMetadataRecords.reserve(cpuTopLevelDesc.instances.size());
-    std::unordered_map<Resource::ResourceId, uint32> alphaTextureIndexLookup;
-    std::unordered_map<Resource::ResourceId, uint32> materialTextureIndexLookup;
+    std::unordered_map<uint64, uint32> alphaTextureIndexLookup;
+    std::unordered_map<uint64, uint32> materialTextureIndexLookup;
     std::unordered_map<RHIBuffer*, uint32> alphaIndexBufferLookup;
     std::unordered_map<RHIBuffer*, uint32> alphaUVBufferLookup;
     std::unordered_map<RHIBuffer*, uint32> alphaNormalBufferLookup;

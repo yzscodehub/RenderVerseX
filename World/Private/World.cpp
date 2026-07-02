@@ -8,6 +8,7 @@
 #include "Core/Log.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/ModelResource.h"
+#include "ResourceSceneAdapters/ResourceSceneAdapters.h"
 #include "Runtime/Camera/Camera.h"
 #include "Scene/ActorFactory.h"
 #include "Scene/SceneManager.h"
@@ -44,6 +45,7 @@ void World::Initialize(const WorldConfig& config)
     // Create scene manager
     m_sceneManager = std::make_unique<SceneManager>();
     m_sceneManager->Initialize();
+    ResourceSceneAdapters::RegisterDefaults();
 
     // Add physics subsystem before spatial queries so physics-driven transform
     // updates are visible before spatial indexing observes the scene.

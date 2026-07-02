@@ -5,19 +5,25 @@
  * @brief Mesh resource type
  */
 
+#include "Core/Math/AABB.h"
+#include "Geometry/Asset/Mesh.h"
+#include "RenderContracts/RenderResource.h"
 #include "Resource/IResource.h"
 #include "Resource/ResourceHandle.h"
-#include "Scene/Mesh.h"
-#include "Core/Math/AABB.h"
+
 #include <memory>
 #include <vector>
 
 namespace RVX::Resource
 {
+    using MeshAttributeUploadView = RenderMeshAttributeUploadView;
+    using MeshSubmeshUploadInfo = RenderMeshSubmeshUploadInfo;
+    using MeshUploadData = RenderMeshUploadData;
+
     /**
-     * @brief Mesh resource - encapsulates Scene::Mesh with resource lifecycle
+     * @brief Mesh resource - encapsulates Mesh data with resource lifecycle
      */
-    class MeshResource : public IResource
+    class MeshResource : public IResource, public IRenderMeshUploadSource
     {
     public:
         MeshResource();
@@ -32,16 +38,27 @@ namespace RVX::Resource
         size_t GetMemoryUsage() const override;
         size_t GetGPUMemoryUsage() const override;
 
+        uint64 GetRenderResourceId() const override { return GetId(); }
+        std::string_view GetRenderResourceName() const override { return GetName(); }
+        uint32 GetRenderResourceRefCount() const override { return GetRefCount(); }
+        RefCounted* GetRenderResourceRefCounted() override { return this; }
+        RenderMeshUploadData GetRenderMeshUploadData() const override { return GetUploadData(); }
+        AABB GetRenderMeshBounds() const override { return GetBounds(); }
+        size_t GetRenderMeshSubmeshCount() const override;
+
         // =====================================================================
         // Mesh Data
         // =====================================================================
 
         std::shared_ptr<Mesh> GetMesh() const { return m_mesh; }
         void SetMesh(std::shared_ptr<Mesh> mesh);
+
         void SetLODMeshes(std::vector<std::shared_ptr<Mesh>> lodMeshes);
         size_t GetLODCount() const;
         std::shared_ptr<Mesh> GetLODMesh(size_t lodIndex) const;
         const std::vector<std::shared_ptr<Mesh>>& GetLODMeshes() const { return m_lodMeshes; }
+
+        MeshUploadData GetUploadData() const;
 
         // =====================================================================
         // Bounds
@@ -50,25 +67,10 @@ namespace RVX::Resource
         const AABB& GetBounds() const { return m_bounds; }
         void SetBounds(const AABB& bounds) { m_bounds = bounds; }
 
-        // =====================================================================
-        // GPU Resources (future)
-        // =====================================================================
-
-        // RHI::BufferHandle GetVertexBuffer();
-        // RHI::BufferHandle GetIndexBuffer();
-        // void UploadToGPU(RHI::Device* device);
-        // void ReleaseGPUResources();
-        // bool IsGPUResident() const;
-
     private:
         std::shared_ptr<Mesh> m_mesh;
         std::vector<std::shared_ptr<Mesh>> m_lodMeshes;
         AABB m_bounds;
-
-        // GPU resources (future)
-        // RHI::BufferHandle m_vertexBuffer;
-        // RHI::BufferHandle m_indexBuffer;
-        // bool m_gpuResident = false;
     };
 
 } // namespace RVX::Resource

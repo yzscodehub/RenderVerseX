@@ -126,6 +126,9 @@ namespace RVX
         /// Set the window for rendering
         void SetWindow(void* windowHandle, uint32_t width, uint32_t height);
 
+        /// Set the window subsystem used by auto window binding.
+        void SetWindowSubsystem(WindowSubsystem* windowSubsystem);
+
         /// Handle window resize
         void OnResize(uint32_t width, uint32_t height);
 
@@ -156,6 +159,7 @@ namespace RVX
         void EnsureVisibleResourcesResident();
         
         RenderConfig m_config;
+        WindowSubsystem* m_windowSubsystem = nullptr;
         std::unique_ptr<RenderContext> m_renderContext;
         std::unique_ptr<SceneRenderer> m_sceneRenderer;
         bool m_frameActive = false;

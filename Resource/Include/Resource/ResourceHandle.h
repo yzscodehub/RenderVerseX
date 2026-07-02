@@ -135,9 +135,9 @@ namespace RVX::Resource
         /// Wait for resource to finish loading (blocking)
         void WaitForLoad() const
         {
-            while (m_resource && m_resource->IsLoading())
+            if (m_resource)
             {
-                // Busy wait for now
+                m_resource->WaitForLoad();
             }
         }
 
@@ -145,8 +145,10 @@ namespace RVX::Resource
         /// @return true if loaded, false if timeout
         bool TryWaitForLoad(uint32_t timeoutMs) const
         {
-            (void)timeoutMs;
-            WaitForLoad();
+            if (m_resource && !m_resource->WaitForLoadFor(timeoutMs))
+            {
+                return false;
+            }
             return IsLoaded();
         }
 

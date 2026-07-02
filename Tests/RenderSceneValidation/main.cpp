@@ -1,7 +1,7 @@
 #include "Animation/Data/Skeleton.h"
 #include "Core/Core.h"
 #include "Render/Renderer/RenderDrawItem.h"
-#include "Render/Renderer/RenderProxy.h"
+#include "RenderContracts/RenderProxy.h"
 #include "Render/Renderer/RenderScene.h"
 #include "RHI/RHITexture.h"
 #include "Resource/Types/MaterialResource.h"
@@ -17,8 +17,8 @@
 #include "Scene/SceneManager.h"
 #include "World/World.h"
 
-#include "RenderProxySceneBridge.h"
-#include "SceneSkyboxPassBridge.h"
+#include "RenderExtraction/RenderProxySceneBridge.h"
+#include "RenderExtraction/SceneSkyboxPassBridge.h"
 
 #include <gtest/gtest.h>
 
@@ -209,6 +209,25 @@ namespace
         {
             object.materialResources.push_back(material);
             object.materialIds.push_back(material ? material->GetId() : 0);
+            if (!material)
+            {
+                object.materialModes.push_back(RenderMaterialMode::Opaque);
+                continue;
+            }
+
+            switch (material->GetAlphaMode())
+            {
+                case Resource::MaterialAlphaMode::Mask:
+                    object.materialModes.push_back(RenderMaterialMode::Masked);
+                    break;
+                case Resource::MaterialAlphaMode::Blend:
+                    object.materialModes.push_back(RenderMaterialMode::Transparent);
+                    break;
+                case Resource::MaterialAlphaMode::Opaque:
+                default:
+                    object.materialModes.push_back(RenderMaterialMode::Opaque);
+                    break;
+            }
         }
 
         return object;
@@ -393,6 +412,8 @@ TEST(RenderSceneValidation, StaticMeshComponentCollectsRenderObjectFromWorld)
     EXPECT_EQ(mesh.Get(), object.meshResource);
     EXPECT_EQ(static_cast<size_t>(1), object.materialIds.size());
     EXPECT_EQ(material.GetId(), object.materialIds[0]);
+    ASSERT_EQ(static_cast<size_t>(1), object.materialModes.size());
+    EXPECT_EQ(RenderMaterialMode::Opaque, object.materialModes[0]);
     EXPECT_EQ(material.Get(), object.materialResources[0]);
     EXPECT_EQ(0x34u, object.layerMask);
     EXPECT_FALSE(object.castsShadow);
@@ -467,8 +488,10 @@ TEST(RenderSceneValidation, StaticMeshComponentCreatesRenderProxy)
     EXPECT_EQ(mesh.GetId(), proxy.meshId);
     EXPECT_EQ(mesh.Get(), proxy.meshResource);
     ASSERT_EQ(static_cast<size_t>(1), proxy.materialIds.size());
+    ASSERT_EQ(static_cast<size_t>(1), proxy.materialModes.size());
     ASSERT_EQ(static_cast<size_t>(1), proxy.materialResources.size());
     EXPECT_EQ(material.GetId(), proxy.materialIds[0]);
+    EXPECT_EQ(RenderMaterialMode::Opaque, proxy.materialModes[0]);
     EXPECT_EQ(material.Get(), proxy.materialResources[0]);
     EXPECT_EQ(0x10u, proxy.layerMask);
     EXPECT_FALSE(proxy.castsShadow);
@@ -493,6 +516,7 @@ TEST(RenderSceneValidation, RenderSceneApplyProxySnapshotPopulatesObjectsAndLigh
     primitive.materialIds = {4101};
     primitive.skinningMatrices = {Mat4Identity(), Mat4Identity()};
     primitive.skinningMatrices[1][3] = Vec4(0.0f, 2.0f, 0.0f, 1.0f);
+    primitive.materialModes = {RenderMaterialMode::Masked};
     primitive.sortKey = 4101;
     primitive.layerMask = 0x5Au;
     primitive.visible = true;
@@ -527,6 +551,8 @@ TEST(RenderSceneValidation, RenderSceneApplyProxySnapshotPopulatesObjectsAndLigh
     ASSERT_EQ(static_cast<size_t>(2), object.skinningMatrices.size());
     EXPECT_EQ(Vec3(0.0f, 2.0f, 0.0f), Vec3(object.skinningMatrices[1][3]));
     EXPECT_EQ(0x5Au, object.layerMask);
+    ASSERT_EQ(static_cast<size_t>(1), object.materialModes.size());
+    EXPECT_EQ(RenderMaterialMode::Masked, object.materialModes[0]);
     EXPECT_FALSE(object.castsShadow);
     EXPECT_TRUE(object.receivesShadow);
 
@@ -581,6 +607,8 @@ TEST(RenderSceneValidation, RenderProxyBridgeBuildsPrimitiveAndLightSnapshot)
     EXPECT_EQ(meshEntity->GetHandle(), snapshot.primitives[0].id.value);
     EXPECT_EQ(mesh.GetId(), snapshot.primitives[0].meshId);
     EXPECT_EQ(material.GetId(), snapshot.primitives[0].materialIds[0]);
+    ASSERT_EQ(static_cast<size_t>(1), snapshot.primitives[0].materialModes.size());
+    EXPECT_EQ(RenderMaterialMode::Opaque, snapshot.primitives[0].materialModes[0]);
 
     ASSERT_EQ(static_cast<size_t>(1), snapshot.lights.size());
     EXPECT_EQ(lightEntity->GetHandle(), snapshot.lights[0].ownerId);
@@ -676,10 +704,10 @@ TEST(RenderSceneValidation, SceneSkyboxBridgeRequestsUploadForNotReadyCubemap)
     Resource::ResourceId uploadId = Resource::InvalidResourceId;
     SceneSkyboxTextureAccess textureAccess;
     textureAccess.requestUpload =
-        [&uploadRequested, &uploadId](Resource::TextureResource* texture)
+        [&uploadRequested, &uploadId](IRenderTextureUploadSource* texture)
         {
             uploadRequested = true;
-            uploadId = texture ? texture->GetId() : Resource::InvalidResourceId;
+            uploadId = texture ? texture->GetRenderResourceId() : Resource::InvalidResourceId;
         };
     textureAccess.isGPUReady =
         [](Resource::ResourceId) -> bool
@@ -780,7 +808,7 @@ TEST(RenderSceneValidation, SceneSkyboxBridgeKeepsEquirectangularUnsupported)
     world.Shutdown();
 }
 
-TEST(RenderSceneValidation, RenderProxyBridgeReportsLegacyRendererFallback)
+TEST(RenderSceneValidation, RenderProxyBridgeBuildsLegacyMeshRendererProxy)
 {
     World world;
     world.Initialize();
@@ -796,13 +824,14 @@ TEST(RenderSceneValidation, RenderProxyBridgeReportsLegacyRendererFallback)
     RenderProxySceneBridge bridge;
     RenderProxySnapshot snapshot;
     RenderProxySceneBridgeResult result;
-    EXPECT_FALSE(bridge.BuildSnapshot(&world, snapshot, &result));
+    EXPECT_TRUE(bridge.BuildSnapshot(&world, snapshot, &result));
 
-    EXPECT_FALSE(result.usedProxyPath);
-    EXPECT_TRUE(result.requiresLegacyFallback);
-    EXPECT_EQ(RenderProxySceneBridgeFallbackReason::LegacyRendererRequired, result.fallbackReason);
-    EXPECT_EQ(entity->GetHandle(), result.fallbackOwnerId);
-    EXPECT_TRUE(snapshot.primitives.empty());
+    EXPECT_TRUE(result.usedProxyPath);
+    EXPECT_FALSE(result.requiresLegacyFallback);
+    EXPECT_EQ(RenderProxySceneBridgeFallbackReason::None, result.fallbackReason);
+    ASSERT_EQ(static_cast<size_t>(1), snapshot.primitives.size());
+    EXPECT_EQ(entity->GetHandle(), snapshot.primitives[0].ownerId);
+    EXPECT_EQ(mesh.GetId(), snapshot.primitives[0].meshId);
     EXPECT_TRUE(snapshot.lights.empty());
 
     world.Shutdown();
@@ -922,7 +951,7 @@ TEST(RenderSceneValidation, RenderProxyBridgeReflectsTransformUpdates)
     world.Shutdown();
 }
 
-TEST(RenderSceneValidation, RenderSceneCollectorFallsBackToLegacyWhenStaticMeshPrimitiveHasNoRenderData)
+TEST(RenderSceneValidation, RenderSceneCollectFromWorldUsesMeshRendererProxyWhenPrimitiveHasNoData)
 {
     World world;
     world.Initialize();
@@ -949,7 +978,7 @@ TEST(RenderSceneValidation, RenderSceneCollectorFallsBackToLegacyWhenStaticMeshP
     world.Shutdown();
 }
 
-TEST(RenderSceneValidation, RenderSceneCollectorDoesNotDuplicateWhenStaticMeshPrimitiveRenders)
+TEST(RenderSceneValidation, RenderSceneCollectFromWorldDoesNotDuplicateWhenStaticMeshPrimitiveRenders)
 {
     World world;
     world.Initialize();
@@ -976,7 +1005,7 @@ TEST(RenderSceneValidation, RenderSceneCollectorDoesNotDuplicateWhenStaticMeshPr
     world.Shutdown();
 }
 
-TEST(RenderSceneValidation, RenderSceneCollectorSkipsInactivePrimitiveOwners)
+TEST(RenderSceneValidation, RenderSceneCollectFromWorldSkipsInactivePrimitiveOwners)
 {
     World world;
     world.Initialize();
@@ -999,7 +1028,7 @@ TEST(RenderSceneValidation, RenderSceneCollectorSkipsInactivePrimitiveOwners)
     world.Shutdown();
 }
 
-TEST(RenderSceneValidation, RenderSceneCollectorDoesNotFallbackWhenPrimitiveIsHidden)
+TEST(RenderSceneValidation, RenderSceneCollectFromWorldDoesNotUseMeshRendererWhenPrimitiveIsHidden)
 {
     World world;
     world.Initialize();

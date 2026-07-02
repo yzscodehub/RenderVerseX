@@ -10,8 +10,7 @@
 
 #include "Scene/Component.h"
 #include "Core/MathTypes.h"
-#include "Resource/ResourceHandle.h"
-#include "Resource/Types/TextureResource.h"
+#include "Scene/SceneAssetHandle.h"
 
 namespace RVX
 {
@@ -72,12 +71,12 @@ public:
     // =========================================================================
 
     /// Set cubemap texture (6-face)
-    void SetCubemap(Resource::ResourceHandle<Resource::TextureResource> texture);
-    Resource::ResourceHandle<Resource::TextureResource> GetCubemap() const { return m_cubemap; }
+    void SetCubemap(SceneTextureHandle texture);
+    SceneTextureHandle GetCubemap() const { return m_cubemap; }
 
     /// Set equirectangular HDR texture
-    void SetEquirectangular(Resource::ResourceHandle<Resource::TextureResource> texture);
-    Resource::ResourceHandle<Resource::TextureResource> GetEquirectangular() const { return m_equirectangular; }
+    void SetEquirectangular(SceneTextureHandle texture);
+    SceneTextureHandle GetEquirectangular() const { return m_equirectangular; }
 
     // =========================================================================
     // Rendering Settings
@@ -137,28 +136,28 @@ public:
     void SetContributesToLighting(bool contributes) { m_contributesToLighting = contributes; }
 
     /// Get prefiltered environment map for reflections
-    Resource::ResourceHandle<Resource::TextureResource> GetPrefilteredMap() const { return m_prefilteredMap; }
-    void SetPrefilteredMap(Resource::ResourceHandle<Resource::TextureResource> texture);
+    SceneTextureHandle GetPrefilteredMap() const { return m_prefilteredMap; }
+    void SetPrefilteredMap(SceneTextureHandle texture);
 
     /// Get irradiance map for diffuse lighting
-    Resource::ResourceHandle<Resource::TextureResource> GetIrradianceMap() const { return m_irradianceMap; }
-    void SetIrradianceMap(Resource::ResourceHandle<Resource::TextureResource> texture);
+    SceneTextureHandle GetIrradianceMap() const { return m_irradianceMap; }
+    void SetIrradianceMap(SceneTextureHandle texture);
 
     /// Get BRDF LUT texture
-    Resource::ResourceHandle<Resource::TextureResource> GetBRDFLUT() const { return m_brdfLUT; }
-    void SetBRDFLUT(Resource::ResourceHandle<Resource::TextureResource> texture);
+    SceneTextureHandle GetBRDFLUT() const { return m_brdfLUT; }
+    void SetBRDFLUT(SceneTextureHandle texture);
 
 private:
     SkyboxType m_type = SkyboxType::Color;
 
     // Textures
-    Resource::ResourceHandle<Resource::TextureResource> m_cubemap;
-    Resource::ResourceHandle<Resource::TextureResource> m_equirectangular;
+    SceneTextureHandle m_cubemap;
+    SceneTextureHandle m_equirectangular;
 
     // IBL textures
-    Resource::ResourceHandle<Resource::TextureResource> m_prefilteredMap;
-    Resource::ResourceHandle<Resource::TextureResource> m_irradianceMap;
-    Resource::ResourceHandle<Resource::TextureResource> m_brdfLUT;
+    SceneTextureHandle m_prefilteredMap;
+    SceneTextureHandle m_irradianceMap;
+    SceneTextureHandle m_brdfLUT;
 
     // Rendering settings
     float m_exposure = 1.0f;

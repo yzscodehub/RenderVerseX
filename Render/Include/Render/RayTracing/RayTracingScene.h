@@ -8,7 +8,7 @@
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
 #include "Render/Material/MaterialClassification.h"
-#include "Resource/IResource.h"
+#include "RenderContracts/RenderResource.h"
 #include "RHI/RHIRayTracing.h"
 
 #include <span>
@@ -51,7 +51,7 @@ namespace RVX
 
     struct RayTracingBLASKey
     {
-        Resource::ResourceId meshId = Resource::InvalidResourceId;
+        uint64 meshId = 0;
         uint32 submeshIndex = 0;
         MaterialRenderMode renderMode = MaterialRenderMode::Opaque;
 
@@ -135,10 +135,10 @@ namespace RVX
         uint32 flags = 0;
         uint32 workflow = 0;
         uint64 materialId = 0;
-        Resource::ResourceId baseColorTextureId = Resource::InvalidResourceId;
-        Resource::ResourceId metallicRoughnessTextureId = Resource::InvalidResourceId;
-        Resource::ResourceId normalTextureId = Resource::InvalidResourceId;
-        Resource::ResourceId emissiveTextureId = Resource::InvalidResourceId;
+        uint64 baseColorTextureId = 0;
+        uint64 metallicRoughnessTextureId = 0;
+        uint64 normalTextureId = 0;
+        uint64 emissiveTextureId = 0;
         RayTracingTextureSamplingMetadata baseColorTextureSampling;
         RayTracingTextureSamplingMetadata metallicRoughnessTextureSampling;
         RayTracingTextureSamplingMetadata normalTextureSampling;
@@ -170,7 +170,7 @@ namespace RVX
         Vec2 baseColorUVScale{1.0f, 1.0f};
         float baseColorUVRotation = 0.0f;
         RHIFormat indexFormat = RHIFormat::Unknown;
-        Resource::ResourceId baseColorTextureId = Resource::InvalidResourceId;
+        uint64 baseColorTextureId = 0;
         RHIBuffer* indexBuffer = nullptr;
         RHIBuffer* uvBuffer = nullptr;
         RHIBuffer* normalBuffer = nullptr;
@@ -195,7 +195,7 @@ namespace RVX
         RayTracingSceneSkipReason reason = RayTracingSceneSkipReason::None;
         uint32 objectIndex = 0;
         uint32 submeshIndex = 0;
-        Resource::ResourceId meshId = Resource::InvalidResourceId;
+        uint64 meshId = 0;
         std::string message;
     };
 

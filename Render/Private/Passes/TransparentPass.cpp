@@ -14,7 +14,6 @@
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
-#include "Resource/Types/MaterialResource.h"
 #include "RHI/RHIRenderPass.h"
 
 namespace RVX
@@ -40,7 +39,7 @@ TransparentPass::TransparentPass()
 
 namespace
 {
-    const Resource::MaterialResource* ResolveMaterialResource(const RenderObject& obj, size_t submeshIndex)
+    const IRenderMaterialSource* ResolveMaterialResource(const RenderObject& obj, size_t submeshIndex)
     {
         if (submeshIndex >= obj.materialResources.size())
             return nullptr;
@@ -261,7 +260,7 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
             }
 
             const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
-            const Resource::MaterialResource* materialResource =
+            const IRenderMaterialSource* materialResource =
                 item.materialResource ? item.materialResource : ResolveMaterialResource(obj, item.submeshIndex);
             MaterialBindingOptions materialOptions;
             materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();

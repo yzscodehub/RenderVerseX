@@ -68,8 +68,8 @@ endif()
 
 target_link_libraries(RVX_Resource PUBLIC
     RVX_Core
-    RVX::RHI
-    RVX::Scene
+    RVX::Geometry
+    RVX::RenderContracts
 )
 
 # Link tinygltf if found

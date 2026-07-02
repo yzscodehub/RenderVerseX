@@ -3,7 +3,7 @@
  * @brief Scene-to-skybox-pass selection bridge implementation.
  */
 
-#include "SceneSkyboxPassBridge.h"
+#include "RenderExtraction/SceneSkyboxPassBridge.h"
 
 #include "Scene/Components/SkyboxComponent.h"
 #include "Scene/SceneEntity.h"
@@ -109,7 +109,8 @@ namespace RVX
                 break;
             case SkyboxType::Cubemap:
             {
-                Resource::TextureResource* cubemapResource = skybox->GetCubemap().Get();
+                IRenderTextureUploadSource* cubemapResource =
+                    skybox->GetCubemap().As<IRenderTextureUploadSource>();
                 if (!cubemapResource)
                 {
                     MarkFallback(result, passActions, SceneSkyboxPassBridgeFallbackReason::SkyboxCubemapMissing);
@@ -126,7 +127,7 @@ namespace RVX
                     return false;
                 }
 
-                const Resource::ResourceId cubemapId = cubemapResource->GetId();
+                const uint64 cubemapId = cubemapResource->GetRenderResourceId();
                 if (!textureAccess.isGPUReady(cubemapId))
                 {
                     if (textureAccess.requestUpload)

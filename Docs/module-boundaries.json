@@ -1,0 +1,189 @@
+{
+  "version": 1,
+  "projectIncludePrefixes": [
+    "AI",
+    "Animation",
+    "Audio",
+    "Core",
+    "Debug",
+    "Editor",
+    "Engine",
+    "Geometry",
+    "HAL",
+    "Networking",
+    "Particle",
+    "Physics",
+    "Picking",
+    "Render",
+    "RenderContracts",
+    "RenderExtraction",
+    "Resource",
+    "ResourceSceneAdapters",
+    "RHI",
+    "RHI_DX11",
+    "RHI_DX12",
+    "RHI_Metal",
+    "RHI_OpenGL",
+    "RHI_Vulkan",
+    "Runtime",
+    "Samples",
+    "Scene",
+    "Scripting",
+    "ShaderCompiler",
+    "Spatial",
+    "Terrain",
+    "Tests",
+    "Tools",
+    "UI",
+    "Water",
+    "World"
+  ],
+  "modules": {
+    "AI": {
+      "path": "AI",
+      "allowed": ["AI", "Core", "Geometry"]
+    },
+    "Animation": {
+      "path": "Animation",
+      "allowed": ["Animation", "Core", "Scene"]
+    },
+    "Audio": {
+      "path": "Audio",
+      "allowed": ["Audio", "Core", "Physics", "Scene"]
+    },
+    "Core": {
+      "path": "Core",
+      "allowed": ["Core"]
+    },
+    "Debug": {
+      "path": "Debug",
+      "allowed": ["Core", "Debug"]
+    },
+    "Editor": {
+      "path": "Editor",
+      "allowed": ["*"]
+    },
+    "Engine": {
+      "path": "Engine",
+      "allowed": ["Core", "Engine", "HAL", "Render", "Resource", "RHI", "Runtime", "World"]
+    },
+    "Geometry": {
+      "path": "Geometry",
+      "allowed": ["Core", "Geometry"]
+    },
+    "HAL": {
+      "path": "HAL",
+      "allowed": ["Core", "HAL"]
+    },
+    "Networking": {
+      "path": "Networking",
+      "allowed": ["Core", "Networking"]
+    },
+    "Particle": {
+      "path": "Particle",
+      "allowed": ["Core", "Particle", "Render", "Resource", "RHI", "Scene", "ShaderCompiler"]
+    },
+    "Physics": {
+      "path": "Physics",
+      "allowed": ["Core", "Physics", "Scene"]
+    },
+    "Picking": {
+      "path": "Picking",
+      "allowed": ["Core", "Picking", "Runtime", "Scene", "World"]
+    },
+    "Render": {
+      "path": "Render",
+      "allowed": ["Core", "HAL", "Render", "RenderContracts", "RenderExtraction", "RHI", "Runtime", "ShaderCompiler", "Spatial"]
+    },
+    "RenderContracts": {
+      "path": "RenderContracts",
+      "allowed": ["Core", "RenderContracts"]
+    },
+    "RenderExtraction": {
+      "path": "RenderExtraction",
+      "allowed": ["Core", "RenderContracts", "RenderExtraction", "Resource", "Scene", "World"]
+    },
+    "Resource": {
+      "path": "Resource",
+      "allowed": ["Core", "Geometry", "RenderContracts", "Resource"]
+    },
+    "ResourceSceneAdapters": {
+      "path": "ResourceSceneAdapters",
+      "allowed": ["Core", "Geometry", "Resource", "ResourceSceneAdapters", "Scene"]
+    },
+    "RHI": {
+      "path": "RHI",
+      "allowed": ["Core", "RHI"]
+    },
+    "RHI_DX11": {
+      "path": "RHI_DX11",
+      "allowed": ["Core", "RHI", "RHI_DX11"]
+    },
+    "RHI_DX12": {
+      "path": "RHI_DX12",
+      "allowed": ["Core", "RHI", "RHI_DX12"]
+    },
+    "RHI_Metal": {
+      "path": "RHI_Metal",
+      "allowed": ["Core", "RHI", "RHI_Metal"]
+    },
+    "RHI_OpenGL": {
+      "path": "RHI_OpenGL",
+      "allowed": ["Core", "RHI", "RHI_OpenGL", "ShaderCompiler"]
+    },
+    "RHI_Vulkan": {
+      "path": "RHI_Vulkan",
+      "allowed": ["Core", "RHI", "RHI_Vulkan"]
+    },
+    "Runtime": {
+      "path": "Runtime",
+      "allowed": ["Core", "HAL", "Runtime"]
+    },
+    "Samples": {
+      "path": "Samples",
+      "allowed": ["*"]
+    },
+    "Scene": {
+      "path": "Scene",
+      "allowed": ["Core", "Geometry", "RenderContracts", "Scene", "Spatial"]
+    },
+    "Scripting": {
+      "path": "Scripting",
+      "allowed": ["Core", "Runtime", "Scene", "Scripting"]
+    },
+    "ShaderCompiler": {
+      "path": "ShaderCompiler",
+      "allowed": ["Core", "RHI", "ShaderCompiler"]
+    },
+    "Spatial": {
+      "path": "Spatial",
+      "allowed": ["Core", "Spatial"]
+    },
+    "Terrain": {
+      "path": "Terrain",
+      "allowed": ["Core", "Render", "RHI", "Scene", "Terrain"]
+    },
+    "Tests": {
+      "path": "Tests",
+      "allowed": ["*"]
+    },
+    "Tools": {
+      "path": "Tools",
+      "allowed": ["Audio", "Core", "Resource", "RHI", "ShaderCompiler", "Tools"]
+    },
+    "UI": {
+      "path": "UI",
+      "allowed": ["Core", "RHI", "UI"]
+    },
+    "Water": {
+      "path": "Water",
+      "allowed": ["Core", "Render", "RHI", "Scene", "Water"]
+    },
+    "World": {
+      "path": "World",
+      "allowed": ["Core", "Physics", "Resource", "ResourceSceneAdapters", "Runtime", "Scene", "Spatial", "World"]
+    }
+  },
+  "legacyEdges": {},
+  "legacyBudgets": {}
+}

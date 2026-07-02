@@ -6,7 +6,7 @@
  */
 
 #include "Core/Types.h"
-#include "Render/Renderer/RenderProxy.h"
+#include "RenderContracts/RenderProxy.h"
 
 #include <cstddef>
 #include <unordered_set>
@@ -23,8 +23,7 @@ namespace RVX
         NullWorld,
         NullSceneManager,
         PrimitiveProxyUnavailable,
-        PrimitiveProxyCreationFailed,
-        LegacyRendererRequired
+        PrimitiveProxyCreationFailed
     };
 
     const char* ToString(RenderProxySceneBridgeFallbackReason reason);
@@ -43,6 +42,9 @@ namespace RVX
     {
     public:
         bool BuildSnapshot(World* world,
+                           RenderProxySnapshot& outSnapshot,
+                           RenderProxySceneBridgeResult* outResult = nullptr) const;
+        bool BuildSnapshot(SceneManager* sceneManager,
                            RenderProxySnapshot& outSnapshot,
                            RenderProxySceneBridgeResult* outResult = nullptr) const;
 

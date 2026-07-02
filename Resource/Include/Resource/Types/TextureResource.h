@@ -7,6 +7,7 @@
 
 #include "Resource/IResource.h"
 #include "Resource/Loader/TextureReference.h"
+#include "RenderContracts/RenderResource.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -56,7 +57,7 @@ namespace RVX::Resource
     /**
      * @brief Texture resource - encapsulates texture data with GPU resource management
      */
-    class TextureResource : public IResource
+    class TextureResource : public IResource, public IRenderTextureUploadSource
     {
     public:
         TextureResource();
@@ -70,6 +71,14 @@ namespace RVX::Resource
         const char* GetTypeName() const override { return "Texture"; }
         size_t GetMemoryUsage() const override;
         size_t GetGPUMemoryUsage() const override;
+
+        uint64 GetRenderResourceId() const override { return GetId(); }
+        std::string_view GetRenderResourceName() const override { return GetName(); }
+        uint32 GetRenderResourceRefCount() const override { return GetRefCount(); }
+        RefCounted* GetRenderResourceRefCounted() override { return this; }
+        RenderTextureUploadData GetRenderTextureUploadData() const override;
+        bool IsRenderDefaultFallbackTexture() const override { return IsDefaultFallback(); }
+        uint32 GetRenderTextureMipLevels() const override { return GetMipLevels(); }
 
         // =====================================================================
         // Metadata

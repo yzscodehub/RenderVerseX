@@ -150,7 +150,7 @@ public:
 
     /// Get skinning matrices for GPU upload
     /// These are: SkinningMatrix[i] = GlobalPose[i] * InverseBindPose[i]
-    const std::vector<Mat4>& GetSkinningMatrices() const;
+    const std::vector<Mat4>& GetSkinningMatrices() const { return m_skinningMatrices; }
 
     /// Force update of skinning matrices
     void UpdateSkinningMatrices();

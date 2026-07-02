@@ -361,7 +361,7 @@ void GPUCulling::BeginFrame()
 uint32 GPUCulling::BeginDrawGroup(uint64 meshId,
                                   uint64 materialId,
                                   MaterialPipelineVariant pipelineVariant,
-                                  const Resource::MaterialResource* materialResource)
+                                  const IRenderMaterialSource* materialResource)
 {
     if (m_drawGroups.size() >= m_config.maxInstances)
     {

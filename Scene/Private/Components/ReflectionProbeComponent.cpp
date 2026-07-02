@@ -45,7 +45,7 @@ void ReflectionProbeComponent::SetSize(const Vec3& size)
     }
 }
 
-void ReflectionProbeComponent::SetCubemap(Resource::ResourceHandle<Resource::TextureResource> cubemap)
+void ReflectionProbeComponent::SetCubemap(SceneTextureHandle cubemap)
 {
     m_cubemap = cubemap;
 }

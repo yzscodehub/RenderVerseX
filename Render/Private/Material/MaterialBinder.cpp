@@ -6,7 +6,6 @@
 #include "Render/Material/MaterialBinder.h"
 #include "Render/GPUResourceManager.h"
 #include "Core/Log.h"
-#include "Scene/Material.h"
 
 #include <cstring>
 #include <utility>
@@ -112,7 +111,7 @@ bool MaterialBinder::UpdateConstantBuffer(const MaterialGPUConstants& constants)
     return true;
 }
 
-void MaterialBinder::Bind(RHICommandContext& ctx, const Material& material, uint32 setIndex)
+void MaterialBinder::Bind(RHICommandContext& ctx, const MaterialSourceData& material, uint32 setIndex)
 {
     (void)ctx;
     (void)setIndex;
@@ -174,64 +173,43 @@ void MaterialBinder::BindDefault(RHICommandContext& ctx, uint32 setIndex)
     // ctx.SetConstantBuffer(setIndex, 0, m_constantBuffer.Get());
 }
 
-MaterialGPUConstants MaterialBinder::ConvertToGPU(const Material& material)
+MaterialGPUConstants MaterialBinder::ConvertToGPU(const MaterialSourceData& material)
 {
     MaterialGPUConstants constants;
-    constants.baseColorFactor = material.GetBaseColor();
-    constants.metallicFactor = material.GetMetallicFactor();
-    constants.roughnessFactor = material.GetRoughnessFactor();
-    constants.normalScale = material.GetNormalScale();
-    constants.occlusionStrength = material.GetOcclusionStrength();
-    constants.emissiveColor = material.GetEmissiveColor();
-    constants.emissiveStrength = material.GetEmissiveStrength();
-    constants.textureFlags = 0;
-    constants.alphaCutoff = material.GetAlphaCutoff();
-    constants.doubleSided = material.IsDoubleSided() ? 1u : 0u;
+    constants.baseColorFactor = material.baseColorFactor;
+    constants.metallicFactor = material.metallicFactor;
+    constants.roughnessFactor = material.roughnessFactor;
+    constants.normalScale = material.normalScale;
+    constants.occlusionStrength = material.occlusionStrength;
+    constants.emissiveColor = material.emissiveColor;
+    constants.emissiveStrength = material.emissiveStrength;
+    constants.textureFlags = material.textureFlags;
+    constants.alphaCutoff = material.alphaCutoff;
+    constants.doubleSided = material.doubleSided ? 1u : 0u;
 
-    if (material.GetBaseColorTexture())
+    switch (material.alphaMode)
     {
-        constants.textureFlags |= static_cast<uint32>(MaterialTextureFlags::HasBaseColor);
-    }
-    if (material.GetNormalTexture())
-    {
-        constants.textureFlags |= static_cast<uint32>(MaterialTextureFlags::HasNormal);
-    }
-    if (material.GetMetallicRoughnessTexture())
-    {
-        constants.textureFlags |= static_cast<uint32>(MaterialTextureFlags::HasMetallicRoughness);
-    }
-    if (material.GetOcclusionTexture())
-    {
-        constants.textureFlags |= static_cast<uint32>(MaterialTextureFlags::HasOcclusion);
-    }
-    if (material.GetEmissiveTexture())
-    {
-        constants.textureFlags |= static_cast<uint32>(MaterialTextureFlags::HasEmissive);
-    }
-
-    switch (material.GetAlphaMode())
-    {
-        case Material::AlphaMode::Mask:
+        case MaterialSourceAlphaMode::Mask:
             constants.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Mask);
             break;
-        case Material::AlphaMode::Blend:
+        case MaterialSourceAlphaMode::Blend:
             constants.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Blend);
             break;
-        case Material::AlphaMode::Opaque:
+        case MaterialSourceAlphaMode::Opaque:
         default:
             constants.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Opaque);
             break;
     }
 
-    switch (material.GetWorkflow())
+    switch (material.workflow)
     {
-        case MaterialWorkflow::SpecularGlossiness:
+        case MaterialSourceWorkflow::SpecularGlossiness:
             constants.workflow = static_cast<uint32>(MaterialGPUWorkflow::SpecularGlossiness);
             break;
-        case MaterialWorkflow::Unlit:
+        case MaterialSourceWorkflow::Unlit:
             constants.workflow = static_cast<uint32>(MaterialGPUWorkflow::Unlit);
             break;
-        case MaterialWorkflow::MetallicRoughness:
+        case MaterialSourceWorkflow::MetallicRoughness:
         default:
             constants.workflow = static_cast<uint32>(MaterialGPUWorkflow::MetallicRoughness);
             break;

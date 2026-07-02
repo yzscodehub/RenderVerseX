@@ -26,7 +26,7 @@
 #include "Render/PostProcess/PostProcessStack.h"
 #include "Render/RayTracing/RayTracingSceneManager.h"
 #include "Render/Renderer/RenderDrawItem.h"
-#include "Render/Renderer/RenderProxy.h"
+#include "RenderContracts/RenderProxy.h"
 
 #include <cstddef>
 #include <functional>
@@ -60,6 +60,7 @@ namespace RVX
     class RayTracedReflectionPass;
     class RayTracedShadowPass;
     class SceneManager;
+    class SceneEnvironmentIBLBridge;
     class SceneSkyboxPassBridge;
     class ShadowPass;
     class SkyboxPass;
@@ -70,7 +71,8 @@ namespace RVX
     {
         None = 0,
         Proxy,
-        LegacyFallback
+        LegacyFallback,
+        ProxyRejected
     };
 
     struct SceneRenderCollectionStats
@@ -78,10 +80,12 @@ namespace RVX
         SceneRenderCollectionPath lastPath = SceneRenderCollectionPath::None;
         uint64 proxyFrameCount = 0;
         uint64 legacyFallbackFrameCount = 0;
+        uint64 rejectedProxyFrameCount = 0;
         size_t lastProxyPrimitiveCount = 0;
         size_t lastProxyLightCount = 0;
         uint64 lastFallbackOwnerId = 0;
         std::string lastFallbackReason;
+        bool lastFallbackSuppressed = false;
     };
 
     struct SceneRenderPassChainStats
@@ -815,6 +819,10 @@ namespace RVX
         /// Set shader directory (must be set before Initialize)
         void SetShaderDirectory(const std::string& dir) { m_shaderDir = dir; }
 
+        /// Enable compatibility fallback to the legacy scene collector when proxy extraction fails.
+        void SetLegacyCollectionFallbackEnabled(bool enabled) { m_legacyCollectionFallbackEnabled = enabled; }
+        bool IsLegacyCollectionFallbackEnabled() const { return m_legacyCollectionFallbackEnabled; }
+
     private:
         void BuildRenderGraph();
         void PrepareRayTracingScene();
@@ -872,6 +880,7 @@ namespace RVX
         std::unique_ptr<ResourceViewCache> m_resourceViewCache;
         std::unique_ptr<RenderPassRegistry> m_passRegistry;
         std::unique_ptr<RenderProxySceneBridge> m_proxyBridge;
+        std::unique_ptr<SceneEnvironmentIBLBridge> m_environmentIBLBridge;
         std::unique_ptr<SceneSkyboxPassBridge> m_skyboxBridge;
         std::unique_ptr<GPUCulling> m_gpuCulling;
         std::unique_ptr<PostProcessStack> m_postProcessStack;
@@ -961,6 +970,7 @@ namespace RVX
         uint32_t m_lastSwapChainHeight = 0;
 
         bool m_initialized = false;
+        bool m_legacyCollectionFallbackEnabled = false;
     };
 
 } // namespace RVX

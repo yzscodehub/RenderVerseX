@@ -14,7 +14,7 @@ void SkyboxComponent::OnDetach()
     // Nothing special needed
 }
 
-void SkyboxComponent::SetCubemap(Resource::ResourceHandle<Resource::TextureResource> texture)
+void SkyboxComponent::SetCubemap(SceneTextureHandle texture)
 {
     m_cubemap = texture;
     if (texture.IsValid())
@@ -23,7 +23,7 @@ void SkyboxComponent::SetCubemap(Resource::ResourceHandle<Resource::TextureResou
     }
 }
 
-void SkyboxComponent::SetEquirectangular(Resource::ResourceHandle<Resource::TextureResource> texture)
+void SkyboxComponent::SetEquirectangular(SceneTextureHandle texture)
 {
     m_equirectangular = texture;
     if (texture.IsValid())
@@ -32,17 +32,17 @@ void SkyboxComponent::SetEquirectangular(Resource::ResourceHandle<Resource::Text
     }
 }
 
-void SkyboxComponent::SetPrefilteredMap(Resource::ResourceHandle<Resource::TextureResource> texture)
+void SkyboxComponent::SetPrefilteredMap(SceneTextureHandle texture)
 {
     m_prefilteredMap = texture;
 }
 
-void SkyboxComponent::SetIrradianceMap(Resource::ResourceHandle<Resource::TextureResource> texture)
+void SkyboxComponent::SetIrradianceMap(SceneTextureHandle texture)
 {
     m_irradianceMap = texture;
 }
 
-void SkyboxComponent::SetBRDFLUT(Resource::ResourceHandle<Resource::TextureResource> texture)
+void SkyboxComponent::SetBRDFLUT(SceneTextureHandle texture)
 {
     m_brdfLUT = texture;
 }

@@ -25,12 +25,9 @@ target_sources(RVX_Render PRIVATE
     # Renderer
     Private/Renderer/ViewData.cpp
     Private/Renderer/RenderScene.cpp
-    Private/Renderer/RenderSceneCollector.cpp
     Private/Renderer/RenderDrawItem.cpp
     Private/Renderer/RenderFrameResourceBinder.cpp
     Private/Renderer/RenderPassRegistry.cpp
-    Private/Renderer/RenderProxySceneBridge.cpp
-    Private/Renderer/SceneSkyboxPassBridge.cpp
     Private/Renderer/SceneRenderer.cpp
     # Ray tracing
     Private/RayTracing/RayTracingScene.cpp
@@ -96,18 +93,10 @@ target_include_directories(RVX_Render PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-# Private access to Engine, World, Resource, Scene headers for subsystem integration
-# Note: Engine links to Render, so we only add include dirs, not link dependencies
-target_include_directories(RVX_Render PRIVATE
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Engine/Include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/World/Include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Physics/Include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Resource/Include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Scene/Include>
-)
-
 target_link_libraries(RVX_Render PUBLIC
     RVX_Core
+    RVX::RenderExtraction
+    RVX::RenderContracts
     RVX_RHI
     RVX_Runtime
     Spatial

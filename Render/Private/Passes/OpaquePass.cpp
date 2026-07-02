@@ -16,8 +16,6 @@
 #include "Render/Passes/ShadowPass.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
-#include "Resource/Types/MaterialResource.h"
-#include "Resource/Types/TextureResource.h"
 #include "RHI/RHIRenderPass.h"
 
 #include <algorithm>
@@ -57,7 +55,7 @@ namespace
         }
     }
 
-    const Resource::MaterialResource* ResolveMaterialResource(const RenderObject& obj, size_t submeshIndex)
+    const IRenderMaterialSource* ResolveMaterialResource(const RenderObject& obj, size_t submeshIndex)
     {
         if (submeshIndex >= obj.materialResources.size())
             return nullptr;
@@ -66,29 +64,22 @@ namespace
     }
 
     void TransitionVisibleMaterialTextures(const std::vector<RenderDrawItem>& drawItems,
-                                           GPUResourceManager& gpuResources, RHICommandContext& ctx)
+                                           const RenderScene& scene,
+                                           MaterialSystem& materialSystem,
+                                           RHICommandContext& ctx)
     {
-        const auto transitionTexture = [&gpuResources, &ctx](
-                                           Resource::ResourceHandle<Resource::TextureResource> textureHandle)
-        {
-            Resource::TextureResource* textureResource = textureHandle.Get();
-            if (!textureResource || !gpuResources.IsGPUReady(textureResource->GetId()))
-                return;
-
-            gpuResources.TransitionTexture(textureResource->GetId(), ctx, RHIResourceState::ShaderResource);
-        };
-
         for (const RenderDrawItem& item : drawItems)
         {
-            const Resource::MaterialResource* material = item.materialResource;
+            const RenderObject* object = item.objectIndex < scene.GetObjectCount()
+                                             ? &scene.GetObject(item.objectIndex)
+                                             : nullptr;
+            const IRenderMaterialSource* material =
+                item.materialResource ? item.materialResource
+                                      : (object ? ResolveMaterialResource(*object, item.submeshIndex) : nullptr);
             if (!material)
                 continue;
 
-            transitionTexture(material->GetAlbedoTexture());
-            transitionTexture(material->GetNormalTexture());
-            transitionTexture(material->GetMetallicRoughnessTexture());
-            transitionTexture(material->GetAOTexture());
-            transitionTexture(material->GetEmissiveTexture());
+            materialSystem.TransitionMaterialTextures(material, ctx);
         }
     }
 
@@ -468,7 +459,7 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
             return false;
         }
 
-        const Resource::MaterialResource* materialResource = group.materialResource;
+        const IRenderMaterialSource* materialResource = group.materialResource;
         if (!materialResource)
         {
             materialResource = representativeItem->materialResource
@@ -592,12 +583,12 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    if (m_gpuResources)
+    if (m_materialSystem && m_renderScene)
     {
         if (m_opaqueDrawItems)
-            TransitionVisibleMaterialTextures(*m_opaqueDrawItems, *m_gpuResources, ctx);
+            TransitionVisibleMaterialTextures(*m_opaqueDrawItems, *m_renderScene, *m_materialSystem, ctx);
         if (m_maskedDrawItems)
-            TransitionVisibleMaterialTextures(*m_maskedDrawItems, *m_gpuResources, ctx);
+            TransitionVisibleMaterialTextures(*m_maskedDrawItems, *m_renderScene, *m_materialSystem, ctx);
     }
 
     ViewData drawView = view;
@@ -850,7 +841,7 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                 }
 
                 const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
-                const Resource::MaterialResource* materialResource =
+                const IRenderMaterialSource* materialResource =
                     item.materialResource ? item.materialResource : ResolveMaterialResource(obj, item.submeshIndex);
                 MaterialBindingOptions materialOptions;
                 materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();
@@ -894,7 +885,7 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
 
                 m_indirectDrawCommands.clear();
                 m_indirectDrawCommands.reserve(batchLength);
-                const Resource::MaterialResource* batchMaterialResource = nullptr;
+                const IRenderMaterialSource* batchMaterialResource = nullptr;
                 for (uint32 i = 0; i < batchLength; ++i)
                 {
                     const RenderDrawItem& item = (*drawItems)[startIndex + i];
@@ -904,7 +895,7 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                         return false;
                     }
 
-                    const Resource::MaterialResource* materialResource =
+                    const IRenderMaterialSource* materialResource =
                         item.materialResource ? item.materialResource : ResolveMaterialResource(obj, item.submeshIndex);
                     if (i == 0)
                     {

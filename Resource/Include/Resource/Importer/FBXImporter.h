@@ -15,9 +15,9 @@
  * - Uses Node indices for mesh/material references
  */
 
-#include "Scene/Model.h"
-#include "Scene/Mesh.h"
-#include "Scene/Material.h"
+#include "Geometry/Asset/Material.h"
+#include "Geometry/Asset/Mesh.h"
+#include "Geometry/Asset/Model.h"
 #include "Resource/Loader/TextureReference.h"
 #include <string>
 #include <vector>

@@ -27,16 +27,12 @@
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
 #include "Render/RayTracing/RayTracingScene.h"
-#include "Resource/Types/MaterialResource.h"
-#include "Resource/Types/TextureResource.h"
+#include "RenderExtraction/RenderProxySceneBridge.h"
+#include "RenderExtraction/SceneEnvironmentIBLBridge.h"
+#include "RenderExtraction/SceneSkyboxPassBridge.h"
 #include "Renderer/RenderFrameResourceBinder.h"
 #include "Renderer/RenderPassRegistry.h"
-#include "Renderer/RenderProxySceneBridge.h"
-#include "Renderer/SceneSkyboxPassBridge.h"
 #include "Runtime/Camera/Camera.h"
-#include "Scene/Components/SkyboxComponent.h"
-#include "Scene/SceneManager.h"
-#include "World/World.h"
 
 #include <algorithm>
 #include <cmath>
@@ -293,6 +289,7 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
     m_renderContext = renderContext;
     m_passRegistry = std::make_unique<RenderPassRegistry>();
     m_proxyBridge = std::make_unique<RenderProxySceneBridge>();
+    m_environmentIBLBridge = std::make_unique<SceneEnvironmentIBLBridge>();
     m_skyboxBridge = std::make_unique<SceneSkyboxPassBridge>();
     m_rayTracingSceneManager = std::make_unique<RayTracingSceneManager>();
     m_rayTracingSceneManager->Initialize(m_renderContext->GetDevice());
@@ -532,6 +529,7 @@ void SceneRenderer::Shutdown()
     m_renderGraph.reset();
     m_passRegistry.reset();
     m_proxyBridge.reset();
+    m_environmentIBLBridge.reset();
     m_skyboxBridge.reset();
     m_rayTracingSceneStats = {};
     m_rayTracingFrameBudgetStats = {};
@@ -576,54 +574,20 @@ void SceneRenderer::UpdateEnvironmentIBL(World* world)
         return;
     }
 
-    if (!world)
+    SceneEnvironmentIBLSnapshot iblSnapshot;
+    SceneEnvironmentIBLBridgeResult iblResult;
+    if (!m_environmentIBLBridge || !m_environmentIBLBridge->Extract(world, iblSnapshot, &iblResult))
     {
-        disableTextureIBL("NoWorld");
+        m_environmentIBLStats.skyboxFound = iblResult.skyboxFound;
+        disableTextureIBL(ToString(iblResult.fallbackReason));
         return;
     }
 
-    SceneManager* sceneManager = world->GetSceneManager();
-    if (!sceneManager)
-    {
-        disableTextureIBL("NoSceneManager");
-        return;
-    }
+    m_environmentIBLStats.skyboxFound = iblResult.skyboxFound;
+    m_environmentIBLStats.intensity = iblSnapshot.intensity;
+    m_environmentIBLStats.prefilteredMipLevels = iblSnapshot.prefilteredMipLevels;
 
-    SkyboxComponent* skybox = nullptr;
-    sceneManager->ForEachActiveEntity(
-        [&skybox](SceneEntity* entity)
-        {
-            if (skybox || !entity)
-                return;
-
-            auto* candidate = entity->GetComponent<SkyboxComponent>();
-            if (candidate && candidate->IsEnabled() && candidate->ContributesToLighting())
-            {
-                skybox = candidate;
-            }
-        });
-
-    if (!skybox)
-    {
-        disableTextureIBL("NoLightingSkybox");
-        return;
-    }
-
-    m_environmentIBLStats.skyboxFound = true;
-    m_environmentIBLStats.intensity = skybox->GetExposure();
-
-    Resource::TextureResource* irradiance = skybox->GetIrradianceMap().Get();
-    Resource::TextureResource* prefiltered = skybox->GetPrefilteredMap().Get();
-    Resource::TextureResource* brdfLUT = skybox->GetBRDFLUT().Get();
-    if (!irradiance || !prefiltered || !brdfLUT)
-    {
-        disableTextureIBL("SkyboxIBLResourcesMissing");
-        return;
-    }
-
-    m_environmentIBLStats.prefilteredMipLevels = std::max(1u, prefiltered->GetMipLevels());
-
-    auto requestAndResolveView = [this](Resource::TextureResource* texture,
+    auto requestAndResolveView = [this](IRenderTextureUploadSource* texture,
                                         const char* reason) -> bool
     {
         if (!texture)
@@ -632,21 +596,20 @@ void SceneRenderer::UpdateEnvironmentIBL(World* world)
             return false;
         }
 
-        const Resource::ResourceId textureId = texture->GetId();
-        if (!m_gpuResourceManager->IsResident(textureId))
+        if (!m_gpuResourceManager->IsResident(texture))
         {
             m_gpuResourceManager->RequestUpload(texture, UploadPriority::High);
             m_environmentIBLStats.uploadRequested = true;
         }
 
-        m_gpuResourceManager->MarkUsed(textureId);
-        if (!m_gpuResourceManager->IsGPUReady(textureId))
+        m_gpuResourceManager->MarkUsed(texture);
+        if (!m_gpuResourceManager->IsGPUReady(texture))
         {
             m_environmentIBLStats.fallbackReason = reason;
             return false;
         }
 
-        RHITexture* rhiTexture = m_gpuResourceManager->GetTexture(textureId);
+        RHITexture* rhiTexture = m_gpuResourceManager->GetTexture(texture);
         if (!rhiTexture || !m_resourceViewCache->GetDefaultSRV(rhiTexture))
         {
             m_environmentIBLStats.fallbackReason = reason;
@@ -657,9 +620,9 @@ void SceneRenderer::UpdateEnvironmentIBL(World* world)
     };
 
     bool ready = true;
-    ready = requestAndResolveView(irradiance, "IrradianceNotReady") && ready;
-    ready = requestAndResolveView(prefiltered, "PrefilteredEnvironmentNotReady") && ready;
-    ready = requestAndResolveView(brdfLUT, "BRDFLUTNotReady") && ready;
+    ready = requestAndResolveView(iblSnapshot.irradiance, "IrradianceNotReady") && ready;
+    ready = requestAndResolveView(iblSnapshot.prefiltered, "PrefilteredEnvironmentNotReady") && ready;
+    ready = requestAndResolveView(iblSnapshot.brdfLUT, "BRDFLUTNotReady") && ready;
 
     if (!ready)
     {
@@ -672,9 +635,9 @@ void SceneRenderer::UpdateEnvironmentIBL(World* world)
     }
 
     MaterialSystem::EnvironmentIBLResources resources;
-    resources.irradianceMap = irradiance;
-    resources.prefilteredMap = prefiltered;
-    resources.brdfLUT = brdfLUT;
+    resources.irradianceMap = iblSnapshot.irradiance;
+    resources.prefilteredMap = iblSnapshot.prefiltered;
+    resources.brdfLUT = iblSnapshot.brdfLUT;
     resources.prefilteredMipLevels = m_environmentIBLStats.prefilteredMipLevels;
     resources.intensity = m_environmentIBLStats.intensity;
     resources.textureIBLEnabled = true;
@@ -728,7 +691,7 @@ void SceneRenderer::UpdateSkyboxPass(World* world)
 
     SceneSkyboxTextureAccess textureAccess;
     textureAccess.requestUpload =
-        [this](Resource::TextureResource* texture)
+        [this](IRenderTextureUploadSource* texture)
         {
             if (m_gpuResourceManager)
             {
@@ -736,12 +699,12 @@ void SceneRenderer::UpdateSkyboxPass(World* world)
             }
         };
     textureAccess.isGPUReady =
-        [this](Resource::ResourceId id) -> bool
+        [this](uint64 id) -> bool
         {
             return m_gpuResourceManager && m_gpuResourceManager->IsGPUReady(id);
         };
     textureAccess.getTexture =
-        [this](Resource::ResourceId id) -> RHITexture*
+        [this](uint64 id) -> RHITexture*
         {
             return m_gpuResourceManager ? m_gpuResourceManager->GetTexture(id) : nullptr;
         };
@@ -951,20 +914,31 @@ void SceneRenderer::SetupView(const Camera& camera, World* world)
         m_collectionStats.lastProxyLightCount = proxyResult.lightCount;
         m_collectionStats.lastFallbackOwnerId = 0;
         m_collectionStats.lastFallbackReason.clear();
+        m_collectionStats.lastFallbackSuppressed = false;
     }
     else
     {
-        m_renderScene.CollectFromWorld(world);
-        m_collectionStats.lastPath = SceneRenderCollectionPath::LegacyFallback;
-        ++m_collectionStats.legacyFallbackFrameCount;
+        m_renderScene.Clear();
+        m_collectionStats.lastPath = SceneRenderCollectionPath::ProxyRejected;
+        ++m_collectionStats.rejectedProxyFrameCount;
         m_collectionStats.lastProxyPrimitiveCount = 0;
         m_collectionStats.lastProxyLightCount = 0;
         m_collectionStats.lastFallbackOwnerId = proxyResult.fallbackOwnerId;
         m_collectionStats.lastFallbackReason = ToString(proxyResult.fallbackReason);
+        m_collectionStats.lastFallbackSuppressed = true;
 
-        RVX_CORE_WARN("SceneRenderer: using legacy RenderSceneCollector fallback, reason={}, ownerId={}",
-                      m_collectionStats.lastFallbackReason,
-                      m_collectionStats.lastFallbackOwnerId);
+        if (m_legacyCollectionFallbackEnabled && proxyResult.requiresLegacyFallback)
+        {
+            RVX_CORE_WARN("SceneRenderer: proxy extraction failed and legacy RenderSceneCollector fallback has been removed, reason={}, ownerId={}",
+                          m_collectionStats.lastFallbackReason,
+                          m_collectionStats.lastFallbackOwnerId);
+        }
+        else
+        {
+            RVX_CORE_WARN("SceneRenderer: proxy extraction failed, reason={}, ownerId={}",
+                          m_collectionStats.lastFallbackReason,
+                          m_collectionStats.lastFallbackOwnerId);
+        }
     }
 
     FinalizeViewScene(camera);
@@ -1051,29 +1025,15 @@ void SceneRenderer::FinalizeViewScene(const Camera& camera)
             }
             m_gpuResourceManager->MarkUsed(obj.meshId);
 
-            for (auto* material : obj.materialResources)
+            if (m_materialSystem)
             {
-                if (!material)
-                    continue;
-
-                const auto requestTexture = [this](Resource::ResourceHandle<Resource::TextureResource> textureHandle)
+                for (auto* material : obj.materialResources)
                 {
-                    auto* texture = textureHandle.Get();
-                    if (!texture)
-                        return;
+                    if (!material)
+                        continue;
 
-                    if (!m_gpuResourceManager->IsResident(texture->GetId()))
-                    {
-                        m_gpuResourceManager->RequestUpload(texture, UploadPriority::High);
-                    }
-                    m_gpuResourceManager->MarkUsed(texture->GetId());
-                };
-
-                requestTexture(material->GetAlbedoTexture());
-                requestTexture(material->GetNormalTexture());
-                requestTexture(material->GetMetallicRoughnessTexture());
-                requestTexture(material->GetAOTexture());
-                requestTexture(material->GetEmissiveTexture());
+                    m_materialSystem->RequestMaterialTextures(material);
+                }
             }
         }
     }
@@ -1201,7 +1161,7 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
     {
         uint64 meshId = 0;
         uint64 materialId = 0;
-        Resource::MaterialResource* materialResource = nullptr;
+        IRenderMaterialSource* materialResource = nullptr;
         MaterialPipelineVariant pipelineVariant = MaterialPipelineVariant::Opaque;
         std::vector<GPUDrivenGroupedDrawItem> items;
     };

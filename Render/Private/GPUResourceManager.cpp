@@ -1,9 +1,6 @@
 #include "Render/GPUResourceManager.h"
 #include "Core/Log.h"
-#include "Resource/Types/MeshResource.h"
-#include "Resource/Types/TextureResource.h"
 #include "RHI/RHICommandContext.h"
-#include "Scene/Mesh.h"
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -22,57 +19,57 @@ namespace
         bool compressed = false;
     };
 
-    TextureUploadFormatInfo ResolveTextureUploadFormat(const Resource::TextureMetadata& metadata)
+    TextureUploadFormatInfo ResolveTextureUploadFormat(const RenderTextureUploadMetadata& metadata)
     {
         TextureUploadFormatInfo info;
         switch (metadata.format)
         {
-            case Resource::TextureFormat::RGBA8:
+            case RenderTextureUploadFormat::RGBA8:
                 info.format = metadata.isSRGB ? RHIFormat::RGBA8_UNORM_SRGB : RHIFormat::RGBA8_UNORM;
                 info.bytesPerBlock = 4;
                 break;
-            case Resource::TextureFormat::RGB8:
+            case RenderTextureUploadFormat::RGB8:
                 info.format = metadata.isSRGB ? RHIFormat::RGBA8_UNORM_SRGB : RHIFormat::RGBA8_UNORM;
                 info.bytesPerBlock = 3;
                 break;
-            case Resource::TextureFormat::RG8:
+            case RenderTextureUploadFormat::RG8:
                 info.format = RHIFormat::RG8_UNORM;
                 info.bytesPerBlock = 2;
                 break;
-            case Resource::TextureFormat::R8:
+            case RenderTextureUploadFormat::R8:
                 info.format = RHIFormat::R8_UNORM;
                 info.bytesPerBlock = 1;
                 break;
-            case Resource::TextureFormat::RGBA16F:
+            case RenderTextureUploadFormat::RGBA16F:
                 info.format = RHIFormat::RGBA16_FLOAT;
                 info.bytesPerBlock = 8;
                 break;
-            case Resource::TextureFormat::RGBA32F:
+            case RenderTextureUploadFormat::RGBA32F:
                 info.format = RHIFormat::RGBA32_FLOAT;
                 info.bytesPerBlock = 16;
                 break;
-            case Resource::TextureFormat::BC1:
+            case RenderTextureUploadFormat::BC1:
                 info.format = metadata.isSRGB ? RHIFormat::BC1_UNORM_SRGB : RHIFormat::BC1_UNORM;
                 info.blockWidth = 4;
                 info.blockHeight = 4;
                 info.bytesPerBlock = 8;
                 info.compressed = true;
                 break;
-            case Resource::TextureFormat::BC3:
+            case RenderTextureUploadFormat::BC3:
                 info.format = metadata.isSRGB ? RHIFormat::BC3_UNORM_SRGB : RHIFormat::BC3_UNORM;
                 info.blockWidth = 4;
                 info.blockHeight = 4;
                 info.bytesPerBlock = 16;
                 info.compressed = true;
                 break;
-            case Resource::TextureFormat::BC5:
+            case RenderTextureUploadFormat::BC5:
                 info.format = RHIFormat::BC5_UNORM;
                 info.blockWidth = 4;
                 info.blockHeight = 4;
                 info.bytesPerBlock = 16;
                 info.compressed = true;
                 break;
-            case Resource::TextureFormat::BC7:
+            case RenderTextureUploadFormat::BC7:
                 info.format = metadata.isSRGB ? RHIFormat::BC7_UNORM_SRGB : RHIFormat::BC7_UNORM;
                 info.blockWidth = 4;
                 info.blockHeight = 4;
@@ -140,18 +137,19 @@ void GPUResourceManager::Shutdown()
     m_device = nullptr;
 }
 
-void GPUResourceManager::RequestUpload(Resource::MeshResource* mesh, UploadPriority priority)
+void GPUResourceManager::RequestUpload(IRenderMeshUploadSource* mesh, UploadPriority priority)
 {
     if (!mesh || !m_device)
         return;
 
-    if (mesh->GetRefCount() == 0)
+    if (mesh->GetRenderResourceRefCount() == 0)
     {
-        RVX_CORE_WARN("GPUResourceManager: Ignoring async upload for unmanaged mesh '{}'", mesh->GetName());
+        RVX_CORE_WARN("GPUResourceManager: Ignoring async upload for unmanaged mesh '{}'",
+                      mesh->GetRenderResourceName());
         return;
     }
 
-    Resource::ResourceId id = mesh->GetId();
+    const uint64 id = mesh->GetRenderResourceId();
     
     // Skip if already resident
     if (IsResident(id))
@@ -164,24 +162,25 @@ void GPUResourceManager::RequestUpload(Resource::MeshResource* mesh, UploadPrior
     PendingUpload upload;
     upload.id = id;
     upload.priority = priority;
-    upload.retainedResource.Reset(mesh);
+    upload.retainedResource.Reset(mesh->GetRenderResourceRefCounted());
     
     SetResourceState(id, GPUResourceState::UploadQueued);
     m_pendingQueue.push(upload);
 }
 
-void GPUResourceManager::RequestUpload(Resource::TextureResource* texture, UploadPriority priority)
+void GPUResourceManager::RequestUpload(IRenderTextureUploadSource* texture, UploadPriority priority)
 {
     if (!texture || !m_device)
         return;
 
-    if (texture->GetRefCount() == 0)
+    if (texture->GetRenderResourceRefCount() == 0)
     {
-        RVX_CORE_WARN("GPUResourceManager: Ignoring async upload for unmanaged texture '{}'", texture->GetName());
+        RVX_CORE_WARN("GPUResourceManager: Ignoring async upload for unmanaged texture '{}'",
+                      texture->GetRenderResourceName());
         return;
     }
 
-    Resource::ResourceId id = texture->GetId();
+    const uint64 id = texture->GetRenderResourceId();
     
     // Skip if already resident
     if (IsResident(id))
@@ -194,19 +193,19 @@ void GPUResourceManager::RequestUpload(Resource::TextureResource* texture, Uploa
     PendingUpload upload;
     upload.id = id;
     upload.priority = priority;
-    upload.retainedResource.Reset(texture);
+    upload.retainedResource.Reset(texture->GetRenderResourceRefCounted());
     
     SetResourceState(id, GPUResourceState::UploadQueued);
     m_pendingQueue.push(upload);
 }
 
-void GPUResourceManager::UploadImmediate(Resource::MeshResource* mesh)
+void GPUResourceManager::UploadImmediate(IRenderMeshUploadSource* mesh)
 {
     if (!mesh || !m_device)
         return;
 
     // Skip if already resident
-    if (IsResident(mesh->GetId()))
+    if (IsResident(mesh->GetRenderResourceId()))
         return;
 
     UploadMesh(mesh);
@@ -217,23 +216,23 @@ void GPUResourceManager::UploadImmediate(Resource::MeshResource* mesh)
     }
 }
 
-void GPUResourceManager::UploadImmediate(Resource::TextureResource* texture)
+void GPUResourceManager::UploadImmediate(IRenderTextureUploadSource* texture)
 {
     if (!texture || !m_device)
         return;
 
-    const size_t removedQueuedUploads = RemoveQueuedUploadRequests(texture->GetId());
+    const size_t removedQueuedUploads = RemoveQueuedUploadRequests(texture->GetRenderResourceId());
     if (removedQueuedUploads > 0)
     {
         RVX_CORE_DEBUG("GPUResourceManager: Removed {} queued texture upload(s) before immediate upload of resource {}",
                        removedQueuedUploads,
-                       texture->GetId());
+                       texture->GetRenderResourceId());
     }
 
     // Match mesh semantics: UploadImmediate is a blocking residency request, not
     // an implicit same-id refresh path. Explicit refresh can be added as a
     // separate API when callers need to replace resident GPU data.
-    if (IsResident(texture->GetId()))
+    if (IsResident(texture->GetRenderResourceId()))
         return;
 
     UploadTexture(texture);
@@ -244,7 +243,7 @@ void GPUResourceManager::UploadImmediate(Resource::TextureResource* texture)
     }
 }
 
-MeshGPUBuffers GPUResourceManager::GetMeshBuffers(Resource::ResourceId meshId) const
+MeshGPUBuffers GPUResourceManager::GetMeshBuffers(uint64 meshId) const
 {
     MeshGPUBuffers result;
     
@@ -270,7 +269,7 @@ MeshGPUBuffers GPUResourceManager::GetMeshBuffers(Resource::ResourceId meshId) c
     return result;
 }
 
-bool GPUResourceManager::IsResident(Resource::ResourceId id) const
+bool GPUResourceManager::IsResident(uint64 id) const
 {
     // Check meshes
     auto meshIt = m_meshGPUData.find(id);
@@ -285,7 +284,12 @@ bool GPUResourceManager::IsResident(Resource::ResourceId id) const
     return false;
 }
 
-GPUResourceState GPUResourceManager::GetResourceState(Resource::ResourceId id) const
+bool GPUResourceManager::IsResident(IRenderTextureUploadSource* texture) const
+{
+    return texture && IsResident(texture->GetRenderResourceId());
+}
+
+GPUResourceState GPUResourceManager::GetResourceState(uint64 id) const
 {
     auto stateIt = m_resourceStates.find(id);
     if (stateIt != m_resourceStates.end())
@@ -301,7 +305,7 @@ GPUResourceState GPUResourceManager::GetResourceState(Resource::ResourceId id) c
     return GPUResourceState::Unloaded;
 }
 
-RHITexture* GPUResourceManager::GetTexture(Resource::ResourceId textureId) const
+RHITexture* GPUResourceManager::GetTexture(uint64 textureId) const
 {
     auto it = m_textureGPUData.find(textureId);
     if (it != m_textureGPUData.end() && it->second.isResident)
@@ -311,7 +315,17 @@ RHITexture* GPUResourceManager::GetTexture(Resource::ResourceId textureId) const
     return nullptr;
 }
 
-bool GPUResourceManager::TransitionTexture(Resource::ResourceId textureId, RHICommandContext& ctx, RHIResourceState desiredState)
+RHITexture* GPUResourceManager::GetTexture(IRenderTextureUploadSource* texture) const
+{
+    return texture ? GetTexture(texture->GetRenderResourceId()) : nullptr;
+}
+
+bool GPUResourceManager::IsGPUReady(IRenderTextureUploadSource* texture) const
+{
+    return texture && IsGPUReady(texture->GetRenderResourceId());
+}
+
+bool GPUResourceManager::TransitionTexture(uint64 textureId, RHICommandContext& ctx, RHIResourceState desiredState)
 {
     auto it = m_textureGPUData.find(textureId);
     if (it == m_textureGPUData.end() || !it->second.isResident || !it->second.texture)
@@ -369,18 +383,18 @@ void GPUResourceManager::ProcessPendingUploads(float timeBudgetMs)
             continue;
 
         // Determine resource type and upload
-        Resource::IResource* resource = upload.retainedResource.Get();
+        RefCounted* resource = upload.retainedResource.Get();
         if (!resource)
         {
             SetResourceState(upload.id, GPUResourceState::Failed);
             continue;
         }
 
-        if (auto* mesh = dynamic_cast<Resource::MeshResource*>(resource))
+        if (auto* mesh = dynamic_cast<IRenderMeshUploadSource*>(resource))
         {
             UploadMesh(mesh);
         }
-        else if (auto* texture = dynamic_cast<Resource::TextureResource*>(resource))
+        else if (auto* texture = dynamic_cast<IRenderTextureUploadSource*>(resource))
         {
             UploadTexture(texture);
         }
@@ -394,7 +408,7 @@ void GPUResourceManager::ProcessPendingUploads(float timeBudgetMs)
     m_currentFrame++;
 }
 
-void GPUResourceManager::MarkUsed(Resource::ResourceId id)
+void GPUResourceManager::MarkUsed(uint64 id)
 {
     auto meshIt = m_meshGPUData.find(id);
     if (meshIt != m_meshGPUData.end())
@@ -410,10 +424,18 @@ void GPUResourceManager::MarkUsed(Resource::ResourceId id)
     }
 }
 
+void GPUResourceManager::MarkUsed(IRenderTextureUploadSource* texture)
+{
+    if (texture)
+    {
+        MarkUsed(texture->GetRenderResourceId());
+    }
+}
+
 void GPUResourceManager::EvictUnused(uint64_t currentFrame, uint64_t frameThreshold)
 {
-    std::vector<Resource::ResourceId> meshesToEvict;
-    std::vector<Resource::ResourceId> texturesToEvict;
+    std::vector<uint64> meshesToEvict;
+    std::vector<uint64> texturesToEvict;
 
     // Find unused meshes
     for (auto& [id, data] : m_meshGPUData)
@@ -434,7 +456,7 @@ void GPUResourceManager::EvictUnused(uint64_t currentFrame, uint64_t frameThresh
     }
 
     // Evict meshes
-    for (Resource::ResourceId id : meshesToEvict)
+    for (uint64 id : meshesToEvict)
     {
         auto it = m_meshGPUData.find(id);
         if (it != m_meshGPUData.end())
@@ -449,7 +471,7 @@ void GPUResourceManager::EvictUnused(uint64_t currentFrame, uint64_t frameThresh
     }
 
     // Evict textures
-    for (Resource::ResourceId id : texturesToEvict)
+    for (uint64 id : texturesToEvict)
     {
         auto it = m_textureGPUData.find(id);
         if (it != m_textureGPUData.end())
@@ -517,7 +539,7 @@ GPUResourceManager::Stats GPUResourceManager::GetStats() const
     return stats;
 }
 
-void GPUResourceManager::UploadMesh(Resource::MeshResource* meshRes)
+void GPUResourceManager::UploadMesh(IRenderMeshUploadSource* meshRes)
 {
     if (!meshRes || !m_device)
     {
@@ -526,56 +548,53 @@ void GPUResourceManager::UploadMesh(Resource::MeshResource* meshRes)
         return;
     }
 
-    SetResourceState(meshRes->GetId(), GPUResourceState::Uploading);
+    const uint64 meshId = meshRes->GetRenderResourceId();
+    const std::string_view meshName = meshRes->GetRenderResourceName();
+
+    SetResourceState(meshId, GPUResourceState::Uploading);
 
     RVX_CORE_DEBUG("GPUResourceManager: Uploading mesh '{}' (ID: {})",
-                   meshRes->GetName(), meshRes->GetId());
+                   meshName, meshId);
 
-    auto* mesh = meshRes->GetMesh().get();
-    if (!mesh)
+    const RenderMeshUploadData uploadData = meshRes->GetRenderMeshUploadData();
+    if (uploadData.vertexCount == 0 || !uploadData.position.IsValid())
     {
-        RVX_CORE_WARN("MeshResource has no mesh data: {}", meshRes->GetName());
-        SetResourceState(meshRes->GetId(), GPUResourceState::Failed);
+        RVX_CORE_WARN("MeshResource has no uploadable mesh data: {}", meshName);
+        SetResourceState(meshId, GPUResourceState::Failed);
         return;
     }
 
     RVX_CORE_TRACE("  Vertex count: {}, Index count: {}",
-                   mesh->GetVertexCount(), mesh->GetIndexCount());
-    RVX_CORE_TRACE("  Attributes: ");
-    for (const auto& [name, attr] : mesh->GetAttributes())
-    {
-        RVX_CORE_TRACE("    - {}: stride={}, total={} bytes",
-                       name, attr->GetStride(), attr->GetTotalSize());
-    }
+                   uploadData.vertexCount, uploadData.indexCount);
 
     MeshGPUData gpuData;
     size_t totalMemory = 0;
 
-    // Helper lambda to create and upload an attribute buffer
     const bool rayTracingGeometryInputEnabled = m_device->GetCapabilities().supportsRaytracing;
     const RHIBufferUsage rayTracingInputUsage =
         RHIBufferUsage::AccelerationStructureInput |
         RHIBufferUsage::DeviceAddress |
         RHIBufferUsage::ShaderResource;
 
+    // Helper lambda to create and upload an attribute buffer
     auto createAttributeBuffer = [this, &gpuData, &totalMemory, rayTracingGeometryInputEnabled, rayTracingInputUsage](
-                                     const VertexAttribute* attr,
-                                     const char* name) -> RHIBufferRef
+        const RenderMeshAttributeUploadView& attribute,
+        const char* name) -> RHIBufferRef
     {
-        if (!attr || attr->GetTotalSize() == 0)
+        if (!attribute.IsValid())
             return nullptr;
 
         GPUUploadBufferDesc desc;
-        desc.size = attr->GetTotalSize();
+        desc.size = attribute.size;
         desc.usage = RHIBufferUsage::Vertex;
         if (rayTracingGeometryInputEnabled)
         {
             desc.usage = desc.usage | rayTracingInputUsage;
         }
-        desc.stride = static_cast<uint32_t>(attr->GetStride());  // CRITICAL: Set stride for vertex buffer view
+        desc.stride = static_cast<uint32_t>(attribute.stride);  // CRITICAL: Set stride for vertex buffer view
         desc.debugName = name;
 
-        auto result = m_uploadService->UploadBufferDataWithResult(desc, attr->GetData(), attr->GetTotalSize());
+        auto result = m_uploadService->UploadBufferDataWithResult(desc, attribute.data, attribute.size);
         if (!result)
         {
             return nullptr;
@@ -592,76 +611,60 @@ void GPUResourceManager::UploadMesh(Resource::MeshResource* meshRes)
 
     // Upload each attribute to its own buffer (no interleaving needed!)
     // Slot 0: Position (required)
-    if (auto* posAttr = mesh->GetAttribute("position"))
+    gpuData.positionBuffer = createAttributeBuffer(uploadData.position, "PositionBuffer");
+    if (!gpuData.positionBuffer)
     {
-        gpuData.positionBuffer = createAttributeBuffer(posAttr, "PositionBuffer");
-        if (!gpuData.positionBuffer)
-        {
-            RVX_CORE_ERROR("Failed to create position buffer for mesh: {}", meshRes->GetName());
-            AbandonUploadIds(gpuData.pendingUploadIds);
-            SetResourceState(meshRes->GetId(), GPUResourceState::Failed);
-            return;
-        }
-    }
-    else
-    {
-        RVX_CORE_ERROR("Mesh has no position attribute: {}", meshRes->GetName());
-        SetResourceState(meshRes->GetId(), GPUResourceState::Failed);
+        RVX_CORE_ERROR("Failed to create position buffer for mesh: {}", meshName);
+        AbandonUploadIds(gpuData.pendingUploadIds);
+        SetResourceState(meshId, GPUResourceState::Failed);
         return;
     }
-
     // Slot 1: Normal (optional)
-    if (auto* normAttr = mesh->GetAttribute("normal"))
+    if (uploadData.normal.IsValid())
     {
-        gpuData.normalBuffer = createAttributeBuffer(normAttr, "NormalBuffer");
+        gpuData.normalBuffer = createAttributeBuffer(uploadData.normal, "NormalBuffer");
         gpuData.hasNormals = (gpuData.normalBuffer != nullptr);
     }
 
-    // Slot 2: UV (optional) - try different names
-    const char* uvNames[] = {"uv0", "uv", "texcoord0", "texcoord"};
-    for (const char* uvName : uvNames)
+    // Slot 2: UV (optional)
+    if (uploadData.uv.IsValid())
     {
-        if (auto* uvAttr = mesh->GetAttribute(uvName))
-        {
-            gpuData.uvBuffer = createAttributeBuffer(uvAttr, "UVBuffer");
-            gpuData.hasUVs = (gpuData.uvBuffer != nullptr);
-            break;
-        }
+        gpuData.uvBuffer = createAttributeBuffer(uploadData.uv, "UVBuffer");
+        gpuData.hasUVs = (gpuData.uvBuffer != nullptr);
     }
 
     // Slot 3: Tangent (optional)
-    if (auto* tangentAttr = mesh->GetAttribute("tangent"))
+    if (uploadData.tangent.IsValid())
     {
-        gpuData.tangentBuffer = createAttributeBuffer(tangentAttr, "TangentBuffer");
+        gpuData.tangentBuffer = createAttributeBuffer(uploadData.tangent, "TangentBuffer");
         gpuData.hasTangents = (gpuData.tangentBuffer != nullptr);
     }
 
     // Slot 4: Bone indices (optional)
-    if (auto* boneIndicesAttr = mesh->GetAttribute(VertexBufferNames::BoneIndices))
+    if (uploadData.boneIndices.IsValid())
     {
-        gpuData.boneIndicesBuffer = createAttributeBuffer(boneIndicesAttr, "BoneIndicesBuffer");
+        gpuData.boneIndicesBuffer = createAttributeBuffer(uploadData.boneIndices, "BoneIndicesBuffer");
         gpuData.hasBoneIndices = (gpuData.boneIndicesBuffer != nullptr);
     }
 
     // Slot 5: Bone weights (optional)
-    if (auto* boneWeightsAttr = mesh->GetAttribute(VertexBufferNames::BoneWeights))
+    if (uploadData.boneWeights.IsValid())
     {
-        gpuData.boneWeightsBuffer = createAttributeBuffer(boneWeightsAttr, "BoneWeightsBuffer");
+        gpuData.boneWeightsBuffer = createAttributeBuffer(uploadData.boneWeights, "BoneWeightsBuffer");
         gpuData.hasBoneWeights = (gpuData.boneWeightsBuffer != nullptr);
     }
 
     // Create index buffer
-    const auto& indexData = mesh->GetIndexData();
-    if (indexData.empty())
+    if (!uploadData.HasIndexData())
     {
-        RVX_CORE_ERROR("Mesh has no index data: {}", meshRes->GetName());
+        RVX_CORE_ERROR("Mesh has no index data: {}", meshName);
         AbandonUploadIds(gpuData.pendingUploadIds);
-        SetResourceState(meshRes->GetId(), GPUResourceState::Failed);
+        SetResourceState(meshId, GPUResourceState::Failed);
         return;
     }
 
     GPUUploadBufferDesc ibDesc;
-    ibDesc.size = (static_cast<uint64>(indexData.size()) + 3ull) & ~3ull;
+    ibDesc.size = uploadData.indexDataSize;
     ibDesc.usage = RHIBufferUsage::Index;
     if (rayTracingGeometryInputEnabled)
     {
@@ -669,13 +672,16 @@ void GPUResourceManager::UploadMesh(Resource::MeshResource* meshRes)
     }
     ibDesc.debugName = "MeshIndexBuffer";
 
-    auto indexUpload = m_uploadService->UploadBufferDataWithResult(ibDesc, indexData.data(), indexData.size());
+    auto indexUpload = m_uploadService->UploadBufferDataWithResult(
+        ibDesc,
+        uploadData.indexData,
+        uploadData.indexDataSize);
     gpuData.indexBuffer = indexUpload.resource;
     if (!indexUpload)
     {
-        RVX_CORE_ERROR("Failed to create index buffer for mesh: {}", meshRes->GetName());
+        RVX_CORE_ERROR("Failed to create index buffer for mesh: {}", meshName);
         AbandonUploadIds(gpuData.pendingUploadIds);
-        SetResourceState(meshRes->GetId(), GPUResourceState::Failed);
+        SetResourceState(meshId, GPUResourceState::Failed);
         return;
     }
 
@@ -687,24 +693,12 @@ void GPUResourceManager::UploadMesh(Resource::MeshResource* meshRes)
     totalMemory += indexUpload.bytesUploaded;
 
     // Collect submesh info
-    if (mesh->HasSubMeshes())
+    for (const auto& submesh : uploadData.submeshes)
     {
-        for (const auto& submesh : mesh->GetSubMeshes())
-        {
-            SubmeshGPUInfo info;
-            info.indexOffset = submesh.indexOffset;
-            info.indexCount = submesh.indexCount;
-            info.baseVertex = submesh.baseVertex;
-            gpuData.submeshes.push_back(info);
-        }
-    }
-    else
-    {
-        // Single submesh covering entire mesh
         SubmeshGPUInfo info;
-        info.indexOffset = 0;
-        info.indexCount = static_cast<uint32_t>(mesh->GetIndexCount());
-        info.baseVertex = 0;
+        info.indexOffset = submesh.indexOffset;
+        info.indexCount = submesh.indexCount;
+        info.baseVertex = submesh.baseVertex;
         gpuData.submeshes.push_back(info);
     }
 
@@ -725,21 +719,21 @@ void GPUResourceManager::UploadMesh(Resource::MeshResource* meshRes)
     bool hasTan = gpuData.hasTangents;
     bool hasSkin = gpuData.hasBoneIndices && gpuData.hasBoneWeights;
     
-    m_meshGPUData[meshRes->GetId()] = std::move(gpuData);
-    if (!m_meshGPUData[meshRes->GetId()].pendingUploadIds.empty())
+    m_meshGPUData[meshId] = std::move(gpuData);
+    if (!m_meshGPUData[meshId].pendingUploadIds.empty())
     {
-        m_pendingMeshUploadCompletions.insert(meshRes->GetId());
+        m_pendingMeshUploadCompletions.insert(meshId);
     }
     else
     {
-        m_pendingMeshUploadCompletions.erase(meshRes->GetId());
+        m_pendingMeshUploadCompletions.erase(meshId);
     }
 
-    SetResourceState(meshRes->GetId(), hasPos && m_meshGPUData[meshRes->GetId()].isResident ?
-                                      GPUResourceState::GPUReady : GPUResourceState::Uploading);
+    SetResourceState(meshId, hasPos && m_meshGPUData[meshId].isResident ?
+                             GPUResourceState::GPUReady : GPUResourceState::Uploading);
 
     RVX_CORE_DEBUG("Uploaded mesh to GPU: {} ({}KB, pos:{} norm:{} uv:{} tan:{} skin:{})",
-                   meshRes->GetName(),
+                   meshName,
                    totalMemory / 1024,
                    hasPos ? "yes" : "no",
                    hasNorm ? "yes" : "no",
@@ -749,14 +743,15 @@ void GPUResourceManager::UploadMesh(Resource::MeshResource* meshRes)
 }
 
 GPUResourceManager::PreparedTextureUpload GPUResourceManager::PrepareTextureUpload(
-    const Resource::TextureResource& texture) const
+    const IRenderTextureUploadSource& texture) const
 {
     PreparedTextureUpload prepared;
 
-    const auto& metadata = texture.GetMetadata();
-    const auto& sourceData = texture.GetData();
+    const RenderTextureUploadData uploadData = texture.GetRenderTextureUploadData();
+    const RenderTextureUploadMetadata& metadata = uploadData.metadata;
+    const uint8* sourceData = uploadData.data;
     if (metadata.width == 0 || metadata.height == 0 || metadata.depth == 0 ||
-        metadata.mipLevels == 0 || metadata.arrayLayers == 0 || sourceData.empty())
+        metadata.mipLevels == 0 || metadata.arrayLayers == 0 || !uploadData.HasData())
     {
         return prepared;
     }
@@ -772,7 +767,7 @@ GPUResourceManager::PreparedTextureUpload GPUResourceManager::PrepareTextureUplo
         return prepared;
     }
 
-    if (metadata.format == Resource::TextureFormat::RGB8 &&
+    if (metadata.format == RenderTextureUploadFormat::RGB8 &&
         (metadata.isCubemap || metadata.isArray || metadata.mipLevels != 1 || metadata.arrayLayers != 1))
     {
         return prepared;
@@ -829,7 +824,7 @@ GPUResourceManager::PreparedTextureUpload GPUResourceManager::PrepareTextureUplo
         expectedSourceSize += mipSize * physicalLayerCount;
     }
 
-    if (sourceData.size() != expectedSourceSize)
+    if (uploadData.dataSize != expectedSourceSize)
     {
         return prepared;
     }
@@ -842,13 +837,13 @@ GPUResourceManager::PreparedTextureUpload GPUResourceManager::PrepareTextureUplo
     prepared.textureDesc.usage = RHITextureUsage::ShaderResource;
     prepared.textureDesc.format = uploadFormat.format;
     prepared.textureDesc.dimension = dimension;
-    prepared.textureDesc.debugName = texture.GetName().c_str();
+    prepared.debugName = std::string(texture.GetRenderResourceName());
 
-    if (metadata.format == Resource::TextureFormat::RGB8)
+    if (metadata.format == RenderTextureUploadFormat::RGB8)
     {
         const uint64 pixelCount = static_cast<uint64>(metadata.width) * metadata.height;
         prepared.data.resize(static_cast<size_t>(pixelCount) * 4);
-        const auto* src = sourceData.data();
+        const uint8* src = sourceData;
         auto* dst = prepared.data.data();
         for (uint64 i = 0; i < pixelCount; ++i)
         {
@@ -870,7 +865,7 @@ GPUResourceManager::PreparedTextureUpload GPUResourceManager::PrepareTextureUplo
                 const uint64 mipSize = mipSizes[mipLevel];
                 const uint64 srcOffset = mipOffsets[mipLevel] + static_cast<uint64>(physicalLayer) * mipSize;
                 std::memcpy(prepared.data.data() + dstOffset,
-                            sourceData.data() + srcOffset,
+                            sourceData + srcOffset,
                             static_cast<size_t>(mipSize));
                 dstOffset += mipSize;
             }
@@ -878,29 +873,33 @@ GPUResourceManager::PreparedTextureUpload GPUResourceManager::PrepareTextureUplo
     }
     else
     {
-        prepared.data = sourceData;
+        prepared.data.assign(sourceData, sourceData + uploadData.dataSize);
     }
 
     prepared.valid = true;
     return prepared;
 }
 
-void GPUResourceManager::UploadTexture(Resource::TextureResource* textureRes)
+void GPUResourceManager::UploadTexture(IRenderTextureUploadSource* textureRes)
 {
     if (!textureRes || !m_device)
         return;
 
-    SetResourceState(textureRes->GetId(), GPUResourceState::Uploading);
+    const uint64 textureId = textureRes->GetRenderResourceId();
+    const std::string_view textureName = textureRes->GetRenderResourceName();
+
+    SetResourceState(textureId, GPUResourceState::Uploading);
 
     TextureGPUData gpuData;
     PreparedTextureUpload prepared = PrepareTextureUpload(*textureRes);
     if (!prepared.valid)
     {
-        RVX_CORE_WARN("TextureResource has unsupported or inconsistent upload data: {}", textureRes->GetName());
-        ReleaseTextureGPUData(textureRes->GetId());
-        SetResourceState(textureRes->GetId(), GPUResourceState::Failed);
+        RVX_CORE_WARN("TextureResource has unsupported or inconsistent upload data: {}", textureName);
+        ReleaseTextureGPUData(textureId);
+        SetResourceState(textureId, GPUResourceState::Failed);
         return;
     }
+    prepared.textureDesc.debugName = prepared.debugName.c_str();
 
     GPUUploadTextureDesc uploadDesc;
     uploadDesc.textureDesc = prepared.textureDesc;
@@ -910,9 +909,9 @@ void GPUResourceManager::UploadTexture(Resource::TextureResource* textureRes)
     gpuData.texture = textureUpload.resource;
     if (!textureUpload)
     {
-        RVX_CORE_ERROR("Failed to create GPU texture for: {}", textureRes->GetName());
-        ReleaseTextureGPUData(textureRes->GetId());
-        SetResourceState(textureRes->GetId(), GPUResourceState::Failed);
+        RVX_CORE_ERROR("Failed to create GPU texture for: {}", textureName);
+        ReleaseTextureGPUData(textureId);
+        SetResourceState(textureId, GPUResourceState::Failed);
         return;
     }
 
@@ -935,27 +934,27 @@ void GPUResourceManager::UploadTexture(Resource::TextureResource* textureRes)
     const uint32 uploadedWidth = prepared.textureDesc.width;
     const uint32 uploadedHeight = prepared.textureDesc.height;
 
-    ReleaseTextureGPUData(textureRes->GetId());
-    m_textureGPUData[textureRes->GetId()] = std::move(gpuData);
-    if (!m_textureGPUData[textureRes->GetId()].pendingUploadIds.empty())
+    ReleaseTextureGPUData(textureId);
+    m_textureGPUData[textureId] = std::move(gpuData);
+    if (!m_textureGPUData[textureId].pendingUploadIds.empty())
     {
-        m_pendingTextureUploadCompletions.insert(textureRes->GetId());
+        m_pendingTextureUploadCompletions.insert(textureId);
     }
     else
     {
-        m_pendingTextureUploadCompletions.erase(textureRes->GetId());
+        m_pendingTextureUploadCompletions.erase(textureId);
     }
 
-    SetResourceState(textureRes->GetId(), m_textureGPUData[textureRes->GetId()].isResident ?
-                                         GPUResourceState::GPUReady : GPUResourceState::Uploading);
+    SetResourceState(textureId, m_textureGPUData[textureId].isResident ?
+                                GPUResourceState::GPUReady : GPUResourceState::Uploading);
 
     RVX_CORE_DEBUG("Created texture on GPU: {} ({}x{}, {}KB)", 
-                   textureRes->GetName(),
+                   textureName,
                    uploadedWidth, uploadedHeight,
                    uploadedMemory / 1024);
 }
 
-void GPUResourceManager::ReleaseTextureGPUData(Resource::ResourceId id)
+void GPUResourceManager::ReleaseTextureGPUData(uint64 id)
 {
     auto it = m_textureGPUData.find(id);
     if (it == m_textureGPUData.end())
@@ -972,9 +971,9 @@ void GPUResourceManager::ReleaseTextureGPUData(Resource::ResourceId id)
     m_textureGPUData.erase(it);
 }
 
-size_t GPUResourceManager::RemoveQueuedUploadRequests(Resource::ResourceId id)
+size_t GPUResourceManager::RemoveQueuedUploadRequests(uint64 id)
 {
-    if (id == Resource::InvalidResourceId || m_pendingQueue.empty())
+    if (id == 0 || m_pendingQueue.empty())
         return 0;
 
     std::vector<PendingUpload> retainedUploads;
@@ -1008,8 +1007,8 @@ void GPUResourceManager::UpdateCompletedResourceUploads()
     if (!m_uploadService)
         return;
 
-    std::vector<Resource::ResourceId> completedMeshes;
-    for (Resource::ResourceId id : m_pendingMeshUploadCompletions)
+    std::vector<uint64> completedMeshes;
+    for (uint64 id : m_pendingMeshUploadCompletions)
     {
         auto it = m_meshGPUData.find(id);
         if (it == m_meshGPUData.end() || it->second.isResident || it->second.pendingUploadIds.empty())
@@ -1044,13 +1043,13 @@ void GPUResourceManager::UpdateCompletedResourceUploads()
         }
     }
 
-    for (Resource::ResourceId id : completedMeshes)
+    for (uint64 id : completedMeshes)
     {
         m_pendingMeshUploadCompletions.erase(id);
     }
 
-    std::vector<Resource::ResourceId> completedTextures;
-    for (Resource::ResourceId id : m_pendingTextureUploadCompletions)
+    std::vector<uint64> completedTextures;
+    for (uint64 id : m_pendingTextureUploadCompletions)
     {
         auto it = m_textureGPUData.find(id);
         if (it == m_textureGPUData.end() || it->second.isResident || it->second.pendingUploadIds.empty())
@@ -1085,7 +1084,7 @@ void GPUResourceManager::UpdateCompletedResourceUploads()
         }
     }
 
-    for (Resource::ResourceId id : completedTextures)
+    for (uint64 id : completedTextures)
     {
         m_pendingTextureUploadCompletions.erase(id);
     }
@@ -1110,9 +1109,9 @@ void GPUResourceManager::NotifyTextureInvalidated(RHITexture* texture)
     }
 }
 
-void GPUResourceManager::SetResourceState(Resource::ResourceId id, GPUResourceState state)
+void GPUResourceManager::SetResourceState(uint64 id, GPUResourceState state)
 {
-    if (id == Resource::InvalidResourceId)
+    if (id == 0)
         return;
 
     if (state == GPUResourceState::Failed)

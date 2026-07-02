@@ -6,6 +6,7 @@
  */
 
 #include "Render/Material/MaterialGPUData.h"
+#include "Render/Material/MaterialSourceData.h"
 #include "RHI/RHI.h"
 #include <string>
 #include <unordered_map>
@@ -13,7 +14,6 @@
 namespace RVX
 {
     // Forward declarations
-    class Material;
     class GPUResourceManager;
 
     enum class MaterialBindStatus : uint8
@@ -73,12 +73,12 @@ namespace RVX
         /**
          * @brief Bind a material for rendering
          * @param ctx Command context to bind to
-         * @param material The material to bind
+         * @param material Source material data to bind
          * @param setIndex Descriptor set index for material constants
          * 
          * Updates the material constant buffer and binds textures.
          */
-        void Bind(RHICommandContext& ctx, const Material& material, uint32 setIndex = 2);
+        void Bind(RHICommandContext& ctx, const MaterialSourceData& material, uint32 setIndex = 2);
 
         /**
          * @brief Bind a material by ID
@@ -89,11 +89,11 @@ namespace RVX
         void Bind(RHICommandContext& ctx, uint64 materialId, uint32 setIndex = 2);
 
         /**
-         * @brief Convert material to GPU constants
-         * @param material Source material
+         * @brief Convert render-facing material data to GPU constants
+         * @param material Source material data
          * @return GPU constant buffer data
          */
-        static MaterialGPUConstants ConvertToGPU(const Material& material);
+        static MaterialGPUConstants ConvertToGPU(const MaterialSourceData& material);
 
         // =========================================================================
         // Default Material

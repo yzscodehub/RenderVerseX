@@ -590,20 +590,18 @@ namespace
 
     TEST(MaterialSystemValidation, ClassifiesMaterialAlphaModes)
     {
-        auto opaque = std::make_shared<Material>();
-        opaque->SetAlphaMode(Material::AlphaMode::Opaque);
         EXPECT_EQ(MaterialRenderMode::Opaque,
-                  ClassifyMaterialRenderMode(opaque.get()));
+                  ClassifyMaterialRenderMode(MaterialSourceAlphaMode::Opaque));
 
-        auto masked = std::make_shared<Material>();
-        masked->SetAlphaMode(Material::AlphaMode::Mask);
         EXPECT_EQ(MaterialRenderMode::Masked,
-                  ClassifyMaterialRenderMode(masked.get()));
+                  ClassifyMaterialRenderMode(MaterialSourceAlphaMode::Mask));
 
-        auto transparent = std::make_shared<Material>();
-        transparent->SetAlphaMode(Material::AlphaMode::Blend);
         EXPECT_EQ(MaterialRenderMode::Transparent,
-                  ClassifyMaterialRenderMode(transparent.get()));
+                  ClassifyMaterialRenderMode(MaterialSourceAlphaMode::Blend));
+
+        MaterialSourceData defaultSource;
+        EXPECT_EQ(MaterialRenderMode::Opaque,
+                  ClassifyMaterialRenderMode(defaultSource));
 
         EXPECT_EQ(MaterialPipelineVariant::Opaque,
                   GetPipelineVariantForRenderMode(MaterialRenderMode::Opaque));
@@ -663,18 +661,18 @@ namespace
 
     TEST(MaterialSystemValidation, MaterialBinderConvertToGPUUsesMaterialProperties)
     {
-        Material material("gpu-material");
-        material.SetBaseColor(0.25f, 0.5f, 0.75f, 0.9f);
-        material.SetMetallicFactor(0.35f);
-        material.SetRoughnessFactor(0.65f);
-        material.SetNormalScale(0.8f);
-        material.SetOcclusionStrength(0.7f);
-        material.SetEmissiveColor({0.1f, 0.2f, 0.3f});
-        material.SetEmissiveStrength(2.5f);
-        material.SetAlphaMode(Material::AlphaMode::Blend);
-        material.SetAlphaCutoff(0.42f);
-        material.SetWorkflow(MaterialWorkflow::SpecularGlossiness);
-        material.SetDoubleSided(true);
+        MaterialSourceData material;
+        material.baseColorFactor = {0.25f, 0.5f, 0.75f, 0.9f};
+        material.metallicFactor = 0.35f;
+        material.roughnessFactor = 0.65f;
+        material.normalScale = 0.8f;
+        material.occlusionStrength = 0.7f;
+        material.emissiveColor = {0.1f, 0.2f, 0.3f};
+        material.emissiveStrength = 2.5f;
+        material.alphaMode = MaterialSourceAlphaMode::Blend;
+        material.alphaCutoff = 0.42f;
+        material.workflow = MaterialSourceWorkflow::SpecularGlossiness;
+        material.doubleSided = true;
 
         const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(material);
 
@@ -698,32 +696,22 @@ namespace
 
     TEST(MaterialSystemValidation, MaterialBinderConvertToGPUTextureFlagsReflectOptionalTextures)
     {
-        Material material("texture-flags");
+        MaterialSourceData material;
 
         MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(material);
         EXPECT_EQ(constants.textureFlags, 0u);
 
-        material.SetBaseColorTexture(TextureInfo("base-color.png"));
-        material.SetNormalTexture(TextureInfo("normal.png"));
-        material.SetMetallicRoughnessTexture(TextureInfo("mr.png"));
-        material.SetOcclusionTexture(TextureInfo("ao.png"));
-        material.SetEmissiveTexture(TextureInfo("emissive.png"));
-
-        constants = MaterialBinder::ConvertToGPU(material);
         const uint32 expectedFlags =
             static_cast<uint32>(MaterialTextureFlags::HasBaseColor) |
             static_cast<uint32>(MaterialTextureFlags::HasNormal) |
             static_cast<uint32>(MaterialTextureFlags::HasMetallicRoughness) |
             static_cast<uint32>(MaterialTextureFlags::HasOcclusion) |
             static_cast<uint32>(MaterialTextureFlags::HasEmissive);
+        material.textureFlags = expectedFlags;
+        constants = MaterialBinder::ConvertToGPU(material);
         EXPECT_EQ(constants.textureFlags, expectedFlags);
 
-        material.ClearBaseColorTexture();
-        material.ClearNormalTexture();
-        material.ClearMetallicRoughnessTexture();
-        material.ClearOcclusionTexture();
-        material.ClearEmissiveTexture();
-
+        material.textureFlags = 0;
         constants = MaterialBinder::ConvertToGPU(material);
         EXPECT_EQ(constants.textureFlags, 0u);
     }
@@ -736,9 +724,9 @@ namespace
         ASSERT_TRUE(binder.IsInitialized());
         ASSERT_NE(device.lastCreatedBuffer, nullptr);
 
-        Material material("bind-material");
-        material.SetBaseColor(0.2f, 0.3f, 0.4f, 1.0f);
-        material.SetRoughnessFactor(0.55f);
+        MaterialSourceData material;
+        material.baseColorFactor = {0.2f, 0.3f, 0.4f, 1.0f};
+        material.roughnessFactor = 0.55f;
 
         FakeCommandContext ctx;
         binder.Bind(ctx, material);
@@ -802,7 +790,7 @@ namespace
             binder.Initialize(&device, nullptr);
             ASSERT_TRUE(binder.IsInitialized());
 
-            Material material("map-fail");
+            MaterialSourceData material;
             FakeCommandContext ctx;
             binder.Bind(ctx, material);
 

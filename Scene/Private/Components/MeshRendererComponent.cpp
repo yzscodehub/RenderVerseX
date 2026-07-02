@@ -1,6 +1,6 @@
 #include "Scene/Components/MeshRendererComponent.h"
+#include "RenderContracts/RenderResource.h"
 #include "Scene/SceneEntity.h"
-#include "Scene/Mesh.h"
 
 namespace RVX
 {
@@ -23,17 +23,15 @@ AABB MeshRendererComponent::GetLocalBounds() const
         return AABB();
     }
 
-    auto* mesh = m_mesh->GetMesh().get();
-    if (mesh && mesh->GetBoundingBox().has_value())
+    if (auto* meshSource = m_mesh.As<IRenderMeshUploadSource>())
     {
-        // BoundingBox is an alias for AABB, just return it
-        return mesh->GetBoundingBox().value();
+        return meshSource->GetRenderMeshBounds();
     }
 
-    return m_mesh->GetBounds();
+    return AABB();
 }
 
-void MeshRendererComponent::SetMesh(Resource::ResourceHandle<Resource::MeshResource> mesh)
+void MeshRendererComponent::SetMesh(SceneMeshHandle mesh)
 {
     m_mesh = mesh;
     
@@ -45,7 +43,7 @@ void MeshRendererComponent::SetMesh(Resource::ResourceHandle<Resource::MeshResou
     NotifyBoundsChanged();
 }
 
-void MeshRendererComponent::SetMaterial(size_t submeshIndex, Resource::ResourceHandle<Resource::MaterialResource> material)
+void MeshRendererComponent::SetMaterial(size_t submeshIndex, SceneMaterialHandle material)
 {
     if (submeshIndex >= m_materialOverrides.size())
     {
@@ -54,7 +52,7 @@ void MeshRendererComponent::SetMaterial(size_t submeshIndex, Resource::ResourceH
     m_materialOverrides[submeshIndex] = material;
 }
 
-Resource::ResourceHandle<Resource::MaterialResource> MeshRendererComponent::GetMaterial(size_t submeshIndex) const
+SceneMaterialHandle MeshRendererComponent::GetMaterial(size_t submeshIndex) const
 {
     // 1. Check for override
     if (submeshIndex < m_materialOverrides.size() && m_materialOverrides[submeshIndex].IsValid())
@@ -66,7 +64,7 @@ Resource::ResourceHandle<Resource::MaterialResource> MeshRendererComponent::GetM
     // TODO: When MeshResource supports default materials per submesh, use that
     
     // 3. Return empty handle (caller should use a default material)
-    return Resource::ResourceHandle<Resource::MaterialResource>();
+    return SceneMaterialHandle();
 }
 
 size_t MeshRendererComponent::GetSubmeshCount() const
@@ -76,50 +74,13 @@ size_t MeshRendererComponent::GetSubmeshCount() const
         return 0;
     }
 
-    auto* mesh = m_mesh->GetMesh().get();
-    if (!mesh)
+    auto* meshSource = m_mesh.As<IRenderMeshUploadSource>();
+    if (!meshSource)
     {
         return 0;
     }
 
-    // If mesh has submeshes, return that count
-    if (mesh->HasSubMeshes())
-    {
-        return mesh->GetSubMeshes().size();
-    }
-
-    // Otherwise, treat whole mesh as one submesh
-    return 1;
-}
-
-void MeshRendererComponent::CollectRenderData(RenderScene& scene, const Mat4& worldMatrix) const
-{
-    // This will be implemented in Phase 5 when RenderScene is updated
-    // For now, this is a placeholder
-    
-    (void)scene;
-    (void)worldMatrix;
-    
-    // Future implementation:
-    // RenderObject obj;
-    // obj.meshId = m_mesh.GetId();
-    // obj.worldMatrix = worldMatrix;
-    // obj.normalMatrix = glm::transpose(glm::inverse(Mat3(worldMatrix)));
-    // obj.bounds = GetLocalBounds().Transformed(worldMatrix);
-    // obj.entityId = GetOwner()->GetHandle();
-    // obj.castsShadow = m_castsShadow;
-    // obj.receivesShadow = m_receivesShadow;
-    // 
-    // // Fill materials for each submesh
-    // size_t submeshCount = GetSubmeshCount();
-    // obj.materials.resize(submeshCount);
-    // for (size_t i = 0; i < submeshCount; ++i)
-    // {
-    //     auto mat = GetMaterial(i);
-    //     obj.materials[i] = mat.IsValid() ? mat.GetId() : 0;
-    // }
-    // 
-    // scene.AddObject(std::move(obj));
+    return meshSource->GetRenderMeshSubmeshCount();
 }
 
 } // namespace RVX

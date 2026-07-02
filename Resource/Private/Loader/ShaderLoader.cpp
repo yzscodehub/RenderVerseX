@@ -128,94 +128,94 @@ namespace
         return it->second;
     }
 
-    std::optional<RHIBackendType> ParseBackend(const std::string& value)
+    std::optional<ShaderBackendType> ParseBackend(const std::string& value)
     {
         const std::string backend = ToLower(value);
         if (backend == "auto")
         {
-            return RHIBackendType::Auto;
+            return ShaderBackendType::Auto;
         }
         if (backend == "directx 11" || backend == "dx11")
         {
-            return RHIBackendType::DX11;
+            return ShaderBackendType::DX11;
         }
         if (backend == "directx 12" || backend == "dx12")
         {
-            return RHIBackendType::DX12;
+            return ShaderBackendType::DX12;
         }
         if (backend == "vulkan")
         {
-            return RHIBackendType::Vulkan;
+            return ShaderBackendType::Vulkan;
         }
         if (backend == "metal")
         {
-            return RHIBackendType::Metal;
+            return ShaderBackendType::Metal;
         }
         if (backend == "opengl")
         {
-            return RHIBackendType::OpenGL;
+            return ShaderBackendType::OpenGL;
         }
         return std::nullopt;
     }
 
-    std::optional<RHIShaderStage> ParseShaderStage(const std::string& value)
+    std::optional<ShaderStage> ParseShaderStage(const std::string& value)
     {
         const std::string stage = ToLower(value);
         if (stage == "vertex")
         {
-            return RHIShaderStage::Vertex;
+            return ShaderStage::Vertex;
         }
         if (stage == "hull")
         {
-            return RHIShaderStage::Hull;
+            return ShaderStage::Hull;
         }
         if (stage == "domain")
         {
-            return RHIShaderStage::Domain;
+            return ShaderStage::Domain;
         }
         if (stage == "geometry")
         {
-            return RHIShaderStage::Geometry;
+            return ShaderStage::Geometry;
         }
         if (stage == "pixel")
         {
-            return RHIShaderStage::Pixel;
+            return ShaderStage::Pixel;
         }
         if (stage == "compute")
         {
-            return RHIShaderStage::Compute;
+            return ShaderStage::Compute;
         }
         if (stage == "mesh")
         {
-            return RHIShaderStage::Mesh;
+            return ShaderStage::Mesh;
         }
         if (stage == "amplification")
         {
-            return RHIShaderStage::Amplification;
+            return ShaderStage::Amplification;
         }
         if (stage == "raygeneration" || stage == "ray generation")
         {
-            return RHIShaderStage::RayGeneration;
+            return ShaderStage::RayGeneration;
         }
         if (stage == "anyhit" || stage == "any hit")
         {
-            return RHIShaderStage::AnyHit;
+            return ShaderStage::AnyHit;
         }
         if (stage == "closesthit" || stage == "closest hit")
         {
-            return RHIShaderStage::ClosestHit;
+            return ShaderStage::ClosestHit;
         }
         if (stage == "miss")
         {
-            return RHIShaderStage::Miss;
+            return ShaderStage::Miss;
         }
         if (stage == "intersection")
         {
-            return RHIShaderStage::Intersection;
+            return ShaderStage::Intersection;
         }
         if (stage == "callable")
         {
-            return RHIShaderStage::Callable;
+            return ShaderStage::Callable;
         }
         return std::nullopt;
     }

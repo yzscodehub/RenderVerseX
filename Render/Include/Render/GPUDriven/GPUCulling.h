@@ -10,6 +10,7 @@
 #include "Core/Types.h"
 #include "Core/MathTypes.h"
 #include "Render/Material/MaterialClassification.h"
+#include "RenderContracts/RenderResource.h"
 #include "RHI/RHI.h"
 #include <vector>
 
@@ -19,7 +20,6 @@ namespace RVX
     class RHICommandContext;
     class RenderScene;
     struct RenderDrawItem;
-    namespace Resource { class MaterialResource; }
 
     /**
      * @brief Indexed draw arguments associated with a render draw item
@@ -58,7 +58,7 @@ namespace RVX
     {
         uint64 meshId = 0;
         uint64 materialId = 0;
-        const Resource::MaterialResource* materialResource = nullptr;
+        const IRenderMaterialSource* materialResource = nullptr;
         MaterialPipelineVariant pipelineVariant = MaterialPipelineVariant::Opaque;
         uint32 commandOffset = 0;
         uint32 countBufferOffset = 0;
@@ -135,7 +135,7 @@ namespace RVX
         uint32 BeginDrawGroup(uint64 meshId,
                               uint64 materialId = 0,
                               MaterialPipelineVariant pipelineVariant = MaterialPipelineVariant::Opaque,
-                              const Resource::MaterialResource* materialResource = nullptr);
+                              const IRenderMaterialSource* materialResource = nullptr);
 
         /**
          * @brief End the current draw group

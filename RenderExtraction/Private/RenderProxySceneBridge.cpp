@@ -3,7 +3,7 @@
  * @brief RenderProxySceneBridge implementation.
  */
 
-#include "RenderProxySceneBridge.h"
+#include "RenderExtraction/RenderProxySceneBridge.h"
 
 #include "Scene/Components/LightComponent.h"
 #include "Scene/Components/MeshRendererComponent.h"
@@ -12,12 +12,33 @@
 #include "Scene/SceneManager.h"
 #include "World/World.h"
 
+#include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 #include <utility>
 
 namespace RVX
 {
+    namespace
+    {
+        RenderMaterialMode ToRenderMaterialMode(const IRenderMaterialSource* material)
+        {
+            if (!material)
+                return RenderMaterialMode::Opaque;
+
+            switch (material->GetRenderMaterialSourceData().alphaMode)
+            {
+                case MaterialSourceAlphaMode::Mask:
+                    return RenderMaterialMode::Masked;
+                case MaterialSourceAlphaMode::Blend:
+                    return RenderMaterialMode::Transparent;
+                case MaterialSourceAlphaMode::Opaque:
+                default:
+                    return RenderMaterialMode::Opaque;
+            }
+        }
+    } // namespace
+
     const char* ToString(RenderProxySceneBridgeFallbackReason reason)
     {
         switch (reason)
@@ -32,8 +53,6 @@ namespace RVX
                 return "PrimitiveProxyUnavailable";
             case RenderProxySceneBridgeFallbackReason::PrimitiveProxyCreationFailed:
                 return "PrimitiveProxyCreationFailed";
-            case RenderProxySceneBridgeFallbackReason::LegacyRendererRequired:
-                return "LegacyRendererRequired";
         }
 
         return "Unknown";
@@ -54,6 +73,16 @@ namespace RVX
         }
 
         SceneManager* sceneManager = world->GetSceneManager();
+        return BuildSnapshot(sceneManager, outSnapshot, outResult);
+    }
+
+    bool RenderProxySceneBridge::BuildSnapshot(SceneManager* sceneManager,
+                                               RenderProxySnapshot& outSnapshot,
+                                               RenderProxySceneBridgeResult* outResult) const
+    {
+        RenderProxySceneBridgeResult result;
+        outSnapshot.Clear();
+
         if (!sceneManager)
         {
             MarkFallback(result, RenderProxySceneBridgeFallbackReason::NullSceneManager, 0);
@@ -151,9 +180,35 @@ namespace RVX
             {
                 if (renderer->IsEnabled() && renderer->IsVisible() && renderer->HasValidMesh())
                 {
-                    MarkFallback(result,
-                                 RenderProxySceneBridgeFallbackReason::LegacyRendererRequired,
-                                 entity->GetHandle());
+                    const Mat4 worldMatrix = entity->GetWorldMatrix();
+
+                    RenderPrimitiveProxy proxy;
+                    proxy.id.value = entity->GetHandle();
+                    proxy.ownerId = entity->GetHandle();
+                    proxy.worldMatrix = worldMatrix;
+                    proxy.normalMatrix = glm::inverseTranspose(Mat4(Mat3(worldMatrix)));
+                    proxy.bounds = entity->GetWorldBounds();
+                    proxy.meshResource = renderer->GetMesh().As<IRenderMeshUploadSource>();
+                    proxy.meshId = renderer->GetMesh().GetId();
+                    proxy.layerMask = ~0u;
+                    proxy.visible = renderer->IsVisible();
+                    proxy.castsShadow = renderer->CastsShadow();
+                    proxy.receivesShadow = renderer->ReceivesShadow();
+
+                    const size_t submeshCount = renderer->GetSubmeshCount();
+                    proxy.materialIds.resize(submeshCount);
+                    proxy.materialModes.resize(submeshCount);
+                    proxy.materialResources.resize(submeshCount);
+                    for (size_t i = 0; i < submeshCount; ++i)
+                    {
+                        auto material = renderer->GetMaterial(i);
+                        proxy.materialIds[i] = material.IsValid() ? material.GetId() : 0;
+                        proxy.materialModes[i] = ToRenderMaterialMode(material.As<IRenderMaterialSource>());
+                        proxy.materialResources[i] = material.As<IRenderMaterialSource>();
+                    }
+
+                    proxy.sortKey = proxy.materialIds.empty() ? 0 : proxy.materialIds[0];
+                    outSnapshot.primitives.push_back(std::move(proxy));
                 }
             }
         }

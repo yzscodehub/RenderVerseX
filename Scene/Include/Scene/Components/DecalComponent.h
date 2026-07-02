@@ -10,8 +10,7 @@
 
 #include "Scene/Component.h"
 #include "Core/MathTypes.h"
-#include "Resource/ResourceHandle.h"
-#include "Resource/Types/MaterialResource.h"
+#include "Scene/SceneAssetHandle.h"
 
 namespace RVX
 {
@@ -72,8 +71,8 @@ public:
     // =========================================================================
 
     /// Set decal material
-    void SetMaterial(Resource::ResourceHandle<Resource::MaterialResource> material);
-    Resource::ResourceHandle<Resource::MaterialResource> GetMaterial() const { return m_material; }
+    void SetMaterial(SceneMaterialHandle material);
+    SceneMaterialHandle GetMaterial() const { return m_material; }
 
     // =========================================================================
     // Projection Size
@@ -146,7 +145,7 @@ public:
     Mat4 GetInverseProjectionMatrix() const;
 
 private:
-    Resource::ResourceHandle<Resource::MaterialResource> m_material;
+    SceneMaterialHandle m_material;
 
     // Size
     Vec3 m_size{0.5f, 0.5f, 0.25f};

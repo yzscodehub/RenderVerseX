@@ -10,9 +10,7 @@
 
 #include "Scene/Component.h"
 #include "Core/MathTypes.h"
-#include "Resource/ResourceHandle.h"
-#include "Resource/Types/MeshResource.h"
-#include "Resource/Types/MaterialResource.h"
+#include "Scene/SceneAssetHandle.h"
 #include <vector>
 
 namespace RVX
@@ -41,10 +39,10 @@ struct LODLevel
     float distanceThreshold = 0.0f;
 
     /// Mesh for this LOD level
-    Resource::ResourceHandle<Resource::MeshResource> mesh;
+    SceneMeshHandle mesh;
 
     /// Optional: Material override for this LOD (can be simpler)
-    Resource::ResourceHandle<Resource::MaterialResource> material;
+    SceneMaterialHandle material;
 
     /// Fade transition width (for cross-fade mode)
     float fadeWidth = 0.1f;

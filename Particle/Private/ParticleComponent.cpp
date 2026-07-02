@@ -1,8 +1,7 @@
 #include "Particle/ParticleComponent.h"
-#include "Engine/Engine.h"
+#include "Core/Log.h"
 #include "Particle/ParticleSubsystem.h"
 #include "Scene/SceneEntity.h"
-#include "Core/Log.h"
 #include <cstring>
 
 namespace RVX::Particle
@@ -90,25 +89,22 @@ void ParticleComponent::CreateInstance()
     m_instanceOwnership = ParticleInstanceOwnership::None;
     m_instanceSubsystem = nullptr;
 
-    if (Engine* engine = Engine::Get())
+    if (auto* subsystem = ParticleSubsystem::GetActiveSubsystem())
     {
-        if (auto* subsystem = engine->GetSubsystem<ParticleSubsystem>())
+        if (subsystem->IsRenderIntegrationReady())
         {
-            if (subsystem->IsRenderIntegrationReady())
+            m_instance = subsystem->CreateInstance(m_particleSystem);
+            if (m_instance)
             {
-                m_instance = subsystem->CreateInstance(m_particleSystem);
-                if (m_instance)
-                {
-                    m_instanceSubsystem = subsystem;
-                    m_instanceOwnership = ParticleInstanceOwnership::SubsystemOwned;
-                }
+                m_instanceSubsystem = subsystem;
+                m_instanceOwnership = ParticleInstanceOwnership::SubsystemOwned;
             }
-            else
-            {
-                RVX_CORE_WARN("ParticleComponent: ParticleSubsystem fallback for '{}': {}",
-                              GetOwner() ? GetOwner()->GetName() : "<no-owner>",
-                              subsystem->GetRenderIntegrationUnsupportedReason());
-            }
+        }
+        else
+        {
+            RVX_CORE_WARN("ParticleComponent: ParticleSubsystem fallback for '{}': {}",
+                          GetOwner() ? GetOwner()->GetName() : "<no-owner>",
+                          subsystem->GetRenderIntegrationUnsupportedReason());
         }
     }
 

@@ -8,17 +8,32 @@
 #include "Resource/IResource.h"
 #include "Resource/ResourceHandle.h"
 #include "Resource/Types/TextureResource.h"
-#include "Scene/Material.h"
+#include "RenderContracts/RenderResource.h"
+#include "Geometry/Asset/Material.h"
 #include <memory>
 #include <string>
 #include <unordered_map>
 
 namespace RVX::Resource
 {
+    enum class MaterialAlphaMode : uint8
+    {
+        Opaque = 0,
+        Mask,
+        Blend
+    };
+
+    enum class MaterialWorkflowMode : uint8
+    {
+        MetallicRoughness = 0,
+        SpecularGlossiness,
+        Unlit
+    };
+
     /**
      * @brief Material resource - encapsulates Scene::Material with texture references
      */
-    class MaterialResource : public IResource
+    class MaterialResource : public IResource, public IRenderMaterialSource
     {
     public:
         MaterialResource();
@@ -34,6 +49,14 @@ namespace RVX::Resource
 
         std::vector<ResourceId> GetRequiredDependencies() const override;
 
+        uint64 GetRenderResourceId() const override { return GetId(); }
+        std::string_view GetRenderResourceName() const override { return GetName(); }
+        uint32 GetRenderResourceRefCount() const override { return GetRefCount(); }
+        RefCounted* GetRenderResourceRefCounted() override { return this; }
+        MaterialSourceData GetRenderMaterialSourceData() const override;
+        IRenderTextureUploadSource* GetRenderMaterialTexture(RenderMaterialTextureSlot slot) const override;
+        RenderMaterialTextureBinding GetRenderMaterialTextureBinding(RenderMaterialTextureSlot slot) const override;
+
         // =====================================================================
         // Material Data
         // =====================================================================
@@ -43,6 +66,17 @@ namespace RVX::Resource
 
         const std::string& GetMaterialName() const;
         MaterialWorkflow GetWorkflow() const;
+        MaterialWorkflowMode GetWorkflowMode() const;
+        MaterialAlphaMode GetAlphaMode() const;
+        Vec4 GetBaseColor() const;
+        float GetMetallicFactor() const;
+        float GetRoughnessFactor() const;
+        float GetNormalScale() const;
+        float GetOcclusionStrength() const;
+        Vec3 GetEmissiveColor() const;
+        float GetEmissiveStrength() const;
+        float GetAlphaCutoff() const;
+        bool IsDoubleSided() const;
 
         // =====================================================================
         // Textures

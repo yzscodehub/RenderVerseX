@@ -7,8 +7,7 @@
 
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
-#include "Resource/ResourceHandle.h"
-#include "Resource/Types/TextureResource.h"
+#include "RenderContracts/RenderResource.h"
 
 #include <functional>
 
@@ -42,9 +41,9 @@ namespace RVX
 
     struct SceneSkyboxTextureAccess
     {
-        std::function<void(Resource::TextureResource*)> requestUpload;
-        std::function<bool(Resource::ResourceId)> isGPUReady;
-        std::function<RHITexture*(Resource::ResourceId)> getTexture;
+        std::function<void(IRenderTextureUploadSource*)> requestUpload;
+        std::function<bool(uint64)> isGPUReady;
+        std::function<RHITexture*(uint64)> getTexture;
     };
 
     struct SceneSkyboxPassActions

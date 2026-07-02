@@ -5,8 +5,8 @@
 
 #include "Render/Renderer/RenderScene.h"
 
-#include "Render/Renderer/RenderProxy.h"
-#include "RenderSceneCollector.h"
+#include "RenderExtraction/RenderProxySceneBridge.h"
+#include "RenderContracts/RenderProxy.h"
 #include "Core/Log.h"
 #include "Core/Math/Frustum.h"
 #include "Runtime/Camera/Camera.h"
@@ -25,12 +25,36 @@ void RenderScene::Clear()
 
 void RenderScene::CollectFromWorld(World* world)
 {
-    RenderSceneCollector::Collect(*this, world);
+    RenderProxySceneBridge bridge;
+    RenderProxySnapshot snapshot;
+    RenderProxySceneBridgeResult result;
+    if (bridge.BuildSnapshot(world, snapshot, &result))
+    {
+        ApplyProxySnapshot(snapshot);
+        return;
+    }
+
+    Clear();
+    RVX_CORE_WARN("RenderScene::CollectFromWorld proxy extraction failed, reason={}, ownerId={}",
+                  ToString(result.fallbackReason),
+                  result.fallbackOwnerId);
 }
 
 void RenderScene::CollectFromSceneManager(SceneManager* sceneManager)
 {
-    RenderSceneCollector::Collect(*this, sceneManager);
+    RenderProxySceneBridge bridge;
+    RenderProxySnapshot snapshot;
+    RenderProxySceneBridgeResult result;
+    if (bridge.BuildSnapshot(sceneManager, snapshot, &result))
+    {
+        ApplyProxySnapshot(snapshot);
+        return;
+    }
+
+    Clear();
+    RVX_CORE_WARN("RenderScene::CollectFromSceneManager proxy extraction failed, reason={}, ownerId={}",
+                  ToString(result.fallbackReason),
+                  result.fallbackOwnerId);
 }
 
 void RenderScene::ApplyProxySnapshot(const RenderProxySnapshot& snapshot)
@@ -47,6 +71,7 @@ void RenderScene::ApplyProxySnapshot(const RenderProxySnapshot& snapshot)
         object.meshId = proxy.meshId;
         object.meshResource = proxy.meshResource;
         object.materialIds = proxy.materialIds;
+        object.materialModes = proxy.materialModes;
         object.materialResources = proxy.materialResources;
         object.skinningMatrices = proxy.skinningMatrices;
         object.entityId = proxy.ownerId;

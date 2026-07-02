@@ -6,7 +6,6 @@
  */
 
 #include "Resource/IResource.h"
-#include "RHI/RHIDefinitions.h"
 
 #include <cstdint>
 #include <string>
@@ -14,14 +13,44 @@
 
 namespace RVX::Resource
 {
+    enum class ShaderBackendType : std::uint8_t
+    {
+        None = 0,
+        Auto,
+        DX11,
+        DX12,
+        Vulkan,
+        Metal,
+        OpenGL
+    };
+
+    enum class ShaderStage : std::uint8_t
+    {
+        None = 0,
+        Vertex,
+        Hull,
+        Domain,
+        Geometry,
+        Pixel,
+        Compute,
+        Mesh,
+        Amplification,
+        RayGeneration,
+        AnyHit,
+        ClosestHit,
+        Miss,
+        Intersection,
+        Callable
+    };
+
     /**
      * @brief Metadata stored with a cooked shader artifact.
      */
     struct ShaderMetadata
     {
         std::string sourcePath;
-        RHIBackendType backend = RHIBackendType::None;
-        RHIShaderStage stage = RHIShaderStage::None;
+        ShaderBackendType backend = ShaderBackendType::None;
+        ShaderStage stage = ShaderStage::None;
         std::string entryPoint = "main";
         std::string targetProfile = "auto";
         std::uint64_t sourceHash = 0;
@@ -51,8 +80,8 @@ namespace RVX::Resource
         // =====================================================================
 
         const ShaderMetadata& GetMetadata() const { return m_metadata; }
-        RHIBackendType GetBackend() const { return m_metadata.backend; }
-        RHIShaderStage GetStage() const { return m_metadata.stage; }
+        ShaderBackendType GetBackend() const { return m_metadata.backend; }
+        ShaderStage GetStage() const { return m_metadata.stage; }
         const std::string& GetEntryPoint() const { return m_metadata.entryPoint; }
         const std::string& GetTargetProfile() const { return m_metadata.targetProfile; }
         std::uint64_t GetSourceHash() const { return m_metadata.sourceHash; }

@@ -19,7 +19,7 @@ AABB DecalComponent::GetLocalBounds() const
     return AABB(-m_size, m_size);
 }
 
-void DecalComponent::SetMaterial(Resource::ResourceHandle<Resource::MaterialResource> material)
+void DecalComponent::SetMaterial(SceneMaterialHandle material)
 {
     m_material = material;
 }

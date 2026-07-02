@@ -43,6 +43,7 @@
 #include "Resource/Types/ModelResource.h"
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/TextureResource.h"
+#include "ResourceSceneAdapters/ResourceSceneAdapters.h"
 #include "Core/Log.h"
 #include "Core/MathTypes.h"
 #include "HAL/Input/KeyCodes.h"
@@ -3476,6 +3477,7 @@ int main(int argc, char* argv[])
     // Add resource subsystem (must be added before loading any resources)
     auto* resourceSubsystem = engine.AddSubsystem<Resource::ResourceSubsystem>();
     (void)resourceSubsystem;  // Will be used via ResourceManager::Get()
+    ResourceSceneAdapters::RegisterDefaults();
 
     // Add input subsystem for mouse control
     auto* inputSubsystem = engine.AddSubsystem<InputSubsystem>();

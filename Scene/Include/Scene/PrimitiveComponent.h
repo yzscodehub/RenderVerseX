@@ -12,7 +12,6 @@
 namespace RVX
 {
     struct RenderPrimitiveProxy;
-    class RenderScene;
 
     /**
      * @brief Base class for scene components that can contribute render data.
@@ -59,9 +58,7 @@ namespace RVX
         virtual bool HasRenderProxy() const { return HasRenderData(); }
         virtual bool CreateRenderProxy(RenderPrimitiveProxy& outProxy) const { (void)outProxy; return false; }
 
-        /** @brief Legacy render extraction path; use RenderProxy for the main renderer path. */
         virtual bool HasRenderData() const { return false; }
-        virtual void CollectRenderData(RenderScene& scene) const { (void)scene; }
 
     protected:
         void OnTransformChanged() override;

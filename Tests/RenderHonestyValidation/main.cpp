@@ -323,6 +323,31 @@ namespace
         return dir;
     }
 
+    fs::path FindRepoRoot()
+    {
+        fs::path cursor = fs::current_path();
+        for (uint32_t i = 0; i < 8; ++i)
+        {
+            if (fs::exists(cursor / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h"))
+            {
+                return cursor;
+            }
+
+            if (!cursor.has_parent_path() || cursor == cursor.parent_path())
+                break;
+
+            cursor = cursor.parent_path();
+        }
+
+        return {};
+    }
+
+    std::string ReadTextFile(const fs::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    }
+
     void WriteTextFile(const fs::path& path, const std::string& text)
     {
         fs::create_directories(path.parent_path());
@@ -2859,6 +2884,26 @@ TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDis
         EXPECT_FALSE(pass->IsEnabled()) << pass->GetName();
         EXPECT_FALSE(pass->GetUnsupportedReason().empty()) << pass->GetName();
     }
+}
+
+TEST_F(RenderHonestyValidationFixture, SceneRendererLegacyCollectionFallbackIsRemoved)
+{
+    const fs::path repoRoot = FindRepoRoot();
+    ASSERT_FALSE(repoRoot.empty());
+
+    const std::string header =
+        ReadTextFile(repoRoot / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
+    const std::string source =
+        ReadTextFile(repoRoot / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+
+    EXPECT_NE(std::string::npos, header.find("void SetLegacyCollectionFallbackEnabled(bool enabled)"));
+    EXPECT_NE(std::string::npos, header.find("bool IsLegacyCollectionFallbackEnabled() const"));
+    EXPECT_NE(std::string::npos, header.find("bool m_legacyCollectionFallbackEnabled = false"));
+    EXPECT_EQ(std::string::npos, source.find("m_renderScene.CollectFromWorld(world)"));
+    EXPECT_EQ(std::string::npos, source.find("SceneRenderCollectionPath::LegacyFallback"));
+    EXPECT_NE(std::string::npos,
+              source.find("legacy RenderSceneCollector fallback has been removed"));
+    EXPECT_NE(std::string::npos, source.find("SceneRenderCollectionPath::ProxyRejected"));
 }
 
 TEST_F(RenderHonestyValidationFixture, ColorGradingRequiresResourcesBeforeSupported)

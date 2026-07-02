@@ -60,6 +60,8 @@ namespace RVX::Particle
         ParticleSubsystem();
         ~ParticleSubsystem() override;
 
+        static ParticleSubsystem* GetActiveSubsystem();
+
         // =====================================================================
         // ISubsystem Interface
         // =====================================================================
@@ -130,6 +132,9 @@ namespace RVX::Particle
         /// Check if GPU simulation is supported
         bool IsGPUSimulationSupported() const { return m_gpuSimulationSupported; }
 
+        /// Set the render subsystem dependency before Initialize.
+        void SetRenderSubsystem(RenderSubsystem* renderSubsystem);
+
         /// Set an RHI device before Initialize; intended for validation and bootstrap paths.
         void SetDeviceForTesting(IRHIDevice* device) { m_device = device; }
 
@@ -188,6 +193,7 @@ namespace RVX::Particle
         void UpdateLODs(const ViewData& view);
 
         ParticleSubsystemConfig m_config;
+        RenderSubsystem* m_renderSubsystem = nullptr;
         IRHIDevice* m_device = nullptr;
         SceneRenderer* m_sceneRenderer = nullptr;
         ParticleRendererConfig m_rendererConfigOverride;
@@ -214,6 +220,8 @@ namespace RVX::Particle
 
         // Statistics
         Statistics m_stats;
+
+        static ParticleSubsystem* s_activeSubsystem;
     };
 
 } // namespace RVX::Particle

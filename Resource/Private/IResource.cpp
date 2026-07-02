@@ -17,7 +17,30 @@ std::vector<ResourceId> IResource::GetAllDependencies() const
 
 void IResource::SetState(ResourceState state)
 {
-    m_state.store(state, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        m_state.store(state, std::memory_order_release);
+    }
+    m_stateCondition.notify_all();
+}
+
+void IResource::WaitForLoad() const
+{
+    std::unique_lock<std::mutex> lock(m_stateMutex);
+    m_stateCondition.wait(lock, [this]() {
+        return GetState() != ResourceState::Loading;
+    });
+}
+
+bool IResource::WaitForLoadFor(uint32 timeoutMs) const
+{
+    std::unique_lock<std::mutex> lock(m_stateMutex);
+    return m_stateCondition.wait_for(
+        lock,
+        std::chrono::milliseconds(timeoutMs),
+        [this]() {
+            return GetState() != ResourceState::Loading;
+        });
 }
 
 void IResource::NotifyLoaded()

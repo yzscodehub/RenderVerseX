@@ -3,7 +3,6 @@
 #include "Resource/Loader/ModelLoader.h"
 #include "Resource/Loader/ShaderLoader.h"
 #include "Resource/Loader/TextureLoader.h"
-#include "Scene/ComponentFactory.h"
 #include "Core/Log.h"
 #include <algorithm>
 #include <exception>
@@ -85,9 +84,6 @@ void ResourceManager::Initialize(const ResourceManagerConfig& config)
 
     // Register default loaders
     RegisterDefaultLoaders();
-
-    // Register default component factories
-    ComponentFactory::RegisterDefaults();
 
     m_initialized = true;
     StartAsyncWorkers();

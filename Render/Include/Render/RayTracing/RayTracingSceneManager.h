@@ -211,11 +211,11 @@ namespace RVX
             m_blasScratchReleaseFrameDelay = std::max<uint64>(frameDelay, 1u);
         }
         uint64 GetBLASScratchReleaseFrameDelay() const { return m_blasScratchReleaseFrameDelay; }
-        const std::vector<Resource::ResourceId>& GetInstanceMaterialTextureTable() const
+        const std::vector<uint64>& GetInstanceMaterialTextureTable() const
         {
             return m_instanceMaterialTextureIds;
         }
-        const std::vector<Resource::ResourceId>& GetInstanceAlphaTextureTable() const
+        const std::vector<uint64>& GetInstanceAlphaTextureTable() const
         {
             return m_instanceAlphaTextureIds;
         }
@@ -273,9 +273,9 @@ namespace RVX
         std::vector<BLASCacheEntry*> m_pendingBLASBuilds;
         std::vector<RHIRayTracingInstanceRecord> m_instanceRecords;
         std::vector<RayTracingInstanceMaterialMetadata> m_instanceMaterialMetadataRecords;
-        std::vector<Resource::ResourceId> m_instanceMaterialTextureIds;
+        std::vector<uint64> m_instanceMaterialTextureIds;
         std::vector<RayTracingInstanceAlphaMetadata> m_instanceAlphaMetadataRecords;
-        std::vector<Resource::ResourceId> m_instanceAlphaTextureIds;
+        std::vector<uint64> m_instanceAlphaTextureIds;
         std::vector<RHIBuffer*> m_instanceAlphaIndexBuffers;
         std::vector<RHIBuffer*> m_instanceAlphaUVBuffers;
         std::vector<RHIBuffer*> m_instanceAlphaNormalBuffers;

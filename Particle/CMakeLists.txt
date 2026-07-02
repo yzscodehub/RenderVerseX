@@ -141,7 +141,6 @@ target_include_directories(${MODULE_NAME}
 target_link_libraries(${MODULE_NAME}
     PUBLIC
         RVX_Core
-        RVX_Engine
         RVX_RHI
         RVX_Render
         RVX_Scene

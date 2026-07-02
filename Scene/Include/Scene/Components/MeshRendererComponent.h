@@ -9,16 +9,11 @@
  */
 
 #include "Scene/Component.h"
-#include "Resource/ResourceHandle.h"
-#include "Resource/Types/MeshResource.h"
-#include "Resource/Types/MaterialResource.h"
+#include "Scene/SceneAssetHandle.h"
 #include <vector>
 
 namespace RVX
 {
-    // Forward declarations
-    class RenderScene;
-
     /**
      * @brief Component for rendering meshes
      * 
@@ -63,10 +58,10 @@ namespace RVX
         // =====================================================================
 
         /// Set the mesh to render
-        void SetMesh(Resource::ResourceHandle<Resource::MeshResource> mesh);
+        void SetMesh(SceneMeshHandle mesh);
 
         /// Get the current mesh
-        Resource::ResourceHandle<Resource::MeshResource> GetMesh() const { return m_mesh; }
+        SceneMeshHandle GetMesh() const { return m_mesh; }
 
         /// Check if mesh is valid and loaded
         bool HasValidMesh() const { return m_mesh.IsValid() && m_mesh.IsLoaded(); }
@@ -76,10 +71,10 @@ namespace RVX
         // =====================================================================
 
         /// Set material override for a specific submesh
-        void SetMaterial(size_t submeshIndex, Resource::ResourceHandle<Resource::MaterialResource> material);
+        void SetMaterial(size_t submeshIndex, SceneMaterialHandle material);
 
         /// Get material for a submesh (returns override or default)
-        Resource::ResourceHandle<Resource::MaterialResource> GetMaterial(size_t submeshIndex) const;
+        SceneMaterialHandle GetMaterial(size_t submeshIndex) const;
 
         /// Get number of submeshes (from mesh)
         size_t GetSubmeshCount() const;
@@ -103,16 +98,9 @@ namespace RVX
         bool ReceivesShadow() const { return m_receivesShadow; }
         void SetReceivesShadow(bool receives) { m_receivesShadow = receives; }
 
-        // =====================================================================
-        // Render Data Collection
-        // =====================================================================
-
-        /// Collect render data for this component (called by RenderScene)
-        void CollectRenderData(RenderScene& scene, const Mat4& worldMatrix) const;
-
     private:
-        Resource::ResourceHandle<Resource::MeshResource> m_mesh;
-        std::vector<Resource::ResourceHandle<Resource::MaterialResource>> m_materialOverrides;
+        SceneMeshHandle m_mesh;
+        std::vector<SceneMaterialHandle> m_materialOverrides;
 
         bool m_visible = true;
         bool m_castsShadow = true;

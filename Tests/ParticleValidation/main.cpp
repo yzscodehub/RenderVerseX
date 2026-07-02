@@ -1,5 +1,4 @@
 #include "Core/Log.h"
-#include "Engine/Engine.h"
 #include "Particle/GPU/CPUParticleSimulator.h"
 #include "Particle/ParticleComponent.h"
 #include "Particle/ParticleSystem.h"
@@ -495,6 +494,11 @@ namespace
     {
         return ReadSourceFile("Particle/Private/ParticleSubsystem.cpp");
     }
+
+    std::string ReadParticleComponentSource()
+    {
+        return ReadSourceFile("Particle/Private/ParticleComponent.cpp");
+    }
 } // namespace
 
 TEST(ParticleValidation, SceneRendererPreGraphCallbacksUseOwnerTokens)
@@ -613,29 +617,38 @@ TEST(ParticleValidation, ParticleSubsystemDoesNotReportReadyWhenRendererUnsuppor
 TEST(ParticleValidation, ParticleSubsystemProductionDeviceAcquisitionSourceGuard)
 {
     EnsureLogInitialized();
-    const std::string source = ReadParticleSubsystemSource();
-    ASSERT_FALSE(source.empty());
+    const std::string subsystemSource = ReadParticleSubsystemSource();
+    const std::string componentSource = ReadParticleComponentSource();
+    ASSERT_FALSE(subsystemSource.empty());
+    ASSERT_FALSE(componentSource.empty());
 
-    EXPECT_NE(source.find("GetSubsystem<RenderSubsystem>"), std::string::npos);
-    EXPECT_NE(source.find("GetDevice()"), std::string::npos);
-    EXPECT_NE(source.find("GetSceneRenderer()"), std::string::npos);
-    EXPECT_NE(source.find("AddPreGraphPrepareCallback"), std::string::npos);
-    EXPECT_NE(source.find("RemovePreGraphPrepareCallback"), std::string::npos);
+    EXPECT_EQ(subsystemSource.find("Engine/Engine.h"), std::string::npos);
+    EXPECT_EQ(subsystemSource.find("Engine::Get"), std::string::npos);
+    EXPECT_EQ(subsystemSource.find("GetSubsystem<RenderSubsystem>"), std::string::npos);
+    EXPECT_NE(subsystemSource.find("SetRenderSubsystem"), std::string::npos);
+    EXPECT_NE(subsystemSource.find("GetDevice()"), std::string::npos);
+    EXPECT_NE(subsystemSource.find("GetSceneRenderer()"), std::string::npos);
+    EXPECT_NE(subsystemSource.find("AddPreGraphPrepareCallback"), std::string::npos);
+    EXPECT_NE(subsystemSource.find("RemovePreGraphPrepareCallback"), std::string::npos);
+
+    EXPECT_EQ(componentSource.find("Engine/Engine.h"), std::string::npos);
+    EXPECT_EQ(componentSource.find("Engine::Get"), std::string::npos);
+    EXPECT_EQ(componentSource.find("GetSubsystem<ParticleSubsystem>"), std::string::npos);
+    EXPECT_NE(componentSource.find("GetActiveSubsystem"), std::string::npos);
 }
 
 TEST(ParticleValidation, ParticleComponentUsesSubsystemOwnedInstanceWhenRenderReady)
 {
     EnsureLogInitialized();
-    Engine engine;
     FakeDevice device;
     SceneRenderer renderer;
-    auto* subsystem = engine.AddSubsystem<ParticleSubsystem>();
-    subsystem->SetDeviceForTesting(&device);
-    subsystem->SetSceneRendererForTesting(&renderer);
-    subsystem->SetRendererConfigForTesting(MakeRendererConfig());
-    subsystem->GetConfig().enableGPUSimulation = false;
-    subsystem->Initialize();
-    ASSERT_TRUE(subsystem->IsRenderIntegrationReady()) << subsystem->GetRenderIntegrationUnsupportedReason();
+    ParticleSubsystem subsystem;
+    subsystem.SetDeviceForTesting(&device);
+    subsystem.SetSceneRendererForTesting(&renderer);
+    subsystem.SetRendererConfigForTesting(MakeRendererConfig());
+    subsystem.GetConfig().enableGPUSimulation = false;
+    subsystem.Initialize();
+    ASSERT_TRUE(subsystem.IsRenderIntegrationReady()) << subsystem.GetRenderIntegrationUnsupportedReason();
 
     SceneEntity entity("ParticleComponentOwner");
     auto* component = entity.AddComponent<ParticleComponent>();
@@ -649,20 +662,19 @@ TEST(ParticleValidation, ParticleComponentUsesSubsystemOwnedInstanceWhenRenderRe
     EXPECT_EQ(component->GetInstanceOwnership(), ParticleInstanceOwnership::SubsystemOwned);
     EXPECT_FALSE(component->IsUsingLegacyFallback());
     EXPECT_TRUE(component->GetInstance()->IsSimulationSupported());
-    EXPECT_EQ(subsystem->GetInstances().size(), 1u);
+    EXPECT_EQ(subsystem.GetInstances().size(), 1u);
 
     component->SetParticleSystem(nullptr);
     EXPECT_EQ(component->GetInstance(), nullptr);
     EXPECT_EQ(component->GetInstanceOwnership(), ParticleInstanceOwnership::None);
-    EXPECT_EQ(subsystem->GetInstances().size(), 0u);
+    EXPECT_EQ(subsystem.GetInstances().size(), 0u);
 
-    subsystem->Deinitialize();
+    subsystem.Deinitialize();
 }
 
 TEST(ParticleValidation, ParticleComponentFallbackWithoutRenderReadySubsystemIsObservable)
 {
     EnsureLogInitialized();
-    Engine engine;
     SceneEntity entity("ParticleComponentFallbackOwner");
     auto* component = entity.AddComponent<ParticleComponent>();
     ASSERT_NE(component, nullptr);

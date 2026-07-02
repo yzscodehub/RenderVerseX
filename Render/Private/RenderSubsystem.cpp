@@ -4,18 +4,17 @@
  */
 
 #include "Render/RenderSubsystem.h"
+#include "Core/Event/EventBus.h"
+#include "Core/Log.h"
+#include "HAL/Window/WindowEvents.h"
 #include "Render/Context/RenderContext.h"
-#include "Render/Renderer/SceneRenderer.h"
-#include "Render/Renderer/RenderScene.h"
 #include "Render/GPUResourceManager.h"
 #include "Render/Passes/OpaquePass.h"
-#include "Engine/Engine.h"
-#include "Runtime/Window/WindowSubsystem.h"
-#include "World/World.h"
+#include "Render/Renderer/RenderScene.h"
+#include "Render/Renderer/SceneRenderer.h"
+#include "RenderExtraction/WorldCameraBridge.h"
 #include "Runtime/Camera/Camera.h"
-#include "Core/Log.h"
-#include "Core/Event/EventBus.h"
-#include "HAL/Window/WindowEvents.h"
+#include "Runtime/Window/WindowSubsystem.h"
 
 namespace RVX
 {
@@ -247,6 +246,15 @@ void RenderSubsystem::SetWindow(void* windowHandle, uint32_t width, uint32_t hei
     }
 }
 
+void RenderSubsystem::SetWindowSubsystem(WindowSubsystem* windowSubsystem)
+{
+    m_windowSubsystem = windowSubsystem;
+    if (m_config.autoBindWindow && m_renderContext && !m_renderContext->HasSwapChain())
+    {
+        AutoBindWindow();
+    }
+}
+
 void RenderSubsystem::OnResize(uint32_t width, uint32_t height)
 {
     RVX_CORE_INFO("RenderSubsystem resize: {}x{}", width, height);
@@ -270,7 +278,8 @@ void RenderSubsystem::RenderFrame(World* world)
         return;
     }
 
-    Camera* camera = world->GetActiveCamera();
+    const WorldCameraBridge cameraBridge;
+    Camera* camera = cameraBridge.GetActiveCamera(world);
     if (!camera)
     {
         RVX_CORE_WARN("RenderFrame: World has no active camera");
@@ -305,17 +314,9 @@ bool RenderSubsystem::IsReady() const
 
 void RenderSubsystem::AutoBindWindow()
 {
-    Engine* engine = GetEngine();
-    if (!engine)
+    if (!m_windowSubsystem)
     {
-        RVX_CORE_WARN("RenderSubsystem: Cannot auto-bind window - no engine reference");
-        return;
-    }
-
-    auto* windowSubsystem = engine->GetSubsystem<WindowSubsystem>();
-    if (!windowSubsystem)
-    {
-        RVX_CORE_WARN("RenderSubsystem: Cannot auto-bind window - WindowSubsystem not found");
+        RVX_CORE_WARN("RenderSubsystem: Cannot auto-bind window - WindowSubsystem dependency was not injected");
         return;
     }
 
@@ -326,8 +327,8 @@ void RenderSubsystem::AutoBindWindow()
     }
 
     void* handle = backendType == RHIBackendType::OpenGL ?
-        windowSubsystem->GetInternalHandle() :
-        windowSubsystem->GetNativeHandle();
+        m_windowSubsystem->GetInternalHandle() :
+        m_windowSubsystem->GetNativeHandle();
     if (!handle)
     {
         RVX_CORE_WARN("RenderSubsystem: WindowSubsystem has no valid window handle");
@@ -335,7 +336,7 @@ void RenderSubsystem::AutoBindWindow()
     }
 
     uint32_t width, height;
-    windowSubsystem->GetFramebufferSize(width, height);
+    m_windowSubsystem->GetFramebufferSize(width, height);
 
     RVX_CORE_INFO("RenderSubsystem: Auto-binding to window {}x{}", width, height);
     SetWindow(handle, width, height);

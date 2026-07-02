@@ -7,14 +7,13 @@
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
-#include "Resource/Types/MaterialResource.h"
 #include "RHI/RHIRenderPass.h"
 
 namespace RVX
 {
     namespace
     {
-        const Resource::MaterialResource* ResolveMaterialResource(const RenderObject& object, uint32 submeshIndex)
+        const IRenderMaterialSource* ResolveMaterialResource(const RenderObject& object, uint32 submeshIndex)
         {
             if (submeshIndex >= object.materialResources.size())
             {
@@ -327,7 +326,7 @@ namespace RVX
                     continue;
                 }
 
-                const Resource::MaterialResource* materialResource =
+                const IRenderMaterialSource* materialResource =
                     item.materialResource ? item.materialResource : ResolveMaterialResource(object, item.submeshIndex);
                 MaterialBindingOptions materialOptions;
                 materialOptions.allowNormalMap = false;

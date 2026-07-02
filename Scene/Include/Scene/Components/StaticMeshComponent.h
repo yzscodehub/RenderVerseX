@@ -5,17 +5,13 @@
  * @brief UE-style primitive component for rendering static meshes
  */
 
-#include "Resource/ResourceHandle.h"
-#include "Resource/Types/MaterialResource.h"
-#include "Resource/Types/MeshResource.h"
 #include "Scene/PrimitiveComponent.h"
+#include "Scene/SceneAssetHandle.h"
 
 #include <vector>
 
 namespace RVX
 {
-    class RenderScene;
-
     /**
      * @brief Renderable primitive component for static mesh instances.
      */
@@ -32,16 +28,16 @@ namespace RVX
         // Mesh
         // =====================================================================
 
-        void SetMesh(Resource::ResourceHandle<Resource::MeshResource> mesh);
-        Resource::ResourceHandle<Resource::MeshResource> GetMesh() const { return m_mesh; }
+        void SetMesh(SceneMeshHandle mesh);
+        SceneMeshHandle GetMesh() const { return m_mesh; }
         bool HasValidMesh() const;
 
         // =====================================================================
         // Materials
         // =====================================================================
 
-        void SetMaterial(size_t submeshIndex, Resource::ResourceHandle<Resource::MaterialResource> material);
-        Resource::ResourceHandle<Resource::MaterialResource> GetMaterial(size_t submeshIndex) const;
+        void SetMaterial(size_t submeshIndex, SceneMaterialHandle material);
+        SceneMaterialHandle GetMaterial(size_t submeshIndex) const;
         size_t GetSubmeshCount() const;
         size_t GetMaterialOverrideCount() const { return m_materialOverrides.size(); }
         void ClearMaterialOverrides() { m_materialOverrides.clear(); }
@@ -62,11 +58,10 @@ namespace RVX
 
         bool HasRenderData() const override;
         bool CreateRenderProxy(RenderPrimitiveProxy& outProxy) const override;
-        void CollectRenderData(RenderScene& scene) const override;
 
     private:
-        Resource::ResourceHandle<Resource::MeshResource> m_mesh;
-        std::vector<Resource::ResourceHandle<Resource::MaterialResource>> m_materialOverrides;
+        SceneMeshHandle m_mesh;
+        std::vector<SceneMaterialHandle> m_materialOverrides;
         bool m_castsShadow = true;
         bool m_receivesShadow = true;
     };

@@ -104,6 +104,10 @@ void SkeletonComponent::SetSkeleton(std::shared_ptr<Animation::Skeleton> skeleto
     m_posesDirty = true;
     m_skinningDirty = true;
     m_boundsDirty = true;
+    if (m_skeleton)
+    {
+        UpdateSkinningMatrices();
+    }
     NotifyBoundsChanged();
 }
 
@@ -125,6 +129,7 @@ void SkeletonComponent::SetPose(const Animation::SkeletonPose& pose)
     m_posesDirty = true;
     m_skinningDirty = true;
     m_boundsDirty = true;
+    UpdateSkinningMatrices();
 }
 
 void SkeletonComponent::ResetToBindPose()
@@ -140,6 +145,7 @@ void SkeletonComponent::ResetToBindPose()
     m_posesDirty = true;
     m_skinningDirty = true;
     m_boundsDirty = true;
+    UpdateSkinningMatrices();
 }
 
 int SkeletonComponent::FindBoneIndex(const std::string& boneName) const
@@ -226,6 +232,7 @@ void SkeletonComponent::SetBoneLocalRotation(int boneIndex, const Quat& rotation
     m_boneOverrides[boneIndex].rotation = rotation;
     m_posesDirty = true;
     m_skinningDirty = true;
+    UpdateSkinningMatrices();
 }
 
 void SkeletonComponent::SetBoneLocalRotation(const std::string& boneName, const Quat& rotation)
@@ -244,6 +251,7 @@ void SkeletonComponent::SetBoneLocalPosition(int boneIndex, const Vec3& position
     m_boneOverrides[boneIndex].position = position;
     m_posesDirty = true;
     m_skinningDirty = true;
+    UpdateSkinningMatrices();
 }
 
 void SkeletonComponent::SetBoneLocalPosition(const std::string& boneName, const Vec3& position)
@@ -260,15 +268,7 @@ void SkeletonComponent::ClearBoneOverrides()
     }
     m_posesDirty = true;
     m_skinningDirty = true;
-}
-
-const std::vector<Mat4>& SkeletonComponent::GetSkinningMatrices() const
-{
-    if (m_skinningDirty)
-    {
-        const_cast<SkeletonComponent*>(this)->UpdateSkinningMatrices();
-    }
-    return m_skinningMatrices;
+    UpdateSkinningMatrices();
 }
 
 void SkeletonComponent::UpdateSkinningMatrices()

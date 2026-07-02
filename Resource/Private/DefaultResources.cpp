@@ -1,5 +1,5 @@
 #include "Resource/DefaultResources.h"
-#include "Scene/Material.h"
+#include "Geometry/Asset/Material.h"
 #include "Core/Log.h"
 #include <functional>
 

@@ -1,5 +1,5 @@
 #include "Particle/ParticleSubsystem.h"
-#include "Engine/Engine.h"
+#include "Core/Log.h"
 #include "Particle/GPU/CPUParticleSimulator.h"
 #include "Particle/GPU/IParticleSimulator.h"
 #include "Particle/GPU/ParticleSorter.h"
@@ -7,12 +7,13 @@
 #include "Particle/Rendering/ParticleRenderer.h"
 #include "Render/Renderer/SceneRenderer.h"
 #include "RHI/RHI.h"
-#include "Core/Log.h"
 #include <algorithm>
 #include <utility>
 
 namespace RVX::Particle
 {
+
+ParticleSubsystem* ParticleSubsystem::s_activeSubsystem = nullptr;
 
 ParticleSubsystem::ParticleSubsystem() = default;
 
@@ -21,8 +22,14 @@ ParticleSubsystem::~ParticleSubsystem()
     Deinitialize();
 }
 
+ParticleSubsystem* ParticleSubsystem::GetActiveSubsystem()
+{
+    return s_activeSubsystem;
+}
+
 void ParticleSubsystem::Initialize()
 {
+    s_activeSubsystem = this;
     m_renderIntegrationReady = false;
     m_renderIntegrationUnsupportedReason = "Particle render integration is not initialized";
 
@@ -64,6 +71,12 @@ void ParticleSubsystem::CheckCapabilities()
     }
 }
 
+void ParticleSubsystem::SetRenderSubsystem(RenderSubsystem* renderSubsystem)
+{
+    m_renderSubsystem = renderSubsystem;
+    AcquireRenderDependencies();
+}
+
 void ParticleSubsystem::CreateRenderComponents()
 {
     // Create renderer
@@ -90,22 +103,17 @@ void ParticleSubsystem::CreateRenderComponents()
 
 void ParticleSubsystem::AcquireRenderDependencies()
 {
-    Engine* engine = GetEngine() ? GetEngine() : Engine::Get();
-    if (!engine)
-        return;
-
-    auto* renderSubsystem = engine->GetSubsystem<RenderSubsystem>();
-    if (!renderSubsystem)
+    if (!m_renderSubsystem)
         return;
 
     if (!m_device)
     {
-        m_device = renderSubsystem->GetDevice();
+        m_device = m_renderSubsystem->GetDevice();
     }
 
     if (!m_sceneRenderer)
     {
-        m_sceneRenderer = renderSubsystem->GetSceneRenderer();
+        m_sceneRenderer = m_renderSubsystem->GetSceneRenderer();
     }
 }
 
@@ -176,6 +184,11 @@ void ParticleSubsystem::MarkRenderIntegrationUnsupported(const std::string& reas
 
 void ParticleSubsystem::Deinitialize()
 {
+    if (s_activeSubsystem == this)
+    {
+        s_activeSubsystem = nullptr;
+    }
+
     if (m_sceneRenderer && m_preGraphCallbackRegistered)
     {
         m_sceneRenderer->RemovePreGraphPrepareCallback(this);

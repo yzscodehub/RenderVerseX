@@ -24,6 +24,10 @@ target_sources(RVX_Physics PRIVATE
     
     # Character Controller
     Private/CharacterController.cpp
+
+    # Scene component adapters
+    Private/SceneComponents/ColliderComponent.cpp
+    Private/SceneComponents/RigidBodyComponent.cpp
     
     # Built-in Physics Engine
     Private/BuiltIn/Integrator.cpp
@@ -42,6 +46,10 @@ target_include_directories(RVX_Physics PUBLIC
 
 target_link_libraries(RVX_Physics PUBLIC
     RVX::Core
+)
+
+target_link_libraries(RVX_Physics PRIVATE
+    RVX::Scene
 )
 
 # Link Geometry module for collision algorithms

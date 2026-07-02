@@ -995,7 +995,7 @@ namespace RVX
         if (!m_sceneManager)
             return false;
 
-        const std::vector<Resource::ResourceId>& textureIds =
+        const std::vector<uint64>& textureIds =
             m_sceneManager->GetInstanceMaterialTextureTable();
         if (textureIds.empty())
             return true;
@@ -1007,7 +1007,7 @@ namespace RVX
             return false;
 
         outViews.reserve(textureIds.size());
-        for (Resource::ResourceId textureId : textureIds)
+        for (uint64 textureId : textureIds)
         {
             RHITexture* texture = m_gpuResources->GetTexture(textureId);
             if (!texture)

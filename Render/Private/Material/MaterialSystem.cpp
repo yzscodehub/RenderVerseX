@@ -8,9 +8,8 @@
 #include "Render/GPUResourceManager.h"
 #include "Render/GPUUploadService.h"
 #include "Render/Graph/ResourceViewCache.h"
-#include "Resource/Types/MaterialResource.h"
-#include "Resource/Types/TextureResource.h"
-#include "Scene/Material.h"
+#include "Render/Material/MaterialBinder.h"
+#include "RHI/RHICommandContext.h"
 
 #include <algorithm>
 #include <cstring>
@@ -123,7 +122,7 @@ void MaterialSystem::BeginFrame()
     m_lastBindingResult = {};
 }
 
-MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::MaterialResource* materialResource,
+MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const IRenderMaterialSource* materialResource,
                                                              ResourceViewCache* viewCache,
                                                              MaterialBindingOptions options)
 {
@@ -145,7 +144,8 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::Mat
 
     const ResolvedMaterialTextures textures = ResolveMaterialTextures(materialResource, viewCache, options);
     const MaterialGPUConstants constants = BuildConstants(materialResource, textures);
-    const std::string materialName = materialResource ? materialResource->GetMaterialName() : std::string();
+    const std::string materialName =
+        materialResource ? std::string(materialResource->GetRenderResourceName()) : std::string();
 
     void* mapped = m_materialConstantBuffer->Map();
     if (!mapped)
@@ -210,7 +210,7 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::Mat
     return SetLastBindingResult(std::move(result));
 }
 
-bool MaterialSystem::UpdateMaterialConstants(const Resource::MaterialResource* materialResource,
+bool MaterialSystem::UpdateMaterialConstants(const IRenderMaterialSource* materialResource,
                                              ResourceViewCache* viewCache,
                                              MaterialBindingOptions options)
 {
@@ -218,7 +218,7 @@ bool MaterialSystem::UpdateMaterialConstants(const Resource::MaterialResource* m
     return result.constantsUpdated && !result.IsError();
 }
 
-RHIDescriptorSet* MaterialSystem::GetOrCreateMaterialSet(const Resource::MaterialResource* materialResource,
+RHIDescriptorSet* MaterialSystem::GetOrCreateMaterialSet(const IRenderMaterialSource* materialResource,
                                                          ResourceViewCache* viewCache,
                                                          MaterialBindingOptions options)
 {
@@ -233,7 +233,8 @@ RHIDescriptorSet* MaterialSystem::GetOrCreateMaterialSet(const Resource::Materia
 
     const ResolvedMaterialTextures textures = ResolveMaterialTextures(materialResource, viewCache, options);
     MaterialSetResolveResult setResult = GetOrCreateMaterialSetForResolved(textures);
-    const std::string materialName = materialResource ? materialResource->GetMaterialName() : std::string();
+    const std::string materialName =
+        materialResource ? std::string(materialResource->GetRenderResourceName()) : std::string();
 
     MaterialBindingResult result;
     result.status = setResult.descriptorSet
@@ -265,6 +266,55 @@ RHIDescriptorSet* MaterialSystem::GetOrCreateMaterialSet(const Resource::Materia
 RHIDescriptorSet* MaterialSystem::GetDefaultMaterialSet()
 {
     return m_defaultMaterialSet.Get();
+}
+
+void MaterialSystem::RequestMaterialTextures(const IRenderMaterialSource* materialResource) const
+{
+    if (!materialResource || !m_gpuResources)
+        return;
+
+    const auto requestTexture = [this](IRenderTextureUploadSource* texture)
+    {
+        if (!texture)
+            return;
+
+        if (!m_gpuResources->IsResident(texture))
+        {
+            m_gpuResources->RequestUpload(texture, UploadPriority::High);
+        }
+        m_gpuResources->MarkUsed(texture);
+    };
+
+    requestTexture(materialResource->GetRenderMaterialTexture(RenderMaterialTextureSlot::BaseColor));
+    requestTexture(materialResource->GetRenderMaterialTexture(RenderMaterialTextureSlot::Normal));
+    requestTexture(materialResource->GetRenderMaterialTexture(RenderMaterialTextureSlot::MetallicRoughness));
+    requestTexture(materialResource->GetRenderMaterialTexture(RenderMaterialTextureSlot::Occlusion));
+    requestTexture(materialResource->GetRenderMaterialTexture(RenderMaterialTextureSlot::Emissive));
+}
+
+void MaterialSystem::TransitionMaterialTextures(const IRenderMaterialSource* materialResource,
+                                                RHICommandContext& ctx,
+                                                MaterialBindingOptions options) const
+{
+    if (!materialResource || !m_gpuResources)
+        return;
+
+    const auto transitionTexture = [this, &ctx](IRenderTextureUploadSource* textureResource)
+    {
+        if (!textureResource || !m_gpuResources->IsGPUReady(textureResource->GetRenderResourceId()))
+            return;
+
+        m_gpuResources->TransitionTexture(textureResource->GetRenderResourceId(), ctx, RHIResourceState::ShaderResource);
+    };
+
+    transitionTexture(materialResource->GetRenderMaterialTexture(RenderMaterialTextureSlot::BaseColor));
+    if (options.allowNormalMap)
+    {
+        transitionTexture(materialResource->GetRenderMaterialTexture(RenderMaterialTextureSlot::Normal));
+    }
+    transitionTexture(materialResource->GetRenderMaterialTexture(RenderMaterialTextureSlot::MetallicRoughness));
+    transitionTexture(materialResource->GetRenderMaterialTexture(RenderMaterialTextureSlot::Occlusion));
+    transitionTexture(materialResource->GetRenderMaterialTexture(RenderMaterialTextureSlot::Emissive));
 }
 
 void MaterialSystem::SetEnvironmentIBLResources(const EnvironmentIBLResources& resources)
@@ -460,7 +510,7 @@ bool MaterialSystem::CreateDefaultResources()
     return true;
 }
 
-RHITextureView* MaterialSystem::ResolveTextureView(const Resource::TextureResource* textureResource,
+RHITextureView* MaterialSystem::ResolveTextureView(IRenderTextureUploadSource* textureResource,
                                                    RHITextureView* fallbackView,
                                                    ResourceViewCache* viewCache,
                                                    uint32 textureFlag,
@@ -473,15 +523,16 @@ RHITextureView* MaterialSystem::ResolveTextureView(const Resource::TextureResour
         return fallbackView;
     }
 
-    if (textureResource->IsDefaultFallback() || !m_gpuResources || !viewCache ||
-        !m_gpuResources->IsGPUReady(textureResource->GetId()))
+    const uint64 textureId = textureResource->GetRenderResourceId();
+    if (textureResource->IsRenderDefaultFallbackTexture() || !m_gpuResources || !viewCache ||
+        !m_gpuResources->IsGPUReady(textureId))
     {
         usedFallback = true;
         fallbackTextureFlags |= textureFlag;
         return fallbackView;
     }
 
-    RHITexture* texture = m_gpuResources->GetTexture(textureResource->GetId());
+    RHITexture* texture = m_gpuResources->GetTexture(textureId);
     if (!texture)
     {
         usedFallback = true;
@@ -502,7 +553,7 @@ RHITextureView* MaterialSystem::ResolveTextureView(const Resource::TextureResour
 }
 
 MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures(
-    const Resource::MaterialResource* materialResource,
+    const IRenderMaterialSource* materialResource,
     ResourceViewCache* viewCache,
     MaterialBindingOptions options) const
 {
@@ -523,13 +574,16 @@ MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures
     }
     else
     {
-        textures.baseColor = ResolveTextureView(materialResource->GetAlbedoTexture().Get(), textures.baseColor,
-                                                viewCache,
-                                                static_cast<uint32>(MaterialTextureFlags::HasBaseColor),
-                                                textures.textureFlags,
-                                                textures.fallbackTextureFlags,
-                                                textures.usedFallback);
-        const Resource::TextureResource* normalTexture = materialResource->GetNormalTexture().Get();
+        textures.baseColor =
+            ResolveTextureView(materialResource->GetRenderMaterialTexture(RenderMaterialTextureSlot::BaseColor),
+                               textures.baseColor,
+                               viewCache,
+                               static_cast<uint32>(MaterialTextureFlags::HasBaseColor),
+                               textures.textureFlags,
+                               textures.fallbackTextureFlags,
+                               textures.usedFallback);
+        IRenderTextureUploadSource* normalTexture =
+            materialResource->GetRenderMaterialTexture(RenderMaterialTextureSlot::Normal);
         if (!options.allowNormalMap && normalTexture)
         {
             textures.usedFallback = true;
@@ -546,24 +600,29 @@ MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures
                                                  textures.usedFallback);
         }
         textures.metallicRoughness =
-            ResolveTextureView(materialResource->GetMetallicRoughnessTexture().Get(), textures.metallicRoughness,
+            ResolveTextureView(materialResource->GetRenderMaterialTexture(RenderMaterialTextureSlot::MetallicRoughness),
+                               textures.metallicRoughness,
                                viewCache,
                                static_cast<uint32>(MaterialTextureFlags::HasMetallicRoughness),
                                textures.textureFlags,
                                textures.fallbackTextureFlags,
                                textures.usedFallback);
-        textures.occlusion = ResolveTextureView(materialResource->GetAOTexture().Get(), textures.occlusion,
-                                                viewCache,
-                                                static_cast<uint32>(MaterialTextureFlags::HasOcclusion),
-                                                textures.textureFlags,
-                                                textures.fallbackTextureFlags,
-                                                textures.usedFallback);
-        textures.emissive = ResolveTextureView(materialResource->GetEmissiveTexture().Get(), textures.emissive,
-                                               viewCache,
-                                               static_cast<uint32>(MaterialTextureFlags::HasEmissive),
-                                               textures.textureFlags,
-                                               textures.fallbackTextureFlags,
-                                               textures.usedFallback);
+        textures.occlusion =
+            ResolveTextureView(materialResource->GetRenderMaterialTexture(RenderMaterialTextureSlot::Occlusion),
+                               textures.occlusion,
+                               viewCache,
+                               static_cast<uint32>(MaterialTextureFlags::HasOcclusion),
+                               textures.textureFlags,
+                               textures.fallbackTextureFlags,
+                               textures.usedFallback);
+        textures.emissive =
+            ResolveTextureView(materialResource->GetRenderMaterialTexture(RenderMaterialTextureSlot::Emissive),
+                               textures.emissive,
+                               viewCache,
+                               static_cast<uint32>(MaterialTextureFlags::HasEmissive),
+                               textures.textureFlags,
+                               textures.fallbackTextureFlags,
+                               textures.usedFallback);
     }
 
     if (m_environmentIBL.textureIBLEnabled)
@@ -604,55 +663,19 @@ MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures
     return textures;
 }
 
-MaterialGPUConstants MaterialSystem::BuildConstants(const Resource::MaterialResource* materialResource,
+MaterialGPUConstants MaterialSystem::BuildConstants(const IRenderMaterialSource* materialResource,
                                                     const ResolvedMaterialTextures& textures) const
 {
-    MaterialGPUConstants constants;
-    constants.textureFlags = textures.textureFlags;
+    MaterialSourceData source;
+    source.textureFlags = textures.textureFlags;
 
-    if (!materialResource || !materialResource->GetMaterial())
-        return constants;
+    if (!materialResource)
+        return MaterialBinder::ConvertToGPU(source);
 
-    const Material& material = *materialResource->GetMaterial();
-    constants.baseColorFactor = material.GetBaseColor();
-    constants.metallicFactor = material.GetMetallicFactor();
-    constants.roughnessFactor = material.GetRoughnessFactor();
-    constants.normalScale = material.GetNormalScale();
-    constants.occlusionStrength = material.GetOcclusionStrength();
-    constants.emissiveColor = material.GetEmissiveColor();
-    constants.emissiveStrength = material.GetEmissiveStrength();
-    constants.alphaCutoff = material.GetAlphaCutoff();
-    constants.doubleSided = material.IsDoubleSided() ? 1u : 0u;
+    source = materialResource->GetRenderMaterialSourceData();
+    source.textureFlags = textures.textureFlags;
 
-    switch (material.GetAlphaMode())
-    {
-        case Material::AlphaMode::Mask:
-            constants.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Mask);
-            break;
-        case Material::AlphaMode::Blend:
-            constants.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Blend);
-            break;
-        case Material::AlphaMode::Opaque:
-        default:
-            constants.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Opaque);
-            break;
-    }
-
-    switch (material.GetWorkflow())
-    {
-        case MaterialWorkflow::SpecularGlossiness:
-            constants.workflow = static_cast<uint32>(MaterialGPUWorkflow::SpecularGlossiness);
-            break;
-        case MaterialWorkflow::Unlit:
-            constants.workflow = static_cast<uint32>(MaterialGPUWorkflow::Unlit);
-            break;
-        case MaterialWorkflow::MetallicRoughness:
-        default:
-            constants.workflow = static_cast<uint32>(MaterialGPUWorkflow::MetallicRoughness);
-            break;
-    }
-
-    return constants;
+    return MaterialBinder::ConvertToGPU(source);
 }
 
 MaterialSystem::MaterialSetResolveResult MaterialSystem::GetOrCreateMaterialSetForResolved(

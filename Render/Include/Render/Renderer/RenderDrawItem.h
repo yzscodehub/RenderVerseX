@@ -8,6 +8,7 @@
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
 #include "Render/Material/MaterialClassification.h"
+#include "RenderContracts/RenderResource.h"
 
 #include <vector>
 
@@ -15,18 +16,13 @@ namespace RVX
 {
     class RenderScene;
 
-    namespace Resource
-    {
-        class MaterialResource;
-    } // namespace Resource
-
     struct RenderDrawItem
     {
         uint32 objectIndex = 0;
         uint32 submeshIndex = 0;
         uint64 meshId = 0;
         uint64 materialId = 0;
-        Resource::MaterialResource* materialResource = nullptr;
+        IRenderMaterialSource* materialResource = nullptr;
         MaterialRenderMode renderMode = MaterialRenderMode::Opaque;
         float depthFromCamera = 0.0f;
         uint64 sortKey = 0;

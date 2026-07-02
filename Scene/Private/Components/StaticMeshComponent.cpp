@@ -1,9 +1,7 @@
 #include "Scene/Components/StaticMeshComponent.h"
 
-#include "Render/Renderer/RenderProxy.h"
-#include "Render/Renderer/RenderScene.h"
 #include "Scene/Components/SkeletonComponent.h"
-#include "Scene/Mesh.h"
+#include "RenderContracts/RenderProxy.h"
 #include "Scene/SceneEntity.h"
 
 #include <glm/gtc/matrix_inverse.hpp>
@@ -12,8 +10,27 @@
 
 namespace RVX
 {
+namespace
+{
+    RenderMaterialMode ToRenderMaterialMode(const IRenderMaterialSource* material)
+    {
+        if (!material)
+            return RenderMaterialMode::Opaque;
 
-void StaticMeshComponent::SetMesh(Resource::ResourceHandle<Resource::MeshResource> mesh)
+        switch (material->GetRenderMaterialSourceData().alphaMode)
+        {
+            case MaterialSourceAlphaMode::Mask:
+                return RenderMaterialMode::Masked;
+            case MaterialSourceAlphaMode::Blend:
+                return RenderMaterialMode::Transparent;
+            case MaterialSourceAlphaMode::Opaque:
+            default:
+                return RenderMaterialMode::Opaque;
+        }
+    }
+} // namespace
+
+void StaticMeshComponent::SetMesh(SceneMeshHandle mesh)
 {
     m_mesh = std::move(mesh);
     m_materialOverrides.clear();
@@ -24,14 +41,13 @@ void StaticMeshComponent::SetMesh(Resource::ResourceHandle<Resource::MeshResourc
         return;
     }
 
-    auto* meshData = m_mesh->GetMesh().get();
-    if (meshData && meshData->GetBoundingBox().has_value())
+    if (auto* meshSource = m_mesh.As<IRenderMeshUploadSource>())
     {
-        SetLocalBounds(meshData->GetBoundingBox().value());
+        SetLocalBounds(meshSource->GetRenderMeshBounds());
         return;
     }
 
-    SetLocalBounds(m_mesh->GetBounds());
+    SetLocalBounds(AABB());
 }
 
 bool StaticMeshComponent::HasValidMesh() const
@@ -40,7 +56,7 @@ bool StaticMeshComponent::HasValidMesh() const
 }
 
 void StaticMeshComponent::SetMaterial(size_t submeshIndex,
-                                      Resource::ResourceHandle<Resource::MaterialResource> material)
+                                      SceneMaterialHandle material)
 {
     if (submeshIndex >= m_materialOverrides.size())
     {
@@ -49,14 +65,14 @@ void StaticMeshComponent::SetMaterial(size_t submeshIndex,
     m_materialOverrides[submeshIndex] = std::move(material);
 }
 
-Resource::ResourceHandle<Resource::MaterialResource> StaticMeshComponent::GetMaterial(size_t submeshIndex) const
+SceneMaterialHandle StaticMeshComponent::GetMaterial(size_t submeshIndex) const
 {
     if (submeshIndex < m_materialOverrides.size() && m_materialOverrides[submeshIndex].IsValid())
     {
         return m_materialOverrides[submeshIndex];
     }
 
-    return Resource::ResourceHandle<Resource::MaterialResource>();
+    return SceneMaterialHandle();
 }
 
 size_t StaticMeshComponent::GetSubmeshCount() const
@@ -66,18 +82,13 @@ size_t StaticMeshComponent::GetSubmeshCount() const
         return 0;
     }
 
-    auto* meshData = m_mesh->GetMesh().get();
-    if (!meshData)
+    auto* meshSource = m_mesh.As<IRenderMeshUploadSource>();
+    if (!meshSource)
     {
         return 0;
     }
 
-    if (meshData->HasSubMeshes())
-    {
-        return meshData->GetSubMeshes().size();
-    }
-
-    return 1;
+    return meshSource->GetRenderMeshSubmeshCount();
 }
 
 bool StaticMeshComponent::HasRenderData() const
@@ -96,7 +107,7 @@ bool StaticMeshComponent::CreateRenderProxy(RenderPrimitiveProxy& outProxy) cons
     outProxy.worldMatrix = worldMatrix;
     outProxy.normalMatrix = glm::inverseTranspose(Mat4(Mat3(worldMatrix)));
     outProxy.bounds = GetWorldBounds();
-    outProxy.meshResource = m_mesh.Get();
+    outProxy.meshResource = m_mesh.As<IRenderMeshUploadSource>();
     outProxy.meshId = m_mesh.GetId();
     outProxy.layerMask = GetLayerMask();
     outProxy.castsShadow = m_castsShadow;
@@ -105,12 +116,14 @@ bool StaticMeshComponent::CreateRenderProxy(RenderPrimitiveProxy& outProxy) cons
 
     const size_t submeshCount = GetSubmeshCount();
     outProxy.materialIds.resize(submeshCount);
+    outProxy.materialModes.resize(submeshCount);
     outProxy.materialResources.resize(submeshCount);
     for (size_t i = 0; i < submeshCount; ++i)
     {
         auto material = GetMaterial(i);
         outProxy.materialIds[i] = material.IsValid() ? material.GetId() : 0;
-        outProxy.materialResources[i] = material.Get();
+        outProxy.materialModes[i] = ToRenderMaterialMode(material.As<IRenderMaterialSource>());
+        outProxy.materialResources[i] = material.As<IRenderMaterialSource>();
     }
 
     outProxy.sortKey = outProxy.materialIds.empty() ? 0 : outProxy.materialIds[0];
@@ -124,35 +137,6 @@ bool StaticMeshComponent::CreateRenderProxy(RenderPrimitiveProxy& outProxy) cons
     }
 
     return true;
-}
-
-void StaticMeshComponent::CollectRenderData(RenderScene& scene) const
-{
-    RenderPrimitiveProxy proxy;
-    if (!CreateRenderProxy(proxy))
-        return;
-
-    RenderObject object;
-    object.worldMatrix = proxy.worldMatrix;
-    object.normalMatrix = proxy.normalMatrix;
-    object.bounds = proxy.bounds;
-    object.meshResource = proxy.meshResource;
-    object.meshId = proxy.meshId;
-    object.materialIds = proxy.materialIds;
-    object.materialResources = proxy.materialResources;
-    object.skinningMatrices = proxy.skinningMatrices;
-    object.sortKey = proxy.sortKey;
-    object.layerMask = proxy.layerMask;
-    object.visible = proxy.visible;
-    object.castsShadow = proxy.castsShadow;
-    object.receivesShadow = proxy.receivesShadow;
-
-    if (auto* entity = dynamic_cast<SceneEntity*>(GetOwner()))
-    {
-        object.entityId = entity->GetHandle();
-    }
-
-    scene.AddObject(object);
 }
 
 } // namespace RVX

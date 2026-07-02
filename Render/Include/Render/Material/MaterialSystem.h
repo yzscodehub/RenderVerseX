@@ -8,6 +8,7 @@
 #include "Core/Assert.h"
 #include "Core/Types.h"
 #include "Render/Material/MaterialGPUData.h"
+#include "RenderContracts/RenderResource.h"
 #include "RHI/RHI.h"
 
 #include <array>
@@ -19,12 +20,7 @@ namespace RVX
 {
     class GPUResourceManager;
     class ResourceViewCache;
-
-    namespace Resource
-    {
-        class MaterialResource;
-        class TextureResource;
-    } // namespace Resource
+    class RHICommandContext;
 
     enum class MaterialBindingStatus : uint8
     {
@@ -100,13 +96,17 @@ namespace RVX
         // Material Binding Data
         // =====================================================================
 
-        MaterialBindingResult PrepareMaterialBinding(const Resource::MaterialResource* materialResource,
+        MaterialBindingResult PrepareMaterialBinding(const IRenderMaterialSource* materialResource,
                                                      ResourceViewCache* viewCache,
                                                      MaterialBindingOptions options = {});
-        bool UpdateMaterialConstants(const Resource::MaterialResource* materialResource,
+        void RequestMaterialTextures(const IRenderMaterialSource* materialResource) const;
+        void TransitionMaterialTextures(const IRenderMaterialSource* materialResource,
+                                        RHICommandContext& ctx,
+                                        MaterialBindingOptions options = {}) const;
+        bool UpdateMaterialConstants(const IRenderMaterialSource* materialResource,
                                      ResourceViewCache* viewCache,
                                      MaterialBindingOptions options = {});
-        RHIDescriptorSet* GetOrCreateMaterialSet(const Resource::MaterialResource* materialResource,
+        RHIDescriptorSet* GetOrCreateMaterialSet(const IRenderMaterialSource* materialResource,
                                                  ResourceViewCache* viewCache,
                                                  MaterialBindingOptions options = {});
         RHIDescriptorSet* GetDefaultMaterialSet();
@@ -117,9 +117,9 @@ namespace RVX
 
         struct EnvironmentIBLResources
         {
-            const Resource::TextureResource* irradianceMap = nullptr;
-            const Resource::TextureResource* prefilteredMap = nullptr;
-            const Resource::TextureResource* brdfLUT = nullptr;
+            IRenderTextureUploadSource* irradianceMap = nullptr;
+            IRenderTextureUploadSource* prefilteredMap = nullptr;
+            IRenderTextureUploadSource* brdfLUT = nullptr;
             uint32 prefilteredMipLevels = 1;
             float intensity = 1.0f;
             bool textureIBLEnabled = false;
@@ -205,17 +205,17 @@ namespace RVX
 
         bool CreateConstantBuffer();
         bool CreateDefaultResources();
-        RHITextureView* ResolveTextureView(const Resource::TextureResource* textureResource,
+        RHITextureView* ResolveTextureView(IRenderTextureUploadSource* textureResource,
                                            RHITextureView* fallbackView,
                                            ResourceViewCache* viewCache,
                                            uint32 textureFlag,
                                            uint32& textureFlags,
                                            uint32& fallbackTextureFlags,
                                            bool& usedFallback) const;
-        ResolvedMaterialTextures ResolveMaterialTextures(const Resource::MaterialResource* materialResource,
+        ResolvedMaterialTextures ResolveMaterialTextures(const IRenderMaterialSource* materialResource,
                                                         ResourceViewCache* viewCache,
                                                         MaterialBindingOptions options) const;
-        MaterialGPUConstants BuildConstants(const Resource::MaterialResource* materialResource,
+        MaterialGPUConstants BuildConstants(const IRenderMaterialSource* materialResource,
                                             const ResolvedMaterialTextures& textures) const;
         MaterialSetResolveResult GetOrCreateMaterialSetForResolved(const ResolvedMaterialTextures& textures);
         RHIDescriptorSetRef CreateMaterialDescriptorSet(const ResolvedMaterialTextures& textures);

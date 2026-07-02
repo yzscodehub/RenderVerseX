@@ -1,6 +1,6 @@
 #include "Scene/Components/LODComponent.h"
 #include "Scene/SceneEntity.h"
-#include "Resource/Types/MeshResource.h"
+#include "RenderContracts/RenderResource.h"
 #include <cmath>
 #include <algorithm>
 
@@ -271,7 +271,12 @@ AABB LODComponent::GetLODBounds(size_t lodIndex) const
         return AABB();
     }
 
-    return level.mesh->GetBounds();
+    if (auto* meshSource = level.mesh.As<IRenderMeshUploadSource>())
+    {
+        return meshSource->GetRenderMeshBounds();
+    }
+
+    return AABB();
 }
 
 } // namespace RVX

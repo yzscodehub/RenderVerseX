@@ -4,17 +4,32 @@
  */
 
 #include "Scene/Components/AudioComponent.h"
-#include "Scene/SceneEntity.h"
+
+#include "Audio/AudioClip.h"
 #include "Audio/AudioEngine.h"
+#include "Audio/AudioSource.h"
 #include "Audio/AudioSubsystem.h"
+#include "Audio/AudioTypes.h"
 #include "Core/Log.h"
+#include "Scene/SceneEntity.h"
 
 namespace RVX
 {
 
+AudioComponent::AudioComponent()
+    : m_source(std::make_unique<Audio::AudioSource>())
+    , m_lastOcclusion(std::make_unique<Audio::OcclusionResult>())
+{
+}
+
 AudioComponent::~AudioComponent()
 {
     Stop();
+}
+
+Audio::AudioHandle AudioComponent::GetHandle() const
+{
+    return Audio::AudioHandle(m_handleId);
 }
 
 void AudioComponent::OnAttach()
@@ -39,21 +54,24 @@ void AudioComponent::Tick(float deltaTime)
         return;
     }
 
-    // Update 3D position if playing and spatialized
-    if (m_handle.IsValid() && m_settings.spatialize)
+    if (GetHandle().IsValid() && m_settings.spatialize)
     {
         UpdatePosition();
     }
 }
 
-void AudioComponent::SetClip(Audio::AudioClip::Ptr clip)
+void AudioComponent::SetClip(std::shared_ptr<Audio::AudioClip> clip)
 {
     if (IsPlaying())
     {
         Stop();
     }
+
     m_clip = std::move(clip);
-    m_source.SetClip(m_clip);
+    if (m_source)
+    {
+        m_source->SetClip(m_clip);
+    }
 }
 
 void AudioComponent::Play()
@@ -64,7 +82,6 @@ void AudioComponent::Play()
         return;
     }
 
-    // Stop any existing playback
     Stop();
 
     Audio::AudioPlaySettings playSettings;
@@ -75,9 +92,7 @@ void AudioComponent::Play()
 
     if (m_settings.spatialize && GetOwner())
     {
-        // 3D playback
         Audio::Audio3DSettings spatial;
-
         spatial.position = GetAudioWorldPosition();
         spatial.minDistance = m_settings.minDistance;
         spatial.maxDistance = m_settings.maxDistance;
@@ -87,62 +102,63 @@ void AudioComponent::Play()
         spatial.coneOuterAngle = m_settings.coneOuterAngle;
         spatial.coneOuterGain = m_settings.coneOuterGain;
 
-        m_handle = engine->Play3D(m_clip, spatial, playSettings);
-        
-        // Update position immediately
+        m_handleId = engine->Play3D(m_clip, spatial, playSettings).GetId();
         UpdatePosition();
     }
     else
     {
-        // 2D playback
-        m_handle = engine->Play(m_clip, playSettings);
+        m_handleId = engine->Play(m_clip, playSettings).GetId();
     }
 }
 
 void AudioComponent::Stop()
 {
-    if (m_handle.IsValid())
+    const Audio::AudioHandle handle = GetHandle();
+    if (handle.IsValid())
     {
         if (auto* engine = GetAudioEngine())
         {
-            engine->Stop(m_handle);
+            engine->Stop(handle);
         }
-        m_handle = Audio::AudioHandle();
+        m_handleId = 0;
     }
 }
 
 void AudioComponent::Pause()
 {
-    if (m_handle.IsValid())
+    const Audio::AudioHandle handle = GetHandle();
+    if (handle.IsValid())
     {
         if (auto* engine = GetAudioEngine())
         {
-            engine->Pause(m_handle);
+            engine->Pause(handle);
         }
     }
 }
 
 void AudioComponent::Resume()
 {
-    if (m_handle.IsValid())
+    const Audio::AudioHandle handle = GetHandle();
+    if (handle.IsValid())
     {
         if (auto* engine = GetAudioEngine())
         {
-            engine->Resume(m_handle);
+            engine->Resume(handle);
         }
     }
 }
 
 bool AudioComponent::IsPlaying() const
 {
-    if (!m_handle.IsValid())
+    const Audio::AudioHandle handle = GetHandle();
+    if (!handle.IsValid())
     {
         return false;
     }
 
     if (auto* engine = GetAudioEngine())
     {
-        return engine->IsPlaying(m_handle);
+        return engine->IsPlaying(handle);
     }
     return false;
 }
@@ -154,46 +170,32 @@ void AudioComponent::SetEvent(const std::string& eventName)
 
 void AudioComponent::PostEvent()
 {
-    // Note: This requires integration with AudioEventManager
-    // For now, just log that the event was posted
     RVX_CORE_DEBUG("AudioComponent::PostEvent - {}", m_eventName);
-    
-    // TODO: Integrate with AudioEventManager
-    // auto* eventManager = GetAudioEventManager();
-    // if (eventManager && !m_eventName.empty())
-    // {
-    //     if (m_settings.spatialize && GetOwner())
-    //     {
-    //         m_handle = eventManager->PostEvent3D(m_eventName, GetOwner()->GetWorldPosition());
-    //     }
-    //     else
-    //     {
-    //         m_handle = eventManager->PostEvent(m_eventName);
-    //     }
-    // }
 }
 
 void AudioComponent::SetSettings(const AudioComponentSettings& settings)
 {
     m_settings = settings;
 
-    // Apply settings to currently playing sound
-    if (m_handle.IsValid())
+    const Audio::AudioHandle handle = GetHandle();
+    if (!handle.IsValid())
     {
-        if (auto* engine = GetAudioEngine())
+        return;
+    }
+
+    if (auto* engine = GetAudioEngine())
+    {
+        engine->SetPitch(handle, m_settings.pitch);
+        engine->SetLooping(handle, m_settings.loop);
+        if (m_settings.spatialize)
         {
-            engine->SetPitch(m_handle, m_settings.pitch);
-            engine->SetLooping(m_handle, m_settings.loop);
-            if (m_settings.spatialize)
-            {
-                ApplySpatialOcclusion();
-            }
-            else
-            {
-                m_lastOcclusion = Audio::OcclusionResult{};
-                engine->SetVolume(m_handle, m_settings.volume);
-                engine->SetLowPassCutoff(m_handle, m_lastOcclusion.lowPassCutoff);
-            }
+            ApplySpatialOcclusion();
+        }
+        else
+        {
+            *m_lastOcclusion = Audio::OcclusionResult{};
+            engine->SetVolume(handle, m_settings.volume);
+            engine->SetLowPassCutoff(handle, m_lastOcclusion->lowPassCutoff);
         }
     }
 }
@@ -201,7 +203,8 @@ void AudioComponent::SetSettings(const AudioComponentSettings& settings)
 void AudioComponent::SetVolume(float volume)
 {
     m_settings.volume = volume;
-    if (m_handle.IsValid())
+    const Audio::AudioHandle handle = GetHandle();
+    if (handle.IsValid())
     {
         if (m_settings.spatialize)
         {
@@ -209,7 +212,7 @@ void AudioComponent::SetVolume(float volume)
         }
         else if (auto* engine = GetAudioEngine())
         {
-            engine->SetVolume(m_handle, volume);
+            engine->SetVolume(handle, volume);
         }
     }
 }
@@ -217,11 +220,12 @@ void AudioComponent::SetVolume(float volume)
 void AudioComponent::SetPitch(float pitch)
 {
     m_settings.pitch = pitch;
-    if (m_handle.IsValid())
+    const Audio::AudioHandle handle = GetHandle();
+    if (handle.IsValid())
     {
         if (auto* engine = GetAudioEngine())
         {
-            engine->SetPitch(m_handle, pitch);
+            engine->SetPitch(handle, pitch);
         }
     }
 }
@@ -229,11 +233,12 @@ void AudioComponent::SetPitch(float pitch)
 void AudioComponent::SetLoop(bool loop)
 {
     m_settings.loop = loop;
-    if (m_handle.IsValid())
+    const Audio::AudioHandle handle = GetHandle();
+    if (handle.IsValid())
     {
         if (auto* engine = GetAudioEngine())
         {
-            engine->SetLooping(m_handle, loop);
+            engine->SetLooping(handle, loop);
         }
     }
 }
@@ -243,13 +248,14 @@ void AudioComponent::SetSpatialize(bool spatialize)
     m_settings.spatialize = spatialize;
     if (!m_settings.spatialize)
     {
-        m_lastOcclusion = Audio::OcclusionResult{};
-        if (m_handle.IsValid())
+        *m_lastOcclusion = Audio::OcclusionResult{};
+        const Audio::AudioHandle handle = GetHandle();
+        if (handle.IsValid())
         {
             if (auto* engine = GetAudioEngine())
             {
-                engine->SetVolume(m_handle, m_settings.volume);
-                engine->SetLowPassCutoff(m_handle, m_lastOcclusion.lowPassCutoff);
+                engine->SetVolume(handle, m_settings.volume);
+                engine->SetLowPassCutoff(handle, m_lastOcclusion->lowPassCutoff);
             }
         }
     }
@@ -293,13 +299,19 @@ Vec3 AudioComponent::GetAudioWorldPosition() const
     return owner ? owner->GetWorldPosition() : Vec3(0.0f);
 }
 
+const Audio::OcclusionResult& AudioComponent::GetLastOcclusionResult() const
+{
+    return *m_lastOcclusion;
+}
+
 float AudioComponent::GetPlaybackPosition() const
 {
-    if (m_handle.IsValid())
+    const Audio::AudioHandle handle = GetHandle();
+    if (handle.IsValid())
     {
         if (auto* engine = GetAudioEngine())
         {
-            return engine->GetPlaybackPosition(m_handle);
+            return engine->GetPlaybackPosition(handle);
         }
     }
     return 0.0f;
@@ -314,7 +326,7 @@ void AudioComponent::SetAudioEngine(Audio::AudioEngine* engine)
 
     Stop();
     m_audioSubsystem = nullptr;
-    m_lastOcclusion = Audio::OcclusionResult{};
+    *m_lastOcclusion = Audio::OcclusionResult{};
     m_audioEngine = engine;
 }
 
@@ -328,29 +340,30 @@ void AudioComponent::SetAudioSubsystem(Audio::AudioSubsystem* subsystem)
     Stop();
     m_audioSubsystem = subsystem;
     m_audioEngine = subsystem ? &subsystem->GetEngine() : nullptr;
-    m_lastOcclusion = Audio::OcclusionResult{};
+    *m_lastOcclusion = Audio::OcclusionResult{};
 }
 
 void AudioComponent::SetPlaybackPosition(float position)
 {
-    if (m_handle.IsValid())
+    const Audio::AudioHandle handle = GetHandle();
+    if (handle.IsValid())
     {
         if (auto* engine = GetAudioEngine())
         {
-            engine->SetPlaybackPosition(m_handle, position);
+            engine->SetPlaybackPosition(handle, position);
         }
     }
 }
 
 void AudioComponent::UpdatePosition()
 {
-    if (!m_handle.IsValid() || !m_settings.spatialize)
+    const Audio::AudioHandle handle = GetHandle();
+    if (!handle.IsValid() || !m_settings.spatialize)
     {
         return;
     }
 
-    auto* owner = GetOwner();
-    if (!owner)
+    if (!GetOwner())
     {
         return;
     }
@@ -361,13 +374,14 @@ void AudioComponent::UpdatePosition()
         return;
     }
 
-    engine->SetPosition(m_handle, GetAudioWorldPosition());
+    engine->SetPosition(handle, GetAudioWorldPosition());
     ApplySpatialOcclusion();
 }
 
 void AudioComponent::ApplySpatialOcclusion()
 {
-    if (!m_handle.IsValid() || !m_settings.spatialize)
+    const Audio::AudioHandle handle = GetHandle();
+    if (!handle.IsValid() || !m_settings.spatialize)
     {
         return;
     }
@@ -380,15 +394,15 @@ void AudioComponent::ApplySpatialOcclusion()
 
     if (!m_audioSubsystem)
     {
-        m_lastOcclusion = Audio::OcclusionResult{};
-        engine->SetVolume(m_handle, m_settings.volume);
-        engine->SetLowPassCutoff(m_handle, m_lastOcclusion.lowPassCutoff);
+        *m_lastOcclusion = Audio::OcclusionResult{};
+        engine->SetVolume(handle, m_settings.volume);
+        engine->SetLowPassCutoff(handle, m_lastOcclusion->lowPassCutoff);
         return;
     }
 
-    m_lastOcclusion = m_audioSubsystem->GetOcclusion(GetAudioWorldPosition());
-    engine->SetVolume(m_handle, m_settings.volume * m_lastOcclusion.volumeScale);
-    engine->SetLowPassCutoff(m_handle, m_lastOcclusion.lowPassCutoff);
+    *m_lastOcclusion = m_audioSubsystem->GetOcclusion(GetAudioWorldPosition());
+    engine->SetVolume(handle, m_settings.volume * m_lastOcclusion->volumeScale);
+    engine->SetLowPassCutoff(handle, m_lastOcclusion->lowPassCutoff);
 }
 
 Audio::AudioEngine* AudioComponent::GetAudioEngine() const

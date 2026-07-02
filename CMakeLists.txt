@@ -156,17 +156,12 @@ endif()
 # Subdirectories
 # =============================================================================
 add_subdirectory(Core)
+add_subdirectory(RenderContracts) # Render-only extraction data contracts
 add_subdirectory(Geometry)     # Geometry module (primitives, queries, algorithms)
 add_subdirectory(HAL)          # Hardware Abstraction Layer (Window, Input)
 add_subdirectory(Spatial)
-add_subdirectory(Physics)    # Physics subsystem
-add_subdirectory(Animation)
-add_subdirectory(Audio)      # Audio subsystem
 add_subdirectory(Scene)
 add_subdirectory(Runtime)      # Runtime subsystems (includes Camera)
-add_subdirectory(Picking)
-add_subdirectory(World)      # World module (integrates Scene, Spatial, Physics, Picking)
-add_subdirectory(Engine)
 add_subdirectory(RHI)
 add_subdirectory(ShaderCompiler)
 
@@ -190,8 +185,17 @@ if(RVX_ENABLE_OPENGL)
     add_subdirectory(RHI_OpenGL)
 endif()
 
-add_subdirectory(Render)       # Render module (includes RenderGraph)
 add_subdirectory(Resource)   # Resource module (canonical resource management)
+add_subdirectory(ResourceSceneAdapters) # Resource model data to Scene actor adapters
+add_subdirectory(Physics)    # Physics subsystem
+add_subdirectory(Animation)
+add_subdirectory(Audio)      # Audio subsystem
+add_subdirectory(World)      # World module (integrates Scene, Spatial, Physics, Picking)
+target_link_libraries(RVX_World PUBLIC RVX::ResourceSceneAdapters)
+add_subdirectory(RenderExtraction) # Scene/World to render contract extraction
+add_subdirectory(Render)       # Render module (includes RenderGraph)
+add_subdirectory(Picking)
+add_subdirectory(Engine)
 add_subdirectory(Particle)   # GPU-driven particle system
 add_subdirectory(AI)         # AI module (Navigation, BehaviorTree, Perception)
 add_subdirectory(Networking) # Network communication and replication

@@ -10,8 +10,7 @@
 
 #include "Scene/Component.h"
 #include "Core/MathTypes.h"
-#include "Resource/ResourceHandle.h"
-#include "Resource/Types/TextureResource.h"
+#include "Scene/SceneAssetHandle.h"
 
 namespace RVX
 {
@@ -179,8 +178,8 @@ public:
     // =========================================================================
 
     /// Get the captured/assigned cubemap
-    Resource::ResourceHandle<Resource::TextureResource> GetCubemap() const { return m_cubemap; }
-    void SetCubemap(Resource::ResourceHandle<Resource::TextureResource> cubemap);
+    SceneTextureHandle GetCubemap() const { return m_cubemap; }
+    void SetCubemap(SceneTextureHandle cubemap);
 
     /// Check if probe has valid data
     bool HasValidCubemap() const;
@@ -228,7 +227,7 @@ private:
     int m_importance = 0;
 
     // Cubemap
-    Resource::ResourceHandle<Resource::TextureResource> m_cubemap;
+    SceneTextureHandle m_cubemap;
     bool m_isBaking = false;
 };
 

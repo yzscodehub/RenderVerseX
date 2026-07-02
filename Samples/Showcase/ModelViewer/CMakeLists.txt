@@ -12,6 +12,7 @@ target_link_libraries(ModelViewer PRIVATE
     RVX::Render
     RVX::Runtime
     RVX::Resource
+    RVX::ResourceSceneAdapters
     RVX::Scene
     RVX::World
     RVX::RHI

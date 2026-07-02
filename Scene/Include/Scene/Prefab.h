@@ -10,8 +10,9 @@
 
 #include "Scene/SceneEntity.h"
 #include "Scene/SceneManager.h"
-#include "Resource/IResource.h"
+#include "Core/AssetResource.h"
 #include "Core/MathTypes.h"
+#include "Core/RefCounted.h"
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -150,7 +151,7 @@ struct PrefabEntityData
  * SceneEntity* instance2 = prefab->Instantiate(scene, Vec3(10, 0, 0));
  * @endcode
  */
-class Prefab : public Resource::IResource, public std::enable_shared_from_this<Prefab>
+class Prefab : public RefCounted, public IAssetResource, public std::enable_shared_from_this<Prefab>
 {
 public:
     using Ptr = std::shared_ptr<Prefab>;
@@ -160,11 +161,15 @@ public:
     ~Prefab() override = default;
 
     // =========================================================================
-    // IResource Interface
+    // Asset Interface
     // =========================================================================
 
-    const char* GetTypeName() const override { return "Prefab"; }
-    size_t GetMemoryUsage() const override;
+    uint64 GetAssetResourceId() const override { return 0; }
+    std::string_view GetAssetResourceName() const override { return m_name; }
+    bool IsAssetResourceLoaded() const override { return true; }
+
+    const char* GetTypeName() const { return "Prefab"; }
+    size_t GetMemoryUsage() const;
 
     // =========================================================================
     // Creation

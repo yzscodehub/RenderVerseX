@@ -88,6 +88,36 @@ function(rvx_add_gtest)
     )
 endfunction()
 
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME Architecture.ModuleBoundaries
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/Scripts/check_module_boundaries.py
+            --root ${CMAKE_SOURCE_DIR}
+            --config ${CMAKE_SOURCE_DIR}/Docs/module-boundaries.json
+    )
+    set_tests_properties(Architecture.ModuleBoundaries PROPERTIES
+        LABELS "unit;architecture"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME Architecture.PhaseGates
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/Scripts/check_architecture_phase_gates.py
+            --root ${CMAKE_SOURCE_DIR}
+    )
+    set_tests_properties(Architecture.PhaseGates PROPERTIES
+        LABELS "unit;architecture"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+else()
+    message(WARNING "Python3 interpreter not found; architecture script tests disabled")
+endif()
+
 # Core debug configuration validation tests
 rvx_add_gtest(
     NAME CoreDebugConfigValidation
@@ -339,19 +369,18 @@ rvx_add_gtest(
         RenderSceneValidation/main.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Material/MaterialClassification.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderDrawItem.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderProxySceneBridge.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/SceneSkyboxPassBridge.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderScene.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderSceneCollector.cpp
     LIBS
         RVX::Core
         RVX::Runtime
         RVX::World
         RVX::Resource
+        RVX::RenderExtraction
         RVX::Scene
         RVX::Animation
         RVX::RHI
     INCLUDES
+        ${CMAKE_SOURCE_DIR}/RenderExtraction/Include
         ${CMAKE_SOURCE_DIR}/RHI/Include
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer
@@ -421,7 +450,6 @@ rvx_add_gtest(
     SOURCES ParticleValidation/main.cpp
     LIBS
         RVX::Core
-        RVX::Engine
         RVX::Render
         RVX::RHI
         RVX::Scene
@@ -538,6 +566,7 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::Resource
+        RVX::ResourceSceneAdapters
         RVX::Scene
         RVX::World
     LABELS unit

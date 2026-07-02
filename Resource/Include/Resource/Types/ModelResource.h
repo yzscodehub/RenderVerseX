@@ -13,7 +13,7 @@
 #include "Resource/ResourceHandle.h"
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/MaterialResource.h"
-#include "Scene/Node.h"
+#include "Geometry/Asset/Node.h"
 #include <memory>
 #include <vector>
 #include <string>

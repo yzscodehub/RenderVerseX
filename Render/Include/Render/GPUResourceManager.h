@@ -11,15 +11,16 @@
  * - Resource eviction for unused resources
  */
 
-#include "Resource/IResource.h"
-#include "Resource/ResourceHandle.h"
+#include "Core/RefCounted.h"
 #include "Render/GPUUploadService.h"
+#include "RenderContracts/RenderResource.h"
 #include "RHI/RHIBuffer.h"
 #include "RHI/RHITexture.h"
 #include "RHI/RHIDevice.h"
 #include <functional>
 #include <memory>
 #include <queue>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -28,13 +29,6 @@
 namespace RVX
 {
     class RHICommandContext;
-
-    // Forward declarations
-    namespace Resource
-    {
-        class MeshResource;
-        class TextureResource;
-    }
 
     /**
      * @brief Upload priority levels
@@ -201,16 +195,16 @@ namespace RVX
         // =====================================================================
 
         /// Request async upload of a mesh
-        void RequestUpload(Resource::MeshResource* mesh, UploadPriority priority = UploadPriority::Normal);
+        void RequestUpload(IRenderMeshUploadSource* mesh, UploadPriority priority = UploadPriority::Normal);
 
         /// Request async upload of a texture
-        void RequestUpload(Resource::TextureResource* texture, UploadPriority priority = UploadPriority::Normal);
+        void RequestUpload(IRenderTextureUploadSource* texture, UploadPriority priority = UploadPriority::Normal);
 
         /// Upload a mesh immediately (blocking)
-        void UploadImmediate(Resource::MeshResource* mesh);
+        void UploadImmediate(IRenderMeshUploadSource* mesh);
 
         /// Upload a texture immediately (blocking)
-        void UploadImmediate(Resource::TextureResource* texture);
+        void UploadImmediate(IRenderTextureUploadSource* texture);
 
         /**
          * @brief Called before a resident GPU texture object is released or replaced.
@@ -229,22 +223,25 @@ namespace RVX
         // =====================================================================
 
         /// Get GPU buffers for a mesh (returns empty if not resident)
-        MeshGPUBuffers GetMeshBuffers(Resource::ResourceId meshId) const;
+        MeshGPUBuffers GetMeshBuffers(uint64 meshId) const;
 
         /// Get GPU texture (returns nullptr if not resident)
-        RHITexture* GetTexture(Resource::ResourceId textureId) const;
+        RHITexture* GetTexture(uint64 textureId) const;
+        RHITexture* GetTexture(IRenderTextureUploadSource* texture) const;
 
         /// Transition a resident texture to the requested state if needed
-        bool TransitionTexture(Resource::ResourceId textureId, RHICommandContext& ctx, RHIResourceState desiredState);
+        bool TransitionTexture(uint64 textureId, RHICommandContext& ctx, RHIResourceState desiredState);
 
         /// Check if a resource is GPU-resident
-        bool IsResident(Resource::ResourceId id) const;
+        bool IsResident(uint64 id) const;
+        bool IsResident(IRenderTextureUploadSource* texture) const;
 
         /// Get the resource upload/residency state
-        GPUResourceState GetResourceState(Resource::ResourceId id) const;
+        GPUResourceState GetResourceState(uint64 id) const;
 
         /// Check if a resource is ready for rendering
-        bool IsGPUReady(Resource::ResourceId id) const { return GetResourceState(id) == GPUResourceState::GPUReady; }
+        bool IsGPUReady(uint64 id) const { return GetResourceState(id) == GPUResourceState::GPUReady; }
+        bool IsGPUReady(IRenderTextureUploadSource* texture) const;
 
         // =====================================================================
         // Per-Frame Processing
@@ -255,7 +252,8 @@ namespace RVX
         void ProcessPendingUploads(float timeBudgetMs = 2.0f);
 
         /// Mark a resource as used this frame (for eviction tracking)
-        void MarkUsed(Resource::ResourceId id);
+        void MarkUsed(uint64 id);
+        void MarkUsed(IRenderTextureUploadSource* texture);
 
         /// Evict unused resources
         /// @param currentFrame Current frame number
@@ -299,9 +297,9 @@ namespace RVX
     private:
         struct PendingUpload
         {
-            Resource::ResourceId id;
+            uint64 id = 0;
             UploadPriority priority;
-            Resource::ResourceHandle<Resource::IResource> retainedResource;
+            Ref<RefCounted> retainedResource;
 
             bool operator<(const PendingUpload& other) const
             {
@@ -314,18 +312,19 @@ namespace RVX
         {
             RHITextureDesc textureDesc;
             std::vector<uint8> data;
+            std::string debugName;
             bool valid = false;
         };
 
-        void UploadMesh(Resource::MeshResource* mesh);
-        void UploadTexture(Resource::TextureResource* texture);
-        PreparedTextureUpload PrepareTextureUpload(const Resource::TextureResource& texture) const;
-        void ReleaseTextureGPUData(Resource::ResourceId id);
-        size_t RemoveQueuedUploadRequests(Resource::ResourceId id);
+        void UploadMesh(IRenderMeshUploadSource* mesh);
+        void UploadTexture(IRenderTextureUploadSource* texture);
+        PreparedTextureUpload PrepareTextureUpload(const IRenderTextureUploadSource& texture) const;
+        void ReleaseTextureGPUData(uint64 id);
+        size_t RemoveQueuedUploadRequests(uint64 id);
         void UpdateCompletedResourceUploads();
         void AbandonUploadIds(const std::vector<uint64>& uploadIds);
         void NotifyTextureInvalidated(RHITexture* texture);
-        void SetResourceState(Resource::ResourceId id, GPUResourceState state);
+        void SetResourceState(uint64 id, GPUResourceState state);
 
         IRHIDevice* m_device = nullptr;
 
@@ -333,11 +332,11 @@ namespace RVX
         std::priority_queue<PendingUpload> m_pendingQueue;
 
         // Resident resources
-        std::unordered_map<Resource::ResourceId, MeshGPUData> m_meshGPUData;
-        std::unordered_map<Resource::ResourceId, TextureGPUData> m_textureGPUData;
-        std::unordered_map<Resource::ResourceId, GPUResourceState> m_resourceStates;
-        std::unordered_set<Resource::ResourceId> m_pendingMeshUploadCompletions;
-        std::unordered_set<Resource::ResourceId> m_pendingTextureUploadCompletions;
+        std::unordered_map<uint64, MeshGPUData> m_meshGPUData;
+        std::unordered_map<uint64, TextureGPUData> m_textureGPUData;
+        std::unordered_map<uint64, GPUResourceState> m_resourceStates;
+        std::unordered_set<uint64> m_pendingMeshUploadCompletions;
+        std::unordered_set<uint64> m_pendingTextureUploadCompletions;
         std::unique_ptr<GPUUploadService> m_uploadService;
         TextureInvalidatedCallback m_textureInvalidatedCallback;
 
