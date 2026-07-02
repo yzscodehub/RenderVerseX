@@ -4,13 +4,29 @@
  */
 
 #include "Editor/Panels/Console.h"
+#if RVX_EDITOR_ENABLE_LEGACY_IMGUI
 #include <imgui.h>
+#endif
 #include <chrono>
 #include <ctime>
 #include <algorithm>
 
 namespace RVX::Editor
 {
+namespace
+{
+    std::tm ConsoleLocalTime(uint64 timestamp)
+    {
+        std::time_t time = static_cast<std::time_t>(timestamp);
+        std::tm localTime = {};
+#if defined(_WIN32)
+        localtime_s(&localTime, &time);
+#else
+        localtime_r(&time, &localTime);
+#endif
+        return localTime;
+    }
+}
 
 std::vector<ConsoleMessage> ConsolePanel::s_messages;
 std::mutex ConsolePanel::s_mutex;
@@ -24,6 +40,7 @@ ConsolePanel::ConsolePanel()
     m_filter.resize(256);
 }
 
+#if RVX_EDITOR_ENABLE_LEGACY_IMGUI
 void ConsolePanel::OnGUI()
 {
     if (!ImGui::Begin(GetName()))
@@ -194,7 +211,7 @@ void ConsolePanel::DrawMessage(const ConsoleMessage& message, int index)
     // Background color based on level and selection
     ImVec4 bgColor;
     bool isSelected = (m_selectedMessage == index);
-    
+
     if (isSelected)
     {
         bgColor = ImVec4(0.2f, 0.4f, 0.6f, 0.5f);
@@ -216,14 +233,14 @@ void ConsolePanel::DrawMessage(const ConsoleMessage& message, int index)
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.2f, 0.3f, 0.5f, 0.5f));
 
     // Selectable row
-    if (ImGui::Selectable("##MessageRow", isSelected, 
+    if (ImGui::Selectable("##MessageRow", isSelected,
                           ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick))
     {
         m_selectedMessage = index;
     }
 
     // Context menu
-    if (ImGui::BeginPopupContextItem())
+    if (ImGui::BeginPopupContextItem("MessageContext"))
     {
         if (ImGui::MenuItem("Copy"))
         {
@@ -254,10 +271,9 @@ void ConsolePanel::DrawMessage(const ConsoleMessage& message, int index)
     // Timestamp
     if (m_showTimestamps)
     {
-        time_t time = static_cast<time_t>(message.timestamp);
-        struct tm* tm = localtime(&time);
+        std::tm localTime = ConsoleLocalTime(message.timestamp);
         char timeStr[16];
-        strftime(timeStr, sizeof(timeStr), "%H:%M:%S", tm);
+        strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &localTime);
         ImGui::TextDisabled("[%s]", timeStr);
         ImGui::SameLine();
     }
@@ -285,13 +301,12 @@ void ConsolePanel::DrawMessage(const ConsoleMessage& message, int index)
 void ConsolePanel::CopyToClipboard(const ConsoleMessage& message)
 {
     std::string text;
-    
+
     if (m_showTimestamps)
     {
-        time_t time = static_cast<time_t>(message.timestamp);
-        struct tm* tm = localtime(&time);
+        std::tm localTime = ConsoleLocalTime(message.timestamp);
         char timeStr[32];
-        strftime(timeStr, sizeof(timeStr), "[%H:%M:%S] ", tm);
+        strftime(timeStr, sizeof(timeStr), "[%H:%M:%S] ", &localTime);
         text += timeStr;
     }
 
@@ -337,6 +352,16 @@ uint32 ConsolePanel::GetLevelColor(ConsoleLogLevel level) const
         default: return IM_COL32(200, 200, 200, 255);
     }
 }
+#else
+void ConsolePanel::OnGUI() {}
+void ConsolePanel::DrawToolbar() {}
+void ConsolePanel::DrawFilterButtons() {}
+void ConsolePanel::DrawMessages() {}
+void ConsolePanel::DrawMessage(const ConsoleMessage&, int) {}
+void ConsolePanel::CopyToClipboard(const ConsoleMessage&) {}
+const char* ConsolePanel::GetLevelIcon(ConsoleLogLevel) const { return ""; }
+uint32 ConsolePanel::GetLevelColor(ConsoleLogLevel) const { return 0; }
+#endif
 
 // Static methods
 void ConsolePanel::Log(const std::string& message, ConsoleLogLevel level)
@@ -441,6 +466,7 @@ void ConsolePanel::Clear()
 
 uint32 ConsolePanel::GetMessageCount(ConsoleLogLevel level)
 {
+    std::lock_guard<std::mutex> lock(s_mutex);
     switch (level)
     {
         case ConsoleLogLevel::Info: return s_infoCount;
@@ -449,6 +475,18 @@ uint32 ConsolePanel::GetMessageCount(ConsoleLogLevel level)
         case ConsoleLogLevel::Critical: return s_errorCount;
         default: return 0;
     }
+}
+
+std::vector<ConsoleMessage> ConsolePanel::GetMessagesSnapshot()
+{
+    std::lock_guard<std::mutex> lock(s_mutex);
+    return s_messages;
+}
+
+uint32 ConsolePanel::GetTotalMessageCount()
+{
+    std::lock_guard<std::mutex> lock(s_mutex);
+    return static_cast<uint32>(s_messages.size());
 }
 
 } // namespace RVX::Editor

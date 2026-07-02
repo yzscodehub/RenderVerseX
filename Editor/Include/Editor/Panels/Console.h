@@ -74,6 +74,8 @@ public:
 
     static void Clear();
     static uint32 GetMessageCount(ConsoleLogLevel level);
+    static std::vector<ConsoleMessage> GetMessagesSnapshot();
+    static uint32 GetTotalMessageCount();
 
 private:
     void DrawToolbar();

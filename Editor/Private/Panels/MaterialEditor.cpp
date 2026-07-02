@@ -36,13 +36,13 @@ void MaterialEditorPanel::OnGUI()
     ImGui::Separator();
 
     // Layout: Node graph on left, properties/preview on right
-    float panelWidth = ImGui::GetContentRegionAvail().x;
+    float panelWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x);
     float propertiesWidth = 250.0f;
 
     if (m_showProperties || m_showPreview)
     {
         ImGui::Columns(2, "MaterialEditorColumns", true);
-        ImGui::SetColumnWidth(0, panelWidth - propertiesWidth);
+        ImGui::SetColumnWidth(0, std::max(160.0f, panelWidth - propertiesWidth));
     }
 
     // Node graph
@@ -57,7 +57,7 @@ void MaterialEditorPanel::OnGUI()
         // Properties panel
         if (m_showProperties)
         {
-            ImGui::BeginChild("Properties", ImVec2(0, m_showPreview ? 300 : 0), true);
+            ImGui::BeginChild("Properties", ImVec2(0.0f, m_showPreview ? 300.0f : 0.0f), true);
             DrawPropertiesPanel();
             ImGui::EndChild();
         }
@@ -74,6 +74,19 @@ void MaterialEditorPanel::OnGUI()
     }
 
     ImGui::End();
+}
+
+void MaterialEditorPanel::OnNativeInput(const UI::UIInputState& input)
+{
+    m_nativeInputState = input;
+    HandleNodeInteraction();
+
+    if (!input.current.wantsKeyboardCapture &&
+        input.WasKeyPressed(UI::RVX_UI_KEY_DELETE) &&
+        m_selectedNode >= 0)
+    {
+        HandleNodeDeletion();
+    }
 }
 
 void MaterialEditorPanel::DrawToolbar()
@@ -128,6 +141,16 @@ void MaterialEditorPanel::DrawNodeGraph()
 {
     ImVec2 canvasPos = ImGui::GetCursorScreenPos();
     ImVec2 canvasSize = ImGui::GetContentRegionAvail();
+    if (canvasSize.x < 1.0f || canvasSize.y < 1.0f)
+    {
+        m_nodeGraphBounds = {};
+        m_nodeGraphHovered = false;
+        ImGui::Dummy(ImVec2(std::max(1.0f, canvasSize.x),
+                            std::max(1.0f, canvasSize.y)));
+        return;
+    }
+
+    m_nodeGraphBounds = UI::Rect(canvasPos.x, canvasPos.y, canvasSize.x, canvasSize.y);
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
     // Background
@@ -179,17 +202,15 @@ void MaterialEditorPanel::DrawNodeGraph()
         Vec2 startPos = GetPinPosition(m_linkSourceNode, m_linkSourcePin, m_linkSourceIsOutput);
         ImVec2 start(canvasPos.x + (startPos.x + m_canvasOffset.x) * m_canvasZoom,
                      canvasPos.y + (startPos.y + m_canvasOffset.y) * m_canvasZoom);
-        ImVec2 end = ImGui::GetMousePos();
+        const Vec2 mouse = m_nativeInputState.current.mousePosition;
+        ImVec2 end(mouse.x, mouse.y);
 
         ImU32 linkColor = IM_COL32(200, 200, 200, 200);
-        drawList->AddBezierCubic(start, 
+        drawList->AddBezierCubic(start,
                                   ImVec2(start.x + 50, start.y),
                                   ImVec2(end.x - 50, end.y),
                                   end, linkColor, 2.0f);
     }
-
-    // Handle input
-    HandleNodeInteraction();
 
     // Context menu
     DrawContextMenu();
@@ -229,9 +250,9 @@ void MaterialEditorPanel::DrawNode(MaterialNode& node)
     float nodeX = canvasPos.x + (node.position.x + m_canvasOffset.x) * m_canvasZoom;
     float nodeY = canvasPos.y + (node.position.y + m_canvasOffset.y) * m_canvasZoom;
     float nodeWidth = m_nodeWidth * m_canvasZoom;
-    
+
     // Calculate node height based on pins
-    int pinCount = std::max(static_cast<int>(node.inputs.size()), 
+    int pinCount = std::max(static_cast<int>(node.inputs.size()),
                            static_cast<int>(node.outputs.size()));
     float nodeHeight = (30.0f + pinCount * 22.0f) * m_canvasZoom;
 
@@ -260,7 +281,7 @@ void MaterialEditorPanel::DrawNode(MaterialNode& node)
     float cornerRadius = 4.0f * m_canvasZoom;
 
     // Header
-    drawList->AddRectFilled(nodePos, 
+    drawList->AddRectFilled(nodePos,
                             ImVec2(nodePos.x + nodeSize.x, nodePos.y + headerHeight),
                             headerColor, cornerRadius, ImDrawFlags_RoundCornersTop);
 
@@ -270,7 +291,7 @@ void MaterialEditorPanel::DrawNode(MaterialNode& node)
                             bodyColor, cornerRadius, ImDrawFlags_RoundCornersBottom);
 
     // Border
-    drawList->AddRect(nodePos, 
+    drawList->AddRect(nodePos,
                       ImVec2(nodePos.x + nodeSize.x, nodePos.y + nodeSize.y),
                       borderColor, cornerRadius, 0, isSelected ? 2.0f : 1.0f);
 
@@ -320,15 +341,6 @@ void MaterialEditorPanel::DrawNode(MaterialNode& node)
         pinY += pinSpacing;
     }
 
-    // Handle node interaction
-    ImVec2 mousePos = ImGui::GetMousePos();
-    bool mouseInNode = mousePos.x >= nodePos.x && mousePos.x <= nodePos.x + nodeSize.x &&
-                       mousePos.y >= nodePos.y && mousePos.y <= nodePos.y + nodeSize.y;
-
-    if (mouseInNode)
-    {
-        m_hoveredNode = node.id;
-    }
 }
 
 void MaterialEditorPanel::DrawLinks()
@@ -365,10 +377,9 @@ void MaterialEditorPanel::DrawContextMenu()
 {
     if (ImGui::BeginPopupContextWindow("NodeContextMenu", ImGuiPopupFlags_NoOpenOverItems))
     {
-        ImVec2 mousePos = ImGui::GetMousePos();
-        ImVec2 canvasPos = ImGui::GetCursorScreenPos();
-        Vec2 nodePos((mousePos.x - canvasPos.x) / m_canvasZoom - m_canvasOffset.x,
-                     (mousePos.y - canvasPos.y) / m_canvasZoom - m_canvasOffset.y);
+        const Vec2 mousePos = m_nativeInputState.current.mousePosition;
+        Vec2 nodePos((mousePos.x - m_nodeGraphBounds.x) / m_canvasZoom - m_canvasOffset.x,
+                     (mousePos.y - m_nodeGraphBounds.y) / m_canvasZoom - m_canvasOffset.y);
 
         ImGui::Text("Add Node");
         ImGui::Separator();
@@ -476,7 +487,7 @@ void MaterialEditorPanel::DrawPropertiesPanel()
                     break;
 
                 case MaterialNodeType::Texture:
-                    ImGui::Text("Texture: %s", 
+                    ImGui::Text("Texture: %s",
                                node->texturePath.empty() ? "(none)" : node->texturePath.c_str());
                     if (ImGui::Button("Browse...", ImVec2(-1, 0)))
                     {
@@ -554,29 +565,32 @@ void MaterialEditorPanel::DrawPreviewPanel()
 
 void MaterialEditorPanel::HandleNodeInteraction()
 {
-    ImGuiIO& io = ImGui::GetIO();
-    ImVec2 canvasPos = ImGui::GetCursorScreenPos();
-    ImVec2 mousePos = io.MousePos;
-
-    // Reset hover state
-    m_hoveredNode = -1;
+    const UI::UIInputState& input = m_nativeInputState;
+    const Vec2 mousePos = input.current.mousePosition;
+    const Vec2 mouseDelta = input.mouseDelta;
+    m_nodeGraphHovered = m_nodeGraphBounds.width > 0.0f &&
+                         m_nodeGraphBounds.height > 0.0f &&
+                         m_nodeGraphBounds.Contains(mousePos);
+    m_hoveredNode = m_nodeGraphHovered ? HitTestNode(mousePos) : -1;
 
     // Canvas panning
-    if (ImGui::IsWindowHovered() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle))
+    if (m_nodeGraphHovered &&
+        input.current.IsMouseButtonDown(UI::UIMouseButton::Middle))
     {
-        m_canvasOffset.x += io.MouseDelta.x / m_canvasZoom;
-        m_canvasOffset.y += io.MouseDelta.y / m_canvasZoom;
+        m_canvasOffset.x += mouseDelta.x / m_canvasZoom;
+        m_canvasOffset.y += mouseDelta.y / m_canvasZoom;
     }
 
     // Zoom with mouse wheel
-    if (ImGui::IsWindowHovered() && io.MouseWheel != 0.0f)
+    if (m_nodeGraphHovered && input.current.scrollDelta.y != 0.0f)
     {
-        float zoomDelta = io.MouseWheel * 0.1f;
+        float zoomDelta = input.current.scrollDelta.y * 0.1f;
         m_canvasZoom = std::clamp(m_canvasZoom + zoomDelta, 0.25f, 2.0f);
     }
 
     // Node selection and dragging
-    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsWindowHovered())
+    if (m_nodeGraphHovered &&
+        input.WasMouseButtonPressed(UI::UIMouseButton::Left))
     {
         m_selectedNode = m_hoveredNode;
         if (m_hoveredNode >= 0)
@@ -585,7 +599,7 @@ void MaterialEditorPanel::HandleNodeInteraction()
         }
     }
 
-    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+    if (input.WasMouseButtonReleased(UI::UIMouseButton::Left))
     {
         m_isDraggingNode = false;
         m_isCreatingLink = false;
@@ -597,18 +611,37 @@ void MaterialEditorPanel::HandleNodeInteraction()
         {
             if (node.id == m_selectedNode)
             {
-                node.position.x += io.MouseDelta.x / m_canvasZoom;
-                node.position.y += io.MouseDelta.y / m_canvasZoom;
+                node.position.x += mouseDelta.x / m_canvasZoom;
+                node.position.y += mouseDelta.y / m_canvasZoom;
                 break;
             }
         }
     }
 
-    // Delete node with Delete key
-    if (ImGui::IsKeyPressed(ImGuiKey_Delete) && m_selectedNode >= 0)
+}
+
+int MaterialEditorPanel::HitTestNode(const Vec2& screenPosition) const
+{
+    for (auto it = m_nodes.rbegin(); it != m_nodes.rend(); ++it)
     {
-        HandleNodeDeletion();
+        const MaterialNode& node = *it;
+        const float nodeX =
+            m_nodeGraphBounds.x + (node.position.x + m_canvasOffset.x) * m_canvasZoom;
+        const float nodeY =
+            m_nodeGraphBounds.y + (node.position.y + m_canvasOffset.y) * m_canvasZoom;
+        const float nodeWidth = m_nodeWidth * m_canvasZoom;
+        const int pinCount = std::max(static_cast<int>(node.inputs.size()),
+                                      static_cast<int>(node.outputs.size()));
+        const float nodeHeight = (30.0f + pinCount * 22.0f) * m_canvasZoom;
+        if (screenPosition.x >= nodeX &&
+            screenPosition.x <= nodeX + nodeWidth &&
+            screenPosition.y >= nodeY &&
+            screenPosition.y <= nodeY + nodeHeight)
+        {
+            return node.id;
+        }
     }
+    return -1;
 }
 
 void MaterialEditorPanel::HandleLinkCreation()

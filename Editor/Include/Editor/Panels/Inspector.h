@@ -7,11 +7,12 @@
 
 #include "Editor/Panels/IEditorPanel.h"
 #include "Core/Serialization/PropertyReflection.h"
+#include "Tools/AssetDatabase.h"
 #include <string>
 
 namespace RVX
 {
-    class Entity;
+    class SceneEntity;
     class Component;
 }
 
@@ -35,14 +36,18 @@ public:
     const char* GetIcon() const override { return "inspector"; }
     void OnGUI() override;
 
+    static bool SetAssetReferenceProperty(const Property& prop,
+                                          void* instance,
+                                          const Tools::AssetGUID& guid);
+
 private:
     // Entity inspection
-    void DrawEntityHeader(Entity* entity);
-    void DrawEntityInspector(Entity* entity);
-    void DrawTransformComponent(Entity* entity);
+    void DrawEntityHeader(SceneEntity* entity);
+    void DrawEntityInspector(SceneEntity* entity);
+    void DrawTransformComponent(SceneEntity* entity);
     void DrawComponentInspector(Component* component);
     void DrawComponentHeader(Component* component, bool& removeRequested);
-    void DrawAddComponentMenu(Entity* entity);
+    void DrawAddComponentMenu(SceneEntity* entity);
 
     // Property drawing
     void DrawProperty(const Property& prop, void* instance);

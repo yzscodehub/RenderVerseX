@@ -45,6 +45,8 @@ void AnimationEditorPanel::OnUpdate(float deltaTime)
 
 void AnimationEditorPanel::OnGUI()
 {
+    m_boneRowHits.clear();
+
     if (!ImGui::Begin(GetName()))
     {
         ImGui::End();
@@ -55,13 +57,20 @@ void AnimationEditorPanel::OnGUI()
     ImGui::Separator();
 
     // Main content area
-    float panelWidth = ImGui::GetContentRegionAvail().x;
-    
+    float panelWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+
     if (m_showBoneHierarchy)
     {
+        const float hierarchyWidth = std::clamp(panelWidth * 0.22f, 160.0f, 220.0f);
+        const float propertyWidth = m_showPropertyPanel
+                                    ? std::clamp(panelWidth * 0.24f, 180.0f, 260.0f)
+                                    : 0.0f;
+        const float timelineWidth = std::max(160.0f,
+                                             panelWidth - hierarchyWidth - propertyWidth);
+
         ImGui::Columns(3, "AnimEditorColumns", true);
-        ImGui::SetColumnWidth(0, 200);
-        ImGui::SetColumnWidth(1, panelWidth - 400);
+        ImGui::SetColumnWidth(0, hierarchyWidth);
+        ImGui::SetColumnWidth(1, timelineWidth);
 
         // Left: Bone hierarchy
         ImGui::BeginChild("BoneHierarchy", ImVec2(0, 0), true);
@@ -99,6 +108,13 @@ void AnimationEditorPanel::OnGUI()
     }
 
     ImGui::End();
+}
+
+void AnimationEditorPanel::OnNativeInput(const UI::UIInputState& input)
+{
+    m_nativeInputState = input;
+    HandleTimelineInput();
+    HandleBoneHierarchyInput();
 }
 
 void AnimationEditorPanel::DrawToolbar()
@@ -194,10 +210,20 @@ void AnimationEditorPanel::DrawTimeline()
 {
     ImVec2 canvasPos = ImGui::GetCursorScreenPos();
     ImVec2 canvasSize = ImGui::GetContentRegionAvail();
+    if (canvasSize.x < 1.0f || canvasSize.y < 1.0f)
+    {
+        m_timelineBounds = {};
+        m_timelineHovered = false;
+        ImGui::Dummy(ImVec2(std::max(1.0f, canvasSize.x),
+                            std::max(1.0f, canvasSize.y)));
+        return;
+    }
+
+    m_timelineBounds = UI::Rect(canvasPos.x, canvasPos.y, canvasSize.x, canvasSize.y);
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
     // Background
-    drawList->AddRectFilled(canvasPos, 
+    drawList->AddRectFilled(canvasPos,
                             ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y),
                             IM_COL32(30, 30, 35, 255));
 
@@ -222,14 +248,17 @@ void AnimationEditorPanel::DrawTimeline()
             ImVec2(playheadX, canvasPos.y + m_rulerHeight),
             IM_COL32(255, 100, 100, 255));
     }
-
-    HandleTimelineInput();
 }
 
 void AnimationEditorPanel::DrawTimeRuler()
 {
     ImVec2 canvasPos = ImGui::GetCursorScreenPos();
     ImVec2 canvasSize = ImGui::GetContentRegionAvail();
+    if (canvasSize.x < 1.0f || canvasSize.y < 1.0f)
+    {
+        return;
+    }
+
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
     // Ruler background
@@ -240,7 +269,7 @@ void AnimationEditorPanel::DrawTimeRuler()
     // Calculate tick spacing
     float minTickSpacing = 50.0f;
     float timePerTick = minTickSpacing / m_timelineZoom;
-    
+
     // Round to nice values
     float niceIntervals[] = { 0.01f, 0.02f, 0.05f, 0.1f, 0.2f, 0.5f, 1.0f, 2.0f, 5.0f, 10.0f };
     for (float interval : niceIntervals)
@@ -276,8 +305,8 @@ void AnimationEditorPanel::DrawTimeRuler()
                 snprintf(label, sizeof(label), "%.1fs", time);
             else
                 snprintf(label, sizeof(label), "%.2fs", time);
-            
-            drawList->AddText(ImVec2(x + 2, canvasPos.y + 2), 
+
+            drawList->AddText(ImVec2(x + 2, canvasPos.y + 2),
                              IM_COL32(180, 180, 180, 255), label);
         }
     }
@@ -292,12 +321,17 @@ void AnimationEditorPanel::DrawTracks()
 {
     ImVec2 canvasPos = ImGui::GetCursorScreenPos();
     ImVec2 canvasSize = ImGui::GetContentRegionAvail();
+    if (canvasSize.x < 1.0f || canvasSize.y < 1.0f)
+    {
+        return;
+    }
+
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
     float trackY = canvasPos.y + m_rulerHeight;
 
     // Demo tracks
-    const char* trackNames[] = { "Position.X", "Position.Y", "Position.Z", 
+    const char* trackNames[] = { "Position.X", "Position.Y", "Position.Z",
                                   "Rotation.X", "Rotation.Y", "Rotation.Z",
                                   "Scale.X", "Scale.Y", "Scale.Z" };
 
@@ -326,7 +360,7 @@ void AnimationEditorPanel::DrawTracks()
                 {
                     float ky = trackY + m_trackHeight * 0.5f;
                     bool selected = (m_selectedTrack == i && m_selectedKeyframe >= 0);
-                    ImU32 keyColor = selected ? IM_COL32(255, 200, 100, 255) : 
+                    ImU32 keyColor = selected ? IM_COL32(255, 200, 100, 255) :
                                                 IM_COL32(100, 180, 255, 255);
 
                     // Diamond shape
@@ -343,19 +377,6 @@ void AnimationEditorPanel::DrawTracks()
         trackY += m_trackHeight;
     }
 
-    // Handle track selection
-    if (ImGui::IsWindowHovered())
-    {
-        ImVec2 mousePos = ImGui::GetMousePos();
-        if (mousePos.y > canvasPos.y + m_rulerHeight)
-        {
-            int hoveredTrack = static_cast<int>((mousePos.y - canvasPos.y - m_rulerHeight) / m_trackHeight);
-            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && hoveredTrack >= 0 && hoveredTrack < 9)
-            {
-                m_selectedTrack = hoveredTrack;
-            }
-        }
-    }
 }
 
 void AnimationEditorPanel::DrawTrack(int trackIndex)
@@ -398,11 +419,15 @@ void AnimationEditorPanel::DrawBoneHierarchy()
             ImGui::Indent();
 
         bool open = ImGui::TreeNodeEx(boneNames[i], flags);
-
-        if (ImGui::IsItemClicked())
-        {
-            m_selectedBone = i;
-        }
+        const ImVec2 itemMin = ImGui::GetItemRectMin();
+        const ImVec2 itemMax = ImGui::GetItemRectMax();
+        const float rowWidth = itemMax.x - itemMin.x;
+        const float rowHeight = itemMax.y - itemMin.y;
+        m_boneRowHits.push_back(BoneRowHit{
+            i,
+            UI::Rect(itemMin.x, itemMin.y, rowWidth, rowHeight),
+            UI::Rect(itemMin.x, itemMin.y, std::min(22.0f, rowWidth), rowHeight),
+            hasChildren});
 
         if (open)
         {
@@ -456,7 +481,7 @@ void AnimationEditorPanel::DrawCurveEditor()
         {
             float t1 = static_cast<float>(i) / canvasSize.x;
             float t2 = static_cast<float>(i + 1) / canvasSize.x;
-            
+
             // Simple sine wave for demo
             float v1 = 0.5f + 0.4f * std::sin(t1 * 6.28f);
             float v2 = 0.5f + 0.4f * std::sin(t2 * 6.28f);
@@ -538,43 +563,82 @@ void AnimationEditorPanel::DrawPropertyPanel()
 
 void AnimationEditorPanel::HandleTimelineInput()
 {
-    ImVec2 canvasPos = ImGui::GetCursorScreenPos();
+    const UI::UIInputState& input = m_nativeInputState;
+    const Vec2 mousePos = input.current.mousePosition;
+    m_timelineHovered = m_timelineBounds.width > 0.0f &&
+                        m_timelineBounds.height > 0.0f &&
+                        m_timelineBounds.Contains(mousePos);
 
-    if (ImGui::IsWindowHovered())
+    if (!m_timelineHovered)
     {
-        // Scroll with mouse wheel
-        if (ImGui::GetIO().MouseWheel != 0.0f)
+        return;
+    }
+
+    // Scroll with mouse wheel
+    if (input.current.scrollDelta.y != 0.0f)
+    {
+        if (input.current.modifiers & UI::ToMask(UI::UIInputModifier::Ctrl))
         {
-            if (ImGui::GetIO().KeyCtrl)
-            {
-                // Zoom
-                float zoomDelta = ImGui::GetIO().MouseWheel * m_timelineZoom * 0.1f;
-                m_timelineZoom = std::clamp(m_timelineZoom + zoomDelta, 20.0f, 500.0f);
-            }
-            else
-            {
-                // Scroll
-                m_timelineScroll -= ImGui::GetIO().MouseWheel * 50.0f;
-                m_timelineScroll = std::max(0.0f, m_timelineScroll);
-            }
+            float zoomDelta = input.current.scrollDelta.y * m_timelineZoom * 0.1f;
+            m_timelineZoom = std::clamp(m_timelineZoom + zoomDelta, 20.0f, 500.0f);
+        }
+        else
+        {
+            m_timelineScroll -= input.current.scrollDelta.y * 50.0f;
+            m_timelineScroll = std::max(0.0f, m_timelineScroll);
+        }
+    }
+
+    if (mousePos.y > m_timelineBounds.y + m_rulerHeight &&
+        input.WasMouseButtonPressed(UI::UIMouseButton::Left))
+    {
+        int hoveredTrack =
+            static_cast<int>((mousePos.y - m_timelineBounds.y - m_rulerHeight) / m_trackHeight);
+        if (hoveredTrack >= 0 && hoveredTrack < 9)
+        {
+            m_selectedTrack = hoveredTrack;
+        }
+    }
+
+    // Click or drag on ruler to set time
+    if (mousePos.y >= m_timelineBounds.y &&
+        mousePos.y <= m_timelineBounds.y + m_rulerHeight &&
+        input.current.IsMouseButtonDown(UI::UIMouseButton::Left))
+    {
+        float clickX = mousePos.x - m_timelineBounds.x + m_timelineScroll;
+        m_currentTime = PixelToTime(clickX);
+        m_currentTime = std::clamp(m_currentTime, 0.0f, m_duration);
+
+        if (m_snapToFrames)
+        {
+            m_currentTime = std::round(m_currentTime * m_frameRate) / m_frameRate;
+        }
+    }
+}
+
+void AnimationEditorPanel::HandleBoneHierarchyInput()
+{
+    const UI::UIInputState& input = m_nativeInputState;
+    if (!input.WasMouseButtonPressed(UI::UIMouseButton::Left))
+    {
+        return;
+    }
+
+    const Vec2 mousePos = input.current.mousePosition;
+    for (auto it = m_boneRowHits.rbegin(); it != m_boneRowHits.rend(); ++it)
+    {
+        if (!it->bounds.Contains(mousePos))
+        {
+            continue;
         }
 
-        // Click on ruler to set time
-        ImVec2 mousePos = ImGui::GetMousePos();
-        if (mousePos.y >= canvasPos.y && mousePos.y <= canvasPos.y + m_rulerHeight)
+        if (it->hasToggle && it->toggleBounds.Contains(mousePos))
         {
-            if (ImGui::IsMouseDown(ImGuiMouseButton_Left))
-            {
-                float clickX = mousePos.x - canvasPos.x + m_timelineScroll;
-                m_currentTime = PixelToTime(clickX);
-                m_currentTime = std::clamp(m_currentTime, 0.0f, m_duration);
-
-                if (m_snapToFrames)
-                {
-                    m_currentTime = std::round(m_currentTime * m_frameRate) / m_frameRate;
-                }
-            }
+            return;
         }
+
+        m_selectedBone = it->boneIndex;
+        return;
     }
 }
 

@@ -6,9 +6,13 @@
 #include "Editor/Panels/SceneHierarchy.h"
 #include "Editor/EditorContext.h"
 #include "Core/Log.h"
+#include "Scene/SceneEntity.h"
+#include "Scene/SceneManager.h"
 
 #include <imgui.h>
 #include <algorithm>
+#include <cstdio>
+#include <cstring>
 
 namespace RVX::Editor
 {
@@ -21,6 +25,9 @@ SceneHierarchyPanel::SceneHierarchyPanel()
 
 void SceneHierarchyPanel::OnGUI()
 {
+    m_entityRows.clear();
+    m_renameEditBounds = {};
+
     if (!ImGui::Begin(GetName()))
     {
         ImGui::End();
@@ -32,6 +39,58 @@ void SceneHierarchyPanel::OnGUI()
     DrawSceneTree();
 
     ImGui::End();
+}
+
+void SceneHierarchyPanel::OnNativeInput(const UI::UIInputState& input)
+{
+    if (m_renamingEntity && input.WasKeyPressed(UI::RVX_UI_KEY_ESCAPE))
+    {
+        m_renamingEntity = nullptr;
+        return;
+    }
+
+    const Vec2 mousePosition = input.current.mousePosition;
+    const bool leftPressed = input.WasMouseButtonPressed(UI::UIMouseButton::Left);
+    if (m_renamingEntity)
+    {
+        if (leftPressed && !m_renameEditBounds.Contains(mousePosition))
+        {
+            m_renamingEntity = nullptr;
+        }
+        return;
+    }
+
+    if (!leftPressed)
+    {
+        return;
+    }
+
+    SceneEntity* hitEntity = nullptr;
+    for (auto it = m_entityRows.rbegin(); it != m_entityRows.rend(); ++it)
+    {
+        if (it->entity && it->bounds.Contains(mousePosition))
+        {
+            hitEntity = it->entity;
+            break;
+        }
+    }
+    if (!hitEntity)
+    {
+        return;
+    }
+
+    auto& context = EditorContext::Get();
+    if (!(input.current.modifiers & UI::ToMask(UI::UIInputModifier::Ctrl)))
+    {
+        context.SelectEntity(hitEntity);
+    }
+
+    if (input.WasMouseButtonDoubleClicked(UI::UIMouseButton::Left))
+    {
+        m_renamingEntity = hitEntity;
+        const std::string& entityName = hitEntity->GetName();
+        std::snprintf(m_renameBuffer, sizeof(m_renameBuffer), "%s", entityName.c_str());
+    }
 }
 
 void SceneHierarchyPanel::DrawToolbar()
@@ -79,12 +138,12 @@ void SceneHierarchyPanel::DrawToolbar()
 void SceneHierarchyPanel::DrawSceneTree()
 {
     auto& context = EditorContext::Get();
-    auto scene = context.GetActiveScene();
+    auto* sceneManager = context.GetActiveSceneManager();
 
-    if (!scene)
+    if (!sceneManager)
     {
         ImGui::TextDisabled("No scene loaded");
-        
+
         if (ImGui::Button("New Scene", ImVec2(-1, 30)))
         {
             context.NewScene();
@@ -99,7 +158,7 @@ void SceneHierarchyPanel::DrawSceneTree()
     bool sceneOpen = ImGui::TreeNodeEx("Scene", sceneFlags);
 
     // Scene context menu
-    if (ImGui::BeginPopupContextItem())
+    if (ImGui::BeginPopupContextItem("SceneRootContext"))
     {
         DrawCreateEntityMenu();
         ImGui::Separator();
@@ -116,17 +175,12 @@ void SceneHierarchyPanel::DrawSceneTree()
 
     if (sceneOpen)
     {
-        // TODO: Iterate through scene root entities
-        // for (auto* entity : scene->GetRootEntities())
-        // {
-        //     if (PassesFilter(entity))
-        //     {
-        //         DrawEntityNode(entity);
-        //     }
-        // }
-
-        // Placeholder entities for demonstration
-        DrawEntityNode(nullptr, 0);
+        sceneManager->ForEachEntity([this](SceneEntity* entity) {
+            if (entity && entity->IsRoot() && PassesFilter(entity))
+            {
+                DrawEntityNode(entity);
+            }
+        });
 
         ImGui::TreePop();
     }
@@ -151,18 +205,18 @@ void SceneHierarchyPanel::DrawSceneTree()
     }
 }
 
-void SceneHierarchyPanel::DrawEntityNode(Entity* entity, int depth)
+void SceneHierarchyPanel::DrawEntityNode(SceneEntity* entity, int depth)
 {
-    (void)entity;
     (void)depth;
+    if (!entity)
+        return;
 
     auto& context = EditorContext::Get();
 
-    // Demo entity for visualization
-    const char* entityName = "Demo Entity";
-    bool hasChildren = false;
-    bool isSelected = false;  // TODO: context.IsSelected(entity);
-    bool isActive = true;
+    const std::string& entityName = entity->GetName();
+    bool hasChildren = entity->GetChildCount() > 0;
+    bool isSelected = context.IsSelected(entity);
+    bool isActive = entity->IsActive();
 
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
     if (isSelected)
@@ -182,6 +236,7 @@ void SceneHierarchyPanel::DrawEntityNode(Entity* entity, int depth)
 
     // Draw node
     bool nodeOpen = false;
+    ImGui::PushID(static_cast<int>(entity->GetHandle()));
     if (m_renamingEntity == entity)
     {
         // Rename mode
@@ -189,46 +244,30 @@ void SceneHierarchyPanel::DrawEntityNode(Entity* entity, int depth)
         if (ImGui::InputText("##Rename", m_renameBuffer, sizeof(m_renameBuffer),
                              ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
         {
-            // TODO: entity->SetName(m_renameBuffer);
-            m_renamingEntity = nullptr;
-            context.MarkSceneDirty();
-        }
-
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape) || 
-            (!ImGui::IsItemActive() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)))
-        {
+            context.SetEntityNameUndoable(entity, m_renameBuffer);
             m_renamingEntity = nullptr;
         }
+        const ImVec2 itemMin = ImGui::GetItemRectMin();
+        const ImVec2 itemMax = ImGui::GetItemRectMax();
+        m_renameEditBounds = UI::Rect(itemMin.x,
+                                      itemMin.y,
+                                      itemMax.x - itemMin.x,
+                                      itemMax.y - itemMin.y);
     }
     else
     {
-        nodeOpen = ImGui::TreeNodeEx(entityName, flags);
-
-        // Handle selection
-        if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
-        {
-            if (ImGui::GetIO().KeyCtrl)
-            {
-                // TODO: Toggle selection
-            }
-            else
-            {
-                context.SelectEntity(entity);
-            }
-        }
-
-        // Double click to rename
-        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-        {
-            m_renamingEntity = entity;
-            strncpy(m_renameBuffer, entityName, sizeof(m_renameBuffer) - 1);
-        }
+        nodeOpen = ImGui::TreeNodeEx(entityName.empty() ? "Entity" : entityName.c_str(), flags);
+        const ImVec2 itemMin = ImGui::GetItemRectMin();
+        const ImVec2 itemMax = ImGui::GetItemRectMax();
+        m_entityRows.push_back(EntityRowHit{
+            entity,
+            UI::Rect(itemMin.x, itemMin.y, itemMax.x - itemMin.x, itemMax.y - itemMin.y)});
 
         // Drag source
         if (ImGui::BeginDragDropSource())
         {
-            ImGui::SetDragDropPayload("ENTITY_PTR", &entity, sizeof(Entity*));
-            ImGui::Text("%s", entityName);
+            ImGui::SetDragDropPayload("ENTITY_PTR", &entity, sizeof(SceneEntity*));
+            ImGui::Text("%s", entityName.empty() ? "Entity" : entityName.c_str());
             ImGui::EndDragDropSource();
         }
 
@@ -237,10 +276,11 @@ void SceneHierarchyPanel::DrawEntityNode(Entity* entity, int depth)
         {
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ENTITY_PTR"))
             {
-                Entity* droppedEntity = *static_cast<Entity**>(payload->Data);
-                (void)droppedEntity;
-                // TODO: Set parent
-                context.MarkSceneDirty();
+                SceneEntity* droppedEntity = *static_cast<SceneEntity**>(payload->Data);
+                if (droppedEntity && droppedEntity != entity && !entity->IsDescendantOf(droppedEntity))
+                {
+                    context.SetEntityParentUndoable(droppedEntity, entity);
+                }
             }
             ImGui::EndDragDropTarget();
         }
@@ -257,27 +297,29 @@ void SceneHierarchyPanel::DrawEntityNode(Entity* entity, int depth)
     // Draw children
     if (nodeOpen)
     {
-        // TODO: for (auto* child : entity->GetChildren())
-        // {
-        //     if (PassesFilter(child))
-        //     {
-        //         DrawEntityNode(child, depth + 1);
-        //     }
-        // }
+        for (auto* child : entity->GetChildren())
+        {
+            if (PassesFilter(child))
+            {
+                DrawEntityNode(child, depth + 1);
+            }
+        }
         ImGui::TreePop();
     }
+    ImGui::PopID();
 }
 
-void SceneHierarchyPanel::DrawContextMenu(Entity* entity)
+void SceneHierarchyPanel::DrawContextMenu(SceneEntity* entity)
 {
-    (void)entity;
+    if (!entity)
+        return;
 
-    if (ImGui::BeginPopupContextItem())
+    if (ImGui::BeginPopupContextItem("EntityContext"))
     {
         if (ImGui::MenuItem("Rename", "F2"))
         {
             m_renamingEntity = entity;
-            strncpy(m_renameBuffer, "Entity", sizeof(m_renameBuffer) - 1);
+            std::snprintf(m_renameBuffer, sizeof(m_renameBuffer), "%s", entity->GetName().c_str());
         }
 
         if (ImGui::MenuItem("Duplicate", "Ctrl+D"))
@@ -288,8 +330,7 @@ void SceneHierarchyPanel::DrawContextMenu(Entity* entity)
 
         if (ImGui::MenuItem("Delete", "Delete"))
         {
-            // TODO: Delete entity
-            EditorContext::Get().MarkSceneDirty();
+            EditorContext::Get().DestroyEntityUndoable(entity);
         }
 
         ImGui::Separator();
@@ -323,11 +364,10 @@ void SceneHierarchyPanel::DrawContextMenu(Entity* entity)
 
         ImGui::Separator();
 
-        bool isActive = true;
+        bool isActive = entity->IsActive();
         if (ImGui::MenuItem(isActive ? "Deactivate" : "Activate"))
         {
-            // TODO: Toggle active state
-            EditorContext::Get().MarkSceneDirty();
+            EditorContext::Get().SetEntityActiveUndoable(entity, !isActive);
         }
 
         if (ImGui::MenuItem("Focus", "F"))
@@ -345,8 +385,14 @@ void SceneHierarchyPanel::DrawCreateEntityMenu()
     {
         if (ImGui::MenuItem("Empty Entity"))
         {
-            // TODO: Create empty entity
-            EditorContext::Get().MarkSceneDirty();
+            auto& context = EditorContext::Get();
+            if (context.GetActiveSceneManager())
+            {
+                if (SceneEntity* entity = context.CreateEntityUndoable("Entity"))
+                {
+                    context.SelectEntity(entity);
+                }
+            }
         }
 
         ImGui::Separator();
@@ -403,24 +449,21 @@ void SceneHierarchyPanel::DrawCreateEntityMenu()
     }
 }
 
-void SceneHierarchyPanel::HandleDragDrop(Entity* entity)
+void SceneHierarchyPanel::HandleDragDrop(SceneEntity* entity)
 {
     (void)entity;
     // Already handled in DrawEntityNode
 }
 
-bool SceneHierarchyPanel::PassesFilter(Entity* entity) const
+bool SceneHierarchyPanel::PassesFilter(SceneEntity* entity) const
 {
-    (void)entity;
+    if (!entity)
+        return false;
 
     if (m_searchFilter.empty() || m_searchFilter[0] == '\0')
         return true;
 
-    // TODO: Check entity name against filter
-    // std::string name = entity->GetName();
-    // return name.find(m_searchFilter) != std::string::npos;
-
-    return true;
+    return entity->GetName().find(m_searchFilter.c_str()) != std::string::npos;
 }
 
 } // namespace RVX::Editor

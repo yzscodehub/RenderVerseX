@@ -38,6 +38,7 @@ public:
     void OnInit() override;
     void OnUpdate(float deltaTime) override;
     void OnGUI() override;
+    void OnNativeInput(const UI::UIInputState& input) override;
 
     // =========================================================================
     // Animation Control
@@ -60,6 +61,14 @@ public:
     void SetLooping(bool loop) { m_isLooping = loop; }
 
 private:
+    struct BoneRowHit
+    {
+        int boneIndex = -1;
+        UI::Rect bounds;
+        UI::Rect toggleBounds;
+        bool hasToggle = false;
+    };
+
     void DrawToolbar();
     void DrawTimeline();
     void DrawTimeRuler();
@@ -72,6 +81,7 @@ private:
     void DrawPropertyPanel();
 
     void HandleTimelineInput();
+    void HandleBoneHierarchyInput();
     void HandleKeyframeEditing();
 
     float TimeToPixel(float time) const;
@@ -94,6 +104,9 @@ private:
     float m_timelineHeight = 300.0f;
     float m_trackHeight = 24.0f;
     float m_rulerHeight = 30.0f;
+    UI::UIInputState m_nativeInputState;
+    UI::Rect m_timelineBounds;
+    bool m_timelineHovered = false;
 
     // Selection
     int m_selectedTrack = -1;
@@ -112,6 +125,7 @@ private:
     // Bone hierarchy
     std::vector<bool> m_boneExpanded;
     std::vector<bool> m_boneVisible;
+    std::vector<BoneRowHit> m_boneRowHits;
 };
 
 } // namespace RVX::Editor

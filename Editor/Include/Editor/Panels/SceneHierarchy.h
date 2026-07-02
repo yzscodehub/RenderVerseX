@@ -6,12 +6,13 @@
 #pragma once
 
 #include "Editor/Panels/IEditorPanel.h"
+
 #include <string>
+#include <vector>
 
 namespace RVX
 {
-    class Entity;
-    class Scene;
+    class SceneEntity;
 }
 
 namespace RVX::Editor
@@ -33,22 +34,31 @@ public:
     const char* GetName() const override { return "Hierarchy"; }
     const char* GetIcon() const override { return "hierarchy"; }
     void OnGUI() override;
+    void OnNativeInput(const UI::UIInputState& input) override;
 
 private:
+    struct EntityRowHit
+    {
+        SceneEntity* entity = nullptr;
+        UI::Rect bounds;
+    };
+
     void DrawToolbar();
     void DrawSceneTree();
-    void DrawEntityNode(Entity* entity, int depth = 0);
-    void DrawContextMenu(Entity* entity);
+    void DrawEntityNode(SceneEntity* entity, int depth = 0);
+    void DrawContextMenu(SceneEntity* entity);
     void DrawCreateEntityMenu();
 
-    void HandleDragDrop(Entity* entity);
-    bool PassesFilter(Entity* entity) const;
+    void HandleDragDrop(SceneEntity* entity);
+    bool PassesFilter(SceneEntity* entity) const;
 
     // State
     std::string m_searchFilter;
     bool m_showHidden = false;
-    Entity* m_renamingEntity = nullptr;
+    SceneEntity* m_renamingEntity = nullptr;
+    UI::Rect m_renameEditBounds;
     char m_renameBuffer[256];
+    std::vector<EntityRowHit> m_entityRows;
     bool m_expandAll = false;
     bool m_collapseAll = false;
 };
