@@ -108,12 +108,17 @@ namespace RVX::Spatial
         // Pending updates
         std::vector<ISpatialEntity*> m_pendingInserts;
         std::vector<EntityHandle> m_pendingRemoves;
+        std::vector<EntityHandle> m_pendingUpdates;
         bool m_needsRebuild = false;
+        bool m_needsRefit = false;
+        size_t m_buildCount = 0;
+        size_t m_refitCount = 0;
 
         // Build helpers
         int BuildRecursive(int start, int end, int depth);
         int FindBestSplit(int start, int end, int& outAxis, float& outPos);
         int Partition(int start, int end, int axis, float splitPos);
+        AABB RefitNodeBounds(int nodeIdx);
 
         // Query helpers
         void QueryFrustumRecursive(int nodeIdx, const Frustum& frustum,

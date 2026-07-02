@@ -26,6 +26,8 @@ namespace RVX::Spatial
         int maxDepth = 0;
         float avgEntitiesPerLeaf = 0.0f;
         float buildTimeMs = 0.0f;
+        size_t buildCount = 0;
+        size_t refitCount = 0;
     };
 
     /**

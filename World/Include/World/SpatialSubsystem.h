@@ -51,14 +51,15 @@ namespace RVX
         void Deinitialize() override;
         void Tick(float deltaTime) override;
         bool ShouldTick() const override { return true; }
+        TickPhase GetTickPhase() const override { return TickPhase::PostUpdate; }
 
         // =====================================================================
         // Index Management
         // =====================================================================
 
         /// Get the spatial index
-        Spatial::ISpatialIndex* GetIndex() { return m_index.get(); }
-        const Spatial::ISpatialIndex* GetIndex() const { return m_index.get(); }
+        Spatial::ISpatialIndex* GetIndex();
+        const Spatial::ISpatialIndex* GetIndex() const;
 
         /// Set a custom spatial index
         void SetIndex(Spatial::SpatialIndexPtr index);

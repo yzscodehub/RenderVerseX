@@ -11,6 +11,7 @@
 #include "Runtime/Camera/Camera.h"
 #include "Scene/ActorFactory.h"
 #include "Scene/SceneManager.h"
+#include "World/PhysicsSubsystem.h"
 #include "World/SpatialSubsystem.h"
 
 #include <algorithm>
@@ -43,6 +44,14 @@ void World::Initialize(const WorldConfig& config)
     // Create scene manager
     m_sceneManager = std::make_unique<SceneManager>();
     m_sceneManager->Initialize();
+
+    // Add physics subsystem before spatial queries so physics-driven transform
+    // updates are visible before spatial indexing observes the scene.
+    if (m_config.autoInitializePhysics)
+    {
+        PhysicsSubsystem* physics = AddSubsystem<PhysicsSubsystem>();
+        physics->SetConfig(m_config.physics);
+    }
 
     // Add spatial subsystem
     if (m_config.autoInitializeSpatial)
@@ -129,6 +138,8 @@ void World::Tick(float deltaTime)
     if (!m_initialized)
         return;
 
+    m_subsystems.TickPhase(TickPhase::PreUpdate, deltaTime);
+
     UpdatePureActorLifecycles(deltaTime);
 
     // Update scene
@@ -137,8 +148,10 @@ void World::Tick(float deltaTime)
         m_sceneManager->Update(deltaTime);
     }
 
-    // Tick subsystems
-    m_subsystems.TickAll(deltaTime);
+    m_subsystems.TickPhase(TickPhase::Update, deltaTime);
+    m_subsystems.TickPhase(TickPhase::PostUpdate, deltaTime);
+    m_subsystems.TickPhase(TickPhase::PreRender, deltaTime);
+    m_subsystems.TickPhase(TickPhase::PostRender, deltaTime);
 }
 
 void World::Shutdown()
@@ -172,6 +185,11 @@ void World::Shutdown()
 SpatialSubsystem* World::GetSpatial() const
 {
     return m_subsystems.GetSubsystem<SpatialSubsystem>();
+}
+
+PhysicsSubsystem* World::GetPhysics() const
+{
+    return m_subsystems.GetSubsystem<PhysicsSubsystem>();
 }
 
 SceneEntity* World::SpawnActor(const ActorSpawnParams& params)
