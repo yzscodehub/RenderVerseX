@@ -7,6 +7,7 @@ target_sources(RVX_Core PRIVATE
     # Core
     Private/Memory.cpp
     Private/Log.cpp
+    Private/PathUtils.cpp
     Private/SystemManager.cpp
     
     # Event System

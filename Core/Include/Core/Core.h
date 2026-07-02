@@ -6,10 +6,11 @@
 
 // Basic Types
 #include "Core/Types.h"
-#include "Core/Log.h"
 #include "Core/Assert.h"
-#include "Core/RefCounted.h"
 #include "Core/Handle.h"
+#include "Core/Log.h"
+#include "Core/PathUtils.h"
+#include "Core/RefCounted.h"
 
 // Event System
 #include "Core/Event/Event.h"
