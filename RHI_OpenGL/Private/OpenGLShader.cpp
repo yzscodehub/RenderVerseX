@@ -102,7 +102,7 @@ namespace RVX
 
         const char* sourcePtr = source.c_str();
         GLint sourceLength = static_cast<GLint>(source.length());
-        
+
         GL_CHECK(glShaderSource(m_shader, 1, &sourcePtr, &sourceLength));
         GL_CHECK(glCompileShader(m_shader));
 

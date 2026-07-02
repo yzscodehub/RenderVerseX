@@ -185,6 +185,10 @@ namespace RVX
             case RHIResourceState::CopySource:     return D3D12_RESOURCE_STATE_COPY_SOURCE;
             case RHIResourceState::Present:        return D3D12_RESOURCE_STATE_PRESENT;
             case RHIResourceState::IndirectArgument: return D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+            case RHIResourceState::AccelerationStructureBuildRead: return D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            case RHIResourceState::AccelerationStructureBuildWrite: return D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
+            case RHIResourceState::AccelerationStructureRead: return D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
+            case RHIResourceState::ShaderBindingTable: return D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
             default:
                 RVX_RHI_ERROR("Unknown RHIResourceState: {}", static_cast<int>(state));
                 return D3D12_RESOURCE_STATE_COMMON;

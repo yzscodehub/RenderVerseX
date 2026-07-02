@@ -7,6 +7,7 @@
 #include "RHI/RHIPipeline.h"
 #include "RHI/RHIDescriptor.h"
 #include <memory>
+#include <unordered_map>
 
 namespace RVX
 {
@@ -39,6 +40,24 @@ namespace RVX
     class OpenGLDescriptorSetLayout : public RHIDescriptorSetLayout
     {
     public:
+        struct BindingBaseOffsets
+        {
+            uint32 uniformBuffer = 0;
+            uint32 storageBuffer = 0;
+            uint32 texture = 0;
+            uint32 sampler = 0;
+            uint32 image = 0;
+        };
+
+        struct BindingCounts
+        {
+            uint32 uniformBuffer = 0;
+            uint32 storageBuffer = 0;
+            uint32 texture = 0;
+            uint32 sampler = 0;
+            uint32 image = 0;
+        };
+
         OpenGLDescriptorSetLayout(OpenGLDevice* device, const RHIDescriptorSetLayoutDesc& desc);
         ~OpenGLDescriptorSetLayout() override = default;
 
@@ -47,10 +66,15 @@ namespace RVX
 
         // Get the OpenGL binding for a given RHI binding
         uint32 GetGLBinding(uint32 rhiBinding, RHIBindingType type) const;
+        uint32 GetGLBindingBase(RHIBindingType type) const;
+        const BindingCounts& GetBindingCounts() const { return m_bindingCounts; }
+        void SetBindingBaseOffsets(const BindingBaseOffsets& offsets) { m_bindingBaseOffsets = offsets; }
 
     private:
         OpenGLDevice* m_device = nullptr;
         RHIDescriptorSetLayoutDesc m_desc;
+        BindingBaseOffsets m_bindingBaseOffsets;
+        BindingCounts m_bindingCounts;
 
         // Mapping from RHI binding to OpenGL binding point (by type)
         struct BindingInfo

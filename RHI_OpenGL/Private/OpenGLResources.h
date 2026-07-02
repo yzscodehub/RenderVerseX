@@ -16,6 +16,7 @@ namespace RVX
     {
     public:
         OpenGLBuffer(OpenGLDevice* device, const RHIBufferDesc& desc);
+        OpenGLBuffer(OpenGLDevice* device, const RHIBufferDesc& desc, GLuint existingBuffer, GLenum target);
         ~OpenGLBuffer() override;
 
         // RHIBuffer interface
@@ -41,6 +42,7 @@ namespace RVX
         GLenum m_target = GL_ARRAY_BUFFER;
         void* m_mappedPtr = nullptr;
         bool m_persistentlyMapped = false;
+        bool m_ownsBuffer = true;
     };
 
     // =============================================================================
@@ -71,7 +73,7 @@ namespace RVX
         const RHITextureDesc& GetDesc() const { return m_desc; }
 
         // For SwapChain back buffer wrapping
-        static Ref<OpenGLTexture> CreateFromExisting(OpenGLDevice* device, GLuint texture, 
+        static Ref<OpenGLTexture> CreateFromExisting(OpenGLDevice* device, GLuint texture,
                                                      GLenum target, const RHITextureDesc& desc);
 
     private:
@@ -97,6 +99,7 @@ namespace RVX
         RHITexture* GetTexture() const override { return m_texture.Get(); }
         RHIFormat GetFormat() const override { return m_desc.format; }
         const RHISubresourceRange& GetSubresourceRange() const override { return m_desc.subresourceRange; }
+        uint64 GetNativeShaderResourceHandleForUI() const override { return static_cast<uint64>(m_textureView); }
 
         // OpenGL specific
         GLuint GetHandle() const { return m_textureView; }

@@ -79,7 +79,8 @@ namespace RVX
             desc.size = m_size;
             desc.usage = RHIBufferUsage::CopySrc;
             desc.memoryType = RHIMemoryType::Upload;
-            m_wrapperBuffer = m_device->CreateBuffer(desc);
+            desc.debugName = "OpenGLStagingBuffer";
+            m_wrapperBuffer = MakeRef<OpenGLBuffer>(m_device, desc, m_pbo, GL_PIXEL_UNPACK_BUFFER);
         }
         return m_wrapperBuffer.Get();
     }
@@ -133,6 +134,7 @@ namespace RVX
             // Switch buffer
             m_currentBuffer = (m_currentBuffer + 1) % 2;
             m_currentOffset = 0;
+            m_wrapperBuffer.Reset();
 
             // Unmap old, map new
             glBindBuffer(GL_ARRAY_BUFFER, m_pbos[m_currentBuffer]);
@@ -167,6 +169,7 @@ namespace RVX
         {
             m_currentBuffer = newBuffer;
             m_currentOffset = 0;
+            m_wrapperBuffer.Reset();
 
             glBindBuffer(GL_ARRAY_BUFFER, m_pbos[m_currentBuffer]);
             if (m_mappedData)
@@ -194,7 +197,12 @@ namespace RVX
             desc.size = m_totalSize;
             desc.usage = RHIBufferUsage::Vertex | RHIBufferUsage::Constant;
             desc.memoryType = RHIMemoryType::Upload;
-            m_wrapperBuffer = m_device->CreateBuffer(desc);
+            desc.debugName = "OpenGLRingBuffer";
+            m_wrapperBuffer = MakeRef<OpenGLBuffer>(
+                m_device,
+                desc,
+                m_pbos[m_currentBuffer],
+                GL_ARRAY_BUFFER);
         }
         return m_wrapperBuffer.Get();
     }

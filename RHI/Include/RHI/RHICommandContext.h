@@ -3,6 +3,7 @@
 #include "RHI/RHIResources.h"
 #include "RHI/RHIRenderPass.h"
 #include "RHI/RHIQuery.h"
+#include "RHI/RHIRayTracing.h"
 #include <span>
 
 namespace RVX
@@ -37,7 +38,7 @@ namespace RVX
     {
         uint64 bufferOffset = 0;
         uint32 bufferRowPitch = 0;    // Bytes per row; 0 = tightly packed
-        uint32 bufferImageHeight = 0; // Rows per image; 0 = tightly packed
+        uint32 bufferImageHeight = 0; // Rows per image, or compressed block rows; 0 = tightly packed
         uint32 textureSubresource = 0;
         RHIRect textureRegion = {0, 0, 0, 0};  // 0,0,0,0 = full texture
         uint32 textureDepthSlice = 0;
@@ -53,6 +54,20 @@ namespace RVX
         uint32 dstSubresource = 0;
         uint32 dstX = 0, dstY = 0, dstZ = 0;
         uint32 width = 0, height = 0, depth = 0;  // 0 = full size
+    };
+
+    /**
+     * @brief Standard indexed indirect draw command argument layout.
+     *
+     * Matches D3D12_DRAW_INDEXED_ARGUMENTS and VkDrawIndexedIndirectCommand.
+     */
+    struct IndirectDrawIndexedCommand
+    {
+        uint32 indexCount = 0;
+        uint32 instanceCount = 0;
+        uint32 firstIndex = 0;
+        int32 vertexOffset = 0;
+        uint32 firstInstance = 0;
     };
 
     // =============================================================================
@@ -189,12 +204,59 @@ namespace RVX
         virtual void DrawIndexed(uint32 indexCount, uint32 instanceCount = 1, uint32 firstIndex = 0, int32 vertexOffset = 0, uint32 firstInstance = 0) = 0;
         virtual void DrawIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride) = 0;
         virtual void DrawIndexedIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride) = 0;
+        virtual void DrawIndexedIndirectCount(RHIBuffer* buffer,
+                                              uint64 offset,
+                                              RHIBuffer* countBuffer,
+                                              uint64 countOffset,
+                                              uint32 maxDrawCount,
+                                              uint32 stride)
+        {
+            (void)countBuffer;
+            (void)countOffset;
+            DrawIndexedIndirect(buffer, offset, maxDrawCount, stride);
+        }
 
         // =========================================================================
         // Compute Commands
         // =========================================================================
         virtual void Dispatch(uint32 groupCountX, uint32 groupCountY, uint32 groupCountZ) = 0;
         virtual void DispatchIndirect(RHIBuffer* buffer, uint64 offset) = 0;
+
+        // =========================================================================
+        // Ray Tracing Commands
+        // =========================================================================
+        virtual void BuildBottomLevelAccelerationStructure(
+            RHIAccelerationStructure* dst,
+            const RHIBottomLevelASDesc& desc,
+            RHIBuffer* scratchBuffer,
+            uint64 scratchOffset = 0,
+            RHIAccelerationStructure* src = nullptr)
+        {
+            (void)dst;
+            (void)desc;
+            (void)scratchBuffer;
+            (void)scratchOffset;
+            (void)src;
+        }
+
+        virtual void BuildTopLevelAccelerationStructure(
+            RHIAccelerationStructure* dst,
+            const RHITopLevelASDesc& desc,
+            RHIBuffer* scratchBuffer,
+            uint64 scratchOffset = 0,
+            RHIAccelerationStructure* src = nullptr)
+        {
+            (void)dst;
+            (void)desc;
+            (void)scratchBuffer;
+            (void)scratchOffset;
+            (void)src;
+        }
+
+        virtual void DispatchRays(const RHIDispatchRaysDesc& desc)
+        {
+            (void)desc;
+        }
 
         // =========================================================================
         // Copy Commands

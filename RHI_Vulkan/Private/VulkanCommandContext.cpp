@@ -525,12 +525,20 @@ namespace RVX
         auto* vkSrc = static_cast<VulkanBuffer*>(src);
         auto* vkDst = static_cast<VulkanTexture*>(dst);
         const auto subresource = DecodeTextureSubresource(desc.textureSubresource, dst->GetMipLevels());
-        const uint32 bytesPerPixel = GetFormatBytesPerPixel(dst->GetFormat());
+        const RHIFormat format = dst->GetFormat();
+        const uint32 formatBytes = GetFormatBytesPerPixel(format);
+        const bool compressed = IsCompressedFormat(format);
+        const uint32 bufferRowLength = (desc.bufferRowPitch != 0 && formatBytes != 0)
+            ? (compressed ? (desc.bufferRowPitch / formatBytes) * 4u : desc.bufferRowPitch / formatBytes)
+            : 0u;
+        const uint32 bufferImageHeight = (desc.bufferImageHeight != 0 && compressed)
+            ? desc.bufferImageHeight * 4u
+            : desc.bufferImageHeight;
 
         VkBufferImageCopy copyRegion = {};
         copyRegion.bufferOffset = desc.bufferOffset;
-        copyRegion.bufferRowLength = (desc.bufferRowPitch != 0 && bytesPerPixel != 0) ? desc.bufferRowPitch / bytesPerPixel : 0;
-        copyRegion.bufferImageHeight = desc.bufferImageHeight;
+        copyRegion.bufferRowLength = bufferRowLength;
+        copyRegion.bufferImageHeight = bufferImageHeight;
         copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         copyRegion.imageSubresource.mipLevel = subresource.mipLevel;
         copyRegion.imageSubresource.baseArrayLayer = subresource.physicalLayer;
@@ -554,12 +562,20 @@ namespace RVX
         auto* vkSrc = static_cast<VulkanTexture*>(src);
         auto* vkDst = static_cast<VulkanBuffer*>(dst);
         const auto subresource = DecodeTextureSubresource(desc.textureSubresource, src->GetMipLevels());
-        const uint32 bytesPerPixel = GetFormatBytesPerPixel(src->GetFormat());
+        const RHIFormat format = src->GetFormat();
+        const uint32 formatBytes = GetFormatBytesPerPixel(format);
+        const bool compressed = IsCompressedFormat(format);
+        const uint32 bufferRowLength = (desc.bufferRowPitch != 0 && formatBytes != 0)
+            ? (compressed ? (desc.bufferRowPitch / formatBytes) * 4u : desc.bufferRowPitch / formatBytes)
+            : 0u;
+        const uint32 bufferImageHeight = (desc.bufferImageHeight != 0 && compressed)
+            ? desc.bufferImageHeight * 4u
+            : desc.bufferImageHeight;
 
         VkBufferImageCopy copyRegion = {};
         copyRegion.bufferOffset = desc.bufferOffset;
-        copyRegion.bufferRowLength = (desc.bufferRowPitch != 0 && bytesPerPixel != 0) ? desc.bufferRowPitch / bytesPerPixel : 0;
-        copyRegion.bufferImageHeight = desc.bufferImageHeight;
+        copyRegion.bufferRowLength = bufferRowLength;
+        copyRegion.bufferImageHeight = bufferImageHeight;
         copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         copyRegion.imageSubresource.mipLevel = subresource.mipLevel;
         copyRegion.imageSubresource.baseArrayLayer = subresource.physicalLayer;

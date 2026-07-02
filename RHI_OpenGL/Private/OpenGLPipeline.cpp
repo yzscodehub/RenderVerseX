@@ -1,6 +1,7 @@
 #include "OpenGLPipeline.h"
 #include "OpenGLDevice.h"
 #include "Core/Log.h"
+#include <algorithm>
 
 namespace RVX
 {
@@ -59,38 +60,39 @@ namespace RVX
         : m_device(device)
         , m_desc(desc)
     {
-        // Build binding map - assign OpenGL binding points per resource type
-        uint32 uboIndex = 1;  // 0 is reserved for push constants
-        uint32 ssboIndex = 0;
-        uint32 textureIndex = 0;
-        uint32 samplerIndex = 0;
-        uint32 imageIndex = 0;
-
+        // Build local binding points per resource type. OpenGLPipelineLayout
+        // assigns global set base offsets once the layout order is known.
         for (const auto& entry : desc.entries)
         {
             BindingInfo info;
             info.type = entry.type;
+            const uint32 count = std::max(entry.count, 1u);
 
             switch (entry.type)
             {
                 case RHIBindingType::UniformBuffer:
                 case RHIBindingType::DynamicUniformBuffer:
-                    info.glBinding = uboIndex++;
+                    info.glBinding = m_bindingCounts.uniformBuffer;
+                    m_bindingCounts.uniformBuffer += count;
                     break;
                 case RHIBindingType::ShaderResourceBuffer:
                 case RHIBindingType::StorageBuffer:
                 case RHIBindingType::DynamicStorageBuffer:
-                    info.glBinding = ssboIndex++;
+                    info.glBinding = m_bindingCounts.storageBuffer;
+                    m_bindingCounts.storageBuffer += count;
                     break;
                 case RHIBindingType::SampledTexture:
                 case RHIBindingType::CombinedTextureSampler:
-                    info.glBinding = textureIndex++;
+                    info.glBinding = m_bindingCounts.texture;
+                    m_bindingCounts.texture += count;
                     break;
                 case RHIBindingType::Sampler:
-                    info.glBinding = samplerIndex++;
+                    info.glBinding = m_bindingCounts.sampler;
+                    m_bindingCounts.sampler += count;
                     break;
                 case RHIBindingType::StorageTexture:
-                    info.glBinding = imageIndex++;
+                    info.glBinding = m_bindingCounts.image;
+                    m_bindingCounts.image += count;
                     break;
             }
 
@@ -108,6 +110,8 @@ namespace RVX
 
     uint32 OpenGLDescriptorSetLayout::GetGLBinding(uint32 rhiBinding, RHIBindingType type) const
     {
+        (void)type;
+
         auto it = m_bindingMap.find(rhiBinding);
         if (it != m_bindingMap.end())
         {
@@ -116,6 +120,29 @@ namespace RVX
         
         RVX_RHI_WARN("Binding {} not found in descriptor set layout '{}'", rhiBinding, GetDebugName());
         return UINT32_MAX;
+    }
+
+    uint32 OpenGLDescriptorSetLayout::GetGLBindingBase(RHIBindingType type) const
+    {
+        switch (type)
+        {
+            case RHIBindingType::UniformBuffer:
+            case RHIBindingType::DynamicUniformBuffer:
+                return m_bindingBaseOffsets.uniformBuffer;
+            case RHIBindingType::ShaderResourceBuffer:
+            case RHIBindingType::StorageBuffer:
+            case RHIBindingType::DynamicStorageBuffer:
+                return m_bindingBaseOffsets.storageBuffer;
+            case RHIBindingType::SampledTexture:
+            case RHIBindingType::CombinedTextureSampler:
+                return m_bindingBaseOffsets.texture;
+            case RHIBindingType::Sampler:
+                return m_bindingBaseOffsets.sampler;
+            case RHIBindingType::StorageTexture:
+                return m_bindingBaseOffsets.image;
+            default:
+                return 0;
+        }
     }
 
     // =============================================================================
@@ -129,6 +156,26 @@ namespace RVX
         for (auto* layout : desc.setLayouts)
         {
             m_setLayouts.push_back(static_cast<OpenGLDescriptorSetLayout*>(layout));
+        }
+
+        OpenGLDescriptorSetLayout::BindingBaseOffsets offsets;
+        offsets.uniformBuffer = 1; // Binding 0 is reserved for the push constant UBO.
+
+        for (OpenGLDescriptorSetLayout* layout : m_setLayouts)
+        {
+            if (!layout)
+            {
+                continue;
+            }
+
+            layout->SetBindingBaseOffsets(offsets);
+
+            const auto& counts = layout->GetBindingCounts();
+            offsets.uniformBuffer += counts.uniformBuffer;
+            offsets.storageBuffer += counts.storageBuffer;
+            offsets.texture += counts.texture;
+            offsets.sampler += counts.sampler;
+            offsets.image += counts.image;
         }
 
         if (desc.debugName)

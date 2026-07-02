@@ -208,6 +208,15 @@ namespace RVX
         virtual RHITexture* GetTexture() const = 0;
         virtual RHIFormat GetFormat() const = 0;
         virtual const RHISubresourceRange& GetSubresourceRange() const = 0;
+
+        /**
+         * @brief Optional native shader-resource handle that UI backends can consume.
+         *
+         * Backends return 0 when the active UI renderer cannot sample the native
+         * handle directly. The OpenGL backend returns a GL texture name for the
+         * OpenGL ImGui renderer.
+         */
+        virtual uint64 GetNativeShaderResourceHandleForUI() const { return 0; }
     };
 
 } // namespace RVX

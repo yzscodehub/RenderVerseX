@@ -85,6 +85,11 @@ namespace RVX
         RHIPipelineLayoutRef CreatePipelineLayout(const RHIPipelineLayoutDesc& desc) override;
         RHIPipelineRef CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc) override;
         RHIPipelineRef CreateComputePipeline(const RHIComputePipelineDesc& desc) override;
+        RHIPipelineRef CreateRayTracingPipeline(const RHIRayTracingPipelineDesc& desc) override;
+        RHIShaderTableRef CreateShaderTable(const RHIShaderTableDesc& desc) override;
+        RHIAccelerationStructureBuildSizes GetBottomLevelASBuildSizes(const RHIBottomLevelASDesc& desc) override;
+        RHIAccelerationStructureBuildSizes GetTopLevelASBuildSizes(const RHITopLevelASDesc& desc) override;
+        RHIAccelerationStructureRef CreateAccelerationStructure(const RHIAccelerationStructureDesc& desc) override;
 
         // Descriptor Set
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) override;

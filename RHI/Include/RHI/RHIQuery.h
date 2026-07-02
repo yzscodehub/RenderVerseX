@@ -27,6 +27,50 @@ namespace RVX
     };
 
     // =============================================================================
+    // Query Validation Helpers
+    // =============================================================================
+    struct RHIQueryValidationResult
+    {
+        bool valid = true;
+        const char* message = "";
+
+        explicit operator bool() const { return valid; }
+    };
+
+    inline RHIQueryValidationResult RHIQueryValidationPass()
+    {
+        return {};
+    }
+
+    inline RHIQueryValidationResult RHIQueryValidationFail(const char* message)
+    {
+        return {false, message};
+    }
+
+    inline bool IsRHIQueryTypeValid(RHIQueryType type)
+    {
+        return type == RHIQueryType::Timestamp ||
+               type == RHIQueryType::Occlusion ||
+               type == RHIQueryType::BinaryOcclusion ||
+               type == RHIQueryType::PipelineStatistics;
+    }
+
+    inline RHIQueryValidationResult ValidateRHIQueryPoolDesc(const RHIQueryPoolDesc& desc)
+    {
+        if (!IsRHIQueryTypeValid(desc.type))
+        {
+            return RHIQueryValidationFail("query pool type is invalid");
+        }
+
+        if (desc.count == 0)
+        {
+            return RHIQueryValidationFail("query pool count must be greater than zero");
+        }
+
+        return RHIQueryValidationPass();
+    }
+
+    // =============================================================================
     // Pipeline Statistics Result
     // =============================================================================
     struct RHIPipelineStatistics
@@ -61,6 +105,24 @@ namespace RVX
          */
         virtual uint64 GetTimestampFrequency() const = 0;
     };
+
+    inline RHIQueryValidationResult ValidateRHIQueryRange(
+        const RHIQueryPool& pool,
+        uint32 firstQuery,
+        uint32 queryCount)
+    {
+        if (queryCount == 0)
+        {
+            return RHIQueryValidationFail("query range count must be greater than zero");
+        }
+
+        if (firstQuery >= pool.GetCount() || queryCount > pool.GetCount() - firstQuery)
+        {
+            return RHIQueryValidationFail("query range exceeds query pool bounds");
+        }
+
+        return RHIQueryValidationPass();
+    }
 
     using RHIQueryPoolRef = Ref<RHIQueryPool>;
 

@@ -497,7 +497,7 @@ namespace RVX
             VkWriteDescriptorSet write = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             write.dstSet = m_descriptorSet;
             write.dstBinding = binding.binding;
-            write.dstArrayElement = 0;
+            write.dstArrayElement = binding.arrayElement;
             write.descriptorCount = 1;
 
             if (binding.buffer)
@@ -590,6 +590,11 @@ namespace RVX
                 
                 write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
                 write.pImageInfo = &imageInfos.back();
+            }
+            else if (binding.accelerationStructure)
+            {
+                RVX_RHI_WARN("VulkanDescriptorSet: acceleration structure binding {} requires backend AS support", binding.binding);
+                return false;
             }
             else
             {

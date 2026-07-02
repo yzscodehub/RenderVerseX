@@ -510,12 +510,13 @@ namespace RVX
         auto updatedBindings = m_bindings;
         for (const auto& updateDesc : bindings)
         {
-            if (updateDesc.binding >= updatedBindings.size())
+            const uint32 slot = updateDesc.binding + updateDesc.arrayElement;
+            if (slot >= updatedBindings.size())
             {
-                updatedBindings.resize(updateDesc.binding + 1);
+                updatedBindings.resize(slot + 1);
             }
 
-            BindingData& binding = updatedBindings[updateDesc.binding];
+            BindingData& binding = updatedBindings[slot];
 
             if (updateDesc.buffer)
             {

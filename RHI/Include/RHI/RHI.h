@@ -10,6 +10,7 @@
 #include "RHI/RHITexture.h"
 #include "RHI/RHISampler.h"
 #include "RHI/RHIShader.h"
+#include "RHI/RHIRayTracing.h"
 #include "RHI/RHIPipeline.h"
 #include "RHI/RHIDescriptor.h"
 #include "RHI/RHIRenderPass.h"

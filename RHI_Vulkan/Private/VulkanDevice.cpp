@@ -290,10 +290,10 @@ namespace RVX
             createInfo.enabledLayerCount = static_cast<uint32>(s_validationLayers.size());
             createInfo.ppEnabledLayerNames = s_validationLayers.data();
 
-            debugCreateInfo.messageSeverity = 
+            debugCreateInfo.messageSeverity =
                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-            debugCreateInfo.messageType = 
+            debugCreateInfo.messageType =
                 VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
                 VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                 VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
@@ -437,7 +437,7 @@ namespace RVX
             }
 
             // Dedicated transfer queue
-            if ((family.queueFlags & VK_QUEUE_TRANSFER_BIT) && 
+            if ((family.queueFlags & VK_QUEUE_TRANSFER_BIT) &&
                 !(family.queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
                 !(family.queueFlags & VK_QUEUE_COMPUTE_BIT))
             {
@@ -505,7 +505,7 @@ namespace RVX
         VkPhysicalDeviceFeatures2 features2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         VkPhysicalDeviceVulkan12Features vulkan12Features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
         VkPhysicalDeviceVulkan13Features vulkan13Features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-        
+
         features2.pNext = &vulkan12Features;
         vulkan12Features.pNext = &vulkan13Features;
 
@@ -515,7 +515,7 @@ namespace RVX
         features2.features.samplerAnisotropy = VK_TRUE;
         features2.features.fillModeNonSolid = VK_TRUE;
         features2.features.multiDrawIndirect = VK_TRUE;
-        
+
         vulkan12Features.descriptorIndexing = VK_TRUE;
         vulkan12Features.descriptorBindingPartiallyBound = VK_TRUE;
         vulkan12Features.runtimeDescriptorArray = VK_TRUE;
@@ -602,10 +602,10 @@ namespace RVX
         allocatorInfo.device = m_device;
         allocatorInfo.instance = m_instance;
         allocatorInfo.pVulkanFunctions = &vulkanFunctions;
-        
+
         // Enable buffer device address for bindless/raytracing
         allocatorInfo.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
-        
+
         // Enable memory budget extension for better memory tracking (if available)
         allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
 
@@ -631,7 +631,7 @@ namespace RVX
         poolInfo.queueFamilyIndex = m_queueFamilies.graphicsFamily.value();
         VK_CHECK(vkCreateCommandPool(m_device, &poolInfo, nullptr, &m_graphicsCommandPool));
 
-        if (m_queueFamilies.computeFamily.has_value() && 
+        if (m_queueFamilies.computeFamily.has_value() &&
             m_queueFamilies.computeFamily.value() != m_queueFamilies.graphicsFamily.value())
         {
             poolInfo.queueFamilyIndex = m_queueFamilies.computeFamily.value();
@@ -860,11 +860,21 @@ namespace RVX
 
         m_capabilities.supportsBindless = vulkan12Features.descriptorIndexing;
 
-        // Check for raytracing support (VK_KHR_ray_tracing_pipeline + VK_KHR_acceleration_structure)
-        m_capabilities.supportsRaytracing = 
+        // Vulkan ray tracing stays disabled until the backend implements AS creation,
+        // AS builds, RT pipeline state, shader tables, and DispatchRays.
+        const bool hasRayTracingExtensions =
             hasExtension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) &&
             hasExtension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
             hasExtension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        m_capabilities.supportsRaytracing = false;
+        m_capabilities.supportsRaytracingPipeline = false;
+        m_capabilities.supportsRayQuery = false;
+        m_capabilities.supportsAccelerationStructureUpdate = false;
+        m_capabilities.supportsAccelerationStructureCompaction = false;
+        m_capabilities.maxRayRecursionDepth = 0;
+        m_capabilities.shaderGroupHandleSize = 0;
+        m_capabilities.shaderGroupHandleAlignment = 0;
+        m_capabilities.shaderTableBaseAlignment = 0;
 
         // Check for mesh shader support (VK_EXT_mesh_shader)
         m_capabilities.supportsMeshShaders = hasExtension(VK_EXT_MESH_SHADER_EXTENSION_NAME);
@@ -885,9 +895,10 @@ namespace RVX
         m_capabilities.supportsMultiQueueBatchSubmit = true;
         m_capabilities.emulatesQueueFences = false;
 
-        RVX_RHI_DEBUG("Vulkan Capabilities: Raytracing={}, MeshShaders={}, VRS={}", 
-            m_capabilities.supportsRaytracing, 
-            m_capabilities.supportsMeshShaders, 
+        RVX_RHI_DEBUG("Vulkan Capabilities: Raytracing={}, RaytracingExtensions={}, MeshShaders={}, VRS={}",
+            m_capabilities.supportsRaytracing,
+            hasRayTracingExtensions,
+            m_capabilities.supportsMeshShaders,
             m_capabilities.supportsVariableRateShading);
 
         // Limits
@@ -1096,7 +1107,7 @@ namespace RVX
     {
         // Create a temporary image to query memory requirements
         VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-        
+
         switch (desc.dimension)
         {
             case RHITextureDimension::Texture1D:
@@ -1135,7 +1146,7 @@ namespace RVX
             imageInfo.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         if (HasFlag(desc.usage, RHITextureUsage::DepthStencil))
             imageInfo.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-        
+
         imageInfo.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         imageInfo.flags |= VK_IMAGE_CREATE_ALIAS_BIT;
 
@@ -1149,7 +1160,7 @@ namespace RVX
 
         VkMemoryRequirements memReqs;
         vkGetImageMemoryRequirements(m_device, tempImage, &memReqs);
-        
+
         vkDestroyImage(m_device, tempImage, nullptr);
 
         return {memReqs.size, memReqs.alignment};
@@ -1173,7 +1184,7 @@ namespace RVX
             bufferInfo.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess))
             bufferInfo.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        
+
         bufferInfo.usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
         VkBuffer tempBuffer = VK_NULL_HANDLE;
@@ -1186,7 +1197,7 @@ namespace RVX
 
         VkMemoryRequirements memReqs;
         vkGetBufferMemoryRequirements(m_device, tempBuffer, &memReqs);
-        
+
         vkDestroyBuffer(m_device, tempBuffer, nullptr);
 
         return {memReqs.size, memReqs.alignment};
@@ -1266,12 +1277,12 @@ namespace RVX
     {
         RVX_RHI_INFO("Creating RHI Device with backend: Vulkan");
         auto device = std::make_unique<VulkanDevice>(desc);
-        
+
         if (!device->GetDevice())
         {
             return nullptr;
         }
-        
+
         return device;
     }
 

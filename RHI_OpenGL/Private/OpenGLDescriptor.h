@@ -20,6 +20,7 @@ namespace RVX
     struct OpenGLBindingEntry
     {
         uint32 glBinding = 0;          // OpenGL binding point
+        uint32 rhiBinding = 0;         // Original RHI binding number
         RHIBindingType type = RHIBindingType::UniformBuffer;
 
         // Buffer info

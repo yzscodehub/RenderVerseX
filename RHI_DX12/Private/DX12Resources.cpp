@@ -47,7 +47,8 @@ namespace RVX
         resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess))
+        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess) ||
+            HasFlag(desc.usage, RHIBufferUsage::AccelerationStructureStorage))
         {
             resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         }
@@ -55,7 +56,11 @@ namespace RVX
         D3D12_HEAP_TYPE heapType = ToD3D12HeapType(desc.memoryType);
 
         D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
-        if (desc.memoryType == RHIMemoryType::Upload)
+        if (HasFlag(desc.usage, RHIBufferUsage::AccelerationStructureStorage))
+        {
+            initialState = D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
+        }
+        else if (desc.memoryType == RHIMemoryType::Upload)
         {
             initialState = D3D12_RESOURCE_STATE_GENERIC_READ;
         }
@@ -313,6 +318,52 @@ namespace RVX
             m_mappedData = nullptr;
         }
         // Upload buffers: no-op, stay mapped
+    }
+
+    // =============================================================================
+    // DX12 Acceleration Structure Implementation
+    // =============================================================================
+    DX12AccelerationStructure::DX12AccelerationStructure(DX12Device* device, const RHIAccelerationStructureDesc& desc)
+        : m_device(device)
+        , m_desc(desc)
+    {
+        if (desc.debugName)
+        {
+            SetDebugName(desc.debugName);
+        }
+
+        if (!m_device || desc.size == 0)
+        {
+            RVX_RHI_ERROR("DX12AccelerationStructure: invalid device or zero-sized acceleration structure");
+            return;
+        }
+
+        RHIBufferDesc bufferDesc;
+        bufferDesc.size = desc.size;
+        bufferDesc.usage = RHIBufferUsage::AccelerationStructureStorage |
+                           RHIBufferUsage::UnorderedAccess |
+                           RHIBufferUsage::ShaderResource |
+                           RHIBufferUsage::DeviceAddress;
+        bufferDesc.memoryType = RHIMemoryType::Default;
+        bufferDesc.debugName = desc.debugName ? desc.debugName : "DX12AccelerationStructure";
+
+        m_storageBuffer = m_device->CreateBuffer(bufferDesc);
+        if (!m_storageBuffer)
+        {
+            RVX_RHI_ERROR("DX12AccelerationStructure: failed to create storage buffer");
+        }
+    }
+
+    uint64 DX12AccelerationStructure::GetGPUVirtualAddress() const
+    {
+        auto* buffer = static_cast<DX12Buffer*>(m_storageBuffer.Get());
+        return buffer ? buffer->GetGPUVirtualAddress() : 0;
+    }
+
+    ID3D12Resource* DX12AccelerationStructure::GetResource() const
+    {
+        auto* buffer = static_cast<DX12Buffer*>(m_storageBuffer.Get());
+        return buffer ? buffer->GetResource() : nullptr;
     }
 
     // =============================================================================
@@ -775,7 +826,7 @@ namespace RVX
 
             D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
             rtvDesc.Format = dxgiFormat;
-            
+
             const bool useTextureArrayView = texture->GetDimension() == RHITextureDimension::TextureCube ||
                                              IsTexture2DArrayViewRequired(*texture);
             if (static_cast<uint32>(texture->GetSampleCount()) > 1)
@@ -903,7 +954,7 @@ namespace RVX
 
         auto toD3D12Filter = [](RHIFilterMode min, RHIFilterMode mag, RHIFilterMode mip, bool anisotropic) -> D3D12_FILTER {
             if (anisotropic) return D3D12_FILTER_ANISOTROPIC;
-            
+
             int filter = 0;
             if (min == RHIFilterMode::Linear) filter |= 0x10;
             if (mag == RHIFilterMode::Linear) filter |= 0x04;
@@ -949,6 +1000,7 @@ namespace RVX
     // =============================================================================
     DX12Shader::DX12Shader(DX12Device* device, const RHIShaderDesc& desc)
         : m_stage(desc.stage)
+        , m_entryPoint(desc.entryPoint ? desc.entryPoint : "main")
     {
         if (desc.debugName)
         {
@@ -1091,6 +1143,24 @@ namespace RVX
         return Ref<DX12Shader>(new DX12Shader(device, desc));
     }
 
+    RHIAccelerationStructureRef CreateDX12AccelerationStructure(DX12Device* device, const RHIAccelerationStructureDesc& desc)
+    {
+        if (!device || !device->GetCapabilities().supportsRaytracing)
+        {
+            RVX_RHI_ERROR("DX12: Cannot create acceleration structure without ray tracing support");
+            return nullptr;
+        }
+
+        auto validation = ValidateRHIAccelerationStructureDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12: Cannot create acceleration structure: {}", validation.message);
+            return nullptr;
+        }
+
+        return Ref<DX12AccelerationStructure>(new DX12AccelerationStructure(device, desc));
+    }
+
     RHIFenceRef CreateDX12Fence(DX12Device* device, uint64 initialValue)
     {
         return Ref<DX12Fence>(new DX12Fence(device, initialValue));
@@ -1136,7 +1206,7 @@ namespace RVX
 
         // Set heap flags based on allowed resource types
         heapDesc.Flags = D3D12_HEAP_FLAG_NONE;
-        
+
         bool allowTextures = HasFlag(desc.flags, RHIHeapFlags::AllowTextures);
         bool allowBuffers = HasFlag(desc.flags, RHIHeapFlags::AllowBuffers);
         bool allowRT = HasFlag(desc.flags, RHIHeapFlags::AllowRenderTargets);
@@ -1334,13 +1404,18 @@ namespace RVX
         resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess))
+        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess) ||
+            HasFlag(desc.usage, RHIBufferUsage::AccelerationStructureStorage))
         {
             resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         }
 
         D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
-        if (desc.memoryType == RHIMemoryType::Upload)
+        if (HasFlag(desc.usage, RHIBufferUsage::AccelerationStructureStorage))
+        {
+            initialState = D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
+        }
+        else if (desc.memoryType == RHIMemoryType::Upload)
         {
             initialState = D3D12_RESOURCE_STATE_GENERIC_READ;
         }

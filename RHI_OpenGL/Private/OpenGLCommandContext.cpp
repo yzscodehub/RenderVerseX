@@ -7,6 +7,7 @@
 #include "Core/Log.h"
 #include "RHI/RHITexture.h"
 #include <algorithm>
+#include <array>
 
 namespace RVX
 {
@@ -349,6 +350,9 @@ namespace RVX
             const auto& attachment = desc.colorAttachments[i];
             if (attachment.loadOp == RHILoadOp::Clear)
             {
+                GLboolean previousColorMask[4] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
+                GL_CHECK(glGetBooleani_v(GL_COLOR_WRITEMASK, i, previousColorMask));
+                GL_CHECK(glColorMaski(i, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE));
                 float clearColor[4] = {
                     attachment.clearColor.r,
                     attachment.clearColor.g,
@@ -356,6 +360,11 @@ namespace RVX
                     attachment.clearColor.a
                 };
                 GL_CHECK(glClearNamedFramebufferfv(m_currentFBO, GL_COLOR, i, clearColor));
+                GL_CHECK(glColorMaski(i,
+                                      previousColorMask[0],
+                                      previousColorMask[1],
+                                      previousColorMask[2],
+                                      previousColorMask[3]));
             }
         }
 
@@ -364,7 +373,11 @@ namespace RVX
             const auto& ds = desc.depthStencilAttachment;
             if (ds.depthLoadOp == RHILoadOp::Clear)
             {
+                GLboolean previousDepthMask = GL_TRUE;
+                GL_CHECK(glGetBooleanv(GL_DEPTH_WRITEMASK, &previousDepthMask));
+                GL_CHECK(glDepthMask(GL_TRUE));
                 GL_CHECK(glClearNamedFramebufferfv(m_currentFBO, GL_DEPTH, 0, &ds.clearValue.depth));
+                GL_CHECK(glDepthMask(previousDepthMask));
             }
             if (ds.stencilLoadOp == RHILoadOp::Clear)
             {
@@ -709,29 +722,38 @@ namespace RVX
             }
 
             // Set up vertex attributes in key
-            uint32 currentOffset = 0;
-            m_cachedVaoKey.attributeCount = static_cast<uint32>(inputLayout.elements.size());
+            std::array<uint32, VAOCacheKey::MAX_VERTEX_BUFFERS> currentOffsets{};
+            uint32 attributeCount = 0;
             for (size_t i = 0; i < inputLayout.elements.size(); ++i)
             {
                 const auto& elem = inputLayout.elements[i];
+                if (elem.inputSlot >= m_vertexBuffers.size() || !m_vertexBuffers[elem.inputSlot].buffer)
+                {
+                    continue;
+                }
+
                 auto vertexFormat = ToGLVertexFormat(elem.format);
 
-                uint32 offset = (elem.alignedByteOffset == 0xFFFFFFFF) ? currentOffset : elem.alignedByteOffset;
+                uint32 offset = (elem.alignedByteOffset == 0xFFFFFFFF) ?
+                    currentOffsets[elem.inputSlot] :
+                    elem.alignedByteOffset;
 
-                m_cachedVaoKey.attributes[i].location = static_cast<uint32>(i);
-                m_cachedVaoKey.attributes[i].binding = elem.inputSlot;
-                m_cachedVaoKey.attributes[i].type = vertexFormat.type;
-                m_cachedVaoKey.attributes[i].components = vertexFormat.components;
-                m_cachedVaoKey.attributes[i].normalized = vertexFormat.normalized;
-                m_cachedVaoKey.attributes[i].offset = offset;
+                auto& attribute = m_cachedVaoKey.attributes[attributeCount++];
+                attribute.location = static_cast<uint32>(i);
+                attribute.binding = elem.inputSlot;
+                attribute.type = vertexFormat.type;
+                attribute.components = vertexFormat.components;
+                attribute.normalized = vertexFormat.normalized;
+                attribute.offset = offset;
 
                 if (elem.perInstance)
                 {
                     m_cachedVaoKey.vertexBuffers[elem.inputSlot].divisor = elem.instanceDataStepRate;
                 }
 
-                currentOffset = offset + vertexFormat.size;
+                currentOffsets[elem.inputSlot] = offset + vertexFormat.size;
             }
+            m_cachedVaoKey.attributeCount = attributeCount;
 
             // Index buffer
             if (m_indexBuffer)
@@ -954,6 +976,52 @@ namespace RVX
         uint32 width = desc.textureRegion.width > 0 ? desc.textureRegion.width : dstGL->GetWidth();
         uint32 height = desc.textureRegion.height > 0 ? desc.textureRegion.height : dstGL->GetHeight();
         uint32 bytesPerPixel = GetFormatBytesPerPixel(dstGL->GetFormat());
+        const bool compressed = glFormat.compressed;
+        if (compressed)
+        {
+            const uint32 blockWidth = 4;
+            const uint32 blockHeight = 4;
+            const uint32 rowBlockCount = (width + blockWidth - 1u) / blockWidth;
+            const uint32 rowCount = (height + blockHeight - 1u) / blockHeight;
+            const uint32 tightRowPitch = rowBlockCount * bytesPerPixel;
+            const uint32 rowPitch = desc.bufferRowPitch > 0 ? desc.bufferRowPitch : tightRowPitch;
+            const uint32 storedRowCount = desc.bufferImageHeight > 0 ? desc.bufferImageHeight : rowCount;
+            if (rowPitch != tightRowPitch)
+            {
+                RVX_RHI_ERROR("OpenGL compressed texture upload requires tight block rows");
+                GL_CHECK(glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0));
+                return;
+            }
+
+            const GLsizei imageSize = static_cast<GLsizei>(rowPitch * storedRowCount);
+            if (dstGL->GetDimension() == RHITextureDimension::Texture2D &&
+                GetTexturePhysicalLayerCount(*dstGL) == 1)
+            {
+                GL_CHECK(glCompressedTextureSubImage2D(
+                    dstGL->GetHandle(), static_cast<GLint>(subresource.mipLevel),
+                    desc.textureRegion.x, desc.textureRegion.y,
+                    width, height,
+                    glFormat.internalFormat,
+                    imageSize,
+                    reinterpret_cast<const void*>(desc.bufferOffset)));
+            }
+            else
+            {
+                const uint32 zOffset = dstGL->GetDimension() == RHITextureDimension::Texture3D ?
+                    desc.textureDepthSlice : subresource.physicalLayer;
+                GL_CHECK(glCompressedTextureSubImage3D(
+                    dstGL->GetHandle(), static_cast<GLint>(subresource.mipLevel),
+                    desc.textureRegion.x, desc.textureRegion.y, static_cast<GLint>(zOffset),
+                    width, height, 1,
+                    glFormat.internalFormat,
+                    imageSize,
+                    reinterpret_cast<const void*>(desc.bufferOffset)));
+            }
+
+            GL_CHECK(glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0));
+            return;
+        }
+
         if (desc.bufferRowPitch > 0 && bytesPerPixel > 0)
         {
             GL_CHECK(glPixelStorei(GL_UNPACK_ROW_LENGTH, static_cast<GLint>(desc.bufferRowPitch / bytesPerPixel)));
@@ -1012,16 +1080,40 @@ namespace RVX
         {
             GL_CHECK(glPixelStorei(GL_PACK_IMAGE_HEIGHT, static_cast<GLint>(desc.bufferImageHeight)));
         }
-        const uint32 zOffset = srcGL->GetDimension() == RHITextureDimension::Texture3D ?
-            desc.textureDepthSlice : subresource.physicalLayer;
 
-        GL_CHECK(glGetTextureSubImage(
-            srcGL->GetHandle(), static_cast<GLint>(subresource.mipLevel),
-            desc.textureRegion.x, desc.textureRegion.y, static_cast<GLint>(zOffset),
-            width, height, 1,
-            glFormat.format, glFormat.type,
-            static_cast<GLsizei>(dstGL->GetSize() - desc.bufferOffset),
-            reinterpret_cast<void*>(desc.bufferOffset)));
+        if (srcGL->GetHandle() == 0)
+        {
+            GLint previousReadFramebuffer = 0;
+            GLint previousReadBuffer = GL_BACK;
+            GL_CHECK(glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFramebuffer));
+            GL_CHECK(glGetIntegerv(GL_READ_BUFFER, &previousReadBuffer));
+
+            GL_CHECK(glBindFramebuffer(GL_READ_FRAMEBUFFER, 0));
+            GL_CHECK(glReadBuffer(GL_BACK));
+            GL_CHECK(glReadPixels(desc.textureRegion.x,
+                                  desc.textureRegion.y,
+                                  width,
+                                  height,
+                                  glFormat.format,
+                                  glFormat.type,
+                                  reinterpret_cast<void*>(desc.bufferOffset)));
+
+            GL_CHECK(glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previousReadFramebuffer)));
+            GL_CHECK(glReadBuffer(static_cast<GLenum>(previousReadBuffer)));
+        }
+        else
+        {
+            const uint32 zOffset = srcGL->GetDimension() == RHITextureDimension::Texture3D ?
+                desc.textureDepthSlice : subresource.physicalLayer;
+
+            GL_CHECK(glGetTextureSubImage(
+                srcGL->GetHandle(), static_cast<GLint>(subresource.mipLevel),
+                desc.textureRegion.x, desc.textureRegion.y, static_cast<GLint>(zOffset),
+                width, height, 1,
+                glFormat.format, glFormat.type,
+                static_cast<GLsizei>(dstGL->GetSize() - desc.bufferOffset),
+                reinterpret_cast<void*>(desc.bufferOffset)));
+        }
 
         GL_CHECK(glPixelStorei(GL_PACK_ROW_LENGTH, 0));
         GL_CHECK(glPixelStorei(GL_PACK_IMAGE_HEIGHT, 0));
@@ -1053,6 +1145,7 @@ namespace RVX
         }
 
         GL_CHECK(glBeginQuery(glPool->GetGLQueryTarget(), query));
+        glPool->ApplyDebugLabel(index);
     }
 
     void OpenGLCommandContext::EndQuery(RHIQueryPool* pool, uint32 index)
@@ -1068,8 +1161,14 @@ namespace RVX
             return;
         }
 
+        GLuint query = glPool->GetQuery(index);
+        if (query == 0)
+        {
+            RVX_RHI_WARN("OpenGLCommandContext::EndQuery - invalid query index {}", index);
+            return;
+        }
+
         GL_CHECK(glEndQuery(glPool->GetGLQueryTarget()));
-        (void)index;  // Index is implicit from glBeginQuery
     }
 
     void OpenGLCommandContext::WriteTimestamp(RHIQueryPool* pool, uint32 index)
@@ -1092,6 +1191,7 @@ namespace RVX
         }
 
         GL_CHECK(glQueryCounter(query, GL_TIMESTAMP));
+        glPool->ApplyDebugLabel(index);
     }
 
     void OpenGLCommandContext::ResolveQueries(RHIQueryPool* pool, uint32 firstQuery, 
@@ -1102,6 +1202,20 @@ namespace RVX
 
         auto* glPool = static_cast<OpenGLQueryPool*>(pool);
         auto* glBuffer = static_cast<OpenGLBuffer*>(destBuffer);
+
+        auto validation = ValidateRHIQueryRange(*glPool, firstQuery, queryCount);
+        if (!validation)
+        {
+            RVX_RHI_WARN("OpenGLCommandContext::ResolveQueries - {}", validation.message);
+            return;
+        }
+
+        const uint64 requiredBytes = static_cast<uint64>(queryCount) * sizeof(uint64);
+        if (destOffset > destBuffer->GetSize() || requiredBytes > destBuffer->GetSize() - destOffset)
+        {
+            RVX_RHI_ERROR("OpenGLCommandContext::ResolveQueries - destination buffer range is too small");
+            return;
+        }
 
         // Map the destination buffer
         void* mapped = glBuffer->Map();

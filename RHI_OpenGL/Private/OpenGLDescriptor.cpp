@@ -4,6 +4,7 @@
 #include "OpenGLResources.h"
 #include "OpenGLStateCache.h"
 #include "Core/Log.h"
+#include "ShaderCompiler/GLSLBindingABI.h"
 #include <algorithm>
 
 namespace RVX
@@ -86,7 +87,8 @@ namespace RVX
 
         OpenGLBindingEntry glEntry;
         glEntry.type = layoutEntry->type;
-        glEntry.glBinding = m_layout->GetGLBinding(binding.binding, layoutEntry->type);
+        glEntry.rhiBinding = binding.binding + binding.arrayElement;
+        glEntry.glBinding = m_layout->GetGLBinding(binding.binding, layoutEntry->type) + binding.arrayElement;
 
         switch (layoutEntry->type)
         {
@@ -223,10 +225,30 @@ namespace RVX
         // Collect texture and sampler bindings for potential batch binding
         std::vector<std::pair<uint32, GLuint>> textureBindings;  // <slot, texture>
         std::vector<std::pair<uint32, GLuint>> samplerBindings;  // <slot, sampler>
+        std::vector<uint32> sampledTextureSlots;
+        std::vector<std::pair<uint32, GLuint>> separateSamplerBindings;
+
+        auto addSamplerBinding = [&samplerBindings](uint32 slot, GLuint sampler)
+        {
+            auto it = std::find_if(samplerBindings.begin(), samplerBindings.end(),
+                [slot](const auto& binding)
+                {
+                    return binding.first == slot;
+                });
+
+            if (it != samplerBindings.end())
+            {
+                it->second = sampler;
+                return;
+            }
+
+            samplerBindings.emplace_back(slot, sampler);
+        };
 
         for (const auto& entry : m_bindings)
         {
-            uint32 globalBinding = entry.glBinding;
+            uint32 globalBinding =
+                GLSLBindingABI::FlattenBinding(entry.type, setIndex, entry.rhiBinding);
 
             switch (entry.type)
             {
@@ -274,6 +296,7 @@ namespace RVX
                 case RHIBindingType::SampledTexture:
                     if (entry.texture != 0)
                     {
+                        sampledTextureSlots.push_back(globalBinding);
                         if (useMultiBind)
                         {
                             textureBindings.emplace_back(globalBinding, entry.texture);
@@ -301,7 +324,7 @@ namespace RVX
                     {
                         if (useMultiBind)
                         {
-                            samplerBindings.emplace_back(globalBinding, entry.sampler);
+                            addSamplerBinding(globalBinding, entry.sampler);
                         }
                         else
                         {
@@ -313,9 +336,10 @@ namespace RVX
                 case RHIBindingType::Sampler:
                     if (entry.sampler != 0)
                     {
+                        separateSamplerBindings.emplace_back(globalBinding, entry.sampler);
                         if (useMultiBind)
                         {
-                            samplerBindings.emplace_back(globalBinding, entry.sampler);
+                            addSamplerBinding(globalBinding, entry.sampler);
                         }
                         else
                         {
@@ -333,6 +357,22 @@ namespace RVX
                                                    entry.imageFormat);
                     }
                     break;
+            }
+        }
+
+        if (separateSamplerBindings.size() == 1)
+        {
+            const GLuint sampler = separateSamplerBindings.front().second;
+            for (uint32 slot : sampledTextureSlots)
+            {
+                if (useMultiBind)
+                {
+                    addSamplerBinding(slot, sampler);
+                }
+                else
+                {
+                    stateCache.BindSampler(slot, sampler);
+                }
             }
         }
 

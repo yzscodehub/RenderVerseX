@@ -48,9 +48,18 @@ namespace RVX
 
         // Advanced features
         bool supportsRaytracing = false;
+        bool supportsRaytracingPipeline = false;
+        bool supportsRayQuery = false;
+        bool supportsAccelerationStructureUpdate = false;
+        bool supportsAccelerationStructureCompaction = false;
+        uint32 maxRayRecursionDepth = 0;
+        uint32 shaderGroupHandleSize = 0;
+        uint32 shaderGroupHandleAlignment = 0;
+        uint32 shaderTableBaseAlignment = 0;
         bool supportsMeshShaders = false;
         bool supportsVariableRateShading = false;
         bool supportsAsyncCompute = false;
+        bool supportsIndirectDrawCount = false;
         bool supportsConservativeRasterization = false;
 
         // Query support

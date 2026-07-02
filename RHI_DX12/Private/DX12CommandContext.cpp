@@ -4,8 +4,383 @@
 #include "DX12Pipeline.h"
 #include "DX12Query.h"
 
+#include <limits>
+
 namespace RVX
 {
+    namespace
+    {
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS ToD3D12ASBuildFlags(
+            RHIAccelerationStructureBuildFlags flags,
+            bool performUpdate = false)
+        {
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS result =
+                D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+
+            if (HasFlag(flags, RHIAccelerationStructureBuildFlags::AllowUpdate))
+                result |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+            if (HasFlag(flags, RHIAccelerationStructureBuildFlags::AllowCompaction))
+                result |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION;
+            if (HasFlag(flags, RHIAccelerationStructureBuildFlags::PreferFastTrace))
+                result |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+            if (HasFlag(flags, RHIAccelerationStructureBuildFlags::PreferFastBuild))
+                result |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+            if (HasFlag(flags, RHIAccelerationStructureBuildFlags::MinimizeMemory))
+                result |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_MINIMIZE_MEMORY;
+            if (performUpdate)
+                result |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+
+            return result;
+        }
+
+        bool ValidateDX12ASBuildFlags(const RHICapabilities& capabilities,
+                                      RHIAccelerationStructureBuildFlags flags,
+                                      const char* operation)
+        {
+            if (HasFlag(flags, RHIAccelerationStructureBuildFlags::AllowCompaction) &&
+                !capabilities.supportsAccelerationStructureCompaction)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} rejected because AllowCompaction requires acceleration structure compaction support",
+                              operation);
+                return false;
+            }
+
+            return true;
+        }
+
+        bool ValidateDX12RayTracingCommandState(bool isRecording,
+                                                bool inRenderPass,
+                                                const char* operation)
+        {
+            if (!isRecording)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} requires active command recording",
+                              operation);
+                return false;
+            }
+
+            if (inRenderPass)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} cannot run inside a render pass",
+                              operation);
+                return false;
+            }
+
+            return true;
+        }
+
+        bool ValidateDX12ASBuildResources(const char* operation,
+                                          RHIAccelerationStructureType expectedType,
+                                          const RHIAccelerationStructureBuildSizes& sizes,
+                                          bool update,
+                                          DX12AccelerationStructure* dstAS,
+                                          DX12AccelerationStructure* srcAS,
+                                          DX12Buffer* scratch,
+                                          uint64 scratchOffset)
+        {
+            if (!sizes.IsValid())
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} failed because acceleration structure build sizes are invalid",
+                              operation);
+                return false;
+            }
+
+            if (update && !sizes.HasValidUpdateScratchSize())
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} update requires valid acceleration structure update scratch size",
+                              operation);
+                return false;
+            }
+
+            if (dstAS->GetType() != expectedType)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} destination AS has the wrong type",
+                              operation);
+                return false;
+            }
+
+            if (update && srcAS && srcAS->GetType() != expectedType)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} source AS has the wrong type for update",
+                              operation);
+                return false;
+            }
+
+            if (dstAS->GetSize() < sizes.accelerationStructureSize)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} destination AS is too small ({} < {})",
+                              operation,
+                              dstAS->GetSize(),
+                              sizes.accelerationStructureSize);
+                return false;
+            }
+
+            if (update && srcAS && srcAS->GetSize() < sizes.accelerationStructureSize)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} source AS is too small for update ({} < {})",
+                              operation,
+                              srcAS->GetSize(),
+                              sizes.accelerationStructureSize);
+                return false;
+            }
+
+            if ((scratchOffset % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT) != 0)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} scratch offset must be {}-byte aligned",
+                              operation,
+                              D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
+                return false;
+            }
+
+            if (scratch->GetMemoryType() != RHIMemoryType::Default)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} scratch buffer must use default memory",
+                              operation);
+                return false;
+            }
+
+            if (!HasFlag(scratch->GetUsage(), RHIBufferUsage::UnorderedAccess) ||
+                !HasFlag(scratch->GetUsage(), RHIBufferUsage::DeviceAddress))
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} scratch buffer requires unordered access and device address usage",
+                              operation);
+                return false;
+            }
+
+            const uint64 requiredScratchSize = update ? sizes.updateScratchSize : sizes.buildScratchSize;
+            if (requiredScratchSize == 0)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} requires non-zero {} scratch size",
+                              operation,
+                              update ? "update" : "build");
+                return false;
+            }
+
+            if (scratch->GetSize() < scratchOffset || scratch->GetSize() - scratchOffset < requiredScratchSize)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} scratch buffer range is too small (available {}, required {})",
+                              operation,
+                              scratch->GetSize() < scratchOffset ? 0 : scratch->GetSize() - scratchOffset,
+                              requiredScratchSize);
+                return false;
+            }
+
+            return true;
+        }
+
+        D3D12_RAYTRACING_GEOMETRY_FLAGS ToD3D12GeometryFlags(RHIRayTracingGeometryFlags flags)
+        {
+            D3D12_RAYTRACING_GEOMETRY_FLAGS result = D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
+            if (HasFlag(flags, RHIRayTracingGeometryFlags::Opaque))
+                result |= D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+            if (HasFlag(flags, RHIRayTracingGeometryFlags::NoDuplicateAnyHitInvocation))
+                result |= D3D12_RAYTRACING_GEOMETRY_FLAG_NO_DUPLICATE_ANYHIT_INVOCATION;
+            return result;
+        }
+
+        bool TryAddDX12GPUVirtualAddress(D3D12_GPU_VIRTUAL_ADDRESS baseAddress,
+                                         uint64 offset,
+                                         D3D12_GPU_VIRTUAL_ADDRESS& result)
+        {
+            result = 0;
+            if (baseAddress == 0)
+            {
+                return false;
+            }
+
+            const uint64 baseAddress64 = static_cast<uint64>(baseAddress);
+            if (offset > std::numeric_limits<uint64>::max() - baseAddress64)
+            {
+                return false;
+            }
+
+            result = static_cast<D3D12_GPU_VIRTUAL_ADDRESS>(baseAddress64 + offset);
+            return result != 0;
+        }
+
+        D3D12_GPU_VIRTUAL_ADDRESS GetDX12BufferAddress(RHIBuffer* buffer, uint64 offset = 0)
+        {
+            auto* dx12Buffer = static_cast<DX12Buffer*>(buffer);
+            if (!dx12Buffer || !dx12Buffer->GetResource())
+                return 0;
+
+            D3D12_GPU_VIRTUAL_ADDRESS address = 0;
+            return TryAddDX12GPUVirtualAddress(dx12Buffer->GetGPUVirtualAddress(), offset, address) ? address : 0;
+        }
+
+        bool ValidateDX12BufferAddressRange(const char* operation,
+                                            DX12Buffer* buffer,
+                                            uint64 offset,
+                                            uint64 requiredBytes,
+                                            const char* label)
+        {
+            if (!buffer || !buffer->GetResource() || buffer->GetGPUVirtualAddress() == 0)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} requires a GPU-addressable {}",
+                              operation,
+                              label);
+                return false;
+            }
+
+            if (!IsRHIRayTracingBufferRangeValid(*buffer, offset, requiredBytes))
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} {} range exceeds buffer size",
+                              operation,
+                              label);
+                return false;
+            }
+
+            D3D12_GPU_VIRTUAL_ADDRESS address = 0;
+            if (!TryAddDX12GPUVirtualAddress(buffer->GetGPUVirtualAddress(), offset, address))
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} {} GPU address overflowed",
+                              operation,
+                              label);
+                return false;
+            }
+
+            return true;
+        }
+
+        bool ValidateDX12BLASGeometryInputAddresses(const RHIBottomLevelASDesc& desc)
+        {
+            for (uint32 geometryIndex = 0; geometryIndex < desc.geometries.size(); ++geometryIndex)
+            {
+                const RHIRayTracingGeometryDesc& geometry = desc.geometries[geometryIndex];
+                if (geometry.type == RHIRayTracingGeometryType::Triangles)
+                {
+                    const RHIRayTracingTrianglesDesc& triangles = geometry.triangles;
+                    const uint32 vertexFormatSize = GetFormatBytesPerPixel(triangles.vertexFormat);
+                    uint64 vertexRangeBytes = 0;
+                    if (!TryGetRHIRayTracingStridedRangeSize(triangles.vertexCount,
+                                                             triangles.vertexStride,
+                                                             vertexFormatSize,
+                                                             vertexRangeBytes))
+                    {
+                        RVX_RHI_ERROR("DX12CommandContext: BLAS geometry {} vertex range size overflowed",
+                                      geometryIndex);
+                        return false;
+                    }
+
+                    if (!ValidateDX12BufferAddressRange("BLAS geometry input",
+                                                        static_cast<DX12Buffer*>(triangles.vertexBuffer),
+                                                        triangles.vertexOffset,
+                                                        vertexRangeBytes,
+                                                        "vertex buffer"))
+                    {
+                        return false;
+                    }
+
+                    if (triangles.indexBuffer)
+                    {
+                        const uint32 indexElementSize = triangles.indexFormat == RHIFormat::R16_UINT ? 2u : 4u;
+                        const uint64 indexRangeBytes = static_cast<uint64>(triangles.indexCount) * indexElementSize;
+                        if (!ValidateDX12BufferAddressRange("BLAS geometry input",
+                                                            static_cast<DX12Buffer*>(triangles.indexBuffer),
+                                                            triangles.indexOffset,
+                                                            indexRangeBytes,
+                                                            "index buffer"))
+                        {
+                            return false;
+                        }
+                    }
+
+                    if (triangles.transformBuffer &&
+                        !ValidateDX12BufferAddressRange("BLAS geometry input",
+                                                        static_cast<DX12Buffer*>(triangles.transformBuffer),
+                                                        triangles.transformOffset,
+                                                        sizeof(float) * 12,
+                                                        "transform buffer"))
+                    {
+                        return false;
+                    }
+                }
+                else
+                {
+                    const RHIRayTracingAABBDesc& aabbs = geometry.aabbs;
+                    uint64 aabbRangeBytes = 0;
+                    if (!TryGetRHIRayTracingStridedRangeSize(aabbs.count,
+                                                             aabbs.stride,
+                                                             24,
+                                                             aabbRangeBytes))
+                    {
+                        RVX_RHI_ERROR("DX12CommandContext: BLAS geometry {} AABB range size overflowed",
+                                      geometryIndex);
+                        return false;
+                    }
+
+                    if (!ValidateDX12BufferAddressRange("BLAS geometry input",
+                                                        static_cast<DX12Buffer*>(aabbs.aabbBuffer),
+                                                        aabbs.offset,
+                                                        aabbRangeBytes,
+                                                        "AABB buffer"))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> BuildDX12GeometryDescs(
+            const RHIBottomLevelASDesc& desc)
+        {
+            std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometries;
+            geometries.reserve(desc.geometries.size());
+
+            for (const RHIRayTracingGeometryDesc& geometry : desc.geometries)
+            {
+                D3D12_RAYTRACING_GEOMETRY_DESC d3dGeometry = {};
+                d3dGeometry.Flags = ToD3D12GeometryFlags(geometry.flags);
+
+                if (geometry.type == RHIRayTracingGeometryType::Triangles)
+                {
+                    const RHIRayTracingTrianglesDesc& triangles = geometry.triangles;
+                    d3dGeometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+                    d3dGeometry.Triangles.VertexBuffer.StartAddress =
+                        GetDX12BufferAddress(triangles.vertexBuffer, triangles.vertexOffset);
+                    d3dGeometry.Triangles.VertexBuffer.StrideInBytes = triangles.vertexStride;
+                    d3dGeometry.Triangles.VertexCount = triangles.vertexCount;
+                    d3dGeometry.Triangles.VertexFormat = ToDXGIFormat(triangles.vertexFormat);
+                    d3dGeometry.Triangles.IndexBuffer =
+                        triangles.indexBuffer ? GetDX12BufferAddress(triangles.indexBuffer, triangles.indexOffset) : 0;
+                    d3dGeometry.Triangles.IndexCount = triangles.indexBuffer ? triangles.indexCount : 0;
+                    d3dGeometry.Triangles.IndexFormat =
+                        triangles.indexBuffer ? ToDXGIFormat(triangles.indexFormat) : DXGI_FORMAT_UNKNOWN;
+                    d3dGeometry.Triangles.Transform3x4 =
+                        triangles.transformBuffer ? GetDX12BufferAddress(triangles.transformBuffer, triangles.transformOffset) : 0;
+                }
+                else
+                {
+                    const RHIRayTracingAABBDesc& aabbs = geometry.aabbs;
+                    d3dGeometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
+                    d3dGeometry.AABBs.AABBCount = aabbs.count;
+                    d3dGeometry.AABBs.AABBs.StartAddress = GetDX12BufferAddress(aabbs.aabbBuffer, aabbs.offset);
+                    d3dGeometry.AABBs.AABBs.StrideInBytes = aabbs.stride;
+                }
+
+                geometries.push_back(d3dGeometry);
+            }
+
+            return geometries;
+        }
+
+        void InsertAccelerationStructureUAVBarrier(
+            ID3D12GraphicsCommandList* commandList,
+            DX12AccelerationStructure* accelerationStructure)
+        {
+            if (!commandList || !accelerationStructure || !accelerationStructure->GetResource())
+                return;
+
+            D3D12_RESOURCE_BARRIER barrier = {};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+            barrier.UAV.pResource = accelerationStructure->GetResource();
+            commandList->ResourceBarrier(1, &barrier);
+        }
+    } // namespace
+
     // =============================================================================
     // Constructor / Destructor
     // =============================================================================
@@ -62,6 +437,7 @@ namespace RVX
 
         m_isRecording = true;
         m_currentPipeline = nullptr;
+        m_boundRayTracingDescriptorSetLayouts.clear();
 
         if (m_queueType != RHICommandQueueType::Copy)
         {
@@ -87,7 +463,7 @@ namespace RVX
         if (FAILED(hr))
         {
             RVX_RHI_ERROR("m_commandList->Close(): HRESULT = 0x{:08X}", static_cast<uint32>(hr));
-            
+
             // Dump D3D12 info queue messages
             ComPtr<ID3D12InfoQueue> infoQueue;
             if (SUCCEEDED(m_device->GetD3DDevice()->QueryInterface(IID_PPV_ARGS(&infoQueue))))
@@ -111,7 +487,7 @@ namespace RVX
                 }
                 infoQueue->ClearStoredMessages();
             }
-            
+
             RVX_ASSERT(false);
         }
         m_isRecording = false;
@@ -151,7 +527,7 @@ namespace RVX
 
         // Use the built-in D3D12 debug marker API
         // This is picked up by PIX, RenderDoc, NSight, etc.
-        m_commandList->BeginEvent(static_cast<UINT>(pixColor), wname, 
+        m_commandList->BeginEvent(static_cast<UINT>(pixColor), wname,
             static_cast<UINT>((wcslen(wname) + 1) * sizeof(wchar_t)));
     }
 
@@ -367,12 +743,62 @@ namespace RVX
     // =============================================================================
     void DX12CommandContext::SetPipeline(RHIPipeline* pipeline)
     {
-        auto* dx12Pipeline = static_cast<DX12Pipeline*>(pipeline);
-        m_currentPipeline = dx12Pipeline;
+        m_currentPipeline = nullptr;
+        m_boundRayTracingDescriptorSetLayouts.clear();
 
+        if (!pipeline)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: SetPipeline requires a pipeline");
+            return;
+        }
+
+        auto* dx12Pipeline = static_cast<DX12Pipeline*>(pipeline);
+        if (dx12Pipeline->IsRayTracing())
+        {
+            if (m_queueType == RHICommandQueueType::Copy)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: ray tracing pipeline binding cannot run on the copy queue");
+                return;
+            }
+
+            if (!ValidateDX12RayTracingCommandState(m_isRecording, m_inRenderPass, "ray tracing pipeline binding"))
+            {
+                return;
+            }
+
+            if (!dx12Pipeline->IsValid() || !dx12Pipeline->GetStateObject())
+            {
+                RVX_RHI_ERROR("DX12CommandContext: ray tracing pipeline binding requires a valid DX12 state object");
+                return;
+            }
+
+            if (!dx12Pipeline->GetPipelineLayout() || !dx12Pipeline->GetRootSignature())
+            {
+                RVX_RHI_ERROR("DX12CommandContext: ray tracing pipeline binding requires a pipeline layout and global root signature");
+                return;
+            }
+
+            ComPtr<ID3D12GraphicsCommandList4> commandList4;
+            if (FAILED(m_commandList.As(&commandList4)) || !commandList4)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: ray tracing pipeline binding requires ID3D12GraphicsCommandList4");
+                return;
+            }
+
+            commandList4->SetPipelineState1(dx12Pipeline->GetStateObject());
+            m_commandList->SetComputeRootSignature(dx12Pipeline->GetRootSignature());
+            if (auto* pipelineLayout = dx12Pipeline->GetPipelineLayout())
+            {
+                m_boundRayTracingDescriptorSetLayouts.resize(pipelineLayout->GetSetLayoutCount(), nullptr);
+            }
+            m_currentPipeline = dx12Pipeline;
+            return;
+        }
+
+        m_currentPipeline = dx12Pipeline;
         m_commandList->SetPipelineState(dx12Pipeline->GetPipelineState());
 
-        if (dx12Pipeline->IsCompute())
+        if (dx12Pipeline->UsesComputeRootSignature())
         {
             m_commandList->SetComputeRootSignature(dx12Pipeline->GetRootSignature());
         }
@@ -434,8 +860,43 @@ namespace RVX
     {
         if (!m_currentPipeline || !set) return;
 
+        const bool bindingRayTracingPipeline = m_currentPipeline->IsRayTracing();
+        if (bindingRayTracingPipeline &&
+            !ValidateDX12RayTracingCommandState(m_isRecording, m_inRenderPass, "ray tracing descriptor set binding"))
+        {
+            return;
+        }
+
         auto* dx12Set = static_cast<DX12DescriptorSet*>(set);
+        if (bindingRayTracingPipeline && !dx12Set->IsValid())
+        {
+            RVX_RHI_ERROR("DX12CommandContext: ray tracing descriptor set binding requires a valid DX12 descriptor set");
+            return;
+        }
+
         auto* pipelineLayout = m_currentPipeline->GetPipelineLayout();
+        auto* setLayout = dx12Set->GetLayout();
+        if (bindingRayTracingPipeline)
+        {
+            if (!pipelineLayout)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: ray tracing descriptor set binding requires a pipeline layout");
+                return;
+            }
+
+            DX12DescriptorSetLayout* expectedLayout = pipelineLayout->GetSetLayout(slot);
+            if (!setLayout || expectedLayout != setLayout)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: ray tracing descriptor set binding layout does not match the pipeline layout slot");
+                return;
+            }
+
+            if (slot >= m_boundRayTracingDescriptorSetLayouts.size())
+            {
+                m_boundRayTracingDescriptorSetLayouts.resize(slot + 1, nullptr);
+            }
+        }
+
         const auto& bindings = dx12Set->GetBindings();
 
         if (pipelineLayout)
@@ -445,7 +906,7 @@ namespace RVX
             uint32 samplerTableIndex = pipelineLayout->GetSamplerTableIndex(slot);
             if (srvUavTableIndex != UINT32_MAX && dx12Set->HasCbvSrvUavTable())
             {
-                if (m_currentPipeline->IsCompute())
+                if (m_currentPipeline->UsesComputeRootSignature())
                 {
                     m_commandList->SetComputeRootDescriptorTable(srvUavTableIndex, dx12Set->GetCbvSrvUavGpuHandle());
                 }
@@ -457,7 +918,7 @@ namespace RVX
 
             if (samplerTableIndex != UINT32_MAX && dx12Set->HasSamplerTable())
             {
-                if (m_currentPipeline->IsCompute())
+                if (m_currentPipeline->UsesComputeRootSignature())
                 {
                     m_commandList->SetComputeRootDescriptorTable(samplerTableIndex, dx12Set->GetSamplerGpuHandle());
                 }
@@ -469,7 +930,6 @@ namespace RVX
 
             // Bind root CBVs for uniform buffers
             // Try to bind buffer as root CBV if it exists in the root signature
-            auto* layout = dx12Set->GetLayout();
             for (const auto& binding : bindings)
             {
                 if (!binding.buffer)
@@ -482,9 +942,9 @@ namespace RVX
 
                 // Handle dynamic offset if applicable
                 uint64 dynamicOffset = 0;
-                if (layout)
+                if (setLayout)
                 {
-                    uint32 dynamicIndex = layout->GetDynamicBindingIndex(binding.binding);
+                    uint32 dynamicIndex = setLayout->GetDynamicBindingIndex(binding.binding);
                     if (dynamicIndex != UINT32_MAX && dynamicIndex < dynamicOffsets.size())
                     {
                         dynamicOffset = dynamicOffsets[dynamicIndex];
@@ -494,7 +954,7 @@ namespace RVX
                 auto* dx12Buffer = static_cast<DX12Buffer*>(binding.buffer);
                 D3D12_GPU_VIRTUAL_ADDRESS gpuAddr = dx12Buffer->GetGPUVirtualAddress() + binding.offset + dynamicOffset;
 
-                if (m_currentPipeline->IsCompute())
+                if (m_currentPipeline->UsesComputeRootSignature())
                 {
                     m_commandList->SetComputeRootConstantBufferView(rootIndex, gpuAddr);
                 }
@@ -516,7 +976,7 @@ namespace RVX
                 D3D12_GPU_VIRTUAL_ADDRESS gpuAddr = dx12Buffer->GetGPUVirtualAddress() + binding.offset;
                 uint32 rootIndex = binding.binding;
 
-                if (m_currentPipeline->IsCompute())
+                if (m_currentPipeline->UsesComputeRootSignature())
                 {
                     m_commandList->SetComputeRootConstantBufferView(rootIndex, gpuAddr);
                 }
@@ -526,19 +986,30 @@ namespace RVX
                 }
             }
         }
+
+        if (bindingRayTracingPipeline)
+        {
+            m_boundRayTracingDescriptorSetLayouts[slot] = setLayout;
+        }
     }
 
     void DX12CommandContext::SetPushConstants(const void* data, uint32 size, uint32 offset)
     {
         if (!m_currentPipeline || !data || size == 0) return;
 
+        if (m_currentPipeline->IsRayTracing() &&
+            !ValidateDX12RayTracingCommandState(m_isRecording, m_inRenderPass, "ray tracing push constants binding"))
+        {
+            return;
+        }
+
         // Get push constant root index from pipeline layout
         auto* pipelineLayout = m_currentPipeline->GetPipelineLayout();
         uint32 rootIndex = pipelineLayout ? pipelineLayout->GetPushConstantRootIndex() : UINT32_MAX;
         if (rootIndex == UINT32_MAX)
             return;
-        
-        if (m_currentPipeline->IsCompute())
+
+        if (m_currentPipeline->UsesComputeRootSignature())
         {
             m_commandList->SetComputeRoot32BitConstants(rootIndex, size / 4, data, offset / 4);
         }
@@ -672,6 +1143,42 @@ namespace RVX
             0);
     }
 
+    void DX12CommandContext::DrawIndexedIndirectCount(RHIBuffer* buffer,
+                                                      uint64 offset,
+                                                      RHIBuffer* countBuffer,
+                                                      uint64 countOffset,
+                                                      uint32 maxDrawCount,
+                                                      uint32 stride)
+    {
+        FlushBarriers();
+        auto* dx12Buffer = static_cast<DX12Buffer*>(buffer);
+        auto* dx12CountBuffer = static_cast<DX12Buffer*>(countBuffer);
+        if (!dx12Buffer || !dx12CountBuffer)
+            return;
+
+        if (stride == 0)
+            stride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+
+        if (stride != sizeof(D3D12_DRAW_INDEXED_ARGUMENTS))
+        {
+            RVX_RHI_WARN("DrawIndexedIndirectCount stride {} does not match D3D12_DRAW_INDEXED_ARGUMENTS size {}",
+                         stride,
+                         sizeof(D3D12_DRAW_INDEXED_ARGUMENTS));
+        }
+
+        auto* signature = m_device->GetDrawIndexedCommandSignature();
+        if (!signature)
+            return;
+
+        m_commandList->ExecuteIndirect(
+            signature,
+            maxDrawCount,
+            dx12Buffer->GetResource(),
+            offset,
+            dx12CountBuffer->GetResource(),
+            countOffset);
+    }
+
     // =============================================================================
     // Compute Commands
     // =============================================================================
@@ -699,6 +1206,316 @@ namespace RVX
             offset,
             nullptr,
             0);
+    }
+
+    // =============================================================================
+    // Ray Tracing Commands
+    // =============================================================================
+    void DX12CommandContext::BuildBottomLevelAccelerationStructure(
+        RHIAccelerationStructure* dst,
+        const RHIBottomLevelASDesc& desc,
+        RHIBuffer* scratchBuffer,
+        uint64 scratchOffset,
+        RHIAccelerationStructure* src)
+    {
+        if (!m_device->GetCapabilities().supportsRaytracing)
+        {
+            RVX_RHI_WARN("DX12CommandContext: BLAS build skipped because ray tracing is unsupported");
+            return;
+        }
+
+        if (m_queueType == RHICommandQueueType::Copy)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: BLAS build cannot run on the copy queue");
+            return;
+        }
+
+        if (!ValidateDX12RayTracingCommandState(m_isRecording, m_inRenderPass, "BLAS build"))
+        {
+            return;
+        }
+
+        auto validation = ValidateRHIBottomLevelASDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: invalid BLAS build desc: {}", validation.message);
+            return;
+        }
+
+        if (!ValidateDX12ASBuildFlags(m_device->GetCapabilities(), desc.buildFlags, "BLAS build"))
+        {
+            return;
+        }
+
+        auto* dstAS = static_cast<DX12AccelerationStructure*>(dst);
+        auto* srcAS = static_cast<DX12AccelerationStructure*>(src);
+        auto* scratch = static_cast<DX12Buffer*>(scratchBuffer);
+        if (!dstAS || !dstAS->GetResource() || !scratch)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: BLAS build requires destination AS and scratch buffer");
+            return;
+        }
+
+        const bool update = srcAS != nullptr;
+        if (dstAS->GetGPUVirtualAddress() == 0 || scratch->GetGPUVirtualAddress() == 0)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: BLAS build requires GPU-addressable destination AS and scratch buffer");
+            return;
+        }
+
+        if (update && (!srcAS->GetResource() || srcAS->GetGPUVirtualAddress() == 0))
+        {
+            RVX_RHI_ERROR("DX12CommandContext: BLAS update requires a GPU-addressable source AS");
+            return;
+        }
+
+        if (update && !HasFlag(desc.buildFlags, RHIAccelerationStructureBuildFlags::AllowUpdate))
+        {
+            RVX_RHI_ERROR("DX12CommandContext: BLAS update requires AllowUpdate build flag");
+            return;
+        }
+
+        if (!ValidateDX12BLASGeometryInputAddresses(desc))
+        {
+            return;
+        }
+
+        const RHIAccelerationStructureBuildSizes sizes = m_device->GetBottomLevelASBuildSizes(desc);
+        if (!ValidateDX12ASBuildResources("BLAS build", RHIAccelerationStructureType::BottomLevel, sizes, update, dstAS, srcAS, scratch, scratchOffset))
+        {
+            return;
+        }
+
+        ComPtr<ID3D12GraphicsCommandList4> commandList4;
+        if (FAILED(m_commandList.As(&commandList4)) || !commandList4)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: BLAS build requires ID3D12GraphicsCommandList4");
+            return;
+        }
+
+        const D3D12_GPU_VIRTUAL_ADDRESS scratchAddress = GetDX12BufferAddress(scratch, scratchOffset);
+        if (scratchAddress == 0)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: BLAS build scratch GPU address overflowed");
+            return;
+        }
+
+        FlushBarriers();
+
+        std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometries = BuildDX12GeometryDescs(desc);
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc = {};
+        buildDesc.DestAccelerationStructureData = dstAS->GetGPUVirtualAddress();
+        buildDesc.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+        buildDesc.Inputs.Flags = ToD3D12ASBuildFlags(desc.buildFlags, update);
+        buildDesc.Inputs.NumDescs = static_cast<UINT>(geometries.size());
+        buildDesc.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        buildDesc.Inputs.pGeometryDescs = geometries.data();
+        buildDesc.SourceAccelerationStructureData = update ? srcAS->GetGPUVirtualAddress() : 0;
+        buildDesc.ScratchAccelerationStructureData = scratchAddress;
+
+        commandList4->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
+        InsertAccelerationStructureUAVBarrier(m_commandList.Get(), dstAS);
+    }
+
+    void DX12CommandContext::BuildTopLevelAccelerationStructure(
+        RHIAccelerationStructure* dst,
+        const RHITopLevelASDesc& desc,
+        RHIBuffer* scratchBuffer,
+        uint64 scratchOffset,
+        RHIAccelerationStructure* src)
+    {
+        if (!m_device->GetCapabilities().supportsRaytracing)
+        {
+            RVX_RHI_WARN("DX12CommandContext: TLAS build skipped because ray tracing is unsupported");
+            return;
+        }
+
+        if (m_queueType == RHICommandQueueType::Copy)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: TLAS build cannot run on the copy queue");
+            return;
+        }
+
+        if (!ValidateDX12RayTracingCommandState(m_isRecording, m_inRenderPass, "TLAS build"))
+        {
+            return;
+        }
+
+        auto validation = ValidateRHITopLevelASDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: invalid TLAS build desc: {}", validation.message);
+            return;
+        }
+
+        if (!ValidateDX12ASBuildFlags(m_device->GetCapabilities(), desc.buildFlags, "TLAS build"))
+        {
+            return;
+        }
+
+        if (!desc.instanceBuffer)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: TLAS build requires a GPU instance buffer");
+            return;
+        }
+
+        auto* dstAS = static_cast<DX12AccelerationStructure*>(dst);
+        auto* srcAS = static_cast<DX12AccelerationStructure*>(src);
+        auto* scratch = static_cast<DX12Buffer*>(scratchBuffer);
+        auto* instanceBuffer = static_cast<DX12Buffer*>(desc.instanceBuffer);
+        if (!dstAS || !dstAS->GetResource() || !scratch || !instanceBuffer)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: TLAS build requires destination AS, instance buffer, and scratch buffer");
+            return;
+        }
+
+        const bool update = srcAS != nullptr;
+        if (dstAS->GetGPUVirtualAddress() == 0 ||
+            scratch->GetGPUVirtualAddress() == 0 ||
+            instanceBuffer->GetGPUVirtualAddress() == 0)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: TLAS build requires GPU-addressable destination AS, instance buffer, and scratch buffer");
+            return;
+        }
+
+        if (update && (!srcAS->GetResource() || srcAS->GetGPUVirtualAddress() == 0))
+        {
+            RVX_RHI_ERROR("DX12CommandContext: TLAS update requires a GPU-addressable source AS");
+            return;
+        }
+
+        if (update && !HasFlag(desc.buildFlags, RHIAccelerationStructureBuildFlags::AllowUpdate))
+        {
+            RVX_RHI_ERROR("DX12CommandContext: TLAS update requires AllowUpdate build flag");
+            return;
+        }
+
+        const RHIAccelerationStructureBuildSizes sizes = m_device->GetTopLevelASBuildSizes(desc);
+        if (!ValidateDX12ASBuildResources("TLAS build", RHIAccelerationStructureType::TopLevel, sizes, update, dstAS, srcAS, scratch, scratchOffset))
+        {
+            return;
+        }
+
+        ComPtr<ID3D12GraphicsCommandList4> commandList4;
+        if (FAILED(m_commandList.As(&commandList4)) || !commandList4)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: TLAS build requires ID3D12GraphicsCommandList4");
+            return;
+        }
+
+        const D3D12_GPU_VIRTUAL_ADDRESS scratchAddress = GetDX12BufferAddress(scratch, scratchOffset);
+        if (scratchAddress == 0)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: TLAS build scratch GPU address overflowed");
+            return;
+        }
+
+        const D3D12_GPU_VIRTUAL_ADDRESS instanceAddress = GetDX12BufferAddress(instanceBuffer, desc.instanceOffset);
+        if (instanceAddress == 0)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: TLAS build instance GPU address overflowed");
+            return;
+        }
+
+        FlushBarriers();
+
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc = {};
+        buildDesc.DestAccelerationStructureData = dstAS->GetGPUVirtualAddress();
+        buildDesc.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+        buildDesc.Inputs.Flags = ToD3D12ASBuildFlags(desc.buildFlags, update);
+        buildDesc.Inputs.NumDescs = desc.instanceCount;
+        buildDesc.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        buildDesc.Inputs.InstanceDescs = instanceAddress;
+        buildDesc.SourceAccelerationStructureData = update ? srcAS->GetGPUVirtualAddress() : 0;
+        buildDesc.ScratchAccelerationStructureData = scratchAddress;
+
+        commandList4->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
+        InsertAccelerationStructureUAVBarrier(m_commandList.Get(), dstAS);
+    }
+
+    void DX12CommandContext::DispatchRays(const RHIDispatchRaysDesc& desc)
+    {
+        if (!m_device->GetCapabilities().supportsRaytracingPipeline)
+        {
+            RVX_RHI_WARN("DX12CommandContext: DispatchRays skipped because DXR pipelines are unsupported");
+            return;
+        }
+
+        if (m_queueType == RHICommandQueueType::Copy)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DispatchRays cannot run on the copy queue");
+            return;
+        }
+
+        if (!ValidateDX12RayTracingCommandState(m_isRecording, m_inRenderPass, "DispatchRays"))
+        {
+            return;
+        }
+
+        if (!m_currentPipeline || !m_currentPipeline->IsRayTracing())
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DispatchRays requires a bound ray tracing pipeline");
+            return;
+        }
+
+        auto validation = ValidateRHIDispatchRaysDesc(desc, m_currentPipeline);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: invalid DispatchRays desc: {}", validation.message);
+            return;
+        }
+
+        auto* shaderTable = static_cast<DX12ShaderTable*>(desc.shaderTable);
+        if (!shaderTable || !shaderTable->IsValid())
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DispatchRays requires a valid DX12 shader table");
+            return;
+        }
+
+        if (shaderTable->GetPipeline() != m_currentPipeline)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DispatchRays shader table does not match the bound ray tracing pipeline");
+            return;
+        }
+
+        auto* pipelineLayout = m_currentPipeline->GetPipelineLayout();
+        if (!pipelineLayout)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DispatchRays requires a ray tracing pipeline layout");
+            return;
+        }
+
+        for (uint32 setIndex = 0; setIndex < pipelineLayout->GetSetLayoutCount(); ++setIndex)
+        {
+            DX12DescriptorSetLayout* expectedLayout = pipelineLayout->GetSetLayout(setIndex);
+            if (!expectedLayout || expectedLayout->GetEntries().empty())
+            {
+                continue;
+            }
+
+            const bool descriptorSetBound =
+                setIndex < m_boundRayTracingDescriptorSetLayouts.size() &&
+                m_boundRayTracingDescriptorSetLayouts[setIndex] == expectedLayout;
+            if (!descriptorSetBound)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: DispatchRays requires descriptor set {} to be bound with the ray tracing pipeline layout",
+                              setIndex);
+                return;
+            }
+        }
+
+        ComPtr<ID3D12GraphicsCommandList4> commandList4;
+        if (FAILED(m_commandList.As(&commandList4)) || !commandList4)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DispatchRays requires ID3D12GraphicsCommandList4");
+            return;
+        }
+
+        FlushBarriers();
+
+        const D3D12_DISPATCH_RAYS_DESC d3dDesc =
+            shaderTable->BuildDispatchRaysDesc(desc.width, desc.height, desc.depth);
+        commandList4->DispatchRays(&d3dDesc);
     }
 
     // =============================================================================
@@ -928,14 +1745,14 @@ namespace RVX
 
         auto* dx12Pool = static_cast<DX12QueryPool*>(pool);
         D3D12_QUERY_TYPE queryType = dx12Pool->GetD3D12QueryType();
-        
+
         // Timestamp queries don't have Begin/End, only WriteTimestamp
         if (queryType == D3D12_QUERY_TYPE_TIMESTAMP)
         {
             RVX_RHI_WARN("Timestamp queries don't support BeginQuery, use WriteTimestamp");
             return;
         }
-        
+
         m_commandList->BeginQuery(dx12Pool->GetHeap(), queryType, index);
     }
 
@@ -946,14 +1763,14 @@ namespace RVX
 
         auto* dx12Pool = static_cast<DX12QueryPool*>(pool);
         D3D12_QUERY_TYPE queryType = dx12Pool->GetD3D12QueryType();
-        
+
         // Timestamp queries don't have Begin/End, only WriteTimestamp
         if (queryType == D3D12_QUERY_TYPE_TIMESTAMP)
         {
             RVX_RHI_WARN("Timestamp queries don't support EndQuery, use WriteTimestamp");
             return;
         }
-        
+
         m_commandList->EndQuery(dx12Pool->GetHeap(), queryType, index);
     }
 
@@ -963,7 +1780,7 @@ namespace RVX
             return;
 
         auto* dx12Pool = static_cast<DX12QueryPool*>(pool);
-        
+
         // In DX12, timestamps are written using EndQuery with TIMESTAMP type
         m_commandList->EndQuery(dx12Pool->GetHeap(), D3D12_QUERY_TYPE_TIMESTAMP, index);
     }
@@ -976,7 +1793,7 @@ namespace RVX
 
         auto* dx12Pool = static_cast<DX12QueryPool*>(pool);
         auto* dx12Buffer = static_cast<DX12Buffer*>(destBuffer);
-        
+
         m_commandList->ResolveQueryData(
             dx12Pool->GetHeap(),
             dx12Pool->GetD3D12QueryType(),

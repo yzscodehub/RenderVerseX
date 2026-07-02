@@ -6,6 +6,7 @@
 
 namespace RVX
 {
+    class DX12DescriptorSetLayout;
     class DX12Device;
     class DX12Pipeline;
 
@@ -86,12 +87,35 @@ namespace RVX
         void DrawIndexed(uint32 indexCount, uint32 instanceCount, uint32 firstIndex, int32 vertexOffset, uint32 firstInstance) override;
         void DrawIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride) override;
         void DrawIndexedIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride) override;
+        void DrawIndexedIndirectCount(RHIBuffer* buffer,
+                                      uint64 offset,
+                                      RHIBuffer* countBuffer,
+                                      uint64 countOffset,
+                                      uint32 maxDrawCount,
+                                      uint32 stride) override;
 
         // =========================================================================
         // Compute Commands
         // =========================================================================
         void Dispatch(uint32 groupCountX, uint32 groupCountY, uint32 groupCountZ) override;
         void DispatchIndirect(RHIBuffer* buffer, uint64 offset) override;
+
+        // =========================================================================
+        // Ray Tracing Commands
+        // =========================================================================
+        void BuildBottomLevelAccelerationStructure(
+            RHIAccelerationStructure* dst,
+            const RHIBottomLevelASDesc& desc,
+            RHIBuffer* scratchBuffer,
+            uint64 scratchOffset,
+            RHIAccelerationStructure* src) override;
+        void BuildTopLevelAccelerationStructure(
+            RHIAccelerationStructure* dst,
+            const RHITopLevelASDesc& desc,
+            RHIBuffer* scratchBuffer,
+            uint64 scratchOffset,
+            RHIAccelerationStructure* src) override;
+        void DispatchRays(const RHIDispatchRaysDesc& desc) override;
 
         // =========================================================================
         // Copy Commands
@@ -147,6 +171,7 @@ namespace RVX
 
         // Current state
         DX12Pipeline* m_currentPipeline = nullptr;
+        std::vector<DX12DescriptorSetLayout*> m_boundRayTracingDescriptorSetLayouts;
         bool m_isRecording = false;
         bool m_inRenderPass = false;
 

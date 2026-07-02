@@ -5,6 +5,7 @@
 #include "RHI/RHITexture.h"
 #include "RHI/RHISampler.h"
 #include "RHI/RHIShader.h"
+#include "RHI/RHIRayTracing.h"
 #include "RHI/RHIPipeline.h"
 #include "RHI/RHIDescriptor.h"
 #include "RHI/RHISwapChain.h"
@@ -87,6 +88,39 @@ namespace RVX
         virtual RHIPipelineLayoutRef CreatePipelineLayout(const RHIPipelineLayoutDesc& desc) = 0;
         virtual RHIPipelineRef CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc) = 0;
         virtual RHIPipelineRef CreateComputePipeline(const RHIComputePipelineDesc& desc) = 0;
+
+        // =========================================================================
+        // Ray Tracing
+        // =========================================================================
+        virtual RHIAccelerationStructureBuildSizes GetBottomLevelASBuildSizes(const RHIBottomLevelASDesc& desc)
+        {
+            (void)desc;
+            return {};
+        }
+
+        virtual RHIAccelerationStructureBuildSizes GetTopLevelASBuildSizes(const RHITopLevelASDesc& desc)
+        {
+            (void)desc;
+            return {};
+        }
+
+        virtual RHIAccelerationStructureRef CreateAccelerationStructure(const RHIAccelerationStructureDesc& desc)
+        {
+            (void)desc;
+            return {};
+        }
+
+        virtual RHIPipelineRef CreateRayTracingPipeline(const RHIRayTracingPipelineDesc& desc)
+        {
+            (void)desc;
+            return {};
+        }
+
+        virtual RHIShaderTableRef CreateShaderTable(const RHIShaderTableDesc& desc)
+        {
+            (void)desc;
+            return {};
+        }
 
         // =========================================================================
         // Descriptor Set

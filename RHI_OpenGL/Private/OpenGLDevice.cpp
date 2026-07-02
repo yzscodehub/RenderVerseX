@@ -500,6 +500,13 @@ namespace RVX
     {
         GL_DEBUG_SCOPE("CreateQueryPool");
 
+        auto validation = ValidateRHIQueryPoolDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("OpenGL query pool creation failed: {}", validation.message);
+            return nullptr;
+        }
+
         auto queryPool = MakeRef<OpenGLQueryPool>(this, desc);
         if (queryPool->GetCount() == 0)
         {

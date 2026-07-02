@@ -21,6 +21,8 @@ namespace RVX
     class RHIFence;
     class RHICommandContext;
     class RHIHeap;
+    class RHIAccelerationStructure;
+    class RHIShaderTable;
 
     // =============================================================================
     // Type Aliases
@@ -38,6 +40,8 @@ namespace RVX
     using RHIFenceRef               = Ref<RHIFence>;
     using RHICommandContextRef      = Ref<RHICommandContext>;
     using RHIHeapRef                = Ref<RHIHeap>;
+    using RHIAccelerationStructureRef = Ref<RHIAccelerationStructure>;
+    using RHIShaderTableRef         = Ref<RHIShaderTable>;
 
     // =============================================================================
     // RHI Resource Base Class
