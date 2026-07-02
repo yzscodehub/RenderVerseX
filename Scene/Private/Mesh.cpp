@@ -171,10 +171,15 @@ namespace RVX
         if (!posAttr) return;
 
         const float* positions = static_cast<const float*>(posAttr->GetData());
-        std::vector<uint32_t> indices = GetTypedIndices<uint32_t>();
-        
+        std::vector<uint32_t> indices = GetIndices32();
+
         for (auto& sm : m_subMeshes)
         {
+            if (sm.indexOffset + sm.indexCount > indices.size())
+            {
+                continue;
+            }
+
             BoundingBox bounds;
             for (uint32_t i = 0; i < sm.indexCount; ++i)
             {
@@ -210,7 +215,7 @@ namespace RVX
             positions.emplace_back(data[i * 3], data[i * 3 + 1], data[i * 3 + 2]);
         }
 
-        std::vector<uint32_t> indices = GetTypedIndices<uint32_t>();
+        std::vector<uint32_t> indices = GetIndices32();
         std::vector<Vec3> normals = ComputeVertexNormalsTriList(positions, indices);
         
         if (normals.empty())
@@ -242,10 +247,10 @@ namespace RVX
         const float* positions = static_cast<const float*>(posAttr->GetData());
         const float* normals = static_cast<const float*>(normAttr->GetData());
         const float* uvs = static_cast<const float*>(uvAttr->GetData());
-        std::vector<uint32_t> indices = GetTypedIndices<uint32_t>();
+        std::vector<uint32_t> indices = GetIndices32();
 
         // Compute tangents per triangle
-        for (size_t i = 0; i + 2 < m_indexCount; i += 3)
+        for (size_t i = 0; i + 2 < indices.size(); i += 3)
         {
             uint32_t i0 = indices[i];
             uint32_t i1 = indices[i + 1];

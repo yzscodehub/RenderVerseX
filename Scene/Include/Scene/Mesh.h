@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 
 namespace RVX
 {
@@ -166,6 +167,42 @@ namespace RVX
             const T* typedData = reinterpret_cast<const T*>(m_indexData.data());
             size_t count = m_indexData.size() / sizeof(T);
             return std::vector<T>(typedData, typedData + count);
+        }
+
+        std::vector<uint32_t> GetIndices32() const
+        {
+            std::vector<uint32_t> indices;
+            indices.reserve(m_indexCount);
+
+            switch (m_indexType)
+            {
+                case IndexType::UInt8:
+                    for (size_t i = 0; i < m_indexCount; ++i)
+                    {
+                        uint8_t value = 0;
+                        std::memcpy(&value, m_indexData.data() + i * sizeof(uint8_t), sizeof(uint8_t));
+                        indices.push_back(value);
+                    }
+                    break;
+                case IndexType::UInt16:
+                    for (size_t i = 0; i < m_indexCount; ++i)
+                    {
+                        uint16_t value = 0;
+                        std::memcpy(&value, m_indexData.data() + i * sizeof(uint16_t), sizeof(uint16_t));
+                        indices.push_back(value);
+                    }
+                    break;
+                case IndexType::UInt32:
+                    for (size_t i = 0; i < m_indexCount; ++i)
+                    {
+                        uint32_t value = 0;
+                        std::memcpy(&value, m_indexData.data() + i * sizeof(uint32_t), sizeof(uint32_t));
+                        indices.push_back(value);
+                    }
+                    break;
+            }
+
+            return indices;
         }
 
         const std::vector<uint8_t>& GetIndexData() const { return m_indexData; }

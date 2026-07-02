@@ -93,6 +93,24 @@ Component* SceneEntity::AddOwnedComponent(std::unique_ptr<Component> component)
     return ptr;
 }
 
+bool SceneEntity::RemoveOwnedComponent(Component* component)
+{
+    if (!component || component->GetOwner() != this)
+        return false;
+
+    const std::type_index typeIndex(typeid(*component));
+    if (m_components.find(typeIndex) == m_components.end())
+        return false;
+
+    if (m_legacyComponentDispatchDepth > 0)
+    {
+        QueuePendingLegacyComponentRemoval(typeIndex);
+        return IsLegacyComponentRemovalPending(typeIndex);
+    }
+
+    return RemoveLegacyComponentByType(typeIndex);
+}
+
 // =============================================================================
 // Hierarchy
 // =============================================================================
@@ -218,6 +236,16 @@ void SceneEntity::MarkTransformDirty()
     m_boundsDirty = true;  // World bounds depend on world transform
     MarkSpatialDirty();
     MarkChildrenTransformDirty();
+}
+
+void SceneEntity::MarkSpatialDirty()
+{
+    m_spatialDirty = true;
+
+    if (m_sceneManager)
+    {
+        m_sceneManager->MarkEntitySpatialDirty(this);
+    }
 }
 
 void SceneEntity::MarkChildrenTransformDirty()

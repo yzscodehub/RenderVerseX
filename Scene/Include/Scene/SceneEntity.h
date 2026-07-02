@@ -102,14 +102,26 @@ namespace RVX
         bool IsActive() const override { return m_active; }
         void SetActive(bool active) override
         {
+            if (m_active == active)
+                return;
+
             Actor::SetActive(active);
             m_active = active;
+            MarkSpatialDirty();
         }
 
-        void SetLayerMask(uint32_t mask) { m_layerMask = mask; }
-        void SetLayer(uint32_t layer) { m_layerMask = 1u << layer; }
-        void AddLayer(uint32_t layer) { m_layerMask |= (1u << layer); }
-        void RemoveLayer(uint32_t layer) { m_layerMask &= ~(1u << layer); }
+        void SetLayerMask(uint32_t mask)
+        {
+            if (m_layerMask == mask)
+                return;
+
+            m_layerMask = mask;
+            MarkSpatialDirty();
+        }
+
+        void SetLayer(uint32_t layer) { SetLayerMask(1u << layer); }
+        void AddLayer(uint32_t layer) { SetLayerMask(m_layerMask | (1u << layer)); }
+        void RemoveLayer(uint32_t layer) { SetLayerMask(m_layerMask & ~(1u << layer)); }
         bool IsInLayer(uint32_t layer) const { return (m_layerMask & (1u << layer)) != 0; }
 
         void SetUserData(void* data) { m_userData = data; }
@@ -213,6 +225,9 @@ namespace RVX
         /// Add an already-created legacy component and transfer ownership.
         Component* AddOwnedComponent(std::unique_ptr<Component> component);
 
+        /// Remove an owned legacy component instance.
+        bool RemoveOwnedComponent(Component* component);
+
         /// Get a component of type T (returns nullptr if not found)
         template<typename T>
         T* GetComponent() const;
@@ -248,7 +263,7 @@ namespace RVX
 
     protected:
         bool ShouldAutoRegisterComponent(ActorComponent* component) const override;
-        void MarkSpatialDirty() { m_spatialDirty = true; }
+        void MarkSpatialDirty();
         void MarkTransformDirty();  // Also marks children as dirty
 
         // Allow SceneManager to set itself

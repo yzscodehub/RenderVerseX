@@ -3,7 +3,7 @@
 /**
  * @file ComponentFactory.h
  * @brief Factory for creating actor components from model Node data
- * 
+ *
  * Provides a unified way to convert Node indices to actor components
  * during ModelResource::Instantiate().
  */
@@ -32,7 +32,7 @@ namespace RVX
 
     /**
      * @brief Factory for creating actor components from model Node data
-     * 
+     *
      * ComponentFactory provides a registry-based system for converting
      * Node indices (meshIndex, materialIndices, etc.) into actor component
      * instances during model instantiation.
@@ -62,6 +62,14 @@ namespace RVX
          */
         using Creator = std::function<ActorComponent*(SceneEntity*, const Node*, const Resource::ModelResource*)>;
         using ClassCreator = std::function<std::unique_ptr<ActorComponent>()>;
+
+        struct ComponentClassDesc
+        {
+            std::string className;
+            std::string displayName;
+            std::string category = "Components";
+            bool allowMultiple = true;
+        };
 
         // =====================================================================
         // Registration
@@ -99,9 +107,20 @@ namespace RVX
         static void RegisterComponentClass(const std::string& typeName);
 
         /**
+         * @brief Register an actor component class with editor-facing metadata
+         */
+        template<typename T>
+        static void RegisterComponentClass(ComponentClassDesc desc);
+
+        /**
          * @brief Register a generic actor component creator
          */
         static void RegisterComponentClass(const std::string& typeName, ClassCreator creator);
+
+        /**
+         * @brief Register a generic actor component creator with editor metadata
+         */
+        static void RegisterComponentClass(ComponentClassDesc desc, ClassCreator creator);
 
         /**
          * @brief Clear generic actor component class creators
@@ -145,6 +164,27 @@ namespace RVX
          */
         static std::unique_ptr<ActorComponent> CreateComponentByClassName(const std::string& typeName);
 
+        /**
+         * @brief Check if a generic actor component class creator is registered
+         */
+        static bool IsComponentClassRegistered(const std::string& typeName);
+
+        /**
+         * @brief Get editor-facing descriptor for a registered component class
+         */
+        static bool GetComponentClassDesc(const std::string& typeName,
+                                          ComponentClassDesc& outDesc);
+
+        /**
+         * @brief Get all registered generic actor component class names
+         */
+        static std::vector<std::string> GetRegisteredComponentClassNames();
+
+        /**
+         * @brief Get editor-facing descriptors for registered component classes
+         */
+        static std::vector<ComponentClassDesc> GetRegisteredComponentClassDescs();
+
         // =====================================================================
         // Query
         // =====================================================================
@@ -162,6 +202,7 @@ namespace RVX
     private:
         static std::unordered_map<std::string, Creator>& GetCreators();
         static std::unordered_map<std::string, ClassCreator>& GetComponentClassCreators();
+        static std::unordered_map<std::string, ComponentClassDesc>& GetComponentClassDescsStorage();
     };
 
     template<typename T>
@@ -169,7 +210,15 @@ namespace RVX
     {
         static_assert(std::is_base_of_v<ActorComponent, T>, "T must derive from ActorComponent");
 
-        RegisterComponentClass(typeName, []() {
+        RegisterComponentClass<T>(ComponentClassDesc{typeName, typeName, "Components", true});
+    }
+
+    template<typename T>
+    void ComponentFactory::RegisterComponentClass(ComponentClassDesc desc)
+    {
+        static_assert(std::is_base_of_v<ActorComponent, T>, "T must derive from ActorComponent");
+
+        RegisterComponentClass(std::move(desc), []() {
             return std::make_unique<T>();
         });
     }

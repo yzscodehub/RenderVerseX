@@ -2,6 +2,7 @@
 
 #include "Render/Renderer/RenderProxy.h"
 #include "Render/Renderer/RenderScene.h"
+#include "Scene/Components/SkeletonComponent.h"
 #include "Scene/Mesh.h"
 #include "Scene/SceneEntity.h"
 
@@ -113,6 +114,15 @@ bool StaticMeshComponent::CreateRenderProxy(RenderPrimitiveProxy& outProxy) cons
     }
 
     outProxy.sortKey = outProxy.materialIds.empty() ? 0 : outProxy.materialIds[0];
+
+    if (auto* entity = dynamic_cast<SceneEntity*>(GetOwner()))
+    {
+        if (auto* skeleton = entity->GetComponent<SkeletonComponent>())
+        {
+            outProxy.skinningMatrices = skeleton->GetSkinningMatrices();
+        }
+    }
+
     return true;
 }
 
@@ -130,7 +140,9 @@ void StaticMeshComponent::CollectRenderData(RenderScene& scene) const
     object.meshId = proxy.meshId;
     object.materialIds = proxy.materialIds;
     object.materialResources = proxy.materialResources;
+    object.skinningMatrices = proxy.skinningMatrices;
     object.sortKey = proxy.sortKey;
+    object.layerMask = proxy.layerMask;
     object.visible = proxy.visible;
     object.castsShadow = proxy.castsShadow;
     object.receivesShadow = proxy.receivesShadow;

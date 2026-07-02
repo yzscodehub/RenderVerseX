@@ -1,9 +1,13 @@
 #include "Scene/Components/ColliderComponent.h"
+#include "Scene/Components/RigidBodyComponent.h"
 #include "Scene/SceneEntity.h"
 
 // Include physics headers for shape creation
 // Note: Using forward declarations in header to avoid circular dependency
 #include "Physics/Shapes/CollisionShape.h"
+
+#include <algorithm>
+#include <cmath>
 
 namespace RVX
 {
@@ -13,12 +17,14 @@ void ColliderComponent::OnAttach()
     // Create initial shape based on type
     RebuildShape();
     NotifyBoundsChanged();
+    NotifyRigidBodyShapeChanged();
 }
 
 void ColliderComponent::OnDetach()
 {
     // Clear shape reference
     m_shape.reset();
+    NotifyRigidBodyShapeChanged();
 }
 
 AABB ColliderComponent::GetLocalBounds() const
@@ -60,6 +66,7 @@ void ColliderComponent::SetColliderType(ColliderType type)
         m_colliderType = type;
         RebuildShape();
         NotifyBoundsChanged();
+        NotifyRigidBodyShapeChanged();
     }
 }
 
@@ -69,6 +76,7 @@ void ColliderComponent::SetCenter(const Vec3& center)
     {
         m_center = center;
         NotifyBoundsChanged();
+        NotifyRigidBodyShapeChanged();
     }
 }
 
@@ -79,6 +87,7 @@ void ColliderComponent::SetSize(const Vec3& size)
         m_size = size;
         RebuildShape();
         NotifyBoundsChanged();
+        NotifyRigidBodyShapeChanged();
     }
 }
 
@@ -89,6 +98,7 @@ void ColliderComponent::SetRadius(float radius)
         m_size.x = radius;
         RebuildShape();
         NotifyBoundsChanged();
+        NotifyRigidBodyShapeChanged();
     }
 }
 
@@ -99,12 +109,53 @@ void ColliderComponent::SetHalfHeight(float halfHeight)
         m_size.y = halfHeight;
         RebuildShape();
         NotifyBoundsChanged();
+        NotifyRigidBodyShapeChanged();
     }
 }
 
 void ColliderComponent::SetHalfExtents(const Vec3& halfExtents)
 {
     SetSize(halfExtents);
+}
+
+void ColliderComponent::SetTrigger(bool trigger)
+{
+    if (m_isTrigger != trigger)
+    {
+        m_isTrigger = trigger;
+        NotifyRigidBodyShapeChanged();
+    }
+}
+
+void ColliderComponent::SetFriction(float friction)
+{
+    if (m_friction != friction)
+    {
+        m_friction = friction;
+        RebuildShape();
+        NotifyRigidBodyShapeChanged();
+    }
+}
+
+void ColliderComponent::SetRestitution(float restitution)
+{
+    if (m_restitution != restitution)
+    {
+        m_restitution = restitution;
+        RebuildShape();
+        NotifyRigidBodyShapeChanged();
+    }
+}
+
+void ColliderComponent::SetDensity(float density)
+{
+    const float sanitizedDensity = std::isfinite(density) ? std::max(0.0f, density) : 0.0f;
+    if (m_density != sanitizedDensity)
+    {
+        m_density = sanitizedDensity;
+        RebuildShape();
+        NotifyRigidBodyShapeChanged();
+    }
 }
 
 void ColliderComponent::RebuildShape()
@@ -137,6 +188,7 @@ void ColliderComponent::RebuildShape()
         Physics::PhysicsMaterial material;
         material.friction = m_friction;
         material.restitution = m_restitution;
+        material.density = m_density;
         m_shape->SetMaterial(material);
     }
 }
@@ -154,6 +206,20 @@ void ColliderComponent::CreateSphereShape()
 void ColliderComponent::CreateCapsuleShape()
 {
     m_shape = Physics::CapsuleShape::Create(m_size.x, m_size.y);
+}
+
+void ColliderComponent::NotifyRigidBodyShapeChanged()
+{
+    SceneEntity* owner = GetOwner();
+    if (!owner)
+    {
+        return;
+    }
+
+    if (auto* rigidBody = owner->GetComponent<RigidBodyComponent>())
+    {
+        rigidBody->RefreshColliderShape(this);
+    }
 }
 
 } // namespace RVX

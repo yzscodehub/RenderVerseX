@@ -5,6 +5,8 @@
  * @brief UE-style base class for actor-owned components
  */
 
+#include "Core/Types.h"
+
 #include <string>
 #include <utility>
 
@@ -25,7 +27,11 @@ namespace RVX
         // Construction
         // =====================================================================
 
-        ActorComponent() = default;
+        using ComponentId = uint64;
+
+        static constexpr ComponentId InvalidComponentId = 0;
+
+        ActorComponent();
         virtual ~ActorComponent() = default;
 
         ActorComponent(const ActorComponent&) = delete;
@@ -47,6 +53,9 @@ namespace RVX
         // =====================================================================
         // Owner and State
         // =====================================================================
+
+        ComponentId GetComponentId() const { return m_componentId; }
+        void SetComponentIdForSerialization(ComponentId componentId);
 
         const std::string& GetName() const { return m_name; }
         void SetName(std::string name) { m_name = std::move(name); }
@@ -87,6 +96,7 @@ namespace RVX
     private:
         friend class Actor;
 
+        ComponentId m_componentId = InvalidComponentId;
         std::string m_name;
         Actor* m_owner = nullptr;
         bool m_enabled = true;

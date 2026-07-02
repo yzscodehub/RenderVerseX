@@ -55,8 +55,8 @@ enum class SkeletonUpdateMode : uint8_t
 class SkeletonComponent : public Component
 {
 public:
-    SkeletonComponent() = default;
-    ~SkeletonComponent() override = default;
+    SkeletonComponent();
+    ~SkeletonComponent() override;
 
     // =========================================================================
     // Component Interface

@@ -71,6 +71,11 @@ void PrimitiveComponent::MarkSpatialDirty()
     auto* entity = dynamic_cast<SceneEntity*>(GetOwner());
     if (entity)
     {
+        if (entity->GetSceneManager())
+        {
+            entity->GetSceneManager()->MarkPrimitiveSpatialDirty(this);
+        }
+
         entity->MarkBoundsDirty();
     }
 }

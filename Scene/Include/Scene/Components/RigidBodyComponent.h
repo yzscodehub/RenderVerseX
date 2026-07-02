@@ -23,6 +23,8 @@ namespace RVX::Physics
 namespace RVX
 {
 
+class ColliderComponent;
+
 /**
  * @brief Body type for physics simulation
  */
@@ -194,12 +196,24 @@ public:
     uint32_t GetCollisionMask() const { return m_collisionMask; }
     void SetCollisionMask(uint32_t mask);
 
+    /// Fine-grained collision group. groupId 0 disables group filtering.
+    uint32_t GetCollisionGroupId() const { return m_collisionGroupId; }
+    uint32_t GetCollisionSubGroupId() const { return m_collisionSubGroupId; }
+    void SetCollisionGroup(uint32_t groupId, uint32_t subGroupId);
+
     // =========================================================================
     // Internal Access
     // =========================================================================
 
     /// Get the underlying physics body (may be null)
     std::shared_ptr<Physics::RigidBody> GetBody() const { return m_body; }
+
+    /// Bind this component to a world-owned physics simulation.
+    void SetPhysicsWorld(Physics::PhysicsWorld* physicsWorld);
+    Physics::PhysicsWorld* GetPhysicsWorld() const { return m_physicsWorld; }
+    bool IsRegisteredWithPhysicsWorld() const { return m_body != nullptr && m_physicsWorld != nullptr; }
+    void RefreshColliderShape();
+    void RefreshColliderShape(const ColliderComponent* collider);
 
     /// Sync entity transform to physics body
     void SyncToPhysics();
@@ -211,6 +225,7 @@ private:
     void CreateBody();
     void DestroyBody();
     void UpdateBodyProperties();
+    void UpdateAutoMass();
 
     RigidBodyType m_bodyType = RigidBodyType::Dynamic;
 
@@ -243,6 +258,8 @@ private:
     bool m_useCCD = false;
     uint32_t m_collisionLayer = 1;
     uint32_t m_collisionMask = ~0u;
+    uint32_t m_collisionGroupId = 0;
+    uint32_t m_collisionSubGroupId = 0;
 
     // Physics body reference
     std::shared_ptr<Physics::RigidBody> m_body;
