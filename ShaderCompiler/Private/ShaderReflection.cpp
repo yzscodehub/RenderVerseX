@@ -43,6 +43,8 @@ namespace RVX
                     return RHIBindingType::Sampler;
                 case SPV_REFLECT_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
                     return RHIBindingType::CombinedTextureSampler;
+                case SPV_REFLECT_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+                    return RHIBindingType::AccelerationStructure;
                 default:
                     return RHIBindingType::UniformBuffer;
             }

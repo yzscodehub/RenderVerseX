@@ -1,4 +1,5 @@
 #include "ShaderCompiler/ShaderManager.h"
+#include "ShaderCompiler/ShaderCacheFormat.h"
 #include "ShaderCompiler/ShaderReflection.h"
 #include "Core/Core.h"
 #include "RHI/RHIDevice.h"
@@ -688,6 +689,7 @@ namespace RVX
         hashCombine(hash, static_cast<uint64>(desc.backend));
         hashCombine(hash, std::hash<std::string>{}(desc.targetProfile));
         hashCombine(hash, sourceHash);
+        hashCombine(hash, RVX_SHADER_COMPILER_CACHE_ABI_VERSION);
         hashCombine(hash, desc.enableDebugInfo ? 1ull : 0ull);
         hashCombine(hash, desc.enableOptimization ? 1ull : 0ull);
 

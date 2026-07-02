@@ -424,6 +424,7 @@ namespace RVX
         // Build header
         ShaderCacheHeader header;
         header.timestamp = GetCurrentTimestamp();
+        header.compilerVersion = RVX_SHADER_COMPILER_CACHE_ABI_VERSION;
         header.backend = entry.backend;
         header.stage = entry.stage;
 
@@ -486,6 +487,11 @@ namespace RVX
         }
 
         if (header.version > RVX_SHADER_CACHE_VERSION)
+        {
+            return false;
+        }
+
+        if (header.compilerVersion != RVX_SHADER_COMPILER_CACHE_ABI_VERSION)
         {
             return false;
         }

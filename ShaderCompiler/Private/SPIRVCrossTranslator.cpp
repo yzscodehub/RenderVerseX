@@ -1,16 +1,50 @@
 #include "SPIRVCrossTranslator.h"
 #include "Core/Log.h"
+#include "ShaderCompiler/GLSLBindingABI.h"
 
 #ifdef __APPLE__
 #include <spirv_cross/spirv_msl.hpp>
 #endif
 #include <spirv_cross/spirv_glsl.hpp>
 #include <spirv_cross/spirv_cross.hpp>
+#include <algorithm>
 
 namespace RVX
 {
     namespace
     {
+        struct GLSLTextureBindingInfo
+        {
+            std::string name;
+            uint32_t originalSet = 0;
+            uint32_t originalBinding = 0;
+            uint32_t glBinding = 0;
+        };
+
+        template <typename ResourceContainerT>
+        void SortResourcesBySetBinding(spirv_cross::Compiler& compiler, ResourceContainerT& resources)
+        {
+            std::sort(resources.begin(), resources.end(),
+                [&compiler](const auto& lhs, const auto& rhs)
+                {
+                    const uint32_t lhsSet = compiler.get_decoration(lhs.id, spv::DecorationDescriptorSet);
+                    const uint32_t rhsSet = compiler.get_decoration(rhs.id, spv::DecorationDescriptorSet);
+                    if (lhsSet != rhsSet)
+                    {
+                        return lhsSet < rhsSet;
+                    }
+
+                    const uint32_t lhsBinding = compiler.get_decoration(lhs.id, spv::DecorationBinding);
+                    const uint32_t rhsBinding = compiler.get_decoration(rhs.id, spv::DecorationBinding);
+                    if (lhsBinding != rhsBinding)
+                    {
+                        return lhsBinding < rhsBinding;
+                    }
+
+                    return compiler.get_name(lhs.id) < compiler.get_name(rhs.id);
+                });
+        }
+
         RHIBindingType ToBindingType(spv::Op op, bool isImage)
         {
             switch (op)
@@ -192,6 +226,8 @@ namespace RVX
         const std::vector<uint8_t>& spirvBytecode,
         RHIShaderStage stage)
     {
+        (void)stage;
+
         ShaderReflection reflection;
 
         if (spirvBytecode.empty() || spirvBytecode.size() % sizeof(uint32_t) != 0)
@@ -398,11 +434,15 @@ namespace RVX
             // Remap bindings: flatten set/binding to OpenGL binding points
             // Note: UBO binding 0 is reserved for push constants (see OpenGLPipeline.h PUSH_CONSTANT_BINDING)
             auto resources = glslCompiler.get_shader_resources();
-            uint32_t uboIndex = 1;  // Start from 1, 0 is reserved for push constants
-            uint32_t ssboIndex = 0;
-            uint32_t textureIndex = 0;
-            uint32_t samplerIndex = 0;
-            uint32_t imageIndex = 0;
+            std::unordered_map<spirv_cross::VariableID, GLSLTextureBindingInfo> separateImageBindings;
+            std::unordered_map<spirv_cross::VariableID, std::string> separateSamplerNames;
+
+            SortResourcesBySetBinding(glslCompiler, resources.uniform_buffers);
+            SortResourcesBySetBinding(glslCompiler, resources.storage_buffers);
+            SortResourcesBySetBinding(glslCompiler, resources.sampled_images);
+            SortResourcesBySetBinding(glslCompiler, resources.separate_images);
+            SortResourcesBySetBinding(glslCompiler, resources.separate_samplers);
+            SortResourcesBySetBinding(glslCompiler, resources.storage_images);
 
             // Process uniform buffers
             for (const auto& ubo : resources.uniform_buffers)
@@ -412,14 +452,14 @@ namespace RVX
                 std::string name = glslCompiler.get_name(ubo.id);
                 if (name.empty()) name = glslCompiler.get_fallback_name(ubo.id);
 
-                // Remap to OpenGL binding
-                glslCompiler.set_decoration(ubo.id, spv::DecorationBinding, uboIndex);
+                const uint32_t glBinding =
+                    GLSLBindingABI::FlattenBinding(RHIBindingType::UniformBuffer, set, binding);
+                glslCompiler.set_decoration(ubo.id, spv::DecorationBinding, glBinding);
                 glslCompiler.unset_decoration(ubo.id, spv::DecorationDescriptorSet);
 
                 result.bindingRemaps.push_back({
-                    name, set, binding, uboIndex, RHIBindingType::UniformBuffer
+                    name, set, binding, glBinding, RHIBindingType::UniformBuffer
                 });
-                uboIndex++;
             }
 
             // Process storage buffers (SSBO)
@@ -430,13 +470,14 @@ namespace RVX
                 std::string name = glslCompiler.get_name(ssbo.id);
                 if (name.empty()) name = glslCompiler.get_fallback_name(ssbo.id);
 
-                glslCompiler.set_decoration(ssbo.id, spv::DecorationBinding, ssboIndex);
+                const uint32_t glBinding =
+                    GLSLBindingABI::FlattenBinding(RHIBindingType::StorageBuffer, set, binding);
+                glslCompiler.set_decoration(ssbo.id, spv::DecorationBinding, glBinding);
                 glslCompiler.unset_decoration(ssbo.id, spv::DecorationDescriptorSet);
 
                 result.bindingRemaps.push_back({
-                    name, set, binding, ssboIndex, RHIBindingType::StorageBuffer
+                    name, set, binding, glBinding, RHIBindingType::StorageBuffer
                 });
-                ssboIndex++;
             }
 
             // Process sampled images (combined texture samplers)
@@ -447,13 +488,14 @@ namespace RVX
                 std::string name = glslCompiler.get_name(tex.id);
                 if (name.empty()) name = glslCompiler.get_fallback_name(tex.id);
 
-                glslCompiler.set_decoration(tex.id, spv::DecorationBinding, textureIndex);
+                const uint32_t glBinding =
+                    GLSLBindingABI::FlattenBinding(RHIBindingType::CombinedTextureSampler, set, binding);
+                glslCompiler.set_decoration(tex.id, spv::DecorationBinding, glBinding);
                 glslCompiler.unset_decoration(tex.id, spv::DecorationDescriptorSet);
 
                 result.bindingRemaps.push_back({
-                    name, set, binding, textureIndex, RHIBindingType::CombinedTextureSampler
+                    name, set, binding, glBinding, RHIBindingType::CombinedTextureSampler
                 });
-                textureIndex++;
             }
 
             // Process separate images
@@ -464,13 +506,15 @@ namespace RVX
                 std::string name = glslCompiler.get_name(img.id);
                 if (name.empty()) name = glslCompiler.get_fallback_name(img.id);
 
-                glslCompiler.set_decoration(img.id, spv::DecorationBinding, textureIndex);
+                const uint32_t glBinding =
+                    GLSLBindingABI::FlattenBinding(RHIBindingType::SampledTexture, set, binding);
+                glslCompiler.set_decoration(img.id, spv::DecorationBinding, glBinding);
                 glslCompiler.unset_decoration(img.id, spv::DecorationDescriptorSet);
 
                 result.bindingRemaps.push_back({
-                    name, set, binding, textureIndex, RHIBindingType::SampledTexture
+                    name, set, binding, glBinding, RHIBindingType::SampledTexture
                 });
-                textureIndex++;
+                separateImageBindings[img.id] = GLSLTextureBindingInfo{name, set, binding, glBinding};
             }
 
             // Process separate samplers
@@ -481,13 +525,63 @@ namespace RVX
                 std::string name = glslCompiler.get_name(smp.id);
                 if (name.empty()) name = glslCompiler.get_fallback_name(smp.id);
 
-                glslCompiler.set_decoration(smp.id, spv::DecorationBinding, samplerIndex);
+                const uint32_t glBinding =
+                    GLSLBindingABI::FlattenBinding(RHIBindingType::Sampler, set, binding);
+                glslCompiler.set_decoration(smp.id, spv::DecorationBinding, glBinding);
                 glslCompiler.unset_decoration(smp.id, spv::DecorationDescriptorSet);
 
                 result.bindingRemaps.push_back({
-                    name, set, binding, samplerIndex, RHIBindingType::Sampler
+                    name, set, binding, glBinding, RHIBindingType::Sampler
                 });
-                samplerIndex++;
+                separateSamplerNames[smp.id] = name;
+            }
+
+            if (!separateImageBindings.empty())
+            {
+                const spirv_cross::VariableID dummySamplerId =
+                    glslCompiler.build_dummy_sampler_for_combined_images();
+                if (dummySamplerId != 0)
+                {
+                    constexpr const char* DummySamplerName = "SPIRVCrossDummySampler";
+                    glslCompiler.set_name(dummySamplerId, DummySamplerName);
+                    glslCompiler.set_decoration(dummySamplerId,
+                                                spv::DecorationBinding,
+                                                GLSLBindingABI::RVX_GLSL_DUMMY_SAMPLER_BINDING);
+                    glslCompiler.unset_decoration(dummySamplerId, spv::DecorationDescriptorSet);
+                    separateSamplerNames[dummySamplerId] = DummySamplerName;
+                }
+            }
+
+            if (!separateImageBindings.empty() && !separateSamplerNames.empty())
+            {
+                glslCompiler.build_combined_image_samplers();
+
+                for (const auto& combined : glslCompiler.get_combined_image_samplers())
+                {
+                    const auto imageIt = separateImageBindings.find(combined.image_id);
+                    if (imageIt == separateImageBindings.end())
+                    {
+                        continue;
+                    }
+
+                    const auto samplerIt = separateSamplerNames.find(combined.sampler_id);
+                    const std::string samplerName = samplerIt != separateSamplerNames.end()
+                                                        ? samplerIt->second
+                                                        : glslCompiler.get_fallback_name(combined.sampler_id);
+                    const std::string combinedName = imageIt->second.name + "_" + samplerName;
+
+                    glslCompiler.set_name(combined.combined_id, combinedName);
+                    glslCompiler.set_decoration(combined.combined_id, spv::DecorationBinding, imageIt->second.glBinding);
+                    glslCompiler.unset_decoration(combined.combined_id, spv::DecorationDescriptorSet);
+
+                    result.bindingRemaps.push_back({
+                        combinedName,
+                        imageIt->second.originalSet,
+                        imageIt->second.originalBinding,
+                        imageIt->second.glBinding,
+                        RHIBindingType::CombinedTextureSampler
+                    });
+                }
             }
 
             // Process storage images
@@ -498,13 +592,14 @@ namespace RVX
                 std::string name = glslCompiler.get_name(img.id);
                 if (name.empty()) name = glslCompiler.get_fallback_name(img.id);
 
-                glslCompiler.set_decoration(img.id, spv::DecorationBinding, imageIndex);
+                const uint32_t glBinding =
+                    GLSLBindingABI::FlattenBinding(RHIBindingType::StorageTexture, set, binding);
+                glslCompiler.set_decoration(img.id, spv::DecorationBinding, glBinding);
                 glslCompiler.unset_decoration(img.id, spv::DecorationDescriptorSet);
 
                 result.bindingRemaps.push_back({
-                    name, set, binding, imageIndex, RHIBindingType::StorageTexture
+                    name, set, binding, glBinding, RHIBindingType::StorageTexture
                 });
-                imageIndex++;
             }
 
             // Process push constants
@@ -517,7 +612,7 @@ namespace RVX
 
                 result.pushConstantInfo = SPIRVToGLSLResult::PushConstantInfo{
                     pcName,
-                    0,  // Push constant UBO at binding 0
+                    GLSLBindingABI::RVX_GLSL_PUSH_CONSTANT_UBO_BINDING,
                     static_cast<uint32_t>(glslCompiler.get_declared_struct_size(type))
                 };
             }

@@ -13,6 +13,7 @@ set(SHADER_COMPILER_PUBLIC_HEADERS
     Include/ShaderCompiler/ShaderCompileService.h
     Include/ShaderCompiler/ShaderCacheManager.h
     Include/ShaderCompiler/ShaderCacheFormat.h
+    Include/ShaderCompiler/GLSLBindingABI.h
     Include/ShaderCompiler/ShaderSourceInfo.h
     Include/ShaderCompiler/ShaderPermutation.h
     Include/ShaderCompiler/ShaderHotReloader.h
@@ -62,6 +63,9 @@ target_link_libraries(RVX_ShaderCompiler PUBLIC
 
 # Windows: Link DirectX Shader Compiler, D3DCompiler, and SPIRV-Cross for OpenGL support
 if(WIN32)
+    find_package(spirv_cross_core CONFIG REQUIRED)
+    find_package(spirv_cross_glsl CONFIG REQUIRED)
+
     target_link_libraries(RVX_ShaderCompiler PRIVATE
         Microsoft::DirectXShaderCompiler
         d3dcompiler
@@ -78,7 +82,7 @@ if(APPLE)
         glslang::glslang-default-resource-limits
         glslang::SPIRV
     )
-    
+
     # Link SPIRV-Cross libraries for MSL translation
     target_link_libraries(RVX_ShaderCompiler PRIVATE
         spirv-cross-core

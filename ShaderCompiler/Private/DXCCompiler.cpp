@@ -63,6 +63,15 @@ namespace RVX
                 // SM6.5+ features
                 case RHIShaderStage::Mesh:          return L"ms_6_5";
                 case RHIShaderStage::Amplification: return L"as_6_5";
+                // DXR/Vulkan ray tracing shaders are compiled as libraries;
+                // the concrete stage comes from HLSL [shader(...)] attributes.
+                case RHIShaderStage::RayGeneration:
+                case RHIShaderStage::AnyHit:
+                case RHIShaderStage::ClosestHit:
+                case RHIShaderStage::Miss:
+                case RHIShaderStage::Intersection:
+                case RHIShaderStage::Callable:
+                    return L"lib_6_3";
                 default: return L"vs_6_0";
             }
         }
@@ -475,7 +484,7 @@ namespace RVX
             args.push_back(L"-HV");
             args.push_back(L"2021");
 
-            // Row-major matrices (compatible with common math libraries)
+            // Column-major matrices match GLM storage used by the engine.
             args.push_back(L"-Zpc");
 
             // Include directory
@@ -608,12 +617,15 @@ namespace RVX
             }
 
             // SPIR-V output
+            args.push_back(L"-HV");
+            args.push_back(L"2021");
+            args.push_back(L"-Zpc");
             args.push_back(L"-spirv");
-            args.push_back(L"-fvk-use-dx-layout");
             args.push_back(L"-fvk-use-dx-position-w");
 
             if (options.targetBackend == RHIBackendType::Vulkan)
             {
+                args.push_back(L"-fvk-use-dx-layout");
                 args.push_back(L"-fspv-target-env=vulkan1.2");
             }
             else
