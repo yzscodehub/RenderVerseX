@@ -6,10 +6,41 @@
 #include "Audio/Streaming/AudioStreamer.h"
 #include "Core/Log.h"
 #include <miniaudio.h>
+#include <algorithm>
+#include <chrono>
 #include <cstring>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace RVX::Audio
 {
+
+namespace
+{
+#if defined(_WIN32)
+    int ToNativeThreadPriority(StreamingThreadPriority priority)
+    {
+        switch (priority)
+        {
+            case StreamingThreadPriority::Low:
+                return THREAD_PRIORITY_BELOW_NORMAL;
+            case StreamingThreadPriority::Normal:
+                return THREAD_PRIORITY_NORMAL;
+            case StreamingThreadPriority::High:
+                return THREAD_PRIORITY_ABOVE_NORMAL;
+            case StreamingThreadPriority::TimeCritical:
+                return THREAD_PRIORITY_HIGHEST;
+        }
+
+        return THREAD_PRIORITY_NORMAL;
+    }
+#endif
+} // namespace
 
 AudioStreamer::AudioStreamer()
 {
@@ -78,6 +109,7 @@ bool AudioStreamer::Open(const std::string& path)
     m_currentSample = 0;
 
     m_isOpen = true;
+    m_prefetchThreadPriorityApplied = false;
     SetState(StreamingState::Loading);
 
     // Fill initial buffers
@@ -122,10 +154,12 @@ void AudioStreamer::Close()
 
     // Stop prefetch thread
     m_stopPrefetch = true;
+    m_prefetchThreadPriorityApplied = false;
     if (m_prefetchThread.joinable())
     {
         m_prefetchThread.join();
     }
+    m_prefetchThreadPriorityApplied = false;
 
     // Clean up decoder
     if (m_decoder)
@@ -302,6 +336,8 @@ void AudioStreamer::SetState(StreamingState state)
 
 void AudioStreamer::PrefetchLoop()
 {
+    m_prefetchThreadPriorityApplied = ApplyPrefetchThreadPriority();
+
     while (!m_stopPrefetch)
     {
         // Handle seek request
@@ -372,6 +408,21 @@ void AudioStreamer::PrefetchLoop()
         // Sleep briefly
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
+}
+
+bool AudioStreamer::ApplyPrefetchThreadPriority()
+{
+#if defined(_WIN32)
+    const int nativePriority = ToNativeThreadPriority(m_config.prefetchThreadPriority);
+    if (::SetThreadPriority(::GetCurrentThread(), nativePriority) == 0)
+    {
+        RVX_CORE_WARN("Failed to set audio streaming thread priority");
+        return false;
+    }
+    return true;
+#else
+    return m_config.prefetchThreadPriority == StreamingThreadPriority::Normal;
+#endif
 }
 
 bool AudioStreamer::FillBuffer(size_t bufferIndex)

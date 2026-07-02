@@ -8,6 +8,7 @@
 #include "Core/Types.h"
 #include "Core/MathTypes.h"
 #include <cstdint>
+#include <string>
 
 namespace RVX::Audio
 {
@@ -68,6 +69,7 @@ struct AudioPlaySettings
     bool loop = false;              ///< Loop playback
     float fadeInTime = 0.0f;        ///< Fade in duration
     bool startPaused = false;       ///< Start paused
+    uint32 busId = 0;               ///< Output bus (0 = engine endpoint/master)
 };
 
 /**
@@ -149,10 +151,20 @@ struct LowPassSettings
 struct AudioBus
 {
     uint32 id = 0;
+    std::string name;
     float volume = 1.0f;
     float pan = 0.0f;
     bool muted = false;
     uint32 parentBus = 0;  // 0 = master
+};
+
+/**
+ * @brief Audio bus send route for effect returns
+ */
+struct AudioBusSend
+{
+    uint32 targetBusId = 0;
+    float amount = 0.0f;
 };
 
 } // namespace RVX::Audio

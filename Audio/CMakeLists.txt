@@ -41,6 +41,7 @@ target_include_directories(RVX_Audio PUBLIC
 
 target_link_libraries(RVX_Audio PUBLIC
     RVX::Core
+    RVX::Physics
 )
 
 # miniaudio include path (header-only)

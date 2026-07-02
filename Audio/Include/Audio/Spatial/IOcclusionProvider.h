@@ -7,6 +7,11 @@
 
 #include "Audio/AudioTypes.h"
 
+namespace RVX::Physics
+{
+    class PhysicsWorld;
+} // namespace RVX::Physics
+
 namespace RVX::Audio
 {
 
@@ -123,14 +128,26 @@ public:
      */
     void SetLowPassReduction(float reduction) { m_lowPassReduction = reduction; }
 
+    /**
+     * @brief Set the physics world used for occlusion raycasts
+     */
+    void SetPhysicsWorld(::RVX::Physics::PhysicsWorld* physicsWorld) { m_physicsWorld = physicsWorld; }
+    ::RVX::Physics::PhysicsWorld* GetPhysicsWorld() const { return m_physicsWorld; }
+
+    /**
+     * @brief Set collision layer mask used by occlusion raycasts
+     */
+    void SetLayerMask(uint32 layerMask) { m_layerMask = layerMask; }
+    uint32 GetLayerMask() const { return m_layerMask; }
+
 private:
     bool m_enabled = true;
     float m_maxDistance = 100.0f;
     float m_occlusionPerHit = 0.5f;
     float m_lowPassReduction = 2000.0f;
+    uint32 m_layerMask = 0xFFFFFFFFu;
+    ::RVX::Physics::PhysicsWorld* m_physicsWorld = nullptr;
 
-    // Raycast interface (to be connected to Physics)
-    // For now, this is a stub that will need physics integration
     bool Raycast(const Vec3& start, const Vec3& end, int& hitCount);
 };
 

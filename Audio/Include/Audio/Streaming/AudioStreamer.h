@@ -31,6 +31,17 @@ enum class StreamingState : uint8
 };
 
 /**
+ * @brief Background streaming thread priority
+ */
+enum class StreamingThreadPriority : uint8
+{
+    Low,
+    Normal,
+    High,
+    TimeCritical
+};
+
+/**
  * @brief Streaming buffer configuration
  */
 struct StreamingConfig
@@ -39,6 +50,7 @@ struct StreamingConfig
     int bufferCount = 4;             ///< Number of buffers (ring buffer)
     size_t prefetchThreshold = 2;    ///< Prefetch when this many buffers available
     bool enablePrefetch = true;      ///< Enable background prefetching
+    StreamingThreadPriority prefetchThreadPriority = StreamingThreadPriority::High;
 };
 
 /**
@@ -167,6 +179,8 @@ public:
     StreamingState GetState() const { return m_state; }
     bool IsFinished() const { return m_state == StreamingState::Finished; }
     bool HasError() const { return m_state == StreamingState::Error; }
+    StreamingThreadPriority GetPrefetchThreadPriority() const { return m_config.prefetchThreadPriority; }
+    bool WasPrefetchThreadPriorityApplied() const { return m_prefetchThreadPriorityApplied; }
 
     /**
      * @brief Set callback for state changes
@@ -225,12 +239,14 @@ private:
     std::atomic<bool> m_stopPrefetch{false};
     std::atomic<bool> m_seekRequested{false};
     std::atomic<uint64> m_seekTarget{0};
+    std::atomic<bool> m_prefetchThreadPriorityApplied{false};
     
     // Callback
     StreamingCallback m_stateCallback;
 
     void SetState(StreamingState state);
     void PrefetchLoop();
+    bool ApplyPrefetchThreadPriority();
     bool FillBuffer(size_t bufferIndex);
     void ClearBuffers();
 };
