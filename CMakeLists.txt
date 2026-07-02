@@ -159,11 +159,13 @@ add_subdirectory(Core)
 add_subdirectory(Geometry)     # Geometry module (primitives, queries, algorithms)
 add_subdirectory(HAL)          # Hardware Abstraction Layer (Window, Input)
 add_subdirectory(Spatial)
-add_subdirectory(Scene)
+add_subdirectory(Physics)    # Physics subsystem
 add_subdirectory(Animation)
+add_subdirectory(Audio)      # Audio subsystem
+add_subdirectory(Scene)
 add_subdirectory(Runtime)      # Runtime subsystems (includes Camera)
 add_subdirectory(Picking)
-add_subdirectory(World)      # World module (integrates Scene, Spatial, Picking)
+add_subdirectory(World)      # World module (integrates Scene, Spatial, Physics, Picking)
 add_subdirectory(Engine)
 add_subdirectory(RHI)
 add_subdirectory(ShaderCompiler)
@@ -195,10 +197,8 @@ add_subdirectory(AI)         # AI module (Navigation, BehaviorTree, Perception)
 add_subdirectory(Networking) # Network communication and replication
 add_subdirectory(Debug)      # Debug module (profiling, console, stats)
 add_subdirectory(Scripting)  # Lua scripting system
-add_subdirectory(Audio)      # Audio subsystem
 add_subdirectory(Tools)      # Asset pipeline and tools
 add_subdirectory(UI)         # UI framework
-add_subdirectory(Physics)    # Physics subsystem
 add_subdirectory(Terrain)    # Terrain module (heightmap terrain rendering)
 add_subdirectory(Water)      # Water module (water surface and effects)
 add_subdirectory(Editor)     # Editor application with ImGui
