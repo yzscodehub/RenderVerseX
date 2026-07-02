@@ -1,11 +1,15 @@
 #include "Resource/ResourceManager.h"
+#include "Resource/Loader/MeshLoader.h"
 #include "Resource/Loader/ModelLoader.h"
+#include "Resource/Loader/ShaderLoader.h"
 #include "Resource/Loader/TextureLoader.h"
 #include "Scene/ComponentFactory.h"
 #include "Core/Log.h"
 #include <algorithm>
 #include <exception>
 #include <filesystem>
+#include <fstream>
+#include <string>
 
 // Logging macros
 #ifndef RVX_RESOURCE_INFO
@@ -19,6 +23,36 @@ namespace RVX::Resource
 {
 
 static ResourceManager* s_instance = nullptr;
+
+namespace
+{
+    ResourceType DetectCookedArtifactType(const std::string& path)
+    {
+        std::ifstream file(path, std::ios::binary);
+        if (!file.is_open())
+        {
+            return ResourceType::Unknown;
+        }
+
+        std::string firstLine;
+        std::getline(file, firstLine);
+
+        if (firstLine == "RVX_TEXTURE_PREBAKE_V1")
+        {
+            return ResourceType::Texture;
+        }
+        if (firstLine == "RVX_MESH_PREBAKE_V1")
+        {
+            return ResourceType::Mesh;
+        }
+        if (firstLine == "RVX_SHADER_PREBAKE_V1")
+        {
+            return ResourceType::Shader;
+        }
+
+        return ResourceType::Unknown;
+    }
+} // namespace
 
 ResourceManager::ResourceManager() = default;
 
@@ -65,6 +99,14 @@ void ResourceManager::RegisterDefaultLoaders()
     // Register TextureLoader
     auto textureLoader = std::make_unique<TextureLoader>(this);
     RegisterLoader(ResourceType::Texture, std::move(textureLoader));
+
+    // Register MeshLoader
+    auto meshLoader = std::make_unique<MeshLoader>(this);
+    RegisterLoader(ResourceType::Mesh, std::move(meshLoader));
+
+    // Register ShaderLoader
+    auto shaderLoader = std::make_unique<ShaderLoader>(this);
+    RegisterLoader(ResourceType::Shader, std::move(shaderLoader));
 
     // Register ModelLoader
     auto modelLoader = std::make_unique<ModelLoader>(this);
@@ -118,6 +160,15 @@ IResource* ResourceManager::LoadResource(const std::string& path)
     std::filesystem::path fsPath(path);
     std::string ext = fsPath.extension().string();
     ResourceType type = GetTypeFromExtension(ext);
+    if (type == ResourceType::Unknown)
+    {
+        std::string lowerExt = ext;
+        std::transform(lowerExt.begin(), lowerExt.end(), lowerExt.begin(), ::tolower);
+        if (lowerExt == ".rva")
+        {
+            type = DetectCookedArtifactType(ResolvePath(path));
+        }
+    }
 
     return LoadInternal(path, type);
 }

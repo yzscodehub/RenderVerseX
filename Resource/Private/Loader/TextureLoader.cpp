@@ -5,10 +5,14 @@
 #include <stb_image.h>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <optional>
 #include <sstream>
+#include <string_view>
+#include <unordered_map>
 
 namespace RVX::Resource
 {
@@ -184,6 +188,236 @@ namespace RVX::Resource
 
             return mipChain;
         }
+
+        std::optional<uint32_t> ParseUint32Field(
+            const std::unordered_map<std::string, std::string>& fields,
+            const std::string& key)
+        {
+            auto it = fields.find(key);
+            if (it == fields.end())
+            {
+                return std::nullopt;
+            }
+
+            try
+            {
+                return static_cast<uint32_t>(std::stoul(it->second));
+            }
+            catch (...)
+            {
+                return std::nullopt;
+            }
+        }
+
+        std::optional<bool> ParseBoolField(
+            const std::unordered_map<std::string, std::string>& fields,
+            const std::string& key)
+        {
+            auto value = ParseUint32Field(fields, key);
+            if (!value)
+            {
+                return std::nullopt;
+            }
+            return *value != 0;
+        }
+
+        std::optional<TextureFormat> ParseTextureFormat(const std::string& value)
+        {
+            if (value == "RGBA8") return TextureFormat::RGBA8;
+            if (value == "RGBA16F") return TextureFormat::RGBA16F;
+            if (value == "RGBA32F") return TextureFormat::RGBA32F;
+            if (value == "RGB8") return TextureFormat::RGB8;
+            if (value == "RG8") return TextureFormat::RG8;
+            if (value == "R8") return TextureFormat::R8;
+            if (value == "BC1") return TextureFormat::BC1;
+            if (value == "BC3") return TextureFormat::BC3;
+            if (value == "BC5") return TextureFormat::BC5;
+            if (value == "BC7") return TextureFormat::BC7;
+            return std::nullopt;
+        }
+
+        std::optional<TextureUsage> ParseTextureUsage(const std::string& value)
+        {
+            if (value == "Color") return TextureUsage::Color;
+            if (value == "Normal") return TextureUsage::Normal;
+            if (value == "Data") return TextureUsage::Data;
+            return std::nullopt;
+        }
+
+        const char* ToCompressionString(TextureFormat format)
+        {
+            switch (format)
+            {
+                case TextureFormat::BC1: return "BC1";
+                case TextureFormat::BC3: return "BC3";
+                case TextureFormat::BC5: return "BC5";
+                case TextureFormat::BC7: return "BC7";
+                default:                 return "";
+            }
+        }
+
+        std::optional<size_t> GetExpectedCookedTextureDataSize(uint32_t width,
+                                                               uint32_t height,
+                                                               uint32_t mipLevels,
+                                                               TextureFormat format)
+        {
+            size_t totalSize = 0;
+            for (uint32_t mip = 0; mip < mipLevels; ++mip)
+            {
+                const uint32_t mipWidth = std::max(1u, width >> mip);
+                const uint32_t mipHeight = std::max(1u, height >> mip);
+                if (format == TextureFormat::RGBA8)
+                {
+                    totalSize += static_cast<size_t>(mipWidth) * mipHeight * 4u;
+                }
+                else if (format == TextureFormat::BC1)
+                {
+                    const uint32_t blocksX = (mipWidth + 3u) / 4u;
+                    const uint32_t blocksY = (mipHeight + 3u) / 4u;
+                    totalSize += static_cast<size_t>(blocksX) * blocksY * 8u;
+                }
+                else if (format == TextureFormat::BC3 ||
+                         format == TextureFormat::BC5 ||
+                         format == TextureFormat::BC7)
+                {
+                    const uint32_t blocksX = (mipWidth + 3u) / 4u;
+                    const uint32_t blocksY = (mipHeight + 3u) / 4u;
+                    totalSize += static_cast<size_t>(blocksX) * blocksY * 16u;
+                }
+                else
+                {
+                    return std::nullopt;
+                }
+            }
+            return totalSize;
+        }
+
+        bool ParseCookedTextureArtifact(const std::vector<uint8_t>& fileData,
+                                        TextureMetadata& outMetadata,
+                                        std::vector<uint8_t>& outPixels,
+                                        std::string& outError)
+        {
+            constexpr const char* magic = "RVX_TEXTURE_PREBAKE_V1\n";
+            constexpr const char* dataMarker = "RVX_TEXTURE_DATA_BEGIN\n";
+            constexpr const char* endMarker = "\nRVX_TEXTURE_PREBAKE_END\n";
+
+            const std::string_view bytes(reinterpret_cast<const char*>(fileData.data()), fileData.size());
+            if (!bytes.starts_with(magic))
+            {
+                outError = "Texture artifact missing RVX_TEXTURE_PREBAKE_V1 magic";
+                return false;
+            }
+
+            const size_t dataMarkerOffset = bytes.find(dataMarker);
+            if (dataMarkerOffset == std::string_view::npos)
+            {
+                outError = "Texture artifact missing data marker";
+                return false;
+            }
+
+            std::unordered_map<std::string, std::string> fields;
+            const std::string metadataText(bytes.substr(std::strlen(magic),
+                                                        dataMarkerOffset - std::strlen(magic)));
+            std::istringstream metadataStream(metadataText);
+            std::string line;
+            while (std::getline(metadataStream, line))
+            {
+                const size_t separator = line.find('=');
+                if (separator == std::string::npos)
+                {
+                    continue;
+                }
+                fields[line.substr(0, separator)] = line.substr(separator + 1);
+            }
+
+            const auto width = ParseUint32Field(fields, "width");
+            const auto height = ParseUint32Field(fields, "height");
+            const auto depth = ParseUint32Field(fields, "depth");
+            const auto mipLevels = ParseUint32Field(fields, "mipLevels");
+            const auto arrayLayers = ParseUint32Field(fields, "arrayLayers");
+            const auto isSRGB = ParseBoolField(fields, "srgb");
+            const auto dataSize = ParseUint32Field(fields, "dataSize");
+            auto formatIt = fields.find("format");
+            auto usageIt = fields.find("usage");
+            auto compressionIt = fields.find("compression");
+
+            if (!width || !height || !depth || !mipLevels || !arrayLayers || !isSRGB ||
+                !dataSize || formatIt == fields.end() || usageIt == fields.end() ||
+                compressionIt == fields.end())
+            {
+                outError = "Texture artifact metadata is incomplete";
+                return false;
+            }
+
+            const std::optional<TextureFormat> format = ParseTextureFormat(formatIt->second);
+            const std::optional<TextureUsage> usage = ParseTextureUsage(usageIt->second);
+            if (!format || !usage)
+            {
+                outError = "Texture artifact contains unsupported format or usage";
+                return false;
+            }
+
+            if (*format == TextureFormat::RGBA8)
+            {
+                if (compressionIt->second != "UncompressedRGBA")
+                {
+                    outError = "Texture artifact RGBA8 payload must use UncompressedRGBA compression";
+                    return false;
+                }
+            }
+            else
+            {
+                const char* expectedCompression = ToCompressionString(*format);
+                if (expectedCompression[0] == '\0' || compressionIt->second != expectedCompression)
+                {
+                    outError = "Texture artifact compression does not match compressed texture format";
+                    return false;
+                }
+            }
+
+            const std::optional<size_t> expectedDataSize =
+                GetExpectedCookedTextureDataSize(*width, *height, *mipLevels, *format);
+            if (!expectedDataSize)
+            {
+                outError = "Texture artifact contains unsupported runtime format";
+                return false;
+            }
+            if (*dataSize != *expectedDataSize)
+            {
+                outError = "Texture artifact dataSize does not match format and mip layout";
+                return false;
+            }
+
+            const size_t payloadOffset = dataMarkerOffset + std::strlen(dataMarker);
+            if (payloadOffset + *dataSize > fileData.size())
+            {
+                outError = "Texture artifact data payload is truncated";
+                return false;
+            }
+
+            const size_t endMarkerOffset = payloadOffset + *dataSize;
+            if (endMarkerOffset + std::strlen(endMarker) > fileData.size() ||
+                std::string_view(reinterpret_cast<const char*>(fileData.data() + endMarkerOffset),
+                                 std::strlen(endMarker)) != endMarker)
+            {
+                outError = "Texture artifact missing end marker at expected payload boundary";
+                return false;
+            }
+
+            outMetadata = {};
+            outMetadata.width = *width;
+            outMetadata.height = *height;
+            outMetadata.depth = *depth;
+            outMetadata.mipLevels = *mipLevels;
+            outMetadata.arrayLayers = *arrayLayers;
+            outMetadata.format = *format;
+            outMetadata.usage = *usage;
+            outMetadata.isSRGB = *isSRGB;
+
+            outPixels.assign(fileData.begin() + static_cast<std::ptrdiff_t>(payloadOffset),
+                             fileData.begin() + static_cast<std::ptrdiff_t>(payloadOffset + *dataSize));
+            return true;
+        }
     } // namespace
 
     // =========================================================================
@@ -201,7 +435,7 @@ namespace RVX::Resource
 
     std::vector<std::string> TextureLoader::GetSupportedExtensions() const
     {
-        return { ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".gif", ".hdr" };
+        return { ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".gif", ".hdr", ".rva" };
     }
 
     bool TextureLoader::CanLoad(const std::string& path) const
@@ -356,6 +590,39 @@ namespace RVX::Resource
             m_lastLoadError = "Failed to read texture file: " + absolutePath;
             RVX_CORE_WARN("TextureLoader: Failed to read file: {}", absolutePath);
             return nullptr;
+        }
+
+        const std::string extension = std::filesystem::path(absolutePath).extension().string();
+        std::string lowerExtension = extension;
+        std::transform(lowerExtension.begin(), lowerExtension.end(), lowerExtension.begin(), ::tolower);
+        if (lowerExtension == ".rva")
+        {
+            TextureMetadata metadata;
+            std::vector<uint8_t> pixels;
+            std::string parseError;
+            if (!ParseCookedTextureArtifact(fileData, metadata, pixels, parseError))
+            {
+                m_lastLoadStatus = TextureLoadStatus::Failed;
+                m_lastLoadError = parseError + ": " + absolutePath;
+                RVX_CORE_WARN("TextureLoader: Failed to parse cooked texture: {}", m_lastLoadError);
+                return nullptr;
+            }
+
+            auto* texture = new TextureResource();
+            texture->SetId(textureId);
+            texture->SetPath(absolutePath);
+            texture->SetName(std::filesystem::path(absolutePath).stem().string());
+            texture->SetData(std::move(pixels), metadata);
+            texture->NotifyLoaded();
+
+            if (m_manager && m_manager->IsInitialized())
+            {
+                m_manager->GetCache().Store(texture);
+            }
+
+            m_lastLoadStatus = TextureLoadStatus::Loaded;
+            m_lastLoadError.clear();
+            return texture;
         }
 
         // Decode image

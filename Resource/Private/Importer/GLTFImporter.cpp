@@ -8,6 +8,7 @@
 
 #include <filesystem>
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <limits>
 
@@ -57,6 +58,61 @@ namespace RVX::Resource
             }
 
             return imageIndex;
+        }
+
+        bool HasCookedTextureArtifactExtension(const std::string& uri)
+        {
+            std::string extension = std::filesystem::path(uri).extension().string();
+            std::transform(extension.begin(), extension.end(), extension.begin(),
+                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            return extension == ".rva";
+        }
+
+        bool LoadImageDataAllowingCookedArtifact(tinygltf::Image* image,
+                                                 const int imageIndex,
+                                                 std::string* error,
+                                                 std::string* warning,
+                                                 int requiredWidth,
+                                                 int requiredHeight,
+                                                 const unsigned char* bytes,
+                                                 int size,
+                                                 void* userData)
+        {
+            if (image && !image->uri.empty() && HasCookedTextureArtifactExtension(image->uri))
+            {
+                if (!bytes || size <= 0)
+                {
+                    if (error)
+                    {
+                        *error += "Cooked texture artifact is empty for image[" +
+                                  std::to_string(imageIndex) + "] uri = \"" + image->uri + "\"\n";
+                    }
+                    return false;
+                }
+
+                (void)requiredWidth;
+                (void)requiredHeight;
+                (void)userData;
+
+                image->width = -1;
+                image->height = -1;
+                image->component = -1;
+                image->bits = -1;
+                image->pixel_type = -1;
+                image->as_is = true;
+                image->image.assign(bytes, bytes + size);
+                return true;
+            }
+
+            return tinygltf::LoadImageData(image,
+                                           imageIndex,
+                                           error,
+                                           warning,
+                                           requiredWidth,
+                                           requiredHeight,
+                                           bytes,
+                                           size,
+                                           userData);
         }
 
         void MarkTextureReferenceUsage(const tinygltf::Model& gltf,
@@ -225,7 +281,8 @@ namespace RVX::Resource
                                  std::string& error, std::string& warning)
     {
         tinygltf::TinyGLTF loader;
-        
+        loader.SetImageLoader(LoadImageDataAllowingCookedArtifact, nullptr);
+
         std::filesystem::path filePath(path);
         std::string ext = filePath.extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);

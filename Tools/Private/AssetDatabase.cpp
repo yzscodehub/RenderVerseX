@@ -56,6 +56,7 @@ AssetGUID AssetGUID::Generate()
 
 bool AssetDatabase::Initialize(const fs::path& sourceRoot, const fs::path& importedRoot)
 {
+    Clear();
     m_sourceRoot = sourceRoot;
     m_importedRoot = importedRoot;
     m_databasePath = importedRoot / "AssetDatabase.json";
@@ -73,6 +74,15 @@ bool AssetDatabase::Initialize(const fs::path& sourceRoot, const fs::path& impor
     Refresh();
 
     return true;
+}
+
+void AssetDatabase::Clear()
+{
+    m_sourceRoot.clear();
+    m_importedRoot.clear();
+    m_databasePath.clear();
+    m_assets.clear();
+    m_pathToGuid.clear();
 }
 
 bool AssetDatabase::Save()
@@ -284,6 +294,14 @@ bool AssetDatabase::ImportAsset(const AssetGUID& guid, AssetPipeline& pipeline)
     fs::create_directories(outputPath.parent_path());
 
     ImportResult result = pipeline.ImportAsset(sourcePath, outputPath);
+    if (result.success && !fs::exists(outputPath))
+    {
+        RVX_CORE_ERROR("Asset import reported success without writing output: source='{}', output='{}'",
+                       sourcePath.string(),
+                       outputPath.string());
+        result.success = false;
+    }
+
     if (result.success)
     {
         auto& mutableEntry = m_assets[GetGuidHash(guid)];
@@ -296,7 +314,14 @@ bool AssetDatabase::ImportAsset(const AssetGUID& guid, AssetPipeline& pipeline)
 
 bool AssetDatabase::ReimportAsset(const AssetGUID& guid, AssetPipeline& pipeline)
 {
-    m_assets[GetGuidHash(guid)].isDirty = true;
+    const uint64 hash = GetGuidHash(guid);
+    auto it = m_assets.find(hash);
+    if (it == m_assets.end())
+    {
+        return false;
+    }
+
+    it->second.isDirty = true;
     return ImportAsset(guid, pipeline);
 }
 

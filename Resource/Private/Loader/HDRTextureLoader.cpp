@@ -19,6 +19,9 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <iomanip>
+#include <limits>
+#include <sstream>
 
 namespace RVX::Resource
 {
@@ -32,6 +35,15 @@ namespace RVX::Resource
 
     namespace
     {
+        class GeneratedHDRTextureResource final : public TextureResource
+        {
+        public:
+            void MarkLoaded()
+            {
+                NotifyLoaded();
+            }
+        };
+
         Vec3 SampleCubemapNearest(const CubemapFaces& envMap, const Vec3& direction)
         {
             if (envMap.faceSize == 0)
@@ -190,6 +202,91 @@ namespace RVX::Resource
             }
             return half;
         }
+
+        void AppendFloatOption(std::ostringstream& stream, const char* name, float value)
+        {
+            stream << '|' << name << '=';
+            if (std::isfinite(value))
+            {
+                stream << std::setprecision(std::numeric_limits<float>::max_digits10) << value;
+            }
+            else
+            {
+                stream << "nonfinite";
+            }
+        }
+
+        void AppendBoolOption(std::ostringstream& stream, const char* name, bool value)
+        {
+            stream << '|' << name << '=' << (value ? 1 : 0);
+        }
+
+        std::string BuildHDREquirectCacheKey(const std::string& absolutePath,
+                                             const HDRLoadOptions& options)
+        {
+            std::ostringstream stream;
+            stream << "hdr_equirect_v1|path=" << absolutePath;
+            AppendBoolOption(stream, "applyGamma", options.applyGamma);
+            AppendFloatOption(stream, "exposure", options.exposure);
+            return stream.str();
+        }
+
+        std::string BuildHDRCubemapCacheKey(const std::string& absolutePath,
+                                            const HDRLoadOptions& options)
+        {
+            std::ostringstream stream;
+            stream << "hdr_cubemap_v1|path=" << absolutePath
+                   << "|resolution=" << options.cubemapResolution;
+            AppendBoolOption(stream, "applyGamma", options.applyGamma);
+            AppendFloatOption(stream, "exposure", options.exposure);
+            return stream.str();
+        }
+
+        std::string BuildIBLEnvironmentCacheKey(const std::string& absolutePath,
+                                                const HDRLoadOptions& options)
+        {
+            std::ostringstream stream;
+            stream << "ibl_environment_v1|path=" << absolutePath
+                   << "|resolution=" << options.cubemapResolution;
+            AppendBoolOption(stream, "applyGamma", options.applyGamma);
+            AppendFloatOption(stream, "exposure", options.exposure);
+            return stream.str();
+        }
+
+        std::string BuildIBLIrradianceCacheKey(const std::string& absolutePath,
+                                               const HDRLoadOptions& options)
+        {
+            std::ostringstream stream;
+            stream << "ibl_irradiance_v1|path=" << absolutePath
+                   << "|envResolution=" << options.cubemapResolution
+                   << "|irradianceResolution=" << options.irradianceResolution
+                   << "|samples=" << std::max(1u, options.convolutionSamples);
+            AppendBoolOption(stream, "applyGamma", options.applyGamma);
+            AppendFloatOption(stream, "exposure", options.exposure);
+            return stream.str();
+        }
+
+        std::string BuildIBLPrefilteredCacheKey(const std::string& absolutePath,
+                                                const HDRLoadOptions& options)
+        {
+            std::ostringstream stream;
+            stream << "ibl_prefiltered_v1|path=" << absolutePath
+                   << "|envResolution=" << options.cubemapResolution
+                   << "|prefilteredResolution=" << options.prefilteredResolution
+                   << "|mips=" << options.prefilteredMipLevels
+                   << "|samples=" << std::max(1u, options.convolutionSamples);
+            AppendBoolOption(stream, "applyGamma", options.applyGamma);
+            AppendFloatOption(stream, "exposure", options.exposure);
+            return stream.str();
+        }
+
+        std::string BuildBRDFLUTCacheKey(uint32_t resolution, uint32_t numSamples)
+        {
+            std::ostringstream stream;
+            stream << "ibl_brdf_lut_v1|resolution=" << resolution
+                   << "|samples=" << std::max(1u, numSamples);
+            return stream.str();
+        }
     } // namespace
 
     // =========================================================================
@@ -263,7 +360,10 @@ namespace RVX::Resource
 
         if (!loaded)
         {
-            RVX_CORE_WARN("HDRTextureLoader: Failed to load: {}", absolutePath);
+            if (Log::GetCoreLogger())
+            {
+                RVX_CORE_WARN("HDRTextureLoader: Failed to load: {}", absolutePath);
+            }
             return GetDefaultEnvironmentMap();
         }
 
@@ -286,12 +386,13 @@ namespace RVX::Resource
             CubemapFaces cubemap = EquirectangularToCubemap(
                 pixels.data(), width, height, options.cubemapResolution);
 
-            return CreateCubemapTexture(cubemap, absolutePath + "_cubemap");
+            return CreateCubemapTexture(cubemap, BuildHDRCubemapCacheKey(absolutePath, options));
         }
         else
         {
             // Create equirectangular texture
-            ResourceId texId = GenerateHDRTextureId(absolutePath);
+            const std::string cacheKey = BuildHDREquirectCacheKey(absolutePath, options);
+            ResourceId texId = GenerateHDRTextureId(cacheKey);
 
             // Check cache
             if (m_manager && m_manager->IsInitialized())
@@ -302,7 +403,7 @@ namespace RVX::Resource
                 }
             }
 
-            auto* texture = new TextureResource();
+            auto* texture = new GeneratedHDRTextureResource();
             texture->SetId(texId);
             texture->SetPath(absolutePath);
             texture->SetName(absPath.stem().string());
@@ -322,6 +423,7 @@ namespace RVX::Resource
             std::memcpy(byteData.data(), pixels.data(), byteData.size());
 
             texture->SetData(std::move(byteData), metadata);
+            texture->MarkLoaded();
 
             if (m_manager && m_manager->IsInitialized())
             {
@@ -360,11 +462,17 @@ namespace RVX::Resource
 
         if (!loaded)
         {
-            RVX_CORE_WARN("HDRTextureLoader: Failed to load for IBL: {}", absolutePath);
+            if (Log::GetCoreLogger())
+            {
+                RVX_CORE_WARN("HDRTextureLoader: Failed to load for IBL: {}", absolutePath);
+            }
             return ibl;
         }
 
-        RVX_CORE_INFO("HDRTextureLoader: Generating IBL from {}...", absPath.filename().string());
+        if (Log::GetCoreLogger())
+        {
+            RVX_CORE_INFO("HDRTextureLoader: Generating IBL from {}...", absPath.filename().string());
+        }
 
         // Apply exposure
         if (options.exposure != 1.0f)
@@ -381,24 +489,32 @@ namespace RVX::Resource
         // Generate environment cubemap
         CubemapFaces envCubemap = EquirectangularToCubemap(
             pixels.data(), width, height, options.cubemapResolution);
-        ibl.environmentMap = CreateCubemapTexture(envCubemap, absolutePath + "_env");
+        ibl.environmentMap = CreateCubemapTexture(
+            envCubemap, BuildIBLEnvironmentCacheKey(absolutePath, options));
 
         // Generate irradiance map
         CubemapFaces irradianceCubemap = GenerateIrradianceMap(
             envCubemap, options.irradianceResolution, options.convolutionSamples);
-        ibl.irradianceMap = CreateCubemapTexture(irradianceCubemap, absolutePath + "_irradiance");
+        ibl.irradianceMap = CreateCubemapTexture(
+            irradianceCubemap, BuildIBLIrradianceCacheKey(absolutePath, options));
 
         // Generate prefiltered map with mip chain
         std::vector<CubemapFaces> prefilteredMips = GeneratePrefilteredMap(
             envCubemap, options.prefilteredResolution, 
             options.prefilteredMipLevels, options.convolutionSamples);
-        ibl.prefilteredMap = CreateCubemapTextureWithMips(prefilteredMips, absolutePath + "_prefiltered");
-        ibl.prefilteredMipLevels = options.prefilteredMipLevels;
+        ibl.prefilteredMap = CreateCubemapTextureWithMips(
+            prefilteredMips, BuildIBLPrefilteredCacheKey(absolutePath, options));
+        ibl.prefilteredMipLevels = ibl.prefilteredMap
+            ? ibl.prefilteredMap->GetMipLevels()
+            : static_cast<uint32_t>(prefilteredMips.size());
 
         // Generate BRDF LUT
         ibl.brdfLUT = GenerateBRDFLUT(options.brdfLUTResolution, options.convolutionSamples);
 
-        RVX_CORE_INFO("HDRTextureLoader: IBL generation complete for {}", absPath.filename().string());
+        if (Log::GetCoreLogger())
+        {
+            RVX_CORE_INFO("HDRTextureLoader: IBL generation complete for {}", absPath.filename().string());
+        }
 
         return ibl;
     }
@@ -633,7 +749,8 @@ namespace RVX::Resource
 
     TextureResource* HDRTextureLoader::GenerateBRDFLUT(uint32_t resolution, uint32_t numSamples)
     {
-        ResourceId lutId = GenerateHDRTextureId("__brdf_lut__");
+        const std::string cacheKey = BuildBRDFLUTCacheKey(resolution, numSamples);
+        ResourceId lutId = GenerateHDRTextureId(cacheKey);
 
         // Check cache
         if (m_manager && m_manager->IsInitialized())
@@ -696,9 +813,9 @@ namespace RVX::Resource
         }
 
         // Create texture
-        auto* texture = new TextureResource();
+        auto* texture = new GeneratedHDRTextureResource();
         texture->SetId(lutId);
-        texture->SetPath("__brdf_lut__");
+        texture->SetPath(cacheKey);
         texture->SetName("BRDF_LUT");
 
         TextureMetadata metadata;
@@ -722,6 +839,7 @@ namespace RVX::Resource
         }
 
         texture->SetData(std::move(byteData), metadata);
+        texture->MarkLoaded();
 
         if (m_manager && m_manager->IsInitialized())
         {
@@ -783,7 +901,10 @@ namespace RVX::Resource
 
         if (!data)
         {
-            RVX_CORE_WARN("HDRTextureLoader: stbi_loadf failed: {}", stbi_failure_reason());
+            if (Log::GetCoreLogger())
+            {
+                RVX_CORE_WARN("HDRTextureLoader: stbi_loadf failed: {}", stbi_failure_reason());
+            }
             return false;
         }
 
@@ -812,7 +933,10 @@ namespace RVX::Resource
         {
             if (err)
             {
-                RVX_CORE_WARN("HDRTextureLoader: tinyexr failed: {}", err);
+                if (Log::GetCoreLogger())
+                {
+                    RVX_CORE_WARN("HDRTextureLoader: tinyexr failed: {}", err);
+                }
                 ::FreeEXRErrorMessage(err);
             }
             return false;
@@ -827,7 +951,10 @@ namespace RVX::Resource
         free(data);
         return true;
 #else
-        RVX_CORE_WARN("HDRTextureLoader: EXR support not compiled in (missing tinyexr)");
+        if (Log::GetCoreLogger())
+        {
+            RVX_CORE_WARN("HDRTextureLoader: EXR support not compiled in (missing tinyexr)");
+        }
         return false;
 #endif
     }
@@ -850,7 +977,7 @@ namespace RVX::Resource
             }
         }
 
-        auto* texture = new TextureResource();
+        auto* texture = new GeneratedHDRTextureResource();
         texture->SetId(texId);
         texture->SetPath(uniqueKey);
         
@@ -880,6 +1007,7 @@ namespace RVX::Resource
         metadata.usage = TextureUsage::Color;
 
         texture->SetData(std::move(cubemapData), metadata);
+        texture->MarkLoaded();
 
         if (m_manager && m_manager->IsInitialized())
         {
@@ -909,7 +1037,7 @@ namespace RVX::Resource
             }
         }
 
-        auto* texture = new TextureResource();
+        auto* texture = new GeneratedHDRTextureResource();
         texture->SetId(texId);
         texture->SetPath(uniqueKey);
 
@@ -950,6 +1078,7 @@ namespace RVX::Resource
         metadata.usage = TextureUsage::Color;
 
         texture->SetData(std::move(cubemapData), metadata);
+        texture->MarkLoaded();
 
         if (m_manager && m_manager->IsInitialized())
         {

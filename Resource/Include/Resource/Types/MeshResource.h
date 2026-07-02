@@ -10,6 +10,7 @@
 #include "Scene/Mesh.h"
 #include "Core/Math/AABB.h"
 #include <memory>
+#include <vector>
 
 namespace RVX::Resource
 {
@@ -37,6 +38,10 @@ namespace RVX::Resource
 
         std::shared_ptr<Mesh> GetMesh() const { return m_mesh; }
         void SetMesh(std::shared_ptr<Mesh> mesh);
+        void SetLODMeshes(std::vector<std::shared_ptr<Mesh>> lodMeshes);
+        size_t GetLODCount() const;
+        std::shared_ptr<Mesh> GetLODMesh(size_t lodIndex) const;
+        const std::vector<std::shared_ptr<Mesh>>& GetLODMeshes() const { return m_lodMeshes; }
 
         // =====================================================================
         // Bounds
@@ -57,6 +62,7 @@ namespace RVX::Resource
 
     private:
         std::shared_ptr<Mesh> m_mesh;
+        std::vector<std::shared_ptr<Mesh>> m_lodMeshes;
         AABB m_bounds;
 
         // GPU resources (future)

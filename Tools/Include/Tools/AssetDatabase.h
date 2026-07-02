@@ -73,6 +73,11 @@ public:
     bool Initialize(const fs::path& sourceRoot, const fs::path& importedRoot);
 
     /**
+     * @brief Clear roots and tracked asset entries while preserving callbacks.
+     */
+    void Clear();
+
+    /**
      * @brief Save database to disk
      */
     bool Save();

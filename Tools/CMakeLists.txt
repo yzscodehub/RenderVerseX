@@ -16,6 +16,12 @@ target_include_directories(RVX_Tools PUBLIC
 
 target_link_libraries(RVX_Tools PUBLIC
     RVX::Core
+    RVX::RHI
+)
+
+target_link_libraries(RVX_Tools PRIVATE
+    RVX::Resource
+    RVX::ShaderCompiler
 )
 
 # Include Audio headers for AudioImporter
@@ -30,3 +36,13 @@ target_include_directories(RVX_Tools PRIVATE
 # )
 
 add_library(RVX::Tools ALIAS RVX_Tools)
+
+add_executable(RVXCook
+    Private/CookMain.cpp
+)
+
+target_link_libraries(RVXCook PRIVATE
+    RVX::Tools
+)
+
+target_compile_features(RVXCook PRIVATE cxx_std_20)

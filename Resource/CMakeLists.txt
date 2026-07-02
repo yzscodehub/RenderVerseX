@@ -9,7 +9,7 @@
 # - ResourceRegistry metadata database
 # - DependencyGraph dependency resolution
 # - ResourceSubsystem engine integration
-# - Concrete resource types (MeshResource, TextureResource, MaterialResource, AudioResource)
+# - Concrete resource types (MeshResource, TextureResource, ShaderResource, MaterialResource, AudioResource)
 # - Hot-reload support with file watching
 # - FBX import via ufbx
 # - HDR/EXR loading with IBL precomputation
@@ -32,11 +32,14 @@ target_sources(RVX_Resource PRIVATE
     # Concrete resource types
     Private/Types/MeshResource.cpp
     Private/Types/TextureResource.cpp
+    Private/Types/ShaderResource.cpp
     Private/Types/MaterialResource.cpp
     Private/Types/ModelResource.cpp
     Private/Types/AudioResource.cpp
 
     # Loaders
+    Private/Loader/MeshLoader.cpp
+    Private/Loader/ShaderLoader.cpp
     Private/Loader/TextureLoader.cpp
     Private/Loader/ModelLoader.cpp
     Private/Loader/AudioLoader.cpp
@@ -65,6 +68,7 @@ endif()
 
 target_link_libraries(RVX_Resource PUBLIC
     RVX_Core
+    RVX::RHI
     RVX::Scene
 )
 
