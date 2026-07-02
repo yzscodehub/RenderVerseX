@@ -1,6 +1,8 @@
 # =============================================================================
 # Physics Module - Physics simulation with Jolt backend
 # =============================================================================
+option(RVX_ENABLE_EXPERIMENTAL_JOLT_BACKEND "Enable the unfinished experimental Jolt physics backend adapter" OFF)
+
 add_library(RVX_Physics STATIC)
 
 target_sources(RVX_Physics PRIVATE
@@ -47,11 +49,13 @@ target_link_libraries(RVX_Physics PUBLIC
     RVX::Geometry
 )
 
-# Optional: Link Jolt Physics when available
-if(TARGET Jolt::Jolt)
+# Optional: Link Jolt Physics only when the unfinished adapter is explicitly enabled
+if(TARGET Jolt::Jolt AND RVX_ENABLE_EXPERIMENTAL_JOLT_BACKEND)
     target_link_libraries(RVX_Physics PRIVATE Jolt::Jolt)
     target_compile_definitions(RVX_Physics PRIVATE RVX_PHYSICS_JOLT=1)
-    message(STATUS "Physics: Using Jolt Physics backend")
+    message(STATUS "Physics: Building experimental Jolt Physics adapter")
+elseif(TARGET Jolt::Jolt)
+    message(STATUS "Physics: Jolt target found, adapter disabled; using built-in physics engine")
 else()
     message(STATUS "Physics: Using built-in physics engine")
 endif()

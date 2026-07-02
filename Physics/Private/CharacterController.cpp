@@ -111,7 +111,7 @@ Vec3 CalculateGroundAdhesion(const Vec3& groundNormal, const Vec3& gravity,
 /**
  * @brief Depenetrate character from geometry
  */
-Vec3 Depenetrate(const Vec3& position, float radius, 
+Vec3 Depenetrate(const Vec3& position, float /*radius*/,
                  const Vec3& penetrationNormal, float penetrationDepth)
 {
     if (penetrationDepth <= 0) return position;

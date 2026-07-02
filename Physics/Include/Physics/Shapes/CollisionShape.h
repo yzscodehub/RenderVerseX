@@ -645,7 +645,7 @@ public:
         return length((m_boundsMax - m_boundsMin) * 0.5f);
     }
 
-    MassProperties CalculateMassProperties(float density) const override
+    MassProperties CalculateMassProperties(float /*density*/) const override
     {
         // Height fields are always static, mass not needed
         MassProperties props;
