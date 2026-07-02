@@ -1,6 +1,8 @@
 # =============================================================================
-# Samples - Example applications
+# RenderingShowcase - integrated rendering features
 # =============================================================================
 
-add_subdirectory(Basic)
-add_subdirectory(Showcase)
+rvx_add_engine_showcase(RenderingShowcase
+    "${CMAKE_CURRENT_SOURCE_DIR}/main.cpp"
+    3
+)

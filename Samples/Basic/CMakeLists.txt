@@ -1,6 +1,6 @@
 # =============================================================================
-# Samples - Example applications
+# Basic Samples - focused low-level demonstrations
 # =============================================================================
 
-add_subdirectory(Basic)
-add_subdirectory(Showcase)
+add_subdirectory(BasicRHI)
+add_subdirectory(ComputeDemo)

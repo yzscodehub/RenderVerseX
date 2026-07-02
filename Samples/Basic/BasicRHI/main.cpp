@@ -1,6 +1,6 @@
 /**
- * @file Triangle Sample
- * @brief Interactive triangle rendering demo using RHI and RenderGraph
+ * @file BasicRHI Sample
+ * @brief Basic RHI rendering demo using RHI and RenderGraph
  *
  * This sample demonstrates:
  * - Direct RHI device and swapchain creation
@@ -49,6 +49,70 @@ struct Vertex
     float color[4];
 };
 
+void AppendVertex(std::vector<Vertex>& vertices,
+                  float px,
+                  float py,
+                  float pz,
+                  float cr,
+                  float cg,
+                  float cb)
+{
+    vertices.push_back({{px, py, pz}, {cr, cg, cb, 1.0f}});
+}
+
+void AppendBasicTriangle(std::vector<Vertex>& vertices)
+{
+    AppendVertex(vertices, -0.72f, 0.45f, 0.0f, 1.0f, 0.15f, 0.1f);
+    AppendVertex(vertices, -0.42f, -0.28f, 0.0f, 0.1f, 0.85f, 0.3f);
+    AppendVertex(vertices, -1.02f, -0.28f, 0.0f, 0.15f, 0.35f, 1.0f);
+}
+
+void AppendBasicQuad(std::vector<Vertex>& vertices)
+{
+    AppendVertex(vertices, -0.28f, 0.34f, 0.0f, 0.92f, 0.92f, 0.92f);
+    AppendVertex(vertices, 0.28f, 0.34f, 0.0f, 0.16f, 0.18f, 0.64f);
+    AppendVertex(vertices, 0.28f, -0.34f, 0.0f, 0.92f, 0.92f, 0.92f);
+
+    AppendVertex(vertices, -0.28f, 0.34f, 0.0f, 0.92f, 0.92f, 0.92f);
+    AppendVertex(vertices, 0.28f, -0.34f, 0.0f, 0.92f, 0.92f, 0.92f);
+    AppendVertex(vertices, -0.28f, -0.34f, 0.0f, 0.16f, 0.18f, 0.64f);
+}
+
+void AppendCubeFace(std::vector<Vertex>& vertices,
+                    const Vertex& a,
+                    const Vertex& b,
+                    const Vertex& c,
+                    const Vertex& d)
+{
+    vertices.push_back(a);
+    vertices.push_back(b);
+    vertices.push_back(c);
+    vertices.push_back(a);
+    vertices.push_back(c);
+    vertices.push_back(d);
+}
+
+void AppendBasicCube(std::vector<Vertex>& vertices)
+{
+    const float cx = 0.72f;
+    const float s = 0.27f;
+    const Vertex p000 = {{cx - s, -s, -s}, {0.90f, 0.20f, 0.20f, 1.0f}};
+    const Vertex p001 = {{cx - s, -s, s}, {0.20f, 0.80f, 0.35f, 1.0f}};
+    const Vertex p010 = {{cx - s, s, -s}, {0.20f, 0.35f, 0.90f, 1.0f}};
+    const Vertex p011 = {{cx - s, s, s}, {0.90f, 0.80f, 0.25f, 1.0f}};
+    const Vertex p100 = {{cx + s, -s, -s}, {0.90f, 0.35f, 0.85f, 1.0f}};
+    const Vertex p101 = {{cx + s, -s, s}, {0.25f, 0.85f, 0.90f, 1.0f}};
+    const Vertex p110 = {{cx + s, s, -s}, {0.75f, 0.55f, 0.25f, 1.0f}};
+    const Vertex p111 = {{cx + s, s, s}, {0.85f, 0.85f, 0.85f, 1.0f}};
+
+    AppendCubeFace(vertices, p100, p110, p111, p101);
+    AppendCubeFace(vertices, p000, p001, p011, p010);
+    AppendCubeFace(vertices, p010, p011, p111, p110);
+    AppendCubeFace(vertices, p000, p100, p101, p001);
+    AppendCubeFace(vertices, p001, p101, p111, p011);
+    AppendCubeFace(vertices, p000, p010, p110, p100);
+}
+
 // =============================================================================
 // File Loading Utilities
 // =============================================================================
@@ -75,7 +139,7 @@ std::string GetExecutableDir()
 int main(int argc, char *argv[])
 {
     RVX::Log::Initialize();
-    RVX_CORE_INFO("Triangle Sample - RHI + RenderGraph Demo");
+    RVX_CORE_INFO("BasicRHI Sample - RHI + RenderGraph Demo");
 
     // =========================================================================
     // GLFW Window Setup
@@ -87,7 +151,7 @@ int main(int argc, char *argv[])
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow *window = glfwCreateWindow(1280, 720, "Triangle - RenderVerseX", nullptr, nullptr);
+    GLFWwindow *window = glfwCreateWindow(1280, 720, "BasicRHI - RenderVerseX", nullptr, nullptr);
     if (!window)
     {
         RVX_CORE_ERROR("Failed to create GLFW window");
@@ -105,6 +169,7 @@ int main(int argc, char *argv[])
 #endif
 
     // Command line override
+    RVX::uint32 maxFrames = 0;
     for (int i = 1; i < argc; ++i)
     {
         std::string arg = argv[i];
@@ -116,6 +181,10 @@ int main(int argc, char *argv[])
             backend = RVX::RHIBackendType::Vulkan;
         else if (arg == "--metal" || arg == "-mtl")
             backend = RVX::RHIBackendType::Metal;
+        else if (arg == "--smoke")
+            maxFrames = 8;
+        else if (arg == "--frames" && i + 1 < argc)
+            maxFrames = static_cast<RVX::uint32>(std::stoul(argv[++i]));
     }
 
     RVX_CORE_INFO("Using backend: {}", RVX::ToString(backend));
@@ -125,7 +194,7 @@ int main(int argc, char *argv[])
     // =========================================================================
     RVX::RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    deviceDesc.applicationName = "Triangle Sample";
+    deviceDesc.applicationName = "BasicRHI Sample";
 
     auto device = RVX::CreateRHIDevice(backend, deviceDesc);
     if (!device)
@@ -180,21 +249,22 @@ int main(int argc, char *argv[])
     // =========================================================================
     // Vertex Buffer
     // =========================================================================
-    Vertex triangleVertices[] = {
-        {{0.0f, 0.5f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},  // Top (Red)
-        {{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f, 1.0f}}, // Right (Green)
-        {{-0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f, 1.0f}} // Left (Blue)
-    };
+    std::vector<Vertex> basicVertices;
+    basicVertices.reserve(45);
+    AppendBasicTriangle(basicVertices);
+    AppendBasicQuad(basicVertices);
+    AppendBasicCube(basicVertices);
+    const RVX::uint32 drawVertexCount = static_cast<RVX::uint32>(basicVertices.size());
 
     RVX::RHIBufferDesc vertexBufferDesc;
-    vertexBufferDesc.size = sizeof(triangleVertices);
+    vertexBufferDesc.size = sizeof(Vertex) * basicVertices.size();
     vertexBufferDesc.usage = RVX::RHIBufferUsage::Vertex;
     vertexBufferDesc.memoryType = RVX::RHIMemoryType::Upload;
     vertexBufferDesc.stride = sizeof(Vertex);
-    vertexBufferDesc.debugName = "TriangleVertexBuffer";
+    vertexBufferDesc.debugName = "BasicRHIGeometryVertexBuffer";
 
     auto vertexBuffer = device->CreateBuffer(vertexBufferDesc);
-    std::memcpy(vertexBuffer->Map(), triangleVertices, sizeof(triangleVertices));
+    std::memcpy(vertexBuffer->Map(), basicVertices.data(), vertexBufferDesc.size);
     vertexBuffer->Unmap();
 
     // =========================================================================
@@ -278,7 +348,7 @@ int main(int argc, char *argv[])
     pipelineDesc.vertexShader = vsResult.shader.Get();
     pipelineDesc.pixelShader = psResult.shader.Get();
     pipelineDesc.pipelineLayout = pipelineLayout.Get();
-    pipelineDesc.debugName = "TrianglePipeline";
+    pipelineDesc.debugName = "BasicRHITrianglePipeline";
 
     pipelineDesc.inputLayout.AddElement("POSITION", RVX::RHIFormat::RGB32_FLOAT, 0);
     pipelineDesc.inputLayout.AddElement("COLOR", RVX::RHIFormat::RGBA32_FLOAT, 0);
@@ -311,7 +381,8 @@ int main(int argc, char *argv[])
     // =========================================================================
     // Main Loop
     // =========================================================================
-    RVX_CORE_INFO("Triangle sample initialized - entering main loop");
+    RVX_CORE_INFO("BasicRHI initialized - entering main loop");
+    RVX_CORE_INFO("Cases consolidated here: triangle, quad, and cube fundamentals");
     RVX_CORE_INFO("Controls:");
     RVX_CORE_INFO("  Arrow Keys: Rotate X/Y");
     RVX_CORE_INFO("  Q/E: Rotate Z");
@@ -319,6 +390,7 @@ int main(int argc, char *argv[])
     RVX_CORE_INFO("  ESC: Exit");
 
     RVX::uint32 frameCount = 0;
+    RVX::uint32 renderedFrames = 0;
     double lastFPSTime = glfwGetTime();
     double lastFrameTime = glfwGetTime();
 
@@ -407,7 +479,7 @@ int main(int argc, char *argv[])
         auto backBufferHandle = renderGraph.ImportTexture(backBuffer, backBufferStates[backBufferIndex]);
         renderGraph.SetExportState(backBufferHandle, RVX::RHIResourceState::Present);
 
-        struct TrianglePassData
+        struct BasicPassData
         {
             RVX::RGTextureHandle renderTarget;
         };
@@ -418,15 +490,16 @@ int main(int argc, char *argv[])
         auto *pVB = vertexBuffer.Get();
         auto *pSwapChain = swapChain.Get();
         auto *pBackBufferView = backBufferView;
+        const RVX::uint32 vertexCount = drawVertexCount;
 
-        renderGraph.AddPass<TrianglePassData>(
-            "TrianglePass",
+        renderGraph.AddPass<BasicPassData>(
+            "BasicRHITrianglePass",
             RVX::RenderGraphPassType::Graphics,
-            [&](RVX::RenderGraphBuilder &builder, TrianglePassData &data)
+            [&](RVX::RenderGraphBuilder &builder, BasicPassData &data)
             {
                 data.renderTarget = builder.Write(backBufferHandle, RVX::RHIResourceState::RenderTarget);
             },
-            [=](const TrianglePassData &, RVX::RHICommandContext &cmdCtx)
+            [=](const BasicPassData &, RVX::RHICommandContext &cmdCtx)
             {
                 RVX::RHIRenderPassDesc renderPass;
                 renderPass.AddColorAttachment(pBackBufferView,
@@ -447,7 +520,7 @@ int main(int argc, char *argv[])
                 cmdCtx.SetPipeline(pPipeline);
                 cmdCtx.SetDescriptorSet(0, pDescSet);
                 cmdCtx.SetVertexBuffer(0, pVB);
-                cmdCtx.Draw(3, 1, 0, 0);
+                cmdCtx.Draw(vertexCount, 1, 0, 0);
 
                 cmdCtx.EndRenderPass();
             });
@@ -463,6 +536,12 @@ int main(int argc, char *argv[])
         device->EndFrame();
 
         frameCount++;
+        renderedFrames++;
+
+        if (maxFrames > 0 && renderedFrames >= maxFrames)
+        {
+            glfwSetWindowShouldClose(window, GLFW_TRUE);
+        }
 
         // FPS counter
         if (now - lastFPSTime >= 1.0)
