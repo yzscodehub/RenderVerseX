@@ -54,13 +54,6 @@ void CPUParticleSimulator::Initialize(IRHIDevice* device, uint32 maxParticles)
     indexDesc.debugName = "CPUAliveIndexBuffer";
     m_gpuAliveIndexBuffer = m_device->CreateBuffer(indexDesc);
 
-    RHIBufferDesc indirectDesc;
-    indirectDesc.size = sizeof(IndirectDrawArgs);
-    indirectDesc.usage = RHIBufferUsage::IndirectArgs;
-    indirectDesc.memoryType = RHIMemoryType::Upload;
-    indirectDesc.debugName = "CPUIndirectDrawBuffer";
-    m_gpuIndirectDrawBuffer = m_device->CreateBuffer(indirectDesc);
-
     m_initialized = true;
     RVX_CORE_INFO("CPUParticleSimulator: Initialized with {} max particles", maxParticles);
 }
@@ -141,6 +134,8 @@ void CPUParticleSimulator::EmitParticle(const EmitParams& params, uint32 index)
 
 Vec3 CPUParticleSimulator::GenerateEmitterPosition(const EmitterGPUData& data, float random)
 {
+    (void)random;
+
     constexpr float PI = 3.14159265359f;
     constexpr float TWO_PI = 2.0f * PI;
     
@@ -907,14 +902,6 @@ void CPUParticleSimulator::UploadToGPU()
         indices[i] = static_cast<uint32>(i);
     m_gpuAliveIndexBuffer->Upload(indices.data(), indices.size());
 
-    // Update indirect draw args
-    IndirectDrawArgs args = {};
-    args.indexCountPerInstance = 6;
-    args.instanceCount = static_cast<uint32>(m_aliveIndices.size());
-    args.startIndexLocation = 0;
-    args.baseVertexLocation = 0;
-    args.startInstanceLocation = 0;
-    m_gpuIndirectDrawBuffer->Upload(&args, 1);
 }
 
 void CPUParticleSimulator::Clear()

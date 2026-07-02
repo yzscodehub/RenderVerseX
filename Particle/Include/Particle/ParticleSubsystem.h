@@ -40,6 +40,8 @@ namespace RVX::Particle
         bool enableSorting = true;              ///< Enable transparency sorting
         bool enableSoftParticles = true;        ///< Enable soft particle depth fade
         float globalSimulationSpeed = 1.0f;     ///< Global simulation speed multiplier
+        bool deterministicCpuSimulation = false; ///< Use a fixed CPU simulator seed for reproducible captures
+        uint32 cpuSimulationSeed = 0;            ///< Seed used when deterministicCpuSimulation is enabled
     };
 
     /**
@@ -152,6 +154,7 @@ namespace RVX::Particle
         // =====================================================================
 
         ParticleRenderer* GetRenderer() { return m_renderer.get(); }
+        const ParticleRenderer* GetRenderer() const { return m_renderer.get(); }
         ParticleSorter* GetSorter() { return m_sorter.get(); }
         ParticlePass* GetRenderPass() { return m_renderPass; }
         const ParticlePass* GetRenderPass() const { return m_renderPass; }

@@ -226,6 +226,10 @@ ParticleSystemInstance* ParticleSubsystem::CreateInstance(ParticleSystem::Ptr sy
     {
         auto simulator = std::make_unique<CPUParticleSimulator>();
         simulator->Initialize(m_device, system->maxParticles);
+        if (m_config.deterministicCpuSimulation)
+        {
+            simulator->SetRandomSeed(m_config.cpuSimulationSeed + static_cast<uint32>(m_instances.size()));
+        }
         instance->SetSimulator(std::move(simulator), "CPU");
     }
     else

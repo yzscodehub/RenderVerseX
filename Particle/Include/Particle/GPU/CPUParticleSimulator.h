@@ -71,6 +71,9 @@ namespace RVX::Particle
         void PrepareRender(RHICommandContext& ctx) override;
         void Clear() override;
 
+        /// Set a deterministic random seed for validation and reproducible captures.
+        void SetRandomSeed(uint32 seed) { m_rng.seed(seed); }
+
         RHIBuffer* GetParticleBuffer() const override { return m_gpuParticleBuffer.Get(); }
         RHIBuffer* GetAliveIndexBuffer() const override { return m_gpuAliveIndexBuffer.Get(); }
         RHIBuffer* GetIndirectDrawBuffer() const override { return m_gpuIndirectDrawBuffer.Get(); }

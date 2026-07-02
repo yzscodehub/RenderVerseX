@@ -15,7 +15,10 @@ Texture2D g_ParticleTexture : register(t3);
 SamplerState g_LinearSampler : register(s4);
 
 // Constants
-ConstantBuffer<RenderData> g_Render : register(b0);
+cbuffer ParticleRenderConstants : register(b0)
+{
+    RenderData g_Render;
+};
 
 struct VSInput
 {
@@ -37,18 +40,23 @@ struct PSOutput
     float4 color : SV_Target0;
 };
 
-// Billboard corners
-static const float2 g_Corners[4] = {
+// Billboard corners expanded to two triangles. This avoids relying on backend
+// specific SV_VertexID behavior for indexed draws in the CPU fallback path.
+static const float2 g_Corners[6] = {
     float2(-1, -1),  // Bottom-left
     float2( 1, -1),  // Bottom-right
     float2(-1,  1),  // Top-left
+    float2(-1,  1),  // Top-left
+    float2( 1, -1),  // Bottom-right
     float2( 1,  1)   // Top-right
 };
 
-static const float2 g_UVs[4] = {
+static const float2 g_UVs[6] = {
     float2(0, 1),
     float2(1, 1),
     float2(0, 0),
+    float2(0, 0),
+    float2(1, 1),
     float2(1, 0)
 };
 
@@ -93,11 +101,10 @@ PSOutput PSMain(VSOutput input)
 {
     PSOutput output;
     
-    // Sample texture
-    float4 texColor = g_ParticleTexture.Sample(g_LinearSampler, input.uv);
-    
-    // Apply particle color
-    float4 finalColor = texColor * input.color;
+    // Particle texture atlases are not exposed through ParticleSystem yet.
+    // Use particle color as the deterministic fallback instead of sampling an
+    // uninitialized 1x1 texture.
+    float4 finalColor = input.color;
     
     if (g_Render.sceneDepthTestEnabled)
     {

@@ -203,7 +203,7 @@ void ParticleRenderer::CreateQuadBuffers()
         { Vec3(-1.0f,  1.0f, 0.0f), Vec2(0.0f, 0.0f) }
     };
 
-    uint16 indices[6] = { 0, 1, 2, 0, 2, 3 };
+    uint16 indices[6] = { 0, 1, 2, 3, 4, 5 };
 
     // Create vertex buffer
     RHIBufferDesc vbDesc;
@@ -350,7 +350,13 @@ bool ParticleRenderer::DrawParticles(RHICommandContext& ctx,
     ctx.SetIndexBuffer(m_quadIndexBuffer.Get(), GetQuadIndexFormat(), 0);
 
     // Draw instanced
-    ctx.DrawIndexed(6, aliveCount, 0, 0, 0);
+    ctx.Draw(6, aliveCount, 0, 0);
+    m_lastDrawStats.drawSubmitted = true;
+    m_lastDrawStats.indexedDraw = false;
+    m_lastDrawStats.indirectDraw = false;
+    m_lastDrawStats.submittedVertexCount = 6;
+    m_lastDrawStats.submittedIndexCount = 0;
+    m_lastDrawStats.submittedInstanceCount = aliveCount;
     m_retainedDescriptorSets.push_back(descriptorSet);
     if (m_retainedDescriptorSets.size() > 256)
     {
@@ -447,6 +453,12 @@ bool ParticleRenderer::DrawParticlesIndirect(RHICommandContext& ctx,
 
     // Indirect draw (1 draw call, stride = 0 for single draw)
     ctx.DrawIndexedIndirect(indirectDrawBuffer, 0, 1, 0);
+    m_lastDrawStats.drawSubmitted = true;
+    m_lastDrawStats.indexedDraw = true;
+    m_lastDrawStats.indirectDraw = true;
+    m_lastDrawStats.submittedVertexCount = 0;
+    m_lastDrawStats.submittedIndexCount = 6;
+    m_lastDrawStats.submittedInstanceCount = instance->GetAliveCount();
     m_retainedDescriptorSets.push_back(descriptorSet);
     if (m_retainedDescriptorSets.size() > 256)
     {
@@ -617,7 +629,7 @@ bool ParticleRenderer::CreateShaders()
         options.enableOptimization = true;
 
         ShaderCompileResult result = compiler->Compile(options);
-        if (!result.success || result.bytecode.empty())
+        if (!result.success)
         {
             SetUnsupported("Particle shader compile failed: " + result.errorMessage);
             return {};
@@ -625,8 +637,28 @@ bool ParticleRenderer::CreateShaders()
 
         RHIShaderDesc desc;
         desc.stage = stage;
-        desc.bytecode = result.bytecode.data();
-        desc.bytecodeSize = result.bytecode.size();
+        if (m_device->GetBackendType() == RHIBackendType::OpenGL)
+        {
+            if (result.glslSource.empty())
+            {
+                SetUnsupported("Particle shader GLSL source is unavailable");
+                return {};
+            }
+
+            desc.bytecode = reinterpret_cast<const uint8*>(result.glslSource.data());
+            desc.bytecodeSize = result.glslSource.size();
+        }
+        else
+        {
+            if (result.bytecode.empty())
+            {
+                SetUnsupported("Particle shader bytecode is unavailable");
+                return {};
+            }
+
+            desc.bytecode = result.bytecode.data();
+            desc.bytecodeSize = result.bytecode.size();
+        }
         desc.entryPoint = entryPoint;
         desc.debugName = debugName;
         return m_device->CreateShader(desc);

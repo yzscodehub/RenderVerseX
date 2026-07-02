@@ -103,7 +103,6 @@ void ParticlePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     // Read/write color target
     if (m_colorTarget.IsValid())
     {
-        m_colorTarget = builder.Read(m_colorTarget);
         m_colorTarget = builder.Write(m_colorTarget, RHIResourceState::RenderTarget);
     }
 
@@ -116,7 +115,7 @@ void ParticlePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
             view.viewCache &&
             view.viewCache->GetDefaultSRV(depthTexture);
 
-        if (depthSrvAvailable)
+        if (m_softParticlesEnabled && depthSrvAvailable)
         {
             m_depthTarget = builder.Read(m_depthTarget, RHIShaderStage::Pixel);
             m_depthMode = ParticleDepthMode::ShaderDepth;
