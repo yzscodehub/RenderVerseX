@@ -1,4 +1,5 @@
 #include "Core/Log.h"
+#include "ShaderCompiler/GLSLBindingABI.h"
 #include "ShaderCompiler/ShaderCacheManager.h"
 #include "ShaderCompiler/ShaderCompiler.h"
 #include "ShaderCompiler/ShaderCompileService.h"
@@ -525,6 +526,108 @@ TEST_F(ShaderCompilerValidationFixture, OpenGLCompileProducesGLSLSource)
     EXPECT_NE(result.glslSource.find("#version"), std::string::npos);
     EXPECT_FALSE(result.reflection.resources.empty());
     EXPECT_FALSE(result.sourceInfo.IsEmpty());
+}
+
+TEST_F(ShaderCompilerValidationFixture, OpenGLRemapsDescriptorSetsByStableSetBindingOrder)
+{
+    TempDirectory temp("rvx_shader_gl_binding_order");
+    fs::path shaderPath = temp.Path() / "BindingOrder.hlsl";
+    const std::string source = R"(
+cbuffer FrameConstants : register(b0, space0)
+{
+    float4 FrameTint;
+};
+
+cbuffer MaterialConstants : register(b0, space2)
+{
+    float4 MaterialTint;
+};
+
+Texture2D<float4> ShadowTexture : register(t1, space0);
+SamplerState ShadowSampler : register(s2, space0);
+Texture2D<float4> RayMaskTexture : register(t6, space0);
+
+Texture2D<float4> BaseTexture : register(t1, space2);
+Texture2D<float4> NormalTexture : register(t2, space2);
+SamplerState MaterialSampler : register(s6, space2);
+
+float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
+{
+    float4 color = ShadowTexture.Sample(ShadowSampler, uv);
+    color += RayMaskTexture.Load(int3(0, 0, 0));
+    color += BaseTexture.Sample(MaterialSampler, uv);
+    color += NormalTexture.Sample(MaterialSampler, uv);
+    return color * FrameTint * MaterialTint;
+}
+)";
+    WriteTextFile(shaderPath, source);
+
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    std::string shaderPathString = shaderPath.string();
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Pixel;
+    options.entryPoint = "main";
+    options.sourceCode = source.c_str();
+    options.sourcePath = shaderPathString.c_str();
+    options.targetBackend = RVX::RHIBackendType::OpenGL;
+    options.enableOptimization = false;
+
+    RVX::ShaderCompileResult result = compiler->Compile(options);
+    if (!result.success && IsCompilerUnavailable(result))
+    {
+        GTEST_SKIP() << result.errorMessage;
+    }
+
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    EXPECT_FALSE(result.glslSource.empty());
+
+    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 5,
+                  "OpenGL GLSL binding ABI changes must invalidate cached GLSL");
+    EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::UniformBuffer, 0, 0), 1u);
+    EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::UniformBuffer, 2, 0), 9u);
+    EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::SampledTexture, 2, 1), 7u);
+
+    EXPECT_EQ(result.glslBindings.uboBindings["FrameConstants"],
+              RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::UniformBuffer, 0, 0));
+    EXPECT_EQ(result.glslBindings.uboBindings["MaterialConstants"],
+              RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::UniformBuffer, 2, 0));
+
+    EXPECT_EQ(result.glslBindings.GetGLBinding(0, 1),
+              RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::SampledTexture, 0, 1));
+    EXPECT_EQ(result.glslBindings.GetGLBinding(0, 6),
+              RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::SampledTexture, 0, 6));
+    EXPECT_EQ(result.glslBindings.GetGLBinding(2, 1),
+              RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::SampledTexture, 2, 1));
+    EXPECT_EQ(result.glslBindings.GetGLBinding(2, 2),
+              RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::SampledTexture, 2, 2));
+
+    const auto shadowSamplerBinding =
+        RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::Sampler, 0, 2);
+    const auto materialSamplerBinding =
+        RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::Sampler, 2, 6);
+    const auto shadowTextureBinding =
+        RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::SampledTexture, 0, 1);
+    const auto baseTextureBinding =
+        RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::SampledTexture, 2, 1);
+    const auto normalTextureBinding =
+        RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::SampledTexture, 2, 2);
+
+    EXPECT_EQ(result.glslBindings.samplerBindings["ShadowSampler"], shadowSamplerBinding);
+    EXPECT_EQ(result.glslBindings.samplerBindings["MaterialSampler"], materialSamplerBinding);
+    EXPECT_NE(result.glslSource.find(
+                  "layout(binding = " + std::to_string(shadowTextureBinding) +
+                  ") uniform sampler2D ShadowTexture_ShadowSampler"),
+              std::string::npos);
+    EXPECT_NE(result.glslSource.find(
+                  "layout(binding = " + std::to_string(baseTextureBinding) +
+                  ") uniform sampler2D BaseTexture_MaterialSampler"),
+              std::string::npos);
+    EXPECT_NE(result.glslSource.find(
+                  "layout(binding = " + std::to_string(normalTextureBinding) +
+                  ") uniform sampler2D NormalTexture_MaterialSampler"),
+              std::string::npos);
 }
 
 TEST_F(ShaderCompilerValidationFixture, OpenGLHotReloadUsesGeneratedGLSLSource)

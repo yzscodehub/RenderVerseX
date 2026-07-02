@@ -23,6 +23,24 @@ TEST(VulkanValidation, DeviceCreation)
     EXPECT_EQ(device->GetBackendType(), RHIBackendType::Vulkan);
 }
 
+TEST(VulkanValidation, RayTracingCapabilitiesAreDisabledUntilBackendImplementation)
+{
+    RHIDeviceDesc desc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, desc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    const RHICapabilities& caps = device->GetCapabilities();
+    EXPECT_FALSE(caps.supportsRaytracing);
+    EXPECT_FALSE(caps.supportsRaytracingPipeline);
+    EXPECT_FALSE(caps.supportsRayQuery);
+    EXPECT_FALSE(caps.supportsAccelerationStructureUpdate);
+    EXPECT_FALSE(caps.supportsAccelerationStructureCompaction);
+    EXPECT_EQ(caps.maxRayRecursionDepth, 0u);
+    EXPECT_EQ(caps.shaderGroupHandleSize, 0u);
+    EXPECT_EQ(caps.shaderGroupHandleAlignment, 0u);
+    EXPECT_EQ(caps.shaderTableBaseAlignment, 0u);
+}
+
 TEST(VulkanValidation, BufferCreation)
 {
     RHIDeviceDesc deviceDesc;

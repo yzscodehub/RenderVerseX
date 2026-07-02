@@ -2,6 +2,7 @@
 #include "RHI/RHI.h"
 #include "Common/GpuTestUtils.h"
 #include "ShaderCompiler/ShaderCompiler.h"
+#include "DX11Device.h"
 #include "DX11Resources.h"
 
 #include <gtest/gtest.h>
@@ -341,6 +342,92 @@ TEST(DX11Validation, CommandContext)
     ctx->End();
 
     device->SubmitCommandContext(ctx.Get(), nullptr);
+    device->WaitIdle();
+}
+
+TEST(DX11Validation, RenderPassUnbindsShaderResourceAliasesForRenderTargets)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+
+    auto* dx11Device = dynamic_cast<DX11Device*>(device.get());
+    ASSERT_NE(nullptr, dx11Device);
+    ID3D11DeviceContext* nativeContext = dx11Device->GetImmediateContext();
+    ASSERT_NE(nullptr, nativeContext);
+
+    auto textureDesc = RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM);
+    textureDesc.debugName = "DX11AliasedRenderTarget";
+    auto texture = device->CreateTexture(textureDesc);
+    ASSERT_NE(nullptr, texture.Get());
+
+    RHITextureViewDesc srvDesc;
+    srvDesc.type = RHITextureViewType::ShaderResource;
+    srvDesc.format = RHIFormat::RGBA8_UNORM;
+    srvDesc.debugName = "DX11AliasedRenderTargetSRV";
+    auto srvView = device->CreateTextureView(texture.Get(), srvDesc);
+    ASSERT_NE(nullptr, srvView.Get());
+
+    RHITextureViewDesc rtvDesc;
+    rtvDesc.type = RHITextureViewType::RenderTarget;
+    rtvDesc.format = RHIFormat::RGBA8_UNORM;
+    rtvDesc.debugName = "DX11AliasedRenderTargetRTV";
+    auto rtvView = device->CreateTextureView(texture.Get(), rtvDesc);
+    ASSERT_NE(nullptr, rtvView.Get());
+
+    auto* dx11SrvView = dynamic_cast<DX11TextureView*>(srvView.Get());
+    ASSERT_NE(nullptr, dx11SrvView);
+    ID3D11ShaderResourceView* nativeSrv = dx11SrvView->GetSRV();
+    ASSERT_NE(nullptr, nativeSrv);
+
+    nativeContext->VSSetShaderResources(1, 1, &nativeSrv);
+    nativeContext->PSSetShaderResources(1, 1, &nativeSrv);
+    nativeContext->CSSetShaderResources(1, 1, &nativeSrv);
+
+    auto expectShaderResourceSlot = [](ID3D11ShaderResourceView* view, ID3D11ShaderResourceView* expected)
+    {
+        EXPECT_EQ(expected, view);
+        if (view)
+        {
+            view->Release();
+        }
+    };
+
+    ID3D11ShaderResourceView* boundVsSrv = nullptr;
+    ID3D11ShaderResourceView* boundPsSrv = nullptr;
+    ID3D11ShaderResourceView* boundCsSrv = nullptr;
+    nativeContext->VSGetShaderResources(1, 1, &boundVsSrv);
+    nativeContext->PSGetShaderResources(1, 1, &boundPsSrv);
+    nativeContext->CSGetShaderResources(1, 1, &boundCsSrv);
+    expectShaderResourceSlot(boundVsSrv, nativeSrv);
+    expectShaderResourceSlot(boundPsSrv, nativeSrv);
+    expectShaderResourceSlot(boundCsSrv, nativeSrv);
+
+    auto commandContext = device->CreateCommandContext(RHICommandQueueType::Graphics);
+    ASSERT_NE(nullptr, commandContext.Get());
+    commandContext->Begin();
+
+    RHIRenderPassDesc renderPassDesc;
+    renderPassDesc.AddColorAttachment(
+        rtvView.Get(),
+        RHILoadOp::Clear,
+        RHIStoreOp::Store,
+        {0.0f, 0.0f, 0.0f, 1.0f});
+    commandContext->BeginRenderPass(renderPassDesc);
+
+    boundVsSrv = nullptr;
+    boundPsSrv = nullptr;
+    boundCsSrv = nullptr;
+    nativeContext->VSGetShaderResources(1, 1, &boundVsSrv);
+    nativeContext->PSGetShaderResources(1, 1, &boundPsSrv);
+    nativeContext->CSGetShaderResources(1, 1, &boundCsSrv);
+    expectShaderResourceSlot(boundVsSrv, nullptr);
+    expectShaderResourceSlot(boundPsSrv, nullptr);
+    expectShaderResourceSlot(boundCsSrv, nullptr);
+
+    commandContext->EndRenderPass();
+    commandContext->End();
+    device->SubmitCommandContext(commandContext.Get(), nullptr);
     device->WaitIdle();
 }
 

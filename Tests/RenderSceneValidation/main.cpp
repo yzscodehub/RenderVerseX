@@ -1,3 +1,4 @@
+#include "Animation/Data/Skeleton.h"
 #include "Core/Core.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderProxy.h"
@@ -9,6 +10,7 @@
 #include "Scene/Actor.h"
 #include "Scene/Components/LightComponent.h"
 #include "Scene/Components/MeshRendererComponent.h"
+#include "Scene/Components/SkeletonComponent.h"
 #include "Scene/Components/SkyboxComponent.h"
 #include "Scene/Components/StaticMeshComponent.h"
 #include "Scene/Mesh.h"
@@ -183,6 +185,15 @@ namespace
         resource->MarkLoaded();
 
         return Resource::ResourceHandle<Resource::TextureResource>(resource);
+    }
+
+    Animation::Skeleton::Ptr MakeTwoBoneSkeleton()
+    {
+        auto skeleton = Animation::Skeleton::Create();
+        skeleton->AddBone("Root");
+        skeleton->AddBone("Child", 0);
+        skeleton->ComputeInverseBindPoses();
+        return skeleton;
     }
 
     RenderObject MakeMaterialObject(uint64 meshId,
@@ -368,6 +379,7 @@ TEST(RenderSceneValidation, StaticMeshComponentCollectsRenderObjectFromWorld)
     EXPECT_TRUE(primitive->AttachToComponent(entity->GetRootComponent()));
     primitive->SetMesh(mesh);
     primitive->SetMaterial(0, material);
+    primitive->SetLayerMask(0x34u);
     primitive->SetCastsShadow(false);
     primitive->SetReceivesShadow(false);
 
@@ -382,9 +394,47 @@ TEST(RenderSceneValidation, StaticMeshComponentCollectsRenderObjectFromWorld)
     EXPECT_EQ(static_cast<size_t>(1), object.materialIds.size());
     EXPECT_EQ(material.GetId(), object.materialIds[0]);
     EXPECT_EQ(material.Get(), object.materialResources[0]);
+    EXPECT_EQ(0x34u, object.layerMask);
     EXPECT_FALSE(object.castsShadow);
     EXPECT_FALSE(object.receivesShadow);
     EXPECT_EQ(Vec3(4.0f, 0.0f, 0.0f), Vec3(object.worldMatrix[3]));
+
+    world.Shutdown();
+}
+
+TEST(RenderSceneValidation, StaticMeshComponentCollectsRenderObjectFromSceneManager)
+{
+    World world;
+    world.Initialize();
+
+    auto* entity = CreateEntity(world, "SceneManagerPrimitiveEntity");
+    ASSERT_NE(nullptr, entity);
+    entity->SetPosition(Vec3(2.0f, 0.0f, 0.0f));
+
+    auto mesh = MakeMeshResource(1005);
+    auto material = MakeMaterialResource(2005);
+
+    auto* primitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
+    ASSERT_NE(nullptr, primitive);
+    EXPECT_TRUE(primitive->AttachToComponent(entity->GetRootComponent()));
+    primitive->SetMesh(mesh);
+    primitive->SetMaterial(0, material);
+
+    RenderScene worldScene;
+    worldScene.CollectFromWorld(&world);
+
+    RenderScene sceneManagerScene;
+    sceneManagerScene.CollectFromSceneManager(world.GetSceneManager());
+
+    ASSERT_EQ(worldScene.GetObjectCount(), sceneManagerScene.GetObjectCount());
+    ASSERT_EQ(static_cast<size_t>(1), sceneManagerScene.GetObjectCount());
+    const auto& object = sceneManagerScene.GetObject(0);
+    EXPECT_EQ(entity->GetHandle(), object.entityId);
+    EXPECT_EQ(mesh.GetId(), object.meshId);
+    EXPECT_EQ(mesh.Get(), object.meshResource);
+    ASSERT_EQ(static_cast<size_t>(1), object.materialIds.size());
+    EXPECT_EQ(material.GetId(), object.materialIds[0]);
+    EXPECT_EQ(Vec3(2.0f, 0.0f, 0.0f), Vec3(object.worldMatrix[3]));
 
     world.Shutdown();
 }
@@ -441,7 +491,10 @@ TEST(RenderSceneValidation, RenderSceneApplyProxySnapshotPopulatesObjectsAndLigh
     primitive.bounds = AABB(Vec3(-1.0f), Vec3(1.0f));
     primitive.meshId = 3101;
     primitive.materialIds = {4101};
+    primitive.skinningMatrices = {Mat4Identity(), Mat4Identity()};
+    primitive.skinningMatrices[1][3] = Vec4(0.0f, 2.0f, 0.0f, 1.0f);
     primitive.sortKey = 4101;
+    primitive.layerMask = 0x5Au;
     primitive.visible = true;
     primitive.castsShadow = false;
     primitive.receivesShadow = true;
@@ -470,6 +523,10 @@ TEST(RenderSceneValidation, RenderSceneApplyProxySnapshotPopulatesObjectsAndLigh
     EXPECT_EQ(Vec3(1.0f, 2.0f, 3.0f), Vec3(object.worldMatrix[3]));
     ASSERT_EQ(static_cast<size_t>(1), object.materialIds.size());
     EXPECT_EQ(4101u, object.materialIds[0]);
+    ASSERT_TRUE(object.HasSkinningData());
+    ASSERT_EQ(static_cast<size_t>(2), object.skinningMatrices.size());
+    EXPECT_EQ(Vec3(0.0f, 2.0f, 0.0f), Vec3(object.skinningMatrices[1][3]));
+    EXPECT_EQ(0x5Au, object.layerMask);
     EXPECT_FALSE(object.castsShadow);
     EXPECT_TRUE(object.receivesShadow);
 
@@ -530,6 +587,50 @@ TEST(RenderSceneValidation, RenderProxyBridgeBuildsPrimitiveAndLightSnapshot)
     EXPECT_EQ(RenderLightProxy::Type::Point, snapshot.lights[0].type);
     EXPECT_EQ(Vec3(0.0f, 5.0f, 0.0f), snapshot.lights[0].position);
     EXPECT_TRUE(snapshot.lights[0].castsShadow);
+
+    world.Shutdown();
+}
+
+TEST(RenderSceneValidation, RenderProxyBridgePropagatesSkeletonSkinningMatrices)
+{
+    World world;
+    world.Initialize();
+
+    auto* meshEntity = CreateEntity(world, "SkinnedProxyMeshEntity");
+    ASSERT_NE(nullptr, meshEntity);
+
+    auto mesh = MakeMeshResource(1202);
+    auto material = MakeMaterialResource(2202);
+    auto* primitive = static_cast<Actor*>(meshEntity)->AddComponent<StaticMeshComponent>();
+    ASSERT_NE(nullptr, primitive);
+    EXPECT_TRUE(primitive->AttachToComponent(meshEntity->GetRootComponent()));
+    primitive->SetMesh(mesh);
+    primitive->SetMaterial(0, material);
+
+    auto* skeleton = meshEntity->AddComponent<SkeletonComponent>();
+    ASSERT_NE(nullptr, skeleton);
+    skeleton->SetSkeleton(MakeTwoBoneSkeleton());
+    skeleton->SetBoneLocalPosition(1, Vec3(0.0f, 2.0f, 0.0f));
+
+    RenderProxySceneBridge bridge;
+    RenderProxySnapshot snapshot;
+    RenderProxySceneBridgeResult result;
+    ASSERT_TRUE(bridge.BuildSnapshot(&world, snapshot, &result));
+
+    ASSERT_EQ(static_cast<size_t>(1), snapshot.primitives.size());
+    const RenderPrimitiveProxy& proxy = snapshot.primitives[0];
+    ASSERT_TRUE(proxy.HasSkinningData());
+    ASSERT_EQ(static_cast<size_t>(2), proxy.skinningMatrices.size());
+    EXPECT_EQ(Vec3(0.0f, 2.0f, 0.0f), Vec3(proxy.skinningMatrices[1][3]));
+
+    RenderScene scene;
+    scene.ApplyProxySnapshot(snapshot);
+
+    ASSERT_EQ(static_cast<size_t>(1), scene.GetObjectCount());
+    const RenderObject& object = scene.GetObject(0);
+    ASSERT_TRUE(object.HasSkinningData());
+    ASSERT_EQ(static_cast<size_t>(2), object.skinningMatrices.size());
+    EXPECT_EQ(Vec3(0.0f, 2.0f, 0.0f), Vec3(object.skinningMatrices[1][3]));
 
     world.Shutdown();
 }

@@ -1,5 +1,6 @@
 #include "Core/Core.h"
 #include "Render/Graph/RenderGraph.h"
+#include "Render/Graph/TransientResourcePool.h"
 #include <gtest/gtest.h>
 
 #include <string>
@@ -132,11 +133,13 @@ namespace
     public:
         RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
         {
+            ++createBufferCount;
             return RHIBufferRef(new FakeBuffer(desc));
         }
 
         RHITextureRef CreateTexture(const RHITextureDesc& desc) override
         {
+            ++createTextureCount;
             return RHITextureRef(new FakeTexture(desc));
         }
 
@@ -171,6 +174,9 @@ namespace
         void EndResourceGroup() override {}
         const RHICapabilities& GetCapabilities() const override { return m_capabilities; }
         RHIBackendType GetBackendType() const override { return RHIBackendType::DX12; }
+
+        uint32 createTextureCount = 0;
+        uint32 createBufferCount = 0;
 
     private:
         RHICapabilities m_capabilities;
@@ -214,6 +220,62 @@ TEST(RenderGraphValidation, TextureResourceCreation)
 
     // Handle should be valid
     EXPECT_TRUE(texture.IsValid());
+}
+
+TEST(RenderGraphValidation, TransientResourcePoolReusesTexturesAcrossClear)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    graph.SetTransientResourcePool(&pool);
+
+    RHITextureDesc texDesc =
+        RHITextureDesc::RenderTarget(128, 64, RHIFormat::RGBA8_UNORM);
+    texDesc.debugName = "RenderGraphValidation.PooledTexture";
+
+    auto buildFrame = [&]() {
+        struct PassData
+        {
+            RGTextureHandle output;
+        };
+
+        RGTextureHandle texture = graph.CreateTexture(texDesc);
+        graph.AddPass<PassData>(
+            "WritePooledTexture",
+            RenderGraphPassType::Graphics,
+            [texture](RenderGraphBuilder& builder, PassData& data) {
+                data.output = builder.Write(texture);
+            },
+            [](const PassData&, RHICommandContext&) {});
+        graph.SetExportState(texture, RHIResourceState::ShaderResource);
+        graph.Compile();
+        FakeCommandContext ctx;
+        graph.Execute(ctx);
+    };
+
+    pool.BeginFrame();
+    graph.Clear();
+    buildFrame();
+    pool.EndFrame();
+
+    EXPECT_EQ(1u, device.createTextureCount);
+    EXPECT_EQ(1u, pool.GetStats().textureMisses);
+    EXPECT_EQ(0u, pool.GetStats().textureHits);
+
+    pool.BeginFrame();
+    graph.Clear();
+    buildFrame();
+    pool.EndFrame();
+
+    EXPECT_EQ(1u, device.createTextureCount);
+    EXPECT_EQ(1u, pool.GetStats().textureHits);
+    EXPECT_EQ(0u, pool.GetStats().textureMisses);
+
+    graph.Clear();
+    pool.Shutdown();
 }
 
 TEST(RenderGraphValidation, BufferResourceCreation)
@@ -1267,6 +1329,64 @@ TEST(RenderGraphValidation, EmptyPassUsageIsReported)
     EXPECT_TRUE(stats.compileValid);
     EXPECT_EQ(stats.emptyPassUsageCount, 1u);
     EXPECT_EQ(stats.validationWarningCount, 1u);
+}
+
+TEST(RenderGraphValidation, ShaderStageMismatchWarningsDoNotInvalidateCompile)
+{
+    FakeDevice device;
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::Texture2D(32, 32, RHIFormat::RGBA16_FLOAT));
+    ASSERT_NE(inputTexture.Get(), nullptr);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle computeOutput =
+        graph.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
+    RGTextureHandle rayTracingOutput =
+        graph.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
+
+    struct StageMismatchData
+    {
+        RGTextureHandle input;
+        RGTextureHandle output;
+    };
+
+    graph.AddPass<StageMismatchData>(
+        "ComputeReadsDefaultGraphicsStage",
+        RenderGraphPassType::Compute,
+        [input, computeOutput](RenderGraphBuilder& builder, StageMismatchData& data)
+        {
+            data.input = builder.Read(input);
+            data.output = builder.Write(computeOutput, RHIResourceState::UnorderedAccess);
+        },
+        [](const StageMismatchData&, RHICommandContext&) {});
+
+    graph.AddPass<StageMismatchData>(
+        "RayTracingReadsPixelStage",
+        RenderGraphPassType::RayTracing,
+        [input, rayTracingOutput](RenderGraphBuilder& builder, StageMismatchData& data)
+        {
+            data.input = builder.Read(input, RHIResourceState::ShaderResource, RHIShaderStage::Pixel);
+            data.output = builder.Write(rayTracingOutput, RHIResourceState::UnorderedAccess);
+        },
+        [](const StageMismatchData&, RHICommandContext&) {});
+
+    graph.SetExportState(computeOutput, RHIResourceState::ShaderResource);
+    graph.SetExportState(rayTracingOutput, RHIResourceState::ShaderResource);
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.compileValid);
+    EXPECT_EQ(stats.shaderStageMismatchUsageCount, 2u);
+    EXPECT_EQ(stats.validationWarningCount, 2u);
+    EXPECT_EQ(stats.validationErrorCount, 0u);
+
+    const std::vector<std::string>& diagnostics = graph.GetCompileDiagnostics();
+    ASSERT_EQ(diagnostics.size(), 2u);
+    EXPECT_NE(diagnostics[0].find("ComputeReadsDefaultGraphicsStage"), std::string::npos);
+    EXPECT_NE(diagnostics[1].find("RayTracingReadsPixelStage"), std::string::npos);
 }
 
 TEST(RenderGraphValidation, IncompatiblePassStateIsReported)

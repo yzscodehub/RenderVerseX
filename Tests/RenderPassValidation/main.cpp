@@ -22,11 +22,17 @@
 #undef private
 
 #include "Render/GPUResourceManager.h"
+#include "Render/GPUDriven/GPUCulling.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/DepthPrepass.h"
 #include "Render/Passes/IRenderPass.h"
+#include "Render/Passes/ObjectVelocityPass.h"
 #include "Render/Passes/OpaquePass.h"
+#include "Render/Passes/RayTracedReflectionCompositePass.h"
+#include "Render/Passes/RayTracedReflectionDenoisePass.h"
+#include "Render/Passes/RayTracedReflectionPass.h"
+#include "Render/Passes/RayTracedShadowPass.h"
 #include "Render/Passes/ShadowPass.h"
 #include "Render/Passes/SkyboxPass.h"
 #include "Render/Passes/TransparentPass.h"
@@ -37,7 +43,11 @@
 #include "Render/PostProcess/PostProcessStack.h"
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
+#include "Render/RayTracing/RayTracingResourceBindings.h"
+#include "Render/RayTracing/RayTracingScene.h"
+#include "Render/RayTracing/RayTracingSceneManager.h"
 #include "Render/Renderer/RenderScene.h"
+#include "Render/Renderer/SceneRenderer.h"
 #include "Render/Renderer/ViewData.h"
 #include "Renderer/RenderPassRegistry.h"
 #include "Resource/Types/MaterialResource.h"
@@ -55,6 +65,8 @@ using namespace RVX;
 namespace
 {
     namespace fs = std::filesystem;
+    namespace RTShadowBindings = RayTracingResourceBindings::Shadow;
+    namespace RTReflectionBindings = RayTracingResourceBindings::Reflection;
 
     fs::path FindShaderDirectory()
     {
@@ -130,6 +142,26 @@ namespace
         RHITextureDesc m_desc;
     };
 
+    class FakeAccelerationStructure final : public RHIAccelerationStructure
+    {
+    public:
+        explicit FakeAccelerationStructure(const RHIAccelerationStructureDesc& desc)
+            : m_desc(desc)
+            , m_address(s_nextAddress)
+        {
+            s_nextAddress += 0x1000;
+        }
+
+        RHIAccelerationStructureType GetType() const override { return m_desc.type; }
+        uint64 GetSize() const override { return m_desc.size; }
+        uint64 GetGPUVirtualAddress() const override { return m_address; }
+
+    private:
+        RHIAccelerationStructureDesc m_desc;
+        uint64 m_address = 0;
+        inline static uint64 s_nextAddress = 0x1000;
+    };
+
     class FakeTextureView final : public RHITextureView
     {
     public:
@@ -201,9 +233,86 @@ namespace
         {
         }
 
-        bool IsCompute() const override { return false; }
+        explicit FakePipeline(const RHIComputePipelineDesc& desc)
+            : debugName(desc.debugName ? desc.debugName : "")
+            , m_compute(true)
+        {
+        }
+
+        explicit FakePipeline(const RHIRayTracingPipelineDesc& desc)
+            : debugName(desc.debugName ? desc.debugName : "")
+            , m_rayTracing(true)
+        {
+            m_shaderGroupStages.reserve(desc.shaderGroups.size());
+            m_shaderGroupIsHitGroup.reserve(desc.shaderGroups.size());
+            for (const RHIRayTracingShaderGroupDesc& group : desc.shaderGroups)
+            {
+                if (group.type == RHIRayTracingShaderGroupType::General)
+                {
+                    m_shaderGroupStages.push_back(group.generalShader ? group.generalShader->GetStage() : RHIShaderStage::None);
+                    m_shaderGroupIsHitGroup.push_back(0);
+                }
+                else
+                {
+                    m_shaderGroupStages.push_back(RHIShaderStage::None);
+                    m_shaderGroupIsHitGroup.push_back(1);
+                }
+            }
+        }
+
+        bool IsCompute() const override { return m_compute; }
+        bool IsRayTracing() const override { return m_rayTracing; }
+        uint32 GetRayTracingShaderGroupCount() const override
+        {
+            return static_cast<uint32>(m_shaderGroupStages.size());
+        }
+        RHIShaderStage GetRayTracingShaderGroupStage(uint32 shaderGroupIndex) const override
+        {
+            return shaderGroupIndex < m_shaderGroupStages.size()
+                ? m_shaderGroupStages[shaderGroupIndex]
+                : RHIShaderStage::None;
+        }
+        bool IsRayTracingHitGroup(uint32 shaderGroupIndex) const override
+        {
+            return shaderGroupIndex < m_shaderGroupIsHitGroup.size() && m_shaderGroupIsHitGroup[shaderGroupIndex] != 0;
+        }
 
         std::string debugName;
+
+    private:
+        bool m_compute = false;
+        bool m_rayTracing = false;
+        std::vector<RHIShaderStage> m_shaderGroupStages;
+        std::vector<uint8> m_shaderGroupIsHitGroup;
+    };
+
+
+    class FakeShaderTable final : public RHIShaderTable
+    {
+    public:
+        explicit FakeShaderTable(const RHIShaderTableDesc& desc)
+            : m_pipelineOwner(desc.rayTracingPipelineOwner)
+            , m_pipeline(desc.GetRayTracingPipeline())
+            , m_rayGenerationRecordCount(static_cast<uint32>(desc.rayGenerationRecords.size()))
+            , m_missRecordCount(static_cast<uint32>(desc.missRecords.size()))
+            , m_hitGroupRecordCount(static_cast<uint32>(desc.hitGroupRecords.size()))
+            , m_callableRecordCount(static_cast<uint32>(desc.callableRecords.size()))
+        {
+        }
+
+        uint32 GetRayGenerationRecordCount() const override { return m_rayGenerationRecordCount; }
+        uint32 GetMissRecordCount() const override { return m_missRecordCount; }
+        uint32 GetHitGroupRecordCount() const override { return m_hitGroupRecordCount; }
+        uint32 GetCallableRecordCount() const override { return m_callableRecordCount; }
+        RHIPipeline* GetRayTracingPipeline() const override { return m_pipeline; }
+
+    private:
+        RHIPipelineRef m_pipelineOwner;
+        RHIPipeline* m_pipeline = nullptr;
+        uint32 m_rayGenerationRecordCount = 0;
+        uint32 m_missRecordCount = 0;
+        uint32 m_hitGroupRecordCount = 0;
+        uint32 m_callableRecordCount = 0;
     };
 
     class FakeDescriptorSet final : public RHIDescriptorSet
@@ -283,6 +392,7 @@ namespace
         }
         void SetPipeline(RHIPipeline* pipeline) override
         {
+            currentPipeline = pipeline;
             pipelineSequence.push_back(pipeline);
             callSequence.push_back("SetPipeline");
         }
@@ -318,11 +428,51 @@ namespace
             ++drawIndexedCount;
         }
         void DrawIndirect(RHIBuffer*, uint64, uint32, uint32) override {}
-        void DrawIndexedIndirect(RHIBuffer*, uint64, uint32, uint32) override {}
+        void DrawIndexedIndirect(RHIBuffer* buffer, uint64 offset, uint32 indirectDrawCount, uint32 stride) override
+        {
+            ++drawIndexedIndirectCount;
+            lastIndirectBuffer = buffer;
+            lastIndirectOffset = offset;
+            lastIndirectDrawCount = indirectDrawCount;
+            lastIndirectStride = stride;
+            callSequence.push_back("DrawIndexedIndirect");
+        }
         void Dispatch(uint32, uint32, uint32) override {}
         void DispatchIndirect(RHIBuffer*, uint64) override {}
+        void BuildBottomLevelAccelerationStructure(
+            RHIAccelerationStructure* dst,
+            const RHIBottomLevelASDesc&,
+            RHIBuffer* scratchBuffer,
+            uint64 = 0,
+            RHIAccelerationStructure* = nullptr) override
+        {
+            ++buildBottomLevelASCount;
+            lastBottomLevelAS = dst;
+            lastBottomLevelScratch = scratchBuffer;
+            callSequence.push_back("BuildBottomLevelAS");
+        }
+        void BuildTopLevelAccelerationStructure(
+            RHIAccelerationStructure* dst,
+            const RHITopLevelASDesc& desc,
+            RHIBuffer* scratchBuffer,
+            uint64 = 0,
+            RHIAccelerationStructure* = nullptr) override
+        {
+            ++buildTopLevelASCount;
+            lastTopLevelAS = dst;
+            lastTopLevelDesc = desc;
+            lastTopLevelScratch = scratchBuffer;
+            callSequence.push_back("BuildTopLevelAS");
+        }
+        void DispatchRays(const RHIDispatchRaysDesc& desc) override
+        {
+            ++dispatchRaysCount;
+            lastDispatchRaysDesc = desc;
+            lastDispatchRaysValidation = ValidateRHIDispatchRaysDesc(desc, currentPipeline);
+            callSequence.push_back("DispatchRays");
+        }
         void CopyBuffer(RHIBuffer*, RHIBuffer*, uint64, uint64, uint64) override { ++copyBufferCount; }
-        void CopyTexture(RHITexture*, RHITexture*, const RHITextureCopyDesc& = {}) override {}
+        void CopyTexture(RHITexture*, RHITexture*, const RHITextureCopyDesc& = {}) override { ++copyTextureCount; }
         void CopyBufferToTexture(RHIBuffer*, RHITexture*, const RHIBufferTextureCopyDesc&) override
         {
             ++copyBufferToTextureCount;
@@ -349,11 +499,28 @@ namespace
         uint32 bufferBarrierCount = 0;
         uint32 textureBarrierCount = 0;
         uint32 copyBufferCount = 0;
+        uint32 copyTextureCount = 0;
         uint32 copyBufferToTextureCount = 0;
         uint32 depthBiasSetCount = 0;
         uint32 drawCount = 0;
         uint32 drawIndexedCount = 0;
+        uint32 drawIndexedIndirectCount = 0;
+        uint32 buildBottomLevelASCount = 0;
+        uint32 buildTopLevelASCount = 0;
+        uint32 dispatchRaysCount = 0;
         uint32 lastDrawVertexCount = 0;
+        RHIBuffer* lastIndirectBuffer = nullptr;
+        uint64 lastIndirectOffset = 0;
+        uint32 lastIndirectDrawCount = 0;
+        uint32 lastIndirectStride = 0;
+        RHIAccelerationStructure* lastBottomLevelAS = nullptr;
+        RHIAccelerationStructure* lastTopLevelAS = nullptr;
+        RHIBuffer* lastBottomLevelScratch = nullptr;
+        RHIBuffer* lastTopLevelScratch = nullptr;
+        RHITopLevelASDesc lastTopLevelDesc;
+        RHIDispatchRaysDesc lastDispatchRaysDesc;
+        RHIRayTracingValidationResult lastDispatchRaysValidation;
+        RHIPipeline* currentPipeline = nullptr;
         std::vector<RHIRenderPassDesc> renderPasses;
         std::vector<RHIPipeline*> pipelineSequence;
         std::vector<uint32> descriptorSetSequence;
@@ -441,7 +608,66 @@ namespace
             return RHIPipelineRef(new FakePipeline(desc));
         }
 
-        RHIPipelineRef CreateComputePipeline(const RHIComputePipelineDesc&) override { return nullptr; }
+        RHIPipelineRef CreateComputePipeline(const RHIComputePipelineDesc& desc) override
+        {
+            return RHIPipelineRef(new FakePipeline(desc));
+        }
+
+        RHIAccelerationStructureBuildSizes GetBottomLevelASBuildSizes(const RHIBottomLevelASDesc& desc) override
+        {
+            ++bottomLevelSizeQueryCount;
+            if (!m_capabilities.supportsRaytracing || !ValidateRHIBottomLevelASDesc(desc))
+                return {};
+
+            const uint64 geometryCount = static_cast<uint64>(std::max<size_t>(desc.geometries.size(), 1));
+            RHIAccelerationStructureBuildSizes sizes;
+            sizes.accelerationStructureSize = 4096 * geometryCount;
+            sizes.buildScratchSize = 2048 * geometryCount;
+            sizes.updateScratchSize = 1024 * geometryCount;
+            return sizes;
+        }
+
+        RHIAccelerationStructureBuildSizes GetTopLevelASBuildSizes(const RHITopLevelASDesc& desc) override
+        {
+            ++topLevelSizeQueryCount;
+            if (!m_capabilities.supportsRaytracing || !ValidateRHITopLevelASDesc(desc))
+                return {};
+
+            RHIAccelerationStructureBuildSizes sizes;
+            sizes.accelerationStructureSize = 4096 + 512 * static_cast<uint64>(desc.GetInstanceCount());
+            sizes.buildScratchSize = 2048;
+            sizes.updateScratchSize = 1024;
+            return sizes;
+        }
+
+        RHIAccelerationStructureRef CreateAccelerationStructure(const RHIAccelerationStructureDesc& desc) override
+        {
+            ++createdAccelerationStructureCount;
+            createdAccelerationStructureDescs.push_back(desc);
+            if (!m_capabilities.supportsRaytracing || desc.size == 0)
+                return {};
+
+            return RHIAccelerationStructureRef(new FakeAccelerationStructure(desc));
+        }
+
+        RHIPipelineRef CreateRayTracingPipeline(const RHIRayTracingPipelineDesc& desc) override
+        {
+            ++createdRayTracingPipelineCount;
+            if (!m_capabilities.supportsRaytracingPipeline || !ValidateRHIRayTracingPipelineDesc(desc))
+                return {};
+
+            return RHIPipelineRef(new FakePipeline(desc));
+        }
+
+        RHIShaderTableRef CreateShaderTable(const RHIShaderTableDesc& desc) override
+        {
+            ++createdShaderTableCount;
+            RHIRayTracingValidationResult validation = ValidateRHIShaderTableDesc(desc);
+            if (!validation)
+                return {};
+
+            return RHIShaderTableRef(new FakeShaderTable(desc));
+        }
 
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) override
         {
@@ -511,12 +737,34 @@ namespace
         const RHICapabilities& GetCapabilities() const override { return m_capabilities; }
         RHIBackendType GetBackendType() const override { return RHIBackendType::DX12; }
 
+        void EnableRayTracing()
+        {
+            m_capabilities.backendType = RHIBackendType::DX12;
+            m_capabilities.supportsRaytracing = true;
+            m_capabilities.supportsRaytracingPipeline = true;
+            m_capabilities.supportsAccelerationStructureUpdate = true;
+            m_capabilities.supportsAccelerationStructureCompaction = false;
+            m_capabilities.maxRayRecursionDepth = 1;
+            m_capabilities.shaderGroupHandleSize = 32;
+            m_capabilities.shaderGroupHandleAlignment = 32;
+            m_capabilities.shaderTableBaseAlignment = 64;
+            m_capabilities.supportsDescriptorSets = true;
+            m_capabilities.supportsExplicitResourceBarriers = true;
+            m_capabilities.maxDescriptorSets = 8;
+        }
+
         bool bufferMapSucceeds = true;
         bool textureViewCreationSucceeds = true;
         bool failDirectionalShadowSRVCreation = false;
         bool samplerCreationSucceeds = true;
+        uint32 bottomLevelSizeQueryCount = 0;
+        uint32 topLevelSizeQueryCount = 0;
+        uint32 createdAccelerationStructureCount = 0;
+        uint32 createdRayTracingPipelineCount = 0;
+        uint32 createdShaderTableCount = 0;
         std::vector<RHIBufferDesc> createdBufferDescs;
         std::vector<FakeBuffer*> createdBuffers;
+        std::vector<RHIAccelerationStructureDesc> createdAccelerationStructureDescs;
         std::vector<RHIDescriptorSetDesc> createdDescriptorSetDescs;
         std::vector<RHITextureDesc> createdTextureDescs;
         std::vector<RHITextureViewDesc> createdTextureViewDescs;
@@ -612,6 +860,55 @@ namespace
         resource->SetId(id);
         resource->SetName("RenderPassMesh");
         resource->SetMesh(MeshFactory::CreateTriangle());
+        return resource;
+    }
+
+    std::unique_ptr<Resource::MeshResource> CreateTwoSubmeshMeshResource(Resource::ResourceId id)
+    {
+        auto resource = std::make_unique<Resource::MeshResource>();
+        resource->SetId(id);
+        resource->SetName("RenderPassTwoSubmeshMesh");
+
+        auto mesh = std::make_shared<Mesh>();
+        mesh->name = "TwoSubmeshTriangles";
+
+        std::vector<Vec3> positions = {
+            {-0.75f, 0.5f, 0.0f},
+            {-1.0f, -0.5f, 0.0f},
+            {-0.5f, -0.5f, 0.0f},
+            {0.75f, 0.5f, 0.0f},
+            {0.5f, -0.5f, 0.0f},
+            {1.0f, -0.5f, 0.0f}
+        };
+        std::vector<Vec3> normals(positions.size(), Vec3(0.0f, 0.0f, 1.0f));
+        std::vector<Vec2> uvs = {
+            {0.5f, 1.0f},
+            {0.0f, 0.0f},
+            {1.0f, 0.0f},
+            {0.5f, 1.0f},
+            {0.0f, 0.0f},
+            {1.0f, 0.0f}
+        };
+        std::vector<uint32_t> indices = {0, 1, 2, 3, 4, 5};
+
+        SubMesh firstSubmesh;
+        firstSubmesh.indexOffset = 0;
+        firstSubmesh.indexCount = 3;
+        firstSubmesh.baseVertex = 0;
+
+        SubMesh secondSubmesh;
+        secondSubmesh.indexOffset = 3;
+        secondSubmesh.indexCount = 3;
+        secondSubmesh.baseVertex = 0;
+
+        mesh->SetPositions(positions);
+        mesh->SetNormals(normals);
+        mesh->SetUVs(uvs);
+        mesh->SetIndices(indices);
+        mesh->SetSubMeshes({firstSubmesh, secondSubmesh});
+        mesh->ComputeBoundingBox();
+
+        resource->SetMesh(mesh);
         return resource;
     }
 
@@ -719,6 +1016,39 @@ namespace
         EXPECT_EQ(fakePipeline->debugName, expectedName);
     }
 
+
+    void ExpectCommandBefore(const RecordingCommandContext& ctx, const std::string& before, const std::string& after)
+    {
+        const auto beforeIt = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), before);
+        const auto afterIt = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), after);
+        ASSERT_NE(beforeIt, ctx.callSequence.end()) << before;
+        ASSERT_NE(afterIt, ctx.callSequence.end()) << after;
+        EXPECT_LT(std::distance(ctx.callSequence.begin(), beforeIt),
+                  std::distance(ctx.callSequence.begin(), afterIt));
+    }
+
+    void PrepareRayTracingSceneForSingleObject(FakeDevice& device,
+                                               GPUResourceManager& gpuResources,
+                                               const RenderScene& scene,
+                                               RayTracingSceneManager& sceneManager)
+    {
+        std::vector<uint32_t> visibleObjectIndices{0};
+        RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(scene, visibleObjectIndices, gpuResources);
+        ASSERT_TRUE(plan.HasWork());
+
+        sceneManager.Initialize(&device);
+        ASSERT_TRUE(sceneManager.IsSupported());
+        ASSERT_TRUE(sceneManager.Prepare(plan)) << sceneManager.GetStats().fallbackReason;
+
+        RecordingCommandContext buildCtx;
+        sceneManager.RecordBuildCommands(buildCtx);
+        EXPECT_GE(buildCtx.buildBottomLevelASCount, 1u);
+        EXPECT_EQ(buildCtx.buildTopLevelASCount, 1u);
+        EXPECT_NE(sceneManager.GetTopLevelAS(), nullptr);
+        EXPECT_NE(sceneManager.GetInstanceMaterialMetadataBuffer(), nullptr);
+        EXPECT_NE(sceneManager.GetInstanceAlphaMetadataBuffer(), nullptr);
+    }
+
     class RenderPassValidationFixture : public ::testing::Test
     {
     protected:
@@ -734,7 +1064,7 @@ namespace
 
         void SetUp() override {}
 
-        void Initialize(bool bufferMapSucceeds = true)
+        void Initialize(bool bufferMapSucceeds = true, bool rayTracingSupported = false)
         {
             const fs::path shaderDir = FindShaderDirectory();
             if (shaderDir.empty())
@@ -743,6 +1073,10 @@ namespace
             }
 
             device.bufferMapSucceeds = bufferMapSucceeds;
+            if (rayTracingSupported)
+            {
+                device.EnableRayTracing();
+            }
 
             ASSERT_TRUE(pipelineCache.Initialize(&device, shaderDir.string())) << pipelineCache.GetLastError();
 
@@ -873,6 +1207,125 @@ TEST(RenderPassStatusValidation, BuiltInProductionPassStatusesAreHonest)
     EXPECT_TRUE(transparentPass.IsEnabled());
 }
 
+TEST(RenderPassValidation, RayTracingPipelineValidationRejectsInvalidShaderGroupContracts)
+{
+    const uint8 shaderBytecode[] = {0x52, 0x56, 0x58, 0x00};
+    auto makeShader = [&](RHIShaderStage stage) -> std::unique_ptr<FakeShader>
+    {
+        RHIShaderDesc desc;
+        desc.stage = stage;
+        desc.bytecode = shaderBytecode;
+        desc.bytecodeSize = sizeof(shaderBytecode);
+        return std::make_unique<FakeShader>(desc);
+    };
+
+    const std::unique_ptr<FakeShader> rayGenerationShader = makeShader(RHIShaderStage::RayGeneration);
+    const std::unique_ptr<FakeShader> missShader = makeShader(RHIShaderStage::Miss);
+    const std::unique_ptr<FakeShader> closestHitShader = makeShader(RHIShaderStage::ClosestHit);
+    const std::unique_ptr<FakeShader> anyHitShader = makeShader(RHIShaderStage::AnyHit);
+    const std::unique_ptr<FakeShader> intersectionShader = makeShader(RHIShaderStage::Intersection);
+    const std::unique_ptr<FakeShader> pixelShader = makeShader(RHIShaderStage::Pixel);
+
+    FakePipelineLayout layout;
+
+    RHIRayTracingShaderGroupDesc rayGenerationGroup;
+    rayGenerationGroup.type = RHIRayTracingShaderGroupType::General;
+    rayGenerationGroup.generalShader = rayGenerationShader.get();
+
+    RHIRayTracingPipelineDesc baseDesc;
+    baseDesc.pipelineLayout = &layout;
+    baseDesc.shaderGroups.push_back(rayGenerationGroup);
+    baseDesc.maxRecursionDepth = 1;
+    baseDesc.maxPayloadSize = sizeof(uint32);
+    baseDesc.maxAttributeSize = sizeof(float) * 2;
+    EXPECT_TRUE(ValidateRHIRayTracingPipelineDesc(baseDesc));
+
+    RHIRayTracingPipelineDesc oversizedAttributeDesc = baseDesc;
+    oversizedAttributeDesc.maxAttributeSize = RVX_RAY_TRACING_MAX_ATTRIBUTE_SIZE + 1u;
+    RHIRayTracingValidationResult result = ValidateRHIRayTracingPipelineDesc(oversizedAttributeDesc);
+    EXPECT_FALSE(result.valid);
+    EXPECT_STREQ(result.message, "ray tracing pipeline max attribute size exceeds the native 32-byte limit");
+
+    RHIRayTracingPipelineDesc missingRayGenDesc = baseDesc;
+    missingRayGenDesc.shaderGroups[0].generalShader = missShader.get();
+    result = ValidateRHIRayTracingPipelineDesc(missingRayGenDesc);
+    EXPECT_FALSE(result.valid);
+    EXPECT_STREQ(result.message, "ray tracing pipeline requires a ray-generation shader group");
+
+    RHIRayTracingPipelineDesc pollutedGeneralDesc = baseDesc;
+    pollutedGeneralDesc.shaderGroups[0].closestHitShader = closestHitShader.get();
+    result = ValidateRHIRayTracingPipelineDesc(pollutedGeneralDesc);
+    EXPECT_FALSE(result.valid);
+    EXPECT_STREQ(result.message, "general shader group cannot include hit shaders");
+
+    RHIRayTracingShaderGroupDesc triangleGroup;
+    triangleGroup.type = RHIRayTracingShaderGroupType::TrianglesHitGroup;
+    triangleGroup.closestHitShader = closestHitShader.get();
+
+    RHIRayTracingPipelineDesc triangleDesc = baseDesc;
+    triangleDesc.shaderGroups.push_back(triangleGroup);
+    EXPECT_TRUE(ValidateRHIRayTracingPipelineDesc(triangleDesc));
+
+    RHIRayTracingPipelineDesc invalidTriangleDesc = triangleDesc;
+    invalidTriangleDesc.shaderGroups[1].intersectionShader = intersectionShader.get();
+    result = ValidateRHIRayTracingPipelineDesc(invalidTriangleDesc);
+    EXPECT_FALSE(result.valid);
+    EXPECT_STREQ(result.message, "triangle hit group cannot include general or intersection shaders");
+
+    invalidTriangleDesc = triangleDesc;
+    invalidTriangleDesc.shaderGroups[1].closestHitShader = pixelShader.get();
+    result = ValidateRHIRayTracingPipelineDesc(invalidTriangleDesc);
+    EXPECT_FALSE(result.valid);
+    EXPECT_STREQ(result.message, "triangle hit group closest-hit shader has the wrong stage");
+
+    RHIRayTracingShaderGroupDesc proceduralGroup;
+    proceduralGroup.type = RHIRayTracingShaderGroupType::ProceduralHitGroup;
+    proceduralGroup.intersectionShader = intersectionShader.get();
+    proceduralGroup.anyHitShader = anyHitShader.get();
+
+    RHIRayTracingPipelineDesc proceduralDesc = baseDesc;
+    proceduralDesc.shaderGroups.push_back(proceduralGroup);
+    EXPECT_TRUE(ValidateRHIRayTracingPipelineDesc(proceduralDesc));
+
+    RHIRayTracingPipelineDesc invalidProceduralDesc = proceduralDesc;
+    invalidProceduralDesc.shaderGroups[1].generalShader = rayGenerationShader.get();
+    result = ValidateRHIRayTracingPipelineDesc(invalidProceduralDesc);
+    EXPECT_FALSE(result.valid);
+    EXPECT_STREQ(result.message, "procedural hit group cannot include a general shader");
+
+    invalidProceduralDesc = proceduralDesc;
+    invalidProceduralDesc.shaderGroups[1].anyHitShader = pixelShader.get();
+    result = ValidateRHIRayTracingPipelineDesc(invalidProceduralDesc);
+    EXPECT_FALSE(result.valid);
+    EXPECT_STREQ(result.message, "procedural hit group any-hit shader has the wrong stage");
+
+    invalidProceduralDesc = proceduralDesc;
+    invalidProceduralDesc.shaderGroups[1].type = static_cast<RHIRayTracingShaderGroupType>(0xFFu);
+    result = ValidateRHIRayTracingPipelineDesc(invalidProceduralDesc);
+    EXPECT_FALSE(result.valid);
+    EXPECT_STREQ(result.message, "ray tracing pipeline shader group has an invalid type");
+
+    RHIRayTracingPipelineDesc emptyExportNameDesc = baseDesc;
+    emptyExportNameDesc.shaderGroups[0].exportName = "";
+    result = ValidateRHIRayTracingPipelineDesc(emptyExportNameDesc);
+    EXPECT_FALSE(result.valid);
+    EXPECT_STREQ(result.message, "ray tracing pipeline shader group export name cannot be empty");
+
+    RHIRayTracingPipelineDesc duplicateExportDesc = triangleDesc;
+    duplicateExportDesc.shaderGroups[0].exportName = "SharedGroup";
+    duplicateExportDesc.shaderGroups[1].exportName = "SharedGroup";
+    result = ValidateRHIRayTracingPipelineDesc(duplicateExportDesc);
+    EXPECT_FALSE(result.valid);
+    EXPECT_STREQ(result.message, "ray tracing pipeline shader exports must be unique");
+
+    RHIRayTracingPipelineDesc importCollisionDesc = triangleDesc;
+    importCollisionDesc.shaderGroups[0].exportName = "ShadowHit_ClosestHit";
+    importCollisionDesc.shaderGroups[1].exportName = "ShadowHit";
+    result = ValidateRHIRayTracingPipelineDesc(importCollisionDesc);
+    EXPECT_FALSE(result.valid);
+    EXPECT_STREQ(result.message, "ray tracing pipeline shader exports must be unique");
+}
+
 TEST_F(RenderPassValidationFixture, ShadowPassReportsSupportedWithDepthPipelineAndResources)
 {
     ASSERT_NO_FATAL_FAILURE(Initialize());
@@ -889,6 +1342,823 @@ TEST_F(RenderPassValidationFixture, ShadowPassReportsSupportedWithDepthPipelineA
     pipelineCache.m_depthOnlyVertexShader.Reset();
     EXPECT_FALSE(pass.IsSupported());
     EXPECT_FALSE(pass.GetUnsupportedReason().empty());
+}
+
+TEST_F(RenderPassValidationFixture, RayTracedShadowPassRuntimeCreatesDescriptorSetAndDispatchesRays)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+
+    RayTracingSceneManager rayTracingScene;
+    ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(device, gpuResources, scene, rayTracingScene));
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
+    depthDesc.debugName = "RayTracedShadowRuntimeDepth";
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    ASSERT_TRUE(depthTexture);
+    view.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+    view.aspectRatio = 1.0f;
+    view.fieldOfView = 1.0472f;
+    view.nearPlane = 0.1f;
+    view.farPlane = 100.0f;
+    view.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+    view.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    view.viewMatrix = Mat4Identity();
+    view.projectionMatrix = Mat4Identity();
+    view.viewProjectionMatrix = Mat4Identity();
+    view.inverseViewMatrix = Mat4Identity();
+    view.inverseProjectionMatrix = Mat4Identity();
+    view.previousViewProjectionMatrix = Mat4Identity();
+    view.resetTemporalHistory = false;
+
+    RayTracedShadowPass pass;
+    pass.SetEnabled(true);
+    pass.OnAdd(&device);
+    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    pass.SetRayTracingScene(&rayTracingScene);
+    pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    pass.AddToGraph(graph, view);
+    graph.Compile();
+    EXPECT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.dispatchRaysCount, 1u);
+    EXPECT_TRUE(ctx.lastDispatchRaysValidation.valid) << ctx.lastDispatchRaysValidation.message;
+    EXPECT_EQ(ctx.lastDispatchRaysDesc.width, 64u);
+    EXPECT_EQ(ctx.lastDispatchRaysDesc.height, 64u);
+    ASSERT_FALSE(ctx.pipelineSequence.empty());
+    EXPECT_EQ(ctx.pipelineSequence.back(), pipelineCache.GetRayTracedShadowPipeline());
+    EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
+                            [](uint32 set) { return set == 0; }));
+    ExpectCommandBefore(ctx, "SetPipeline", "DispatchRays");
+    ExpectCommandBefore(ctx, "SetDescriptorSet", "DispatchRays");
+
+    const RayTracedShadowPassStats& stats = pass.GetStats();
+    EXPECT_TRUE(stats.outputDeclared);
+    EXPECT_TRUE(stats.resourceViewsAvailable);
+    EXPECT_TRUE(stats.descriptorSetAvailable);
+    EXPECT_TRUE(stats.constantsUploaded);
+    EXPECT_TRUE(stats.dispatchRecorded);
+    EXPECT_TRUE(stats.historyAvailable);
+    EXPECT_EQ(stats.dispatchPixelCount, 64u * 64u);
+}
+
+TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedMaterialTextureTable)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+
+    constexpr uint32 kMaterialTextureLimit = RTShadowBindings::RVX_RT_SHADOW_MAX_MATERIAL_TEXTURES;
+    constexpr uint32 kTextureCount = kMaterialTextureLimit + 1;
+
+    RenderScene oversizedScene;
+    std::vector<std::unique_ptr<Resource::MaterialResource>> materials;
+    std::vector<Resource::TextureHandle> textures;
+    std::vector<uint32_t> visibleObjectIndices;
+    materials.reserve(kTextureCount);
+    textures.reserve(kTextureCount);
+    visibleObjectIndices.reserve(kTextureCount);
+
+    for (uint32 i = 0; i < kTextureCount; ++i)
+    {
+        Resource::TextureHandle albedo = CreateTextureResource(11000 + i);
+        albedo->SetName("RayTracedShadowMaterialOverflowTexture");
+        gpuResources.UploadImmediate(albedo.Get());
+        ASSERT_TRUE(gpuResources.IsGPUReady(albedo.GetId()));
+
+        auto material = std::make_unique<Resource::MaterialResource>();
+        material->SetId(12000 + i);
+        material->SetName("RayTracedShadowMaterialOverflowMaterial");
+        auto materialData = std::make_shared<Material>("RayTracedShadowMaterialOverflowMaterial");
+        materialData->SetBaseColorTexture(
+            TextureInfo("shadow_material_overflow_albedo_" + std::to_string(i) + ".png", 0));
+        material->SetMaterialData(materialData);
+        material->SetTexture("albedo", albedo);
+
+        RenderObject object = MakeRenderObject(*meshResource);
+        object.entityId = 13000 + i;
+        object.materialIds = {material->GetId()};
+        object.materialResources = {material.get()};
+        oversizedScene.AddObject(object);
+        visibleObjectIndices.push_back(i);
+
+        textures.push_back(albedo);
+        materials.push_back(std::move(material));
+    }
+
+    RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(
+        oversizedScene,
+        visibleObjectIndices,
+        gpuResources);
+    ASSERT_TRUE(plan.HasWork());
+    ASSERT_EQ(plan.instances.size(), kTextureCount);
+
+    RayTracingSceneManager rayTracingScene;
+    rayTracingScene.Initialize(&device);
+    ASSERT_TRUE(rayTracingScene.IsSupported());
+    ASSERT_TRUE(rayTracingScene.Prepare(plan)) << rayTracingScene.GetStats().fallbackReason;
+    ASSERT_EQ(rayTracingScene.GetInstanceMaterialTextureTable().size(), kTextureCount);
+
+    RayTracedShadowPass pass;
+    pass.SetEnabled(true);
+    pass.OnAdd(&device);
+    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    pass.SetRayTracingScene(&rayTracingScene);
+    pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_EQ(pass.GetUnsupportedReason(),
+              "Ray tracing material texture table exceeds the supported descriptor count");
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    pass.AddToGraph(graph, view);
+
+    const RayTracedShadowPassStats& stats = pass.GetStats();
+    EXPECT_FALSE(stats.supported);
+    EXPECT_EQ(stats.materialTextureCount, kMaterialTextureLimit);
+    EXPECT_FALSE(stats.materialTextureTableAvailable);
+    EXPECT_TRUE(stats.alphaTextureTableAvailable);
+    EXPECT_TRUE(stats.alphaGeometryTableAvailable);
+    EXPECT_FALSE(stats.outputDeclared);
+}
+
+TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaTextureTable)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+
+    constexpr uint32 kAlphaTextureLimit = RTShadowBindings::RVX_RT_SHADOW_MAX_ALPHA_TEXTURES;
+    constexpr uint32 kTextureCount = kAlphaTextureLimit + 1;
+
+    RenderScene oversizedScene;
+    std::vector<std::unique_ptr<Resource::MaterialResource>> materials;
+    std::vector<Resource::TextureHandle> textures;
+    std::vector<uint32_t> visibleObjectIndices;
+    materials.reserve(kTextureCount);
+    textures.reserve(kTextureCount);
+    visibleObjectIndices.reserve(kTextureCount);
+
+    for (uint32 i = 0; i < kTextureCount; ++i)
+    {
+        Resource::TextureHandle albedo = CreateTextureResource(14000 + i);
+        albedo->SetName("RayTracedShadowAlphaOverflowTexture");
+        gpuResources.UploadImmediate(albedo.Get());
+        ASSERT_TRUE(gpuResources.IsGPUReady(albedo.GetId()));
+
+        auto material = std::make_unique<Resource::MaterialResource>();
+        material->SetId(15000 + i);
+        material->SetName("RayTracedShadowAlphaOverflowMaterial");
+        auto materialData = std::make_shared<Material>("RayTracedShadowAlphaOverflowMaterial");
+        materialData->SetAlphaMode(Material::AlphaMode::Mask);
+        materialData->SetBaseColorTexture(
+            TextureInfo("shadow_alpha_overflow_albedo_" + std::to_string(i) + ".png", 0));
+        material->SetMaterialData(materialData);
+        material->SetTexture("albedo", albedo);
+
+        RenderObject object = MakeRenderObject(*meshResource);
+        object.entityId = 16000 + i;
+        object.materialIds = {material->GetId()};
+        object.materialResources = {material.get()};
+        oversizedScene.AddObject(object);
+        visibleObjectIndices.push_back(i);
+
+        textures.push_back(albedo);
+        materials.push_back(std::move(material));
+    }
+
+    RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(
+        oversizedScene,
+        visibleObjectIndices,
+        gpuResources);
+    ASSERT_TRUE(plan.HasWork());
+    ASSERT_EQ(plan.instances.size(), kTextureCount);
+
+    RayTracingSceneManager rayTracingScene;
+    rayTracingScene.Initialize(&device);
+    ASSERT_TRUE(rayTracingScene.IsSupported());
+    ASSERT_TRUE(rayTracingScene.Prepare(plan)) << rayTracingScene.GetStats().fallbackReason;
+    ASSERT_EQ(rayTracingScene.GetInstanceAlphaTextureTable().size(), kTextureCount);
+
+    RayTracedShadowPass pass;
+    pass.SetEnabled(true);
+    pass.OnAdd(&device);
+    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    pass.SetRayTracingScene(&rayTracingScene);
+    pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_EQ(pass.GetUnsupportedReason(),
+              "Ray tracing alpha texture table exceeds the supported descriptor count");
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    pass.AddToGraph(graph, view);
+
+    const RayTracedShadowPassStats& stats = pass.GetStats();
+    EXPECT_FALSE(stats.supported);
+    EXPECT_TRUE(stats.materialTextureTableAvailable);
+    EXPECT_EQ(stats.alphaTextureCount, kAlphaTextureLimit);
+    EXPECT_FALSE(stats.alphaTextureTableAvailable);
+    EXPECT_TRUE(stats.alphaGeometryTableAvailable);
+    EXPECT_FALSE(stats.outputDeclared);
+}
+
+TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaGeometryBufferTable)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+
+    constexpr uint32 kAlphaGeometryBufferLimit = RTShadowBindings::RVX_RT_SHADOW_MAX_ALPHA_GEOMETRY_BUFFERS;
+    constexpr uint32 kMeshCount = kAlphaGeometryBufferLimit + 1;
+
+    auto material = std::make_unique<Resource::MaterialResource>();
+    material->SetId(17000);
+    material->SetName("RayTracedShadowAlphaGeometryOverflowMaterial");
+    auto materialData = std::make_shared<Material>("RayTracedShadowAlphaGeometryOverflowMaterial");
+    materialData->SetAlphaMode(Material::AlphaMode::Mask);
+    material->SetMaterialData(materialData);
+
+    RenderScene oversizedScene;
+    std::vector<std::unique_ptr<Resource::MeshResource>> meshes;
+    std::vector<uint32_t> visibleObjectIndices;
+    meshes.reserve(kMeshCount);
+    visibleObjectIndices.reserve(kMeshCount);
+
+    for (uint32 i = 0; i < kMeshCount; ++i)
+    {
+        auto mesh = CreateMeshResource(18000 + i);
+        gpuResources.UploadImmediate(mesh.get());
+        ASSERT_TRUE(gpuResources.IsGPUReady(mesh->GetId()));
+
+        RenderObject object = MakeRenderObject(*mesh);
+        object.entityId = 19000 + i;
+        object.materialIds = {material->GetId()};
+        object.materialResources = {material.get()};
+        oversizedScene.AddObject(object);
+        visibleObjectIndices.push_back(i);
+
+        meshes.push_back(std::move(mesh));
+    }
+
+    RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(
+        oversizedScene,
+        visibleObjectIndices,
+        gpuResources);
+    ASSERT_TRUE(plan.HasWork());
+    ASSERT_EQ(plan.instances.size(), kMeshCount);
+    ASSERT_EQ(plan.blasBuilds.size(), kMeshCount);
+
+    RayTracingSceneManager rayTracingScene;
+    rayTracingScene.Initialize(&device);
+    ASSERT_TRUE(rayTracingScene.IsSupported());
+    ASSERT_TRUE(rayTracingScene.Prepare(plan)) << rayTracingScene.GetStats().fallbackReason;
+    ASSERT_EQ(rayTracingScene.GetInstanceAlphaIndexBufferTable().size(), kMeshCount);
+    ASSERT_EQ(rayTracingScene.GetInstanceAlphaUVBufferTable().size(), kMeshCount);
+
+    RayTracedShadowPass pass;
+    pass.SetEnabled(true);
+    pass.OnAdd(&device);
+    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    pass.SetRayTracingScene(&rayTracingScene);
+    pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_EQ(pass.GetUnsupportedReason(),
+              "Ray tracing alpha geometry buffer table exceeds the supported descriptor count");
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    pass.AddToGraph(graph, view);
+
+    const RayTracedShadowPassStats& stats = pass.GetStats();
+    EXPECT_FALSE(stats.supported);
+    EXPECT_TRUE(stats.materialTextureTableAvailable);
+    EXPECT_TRUE(stats.alphaTextureTableAvailable);
+    EXPECT_EQ(stats.alphaIndexBufferCount, kAlphaGeometryBufferLimit);
+    EXPECT_EQ(stats.alphaUVBufferCount, kAlphaGeometryBufferLimit);
+    EXPECT_FALSE(stats.alphaGeometryTableAvailable);
+    EXPECT_FALSE(stats.outputDeclared);
+}
+
+TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRuntimeCreatesDescriptorSetAndDispatchesRays)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+
+    RayTracingSceneManager rayTracingScene;
+    ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(device, gpuResources, scene, rayTracingScene));
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
+    colorDesc.debugName = "RayTracedReflectionRuntimeColor";
+    RHITextureRef sceneColorTexture = device.CreateTexture(colorDesc);
+    ASSERT_TRUE(sceneColorTexture);
+    view.colorTarget = graph.ImportTexture(sceneColorTexture.Get(), RHIResourceState::ShaderResource);
+
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
+    depthDesc.debugName = "RayTracedReflectionRuntimeDepth";
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    ASSERT_TRUE(depthTexture);
+    view.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+    view.aspectRatio = 1.0f;
+    view.fieldOfView = 1.0472f;
+    view.nearPlane = 0.1f;
+    view.farPlane = 100.0f;
+    view.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+    view.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    view.viewMatrix = Mat4Identity();
+    view.projectionMatrix = Mat4Identity();
+    view.viewProjectionMatrix = Mat4Identity();
+    view.inverseViewMatrix = Mat4Identity();
+    view.inverseProjectionMatrix = Mat4Identity();
+    view.previousViewProjectionMatrix = Mat4Identity();
+    view.resetTemporalHistory = false;
+
+    RayTracedReflectionPass pass;
+    pass.SetEnabled(true);
+    pass.OnAdd(&device);
+    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    pass.SetRayTracingScene(&rayTracingScene);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    pass.AddToGraph(graph, view);
+    graph.Compile();
+    EXPECT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.dispatchRaysCount, 1u);
+    EXPECT_TRUE(ctx.lastDispatchRaysValidation.valid) << ctx.lastDispatchRaysValidation.message;
+    EXPECT_EQ(ctx.lastDispatchRaysDesc.width, 64u);
+    EXPECT_EQ(ctx.lastDispatchRaysDesc.height, 64u);
+    ASSERT_FALSE(ctx.pipelineSequence.empty());
+    EXPECT_EQ(ctx.pipelineSequence.back(), pipelineCache.GetRayTracedReflectionPipeline());
+    EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
+                            [](uint32 set) { return set == 0; }));
+    ExpectCommandBefore(ctx, "SetPipeline", "DispatchRays");
+    ExpectCommandBefore(ctx, "SetDescriptorSet", "DispatchRays");
+
+    const RayTracedReflectionPassStats& stats = pass.GetStats();
+    EXPECT_TRUE(stats.outputDeclared);
+    EXPECT_TRUE(stats.resourceViewsAvailable);
+    EXPECT_TRUE(stats.descriptorSetAvailable);
+    EXPECT_TRUE(stats.constantsUploaded);
+    EXPECT_TRUE(stats.dispatchRecorded);
+    EXPECT_TRUE(stats.historyAvailable);
+    EXPECT_EQ(stats.dispatchPixelCount, 64u * 64u);
+}
+
+TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRejectsOversizedMaterialTextureTable)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+
+    constexpr uint32 kMaterialTextureLimit = RTReflectionBindings::RVX_RT_REFLECTION_MAX_MATERIAL_TEXTURES;
+    constexpr uint32 kTextureCount = kMaterialTextureLimit + 1;
+
+    RenderScene oversizedScene;
+    std::vector<std::unique_ptr<Resource::MaterialResource>> materials;
+    std::vector<Resource::TextureHandle> textures;
+    std::vector<uint32_t> visibleObjectIndices;
+    materials.reserve(kTextureCount);
+    textures.reserve(kTextureCount);
+    visibleObjectIndices.reserve(kTextureCount);
+
+    for (uint32 i = 0; i < kTextureCount; ++i)
+    {
+        Resource::TextureHandle albedo = CreateTextureResource(6000 + i);
+        albedo->SetName("RayTracedReflectionOverflowTexture");
+        gpuResources.UploadImmediate(albedo.Get());
+        ASSERT_TRUE(gpuResources.IsGPUReady(albedo.GetId()));
+
+        auto material = std::make_unique<Resource::MaterialResource>();
+        material->SetId(7000 + i);
+        material->SetName("RayTracedReflectionOverflowMaterial");
+        auto materialData = std::make_shared<Material>("RayTracedReflectionOverflowMaterial");
+        TextureInfo baseColorTexture("reflection_overflow_albedo_" + std::to_string(i) + ".png", 0);
+        baseColorTexture.offset = Vec2(static_cast<float>(i) * 0.001f, 0.0f);
+        materialData->SetBaseColorTexture(baseColorTexture);
+        material->SetMaterialData(materialData);
+        material->SetTexture("albedo", albedo);
+
+        RenderObject object = MakeRenderObject(*meshResource);
+        object.entityId = 8000 + i;
+        object.materialIds = {material->GetId()};
+        object.materialResources = {material.get()};
+        oversizedScene.AddObject(object);
+        visibleObjectIndices.push_back(i);
+
+        textures.push_back(albedo);
+        materials.push_back(std::move(material));
+    }
+
+    RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(
+        oversizedScene,
+        visibleObjectIndices,
+        gpuResources);
+    ASSERT_TRUE(plan.HasWork());
+    ASSERT_EQ(plan.instances.size(), kTextureCount);
+
+    RayTracingSceneManager rayTracingScene;
+    rayTracingScene.Initialize(&device);
+    ASSERT_TRUE(rayTracingScene.IsSupported());
+    ASSERT_TRUE(rayTracingScene.Prepare(plan)) << rayTracingScene.GetStats().fallbackReason;
+    ASSERT_EQ(rayTracingScene.GetInstanceMaterialTextureTable().size(), kTextureCount);
+    EXPECT_EQ(rayTracingScene.GetStats().materialTextureCount, kTextureCount);
+
+    RayTracedReflectionPass pass;
+    pass.SetEnabled(true);
+    pass.OnAdd(&device);
+    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    pass.SetRayTracingScene(&rayTracingScene);
+
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_EQ(pass.GetUnsupportedReason(),
+              "Ray tracing material texture table exceeds the supported descriptor count");
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    pass.AddToGraph(graph, view);
+
+    const RayTracedReflectionPassStats& stats = pass.GetStats();
+    EXPECT_FALSE(stats.supported);
+    EXPECT_EQ(stats.materialTextureCount, kMaterialTextureLimit);
+    EXPECT_FALSE(stats.materialTextureTableAvailable);
+    EXPECT_TRUE(stats.geometryTableAvailable);
+    EXPECT_FALSE(stats.outputDeclared);
+}
+
+TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRejectsOversizedGeometryBufferTable)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+
+    constexpr uint32 kGeometryBufferLimit = RTReflectionBindings::RVX_RT_REFLECTION_MAX_GEOMETRY_BUFFERS;
+    constexpr uint32 kMeshCount = kGeometryBufferLimit + 1;
+
+    RenderScene oversizedScene;
+    std::vector<std::unique_ptr<Resource::MeshResource>> meshes;
+    std::vector<uint32_t> visibleObjectIndices;
+    meshes.reserve(kMeshCount);
+    visibleObjectIndices.reserve(kMeshCount);
+
+    for (uint32 i = 0; i < kMeshCount; ++i)
+    {
+        auto mesh = CreateMeshResource(9000 + i);
+        gpuResources.UploadImmediate(mesh.get());
+        ASSERT_TRUE(gpuResources.IsGPUReady(mesh->GetId()));
+
+        RenderObject object = MakeRenderObject(*mesh);
+        object.entityId = 10000 + i;
+        oversizedScene.AddObject(object);
+        visibleObjectIndices.push_back(i);
+
+        meshes.push_back(std::move(mesh));
+    }
+
+    RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(
+        oversizedScene,
+        visibleObjectIndices,
+        gpuResources);
+    ASSERT_TRUE(plan.HasWork());
+    ASSERT_EQ(plan.instances.size(), kMeshCount);
+    ASSERT_EQ(plan.blasBuilds.size(), kMeshCount);
+
+    RayTracingSceneManager rayTracingScene;
+    rayTracingScene.Initialize(&device);
+    ASSERT_TRUE(rayTracingScene.IsSupported());
+    ASSERT_TRUE(rayTracingScene.Prepare(plan)) << rayTracingScene.GetStats().fallbackReason;
+    ASSERT_EQ(rayTracingScene.GetInstanceAlphaIndexBufferTable().size(), kMeshCount);
+    EXPECT_EQ(rayTracingScene.GetStats().alphaIndexBufferCount, kMeshCount);
+
+    RayTracedReflectionPass pass;
+    pass.SetEnabled(true);
+    pass.OnAdd(&device);
+    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    pass.SetRayTracingScene(&rayTracingScene);
+
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_EQ(pass.GetUnsupportedReason(),
+              "Ray tracing geometry buffer table exceeds the supported descriptor count");
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    pass.AddToGraph(graph, view);
+
+    const RayTracedReflectionPassStats& stats = pass.GetStats();
+    EXPECT_FALSE(stats.supported);
+    EXPECT_TRUE(stats.materialTextureTableAvailable);
+    EXPECT_EQ(stats.geometryIndexBufferCount, kGeometryBufferLimit);
+    EXPECT_FALSE(stats.geometryTableAvailable);
+    EXPECT_FALSE(stats.outputDeclared);
+}
+
+TEST_F(RenderPassValidationFixture, RayTracedReflectionRenderGraphChainDenoisesBeforeComposite)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+
+    RayTracingSceneManager rayTracingScene;
+    ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(device, gpuResources, scene, rayTracingScene));
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
+    colorDesc.debugName = "RayTracedReflectionChainColor";
+    RHITextureRef sceneColorTexture = device.CreateTexture(colorDesc);
+    ASSERT_TRUE(sceneColorTexture);
+    view.colorTarget = graph.ImportTexture(sceneColorTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(view.colorTarget, RHIResourceState::RenderTarget);
+
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
+    depthDesc.debugName = "RayTracedReflectionChainDepth";
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    ASSERT_TRUE(depthTexture);
+    view.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+    graph.SetExportState(view.depthTarget, RHIResourceState::DepthRead);
+
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+    view.aspectRatio = 1.0f;
+    view.fieldOfView = 1.0472f;
+    view.nearPlane = 0.1f;
+    view.farPlane = 100.0f;
+    view.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+    view.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    view.viewMatrix = Mat4Identity();
+    view.projectionMatrix = Mat4Identity();
+    view.viewProjectionMatrix = Mat4Identity();
+    view.inverseViewMatrix = Mat4Identity();
+    view.inverseProjectionMatrix = Mat4Identity();
+    view.previousViewProjectionMatrix = Mat4Identity();
+    view.resetTemporalHistory = false;
+
+    RayTracedReflectionPass reflectionPass;
+    reflectionPass.SetEnabled(true);
+    reflectionPass.OnAdd(&device);
+    reflectionPass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    reflectionPass.SetRayTracingScene(&rayTracingScene);
+
+    RayTracedReflectionDenoisePass denoisePass;
+    denoisePass.SetEnabled(true);
+    denoisePass.OnAdd(&device);
+    denoisePass.SetResources(&pipelineCache, &viewCache);
+    denoisePass.SetReflectionSource(&reflectionPass);
+
+    RayTracedReflectionCompositePass compositePass;
+    compositePass.SetEnabled(true);
+    compositePass.OnAdd(&device);
+    compositePass.SetResources(&pipelineCache, &viewCache);
+    compositePass.SetReflectionSource(&reflectionPass);
+    compositePass.SetDenoisedReflectionSource(&denoisePass);
+
+    EXPECT_LT(reflectionPass.GetPriority(), denoisePass.GetPriority());
+    EXPECT_LT(denoisePass.GetPriority(), compositePass.GetPriority());
+    ASSERT_TRUE(reflectionPass.IsSupported()) << reflectionPass.GetUnsupportedReason();
+    ASSERT_TRUE(denoisePass.IsSupported()) << denoisePass.GetUnsupportedReason();
+    ASSERT_TRUE(compositePass.IsSupported()) << compositePass.GetUnsupportedReason();
+
+    reflectionPass.AddToGraph(graph, view);
+    denoisePass.AddToGraph(graph, view);
+    compositePass.AddToGraph(graph, view);
+
+    const RayTracedReflectionPassStats& reflectionSetupStats = reflectionPass.GetStats();
+    const RayTracedReflectionDenoisePassStats& denoiseSetupStats = denoisePass.GetStats();
+    const RayTracedReflectionCompositePassStats& compositeSetupStats = compositePass.GetStats();
+    EXPECT_TRUE(reflectionSetupStats.outputDeclared);
+    EXPECT_TRUE(denoiseSetupStats.outputDeclared);
+    EXPECT_TRUE(denoiseSetupStats.reflectionHandleAvailable);
+    EXPECT_TRUE(denoiseSetupStats.normalGuideAvailable);
+    EXPECT_TRUE(compositeSetupStats.outputDeclared);
+    EXPECT_TRUE(compositeSetupStats.denoisedSourceUsed);
+    EXPECT_FALSE(compositeSetupStats.rawSourceUsed);
+    EXPECT_FALSE(compositeSetupStats.denoiseFallbackToRaw);
+    EXPECT_EQ(compositeSetupStats.source, RayTracedReflectionCompositeSource::DenoisedReflection);
+
+    graph.Compile();
+    EXPECT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 3u);
+    EXPECT_EQ(graph.GetCompileStats().culledPasses, 0u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.dispatchRaysCount, 1u);
+    EXPECT_EQ(ctx.drawCount, 2u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 2u);
+    EXPECT_EQ(ctx.endRenderPassCount, 2u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(3));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetRayTracedReflectionPipeline());
+    EXPECT_EQ(ctx.pipelineSequence[1], pipelineCache.GetRayTracedReflectionDenoisePipeline(RHIFormat::RGBA16_FLOAT));
+    EXPECT_EQ(ctx.pipelineSequence[2], pipelineCache.GetRayTracedReflectionCompositePipeline(RHIFormat::RGBA16_FLOAT));
+    ExpectCommandBefore(ctx, "DispatchRays", "Draw");
+
+    const RayTracedReflectionPassStats& reflectionStats = reflectionPass.GetStats();
+    const RayTracedReflectionDenoisePassStats& denoiseStats = denoisePass.GetStats();
+    const RayTracedReflectionCompositePassStats& compositeStats = compositePass.GetStats();
+    EXPECT_TRUE(reflectionStats.dispatchRecorded);
+    EXPECT_TRUE(denoiseStats.denoiseRecorded);
+    EXPECT_TRUE(compositeStats.compositeRecorded);
+    EXPECT_TRUE(compositeStats.denoisedSourceUsed);
+    EXPECT_EQ(compositeStats.source, RayTracedReflectionCompositeSource::DenoisedReflection);
+}
+TEST_F(RenderPassValidationFixture, RayTracedShadowPassReusesHistoryAcrossStableFrames)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+
+    RayTracingSceneManager rayTracingScene;
+    ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(device, gpuResources, scene, rayTracingScene));
+
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
+    depthDesc.debugName = "RayTracedShadowStableHistoryDepth";
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    ASSERT_TRUE(depthTexture);
+
+    RayTracedShadowPass pass;
+    pass.SetEnabled(true);
+    pass.OnAdd(&device);
+    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    pass.SetRayTracingScene(&rayTracingScene);
+    pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    auto runFrame = [&](uint64 frameNumber, RecordingCommandContext& ctx)
+    {
+        RenderGraph graph;
+        graph.SetDevice(&device);
+
+        ViewData frameView;
+        frameView.renderGraph = &graph;
+        frameView.viewCache = &viewCache;
+        frameView.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+        frameView.viewportWidth = 64;
+        frameView.viewportHeight = 64;
+        frameView.aspectRatio = 1.0f;
+        frameView.fieldOfView = 1.0472f;
+        frameView.nearPlane = 0.1f;
+        frameView.farPlane = 100.0f;
+        frameView.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+        frameView.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+        frameView.viewMatrix = Mat4Identity();
+        frameView.projectionMatrix = Mat4Identity();
+        frameView.viewProjectionMatrix = Mat4Identity();
+        frameView.inverseViewMatrix = Mat4Identity();
+        frameView.inverseProjectionMatrix = Mat4Identity();
+        frameView.previousViewProjectionMatrix = Mat4Identity();
+        frameView.frameNumber = frameNumber;
+        frameView.resetTemporalHistory = false;
+
+        pass.AddToGraph(graph, frameView);
+        graph.Compile();
+        EXPECT_TRUE(graph.GetCompileStats().compileValid);
+        EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
+
+        graph.Execute(ctx);
+    };
+
+    RecordingCommandContext firstCtx;
+    runFrame(1, firstCtx);
+    EXPECT_EQ(firstCtx.dispatchRaysCount, 1u);
+    EXPECT_TRUE(firstCtx.lastDispatchRaysValidation.valid) << firstCtx.lastDispatchRaysValidation.message;
+    const RayTracedShadowPassStats firstStats = pass.GetStats();
+    EXPECT_TRUE(firstStats.dispatchRecorded);
+    EXPECT_TRUE(firstStats.historyRecreated);
+    EXPECT_TRUE(firstStats.historyAvailable);
+    EXPECT_FALSE(firstStats.temporalAccumulated);
+    const size_t textureCountAfterFirstFrame = device.createdTextureDescs.size();
+
+    RecordingCommandContext secondCtx;
+    runFrame(2, secondCtx);
+    EXPECT_EQ(secondCtx.dispatchRaysCount, 1u);
+    EXPECT_TRUE(secondCtx.lastDispatchRaysValidation.valid) << secondCtx.lastDispatchRaysValidation.message;
+    const RayTracedShadowPassStats secondStats = pass.GetStats();
+    EXPECT_TRUE(secondStats.dispatchRecorded);
+    EXPECT_TRUE(secondStats.historyAvailable);
+    EXPECT_TRUE(secondStats.depthHistoryAvailable);
+    EXPECT_TRUE(secondStats.normalHistoryAvailable);
+    EXPECT_TRUE(secondStats.temporalAccumulated);
+    EXPECT_FALSE(secondStats.historyRecreated);
+    EXPECT_FALSE(secondStats.historyResolutionChanged);
+    EXPECT_FALSE(secondStats.historyConfigChanged);
+    EXPECT_FALSE(secondStats.historyReset);
+    EXPECT_EQ(device.createdTextureDescs.size(), textureCountAfterFirstFrame);
+}
+
+TEST_F(RenderPassValidationFixture, RayTracedReflectionPassReusesHistoryAcrossStableFrames)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+
+    RayTracingSceneManager rayTracingScene;
+    ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(device, gpuResources, scene, rayTracingScene));
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
+    colorDesc.debugName = "RayTracedReflectionStableHistoryColor";
+    RHITextureRef sceneColorTexture = device.CreateTexture(colorDesc);
+    ASSERT_TRUE(sceneColorTexture);
+
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
+    depthDesc.debugName = "RayTracedReflectionStableHistoryDepth";
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    ASSERT_TRUE(depthTexture);
+
+    RayTracedReflectionPass pass;
+    pass.SetEnabled(true);
+    pass.OnAdd(&device);
+    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    pass.SetRayTracingScene(&rayTracingScene);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    auto runFrame = [&](uint64 frameNumber, RecordingCommandContext& ctx)
+    {
+        RenderGraph graph;
+        graph.SetDevice(&device);
+
+        ViewData frameView;
+        frameView.renderGraph = &graph;
+        frameView.viewCache = &viewCache;
+        frameView.colorTarget = graph.ImportTexture(sceneColorTexture.Get(), RHIResourceState::ShaderResource);
+        frameView.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+        frameView.viewportWidth = 64;
+        frameView.viewportHeight = 64;
+        frameView.aspectRatio = 1.0f;
+        frameView.fieldOfView = 1.0472f;
+        frameView.nearPlane = 0.1f;
+        frameView.farPlane = 100.0f;
+        frameView.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+        frameView.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+        frameView.viewMatrix = Mat4Identity();
+        frameView.projectionMatrix = Mat4Identity();
+        frameView.viewProjectionMatrix = Mat4Identity();
+        frameView.inverseViewMatrix = Mat4Identity();
+        frameView.inverseProjectionMatrix = Mat4Identity();
+        frameView.previousViewProjectionMatrix = Mat4Identity();
+        frameView.frameNumber = frameNumber;
+        frameView.resetTemporalHistory = false;
+
+        pass.AddToGraph(graph, frameView);
+        graph.Compile();
+        EXPECT_TRUE(graph.GetCompileStats().compileValid);
+        EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
+
+        graph.Execute(ctx);
+    };
+
+    RecordingCommandContext firstCtx;
+    runFrame(1, firstCtx);
+    EXPECT_EQ(firstCtx.dispatchRaysCount, 1u);
+    EXPECT_TRUE(firstCtx.lastDispatchRaysValidation.valid) << firstCtx.lastDispatchRaysValidation.message;
+    const RayTracedReflectionPassStats firstStats = pass.GetStats();
+    EXPECT_TRUE(firstStats.dispatchRecorded);
+    EXPECT_TRUE(firstStats.historyRecreated);
+    EXPECT_TRUE(firstStats.historyAvailable);
+    EXPECT_FALSE(firstStats.temporalAccumulated);
+    const size_t textureCountAfterFirstFrame = device.createdTextureDescs.size();
+
+    RecordingCommandContext secondCtx;
+    runFrame(2, secondCtx);
+    EXPECT_EQ(secondCtx.dispatchRaysCount, 1u);
+    EXPECT_TRUE(secondCtx.lastDispatchRaysValidation.valid) << secondCtx.lastDispatchRaysValidation.message;
+    const RayTracedReflectionPassStats secondStats = pass.GetStats();
+    EXPECT_TRUE(secondStats.dispatchRecorded);
+    EXPECT_TRUE(secondStats.historyAvailable);
+    EXPECT_TRUE(secondStats.depthHistoryAvailable);
+    EXPECT_TRUE(secondStats.normalHistoryAvailable);
+    EXPECT_TRUE(secondStats.temporalAccumulated);
+    EXPECT_FALSE(secondStats.historyRecreated);
+    EXPECT_FALSE(secondStats.historyResolutionChanged);
+    EXPECT_FALSE(secondStats.historyConfigChanged);
+    EXPECT_FALSE(secondStats.historyReset);
+    EXPECT_EQ(device.createdTextureDescs.size(), textureCountAfterFirstFrame);
+}
+
+TEST_F(RenderPassValidationFixture, ShadowPassConfigDefaultsToComplementaryRayTracedShadows)
+{
+    ShadowPassConfig config;
+
+    EXPECT_EQ(config.rayTracedShadowMode, RayTracedShadowMode::ComplementRaster);
+    EXPECT_FLOAT_EQ(config.rayTracedHistoryVelocityRejectionScale, 8.0f);
 }
 
 TEST_F(RenderPassValidationFixture, ShadowPassRejectsUnsupportedCascadeCounts)
@@ -1515,6 +2785,247 @@ TEST_F(RenderPassValidationFixture, PostProcessSettingsDefaultToneMappingOperato
     EXPECT_EQ(settings.toneMappingOperator, ToneMappingOperator::ACES);
 }
 
+TEST_F(RenderPassValidationFixture, ViewDataDefaultsKeepTemporalHistoryStable)
+{
+    ViewData defaultView;
+    EXPECT_FALSE(defaultView.resetTemporalHistory);
+    EXPECT_FALSE(defaultView.velocityTarget.IsValid());
+    EXPECT_EQ(defaultView.previousViewProjectionValid, 0);
+
+    RenderObject defaultObject;
+    EXPECT_EQ(defaultObject.previousWorldMatrixValid, 0);
+}
+
+TEST(SceneRendererExternalTargetValidation, ImportsExternalColorAndDepthTargets)
+{
+    FakeDevice device;
+    SceneRenderer renderer;
+    auto graph = std::make_unique<RenderGraph>();
+    graph->SetDevice(&device);
+    renderer.SetRenderGraphForTesting(std::move(graph));
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(96, 64, RHIFormat::RGBA8_UNORM);
+    colorDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHITextureRef colorTarget = device.CreateTexture(colorDesc);
+    ASSERT_TRUE(colorTarget);
+
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(96, 64, PipelineCache::GetDefaultDepthStencilFormat());
+    RHITextureRef depthTarget = device.CreateTexture(depthDesc);
+    ASSERT_TRUE(depthTarget);
+
+    SceneRendererExternalTargetDesc externalTarget;
+    externalTarget.colorTarget = colorTarget.Get();
+    externalTarget.depthTarget = depthTarget.Get();
+    externalTarget.colorInitialState = RHIResourceState::ShaderResource;
+    externalTarget.colorFinalState = RHIResourceState::ShaderResource;
+    externalTarget.depthInitialState = RHIResourceState::DepthRead;
+    externalTarget.depthFinalState = RHIResourceState::DepthRead;
+
+    renderer.SetExternalRenderTarget(externalTarget);
+    renderer.BuildRenderGraphForTesting();
+
+    const SceneRendererExternalTargetStats& stats = renderer.GetExternalRenderTargetStats();
+    EXPECT_TRUE(stats.requested);
+    EXPECT_TRUE(stats.active);
+    EXPECT_TRUE(stats.importedColor);
+    EXPECT_TRUE(stats.importedDepth);
+    EXPECT_EQ(stats.width, 96u);
+    EXPECT_EQ(stats.height, 64u);
+    EXPECT_EQ(stats.colorFormat, RHIFormat::RGBA8_UNORM);
+    EXPECT_EQ(stats.depthFormat, PipelineCache::GetDefaultDepthStencilFormat());
+    EXPECT_EQ(stats.colorFinalState, RHIResourceState::ShaderResource);
+    EXPECT_EQ(stats.depthFinalState, RHIResourceState::DepthRead);
+    EXPECT_TRUE(stats.fallbackReason.empty());
+
+    EXPECT_EQ(renderer.GetViewData().viewportWidth, 96u);
+    EXPECT_EQ(renderer.GetViewData().viewportHeight, 64u);
+    EXPECT_EQ(renderer.GetRenderGraph()->GetTexture(renderer.GetViewData().colorTarget), colorTarget.Get());
+    EXPECT_EQ(renderer.GetRenderGraph()->GetTexture(renderer.GetViewData().depthTarget), depthTarget.Get());
+    EXPECT_EQ(renderer.GetPostProcessStats().backBufferFormat, RHIFormat::RGBA8_UNORM);
+    EXPECT_EQ(renderer.GetPostProcessStats().toneMappingOutputColorSpace, ToneMappingOutputColorSpace::SRGB);
+    EXPECT_EQ(renderer.GetFrameDiagnostics().toneMappingOutputColorSpace, ToneMappingOutputColorSpace::SRGB);
+}
+
+TEST(SceneRendererExternalTargetValidation, InvalidExternalColorTargetFallsBackWithoutImport)
+{
+    FakeDevice device;
+    SceneRenderer renderer;
+    auto graph = std::make_unique<RenderGraph>();
+    graph->SetDevice(&device);
+    renderer.SetRenderGraphForTesting(std::move(graph));
+
+    RHITextureDesc invalidColorDesc = RHITextureDesc::RenderTarget(0, 64, RHIFormat::RGBA8_UNORM);
+    RHITextureRef invalidColorTarget = device.CreateTexture(invalidColorDesc);
+    ASSERT_TRUE(invalidColorTarget);
+
+    SceneRendererExternalTargetDesc externalTarget;
+    externalTarget.colorTarget = invalidColorTarget.Get();
+    renderer.SetExternalRenderTarget(externalTarget);
+    renderer.BuildRenderGraphForTesting();
+
+    const SceneRendererExternalTargetStats& stats = renderer.GetExternalRenderTargetStats();
+    EXPECT_TRUE(stats.requested);
+    EXPECT_FALSE(stats.active);
+    EXPECT_FALSE(stats.importedColor);
+    EXPECT_FALSE(stats.importedDepth);
+    EXPECT_NE(stats.fallbackReason.find("External color target"), std::string::npos);
+    EXPECT_FALSE(renderer.GetViewData().colorTarget.IsValid());
+}
+
+TEST(SceneRendererExternalTargetValidation, FloatExternalTargetKeepsToneMappingOutputLinear)
+{
+    FakeDevice device;
+    SceneRenderer renderer;
+    auto graph = std::make_unique<RenderGraph>();
+    graph->SetDevice(&device);
+    renderer.SetRenderGraphForTesting(std::move(graph));
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(64, 32, RHIFormat::RGBA16_FLOAT);
+    RHITextureRef colorTarget = device.CreateTexture(colorDesc);
+    ASSERT_TRUE(colorTarget);
+
+    SceneRendererExternalTargetDesc externalTarget;
+    externalTarget.colorTarget = colorTarget.Get();
+    externalTarget.colorInitialState = RHIResourceState::ShaderResource;
+    externalTarget.colorFinalState = RHIResourceState::ShaderResource;
+
+    renderer.SetExternalRenderTarget(externalTarget);
+    renderer.BuildRenderGraphForTesting();
+
+    const SceneRenderPostProcessStats& stats = renderer.GetPostProcessStats();
+    EXPECT_EQ(stats.backBufferFormat, RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(stats.toneMappingOutputFormat, RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(stats.toneMappingOutputColorSpace, ToneMappingOutputColorSpace::Linear);
+    EXPECT_EQ(renderer.GetFrameDiagnostics().toneMappingOutputColorSpace, ToneMappingOutputColorSpace::Linear);
+}
+
+TEST(SceneRendererDiagnosticsValidation, AggregatesExternalTargetPassChainAndRenderGraphStats)
+{
+    FakeDevice device;
+    SceneRenderer renderer;
+    auto graph = std::make_unique<RenderGraph>();
+    graph->SetDevice(&device);
+    renderer.SetRenderGraphForTesting(std::move(graph));
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(96, 64, RHIFormat::RGBA8_UNORM);
+    colorDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHITextureRef colorTarget = device.CreateTexture(colorDesc);
+    ASSERT_TRUE(colorTarget);
+
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(96, 64, PipelineCache::GetDefaultDepthStencilFormat());
+    RHITextureRef depthTarget = device.CreateTexture(depthDesc);
+    ASSERT_TRUE(depthTarget);
+
+    SceneRendererExternalTargetDesc externalTarget;
+    externalTarget.colorTarget = colorTarget.Get();
+    externalTarget.depthTarget = depthTarget.Get();
+    externalTarget.colorInitialState = RHIResourceState::ShaderResource;
+    externalTarget.colorFinalState = RHIResourceState::ShaderResource;
+    externalTarget.depthInitialState = RHIResourceState::DepthRead;
+    externalTarget.depthFinalState = RHIResourceState::DepthRead;
+    renderer.SetExternalRenderTarget(externalTarget);
+
+    RenderObject object;
+    object.entityId = 42;
+    renderer.GetRenderScene().AddObject(object);
+
+    RenderLight light;
+    light.type = RenderLight::Type::Directional;
+    renderer.GetRenderScene().AddLight(light);
+
+    renderer.BuildRenderGraphForTesting();
+
+    const SceneRendererFrameDiagnostics& diagnostics = renderer.GetFrameDiagnostics();
+    EXPECT_FALSE(diagnostics.renderAttempted);
+    EXPECT_FALSE(diagnostics.rendered);
+    EXPECT_TRUE(diagnostics.graphBuilt);
+    EXPECT_FALSE(diagnostics.graphCompiled);
+    EXPECT_TRUE(diagnostics.graphCompileValid);
+    EXPECT_TRUE(diagnostics.skippedReason.empty());
+
+    EXPECT_TRUE(diagnostics.externalTargetRequested);
+    EXPECT_TRUE(diagnostics.externalTargetActive);
+    EXPECT_TRUE(diagnostics.externalColorImported);
+    EXPECT_TRUE(diagnostics.externalDepthImported);
+    EXPECT_TRUE(diagnostics.externalTargetFallbackReason.empty());
+
+    EXPECT_EQ(diagnostics.renderSceneObjectCount, static_cast<size_t>(1));
+    EXPECT_EQ(diagnostics.renderSceneLightCount, static_cast<size_t>(1));
+    EXPECT_EQ(diagnostics.registeredPassCount, static_cast<size_t>(0));
+    EXPECT_EQ(diagnostics.graphPassCount, static_cast<size_t>(0));
+    EXPECT_EQ(diagnostics.skippedDisabledPassCount, static_cast<size_t>(0));
+    EXPECT_EQ(diagnostics.skippedUnsupportedPassCount, static_cast<size_t>(0));
+    EXPECT_TRUE(diagnostics.passStatuses.empty());
+    EXPECT_TRUE(diagnostics.graphDiagnostics.empty());
+}
+
+TEST_F(RenderPassValidationFixture, PostProcessSettingsDefaultRayTracedReflectionControlsAreExplicit)
+{
+    PostProcessSettings settings;
+
+    EXPECT_FALSE(settings.enableSSR);
+    EXPECT_FALSE(settings.enableRayTracedReflections);
+    EXPECT_TRUE(settings.enableRayTracedReflectionDenoise);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionIntensity, 1.0f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionResolutionScale, 1.0f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionMaxDistance, 50.0f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionMaxRoughness, 1.0f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionDistanceFadeStart, 0.8f);
+    EXPECT_EQ(settings.rayTracedReflectionInstanceMask, 0xFFu);
+    EXPECT_EQ(settings.rayTracedReflectionSamplesPerPixel, 1u);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionRoughnessConeSpread, 1.0f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionNormalBias, 0.02f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionRayMinT, 0.001f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionFireflyClamp, 64.0f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionTemporalBlendFactor, 0.85f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionHistoryDepthThreshold, 0.01f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionHistoryNormalThreshold, 0.85f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionHistoryLuminanceTolerance, 4.0f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionHistoryConfidenceThreshold, 0.05f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionHistoryVelocityRejectionScale, 8.0f);
+    EXPECT_EQ(settings.rayTracedReflectionDenoiseRadius, 1u);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionDenoiseDepthSigma, 0.01f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionDenoiseNormalThreshold, 0.85f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionDenoiseConfidencePower, 1.0f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionDenoiseCenterWeight, 1.0f);
+    EXPECT_FLOAT_EQ(settings.rayTracedReflectionDenoiseLowConfidenceDepthScale, 4.0f);
+
+    SceneRayTracingBudgetSettings budgetSettings;
+    EXPECT_FALSE(budgetSettings.enabled);
+    EXPECT_EQ(budgetSettings.maxRayCount, 0u);
+    EXPECT_EQ(budgetSettings.maxDenoiseTapCount, 0u);
+    EXPECT_EQ(budgetSettings.maxTrackedResourceBytes, 0u);
+    EXPECT_FLOAT_EQ(budgetSettings.maxMeasuredGpuMs, 0.0f);
+    EXPECT_FLOAT_EQ(budgetSettings.maxShadowMeasuredGpuMs, 0.0f);
+    EXPECT_FLOAT_EQ(budgetSettings.maxReflectionMeasuredGpuMs, 0.0f);
+    EXPECT_FLOAT_EQ(budgetSettings.gpuTimingHysteresis, 0.15f);
+    EXPECT_FLOAT_EQ(budgetSettings.gpuTimingRecoveryRate, 0.05f);
+    EXPECT_EQ(budgetSettings.gpuTimingAdjustmentFrameCount, 2u);
+    EXPECT_FLOAT_EQ(budgetSettings.minReflectionResolutionScale, 0.25f);
+    EXPECT_EQ(budgetSettings.minShadowSamplesPerPixel, 1u);
+    EXPECT_EQ(budgetSettings.minReflectionSamplesPerPixel, 1u);
+    EXPECT_EQ(budgetSettings.minReflectionDenoiseRadius, 0u);
+    EXPECT_EQ(budgetSettings.blasCacheEvictionFrameThreshold, 300u);
+
+    SceneRayTracingFrameStats frameStats;
+    EXPECT_FALSE(frameStats.resourceBudgetExceeded);
+    EXPECT_FALSE(frameStats.resourceBudgetEvictionAttempted);
+    EXPECT_FALSE(frameStats.resourceByteAccountingOverflowed);
+    EXPECT_EQ(frameStats.trackedResourceBudget, 0u);
+    EXPECT_EQ(frameStats.resourceBudgetEvictedBLASCount, 0u);
+    EXPECT_EQ(frameStats.releasedBLASScratchCount, 0u);
+    EXPECT_EQ(frameStats.pendingBLASScratchReleaseCount, 0u);
+    EXPECT_EQ(frameStats.cachedBLASAccelerationStructureBytes, 0u);
+    EXPECT_EQ(frameStats.cachedBLASScratchBytes, 0u);
+    EXPECT_EQ(frameStats.releasedBLASScratchBytes, 0u);
+    EXPECT_EQ(frameStats.topLevelAccelerationStructureBytes, 0u);
+    EXPECT_EQ(frameStats.topLevelScratchBytes, 0u);
+    EXPECT_EQ(frameStats.instanceBufferBytes, 0u);
+    EXPECT_EQ(frameStats.materialMetadataBufferBytes, 0u);
+    EXPECT_EQ(frameStats.alphaMetadataBufferBytes, 0u);
+    EXPECT_EQ(frameStats.totalTrackedResourceBytes, 0u);
+}
+
 TEST_F(RenderPassValidationFixture, ToneMappingConfigureAppliesOperatorFromSettings)
 {
     ToneMappingPass pass;
@@ -1528,6 +3039,21 @@ TEST_F(RenderPassValidationFixture, ToneMappingConfigureAppliesOperatorFromSetti
     settings.toneMappingOperator = ToneMappingOperator::None;
     pass.Configure(settings);
     EXPECT_EQ(pass.GetOperator(), ToneMappingOperator::None);
+}
+
+TEST_F(RenderPassValidationFixture, ToneMappingConfigureAppliesOutputColorSpaceFromSettings)
+{
+    ToneMappingPass pass;
+    PostProcessSettings settings;
+    settings.enableToneMapping = true;
+    settings.toneMappingOutputColorSpace = ToneMappingOutputColorSpace::Linear;
+
+    pass.Configure(settings);
+    EXPECT_EQ(pass.GetOutputColorSpace(), ToneMappingOutputColorSpace::Linear);
+
+    settings.toneMappingOutputColorSpace = ToneMappingOutputColorSpace::SRGB;
+    pass.Configure(settings);
+    EXPECT_EQ(pass.GetOutputColorSpace(), ToneMappingOutputColorSpace::SRGB);
 }
 
 TEST_F(RenderPassValidationFixture, ToneMappingConfigureResolvesManualExposureSettings)
@@ -1607,6 +3133,7 @@ TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscre
     settings.enableToneMapping = true;
     settings.exposure = 1.25f;
     settings.gamma = 2.2f;
+    settings.toneMappingOutputColorSpace = ToneMappingOutputColorSpace::Linear;
     pass.Configure(settings);
     pass.SetResources(&pipelineCache, &viewCache);
 
@@ -1695,6 +3222,20 @@ TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscre
     EXPECT_TRUE(hasBinding(0, true, false, false));
     EXPECT_TRUE(hasBinding(1, false, true, false));
     EXPECT_TRUE(hasBinding(2, false, false, true));
+
+    const FakeBuffer* constants = FindCreatedBuffer(device, "ToneMappingConstants");
+    ASSERT_NE(constants, nullptr);
+    const std::vector<uint8>& storage = constants->GetStorage();
+    ASSERT_GE(storage.size(), static_cast<size_t>(36));
+
+    auto readUInt = [&storage](size_t offset)
+    {
+        uint32 value = 0;
+        std::memcpy(&value, storage.data() + offset, sizeof(value));
+        return value;
+    };
+
+    EXPECT_EQ(readUInt(32), static_cast<uint32>(ToneMappingOutputColorSpace::Linear));
 
     auto descriptorCall = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), "SetDescriptorSet");
     auto drawCall = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), "Draw");
@@ -3203,6 +4744,82 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterCo
     EXPECT_EQ(graphStats.totalPasses, 0u);
 }
 
+TEST_F(RenderPassValidationFixture, PostProcessStackRejectsHDRChainWritingLDROutputWithoutToneMapping)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    PostProcessStack stack;
+    auto* bloom = stack.AddEffect<RecordingPostProcessPass>("Bloom", 100);
+
+    stack.Execute(graph, input, output);
+
+    const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
+    EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
+    EXPECT_NE(executeStats.toneMappingBoundaryWarning.find("requires ToneMapping"), std::string::npos);
+    EXPECT_EQ(executeStats.enabledEffectCount, 1u);
+    EXPECT_EQ(executeStats.graphPassCount, 0u);
+    EXPECT_EQ(executeStats.transientIntermediateCount, 0u);
+    EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
+    EXPECT_EQ(bloom->addToGraphCount, 0u);
+
+    graph.Compile();
+    const auto& graphStats = graph.GetCompileStats();
+    EXPECT_TRUE(graphStats.compileValid);
+    EXPECT_EQ(graphStats.totalPasses, 0u);
+}
+
+TEST_F(RenderPassValidationFixture, PostProcessStackAllowsHDRChainWritingHDROutputWithoutToneMapping)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    PostProcessStack stack;
+    auto* bloom = stack.AddEffect<RecordingPostProcessPass>("Bloom", 100);
+
+    stack.Execute(graph, input, output);
+
+    const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
+    EXPECT_TRUE(executeStats.toneMappingBoundaryValid);
+    EXPECT_TRUE(executeStats.toneMappingBoundaryWarning.empty());
+    EXPECT_EQ(executeStats.enabledEffectCount, 1u);
+    EXPECT_EQ(executeStats.graphPassCount, 1u);
+    EXPECT_EQ(executeStats.transientIntermediateCount, 0u);
+    EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(bloom->addToGraphCount, 1u);
+
+    graph.Compile();
+    const auto& graphStats = graph.GetCompileStats();
+    EXPECT_TRUE(graphStats.compileValid);
+    EXPECT_EQ(graphStats.totalPasses, 1u);
+}
+
 TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidLDREffectBeforeToneMapping)
 {
     ASSERT_NO_FATAL_FAILURE(Initialize());
@@ -3441,6 +5058,69 @@ TEST_F(RenderPassValidationFixture, NoSupportedEffectsReportsNoWork)
     EXPECT_EQ(graphStats.totalPasses, 0u);
 }
 
+TEST_F(RenderPassValidationFixture, NoSupportedEffectsCopiesCompatibleSceneColorToOutput)
+{
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    PostProcessStack stack;
+    stack.Execute(graph, input, output);
+
+    const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
+    EXPECT_TRUE(executeStats.noEffectNoWork);
+    EXPECT_TRUE(executeStats.fallbackCopyApplied);
+    EXPECT_EQ(executeStats.fallbackCopyPassCount, 1u);
+    EXPECT_EQ(executeStats.graphPassCount, 1u);
+    EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+    EXPECT_EQ(ctx.copyTextureCount, 1u);
+}
+
+TEST_F(RenderPassValidationFixture, InvalidToneMappingBoundaryCopiesCompatibleSceneColorToOutput)
+{
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    PostProcessStack stack;
+    (void)stack.AddEffect<RecordingPostProcessPass>("FXAA", 100);
+    stack.Execute(graph, input, output);
+
+    const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
+    EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
+    EXPECT_TRUE(executeStats.fallbackCopyApplied);
+    EXPECT_EQ(executeStats.fallbackCopyPassCount, 1u);
+    EXPECT_EQ(executeStats.graphPassCount, 1u);
+    EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+    EXPECT_EQ(ctx.copyTextureCount, 1u);
+}
+
 TEST(RenderPostProcessStackValidation, MultiPassChainUsesDistinctTransientIntermediate)
 {
     FakeDevice device;
@@ -3450,7 +5130,7 @@ TEST(RenderPostProcessStackValidation, MultiPassChainUsesDistinctTransientInterm
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
     RHITextureRef outputTexture =
-        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
@@ -3492,6 +5172,75 @@ TEST(RenderPostProcessStackValidation, MultiPassChainUsesDistinctTransientInterm
     EXPECT_EQ(graphStats.totalPasses, 2u);
 }
 
+TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMaterialSet)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderObject& object = scene.GetMutableObject(0);
+    object.previousWorldMatrix = Mat4Identity();
+    object.previousWorldMatrix[3][0] = -1.0f;
+    object.previousWorldMatrixValid = 1;
+
+    Resource::MaterialResource materialResource;
+    materialResource.SetId(601);
+    materialResource.SetName("MaskedVelocityMaterial");
+    materialResource.SetMaterialData(std::make_shared<Material>());
+
+    RenderDrawItem maskedItem = MakeDrawItem(MaterialRenderMode::Masked);
+    maskedItem.materialResource = &materialResource;
+    std::vector<RenderDrawItem> opaqueItems;
+    std::vector<RenderDrawItem> maskedItems = {maskedItem};
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureDesc velocityDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RG16_FLOAT);
+    velocityDesc.debugName = "GraphVelocityForObjectVelocityPass";
+    view.velocityTarget = graph.CreateTexture(velocityDesc);
+    graph.SetExportState(view.velocityTarget, RHIResourceState::RenderTarget);
+
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
+    depthDesc.debugName = "GraphDepthForObjectVelocityPass";
+    view.depthTarget = graph.CreateTexture(depthDesc);
+    graph.SetExportState(view.depthTarget, RHIResourceState::DepthRead);
+
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+    view.previousViewProjectionMatrix = Mat4Identity();
+    view.previousViewProjectionValid = 1;
+    view.resetTemporalHistory = false;
+
+    ObjectVelocityPass pass;
+    pass.SetResources(&gpuResources, &pipelineCache, &viewCache, &materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetEnabled(true);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    pass.AddToGraph(graph, view);
+    graph.Compile();
+    EXPECT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetMaskedObjectVelocityPipeline(RHIFormat::RG16_FLOAT));
+    EXPECT_EQ(1u, ctx.drawIndexedCount);
+    EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
+                            [](uint32 set) { return set == 2; }));
+
+    const ObjectVelocityPassStats& stats = pass.GetStats();
+    EXPECT_TRUE(stats.velocityRecorded);
+    EXPECT_EQ(stats.opaqueDrawItemCount, 0u);
+    EXPECT_EQ(stats.maskedDrawItemCount, 1u);
+    EXPECT_EQ(stats.maskedDrawCount, 1u);
+    EXPECT_EQ(stats.skippedMissingUVCount, 0u);
+    EXPECT_EQ(stats.skippedMaterialBindingCount, 0u);
+}
 TEST_F(RenderPassValidationFixture, OpaquePassBindsOpaqueThenMaskedPipelinesAndDrawsBothGroups)
 {
     ASSERT_NO_FATAL_FAILURE(Initialize());
@@ -3511,6 +5260,295 @@ TEST_F(RenderPassValidationFixture, OpaquePassBindsOpaqueThenMaskedPipelinesAndD
     EXPECT_EQ(pipelineCache.GetOpaquePipeline(), ctx.pipelineSequence[0]);
     EXPECT_EQ(pipelineCache.GetMaskedPipeline(), ctx.pipelineSequence[1]);
     EXPECT_EQ(2u, ctx.drawIndexedCount);
+}
+
+TEST_F(RenderPassValidationFixture, DepthPrepassConsumesGPUDrivenMultiMeshIndirectStreams)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    auto secondMeshResource = CreateMeshResource(402);
+    gpuResources.UploadImmediate(secondMeshResource.get());
+    ASSERT_TRUE(gpuResources.IsGPUReady(secondMeshResource->GetId()));
+
+    scene.GetMutableObject(0).bounds = meshResource->GetBounds();
+    RenderObject secondObject = MakeRenderObject(*secondMeshResource);
+    secondObject.bounds = secondMeshResource->GetBounds();
+    scene.AddObject(secondObject);
+
+    RenderDrawItem firstItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    RenderDrawItem secondItem = firstItem;
+    secondItem.objectIndex = 1;
+    secondItem.meshId = secondMeshResource->GetId();
+    std::vector<RenderDrawItem> opaqueItems = {firstItem, secondItem};
+    std::vector<RenderDrawItem> maskedItems;
+
+    MeshGPUBuffers firstBuffers = gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(firstBuffers.IsValid());
+    ASSERT_FALSE(firstBuffers.submeshes.empty());
+    MeshGPUBuffers secondBuffers = gpuResources.GetMeshBuffers(secondMeshResource->GetId());
+    ASSERT_TRUE(secondBuffers.IsValid());
+    ASSERT_FALSE(secondBuffers.submeshes.empty());
+
+    GPUCulling culling;
+    GPUCullingConfig cullingConfig;
+    cullingConfig.maxInstances = 4;
+    cullingConfig.enableOcclusionCulling = false;
+    cullingConfig.enableDistanceCulling = false;
+    culling.Initialize(&device, cullingConfig);
+    culling.BeginFrame();
+
+    GPUIndexedDrawDesc firstDrawDesc;
+    firstDrawDesc.indexCount = firstBuffers.submeshes[0].indexCount;
+    firstDrawDesc.firstIndex = firstBuffers.submeshes[0].indexOffset;
+    firstDrawDesc.vertexOffset = firstBuffers.submeshes[0].baseVertex;
+    ASSERT_EQ(0u, culling.BeginDrawGroup(meshResource->GetId()));
+    EXPECT_NE(RVX_INVALID_INDEX, culling.AddDrawItemInstance(scene, firstItem, firstDrawDesc, 0));
+    culling.EndDrawGroup();
+
+    GPUIndexedDrawDesc secondDrawDesc;
+    secondDrawDesc.indexCount = secondBuffers.submeshes[0].indexCount;
+    secondDrawDesc.firstIndex = secondBuffers.submeshes[0].indexOffset;
+    secondDrawDesc.vertexOffset = secondBuffers.submeshes[0].baseVertex;
+    ASSERT_EQ(1u, culling.BeginDrawGroup(secondMeshResource->GetId()));
+    EXPECT_NE(RVX_INVALID_INDEX, culling.AddDrawItemInstance(scene, secondItem, secondDrawDesc, 1));
+    culling.EndDrawGroup();
+    culling.EndFrame();
+    culling.CullCpuFallback(view.viewMatrix, view.projectionMatrix);
+    EXPECT_EQ(2u, culling.GetDrawCount());
+    ASSERT_EQ(2u, culling.GetDrawGroups().size());
+
+    RHITextureRef depthTexture = device.CreateTexture(RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    ASSERT_TRUE(depthTexture);
+    RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
+    ASSERT_TRUE(depthView);
+
+    DepthPrepass pass;
+    pass.SetEnabled(true);
+    pass.SetResources(&gpuResources, &pipelineCache);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetDepthTarget(depthView.Get());
+    pass.SetGPUDrivenCullingSource(&culling);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(1u, ctx.beginRenderPassCount);
+    EXPECT_EQ(1u, ctx.endRenderPassCount);
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(2u, ctx.drawIndexedIndirectCount);
+    EXPECT_EQ(1u, ctx.lastIndirectDrawCount);
+    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectOffset);
+    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectStride);
+    ASSERT_NE(ctx.currentPipeline, nullptr);
+    ExpectPipelineDebugName(ctx.currentPipeline, "GPUDrivenDepthOnlyPipeline");
+
+    const DepthPrepassDrawStats& stats = pass.GetDrawStats();
+    EXPECT_TRUE(stats.gpuDrivenRequested);
+    EXPECT_TRUE(stats.gpuDrivenEligible);
+    EXPECT_EQ(0u, stats.directDrawCount);
+    EXPECT_EQ(2u, stats.gpuDrivenIndirectBatchCount);
+    EXPECT_EQ(2u, stats.gpuDrivenIndirectDrawCount);
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassConsumesGPUDrivenMaterialGroupedIndirectStreams)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    scene.GetMutableObject(0).bounds = meshResource->GetBounds();
+
+    RenderDrawItem opaqueItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    RenderDrawItem maskedItem = MakeDrawItem(MaterialRenderMode::Masked);
+    std::vector<RenderDrawItem> opaqueItems = {opaqueItem};
+    std::vector<RenderDrawItem> maskedItems = {maskedItem};
+
+    MeshGPUBuffers buffers = gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    ASSERT_FALSE(buffers.submeshes.empty());
+
+    GPUIndexedDrawDesc drawDesc;
+    drawDesc.indexCount = buffers.submeshes[0].indexCount;
+    drawDesc.firstIndex = buffers.submeshes[0].indexOffset;
+    drawDesc.vertexOffset = buffers.submeshes[0].baseVertex;
+
+    GPUCulling culling;
+    GPUCullingConfig cullingConfig;
+    cullingConfig.maxInstances = 4;
+    cullingConfig.enableOcclusionCulling = false;
+    cullingConfig.enableDistanceCulling = false;
+    culling.Initialize(&device, cullingConfig);
+    culling.BeginFrame();
+
+    ASSERT_EQ(0u, culling.BeginDrawGroup(
+        meshResource->GetId(),
+        opaqueItem.materialId,
+        MaterialPipelineVariant::Opaque,
+        opaqueItem.materialResource));
+    EXPECT_NE(RVX_INVALID_INDEX, culling.AddDrawItemInstance(scene, opaqueItem, drawDesc, 0));
+    culling.EndDrawGroup();
+
+    ASSERT_EQ(1u, culling.BeginDrawGroup(
+        meshResource->GetId(),
+        maskedItem.materialId,
+        MaterialPipelineVariant::Masked,
+        maskedItem.materialResource));
+    EXPECT_NE(RVX_INVALID_INDEX, culling.AddDrawItemInstance(scene, maskedItem, drawDesc, 1));
+    culling.EndDrawGroup();
+
+    culling.EndFrame();
+    culling.CullCpuFallback(view.viewMatrix, view.projectionMatrix);
+    EXPECT_EQ(2u, culling.GetDrawCount());
+    ASSERT_EQ(2u, culling.GetDrawGroups().size());
+
+    OpaquePass pass;
+    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.SetGPUDrivenCullingSource(&culling);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(1u, ctx.beginRenderPassCount);
+    EXPECT_EQ(1u, ctx.endRenderPassCount);
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(2u, ctx.drawIndexedIndirectCount);
+    EXPECT_EQ(1u, ctx.lastIndirectDrawCount);
+    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectOffset);
+    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectStride);
+    ASSERT_EQ(static_cast<size_t>(2), ctx.pipelineSequence.size());
+    ExpectPipelineDebugName(ctx.pipelineSequence[0], "GPUDrivenOpaquePipeline");
+    ExpectPipelineDebugName(ctx.pipelineSequence[1], "GPUDrivenMaskedPipeline");
+
+    const OpaquePassDrawStats& stats = pass.GetDrawStats();
+    EXPECT_TRUE(stats.gpuDrivenRequested);
+    EXPECT_TRUE(stats.gpuDrivenEligible);
+    EXPECT_EQ(0u, stats.directDrawCount);
+    EXPECT_EQ(0u, stats.indirectBatchCount);
+    EXPECT_EQ(2u, stats.gpuDrivenIndirectBatchCount);
+    EXPECT_EQ(2u, stats.gpuDrivenIndirectDrawCount);
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassBatchesSameObjectSubmeshesWithIndirectDraw)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    auto twoSubmeshResource = CreateTwoSubmeshMeshResource(1401);
+    gpuResources.UploadImmediate(twoSubmeshResource.get());
+    ASSERT_TRUE(gpuResources.IsGPUReady(twoSubmeshResource->GetId()));
+
+    scene.Clear();
+    scene.AddObject(MakeRenderObject(*twoSubmeshResource));
+
+    RenderDrawItem firstItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    firstItem.meshId = twoSubmeshResource->GetId();
+    firstItem.submeshIndex = 0;
+
+    RenderDrawItem secondItem = firstItem;
+    secondItem.submeshIndex = 1;
+
+    std::vector<RenderDrawItem> opaqueItems = {firstItem, secondItem};
+    std::vector<RenderDrawItem> maskedItems;
+
+    view.viewCache = &viewCache;
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+
+    OpaquePass pass;
+    pass.OnAdd(&device);
+    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(1u, ctx.drawIndexedIndirectCount);
+    EXPECT_EQ(0u, ctx.lastIndirectOffset);
+    EXPECT_EQ(2u, ctx.lastIndirectDrawCount);
+    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectStride);
+    ASSERT_NE(ctx.lastIndirectBuffer, nullptr);
+
+    const auto* indirectBuffer = dynamic_cast<const FakeBuffer*>(ctx.lastIndirectBuffer);
+    ASSERT_NE(indirectBuffer, nullptr);
+    ASSERT_GE(indirectBuffer->GetStorage().size(), sizeof(IndirectDrawIndexedCommand) * 2);
+
+    std::array<IndirectDrawIndexedCommand, 2> commands;
+    std::memcpy(commands.data(), indirectBuffer->GetStorage().data(), sizeof(commands));
+    EXPECT_EQ(3u, commands[0].indexCount);
+    EXPECT_EQ(1u, commands[0].instanceCount);
+    EXPECT_EQ(0u, commands[0].firstIndex);
+    EXPECT_EQ(0, commands[0].vertexOffset);
+    EXPECT_EQ(0u, commands[0].firstInstance);
+    EXPECT_EQ(3u, commands[1].indexCount);
+    EXPECT_EQ(1u, commands[1].instanceCount);
+    EXPECT_EQ(3u, commands[1].firstIndex);
+    EXPECT_EQ(0, commands[1].vertexOffset);
+    EXPECT_EQ(0u, commands[1].firstInstance);
+
+    const OpaquePassDrawStats& stats = pass.GetDrawStats();
+    EXPECT_EQ(0u, stats.directDrawCount);
+    EXPECT_EQ(1u, stats.indirectBatchCount);
+    EXPECT_EQ(2u, stats.indirectDrawCount);
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassDoesNotIndirectBatchResolvedMaterialMismatch)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    auto twoSubmeshResource = CreateTwoSubmeshMeshResource(1402);
+    gpuResources.UploadImmediate(twoSubmeshResource.get());
+    ASSERT_TRUE(gpuResources.IsGPUReady(twoSubmeshResource->GetId()));
+
+    Resource::MaterialResource firstMaterial;
+    firstMaterial.SetId(701);
+    firstMaterial.SetName("FirstSubmeshMaterial");
+    firstMaterial.SetMaterialData(std::make_shared<Material>());
+
+    Resource::MaterialResource secondMaterial;
+    secondMaterial.SetId(702);
+    secondMaterial.SetName("SecondSubmeshMaterial");
+    secondMaterial.SetMaterialData(std::make_shared<Material>());
+
+    RenderObject object = MakeRenderObject(*twoSubmeshResource);
+    object.materialResources = {&firstMaterial, &secondMaterial};
+    object.materialIds = {firstMaterial.GetId(), secondMaterial.GetId()};
+
+    scene.Clear();
+    scene.AddObject(object);
+
+    RenderDrawItem firstItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    firstItem.meshId = twoSubmeshResource->GetId();
+    firstItem.submeshIndex = 0;
+    firstItem.materialId = 7000;
+    firstItem.materialResource = nullptr;
+
+    RenderDrawItem secondItem = firstItem;
+    secondItem.submeshIndex = 1;
+
+    std::vector<RenderDrawItem> opaqueItems = {firstItem, secondItem};
+    std::vector<RenderDrawItem> maskedItems;
+
+    view.viewCache = &viewCache;
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+
+    OpaquePass pass;
+    pass.OnAdd(&device);
+    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(2u, ctx.drawIndexedCount);
+    EXPECT_EQ(0u, ctx.drawIndexedIndirectCount);
+
+    const OpaquePassDrawStats& stats = pass.GetDrawStats();
+    EXPECT_EQ(2u, stats.directDrawCount);
+    EXPECT_EQ(0u, stats.indirectBatchCount);
+    EXPECT_EQ(0u, stats.indirectDrawCount);
 }
 
 TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassGateNormalMapsOnTangentBasis)
@@ -3543,27 +5581,77 @@ TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassBindFrameLightResour
     const std::string transparentPass = ReadTextFile(passesDir / "TransparentPass.cpp");
 
     EXPECT_NE(opaquePass.find("#include \"Render/Lighting/LightManager.h\""), std::string::npos);
+    EXPECT_NE(opaquePass.find("#include \"Render/Lighting/ClusteredLighting.h\""), std::string::npos);
     EXPECT_NE(opaquePass.find("lightResources.lightConstantsBuffer = m_lightManager->GetLightConstantsBuffer();"),
               std::string::npos);
     EXPECT_NE(opaquePass.find("lightResources.pointLightsBuffer = m_lightManager->GetPointLightsBuffer();"),
               std::string::npos);
     EXPECT_NE(opaquePass.find("lightResources.spotLightsBuffer = m_lightManager->GetSpotLightsBuffer();"),
               std::string::npos);
+    EXPECT_NE(opaquePass.find("lightResources.clusterConstantsBuffer = m_clusteredLighting->GetClusterConstantsBuffer();"),
+              std::string::npos);
+    EXPECT_NE(opaquePass.find("lightResources.clusterBuffer = m_clusteredLighting->GetClusterBuffer();"),
+              std::string::npos);
+    EXPECT_NE(opaquePass.find("lightResources.clusterLightIndexBuffer = m_clusteredLighting->GetLightIndexBuffer();"),
+              std::string::npos);
+    EXPECT_NE(opaquePass.find("obj.receivesShadow,"), std::string::npos);
     EXPECT_NE(opaquePass.find("m_pipelineCache->UpdateFrameLightResources(lightResources);"), std::string::npos);
 
     EXPECT_NE(transparentPass.find("#include \"Render/Lighting/LightManager.h\""), std::string::npos);
+    EXPECT_NE(transparentPass.find("#include \"Render/Lighting/ClusteredLighting.h\""), std::string::npos);
     EXPECT_NE(transparentPass.find("lightResources.lightConstantsBuffer = m_lightManager->GetLightConstantsBuffer();"),
               std::string::npos);
     EXPECT_NE(transparentPass.find("lightResources.pointLightsBuffer = m_lightManager->GetPointLightsBuffer();"),
               std::string::npos);
     EXPECT_NE(transparentPass.find("lightResources.spotLightsBuffer = m_lightManager->GetSpotLightsBuffer();"),
               std::string::npos);
+    EXPECT_NE(transparentPass.find("lightResources.clusterConstantsBuffer = m_clusteredLighting->GetClusterConstantsBuffer();"),
+              std::string::npos);
+    EXPECT_NE(transparentPass.find("lightResources.clusterBuffer = m_clusteredLighting->GetClusterBuffer();"),
+              std::string::npos);
+    EXPECT_NE(transparentPass.find("lightResources.clusterLightIndexBuffer = m_clusteredLighting->GetLightIndexBuffer();"),
+              std::string::npos);
+    EXPECT_NE(transparentPass.find("obj.receivesShadow,"), std::string::npos);
 
     const size_t shadowUpdate = transparentPass.find("m_pipelineCache->UpdateDirectionalShadowFrameResources({});");
     const size_t lightUpdate = transparentPass.find("m_pipelineCache->UpdateFrameLightResources(lightResources);");
     ASSERT_NE(shadowUpdate, std::string::npos);
     ASSERT_NE(lightUpdate, std::string::npos);
     EXPECT_LT(shadowUpdate, lightUpdate);
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassReportsShadowReceiverOptOutDrawItems)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderObject& firstObject = scene.GetMutableObject(0);
+    firstObject.receivesShadow = true;
+
+    RenderObject secondObject = MakeRenderObject(*meshResource);
+    secondObject.receivesShadow = false;
+    scene.AddObject(secondObject);
+
+    RenderDrawItem firstItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    RenderDrawItem secondItem = MakeDrawItem(MaterialRenderMode::Masked);
+    secondItem.objectIndex = 1;
+
+    std::vector<RenderDrawItem> opaqueItems = {firstItem};
+    std::vector<RenderDrawItem> maskedItems = {secondItem};
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    view.colorTarget = graph.ImportTexture(colorTexture.Get(), RHIResourceState::RenderTarget);
+
+    OpaquePass pass;
+    pass.OnAdd(&device);
+    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.AddToGraph(graph, view);
+
+    const OpaquePassShadowStats& stats = pass.GetShadowStats();
+    EXPECT_EQ(stats.receiverCandidateDrawItemCount, 2u);
+    EXPECT_EQ(stats.shadowReceivingDrawItemCount, 1u);
+    EXPECT_EQ(stats.shadowReceiverOptOutDrawItemCount, 1u);
 }
 
 TEST_F(RenderPassValidationFixture, OpaquePassResolvesRenderGraphColorTargetView)

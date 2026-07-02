@@ -5,6 +5,7 @@
 #include "Render/Material/MaterialClassification.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Material/MaterialTemplate.h"
+#include "Resource/Loader/TextureLoader.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/TextureResource.h"
 #include "RHI/RHICommandContext.h"
@@ -16,8 +17,11 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <vector>
 
 using namespace RVX;
@@ -468,6 +472,79 @@ namespace
     {
         return CreateTextureResource(id, Resource::TextureFormat::RGBA8, {0, 0, 0, 255});
     }
+
+    const char* ToCookedTextureFormatString(Resource::TextureFormat format)
+    {
+        switch (format)
+        {
+            case Resource::TextureFormat::BC1: return "BC1";
+            case Resource::TextureFormat::BC3: return "BC3";
+            case Resource::TextureFormat::BC5: return "BC5";
+            default:                           return "RGBA8";
+        }
+    }
+
+    const char* ToCookedTextureUsageString(Resource::TextureUsage usage)
+    {
+        switch (usage)
+        {
+            case Resource::TextureUsage::Normal: return "Normal";
+            case Resource::TextureUsage::Data:   return "Data";
+            case Resource::TextureUsage::Color:
+            default:                             return "Color";
+        }
+    }
+
+    std::filesystem::path WriteCookedTextureArtifact(const std::string& name,
+                                                     Resource::TextureFormat format,
+                                                     Resource::TextureUsage usage,
+                                                     bool isSRGB,
+                                                     const std::vector<uint8>& payload)
+    {
+        const std::filesystem::path path =
+            std::filesystem::temp_directory_path() / (name + ".rva");
+
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << "RVX_TEXTURE_PREBAKE_V1\n";
+        file << "width=4\n";
+        file << "height=4\n";
+        file << "depth=1\n";
+        file << "mipLevels=1\n";
+        file << "arrayLayers=1\n";
+        file << "format=" << ToCookedTextureFormatString(format) << "\n";
+        file << "usage=" << ToCookedTextureUsageString(usage) << "\n";
+        file << "srgb=" << (isSRGB ? 1 : 0) << "\n";
+        file << "dataSize=" << payload.size() << "\n";
+        file << "compression=" << ToCookedTextureFormatString(format) << "\n";
+        file << "RVX_TEXTURE_DATA_BEGIN\n";
+        file.write(reinterpret_cast<const char*>(payload.data()),
+                   static_cast<std::streamsize>(payload.size()));
+        file << "\nRVX_TEXTURE_PREBAKE_END\n";
+
+        return path;
+    }
+
+    class ScopedTempFiles final
+    {
+    public:
+        std::filesystem::path Track(std::filesystem::path path)
+        {
+            m_paths.push_back(path);
+            return path;
+        }
+
+        ~ScopedTempFiles()
+        {
+            for (const std::filesystem::path& path : m_paths)
+            {
+                std::error_code error;
+                std::filesystem::remove(path, error);
+            }
+        }
+
+    private:
+        std::vector<std::filesystem::path> m_paths;
+    };
 
     void ConfigureMaterialWithAlbedo(Resource::MaterialResource& materialResource,
                                      const Resource::TextureHandle& albedo)
@@ -1169,6 +1246,108 @@ namespace
         gpuResources.Shutdown();
     }
 
+    TEST(MaterialSystemValidation, MaterialSetUsesCookedBlockCompressedTextureViews)
+    {
+        ScopedTempFiles tempFiles;
+        const std::filesystem::path albedoPath = tempFiles.Track(WriteCookedTextureArtifact(
+            "rvx_material_system_cooked_bc1_albedo",
+            Resource::TextureFormat::BC1,
+            Resource::TextureUsage::Color,
+            true,
+            std::vector<uint8>(8, 0x11)));
+        const std::filesystem::path metallicRoughnessPath = tempFiles.Track(WriteCookedTextureArtifact(
+            "rvx_material_system_cooked_bc3_metallic_roughness",
+            Resource::TextureFormat::BC3,
+            Resource::TextureUsage::Data,
+            false,
+            std::vector<uint8>(16, 0x22)));
+        const std::filesystem::path normalPath = tempFiles.Track(WriteCookedTextureArtifact(
+            "rvx_material_system_cooked_bc5_normal",
+            Resource::TextureFormat::BC5,
+            Resource::TextureUsage::Normal,
+            false,
+            std::vector<uint8>(16, 0x33)));
+
+        Resource::TextureLoader loader(nullptr);
+        Resource::TextureHandle albedo(loader.LoadFromFile(albedoPath.string()));
+        ASSERT_TRUE(albedo) << loader.GetLastLoadError();
+        Resource::TextureHandle metallicRoughness(loader.LoadFromFile(metallicRoughnessPath.string()));
+        ASSERT_TRUE(metallicRoughness) << loader.GetLastLoadError();
+        Resource::TextureHandle normal(loader.LoadFromFile(normalPath.string()));
+        ASSERT_TRUE(normal) << loader.GetLastLoadError();
+
+        EXPECT_EQ(Resource::TextureFormat::BC1, albedo->GetFormat());
+        EXPECT_TRUE(albedo->IsSRGB());
+        EXPECT_EQ(Resource::TextureFormat::BC3, metallicRoughness->GetFormat());
+        EXPECT_FALSE(metallicRoughness->IsSRGB());
+        EXPECT_EQ(Resource::TextureFormat::BC5, normal->GetFormat());
+        EXPECT_EQ(Resource::TextureUsage::Normal, normal->GetUsage());
+
+        FakeDevice device;
+        GPUResourceManager gpuResources;
+        gpuResources.Initialize(&device);
+
+        ResourceViewCache viewCache;
+        viewCache.Initialize(&device);
+
+        FakeDescriptorSetLayout materialSetLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+
+        gpuResources.UploadImmediate(albedo.Get());
+        gpuResources.UploadImmediate(metallicRoughness.Get());
+        gpuResources.UploadImmediate(normal.Get());
+        ASSERT_EQ(GPUResourceState::GPUReady, gpuResources.GetResourceState(albedo.GetId()));
+        ASSERT_EQ(GPUResourceState::GPUReady, gpuResources.GetResourceState(metallicRoughness.GetId()));
+        ASSERT_EQ(GPUResourceState::GPUReady, gpuResources.GetResourceState(normal.GetId()));
+
+        Resource::MaterialResource materialResource;
+        materialResource.SetId(223);
+        materialResource.SetName("CookedBlockCompressedMaterialResource");
+        materialResource.SetMaterialData(std::make_shared<Material>("CookedBlockCompressedMaterialResource"));
+        materialResource.SetTexture("albedo", albedo);
+        materialResource.SetTexture("metallic_roughness", metallicRoughness);
+        materialResource.SetTexture("normal", normal);
+
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(&materialResource, &viewCache);
+
+        ASSERT_EQ(MaterialBindingStatus::Ready, result.status);
+        ASSERT_NE(nullptr, result.descriptorSet);
+        EXPECT_FALSE(result.usedFallback);
+        const uint32 expectedFlags =
+            static_cast<uint32>(MaterialTextureFlags::HasBaseColor) |
+            static_cast<uint32>(MaterialTextureFlags::HasNormal) |
+            static_cast<uint32>(MaterialTextureFlags::HasMetallicRoughness);
+        EXPECT_EQ(expectedFlags, result.textureFlags);
+        EXPECT_EQ(0u, result.fallbackTextureFlags);
+
+        const RHIDescriptorBinding* albedoBinding = FindBinding(result.descriptorSet, 1);
+        const RHIDescriptorBinding* normalBinding = FindBinding(result.descriptorSet, 2);
+        const RHIDescriptorBinding* metallicRoughnessBinding = FindBinding(result.descriptorSet, 3);
+        ASSERT_NE(nullptr, albedoBinding);
+        ASSERT_NE(nullptr, normalBinding);
+        ASSERT_NE(nullptr, metallicRoughnessBinding);
+        ASSERT_NE(nullptr, albedoBinding->textureView);
+        ASSERT_NE(nullptr, normalBinding->textureView);
+        ASSERT_NE(nullptr, metallicRoughnessBinding->textureView);
+
+        EXPECT_EQ(gpuResources.GetTexture(albedo.GetId()), albedoBinding->textureView->GetTexture());
+        EXPECT_EQ(RHIFormat::BC1_UNORM_SRGB, albedoBinding->textureView->GetFormat());
+        EXPECT_EQ(gpuResources.GetTexture(normal.GetId()), normalBinding->textureView->GetTexture());
+        EXPECT_EQ(RHIFormat::BC5_UNORM, normalBinding->textureView->GetFormat());
+        EXPECT_EQ(gpuResources.GetTexture(metallicRoughness.GetId()),
+                  metallicRoughnessBinding->textureView->GetTexture());
+        EXPECT_EQ(RHIFormat::BC3_UNORM, metallicRoughnessBinding->textureView->GetFormat());
+
+        ASSERT_NE(device.lastCreatedBuffer, nullptr);
+        const MaterialGPUConstants constants = ReadMaterialConstants(*device.lastCreatedBuffer);
+        EXPECT_EQ(expectedFlags, constants.textureFlags);
+
+        materialSystem.Shutdown();
+        viewCache.Shutdown();
+        gpuResources.Shutdown();
+    }
+
     TEST(MaterialSystemValidation, MaterialSystemCreatesExplicitMipFilteredMaterialSampler)
     {
         FakeDevice device;
@@ -1392,6 +1571,66 @@ namespace
         ASSERT_NE(nullptr, irradianceBinding);
         ASSERT_NE(nullptr, irradianceBinding->textureView);
         EXPECT_EQ(gpuResources.GetTexture(irradianceB.GetId()), irradianceBinding->textureView->GetTexture());
+
+        materialSystem.Shutdown();
+        viewCache.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation, EnvironmentIBLScalarChangesReuseMaterialDescriptorCache)
+    {
+        FakeDevice device;
+        GPUResourceManager gpuResources;
+        gpuResources.Initialize(&device);
+
+        ResourceViewCache viewCache;
+        viewCache.Initialize(&device);
+
+        FakeDescriptorSetLayout materialSetLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+
+        auto upload = [&gpuResources](const Resource::TextureHandle& texture)
+        {
+            gpuResources.UploadImmediate(texture.Get());
+            ASSERT_TRUE(gpuResources.IsGPUReady(texture.GetId()));
+        };
+
+        Resource::TextureHandle irradiance = CreateIBLCubemapResource(441);
+        Resource::TextureHandle prefiltered = CreateIBLCubemapResource(442, 2);
+        Resource::TextureHandle brdf = CreateIBLBRDFLUTResource(443);
+        upload(irradiance);
+        upload(prefiltered);
+        upload(brdf);
+
+        Resource::MaterialResource materialResource;
+        materialResource.SetId(504);
+        materialResource.SetName("IBLScalarCacheMaterial");
+        materialResource.SetMaterialData(std::make_shared<Material>());
+
+        MaterialSystem::EnvironmentIBLResources firstIBL;
+        firstIBL.irradianceMap = irradiance.Get();
+        firstIBL.prefilteredMap = prefiltered.Get();
+        firstIBL.brdfLUT = brdf.Get();
+        firstIBL.prefilteredMipLevels = 2;
+        firstIBL.intensity = 1.0f;
+        firstIBL.textureIBLEnabled = true;
+        materialSystem.SetEnvironmentIBLResources(firstIBL);
+        RHIDescriptorSet* firstSet = materialSystem.GetOrCreateMaterialSet(&materialResource, &viewCache);
+        ASSERT_NE(nullptr, firstSet);
+        const uint32 descriptorSetCountAfterFirstIBL = device.createdDescriptorSetCount;
+
+        MaterialSystem::EnvironmentIBLResources secondIBL = firstIBL;
+        secondIBL.prefilteredMipLevels = 6;
+        secondIBL.intensity = 2.5f;
+        materialSystem.SetEnvironmentIBLResources(secondIBL);
+        RHIDescriptorSet* secondSet = materialSystem.GetOrCreateMaterialSet(&materialResource, &viewCache);
+        ASSERT_NE(nullptr, secondSet);
+
+        EXPECT_EQ(firstSet, secondSet);
+        EXPECT_EQ(device.createdDescriptorSetCount, descriptorSetCountAfterFirstIBL);
+        EXPECT_EQ(materialSystem.GetEnvironmentIBLResources().prefilteredMipLevels, 6u);
+        EXPECT_FLOAT_EQ(materialSystem.GetEnvironmentIBLResources().intensity, 2.5f);
 
         materialSystem.Shutdown();
         viewCache.Shutdown();

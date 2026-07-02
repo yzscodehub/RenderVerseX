@@ -177,13 +177,6 @@ namespace
         std::vector<FakeBuffer*> createdBuffers;
     };
 
-    struct ClusterConstantsForTest
-    {
-        Vec4 clusterSize;
-        Vec4 screenParams;
-        Mat4 invProj;
-    };
-
     ClusteringConfig SmallConfig()
     {
         ClusteringConfig config;
@@ -292,6 +285,8 @@ TEST_F(ClusteredLightingValidationFixture, ValidInitializationCreatesExpectedBuf
 
     EXPECT_EQ(device.createdBufferDescs[3].size, 256u);
     EXPECT_TRUE(HasFlag(device.createdBufferDescs[3].usage, RHIBufferUsage::Constant));
+    EXPECT_EQ(sizeof(LightIndex), sizeof(uint32));
+    EXPECT_EQ(sizeof(GPUClusterConstants), 96u);
 
     EXPECT_EQ(lighting.GetStatistics().clusterCount, 8u);
 }
@@ -364,8 +359,7 @@ TEST_F(ClusteredLightingValidationFixture, BeginFrameAssignLightsAndUploadWrites
     EXPECT_GT(stats.activeClusters, 0u);
     EXPECT_GT(stats.totalLightAssignments, 0u);
 
-    FakeCommandContext ctx;
-    ASSERT_TRUE(lighting.UpdateGPUBuffers(ctx)) << lighting.GetLastError();
+    ASSERT_TRUE(lighting.UploadFrameData()) << lighting.GetLastError();
 
     FakeBuffer* aabbBuffer = device.FindBuffer("ClusterAABBBuffer");
     FakeBuffer* clusterBuffer = device.FindBuffer("ClusterDataBuffer");
@@ -383,8 +377,8 @@ TEST_F(ClusteredLightingValidationFixture, BeginFrameAssignLightsAndUploadWrites
     EXPECT_TRUE(StorageHasAnyNonZeroByte(clusterBuffer->GetStorage()));
     EXPECT_TRUE(StorageHasAnyNonZeroByte(lightIndexBuffer->GetStorage()));
 
-    ASSERT_GE(constantsBuffer->GetStorage().size(), sizeof(ClusterConstantsForTest));
-    ClusterConstantsForTest constants;
+    ASSERT_GE(constantsBuffer->GetStorage().size(), sizeof(GPUClusterConstants));
+    GPUClusterConstants constants;
     std::memcpy(&constants, constantsBuffer->GetStorage().data(), sizeof(constants));
     EXPECT_EQ(constants.clusterSize.x, 2.0f);
     EXPECT_EQ(constants.clusterSize.y, 2.0f);
@@ -433,11 +427,15 @@ TEST_F(ClusteredLightingValidationFixture, OperationsRejectInvalidOrder)
 
     EXPECT_FALSE(lighting.AssignLights(lights));
     EXPECT_FALSE(lighting.GetLastError().empty());
+    EXPECT_FALSE(lighting.UploadFrameData());
+    EXPECT_FALSE(lighting.GetLastError().empty());
     EXPECT_FALSE(lighting.UpdateGPUBuffers(ctx));
     EXPECT_FALSE(lighting.GetLastError().empty());
 
     FakeDevice device;
     ASSERT_TRUE(lighting.Initialize(&device, SmallConfig())) << lighting.GetLastError();
+    EXPECT_FALSE(lighting.UploadFrameData());
+    EXPECT_FALSE(lighting.GetLastError().empty());
     EXPECT_FALSE(lighting.UpdateGPUBuffers(ctx));
     EXPECT_FALSE(lighting.GetLastError().empty());
     EXPECT_FALSE(lighting.AssignLights(lights));
@@ -458,8 +456,7 @@ TEST_F(ClusteredLightingValidationFixture, PartialUploadFailureIsVisible)
     LightManager lights;
     ASSERT_TRUE(lighting.AssignLights(lights)) << lighting.GetLastError();
 
-    FakeCommandContext ctx;
-    EXPECT_FALSE(lighting.UpdateGPUBuffers(ctx));
+    EXPECT_FALSE(lighting.UploadFrameData());
     EXPECT_FALSE(lighting.GetLastError().empty());
 
     FakeBuffer* aabbBuffer = device.FindBuffer("ClusterAABBBuffer");

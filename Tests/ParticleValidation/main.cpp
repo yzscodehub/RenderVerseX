@@ -209,7 +209,12 @@ namespace
         void SetViewports(std::span<const RHIViewport>) override {}
         void SetScissor(const RHIRect&) override { callSequence.push_back("SetScissor"); }
         void SetScissors(std::span<const RHIRect>) override {}
-        void Draw(uint32, uint32 = 1, uint32 = 0, uint32 = 0) override {}
+        void Draw(uint32 vertexCount, uint32 instanceCount = 1, uint32 = 0, uint32 = 0) override
+        {
+            lastDrawVertexCount = vertexCount;
+            lastDrawInstanceCount = instanceCount;
+            callSequence.push_back("Draw");
+        }
         void DrawIndexed(uint32 indexCount, uint32 instanceCount = 1, uint32 = 0, int32 = 0, uint32 = 0) override
         {
             lastDrawIndexCount = indexCount;
@@ -242,6 +247,7 @@ namespace
         std::vector<uint32> descriptorSetSlots;
         std::vector<std::string> callSequence;
         RHIFormat indexBufferFormat = RHIFormat::Unknown;
+        uint32 lastDrawVertexCount = 0;
         uint32 lastDrawIndexCount = 0;
         uint32 lastDrawInstanceCount = 0;
     };
@@ -729,6 +735,9 @@ TEST(ParticleValidation, ParticleBillboardShaderUsesUniqueRQ32Bindings)
     EXPECT_EQ(source.find("RVX_PARTICLE_ENABLE_SOFT_PARTICLES"), std::string::npos);
     EXPECT_NE(source.find("g_Render.sceneDepthTestEnabled"), std::string::npos);
     EXPECT_NE(source.find("g_Render.softParticleEnabled"), std::string::npos);
+    EXPECT_NE(source.find("g_Corners[6]"), std::string::npos);
+    EXPECT_NE(source.find("float4 finalColor = input.color"), std::string::npos);
+    EXPECT_EQ(source.find("g_ParticleTexture.Sample"), std::string::npos);
     EXPECT_NE(source.find("sceneViewDepth <= input.viewDepth"), std::string::npos);
     EXPECT_NE(source.find("g_Render.nearPlane"), std::string::npos);
     EXPECT_NE(source.find("g_Render.farPlane"), std::string::npos);
@@ -827,11 +836,17 @@ TEST(ParticleValidation, ParticleRendererCreatesDescriptorLayoutAndDrawsBillboar
     EXPECT_FALSE(renderer.GetLastDrawStats().usedRealSceneDepth);
     EXPECT_FALSE(renderer.GetLastDrawStats().sceneDepthTestEnabled);
     EXPECT_FALSE(renderer.GetLastDrawStats().softParticlesEnabled);
+    EXPECT_TRUE(renderer.GetLastDrawStats().drawSubmitted);
+    EXPECT_FALSE(renderer.GetLastDrawStats().indexedDraw);
+    EXPECT_FALSE(renderer.GetLastDrawStats().indirectDraw);
+    EXPECT_EQ(renderer.GetLastDrawStats().submittedVertexCount, 6u);
+    EXPECT_EQ(renderer.GetLastDrawStats().submittedIndexCount, 0u);
+    EXPECT_EQ(renderer.GetLastDrawStats().submittedInstanceCount, aliveCount);
     EXPECT_NE(renderer.GetLastDrawStats().softParticleFallbackReason.find("Scene depth SRV unavailable"),
               std::string::npos);
 
-    EXPECT_EQ(ctx.indexBufferFormat, RHIFormat::R16_UINT);
-    EXPECT_EQ(ctx.lastDrawIndexCount, 6u);
+    EXPECT_EQ(ctx.lastDrawVertexCount, 6u);
+    EXPECT_EQ(ctx.lastDrawIndexCount, 0u);
     EXPECT_EQ(ctx.lastDrawInstanceCount, aliveCount);
     EXPECT_LT(FindCall(ctx.callSequence, "SetDescriptorSet"), FindCall(ctx.callSequence, "SetPipeline"));
 }
@@ -963,6 +978,7 @@ TEST(ParticleValidation, SupportedParticleRendererRejectsOutOfScopeModesWithoutD
     RecordingCommandContext meshCtx;
     meshInstance.GetSimulator()->PrepareRender(meshCtx);
     EXPECT_FALSE(renderer.DrawParticles(meshCtx, &meshInstance, MakeView(), nullptr));
+    EXPECT_EQ(meshCtx.lastDrawVertexCount, 0u);
     EXPECT_EQ(meshCtx.lastDrawIndexCount, 0u);
 
     ParticleSystemInstance multiplyInstance = MakeCpuInstance(device);
@@ -970,6 +986,7 @@ TEST(ParticleValidation, SupportedParticleRendererRejectsOutOfScopeModesWithoutD
     RecordingCommandContext blendCtx;
     multiplyInstance.GetSimulator()->PrepareRender(blendCtx);
     EXPECT_FALSE(renderer.DrawParticles(blendCtx, &multiplyInstance, MakeView(), nullptr));
+    EXPECT_EQ(blendCtx.lastDrawVertexCount, 0u);
     EXPECT_EQ(blendCtx.lastDrawIndexCount, 0u);
 }
 
@@ -1019,8 +1036,8 @@ TEST(ParticleValidation, ParticlePassUsesDepthSrvColorOnlyPathWhenAvailable)
     ASSERT_EQ(ctx.renderPasses.size(), 1u);
     EXPECT_EQ(ctx.renderPasses.front().colorAttachmentCount, 1u);
     EXPECT_FALSE(ctx.renderPasses.front().hasDepthStencil);
-    EXPECT_EQ(ctx.indexBufferFormat, RHIFormat::R16_UINT);
-    EXPECT_EQ(ctx.lastDrawIndexCount, 6u);
+    EXPECT_EQ(ctx.lastDrawVertexCount, 6u);
+    EXPECT_EQ(ctx.lastDrawIndexCount, 0u);
     EXPECT_EQ(ctx.lastDrawInstanceCount, instance.GetAliveCount());
     EXPECT_TRUE(renderer.GetLastDrawStats().usedRealSceneDepth);
     EXPECT_TRUE(renderer.GetLastDrawStats().sceneDepthTestEnabled);
@@ -1038,8 +1055,65 @@ TEST(ParticleValidation, ParticlePassUsesDepthSrvColorOnlyPathWhenAvailable)
     EXPECT_LT(FindCall(ctx.callSequence, "SetViewport"), FindCall(ctx.callSequence, "SetScissor"));
     EXPECT_LT(FindCall(ctx.callSequence, "SetScissor"), FindCall(ctx.callSequence, "SetDescriptorSet"));
     EXPECT_LT(FindCall(ctx.callSequence, "SetDescriptorSet"), FindCall(ctx.callSequence, "SetPipeline"));
-    EXPECT_LT(FindCall(ctx.callSequence, "SetPipeline"), FindCall(ctx.callSequence, "DrawIndexed"));
-    EXPECT_LT(FindCall(ctx.callSequence, "DrawIndexed"), FindCall(ctx.callSequence, "EndRenderPass"));
+    EXPECT_LT(FindCall(ctx.callSequence, "SetPipeline"), FindCall(ctx.callSequence, "Draw"));
+    EXPECT_LT(FindCall(ctx.callSequence, "Draw"), FindCall(ctx.callSequence, "EndRenderPass"));
+}
+
+TEST(ParticleValidation, ParticlePassUsesReadOnlyDsvWhenSoftParticlesAreDisabled)
+{
+    EnsureLogInitialized();
+    FakeDevice device;
+    ParticleRenderer renderer;
+    renderer.Initialize(&device, MakeRendererConfig());
+    ASSERT_TRUE(renderer.IsRenderingSupported()) << renderer.GetUnsupportedReason();
+
+    ParticleSystemInstance instance = MakeCpuInstance(device);
+    ParticlePass pass;
+    pass.SetRenderer(&renderer);
+    pass.SetSoftParticlesEnabled(false);
+    pass.SetParticleSystems(std::vector<ParticleSystemInstance*>{&instance});
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    ResourceViewCache viewCache;
+    viewCache.Initialize(&device);
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
+    RHITextureRef colorTexture = device.CreateTexture(colorDesc);
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    ViewData view = MakeView(&graph, &viewCache);
+    view.colorTarget = graph.ImportTexture(colorTexture.Get(), RHIResourceState::RenderTarget);
+    view.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+    graph.SetExportState(view.colorTarget, RHIResourceState::RenderTarget);
+
+    graph.AddPass<int>(
+        "ParticlePassDsvWhenSoftDisabledValidation",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, int&)
+        {
+            pass.Setup(builder, view);
+        },
+        [&](const int&, RHICommandContext& ctx)
+        {
+            pass.Execute(ctx, view);
+        });
+
+    graph.Compile();
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    ASSERT_EQ(ctx.renderPasses.size(), 1u);
+    EXPECT_EQ(ctx.renderPasses.front().colorAttachmentCount, 1u);
+    EXPECT_TRUE(ctx.renderPasses.front().hasDepthStencil);
+    EXPECT_TRUE(ctx.renderPasses.front().depthStencilAttachment.readOnly);
+    EXPECT_EQ(ctx.lastDrawVertexCount, 6u);
+    EXPECT_EQ(ctx.lastDrawIndexCount, 0u);
+    EXPECT_EQ(ctx.lastDrawInstanceCount, instance.GetAliveCount());
+    EXPECT_EQ(renderer.GetLastDrawStats().depthMode, ParticleDepthMode::FixedFunction);
+    EXPECT_FALSE(renderer.GetLastDrawStats().usedRealSceneDepth);
+    EXPECT_FALSE(renderer.GetLastDrawStats().sceneDepthTestEnabled);
+    EXPECT_FALSE(renderer.GetLastDrawStats().softParticlesEnabled);
 }
 
 TEST(ParticleValidation, ParticlePassFallsBackToReadOnlyDsvWhenDepthSrvUnavailable)
@@ -1092,7 +1166,8 @@ TEST(ParticleValidation, ParticlePassFallsBackToReadOnlyDsvWhenDepthSrvUnavailab
     EXPECT_EQ(ctx.renderPasses.front().colorAttachmentCount, 1u);
     EXPECT_TRUE(ctx.renderPasses.front().hasDepthStencil);
     EXPECT_TRUE(ctx.renderPasses.front().depthStencilAttachment.readOnly);
-    EXPECT_EQ(ctx.lastDrawIndexCount, 6u);
+    EXPECT_EQ(ctx.lastDrawVertexCount, 6u);
+    EXPECT_EQ(ctx.lastDrawIndexCount, 0u);
     EXPECT_EQ(ctx.lastDrawInstanceCount, instance.GetAliveCount());
     EXPECT_EQ(renderer.GetLastDrawStats().depthMode, ParticleDepthMode::FixedFunction);
     EXPECT_FALSE(renderer.GetLastDrawStats().usedRealSceneDepth);

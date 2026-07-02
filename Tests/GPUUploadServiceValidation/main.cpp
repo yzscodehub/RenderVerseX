@@ -261,7 +261,7 @@ namespace
         void BeginResourceGroup(const char*) override {}
         void EndResourceGroup() override {}
         const RHICapabilities& GetCapabilities() const override { return capabilities; }
-        RHIBackendType GetBackendType() const override { return RHIBackendType::None; }
+        RHIBackendType GetBackendType() const override { return backendType; }
 
         uint32 createdBufferCount = 0;
         uint32 createdTextureCount = 0;
@@ -279,6 +279,7 @@ namespace
         std::vector<RHIFenceRef> retainedFences;
         RHICapabilities capabilities;
         RHITextureDesc lastCreatedTextureDesc;
+        RHIBackendType backendType = RHIBackendType::None;
         uint64 fenceInitialValueOverride = 0;
         bool signalLastFenceOnWaitIdle = false;
     };
@@ -572,6 +573,45 @@ TEST(GPUUploadServiceValidation, StagedTextureUploadCopiesEveryMipSubresource)
     EXPECT_EQ(mip2.textureRegion.height, 1u);
 
     EXPECT_EQ(result.bytesUploaded, pixels.size());
+    uploadService.Shutdown();
+}
+
+TEST(GPUUploadServiceValidation, StagedOpenGLCompressedTextureUploadUsesTightBlockRows)
+{
+    FakeDevice device;
+    device.backendType = RHIBackendType::OpenGL;
+    GPUUploadService uploadService;
+    uploadService.Initialize(&device);
+
+    std::vector<uint8> blocks(24, 0xBC);
+
+    GPUUploadTextureDesc desc;
+    desc.textureDesc = RHITextureDesc::Texture2D(4, 4, RHIFormat::BC1_UNORM);
+    desc.textureDesc.mipLevels = 3;
+    desc.dataSize = blocks.size();
+
+    auto result = uploadService.UploadTextureDataWithResult(desc, blocks.data());
+
+    ASSERT_TRUE(result.succeeded);
+    EXPECT_EQ(device.createdTextureCount, 1u);
+    ASSERT_NE(nullptr, device.lastCommandContext);
+    ASSERT_EQ(device.lastCommandContext->copyBufferToTextureDescs.size(), 3u);
+
+    const auto& mip0 = device.lastCommandContext->copyBufferToTextureDescs[0];
+    const auto& mip1 = device.lastCommandContext->copyBufferToTextureDescs[1];
+    const auto& mip2 = device.lastCommandContext->copyBufferToTextureDescs[2];
+    EXPECT_EQ(mip0.bufferOffset, 0ull);
+    EXPECT_EQ(mip0.bufferRowPitch, 8u);
+    EXPECT_EQ(mip0.bufferImageHeight, 1u);
+    EXPECT_EQ(mip1.bufferOffset, 8ull);
+    EXPECT_EQ(mip1.bufferRowPitch, 8u);
+    EXPECT_EQ(mip1.bufferImageHeight, 1u);
+    EXPECT_EQ(mip2.bufferOffset, 16ull);
+    EXPECT_EQ(mip2.bufferRowPitch, 8u);
+    EXPECT_EQ(mip2.bufferImageHeight, 1u);
+
+    EXPECT_EQ(result.bytesUploaded, 24ull);
+    EXPECT_EQ(uploadService.GetStats().stagingBytesInFlight, 24ull);
     uploadService.Shutdown();
 }
 

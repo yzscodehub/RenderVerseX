@@ -4,6 +4,7 @@
 #include "Scene/ActorFactory.h"
 #include "Scene/Component.h"
 #include "Scene/ComponentFactory.h"
+#include "Scene/Components/AudioComponent.h"
 #include "Scene/Components/StaticMeshComponent.h"
 #include "Scene/Node.h"
 #include "Scene/PrimitiveComponent.h"
@@ -92,6 +93,28 @@ namespace
         ASSERT_NE(nullptr, second);
         EXPECT_EQ(std::string("TestComponent"), first->GetName());
         EXPECT_EQ(std::string("TestComponent_1"), second->GetName());
+    }
+
+    TEST(ActorComponentValidation, ActorComponentsExposeStableUniqueComponentIds)
+    {
+        RVX::Actor actor("ComponentIdActor");
+
+        auto* first = actor.AddComponent<TestComponent>();
+        auto* second = actor.AddComponent<TestComponent>();
+
+        ASSERT_NE(nullptr, first);
+        ASSERT_NE(nullptr, second);
+        EXPECT_NE(RVX::ActorComponent::InvalidComponentId, first->GetComponentId());
+        EXPECT_NE(RVX::ActorComponent::InvalidComponentId, second->GetComponentId());
+        EXPECT_NE(first->GetComponentId(), second->GetComponentId());
+
+        const RVX::ActorComponent::ComponentId restoredId = 1048576;
+        first->SetComponentIdForSerialization(restoredId);
+        EXPECT_EQ(restoredId, first->GetComponentId());
+
+        auto* third = actor.AddComponent<TestComponent>();
+        ASSERT_NE(nullptr, third);
+        EXPECT_GT(third->GetComponentId(), restoredId);
     }
 
     TEST(ActorComponentValidation, ActorAddOwnedComponentUniquifiesExplicitComponentNames)
@@ -1728,6 +1751,26 @@ namespace
         EXPECT_TRUE(parent.RemoveChild(&child));
         EXPECT_EQ(nullptr, child.GetRootComponent()->GetAttachParent());
         EXPECT_EQ(RVX::Vec3(2.0f, 0.0f, 0.0f), child.GetWorldPosition());
+    }
+
+    TEST(ActorComponentValidation, AudioComponentUsesSceneEntityWorldPosition)
+    {
+        RVX::SceneEntity parent("AudioParent");
+        RVX::SceneEntity child("AudioEmitter");
+
+        parent.SetPosition(RVX::Vec3(10.0f, 2.0f, 0.0f));
+        child.SetPosition(RVX::Vec3(3.0f, 4.0f, 5.0f));
+        parent.AddChild(&child);
+
+        auto* audio = child.AddComponent<RVX::AudioComponent>();
+        ASSERT_NE(nullptr, audio);
+        EXPECT_EQ(RVX::Vec3(13.0f, 6.0f, 5.0f), audio->GetAudioWorldPosition());
+
+        parent.SetPosition(RVX::Vec3(-2.0f, 1.0f, 7.0f));
+        EXPECT_EQ(RVX::Vec3(1.0f, 5.0f, 12.0f), audio->GetAudioWorldPosition());
+
+        EXPECT_TRUE(parent.RemoveChild(&child));
+        EXPECT_EQ(RVX::Vec3(3.0f, 4.0f, 5.0f), audio->GetAudioWorldPosition());
     }
 
     TEST(ActorComponentValidation, SceneEntityTransformStaysSyncedThroughActorAndRootPaths)
