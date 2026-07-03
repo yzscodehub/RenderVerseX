@@ -455,14 +455,21 @@ bool ParticleSubsystem::BuildRenderSnapshot(RVX::ParticleRenderSnapshot& outSnap
         item.renderMode = ToSnapshotRenderMode(system->renderMode);
         item.blendMode = ToSnapshotBlendMode(system->blendMode);
         item.simulationBackend = ToSnapshotSimulationBackend(*instance);
+        item.payloadStatus = RVX::ParticleRenderSnapshotPayloadStatus::MetadataOnly;
         item.aliveParticleCount = aliveCount;
         item.maxParticleCount = instance->GetMaxParticles();
         item.lodLevel = instance->GetCurrentLODLevel();
         item.normalizedTime = instance->GetNormalizedTime();
         item.visible = instance->IsVisible();
         item.simulationSupported = instance->IsSimulationSupported();
+        item.renderPayloadAvailable = false;
+        item.sortingSupported = false;
         item.softParticlesEnabled = system->softParticleConfig.enabled;
         item.softParticleFadeDistance = system->softParticleConfig.fadeDistance;
+        item.renderPayloadReason =
+            "Particle snapshot contains metadata only; Render-owned particle draw data extraction is not connected";
+        item.sortingReason =
+            "Particle sorting is deferred to Render-owned feature passes";
         if (!item.simulationSupported)
         {
             item.unsupportedReason = instance->GetSimulationUnsupportedReason();

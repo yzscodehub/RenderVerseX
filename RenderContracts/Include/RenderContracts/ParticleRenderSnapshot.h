@@ -50,6 +50,12 @@ namespace RVX
         External
     };
 
+    enum class ParticleRenderSnapshotPayloadStatus : uint8
+    {
+        MetadataOnly = 0,
+        RenderOwnedPayloadReady
+    };
+
     struct ParticleRenderSnapshotItem
     {
         uint64 instanceId = 0;
@@ -63,6 +69,7 @@ namespace RVX
         ParticleRenderSnapshotMode renderMode = ParticleRenderSnapshotMode::Billboard;
         ParticleRenderSnapshotBlendMode blendMode = ParticleRenderSnapshotBlendMode::AlphaBlend;
         ParticleRenderSnapshotSimulationBackend simulationBackend = ParticleRenderSnapshotSimulationBackend::None;
+        ParticleRenderSnapshotPayloadStatus payloadStatus = ParticleRenderSnapshotPayloadStatus::MetadataOnly;
 
         uint32 aliveParticleCount = 0;
         uint32 maxParticleCount = 0;
@@ -71,9 +78,13 @@ namespace RVX
 
         bool visible = true;
         bool simulationSupported = false;
+        bool renderPayloadAvailable = false;
+        bool sortingSupported = false;
         bool softParticlesEnabled = false;
         float softParticleFadeDistance = 0.0f;
         std::string unsupportedReason;
+        std::string renderPayloadReason;
+        std::string sortingReason;
     };
 
     struct ParticleRenderSnapshotMetadata

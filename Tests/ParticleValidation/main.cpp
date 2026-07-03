@@ -924,16 +924,22 @@ TEST(ParticleValidation, ParticleSubsystemBuildsRenderSnapshotWithoutRenderHandl
     EXPECT_EQ(item.renderMode, ParticleRenderSnapshotMode::StretchedBillboard);
     EXPECT_EQ(item.blendMode, ParticleRenderSnapshotBlendMode::Additive);
     EXPECT_EQ(item.simulationBackend, ParticleRenderSnapshotSimulationBackend::CPU);
+    EXPECT_EQ(item.payloadStatus, ParticleRenderSnapshotPayloadStatus::MetadataOnly);
     EXPECT_EQ(item.aliveParticleCount, liveInstance->GetAliveCount());
     EXPECT_EQ(item.maxParticleCount, 32u);
     EXPECT_TRUE(item.visible);
     EXPECT_TRUE(item.simulationSupported);
+    EXPECT_FALSE(item.renderPayloadAvailable);
+    EXPECT_FALSE(item.sortingSupported);
     EXPECT_TRUE(item.softParticlesEnabled);
     EXPECT_FLOAT_EQ(item.softParticleFadeDistance, 2.5f);
     EXPECT_FLOAT_EQ(item.position.x, 1.0f);
     EXPECT_FLOAT_EQ(item.position.y, 2.0f);
     EXPECT_FLOAT_EQ(item.position.z, 3.0f);
     EXPECT_TRUE(item.unsupportedReason.empty());
+    EXPECT_NE(item.renderPayloadReason.find("metadata only"), std::string::npos);
+    EXPECT_NE(item.renderPayloadReason.find("Render-owned"), std::string::npos);
+    EXPECT_NE(item.sortingReason.find("Render-owned"), std::string::npos);
 
     ASSERT_EQ(snapshot.skippedReasons.size(), 1u);
     EXPECT_NE(snapshot.skippedReasons.front().find("not playing"), std::string::npos);

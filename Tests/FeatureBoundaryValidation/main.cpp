@@ -35,10 +35,17 @@ namespace
             item.renderMode = ParticleRenderSnapshotMode::Billboard;
             item.blendMode = ParticleRenderSnapshotBlendMode::AlphaBlend;
             item.simulationBackend = ParticleRenderSnapshotSimulationBackend::CPU;
+            item.payloadStatus = ParticleRenderSnapshotPayloadStatus::MetadataOnly;
             item.aliveParticleCount = 12;
             item.maxParticleCount = 64;
             item.visible = true;
             item.simulationSupported = true;
+            item.renderPayloadAvailable = false;
+            item.sortingSupported = false;
+            item.renderPayloadReason =
+                "Particle snapshot contains metadata only; Render-owned particle draw data extraction is not connected";
+            item.sortingReason =
+                "Particle sorting is deferred to Render-owned feature passes";
 
             outSnapshot.particles.metadata.totalAliveParticles += item.aliveParticleCount;
             outSnapshot.particles.items.push_back(item);
@@ -277,6 +284,11 @@ TEST(FeatureBoundaryValidation, RenderFeatureSceneBridgeCollectsFeatureSnapshots
     EXPECT_EQ(snapshot.particles.items.front().systemName, "ContractParticle");
     EXPECT_EQ(snapshot.particles.items.front().aliveParticleCount, 12u);
     EXPECT_EQ(snapshot.particles.items.front().simulationBackend, ParticleRenderSnapshotSimulationBackend::CPU);
+    EXPECT_EQ(snapshot.particles.items.front().payloadStatus, ParticleRenderSnapshotPayloadStatus::MetadataOnly);
+    EXPECT_FALSE(snapshot.particles.items.front().renderPayloadAvailable);
+    EXPECT_FALSE(snapshot.particles.items.front().sortingSupported);
+    EXPECT_NE(snapshot.particles.items.front().renderPayloadReason.find("Render-owned"), std::string::npos);
+    EXPECT_NE(snapshot.particles.items.front().sortingReason.find("Render-owned"), std::string::npos);
 
     ASSERT_EQ(snapshot.water.items.size(), 1u);
     EXPECT_EQ(snapshot.water.items.front().componentId, waterEntity->GetHandle());
