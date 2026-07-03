@@ -466,6 +466,49 @@ TEST(ResourceRuntimePolicyValidation, RejectsCookedAndSourcePathsEscapingMounted
     fs::remove_all(cookedRoot, removeError);
 }
 
+TEST(ResourceRuntimePolicyValidation, RejectsMountedRootSymlinkEscapesWhenSupported)
+{
+    const fs::path sourceRoot = MakeTempDirectory("SourceRootSymlinkEscape");
+    const fs::path outsideRoot = MakeTempDirectory("OutsideSourceRootSymlinkTarget");
+    const fs::path outsideAssetDirectory = outsideRoot / "assets";
+    fs::create_directories(outsideAssetDirectory);
+
+    const fs::path escapedAssetPath = outsideAssetDirectory / "secret.png";
+    {
+        std::ofstream file(escapedAssetPath, std::ios::binary);
+        file << "not actually an image";
+    }
+
+    const fs::path symlinkPath = sourceRoot / "external";
+    std::error_code linkError;
+    fs::create_directory_symlink(outsideRoot, symlinkPath, linkError);
+    if (linkError)
+    {
+        std::error_code removeError;
+        fs::remove_all(sourceRoot, removeError);
+        fs::remove_all(outsideRoot, removeError);
+        GTEST_SKIP() << "Directory symlinks are unavailable in this environment: " << linkError.message();
+    }
+
+    ResourceRuntimePolicy policy;
+    policy.mode = ResourceRuntimeMode::Editor;
+    policy.allowSourceAssetReads = true;
+    policy.sourceRoot = sourceRoot.string();
+
+    const ResourcePathResolution resolution =
+        ResolveRuntimeResourcePath(policy, "", "source://external/assets/secret.png");
+    EXPECT_FALSE(resolution.allowed);
+    EXPECT_EQ(resolution.domain, ResourceLoadDomain::SourceAsset);
+    EXPECT_EQ(resolution.failure, ResourceLoadFailureCode::PathEscapesRoot);
+    EXPECT_TRUE(resolution.sourceAssetRead);
+    EXPECT_NE(resolution.diagnosticMessage.find("outside"), std::string::npos);
+
+    std::error_code removeError;
+    fs::remove(symlinkPath, removeError);
+    fs::remove_all(sourceRoot, removeError);
+    fs::remove_all(outsideRoot, removeError);
+}
+
 TEST(ResourceRuntimePolicyValidation, CookedShaderArtifactExposesStableRuntimeContract)
 {
     const fs::path root = MakeTempDirectory("ShaderContract");

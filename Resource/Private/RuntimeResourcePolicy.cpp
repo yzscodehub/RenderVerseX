@@ -60,6 +60,31 @@ namespace RVX::Resource
             return true;
         }
 
+        std::filesystem::path ResolveRootPath(const std::string& root)
+        {
+            std::error_code error;
+            std::filesystem::path rootPath =
+                std::filesystem::weakly_canonical(std::filesystem::absolute(std::filesystem::path(root)), error);
+            if (error)
+            {
+                rootPath = std::filesystem::absolute(std::filesystem::path(root)).lexically_normal();
+            }
+
+            return rootPath.lexically_normal();
+        }
+
+        std::filesystem::path ResolveCandidatePath(const std::filesystem::path& path)
+        {
+            std::error_code error;
+            std::filesystem::path resolvedPath = std::filesystem::weakly_canonical(path, error);
+            if (error)
+            {
+                resolvedPath = path.lexically_normal();
+            }
+
+            return resolvedPath.lexically_normal();
+        }
+
         bool TryResolveAgainstMountedRoot(const std::string& root,
                                           const std::string& path,
                                           std::string& resolvedPath,
@@ -78,11 +103,18 @@ namespace RVX::Resource
                 return false;
             }
 
-            std::filesystem::path rootPath = std::filesystem::absolute(std::filesystem::path(root)).lexically_normal();
-            std::filesystem::path candidatePath = (rootPath / resourcePath).lexically_normal();
-            if (!IsPathWithinRoot(candidatePath, rootPath))
+            const std::filesystem::path rootPath = ResolveRootPath(root);
+            const std::filesystem::path lexicalCandidatePath = (rootPath / resourcePath).lexically_normal();
+            if (!IsPathWithinRoot(lexicalCandidatePath, rootPath))
             {
                 failureMessage = "Resource path escapes the mounted resource root.";
+                return false;
+            }
+
+            std::filesystem::path candidatePath = ResolveCandidatePath(lexicalCandidatePath);
+            if (!IsPathWithinRoot(candidatePath, rootPath))
+            {
+                failureMessage = "Resource path resolves outside the mounted resource root.";
                 return false;
             }
 
