@@ -2,7 +2,6 @@
 #include "Core/Log.h"
 #include "Particle/GPU/CPUParticleSimulator.h"
 #include "Particle/GPU/IParticleSimulator.h"
-#include "Particle/GPU/ParticleSorter.h"
 #include "Particle/ParticleSubsystemRenderAccess.h"
 #include "Particle/Rendering/ParticlePass.h"
 #include "Particle/Rendering/ParticleRenderer.h"
@@ -19,7 +18,6 @@ struct ParticleSubsystemRenderState
     SceneRenderer* sceneRenderer = nullptr;
     std::unique_ptr<ParticleRendererConfig> rendererConfigOverride;
     std::unique_ptr<ParticleRenderer> renderer;
-    std::unique_ptr<ParticleSorter> sorter;
     ParticlePass* renderPass = nullptr;
 };
 
@@ -188,11 +186,9 @@ void ParticleSubsystem::CreateRenderComponents()
         m_renderState->renderer->Initialize(m_renderState->device, rendererConfig);
     }
 
-    // Create sorter (if GPU simulation supported)
-    if (m_gpuSimulationSupported && m_config.enableSorting)
+    if (m_config.enableSorting)
     {
-        m_renderState->sorter = std::make_unique<ParticleSorter>();
-        m_renderState->sorter->Initialize(m_renderState->device, m_config.maxGlobalParticles);
+        RVX_CORE_WARN("ParticleSubsystem: particle sorting is deferred to Render-owned feature passes");
     }
 }
 
@@ -217,7 +213,6 @@ void ParticleSubsystem::RegisterRenderIntegration()
 
     auto renderPass = std::make_unique<ParticlePass>();
     renderPass->SetRenderer(m_renderState->renderer.get());
-    renderPass->SetSorter(m_renderState->sorter.get());
     renderPass->SetSortingEnabled(m_config.enableSorting);
     renderPass->SetSoftParticlesEnabled(m_config.enableSoftParticles);
 
@@ -294,7 +289,6 @@ void ParticleSubsystem::Deinitialize()
     m_stats.gpuSimulatedParticles = 0;
     m_stats.cpuSimulatedParticles = 0;
 
-    m_renderState->sorter.reset();
     m_renderState->renderer.reset();
 
     m_renderState->sceneRenderer = nullptr;

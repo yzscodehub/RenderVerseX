@@ -1,7 +1,6 @@
 #include "Particle/Rendering/ParticlePass.h"
 #include "Core/Log.h"
 #include "Particle/GPU/IParticleSimulator.h"
-#include "Particle/GPU/ParticleSorter.h"
 #include "Particle/ParticleSystem.h"
 #include "Particle/ParticleSystemInstance.h"
 #include "Particle/Rendering/ParticleRenderer.h"
@@ -157,10 +156,9 @@ void ParticlePass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    // Sort particles by distance if enabled
-    if (m_sortingEnabled && m_sorter)
+    if (m_sortingEnabled)
     {
-        SortParticlesByDistance(view);
+        RecordSortingFallback();
     }
 
     RHITextureView* colorTargetView = nullptr;
@@ -264,15 +262,14 @@ void ParticlePass::Execute(RHICommandContext& ctx, const ViewData& view)
     ctx.EndRenderPass();
 }
 
-void ParticlePass::SortParticlesByDistance(const ViewData& view)
+void ParticlePass::RecordSortingFallback()
 {
-    if (!m_sorter)
+    if (!m_sortingFallbackReason.empty())
         return;
 
-    // Sort each instance's particles
-    // This is done per-instance as each has its own particle buffer
-    // For now, sorting is handled by the CPU simulator or GPU sorter separately
-    (void)view;
+    m_sortingFallbackReason =
+        "Particle sorting is deferred to Render-owned feature passes; legacy ParticlePass preserves batch order";
+    RVX_CORE_WARN("ParticlePass: {}", m_sortingFallbackReason);
 }
 
 } // namespace RVX::Particle

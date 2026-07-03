@@ -2,11 +2,12 @@
 
 /**
  * @file ParticleSorter.h
- * @brief GPU-based particle sorting for correct transparency rendering
+ * @brief Unsupported particle sorting diagnostic contract
  */
 
 #include "Particle/ParticleTypes.h"
-#include "RHI/RHI.h"
+
+#include <string>
 
 namespace RVX::Particle
 {
@@ -20,16 +21,16 @@ namespace RVX::Particle
     };
 
     /**
-     * @brief GPU-based particle sorter using Bitonic Sort
-     * 
-     * Implements GPU parallel bitonic sort for back-to-front
-     * particle rendering order (required for correct transparency).
+     * @brief Compatibility diagnostic for deferred particle sorting.
+     *
+     * Particle no longer owns GPU sorting resources. Render-owned feature
+     * passes are expected to consume particle snapshots and provide sorting.
      */
     class ParticleSorter
     {
     public:
         ParticleSorter() = default;
-        ~ParticleSorter();
+        ~ParticleSorter() = default;
 
         // Non-copyable
         ParticleSorter(const ParticleSorter&) = delete;
@@ -39,59 +40,33 @@ namespace RVX::Particle
         // Lifecycle
         // =====================================================================
 
-        void Initialize(IRHIDevice* device, uint32 maxParticles);
+        void Initialize(uint32 maxParticles);
         void Shutdown();
-        bool IsInitialized() const { return m_device != nullptr; }
+        bool IsInitialized() const { return m_initialized; }
+        bool IsSupported() const { return false; }
+        const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
+        uint32 GetMaxParticles() const { return m_maxParticles; }
+        uint32 GetLastRequestedParticleCount() const { return m_lastRequestedParticleCount; }
 
         // =====================================================================
         // Sorting
         // =====================================================================
 
         /**
-         * @brief Sort particles by distance to camera
-         * @param ctx Command context
-         * @param particleBuffer Buffer containing particle data
-         * @param indexBuffer Output: sorted index buffer
+         * @brief Report that particle sorting is not owned by Particle.
          * @param particleCount Number of particles to sort
          * @param cameraPosition Camera world position
+         * @return Always false until a Render-owned sorting pass is connected
          */
-        void Sort(RHICommandContext& ctx,
-                  RHIBuffer* particleBuffer,
-                  RHIBuffer* indexBuffer,
-                  uint32 particleCount,
-                  const Vec3& cameraPosition);
-
-        // =====================================================================
-        // Pipeline Management
-        // =====================================================================
-
-        void SetKeyGenPipeline(RHIPipeline* pipeline) { m_keyGenPipeline = pipeline; }
-        void SetBitonicSortPipeline(RHIPipeline* pipeline) { m_bitonicSortPipeline = pipeline; }
-        void SetBitonicMergePipeline(RHIPipeline* pipeline) { m_bitonicMergePipeline = pipeline; }
+        bool Sort(uint32 particleCount, const Vec3& cameraPosition);
 
     private:
-        void GenerateSortKeys(RHICommandContext& ctx, 
-                             RHIBuffer* particleBuffer,
-                             uint32 particleCount,
-                             const Vec3& cameraPosition);
-        
-        void BitonicSort(RHICommandContext& ctx, uint32 count);
-        void ScatterToOutput(RHICommandContext& ctx, RHIBuffer* indexBuffer, uint32 count);
-
-        IRHIDevice* m_device = nullptr;
+        bool m_initialized = false;
         uint32 m_maxParticles = 0;
-
-        // Sort key buffer (distance + index pairs)
-        RHIBufferRef m_sortKeyBuffer;
-        RHIBufferRef m_sortKeyBufferBack;
-
-        // Constants buffer
-        RHIBufferRef m_sortConstantsBuffer;
-
-        // Pipelines
-        RHIPipeline* m_keyGenPipeline = nullptr;
-        RHIPipeline* m_bitonicSortPipeline = nullptr;
-        RHIPipeline* m_bitonicMergePipeline = nullptr;
+        uint32 m_lastRequestedParticleCount = 0;
+        Vec3 m_lastRequestedCameraPosition{0.0f, 0.0f, 0.0f};
+        std::string m_unsupportedReason =
+            "Particle sorting is deferred to Render-owned feature passes";
     };
 
 } // namespace RVX::Particle

@@ -1,5 +1,6 @@
 #include "Core/Log.h"
 #include "Particle/GPU/CPUParticleSimulator.h"
+#include "Particle/GPU/ParticleSorter.h"
 #include "Particle/ParticleComponent.h"
 #include "Particle/ParticleSystem.h"
 #include "Particle/ParticleSystemInstance.h"
@@ -656,6 +657,7 @@ TEST(ParticleValidation, ParticleSubsystemProductionDeviceAcquisitionSourceGuard
     EXPECT_EQ(subsystemSource.find("SetRenderSubsystem"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("->GetDevice()"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("->GetSceneRenderer()"), std::string::npos);
+    EXPECT_EQ(subsystemSource.find("ParticleSorter"), std::string::npos);
     EXPECT_NE(subsystemSource.find("AddPreGraphPrepareCallback"), std::string::npos);
     EXPECT_NE(subsystemSource.find("RemovePreGraphPrepareCallback"), std::string::npos);
 
@@ -774,6 +776,50 @@ TEST(ParticleValidation, TrailRendererBuildsCpuMeshWithoutRHI)
     EXPECT_TRUE(trailRenderer.GetVertices().empty());
     EXPECT_TRUE(trailRenderer.GetIndices().empty());
     EXPECT_EQ(trailRenderer.GetIndexCount(), 0u);
+}
+
+TEST(ParticleValidation, ParticleSorterReportsUnsupportedWithoutRHI)
+{
+    EnsureLogInitialized();
+
+    const std::string sorterHeader =
+        ReadSourceFile("Particle/Private/Particle/GPU/ParticleSorter.h");
+    const std::string sorterSource =
+        ReadSourceFile("Particle/Private/GPU/ParticleSorter.cpp");
+    const std::string passHeader =
+        ReadSourceFile("Particle/Private/Particle/Rendering/ParticlePass.h");
+    const std::string passSource =
+        ReadSourceFile("Particle/Private/Rendering/ParticlePass.cpp");
+    ASSERT_FALSE(sorterHeader.empty());
+    ASSERT_FALSE(sorterSource.empty());
+    ASSERT_FALSE(passHeader.empty());
+    ASSERT_FALSE(passSource.empty());
+
+    EXPECT_EQ(sorterHeader.find("RHI/"), std::string::npos);
+    EXPECT_EQ(sorterHeader.find("IRHIDevice"), std::string::npos);
+    EXPECT_EQ(sorterHeader.find("RHICommandContext"), std::string::npos);
+    EXPECT_EQ(sorterHeader.find("RHIBuffer"), std::string::npos);
+    EXPECT_EQ(sorterSource.find("CreateBuffer"), std::string::npos);
+    EXPECT_EQ(sorterSource.find("Dispatch("), std::string::npos);
+    EXPECT_EQ(sorterSource.find("SetPipeline"), std::string::npos);
+    EXPECT_EQ(passHeader.find("ParticleSorter"), std::string::npos);
+    EXPECT_EQ(passSource.find("ParticleSorter"), std::string::npos);
+
+    ParticleSorter sorter;
+    sorter.Initialize(128);
+    EXPECT_TRUE(sorter.IsInitialized());
+    EXPECT_FALSE(sorter.IsSupported());
+    EXPECT_EQ(sorter.GetMaxParticles(), 128u);
+    EXPECT_NE(sorter.GetUnsupportedReason().find("Render-owned"), std::string::npos);
+
+    EXPECT_FALSE(sorter.Sort(12, Vec3(1.0f, 2.0f, 3.0f)));
+    EXPECT_EQ(sorter.GetLastRequestedParticleCount(), 12u);
+    EXPECT_NE(sorter.GetUnsupportedReason().find("unsupported in Particle"), std::string::npos);
+
+    sorter.Shutdown();
+    EXPECT_FALSE(sorter.IsInitialized());
+    EXPECT_EQ(sorter.GetMaxParticles(), 0u);
+    EXPECT_EQ(sorter.GetLastRequestedParticleCount(), 0u);
 }
 
 TEST(ParticleValidation, ParticleComponentUsesSubsystemOwnedInstanceWhenRenderReady)
@@ -1258,6 +1304,7 @@ TEST(ParticleValidation, ParticlePassUsesDepthSrvColorOnlyPathWhenAvailable)
     EXPECT_TRUE(renderer.GetLastDrawStats().sceneDepthTestEnabled);
     EXPECT_TRUE(renderer.GetLastDrawStats().softParticlesEnabled);
     EXPECT_EQ(renderer.GetLastDrawStats().depthMode, ParticleDepthMode::ShaderDepth);
+    EXPECT_NE(pass.GetSortingFallbackReason().find("Render-owned"), std::string::npos);
 
     ASSERT_FALSE(device.createdDescriptorSetDescs.empty());
     const RHIDescriptorBinding* depthBinding =

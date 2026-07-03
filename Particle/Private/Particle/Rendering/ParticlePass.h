@@ -15,7 +15,6 @@ namespace RVX::Particle
 {
     class ParticleSystemInstance;
     class ParticleRenderer;
-    class ParticleSorter;
 
     /**
      * @brief Draw batch for particles with same blend mode
@@ -63,21 +62,19 @@ namespace RVX::Particle
         /// Set the renderer
         void SetRenderer(ParticleRenderer* renderer) { m_renderer = renderer; }
 
-        /// Set the sorter
-        void SetSorter(ParticleSorter* sorter) { m_sorter = sorter; }
-
         /// Enable/disable sorting
         void SetSortingEnabled(bool enabled) { m_sortingEnabled = enabled; }
 
         /// Enable/disable soft particles
         void SetSoftParticlesEnabled(bool enabled) { m_softParticlesEnabled = enabled; }
 
+        const std::string& GetSortingFallbackReason() const { return m_sortingFallbackReason; }
+
     private:
         void SortIntoBatches();
-        void SortParticlesByDistance(const ViewData& view);
+        void RecordSortingFallback();
 
         ParticleRenderer* m_renderer = nullptr;
-        ParticleSorter* m_sorter = nullptr;
 
         std::vector<ParticleSystemInstance*> m_instances;
         std::vector<ParticleDrawBatch> m_batches;
@@ -88,6 +85,7 @@ namespace RVX::Particle
 
         bool m_sortingEnabled = true;
         bool m_softParticlesEnabled = true;
+        std::string m_sortingFallbackReason;
     };
 
 } // namespace RVX::Particle

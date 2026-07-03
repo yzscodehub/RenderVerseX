@@ -192,7 +192,7 @@
   },
   "legacyBudgets": {
     "Particle->Render": 5,
-    "Particle->RHI": 4,
+    "Particle->RHI": 3,
     "Terrain->RHI": 5,
     "Water->RHI": 8
   }
