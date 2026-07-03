@@ -89,6 +89,7 @@ namespace RVX
         m_capabilities.maxComputeWorkGroupSize[2] = 1024;
 
         // Feature detection
+        m_capabilities.supportsComputePipeline = true;
         m_capabilities.supportsAsyncCompute = true;
 
         // Check for raytracing support (Apple Silicon)

@@ -136,6 +136,15 @@ rvx_add_gtest(
     TIMEOUT 30
 )
 
+# RHI public contract validation tests
+rvx_add_gtest(
+    NAME RHIContractValidation
+    SOURCES RHIContractValidation/main.cpp
+    LIBS RVX::RHI
+    LABELS unit
+    TIMEOUT 30
+)
+
 # DX12 Validation Tests
 if(RVX_ENABLE_DX12)
     rvx_add_gtest(

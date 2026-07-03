@@ -229,6 +229,7 @@ namespace RVX
         m_capabilities.supportsSeparateStencilRef = true;       // OpenGL supports glStencilFuncSeparate
         m_capabilities.supportsSplitBarrier = false;            // OpenGL doesn't support split barriers
         m_capabilities.supportsSecondaryCommandBuffer = false;  // OpenGL is immediate mode
+        m_capabilities.supportsComputePipeline = m_capabilities.opengl.hasComputeShader;
         m_capabilities.supportsAsyncCompute = false;            // OpenGL single queue
         m_capabilities.supportsDescriptorSets = true;           // Implemented through binding point remapping
         m_capabilities.supportsDynamicDescriptorOffsets = true; // Dynamic buffer offsets are applied during bind

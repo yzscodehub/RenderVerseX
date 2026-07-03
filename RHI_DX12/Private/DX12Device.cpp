@@ -874,6 +874,7 @@ namespace RVX
         }
 
         // Feature support
+        m_capabilities.supportsComputePipeline = true;
         m_capabilities.supportsAsyncCompute = true;
 
         // Raytracing

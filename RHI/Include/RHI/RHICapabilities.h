@@ -2,9 +2,13 @@
 
 #include "RHI/RHIDefinitions.h"
 #include <string>
+#include <vector>
 
 namespace RVX
 {
+    inline constexpr const char* RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID = "RVX.RHI.CapabilityReport";
+    inline constexpr uint32 RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 3;
+
     // =============================================================================
     // DX11 Threading Mode
     // =============================================================================
@@ -58,6 +62,7 @@ namespace RVX
         uint32 shaderTableBaseAlignment = 0;
         bool supportsMeshShaders = false;
         bool supportsVariableRateShading = false;
+        bool supportsComputePipeline = false;
         bool supportsAsyncCompute = false;
         bool supportsIndirectDrawCount = false;
         bool supportsConservativeRasterization = false;
@@ -161,5 +166,90 @@ namespace RVX
             uint32 maxComputeSharedMemorySize = 32768;
         } opengl;
     };
+
+    enum class RHICapabilityFeature : uint8
+    {
+        ComputePipeline = 0,
+        DescriptorSets,
+        ExplicitResourceBarriers,
+        QueueSynchronization,
+        AsyncCompute,
+        IndirectDrawCount,
+        RayTracing,
+        BindlessResources,
+        QuerySupport,
+        MemoryBudget,
+        ExplicitHeapManagement,
+    };
+
+    enum class RHICapabilityStatus : uint8
+    {
+        Unsupported = 0,
+        Supported,
+        Emulated,
+    };
+
+    const char* GetRHICapabilityFeatureName(RHICapabilityFeature feature);
+    const char* GetRHICapabilityStatusName(RHICapabilityStatus status);
+
+    struct RHICapabilityReportEntry
+    {
+        RHICapabilityFeature feature = RHICapabilityFeature::ComputePipeline;
+        RHICapabilityStatus status = RHICapabilityStatus::Unsupported;
+        bool supported = false;
+        bool emulated = false;
+        std::string requiredCapability;
+        std::string diagnosticMessage;
+    };
+
+    struct RHICapabilityReport
+    {
+        uint32 schemaVersion = RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION;
+        RHIBackendType backendType = RHIBackendType::None;
+        std::string adapterName;
+        std::string driverVersion;
+        bool validationPassed = false;
+        std::string validationMessage;
+        std::vector<RHICapabilityReportEntry> entries;
+        uint32 supportedCount = 0;
+        uint32 emulatedCount = 0;
+        uint32 unsupportedCount = 0;
+        bool renderGraphBaselineSupported = false;
+        std::vector<std::string> renderGraphBaselineMissingRequirements;
+    };
+
+    /**
+     * @brief Result of validating the public RHI capability contract.
+     */
+    struct RHICapabilityValidationResult
+    {
+        bool valid = true;
+        std::string message;
+
+        explicit operator bool() const { return valid; }
+    };
+
+    /**
+     * @brief Validate that a backend capability report is internally consistent.
+     *
+     * This checks the public contract only: feature flags must agree with their
+     * limits and fallback flags, without assuming a specific GPU model.
+     */
+    RHICapabilityValidationResult ValidateRHICapabilities(const RHICapabilities& capabilities);
+
+    /**
+     * @brief Build a versioned feature capability report for diagnostics/tooling.
+     */
+    RHICapabilityReport BuildRHICapabilityReport(const RHICapabilities& capabilities);
+
+    /**
+     * @brief Export a stable, human-readable capability report for logs/tools.
+     */
+    std::string ExportRHICapabilityReportText(const RHICapabilityReport& report);
+
+    /**
+     * @brief Export a stable machine-readable capability report for tools/CI.
+     */
+    std::string ExportRHICapabilityReportJson(const RHICapabilityReport& report);
 
 } // namespace RVX

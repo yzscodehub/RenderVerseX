@@ -48,7 +48,6 @@ target_include_directories(RVX_RHI_DX11 PRIVATE
 
 target_link_libraries(RVX_RHI_DX11 PUBLIC
     RVX::RHI
-    RVX::ShaderCompiler
 )
 
 # Windows SDK libraries

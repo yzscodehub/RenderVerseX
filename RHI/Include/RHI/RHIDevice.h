@@ -220,6 +220,18 @@ namespace RVX
         // Capabilities
         // =========================================================================
         virtual const RHICapabilities& GetCapabilities() const = 0;
+        virtual RHICapabilityReport GetCapabilityReport() const
+        {
+            return BuildRHICapabilityReport(GetCapabilities());
+        }
+        virtual std::string ExportCapabilityReportText() const
+        {
+            return ExportRHICapabilityReportText(GetCapabilityReport());
+        }
+        virtual std::string ExportCapabilityReportJson() const
+        {
+            return ExportRHICapabilityReportJson(GetCapabilityReport());
+        }
         virtual RHIBackendType GetBackendType() const = 0;
     };
 

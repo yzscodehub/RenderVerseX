@@ -926,6 +926,7 @@ namespace RVX
         m_capabilities.supportsSeparateStencilRef = true;       // Vulkan supports separate stencil refs
         m_capabilities.supportsSplitBarrier = false;            // Event-based split barriers are not implemented yet
         m_capabilities.supportsSecondaryCommandBuffer = true;   // Vulkan supports secondary command buffers
+        m_capabilities.supportsComputePipeline = true;          // Vulkan exposes compute pipelines in the base API
         m_capabilities.supportsAsyncCompute = true;             // Vulkan supports async compute
         m_capabilities.supportsDescriptorSets = true;
         m_capabilities.supportsDynamicDescriptorOffsets = true;

@@ -344,6 +344,7 @@ namespace RVX
         m_capabilities.supportsRaytracing = false;
         m_capabilities.supportsMeshShaders = false;
         m_capabilities.supportsVariableRateShading = false;
+        m_capabilities.supportsComputePipeline = true;
         m_capabilities.supportsAsyncCompute = false;  // Single queue
 
         // Dynamic state and advanced features

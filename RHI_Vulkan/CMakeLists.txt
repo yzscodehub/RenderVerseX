@@ -23,7 +23,6 @@ target_include_directories(RVX_RHI_Vulkan PUBLIC
 
 target_link_libraries(RVX_RHI_Vulkan PUBLIC
     RVX::RHI
-    RVX::ShaderCompiler
     Vulkan::Vulkan
     GPUOpen::VulkanMemoryAllocator
 )
