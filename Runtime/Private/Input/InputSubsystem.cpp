@@ -8,8 +8,6 @@
 #include "Runtime/Input/VirtualJoystick.h"
 #include "Runtime/Window/WindowSubsystem.h"
 #include "HAL/HAL.h"
-#include "GLFW/GLFWInputBackend.h"
-#include "GLFW/GLFWGamepadBackend.h"
 #include "Core/Log.h"
 
 namespace RVX
@@ -31,7 +29,7 @@ void InputSubsystem::Initialize()
     RVX_CORE_INFO("InputSubsystem initializing...");
 
     // Create gamepad backend
-    m_gamepadBackend = std::make_unique<HAL::GLFWGamepadBackend>();
+    m_gamepadBackend = HAL::CreateGamepadBackend();
 
     // Create gesture recognizer
     m_gestureRecognizer = std::make_unique<GestureRecognizer>();
@@ -81,10 +79,7 @@ void InputSubsystem::SetWindow(Window* window)
     
     if (window)
     {
-        // Create GLFW backend using internal handle (GLFWwindow*)
-        m_backend = std::make_unique<HAL::GLFWInputBackend>(
-            static_cast<GLFWwindow*>(window->GetInternalHandle())
-        );
+        m_backend = HAL::CreateInputBackendForWindow(window->GetInternalHandle());
         
         // Initialize mouse position
         const auto& state = m_input.GetState();
@@ -137,9 +132,7 @@ void InputSubsystem::Tick(float deltaTime)
     if (m_gamepadBackend)
     {
         m_gamepadBackend->Poll(m_gamepadStates);
-        
-        // Update vibration timers
-        static_cast<HAL::GLFWGamepadBackend*>(m_gamepadBackend.get())->UpdateVibration(deltaTime);
+        m_gamepadBackend->Tick(deltaTime);
 
         // Update previous button states
         for (auto& pad : m_gamepadStates)

@@ -29,16 +29,13 @@ namespace RVX::HAL
         ~GLFWGamepadBackend() override;
 
         void Poll(std::array<GamepadState, MAX_GAMEPADS>& states) override;
+        void Tick(float deltaTime) override;
         bool SupportsVibration() const override;
         void SetVibration(int gamepadIndex, const GamepadVibration& vibration) override;
         void StopVibration(int gamepadIndex) override;
 
-        /**
-         * @brief Update vibration timers (call each frame)
-         */
-        void UpdateVibration(float deltaTime);
-
     private:
+        void UpdateVibration(float deltaTime);
         void PollGamepad(int index, GamepadState& state);
 
 #if RVX_XINPUT_VIBRATION
