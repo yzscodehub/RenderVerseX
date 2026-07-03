@@ -30,6 +30,7 @@ namespace RVX::Particle
         bool enableGPUSimulation = true;        ///< Prefer GPU simulation when available
         bool enableSorting = true;              ///< Enable transparency sorting
         bool enableSoftParticles = true;        ///< Enable soft particle depth fade
+        bool enableLegacyRenderPassRegistration = false; ///< Compatibility-only legacy render registration path
         float globalSimulationSpeed = 1.0f;     ///< Global simulation speed multiplier
         bool deterministicCpuSimulation = false; ///< Use a fixed CPU simulator seed for reproducible captures
         uint32 cpuSimulationSeed = 0;            ///< Seed used when deterministicCpuSimulation is enabled
@@ -123,7 +124,7 @@ namespace RVX::Particle
         /// Check if GPU simulation is supported
         bool IsGPUSimulationSupported() const { return m_gpuSimulationSupported; }
 
-        /// Check whether the subsystem is connected to the main render frame.
+        /// Check whether the compatibility render path is connected to the main frame.
         bool IsRenderIntegrationReady() const { return m_renderIntegrationReady; }
 
         /// Human-readable reason when render integration is unavailable.

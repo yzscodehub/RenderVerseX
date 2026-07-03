@@ -174,7 +174,17 @@ const ParticleRendererDrawStats& ParticleSubsystem::GetLastRenderDrawStats() con
 
 void ParticleSubsystem::CreateRenderComponents()
 {
-    // Create renderer
+    if (!m_config.enableLegacyRenderPassRegistration)
+    {
+        m_renderState->renderer.reset();
+        if (m_config.enableSorting)
+        {
+            RVX_CORE_WARN("ParticleSubsystem: particle sorting is deferred to Render-owned feature passes");
+        }
+        return;
+    }
+
+    // Create legacy renderer for compatibility and focused validation paths.
     m_renderState->renderer = std::make_unique<ParticleRenderer>();
     if (m_renderState->rendererConfigOverride)
     {
@@ -194,6 +204,14 @@ void ParticleSubsystem::CreateRenderComponents()
 
 void ParticleSubsystem::RegisterRenderIntegration()
 {
+    if (!m_config.enableLegacyRenderPassRegistration)
+    {
+        MarkRenderIntegrationUnsupported(
+            "Legacy ParticlePass registration is disabled; Render-owned particle feature pass consumes snapshots");
+        RVX_CORE_INFO("ParticleSubsystem: {}", m_renderIntegrationUnsupportedReason);
+        return;
+    }
+
     if (!m_renderState->renderHost)
     {
         MarkRenderIntegrationUnsupported("Particle render integration host is unavailable for pass registration");

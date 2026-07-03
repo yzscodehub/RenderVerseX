@@ -612,6 +612,49 @@ TEST(ParticleValidation, SceneRendererPreGraphCallbacksUseOwnerTokens)
     EXPECT_EQ(renderer.GetPreGraphPrepareCallbackCount(), 0u);
 }
 
+TEST(ParticleValidation, ParticleSubsystemDefaultsToSnapshotPathWithoutLegacyPass)
+{
+    EnsureLogInitialized();
+    ParticleSubsystemConfig defaultConfig;
+    EXPECT_FALSE(defaultConfig.enableLegacyRenderPassRegistration);
+
+    FakeDevice device;
+    SceneRenderer renderer;
+    SceneRendererParticleRenderHost renderHost(renderer);
+    ParticleSubsystem subsystem;
+    ParticleSubsystemRenderAccess::SetDeviceForTesting(subsystem, &device);
+    ParticleSubsystemRenderAccess::SetRenderHostForTesting(subsystem, &renderHost);
+    subsystem.GetConfig().enableGPUSimulation = false;
+    subsystem.Initialize();
+
+    EXPECT_FALSE(subsystem.IsRenderIntegrationReady());
+    EXPECT_EQ(ParticleSubsystemRenderAccess::GetRenderPassForTesting(subsystem), nullptr);
+    EXPECT_EQ(renderer.GetPassCount(), 0u);
+    EXPECT_EQ(renderer.GetPreGraphPrepareCallbackCount(), 0u);
+    EXPECT_FALSE(subsystem.GetStatistics().renderPassRegistered);
+    EXPECT_FALSE(subsystem.GetStatistics().preGraphCallbackRegistered);
+    EXPECT_NE(subsystem.GetRenderIntegrationUnsupportedReason().find("Legacy ParticlePass registration is disabled"),
+              std::string::npos);
+
+    auto system = ParticleSystem::CreateSimple("SnapshotProductionDefault");
+    system->maxParticles = 16;
+    ParticleSystemInstance* instance = subsystem.CreateInstance(system);
+    ASSERT_NE(instance, nullptr);
+    instance->Play();
+    subsystem.Simulate(0.25f);
+    ASSERT_GT(instance->GetAliveCount(), 0u);
+
+    ParticleRenderSnapshot snapshot;
+    EXPECT_TRUE(subsystem.BuildRenderSnapshot(snapshot));
+    ASSERT_EQ(snapshot.items.size(), 1u);
+    EXPECT_EQ(snapshot.items.front().payloadStatus, ParticleRenderSnapshotPayloadStatus::MetadataOnly);
+    EXPECT_FALSE(snapshot.items.front().renderPayloadAvailable);
+    EXPECT_NE(snapshot.items.front().renderPayloadReason.find("Render-owned particle draw data extraction"),
+              std::string::npos);
+
+    subsystem.Deinitialize();
+}
+
 TEST(ParticleValidation, ParticleSubsystemRegistersPassAndCallbackIntoSceneRenderer)
 {
     EnsureLogInitialized();
@@ -623,6 +666,7 @@ TEST(ParticleValidation, ParticleSubsystemRegistersPassAndCallbackIntoSceneRende
     ParticleSubsystemRenderAccess::SetRenderHostForTesting(subsystem, &renderHost);
     ParticleSubsystemRenderAccess::SetRendererConfigForTesting(subsystem, MakeRendererConfig());
     subsystem.GetConfig().enableGPUSimulation = false;
+    subsystem.GetConfig().enableLegacyRenderPassRegistration = true;
     subsystem.Initialize();
 
     EXPECT_TRUE(subsystem.IsRenderIntegrationReady()) << subsystem.GetRenderIntegrationUnsupportedReason();
@@ -672,6 +716,7 @@ TEST(ParticleValidation, ParticleSubsystemDoesNotReportReadyWhenRendererUnsuppor
     ParticleSubsystemRenderAccess::SetRenderHostForTesting(subsystem, &renderHost);
     ParticleSubsystemRenderAccess::SetRendererConfigForTesting(subsystem, MakeRendererConfig());
     subsystem.GetConfig().enableGPUSimulation = false;
+    subsystem.GetConfig().enableLegacyRenderPassRegistration = true;
     subsystem.Initialize();
 
     EXPECT_FALSE(subsystem.IsRenderIntegrationReady());
@@ -707,6 +752,8 @@ TEST(ParticleValidation, ParticleSubsystemProductionDeviceAcquisitionSourceGuard
     EXPECT_EQ(subsystemSource.find("->GetDevice()"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("->GetSceneRenderer()"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("ParticleSorter"), std::string::npos);
+    EXPECT_NE(subsystemSource.find("enableLegacyRenderPassRegistration"), std::string::npos);
+    EXPECT_NE(subsystemSource.find("Legacy ParticlePass registration is disabled"), std::string::npos);
     EXPECT_NE(subsystemSource.find("AddPreGraphPrepareCallback"), std::string::npos);
     EXPECT_NE(subsystemSource.find("RemovePreGraphPrepareCallback"), std::string::npos);
 
@@ -908,6 +955,7 @@ TEST(ParticleValidation, ParticleComponentUsesSubsystemOwnedInstanceWhenRenderRe
     ParticleSubsystemRenderAccess::SetRenderHostForTesting(subsystem, &renderHost);
     ParticleSubsystemRenderAccess::SetRendererConfigForTesting(subsystem, MakeRendererConfig());
     subsystem.GetConfig().enableGPUSimulation = false;
+    subsystem.GetConfig().enableLegacyRenderPassRegistration = true;
     subsystem.Initialize();
     ASSERT_TRUE(subsystem.IsRenderIntegrationReady()) << subsystem.GetRenderIntegrationUnsupportedReason();
 
