@@ -4,8 +4,6 @@
 #include "Particle/ParticleSystem.h"
 #include "Particle/ParticleSystemInstance.h"
 #include "Particle/Rendering/ParticleRenderer.h"
-#include "Render/Graph/RenderGraph.h"
-#include "Render/Graph/ResourceViewCache.h"
 #include "Render/Renderer/ViewData.h"
 #include "RHI/RHIRenderPass.h"
 
@@ -125,12 +123,7 @@ void ParticlePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 
     if (m_depthTarget.IsValid())
     {
-        RHITexture* depthTexture = view.renderGraph ? view.renderGraph->GetTexture(m_depthTarget) : nullptr;
-        const bool depthSrvAvailable =
-            depthTexture &&
-            HasFlag(depthTexture->GetUsage(), RHITextureUsage::ShaderResource) &&
-            view.viewCache &&
-            view.viewCache->GetDefaultSRV(depthTexture);
+        const bool depthSrvAvailable = view.HasTextureShaderResourceView(m_depthTarget);
 
         if (m_softParticlesEnabled && depthSrvAvailable)
         {
@@ -163,12 +156,9 @@ void ParticlePass::Execute(RHICommandContext& ctx, const ViewData& view)
 
     RHITextureView* colorTargetView = nullptr;
     RHITextureView* depthTargetView = nullptr;
-    if (view.renderGraph && view.viewCache && m_colorTarget.IsValid())
+    if (m_colorTarget.IsValid())
     {
-        if (RHITexture* colorTarget = view.renderGraph->GetTexture(m_colorTarget))
-        {
-            colorTargetView = view.viewCache->GetDefaultRTV(colorTarget);
-        }
+        colorTargetView = view.GetTextureRenderTargetView(m_colorTarget);
     }
 
     if (!colorTargetView)
@@ -178,28 +168,24 @@ void ParticlePass::Execute(RHICommandContext& ctx, const ViewData& view)
     }
 
     RHITextureView* sceneDepthView = nullptr;
-    if (view.renderGraph && view.viewCache && m_depthTarget.IsValid())
+    if (m_depthTarget.IsValid())
     {
-        RHITexture* depthTexture = view.renderGraph->GetTexture(m_depthTarget);
-        if (depthTexture)
+        if (m_depthMode == ParticleDepthMode::ShaderDepth)
         {
-            if (m_depthMode == ParticleDepthMode::ShaderDepth)
+            sceneDepthView = view.GetTextureShaderResourceView(m_depthTarget);
+            if (!sceneDepthView)
             {
-                sceneDepthView = view.viewCache->GetDefaultSRV(depthTexture);
-                if (!sceneDepthView)
-                {
-                    RVX_CORE_WARN("ParticlePass: scene depth SRV unavailable during execute; shader depth disabled");
-                    m_depthMode = ParticleDepthMode::None;
-                }
+                RVX_CORE_WARN("ParticlePass: scene depth SRV unavailable during execute; shader depth disabled");
+                m_depthMode = ParticleDepthMode::None;
             }
-            else if (m_depthMode == ParticleDepthMode::FixedFunction)
+        }
+        else if (m_depthMode == ParticleDepthMode::FixedFunction)
+        {
+            depthTargetView = view.GetTextureDepthStencilView(m_depthTarget);
+            if (!depthTargetView)
             {
-                depthTargetView = view.viewCache->GetDefaultDSV(depthTexture);
-                if (!depthTargetView)
-                {
-                    RVX_CORE_WARN("ParticlePass: depth target view unavailable during execute; fixed depth disabled");
-                    m_depthMode = ParticleDepthMode::None;
-                }
+                RVX_CORE_WARN("ParticlePass: depth target view unavailable during execute; fixed depth disabled");
+                m_depthMode = ParticleDepthMode::None;
             }
         }
     }

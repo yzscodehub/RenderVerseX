@@ -786,6 +786,32 @@ TEST(ParticleValidation, ParticleRendererUsesLocalViewContract)
     EXPECT_EQ(rendererSource.find("const ViewData&"), std::string::npos);
 }
 
+TEST(ParticleValidation, ParticlePassUsesViewDataResourceViewHelpers)
+{
+    const std::string passSource =
+        ReadSourceFile("Particle/Private/Rendering/ParticlePass.cpp");
+    const std::string viewDataHeader =
+        ReadSourceFile("Render/Include/Render/Renderer/ViewData.h");
+    const std::string viewDataSource =
+        ReadSourceFile("Render/Private/Renderer/ViewData.cpp");
+    ASSERT_FALSE(passSource.empty());
+    ASSERT_FALSE(viewDataHeader.empty());
+    ASSERT_FALSE(viewDataSource.empty());
+
+    EXPECT_EQ(passSource.find("Render/Graph/RenderGraph.h"), std::string::npos);
+    EXPECT_EQ(passSource.find("Render/Graph/ResourceViewCache.h"), std::string::npos);
+    EXPECT_EQ(passSource.find("view.renderGraph"), std::string::npos);
+    EXPECT_EQ(passSource.find("view.viewCache"), std::string::npos);
+    EXPECT_NE(passSource.find("view.HasTextureShaderResourceView"), std::string::npos);
+    EXPECT_NE(passSource.find("view.GetTextureRenderTargetView"), std::string::npos);
+    EXPECT_NE(passSource.find("view.GetTextureShaderResourceView"), std::string::npos);
+    EXPECT_NE(passSource.find("view.GetTextureDepthStencilView"), std::string::npos);
+
+    EXPECT_NE(viewDataHeader.find("HasTextureShaderResourceView"), std::string::npos);
+    EXPECT_NE(viewDataHeader.find("GetTextureRenderTargetView"), std::string::npos);
+    EXPECT_NE(viewDataSource.find("ResourceViewCache.h"), std::string::npos);
+}
+
 TEST(ParticleValidation, TrailRendererBuildsCpuMeshWithoutRHI)
 {
     EnsureLogInitialized();

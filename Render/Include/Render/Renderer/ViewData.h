@@ -244,6 +244,26 @@ namespace RVX
                 viewportWidth, viewportHeight
             };
         }
+
+        /**
+         * @brief Check whether a render-graph texture can be sampled through the view cache.
+         */
+        bool HasTextureShaderResourceView(RGTextureHandle handle) const;
+
+        /**
+         * @brief Resolve the default render-target view for a render-graph texture.
+         */
+        RHITextureView* GetTextureRenderTargetView(RGTextureHandle handle) const;
+
+        /**
+         * @brief Resolve the default shader-resource view for a render-graph texture.
+         */
+        RHITextureView* GetTextureShaderResourceView(RGTextureHandle handle) const;
+
+        /**
+         * @brief Resolve the default depth-stencil view for a render-graph texture.
+         */
+        RHITextureView* GetTextureDepthStencilView(RGTextureHandle handle) const;
     };
 
 } // namespace RVX
