@@ -1,14 +1,17 @@
 #include "RHI/RHICapabilities.h"
 #include "RHI/RHIDefinitions.h"
+#include "Core/Diagnostics/JsonWriter.h"
 
 #include <sstream>
-#include <string_view>
 #include <utility>
 
 namespace RVX
 {
     namespace
     {
+        using Diagnostics::JsonBool;
+        using Diagnostics::JsonString;
+
         void AddCapabilityReportEntry(RHICapabilityReport& report,
                                       RHICapabilityReportEntry entry)
         {
@@ -60,45 +63,6 @@ namespace RVX
                     "supportsDefaultQueueFenceSignal|supportsExplicitQueueFenceSignal|emulatesQueueFences");
 
             return missing;
-        }
-
-        const char* JsonBool(bool value)
-        {
-            return value ? "true" : "false";
-        }
-
-        std::string JsonString(std::string_view value)
-        {
-            std::ostringstream ss;
-            ss << '"';
-            for (const char ch : value)
-            {
-                switch (ch)
-                {
-                    case '"': ss << "\\\""; break;
-                    case '\\': ss << "\\\\"; break;
-                    case '\b': ss << "\\b"; break;
-                    case '\f': ss << "\\f"; break;
-                    case '\n': ss << "\\n"; break;
-                    case '\r': ss << "\\r"; break;
-                    case '\t': ss << "\\t"; break;
-                    default:
-                        if (static_cast<unsigned char>(ch) < 0x20)
-                        {
-                            ss << "\\u00";
-                            const char* digits = "0123456789abcdef";
-                            ss << digits[(static_cast<unsigned char>(ch) >> 4) & 0x0F];
-                            ss << digits[static_cast<unsigned char>(ch) & 0x0F];
-                        }
-                        else
-                        {
-                            ss << ch;
-                        }
-                        break;
-                }
-            }
-            ss << '"';
-            return ss.str();
         }
     } // namespace
 
