@@ -932,7 +932,7 @@ def check_p20_tool_diagnostics_portable_artifact_paths_contract(root: Path) -> l
         ),
         (
             "Render/Private/Renderer/SceneRenderer.cpp",
-            "GetToolArtifactRelativePath",
+            "GetPortableFilename",
             "P20 SceneRenderer artifacts must derive bundle-relative paths.",
         ),
         (
@@ -975,7 +975,7 @@ def check_p21_tool_diagnostics_artifact_hash_contract(root: Path) -> list[Findin
         ),
         (
             "Render/Private/Renderer/SceneRenderer.cpp",
-            "GetToolArtifactContentHash",
+            "ComputeFileContentHash",
             "P21 SceneRenderer artifacts must compute stable content hashes.",
         ),
         (

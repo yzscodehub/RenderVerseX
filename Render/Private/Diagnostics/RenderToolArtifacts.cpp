@@ -4,10 +4,11 @@
  */
 
 #include "Render/Renderer/SceneRenderer.h"
+#include "Core/Diagnostics/ContentHash.h"
 #include "Core/Diagnostics/JsonWriter.h"
+#include "Core/Diagnostics/PortablePath.h"
 
 #include <algorithm>
-#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -23,6 +24,11 @@ namespace
     using Diagnostics::JsonBool;
     using Diagnostics::JsonOptionalIndex;
     using Diagnostics::JsonString;
+    using Diagnostics::ComputeFileContentHash;
+    using Diagnostics::FormatContentHash;
+    using Diagnostics::GetPortableFilename;
+    using Diagnostics::MixContentHashString;
+    using Diagnostics::MixContentHashValue;
 
     struct ToolArtifactSummaryEntry
     {
@@ -59,79 +65,6 @@ namespace
         ss << "      \"relativePath\": " << JsonString(entry.relativePath ? *entry.relativePath : std::string()) << ",\n";
         ss << "      \"path\": " << JsonString(entry.path ? *entry.path : std::string()) << "\n";
         ss << "    }" << (trailingComma ? "," : "") << "\n";
-    }
-
-    std::string GetToolArtifactRelativePath(const std::filesystem::path& artifactPath)
-    {
-        return artifactPath.filename().string();
-    }
-
-    std::string ToToolArtifactContentHashString(uint64 hash)
-    {
-        constexpr char digits[] = "0123456789abcdef";
-        std::string text(16, '0');
-        for (int32 i = 15; i >= 0; --i)
-        {
-            text[static_cast<size_t>(i)] = digits[hash & 0x0F];
-            hash >>= 4;
-        }
-        return text;
-    }
-
-    void MixToolArtifactHashString(uint64& hash, const std::string& value)
-    {
-        for (char ch : value)
-        {
-            hash ^= static_cast<uint8>(ch);
-            hash *= 1099511628211ull;
-        }
-        hash ^= 0xFFu;
-        hash *= 1099511628211ull;
-    }
-
-    void MixToolArtifactHashValue(uint64& hash, uint64 value)
-    {
-        MixToolArtifactHashString(hash, std::to_string(value));
-    }
-
-    std::string GetToolArtifactContentHash(const std::string& path)
-    {
-        if (path.empty())
-        {
-            return {};
-        }
-
-        std::error_code fileError;
-        if (!std::filesystem::is_regular_file(path, fileError) || fileError)
-        {
-            return {};
-        }
-
-        std::ifstream file(path, std::ios::binary);
-        if (!file.is_open())
-        {
-            return {};
-        }
-
-        uint64 hash = 14695981039346656037ull;
-        std::array<char, 4096> buffer{};
-        while (file)
-        {
-            file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-            const std::streamsize bytesRead = file.gcount();
-            for (std::streamsize i = 0; i < bytesRead; ++i)
-            {
-                hash ^= static_cast<uint8>(buffer[static_cast<size_t>(i)]);
-                hash *= 1099511628211ull;
-            }
-        }
-
-        if (file.bad())
-        {
-            return {};
-        }
-
-        return ToToolArtifactContentHashString(hash);
     }
 
     std::string ReadToolArtifactText(const std::string& path)
@@ -237,20 +170,20 @@ namespace
             return {};
         }
 
-        uint64 hash = 14695981039346656037ull;
-        MixToolArtifactHashString(hash, result.captureBaseName);
-        MixToolArtifactHashValue(hash, result.frameIndex);
-        MixToolArtifactHashValue(hash, result.toolDiagnosticsSchemaVersion);
-        MixToolArtifactHashValue(hash, result.frameDiagnosticsSchemaVersion);
-        MixToolArtifactHashValue(hash, result.renderGraphDiagnosticsSchemaVersion);
-        MixToolArtifactHashValue(hash, result.rhiCapabilityReportSchemaVersion);
-        MixToolArtifactHashString(hash, result.renderGraphDiagnosticsSchemaId);
-        MixToolArtifactHashString(hash, result.rhiCapabilityReportSchemaId);
-        MixToolArtifactHashValue(hash, static_cast<uint64>(result.renderGraphPassCount));
-        MixToolArtifactHashValue(hash, static_cast<uint64>(result.renderGraphResourceCount));
-        MixToolArtifactHashValue(hash, result.primaryArtifactCount);
-        MixToolArtifactHashValue(hash, result.savedPrimaryArtifactCount);
-        MixToolArtifactHashValue(hash, result.totalPrimaryArtifactBytes);
+        uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+        MixContentHashString(hash, result.captureBaseName);
+        MixContentHashValue(hash, result.frameIndex);
+        MixContentHashValue(hash, result.toolDiagnosticsSchemaVersion);
+        MixContentHashValue(hash, result.frameDiagnosticsSchemaVersion);
+        MixContentHashValue(hash, result.renderGraphDiagnosticsSchemaVersion);
+        MixContentHashValue(hash, result.rhiCapabilityReportSchemaVersion);
+        MixContentHashString(hash, result.renderGraphDiagnosticsSchemaId);
+        MixContentHashString(hash, result.rhiCapabilityReportSchemaId);
+        MixContentHashValue(hash, static_cast<uint64>(result.renderGraphPassCount));
+        MixContentHashValue(hash, static_cast<uint64>(result.renderGraphResourceCount));
+        MixContentHashValue(hash, result.primaryArtifactCount);
+        MixContentHashValue(hash, result.savedPrimaryArtifactCount);
+        MixContentHashValue(hash, result.totalPrimaryArtifactBytes);
 
         std::vector<std::pair<std::string, std::pair<uint64, std::string>>> artifacts = {
             {result.toolDiagnosticsTextRelativePath,
@@ -273,12 +206,12 @@ namespace
 
         for (const auto& artifact : artifacts)
         {
-            MixToolArtifactHashString(hash, artifact.first);
-            MixToolArtifactHashValue(hash, artifact.second.first);
-            MixToolArtifactHashString(hash, artifact.second.second);
+            MixContentHashString(hash, artifact.first);
+            MixContentHashValue(hash, artifact.second.first);
+            MixContentHashString(hash, artifact.second.second);
         }
 
-        return ToToolArtifactContentHashString(hash);
+        return FormatContentHash(hash);
     }
 
     std::string GetToolDiagnosticsCaptureId(const SceneRendererToolDiagnosticsArtifactResult& result)
@@ -288,21 +221,21 @@ namespace
             return {};
         }
 
-        uint64 hash = 14695981039346656037ull;
-        MixToolArtifactHashString(hash, result.captureBaseName);
-        MixToolArtifactHashValue(hash, result.frameIndex);
-        MixToolArtifactHashValue(hash, result.toolDiagnosticsSchemaVersion);
-        MixToolArtifactHashValue(hash, result.frameDiagnosticsSchemaVersion);
-        MixToolArtifactHashValue(hash, result.renderGraphDiagnosticsSchemaVersion);
-        MixToolArtifactHashValue(hash, result.rhiCapabilityReportSchemaVersion);
-        MixToolArtifactHashString(hash, result.renderGraphDiagnosticsSchemaId);
-        MixToolArtifactHashString(hash, result.rhiCapabilityReportSchemaId);
-        MixToolArtifactHashValue(hash, result.rhiCapabilityReportJsonExpected ? 1u : 0u);
-        MixToolArtifactHashValue(hash, result.artifactSummarySchemaVersion);
-        MixToolArtifactHashValue(hash, result.artifactValidationSchemaVersion);
-        MixToolArtifactHashValue(hash, static_cast<uint64>(result.renderGraphPassCount));
-        MixToolArtifactHashValue(hash, static_cast<uint64>(result.renderGraphResourceCount));
-        return ToToolArtifactContentHashString(hash);
+        uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+        MixContentHashString(hash, result.captureBaseName);
+        MixContentHashValue(hash, result.frameIndex);
+        MixContentHashValue(hash, result.toolDiagnosticsSchemaVersion);
+        MixContentHashValue(hash, result.frameDiagnosticsSchemaVersion);
+        MixContentHashValue(hash, result.renderGraphDiagnosticsSchemaVersion);
+        MixContentHashValue(hash, result.rhiCapabilityReportSchemaVersion);
+        MixContentHashString(hash, result.renderGraphDiagnosticsSchemaId);
+        MixContentHashString(hash, result.rhiCapabilityReportSchemaId);
+        MixContentHashValue(hash, result.rhiCapabilityReportJsonExpected ? 1u : 0u);
+        MixContentHashValue(hash, result.artifactSummarySchemaVersion);
+        MixContentHashValue(hash, result.artifactValidationSchemaVersion);
+        MixContentHashValue(hash, static_cast<uint64>(result.renderGraphPassCount));
+        MixContentHashValue(hash, static_cast<uint64>(result.renderGraphResourceCount));
+        return FormatContentHash(hash);
     }
 
     uint64 GetToolArtifactFileSize(const std::string& path, bool& exists)
@@ -348,17 +281,17 @@ namespace
         result.manifestJsonBytes =
             GetToolArtifactFileSize(result.manifestJsonPath, result.manifestJsonExists);
         result.toolDiagnosticsTextContentHash =
-            GetToolArtifactContentHash(result.toolDiagnosticsTextPath);
+            ComputeFileContentHash(result.toolDiagnosticsTextPath);
         result.renderGraphGraphvizContentHash =
-            GetToolArtifactContentHash(result.renderGraphGraphvizPath);
+            ComputeFileContentHash(result.renderGraphGraphvizPath);
         result.renderGraphDiagnosticsTextContentHash =
-            GetToolArtifactContentHash(result.renderGraphDiagnosticsTextPath);
+            ComputeFileContentHash(result.renderGraphDiagnosticsTextPath);
         result.renderGraphDiagnosticsJsonContentHash =
-            GetToolArtifactContentHash(result.renderGraphDiagnosticsJsonPath);
+            ComputeFileContentHash(result.renderGraphDiagnosticsJsonPath);
         result.rhiCapabilityReportJsonContentHash =
-            GetToolArtifactContentHash(result.rhiCapabilityReportJsonPath);
+            ComputeFileContentHash(result.rhiCapabilityReportJsonPath);
         result.manifestJsonContentHash =
-            GetToolArtifactContentHash(result.manifestJsonPath);
+            ComputeFileContentHash(result.manifestJsonPath);
 
         std::vector<bool> saved = {
             result.toolDiagnosticsTextSaved && result.toolDiagnosticsTextExists,
@@ -399,7 +332,7 @@ namespace
         result.artifactValidationJsonBytes =
             GetToolArtifactFileSize(result.artifactValidationJsonPath, result.artifactValidationJsonExists);
         result.artifactValidationJsonContentHash =
-            GetToolArtifactContentHash(result.artifactValidationJsonPath);
+            ComputeFileContentHash(result.artifactValidationJsonPath);
     }
 
     void PopulateToolDiagnosticsValidationSummaryStats(
@@ -1470,14 +1403,14 @@ SceneRendererToolDiagnosticsArtifactResult SceneRenderer::SaveToolDiagnosticsArt
     result.manifestJsonPath = manifestJsonPath.string();
     result.artifactSummaryJsonPath = artifactSummaryJsonPath.string();
     result.artifactValidationJsonPath = artifactValidationJsonPath.string();
-    result.toolDiagnosticsTextRelativePath = GetToolArtifactRelativePath(toolDiagnosticsTextPath);
-    result.renderGraphGraphvizRelativePath = GetToolArtifactRelativePath(renderGraphGraphvizPath);
-    result.renderGraphDiagnosticsTextRelativePath = GetToolArtifactRelativePath(renderGraphDiagnosticsTextPath);
-    result.renderGraphDiagnosticsJsonRelativePath = GetToolArtifactRelativePath(renderGraphDiagnosticsJsonPath);
-    result.rhiCapabilityReportJsonRelativePath = GetToolArtifactRelativePath(rhiCapabilityReportJsonPath);
-    result.manifestJsonRelativePath = GetToolArtifactRelativePath(manifestJsonPath);
-    result.artifactSummaryJsonRelativePath = GetToolArtifactRelativePath(artifactSummaryJsonPath);
-    result.artifactValidationJsonRelativePath = GetToolArtifactRelativePath(artifactValidationJsonPath);
+    result.toolDiagnosticsTextRelativePath = GetPortableFilename(toolDiagnosticsTextPath);
+    result.renderGraphGraphvizRelativePath = GetPortableFilename(renderGraphGraphvizPath);
+    result.renderGraphDiagnosticsTextRelativePath = GetPortableFilename(renderGraphDiagnosticsTextPath);
+    result.renderGraphDiagnosticsJsonRelativePath = GetPortableFilename(renderGraphDiagnosticsJsonPath);
+    result.rhiCapabilityReportJsonRelativePath = GetPortableFilename(rhiCapabilityReportJsonPath);
+    result.manifestJsonRelativePath = GetPortableFilename(manifestJsonPath);
+    result.artifactSummaryJsonRelativePath = GetPortableFilename(artifactSummaryJsonPath);
+    result.artifactValidationJsonRelativePath = GetPortableFilename(artifactValidationJsonPath);
 
     PopulateToolDiagnosticsCaptureMetadata(result, m_toolDiagnosticsSnapshot, outputDirectory, baseNameString);
 
