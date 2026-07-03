@@ -27,7 +27,11 @@ namespace
         }
 
         const std::string name = effect->GetName();
-        return name == "ChromaticAberration" || name == "ColorGrading" || name == "FXAA" || name == "Vignette";
+        return name == "ChromaticAberration" ||
+               name == "ColorGrading" ||
+               name == "FilmGrain" ||
+               name == "FXAA" ||
+               name == "Vignette";
     }
 
     bool IsLDROutputFormat(RHIFormat format)

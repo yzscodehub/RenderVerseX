@@ -49,6 +49,7 @@ namespace RVX
     class ChromaticAberrationPass;
     class ColorGradingPass;
     class FXAAPass;
+    class FilmGrainPass;
     class LightManager;
     class VignettePass;
     class IRenderPass;
@@ -1312,6 +1313,7 @@ namespace RVX
         ColorGradingPass* m_colorGradingPostProcess = nullptr;
         ChromaticAberrationPass* m_chromaticAberrationPostProcess = nullptr;
         VignettePass* m_vignettePostProcess = nullptr;
+        FilmGrainPass* m_filmGrainPostProcess = nullptr;
         FXAAPass* m_fxaaPostProcess = nullptr;
 
         // Depth buffer

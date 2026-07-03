@@ -34,7 +34,7 @@ namespace
     constexpr uint64 RVX_MAX_DRAW_CONSTANTS_PER_FRAME = 8192;
     constexpr uint64 RVX_PIPELINE_HASH_OFFSET_BASIS = 0xcbf29ce484222325ull;
     constexpr uint64 RVX_PIPELINE_HASH_PRIME = 0x100000001b3ull;
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 11;
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 12;
     constexpr uint32 RVX_PIPELINE_PURPOSE_DEFAULT = 0x50445354u; // PDST
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_DRIVEN_DEFAULT = 0x47444546u; // GDEF
     constexpr uint32 RVX_PIPELINE_PURPOSE_SHADOW_DEPTH = 0x53484457u; // SHDW
@@ -59,6 +59,8 @@ namespace
         uint64 colorGradingPixelShaderHash = 0;
         uint64 chromaticAberrationVertexShaderHash = 0;
         uint64 chromaticAberrationPixelShaderHash = 0;
+        uint64 filmGrainVertexShaderHash = 0;
+        uint64 filmGrainPixelShaderHash = 0;
         uint64 fxaaVertexShaderHash = 0;
         uint64 fxaaPixelShaderHash = 0;
         uint64 vignetteVertexShaderHash = 0;
@@ -80,6 +82,7 @@ namespace
         uint64 bloomPipelineHash = 0;
         uint64 colorGradingPipelineHash = 0;
         uint64 chromaticAberrationPipelineHash = 0;
+        uint64 filmGrainPipelineHash = 0;
         uint64 fxaaPipelineHash = 0;
         uint64 vignettePipelineHash = 0;
         uint64 uiPipelineHash = 0;
@@ -258,6 +261,8 @@ namespace
                key == "colorGradingPixelShaderHash" ||
                key == "chromaticAberrationVertexShaderHash" ||
                key == "chromaticAberrationPixelShaderHash" ||
+               key == "filmGrainVertexShaderHash" ||
+               key == "filmGrainPixelShaderHash" ||
                key == "fxaaVertexShaderHash" ||
                key == "fxaaPixelShaderHash" ||
                key == "vignetteVertexShaderHash" ||
@@ -279,6 +284,7 @@ namespace
                key == "bloomPipelineHash" ||
                key == "colorGradingPipelineHash" ||
                key == "chromaticAberrationPipelineHash" ||
+               key == "filmGrainPipelineHash" ||
                key == "fxaaPipelineHash" ||
                key == "vignettePipelineHash" ||
                key == "uiPipelineHash";
@@ -371,7 +377,7 @@ namespace
             fields.emplace(std::move(key), std::move(value));
         }
 
-        if (fields.size() != 36)
+        if (fields.size() != 39)
         {
             return false;
         }
@@ -388,6 +394,8 @@ namespace
             !ReadRequiredManifestUint64(fields, "colorGradingPixelShaderHash", manifest.colorGradingPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "chromaticAberrationVertexShaderHash", manifest.chromaticAberrationVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "chromaticAberrationPixelShaderHash", manifest.chromaticAberrationPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "filmGrainVertexShaderHash", manifest.filmGrainVertexShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "filmGrainPixelShaderHash", manifest.filmGrainPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "fxaaVertexShaderHash", manifest.fxaaVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "fxaaPixelShaderHash", manifest.fxaaPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "vignetteVertexShaderHash", manifest.vignetteVertexShaderHash) ||
@@ -409,6 +417,7 @@ namespace
             !ReadRequiredManifestUint64(fields, "bloomPipelineHash", manifest.bloomPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "colorGradingPipelineHash", manifest.colorGradingPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "chromaticAberrationPipelineHash", manifest.chromaticAberrationPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "filmGrainPipelineHash", manifest.filmGrainPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "fxaaPipelineHash", manifest.fxaaPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "vignettePipelineHash", manifest.vignettePipelineHash) ||
             !ReadRequiredManifestUint64(fields, "uiPipelineHash", manifest.uiPipelineHash))
@@ -449,6 +458,8 @@ namespace
             file << "colorGradingPixelShaderHash=" << manifest.colorGradingPixelShaderHash << '\n';
             file << "chromaticAberrationVertexShaderHash=" << manifest.chromaticAberrationVertexShaderHash << '\n';
             file << "chromaticAberrationPixelShaderHash=" << manifest.chromaticAberrationPixelShaderHash << '\n';
+            file << "filmGrainVertexShaderHash=" << manifest.filmGrainVertexShaderHash << '\n';
+            file << "filmGrainPixelShaderHash=" << manifest.filmGrainPixelShaderHash << '\n';
             file << "fxaaVertexShaderHash=" << manifest.fxaaVertexShaderHash << '\n';
             file << "fxaaPixelShaderHash=" << manifest.fxaaPixelShaderHash << '\n';
             file << "vignetteVertexShaderHash=" << manifest.vignetteVertexShaderHash << '\n';
@@ -470,6 +481,7 @@ namespace
             file << "bloomPipelineHash=" << manifest.bloomPipelineHash << '\n';
             file << "colorGradingPipelineHash=" << manifest.colorGradingPipelineHash << '\n';
             file << "chromaticAberrationPipelineHash=" << manifest.chromaticAberrationPipelineHash << '\n';
+            file << "filmGrainPipelineHash=" << manifest.filmGrainPipelineHash << '\n';
             file << "fxaaPipelineHash=" << manifest.fxaaPipelineHash << '\n';
             file << "vignettePipelineHash=" << manifest.vignettePipelineHash << '\n';
             file << "uiPipelineHash=" << manifest.uiPipelineHash << '\n';
@@ -539,6 +551,8 @@ namespace
                a.colorGradingPixelShaderHash == b.colorGradingPixelShaderHash &&
                a.chromaticAberrationVertexShaderHash == b.chromaticAberrationVertexShaderHash &&
                a.chromaticAberrationPixelShaderHash == b.chromaticAberrationPixelShaderHash &&
+               a.filmGrainVertexShaderHash == b.filmGrainVertexShaderHash &&
+               a.filmGrainPixelShaderHash == b.filmGrainPixelShaderHash &&
                a.fxaaVertexShaderHash == b.fxaaVertexShaderHash &&
                a.fxaaPixelShaderHash == b.fxaaPixelShaderHash &&
                a.vignetteVertexShaderHash == b.vignetteVertexShaderHash &&
@@ -560,6 +574,7 @@ namespace
                a.bloomPipelineHash == b.bloomPipelineHash &&
                a.colorGradingPipelineHash == b.colorGradingPipelineHash &&
                a.chromaticAberrationPipelineHash == b.chromaticAberrationPipelineHash &&
+               a.filmGrainPipelineHash == b.filmGrainPipelineHash &&
                a.fxaaPipelineHash == b.fxaaPipelineHash &&
                a.vignettePipelineHash == b.vignettePipelineHash &&
                a.uiPipelineHash == b.uiPipelineHash;
@@ -770,6 +785,7 @@ void PipelineCache::Shutdown()
     m_maskedObjectVelocityPipeline.Reset();
     m_colorGradingPipeline.Reset();
     m_chromaticAberrationPipeline.Reset();
+    m_filmGrainPipeline.Reset();
     m_fxaaPipeline.Reset();
     m_vignettePipeline.Reset();
     m_uiPipeline.Reset();
@@ -840,6 +856,8 @@ void PipelineCache::Shutdown()
     m_colorGradingPixelShader.Reset();
     m_chromaticAberrationVertexShader.Reset();
     m_chromaticAberrationPixelShader.Reset();
+    m_filmGrainVertexShader.Reset();
+    m_filmGrainPixelShader.Reset();
     m_fxaaVertexShader.Reset();
     m_fxaaPixelShader.Reset();
     m_vignetteVertexShader.Reset();
@@ -878,6 +896,8 @@ void PipelineCache::Shutdown()
     m_colorGradingPsCompileResult.reset();
     m_chromaticAberrationVsCompileResult.reset();
     m_chromaticAberrationPsCompileResult.reset();
+    m_filmGrainVsCompileResult.reset();
+    m_filmGrainPsCompileResult.reset();
     m_fxaaVsCompileResult.reset();
     m_fxaaPsCompileResult.reset();
     m_vignetteVsCompileResult.reset();
@@ -922,6 +942,7 @@ bool PipelineCache::CompileShaders()
         m_shaderDir + "/PostProcess/RayTracedReflectionDenoise.hlsl";
     std::string colorGradingShaderPath = m_shaderDir + "/PostProcess/ColorGrading.hlsl";
     std::string chromaticAberrationShaderPath = m_shaderDir + "/PostProcess/ChromaticAberration.hlsl";
+    std::string filmGrainShaderPath = m_shaderDir + "/PostProcess/FilmGrain.hlsl";
     std::string fxaaShaderPath = m_shaderDir + "/PostProcess/FXAA.hlsl";
     std::string vignetteShaderPath = m_shaderDir + "/PostProcess/Vignette.hlsl";
     std::string uiShaderPath = m_shaderDir + "/UI.hlsl";
@@ -1033,6 +1054,16 @@ bool PipelineCache::CompileShaders()
         SetLastError("ChromaticAberration shader file not found: " + chromaticAberrationShaderPath);
 
         std::filesystem::path absPath = std::filesystem::absolute(chromaticAberrationShaderPath);
+        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
+        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
+        return false;
+    }
+
+    if (!std::filesystem::exists(filmGrainShaderPath))
+    {
+        SetLastError("FilmGrain shader file not found: " + filmGrainShaderPath);
+
+        std::filesystem::path absPath = std::filesystem::absolute(filmGrainShaderPath);
         RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
         RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
         return false;
@@ -1604,6 +1635,53 @@ bool PipelineCache::CompileShaders()
     m_chromaticAberrationPixelShader = chromaticAberrationPsResult.shader;
     m_chromaticAberrationPsCompileResult =
         std::make_unique<ShaderCompileResult>(std::move(chromaticAberrationPsResult.compileResult));
+
+    ShaderLoadDesc filmGrainVsDesc = vsDesc;
+    filmGrainVsDesc.path = filmGrainShaderPath;
+    filmGrainVsDesc.entryPoint = "VSMain";
+    filmGrainVsDesc.stage = RHIShaderStage::Vertex;
+    if (backend == RHIBackendType::DX11)
+    {
+        filmGrainVsDesc.targetProfile = "vs_5_0";
+    }
+
+    auto filmGrainVsResult = m_shaderManager->LoadFromFile(m_device, filmGrainVsDesc);
+    if (!filmGrainVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile FilmGrain vertex shader: " + filmGrainVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!filmGrainVsResult.shader)
+    {
+        SetLastError("Failed to create FilmGrain vertex shader");
+        return false;
+    }
+    m_filmGrainVertexShader = filmGrainVsResult.shader;
+    m_filmGrainVsCompileResult =
+        std::make_unique<ShaderCompileResult>(std::move(filmGrainVsResult.compileResult));
+
+    ShaderLoadDesc filmGrainPsDesc = filmGrainVsDesc;
+    filmGrainPsDesc.entryPoint = "PSMain";
+    filmGrainPsDesc.stage = RHIShaderStage::Pixel;
+    if (backend == RHIBackendType::DX11)
+    {
+        filmGrainPsDesc.targetProfile = "ps_5_0";
+    }
+
+    auto filmGrainPsResult = m_shaderManager->LoadFromFile(m_device, filmGrainPsDesc);
+    if (!filmGrainPsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile FilmGrain pixel shader: " + filmGrainPsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!filmGrainPsResult.shader)
+    {
+        SetLastError("Failed to create FilmGrain pixel shader");
+        return false;
+    }
+    m_filmGrainPixelShader = filmGrainPsResult.shader;
+    m_filmGrainPsCompileResult =
+        std::make_unique<ShaderCompileResult>(std::move(filmGrainPsResult.compileResult));
 
     ShaderLoadDesc fxaaVsDesc = vsDesc;
     fxaaVsDesc.path = fxaaShaderPath;
@@ -2419,6 +2497,8 @@ void PipelineCache::ProcessPipelineManifest()
     expected.colorGradingPixelShaderHash = ComputeShaderHash(m_colorGradingPsCompileResult.get());
     expected.chromaticAberrationVertexShaderHash = ComputeShaderHash(m_chromaticAberrationVsCompileResult.get());
     expected.chromaticAberrationPixelShaderHash = ComputeShaderHash(m_chromaticAberrationPsCompileResult.get());
+    expected.filmGrainVertexShaderHash = ComputeShaderHash(m_filmGrainVsCompileResult.get());
+    expected.filmGrainPixelShaderHash = ComputeShaderHash(m_filmGrainPsCompileResult.get());
     expected.fxaaVertexShaderHash = ComputeShaderHash(m_fxaaVsCompileResult.get());
     expected.fxaaPixelShaderHash = ComputeShaderHash(m_fxaaPsCompileResult.get());
     expected.vignetteVertexShaderHash = ComputeShaderHash(m_vignetteVsCompileResult.get());
@@ -2440,6 +2520,7 @@ void PipelineCache::ProcessPipelineManifest()
     expected.bloomPipelineHash = m_stats.bloomPipelineHash;
     expected.colorGradingPipelineHash = m_stats.colorGradingPipelineHash;
     expected.chromaticAberrationPipelineHash = m_stats.chromaticAberrationPipelineHash;
+    expected.filmGrainPipelineHash = m_stats.filmGrainPipelineHash;
     expected.fxaaPipelineHash = m_stats.fxaaPipelineHash;
     expected.vignettePipelineHash = m_stats.vignettePipelineHash;
     expected.uiPipelineHash = m_stats.uiPipelineHash;
@@ -3082,6 +3163,16 @@ RHIPipeline* PipelineCache::GetFXAAPipeline(RHIFormat outputFormat)
     return GetOrCreateFXAAPipeline(outputFormat).Get();
 }
 
+RHIPipeline* PipelineCache::GetFilmGrainPipeline(RHIFormat outputFormat)
+{
+    if (outputFormat == RHIFormat::Unknown)
+    {
+        return GetFilmGrainPipeline();
+    }
+
+    return GetOrCreateFilmGrainPipeline(outputFormat).Get();
+}
+
 RHIPipeline* PipelineCache::GetVignettePipeline(RHIFormat outputFormat)
 {
     if (outputFormat == RHIFormat::Unknown)
@@ -3651,6 +3742,16 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
+    m_filmGrainPipeline = GetOrCreateFilmGrainPipeline(m_toneMappingOutputFormat);
+    if (!m_filmGrainPipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create FilmGrain pipeline");
+        }
+        return false;
+    }
+
     m_fxaaPipeline = GetOrCreateFXAAPipeline(m_toneMappingOutputFormat);
     if (!m_fxaaPipeline)
     {
@@ -3709,7 +3810,7 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
-    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, Skybox pipeline, ToneMapping pipeline, Bloom pipeline, Vignette pipeline, FXAA pipeline, ColorGrading pipeline, ChromaticAberration pipeline, UI pipeline, and optional ray tracing pipelines");
+    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, Skybox pipeline, ToneMapping pipeline, Bloom pipeline, Vignette pipeline, FilmGrain pipeline, FXAA pipeline, ColorGrading pipeline, ChromaticAberration pipeline, UI pipeline, and optional ray tracing pipelines");
     return true;
 }
 
@@ -4695,6 +4796,54 @@ RHIPipelineRef PipelineCache::GetOrCreateVignettePipeline(RHIFormat outputFormat
     return pipeline;
 }
 
+RHIPipelineRef PipelineCache::GetOrCreateFilmGrainPipeline(RHIFormat outputFormat)
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildFilmGrainPipelineDesc(outputFormat);
+    if (!pipelineDesc.vertexShader)
+    {
+        SetLastError("Cannot create FilmGrain pipeline without vertex shader");
+        return {};
+    }
+    if (!pipelineDesc.pixelShader)
+    {
+        SetLastError("Cannot create FilmGrain pipeline without pixel shader");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError("Cannot create FilmGrain pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.numRenderTargets != 1 || pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create FilmGrain pipeline with invalid render target format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc, MaterialPipelineVariant::Transparent);
+    m_stats.filmGrainPipelineHash = stateHash;
+    m_stats.lastPipelineStateHash = stateHash;
+
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create FilmGrain pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
 RHIPipelineRef PipelineCache::GetOrCreateFXAAPipeline(RHIFormat outputFormat)
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildFXAAPipelineDesc(outputFormat);
@@ -5166,6 +5315,28 @@ RHIGraphicsPipelineDesc PipelineCache::BuildVignettePipelineDesc(RHIFormat outpu
     return pipelineDesc;
 }
 
+RHIGraphicsPipelineDesc PipelineCache::BuildFilmGrainPipelineDesc(RHIFormat outputFormat) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc;
+
+    pipelineDesc.vertexShader = m_filmGrainVertexShader.Get();
+    pipelineDesc.pixelShader = m_filmGrainPixelShader.Get();
+    pipelineDesc.pipelineLayout = m_postProcessPipelineLayout.Get();
+    pipelineDesc.debugName = "FilmGrainPipeline";
+
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets = 1;
+    pipelineDesc.renderTargetFormats[0] = outputFormat;
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+
+    return pipelineDesc;
+}
+
 RHIGraphicsPipelineDesc PipelineCache::BuildUIPipelineDesc(RHIFormat outputFormat) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
@@ -5301,6 +5472,10 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_chromaticAberrationVsCompileResult.get());
         if (shader == m_chromaticAberrationPixelShader.Get())
             return ComputeShaderHash(m_chromaticAberrationPsCompileResult.get());
+        if (shader == m_filmGrainVertexShader.Get())
+            return ComputeShaderHash(m_filmGrainVsCompileResult.get());
+        if (shader == m_filmGrainPixelShader.Get())
+            return ComputeShaderHash(m_filmGrainPsCompileResult.get());
         if (shader == m_fxaaVertexShader.Get())
             return ComputeShaderHash(m_fxaaVsCompileResult.get());
         if (shader == m_fxaaPixelShader.Get())

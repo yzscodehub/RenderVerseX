@@ -898,12 +898,46 @@ TEST_F(PipelineCacheValidationFixture, MissingFXAAShaderFailsWithVisibleError)
                   temp.Path() / "PostProcess" / "ColorGrading.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "ChromaticAberration.hlsl",
                   temp.Path() / "PostProcess" / "ChromaticAberration.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "FilmGrain.hlsl",
+                  temp.Path() / "PostProcess" / "FilmGrain.hlsl");
 
     FakeDevice device;
     RVX::PipelineCache cache;
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
     EXPECT_NE(cache.GetLastError().find("FXAA shader file not found"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, MissingFilmGrainShaderFailsWithVisibleError)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path sourceDir = FindShaderDirectory();
+    TempDirectory temp("rvx_pipeline_missing_film_grain_shader");
+    fs::copy_file(sourceDir / "DefaultLit.hlsl", temp.Path() / "DefaultLit.hlsl");
+    fs::copy_file(sourceDir / "DepthOnly.hlsl", temp.Path() / "DepthOnly.hlsl");
+    fs::copy(sourceDir / "Include", temp.Path() / "Include", fs::copy_options::recursive);
+    fs::create_directories(temp.Path() / "PostProcess");
+    fs::copy_file(sourceDir / "PostProcess" / "ToneMapping.hlsl",
+                  temp.Path() / "PostProcess" / "ToneMapping.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "Bloom.hlsl",
+                  temp.Path() / "PostProcess" / "Bloom.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "CameraVelocity.hlsl",
+                  temp.Path() / "PostProcess" / "CameraVelocity.hlsl");
+    fs::copy_file(sourceDir / "ObjectVelocity.hlsl", temp.Path() / "ObjectVelocity.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "ColorGrading.hlsl",
+                  temp.Path() / "PostProcess" / "ColorGrading.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "ChromaticAberration.hlsl",
+                  temp.Path() / "PostProcess" / "ChromaticAberration.hlsl");
+
+    FakeDevice device;
+    RVX::PipelineCache cache;
+
+    EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
+    EXPECT_NE(cache.GetLastError().find("FilmGrain shader file not found"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, MissingChromaticAberrationShaderFailsWithVisibleError)
@@ -988,6 +1022,8 @@ TEST_F(PipelineCacheValidationFixture, MissingVignetteShaderFailsWithVisibleErro
                   temp.Path() / "PostProcess" / "ColorGrading.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "ChromaticAberration.hlsl",
                   temp.Path() / "PostProcess" / "ChromaticAberration.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "FilmGrain.hlsl",
+                  temp.Path() / "PostProcess" / "FilmGrain.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "FXAA.hlsl",
                   temp.Path() / "PostProcess" / "FXAA.hlsl");
 
@@ -1022,6 +1058,8 @@ TEST_F(PipelineCacheValidationFixture, MissingSkyboxShaderFailsWithVisibleError)
                   temp.Path() / "PostProcess" / "ColorGrading.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "ChromaticAberration.hlsl",
                   temp.Path() / "PostProcess" / "ChromaticAberration.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "FilmGrain.hlsl",
+                  temp.Path() / "PostProcess" / "FilmGrain.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "FXAA.hlsl",
                   temp.Path() / "PostProcess" / "FXAA.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "Vignette.hlsl",
@@ -1059,6 +1097,8 @@ TEST_F(PipelineCacheValidationFixture, MissingUIShaderFailsWithVisibleError)
                   temp.Path() / "PostProcess" / "ColorGrading.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "ChromaticAberration.hlsl",
                   temp.Path() / "PostProcess" / "ChromaticAberration.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "FilmGrain.hlsl",
+                  temp.Path() / "PostProcess" / "FilmGrain.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "FXAA.hlsl",
                   temp.Path() / "PostProcess" / "FXAA.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "Vignette.hlsl",
@@ -1233,6 +1273,24 @@ TEST_F(PipelineCacheValidationFixture, VignetteShaderUsesPostProcessDescriptorLa
     EXPECT_NE(shaderSource.find("cbuffer VignetteConstants : register(b0, space0)"), std::string::npos);
     EXPECT_NE(shaderSource.find("Texture2D<float4> InputTexture : register(t1, space0)"), std::string::npos);
     EXPECT_NE(shaderSource.find("SamplerState LinearSampler : register(s2, space0)"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, FilmGrainShaderUsesPostProcessDescriptorLayout)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const std::string shaderSource =
+        ReadTextFile(FindShaderDirectory() / "PostProcess" / "FilmGrain.hlsl");
+
+    EXPECT_NE(shaderSource.find("cbuffer FilmGrainConstants : register(b0, space0)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("Texture2D<float4> InputTexture : register(t1, space0)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("SamplerState LinearSampler : register(s2, space0)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("VSMain"), std::string::npos);
+    EXPECT_NE(shaderSource.find("PSMain"), std::string::npos);
+    EXPECT_EQ(shaderSource.find("RWTexture2D"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, ColorGradingShaderUsesPostProcessDescriptorLayout)
@@ -5663,7 +5721,7 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingOperatorUsesSharedRuntimeSetti
     const auto defaultsEnd = sceneRendererSource.find("SceneRenderer::SceneRenderer()", defaultsStart);
     ASSERT_NE(defaultsEnd, std::string::npos);
     const std::string defaultsBody = sceneRendererSource.substr(defaultsStart, defaultsEnd - defaultsStart);
-    EXPECT_NE(defaultsBody.find("settings.toneMappingOperator = ToneMappingOperator::None;"), std::string::npos);
+    EXPECT_NE(defaultsBody.find("settings.toneMappingOperator = ToneMappingOperator::ACES;"), std::string::npos);
     EXPECT_NE(defaultsBody.find("settings.enableRayTracedReflections = false;"), std::string::npos);
     EXPECT_NE(defaultsBody.find("settings.enableRayTracedReflectionDenoise = true;"), std::string::npos);
 
@@ -6095,6 +6153,7 @@ TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAwa
     EXPECT_NE(firstCache.GetStats().colorGradingPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().chromaticAberrationPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().vignettePipelineHash, 0u);
+    EXPECT_NE(firstCache.GetStats().filmGrainPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().fxaaPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().skyboxPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().uiPipelineHash, 0u);
@@ -6102,11 +6161,12 @@ TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAwa
     EXPECT_NE(firstCache.GetStats().colorGradingPipelineHash, firstCache.GetStats().bloomPipelineHash);
     EXPECT_NE(firstCache.GetStats().chromaticAberrationPipelineHash, firstCache.GetStats().bloomPipelineHash);
     EXPECT_NE(firstCache.GetStats().vignettePipelineHash, firstCache.GetStats().bloomPipelineHash);
+    EXPECT_NE(firstCache.GetStats().filmGrainPipelineHash, firstCache.GetStats().bloomPipelineHash);
     EXPECT_NE(firstCache.GetStats().fxaaPipelineHash, firstCache.GetStats().bloomPipelineHash);
     EXPECT_NE(firstCache.GetStats().skyboxPipelineHash, firstCache.GetStats().toneMappingPipelineHash);
     EXPECT_NE(firstCache.GetStats().uiPipelineHash, firstCache.GetStats().bloomPipelineHash);
-    EXPECT_EQ(firstCache.GetStats().pipelineCreateCount, 14u);
-    EXPECT_EQ(firstCache.GetStats().pipelineCacheMissCount, 14u);
+    EXPECT_EQ(firstCache.GetStats().pipelineCreateCount, 15u);
+    EXPECT_EQ(firstCache.GetStats().pipelineCacheMissCount, 15u);
 }
 
 TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
@@ -6336,7 +6396,7 @@ TEST_F(PipelineCacheValidationFixture, SplitRenderTargetFormatsRouteSceneBloomAn
     EXPECT_EQ(cache.GetPostProcessIntermediateFormat(), RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(cache.GetToneMappingOutputFormat(), RVX::RHIFormat::BGRA8_UNORM);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), 14u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 15u);
     EXPECT_EQ(device.capturedGraphicsPipelines[0].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(device.capturedGraphicsPipelines[1].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(device.capturedGraphicsPipelines[2].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
@@ -6424,12 +6484,13 @@ TEST_F(PipelineCacheValidationFixture, RuntimeOutputFormatRequestsCreateMatching
     ASSERT_NE(cache.GetSkyboxPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetBloomPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetVignettePipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
+    ASSERT_NE(cache.GetFilmGrainPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetFXAAPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetColorGradingPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetChromaticAberrationPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetUIPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), initialPipelineCount + 8u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), initialPipelineCount + 9u);
     EXPECT_EQ(device.capturedGraphicsPipelines[initialPipelineCount].renderTargetFormats[0],
               RVX::RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(device.capturedGraphicsPipelines[initialPipelineCount + 1].renderTargetFormats[0],
@@ -6445,6 +6506,8 @@ TEST_F(PipelineCacheValidationFixture, RuntimeOutputFormatRequestsCreateMatching
     EXPECT_EQ(device.capturedGraphicsPipelines[initialPipelineCount + 6].renderTargetFormats[0],
               RVX::RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(device.capturedGraphicsPipelines[initialPipelineCount + 7].renderTargetFormats[0],
+              RVX::RHIFormat::RGBA8_UNORM);
+    EXPECT_EQ(device.capturedGraphicsPipelines[initialPipelineCount + 8].renderTargetFormats[0],
               RVX::RHIFormat::RGBA8_UNORM);
 }
 
@@ -6472,13 +6535,14 @@ TEST_F(PipelineCacheValidationFixture, RuntimeRenderTargetFormatSwitchRefreshesC
     ASSERT_NE(cache.GetBloomPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetToneMappingPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetVignettePipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
+    ASSERT_NE(cache.GetFilmGrainPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetFXAAPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetColorGradingPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetChromaticAberrationPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetUIPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), initialPipelineCount + 9u);
-    for (size_t index = initialPipelineCount; index < initialPipelineCount + 9u; ++index)
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), initialPipelineCount + 10u);
+    for (size_t index = initialPipelineCount; index < initialPipelineCount + 10u; ++index)
     {
         EXPECT_EQ(device.capturedGraphicsPipelines[index].renderTargetFormats[0],
                   RVX::RHIFormat::RGBA8_UNORM);
@@ -6510,10 +6574,11 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     const auto& reflectionCompositeDesc = device.capturedGraphicsPipelines[7];
     const auto& reflectionDenoiseDesc = device.capturedGraphicsPipelines[8];
     const auto& vignetteDesc = device.capturedGraphicsPipelines[9];
-    const auto& fxaaDesc = device.capturedGraphicsPipelines[10];
-    const auto& colorGradingDesc = device.capturedGraphicsPipelines[11];
-    const auto& chromaticAberrationDesc = device.capturedGraphicsPipelines[12];
-    const auto& uiDesc = device.capturedGraphicsPipelines[13];
+    const auto& filmGrainDesc = device.capturedGraphicsPipelines[10];
+    const auto& fxaaDesc = device.capturedGraphicsPipelines[11];
+    const auto& colorGradingDesc = device.capturedGraphicsPipelines[12];
+    const auto& chromaticAberrationDesc = device.capturedGraphicsPipelines[13];
+    const auto& uiDesc = device.capturedGraphicsPipelines[14];
 
     EXPECT_EQ(opaqueDesc.depthStencilFormat, RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(opaqueDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::Less);
@@ -6601,6 +6666,16 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_NE(vignetteDesc.vertexShader, nullptr);
     EXPECT_NE(vignetteDesc.pixelShader, nullptr);
     EXPECT_TRUE(vignetteDesc.inputLayout.elements.empty());
+
+    ASSERT_NE(cache.GetFilmGrainPipeline(), nullptr);
+    EXPECT_EQ(filmGrainDesc.numRenderTargets, 1u);
+    EXPECT_EQ(filmGrainDesc.renderTargetFormats[0], RVX::RHIFormat::RGBA8_UNORM);
+    EXPECT_EQ(filmGrainDesc.depthStencilFormat, RVX::RHIFormat::Unknown);
+    EXPECT_FALSE(filmGrainDesc.depthStencilState.depthTestEnable);
+    EXPECT_FALSE(filmGrainDesc.depthStencilState.depthWriteEnable);
+    EXPECT_NE(filmGrainDesc.vertexShader, nullptr);
+    EXPECT_NE(filmGrainDesc.pixelShader, nullptr);
+    EXPECT_TRUE(filmGrainDesc.inputLayout.elements.empty());
 
     ASSERT_NE(cache.GetFXAAPipeline(), nullptr);
     EXPECT_EQ(fxaaDesc.numRenderTargets, 1u);
@@ -6830,7 +6905,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata
     EXPECT_TRUE(fs::exists(temp.Path() / RVX::PipelineCache::GetManifestFileName()));
 
     const std::string manifest = ReadTextFile(temp.Path() / RVX::PipelineCache::GetManifestFileName());
-    EXPECT_NE(manifest.find("version=11"), std::string::npos);
+    EXPECT_NE(manifest.find("version=12"), std::string::npos);
     EXPECT_NE(manifest.find("skyboxVertexShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("skyboxPixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("skyboxPipelineHash="), std::string::npos);
@@ -6846,6 +6921,9 @@ TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata
     EXPECT_NE(manifest.find("vignetteVertexShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("vignettePixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("vignettePipelineHash="), std::string::npos);
+    EXPECT_NE(manifest.find("filmGrainVertexShaderHash="), std::string::npos);
+    EXPECT_NE(manifest.find("filmGrainPixelShaderHash="), std::string::npos);
+    EXPECT_NE(manifest.find("filmGrainPipelineHash="), std::string::npos);
     EXPECT_NE(manifest.find("uiVertexShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("uiPixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("uiPipelineHash="), std::string::npos);
@@ -7607,11 +7685,26 @@ TEST_F(PipelineCacheValidationFixture, FXAAPipelineCreationFailureIsVisible)
     }
 
     FakeDevice device;
-    device.failPipelineCreationAtIndex = 11;
+    device.failPipelineCreationAtIndex = 12;
     RVX::PipelineCache cache;
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("FXAA pipeline"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, FilmGrainPipelineCreationFailureIsVisible)
+{
+    if (!HasCompilerAvailable())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    device.failPipelineCreationAtIndex = 11;
+    RVX::PipelineCache cache;
+
+    EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
+    EXPECT_NE(cache.GetLastError().find("FilmGrain pipeline"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, ColorGradingPipelineCreationFailureIsVisible)
@@ -7622,7 +7715,7 @@ TEST_F(PipelineCacheValidationFixture, ColorGradingPipelineCreationFailureIsVisi
     }
 
     FakeDevice device;
-    device.failPipelineCreationAtIndex = 12;
+    device.failPipelineCreationAtIndex = 13;
     RVX::PipelineCache cache;
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
@@ -7637,7 +7730,7 @@ TEST_F(PipelineCacheValidationFixture, ChromaticAberrationPipelineCreationFailur
     }
 
     FakeDevice device;
-    device.failPipelineCreationAtIndex = 13;
+    device.failPipelineCreationAtIndex = 14;
     RVX::PipelineCache cache;
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
@@ -7652,7 +7745,7 @@ TEST_F(PipelineCacheValidationFixture, UIPipelineCreationFailureIsVisible)
     }
 
     FakeDevice device;
-    device.failPipelineCreationAtIndex = 14;
+    device.failPipelineCreationAtIndex = 15;
     RVX::PipelineCache cache;
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));

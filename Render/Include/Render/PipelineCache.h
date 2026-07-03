@@ -179,6 +179,7 @@ namespace RVX
         uint64 bloomPipelineHash = 0;
         uint64 colorGradingPipelineHash = 0;
         uint64 chromaticAberrationPipelineHash = 0;
+        uint64 filmGrainPipelineHash = 0;
         uint64 fxaaPipelineHash = 0;
         uint64 vignettePipelineHash = 0;
         uint64 uiPipelineHash = 0;
@@ -355,6 +356,12 @@ namespace RVX
          */
         RHIPipeline* GetFXAAPipeline() const { return m_fxaaPipeline.Get(); }
         RHIPipeline* GetFXAAPipeline(RHIFormat outputFormat);
+
+        /**
+         * @brief Get the fullscreen FilmGrain LDR post-process pipeline
+         */
+        RHIPipeline* GetFilmGrainPipeline() const { return m_filmGrainPipeline.Get(); }
+        RHIPipeline* GetFilmGrainPipeline(RHIFormat outputFormat);
 
         /**
          * @brief Get the fullscreen Vignette LDR post-process pipeline
@@ -673,6 +680,7 @@ namespace RVX
         RHIPipelineRef GetOrCreateRayTracedReflectionDenoisePipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateColorGradingPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateChromaticAberrationPipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateFilmGrainPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateFXAAPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateVignettePipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateUIPipeline(RHIFormat outputFormat);
@@ -700,6 +708,7 @@ namespace RVX
         RHIGraphicsPipelineDesc BuildRayTracedReflectionDenoisePipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildColorGradingPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildChromaticAberrationPipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildFilmGrainPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildFXAAPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildVignettePipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildUIPipelineDesc(RHIFormat outputFormat) const;
@@ -760,6 +769,8 @@ namespace RVX
         RHIShaderRef m_colorGradingPixelShader;
         RHIShaderRef m_chromaticAberrationVertexShader;
         RHIShaderRef m_chromaticAberrationPixelShader;
+        RHIShaderRef m_filmGrainVertexShader;
+        RHIShaderRef m_filmGrainPixelShader;
         RHIShaderRef m_fxaaVertexShader;
         RHIShaderRef m_fxaaPixelShader;
         RHIShaderRef m_vignetteVertexShader;
@@ -798,6 +809,8 @@ namespace RVX
         std::unique_ptr<ShaderCompileResult> m_colorGradingPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_chromaticAberrationVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_chromaticAberrationPsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_filmGrainVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_filmGrainPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_fxaaVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_fxaaPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_vignetteVsCompileResult;
@@ -846,6 +859,7 @@ namespace RVX
         RHIPipelineRef m_rayTracedReflectionDenoisePipeline;
         RHIPipelineRef m_colorGradingPipeline;
         RHIPipelineRef m_chromaticAberrationPipeline;
+        RHIPipelineRef m_filmGrainPipeline;
         RHIPipelineRef m_fxaaPipeline;
         RHIPipelineRef m_vignettePipeline;
         RHIPipelineRef m_uiPipeline;

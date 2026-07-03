@@ -2897,18 +2897,15 @@ TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDis
     RVX::PostProcessSettings settings;
     settings.enableDOF = true;
     settings.enableMotionBlur = true;
-    settings.enableFilmGrain = true;
     settings.enableVolumetricLighting = true;
 
     RVX::DOFPass dof;
     RVX::MotionBlurPass motionBlur;
-    RVX::FilmGrainPass filmGrain;
     RVX::VolumetricLightingPass volumetricLighting;
 
     RVX::IPostProcessPass* passes[] = {
         &dof,
         &motionBlur,
-        &filmGrain,
         &volumetricLighting,
     };
 
@@ -2920,6 +2917,20 @@ TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDis
         EXPECT_FALSE(pass->IsEnabled()) << pass->GetName();
         EXPECT_FALSE(pass->GetUnsupportedReason().empty()) << pass->GetName();
     }
+}
+
+TEST_F(RenderHonestyValidationFixture, FilmGrainRequiresResourcesBeforeSupported)
+{
+    RVX::PostProcessSettings settings;
+    settings.enableFilmGrain = true;
+
+    RVX::FilmGrainPass filmGrain;
+    filmGrain.Configure(settings);
+
+    EXPECT_TRUE(filmGrain.IsRequestedEnabled());
+    EXPECT_FALSE(filmGrain.IsSupported());
+    EXPECT_FALSE(filmGrain.IsEnabled());
+    EXPECT_FALSE(filmGrain.GetUnsupportedReason().empty());
 }
 
 TEST_F(RenderHonestyValidationFixture, TerrainMaterialLayerBufferMapFailureIsNotInitialized)

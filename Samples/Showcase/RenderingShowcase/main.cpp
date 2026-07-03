@@ -821,7 +821,7 @@ namespace
                 report.enabledFeatures.push_back("FXAA");
                 report.enabledFeatures.push_back("ColorGrading");
                 report.enabledFeatures.push_back("Vignette");
-                report.unsupportedFeatures.push_back("FilmGrain pipeline is staged for a later visual pass");
+                report.enabledFeatures.push_back("FilmGrain");
                 report.unsupportedFeatures.push_back("SSAO/TAA/SSR are diagnostic-only until their low-tier passes land");
                 break;
             case ShowcaseMode::Lighting:
@@ -1160,6 +1160,8 @@ namespace
         settings.vignetteIntensity = 0.25f;
         settings.enableChromaticAberration = false;
         settings.chromaticAberrationIntensity = 0.05f;
+        settings.enableFilmGrain = false;
+        settings.filmGrainIntensity = 0.0f;
 
         switch (quality)
         {
@@ -1179,6 +1181,8 @@ namespace
                 settings.saturation = 1.1f;
                 settings.enableVignette = true;
                 settings.vignetteIntensity = 0.28f;
+                settings.enableFilmGrain = true;
+                settings.filmGrainIntensity = 0.12f;
                 break;
             case ShowcaseQuality::Medium:
             default:
@@ -1203,6 +1207,8 @@ namespace
                 settings.vignetteIntensity = 0.32f;
                 settings.enableChromaticAberration = true;
                 settings.chromaticAberrationIntensity = 0.035f;
+                settings.enableFilmGrain = true;
+                settings.filmGrainIntensity = 0.08f;
                 RVX_CORE_INFO("Post-process preset 3: filmic grade");
                 break;
             case 3:
@@ -1226,6 +1232,7 @@ namespace
             settings.enableColorGrading = false;
             settings.enableVignette = false;
             settings.enableChromaticAberration = false;
+            settings.enableFilmGrain = false;
         }
 
         sceneRenderer->ApplyPostProcessSettings(settings);

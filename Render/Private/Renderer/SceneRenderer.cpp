@@ -24,6 +24,7 @@
 #include "Render/PostProcess/Bloom.h"
 #include "Render/PostProcess/ChromaticAberration.h"
 #include "Render/PostProcess/ColorGrading.h"
+#include "Render/PostProcess/FilmGrain.h"
 #include "Render/PostProcess/FXAA.h"
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
@@ -3271,6 +3272,7 @@ void SceneRenderer::SetupDefaultPostProcess()
     m_colorGradingPostProcess = m_postProcessStack->AddEffect<ColorGradingPass>();
     m_chromaticAberrationPostProcess = m_postProcessStack->AddEffect<ChromaticAberrationPass>();
     m_vignettePostProcess = m_postProcessStack->AddEffect<VignettePass>();
+    m_filmGrainPostProcess = m_postProcessStack->AddEffect<FilmGrainPass>();
     m_fxaaPostProcess = m_postProcessStack->AddEffect<FXAAPass>();
 
     if (m_bloomPostProcess)
@@ -3296,6 +3298,11 @@ void SceneRenderer::SetupDefaultPostProcess()
     if (m_vignettePostProcess)
     {
         m_vignettePostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
+    }
+
+    if (m_filmGrainPostProcess)
+    {
+        m_filmGrainPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
     }
 
     if (m_fxaaPostProcess)

@@ -40,6 +40,7 @@
 #include "Render/PostProcess/ChromaticAberration.h"
 #include "Render/PostProcess/ColorGrading.h"
 #include "Render/PostProcess/DOF.h"
+#include "Render/PostProcess/FilmGrain.h"
 #include "Render/PostProcess/FXAA.h"
 #include "Render/PostProcess/MotionBlur.h"
 #include "Render/PostProcess/PostProcessStack.h"
@@ -5754,6 +5755,190 @@ TEST_F(RenderPassValidationFixture, VignetteSkipsDrawWhenConstantsCannotMap)
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
 }
 
+TEST_F(RenderPassValidationFixture, FilmGrainRequiresResourcesBeforeReportingSupported)
+{
+    FilmGrainPass pass;
+    PostProcessSettings settings;
+    settings.enableFilmGrain = true;
+    pass.Configure(settings);
+
+    EXPECT_TRUE(pass.IsRequestedEnabled());
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_FALSE(pass.IsEnabled());
+    EXPECT_FALSE(pass.GetUnsupportedReason().empty());
+}
+
+TEST_F(RenderPassValidationFixture, FilmGrainAddsLiveGraphPassAndDrawsFullscreenTriangle)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    FilmGrainPass pass;
+    PostProcessSettings settings;
+    settings.enableFilmGrain = true;
+    settings.filmGrainIntensity = 0.2f;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    ASSERT_TRUE(pass.IsEnabled());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.compileValid);
+    EXPECT_EQ(stats.totalPasses, 1u);
+    EXPECT_EQ(stats.culledPasses, 0u);
+    EXPECT_EQ(stats.emptyPassUsageCount, 0u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.beginRenderPassCount, 1u);
+    EXPECT_EQ(ctx.endRenderPassCount, 1u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetFilmGrainPipeline(RHIFormat::RGBA8_UNORM));
+    ASSERT_EQ(ctx.descriptorSetSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.descriptorSetSequence[0], 0u);
+    EXPECT_EQ(ctx.drawCount, 1u);
+    EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
+    EXPECT_EQ(ctx.drawIndexedCount, 0u);
+
+    auto descriptorIt = std::find_if(
+        device.createdDescriptorSetDescs.begin(),
+        device.createdDescriptorSetDescs.end(),
+        [](const RHIDescriptorSetDesc& desc)
+        {
+            return desc.debugName && std::string(desc.debugName) == "FilmGrainDescriptorSet";
+        });
+    ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
+    EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
+}
+
+TEST_F(RenderPassValidationFixture, FilmGrainUploadsConstantsWithHLSLPacking)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    FilmGrainPass pass;
+    PostProcessSettings settings;
+    settings.enableFilmGrain = true;
+    pass.Configure(settings);
+
+    FilmGrainConfig config;
+    config.type = FilmGrainType::Colored;
+    config.intensity = 0.42f;
+    config.response = 0.65f;
+    config.size = 2.25f;
+    config.luminanceContribution = 0.75f;
+    config.colorContribution = 0.25f;
+    config.animated = true;
+    config.animationSpeed = 2.0f;
+    pass.SetConfig(config);
+    pass.SetFrameTime(1.5f);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    ASSERT_TRUE(pass.IsEnabled());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(40, 20, RHIFormat::RGBA8_UNORM));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(40, 20, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    ASSERT_EQ(ctx.drawCount, 1u);
+
+    const FakeBuffer* constants = FindCreatedBuffer(device, "FilmGrainConstants");
+    ASSERT_NE(constants, nullptr);
+    const std::vector<uint8>& storage = constants->GetStorage();
+    ASSERT_GE(storage.size(), static_cast<size_t>(48));
+
+    auto readFloat = [&storage](size_t byteOffset)
+    {
+        float value = 0.0f;
+        std::memcpy(&value, storage.data() + byteOffset, sizeof(float));
+        return value;
+    };
+
+    EXPECT_FLOAT_EQ(readFloat(0), 40.0f);
+    EXPECT_FLOAT_EQ(readFloat(4), 20.0f);
+    EXPECT_FLOAT_EQ(readFloat(8), 1.0f / 40.0f);
+    EXPECT_FLOAT_EQ(readFloat(12), 1.0f / 20.0f);
+    EXPECT_FLOAT_EQ(readFloat(16), config.intensity);
+    EXPECT_FLOAT_EQ(readFloat(20), config.response);
+    EXPECT_FLOAT_EQ(readFloat(24), config.size);
+    EXPECT_FLOAT_EQ(readFloat(28), config.luminanceContribution);
+    EXPECT_FLOAT_EQ(readFloat(32), config.colorContribution);
+    EXPECT_FLOAT_EQ(readFloat(36), 3.0f);
+    EXPECT_FLOAT_EQ(readFloat(40), static_cast<float>(static_cast<uint32>(config.type)));
+    EXPECT_FLOAT_EQ(readFloat(44), 0.0f);
+}
+
+TEST_F(RenderPassValidationFixture, FilmGrainSkipsDrawWhenConstantsCannotMap)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+
+    FilmGrainPass pass;
+    PostProcessSettings settings;
+    settings.enableFilmGrain = true;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.drawCount, 0u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 0u);
+}
+
 TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingThroughIntermediate)
 {
     ASSERT_NO_FATAL_FAILURE(Initialize());
@@ -5844,6 +6029,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     settings.enableColorGrading = true;
     settings.enableChromaticAberration = true;
     settings.enableVignette = true;
+    settings.enableFilmGrain = true;
     settings.enableFXAA = true;
 
     PostProcessStack stack;
@@ -5852,30 +6038,33 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     auto* colorGrading = stack.AddEffect<ColorGradingPass>();
     auto* chromaticAberration = stack.AddEffect<ChromaticAberrationPass>();
     auto* vignette = stack.AddEffect<VignettePass>();
+    auto* filmGrain = stack.AddEffect<FilmGrainPass>();
     auto* fxaa = stack.AddEffect<FXAAPass>();
     bloom->Configure(settings);
     toneMapping->Configure(settings);
     colorGrading->Configure(settings);
     chromaticAberration->Configure(settings);
     vignette->Configure(settings);
+    filmGrain->Configure(settings);
     fxaa->Configure(settings);
     bloom->SetResources(&pipelineCache, &viewCache);
     toneMapping->SetResources(&pipelineCache, &viewCache);
     colorGrading->SetResources(&pipelineCache, &viewCache);
     chromaticAberration->SetResources(&pipelineCache, &viewCache);
     vignette->SetResources(&pipelineCache, &viewCache);
+    filmGrain->SetResources(&pipelineCache, &viewCache);
     fxaa->SetResources(&pipelineCache, &viewCache);
 
     stack.Execute(graph, input, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.noEffectNoWork);
-    EXPECT_EQ(executeStats.enabledEffectCount, 6u);
-    EXPECT_EQ(executeStats.graphPassCount, 6u);
-    EXPECT_EQ(executeStats.transientIntermediateCount, 5u);
+    EXPECT_EQ(executeStats.enabledEffectCount, 7u);
+    EXPECT_EQ(executeStats.graphPassCount, 7u);
+    EXPECT_EQ(executeStats.transientIntermediateCount, 6u);
     EXPECT_EQ(executeStats.hdrIntermediateCount, 1u);
     EXPECT_EQ(executeStats.hdrIntermediateFormat, RHIFormat::RGBA16_FLOAT);
-    EXPECT_EQ(executeStats.ldrIntermediateCount, 4u);
+    EXPECT_EQ(executeStats.ldrIntermediateCount, 5u);
     EXPECT_EQ(executeStats.ldrIntermediateFormat, RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(executeStats.transientIntermediateFormat, RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
@@ -5885,12 +6074,12 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     graph.Compile();
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 12u);
+    EXPECT_EQ(graphStats.totalPasses, 13u);
 
     RecordingCommandContext ctx;
     graph.Execute(ctx);
 
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(12));
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(13));
     for (size_t i = 0; i < 4; ++i)
     {
         ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomPipeline");
@@ -5903,11 +6092,12 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     EXPECT_EQ(ctx.pipelineSequence[8], pipelineCache.GetColorGradingPipeline(RHIFormat::RGBA8_UNORM));
     EXPECT_EQ(ctx.pipelineSequence[9], pipelineCache.GetChromaticAberrationPipeline(RHIFormat::RGBA8_UNORM));
     EXPECT_EQ(ctx.pipelineSequence[10], pipelineCache.GetVignettePipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.pipelineSequence[11], pipelineCache.GetFXAAPipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.drawCount, 12u);
+    EXPECT_EQ(ctx.pipelineSequence[11], pipelineCache.GetFilmGrainPipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.pipelineSequence[12], pipelineCache.GetFXAAPipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.drawCount, 13u);
     EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
-    EXPECT_EQ(ctx.beginRenderPassCount, 12u);
-    EXPECT_EQ(ctx.endRenderPassCount, 12u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 13u);
+    EXPECT_EQ(ctx.endRenderPassCount, 13u);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessStackKeepsZeroIntensityVignetteAsPassThrough)
