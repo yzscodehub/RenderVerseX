@@ -236,6 +236,9 @@ public:
 
     // For reading
     bool Parse(const std::string& json);
+    bool IsReadSupported() const { return false; }
+    bool HasUnsupportedRead() const { return m_unsupportedReadAttempted; }
+    const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
 
     // =========================================================================
     // Implementation
@@ -261,11 +264,13 @@ public:
     void EndArray() override;
 
 private:
-    void* m_jsonRoot = nullptr;  // JSON library root node
-    std::vector<void*> m_nodeStack;
+    void MarkReadUnsupported(const char* operation);
+
     int m_indent = 0;
     std::string m_output;
     bool m_parseSucceeded = false;
+    bool m_unsupportedReadAttempted = false;
+    std::string m_unsupportedReason;
 };
 
 /**

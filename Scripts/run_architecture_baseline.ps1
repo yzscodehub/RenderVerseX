@@ -32,7 +32,7 @@ $baselineRegex = @(
     "ParticleValidation\.FeaturePublicHeadersDoNotIncludeRenderOrRHI",
     "ResourceInstantiationValidation\.(ModelResourceInstantiateActorUsesStaticMeshComponent|LegacyInstantiateDelegatesToActorPath|ProductionPathsDoNotCreateLegacyMeshRendererComponents|WorldLoadModelResourceReplacesSceneContent)",
     "ResourceRuntimePolicyValidation\.",
-    "RenderHonestyValidationFixture\.(PlaceholderAssetImportersFailInsteadOfReportingSuccess|PostProcessStubPassesAreUnsupportedAndDisabled|SceneRendererLegacyCollectionFallbackIsRemoved|RenderGraphCompileDiagnosticsExposeReadBeforeWrite)",
+    "RenderHonestyValidationFixture\.(JsonArchiveReadPathReportsUnsupportedInsteadOfPretendingSuccess|PlaceholderAssetImportersFailInsteadOfReportingSuccess|PostProcessStubPassesAreUnsupportedAndDisabled|SceneRendererLegacyCollectionFallbackIsRemoved|RenderGraphCompileDiagnosticsExposeReadBeforeWrite)",
     "SystemIntegration\.(SceneEntityAndManager|ResourceBasics)"
 ) -join "|"
 

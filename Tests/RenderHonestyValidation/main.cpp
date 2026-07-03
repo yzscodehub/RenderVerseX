@@ -678,6 +678,30 @@ TEST_F(RenderHonestyValidationFixture, JsonArchiveRejectsInvalidJson)
     EXPECT_TRUE(archive.Parse("{\"value\": [true, false, null, -1.25e+2]}"));
 }
 
+TEST_F(RenderHonestyValidationFixture, JsonArchiveReadPathReportsUnsupportedInsteadOfPretendingSuccess)
+{
+    RVX::JsonArchive archive(RVX::ArchiveMode::Read);
+    EXPECT_FALSE(archive.IsReadSupported());
+    ASSERT_TRUE(archive.Parse("{\"enabled\": true, \"count\": 42, \"name\": \"Loaded\"}"));
+    EXPECT_FALSE(archive.HasUnsupportedRead());
+    EXPECT_NE(archive.GetUnsupportedReason().find("Parse only validates JSON syntax"),
+              std::string::npos);
+
+    bool enabled = false;
+    RVX::int32 count = 7;
+    std::string name = "unchanged";
+    archive.Serialize("enabled", enabled);
+    archive.Serialize("count", count);
+    archive.Serialize("name", name);
+
+    EXPECT_FALSE(enabled);
+    EXPECT_EQ(count, 7);
+    EXPECT_EQ(name, "unchanged");
+    EXPECT_TRUE(archive.HasUnsupportedRead());
+    EXPECT_NE(archive.GetUnsupportedReason().find("unsupported"), std::string::npos);
+    EXPECT_NE(archive.GetUnsupportedReason().find("name"), std::string::npos);
+}
+
 TEST_F(RenderHonestyValidationFixture, PlaceholderAssetImportersFailInsteadOfReportingSuccess)
 {
     fs::path dir = MakeTempDir("rvx_asset_importers");
