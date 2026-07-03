@@ -6,6 +6,8 @@
 #include "Particle/Rendering/ParticlePass.h"
 #include "Particle/Rendering/ParticleRenderer.h"
 #include "Render/Renderer/SceneRenderer.h"
+#include "Render/RenderSubsystem.h"
+#include "Resource/ResourceSubsystem.h"
 #include "RHI/RHI.h"
 #include <algorithm>
 #include <utility>
@@ -25,6 +27,11 @@ ParticleSubsystem::~ParticleSubsystem()
 ParticleSubsystem* ParticleSubsystem::GetActiveSubsystem()
 {
     return s_activeSubsystem;
+}
+
+std::vector<SubsystemDependency> ParticleSubsystem::GetTypedDependencies() const
+{
+    return MakeDependencies<RenderSubsystem, ResourceSubsystem>();
 }
 
 void ParticleSubsystem::Initialize()
@@ -77,13 +84,24 @@ void ParticleSubsystem::SetRenderSubsystem(RenderSubsystem* renderSubsystem)
     AcquireRenderDependencies();
 }
 
+void ParticleSubsystem::SetRendererConfigForTesting(const ParticleRendererConfig& config)
+{
+    m_rendererConfigOverride = std::make_unique<ParticleRendererConfig>(config);
+}
+
+const ParticleRendererDrawStats& ParticleSubsystem::GetLastRenderDrawStats() const
+{
+    static const ParticleRendererDrawStats emptyStats;
+    return m_renderer ? m_renderer->GetLastDrawStats() : emptyStats;
+}
+
 void ParticleSubsystem::CreateRenderComponents()
 {
     // Create renderer
     m_renderer = std::make_unique<ParticleRenderer>();
-    if (m_hasRendererConfigOverride)
+    if (m_rendererConfigOverride)
     {
-        m_renderer->Initialize(m_device, m_rendererConfigOverride);
+        m_renderer->Initialize(m_device, *m_rendererConfigOverride);
     }
     else
     {

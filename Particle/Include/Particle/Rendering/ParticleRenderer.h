@@ -5,9 +5,9 @@
  * @brief Particle rendering system
  */
 
+#include "Particle/ParticleRenderStats.h"
 #include "Particle/ParticleTypes.h"
 #include "Particle/Rendering/SoftParticleConfig.h"
-#include "Particle/Rendering/TrailRenderer.h"
 #include "RHI/RHI.h"
 #include "Render/Renderer/ViewData.h"
 
@@ -20,6 +20,7 @@
 namespace RVX::Particle
 {
     class ParticleSystemInstance;
+    class TrailRenderer;
 
     /**
      * @brief Explicit renderer creation contract for billboard particle pipelines.
@@ -41,30 +42,12 @@ namespace RVX::Particle
     };
 
     /**
-     * @brief Test-visible state from the most recent particle draw attempt.
-     */
-    struct ParticleRendererDrawStats
-    {
-        ParticleDepthMode depthMode = ParticleDepthMode::None;
-        uint32 submittedVertexCount = 0;
-        uint32 submittedIndexCount = 0;
-        uint32 submittedInstanceCount = 0;
-        bool usedRealSceneDepth = false;
-        bool sceneDepthTestEnabled = false;
-        bool softParticlesEnabled = false;
-        bool drawSubmitted = false;
-        bool indexedDraw = false;
-        bool indirectDraw = false;
-        std::string softParticleFallbackReason;
-    };
-
-    /**
      * @brief Particle renderer - handles all particle rendering modes
      */
     class ParticleRenderer
     {
     public:
-        ParticleRenderer() = default;
+        ParticleRenderer();
         ~ParticleRenderer();
 
         // Non-copyable

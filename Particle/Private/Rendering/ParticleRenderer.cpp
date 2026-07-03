@@ -80,6 +80,8 @@ namespace
 
 } // namespace
 
+ParticleRenderer::ParticleRenderer() = default;
+
 ParticleRenderer::~ParticleRenderer()
 {
     Shutdown();

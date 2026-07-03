@@ -2385,9 +2385,7 @@ namespace
         }
 
         const Particle::ParticleSubsystem::Statistics& stats = particleSubsystem->GetStatistics();
-        const Particle::ParticleRenderer* renderer = particleSubsystem->GetRenderer();
-        const Particle::ParticleRendererDrawStats* drawStats =
-            renderer ? &renderer->GetLastDrawStats() : nullptr;
+        const Particle::ParticleRendererDrawStats& drawStats = particleSubsystem->GetLastRenderDrawStats();
         return std::string("renderReady=") + BoolText(particleSubsystem->IsRenderIntegrationReady()) +
                ", reason=" + particleSubsystem->GetRenderIntegrationUnsupportedReason() +
                ", renderPassRegistered=" + BoolText(stats.renderPassRegistered) +
@@ -2399,13 +2397,13 @@ namespace
                ", gpuSimulatedParticles=" + std::to_string(stats.gpuSimulatedParticles) +
                ", prepareFrames=" + std::to_string(stats.prepareFrameCount) +
                ", skippedPrepareFrames=" + std::to_string(stats.skippedPrepareFrameCount) +
-               ", drawSubmitted=" + BoolText(drawStats && drawStats->drawSubmitted) +
+               ", drawSubmitted=" + BoolText(drawStats.drawSubmitted) +
                ", drawVertices=" +
-               std::to_string(drawStats ? drawStats->submittedVertexCount : 0u) +
+               std::to_string(drawStats.submittedVertexCount) +
                ", drawIndices=" +
-               std::to_string(drawStats ? drawStats->submittedIndexCount : 0u) +
+               std::to_string(drawStats.submittedIndexCount) +
                ", drawInstances=" +
-               std::to_string(drawStats ? drawStats->submittedInstanceCount : 0u);
+               std::to_string(drawStats.submittedInstanceCount);
     }
 
     bool IsParticleRuntimeReady(const Particle::ParticleSubsystem* particleSubsystem, std::string& outReason)
@@ -2417,9 +2415,7 @@ namespace
         }
 
         const Particle::ParticleSubsystem::Statistics& stats = particleSubsystem->GetStatistics();
-        const Particle::ParticleRenderer* renderer = particleSubsystem->GetRenderer();
-        const Particle::ParticleRendererDrawStats* drawStats =
-            renderer ? &renderer->GetLastDrawStats() : nullptr;
+        const Particle::ParticleRendererDrawStats& drawStats = particleSubsystem->GetLastRenderDrawStats();
         const bool ready = particleSubsystem->IsRenderIntegrationReady() &&
                            stats.renderPassRegistered &&
                            stats.preGraphCallbackRegistered &&
@@ -2429,10 +2425,9 @@ namespace
                            stats.cpuSimulatedParticles > 0 &&
                            stats.prepareFrameCount > 0 &&
                            stats.skippedPrepareFrameCount == 0 &&
-                           drawStats &&
-                           drawStats->drawSubmitted &&
-                           (drawStats->submittedVertexCount == 6 || drawStats->submittedIndexCount == 6) &&
-                           drawStats->submittedInstanceCount > 0;
+                           drawStats.drawSubmitted &&
+                           (drawStats.submittedVertexCount == 6 || drawStats.submittedIndexCount == 6) &&
+                           drawStats.submittedInstanceCount > 0;
         if (ready)
         {
             outReason.clear();

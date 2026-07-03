@@ -23,6 +23,7 @@ set(PARTICLE_HEADERS
     Include/Particle/ParticleComponent.h
     Include/Particle/ParticleLOD.h
     Include/Particle/ParticlePool.h
+    Include/Particle/ParticleRenderStats.h
     Include/Particle/ParticleSystemLoader.h
     
     # Curves
@@ -196,6 +197,7 @@ source_group("Include\\Particle" FILES
     Include/Particle/ParticleComponent.h
     Include/Particle/ParticleLOD.h
     Include/Particle/ParticlePool.h
+    Include/Particle/ParticleRenderStats.h
     Include/Particle/ParticleSystemLoader.h
 )
 

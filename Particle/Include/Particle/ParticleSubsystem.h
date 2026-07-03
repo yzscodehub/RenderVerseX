@@ -6,13 +6,10 @@
  */
 
 #include "Core/Subsystem/EngineSubsystem.h"
+#include "Particle/ParticleRenderStats.h"
 #include "Particle/ParticleSystem.h"
 #include "Particle/ParticleSystemInstance.h"
 #include "Particle/ParticlePool.h"
-#include "Particle/Rendering/ParticleRenderer.h"
-#include "Render/Renderer/ViewData.h"
-#include "Render/RenderSubsystem.h"
-#include "Resource/ResourceSubsystem.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -20,11 +17,14 @@
 namespace RVX
 {
     class IRHIDevice;
+    class RenderSubsystem;
     class SceneRenderer;
+    struct ViewData;
 }
 
 namespace RVX::Particle
 {
+    struct ParticleRendererConfig;
     class ParticleRenderer;
     class ParticleSorter;
     class ParticlePass;
@@ -70,7 +70,7 @@ namespace RVX::Particle
         bool ShouldTick() const override { return true; }
         TickPhase GetTickPhase() const override { return TickPhase::PreRender; }
 
-        RVX_SUBSYSTEM_DEPENDENCIES(RenderSubsystem, ResourceSubsystem);
+        std::vector<SubsystemDependency> GetTypedDependencies() const override;
 
         void Initialize() override;
         void Deinitialize() override;
@@ -142,17 +142,16 @@ namespace RVX::Particle
         void SetSceneRendererForTesting(SceneRenderer* renderer) { m_sceneRenderer = renderer; }
 
         /// Set renderer creation config before Initialize; intended for focused validation/bootstrap paths.
-        void SetRendererConfigForTesting(const ParticleRendererConfig& config)
-        {
-            m_rendererConfigOverride = config;
-            m_hasRendererConfigOverride = true;
-        }
+        void SetRendererConfigForTesting(const ParticleRendererConfig& config);
 
         /// Check whether the subsystem is connected to the main render frame.
         bool IsRenderIntegrationReady() const { return m_renderIntegrationReady; }
 
         /// Human-readable reason when render integration is unavailable.
         const std::string& GetRenderIntegrationUnsupportedReason() const { return m_renderIntegrationUnsupportedReason; }
+
+        /// Test/reporting view of the last renderer draw attempt without exposing Render/RHI headers.
+        const ParticleRendererDrawStats& GetLastRenderDrawStats() const;
 
         // =====================================================================
         // Rendering Components
@@ -196,8 +195,7 @@ namespace RVX::Particle
         RenderSubsystem* m_renderSubsystem = nullptr;
         IRHIDevice* m_device = nullptr;
         SceneRenderer* m_sceneRenderer = nullptr;
-        ParticleRendererConfig m_rendererConfigOverride;
-        bool m_hasRendererConfigOverride = false;
+        std::unique_ptr<ParticleRendererConfig> m_rendererConfigOverride;
 
         // Simulation capability
         bool m_gpuSimulationSupported = false;

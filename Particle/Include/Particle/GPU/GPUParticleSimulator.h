@@ -6,7 +6,6 @@
  */
 
 #include "Particle/GPU/IParticleSimulator.h"
-#include "RHI/RHI.h"
 
 namespace RVX::Particle
 {

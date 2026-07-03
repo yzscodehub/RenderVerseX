@@ -563,6 +563,11 @@ TEST(ParticleValidation, ParticleSubsystemRegistersPassAndCallbackIntoSceneRende
     EXPECT_NE(subsystem.GetRenderPass(), nullptr);
     EXPECT_TRUE(subsystem.GetStatistics().renderPassRegistered);
     EXPECT_TRUE(subsystem.GetStatistics().preGraphCallbackRegistered);
+    const ParticleRendererDrawStats& initialDrawStats = subsystem.GetLastRenderDrawStats();
+    EXPECT_FALSE(initialDrawStats.drawSubmitted);
+    EXPECT_EQ(initialDrawStats.submittedVertexCount, 0u);
+    EXPECT_EQ(initialDrawStats.submittedIndexCount, 0u);
+    EXPECT_EQ(initialDrawStats.submittedInstanceCount, 0u);
 
     auto system = ParticleSystem::CreateSimple("SubsystemRenderIntegration");
     system->maxParticles = 32;
