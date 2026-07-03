@@ -10,6 +10,7 @@
 #include "Particle/ParticleSystem.h"
 #include "Particle/ParticleSystemInstance.h"
 #include "Particle/ParticlePool.h"
+#include "RenderContracts/ParticleRenderSnapshot.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -116,10 +117,13 @@ namespace RVX::Particle
         void PrepareRender(const ViewData& view);
 
         /// Get visible instances (after culling)
-        const std::vector<ParticleSystemInstance*>& GetVisibleInstances() const 
-        { 
-            return m_visibleInstances; 
+        const std::vector<ParticleSystemInstance*>& GetVisibleInstances() const
+        {
+            return m_visibleInstances;
         }
+
+        /// Build a Render-facing particle snapshot without exposing Render/RHI objects.
+        bool BuildRenderSnapshot(RVX::ParticleRenderSnapshot& outSnapshot) const;
 
         // =====================================================================
         // Configuration
@@ -218,6 +222,7 @@ namespace RVX::Particle
 
         // Statistics
         Statistics m_stats;
+        mutable uint64 m_nextRenderSnapshotSequence = 0;
 
         static ParticleSubsystem* s_activeSubsystem;
     };

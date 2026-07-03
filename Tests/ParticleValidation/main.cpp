@@ -745,6 +745,70 @@ TEST(ParticleValidation, ParticleComponentFallbackWithoutRenderReadySubsystemIsO
     EXPECT_EQ(component->GetInstanceOwnership(), ParticleInstanceOwnership::None);
 }
 
+TEST(ParticleValidation, ParticleSubsystemBuildsRenderSnapshotWithoutRenderHandles)
+{
+    EnsureLogInitialized();
+    FakeDevice device;
+    ParticleSubsystem subsystem;
+    subsystem.SetDeviceForTesting(&device);
+    subsystem.SetRendererConfigForTesting(MakeRendererConfig());
+    subsystem.GetConfig().enableGPUSimulation = false;
+    subsystem.Initialize();
+
+    auto liveSystem = ParticleSystem::CreateSimple("SnapshotParticles");
+    liveSystem->id = 42;
+    liveSystem->maxParticles = 32;
+    liveSystem->renderMode = ParticleRenderMode::StretchedBillboard;
+    liveSystem->blendMode = ParticleBlendMode::Additive;
+    liveSystem->softParticleConfig.enabled = true;
+    liveSystem->softParticleConfig.fadeDistance = 2.5f;
+
+    ParticleSystemInstance* liveInstance = subsystem.CreateInstance(liveSystem);
+    ASSERT_NE(liveInstance, nullptr);
+    liveInstance->SetPosition(Vec3(1.0f, 2.0f, 3.0f));
+    liveInstance->Play();
+    subsystem.Simulate(0.25f);
+    ASSERT_GT(liveInstance->GetAliveCount(), 0u);
+
+    auto stoppedSystem = ParticleSystem::CreateSimple("StoppedSnapshotParticles");
+    ASSERT_NE(subsystem.CreateInstance(stoppedSystem), nullptr);
+
+    ParticleRenderSnapshot snapshot;
+    EXPECT_TRUE(subsystem.BuildRenderSnapshot(snapshot));
+
+    const ParticleRenderSnapshotMetadata metadata = snapshot.GetMetadata();
+    EXPECT_EQ(metadata.schemaVersion, RVX_PARTICLE_RENDER_SNAPSHOT_SCHEMA_VERSION);
+    EXPECT_EQ(metadata.status, ParticleRenderSnapshotStatus::Complete);
+    EXPECT_TRUE(metadata.complete);
+    EXPECT_EQ(metadata.itemCount, 1u);
+    EXPECT_EQ(metadata.totalAliveParticles, liveInstance->GetAliveCount());
+    EXPECT_EQ(metadata.skippedInstanceCount, 1u);
+
+    ASSERT_EQ(snapshot.items.size(), 1u);
+    const ParticleRenderSnapshotItem& item = snapshot.items.front();
+    EXPECT_EQ(item.instanceId, liveInstance->GetInstanceId());
+    EXPECT_EQ(item.systemId, 42u);
+    EXPECT_EQ(item.systemName, "SnapshotParticles");
+    EXPECT_EQ(item.renderMode, ParticleRenderSnapshotMode::StretchedBillboard);
+    EXPECT_EQ(item.blendMode, ParticleRenderSnapshotBlendMode::Additive);
+    EXPECT_EQ(item.simulationBackend, ParticleRenderSnapshotSimulationBackend::CPU);
+    EXPECT_EQ(item.aliveParticleCount, liveInstance->GetAliveCount());
+    EXPECT_EQ(item.maxParticleCount, 32u);
+    EXPECT_TRUE(item.visible);
+    EXPECT_TRUE(item.simulationSupported);
+    EXPECT_TRUE(item.softParticlesEnabled);
+    EXPECT_FLOAT_EQ(item.softParticleFadeDistance, 2.5f);
+    EXPECT_FLOAT_EQ(item.position.x, 1.0f);
+    EXPECT_FLOAT_EQ(item.position.y, 2.0f);
+    EXPECT_FLOAT_EQ(item.position.z, 3.0f);
+    EXPECT_TRUE(item.unsupportedReason.empty());
+
+    ASSERT_EQ(snapshot.skippedReasons.size(), 1u);
+    EXPECT_NE(snapshot.skippedReasons.front().find("not playing"), std::string::npos);
+
+    subsystem.Deinitialize();
+}
+
 TEST(ParticleValidation, ParticleSubsystemCreatesCpuSimulatorWhenDeviceIsInjected)
 {
     EnsureLogInitialized();

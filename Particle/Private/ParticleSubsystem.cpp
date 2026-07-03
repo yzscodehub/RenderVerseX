@@ -14,6 +14,60 @@
 
 namespace RVX::Particle
 {
+namespace
+{
+    RVX::ParticleRenderSnapshotMode ToSnapshotRenderMode(ParticleRenderMode mode)
+    {
+        switch (mode)
+        {
+            case ParticleRenderMode::Billboard:
+                return RVX::ParticleRenderSnapshotMode::Billboard;
+            case ParticleRenderMode::StretchedBillboard:
+                return RVX::ParticleRenderSnapshotMode::StretchedBillboard;
+            case ParticleRenderMode::HorizontalBillboard:
+                return RVX::ParticleRenderSnapshotMode::HorizontalBillboard;
+            case ParticleRenderMode::VerticalBillboard:
+                return RVX::ParticleRenderSnapshotMode::VerticalBillboard;
+            case ParticleRenderMode::Mesh:
+                return RVX::ParticleRenderSnapshotMode::Mesh;
+            case ParticleRenderMode::Trail:
+                return RVX::ParticleRenderSnapshotMode::Trail;
+        }
+
+        return RVX::ParticleRenderSnapshotMode::Billboard;
+    }
+
+    RVX::ParticleRenderSnapshotBlendMode ToSnapshotBlendMode(ParticleBlendMode mode)
+    {
+        switch (mode)
+        {
+            case ParticleBlendMode::Additive:
+                return RVX::ParticleRenderSnapshotBlendMode::Additive;
+            case ParticleBlendMode::AlphaBlend:
+                return RVX::ParticleRenderSnapshotBlendMode::AlphaBlend;
+            case ParticleBlendMode::Multiply:
+                return RVX::ParticleRenderSnapshotBlendMode::Multiply;
+            case ParticleBlendMode::Premultiplied:
+                return RVX::ParticleRenderSnapshotBlendMode::Premultiplied;
+        }
+
+        return RVX::ParticleRenderSnapshotBlendMode::AlphaBlend;
+    }
+
+    RVX::ParticleRenderSnapshotSimulationBackend ToSnapshotSimulationBackend(const ParticleSystemInstance& instance)
+    {
+        if (!instance.IsSimulationSupported())
+            return RVX::ParticleRenderSnapshotSimulationBackend::None;
+
+        const std::string& backendName = instance.GetSimulationBackendName();
+        if (backendName.find("GPU") != std::string::npos)
+            return RVX::ParticleRenderSnapshotSimulationBackend::GPU;
+        if (backendName.find("CPU") != std::string::npos)
+            return RVX::ParticleRenderSnapshotSimulationBackend::CPU;
+
+        return RVX::ParticleRenderSnapshotSimulationBackend::External;
+    }
+} // namespace
 
 ParticleSubsystem* ParticleSubsystem::s_activeSubsystem = nullptr;
 
@@ -349,6 +403,76 @@ void ParticleSubsystem::PrepareRender(const ViewData& view)
     m_renderPass->SetParticleSystems(m_visibleInstances);
 
     m_stats.visibleInstances = static_cast<uint32>(m_visibleInstances.size());
+}
+
+bool ParticleSubsystem::BuildRenderSnapshot(RVX::ParticleRenderSnapshot& outSnapshot) const
+{
+    outSnapshot.BeginBuild(++m_nextRenderSnapshotSequence);
+
+    for (const auto& instanceOwner : m_instances)
+    {
+        const ParticleSystemInstance* instance = instanceOwner.get();
+        if (!instance)
+        {
+            outSnapshot.skippedReasons.push_back("Null particle instance");
+            continue;
+        }
+
+        if (!instance->IsPlaying())
+        {
+            outSnapshot.skippedReasons.push_back("Particle instance is not playing");
+            continue;
+        }
+
+        if (!instance->IsVisible())
+        {
+            outSnapshot.skippedReasons.push_back("Particle instance is hidden");
+            continue;
+        }
+
+        const uint32 aliveCount = instance->GetAliveCount();
+        if (aliveCount == 0)
+        {
+            outSnapshot.skippedReasons.push_back("Particle instance has no alive particles");
+            continue;
+        }
+
+        const auto system = instance->GetSystem();
+        if (!system)
+        {
+            outSnapshot.skippedReasons.push_back("Particle instance has no particle system");
+            continue;
+        }
+
+        RVX::ParticleRenderSnapshotItem item;
+        item.instanceId = instance->GetInstanceId();
+        item.systemId = system->id;
+        item.systemName = system->name;
+        item.worldMatrix = instance->GetTransform();
+        item.worldBounds = instance->GetWorldBounds();
+        item.position = instance->GetPosition();
+        item.renderMode = ToSnapshotRenderMode(system->renderMode);
+        item.blendMode = ToSnapshotBlendMode(system->blendMode);
+        item.simulationBackend = ToSnapshotSimulationBackend(*instance);
+        item.aliveParticleCount = aliveCount;
+        item.maxParticleCount = instance->GetMaxParticles();
+        item.lodLevel = instance->GetCurrentLODLevel();
+        item.normalizedTime = instance->GetNormalizedTime();
+        item.visible = instance->IsVisible();
+        item.simulationSupported = instance->IsSimulationSupported();
+        item.softParticlesEnabled = system->softParticleConfig.enabled;
+        item.softParticleFadeDistance = system->softParticleConfig.fadeDistance;
+        if (!item.simulationSupported)
+        {
+            item.unsupportedReason = instance->GetSimulationUnsupportedReason();
+        }
+
+        outSnapshot.metadata.totalAliveParticles += aliveCount;
+        outSnapshot.items.push_back(std::move(item));
+    }
+
+    outSnapshot.MarkComplete();
+    return true;
 }
 
 void ParticleSubsystem::CullInstances(const ViewData& view)

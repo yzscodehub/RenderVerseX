@@ -81,7 +81,7 @@
     },
     "Particle": {
       "path": "Particle",
-      "allowed": ["Core", "Particle", "Resource", "Scene", "ShaderCompiler"]
+      "allowed": ["Core", "Particle", "RenderContracts", "Resource", "Scene", "ShaderCompiler"]
     },
     "Physics": {
       "path": "Physics",
