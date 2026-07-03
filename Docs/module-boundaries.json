@@ -81,7 +81,7 @@
     },
     "Particle": {
       "path": "Particle",
-      "allowed": ["Core", "Particle", "Render", "Resource", "RHI", "Scene", "ShaderCompiler"]
+      "allowed": ["Core", "Particle", "Resource", "Scene", "ShaderCompiler"]
     },
     "Physics": {
       "path": "Physics",
@@ -161,7 +161,7 @@
     },
     "Terrain": {
       "path": "Terrain",
-      "allowed": ["Core", "Render", "RHI", "Scene", "Terrain"]
+      "allowed": ["Core", "Scene", "Terrain"]
     },
     "Tests": {
       "path": "Tests",
@@ -177,13 +177,27 @@
     },
     "Water": {
       "path": "Water",
-      "allowed": ["Core", "Render", "RHI", "Scene", "Water"]
+      "allowed": ["Core", "Scene", "Water"]
     },
     "World": {
       "path": "World",
       "allowed": ["Core", "Physics", "Resource", "ResourceSceneAdapters", "Runtime", "Scene", "Spatial", "World"]
     }
   },
-  "legacyEdges": {},
-  "legacyBudgets": {}
+  "legacyEdges": {
+    "Particle->Render": "Phase 4 migration: move particle GPU/rendering ownership behind RenderContracts/RenderExtraction.",
+    "Particle->RHI": "Phase 4 migration: remove particle public RHI exposure and move GPU calls into Render-owned paths.",
+    "Terrain->Render": "Phase 4 migration: move terrain render pass ownership behind terrain snapshots consumed by Render.",
+    "Terrain->RHI": "Phase 4 migration: remove terrain public RHI exposure and move GPU calls into Render-owned paths.",
+    "Water->Render": "Phase 4 migration: move water render pass ownership behind water snapshots consumed by Render.",
+    "Water->RHI": "Phase 4 migration: remove water public RHI exposure and move GPU calls into Render-owned paths."
+  },
+  "legacyBudgets": {
+    "Particle->Render": 10,
+    "Particle->RHI": 7,
+    "Terrain->Render": 1,
+    "Terrain->RHI": 9,
+    "Water->Render": 1,
+    "Water->RHI": 21
+  }
 }
