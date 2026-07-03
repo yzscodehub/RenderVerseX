@@ -325,6 +325,7 @@ namespace RVX
         void EndPlayLegacyComponents();
         void BeginLegacyComponentDispatch();
         void EndLegacyComponentDispatch();
+        void NotifyComponentAttached(Component* component);
 
         // Handle generation
         static Handle GenerateHandle();
@@ -371,6 +372,7 @@ namespace RVX
 
             // Notify bounds may have changed
             MarkBoundsDirty();
+            NotifyComponentAttached(ptr);
 
             return ptr;
         }

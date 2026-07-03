@@ -1,4 +1,6 @@
 #include "Scene/SceneEntity.h"
+#include "Core/Event/EventBus.h"
+#include "Scene/ComponentEvents.h"
 #include "Scene/SceneManager.h"
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -89,6 +91,7 @@ Component* SceneEntity::AddOwnedComponent(std::unique_ptr<Component> component)
         RegisterLegacyComponent(ptr);
     }
     MarkBoundsDirty();
+    NotifyComponentAttached(ptr);
 
     return ptr;
 }
@@ -676,6 +679,12 @@ void SceneEntity::EndLegacyComponentDispatch()
     {
         FlushPendingLegacyComponentRemovals();
     }
+}
+
+void SceneEntity::NotifyComponentAttached(Component* component)
+{
+    ComponentAttachedEvent event(this, component);
+    EventBus::Get().Publish(event);
 }
 
 void SceneEntity::TickComponents(float deltaTime)

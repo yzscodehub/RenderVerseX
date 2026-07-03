@@ -1,7 +1,6 @@
 #include "Scripting/Bindings/CoreBindings.h"
 #include "Scripting/LuaState.h"
 #include "Core/Log.h"
-#include "Core/Services.h"
 
 #include <sstream>
 

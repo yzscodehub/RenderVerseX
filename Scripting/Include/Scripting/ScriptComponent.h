@@ -190,6 +190,10 @@ namespace RVX
         const sol::table& GetInstance() const { return m_instance; }
 
     private:
+        friend class ScriptingSubsystem;
+
+        void BindScriptingSubsystem(ScriptingSubsystem* engine);
+
         ScriptingSubsystem* m_engine = nullptr;
         std::filesystem::path m_scriptPath;
         ScriptHandle m_scriptHandle = InvalidScriptHandle;

@@ -1,7 +1,6 @@
 #include "Scripting/ScriptComponent.h"
 #include "Scripting/ScriptEngine.h"
 #include "Scene/SceneEntity.h"
-#include "Core/Services.h"
 
 namespace RVX
 {
@@ -18,8 +17,15 @@ namespace RVX
 
     ScriptComponent::~ScriptComponent()
     {
-        Stop();
-        DestroyInstance();
+        if (m_engine)
+        {
+            m_engine->UnregisterComponent(this);
+        }
+        else
+        {
+            Stop();
+            DestroyInstance();
+        }
     }
 
     // =========================================================================
@@ -28,34 +34,18 @@ namespace RVX
 
     void ScriptComponent::OnAttach()
     {
-        // Try to get ScriptEngine from services
-        m_engine = Services::Get<ScriptingSubsystem>();
-        
-        if (m_engine)
-        {
-            m_engine->RegisterComponent(this);
-
-            // If script path was set in constructor, load it now
-            if (!m_scriptPath.empty())
-            {
-                SetScript(m_scriptPath);
-            }
-        }
-        else
-        {
-            RVX_CORE_WARN("ScriptComponent::OnAttach - ScriptingSubsystem not available");
-        }
     }
 
     void ScriptComponent::OnDetach()
     {
-        Stop();
-        DestroyInstance();
-
         if (m_engine)
         {
             m_engine->UnregisterComponent(this);
-            m_engine = nullptr;
+        }
+        else
+        {
+            Stop();
+            DestroyInstance();
         }
     }
 
@@ -229,6 +219,23 @@ namespace RVX
     // =========================================================================
     // Private Methods
     // =========================================================================
+
+    void ScriptComponent::BindScriptingSubsystem(ScriptingSubsystem* engine)
+    {
+        if (m_engine == engine)
+        {
+            return;
+        }
+
+        Stop();
+        DestroyInstance();
+        m_engine = engine;
+
+        if (m_engine && !m_scriptPath.empty())
+        {
+            SetScript(m_scriptPath);
+        }
+    }
 
     bool ScriptComponent::CreateInstance()
     {

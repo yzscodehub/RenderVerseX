@@ -11,6 +11,7 @@
  * - Manages script hot-reloading
  */
 
+#include "Core/Event/EventHandle.h"
 #include "Core/Subsystem/EngineSubsystem.h"
 #include "Scripting/LuaState.h"
 
@@ -21,6 +22,8 @@
 namespace RVX
 {
     // Forward declarations
+    class Component;
+    class InputSubsystem;
     class ScriptComponent;
 
     /**
@@ -50,6 +53,11 @@ namespace RVX
         std::filesystem::path scriptsDirectory = "Scripts";
         bool enableHotReload = true;
         float hotReloadInterval = 1.0f;     ///< Check interval in seconds
+
+        ScriptingSubsystemConfig()
+        {
+            luaConfig.libraries = LuaLibrary::Safe | LuaLibrary::Package;
+        }
     };
 
     /**
@@ -103,6 +111,16 @@ namespace RVX
          * @brief Get current configuration
          */
         const ScriptingSubsystemConfig& GetConfig() const { return m_config; }
+
+        /**
+         * @brief Bind the optional runtime input subsystem used by Lua input APIs.
+         */
+        void SetInputSubsystem(InputSubsystem* inputSubsystem);
+
+        /**
+         * @brief Get the currently bound input subsystem, if any.
+         */
+        InputSubsystem* GetInputSubsystem() const { return m_inputSubsystem; }
 
         // =====================================================================
         // Script Loading
@@ -297,10 +315,14 @@ namespace RVX
 
         // Registered components
         std::vector<ScriptComponent*> m_components;
+        InputSubsystem* m_inputSubsystem = nullptr;
+        ScopedEventHandle m_componentAttachedSubscription;
+        bool m_initialized = false;
 
         // Hot reload
         float m_timeSinceLastCheck = 0.0f;
 
+        void HandleComponentAttached(Component* component);
         void CheckForHotReload();
         ScriptHandle AllocateHandle();
     };

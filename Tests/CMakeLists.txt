@@ -543,6 +543,18 @@ rvx_add_gtest(
     TIMEOUT 120
 )
 
+# Scripting subsystem validation tests
+rvx_add_gtest(
+    NAME ScriptingValidation
+    SOURCES ScriptingValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::Scene
+        RVX::Scripting
+    LABELS unit
+    TIMEOUT 120
+)
+
 # Physics world/scene integration validation tests
 rvx_add_gtest(
     NAME PhysicsWorldIntegrationValidation

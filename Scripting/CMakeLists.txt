@@ -25,10 +25,11 @@ target_include_directories(RVX_Scripting PUBLIC
 
 # Find Lua (vcpkg provides lua as unofficial::lua::lua)
 find_package(lua CONFIG REQUIRED)
-find_package(sol2 CONFIG REQUIRED)
+find_path(SOL2_INCLUDE_DIRS "sol/sol.hpp" REQUIRED)
 
 target_link_libraries(RVX_Scripting PUBLIC
     RVX::Core
+    RVX::Runtime
     RVX::Scene
 )
 
@@ -44,11 +45,8 @@ else()
     target_include_directories(RVX_Scripting PRIVATE ${LUA_INCLUDE_DIR})
 endif()
 
-target_link_libraries(RVX_Scripting PUBLIC sol2)
-
-target_include_directories(RVX_Scripting PRIVATE
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Runtime/Include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/HAL/Include>
+target_include_directories(RVX_Scripting PUBLIC
+    ${SOL2_INCLUDE_DIRS}
 )
 
 # Alias for cleaner target names

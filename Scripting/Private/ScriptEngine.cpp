@@ -5,10 +5,12 @@
 #include "Scripting/Bindings/SceneBindings.h"
 #include "Scripting/Bindings/InputBindings.h"
 
-#include "Core/Services.h"
+#include "Core/Event/EventBus.h"
 #include "Runtime/Input/InputSubsystem.h"
 #include "Runtime/Time/Time.h"
+#include "Scene/ComponentEvents.h"
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 
@@ -31,6 +33,12 @@ namespace RVX
 
     void ScriptingSubsystem::Initialize()
     {
+        if (m_initialized)
+        {
+            RVX_CORE_WARN("ScriptingSubsystem::Initialize - Already initialized");
+            return;
+        }
+
         RVX_CORE_INFO("ScriptingSubsystem::Initialize");
 
         // Initialize Lua state
@@ -46,23 +54,42 @@ namespace RVX
         // Register all bindings
         RegisterBindings();
 
-        RVX_CORE_INFO("ScriptingSubsystem initialized with scripts directory: {}", 
+        m_componentAttachedSubscription = EventBus::Get().SubscribeScoped<ComponentAttachedEvent>(
+            [this](const ComponentAttachedEvent& event)
+            {
+                HandleComponentAttached(event.component);
+            },
+            SubscriptionOptions::ForChannel(EventChannel::Entity));
+
+        m_initialized = true;
+
+        RVX_CORE_INFO("ScriptingSubsystem initialized with scripts directory: {}",
                       m_config.scriptsDirectory.string());
     }
 
     void ScriptingSubsystem::Deinitialize()
     {
+        if (!m_initialized && !m_luaState.IsInitialized() && !m_componentAttachedSubscription.IsValid())
+        {
+            return;
+        }
+
         RVX_CORE_INFO("ScriptingSubsystem::Deinitialize");
 
         // Clear all cached scripts
         m_scripts.clear();
         m_pathToHandle.clear();
 
-        // Clear component references
-        m_components.clear();
+        auto components = m_components;
+        for (ScriptComponent* component : components)
+        {
+            UnregisterComponent(component);
+        }
+        m_componentAttachedSubscription = {};
 
         // Shutdown Lua state
         m_luaState.Shutdown();
+        m_initialized = false;
     }
 
     void ScriptingSubsystem::Tick(float deltaTime)
@@ -74,10 +101,9 @@ namespace RVX
         Bindings::UpdateTime(deltaTime, totalTime);
 
         // Sync input state from InputSubsystem
-        auto* inputSys = Services::Get<InputSubsystem>();
-        if (inputSys)
+        if (m_inputSubsystem)
         {
-            Bindings::SyncInputCache(inputSys);
+            Bindings::SyncInputCache(m_inputSubsystem);
         }
 
         // Update registered script components
@@ -108,6 +134,11 @@ namespace RVX
     void ScriptingSubsystem::Configure(const ScriptingSubsystemConfig& config)
     {
         m_config = config;
+    }
+
+    void ScriptingSubsystem::SetInputSubsystem(InputSubsystem* inputSubsystem)
+    {
+        m_inputSubsystem = inputSubsystem;
     }
 
     // =========================================================================
@@ -298,9 +329,19 @@ namespace RVX
 
     void ScriptingSubsystem::RegisterComponent(ScriptComponent* component)
     {
-        if (component && std::find(m_components.begin(), m_components.end(), component) == m_components.end())
+        if (!component)
+        {
+            return;
+        }
+
+        if (std::find(m_components.begin(), m_components.end(), component) == m_components.end())
         {
             m_components.push_back(component);
+        }
+
+        if (component->m_engine != this)
+        {
+            component->BindScriptingSubsystem(this);
         }
     }
 
@@ -311,11 +352,24 @@ namespace RVX
         {
             m_components.erase(it);
         }
+
+        if (component && component->m_engine == this)
+        {
+            component->BindScriptingSubsystem(nullptr);
+        }
     }
 
     // =========================================================================
     // Private Methods
     // =========================================================================
+
+    void ScriptingSubsystem::HandleComponentAttached(Component* component)
+    {
+        if (auto* scriptComponent = dynamic_cast<ScriptComponent*>(component))
+        {
+            RegisterComponent(scriptComponent);
+        }
+    }
 
     void ScriptingSubsystem::CheckForHotReload()
     {

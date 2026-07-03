@@ -244,6 +244,19 @@ namespace RVX
             return;
         }
 
+        sol::object packageObject = m_state["package"];
+        if (!packageObject.valid() || !packageObject.is<sol::table>())
+        {
+            if (Log::GetCoreLogger())
+            {
+                RVX_CORE_WARN("LuaState::AddSearchPath - package library is not loaded");
+            }
+            return;
+        }
+
+        sol::table packageTable = packageObject.as<sol::table>();
+        sol::object packagePathObject = packageTable["path"];
+
         std::string pathStr = path.string();
         // Replace backslashes with forward slashes
         for (char& c : pathStr)
@@ -252,10 +265,14 @@ namespace RVX
         }
 
         // Append to package.path
-        std::string packagePath = m_state["package"]["path"];
+        std::string packagePath;
+        if (packagePathObject.valid() && packagePathObject.is<std::string>())
+        {
+            packagePath = packagePathObject.as<std::string>();
+        }
         packagePath += ";" + pathStr + "/?.lua";
         packagePath += ";" + pathStr + "/?/init.lua";
-        m_state["package"]["path"] = packagePath;
+        packageTable["path"] = packagePath;
     }
 
     // =========================================================================
