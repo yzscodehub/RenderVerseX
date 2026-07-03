@@ -8,12 +8,12 @@
 #include "Editor/Panels/NativeViewport.h"
 #include "Editor/Panels/Viewport.h"
 #include "Editor/UI/IEditorUIBackend.h"
+#include "Core/Camera/Camera.h"
 #include "Render/Context/RenderContext.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/SceneRenderer.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
-#include "Runtime/Camera/Camera.h"
 #include "UI/UIRenderer.h"
 
 namespace RVX::Editor

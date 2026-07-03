@@ -14,15 +14,16 @@ target_sources(RVX_Picking PRIVATE
 
 target_include_directories(RVX_Picking PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Private>
     $<INSTALL_INTERFACE:include>
+)
+
+target_include_directories(RVX_Picking PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Private>
 )
 
 target_link_libraries(RVX_Picking PUBLIC
     RVX_Core
     RVX_Scene
-    RVX_Runtime
-    Spatial
     RVX_World
 )
 

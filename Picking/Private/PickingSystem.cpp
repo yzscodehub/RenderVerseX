@@ -5,7 +5,7 @@
 
 #include "Picking/PickingSystem.h"
 #include "PickingBVH.h"
-#include "Runtime/Camera/Camera.h"
+#include "Core/Camera/Camera.h"
 #include "Scene/Mesh.h"
 #include "Scene/VertexAttribute.h"
 #include <cmath>

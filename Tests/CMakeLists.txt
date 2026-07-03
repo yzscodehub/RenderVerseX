@@ -521,6 +521,16 @@ target_compile_options(EditorContextValidation PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/bigobj>
 )
 
+# App mode and editor/runtime shared-core boundary validation tests
+rvx_add_gtest(
+    NAME AppModeBoundaryValidation
+    SOURCES AppModeBoundaryValidation/main.cpp
+    LIBS
+        RVX::Core
+    LABELS unit
+    TIMEOUT 120
+)
+
 # Runtime UI command stream validation tests
 rvx_add_gtest(
     NAME UIValidation

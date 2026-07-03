@@ -9,6 +9,9 @@ target_sources(RVX_Core PRIVATE
     Private/Log.cpp
     Private/PathUtils.cpp
     Private/SystemManager.cpp
+
+    # Camera contracts
+    Private/Camera/Camera.cpp
     
     # Event System
     Private/Event/EventBus.cpp
