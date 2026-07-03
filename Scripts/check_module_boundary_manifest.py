@@ -27,6 +27,8 @@ KNOWN_NON_MODULE_TARGETS = {
     "RVX::Options",
 }
 KNOWN_SUBMODULE_TARGETS = {
+    "RVX_SampleCommon",
+    "RVX::SampleCommon",
     "RVX_TestCommon",
     "RVX::RenderGraph",
 }

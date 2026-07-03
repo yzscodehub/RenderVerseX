@@ -12,6 +12,7 @@
 #include "Core/MathTypes.h"
 #include "RHI/RHI.h"
 #include "Render/Graph/RenderGraph.h"
+#include "Samples/SampleCLI.h"
 #include "ShaderCompiler/ShaderManager.h"
 #include "ShaderCompiler/ShaderLayout.h"
 
@@ -26,10 +27,11 @@
 #include <GLFW/glfw3native.h>
 #endif
 
-#include <fstream>
-#include <vector>
-#include <string>
 #include <cmath>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <vector>
 
 // =============================================================================
 // Transform Constant Buffer Data
@@ -141,50 +143,106 @@ int main(int argc, char *argv[])
     RVX::Log::Initialize();
     RVX_CORE_INFO("BasicRHI Sample - RHI + RenderGraph Demo");
 
+    RVX::SampleCLIOptions options;
+    options.backend = RVX::SelectBestBackend();
+
+    std::string parseError;
+    if (!RVX::ParseSampleCLI(argc, argv, options, &parseError))
+    {
+        if (!parseError.empty())
+        {
+            RVX_CORE_ERROR("{}", parseError);
+        }
+        RVX::PrintSampleCLIUsage(std::cerr, "BasicRHI");
+        RVX::Log::Shutdown();
+        return 2;
+    }
+
+    if (options.showHelp)
+    {
+        RVX::PrintSampleCLIUsage(std::cout, "BasicRHI");
+        RVX::Log::Shutdown();
+        return 0;
+    }
+
+    RVX::RHIBackendType backend =
+        options.backend == RVX::RHIBackendType::Auto ? RVX::SelectBestBackend() : options.backend;
+    RVX::RHIBackendType reportBackend = backend;
+    const RVX::uint32 frameLimit = options.frames;
+
+    const auto writeReport =
+        [&](bool pass, RVX::uint32 frameCount, std::vector<std::string> fallbackReasons = {})
+    {
+        if (options.reportPath.empty())
+        {
+            return;
+        }
+
+        RVX::SampleReport report;
+        report.sampleName = "BasicRHI";
+        report.backend = reportBackend;
+        report.frameCount = frameCount;
+        report.width = options.width;
+        report.height = options.height;
+        report.quality = options.quality;
+        report.diagnostics = options.diagnostics;
+        report.enabledFeatures = {
+            "RHI",
+            "RenderGraph",
+            "BasicTriangle",
+            "BasicQuad",
+            "BasicCube",
+        };
+        if (options.diagnostics)
+        {
+            report.enabledFeatures.push_back("DiagnosticsReport");
+        }
+        if (!options.screenshotPath.empty())
+        {
+            report.screenshotPath = options.screenshotPath;
+            report.unsupportedFeatures.push_back("ScreenshotCapture");
+            fallbackReasons.push_back("BasicRHI does not capture screenshots yet");
+        }
+        if (options.quality != "default")
+        {
+            report.unsupportedFeatures.push_back("QualityProfile");
+            fallbackReasons.push_back("BasicRHI uses a fixed quality profile");
+        }
+        report.fallbackReasons = fallbackReasons;
+        report.pass = pass;
+
+        std::string reportError;
+        if (!RVX::WriteSampleReportJson(report, options.reportPath, &reportError))
+        {
+            RVX_CORE_ERROR("Failed to write BasicRHI report: {}", reportError);
+        }
+    };
+
     // =========================================================================
     // GLFW Window Setup
     // =========================================================================
     if (!glfwInit())
     {
         RVX_CORE_ERROR("Failed to initialize GLFW");
+        writeReport(false, 0, {"Failed to initialize GLFW"});
+        RVX::Log::Shutdown();
         return -1;
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow *window = glfwCreateWindow(1280, 720, "BasicRHI - RenderVerseX", nullptr, nullptr);
+    GLFWwindow *window = glfwCreateWindow(
+        static_cast<int>(options.width),
+        static_cast<int>(options.height),
+        "BasicRHI - RenderVerseX",
+        nullptr,
+        nullptr);
     if (!window)
     {
         RVX_CORE_ERROR("Failed to create GLFW window");
+        writeReport(false, 0, {"Failed to create GLFW window"});
         glfwTerminate();
+        RVX::Log::Shutdown();
         return -1;
-    }
-
-    // Select backend
-#if defined(__APPLE__)
-    RVX::RHIBackendType backend = RVX::RHIBackendType::Metal;
-#elif defined(_WIN32)
-    RVX::RHIBackendType backend = RVX::RHIBackendType::DX12;
-#else
-    RVX::RHIBackendType backend = RVX::RHIBackendType::Vulkan;
-#endif
-
-    // Command line override
-    RVX::uint32 maxFrames = 0;
-    for (int i = 1; i < argc; ++i)
-    {
-        std::string arg = argv[i];
-        if (arg == "--dx11" || arg == "-d11")
-            backend = RVX::RHIBackendType::DX11;
-        else if (arg == "--dx12" || arg == "-d12")
-            backend = RVX::RHIBackendType::DX12;
-        else if (arg == "--vulkan" || arg == "-vk")
-            backend = RVX::RHIBackendType::Vulkan;
-        else if (arg == "--metal" || arg == "-mtl")
-            backend = RVX::RHIBackendType::Metal;
-        else if (arg == "--smoke")
-            maxFrames = 8;
-        else if (arg == "--frames" && i + 1 < argc)
-            maxFrames = static_cast<RVX::uint32>(std::stoul(argv[++i]));
     }
 
     RVX_CORE_INFO("Using backend: {}", RVX::ToString(backend));
@@ -200,10 +258,13 @@ int main(int argc, char *argv[])
     if (!device)
     {
         RVX_CORE_ERROR("Failed to create RHI device");
+        writeReport(false, 0, {"Failed to create RHI device"});
         glfwDestroyWindow(window);
         glfwTerminate();
+        RVX::Log::Shutdown();
         return -1;
     }
+    reportBackend = device->GetBackendType();
 
     RVX_CORE_INFO("Adapter: {}", device->GetCapabilities().adapterName);
 
@@ -216,8 +277,8 @@ int main(int argc, char *argv[])
 #elif __APPLE__
     swapChainDesc.windowHandle = glfwGetCocoaWindow(window);
 #endif
-    swapChainDesc.width = 1280;
-    swapChainDesc.height = 720;
+    swapChainDesc.width = options.width;
+    swapChainDesc.height = options.height;
     swapChainDesc.bufferCount = 3;
     swapChainDesc.format = RVX::RHIFormat::RGBA8_UNORM;
     swapChainDesc.vsync = true;
@@ -242,6 +303,7 @@ int main(int argc, char *argv[])
         if (!cmdContexts[i])
         {
             RVX_CORE_ERROR("Failed to create command context {}", i);
+            writeReport(false, 0, {"Failed to create command context"});
             return -1;
         }
     }
@@ -294,6 +356,7 @@ int main(int argc, char *argv[])
     if (!vsResult.compileResult.success)
     {
         RVX_CORE_ERROR("Failed to compile vertex shader: {}", vsResult.compileResult.errorMessage);
+        writeReport(false, 0, {"Failed to compile vertex shader"});
         return -1;
     }
 
@@ -305,6 +368,7 @@ int main(int argc, char *argv[])
     if (!psResult.compileResult.success)
     {
         RVX_CORE_ERROR("Failed to compile pixel shader: {}", psResult.compileResult.errorMessage);
+        writeReport(false, 0, {"Failed to compile pixel shader"});
         return -1;
     }
 
@@ -369,6 +433,7 @@ int main(int argc, char *argv[])
     if (!pipeline)
     {
         RVX_CORE_ERROR("Failed to create graphics pipeline");
+        writeReport(false, 0, {"Failed to create graphics pipeline"});
         return -1;
     }
 
@@ -538,7 +603,7 @@ int main(int argc, char *argv[])
         frameCount++;
         renderedFrames++;
 
-        if (maxFrames > 0 && renderedFrames >= maxFrames)
+        if (frameLimit > 0 && renderedFrames >= frameLimit)
         {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
@@ -586,6 +651,8 @@ int main(int argc, char *argv[])
 
     glfwDestroyWindow(window);
     glfwTerminate();
+
+    writeReport(true, renderedFrames);
 
     RVX::Log::Shutdown();
     return 0;

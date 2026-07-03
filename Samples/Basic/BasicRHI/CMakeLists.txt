@@ -15,6 +15,7 @@ target_link_libraries(BasicRHI PRIVATE
     RVX::RHI
     RVX::Render          # Includes RenderGraph
     RVX::Runtime         # Camera
+    RVX::SampleCommon
     RVX::ShaderCompiler
     RVX::HAL
     glfw

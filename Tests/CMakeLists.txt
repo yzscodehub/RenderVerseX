@@ -229,6 +229,17 @@ rvx_add_gtest(
     TIMEOUT 30
 )
 
+# Samples CLI/report contract validation tests
+if(TARGET RVX_SampleCommon)
+    rvx_add_gtest(
+        NAME SampleCLIValidation
+        SOURCES SampleCLIValidation/main.cpp
+        LIBS RVX::SampleCommon
+        LABELS unit
+        TIMEOUT 30
+    )
+endif()
+
 # DX12 Validation Tests
 if(RVX_ENABLE_DX12)
     rvx_add_gtest(

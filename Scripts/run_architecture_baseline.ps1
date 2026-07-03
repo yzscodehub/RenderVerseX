@@ -27,6 +27,7 @@ $baselineRegex = @(
     "JobGraphValidation\.",
     "PhysicsWorldIntegrationValidation\.(BackendQueryAndShapeStubsReportExplicitMisses|UnsupportedColliderTypesDoNotCreateFallbackShapesOrQueryHits)",
     "RHIContractValidation\.",
+    "SampleCLIValidation\.",
     "RenderGraphValidation\.(GraphCreation|PassChain|MemoryAliasing|ExecuteAsyncFallsBackToGraphicsWhenBackendDoesNotSupportQueueSync)",
     "RenderSceneValidation\.(RenderSceneApplyProxySnapshotPopulatesObjectsAndLights|RenderProxyBridgeBuildsPrimitiveAndLightSnapshot|RenderProxyBridgeBuildsLegacyMeshRendererProxy)",
     "ActorComponentValidation\.(ActorOwnsComponentsAndDispatchesLifecycle|WorldSpawnActorDelegatesToSceneManager|ActorAddComponentRejectsLegacyComponentToAvoidContainerSplit)",

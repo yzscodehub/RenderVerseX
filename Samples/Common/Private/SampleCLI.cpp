@@ -1,0 +1,343 @@
+/**
+ * @file SampleCLI.cpp
+ * @brief Shared command-line and JSON report helpers for sample applications.
+ */
+
+#include "Samples/SampleCLI.h"
+
+#include "Core/Diagnostics/JsonWriter.h"
+
+#include <algorithm>
+#include <charconv>
+#include <cctype>
+#include <fstream>
+#include <ostream>
+#include <string>
+#include <system_error>
+
+namespace RVX
+{
+    namespace
+    {
+        std::string ToLower(std::string text)
+        {
+            std::transform(text.begin(),
+                           text.end(),
+                           text.begin(),
+                           [](unsigned char ch)
+                           {
+                               return static_cast<char>(std::tolower(ch));
+                           });
+            return text;
+        }
+
+        bool ParsePositiveUInt(const char* text, uint32& outValue)
+        {
+            if (!text || text[0] == '\0')
+            {
+                return false;
+            }
+
+            uint32 value = 0;
+            const char* end = text + std::char_traits<char>::length(text);
+            const std::from_chars_result result = std::from_chars(text, end, value);
+            if (result.ec != std::errc{} || result.ptr != end)
+            {
+                return false;
+            }
+
+            outValue = value;
+            return true;
+        }
+
+        void SetError(std::string* outError, const std::string& error)
+        {
+            if (outError)
+            {
+                *outError = error;
+            }
+        }
+
+        void WriteStringArray(std::ostream& stream,
+                              const char* name,
+                              const std::vector<std::string>& values,
+                              const char* suffix)
+        {
+            stream << "  \"" << name << "\": [";
+            for (size_t i = 0; i < values.size(); ++i)
+            {
+                if (i > 0)
+                {
+                    stream << ", ";
+                }
+                stream << Diagnostics::JsonString(values[i]);
+            }
+            stream << "]" << suffix << "\n";
+        }
+    } // namespace
+
+    bool ParseSampleBackend(const std::string& text, RHIBackendType& outBackend)
+    {
+        const std::string value = ToLower(text);
+        if (value == "auto")
+        {
+            outBackend = RHIBackendType::Auto;
+            return true;
+        }
+        if (value == "dx11" || value == "d3d11" || value == "directx11")
+        {
+            outBackend = RHIBackendType::DX11;
+            return true;
+        }
+        if (value == "dx12" || value == "d3d12" || value == "directx12")
+        {
+            outBackend = RHIBackendType::DX12;
+            return true;
+        }
+        if (value == "vulkan" || value == "vk")
+        {
+            outBackend = RHIBackendType::Vulkan;
+            return true;
+        }
+        if (value == "metal" || value == "mtl")
+        {
+            outBackend = RHIBackendType::Metal;
+            return true;
+        }
+        if (value == "opengl" || value == "gl")
+        {
+            outBackend = RHIBackendType::OpenGL;
+            return true;
+        }
+
+        return false;
+    }
+
+    const char* GetSampleBackendName(RHIBackendType backend)
+    {
+        switch (backend)
+        {
+            case RHIBackendType::Auto:
+                return "auto";
+            case RHIBackendType::DX11:
+                return "dx11";
+            case RHIBackendType::DX12:
+                return "dx12";
+            case RHIBackendType::Vulkan:
+                return "vulkan";
+            case RHIBackendType::Metal:
+                return "metal";
+            case RHIBackendType::OpenGL:
+                return "opengl";
+            default:
+                return "unknown";
+        }
+    }
+
+    bool ParseSampleCLI(int argc,
+                        const char* const* argv,
+                        SampleCLIOptions& options,
+                        std::string* outError)
+    {
+        bool framesSpecified = false;
+
+        for (int i = 1; i < argc; ++i)
+        {
+            const std::string arg = argv[i] ? argv[i] : "";
+            const auto requireValue = [&](const char* name) -> const char*
+            {
+                if (i + 1 >= argc)
+                {
+                    SetError(outError, std::string("Missing value for ") + name);
+                    return nullptr;
+                }
+                return argv[++i];
+            };
+
+            if (arg == "--help" || arg == "-h")
+            {
+                options.showHelp = true;
+            }
+            else if (arg == "--backend")
+            {
+                const char* value = requireValue("--backend");
+                if (!value)
+                {
+                    return false;
+                }
+                if (!ParseSampleBackend(value, options.backend))
+                {
+                    SetError(outError, std::string("Invalid --backend value: ") + value);
+                    return false;
+                }
+            }
+            else if (arg == "--dx11" || arg == "-d11")
+            {
+                options.backend = RHIBackendType::DX11;
+            }
+            else if (arg == "--dx12" || arg == "-d12")
+            {
+                options.backend = RHIBackendType::DX12;
+            }
+            else if (arg == "--vulkan" || arg == "-vk")
+            {
+                options.backend = RHIBackendType::Vulkan;
+            }
+            else if (arg == "--metal" || arg == "-mtl")
+            {
+                options.backend = RHIBackendType::Metal;
+            }
+            else if (arg == "--opengl" || arg == "-gl")
+            {
+                options.backend = RHIBackendType::OpenGL;
+            }
+            else if (arg == "--smoke")
+            {
+                options.smoke = true;
+            }
+            else if (arg == "--frames")
+            {
+                const char* value = requireValue("--frames");
+                if (!value)
+                {
+                    return false;
+                }
+                if (!ParsePositiveUInt(value, options.frames))
+                {
+                    SetError(outError, std::string("Invalid --frames value: ") + value);
+                    return false;
+                }
+                framesSpecified = true;
+            }
+            else if (arg == "--screenshot")
+            {
+                const char* value = requireValue("--screenshot");
+                if (!value)
+                {
+                    return false;
+                }
+                options.screenshotPath = value;
+            }
+            else if (arg == "--report")
+            {
+                const char* value = requireValue("--report");
+                if (!value)
+                {
+                    return false;
+                }
+                options.reportPath = value;
+            }
+            else if (arg == "--width")
+            {
+                const char* value = requireValue("--width");
+                if (!value)
+                {
+                    return false;
+                }
+                if (!ParsePositiveUInt(value, options.width) || options.width == 0)
+                {
+                    SetError(outError, std::string("Invalid --width value: ") + value);
+                    return false;
+                }
+            }
+            else if (arg == "--height")
+            {
+                const char* value = requireValue("--height");
+                if (!value)
+                {
+                    return false;
+                }
+                if (!ParsePositiveUInt(value, options.height) || options.height == 0)
+                {
+                    SetError(outError, std::string("Invalid --height value: ") + value);
+                    return false;
+                }
+            }
+            else if (arg == "--quality")
+            {
+                const char* value = requireValue("--quality");
+                if (!value)
+                {
+                    return false;
+                }
+                options.quality = value;
+            }
+            else if (arg == "--diagnostics")
+            {
+                options.diagnostics = true;
+            }
+            else
+            {
+                SetError(outError, std::string("Unknown argument: ") + arg);
+                return false;
+            }
+        }
+
+        if (options.smoke && !framesSpecified && options.frames == 0)
+        {
+            options.frames = 8;
+        }
+
+        return true;
+    }
+
+    void PrintSampleCLIUsage(std::ostream& stream, const char* executableName)
+    {
+        stream
+            << executableName << "\n"
+            << "  --backend <auto|dx11|dx12|vulkan|metal|opengl>\n"
+            << "  --smoke\n"
+            << "  --frames <count>\n"
+            << "  --screenshot <path.ppm>\n"
+            << "  --report <path.json>\n"
+            << "  --width <pixels>\n"
+            << "  --height <pixels>\n"
+            << "  --quality <name>\n"
+            << "  --diagnostics\n";
+    }
+
+    void WriteSampleReportJson(std::ostream& stream, const SampleReport& report)
+    {
+        stream << "{\n";
+        stream << "  \"sampleName\": " << Diagnostics::JsonString(report.sampleName) << ",\n";
+        stream << "  \"backend\": " << Diagnostics::JsonString(GetSampleBackendName(report.backend)) << ",\n";
+        stream << "  \"frameCount\": " << report.frameCount << ",\n";
+        stream << "  \"width\": " << report.width << ",\n";
+        stream << "  \"height\": " << report.height << ",\n";
+        stream << "  \"quality\": " << Diagnostics::JsonString(report.quality) << ",\n";
+        stream << "  \"diagnostics\": " << Diagnostics::JsonBool(report.diagnostics) << ",\n";
+        stream << "  \"screenshotPath\": " << Diagnostics::JsonString(report.screenshotPath.string()) << ",\n";
+        WriteStringArray(stream, "enabledFeatures", report.enabledFeatures, ",");
+        WriteStringArray(stream, "unsupportedFeatures", report.unsupportedFeatures, ",");
+        WriteStringArray(stream, "fallbackReasons", report.fallbackReasons, ",");
+        stream << "  \"pass\": " << Diagnostics::JsonBool(report.pass) << "\n";
+        stream << "}\n";
+    }
+
+    bool WriteSampleReportJson(const SampleReport& report,
+                               const std::filesystem::path& path,
+                               std::string* outError)
+    {
+        std::error_code error;
+        const std::filesystem::path parent = path.parent_path();
+        if (!parent.empty())
+        {
+            std::filesystem::create_directories(parent, error);
+            if (error)
+            {
+                SetError(outError, "Failed to create report directory: " + error.message());
+                return false;
+            }
+        }
+
+        std::ofstream stream(path, std::ios::out | std::ios::trunc);
+        if (!stream)
+        {
+            SetError(outError, "Failed to open sample report: " + path.string());
+            return false;
+        }
+
+        WriteSampleReportJson(stream, report);
+        return true;
+    }
+} // namespace RVX
