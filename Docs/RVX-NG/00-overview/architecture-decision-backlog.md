@@ -1,7 +1,7 @@
 # RVX-NG · 架构决策 Backlog
 
 **日期**：2026-06-27  
-**状态**：v1.0 框架治理输入
+**状态**：v1.0 框架治理输入 · v1.1 目标口径已登记
 
 本文记录 RVX-NG 北极星框架中的架构级决策。它用于区分三类事项：
 
@@ -24,6 +24,7 @@
 | AD-009 | Project/package lock | CI/Shipping 只允许使用 resolved project lock；package 安装不等于运行时启用，必须经 profile/feature set 显式选择 | ADR |
 | AD-010 | Platform provider 隔离 | Online/Platform SDK 类型只存在 provider 私有实现；gameplay 使用 OnlineServices 抽象，不直接调用平台 SDK | ADR |
 | AD-011 | Third-party compliance gate | Unknown license/source/hash、forbidden license、high vulnerability、SBOM 缺失在 Test/Shipping profile 阻断 | ADR |
+| AD-012 | v1.1 目标口径 | RVX-NG 的实施目标是先建立可编译、可测试、可诊断、可扩展、可工具化的生产级 C++20 实时渲染/游戏引擎框架底座；完整开放世界、高端 GI/RT、主机/移动/XR、发行生态等作为分级演进上限，不作为首期一次性交付承诺 | ADR |
 
 ## 2. 待 Spike 决策
 
