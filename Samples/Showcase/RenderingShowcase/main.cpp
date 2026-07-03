@@ -4,6 +4,7 @@
  */
 
 #include "Core/Core.h"
+#include "Core/Diagnostics/ContentHash.h"
 #include "Core/MathTypes.h"
 #include "Engine/Engine.h"
 #include "HAL/Input/KeyCodes.h"
@@ -15,6 +16,7 @@
 #include "Render/RenderSubsystem.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/ResourceSubsystem.h"
+#include "Resource/RuntimeResourcePolicy.h"
 #include "Resource/Types/ModelResource.h"
 #include "Runtime/Camera/Camera.h"
 #include "Runtime/Input/InputSubsystem.h"
@@ -28,6 +30,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <filesystem>
@@ -35,6 +38,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -860,7 +864,8 @@ namespace
             case ShowcaseMode::ResourceRuntime:
                 report.enabledFeatures.push_back("ResourceManager");
                 report.enabledFeatures.push_back("ModelResourceLoad");
-                report.unsupportedFeatures.push_back("Cooked/package fixture loading is covered by ResourceRuntimePolicyValidation until sample assets are added");
+                report.enabledFeatures.push_back("RuntimeResourcePolicyFixture");
+                report.unsupportedFeatures.push_back("Full package archive loading is deferred; showcase uses mount-table fixture diagnostics");
                 break;
             case ShowcaseMode::PhysicsAudio:
                 report.enabledFeatures.push_back("PhysicsAudioStagingScene");
@@ -919,6 +924,125 @@ namespace
                 report.unsupportedFeatures.push_back(status.name + ": " + status.unsupportedReason);
             }
         }
+    }
+
+    bool WriteRuntimeFixtureFile(const std::filesystem::path& path, const std::string& contents)
+    {
+        std::error_code error;
+        std::filesystem::create_directories(path.parent_path(), error);
+        if (error)
+        {
+            return false;
+        }
+
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        if (!file)
+        {
+            return false;
+        }
+
+        file << contents;
+        return static_cast<bool>(file);
+    }
+
+    void AppendResourceRuntimePolicyDiagnostics(ShowcaseReport& report)
+    {
+        const auto uniqueId = std::chrono::steady_clock::now().time_since_epoch().count();
+        const std::filesystem::path root =
+            std::filesystem::temp_directory_path() /
+            ("RVX_ResourceRuntimeShowcase_" + std::to_string(uniqueId));
+        const std::filesystem::path cookedRoot = root / "Cooked";
+        const std::filesystem::path packageRoot = root / "Package";
+
+        const std::filesystem::path cookedArtifact = cookedRoot / "textures" / "albedo.rva";
+        const std::filesystem::path packageArtifact = packageRoot / "compiled" / "basic.rva";
+        const std::filesystem::path mismatchedPackageArtifact = packageRoot / "compiled" / "mismatch.rva";
+
+        if (!WriteRuntimeFixtureFile(cookedArtifact, "RVX_TEXTURE_PREBAKE_V1\n") ||
+            !WriteRuntimeFixtureFile(packageArtifact, "RVX_SHADER_PREBAKE_V1\nshowcase\n") ||
+            !WriteRuntimeFixtureFile(mismatchedPackageArtifact, "RVX_SHADER_PREBAKE_V1\nmismatch\n"))
+        {
+            report.resourceDiagnostics.push_back("runtime policy fixture setup failed");
+            std::error_code removeError;
+            std::filesystem::remove_all(root, removeError);
+            return;
+        }
+
+        auto appendResolution =
+            [&report](const char* label, const Resource::ResourcePathResolution& resolution)
+        {
+            std::string text = label;
+            text += resolution.allowed ? ": allowed" : ": denied";
+            text += " failure=";
+            text += Resource::GetResourceLoadFailureCodeName(resolution.failure);
+            if (!resolution.resolvedPath.empty())
+            {
+                text += " resolved=";
+                text += resolution.resolvedPath;
+            }
+            if (resolution.packageHashChecked)
+            {
+                text += " hashMatched=";
+                text += resolution.packageHashMatched ? "true" : "false";
+            }
+            report.resourceDiagnostics.push_back(std::move(text));
+        };
+
+        Resource::ResourceRuntimePolicy cookedPolicy;
+        cookedPolicy.mode = Resource::ResourceRuntimeMode::CookedRuntime;
+        cookedPolicy.allowSourceAssetReads = false;
+        cookedPolicy.requireCookedArtifacts = true;
+        cookedPolicy.cookedRoot = cookedRoot.string();
+
+        appendResolution("source denied",
+                         Resource::ResolveRuntimeResourcePath(cookedPolicy,
+                                                              "",
+                                                              "source://textures/albedo.png"));
+        appendResolution("cooked artifact resolved",
+                         Resource::ResolveRuntimeResourcePath(cookedPolicy,
+                                                              "",
+                                                              "cooked://textures/albedo.rva"));
+
+        Resource::ResourceRuntimePolicy packagePolicy;
+        packagePolicy.mode = Resource::ResourceRuntimeMode::PackagedRuntime;
+        packagePolicy.allowSourceAssetReads = false;
+        packagePolicy.requireRuntimePackage = true;
+        packagePolicy.packageMounts = {
+            Resource::ResourcePackageMount{
+                "Base",
+                10,
+                packageRoot.string(),
+                {
+                    Resource::ResourcePackageArtifact{
+                        "shaders/basic.rva",
+                        "compiled/basic.rva",
+                        Diagnostics::ComputeFileContentHash(packageArtifact)},
+                    Resource::ResourcePackageArtifact{
+                        "shaders/mismatch.rva",
+                        "compiled/mismatch.rva",
+                        "0000000000000000"},
+                }},
+        };
+
+        appendResolution("package artifact resolved",
+                         Resource::ResolveRuntimeResourcePath(packagePolicy,
+                                                              "",
+                                                              "package://Base/shaders/basic.rva"));
+        appendResolution("missing package",
+                         Resource::ResolveRuntimeResourcePath(packagePolicy,
+                                                              "",
+                                                              "package://Missing/shaders/basic.rva"));
+        appendResolution("missing artifact",
+                         Resource::ResolveRuntimeResourcePath(packagePolicy,
+                                                              "",
+                                                              "package://Base/shaders/missing.rva"));
+        appendResolution("hash mismatch",
+                         Resource::ResolveRuntimeResourcePath(packagePolicy,
+                                                              "",
+                                                              "package://Base/shaders/mismatch.rva"));
+
+        std::error_code removeError;
+        std::filesystem::remove_all(root, removeError);
     }
 
     bool WriteShowcaseReport(const ShowcaseReport& report, const std::filesystem::path& path)
@@ -1817,6 +1941,10 @@ int main(int argc, char* argv[])
     else
     {
         report.resourceDiagnostics.push_back("model fixture loaded: " + modelPath.string());
+    }
+    if (options.mode == ShowcaseMode::ResourceRuntime)
+    {
+        AppendResourceRuntimePolicyDiagnostics(report);
     }
     AppendRendererDiagnostics(sceneRenderer, report);
 
