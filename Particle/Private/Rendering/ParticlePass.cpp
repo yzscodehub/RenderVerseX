@@ -5,7 +5,6 @@
 #include "Particle/ParticleSystemInstance.h"
 #include "Particle/Rendering/ParticleRenderer.h"
 #include "Render/Renderer/ViewData.h"
-#include "RHI/RHIRenderPass.h"
 
 #include <unordered_map>
 
