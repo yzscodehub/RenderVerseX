@@ -29,7 +29,8 @@ $baselineRegex = @(
     "RenderSceneValidation\.(RenderSceneApplyProxySnapshotPopulatesObjectsAndLights|RenderProxyBridgeBuildsPrimitiveAndLightSnapshot|RenderProxyBridgeBuildsLegacyMeshRendererProxy)",
     "ActorComponentValidation\.(ActorOwnsComponentsAndDispatchesLifecycle|WorldSpawnActorDelegatesToSceneManager|ActorAddComponentRejectsLegacyComponentToAvoidContainerSplit)",
     "AppModeBoundaryValidation\.",
-    "ResourceInstantiationValidation\.(ModelResourceInstantiateActorUsesStaticMeshComponent|WorldLoadModelResourceReplacesSceneContent)",
+    "ParticleValidation\.FeaturePublicHeadersDoNotIncludeRenderOrRHI",
+    "ResourceInstantiationValidation\.(ModelResourceInstantiateActorUsesStaticMeshComponent|LegacyInstantiateDelegatesToActorPath|ProductionPathsDoNotCreateLegacyMeshRendererComponents|WorldLoadModelResourceReplacesSceneContent)",
     "ResourceRuntimePolicyValidation\.",
     "RenderHonestyValidationFixture\.(PlaceholderAssetImportersFailInsteadOfReportingSuccess|PostProcessStubPassesAreUnsupportedAndDisabled|SceneRendererLegacyCollectionFallbackIsRemoved|RenderGraphCompileDiagnosticsExposeReadBeforeWrite)",
     "SystemIntegration\.(SceneEntityAndManager|ResourceBasics)"

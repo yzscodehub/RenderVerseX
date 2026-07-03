@@ -19,9 +19,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -49,6 +51,63 @@ namespace
 
     [[maybe_unused]] const auto* g_logEnvironment =
         ::testing::AddGlobalTestEnvironment(new LogEnvironment);
+
+    std::filesystem::path FindRepositoryRoot()
+    {
+        std::filesystem::path cursor = std::filesystem::current_path();
+        for (uint32 i = 0; i < 8; ++i)
+        {
+            if (std::filesystem::exists(cursor / "CMakeLists.txt") &&
+                std::filesystem::exists(cursor / "Scene/Include/Scene/Components/MeshRendererComponent.h"))
+            {
+                return cursor;
+            }
+
+            if (!cursor.has_parent_path() || cursor == cursor.parent_path())
+                break;
+
+            cursor = cursor.parent_path();
+        }
+
+        return {};
+    }
+
+    std::string ReadTextFile(const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    }
+
+    std::string RemoveWhitespace(std::string value)
+    {
+        value.erase(std::remove_if(value.begin(),
+                                   value.end(),
+                                   [](unsigned char character)
+                                   {
+                                       return std::isspace(character) != 0;
+                                   }),
+                    value.end());
+        return value;
+    }
+
+    bool IsCompatibilityPath(const std::filesystem::path& relativePath)
+    {
+        for (const auto& segment : relativePath)
+        {
+            std::string text = segment.generic_string();
+            std::transform(text.begin(),
+                           text.end(),
+                           text.begin(),
+                           [](unsigned char character)
+                           {
+                               return static_cast<char>(std::tolower(character));
+                           });
+            if (text == "compat" || text == "compatibility")
+                return true;
+        }
+
+        return false;
+    }
 
     class TestMeshResource : public MeshResource
     {
@@ -649,6 +708,77 @@ namespace
         EXPECT_FALSE(entity->HasComponent<MeshRendererComponent>());
 
         sceneManager.Shutdown();
+    }
+
+    TEST(ResourceInstantiationValidation, ProductionPathsDoNotCreateLegacyMeshRendererComponents)
+    {
+        const std::filesystem::path repoRoot = FindRepositoryRoot();
+        ASSERT_FALSE(repoRoot.empty());
+
+        const std::vector<std::filesystem::path> productionRoots = {
+            "Animation",
+            "Audio",
+            "Core",
+            "Editor",
+            "Engine",
+            "Geometry",
+            "HAL",
+            "Material",
+            "Particle",
+            "Physics",
+            "Render",
+            "RenderContracts",
+            "RenderExtraction",
+            "Resource",
+            "ResourceSceneAdapters",
+            "RHI",
+            "RHI_DX11",
+            "RHI_DX12",
+            "RHI_OpenGL",
+            "RHI_Vulkan",
+            "Runtime",
+            "Samples",
+            "Scene",
+            "ShaderCompiler",
+            "Spatial",
+            "Terrain",
+            "Tools",
+            "UI",
+            "Water",
+            "World",
+        };
+
+        std::string violations;
+        for (const auto& productionRoot : productionRoots)
+        {
+            const std::filesystem::path root = repoRoot / productionRoot;
+            if (!std::filesystem::exists(root))
+                continue;
+
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(
+                     root, std::filesystem::directory_options::skip_permission_denied))
+            {
+                if (!entry.is_regular_file())
+                    continue;
+
+                const std::filesystem::path extension = entry.path().extension();
+                if (extension != ".cpp" && extension != ".h" && extension != ".hpp")
+                    continue;
+
+                const std::filesystem::path relativePath = entry.path().lexically_relative(repoRoot);
+                if (IsCompatibilityPath(relativePath))
+                    continue;
+
+                const std::string normalizedSource = RemoveWhitespace(ReadTextFile(entry.path()));
+                if (normalizedSource.find("AddComponent<MeshRendererComponent>") != std::string::npos)
+                {
+                    violations += relativePath.generic_string();
+                    violations += "\n";
+                }
+            }
+        }
+
+        EXPECT_TRUE(violations.empty()) << violations;
     }
 
     TEST(ResourceInstantiationValidation, ModelResourceInstantiateActorBuildsSpawnedHierarchy)
