@@ -53,7 +53,7 @@ namespace RVX::Resource
     {
         ResourceManagerConfig config;
         config.runtimePolicy = MakeResourceRuntimePolicyForAppMode(mode);
-        config.enableHotReload = AllowsSourceAssetAccess(mode);
+        config.enableHotReload = AllowsHotReload(mode);
         return config;
     }
 

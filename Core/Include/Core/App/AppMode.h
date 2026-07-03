@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/Types.h"
+#include <string_view>
 
 namespace RVX
 {
@@ -12,7 +13,9 @@ namespace RVX
         Runtime = 0,
         Editor,
         Preview,
-        PlayInEditor
+        PlayInEditor,
+        Cook,
+        Test
     };
 
     /**
@@ -28,6 +31,7 @@ namespace RVX
         bool previewWorld = false;
         bool sourceAssetAccessAllowed = false;
         bool cookedRuntimeArtifactsRequired = true;
+        bool hotReloadAllowed = false;
     };
 
     constexpr std::string_view ToString(AppMode mode)
@@ -42,6 +46,10 @@ namespace RVX
             return "Preview";
         case AppMode::PlayInEditor:
             return "PlayInEditor";
+        case AppMode::Cook:
+            return "Cook";
+        case AppMode::Test:
+            return "Test";
         }
 
         return "Unknown";
@@ -61,6 +69,7 @@ namespace RVX
                 false,
                 false,
                 true,
+                false,
             };
         case AppMode::Editor:
             return {
@@ -72,6 +81,7 @@ namespace RVX
                 false,
                 true,
                 false,
+                true,
             };
         case AppMode::Preview:
             return {
@@ -83,6 +93,7 @@ namespace RVX
                 true,
                 true,
                 false,
+                true,
             };
         case AppMode::PlayInEditor:
             return {
@@ -94,6 +105,31 @@ namespace RVX
                 false,
                 false,
                 true,
+                false,
+            };
+        case AppMode::Cook:
+            return {
+                AppMode::Cook,
+                "Cook",
+                false,
+                false,
+                false,
+                false,
+                true,
+                false,
+                false,
+            };
+        case AppMode::Test:
+            return {
+                AppMode::Test,
+                "Test",
+                false,
+                false,
+                false,
+                false,
+                true,
+                false,
+                false,
             };
         }
 
@@ -113,6 +149,11 @@ namespace RVX
     constexpr bool AllowsSourceAssetAccess(AppMode mode)
     {
         return GetAppModeTraits(mode).sourceAssetAccessAllowed;
+    }
+
+    constexpr bool AllowsHotReload(AppMode mode)
+    {
+        return GetAppModeTraits(mode).hotReloadAllowed;
     }
 
 } // namespace RVX

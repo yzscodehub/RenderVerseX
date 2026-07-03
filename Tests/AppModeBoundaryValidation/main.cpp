@@ -22,6 +22,7 @@ namespace
         EXPECT_TRUE(IsRuntimeExecutionMode(AppMode::Runtime));
         EXPECT_FALSE(IsEditorShellMode(AppMode::Runtime));
         EXPECT_FALSE(AllowsSourceAssetAccess(AppMode::Runtime));
+        EXPECT_FALSE(AllowsHotReload(AppMode::Runtime));
     }
 
     TEST(AppModeBoundaryValidation, EditorAndPreviewModesPermitAuthoringShells)
@@ -34,6 +35,8 @@ namespace
         EXPECT_FALSE(editor.runtimeExecutionEnabled);
         EXPECT_TRUE(editor.sourceAssetAccessAllowed);
         EXPECT_FALSE(editor.cookedRuntimeArtifactsRequired);
+        EXPECT_TRUE(editor.hotReloadAllowed);
+        EXPECT_TRUE(AllowsHotReload(AppMode::Editor));
 
         EXPECT_TRUE(preview.editorShellVisible);
         EXPECT_TRUE(preview.authoringToolsEnabled);
@@ -41,6 +44,8 @@ namespace
         EXPECT_TRUE(preview.previewWorld);
         EXPECT_TRUE(preview.sourceAssetAccessAllowed);
         EXPECT_FALSE(preview.cookedRuntimeArtifactsRequired);
+        EXPECT_TRUE(preview.hotReloadAllowed);
+        EXPECT_TRUE(AllowsHotReload(AppMode::Preview));
     }
 
     TEST(AppModeBoundaryValidation, PlayInEditorKeepsRuntimeWorldInsideEditorShell)
@@ -54,8 +59,42 @@ namespace
         EXPECT_FALSE(traits.previewWorld);
         EXPECT_FALSE(traits.sourceAssetAccessAllowed);
         EXPECT_TRUE(traits.cookedRuntimeArtifactsRequired);
+        EXPECT_FALSE(traits.hotReloadAllowed);
         EXPECT_TRUE(IsEditorShellMode(AppMode::PlayInEditor));
         EXPECT_TRUE(IsRuntimeExecutionMode(AppMode::PlayInEditor));
+        EXPECT_FALSE(AllowsHotReload(AppMode::PlayInEditor));
+    }
+
+    TEST(AppModeBoundaryValidation, CookAndTestModesPermitSourceInputsWithoutEditorShellHotReload)
+    {
+        constexpr AppModeTraits cook = GetAppModeTraits(AppMode::Cook);
+        constexpr AppModeTraits test = GetAppModeTraits(AppMode::Test);
+
+        EXPECT_EQ(ToString(AppMode::Cook), "Cook");
+        EXPECT_FALSE(cook.editorShellVisible);
+        EXPECT_FALSE(cook.authoringToolsEnabled);
+        EXPECT_FALSE(cook.runtimeExecutionEnabled);
+        EXPECT_FALSE(cook.previewWorld);
+        EXPECT_TRUE(cook.sourceAssetAccessAllowed);
+        EXPECT_FALSE(cook.cookedRuntimeArtifactsRequired);
+        EXPECT_FALSE(cook.hotReloadAllowed);
+        EXPECT_FALSE(IsEditorShellMode(AppMode::Cook));
+        EXPECT_FALSE(IsRuntimeExecutionMode(AppMode::Cook));
+        EXPECT_TRUE(AllowsSourceAssetAccess(AppMode::Cook));
+        EXPECT_FALSE(AllowsHotReload(AppMode::Cook));
+
+        EXPECT_EQ(ToString(AppMode::Test), "Test");
+        EXPECT_FALSE(test.editorShellVisible);
+        EXPECT_FALSE(test.authoringToolsEnabled);
+        EXPECT_FALSE(test.runtimeExecutionEnabled);
+        EXPECT_FALSE(test.previewWorld);
+        EXPECT_TRUE(test.sourceAssetAccessAllowed);
+        EXPECT_FALSE(test.cookedRuntimeArtifactsRequired);
+        EXPECT_FALSE(test.hotReloadAllowed);
+        EXPECT_FALSE(IsEditorShellMode(AppMode::Test));
+        EXPECT_FALSE(IsRuntimeExecutionMode(AppMode::Test));
+        EXPECT_TRUE(AllowsSourceAssetAccess(AppMode::Test));
+        EXPECT_FALSE(AllowsHotReload(AppMode::Test));
     }
 
     TEST(AppModeBoundaryValidation, CameraContractLivesInCoreForSharedEditorRuntimeUse)

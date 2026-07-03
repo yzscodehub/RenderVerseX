@@ -730,6 +730,26 @@ TEST(ResourceRuntimePolicyValidation, AppModeBuildsEditorPreviewAndRuntimeResour
     EXPECT_FALSE(piePolicy.requireRuntimePackage);
     EXPECT_FALSE(pieConfig.enableHotReload);
 
+    const ResourceManagerConfig cookConfig =
+        MakeResourceManagerConfigForAppMode(AppMode::Cook);
+    const ResourceRuntimePolicy cookPolicy =
+        cookConfig.runtimePolicy;
+    EXPECT_EQ(cookPolicy.mode, ResourceRuntimeMode::Editor);
+    EXPECT_TRUE(cookPolicy.allowSourceAssetReads);
+    EXPECT_FALSE(cookPolicy.requireCookedArtifacts);
+    EXPECT_FALSE(cookPolicy.requireRuntimePackage);
+    EXPECT_FALSE(cookConfig.enableHotReload);
+
+    const ResourceManagerConfig testConfig =
+        MakeResourceManagerConfigForAppMode(AppMode::Test);
+    const ResourceRuntimePolicy testPolicy =
+        testConfig.runtimePolicy;
+    EXPECT_EQ(testPolicy.mode, ResourceRuntimeMode::Editor);
+    EXPECT_TRUE(testPolicy.allowSourceAssetReads);
+    EXPECT_FALSE(testPolicy.requireCookedArtifacts);
+    EXPECT_FALSE(testPolicy.requireRuntimePackage);
+    EXPECT_FALSE(testConfig.enableHotReload);
+
     const ResourcePathResolution runtimeSource =
         ResolveRuntimeResourcePath(runtimePolicy, "", "source://textures/albedo.png");
     EXPECT_FALSE(runtimeSource.allowed);
@@ -739,6 +759,16 @@ TEST(ResourceRuntimePolicyValidation, AppModeBuildsEditorPreviewAndRuntimeResour
         ResolveRuntimeResourcePath(editorPolicy, "", "source://textures/albedo.png");
     EXPECT_TRUE(editorSource.allowed);
     EXPECT_EQ(editorSource.domain, ResourceLoadDomain::SourceAsset);
+
+    const ResourcePathResolution cookSource =
+        ResolveRuntimeResourcePath(cookPolicy, "", "source://textures/albedo.png");
+    EXPECT_TRUE(cookSource.allowed);
+    EXPECT_EQ(cookSource.domain, ResourceLoadDomain::SourceAsset);
+
+    const ResourcePathResolution testSource =
+        ResolveRuntimeResourcePath(testPolicy, "", "source://textures/albedo.png");
+    EXPECT_TRUE(testSource.allowed);
+    EXPECT_EQ(testSource.domain, ResourceLoadDomain::SourceAsset);
 }
 
 TEST(ResourceRuntimePolicyValidation, LoadAsyncRunsInlineWhenAsyncDisabledAndJobSystemMissing)
