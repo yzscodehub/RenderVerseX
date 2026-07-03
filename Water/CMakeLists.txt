@@ -26,20 +26,11 @@ target_include_directories(RVX_Water PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-# Private access to Engine, World, Resource, Scene headers
-target_include_directories(RVX_Water PRIVATE
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Engine/Include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/World/Include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Resource/Include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Scene/Include>
-)
-
 target_link_libraries(RVX_Water PUBLIC
     RVX_Core
     RVX_RHI
     RVX::Render
     RVX::Scene
-    Spatial
 )
 
 add_library(RVX::Water ALIAS RVX_Water)

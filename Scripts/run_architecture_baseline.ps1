@@ -15,12 +15,21 @@ if (-not (Test-Path $buildPath)) {
 
 $baselineRegex = @(
     "Architecture\.ModuleBoundaries",
+    "Architecture\.ModuleBoundaryManifest",
+    "Architecture\.CMakeModuleVisibility",
+    "Architecture\.CMakeModuleIncludeEdges",
+    "Architecture\.CMakeModuleLinks",
+    "Architecture\.PublicHeaderLinkage",
+    "Architecture\.EditorRuntimeBoundary",
     "Architecture\.PhaseGates",
     "CoreDebugConfigValidation\.DebugConfigurationDefinesRVXDebug",
-    "RenderGraphValidation\.(GraphCreation|PassChain|MemoryAliasing|ExecuteAsyncFallsBackToGraphicsUntilQueueSchedulerExists)",
+    "RHIContractValidation\.",
+    "RenderGraphValidation\.(GraphCreation|PassChain|MemoryAliasing|ExecuteAsyncFallsBackToGraphicsWhenBackendDoesNotSupportQueueSync)",
     "RenderSceneValidation\.(RenderSceneApplyProxySnapshotPopulatesObjectsAndLights|RenderProxyBridgeBuildsPrimitiveAndLightSnapshot|RenderProxyBridgeBuildsLegacyMeshRendererProxy)",
     "ActorComponentValidation\.(ActorOwnsComponentsAndDispatchesLifecycle|WorldSpawnActorDelegatesToSceneManager|ActorAddComponentRejectsLegacyComponentToAvoidContainerSplit)",
+    "AppModeBoundaryValidation\.",
     "ResourceInstantiationValidation\.(ModelResourceInstantiateActorUsesStaticMeshComponent|WorldLoadModelResourceReplacesSceneContent)",
+    "ResourceRuntimePolicyValidation\.",
     "RenderHonestyValidationFixture\.(PlaceholderAssetImportersFailInsteadOfReportingSuccess|PostProcessStubPassesAreUnsupportedAndDisabled|SceneRendererLegacyCollectionFallbackIsRemoved|RenderGraphCompileDiagnosticsExposeReadBeforeWrite)",
     "SystemIntegration\.(SceneEntityAndManager|ResourceBasics)"
 ) -join "|"

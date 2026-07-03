@@ -26,7 +26,6 @@ target_link_libraries(RVX_World PUBLIC
     RVX_Scene
     RVX_Resource
     Spatial
-    RVX_Runtime
 )
 
 add_library(RVX::World ALIAS RVX_World)

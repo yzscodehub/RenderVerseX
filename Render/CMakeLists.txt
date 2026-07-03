@@ -89,8 +89,11 @@ target_sources(RVX_Render PRIVATE
 
 target_include_directories(RVX_Render PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Private>
     $<INSTALL_INTERFACE:include>
+)
+
+target_include_directories(RVX_Render PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Private>
 )
 
 target_link_libraries(RVX_Render PUBLIC

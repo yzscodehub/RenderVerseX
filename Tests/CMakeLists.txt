@@ -104,6 +104,82 @@ if(Python3_Interpreter_FOUND)
     )
 
     add_test(
+        NAME Architecture.ModuleBoundaryManifest
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/Scripts/check_module_boundary_manifest.py
+            --root ${CMAKE_SOURCE_DIR}
+            --config ${CMAKE_SOURCE_DIR}/Docs/module-boundaries.json
+    )
+    set_tests_properties(Architecture.ModuleBoundaryManifest PROPERTIES
+        LABELS "unit;architecture"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME Architecture.CMakeModuleVisibility
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/Scripts/check_cmake_module_visibility.py
+            --root ${CMAKE_SOURCE_DIR}
+    )
+    set_tests_properties(Architecture.CMakeModuleVisibility PROPERTIES
+        LABELS "unit;architecture"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME Architecture.CMakeModuleIncludeEdges
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/Scripts/check_cmake_module_include_edges.py
+            --root ${CMAKE_SOURCE_DIR}
+            --config ${CMAKE_SOURCE_DIR}/Docs/module-boundaries.json
+    )
+    set_tests_properties(Architecture.CMakeModuleIncludeEdges PROPERTIES
+        LABELS "unit;architecture"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME Architecture.CMakeModuleLinks
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/Scripts/check_cmake_module_links.py
+            --root ${CMAKE_SOURCE_DIR}
+            --config ${CMAKE_SOURCE_DIR}/Docs/module-boundaries.json
+    )
+    set_tests_properties(Architecture.CMakeModuleLinks PROPERTIES
+        LABELS "unit;architecture"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME Architecture.PublicHeaderLinkage
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/Scripts/check_public_header_linkage.py
+            --root ${CMAKE_SOURCE_DIR}
+            --config ${CMAKE_SOURCE_DIR}/Docs/module-boundaries.json
+    )
+    set_tests_properties(Architecture.PublicHeaderLinkage PROPERTIES
+        LABELS "unit;architecture"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME Architecture.EditorRuntimeBoundary
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/Scripts/check_editor_runtime_boundary.py
+            --root ${CMAKE_SOURCE_DIR}
+    )
+    set_tests_properties(Architecture.EditorRuntimeBoundary PROPERTIES
+        LABELS "unit;architecture"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
         NAME Architecture.PhaseGates
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/Scripts/check_architecture_phase_gates.py

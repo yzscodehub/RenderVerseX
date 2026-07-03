@@ -4,6 +4,7 @@
  */
 
 #include "Render/RenderSubsystem.h"
+#include "Core/Camera/Camera.h"
 #include "Core/Event/EventBus.h"
 #include "Core/Log.h"
 #include "HAL/Window/WindowEvents.h"
@@ -13,7 +14,6 @@
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/SceneRenderer.h"
 #include "RenderExtraction/WorldCameraBridge.h"
-#include "Runtime/Camera/Camera.h"
 #include "Runtime/Window/WindowSubsystem.h"
 
 namespace RVX

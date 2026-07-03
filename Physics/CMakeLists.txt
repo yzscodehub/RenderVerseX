@@ -52,11 +52,6 @@ target_link_libraries(RVX_Physics PRIVATE
     RVX::Scene
 )
 
-# Link Geometry module for collision algorithms
-target_link_libraries(RVX_Physics PUBLIC
-    RVX::Geometry
-)
-
 # Optional: Link Jolt Physics only when the unfinished adapter is explicitly enabled
 if(TARGET Jolt::Jolt AND RVX_ENABLE_EXPERIMENTAL_JOLT_BACKEND)
     target_link_libraries(RVX_Physics PRIVATE Jolt::Jolt)

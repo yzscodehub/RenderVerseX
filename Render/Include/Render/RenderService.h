@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Camera/Camera.h"
+#include "Core/Camera/Camera.h"
 #include "RHI/RHI.h"
 
 // Forward declaration

@@ -23,13 +23,10 @@ namespace RVX
      * - Provides bounds for spatial indexing
      * - Collects render data for the rendering pipeline
      * 
-     * Usage:
-     * @code
-     * auto* entity = scene->CreateEntity("Helmet");
-     * auto* renderer = entity->AddComponent<MeshRendererComponent>();
-     * renderer->SetMesh(meshHandle);
-     * renderer->SetMaterial(0, glassMaterial);  // Override submesh 0
-     * @endcode
+     * Compatibility note:
+     * This component is kept for legacy scenes. New model import paths should
+     * instantiate render-facing components through ResourceSceneAdapters so the
+     * Scene -> RenderProxy -> RenderScene extraction path remains authoritative.
      */
     class MeshRendererComponent : public Component
     {

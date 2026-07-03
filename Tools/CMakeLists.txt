@@ -15,6 +15,7 @@ target_include_directories(RVX_Tools PUBLIC
 )
 
 target_link_libraries(RVX_Tools PUBLIC
+    RVX::Audio
     RVX::Core
     RVX::RHI
 )
@@ -22,11 +23,6 @@ target_link_libraries(RVX_Tools PUBLIC
 target_link_libraries(RVX_Tools PRIVATE
     RVX::Resource
     RVX::ShaderCompiler
-)
-
-# Include Audio headers for AudioImporter
-target_include_directories(RVX_Tools PRIVATE
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Audio/Include>
 )
 
 # Optional: Link asset processing libraries when available

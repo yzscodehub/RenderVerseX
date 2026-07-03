@@ -4,12 +4,12 @@
  */
 
 #include "World/SpatialSubsystem.h"
+#include "Core/Camera/Camera.h"
+#include "Core/Log.h"
 #include "World/World.h"
 #include "Scene/SceneManager.h"
 #include "Scene/SceneEntity.h"
-#include "Runtime/Camera/Camera.h"
 #include "Spatial/Index/SpatialFactory.h"
-#include "Core/Log.h"
 
 #include <unordered_set>
 
