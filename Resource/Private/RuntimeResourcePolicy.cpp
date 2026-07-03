@@ -1,4 +1,5 @@
 #include "Resource/RuntimeResourcePolicy.h"
+#include "Core/Diagnostics/ContentHash.h"
 #include "Core/Diagnostics/JsonWriter.h"
 
 #include <algorithm>
@@ -26,6 +27,44 @@ namespace RVX::Resource
         bool HasScheme(const std::string& path)
         {
             return path.find("://") != std::string::npos;
+        }
+
+        std::string NormalizePackageLogicalPath(std::string path)
+        {
+            std::replace(path.begin(), path.end(), '\\', '/');
+            while (!path.empty() && path.front() == '/')
+            {
+                path.erase(path.begin());
+            }
+            return path;
+        }
+
+        struct ParsedPackagePath
+        {
+            bool valid = false;
+            std::string packageName;
+            std::string entryPath;
+        };
+
+        ParsedPackagePath ParsePackagePath(const std::string& logicalPath)
+        {
+            ParsedPackagePath parsed;
+            if (logicalPath.empty() || logicalPath == "." || HasScheme(logicalPath))
+            {
+                return parsed;
+            }
+
+            const std::string normalizedPath = NormalizePackageLogicalPath(logicalPath);
+            const size_t separator = normalizedPath.find('/');
+            if (separator == std::string::npos || separator == 0 || separator + 1 >= normalizedPath.size())
+            {
+                return parsed;
+            }
+
+            parsed.packageName = normalizedPath.substr(0, separator);
+            parsed.entryPath = normalizedPath.substr(separator + 1);
+            parsed.valid = !parsed.packageName.empty() && !parsed.entryPath.empty();
+            return parsed;
         }
 
         std::string ResolveAgainstRoot(const std::string& root, const std::string& path)
@@ -149,6 +188,131 @@ namespace RVX::Resource
             resolution.runtimePackageRead = resolution.domain == ResourceLoadDomain::RuntimePackage;
         }
 
+        const ResourcePackageArtifact* FindPackageArtifact(const ResourcePackageMount& mount,
+                                                           const std::string& logicalPath)
+        {
+            const std::string normalizedLogicalPath = NormalizePackageLogicalPath(logicalPath);
+            auto it = std::find_if(mount.artifacts.begin(),
+                                   mount.artifacts.end(),
+                                   [&](const ResourcePackageArtifact& artifact)
+                                   {
+                                       return NormalizePackageLogicalPath(artifact.logicalPath) ==
+                                              normalizedLogicalPath;
+                                   });
+            return it == mount.artifacts.end() ? nullptr : &*it;
+        }
+
+        std::vector<const ResourcePackageMount*> FindPackageMounts(const ResourceRuntimePolicy& policy,
+                                                                   const std::string& packageName)
+        {
+            std::vector<const ResourcePackageMount*> mounts;
+            for (const ResourcePackageMount& mount : policy.packageMounts)
+            {
+                if (mount.packageName == packageName)
+                {
+                    mounts.push_back(&mount);
+                }
+            }
+
+            std::sort(mounts.begin(),
+                      mounts.end(),
+                      [](const ResourcePackageMount* lhs, const ResourcePackageMount* rhs)
+                      {
+                          return lhs->mountPriority > rhs->mountPriority;
+                      });
+            return mounts;
+        }
+
+        ResourcePathResolution ResolvePackageMountTablePath(const ResourceRuntimePolicy& policy,
+                                                            const ParsedPackagePath& packagePath,
+                                                            ResourcePathResolution resolution)
+        {
+            const std::vector<const ResourcePackageMount*> mounts =
+                FindPackageMounts(policy, packagePath.packageName);
+            if (mounts.empty())
+            {
+                return Deny(resolution,
+                            ResourceLoadFailureCode::PackageMountMissing,
+                            "Runtime package is not mounted: " + packagePath.packageName);
+            }
+
+            bool sawMountedRoot = false;
+            for (const ResourcePackageMount* mount : mounts)
+            {
+                if (!mount || mount->mountRoot.empty())
+                {
+                    continue;
+                }
+
+                sawMountedRoot = true;
+                const ResourcePackageArtifact* artifact = nullptr;
+                std::string artifactPath = packagePath.entryPath;
+                std::string expectedHash;
+
+                if (!mount->artifacts.empty())
+                {
+                    artifact = FindPackageArtifact(*mount, packagePath.entryPath);
+                    if (!artifact)
+                    {
+                        continue;
+                    }
+
+                    artifactPath = artifact->resolvedArtifactPath.empty()
+                        ? artifact->logicalPath
+                        : artifact->resolvedArtifactPath;
+                    expectedHash = artifact->contentHash;
+                }
+
+                resolution.packageMountPriority = mount->mountPriority;
+                resolution.packageArtifactPath = NormalizePackageLogicalPath(artifactPath);
+                resolution.packageExpectedContentHash = expectedHash;
+
+                std::string failureMessage;
+                if (!TryResolveAgainstMountedRoot(mount->mountRoot,
+                                                  artifactPath,
+                                                  resolution.resolvedPath,
+                                                  failureMessage))
+                {
+                    return Deny(resolution, ResourceLoadFailureCode::PathEscapesRoot, failureMessage);
+                }
+
+                if (!std::filesystem::is_regular_file(std::filesystem::path(resolution.resolvedPath)))
+                {
+                    return Deny(resolution,
+                                ResourceLoadFailureCode::PackageArtifactMissing,
+                                "Runtime package artifact is missing: " + packagePath.entryPath);
+                }
+
+                if (!expectedHash.empty())
+                {
+                    resolution.packageHashChecked = true;
+                    resolution.packageActualContentHash =
+                        Diagnostics::ComputeFileContentHash(std::filesystem::path(resolution.resolvedPath));
+                    resolution.packageHashMatched =
+                        resolution.packageActualContentHash == expectedHash;
+                    if (!resolution.packageHashMatched)
+                    {
+                        return Deny(resolution,
+                                    ResourceLoadFailureCode::PackageArtifactHashMismatch,
+                                    "Runtime package artifact content hash mismatch: " + packagePath.entryPath);
+                    }
+                }
+
+                return resolution;
+            }
+
+            if (!sawMountedRoot)
+            {
+                return Deny(resolution,
+                            ResourceLoadFailureCode::PackageRootMissing,
+                            "Runtime package mount root is not mounted.");
+            }
+
+            return Deny(resolution,
+                        ResourceLoadFailureCode::PackageArtifactMissing,
+                        "Runtime package artifact is not listed: " + packagePath.entryPath);
+        }
+
     } // namespace
 
     const char* GetResourceLoadDomainName(ResourceLoadDomain domain)
@@ -175,6 +339,9 @@ namespace RVX::Resource
             case ResourceLoadFailureCode::RuntimePackageRequired: return "RuntimePackageRequired";
             case ResourceLoadFailureCode::InvalidPackagePath: return "InvalidPackagePath";
             case ResourceLoadFailureCode::PackageRootMissing: return "PackageRootMissing";
+            case ResourceLoadFailureCode::PackageMountMissing: return "PackageMountMissing";
+            case ResourceLoadFailureCode::PackageArtifactMissing: return "PackageArtifactMissing";
+            case ResourceLoadFailureCode::PackageArtifactHashMismatch: return "PackageArtifactHashMismatch";
             case ResourceLoadFailureCode::LoaderUnavailable: return "LoaderUnavailable";
             case ResourceLoadFailureCode::LoaderFailed: return "LoaderFailed";
             case ResourceLoadFailureCode::PathEscapesRoot: return "PathEscapesRoot";
@@ -202,10 +369,18 @@ namespace RVX::Resource
         ss << "  \"failureCode\": " << static_cast<uint32>(diagnostic.failure) << ",\n";
         ss << "  \"requestedPath\": " << JsonString(diagnostic.requestedPath) << ",\n";
         ss << "  \"resolvedPath\": " << JsonString(diagnostic.resolvedPath) << ",\n";
+        ss << "  \"packageName\": " << JsonString(diagnostic.packageName) << ",\n";
+        ss << "  \"packageMountPriority\": " << diagnostic.packageMountPriority << ",\n";
+        ss << "  \"packageLogicalPath\": " << JsonString(diagnostic.packageLogicalPath) << ",\n";
+        ss << "  \"packageArtifactPath\": " << JsonString(diagnostic.packageArtifactPath) << ",\n";
+        ss << "  \"packageExpectedContentHash\": " << JsonString(diagnostic.packageExpectedContentHash) << ",\n";
+        ss << "  \"packageActualContentHash\": " << JsonString(diagnostic.packageActualContentHash) << ",\n";
         ss << "  \"message\": " << JsonString(diagnostic.message) << ",\n";
         ss << "  \"sourceAssetRead\": " << JsonBool(diagnostic.sourceAssetRead) << ",\n";
         ss << "  \"cookedArtifactRead\": " << JsonBool(diagnostic.cookedArtifactRead) << ",\n";
-        ss << "  \"runtimePackageRead\": " << JsonBool(diagnostic.runtimePackageRead) << "\n";
+        ss << "  \"runtimePackageRead\": " << JsonBool(diagnostic.runtimePackageRead) << ",\n";
+        ss << "  \"packageHashChecked\": " << JsonBool(diagnostic.packageHashChecked) << ",\n";
+        ss << "  \"packageHashMatched\": " << JsonBool(diagnostic.packageHashMatched) << "\n";
         ss << "}\n";
         return ss.str();
     }
@@ -315,27 +490,44 @@ namespace RVX::Resource
 
         if (resolution.domain == ResourceLoadDomain::RuntimePackage)
         {
-            if (logicalPath.empty() || logicalPath == "." || HasScheme(logicalPath))
+            const ParsedPackagePath packagePath = ParsePackagePath(logicalPath);
+            if (!packagePath.valid)
             {
                 return Deny(resolution,
                             ResourceLoadFailureCode::InvalidPackagePath,
                             "Runtime package path must include a package and entry path.");
             }
 
-            if (policy.packageRoot.empty())
+            resolution.packageName = packagePath.packageName;
+            resolution.packageLogicalPath = packagePath.entryPath;
+
+            if (!policy.packageMounts.empty())
+            {
+                resolution = ResolvePackageMountTablePath(policy, packagePath, resolution);
+                if (!resolution.allowed && resolution.failure != ResourceLoadFailureCode::None)
+                {
+                    return resolution;
+                }
+            }
+            else if (policy.packageRoot.empty())
             {
                 return Deny(resolution,
                             ResourceLoadFailureCode::PackageRootMissing,
                             "Runtime package root is not mounted.");
             }
-
-            std::string failureMessage;
-            if (!TryResolveAgainstMountedRoot(policy.packageRoot,
-                                              logicalPath,
-                                              resolution.resolvedPath,
-                                              failureMessage))
+            else
             {
-                return Deny(resolution, ResourceLoadFailureCode::PathEscapesRoot, failureMessage);
+                resolution.packageMountPriority = 0;
+                resolution.packageArtifactPath = NormalizePackageLogicalPath(logicalPath);
+
+                std::string failureMessage;
+                if (!TryResolveAgainstMountedRoot(policy.packageRoot,
+                                                  logicalPath,
+                                                  resolution.resolvedPath,
+                                                  failureMessage))
+                {
+                    return Deny(resolution, ResourceLoadFailureCode::PathEscapesRoot, failureMessage);
+                }
             }
         }
         else if (resolution.domain == ResourceLoadDomain::CookedArtifact)

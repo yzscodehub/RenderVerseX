@@ -1,3 +1,4 @@
+#include "Core/Diagnostics/ContentHash.h"
 #include "Core/Log.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/RuntimeResourcePolicy.h"
@@ -418,6 +419,193 @@ TEST(ResourceRuntimePolicyValidation, MapsRuntimePackageEntriesThroughMountedPac
     EXPECT_FALSE(diagnostic.cookedArtifactRead);
     EXPECT_TRUE(diagnostic.runtimePackageRead);
     EXPECT_EQ(diagnostic.resolvedPath, packageEntryPath.string());
+
+    std::error_code removeError;
+    fs::remove_all(root, removeError);
+}
+
+TEST(ResourceRuntimePolicyValidation, MapsRuntimePackageEntriesThroughMountTablePriority)
+{
+    const fs::path lowRoot = MakeTempDirectory("PackageMountLow");
+    const fs::path highRoot = MakeTempDirectory("PackageMountHigh");
+    const fs::path lowArtifactPath = lowRoot / "compiled" / "basic.rva";
+    const fs::path highArtifactPath = highRoot / "compiled" / "basic.rva";
+    WriteTextFile(lowArtifactPath, "RVX_SHADER_PREBAKE_V1\nlow\n");
+    WriteTextFile(highArtifactPath, "RVX_SHADER_PREBAKE_V1\nhigh\n");
+    const std::string highHash = Diagnostics::ComputeFileContentHash(highArtifactPath);
+
+    ResourceManagerConfig config;
+    config.asyncThreadCount = 0;
+    config.runtimePolicy.mode = ResourceRuntimeMode::PackagedRuntime;
+    config.runtimePolicy.allowSourceAssetReads = false;
+    config.runtimePolicy.requireRuntimePackage = true;
+    config.runtimePolicy.packageMounts = {
+        ResourcePackageMount{
+            "Base",
+            0,
+            lowRoot.string(),
+            {ResourcePackageArtifact{"shaders/basic.rva", "compiled/basic.rva", ""}}},
+        ResourcePackageMount{
+            "Base",
+            10,
+            highRoot.string(),
+            {ResourcePackageArtifact{"shaders/basic.rva", "compiled/basic.rva", highHash}}},
+    };
+
+    ResourceManagerTestGuard guard(config);
+    auto& manager = ResourceManager::Get();
+
+    auto loader = std::make_unique<RecordingLoader>(ResourceType::Shader);
+    RecordingLoader* loaderPtr = loader.get();
+    manager.RegisterLoader(ResourceType::Shader, std::move(loader));
+
+    IResource* resource = manager.LoadResource("package://Base/shaders/basic.rva");
+    ASSERT_NE(resource, nullptr);
+    EXPECT_EQ(loaderPtr->loadCount, 1u);
+    EXPECT_EQ(loaderPtr->lastPath, highArtifactPath.string());
+
+    const ResourceLoadDiagnostic diagnostic = manager.GetLastLoadDiagnostic();
+    EXPECT_TRUE(diagnostic.success);
+    EXPECT_EQ(diagnostic.domain, ResourceLoadDomain::RuntimePackage);
+    EXPECT_EQ(diagnostic.failure, ResourceLoadFailureCode::None);
+    EXPECT_EQ(diagnostic.packageName, "Base");
+    EXPECT_EQ(diagnostic.packageMountPriority, 10);
+    EXPECT_EQ(diagnostic.packageLogicalPath, "shaders/basic.rva");
+    EXPECT_EQ(diagnostic.packageArtifactPath, "compiled/basic.rva");
+    EXPECT_EQ(diagnostic.packageExpectedContentHash, highHash);
+    EXPECT_EQ(diagnostic.packageActualContentHash, highHash);
+    EXPECT_TRUE(diagnostic.packageHashChecked);
+    EXPECT_TRUE(diagnostic.packageHashMatched);
+
+    const std::string diagnosticJson = manager.ExportLastLoadDiagnosticJson();
+    EXPECT_NE(diagnosticJson.find("\"packageName\": \"Base\""), std::string::npos);
+    EXPECT_NE(diagnosticJson.find("\"packageMountPriority\": 10"), std::string::npos);
+    EXPECT_NE(diagnosticJson.find("\"packageHashMatched\": true"), std::string::npos);
+
+    std::error_code removeError;
+    fs::remove_all(lowRoot, removeError);
+    fs::remove_all(highRoot, removeError);
+}
+
+TEST(ResourceRuntimePolicyValidation, RejectsMissingRuntimePackageMount)
+{
+    const fs::path root = MakeTempDirectory("PackageMountMissing");
+
+    ResourceManagerConfig config;
+    config.asyncThreadCount = 0;
+    config.runtimePolicy.mode = ResourceRuntimeMode::PackagedRuntime;
+    config.runtimePolicy.allowSourceAssetReads = false;
+    config.runtimePolicy.requireRuntimePackage = true;
+    config.runtimePolicy.packageMounts = {
+        ResourcePackageMount{"Other", 0, root.string(), {}},
+    };
+
+    ResourceManagerTestGuard guard(config);
+    auto& manager = ResourceManager::Get();
+
+    auto loader = std::make_unique<RecordingLoader>(ResourceType::Shader);
+    RecordingLoader* loaderPtr = loader.get();
+    manager.RegisterLoader(ResourceType::Shader, std::move(loader));
+
+    EXPECT_EQ(manager.LoadResource("package://Base/shaders/basic.rva"), nullptr);
+    EXPECT_EQ(loaderPtr->loadCount, 0u);
+
+    const ResourceLoadDiagnostic diagnostic = manager.GetLastLoadDiagnostic();
+    EXPECT_TRUE(diagnostic.attempted);
+    EXPECT_FALSE(diagnostic.success);
+    EXPECT_EQ(diagnostic.domain, ResourceLoadDomain::RuntimePackage);
+    EXPECT_EQ(diagnostic.failure, ResourceLoadFailureCode::PackageMountMissing);
+    EXPECT_EQ(diagnostic.packageName, "Base");
+    EXPECT_EQ(diagnostic.packageLogicalPath, "shaders/basic.rva");
+
+    std::error_code removeError;
+    fs::remove_all(root, removeError);
+}
+
+TEST(ResourceRuntimePolicyValidation, RejectsMissingRuntimePackageArtifact)
+{
+    const fs::path root = MakeTempDirectory("PackageArtifactMissing");
+
+    ResourceManagerConfig config;
+    config.asyncThreadCount = 0;
+    config.runtimePolicy.mode = ResourceRuntimeMode::PackagedRuntime;
+    config.runtimePolicy.allowSourceAssetReads = false;
+    config.runtimePolicy.requireRuntimePackage = true;
+    config.runtimePolicy.packageMounts = {
+        ResourcePackageMount{
+            "Base",
+            0,
+            root.string(),
+            {ResourcePackageArtifact{"shaders/other.rva", "compiled/other.rva", ""}}},
+    };
+
+    ResourceManagerTestGuard guard(config);
+    auto& manager = ResourceManager::Get();
+
+    auto loader = std::make_unique<RecordingLoader>(ResourceType::Shader);
+    RecordingLoader* loaderPtr = loader.get();
+    manager.RegisterLoader(ResourceType::Shader, std::move(loader));
+
+    EXPECT_EQ(manager.LoadResource("package://Base/shaders/basic.rva"), nullptr);
+    EXPECT_EQ(loaderPtr->loadCount, 0u);
+
+    const ResourceLoadDiagnostic diagnostic = manager.GetLastLoadDiagnostic();
+    EXPECT_TRUE(diagnostic.attempted);
+    EXPECT_FALSE(diagnostic.success);
+    EXPECT_EQ(diagnostic.domain, ResourceLoadDomain::RuntimePackage);
+    EXPECT_EQ(diagnostic.failure, ResourceLoadFailureCode::PackageArtifactMissing);
+    EXPECT_EQ(diagnostic.packageName, "Base");
+    EXPECT_EQ(diagnostic.packageLogicalPath, "shaders/basic.rva");
+
+    std::error_code removeError;
+    fs::remove_all(root, removeError);
+}
+
+TEST(ResourceRuntimePolicyValidation, RejectsRuntimePackageArtifactHashMismatch)
+{
+    const fs::path root = MakeTempDirectory("PackageArtifactHashMismatch");
+    const fs::path artifactPath = root / "compiled" / "basic.rva";
+    WriteTextFile(artifactPath, "RVX_SHADER_PREBAKE_V1\nhash mismatch\n");
+
+    ResourceManagerConfig config;
+    config.asyncThreadCount = 0;
+    config.runtimePolicy.mode = ResourceRuntimeMode::PackagedRuntime;
+    config.runtimePolicy.allowSourceAssetReads = false;
+    config.runtimePolicy.requireRuntimePackage = true;
+    config.runtimePolicy.packageMounts = {
+        ResourcePackageMount{
+            "Base",
+            0,
+            root.string(),
+            {ResourcePackageArtifact{"shaders/basic.rva", "compiled/basic.rva", "0000000000000000"}}},
+    };
+
+    ResourceManagerTestGuard guard(config);
+    auto& manager = ResourceManager::Get();
+
+    auto loader = std::make_unique<RecordingLoader>(ResourceType::Shader);
+    RecordingLoader* loaderPtr = loader.get();
+    manager.RegisterLoader(ResourceType::Shader, std::move(loader));
+
+    EXPECT_EQ(manager.LoadResource("package://Base/shaders/basic.rva"), nullptr);
+    EXPECT_EQ(loaderPtr->loadCount, 0u);
+
+    const ResourceLoadDiagnostic diagnostic = manager.GetLastLoadDiagnostic();
+    EXPECT_TRUE(diagnostic.attempted);
+    EXPECT_FALSE(diagnostic.success);
+    EXPECT_EQ(diagnostic.domain, ResourceLoadDomain::RuntimePackage);
+    EXPECT_EQ(diagnostic.failure, ResourceLoadFailureCode::PackageArtifactHashMismatch);
+    EXPECT_EQ(diagnostic.packageName, "Base");
+    EXPECT_EQ(diagnostic.packageLogicalPath, "shaders/basic.rva");
+    EXPECT_EQ(diagnostic.packageExpectedContentHash, "0000000000000000");
+    EXPECT_FALSE(diagnostic.packageActualContentHash.empty());
+    EXPECT_TRUE(diagnostic.packageHashChecked);
+    EXPECT_FALSE(diagnostic.packageHashMatched);
+
+    const std::string diagnosticJson = manager.ExportLastLoadDiagnosticJson();
+    EXPECT_NE(diagnosticJson.find("\"failure\": \"PackageArtifactHashMismatch\""), std::string::npos);
+    EXPECT_NE(diagnosticJson.find("\"packageHashChecked\": true"), std::string::npos);
+    EXPECT_NE(diagnosticJson.find("\"packageHashMatched\": false"), std::string::npos);
 
     std::error_code removeError;
     fs::remove_all(root, removeError);

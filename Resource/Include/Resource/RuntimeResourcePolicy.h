@@ -8,6 +8,7 @@
 #include "Core/App/AppMode.h"
 #include "Core/Types.h"
 #include <string>
+#include <vector>
 
 namespace RVX::Resource
 {
@@ -40,10 +41,28 @@ namespace RVX::Resource
         RuntimePackageRequired,
         InvalidPackagePath,
         PackageRootMissing,
+        PackageMountMissing,
+        PackageArtifactMissing,
+        PackageArtifactHashMismatch,
         LoaderUnavailable,
         LoaderFailed,
         PathEscapesRoot,
         ResourceRootMissing,
+    };
+
+    struct ResourcePackageArtifact
+    {
+        std::string logicalPath;
+        std::string resolvedArtifactPath;
+        std::string contentHash;
+    };
+
+    struct ResourcePackageMount
+    {
+        std::string packageName;
+        int32 mountPriority = 0;
+        std::string mountRoot;
+        std::vector<ResourcePackageArtifact> artifacts;
     };
 
     struct ResourceRuntimePolicy
@@ -55,6 +74,7 @@ namespace RVX::Resource
         std::string sourceRoot;
         std::string cookedRoot;
         std::string packageRoot;
+        std::vector<ResourcePackageMount> packageMounts;
     };
 
     struct ResourcePathResolution
@@ -65,10 +85,18 @@ namespace RVX::Resource
         std::string requestedPath;
         std::string logicalPath;
         std::string resolvedPath;
+        std::string packageName;
+        int32 packageMountPriority = 0;
+        std::string packageLogicalPath;
+        std::string packageArtifactPath;
+        std::string packageExpectedContentHash;
+        std::string packageActualContentHash;
         std::string diagnosticMessage;
         bool sourceAssetRead = false;
         bool cookedArtifactRead = false;
         bool runtimePackageRead = false;
+        bool packageHashChecked = false;
+        bool packageHashMatched = false;
     };
 
     struct ResourceLoadDiagnostic
@@ -79,10 +107,18 @@ namespace RVX::Resource
         ResourceLoadFailureCode failure = ResourceLoadFailureCode::None;
         std::string requestedPath;
         std::string resolvedPath;
+        std::string packageName;
+        int32 packageMountPriority = 0;
+        std::string packageLogicalPath;
+        std::string packageArtifactPath;
+        std::string packageExpectedContentHash;
+        std::string packageActualContentHash;
         std::string message;
         bool sourceAssetRead = false;
         bool cookedArtifactRead = false;
         bool runtimePackageRead = false;
+        bool packageHashChecked = false;
+        bool packageHashMatched = false;
     };
 
     const char* GetResourceLoadDomainName(ResourceLoadDomain domain);
@@ -105,6 +141,8 @@ namespace RVX
     using Resource::ResourceLoadDomain;
     using Resource::ResourceLoadFailureCode;
     using Resource::ExportResourceLoadDiagnosticJson;
+    using Resource::ResourcePackageArtifact;
+    using Resource::ResourcePackageMount;
     using Resource::ResourcePathResolution;
     using Resource::ResourceRuntimeMode;
     using Resource::ResourceRuntimePolicy;

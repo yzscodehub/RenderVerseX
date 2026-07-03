@@ -98,10 +98,18 @@ namespace
         diagnostic.failure = failure;
         diagnostic.requestedPath = resolution.requestedPath;
         diagnostic.resolvedPath = resolution.resolvedPath;
+        diagnostic.packageName = resolution.packageName;
+        diagnostic.packageMountPriority = resolution.packageMountPriority;
+        diagnostic.packageLogicalPath = resolution.packageLogicalPath;
+        diagnostic.packageArtifactPath = resolution.packageArtifactPath;
+        diagnostic.packageExpectedContentHash = resolution.packageExpectedContentHash;
+        diagnostic.packageActualContentHash = resolution.packageActualContentHash;
         diagnostic.message = message;
         diagnostic.sourceAssetRead = resolution.sourceAssetRead;
         diagnostic.cookedArtifactRead = resolution.cookedArtifactRead;
         diagnostic.runtimePackageRead = resolution.runtimePackageRead;
+        diagnostic.packageHashChecked = resolution.packageHashChecked;
+        diagnostic.packageHashMatched = resolution.packageHashMatched;
         return diagnostic;
     }
 } // namespace
