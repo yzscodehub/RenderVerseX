@@ -46,8 +46,8 @@ namespace RVX
      * 
      * // Setup material
      * auto material = std::make_shared<TerrainMaterial>();
-     * material->AddLayer("grass", grassTexture, 10.0f);
-     * material->AddLayer("rock", rockTexture, 8.0f);
+     * material->AddLayer("grass", "terrain/grass_albedo", "terrain/grass_normal", 10.0f);
+     * material->AddLayer("rock", "terrain/rock_albedo", "terrain/rock_normal", 8.0f);
      * terrain->SetMaterial(material);
      * 
      * // Configure
@@ -183,7 +183,7 @@ namespace RVX
         TerrainCollider* GetCollider() const { return m_collider.get(); }
 
         /**
-         * @brief Build a Render-facing terrain snapshot without exposing Render/RHI objects.
+         * @brief Build a Render-facing terrain snapshot without exposing renderer backend objects.
          */
         bool BuildRenderSnapshot(TerrainRenderSnapshot& outSnapshot) const;
 
@@ -193,9 +193,9 @@ namespace RVX
         bool AppendRenderFeatureSnapshot(RenderFeatureSnapshot& outSnapshot) const override;
 
         /**
-         * @brief Check if GPU resources are initialized
+         * @brief Feature modules do not own terrain GPU resources.
          */
-        bool IsGPUInitialized() const { return m_gpuInitialized; }
+        bool IsGPUInitialized() const { return false; }
 
     private:
         void RebuildMesh();
@@ -209,7 +209,6 @@ namespace RVX
         std::unique_ptr<TerrainCollider> m_collider;
 
         bool m_collisionEnabled = true;
-        bool m_gpuInitialized = false;
         bool m_needsRebuild = true;
 
         AABB m_localBounds;

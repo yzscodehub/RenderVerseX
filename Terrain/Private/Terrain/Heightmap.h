@@ -8,18 +8,15 @@
  * Supports loading from image files and procedural generation.
  */
 
-#include "Core/Types.h"
 #include "Core/MathTypes.h"
-#include "RHI/RHI.h"
+#include "Core/Types.h"
 
 #include <memory>
-#include <vector>
 #include <string>
+#include <vector>
 
 namespace RVX
 {
-    class IRHIDevice;
-
     /**
      * @brief Heightmap data format
      */
@@ -177,23 +174,16 @@ namespace RVX
         bool IsValid() const { return !m_data.empty() && m_width > 0 && m_height > 0; }
 
         // =====================================================================
-        // GPU Resources
+        // Render Upload Diagnostics
         // =====================================================================
 
         /**
-         * @brief Create GPU texture from heightmap data
-         * @param device RHI device
-         * @return true if texture creation succeeded
+         * @brief Report whether Terrain can create a feature-owned height texture.
          */
-        bool CreateGPUTexture(IRHIDevice* device);
+        bool CreateGPUTexture();
 
         /**
-         * @brief Get the GPU heightmap texture
-         */
-        RHITexture* GetGPUTexture() const { return m_gpuTexture.Get(); }
-
-        /**
-         * @brief Check whether GPU texture data has been uploaded from CPU height data
+         * @brief Check whether height data has been uploaded by a render-owned path.
          */
         bool IsGPUTextureDataUploaded() const { return m_gpuTextureDataUploaded; }
 
@@ -203,17 +193,10 @@ namespace RVX
         const std::string& GetGPUTextureDiagnostic() const { return m_gpuTextureDiagnostic; }
 
         /**
-         * @brief Generate normal map texture
-         * @param device RHI device
+         * @brief Report whether Terrain can create a feature-owned normal map texture.
          * @param scale Terrain scale for proper normal calculation
-         * @return true if normal map creation succeeded
          */
-        bool GenerateNormalMap(IRHIDevice* device, const Vec3& scale);
-
-        /**
-         * @brief Get the GPU normal map texture
-         */
-        RHITexture* GetNormalMapTexture() const { return m_normalMapTexture.Get(); }
+        bool GenerateNormalMap(const Vec3& scale);
 
         /**
          * @brief Check whether normal map texture data has been uploaded
@@ -235,12 +218,10 @@ namespace RVX
         float m_maxHeight = 100.0f;
         HeightmapFormat m_format = HeightmapFormat::Float32;
 
-        RHITextureRef m_gpuTexture;
-        RHITextureRef m_normalMapTexture;
         bool m_gpuTextureDataUploaded = false;
         bool m_normalMapDataUploaded = false;
-        std::string m_gpuTextureDiagnostic = "Heightmap GPU texture has not been created.";
-        std::string m_normalMapDiagnostic = "Heightmap normal map has not been generated.";
+        std::string m_gpuTextureDiagnostic = "Heightmap render texture has not been created.";
+        std::string m_normalMapDiagnostic = "Heightmap render normal map has not been generated.";
     };
 
 } // namespace RVX

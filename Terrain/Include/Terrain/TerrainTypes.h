@@ -2,7 +2,7 @@
 
 /**
  * @file TerrainTypes.h
- * @brief Runtime-facing terrain contracts without Render/RHI types
+ * @brief Runtime-facing terrain contracts without renderer backend types
  */
 
 #include "Core/MathTypes.h"

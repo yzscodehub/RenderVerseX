@@ -10,6 +10,7 @@
 #include "Core/Types.h"
 
 #include <cstddef>
+#include <string>
 #include <vector>
 
 namespace RVX
@@ -41,6 +42,12 @@ namespace RVX
         bool heightmapValid = false;
         bool hasMaterial = false;
         bool gpuInitialized = false;
+        bool cpuDataAvailable = false;
+        bool renderGpuPathAvailable = false;
+        std::string renderPathReason;
+        std::string heightmapDiagnostic;
+        std::string materialDiagnostic;
+        std::string lodDiagnostic;
     };
 
     struct TerrainRenderSnapshotMetadata

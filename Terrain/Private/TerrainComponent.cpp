@@ -185,7 +185,17 @@ bool TerrainComponent::BuildRenderSnapshot(TerrainRenderSnapshot& outSnapshot) c
     item.hasHeightmap = m_heightmap != nullptr;
     item.heightmapValid = m_heightmap && m_heightmap->IsValid();
     item.hasMaterial = m_material != nullptr;
-    item.gpuInitialized = m_gpuInitialized;
+    item.gpuInitialized = false;
+    item.cpuDataAvailable = item.heightmapValid;
+    item.renderGpuPathAvailable = false;
+    item.renderPathReason =
+        "Terrain feature module exports CPU state only; terrain GPU resources are owned by Render terrain passes";
+    item.heightmapDiagnostic =
+        m_heightmap ? m_heightmap->GetGPUTextureDiagnostic() : "Terrain has no heightmap assigned.";
+    item.materialDiagnostic =
+        m_material ? m_material->GetLayerBufferDiagnostic() : "Terrain has no material assigned.";
+    item.lodDiagnostic =
+        m_lodSystem ? m_lodSystem->GetPatchMeshDiagnostic() : "Terrain LOD system is not attached.";
 
     outSnapshot.items.push_back(item);
     outSnapshot.MarkComplete();

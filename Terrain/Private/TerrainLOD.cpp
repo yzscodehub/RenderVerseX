@@ -5,48 +5,13 @@
 
 #include "Terrain/TerrainLOD.h"
 #include "Core/Log.h"
-#include "RHI/RHIDevice.h"
 #include "Terrain/Heightmap.h"
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 
 namespace RVX
 {
-namespace
-{
-    bool UploadMappedTerrainBuffer(RHIBuffer* buffer,
-                                   const void* data,
-                                   uint64 size,
-                                   const char* label,
-                                   std::string& outDiagnostic)
-    {
-        if (!buffer)
-        {
-            outDiagnostic = std::string("Terrain LOD patch ") + label + " buffer is missing.";
-            return false;
-        }
-
-        if (!data || size == 0)
-        {
-            outDiagnostic = std::string("Terrain LOD patch ") + label + " upload has no data.";
-            return false;
-        }
-
-        void* mapped = buffer->Map();
-        if (!mapped)
-        {
-            outDiagnostic = std::string("Terrain LOD failed to map patch ") + label + " buffer.";
-            return false;
-        }
-
-        std::memcpy(mapped, data, static_cast<size_t>(size));
-        buffer->Unmap();
-        return true;
-    }
-} // namespace
-
 bool TerrainLOD::Initialize(const Heightmap* heightmap, const Vec3& terrainSize,
                              const TerrainLODParams& params)
 {
@@ -118,95 +83,21 @@ float TerrainLOD::GetMorphFactor(float distance, uint8 lodLevel) const
     return (distance - morphStart) / (lodEnd - morphStart);
 }
 
-bool TerrainLOD::CreateGPUResources(IRHIDevice* device)
+bool TerrainLOD::CreateGPUResources()
 {
-    if (!device)
-    {
-        m_patchMeshDataUploaded = false;
-        m_patchMeshDiagnostic = "Terrain LOD patch mesh upload failed: invalid device.";
-        RVX_CORE_ERROR("TerrainLOD: Invalid device");
-        return false;
-    }
-
     if (m_patchVertices.empty() || m_patchIndices.empty())
     {
         m_patchMeshDataUploaded = false;
-        m_patchMeshDiagnostic = "Terrain LOD patch mesh upload failed: no patch mesh data.";
+        m_patchMeshDiagnostic = "Terrain LOD patch mesh export failed: no patch mesh data.";
         RVX_CORE_ERROR("TerrainLOD: No patch mesh data");
         return false;
     }
 
-    RHIBufferDesc vbDesc;
-    vbDesc.size = static_cast<uint64>(m_patchVertices.size() * sizeof(Vec2));
-    vbDesc.usage = RHIBufferUsage::Vertex;
-    vbDesc.memoryType = RHIMemoryType::Upload;
-    vbDesc.stride = sizeof(Vec2);
-    vbDesc.debugName = "TerrainPatchVB";
-
-    m_patchVertexBuffer = device->CreateBuffer(vbDesc);
-    if (!m_patchVertexBuffer)
-    {
-        m_patchVertexBuffer.Reset();
-        m_patchIndexBuffer.Reset();
-        m_patchMeshDataUploaded = false;
-        m_patchMeshDiagnostic = "Terrain LOD failed to create patch vertex buffer.";
-        RVX_CORE_ERROR("TerrainLOD: {}", m_patchMeshDiagnostic);
-        return false;
-    }
-
-    if (!UploadMappedTerrainBuffer(m_patchVertexBuffer.Get(),
-                                   m_patchVertices.data(),
-                                   vbDesc.size,
-                                   "vertex",
-                                   m_patchMeshDiagnostic))
-    {
-        m_patchVertexBuffer.Reset();
-        m_patchIndexBuffer.Reset();
-        m_patchMeshDataUploaded = false;
-        RVX_CORE_ERROR("TerrainLOD: {}", m_patchMeshDiagnostic);
-        return false;
-    }
-
-    RHIBufferDesc ibDesc;
-    ibDesc.size = static_cast<uint64>(m_patchIndices.size() * sizeof(uint32));
-    ibDesc.usage = RHIBufferUsage::Index;
-    ibDesc.memoryType = RHIMemoryType::Upload;
-    ibDesc.stride = sizeof(uint32);
-    ibDesc.debugName = "TerrainPatchIB";
-
-    m_patchIndexBuffer = device->CreateBuffer(ibDesc);
-    if (!m_patchIndexBuffer)
-    {
-        m_patchVertexBuffer.Reset();
-        m_patchIndexBuffer.Reset();
-        m_patchMeshDataUploaded = false;
-        m_patchMeshDiagnostic = "Terrain LOD failed to create patch index buffer.";
-        RVX_CORE_ERROR("TerrainLOD: {}", m_patchMeshDiagnostic);
-        return false;
-    }
-
-    if (!UploadMappedTerrainBuffer(m_patchIndexBuffer.Get(),
-                                   m_patchIndices.data(),
-                                   ibDesc.size,
-                                   "index",
-                                   m_patchMeshDiagnostic))
-    {
-        m_patchVertexBuffer.Reset();
-        m_patchIndexBuffer.Reset();
-        m_patchMeshDataUploaded = false;
-        RVX_CORE_ERROR("TerrainLOD: {}", m_patchMeshDiagnostic);
-        return false;
-    }
-
-    m_patchIndexCount = static_cast<uint32>(m_patchIndices.size());
-    m_patchMeshDataUploaded = true;
+    m_patchMeshDataUploaded = false;
     m_patchMeshDiagnostic =
-        "Terrain LOD patch mesh uploaded with RHI upload-memory buffers; "
-        "GPU-only staged patch buffers are not used by this Terrain-local path.";
-
-    RVX_CORE_INFO("TerrainLOD: Created GPU resources - {} vertices, {} indices",
-                  m_patchVertices.size(), m_patchIndices.size());
-    return true;
+        "Terrain LOD patch CPU mesh is available, but patch buffers are Render-owned and not created by the Terrain feature module.";
+    RVX_CORE_ERROR("TerrainLOD: {}", m_patchMeshDiagnostic);
+    return false;
 }
 
 void TerrainLOD::BuildQuadTree(const Heightmap* heightmap, const Vec3& terrainSize)
@@ -379,11 +270,9 @@ void TerrainLOD::CreatePatchMesh(uint32 patchSize)
 {
     m_patchVertices.clear();
     m_patchIndices.clear();
-    m_patchVertexBuffer.Reset();
-    m_patchIndexBuffer.Reset();
     m_patchIndexCount = 0;
     m_patchMeshDataUploaded = false;
-    m_patchMeshDiagnostic = "Terrain patch mesh CPU data has not been uploaded to GPU buffers.";
+    m_patchMeshDiagnostic = "Terrain patch mesh CPU data has not been exported to Render-owned buffers.";
 
     // Create grid of vertices
     for (uint32 y = 0; y < patchSize; ++y)

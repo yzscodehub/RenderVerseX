@@ -204,6 +204,31 @@ TEST(FeatureBoundaryValidation, TerrainComponentPublicHeaderDoesNotExposeRenderO
     EXPECT_NE(terrainHeader.find("TerrainRenderSnapshot"), std::string::npos);
 }
 
+TEST(FeatureBoundaryValidation, TerrainModuleDoesNotIncludeOrLinkRHI)
+{
+    const std::filesystem::path terrainRoot = FindSourcePath("Terrain");
+    ASSERT_FALSE(terrainRoot.empty());
+
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(terrainRoot))
+    {
+        if (!entry.is_regular_file())
+            continue;
+
+        const std::filesystem::path extension = entry.path().extension();
+        if (extension != ".h" && extension != ".cpp")
+            continue;
+
+        std::ifstream stream(entry.path(), std::ios::binary);
+        const std::string source{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+        EXPECT_EQ(source.find("#include \"RHI/"), std::string::npos) << entry.path().string();
+        EXPECT_EQ(source.find("#include <RHI/"), std::string::npos) << entry.path().string();
+    }
+
+    const std::string terrainCMake = ReadSourceFile("Terrain/CMakeLists.txt");
+    ASSERT_FALSE(terrainCMake.empty());
+    EXPECT_EQ(terrainCMake.find("RVX_RHI"), std::string::npos);
+}
+
 TEST(FeatureBoundaryValidation, TerrainComponentBuildsRenderSnapshotWithoutGPUHandles)
 {
     EnsureLogInitialized();
@@ -252,6 +277,12 @@ TEST(FeatureBoundaryValidation, TerrainComponentBuildsRenderSnapshotWithoutGPUHa
     EXPECT_FALSE(item.heightmapValid);
     EXPECT_FALSE(item.hasMaterial);
     EXPECT_FALSE(item.gpuInitialized);
+    EXPECT_FALSE(item.cpuDataAvailable);
+    EXPECT_FALSE(item.renderGpuPathAvailable);
+    EXPECT_FALSE(item.renderPathReason.empty());
+    EXPECT_FALSE(item.heightmapDiagnostic.empty());
+    EXPECT_FALSE(item.materialDiagnostic.empty());
+    EXPECT_FALSE(item.lodDiagnostic.empty());
 }
 
 TEST(FeatureBoundaryValidation, RenderFeatureSceneBridgeCollectsFeatureSnapshotsThroughProviderContract)

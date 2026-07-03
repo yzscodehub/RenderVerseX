@@ -1,19 +1,28 @@
 /**
  * @file TerrainMaterial.cpp
- * @brief Implementation of terrain material system
+ * @brief Implementation of terrain material state.
  */
 
 #include "Terrain/TerrainMaterial.h"
 #include "Core/Log.h"
-#include "RHI/RHIDevice.h"
 
-#include <cstring>
+#include <utility>
 
 namespace RVX
 {
 
-uint32 TerrainMaterial::AddLayer(const std::string& name, RHITextureRef albedo,
-                                  RHITextureRef normal, float tilingScale)
+void TerrainMaterial::MarkLayerDataDirty(const char* reason)
+{
+    m_needsUpdate = true;
+    m_layerBufferDataUploaded = false;
+    m_layerBufferDiagnostic = reason ? reason :
+        "Terrain material layer constants changed; Render-owned buffers need refresh.";
+}
+
+uint32 TerrainMaterial::AddLayer(const std::string& name,
+                                 std::string albedoTexture,
+                                 std::string normalTexture,
+                                 float tilingScale)
 {
     if (m_layers.size() >= RVX_TERRAIN_MAX_LAYERS)
     {
@@ -23,15 +32,13 @@ uint32 TerrainMaterial::AddLayer(const std::string& name, RHITextureRef albedo,
 
     TerrainLayer layer;
     layer.name = name;
-    layer.albedoTexture = std::move(albedo);
-    layer.normalTexture = std::move(normal);
+    layer.albedoTexture = std::move(albedoTexture);
+    layer.normalTexture = std::move(normalTexture);
     layer.tilingScale = tilingScale;
 
-    uint32 index = static_cast<uint32>(m_layers.size());
+    const uint32 index = static_cast<uint32>(m_layers.size());
     m_layers.push_back(std::move(layer));
-    m_needsUpdate = true;
-    m_layerBufferDataUploaded = false;
-    m_layerBufferDiagnostic = "Terrain layer data has pending GPU upload.";
+    MarkLayerDataDirty("Terrain layer data has pending Render-owned buffer upload.");
 
     RVX_CORE_INFO("TerrainMaterial: Added layer '{}' at index {}", name, index);
     return index;
@@ -39,13 +46,17 @@ uint32 TerrainMaterial::AddLayer(const std::string& name, RHITextureRef albedo,
 
 TerrainLayer* TerrainMaterial::GetLayer(uint32 index)
 {
-    if (index >= m_layers.size()) return nullptr;
+    if (index >= m_layers.size())
+        return nullptr;
+
     return &m_layers[index];
 }
 
 const TerrainLayer* TerrainMaterial::GetLayer(uint32 index) const
 {
-    if (index >= m_layers.size()) return nullptr;
+    if (index >= m_layers.size())
+        return nullptr;
+
     return &m_layers[index];
 }
 
@@ -56,127 +67,58 @@ TerrainLayer* TerrainMaterial::GetLayerByName(const std::string& name)
         if (layer.name == name)
             return &layer;
     }
+
     return nullptr;
 }
 
 void TerrainMaterial::RemoveLayer(uint32 index)
 {
-    if (index >= m_layers.size()) return;
+    if (index >= m_layers.size())
+        return;
 
     m_layers.erase(m_layers.begin() + index);
-    m_needsUpdate = true;
-    m_layerBufferDataUploaded = false;
-    m_layerBufferDiagnostic = "Terrain layer data has pending GPU upload.";
+    MarkLayerDataDirty("Terrain layer data has pending Render-owned buffer upload.");
 
     RVX_CORE_INFO("TerrainMaterial: Removed layer at index {}", index);
 }
 
-void TerrainMaterial::SetSplatmap(RHITextureRef splatmap)
+void TerrainMaterial::SetSplatmap(std::string splatmap)
 {
     m_splatmaps.clear();
-    if (splatmap)
+    if (!splatmap.empty())
     {
         m_splatmaps.push_back(std::move(splatmap));
     }
 }
 
-void TerrainMaterial::SetSplatmaps(const std::vector<RHITextureRef>& splatmaps)
+void TerrainMaterial::SetSplatmaps(std::vector<std::string> splatmaps)
 {
-    m_splatmaps = splatmaps;
+    m_splatmaps = std::move(splatmaps);
 }
 
-RHITexture* TerrainMaterial::GetSplatmap(uint32 index) const
+const std::string* TerrainMaterial::GetSplatmap(uint32 index) const
 {
-    if (index >= m_splatmaps.size()) return nullptr;
-    return m_splatmaps[index].Get();
+    if (index >= m_splatmaps.size())
+        return nullptr;
+
+    return &m_splatmaps[index];
 }
 
-bool TerrainMaterial::InitializeGPU(IRHIDevice* device)
+void TerrainMaterial::BuildLayerRenderData(std::vector<TerrainLayerRenderData>& outData) const
 {
-    if (!device)
-    {
-        RVX_CORE_ERROR("TerrainMaterial: Invalid device");
-        return false;
-    }
-
-    // Create layer data buffer
-    RHIBufferDesc bufferDesc;
-    bufferDesc.size = RVX_TERRAIN_MAX_LAYERS * sizeof(TerrainLayerGPUData);
-    bufferDesc.usage = RHIBufferUsage::Constant;
-    bufferDesc.memoryType = RHIMemoryType::Upload;
-    bufferDesc.debugName = "TerrainLayerData";
-
-    m_layerBuffer = device->CreateBuffer(bufferDesc);
-    if (!m_layerBuffer)
-    {
-        m_gpuInitialized = false;
-        m_layerBufferDataUploaded = false;
-        m_layerBufferDiagnostic = "TerrainMaterial failed to create layer buffer.";
-        RVX_CORE_ERROR("TerrainMaterial: Failed to create layer buffer");
-        return false;
-    }
-
-    m_gpuInitialized = true;
-    if (!UpdateGPUData())
-    {
-        m_gpuInitialized = false;
-        RVX_CORE_ERROR("TerrainMaterial: {}", m_layerBufferDiagnostic);
-        return false;
-    }
-
-    RVX_CORE_INFO("TerrainMaterial: GPU resources initialized with {} layers", m_layers.size());
-    return true;
-}
-
-bool TerrainMaterial::UpdateGPUData()
-{
-    if (!m_gpuInitialized)
-    {
-        m_layerBufferDataUploaded = false;
-        m_layerBufferDiagnostic = "Terrain material GPU data update skipped because GPU resources are not initialized.";
-        return false;
-    }
-
-    if (!m_needsUpdate)
-    {
-        return m_layerBufferDataUploaded;
-    }
-
-    std::vector<TerrainLayerGPUData> gpuData(RVX_TERRAIN_MAX_LAYERS);
+    outData.assign(RVX_TERRAIN_MAX_LAYERS, {});
 
     for (size_t i = 0; i < m_layers.size(); ++i)
     {
         const auto& layer = m_layers[i];
-        gpuData[i].tilingAndStrength = Vec4(
+        outData[i].tilingAndStrength = Vec4(
             layer.tilingScale,
             layer.normalStrength,
             layer.roughnessValue,
             layer.metallicValue
         );
-        gpuData[i].tintColor = Vec4(layer.tintColor, 1.0f);
+        outData[i].tintColor = Vec4(layer.tintColor, 1.0f);
     }
-
-    if (!m_layerBuffer)
-    {
-        m_layerBufferDataUploaded = false;
-        m_layerBufferDiagnostic = "Terrain material layer buffer is missing.";
-        return false;
-    }
-
-    void* mapped = m_layerBuffer->Map();
-    if (!mapped)
-    {
-        m_layerBufferDataUploaded = false;
-        m_layerBufferDiagnostic = "Terrain material failed to map layer buffer for upload.";
-        return false;
-    }
-
-    std::memcpy(mapped, gpuData.data(), gpuData.size() * sizeof(TerrainLayerGPUData));
-    m_layerBuffer->Unmap();
-    m_needsUpdate = false;
-    m_layerBufferDataUploaded = true;
-    m_layerBufferDiagnostic = "Terrain material layer data uploaded to GPU buffer.";
-    return true;
 }
 
 } // namespace RVX

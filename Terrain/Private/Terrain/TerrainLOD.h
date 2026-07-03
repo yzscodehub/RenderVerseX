@@ -8,9 +8,8 @@
  * efficient terrain rendering with smooth transitions.
  */
 
-#include "Core/Types.h"
 #include "Core/MathTypes.h"
-#include "RHI/RHI.h"
+#include "Core/Types.h"
 
 #include <memory>
 #include <string>
@@ -18,7 +17,6 @@
 
 namespace RVX
 {
-    class IRHIDevice;
     class Heightmap;
 
     /**
@@ -73,7 +71,7 @@ namespace RVX
      * - Continuous morph-based transitions
      * - Frustum culling at each LOD level
      * - Crack prevention via neighbor LOD matching
-     * - GPU-friendly patch generation
+     * - Render-facing patch generation
      * 
      * Usage:
      * @code
@@ -157,25 +155,13 @@ namespace RVX
         float GetMorphFactor(float distance, uint8 lodLevel) const;
 
         // =====================================================================
-        // GPU Resources
+        // Render Upload Diagnostics
         // =====================================================================
 
         /**
-         * @brief Create GPU buffers for terrain patches
-         * @param device RHI device
-         * @return true if creation succeeded
+         * @brief Report whether Terrain can create feature-owned patch buffers.
          */
-        bool CreateGPUResources(IRHIDevice* device);
-
-        /**
-         * @brief Get the patch vertex buffer
-         */
-        RHIBuffer* GetPatchVertexBuffer() const { return m_patchVertexBuffer.Get(); }
-
-        /**
-         * @brief Get the patch index buffer
-         */
-        RHIBuffer* GetPatchIndexBuffer() const { return m_patchIndexBuffer.Get(); }
+        bool CreateGPUResources();
 
         /**
          * @brief Get index count per patch
@@ -183,7 +169,7 @@ namespace RVX
         uint32 GetPatchIndexCount() const { return m_patchIndexCount; }
 
         /**
-         * @brief Check whether patch vertex/index data has been uploaded to GPU buffers
+         * @brief Check whether patch vertex/index data has been uploaded by a render-owned path.
          */
         bool IsPatchMeshDataUploaded() const { return m_patchMeshDataUploaded; }
 
@@ -247,12 +233,9 @@ namespace RVX
         TerrainLODParams m_params;
         Vec3 m_terrainSize{1.0f};
         
-        // GPU resources for patch rendering
-        RHIBufferRef m_patchVertexBuffer;
-        RHIBufferRef m_patchIndexBuffer;
         uint32 m_patchIndexCount = 0;
         bool m_patchMeshDataUploaded = false;
-        std::string m_patchMeshDiagnostic = "Terrain patch mesh GPU buffers have not been created.";
+        std::string m_patchMeshDiagnostic = "Terrain patch mesh render buffers have not been created.";
         bool m_usesConservativeHeightBounds = false;
         std::string m_heightBoundsDiagnostic = "Terrain LOD has not been initialized.";
         std::string m_crackPreventionDiagnostic =

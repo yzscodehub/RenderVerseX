@@ -184,10 +184,6 @@
       "allowed": ["Core", "Physics", "Resource", "ResourceSceneAdapters", "Runtime", "Scene", "Spatial", "World"]
     }
   },
-  "legacyEdges": {
-    "Terrain->RHI": "Phase 4 migration: remove terrain public RHI exposure and move GPU calls into Render-owned paths."
-  },
-  "legacyBudgets": {
-    "Terrain->RHI": 5
-  }
+  "legacyEdges": {},
+  "legacyBudgets": {}
 }

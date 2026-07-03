@@ -2932,15 +2932,20 @@ TEST_F(RenderHonestyValidationFixture, FilmGrainRequiresResourcesBeforeSupported
     EXPECT_FALSE(filmGrain.GetUnsupportedReason().empty());
 }
 
-TEST_F(RenderHonestyValidationFixture, TerrainMaterialLayerBufferMapFailureIsNotInitialized)
+TEST_F(RenderHonestyValidationFixture, TerrainMaterialRenderDataExportDoesNotPretendGpuUpload)
 {
-    TerrainNullMapBufferDevice device;
     RVX::TerrainMaterial material;
 
-    EXPECT_FALSE(material.InitializeGPU(&device));
+    EXPECT_EQ(material.AddLayer("Grass", "terrain/grass_albedo", "terrain/grass_normal", 12.0f), 0u);
+
+    std::vector<RVX::TerrainLayerRenderData> layerData;
+    material.BuildLayerRenderData(layerData);
+
+    ASSERT_EQ(layerData.size(), RVX::RVX_TERRAIN_MAX_LAYERS);
+    EXPECT_FLOAT_EQ(layerData[0].tilingAndStrength.x, 12.0f);
     EXPECT_FALSE(material.IsGPUInitialized());
     EXPECT_FALSE(material.IsLayerBufferDataUploaded());
-    EXPECT_NE(material.GetLayerBufferDiagnostic().find("map"), std::string::npos);
+    EXPECT_NE(material.GetLayerBufferDiagnostic().find("Render-owned"), std::string::npos);
 }
 
 TEST_F(RenderHonestyValidationFixture, TerrainHeightmapGpuTextureUploadIsHonestWhenUnavailable)
@@ -2955,16 +2960,13 @@ TEST_F(RenderHonestyValidationFixture, TerrainHeightmapGpuTextureUploadIsHonestW
     RVX::Heightmap heightmap;
     ASSERT_TRUE(heightmap.Create(desc));
 
-    NullDevice device;
-    EXPECT_FALSE(heightmap.CreateGPUTexture(&device));
+    EXPECT_FALSE(heightmap.CreateGPUTexture());
     EXPECT_FALSE(heightmap.IsGPUTextureDataUploaded());
-    EXPECT_EQ(heightmap.GetGPUTexture(), nullptr);
-    EXPECT_NE(heightmap.GetGPUTextureDiagnostic().find("RHI-only"), std::string::npos);
+    EXPECT_NE(heightmap.GetGPUTextureDiagnostic().find("Render-owned"), std::string::npos);
 
-    EXPECT_FALSE(heightmap.GenerateNormalMap(&device, RVX::Vec3(1.0f)));
+    EXPECT_FALSE(heightmap.GenerateNormalMap(RVX::Vec3(1.0f)));
     EXPECT_FALSE(heightmap.IsNormalMapDataUploaded());
-    EXPECT_EQ(heightmap.GetNormalMapTexture(), nullptr);
-    EXPECT_NE(heightmap.GetNormalMapDiagnostic().find("RHI-only"), std::string::npos);
+    EXPECT_NE(heightmap.GetNormalMapDiagnostic().find("Render-owned"), std::string::npos);
 }
 
 TEST_F(RenderHonestyValidationFixture, TerrainLODFallbacksExposeDeterministicStatus)
@@ -3018,18 +3020,21 @@ TEST_F(RenderHonestyValidationFixture, TerrainPlaceholderPathsExposeHonestDiagno
     EXPECT_EQ(heightmapSource.find("Render/GPUUploadService.h"), std::string::npos);
     EXPECT_NE(heightmapHeader.find("IsGPUTextureDataUploaded"), std::string::npos);
     EXPECT_NE(heightmapHeader.find("GetGPUTextureDiagnostic"), std::string::npos);
-    EXPECT_NE(heightmapSource.find("no placeholder texture was created"), std::string::npos);
+    EXPECT_NE(heightmapSource.find("Render-owned"), std::string::npos);
 
     EXPECT_EQ(materialSource.find("This is a simplified placeholder"), std::string::npos);
     EXPECT_NE(materialHeader.find("IsLayerBufferDataUploaded"), std::string::npos);
-    EXPECT_NE(materialSource.find("m_layerBuffer->Map()"), std::string::npos);
+    EXPECT_EQ(materialHeader.find("RHIBuffer"), std::string::npos);
+    EXPECT_EQ(materialSource.find("m_layerBuffer->"), std::string::npos);
+    EXPECT_NE(materialSource.find("BuildLayerRenderData"), std::string::npos);
 
     EXPECT_EQ(lodSource.find("TODO: Calculate neighbor LOD mask"), std::string::npos);
     EXPECT_EQ(lodSource.find("Render/GPUUploadService.h"), std::string::npos);
     EXPECT_NE(lodHeader.find("SupportsCrackPrevention"), std::string::npos);
     EXPECT_NE(lodHeader.find("UsesConservativeHeightBounds"), std::string::npos);
     EXPECT_NE(lodSource.find("Conservative fallback"), std::string::npos);
-    EXPECT_NE(lodSource.find("UploadMappedTerrainBuffer"), std::string::npos);
+    EXPECT_EQ(lodSource.find("UploadMappedTerrainBuffer"), std::string::npos);
+    EXPECT_NE(lodSource.find("Render-owned"), std::string::npos);
 }
 
 TEST_F(RenderHonestyValidationFixture, SceneRendererLegacyCollectionFallbackIsRemoved)

@@ -31,8 +31,6 @@ target_link_libraries(RVX_Terrain PUBLIC
     RVX_Core
     RVX::RenderContracts
     RVX::Scene
-    PRIVATE
-        RVX_RHI
 )
 
 add_library(RVX::Terrain ALIAS RVX_Terrain)
