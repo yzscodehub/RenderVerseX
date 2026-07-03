@@ -5,7 +5,6 @@
 
 #include "Terrain/Heightmap.h"
 #include "Core/Log.h"
-#include "RHI/RHIDevice.h"
 
 #include <algorithm>
 #include <cmath>

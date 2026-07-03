@@ -9,9 +9,7 @@
  */
 
 #include "Water/WaterTypes.h"
-#include "RHI/RHITexture.h"
-#include "RHI/RHIBuffer.h"
-#include "RHI/RHIPipeline.h"
+#include "RHI/RHI.h"
 
 #include <memory>
 

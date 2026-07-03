@@ -10,8 +10,7 @@
 
 #include "Core/Types.h"
 #include "Core/MathTypes.h"
-#include "RHI/RHITexture.h"
-#include "RHI/RHIBuffer.h"
+#include "RHI/RHI.h"
 
 #include <memory>
 #include <vector>

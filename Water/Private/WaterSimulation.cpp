@@ -5,7 +5,6 @@
 
 #include "Water/WaterSimulation.h"
 #include "RHI/RHIDevice.h"
-#include "RHI/RHICommandContext.h"
 #include "Core/Log.h"
 
 #include <cmath>
