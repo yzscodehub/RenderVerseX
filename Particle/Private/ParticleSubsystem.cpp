@@ -3,6 +3,7 @@
 #include "Particle/GPU/CPUParticleSimulator.h"
 #include "Particle/GPU/IParticleSimulator.h"
 #include "Particle/GPU/ParticleSorter.h"
+#include "Particle/ParticleSubsystemRenderAccess.h"
 #include "Particle/Rendering/ParticlePass.h"
 #include "Particle/Rendering/ParticleRenderer.h"
 #include "Render/Renderer/SceneRenderer.h"
@@ -14,6 +15,17 @@
 
 namespace RVX::Particle
 {
+struct ParticleSubsystemRenderState
+{
+    RenderSubsystem* renderSubsystem = nullptr;
+    IRHIDevice* device = nullptr;
+    SceneRenderer* sceneRenderer = nullptr;
+    std::unique_ptr<ParticleRendererConfig> rendererConfigOverride;
+    std::unique_ptr<ParticleRenderer> renderer;
+    std::unique_ptr<ParticleSorter> sorter;
+    ParticlePass* renderPass = nullptr;
+};
+
 namespace
 {
     RVX::ParticleRenderSnapshotMode ToSnapshotRenderMode(ParticleRenderMode mode)
@@ -71,7 +83,36 @@ namespace
 
 ParticleSubsystem* ParticleSubsystem::s_activeSubsystem = nullptr;
 
-ParticleSubsystem::ParticleSubsystem() = default;
+ParticleSubsystem::ParticleSubsystem()
+    : m_renderState(std::make_unique<ParticleSubsystemRenderState>())
+{
+}
+
+void ParticleSubsystemRenderAccess::SetDeviceForTesting(ParticleSubsystem& subsystem, IRHIDevice* device)
+{
+    subsystem.m_renderState->device = device;
+}
+
+void ParticleSubsystemRenderAccess::SetSceneRendererForTesting(ParticleSubsystem& subsystem, SceneRenderer* renderer)
+{
+    subsystem.m_renderState->sceneRenderer = renderer;
+}
+
+void ParticleSubsystemRenderAccess::SetRendererConfigForTesting(ParticleSubsystem& subsystem,
+                                                                const ParticleRendererConfig& config)
+{
+    subsystem.m_renderState->rendererConfigOverride = std::make_unique<ParticleRendererConfig>(config);
+}
+
+ParticlePass* ParticleSubsystemRenderAccess::GetRenderPassForTesting(ParticleSubsystem& subsystem)
+{
+    return subsystem.m_renderState->renderPass;
+}
+
+const ParticlePass* ParticleSubsystemRenderAccess::GetRenderPassForTesting(const ParticleSubsystem& subsystem)
+{
+    return subsystem.m_renderState->renderPass;
+}
 
 ParticleSubsystem::~ParticleSubsystem()
 {
@@ -96,7 +137,7 @@ void ParticleSubsystem::Initialize()
 
     AcquireRenderDependencies();
 
-    if (!m_device)
+    if (!m_renderState->device)
     {
         MarkRenderIntegrationUnsupported("No RHI device available");
         RVX_CORE_ERROR("ParticleSubsystem: {}", m_renderIntegrationUnsupportedReason);
@@ -121,7 +162,7 @@ void ParticleSubsystem::Initialize()
 
 void ParticleSubsystem::CheckCapabilities()
 {
-    if (!m_device)
+    if (!m_renderState->device)
         return;
 
     m_gpuSimulationSupported = false;
@@ -132,76 +173,65 @@ void ParticleSubsystem::CheckCapabilities()
     }
 }
 
-void ParticleSubsystem::SetRenderSubsystem(RenderSubsystem* renderSubsystem)
-{
-    m_renderSubsystem = renderSubsystem;
-    AcquireRenderDependencies();
-}
-
-void ParticleSubsystem::SetRendererConfigForTesting(const ParticleRendererConfig& config)
-{
-    m_rendererConfigOverride = std::make_unique<ParticleRendererConfig>(config);
-}
-
 const ParticleRendererDrawStats& ParticleSubsystem::GetLastRenderDrawStats() const
 {
     static const ParticleRendererDrawStats emptyStats;
-    return m_renderer ? m_renderer->GetLastDrawStats() : emptyStats;
+    return m_renderState->renderer ? m_renderState->renderer->GetLastDrawStats() : emptyStats;
 }
 
 void ParticleSubsystem::CreateRenderComponents()
 {
     // Create renderer
-    m_renderer = std::make_unique<ParticleRenderer>();
-    if (m_rendererConfigOverride)
+    m_renderState->renderer = std::make_unique<ParticleRenderer>();
+    if (m_renderState->rendererConfigOverride)
     {
-        m_renderer->Initialize(m_device, *m_rendererConfigOverride);
+        m_renderState->renderer->Initialize(m_renderState->device, *m_renderState->rendererConfigOverride);
     }
     else
     {
         ParticleRendererConfig rendererConfig;
         // Matches PipelineCache::GetDefaultDepthStencilFormat() used by SceneRenderer.
         rendererConfig.depthStencilFormat = RHIFormat::D32_FLOAT;
-        m_renderer->Initialize(m_device, rendererConfig);
+        m_renderState->renderer->Initialize(m_renderState->device, rendererConfig);
     }
 
     // Create sorter (if GPU simulation supported)
     if (m_gpuSimulationSupported && m_config.enableSorting)
     {
-        m_sorter = std::make_unique<ParticleSorter>();
-        m_sorter->Initialize(m_device, m_config.maxGlobalParticles);
+        m_renderState->sorter = std::make_unique<ParticleSorter>();
+        m_renderState->sorter->Initialize(m_renderState->device, m_config.maxGlobalParticles);
     }
 }
 
 void ParticleSubsystem::AcquireRenderDependencies()
 {
-    if (!m_renderSubsystem)
+    if (!m_renderState->renderSubsystem)
         return;
 
-    if (!m_device)
+    if (!m_renderState->device)
     {
-        m_device = m_renderSubsystem->GetDevice();
+        m_renderState->device = m_renderState->renderSubsystem->GetDevice();
     }
 
-    if (!m_sceneRenderer)
+    if (!m_renderState->sceneRenderer)
     {
-        m_sceneRenderer = m_renderSubsystem->GetSceneRenderer();
+        m_renderState->sceneRenderer = m_renderState->renderSubsystem->GetSceneRenderer();
     }
 }
 
 void ParticleSubsystem::RegisterRenderIntegration()
 {
-    if (!m_sceneRenderer)
+    if (!m_renderState->sceneRenderer)
     {
         MarkRenderIntegrationUnsupported("SceneRenderer is unavailable for particle pass registration");
         RVX_CORE_WARN("ParticleSubsystem: {}", m_renderIntegrationUnsupportedReason);
         return;
     }
 
-    if (!m_renderer || !m_renderer->IsRenderingSupported())
+    if (!m_renderState->renderer || !m_renderState->renderer->IsRenderingSupported())
     {
-        const std::string reason = m_renderer && !m_renderer->GetUnsupportedReason().empty()
-                                       ? "Particle renderer is unsupported: " + m_renderer->GetUnsupportedReason()
+        const std::string reason = m_renderState->renderer && !m_renderState->renderer->GetUnsupportedReason().empty()
+                                       ? "Particle renderer is unsupported: " + m_renderState->renderer->GetUnsupportedReason()
                                        : "Particle renderer is unavailable for pass registration";
         MarkRenderIntegrationUnsupported(reason);
         RVX_CORE_WARN("ParticleSubsystem: {}", m_renderIntegrationUnsupportedReason);
@@ -209,23 +239,23 @@ void ParticleSubsystem::RegisterRenderIntegration()
     }
 
     auto renderPass = std::make_unique<ParticlePass>();
-    renderPass->SetRenderer(m_renderer.get());
-    renderPass->SetSorter(m_sorter.get());
+    renderPass->SetRenderer(m_renderState->renderer.get());
+    renderPass->SetSorter(m_renderState->sorter.get());
     renderPass->SetSortingEnabled(m_config.enableSorting);
     renderPass->SetSoftParticlesEnabled(m_config.enableSoftParticles);
 
-    m_renderPass = renderPass.get();
-    m_sceneRenderer->AddPass(std::move(renderPass));
+    m_renderState->renderPass = renderPass.get();
+    m_renderState->sceneRenderer->AddPass(std::move(renderPass));
     m_renderPassRegistered = true;
     m_stats.renderPassRegistered = true;
 
-    if (!m_sceneRenderer->AddPreGraphPrepareCallback(
+    if (!m_renderState->sceneRenderer->AddPreGraphPrepareCallback(
             this,
             [this](const ViewData& view)
             {
                 if (m_renderIntegrationReady)
                 {
-                    PrepareRender(view);
+                    PrepareRenderForCamera(view.cameraPosition);
                 }
                 else
                 {
@@ -233,8 +263,8 @@ void ParticleSubsystem::RegisterRenderIntegration()
                 }
             }))
     {
-        m_sceneRenderer->RemovePass("ParticlePass");
-        m_renderPass = nullptr;
+        m_renderState->sceneRenderer->RemovePass("ParticlePass");
+        m_renderState->renderPass = nullptr;
         m_renderPassRegistered = false;
         m_stats.renderPassRegistered = false;
         MarkRenderIntegrationUnsupported("Particle pre-graph prepare callback could not be registered");
@@ -261,22 +291,22 @@ void ParticleSubsystem::Deinitialize()
         s_activeSubsystem = nullptr;
     }
 
-    if (m_sceneRenderer && m_preGraphCallbackRegistered)
+    if (m_renderState->sceneRenderer && m_preGraphCallbackRegistered)
     {
-        m_sceneRenderer->RemovePreGraphPrepareCallback(this);
+        m_renderState->sceneRenderer->RemovePreGraphPrepareCallback(this);
     }
     m_preGraphCallbackRegistered = false;
     m_stats.preGraphCallbackRegistered = false;
 
     MarkRenderIntegrationUnsupported("Particle subsystem is deinitialized");
 
-    if (m_sceneRenderer && m_renderPassRegistered)
+    if (m_renderState->sceneRenderer && m_renderPassRegistered)
     {
-        m_sceneRenderer->RemovePass("ParticlePass");
+        m_renderState->sceneRenderer->RemovePass("ParticlePass");
     }
     m_renderPassRegistered = false;
     m_stats.renderPassRegistered = false;
-    m_renderPass = nullptr;
+    m_renderState->renderPass = nullptr;
 
     m_instances.clear();
     m_visibleInstances.clear();
@@ -287,11 +317,11 @@ void ParticleSubsystem::Deinitialize()
     m_stats.gpuSimulatedParticles = 0;
     m_stats.cpuSimulatedParticles = 0;
 
-    m_sorter.reset();
-    m_renderer.reset();
+    m_renderState->sorter.reset();
+    m_renderState->renderer.reset();
 
-    m_sceneRenderer = nullptr;
-    m_device = nullptr;
+    m_renderState->sceneRenderer = nullptr;
+    m_renderState->device = nullptr;
 
     RVX_CORE_INFO("ParticleSubsystem: Deinitialized");
 }
@@ -307,10 +337,10 @@ ParticleSystemInstance* ParticleSubsystem::CreateInstance(ParticleSystem::Ptr sy
         return nullptr;
 
     auto instance = std::make_unique<ParticleSystemInstance>(system);
-    if (m_device)
+    if (m_renderState->device)
     {
         auto simulator = std::make_unique<CPUParticleSimulator>();
-        simulator->Initialize(m_device, system->maxParticles);
+        simulator->Initialize(m_renderState->device, system->maxParticles);
         if (m_config.deterministicCpuSimulation)
         {
             simulator->SetRandomSeed(m_config.cpuSimulationSeed + static_cast<uint32>(m_instances.size()));
@@ -380,27 +410,27 @@ void ParticleSubsystem::Simulate(float deltaTime)
     }
 }
 
-void ParticleSubsystem::PrepareRender(const ViewData& view)
+void ParticleSubsystem::PrepareRenderForCamera(const Vec3& cameraPosition)
 {
     ++m_stats.prepareFrameCount;
-    if (!m_renderPass)
+    if (!m_renderState->renderPass)
     {
         ++m_stats.skippedPrepareFrameCount;
         if (m_renderIntegrationUnsupportedReason.empty())
         {
-            MarkRenderIntegrationUnsupported("Particle render pass is unavailable during PrepareRender");
+            MarkRenderIntegrationUnsupported("Particle render pass is unavailable during render preparation");
         }
         return;
     }
 
     // Update LODs
-    UpdateLODs(view);
+    UpdateLODsForCamera(cameraPosition);
 
     // Cull invisible instances
-    CullInstances(view);
+    CullInstancesForCamera(cameraPosition);
 
     // Update render pass
-    m_renderPass->SetParticleSystems(m_visibleInstances);
+    m_renderState->renderPass->SetParticleSystems(m_visibleInstances);
 
     m_stats.visibleInstances = static_cast<uint32>(m_visibleInstances.size());
 }
@@ -475,7 +505,7 @@ bool ParticleSubsystem::BuildRenderSnapshot(RVX::ParticleRenderSnapshot& outSnap
     return true;
 }
 
-void ParticleSubsystem::CullInstances(const ViewData& view)
+void ParticleSubsystem::CullInstancesForCamera(const Vec3& cameraPosition)
 {
     m_visibleInstances.clear();
 
@@ -492,8 +522,8 @@ void ParticleSubsystem::CullInstances(const ViewData& view)
         if (system && system->lodConfig.enabled)
         {
             Vec3 pos = instance->GetPosition();
-            float distance = length(pos - view.cameraPosition);
-            
+            float distance = length(pos - cameraPosition);
+
             if (system->lodConfig.ShouldCull(distance))
                 continue;
         }
@@ -506,7 +536,7 @@ void ParticleSubsystem::CullInstances(const ViewData& view)
     }
 }
 
-void ParticleSubsystem::UpdateLODs(const ViewData& view)
+void ParticleSubsystem::UpdateLODsForCamera(const Vec3& cameraPosition)
 {
     for (auto& instance : m_instances)
     {
@@ -514,7 +544,7 @@ void ParticleSubsystem::UpdateLODs(const ViewData& view)
             continue;
 
         Vec3 pos = instance->GetPosition();
-        float distance = length(pos - view.cameraPosition);
+        float distance = length(pos - cameraPosition);
         instance->UpdateLOD(distance);
     }
 }

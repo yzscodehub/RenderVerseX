@@ -71,6 +71,7 @@ set(PARTICLE_PRIVATE_HEADERS
     Private/Particle/GPU/ParticleSorter.h
 
     # Rendering
+    Private/Particle/ParticleSubsystemRenderAccess.h
     Private/Particle/Rendering/ParticleRenderer.h
     Private/Particle/Rendering/TrailRenderer.h
     Private/Particle/Rendering/ParticlePass.h
@@ -265,6 +266,7 @@ source_group("Private\\Modules" FILES
 )
 
 source_group("Private\\Rendering" FILES
+    Private/Particle/ParticleSubsystemRenderAccess.h
     Private/Particle/Rendering/ParticleRenderer.h
     Private/Particle/Rendering/TrailRenderer.h
     Private/Particle/Rendering/ParticlePass.h

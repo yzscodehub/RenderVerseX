@@ -15,20 +15,10 @@
 #include <string>
 #include <vector>
 
-namespace RVX
-{
-    class IRHIDevice;
-    class RenderSubsystem;
-    class SceneRenderer;
-    struct ViewData;
-}
-
 namespace RVX::Particle
 {
-    struct ParticleRendererConfig;
-    class ParticleRenderer;
-    class ParticleSorter;
-    class ParticlePass;
+    class ParticleSubsystemRenderAccess;
+    struct ParticleSubsystemRenderState;
 
     /**
      * @brief Configuration for particle subsystem
@@ -113,9 +103,6 @@ namespace RVX::Particle
         /// Simulate all active particle systems
         void Simulate(float deltaTime);
 
-        /// Prepare for rendering
-        void PrepareRender(const ViewData& view);
-
         /// Get visible instances (after culling)
         const std::vector<ParticleSystemInstance*>& GetVisibleInstances() const
         {
@@ -136,18 +123,6 @@ namespace RVX::Particle
         /// Check if GPU simulation is supported
         bool IsGPUSimulationSupported() const { return m_gpuSimulationSupported; }
 
-        /// Set the render subsystem dependency before Initialize.
-        void SetRenderSubsystem(RenderSubsystem* renderSubsystem);
-
-        /// Set an RHI device before Initialize; intended for validation and bootstrap paths.
-        void SetDeviceForTesting(IRHIDevice* device) { m_device = device; }
-
-        /// Set a scene renderer before Initialize; intended for focused validation/bootstrap paths.
-        void SetSceneRendererForTesting(SceneRenderer* renderer) { m_sceneRenderer = renderer; }
-
-        /// Set renderer creation config before Initialize; intended for focused validation/bootstrap paths.
-        void SetRendererConfigForTesting(const ParticleRendererConfig& config);
-
         /// Check whether the subsystem is connected to the main render frame.
         bool IsRenderIntegrationReady() const { return m_renderIntegrationReady; }
 
@@ -156,16 +131,6 @@ namespace RVX::Particle
 
         /// Test/reporting view of the last renderer draw attempt without exposing Render/RHI headers.
         const ParticleRendererDrawStats& GetLastRenderDrawStats() const;
-
-        // =====================================================================
-        // Rendering Components
-        // =====================================================================
-
-        ParticleRenderer* GetRenderer() { return m_renderer.get(); }
-        const ParticleRenderer* GetRenderer() const { return m_renderer.get(); }
-        ParticleSorter* GetSorter() { return m_sorter.get(); }
-        ParticlePass* GetRenderPass() { return m_renderPass; }
-        const ParticlePass* GetRenderPass() const { return m_renderPass; }
 
         // =====================================================================
         // Statistics
@@ -192,14 +157,12 @@ namespace RVX::Particle
         void CreateRenderComponents();
         void RegisterRenderIntegration();
         void MarkRenderIntegrationUnsupported(const std::string& reason);
-        void CullInstances(const ViewData& view);
-        void UpdateLODs(const ViewData& view);
+        void PrepareRenderForCamera(const Vec3& cameraPosition);
+        void CullInstancesForCamera(const Vec3& cameraPosition);
+        void UpdateLODsForCamera(const Vec3& cameraPosition);
 
         ParticleSubsystemConfig m_config;
-        RenderSubsystem* m_renderSubsystem = nullptr;
-        IRHIDevice* m_device = nullptr;
-        SceneRenderer* m_sceneRenderer = nullptr;
-        std::unique_ptr<ParticleRendererConfig> m_rendererConfigOverride;
+        std::unique_ptr<ParticleSubsystemRenderState> m_renderState;
 
         // Simulation capability
         bool m_gpuSimulationSupported = false;
@@ -212,9 +175,6 @@ namespace RVX::Particle
         ParticlePool m_pool;
 
         // Rendering components
-        std::unique_ptr<ParticleRenderer> m_renderer;
-        std::unique_ptr<ParticleSorter> m_sorter;
-        ParticlePass* m_renderPass = nullptr;
         bool m_renderPassRegistered = false;
         bool m_preGraphCallbackRegistered = false;
         bool m_renderIntegrationReady = false;
@@ -225,6 +185,8 @@ namespace RVX::Particle
         mutable uint64 m_nextRenderSnapshotSequence = 0;
 
         static ParticleSubsystem* s_activeSubsystem;
+
+        friend class ParticleSubsystemRenderAccess;
     };
 
 } // namespace RVX::Particle
