@@ -29,6 +29,8 @@ target_sources(RVX_Render PRIVATE
     Private/Renderer/RenderFrameResourceBinder.cpp
     Private/Renderer/RenderPassRegistry.cpp
     Private/Renderer/SceneRenderer.cpp
+    # Diagnostics
+    Private/Diagnostics/SceneRendererToolDiagnostics.cpp
     # Ray tracing
     Private/RayTracing/RayTracingScene.cpp
     Private/RayTracing/RayTracingSceneManager.cpp
