@@ -10,7 +10,8 @@
  * - OGG Vorbis (via stb_vorbis)  
  * - FLAC (via dr_flac)
  * 
- * Supports both fully loaded and streaming modes.
+ * Streaming requests are reported as unsupported until AudioResource has a
+ * decoder-backed stream buffer implementation.
  */
 
 #include "Resource/ResourceManager.h"
@@ -20,6 +21,20 @@
 
 namespace RVX::Resource
 {
+    /**
+     * @brief Audio load result status for the most recent loader operation
+     */
+    enum class AudioLoadStatus : uint8_t
+    {
+        None,
+        Loaded,
+        Failed,
+        FallbackMissingFile,
+        FallbackDecodeFailed,
+        UnsupportedStreaming,
+        FallbackStreamingUnsupported
+    };
+
     /**
      * @brief Audio loading options
      */
@@ -57,7 +72,7 @@ namespace RVX::Resource
      * - Loads audio from common formats (WAV, MP3, OGG, FLAC)
      * - Automatic format detection
      * - Format conversion (sample rate, channels, bit depth)
-     * - Streaming mode for large files
+     * - Explicit diagnostics for currently unsupported resource streaming
      * - Provides default silent audio for errors
      */
     class AudioLoader : public IResourceLoader
@@ -74,6 +89,15 @@ namespace RVX::Resource
         std::vector<std::string> GetSupportedExtensions() const override;
         IResource* Load(const std::string& path) override;
         bool CanLoad(const std::string& path) const override;
+
+        AudioLoadStatus GetLastLoadStatus() const { return m_lastLoadStatus; }
+        const std::string& GetLastLoadError() const { return m_lastLoadError; }
+        bool WasLastLoadFallback() const
+        {
+            return m_lastLoadStatus == AudioLoadStatus::FallbackMissingFile ||
+                   m_lastLoadStatus == AudioLoadStatus::FallbackDecodeFailed ||
+                   m_lastLoadStatus == AudioLoadStatus::FallbackStreamingUnsupported;
+        }
 
         // =====================================================================
         // Extended Loading API
@@ -105,11 +129,12 @@ namespace RVX::Resource
         /**
          * @brief Load audio for streaming
          * 
-         * Creates an AudioResource configured for streaming.
-         * Data is not loaded into memory, only metadata.
+         * Resource-level streaming is not implemented yet. This returns nullptr
+         * and records AudioLoadStatus::UnsupportedStreaming instead of creating
+         * a placeholder resource that cannot produce a stream buffer.
          * 
          * @param path Path to audio file
-         * @return AudioResource with streaming configuration
+         * @return nullptr until resource streaming is implemented
          */
         AudioResource* LoadForStreaming(const std::string& path);
 
@@ -186,6 +211,8 @@ namespace RVX::Resource
         ResourceId GenerateAudioId(const std::string& uniqueKey);
 
         ResourceManager* m_manager;
+        AudioLoadStatus m_lastLoadStatus = AudioLoadStatus::None;
+        std::string m_lastLoadError;
         AudioResource* m_silentAudio = nullptr;
     };
 

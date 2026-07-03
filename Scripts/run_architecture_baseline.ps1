@@ -23,7 +23,9 @@ $baselineRegex = @(
     "Architecture\.EditorRuntimeBoundary",
     "Architecture\.PhaseGates",
     "CoreDebugConfigValidation\.DebugConfigurationDefinesRVXDebug",
+    "AudioResourceValidation\.",
     "JobGraphValidation\.",
+    "PhysicsWorldIntegrationValidation\.(BackendQueryAndShapeStubsReportExplicitMisses|UnsupportedColliderTypesDoNotCreateFallbackShapesOrQueryHits)",
     "RHIContractValidation\.",
     "RenderGraphValidation\.(GraphCreation|PassChain|MemoryAliasing|ExecuteAsyncFallsBackToGraphicsWhenBackendDoesNotSupportQueueSync)",
     "RenderSceneValidation\.(RenderSceneApplyProxySnapshotPopulatesObjectsAndLights|RenderProxyBridgeBuildsPrimitiveAndLightSnapshot|RenderProxyBridgeBuildsLegacyMeshRendererProxy)",
@@ -32,7 +34,7 @@ $baselineRegex = @(
     "ParticleValidation\.FeaturePublicHeadersDoNotIncludeRenderOrRHI",
     "ResourceInstantiationValidation\.(ModelResourceInstantiateActorUsesStaticMeshComponent|LegacyInstantiateDelegatesToActorPath|ProductionPathsDoNotCreateLegacyMeshRendererComponents|WorldLoadModelResourceReplacesSceneContent)",
     "ResourceRuntimePolicyValidation\.",
-    "RenderHonestyValidationFixture\.(JsonArchiveReadPathReportsUnsupportedInsteadOfPretendingSuccess|PlaceholderAssetImportersFailInsteadOfReportingSuccess|PostProcessStubPassesAreUnsupportedAndDisabled|SceneRendererLegacyCollectionFallbackIsRemoved|RenderGraphCompileDiagnosticsExposeReadBeforeWrite)",
+    "RenderHonestyValidationFixture\.(JsonArchiveReadPathReportsUnsupportedInsteadOfPretendingSuccess|PlaceholderAssetImportersFailInsteadOfReportingSuccess|PostProcessStubPassesAreUnsupportedAndDisabled|TerrainMaterialLayerBufferMapFailureIsNotInitialized|TerrainHeightmapGpuTextureUploadIsHonestWhenUnavailable|TerrainLODFallbacksExposeDeterministicStatus|TerrainPlaceholderPathsExposeHonestDiagnostics|SceneRendererLegacyCollectionFallbackIsRemoved|RenderGraphCompileDiagnosticsExposeReadBeforeWrite)",
     "SystemIntegration\.(SceneEntityAndManager|ResourceBasics)"
 ) -join "|"
 

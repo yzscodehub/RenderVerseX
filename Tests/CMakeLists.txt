@@ -338,11 +338,13 @@ rvx_add_gtest(
         RVX::Resource
         RVX::Tools
         RVX::RHI
+        RVX::Terrain
         Particle
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Particle/Private
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Resource/Include
+        ${CMAKE_SOURCE_DIR}/Terrain/Private
         ${CMAKE_SOURCE_DIR}/Tools/Include
         ${CMAKE_SOURCE_DIR}/RHI/Include
     LABELS unit
@@ -675,6 +677,17 @@ rvx_add_gtest(
         RVX::Audio
         RVX::Physics
         RVX::Scene
+    LABELS unit
+    TIMEOUT 120
+)
+
+# Audio resource honesty validation tests
+rvx_add_gtest(
+    NAME AudioResourceValidation
+    SOURCES AudioResourceValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::Resource
     LABELS unit
     TIMEOUT 120
 )

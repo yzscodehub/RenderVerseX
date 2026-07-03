@@ -4,17 +4,27 @@
  */
 
 #include "Terrain/Heightmap.h"
-#include "RHI/RHIDevice.h"
 #include "Core/Log.h"
+#include "RHI/RHIDevice.h"
 
-#include <fstream>
-#include <cmath>
 #include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <fstream>
 
 namespace RVX
 {
 
 Heightmap::~Heightmap() = default;
+
+void Heightmap::MarkGPUDataStale(const char* reason)
+{
+    const char* diagnostic = reason ? reason : "Heightmap CPU data changed; GPU resources require upload.";
+    m_gpuTextureDataUploaded = false;
+    m_normalMapDataUploaded = false;
+    m_gpuTextureDiagnostic = diagnostic;
+    m_normalMapDiagnostic = diagnostic;
+}
 
 bool Heightmap::Create(const HeightmapDesc& desc)
 {
@@ -31,6 +41,9 @@ bool Heightmap::Create(const HeightmapDesc& desc)
     m_format = desc.format;
 
     m_data.resize(m_width * m_height, 0.0f);
+    m_gpuTexture.Reset();
+    m_normalMapTexture.Reset();
+    MarkGPUDataStale("Heightmap CPU data has not been uploaded to GPU resources.");
 
     if (desc.initialData)
     {
@@ -137,6 +150,9 @@ void Heightmap::GeneratePerlinNoise(uint32 width, uint32 height, float scale,
     m_format = HeightmapFormat::Float32;
 
     m_data.resize(width * height);
+    m_gpuTexture.Reset();
+    m_normalMapTexture.Reset();
+    MarkGPUDataStale("Heightmap CPU data has not been uploaded to GPU resources.");
 
     // Simple Perlin-like noise implementation
     auto fade = [](float t) { return t * t * t * (t * (t * 6 - 15) + 10); };
@@ -235,11 +251,12 @@ void Heightmap::SetHeight(uint32 x, uint32 y, float height)
 {
     if (x >= m_width || y >= m_height) return;
     m_data[y * m_width + x] = height;
+    MarkGPUDataStale("Heightmap CPU sample changed after GPU upload; recreate GPU terrain textures before rendering.");
 }
 
 Vec3 Heightmap::SampleNormal(float u, float v, const Vec3& scale) const
 {
-    if (m_data.empty()) return Vec3(0, 1, 0);
+    if (m_data.empty() || m_width < 2 || m_height < 2) return Vec3(0, 1, 0);
 
     const float du = 1.0f / (m_width - 1);
     const float dv = 1.0f / (m_height - 1);
@@ -264,84 +281,40 @@ bool Heightmap::CreateGPUTexture(IRHIDevice* device)
 {
     if (!device || m_data.empty())
     {
+        m_gpuTextureDataUploaded = false;
+        m_gpuTextureDiagnostic = "Heightmap GPU texture upload failed: invalid device or empty CPU data.";
         RVX_CORE_ERROR("Heightmap: Cannot create GPU texture - invalid state");
         return false;
     }
 
-    RHITextureDesc desc;
-    desc.width = m_width;
-    desc.height = m_height;
-    desc.depth = 1;
-    desc.mipLevels = 1;
-    desc.arraySize = 1;
-    desc.format = RHIFormat::R32_FLOAT;
-    desc.usage = RHITextureUsage::ShaderResource;
-    desc.dimension = RHITextureDimension::Texture2D;
-    desc.debugName = "Heightmap";
-
-    m_gpuTexture = device->CreateTexture(desc);
-    if (!m_gpuTexture)
-    {
-        RVX_CORE_ERROR("Heightmap: Failed to create GPU texture");
-        return false;
-    }
-
-    // Upload data
-    // Note: Actual upload would be done through upload buffer
-    // This is a simplified placeholder
-
-    return true;
+    m_gpuTexture.Reset();
+    m_gpuTextureDataUploaded = false;
+    m_gpuTextureDiagnostic =
+        "Heightmap GPU texture upload is unavailable in Terrain's RHI-only path; "
+        "no placeholder texture was created.";
+    RVX_CORE_ERROR("Heightmap: {}", m_gpuTextureDiagnostic);
+    return false;
 }
 
 bool Heightmap::GenerateNormalMap(IRHIDevice* device, const Vec3& scale)
 {
     if (!device || m_data.empty())
     {
+        m_normalMapDataUploaded = false;
+        m_normalMapDiagnostic = "Heightmap normal map upload failed: invalid device or empty CPU data.";
         RVX_CORE_ERROR("Heightmap: Cannot generate normal map - invalid state");
         return false;
     }
 
-    // Generate normal data
-    std::vector<Vec4> normalData(m_width * m_height);
+    (void)scale;
 
-    for (uint32 y = 0; y < m_height; ++y)
-    {
-        for (uint32 x = 0; x < m_width; ++x)
-        {
-            float u = static_cast<float>(x) / (m_width - 1);
-            float v = static_cast<float>(y) / (m_height - 1);
-
-            Vec3 normal = SampleNormal(u, v, scale);
-
-            // Pack normal into texture (normal map format: [0,1] range)
-            normalData[y * m_width + x] = Vec4(
-                normal.x * 0.5f + 0.5f,
-                normal.y * 0.5f + 0.5f,
-                normal.z * 0.5f + 0.5f,
-                1.0f
-            );
-        }
-    }
-
-    RHITextureDesc desc;
-    desc.width = m_width;
-    desc.height = m_height;
-    desc.depth = 1;
-    desc.mipLevels = 1;
-    desc.arraySize = 1;
-    desc.format = RHIFormat::RGBA8_UNORM;
-    desc.usage = RHITextureUsage::ShaderResource;
-    desc.dimension = RHITextureDimension::Texture2D;
-    desc.debugName = "HeightmapNormalMap";
-
-    m_normalMapTexture = device->CreateTexture(desc);
-    if (!m_normalMapTexture)
-    {
-        RVX_CORE_ERROR("Heightmap: Failed to create normal map texture");
-        return false;
-    }
-
-    return true;
+    m_normalMapTexture.Reset();
+    m_normalMapDataUploaded = false;
+    m_normalMapDiagnostic =
+        "Heightmap normal map texture upload is unavailable in Terrain's RHI-only path; "
+        "no placeholder normal texture was created.";
+    RVX_CORE_ERROR("Heightmap: {}", m_normalMapDiagnostic);
+    return false;
 }
 
 } // namespace RVX

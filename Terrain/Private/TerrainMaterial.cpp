@@ -4,8 +4,10 @@
  */
 
 #include "Terrain/TerrainMaterial.h"
-#include "RHI/RHIDevice.h"
 #include "Core/Log.h"
+#include "RHI/RHIDevice.h"
+
+#include <cstring>
 
 namespace RVX
 {
@@ -28,6 +30,8 @@ uint32 TerrainMaterial::AddLayer(const std::string& name, RHITextureRef albedo,
     uint32 index = static_cast<uint32>(m_layers.size());
     m_layers.push_back(std::move(layer));
     m_needsUpdate = true;
+    m_layerBufferDataUploaded = false;
+    m_layerBufferDiagnostic = "Terrain layer data has pending GPU upload.";
 
     RVX_CORE_INFO("TerrainMaterial: Added layer '{}' at index {}", name, index);
     return index;
@@ -61,6 +65,8 @@ void TerrainMaterial::RemoveLayer(uint32 index)
 
     m_layers.erase(m_layers.begin() + index);
     m_needsUpdate = true;
+    m_layerBufferDataUploaded = false;
+    m_layerBufferDiagnostic = "Terrain layer data has pending GPU upload.";
 
     RVX_CORE_INFO("TerrainMaterial: Removed layer at index {}", index);
 }
@@ -103,20 +109,38 @@ bool TerrainMaterial::InitializeGPU(IRHIDevice* device)
     m_layerBuffer = device->CreateBuffer(bufferDesc);
     if (!m_layerBuffer)
     {
+        m_gpuInitialized = false;
+        m_layerBufferDataUploaded = false;
+        m_layerBufferDiagnostic = "TerrainMaterial failed to create layer buffer.";
         RVX_CORE_ERROR("TerrainMaterial: Failed to create layer buffer");
         return false;
     }
 
     m_gpuInitialized = true;
-    UpdateGPUData();
+    if (!UpdateGPUData())
+    {
+        m_gpuInitialized = false;
+        RVX_CORE_ERROR("TerrainMaterial: {}", m_layerBufferDiagnostic);
+        return false;
+    }
 
     RVX_CORE_INFO("TerrainMaterial: GPU resources initialized with {} layers", m_layers.size());
     return true;
 }
 
-void TerrainMaterial::UpdateGPUData()
+bool TerrainMaterial::UpdateGPUData()
 {
-    if (!m_gpuInitialized || !m_needsUpdate) return;
+    if (!m_gpuInitialized)
+    {
+        m_layerBufferDataUploaded = false;
+        m_layerBufferDiagnostic = "Terrain material GPU data update skipped because GPU resources are not initialized.";
+        return false;
+    }
+
+    if (!m_needsUpdate)
+    {
+        return m_layerBufferDataUploaded;
+    }
 
     std::vector<TerrainLayerGPUData> gpuData(RVX_TERRAIN_MAX_LAYERS);
 
@@ -132,11 +156,27 @@ void TerrainMaterial::UpdateGPUData()
         gpuData[i].tintColor = Vec4(layer.tintColor, 1.0f);
     }
 
-    // Upload to GPU buffer
-    // Note: Actual upload would be done through upload buffer or map
-    // This is a simplified placeholder
+    if (!m_layerBuffer)
+    {
+        m_layerBufferDataUploaded = false;
+        m_layerBufferDiagnostic = "Terrain material layer buffer is missing.";
+        return false;
+    }
 
+    void* mapped = m_layerBuffer->Map();
+    if (!mapped)
+    {
+        m_layerBufferDataUploaded = false;
+        m_layerBufferDiagnostic = "Terrain material failed to map layer buffer for upload.";
+        return false;
+    }
+
+    std::memcpy(mapped, gpuData.data(), gpuData.size() * sizeof(TerrainLayerGPUData));
+    m_layerBuffer->Unmap();
     m_needsUpdate = false;
+    m_layerBufferDataUploaded = true;
+    m_layerBufferDiagnostic = "Terrain material layer data uploaded to GPU buffer.";
+    return true;
 }
 
 } // namespace RVX

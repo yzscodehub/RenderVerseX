@@ -206,8 +206,9 @@ namespace RVX
 
         /**
          * @brief Update GPU buffer with layer data
+         * @return true if layer data is resident in the GPU buffer
          */
-        void UpdateGPUData();
+        bool UpdateGPUData();
 
         /**
          * @brief Get layer data GPU buffer
@@ -218,6 +219,16 @@ namespace RVX
          * @brief Check if GPU resources are initialized
          */
         bool IsGPUInitialized() const { return m_gpuInitialized; }
+
+        /**
+         * @brief Check whether layer constants have been uploaded to the GPU buffer
+         */
+        bool IsLayerBufferDataUploaded() const { return m_layerBufferDataUploaded; }
+
+        /**
+         * @brief Diagnostic for layer-buffer upload status
+         */
+        const std::string& GetLayerBufferDiagnostic() const { return m_layerBufferDiagnostic; }
 
     private:
         std::vector<TerrainLayer> m_layers;
@@ -233,6 +244,8 @@ namespace RVX
         RHIBufferRef m_layerBuffer;
         bool m_gpuInitialized = false;
         bool m_needsUpdate = true;
+        bool m_layerBufferDataUploaded = false;
+        std::string m_layerBufferDiagnostic = "Terrain material GPU resources have not been initialized.";
     };
 
 } // namespace RVX

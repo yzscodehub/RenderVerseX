@@ -289,6 +289,32 @@ TEST(PhysicsWorldIntegrationValidation, BackendSelectionFallsBackToBuiltInWhenJo
     physicsWorld.Shutdown();
 }
 
+TEST(PhysicsWorldIntegrationValidation, BackendQueryAndShapeStubsReportExplicitMisses)
+{
+    auto backend = RVX::Physics::PhysicsBackendFactory::Create(RVX::Physics::PhysicsBackendType::BuiltIn);
+    ASSERT_NE(nullptr, backend);
+    ASSERT_TRUE(backend->Initialize({}));
+
+    RVX::Physics::RaycastHit rayHit;
+    EXPECT_FALSE(backend->Raycast(RVX::Vec3(0.0f), RVX::Vec3(0.0f, 0.0f, 1.0f), 10.0f, rayHit));
+    EXPECT_FALSE(rayHit.hit);
+    EXPECT_EQ(0u, rayHit.bodyId);
+
+    RVX::Physics::ShapeCastHit shapeHit;
+    EXPECT_FALSE(backend->SphereCast(RVX::Vec3(0.0f), 0.5f, RVX::Vec3(0.0f, 0.0f, 1.0f), 10.0f, shapeHit));
+    EXPECT_FALSE(shapeHit.hit);
+    EXPECT_EQ(0u, shapeHit.bodyId);
+
+    std::vector<RVX::Physics::BodyHandle> overlaps{RVX::Physics::BodyHandle(42u)};
+    EXPECT_EQ(0u, backend->OverlapSphere(RVX::Vec3(0.0f), 1.0f, overlaps));
+    EXPECT_TRUE(overlaps.empty());
+
+    auto shape = RVX::Physics::BoxShape::Create(RVX::Vec3(1.0f));
+    EXPECT_EQ(nullptr, backend->CreateBackendShape(shape.get()));
+
+    backend->Shutdown();
+}
+
 TEST(PhysicsWorldIntegrationValidation, AccumulatedForceAndTorqueAffectDynamicBodyStepOnce)
 {
     RVX::Physics::PhysicsWorldConfig config;
@@ -571,6 +597,76 @@ TEST(PhysicsWorldIntegrationValidation, ColliderAddedAfterRigidBodyRefreshesWorl
 
     collider->SetTrigger(true);
     EXPECT_TRUE(rigidBody->GetBody()->IsTrigger());
+
+    world.Shutdown();
+}
+
+TEST(PhysicsWorldIntegrationValidation, UnsupportedColliderTypesDoNotCreateFallbackShapesOrQueryHits)
+{
+    RVX::WorldConfig config;
+    config.name = "PhysicsUnsupportedColliderHonestyWorld";
+    config.autoInitializeSpatial = false;
+    config.autoInitializePhysics = true;
+
+    RVX::World world;
+    world.Initialize(config);
+
+    auto* physicsSubsystem = world.GetPhysics();
+    ASSERT_NE(nullptr, physicsSubsystem);
+    ASSERT_NE(nullptr, physicsSubsystem->GetPhysicsWorld());
+
+    RVX::ActorSpawnParams meshParams;
+    meshParams.localPosition = RVX::Vec3(0.0f, 0.0f, 0.0f);
+    RVX::SceneEntity* meshEntity = world.SpawnActor(meshParams);
+    ASSERT_NE(nullptr, meshEntity);
+
+    auto* meshBody = meshEntity->AddComponent<RVX::RigidBodyComponent>();
+    ASSERT_NE(nullptr, meshBody);
+    meshBody->SetBodyType(RVX::RigidBodyType::Static);
+
+    auto* meshCollider = meshEntity->AddComponent<RVX::ColliderComponent>();
+    ASSERT_NE(nullptr, meshCollider);
+    meshCollider->SetColliderType(RVX::ColliderType::Mesh);
+
+    RVX::ActorSpawnParams convexParams;
+    convexParams.localPosition = RVX::Vec3(3.0f, 0.0f, 0.0f);
+    RVX::SceneEntity* convexEntity = world.SpawnActor(convexParams);
+    ASSERT_NE(nullptr, convexEntity);
+
+    auto* convexBody = convexEntity->AddComponent<RVX::RigidBodyComponent>();
+    ASSERT_NE(nullptr, convexBody);
+    convexBody->SetBodyType(RVX::RigidBodyType::Static);
+
+    auto* convexCollider = convexEntity->AddComponent<RVX::ColliderComponent>();
+    ASSERT_NE(nullptr, convexCollider);
+    convexCollider->SetColliderType(RVX::ColliderType::Convex);
+
+    world.Tick(1.0f / 60.0f);
+
+    ASSERT_NE(nullptr, meshBody->GetBody());
+    ASSERT_NE(nullptr, convexBody->GetBody());
+    EXPECT_EQ(nullptr, meshCollider->GetShape().get());
+    EXPECT_EQ(nullptr, convexCollider->GetShape().get());
+    EXPECT_EQ(0u, meshBody->GetBody()->GetShapeCount());
+    EXPECT_EQ(0u, convexBody->GetBody()->GetShapeCount());
+
+    auto* physicsWorld = physicsSubsystem->GetPhysicsWorld();
+    RVX::Physics::RaycastHit hit;
+    EXPECT_FALSE(physicsWorld->Raycast(RVX::Vec3(0.0f, 0.0f, 5.0f),
+                                       RVX::Vec3(0.0f, 0.0f, -1.0f),
+                                       10.0f,
+                                       hit));
+    EXPECT_FALSE(hit.hit);
+    EXPECT_EQ(0u, hit.bodyId);
+    EXPECT_EQ(2u, physicsWorld->GetLastQueryStats().bodyWithoutShapeSkipCount);
+    EXPECT_EQ(0u, physicsWorld->GetLastQueryStats().broadphaseCandidateCount);
+    EXPECT_EQ(0u, physicsWorld->GetLastQueryStats().narrowphaseTestCount);
+
+    std::vector<RVX::Physics::BodyHandle> overlaps;
+    EXPECT_EQ(0u, physicsWorld->OverlapBox(RVX::Vec3(0.0f), RVX::Vec3(1.0f), overlaps));
+    EXPECT_TRUE(overlaps.empty());
+    EXPECT_EQ(2u, physicsWorld->GetLastQueryStats().bodyWithoutShapeSkipCount);
+    EXPECT_EQ(0u, physicsWorld->GetLastQueryStats().narrowphaseTestCount);
 
     world.Shutdown();
 }

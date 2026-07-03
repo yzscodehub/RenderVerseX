@@ -114,6 +114,11 @@ namespace
 
     bool BodiesCanCollide(const RigidBody& bodyA, const RigidBody& bodyB)
     {
+        if (bodyA.GetShapeCount() == 0 || bodyB.GetShapeCount() == 0)
+        {
+            return false;
+        }
+
         if (bodyA.IsStatic() && bodyB.IsStatic())
         {
             return false;
@@ -584,7 +589,8 @@ namespace
 
     void BuildQueryBroadphase(const std::vector<std::shared_ptr<RigidBody>>& bodies,
                               std::vector<QueryBroadphasePrimitive>& primitives,
-                              std::vector<QueryBroadphaseNode>& nodes)
+                              std::vector<QueryBroadphaseNode>& nodes,
+                              PhysicsWorld::QueryStats& stats)
     {
         primitives.clear();
         nodes.clear();
@@ -595,6 +601,12 @@ namespace
             const auto& body = bodies[bodyIndex];
             if (!body)
             {
+                continue;
+            }
+
+            if (body->GetShapeCount() == 0)
+            {
+                ++stats.bodyWithoutShapeSkipCount;
                 continue;
             }
 
@@ -1534,7 +1546,7 @@ bool PhysicsWorld::Raycast(const Vec3& origin, const Vec3& direction, float maxD
     std::vector<QueryBroadphasePrimitive> broadphasePrimitives;
     std::vector<QueryBroadphaseNode> broadphaseNodes;
     std::vector<size_t> candidateBodyIndices;
-    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes);
+    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes, m_lastQueryStats);
     CollectRayBroadphaseCandidates(broadphasePrimitives,
                                    broadphaseNodes,
                                    ray,
@@ -1592,7 +1604,7 @@ size_t PhysicsWorld::RaycastAll(const Vec3& origin, const Vec3& direction, float
     std::vector<QueryBroadphasePrimitive> broadphasePrimitives;
     std::vector<QueryBroadphaseNode> broadphaseNodes;
     std::vector<size_t> candidateBodyIndices;
-    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes);
+    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes, m_lastQueryStats);
     CollectRayBroadphaseCandidates(broadphasePrimitives,
                                    broadphaseNodes,
                                    ray,
@@ -1656,7 +1668,7 @@ bool PhysicsWorld::SphereCast(const Vec3& origin, float radius, const Vec3& dire
     std::vector<QueryBroadphasePrimitive> broadphasePrimitives;
     std::vector<QueryBroadphaseNode> broadphaseNodes;
     std::vector<size_t> candidateBodyIndices;
-    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes);
+    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes, m_lastQueryStats);
     CollectAABBBroadphaseCandidates(broadphasePrimitives,
                                     broadphaseNodes,
                                     sweptBounds,
@@ -1711,7 +1723,7 @@ size_t PhysicsWorld::OverlapSphere(const Vec3& center, float radius,
     std::vector<QueryBroadphasePrimitive> broadphasePrimitives;
     std::vector<QueryBroadphaseNode> broadphaseNodes;
     std::vector<size_t> candidateBodyIndices;
-    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes);
+    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes, m_lastQueryStats);
     CollectAABBBroadphaseCandidates(broadphasePrimitives,
                                     broadphaseNodes,
                                     queryBounds,
@@ -1769,7 +1781,7 @@ size_t PhysicsWorld::OverlapBox(const Vec3& center, const Vec3& halfExtents, con
     std::vector<QueryBroadphasePrimitive> broadphasePrimitives;
     std::vector<QueryBroadphaseNode> broadphaseNodes;
     std::vector<size_t> candidateBodyIndices;
-    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes);
+    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes, m_lastQueryStats);
     CollectAABBBroadphaseCandidates(broadphasePrimitives,
                                     broadphaseNodes,
                                     queryBounds,
@@ -1812,7 +1824,7 @@ size_t PhysicsWorld::OverlapCapsule(const Vec3& pointA, const Vec3& pointB, floa
     std::vector<QueryBroadphasePrimitive> broadphasePrimitives;
     std::vector<QueryBroadphaseNode> broadphaseNodes;
     std::vector<size_t> candidateBodyIndices;
-    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes);
+    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes, m_lastQueryStats);
     CollectAABBBroadphaseCandidates(broadphasePrimitives,
                                     broadphaseNodes,
                                     capsuleBounds,
@@ -1879,7 +1891,8 @@ void PhysicsWorld::GetDebugDrawData(std::vector<Vec3>& lines, std::vector<Vec4>&
         const Vec4 color = GetDebugBroadphaseColor();
         std::vector<QueryBroadphasePrimitive> broadphasePrimitives;
         std::vector<QueryBroadphaseNode> broadphaseNodes;
-        BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes);
+        QueryStats stats;
+        BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes, stats);
         for (const QueryBroadphaseNode& node : broadphaseNodes)
         {
             AppendAABBDebugLines(node.bounds, color, lines, colors);

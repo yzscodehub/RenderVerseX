@@ -215,6 +215,7 @@ public:
         size_t broadphaseNodeVisits = 0;
         size_t broadphaseCandidateCount = 0;
         size_t narrowphaseTestCount = 0;
+        size_t bodyWithoutShapeSkipCount = 0;
     };
 
     /**

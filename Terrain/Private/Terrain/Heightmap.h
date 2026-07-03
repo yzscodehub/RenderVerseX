@@ -193,6 +193,16 @@ namespace RVX
         RHITexture* GetGPUTexture() const { return m_gpuTexture.Get(); }
 
         /**
+         * @brief Check whether GPU texture data has been uploaded from CPU height data
+         */
+        bool IsGPUTextureDataUploaded() const { return m_gpuTextureDataUploaded; }
+
+        /**
+         * @brief Diagnostic for the last height texture upload attempt or stale state
+         */
+        const std::string& GetGPUTextureDiagnostic() const { return m_gpuTextureDiagnostic; }
+
+        /**
          * @brief Generate normal map texture
          * @param device RHI device
          * @param scale Terrain scale for proper normal calculation
@@ -205,7 +215,19 @@ namespace RVX
          */
         RHITexture* GetNormalMapTexture() const { return m_normalMapTexture.Get(); }
 
+        /**
+         * @brief Check whether normal map texture data has been uploaded
+         */
+        bool IsNormalMapDataUploaded() const { return m_normalMapDataUploaded; }
+
+        /**
+         * @brief Diagnostic for the last normal map upload attempt or stale state
+         */
+        const std::string& GetNormalMapDiagnostic() const { return m_normalMapDiagnostic; }
+
     private:
+        void MarkGPUDataStale(const char* reason);
+
         std::vector<float> m_data;      ///< Height data (always stored as float internally)
         uint32 m_width = 0;
         uint32 m_height = 0;
@@ -215,6 +237,10 @@ namespace RVX
 
         RHITextureRef m_gpuTexture;
         RHITextureRef m_normalMapTexture;
+        bool m_gpuTextureDataUploaded = false;
+        bool m_normalMapDataUploaded = false;
+        std::string m_gpuTextureDiagnostic = "Heightmap GPU texture has not been created.";
+        std::string m_normalMapDiagnostic = "Heightmap normal map has not been generated.";
     };
 
 } // namespace RVX

@@ -15,6 +15,12 @@
 
 namespace RVX::Resource
 {
+    namespace
+    {
+        constexpr const char* RVX_AUDIO_RESOURCE_STREAMING_UNSUPPORTED =
+            "Audio resource streaming is unsupported because AudioResource has no decoder-backed stream buffer implementation";
+    } // namespace
+
     // =========================================================================
     // Construction
     // =========================================================================
@@ -61,9 +67,17 @@ namespace RVX::Resource
     AudioResource* AudioLoader::LoadWithOptions(const std::string& path,
                                                   const AudioLoadOptions& options)
     {
+        m_lastLoadStatus = AudioLoadStatus::None;
+        m_lastLoadError.clear();
+
         // Resolve to absolute path
         std::filesystem::path absPath = std::filesystem::absolute(path);
         std::string absolutePath = absPath.string();
+
+        if (options.enableStreaming)
+        {
+            return LoadForStreaming(absolutePath);
+        }
 
         ResourceId audioId = GenerateAudioId(absolutePath);
 
@@ -72,6 +86,7 @@ namespace RVX::Resource
         {
             if (auto* cached = m_manager->GetCache().Get(audioId))
             {
+                m_lastLoadStatus = AudioLoadStatus::Loaded;
                 return static_cast<AudioResource*>(cached);
             }
         }
@@ -79,24 +94,26 @@ namespace RVX::Resource
         // Check if file exists
         if (!std::filesystem::exists(absolutePath))
         {
+            m_lastLoadStatus = AudioLoadStatus::FallbackMissingFile;
+            m_lastLoadError = "Audio file not found; using silent fallback: " + absolutePath;
             RVX_CORE_WARN("AudioLoader: File not found: {}", absolutePath);
             return GetSilentAudio();
         }
 
-        // Check file size for auto-streaming
+        // Check file size for auto-streaming. Resource streaming is not
+        // available yet, so the threshold path records an explicit fallback and
+        // loads fully rather than creating a fake streaming resource.
         AudioLoadOptions effectiveOptions = options;
         size_t fileSize = std::filesystem::file_size(absolutePath);
         if (!effectiveOptions.enableStreaming && fileSize > effectiveOptions.streamingThreshold)
         {
-            RVX_CORE_INFO("AudioLoader: Large file ({}MB), enabling streaming for: {}", 
-                fileSize / (1024 * 1024), absPath.filename().string());
-            effectiveOptions.enableStreaming = true;
-        }
-
-        // For streaming, just create reference without loading data
-        if (effectiveOptions.enableStreaming)
-        {
-            return LoadForStreaming(absolutePath);
+            m_lastLoadStatus = AudioLoadStatus::FallbackStreamingUnsupported;
+            m_lastLoadError = std::string(RVX_AUDIO_RESOURCE_STREAMING_UNSUPPORTED) +
+                              "; loading fully instead: " + absolutePath;
+            RVX_CORE_WARN("AudioLoader: {} ({}MB exceeds threshold for {})",
+                          m_lastLoadError,
+                          fileSize / (1024 * 1024),
+                          absPath.filename().string());
         }
 
         // Decode audio
@@ -105,6 +122,8 @@ namespace RVX::Resource
 
         if (!DecodeFile(absolutePath, audioData, metadata, effectiveOptions))
         {
+            m_lastLoadStatus = AudioLoadStatus::FallbackDecodeFailed;
+            m_lastLoadError = "Failed to decode audio file; using silent fallback: " + absolutePath;
             RVX_CORE_WARN("AudioLoader: Failed to decode: {}", absolutePath);
             return GetSilentAudio();
         }
@@ -118,13 +137,22 @@ namespace RVX::Resource
         }
         metadata.sourceFormat = ext;
 
-        return CreateAudioResource(std::move(audioData), metadata, absolutePath);
+        AudioResource* resource = CreateAudioResource(std::move(audioData), metadata, absolutePath);
+        if (resource && m_lastLoadStatus != AudioLoadStatus::FallbackStreamingUnsupported)
+        {
+            m_lastLoadStatus = AudioLoadStatus::Loaded;
+            m_lastLoadError.clear();
+        }
+        return resource;
     }
 
     AudioResource* AudioLoader::LoadFromMemory(const void* data, size_t size,
                                                  const std::string& uniqueKey,
                                                  const AudioLoadOptions& options)
     {
+        m_lastLoadStatus = AudioLoadStatus::None;
+        m_lastLoadError.clear();
+
         ResourceId audioId = GenerateAudioId(uniqueKey);
 
         // Check cache
@@ -132,6 +160,7 @@ namespace RVX::Resource
         {
             if (auto* cached = m_manager->GetCache().Get(audioId))
             {
+                m_lastLoadStatus = AudioLoadStatus::Loaded;
                 return static_cast<AudioResource*>(cached);
             }
         }
@@ -142,11 +171,19 @@ namespace RVX::Resource
 
         if (!DecodeMemory(data, size, audioData, metadata, options))
         {
+            m_lastLoadStatus = AudioLoadStatus::FallbackDecodeFailed;
+            m_lastLoadError = "Failed to decode audio memory; using silent fallback: " + uniqueKey;
             RVX_CORE_WARN("AudioLoader: Failed to decode from memory: {}", uniqueKey);
             return GetSilentAudio();
         }
 
-        return CreateAudioResource(std::move(audioData), metadata, uniqueKey);
+        AudioResource* resource = CreateAudioResource(std::move(audioData), metadata, uniqueKey);
+        if (resource)
+        {
+            m_lastLoadStatus = AudioLoadStatus::Loaded;
+            m_lastLoadError.clear();
+        }
+        return resource;
     }
 
     AudioResource* AudioLoader::LoadForStreaming(const std::string& path)
@@ -154,55 +191,10 @@ namespace RVX::Resource
         std::filesystem::path absPath = std::filesystem::absolute(path);
         std::string absolutePath = absPath.string();
 
-        ResourceId audioId = GenerateAudioId(absolutePath + "_streaming");
-
-        // Check cache
-        if (m_manager && m_manager->IsInitialized())
-        {
-            if (auto* cached = m_manager->GetCache().Get(audioId))
-            {
-                return static_cast<AudioResource*>(cached);
-            }
-        }
-
-        // Get file info without loading
-        auto info = GetFileInfo(absolutePath);
-        if (!info.valid)
-        {
-            RVX_CORE_WARN("AudioLoader: Cannot get info for streaming: {}", absolutePath);
-            return GetSilentAudio();
-        }
-
-        // Create resource with metadata only
-        auto* audio = new AudioResource();
-        audio->SetId(audioId);
-        audio->SetPath(absolutePath);
-        audio->SetName(absPath.stem().string());
-
-        AudioMetadata metadata;
-        metadata.sampleRate = info.sampleRate;
-        metadata.channels = info.channels;
-        metadata.totalFrames = info.totalFrames;
-        metadata.duration = info.duration;
-        metadata.format = AudioFormat::S16;  // miniaudio typically decodes to S16
-        metadata.bitsPerSample = 16;
-        metadata.loadMode = AudioLoadMode::Streaming;
-        metadata.sourceFormat = info.format;
-
-        // Set empty data with metadata
-        audio->SetData({}, metadata);
-        audio->SetStreamingSourcePath(absolutePath);
-
-        // Store in cache
-        if (m_manager && m_manager->IsInitialized())
-        {
-            m_manager->GetCache().Store(audio);
-        }
-
-        RVX_CORE_INFO("AudioLoader: Prepared for streaming: {} ({:.1f}s)", 
-            absPath.filename().string(), info.duration);
-
-        return audio;
+        m_lastLoadStatus = AudioLoadStatus::UnsupportedStreaming;
+        m_lastLoadError = std::string(RVX_AUDIO_RESOURCE_STREAMING_UNSUPPORTED) + ": " + absolutePath;
+        RVX_CORE_ERROR("AudioLoader: {}", m_lastLoadError);
+        return nullptr;
     }
 
     // =========================================================================
@@ -237,6 +229,9 @@ namespace RVX::Resource
     AudioResource* AudioLoader::GenerateSineWave(float frequency, float duration,
                                                    uint32_t sampleRate)
     {
+        m_lastLoadStatus = AudioLoadStatus::None;
+        m_lastLoadError.clear();
+
         std::string uniqueKey = "__sine_" + std::to_string(static_cast<int>(frequency)) + 
                                 "_" + std::to_string(static_cast<int>(duration * 1000)) + "__";
 
@@ -247,6 +242,7 @@ namespace RVX::Resource
         {
             if (auto* cached = m_manager->GetCache().Get(audioId))
             {
+                m_lastLoadStatus = AudioLoadStatus::Loaded;
                 return static_cast<AudioResource*>(cached);
             }
         }
@@ -292,7 +288,13 @@ namespace RVX::Resource
         metadata.format = AudioFormat::S16;
         metadata.sourceFormat = "generated";
 
-        return CreateAudioResource(std::move(data), metadata, uniqueKey);
+        AudioResource* resource = CreateAudioResource(std::move(data), metadata, uniqueKey);
+        if (resource)
+        {
+            m_lastLoadStatus = AudioLoadStatus::Loaded;
+            m_lastLoadError.clear();
+        }
+        return resource;
     }
 
     // =========================================================================
