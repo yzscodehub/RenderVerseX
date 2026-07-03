@@ -212,6 +212,14 @@ rvx_add_gtest(
     TIMEOUT 30
 )
 
+rvx_add_gtest(
+    NAME JobGraphValidation
+    SOURCES JobGraphValidation/main.cpp
+    LIBS RVX::Core
+    LABELS unit
+    TIMEOUT 30
+)
+
 # RHI public contract validation tests
 rvx_add_gtest(
     NAME RHIContractValidation

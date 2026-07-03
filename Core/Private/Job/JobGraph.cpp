@@ -131,17 +131,26 @@ void JobGraph::Execute()
 
 void JobGraph::ScheduleReadyJobs()
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::vector<JobNode*> readyJobs;
 
-    for (auto& job : m_jobs)
     {
-        if (job->IsReady() && !job->m_scheduled.exchange(true))
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        for (auto& job : m_jobs)
         {
-            JobSystem::Get().Submit([this, jobPtr = job.get()]() {
-                jobPtr->Execute();
-                OnJobComplete(jobPtr);
-            });
+            if (job->IsReady() && !job->m_scheduled.exchange(true))
+            {
+                readyJobs.push_back(job.get());
+            }
         }
+    }
+
+    for (JobNode* job : readyJobs)
+    {
+        JobSystem::Get().Submit([this, job]() {
+            job->Execute();
+            OnJobComplete(job);
+        });
     }
 }
 
@@ -157,15 +166,18 @@ void JobGraph::OnJobComplete(JobNode* node)
 
     // Schedule newly ready jobs
     ScheduleReadyJobs();
+
+    if (IsComplete())
+    {
+        m_executing.store(false);
+        m_completionCondition.notify_all();
+    }
 }
 
 void JobGraph::Wait()
 {
-    while (!IsComplete())
-    {
-        std::this_thread::yield();
-    }
-    m_executing.store(false);
+    std::unique_lock<std::mutex> lock(m_mutex);
+    m_completionCondition.wait(lock, [this]() { return IsComplete(); });
 }
 
 bool JobGraph::IsComplete() const
