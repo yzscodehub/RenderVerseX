@@ -1,7 +1,9 @@
 #include "Core/Log.h"
+#include "RenderContracts/FeatureRenderSnapshot.h"
 #include "RenderContracts/TerrainRenderSnapshot.h"
 #include "RenderContracts/WaterRenderSnapshot.h"
 #include "RenderExtraction/RenderFeatureSceneBridge.h"
+#include "Scene/Component.h"
 #include "Scene/SceneEntity.h"
 #include "Scene/SceneManager.h"
 #include "Terrain/TerrainComponent.h"
@@ -18,6 +20,32 @@ using namespace RVX;
 
 namespace
 {
+    class TestParticleFeatureProvider final : public Component, public IRenderFeatureSnapshotProvider
+    {
+    public:
+        const char* GetTypeName() const override { return "TestParticleFeatureProvider"; }
+
+        bool AppendRenderFeatureSnapshot(RenderFeatureSnapshot& outSnapshot) const override
+        {
+            ParticleRenderSnapshotItem item;
+            item.instanceId = 1001;
+            item.systemId = 2002;
+            item.systemName = "ContractParticle";
+            item.position = Vec3(4.0f, 5.0f, 6.0f);
+            item.renderMode = ParticleRenderSnapshotMode::Billboard;
+            item.blendMode = ParticleRenderSnapshotBlendMode::AlphaBlend;
+            item.simulationBackend = ParticleRenderSnapshotSimulationBackend::CPU;
+            item.aliveParticleCount = 12;
+            item.maxParticleCount = 64;
+            item.visible = true;
+            item.simulationSupported = true;
+
+            outSnapshot.particles.metadata.totalAliveParticles += item.aliveParticleCount;
+            outSnapshot.particles.items.push_back(item);
+            return true;
+        }
+    };
+
     std::filesystem::path FindSourcePath(const std::filesystem::path& relativePath)
     {
         std::filesystem::path cursor = std::filesystem::current_path();
@@ -196,6 +224,11 @@ TEST(FeatureBoundaryValidation, RenderFeatureSceneBridgeCollectsFeatureSnapshots
     SceneManager sceneManager;
     sceneManager.Initialize();
 
+    SceneEntity* particleEntity = sceneManager.GetEntity(sceneManager.CreateEntity("ExtractedParticles"));
+    ASSERT_NE(particleEntity, nullptr);
+    auto* particles = particleEntity->AddComponent<TestParticleFeatureProvider>();
+    ASSERT_NE(particles, nullptr);
+
     SceneEntity* waterEntity = sceneManager.GetEntity(sceneManager.CreateEntity("ExtractedWater"));
     ASSERT_NE(waterEntity, nullptr);
     waterEntity->SetPosition(Vec3(10.0f, 0.0f, 20.0f));
@@ -225,18 +258,25 @@ TEST(FeatureBoundaryValidation, RenderFeatureSceneBridgeCollectsFeatureSnapshots
     EXPECT_EQ(metadata.schemaVersion, RVX_RENDER_FEATURE_SNAPSHOT_SCHEMA_VERSION);
     EXPECT_EQ(metadata.status, RenderFeatureSnapshotStatus::Complete);
     EXPECT_TRUE(metadata.complete);
-    EXPECT_EQ(metadata.providerCount, 2u);
+    EXPECT_EQ(metadata.providerCount, 3u);
     EXPECT_EQ(metadata.skippedProviderCount, 0u);
-    EXPECT_EQ(metadata.particleItemCount, 0u);
+    EXPECT_EQ(metadata.particleItemCount, 1u);
     EXPECT_EQ(metadata.waterItemCount, 1u);
     EXPECT_EQ(metadata.terrainItemCount, 1u);
 
     EXPECT_TRUE(result.usedProviderPath);
     EXPECT_FALSE(result.requiresLegacyFallback);
     EXPECT_EQ(result.fallbackReason, RenderFeatureSceneBridgeFallbackReason::None);
-    EXPECT_EQ(result.providerCount, 2u);
+    EXPECT_EQ(result.providerCount, 3u);
+    EXPECT_EQ(result.particleItemCount, 1u);
     EXPECT_EQ(result.waterItemCount, 1u);
     EXPECT_EQ(result.terrainItemCount, 1u);
+
+    ASSERT_EQ(snapshot.particles.items.size(), 1u);
+    EXPECT_EQ(snapshot.particles.items.front().instanceId, 1001u);
+    EXPECT_EQ(snapshot.particles.items.front().systemName, "ContractParticle");
+    EXPECT_EQ(snapshot.particles.items.front().aliveParticleCount, 12u);
+    EXPECT_EQ(snapshot.particles.items.front().simulationBackend, ParticleRenderSnapshotSimulationBackend::CPU);
 
     ASSERT_EQ(snapshot.water.items.size(), 1u);
     EXPECT_EQ(snapshot.water.items.front().componentId, waterEntity->GetHandle());

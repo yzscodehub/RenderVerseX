@@ -6768,6 +6768,41 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeGPURes
               std::string::npos);
 }
 
+TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatureExtractionStats)
+{
+    const fs::path shaderDir = FindShaderDirectory();
+    if (shaderDir.empty())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path renderRoot = shaderDir.parent_path();
+    const std::string sceneRendererHeader =
+        ReadTextFile(renderRoot / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
+    const std::string sceneRendererSource =
+        ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string artifactSource =
+        ReadTextFile(renderRoot / "Private" / "Diagnostics" / "RenderToolArtifacts.cpp");
+
+    EXPECT_NE(sceneRendererHeader.find("struct SceneFeatureExtractionStats"), std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("RenderFeatureSnapshot m_featureSnapshot;"), std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("std::unique_ptr<RenderFeatureSceneBridge> m_featureBridge;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("SceneFeatureExtractionStats featureExtractionStats;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("m_featureBridge = std::make_unique<RenderFeatureSceneBridge>();"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("diagnostics.featureExtractionStats = m_featureExtractionStats;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("UpdateFeatureExtraction(world);"), std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("UpdateFeatureExtraction(sceneManager);"), std::string::npos);
+    EXPECT_NE(artifactSource.find("FeatureExtraction: attempted="), std::string::npos);
+    EXPECT_NE(artifactSource.find("\\\"featureExtraction\\\": {"), std::string::npos);
+    EXPECT_NE(artifactSource.find("\\\"particleItemCount\\\": "), std::string::npos);
+    EXPECT_NE(artifactSource.find("\\\"waterItemCount\\\": "), std::string::npos);
+    EXPECT_NE(artifactSource.find("\\\"terrainItemCount\\\": "), std::string::npos);
+}
+
 TEST(RenderPostProcessStackValidation, EvaluateEffectsReportsRequestedButUnsupportedResources)
 {
     PostProcessSettings settings;

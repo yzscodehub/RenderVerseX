@@ -26,6 +26,7 @@
 #include "Render/PostProcess/PostProcessStack.h"
 #include "Render/RayTracing/RayTracingSceneManager.h"
 #include "Render/Renderer/RenderDrawItem.h"
+#include "RenderContracts/FeatureRenderSnapshot.h"
 #include "RenderContracts/RenderProxy.h"
 #include "RHI/RHICapabilities.h"
 
@@ -57,6 +58,7 @@ namespace RVX
     class DepthPrepass;
     class OpaquePass;
     class RenderPassRegistry;
+    class RenderFeatureSceneBridge;
     class RenderProxySceneBridge;
     class RayTracedReflectionCompositePass;
     class RayTracedReflectionDenoisePass;
@@ -90,6 +92,23 @@ namespace RVX
         uint64 lastFallbackOwnerId = 0;
         std::string lastFallbackReason;
         bool lastFallbackSuppressed = false;
+    };
+
+    struct SceneFeatureExtractionStats
+    {
+        bool attempted = false;
+        bool usedProviderPath = false;
+        bool requiresLegacyFallback = false;
+        uint32 snapshotSchemaVersion = RVX_RENDER_FEATURE_SNAPSHOT_SCHEMA_VERSION;
+        uint64 snapshotSequence = 0;
+        bool snapshotComplete = false;
+        size_t providerCount = 0;
+        size_t skippedProviderCount = 0;
+        size_t particleItemCount = 0;
+        size_t waterItemCount = 0;
+        size_t terrainItemCount = 0;
+        uint64 fallbackOwnerId = 0;
+        std::string fallbackReason;
     };
 
     struct SceneRenderPassChainStats
@@ -272,6 +291,7 @@ namespace RVX
         size_t opaqueDrawItemCount = 0;
         size_t maskedDrawItemCount = 0;
         size_t transparentDrawItemCount = 0;
+        SceneFeatureExtractionStats featureExtractionStats;
         uint32 pointLightCount = 0;
         uint32 spotLightCount = 0;
         bool lightConstantsBufferReady = false;
@@ -1002,6 +1022,12 @@ namespace RVX
         /// Get scene collection path statistics.
         const SceneRenderCollectionStats& GetCollectionStats() const { return m_collectionStats; }
 
+        /// Get render-facing feature extraction statistics.
+        const SceneFeatureExtractionStats& GetFeatureExtractionStats() const { return m_featureExtractionStats; }
+
+        /// Get the most recent render-facing feature snapshot.
+        const RenderFeatureSnapshot& GetFeatureSnapshot() const { return m_featureSnapshot; }
+
         /// Get render pass chain statistics from the last RenderGraph build.
         const SceneRenderPassChainStats& GetPassChainStats() const { return m_passChainStats; }
 
@@ -1220,6 +1246,8 @@ namespace RVX
                                      bool graphBuilt,
                                      bool graphCompiled,
                                      const char* skippedReason);
+        void UpdateFeatureExtraction(World* world);
+        void UpdateFeatureExtraction(SceneManager* sceneManager);
         SceneRenderFeatureReport BuildRenderFeatureReport(const SceneRendererFrameDiagnostics& diagnostics) const;
 
         struct PreGraphPrepareCallbackEntry
@@ -1238,6 +1266,7 @@ namespace RVX
         std::unique_ptr<TransientResourcePool> m_transientResourcePool;
         std::unique_ptr<ResourceViewCache> m_resourceViewCache;
         std::unique_ptr<RenderPassRegistry> m_passRegistry;
+        std::unique_ptr<RenderFeatureSceneBridge> m_featureBridge;
         std::unique_ptr<RenderProxySceneBridge> m_proxyBridge;
         std::unique_ptr<SceneEnvironmentIBLBridge> m_environmentIBLBridge;
         std::unique_ptr<SceneSkyboxPassBridge> m_skyboxBridge;
@@ -1247,8 +1276,10 @@ namespace RVX
 
         ViewData m_viewData;
         RenderScene m_renderScene;
+        RenderFeatureSnapshot m_featureSnapshot;
         RenderProxySnapshot m_proxySnapshot;
         SceneRenderCollectionStats m_collectionStats;
+        SceneFeatureExtractionStats m_featureExtractionStats;
         SceneRenderPassChainStats m_passChainStats;
         SceneRenderPostProcessStats m_postProcessStats;
         SceneRendererExternalTargetDesc m_externalRenderTarget;

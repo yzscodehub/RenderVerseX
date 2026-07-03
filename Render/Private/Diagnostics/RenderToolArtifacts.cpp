@@ -581,6 +581,19 @@ std::string SceneRenderer::ExportToolDiagnosticsText() const
        << ", opaqueDraws=" << frame.opaqueDrawItemCount
        << ", maskedDraws=" << frame.maskedDrawItemCount
        << ", transparentDraws=" << frame.transparentDrawItemCount << "\n";
+    ss << "FeatureExtraction: attempted=" << frame.featureExtractionStats.attempted
+       << ", providerPath=" << frame.featureExtractionStats.usedProviderPath
+       << ", complete=" << frame.featureExtractionStats.snapshotComplete
+       << ", schema=" << frame.featureExtractionStats.snapshotSchemaVersion
+       << ", sequence=" << frame.featureExtractionStats.snapshotSequence
+       << ", providers=" << frame.featureExtractionStats.providerCount
+       << ", skippedProviders=" << frame.featureExtractionStats.skippedProviderCount
+       << ", particles=" << frame.featureExtractionStats.particleItemCount
+       << ", water=" << frame.featureExtractionStats.waterItemCount
+       << ", terrain=" << frame.featureExtractionStats.terrainItemCount
+       << ", fallback=" << frame.featureExtractionStats.requiresLegacyFallback
+       << ", owner=" << frame.featureExtractionStats.fallbackOwnerId
+       << ", reason=" << frame.featureExtractionStats.fallbackReason << "\n";
     ss << "ExternalTarget: requested=" << frame.externalTargetRequested
        << ", active=" << frame.externalTargetActive
        << ", colorImported=" << frame.externalColorImported
@@ -887,6 +900,21 @@ std::string SceneRenderer::ExportToolDiagnosticsManifestJson(
     ss << "    \"opaqueDrawItemCount\": " << frame.opaqueDrawItemCount << ",\n";
     ss << "    \"maskedDrawItemCount\": " << frame.maskedDrawItemCount << ",\n";
     ss << "    \"transparentDrawItemCount\": " << frame.transparentDrawItemCount << "\n";
+    ss << "  },\n";
+    ss << "  \"featureExtraction\": {\n";
+    ss << "    \"attempted\": " << JsonBool(frame.featureExtractionStats.attempted) << ",\n";
+    ss << "    \"usedProviderPath\": " << JsonBool(frame.featureExtractionStats.usedProviderPath) << ",\n";
+    ss << "    \"requiresLegacyFallback\": " << JsonBool(frame.featureExtractionStats.requiresLegacyFallback) << ",\n";
+    ss << "    \"snapshotSchemaVersion\": " << frame.featureExtractionStats.snapshotSchemaVersion << ",\n";
+    ss << "    \"snapshotSequence\": " << frame.featureExtractionStats.snapshotSequence << ",\n";
+    ss << "    \"snapshotComplete\": " << JsonBool(frame.featureExtractionStats.snapshotComplete) << ",\n";
+    ss << "    \"providerCount\": " << frame.featureExtractionStats.providerCount << ",\n";
+    ss << "    \"skippedProviderCount\": " << frame.featureExtractionStats.skippedProviderCount << ",\n";
+    ss << "    \"particleItemCount\": " << frame.featureExtractionStats.particleItemCount << ",\n";
+    ss << "    \"waterItemCount\": " << frame.featureExtractionStats.waterItemCount << ",\n";
+    ss << "    \"terrainItemCount\": " << frame.featureExtractionStats.terrainItemCount << ",\n";
+    ss << "    \"fallbackOwnerId\": " << frame.featureExtractionStats.fallbackOwnerId << ",\n";
+    ss << "    \"fallbackReason\": " << JsonString(frame.featureExtractionStats.fallbackReason) << "\n";
     ss << "  },\n";
     ss << "  \"features\": {\n";
     ss << "    \"schemaVersion\": " << frame.featureReport.schemaVersion << ",\n";

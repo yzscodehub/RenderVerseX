@@ -30,6 +30,7 @@
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
 #include "Render/RayTracing/RayTracingScene.h"
+#include "RenderExtraction/RenderFeatureSceneBridge.h"
 #include "RenderExtraction/RenderProxySceneBridge.h"
 #include "RenderExtraction/SceneEnvironmentIBLBridge.h"
 #include "RenderExtraction/SceneSkyboxPassBridge.h"
@@ -290,6 +291,7 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
 
     m_renderContext = renderContext;
     m_passRegistry = std::make_unique<RenderPassRegistry>();
+    m_featureBridge = std::make_unique<RenderFeatureSceneBridge>();
     m_proxyBridge = std::make_unique<RenderProxySceneBridge>();
     m_environmentIBLBridge = std::make_unique<SceneEnvironmentIBLBridge>();
     m_skyboxBridge = std::make_unique<SceneSkyboxPassBridge>();
@@ -532,6 +534,7 @@ void SceneRenderer::Shutdown()
 
     m_renderGraph.reset();
     m_passRegistry.reset();
+    m_featureBridge.reset();
     m_proxyBridge.reset();
     m_environmentIBLBridge.reset();
     m_skyboxBridge.reset();
@@ -810,6 +813,7 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
     diagnostics.opaqueDrawItemCount = m_opaqueDrawItems.size();
     diagnostics.maskedDrawItemCount = m_maskedDrawItems.size();
     diagnostics.transparentDrawItemCount = m_transparentDrawItems.size();
+    diagnostics.featureExtractionStats = m_featureExtractionStats;
     diagnostics.pointLightCount = m_localLightingStats.pointLightCount;
     diagnostics.spotLightCount = m_localLightingStats.spotLightCount;
     diagnostics.lightConstantsBufferReady = m_localLightingStats.lightConstantsBufferReady;
@@ -931,6 +935,72 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
     }
 }
 
+void SceneRenderer::UpdateFeatureExtraction(World* world)
+{
+    m_featureExtractionStats = {};
+    m_featureExtractionStats.attempted = true;
+
+    if (!m_featureBridge)
+    {
+        m_featureSnapshot.Clear();
+        m_featureExtractionStats.requiresLegacyFallback = true;
+        m_featureExtractionStats.fallbackReason = "Feature bridge unavailable";
+        return;
+    }
+
+    RenderFeatureSceneBridgeResult result;
+    const bool complete = m_featureBridge->BuildSnapshot(world, m_featureSnapshot, &result);
+
+    m_featureExtractionStats.usedProviderPath = result.usedProviderPath;
+    m_featureExtractionStats.requiresLegacyFallback = result.requiresLegacyFallback || !complete;
+    m_featureExtractionStats.snapshotSchemaVersion = result.snapshotSchemaVersion;
+    m_featureExtractionStats.snapshotSequence = result.snapshotSequence;
+    m_featureExtractionStats.snapshotComplete = result.snapshotComplete;
+    m_featureExtractionStats.providerCount = result.providerCount;
+    m_featureExtractionStats.skippedProviderCount = result.skippedProviderCount;
+    m_featureExtractionStats.particleItemCount = result.particleItemCount;
+    m_featureExtractionStats.waterItemCount = result.waterItemCount;
+    m_featureExtractionStats.terrainItemCount = result.terrainItemCount;
+    m_featureExtractionStats.fallbackOwnerId = result.fallbackOwnerId;
+    m_featureExtractionStats.fallbackReason =
+        result.fallbackReason == RenderFeatureSceneBridgeFallbackReason::None
+            ? ""
+            : ToString(result.fallbackReason);
+}
+
+void SceneRenderer::UpdateFeatureExtraction(SceneManager* sceneManager)
+{
+    m_featureExtractionStats = {};
+    m_featureExtractionStats.attempted = true;
+
+    if (!m_featureBridge)
+    {
+        m_featureSnapshot.Clear();
+        m_featureExtractionStats.requiresLegacyFallback = true;
+        m_featureExtractionStats.fallbackReason = "Feature bridge unavailable";
+        return;
+    }
+
+    RenderFeatureSceneBridgeResult result;
+    const bool complete = m_featureBridge->BuildSnapshot(sceneManager, m_featureSnapshot, &result);
+
+    m_featureExtractionStats.usedProviderPath = result.usedProviderPath;
+    m_featureExtractionStats.requiresLegacyFallback = result.requiresLegacyFallback || !complete;
+    m_featureExtractionStats.snapshotSchemaVersion = result.snapshotSchemaVersion;
+    m_featureExtractionStats.snapshotSequence = result.snapshotSequence;
+    m_featureExtractionStats.snapshotComplete = result.snapshotComplete;
+    m_featureExtractionStats.providerCount = result.providerCount;
+    m_featureExtractionStats.skippedProviderCount = result.skippedProviderCount;
+    m_featureExtractionStats.particleItemCount = result.particleItemCount;
+    m_featureExtractionStats.waterItemCount = result.waterItemCount;
+    m_featureExtractionStats.terrainItemCount = result.terrainItemCount;
+    m_featureExtractionStats.fallbackOwnerId = result.fallbackOwnerId;
+    m_featureExtractionStats.fallbackReason =
+        result.fallbackReason == RenderFeatureSceneBridgeFallbackReason::None
+            ? ""
+            : ToString(result.fallbackReason);
+}
+
 void SceneRenderer::SetupView(const Camera& camera, World* world)
 {
     if (!m_initialized)
@@ -942,6 +1012,7 @@ void SceneRenderer::SetupView(const Camera& camera, World* world)
     SetupCameraViewData(camera, width, height);
     UpdateEnvironmentIBL(world);
     UpdateSkyboxPass(world);
+    UpdateFeatureExtraction(world);
 
     // Collect scene data through the proxy bridge first; legacy collection is audited fallback only.
     RenderProxySceneBridgeResult proxyResult;
@@ -995,6 +1066,7 @@ void SceneRenderer::SetupView(const Camera& camera, SceneManager* sceneManager)
     SetupCameraViewData(camera, width, height);
     UpdateEnvironmentIBL(nullptr);
     UpdateSkyboxPass(nullptr);
+    UpdateFeatureExtraction(sceneManager);
 
     m_renderScene.CollectFromSceneManager(sceneManager);
     m_collectionStats.lastPath = SceneRenderCollectionPath::SceneManagerDirect;
