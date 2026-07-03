@@ -653,26 +653,37 @@ TEST(ParticleValidation, ParticleSubsystemProductionDeviceAcquisitionSourceGuard
     EXPECT_NE(componentSource.find("GetActiveSubsystem"), std::string::npos);
 }
 
-TEST(ParticleValidation, PublicParticleHeadersDoNotIncludeRenderOrRHI)
+TEST(ParticleValidation, FeaturePublicHeadersDoNotIncludeRenderOrRHI)
 {
-    const std::filesystem::path includeRoot = FindSourcePath("Particle/Include");
-    ASSERT_FALSE(includeRoot.empty());
+    const std::vector<std::string> featureIncludeRoots = {
+        "Particle/Include",
+        "Terrain/Include",
+        "Water/Include",
+    };
 
     std::string violations;
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(includeRoot))
+    for (const std::string& featureIncludeRoot : featureIncludeRoots)
     {
-        if (!entry.is_regular_file() || entry.path().extension() != ".h")
-            continue;
+        const std::filesystem::path includeRoot = FindSourcePath(featureIncludeRoot);
+        ASSERT_FALSE(includeRoot.empty()) << featureIncludeRoot;
 
-        std::ifstream stream(entry.path(), std::ios::binary);
-        const std::string contents{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
-        if (contents.find("#include \"Render/") != std::string::npos ||
-            contents.find("#include <Render/") != std::string::npos ||
-            contents.find("#include \"RHI/") != std::string::npos ||
-            contents.find("#include <RHI/") != std::string::npos)
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(includeRoot))
         {
-            violations += entry.path().lexically_relative(includeRoot).generic_string();
-            violations += "\n";
+            if (!entry.is_regular_file() || entry.path().extension() != ".h")
+                continue;
+
+            std::ifstream stream(entry.path(), std::ios::binary);
+            const std::string contents{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+            if (contents.find("#include \"Render/") != std::string::npos ||
+                contents.find("#include <Render/") != std::string::npos ||
+                contents.find("#include \"RHI/") != std::string::npos ||
+                contents.find("#include <RHI/") != std::string::npos)
+            {
+                violations += featureIncludeRoot;
+                violations += "/";
+                violations += entry.path().lexically_relative(includeRoot).generic_string();
+                violations += "\n";
+            }
         }
     }
 
