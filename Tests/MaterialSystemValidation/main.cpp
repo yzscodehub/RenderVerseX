@@ -7,6 +7,7 @@
 #include "Render/Material/MaterialTemplate.h"
 #include "Resource/Loader/TextureLoader.h"
 #include "Resource/Types/MaterialResource.h"
+#include "Resource/Types/ShaderResource.h"
 #include "Resource/Types/TextureResource.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
@@ -19,6 +20,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <system_error>
@@ -471,6 +473,48 @@ namespace
     Resource::TextureHandle CreateIBLBRDFLUTResource(Resource::ResourceId id)
     {
         return CreateTextureResource(id, Resource::TextureFormat::RGBA8, {0, 0, 0, 255});
+    }
+
+    class TestShaderResource final : public Resource::ShaderResource
+    {
+    public:
+        void MarkLoaded()
+        {
+            SetState(Resource::ResourceState::Loaded);
+        }
+    };
+
+    Resource::ShaderHandle CreateShaderResource(Resource::ResourceId id,
+                                                bool validContract = true)
+    {
+        auto* shader = new TestShaderResource();
+        shader->SetId(id);
+        shader->SetName("MaterialSystemShader");
+
+        Resource::ShaderMetadata metadata;
+        metadata.sourcePath = validContract ? "Shaders/Material.ps.hlsl" : "";
+        metadata.backend = Resource::ShaderBackendType::DX12;
+        metadata.stage = Resource::ShaderStage::Pixel;
+        metadata.entryPoint = "main";
+        metadata.targetProfile = "ps_6_0";
+        metadata.sourceHash = 0x12345678ull;
+        metadata.reflectionResourceCount = 4;
+
+        shader->SetData({0x44, 0x58, 0x42, 0x43}, "", "", metadata);
+        shader->MarkLoaded();
+        return Resource::ShaderHandle(shader);
+    }
+
+    std::string ReadTextFile(const std::filesystem::path& path)
+    {
+        std::ifstream file(path, std::ios::binary);
+        if (!file.is_open())
+        {
+            return {};
+        }
+
+        return std::string(std::istreambuf_iterator<char>(file),
+                           std::istreambuf_iterator<char>());
     }
 
     const char* ToCookedTextureFormatString(Resource::TextureFormat format)
@@ -1701,5 +1745,163 @@ namespace
         materialSystem.Shutdown();
         viewCache.Shutdown();
         gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation, MaterialResourceTracksShaderRuntimeContractAndDependency)
+    {
+        Resource::MaterialResource materialResource;
+        materialResource.SetId(601);
+        materialResource.SetName("ShaderContractMaterial");
+        materialResource.SetMaterialData(std::make_shared<Material>());
+
+        Resource::ShaderHandle shader = CreateShaderResource(602);
+        ASSERT_TRUE(shader->HasValidRuntimeContract());
+
+        materialResource.SetShader(shader);
+
+        EXPECT_TRUE(materialResource.HasShader());
+        EXPECT_TRUE(materialResource.HasValidShaderRuntimeContract());
+        EXPECT_EQ(materialResource.GetShaderRuntimeContractHash(), shader->GetRuntimeContractHash());
+        EXPECT_EQ(materialResource.GetShader().Get(), shader.Get());
+
+        const Resource::MaterialShaderContractSnapshot snapshot =
+            materialResource.GetShaderContractSnapshot();
+        EXPECT_TRUE(snapshot.shaderAssigned);
+        EXPECT_TRUE(snapshot.shaderLoaded);
+        EXPECT_TRUE(snapshot.shaderContractValid);
+        EXPECT_EQ(snapshot.shaderResourceId, shader.GetId());
+        EXPECT_EQ(snapshot.shaderContractHash, shader->GetRuntimeContractHash());
+        EXPECT_EQ(snapshot.shaderPayloadHash, shader->GetRuntimeContract().payloadHash);
+        EXPECT_EQ(snapshot.shaderContractKey, shader->GetRuntimeContract().cacheKey);
+        EXPECT_NE(snapshot.shaderContractKey.find("backend=DX12"), std::string::npos);
+        EXPECT_NE(snapshot.shaderContractKey.find("stage=Pixel"), std::string::npos);
+
+        const std::string snapshotJson = materialResource.ExportShaderContractSnapshotJson();
+        EXPECT_NE(snapshotJson.find("\"schemaVersion\": 1"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"schemaId\": \"RVX.Resource.MaterialShaderContractSnapshot\""),
+                  std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"id\": \"materialShaderContractSnapshotJson\""), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"kind\": \"MaterialShaderContractSnapshotJson\""), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"contentType\": \"application/json\""), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"material\": {"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"resourceId\": 601"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"name\": \"ShaderContractMaterial\""), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"shader\": {"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"assigned\": true"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"loaded\": true"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"contractValid\": true"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"resourceId\": 602"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"contractHash\": " +
+                                    std::to_string(shader->GetRuntimeContractHash())),
+                  std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"payloadHash\": " +
+                                    std::to_string(shader->GetRuntimeContract().payloadHash)),
+                  std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"contractKey\": "), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"diagnosticMessage\": \"Shader runtime contract is valid.\""),
+                  std::string::npos);
+        EXPECT_FALSE(materialResource.SaveShaderContractSnapshotJson(nullptr));
+        EXPECT_FALSE(materialResource.SaveShaderContractSnapshotJson(""));
+
+        const auto suffix = std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        const std::filesystem::path snapshotPath =
+            std::filesystem::temp_directory_path() /
+            ("RVX_MaterialShaderContractSnapshot_" + suffix + ".json");
+        const std::string snapshotPathString = snapshotPath.string();
+        ASSERT_TRUE(materialResource.SaveShaderContractSnapshotJson(snapshotPathString.c_str()));
+        EXPECT_EQ(ReadTextFile(snapshotPath), snapshotJson);
+        std::error_code removeError;
+        std::filesystem::remove(snapshotPath, removeError);
+
+        const std::vector<Resource::ResourceId> deps = materialResource.GetRequiredDependencies();
+        EXPECT_NE(std::find(deps.begin(), deps.end(), shader.GetId()), deps.end());
+    }
+
+    TEST(MaterialSystemValidation, MaterialResourceReportsInvalidShaderRuntimeContract)
+    {
+        Resource::MaterialResource materialResource;
+        materialResource.SetId(603);
+        materialResource.SetName("InvalidShaderContractMaterial");
+
+        Resource::ShaderHandle shader = CreateShaderResource(604, false);
+        ASSERT_FALSE(shader->HasValidRuntimeContract());
+
+        materialResource.SetShader(shader);
+
+        EXPECT_TRUE(materialResource.HasShader());
+        EXPECT_FALSE(materialResource.HasValidShaderRuntimeContract());
+        EXPECT_EQ(materialResource.GetShaderRuntimeContractHash(), 0u);
+
+        const Resource::MaterialShaderContractSnapshot snapshot =
+            materialResource.GetShaderContractSnapshot();
+        EXPECT_TRUE(snapshot.shaderAssigned);
+        EXPECT_TRUE(snapshot.shaderLoaded);
+        EXPECT_FALSE(snapshot.shaderContractValid);
+        EXPECT_EQ(snapshot.shaderResourceId, shader.GetId());
+        EXPECT_EQ(snapshot.shaderPayloadHash, shader->GetRuntimeContract().payloadHash);
+        EXPECT_EQ(snapshot.shaderContractHash, 0u);
+        EXPECT_NE(snapshot.diagnosticMessage.find("source path"), std::string::npos);
+
+        const std::string snapshotJson = materialResource.ExportShaderContractSnapshotJson();
+        EXPECT_NE(snapshotJson.find("\"schemaId\": \"RVX.Resource.MaterialShaderContractSnapshot\""),
+                  std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"kind\": \"MaterialShaderContractSnapshotJson\""),
+                  std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"name\": \"InvalidShaderContractMaterial\""), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"assigned\": true"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"loaded\": true"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"contractValid\": false"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"resourceId\": 604"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"contractHash\": 0"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"payloadHash\": " +
+                                    std::to_string(shader->GetRuntimeContract().payloadHash)),
+                  std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"contractKey\": \"\""), std::string::npos);
+        EXPECT_NE(snapshotJson.find("source path"), std::string::npos);
+    }
+
+    TEST(MaterialSystemValidation, MaterialResourceShaderContractSnapshotJsonReportsMissingShader)
+    {
+        Resource::MaterialResource materialResource;
+        materialResource.SetId(605);
+        materialResource.SetName("MissingShaderMaterial");
+        materialResource.SetMaterialData(std::make_shared<Material>());
+
+        EXPECT_FALSE(materialResource.HasShader());
+        EXPECT_FALSE(materialResource.HasValidShaderRuntimeContract());
+        EXPECT_EQ(materialResource.GetShaderRuntimeContractHash(), 0u);
+
+        const Resource::MaterialShaderContractSnapshot snapshot =
+            materialResource.GetShaderContractSnapshot();
+        EXPECT_FALSE(snapshot.shaderAssigned);
+        EXPECT_FALSE(snapshot.shaderLoaded);
+        EXPECT_FALSE(snapshot.shaderContractValid);
+        EXPECT_EQ(snapshot.shaderResourceId, Resource::InvalidResourceId);
+        EXPECT_EQ(snapshot.shaderContractHash, 0u);
+        EXPECT_EQ(snapshot.shaderPayloadHash, 0u);
+        EXPECT_TRUE(snapshot.shaderContractKey.empty());
+        EXPECT_EQ(snapshot.diagnosticMessage, "Material has no shader assigned.");
+
+        const std::string snapshotJson = materialResource.ExportShaderContractSnapshotJson();
+        EXPECT_NE(snapshotJson.find("\"schemaId\": \"RVX.Resource.MaterialShaderContractSnapshot\""),
+                  std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"id\": \"materialShaderContractSnapshotJson\""),
+                  std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"kind\": \"MaterialShaderContractSnapshotJson\""),
+                  std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"resourceId\": 605"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"name\": \"MissingShaderMaterial\""), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"assigned\": false"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"loaded\": false"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"contractValid\": false"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"resourceId\": " +
+                                    std::to_string(Resource::InvalidResourceId)),
+                  std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"contractHash\": 0"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"payloadHash\": 0"), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"contractKey\": \"\""), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"diagnosticMessage\": \"Material has no shader assigned.\""),
+                  std::string::npos);
     }
 } // namespace

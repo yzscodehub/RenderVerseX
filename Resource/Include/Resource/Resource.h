@@ -47,6 +47,7 @@
 #include "Resource/ResourceCache.h"
 #include "Resource/ResourceRegistry.h"
 #include "Resource/DependencyGraph.h"
+#include "Resource/RuntimeResourcePolicy.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/ResourceSubsystem.h"
 

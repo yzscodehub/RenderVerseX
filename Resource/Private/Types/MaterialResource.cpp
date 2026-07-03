@@ -1,5 +1,10 @@
 #include "Resource/Types/MaterialResource.h"
 
+#include <fstream>
+#include <sstream>
+#include <string_view>
+#include <utility>
+
 namespace RVX::Resource
 {
 namespace
@@ -85,6 +90,44 @@ namespace
         binding.wrapT = ToRenderTextureWrapMode(textureInfo->wrapT);
         binding.minFilter = ToRenderTextureFilterMode(textureInfo->minFilter);
         binding.magFilter = ToRenderTextureFilterMode(textureInfo->magFilter);
+    }
+
+    const char* JsonBool(bool value)
+    {
+        return value ? "true" : "false";
+    }
+
+    std::string JsonString(std::string_view value)
+    {
+        std::string escaped;
+        escaped.reserve(value.size() + 2);
+        escaped.push_back('"');
+        for (char ch : value)
+        {
+            switch (ch)
+            {
+                case '\\':
+                    escaped += "\\\\";
+                    break;
+                case '"':
+                    escaped += "\\\"";
+                    break;
+                case '\n':
+                    escaped += "\\n";
+                    break;
+                case '\r':
+                    escaped += "\\r";
+                    break;
+                case '\t':
+                    escaped += "\\t";
+                    break;
+                default:
+                    escaped.push_back(ch);
+                    break;
+            }
+        }
+        escaped.push_back('"');
+        return escaped;
     }
 } // namespace
 
@@ -273,22 +316,119 @@ const std::unordered_map<std::string, ResourceHandle<TextureResource>>& Material
     return m_textures;
 }
 
+void MaterialResource::SetShader(ResourceHandle<ShaderResource> shader)
+{
+    m_shader = std::move(shader);
+}
+
+ResourceHandle<ShaderResource> MaterialResource::GetShader() const
+{
+    return m_shader;
+}
+
+bool MaterialResource::HasShader() const
+{
+    return m_shader.IsValid();
+}
+
+bool MaterialResource::HasValidShaderRuntimeContract() const
+{
+    return m_shader.IsValid() && m_shader->HasValidRuntimeContract();
+}
+
+uint64 MaterialResource::GetShaderRuntimeContractHash() const
+{
+    return m_shader.IsValid() ? m_shader->GetRuntimeContractHash() : 0;
+}
+
+MaterialShaderContractSnapshot MaterialResource::GetShaderContractSnapshot() const
+{
+    MaterialShaderContractSnapshot snapshot;
+    snapshot.shaderAssigned = m_shader.IsValid();
+
+    if (!m_shader.IsValid())
+    {
+        snapshot.diagnosticMessage = "Material has no shader assigned.";
+        return snapshot;
+    }
+
+    snapshot.shaderLoaded = m_shader.IsLoaded();
+    snapshot.shaderResourceId = m_shader.GetId();
+
+    const ShaderRuntimeContract& contract = m_shader->GetRuntimeContract();
+    snapshot.shaderContractValid = contract.valid;
+    snapshot.shaderContractHash = contract.contractHash;
+    snapshot.shaderPayloadHash = contract.payloadHash;
+    snapshot.shaderContractKey = contract.cacheKey;
+    snapshot.diagnosticMessage = contract.diagnosticMessage;
+    return snapshot;
+}
+
+std::string MaterialResource::ExportShaderContractSnapshotJson() const
+{
+    const MaterialShaderContractSnapshot snapshot = GetShaderContractSnapshot();
+
+    std::ostringstream ss;
+    ss << "{\n";
+    ss << "  \"schemaVersion\": " << RVX_MATERIAL_SHADER_CONTRACT_SNAPSHOT_SCHEMA_VERSION << ",\n";
+    ss << "  \"schemaId\": " << JsonString(RVX_MATERIAL_SHADER_CONTRACT_SNAPSHOT_SCHEMA_ID) << ",\n";
+    ss << "  \"id\": \"materialShaderContractSnapshotJson\",\n";
+    ss << "  \"kind\": \"MaterialShaderContractSnapshotJson\",\n";
+    ss << "  \"contentType\": \"application/json\",\n";
+    ss << "  \"material\": {\n";
+    ss << "    \"resourceId\": " << GetId() << ",\n";
+    ss << "    \"name\": " << JsonString(GetName()) << ",\n";
+    ss << "    \"path\": " << JsonString(GetPath()) << ",\n";
+    ss << "    \"workflow\": " << static_cast<uint32>(GetWorkflowMode()) << ",\n";
+    ss << "    \"alphaMode\": " << static_cast<uint32>(GetAlphaMode()) << "\n";
+    ss << "  },\n";
+    ss << "  \"shader\": {\n";
+    ss << "    \"assigned\": " << JsonBool(snapshot.shaderAssigned) << ",\n";
+    ss << "    \"loaded\": " << JsonBool(snapshot.shaderLoaded) << ",\n";
+    ss << "    \"contractValid\": " << JsonBool(snapshot.shaderContractValid) << ",\n";
+    ss << "    \"resourceId\": " << snapshot.shaderResourceId << ",\n";
+    ss << "    \"contractHash\": " << snapshot.shaderContractHash << ",\n";
+    ss << "    \"payloadHash\": " << snapshot.shaderPayloadHash << ",\n";
+    ss << "    \"contractKey\": " << JsonString(snapshot.shaderContractKey) << ",\n";
+    ss << "    \"diagnosticMessage\": " << JsonString(snapshot.diagnosticMessage) << "\n";
+    ss << "  }\n";
+    ss << "}\n";
+    return ss.str();
+}
+
+bool MaterialResource::SaveShaderContractSnapshotJson(const char* filename) const
+{
+    if (!filename || filename[0] == '\0')
+    {
+        return false;
+    }
+
+    std::ofstream file(filename, std::ios::binary);
+    if (!file.is_open())
+    {
+        return false;
+    }
+
+    file << ExportShaderContractSnapshotJson();
+    return file.good();
+}
+
 size_t MaterialResource::GetMemoryUsage() const
 {
     size_t size = sizeof(*this);
-    
+
     if (m_material)
     {
         size += sizeof(Material);
     }
-    
+
     return size;
 }
 
 std::vector<ResourceId> MaterialResource::GetRequiredDependencies() const
 {
     std::vector<ResourceId> deps;
-    
+
     for (const auto& [slot, texture] : m_textures)
     {
         if (texture.IsValid())
@@ -296,7 +436,12 @@ std::vector<ResourceId> MaterialResource::GetRequiredDependencies() const
             deps.push_back(texture.GetId());
         }
     }
-    
+
+    if (m_shader.IsValid())
+    {
+        deps.push_back(m_shader.GetId());
+    }
+
     return deps;
 }
 

@@ -66,11 +66,12 @@ namespace RVX::Resource
             RVX_CORE_INFO("FileWatcher: Using polling for: {}", path);
         }
 
-        m_watches[entry.id] = std::move(entry);
+        const uint32_t watchId = entry.id;
+        m_watches[watchId] = std::move(entry);
 
-        RVX_CORE_INFO("FileWatcher: Watching {} (id={})", path, m_watches[entry.id - 1].id);
+        RVX_CORE_INFO("FileWatcher: Watching {} (id={})", path, watchId);
 
-        return entry.id;
+        return watchId;
     }
 
     uint32_t FileWatcher::WatchFile(const std::string& path, FileChangeCallback callback)

@@ -5,19 +5,21 @@
  * @brief Main facade for the resource management system
  */
 
+#include "Resource/DependencyGraph.h"
 #include "Resource/IResource.h"
+#include "Resource/ResourceCache.h"
 #include "Resource/ResourceHandle.h"
 #include "Resource/ResourceRegistry.h"
-#include "Resource/ResourceCache.h"
-#include "Resource/DependencyGraph.h"
+#include "Resource/RuntimeResourcePolicy.h"
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
-#include <future>
-#include <functional>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace RVX::Resource
@@ -39,13 +41,50 @@ namespace RVX::Resource
         /// Base path for resources
         std::string basePath = "";
 
+        /// Runtime/source/cooked/package path policy
+        ResourceRuntimePolicy runtimePolicy;
+
         /// Enable hot reload
         bool enableHotReload = false;
     };
 
+    enum class ResourceHotReloadStatus : uint8
+    {
+        Disabled = 0,
+        Active,
+        UnsupportedRuntimePolicy,
+        Uninitialized,
+    };
+
+    inline constexpr uint32 RVX_RESOURCE_HOT_RELOAD_DIAGNOSTIC_SCHEMA_VERSION = 1;
+    inline constexpr const char* RVX_RESOURCE_HOT_RELOAD_DIAGNOSTIC_SCHEMA_ID =
+        "RVX.Resource.HotReloadDiagnostic";
+
+    const char* GetResourceHotReloadStatusName(ResourceHotReloadStatus status);
+
+    struct ResourceHotReloadDiagnostic
+    {
+        bool requested = false;
+        bool enabled = false;
+        bool sourceAssetAccessRequired = true;
+        bool watcherInitialized = false;
+        ResourceHotReloadStatus status = ResourceHotReloadStatus::Disabled;
+        std::string message;
+        size_t watchedFileCount = 0;
+        size_t registeredResourceCount = 0;
+        size_t pendingReloadCount = 0;
+        size_t totalReloadCount = 0;
+        size_t successfulReloadCount = 0;
+        size_t failedReloadCount = 0;
+    };
+
+    std::string ExportResourceHotReloadDiagnosticJson(const ResourceHotReloadDiagnostic& diagnostic);
+    bool SaveResourceHotReloadDiagnosticJson(const char* filename,
+                                             const ResourceHotReloadDiagnostic& diagnostic);
+
     /**
      * @brief Central resource management facade
-     * 
+     *
      * Provides:
      * - Synchronous and asynchronous loading
      * - Automatic dependency resolution
@@ -139,6 +178,18 @@ namespace RVX::Resource
         /// Enable/disable hot reload
         void EnableHotReload(bool enable);
 
+        /// Check whether hot reload is active under the current runtime policy.
+        bool IsHotReloadEnabled() const;
+
+        /// Get the current hot-reload policy/status diagnostic.
+        ResourceHotReloadDiagnostic GetHotReloadDiagnostic() const;
+
+        /// Export the current hot-reload diagnostic as a stable JSON artifact.
+        std::string ExportHotReloadDiagnosticJson() const;
+
+        /// Save the current hot-reload diagnostic as a stable JSON artifact.
+        bool SaveHotReloadDiagnosticJson(const char* filename) const;
+
         /// Check for file changes and reload modified resources
         void CheckForChanges();
 
@@ -198,6 +249,15 @@ namespace RVX::Resource
 
         Stats GetStats() const;
 
+        /// Get the last synchronous or async load diagnostic emitted by the manager.
+        ResourceLoadDiagnostic GetLastLoadDiagnostic() const;
+
+        /// Export the last load diagnostic as a stable machine-readable JSON artifact.
+        std::string ExportLastLoadDiagnosticJson() const;
+
+        /// Save the last load diagnostic JSON artifact for tools/CI.
+        bool SaveLastLoadDiagnosticJson(const char* filename) const;
+
         // =====================================================================
         // Utility
         // =====================================================================
@@ -237,9 +297,27 @@ namespace RVX::Resource
         std::vector<PendingAsyncCallback> m_pendingCallbacks;
         mutable std::mutex m_pendingCallbacksMutex;
 
+        mutable std::mutex m_diagnosticMutex;
+        ResourceLoadDiagnostic m_lastLoadDiagnostic;
+
+        mutable std::mutex m_hotReloadMutex;
+        ResourceHotReloadDiagnostic m_hotReloadDiagnostic;
+        bool m_hotReloadInitializedByManager = false;
+        std::unordered_map<ResourceId, uint32_t> m_hotReloadWatchIds;
+
         // Internal loading
-        IResource* LoadInternal(const std::string& path, ResourceType type);
+        IResource* LoadInternal(const std::string& path,
+                                const ResourcePathResolution& resolution,
+                                ResourceType type);
         void LoadDependencies(IResource* resource);
+        void SetLastLoadDiagnostic(const ResourceLoadDiagnostic& diagnostic);
+        bool IsHotReloadSupportedByPolicy() const;
+        void ConfigureHotReload(bool enable);
+        void RegisterHotReloadResource(IResource* resource, const ResourcePathResolution& resolution);
+        void SetHotReloadDiagnostic(ResourceHotReloadStatus status,
+                                    bool requested,
+                                    bool enabled,
+                                    const std::string& message);
 
         // Register default loaders (ModelLoader, TextureLoader)
         void RegisterDefaultLoaders();
@@ -337,7 +415,13 @@ namespace RVX::Resource
 
 namespace RVX
 {
+    using Resource::IResourceLoader;
+    using Resource::ExportResourceHotReloadDiagnosticJson;
+    using Resource::RVX_RESOURCE_HOT_RELOAD_DIAGNOSTIC_SCHEMA_ID;
+    using Resource::RVX_RESOURCE_HOT_RELOAD_DIAGNOSTIC_SCHEMA_VERSION;
+    using Resource::ResourceHotReloadDiagnostic;
+    using Resource::ResourceHotReloadStatus;
     using Resource::ResourceManager;
     using Resource::ResourceManagerConfig;
-    using Resource::IResourceLoader;
+    using Resource::SaveResourceHotReloadDiagnosticJson;
 }

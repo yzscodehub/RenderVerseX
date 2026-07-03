@@ -7,6 +7,7 @@
 
 #include "Resource/IResource.h"
 #include "Resource/ResourceHandle.h"
+#include "Resource/Types/ShaderResource.h"
 #include "Resource/Types/TextureResource.h"
 #include "RenderContracts/RenderResource.h"
 #include "Geometry/Asset/Material.h"
@@ -16,6 +17,10 @@
 
 namespace RVX::Resource
 {
+    inline constexpr const char* RVX_MATERIAL_SHADER_CONTRACT_SNAPSHOT_SCHEMA_ID =
+        "RVX.Resource.MaterialShaderContractSnapshot";
+    inline constexpr uint32 RVX_MATERIAL_SHADER_CONTRACT_SNAPSHOT_SCHEMA_VERSION = 1;
+
     enum class MaterialAlphaMode : uint8
     {
         Opaque = 0,
@@ -28,6 +33,18 @@ namespace RVX::Resource
         MetallicRoughness = 0,
         SpecularGlossiness,
         Unlit
+    };
+
+    struct MaterialShaderContractSnapshot
+    {
+        bool shaderAssigned = false;
+        bool shaderLoaded = false;
+        bool shaderContractValid = false;
+        ResourceId shaderResourceId = InvalidResourceId;
+        uint64 shaderContractHash = 0;
+        uint64 shaderPayloadHash = 0;
+        std::string shaderContractKey;
+        std::string diagnosticMessage;
     };
 
     /**
@@ -94,18 +111,22 @@ namespace RVX::Resource
         ResourceHandle<TextureResource> GetEmissiveTexture() const { return GetTexture("emissive"); }
 
         // =====================================================================
-        // Shader (future)
+        // Shader
         // =====================================================================
 
-        // AssetHandle<ShaderAsset> GetShader() const;
-        // void SetShader(AssetHandle<ShaderAsset> shader);
+        void SetShader(ResourceHandle<ShaderResource> shader);
+        ResourceHandle<ShaderResource> GetShader() const;
+        bool HasShader() const;
+        bool HasValidShaderRuntimeContract() const;
+        uint64 GetShaderRuntimeContractHash() const;
+        MaterialShaderContractSnapshot GetShaderContractSnapshot() const;
+        std::string ExportShaderContractSnapshotJson() const;
+        bool SaveShaderContractSnapshotJson(const char* filename) const;
 
     private:
         std::shared_ptr<Material> m_material;
         std::unordered_map<std::string, ResourceHandle<TextureResource>> m_textures;
-
-        // Future: shader reference
-        // AssetHandle<ShaderAsset> m_shader;
+        ResourceHandle<ShaderResource> m_shader;
     };
 
 } // namespace RVX::Resource

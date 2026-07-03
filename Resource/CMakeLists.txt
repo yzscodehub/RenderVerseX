@@ -26,6 +26,7 @@ target_sources(RVX_Resource PRIVATE
     Private/ResourceCache.cpp
     Private/ResourceRegistry.cpp
     Private/DependencyGraph.cpp
+    Private/RuntimeResourcePolicy.cpp
     Private/ResourceManager.cpp
     Private/DefaultResources.cpp
     

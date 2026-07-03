@@ -595,6 +595,17 @@ rvx_add_gtest(
     TIMEOUT 120
 )
 
+# Resource runtime policy validation tests
+rvx_add_gtest(
+    NAME ResourceRuntimePolicyValidation
+    SOURCES ResourceRuntimePolicyValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::Resource
+    LABELS unit
+    TIMEOUT 120
+)
+
 # Resource view cache validation tests
 rvx_add_gtest(
     NAME ResourceViewCacheValidation
