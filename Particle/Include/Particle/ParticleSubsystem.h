@@ -153,7 +153,6 @@ namespace RVX::Particle
 
     private:
         void CheckCapabilities();
-        void AcquireRenderDependencies();
         void CreateRenderComponents();
         void RegisterRenderIntegration();
         void MarkRenderIntegrationUnsupported(const std::string& reason);

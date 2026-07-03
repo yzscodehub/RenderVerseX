@@ -7,7 +7,6 @@
 #include "Particle/Rendering/ParticlePass.h"
 #include "Particle/Rendering/ParticleRenderer.h"
 #include "Render/Renderer/SceneRenderer.h"
-#include "Render/RenderSubsystem.h"
 #include "Resource/ResourceSubsystem.h"
 #include <algorithm>
 #include <utility>
@@ -16,7 +15,6 @@ namespace RVX::Particle
 {
 struct ParticleSubsystemRenderState
 {
-    RenderSubsystem* renderSubsystem = nullptr;
     IRHIDevice* device = nullptr;
     SceneRenderer* sceneRenderer = nullptr;
     std::unique_ptr<ParticleRendererConfig> rendererConfigOverride;
@@ -125,7 +123,7 @@ ParticleSubsystem* ParticleSubsystem::GetActiveSubsystem()
 
 std::vector<SubsystemDependency> ParticleSubsystem::GetTypedDependencies() const
 {
-    return MakeDependencies<RenderSubsystem, ResourceSubsystem>();
+    return MakeDependencies<ResourceSubsystem>();
 }
 
 void ParticleSubsystem::Initialize()
@@ -133,8 +131,6 @@ void ParticleSubsystem::Initialize()
     s_activeSubsystem = this;
     m_renderIntegrationReady = false;
     m_renderIntegrationUnsupportedReason = "Particle render integration is not initialized";
-
-    AcquireRenderDependencies();
 
     if (!m_renderState->device)
     {
@@ -197,22 +193,6 @@ void ParticleSubsystem::CreateRenderComponents()
     {
         m_renderState->sorter = std::make_unique<ParticleSorter>();
         m_renderState->sorter->Initialize(m_renderState->device, m_config.maxGlobalParticles);
-    }
-}
-
-void ParticleSubsystem::AcquireRenderDependencies()
-{
-    if (!m_renderState->renderSubsystem)
-        return;
-
-    if (!m_renderState->device)
-    {
-        m_renderState->device = m_renderState->renderSubsystem->GetDevice();
-    }
-
-    if (!m_renderState->sceneRenderer)
-    {
-        m_renderState->sceneRenderer = m_renderState->renderSubsystem->GetSceneRenderer();
     }
 }
 

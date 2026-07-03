@@ -641,10 +641,12 @@ TEST(ParticleValidation, ParticleSubsystemProductionDeviceAcquisitionSourceGuard
 
     EXPECT_EQ(subsystemSource.find("Engine/Engine.h"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("Engine::Get"), std::string::npos);
+    EXPECT_EQ(subsystemSource.find("#include \"Render/RenderSubsystem.h\""), std::string::npos);
+    EXPECT_EQ(subsystemSource.find("RenderSubsystem*"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("GetSubsystem<RenderSubsystem>"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("SetRenderSubsystem"), std::string::npos);
-    EXPECT_NE(subsystemSource.find("GetDevice()"), std::string::npos);
-    EXPECT_NE(subsystemSource.find("GetSceneRenderer()"), std::string::npos);
+    EXPECT_EQ(subsystemSource.find("->GetDevice()"), std::string::npos);
+    EXPECT_EQ(subsystemSource.find("->GetSceneRenderer()"), std::string::npos);
     EXPECT_NE(subsystemSource.find("AddPreGraphPrepareCallback"), std::string::npos);
     EXPECT_NE(subsystemSource.find("RemovePreGraphPrepareCallback"), std::string::npos);
 

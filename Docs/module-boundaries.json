@@ -191,7 +191,7 @@
     "Water->RHI": "Phase 4 migration: remove water public RHI exposure and move GPU calls into Render-owned paths."
   },
   "legacyBudgets": {
-    "Particle->Render": 7,
+    "Particle->Render": 6,
     "Particle->RHI": 5,
     "Terrain->RHI": 5,
     "Water->RHI": 8
