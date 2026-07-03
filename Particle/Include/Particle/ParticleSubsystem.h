@@ -30,7 +30,6 @@ namespace RVX::Particle
         bool enableGPUSimulation = true;        ///< Prefer GPU simulation when available
         bool enableSorting = true;              ///< Enable transparency sorting
         bool enableSoftParticles = true;        ///< Enable soft particle depth fade
-        bool enableLegacyRenderPassRegistration = false; ///< Compatibility-only legacy render registration path
         float globalSimulationSpeed = 1.0f;     ///< Global simulation speed multiplier
         bool deterministicCpuSimulation = false; ///< Use a fixed CPU simulator seed for reproducible captures
         uint32 cpuSimulationSeed = 0;            ///< Seed used when deterministicCpuSimulation is enabled
@@ -124,7 +123,7 @@ namespace RVX::Particle
         /// Check if GPU simulation is supported
         bool IsGPUSimulationSupported() const { return m_gpuSimulationSupported; }
 
-        /// Check whether the compatibility render path is connected to the main frame.
+        /// Check whether the subsystem owns a legacy render path. Production rendering uses snapshots.
         bool IsRenderIntegrationReady() const { return m_renderIntegrationReady; }
 
         /// Human-readable reason when render integration is unavailable.
@@ -154,8 +153,6 @@ namespace RVX::Particle
 
     private:
         void CheckCapabilities();
-        void CreateRenderComponents();
-        void RegisterRenderIntegration();
         void MarkRenderIntegrationUnsupported(const std::string& reason);
         void PrepareRenderForCamera(const Vec3& cameraPosition);
         void CullInstancesForCamera(const Vec3& cameraPosition);
