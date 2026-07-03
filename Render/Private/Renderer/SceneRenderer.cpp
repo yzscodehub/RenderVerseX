@@ -26,6 +26,7 @@
 #include "Render/PostProcess/ColorGrading.h"
 #include "Render/PostProcess/FilmGrain.h"
 #include "Render/PostProcess/FXAA.h"
+#include "Render/PostProcess/SSAO.h"
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
 #include "Render/RayTracing/RayTracingScene.h"
@@ -469,6 +470,8 @@ void SceneRenderer::Shutdown()
     m_colorGradingPostProcess = nullptr;
     m_chromaticAberrationPostProcess = nullptr;
     m_vignettePostProcess = nullptr;
+    m_filmGrainPostProcess = nullptr;
+    m_ssaoPostProcess = nullptr;
     m_fxaaPostProcess = nullptr;
     if (m_postProcessStack)
     {
@@ -3268,6 +3271,7 @@ void SceneRenderer::SetupDefaultPostProcess()
     m_postProcessStack = std::make_unique<PostProcessStack>();
     m_postProcessStack->Initialize(m_renderContext->GetDevice());
     m_bloomPostProcess = m_postProcessStack->AddEffect<BloomPass>();
+    m_ssaoPostProcess = m_postProcessStack->AddEffect<SSAOPass>();
     m_toneMappingPostProcess = m_postProcessStack->AddEffect<ToneMappingPass>();
     m_colorGradingPostProcess = m_postProcessStack->AddEffect<ColorGradingPass>();
     m_chromaticAberrationPostProcess = m_postProcessStack->AddEffect<ChromaticAberrationPass>();
@@ -3278,6 +3282,11 @@ void SceneRenderer::SetupDefaultPostProcess()
     if (m_bloomPostProcess)
     {
         m_bloomPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
+    }
+
+    if (m_ssaoPostProcess)
+    {
+        m_ssaoPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
     }
 
     if (m_toneMappingPostProcess)

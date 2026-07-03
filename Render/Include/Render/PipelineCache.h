@@ -177,6 +177,7 @@ namespace RVX
         uint64 skyboxPipelineHash = 0;
         uint64 toneMappingPipelineHash = 0;
         uint64 bloomPipelineHash = 0;
+        uint64 ssaoPipelineHash = 0;
         uint64 colorGradingPipelineHash = 0;
         uint64 chromaticAberrationPipelineHash = 0;
         uint64 filmGrainPipelineHash = 0;
@@ -306,6 +307,12 @@ namespace RVX
         RHIPipeline* GetBloomPipeline() const { return m_bloomPipeline.Get(); }
         RHIPipeline* GetBloomPipeline(RHIFormat outputFormat);
         RHIPipeline* GetBloomAdditivePipeline(RHIFormat outputFormat);
+
+        /**
+         * @brief Get the fullscreen depth-only SSAO post-process pipeline
+         */
+        RHIPipeline* GetSSAOPipeline() const { return m_ssaoPipeline.Get(); }
+        RHIPipeline* GetSSAOPipeline(RHIFormat outputFormat);
 
         /**
          * @brief Get the camera/depth motion-vector pipeline
@@ -629,6 +636,7 @@ namespace RVX
 
         void SetDepthStencilFormat(RHIFormat format) { m_config.depthStencilFormat = format; }
         void SetReverseZ(bool enabled) { m_config.reverseZ = enabled; }
+        bool IsReverseZ() const { return m_config.reverseZ; }
 
     private:
         static uint32 ToRHIConstantDynamicOffset(uint64 offset)
@@ -673,6 +681,7 @@ namespace RVX
         RHIPipelineRef GetOrCreateToneMappingPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateBloomPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateBloomAdditivePipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateSSAOPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateCameraVelocityPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateObjectVelocityPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateMaskedObjectVelocityPipeline(RHIFormat outputFormat);
@@ -701,6 +710,7 @@ namespace RVX
         RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomAdditivePipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildSSAOPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildCameraVelocityPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildObjectVelocityPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildMaskedObjectVelocityPipelineDesc(RHIFormat outputFormat) const;
@@ -756,6 +766,8 @@ namespace RVX
         RHIShaderRef m_toneMappingPixelShader;
         RHIShaderRef m_bloomVertexShader;
         RHIShaderRef m_bloomPixelShader;
+        RHIShaderRef m_ssaoVertexShader;
+        RHIShaderRef m_ssaoPixelShader;
         RHIShaderRef m_cameraVelocityPixelShader;
         RHIShaderRef m_objectVelocityVertexShader;
         RHIShaderRef m_objectVelocityPixelShader;
@@ -796,6 +808,8 @@ namespace RVX
         std::unique_ptr<ShaderCompileResult> m_toneMappingPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_bloomVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_bloomPsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_ssaoVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_ssaoPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_cameraVelocityPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_objectVelocityVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_objectVelocityPsCompileResult;
@@ -852,6 +866,7 @@ namespace RVX
         RHIPipelineRef m_toneMappingPipeline;
         RHIPipelineRef m_bloomPipeline;
         RHIPipelineRef m_bloomAdditivePipeline;
+        RHIPipelineRef m_ssaoPipeline;
         RHIPipelineRef m_cameraVelocityPipeline;
         RHIPipelineRef m_objectVelocityPipeline;
         RHIPipelineRef m_maskedObjectVelocityPipeline;

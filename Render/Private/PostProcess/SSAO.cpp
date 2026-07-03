@@ -5,9 +5,12 @@
 
 #include "Render/PostProcess/SSAO.h"
 #include "Core/Log.h"
+#include "Render/Graph/ResourceViewCache.h"
+#include "Render/PipelineCache.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace RVX
 {
@@ -48,6 +51,21 @@ namespace
         Vec4 targetSize = Vec4(1.0f);
         Vec4 params = Vec4(0.0f);
         Vec4 fallbackParams = Vec4(0.0f);
+    };
+
+    struct SSAOPassGPUConstants
+    {
+        float textureSize[2] = {1.0f, 1.0f};
+        float invTextureSize[2] = {1.0f, 1.0f};
+        float radius = 0.5f;
+        float intensity = 1.0f;
+        float bias = 0.025f;
+        float power = 2.0f;
+        float sampleCount = 8.0f;
+        float reverseZ = 0.0f;
+        float normalFallback = 1.0f;
+        float temporalFallback = 0.0f;
+        float padding[4] = {};
     };
 } // namespace
 
@@ -403,6 +421,363 @@ void SSAO::BlurSSAO(RHICommandContext& ctx, RHITexture* depth)
 
     ctx.CopyTexture(m_aoResult.Get(), m_aoBlurred.Get());
     m_lastComputeStats.blurPassCount = 1;
+}
+
+SSAOPass::SSAOPass()
+{
+    m_config.useNormals = true;
+    m_config.temporalFilter = false;
+    m_config.blurPasses = 0;
+    MarkUnsupported("SSAO requires fullscreen pipeline resources before it can execute");
+}
+
+void SSAOPass::Configure(const PostProcessSettings& settings)
+{
+    m_enabled = settings.enableSSAO;
+    m_config.radius = std::max(0.0f, settings.ssaoRadius);
+    m_config.intensity = std::max(0.0f, settings.ssaoIntensity);
+
+    switch (settings.visualQualityPreset)
+    {
+        case RenderVisualQualityPreset::Low:
+            m_config.quality = SSAOQuality::Low;
+            break;
+        case RenderVisualQualityPreset::High:
+            m_config.quality = SSAOQuality::High;
+            break;
+        case RenderVisualQualityPreset::Cinematic:
+            m_config.quality = SSAOQuality::Ultra;
+            break;
+        case RenderVisualQualityPreset::Medium:
+        default:
+            m_config.quality = SSAOQuality::Medium;
+            break;
+    }
+
+    RefreshSupportState();
+}
+
+void SSAOPass::SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache)
+{
+    m_pipelineCache = pipelineCache;
+    m_viewCache = viewCache;
+
+    IRHIDevice* device = m_pipelineCache ? m_pipelineCache->GetDevice() : nullptr;
+    if (device != m_resourceDevice)
+    {
+        m_retainedDescriptorSets.clear();
+        m_constantBuffer.Reset();
+        m_sampler.Reset();
+        m_resourceDevice = device;
+    }
+
+    RefreshSupportState();
+}
+
+void SSAOPass::SetConfig(const SSAOConfig& config)
+{
+    m_config = config;
+    RefreshSupportState();
+}
+
+void SSAOPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output)
+{
+    PostProcessFrameInputs frameInputs;
+    frameInputs.sceneColor = input;
+    AddToGraph(graph, frameInputs, output);
+}
+
+void SSAOPass::AddToGraph(RenderGraph& graph,
+                          const PostProcessFrameInputs& frameInputs,
+                          RGTextureHandle output)
+{
+    m_lastGraphStats = {};
+    m_lastGraphStats.requested = IsRequestedEnabled();
+    m_lastGraphStats.supported = IsSupported();
+    m_lastGraphStats.depthAvailable = frameInputs.depth.IsValid();
+    m_lastGraphStats.normalAvailable = frameInputs.normal.IsValid();
+    m_lastGraphStats.sampleCount = ResolveSampleCount();
+    m_lastGraphStats.normalFallbackUsed = m_config.useNormals && !frameInputs.normal.IsValid();
+    m_lastGraphStats.temporalFallbackUsed = m_config.temporalFilter;
+    m_lastGraphStats.implementationTier = frameInputs.normal.IsValid()
+                                              ? SSAOImplementationTier::DepthNormalLowTier
+                                              : SSAOImplementationTier::DepthOnlyLowTier;
+
+    if (!IsEnabled())
+    {
+        if (IsRequestedEnabled() && !IsSupported())
+        {
+            RVX_CORE_WARN("SSAO: unsupported fullscreen pass skipped: {}", GetUnsupportedReason());
+        }
+        m_lastGraphStats.fallbackReason = GetUnsupportedReason();
+        m_lastGraphStats.implementationTier = SSAOImplementationTier::Unsupported;
+        return;
+    }
+
+    if (!frameInputs.depth.IsValid())
+    {
+        m_lastGraphStats.fallbackReason = "SSAO skipped because depth frame input is unavailable";
+        RVX_CORE_WARN("SSAO: {}", m_lastGraphStats.fallbackReason);
+        return;
+    }
+
+    if (m_lastGraphStats.normalFallbackUsed)
+    {
+        AppendReason(m_lastGraphStats.fallbackReason,
+                     "SSAO using depth-only low-tier fallback because normal input is unavailable");
+    }
+    if (m_lastGraphStats.temporalFallbackUsed)
+    {
+        AppendReason(m_lastGraphStats.fallbackReason,
+                     "SSAO temporal accumulation is deferred for the low-tier fullscreen path");
+    }
+
+    struct SSAOPassData
+    {
+        RGTextureHandle input;
+        RGTextureHandle depth;
+        RGTextureHandle output;
+        SSAOConfig config;
+        bool normalFallbackUsed = false;
+        bool temporalFallbackUsed = false;
+    };
+
+    graph.AddPass<SSAOPassData>(
+        "SSAO",
+        RenderGraphPassType::Graphics,
+        [this, frameInputs, output](RenderGraphBuilder& builder, SSAOPassData& data)
+        {
+            data.input = builder.Read(frameInputs.sceneColor);
+            data.depth = builder.Read(frameInputs.depth);
+            data.output = builder.Write(output, RHIResourceState::RenderTarget);
+            data.config = m_config;
+            data.normalFallbackUsed = m_lastGraphStats.normalFallbackUsed;
+            data.temporalFallbackUsed = m_lastGraphStats.temporalFallbackUsed;
+        },
+        [this, &graph](const SSAOPassData& data, RHICommandContext& ctx)
+        {
+            if (!m_pipelineCache || !m_viewCache)
+            {
+                RVX_CORE_WARN("SSAO: missing resources during execution");
+                return;
+            }
+
+            RHIFormat outputFormat = RHIFormat::Unknown;
+            if (const RHITextureDesc* outputDesc = graph.GetTextureDesc(data.output))
+            {
+                outputFormat = outputDesc->format;
+            }
+
+            RHIPipeline* pipeline = m_pipelineCache->GetSSAOPipeline(outputFormat);
+            RHIDescriptorSetLayout* setLayout = m_pipelineCache->GetPostProcessSetLayout();
+            IRHIDevice* device = m_pipelineCache->GetDevice();
+            if (!pipeline || !setLayout || !device)
+            {
+                RVX_CORE_WARN("SSAO: fullscreen pipeline resources are unavailable");
+                return;
+            }
+
+            RHITexture* inputTexture = graph.GetTexture(data.input);
+            RHITexture* depthTexture = graph.GetTexture(data.depth);
+            RHITexture* outputTexture = graph.GetTexture(data.output);
+            if (!inputTexture || !depthTexture || !outputTexture)
+            {
+                RVX_CORE_WARN("SSAO: input, depth, or output texture is unavailable");
+                return;
+            }
+
+            RHITextureView* inputView = m_viewCache->GetDefaultSRV(inputTexture);
+            RHITextureView* depthView = m_viewCache->GetDefaultSRV(depthTexture);
+            RHITextureView* outputView = m_viewCache->GetDefaultRTV(outputTexture);
+            if (!inputView || !depthView || !outputView)
+            {
+                RVX_CORE_WARN("SSAO: failed to resolve input SRV, depth SRV, or output RTV");
+                return;
+            }
+
+            if (!EnsureRuntimeResources() ||
+                !UpdateConstants(inputTexture->GetWidth(),
+                                 inputTexture->GetHeight(),
+                                 data.config,
+                                 data.normalFallbackUsed,
+                                 data.temporalFallbackUsed))
+            {
+                return;
+            }
+
+            RHIDescriptorSetDesc descriptorDesc;
+            descriptorDesc.layout = setLayout;
+            descriptorDesc.debugName = "SSAODescriptorSet";
+            descriptorDesc.BindBuffer(0,
+                                      m_constantBuffer.Get(),
+                                      0,
+                                      AlignSSAOConstantBufferSize(sizeof(SSAOPassGPUConstants)));
+            descriptorDesc.BindTexture(1, inputView);
+            descriptorDesc.BindSampler(2, m_sampler.Get());
+            descriptorDesc.BindTexture(3, depthView);
+
+            RHIDescriptorSetRef descriptorSet = device->CreateDescriptorSet(descriptorDesc);
+            if (!descriptorSet)
+            {
+                RVX_CORE_WARN("SSAO: failed to create descriptor set");
+                return;
+            }
+            m_retainedDescriptorSets.push_back(descriptorSet);
+            while (m_retainedDescriptorSets.size() > RVX_MAX_FRAME_COUNT + 1)
+            {
+                m_retainedDescriptorSets.pop_front();
+            }
+
+            RHIRenderPassDesc renderPassDesc;
+            renderPassDesc.AddColorAttachment(outputView, RHILoadOp::DontCare, RHIStoreOp::Store);
+            renderPassDesc.SetRenderArea(0, 0, outputTexture->GetWidth(), outputTexture->GetHeight());
+
+            ctx.BeginRenderPass(renderPassDesc);
+            ctx.SetPipeline(pipeline);
+            ctx.SetDescriptorSet(0, descriptorSet.Get());
+
+            RHIViewport viewport;
+            viewport.width = static_cast<float>(outputTexture->GetWidth());
+            viewport.height = static_cast<float>(outputTexture->GetHeight());
+            viewport.minDepth = 0.0f;
+            viewport.maxDepth = 1.0f;
+            ctx.SetViewport(viewport);
+
+            RHIRect scissor;
+            scissor.width = outputTexture->GetWidth();
+            scissor.height = outputTexture->GetHeight();
+            ctx.SetScissor(scissor);
+
+            ctx.Draw(3, 1, 0, 0);
+            ctx.EndRenderPass();
+
+            m_lastGraphStats.executed = true;
+            m_lastGraphStats.aoPassCount = 1;
+        });
+}
+
+bool SSAOPass::EnsureRuntimeResources()
+{
+    IRHIDevice* device = m_pipelineCache ? m_pipelineCache->GetDevice() : nullptr;
+    if (!device)
+    {
+        MarkUnsupported("SSAO requires an RHI device");
+        return false;
+    }
+
+    if (!m_constantBuffer)
+    {
+        RHIBufferDesc bufferDesc;
+        bufferDesc.size = AlignSSAOConstantBufferSize(sizeof(SSAOPassGPUConstants));
+        bufferDesc.usage = RHIBufferUsage::Constant;
+        bufferDesc.memoryType = RHIMemoryType::Upload;
+        bufferDesc.debugName = "SSAOPassConstants";
+
+        m_constantBuffer = device->CreateBuffer(bufferDesc);
+        if (!m_constantBuffer)
+        {
+            MarkUnsupported("SSAO constant buffer creation failed");
+            return false;
+        }
+    }
+
+    if (!m_sampler)
+    {
+        RHISamplerDesc samplerDesc = RHISamplerDesc::LinearClamp();
+        samplerDesc.debugName = "SSAOLinearClampSampler";
+        m_sampler = device->CreateSampler(samplerDesc);
+        if (!m_sampler)
+        {
+            MarkUnsupported("SSAO sampler creation failed");
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool SSAOPass::UpdateConstants(uint32 width,
+                               uint32 height,
+                               const SSAOConfig& config,
+                               bool normalFallbackUsed,
+                               bool temporalFallbackUsed)
+{
+    if (!m_constantBuffer)
+    {
+        return false;
+    }
+
+    SSAOPassGPUConstants constants;
+    constants.textureSize[0] = static_cast<float>(width);
+    constants.textureSize[1] = static_cast<float>(height);
+    constants.invTextureSize[0] = width > 0 ? 1.0f / static_cast<float>(width) : 1.0f;
+    constants.invTextureSize[1] = height > 0 ? 1.0f / static_cast<float>(height) : 1.0f;
+    constants.radius = std::max(config.radius, 0.0f);
+    constants.intensity = std::max(config.intensity, 0.0f);
+    constants.bias = std::max(config.bias, 0.0f);
+    constants.power = std::max(config.power, 0.01f);
+    constants.sampleCount = static_cast<float>(ResolveSampleCount());
+    constants.reverseZ = m_pipelineCache && m_pipelineCache->IsReverseZ() ? 1.0f : 0.0f;
+    constants.normalFallback = normalFallbackUsed ? 1.0f : 0.0f;
+    constants.temporalFallback = temporalFallbackUsed ? 1.0f : 0.0f;
+
+    void* mapped = m_constantBuffer->Map();
+    if (!mapped)
+    {
+        RVX_CORE_WARN("SSAO: failed to map constants");
+        return false;
+    }
+
+    std::memcpy(mapped, &constants, sizeof(constants));
+    m_constantBuffer->Unmap();
+    return true;
+}
+
+uint32 SSAOPass::ResolveSampleCount() const
+{
+    switch (m_config.quality)
+    {
+        case SSAOQuality::Low:
+            return 4;
+        case SSAOQuality::High:
+            return 12;
+        case SSAOQuality::Ultra:
+            return 16;
+        case SSAOQuality::Medium:
+        default:
+            return 8;
+    }
+}
+
+void SSAOPass::RefreshSupportState()
+{
+    if (!m_pipelineCache || !m_pipelineCache->IsInitialized())
+    {
+        MarkUnsupported("SSAO requires an initialized PipelineCache");
+        return;
+    }
+
+    if (!m_viewCache || !m_viewCache->IsInitialized())
+    {
+        MarkUnsupported("SSAO requires an initialized ResourceViewCache");
+        return;
+    }
+
+    if (!m_pipelineCache->GetSSAOPipeline() ||
+        !m_pipelineCache->GetPostProcessLayout() ||
+        !m_pipelineCache->GetPostProcessSetLayout())
+    {
+        MarkUnsupported("SSAO fullscreen pipeline resources are not available");
+        return;
+    }
+
+    if (!EnsureRuntimeResources())
+    {
+        return;
+    }
+
+    m_supported = true;
+    m_unsupportedReason.clear();
 }
 
 } // namespace RVX

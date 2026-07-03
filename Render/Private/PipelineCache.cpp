@@ -34,7 +34,7 @@ namespace
     constexpr uint64 RVX_MAX_DRAW_CONSTANTS_PER_FRAME = 8192;
     constexpr uint64 RVX_PIPELINE_HASH_OFFSET_BASIS = 0xcbf29ce484222325ull;
     constexpr uint64 RVX_PIPELINE_HASH_PRIME = 0x100000001b3ull;
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 12;
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 13;
     constexpr uint32 RVX_PIPELINE_PURPOSE_DEFAULT = 0x50445354u; // PDST
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_DRIVEN_DEFAULT = 0x47444546u; // GDEF
     constexpr uint32 RVX_PIPELINE_PURPOSE_SHADOW_DEPTH = 0x53484457u; // SHDW
@@ -55,6 +55,8 @@ namespace
         uint64 toneMappingPixelShaderHash = 0;
         uint64 bloomVertexShaderHash = 0;
         uint64 bloomPixelShaderHash = 0;
+        uint64 ssaoVertexShaderHash = 0;
+        uint64 ssaoPixelShaderHash = 0;
         uint64 colorGradingVertexShaderHash = 0;
         uint64 colorGradingPixelShaderHash = 0;
         uint64 chromaticAberrationVertexShaderHash = 0;
@@ -80,6 +82,7 @@ namespace
         uint64 skyboxPipelineHash = 0;
         uint64 toneMappingPipelineHash = 0;
         uint64 bloomPipelineHash = 0;
+        uint64 ssaoPipelineHash = 0;
         uint64 colorGradingPipelineHash = 0;
         uint64 chromaticAberrationPipelineHash = 0;
         uint64 filmGrainPipelineHash = 0;
@@ -257,6 +260,8 @@ namespace
                key == "toneMappingPixelShaderHash" ||
                key == "bloomVertexShaderHash" ||
                key == "bloomPixelShaderHash" ||
+               key == "ssaoVertexShaderHash" ||
+               key == "ssaoPixelShaderHash" ||
                key == "colorGradingVertexShaderHash" ||
                key == "colorGradingPixelShaderHash" ||
                key == "chromaticAberrationVertexShaderHash" ||
@@ -282,6 +287,7 @@ namespace
                key == "skyboxPipelineHash" ||
                key == "toneMappingPipelineHash" ||
                key == "bloomPipelineHash" ||
+               key == "ssaoPipelineHash" ||
                key == "colorGradingPipelineHash" ||
                key == "chromaticAberrationPipelineHash" ||
                key == "filmGrainPipelineHash" ||
@@ -377,7 +383,7 @@ namespace
             fields.emplace(std::move(key), std::move(value));
         }
 
-        if (fields.size() != 39)
+        if (fields.size() != 42)
         {
             return false;
         }
@@ -390,6 +396,8 @@ namespace
             !ReadRequiredManifestUint64(fields, "toneMappingPixelShaderHash", manifest.toneMappingPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomVertexShaderHash", manifest.bloomVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomPixelShaderHash", manifest.bloomPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "ssaoVertexShaderHash", manifest.ssaoVertexShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "ssaoPixelShaderHash", manifest.ssaoPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "colorGradingVertexShaderHash", manifest.colorGradingVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "colorGradingPixelShaderHash", manifest.colorGradingPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "chromaticAberrationVertexShaderHash", manifest.chromaticAberrationVertexShaderHash) ||
@@ -415,6 +423,7 @@ namespace
             !ReadRequiredManifestUint64(fields, "skyboxPipelineHash", manifest.skyboxPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "toneMappingPipelineHash", manifest.toneMappingPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "bloomPipelineHash", manifest.bloomPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "ssaoPipelineHash", manifest.ssaoPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "colorGradingPipelineHash", manifest.colorGradingPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "chromaticAberrationPipelineHash", manifest.chromaticAberrationPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "filmGrainPipelineHash", manifest.filmGrainPipelineHash) ||
@@ -454,6 +463,8 @@ namespace
             file << "toneMappingPixelShaderHash=" << manifest.toneMappingPixelShaderHash << '\n';
             file << "bloomVertexShaderHash=" << manifest.bloomVertexShaderHash << '\n';
             file << "bloomPixelShaderHash=" << manifest.bloomPixelShaderHash << '\n';
+            file << "ssaoVertexShaderHash=" << manifest.ssaoVertexShaderHash << '\n';
+            file << "ssaoPixelShaderHash=" << manifest.ssaoPixelShaderHash << '\n';
             file << "colorGradingVertexShaderHash=" << manifest.colorGradingVertexShaderHash << '\n';
             file << "colorGradingPixelShaderHash=" << manifest.colorGradingPixelShaderHash << '\n';
             file << "chromaticAberrationVertexShaderHash=" << manifest.chromaticAberrationVertexShaderHash << '\n';
@@ -479,6 +490,7 @@ namespace
             file << "skyboxPipelineHash=" << manifest.skyboxPipelineHash << '\n';
             file << "toneMappingPipelineHash=" << manifest.toneMappingPipelineHash << '\n';
             file << "bloomPipelineHash=" << manifest.bloomPipelineHash << '\n';
+            file << "ssaoPipelineHash=" << manifest.ssaoPipelineHash << '\n';
             file << "colorGradingPipelineHash=" << manifest.colorGradingPipelineHash << '\n';
             file << "chromaticAberrationPipelineHash=" << manifest.chromaticAberrationPipelineHash << '\n';
             file << "filmGrainPipelineHash=" << manifest.filmGrainPipelineHash << '\n';
@@ -547,6 +559,8 @@ namespace
                a.toneMappingPixelShaderHash == b.toneMappingPixelShaderHash &&
                a.bloomVertexShaderHash == b.bloomVertexShaderHash &&
                a.bloomPixelShaderHash == b.bloomPixelShaderHash &&
+               a.ssaoVertexShaderHash == b.ssaoVertexShaderHash &&
+               a.ssaoPixelShaderHash == b.ssaoPixelShaderHash &&
                a.colorGradingVertexShaderHash == b.colorGradingVertexShaderHash &&
                a.colorGradingPixelShaderHash == b.colorGradingPixelShaderHash &&
                a.chromaticAberrationVertexShaderHash == b.chromaticAberrationVertexShaderHash &&
@@ -572,6 +586,7 @@ namespace
                a.skyboxPipelineHash == b.skyboxPipelineHash &&
                a.toneMappingPipelineHash == b.toneMappingPipelineHash &&
                a.bloomPipelineHash == b.bloomPipelineHash &&
+               a.ssaoPipelineHash == b.ssaoPipelineHash &&
                a.colorGradingPipelineHash == b.colorGradingPipelineHash &&
                a.chromaticAberrationPipelineHash == b.chromaticAberrationPipelineHash &&
                a.filmGrainPipelineHash == b.filmGrainPipelineHash &&
@@ -783,6 +798,7 @@ void PipelineCache::Shutdown()
     m_cameraVelocityPipeline.Reset();
     m_objectVelocityPipeline.Reset();
     m_maskedObjectVelocityPipeline.Reset();
+    m_ssaoPipeline.Reset();
     m_colorGradingPipeline.Reset();
     m_chromaticAberrationPipeline.Reset();
     m_filmGrainPipeline.Reset();
@@ -843,6 +859,8 @@ void PipelineCache::Shutdown()
     m_toneMappingPixelShader.Reset();
     m_bloomVertexShader.Reset();
     m_bloomPixelShader.Reset();
+    m_ssaoVertexShader.Reset();
+    m_ssaoPixelShader.Reset();
     m_cameraVelocityPixelShader.Reset();
     m_objectVelocityVertexShader.Reset();
     m_objectVelocityPixelShader.Reset();
@@ -883,6 +901,8 @@ void PipelineCache::Shutdown()
     m_toneMappingPsCompileResult.reset();
     m_bloomVsCompileResult.reset();
     m_bloomPsCompileResult.reset();
+    m_ssaoVsCompileResult.reset();
+    m_ssaoPsCompileResult.reset();
     m_cameraVelocityPsCompileResult.reset();
     m_objectVelocityVsCompileResult.reset();
     m_objectVelocityPsCompileResult.reset();
@@ -934,6 +954,7 @@ bool PipelineCache::CompileShaders()
     std::string depthOnlyShaderPath = m_shaderDir + "/DepthOnly.hlsl";
     std::string toneMappingShaderPath = m_shaderDir + "/PostProcess/ToneMapping.hlsl";
     std::string bloomShaderPath = m_shaderDir + "/PostProcess/Bloom.hlsl";
+    std::string ssaoShaderPath = m_shaderDir + "/PostProcess/SSAO.hlsl";
     std::string cameraVelocityShaderPath = m_shaderDir + "/PostProcess/CameraVelocity.hlsl";
     std::string objectVelocityShaderPath = m_shaderDir + "/ObjectVelocity.hlsl";
     std::string rayTracedReflectionCompositeShaderPath =
@@ -1014,6 +1035,16 @@ bool PipelineCache::CompileShaders()
         SetLastError("Bloom shader file not found: " + bloomShaderPath);
 
         std::filesystem::path absPath = std::filesystem::absolute(bloomShaderPath);
+        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
+        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
+        return false;
+    }
+
+    if (!std::filesystem::exists(ssaoShaderPath))
+    {
+        SetLastError("SSAO shader file not found: " + ssaoShaderPath);
+
+        std::filesystem::path absPath = std::filesystem::absolute(ssaoShaderPath);
         RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
         RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
         return false;
@@ -1331,6 +1362,51 @@ bool PipelineCache::CompileShaders()
     }
     m_bloomPixelShader = bloomPsResult.shader;
     m_bloomPsCompileResult = std::make_unique<ShaderCompileResult>(std::move(bloomPsResult.compileResult));
+
+    ShaderLoadDesc ssaoVsDesc = vsDesc;
+    ssaoVsDesc.path = ssaoShaderPath;
+    ssaoVsDesc.entryPoint = "VSMain";
+    ssaoVsDesc.stage = RHIShaderStage::Vertex;
+    if (backend == RHIBackendType::DX11)
+    {
+        ssaoVsDesc.targetProfile = "vs_5_0";
+    }
+
+    auto ssaoVsResult = m_shaderManager->LoadFromFile(m_device, ssaoVsDesc);
+    if (!ssaoVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile SSAO vertex shader: " + ssaoVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!ssaoVsResult.shader)
+    {
+        SetLastError("Failed to create SSAO vertex shader");
+        return false;
+    }
+    m_ssaoVertexShader = ssaoVsResult.shader;
+    m_ssaoVsCompileResult = std::make_unique<ShaderCompileResult>(std::move(ssaoVsResult.compileResult));
+
+    ShaderLoadDesc ssaoPsDesc = ssaoVsDesc;
+    ssaoPsDesc.entryPoint = "PSMain";
+    ssaoPsDesc.stage = RHIShaderStage::Pixel;
+    if (backend == RHIBackendType::DX11)
+    {
+        ssaoPsDesc.targetProfile = "ps_5_0";
+    }
+
+    auto ssaoPsResult = m_shaderManager->LoadFromFile(m_device, ssaoPsDesc);
+    if (!ssaoPsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile SSAO pixel shader: " + ssaoPsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!ssaoPsResult.shader)
+    {
+        SetLastError("Failed to create SSAO pixel shader");
+        return false;
+    }
+    m_ssaoPixelShader = ssaoPsResult.shader;
+    m_ssaoPsCompileResult = std::make_unique<ShaderCompileResult>(std::move(ssaoPsResult.compileResult));
 
     ShaderLoadDesc cameraVelocityPsDesc = vsDesc;
     cameraVelocityPsDesc.path = cameraVelocityShaderPath;
@@ -2071,6 +2147,7 @@ bool PipelineCache::CreatePostProcessPipelineLayout()
     setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
     setLayoutDesc.AddBinding(1, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
     setLayoutDesc.AddBinding(2, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(3, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
 
     m_postProcessSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
     if (!m_postProcessSetLayout)
@@ -2493,6 +2570,8 @@ void PipelineCache::ProcessPipelineManifest()
     expected.toneMappingPixelShaderHash = ComputeShaderHash(m_toneMappingPsCompileResult.get());
     expected.bloomVertexShaderHash = ComputeShaderHash(m_bloomVsCompileResult.get());
     expected.bloomPixelShaderHash = ComputeShaderHash(m_bloomPsCompileResult.get());
+    expected.ssaoVertexShaderHash = ComputeShaderHash(m_ssaoVsCompileResult.get());
+    expected.ssaoPixelShaderHash = ComputeShaderHash(m_ssaoPsCompileResult.get());
     expected.colorGradingVertexShaderHash = ComputeShaderHash(m_colorGradingVsCompileResult.get());
     expected.colorGradingPixelShaderHash = ComputeShaderHash(m_colorGradingPsCompileResult.get());
     expected.chromaticAberrationVertexShaderHash = ComputeShaderHash(m_chromaticAberrationVsCompileResult.get());
@@ -2518,6 +2597,7 @@ void PipelineCache::ProcessPipelineManifest()
     expected.skyboxPipelineHash = m_stats.skyboxPipelineHash;
     expected.toneMappingPipelineHash = m_stats.toneMappingPipelineHash;
     expected.bloomPipelineHash = m_stats.bloomPipelineHash;
+    expected.ssaoPipelineHash = m_stats.ssaoPipelineHash;
     expected.colorGradingPipelineHash = m_stats.colorGradingPipelineHash;
     expected.chromaticAberrationPipelineHash = m_stats.chromaticAberrationPipelineHash;
     expected.filmGrainPipelineHash = m_stats.filmGrainPipelineHash;
@@ -3052,6 +3132,22 @@ RHIPipeline* PipelineCache::GetBloomAdditivePipeline(RHIFormat outputFormat)
     }
 
     return GetOrCreateBloomAdditivePipeline(resolvedFormat).Get();
+}
+
+RHIPipeline* PipelineCache::GetSSAOPipeline(RHIFormat outputFormat)
+{
+    const RHIFormat resolvedFormat =
+        outputFormat == RHIFormat::Unknown ? m_postProcessIntermediateFormat : outputFormat;
+    if (resolvedFormat == m_postProcessIntermediateFormat)
+    {
+        if (!m_ssaoPipeline)
+        {
+            m_ssaoPipeline = GetOrCreateSSAOPipeline(resolvedFormat);
+        }
+        return m_ssaoPipeline.Get();
+    }
+
+    return GetOrCreateSSAOPipeline(resolvedFormat).Get();
 }
 
 RHIPipeline* PipelineCache::GetCameraVelocityPipeline(RHIFormat outputFormat)
@@ -3732,6 +3828,16 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
+    m_ssaoPipeline = GetOrCreateSSAOPipeline(m_postProcessIntermediateFormat);
+    if (!m_ssaoPipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create SSAO pipeline");
+        }
+        return false;
+    }
+
     m_vignettePipeline = GetOrCreateVignettePipeline(m_toneMappingOutputFormat);
     if (!m_vignettePipeline)
     {
@@ -3810,7 +3916,7 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
-    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, Skybox pipeline, ToneMapping pipeline, Bloom pipeline, Vignette pipeline, FilmGrain pipeline, FXAA pipeline, ColorGrading pipeline, ChromaticAberration pipeline, UI pipeline, and optional ray tracing pipelines");
+    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, Skybox pipeline, ToneMapping pipeline, Bloom pipeline, SSAO pipeline, Vignette pipeline, FilmGrain pipeline, FXAA pipeline, ColorGrading pipeline, ChromaticAberration pipeline, UI pipeline, and optional ray tracing pipelines");
     return true;
 }
 
@@ -4395,6 +4501,54 @@ RHIPipelineRef PipelineCache::GetOrCreateBloomAdditivePipeline(RHIFormat outputF
     if (!pipeline)
     {
         SetLastError("Backend failed to create additive Bloom pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateSSAOPipeline(RHIFormat outputFormat)
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildSSAOPipelineDesc(outputFormat);
+    if (!pipelineDesc.vertexShader)
+    {
+        SetLastError("Cannot create SSAO pipeline without vertex shader");
+        return {};
+    }
+    if (!pipelineDesc.pixelShader)
+    {
+        SetLastError("Cannot create SSAO pipeline without pixel shader");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError("Cannot create SSAO pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.numRenderTargets != 1 || pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create SSAO pipeline with invalid render target format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc, MaterialPipelineVariant::Transparent);
+    m_stats.ssaoPipelineHash = stateHash;
+    m_stats.lastPipelineStateHash = stateHash;
+
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create SSAO pipeline");
         return {};
     }
 
@@ -5117,6 +5271,28 @@ RHIGraphicsPipelineDesc PipelineCache::BuildBloomAdditivePipelineDesc(RHIFormat 
     return pipelineDesc;
 }
 
+RHIGraphicsPipelineDesc PipelineCache::BuildSSAOPipelineDesc(RHIFormat outputFormat) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc;
+
+    pipelineDesc.vertexShader = m_ssaoVertexShader.Get();
+    pipelineDesc.pixelShader = m_ssaoPixelShader.Get();
+    pipelineDesc.pipelineLayout = m_postProcessPipelineLayout.Get();
+    pipelineDesc.debugName = "SSAOPipeline";
+
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets = 1;
+    pipelineDesc.renderTargetFormats[0] = outputFormat;
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+
+    return pipelineDesc;
+}
+
 RHIGraphicsPipelineDesc PipelineCache::BuildCameraVelocityPipelineDesc(RHIFormat outputFormat) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
@@ -5446,6 +5622,10 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_bloomVsCompileResult.get());
         if (shader == m_bloomPixelShader.Get())
             return ComputeShaderHash(m_bloomPsCompileResult.get());
+        if (shader == m_ssaoVertexShader.Get())
+            return ComputeShaderHash(m_ssaoVsCompileResult.get());
+        if (shader == m_ssaoPixelShader.Get())
+            return ComputeShaderHash(m_ssaoPsCompileResult.get());
         if (shader == m_cameraVelocityPixelShader.Get())
             return ComputeShaderHash(m_cameraVelocityPsCompileResult.get());
         if (shader == m_objectVelocityVertexShader.Get())

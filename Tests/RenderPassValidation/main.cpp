@@ -5939,6 +5939,107 @@ TEST_F(RenderPassValidationFixture, FilmGrainSkipsDrawWhenConstantsCannotMap)
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
 }
 
+TEST_F(RenderPassValidationFixture, SSAOPassRequiresResourcesBeforeReportingSupported)
+{
+    SSAOPass pass;
+    PostProcessSettings settings;
+    settings.enableSSAO = true;
+    pass.Configure(settings);
+
+    EXPECT_TRUE(pass.IsRequestedEnabled());
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_FALSE(pass.IsEnabled());
+    EXPECT_FALSE(pass.GetUnsupportedReason().empty());
+}
+
+TEST_F(RenderPassValidationFixture, SSAOPassAddsDepthOnlyGraphPassAndDrawsFullscreenTriangle)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    SSAOPass pass;
+    PostProcessSettings settings;
+    settings.enableSSAO = true;
+    settings.ssaoRadius = 0.75f;
+    settings.ssaoIntensity = 0.6f;
+    settings.visualQualityPreset = RenderVisualQualityPreset::High;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    ASSERT_TRUE(pass.IsEnabled());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureDesc inputDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
+    inputDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHITextureDesc outputDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
+    outputDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT);
+    depthDesc.usage = RHITextureUsage::DepthStencil | RHITextureUsage::ShaderResource;
+
+    RHITextureRef inputTexture = device.CreateTexture(inputDesc);
+    RHITextureRef outputTexture = device.CreateTexture(outputDesc);
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+    ASSERT_TRUE(depthTexture);
+
+    PostProcessFrameInputs frameInputs;
+    frameInputs.sceneColor = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    frameInputs.depth = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthWrite);
+    frameInputs.outputFormat = RHIFormat::RGBA16_FLOAT;
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, frameInputs, output);
+    graph.Compile();
+
+    const auto& graphStats = graph.GetCompileStats();
+    EXPECT_TRUE(graphStats.compileValid);
+    EXPECT_EQ(graphStats.totalPasses, 1u);
+    EXPECT_EQ(graphStats.culledPasses, 0u);
+    EXPECT_EQ(graphStats.emptyPassUsageCount, 0u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.beginRenderPassCount, 1u);
+    EXPECT_EQ(ctx.endRenderPassCount, 1u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetSSAOPipeline(RHIFormat::RGBA16_FLOAT));
+    ASSERT_EQ(ctx.descriptorSetSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.descriptorSetSequence[0], 0u);
+    EXPECT_EQ(ctx.drawCount, 1u);
+    EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
+    EXPECT_EQ(ctx.drawIndexedCount, 0u);
+
+    auto descriptorIt = std::find_if(
+        device.createdDescriptorSetDescs.begin(),
+        device.createdDescriptorSetDescs.end(),
+        [](const RHIDescriptorSetDesc& desc)
+        {
+            return desc.debugName && std::string(desc.debugName) == "SSAODescriptorSet";
+        });
+    ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
+    EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(4));
+
+    const SSAOComputeStats& stats = pass.GetLastGraphStats();
+    EXPECT_TRUE(stats.requested);
+    EXPECT_TRUE(stats.supported);
+    EXPECT_TRUE(stats.executed);
+    EXPECT_TRUE(stats.depthAvailable);
+    EXPECT_FALSE(stats.normalAvailable);
+    EXPECT_TRUE(stats.normalFallbackUsed);
+    EXPECT_FALSE(stats.neutralOutputFallbackUsed);
+    EXPECT_EQ(stats.sampleCount, 12u);
+    EXPECT_EQ(stats.aoPassCount, 1u);
+    EXPECT_EQ(stats.blurPassCount, 0u);
+    EXPECT_EQ(stats.implementationTier, SSAOImplementationTier::DepthOnlyLowTier);
+    EXPECT_NE(stats.fallbackReason.find("depth-only low-tier fallback"), std::string::npos);
+}
+
 TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingThroughIntermediate)
 {
     ASSERT_NO_FATAL_FAILURE(Initialize());

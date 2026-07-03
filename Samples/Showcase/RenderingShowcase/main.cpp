@@ -822,7 +822,7 @@ namespace
                 report.enabledFeatures.push_back("ColorGrading");
                 report.enabledFeatures.push_back("Vignette");
                 report.enabledFeatures.push_back("FilmGrain");
-                report.enabledFeatures.push_back("SSAO minimal runtime fallback diagnostics");
+                report.enabledFeatures.push_back("SSAO depth-only low-tier");
                 report.unsupportedFeatures.push_back("TAA/SSR are diagnostic-only until their low-tier passes land");
                 break;
             case ShowcaseMode::Lighting:
@@ -1163,6 +1163,10 @@ namespace
         settings.chromaticAberrationIntensity = 0.05f;
         settings.enableFilmGrain = false;
         settings.filmGrainIntensity = 0.0f;
+        settings.enableSSAO = true;
+        settings.ssaoRadius = 0.5f;
+        settings.ssaoIntensity = 0.45f;
+        settings.visualQualityPreset = RenderVisualQualityPreset::Medium;
 
         switch (quality)
         {
@@ -1170,11 +1174,16 @@ namespace
                 settings.enableFXAA = false;
                 settings.enableBloom = false;
                 settings.enableColorGrading = false;
+                settings.enableSSAO = false;
+                settings.visualQualityPreset = RenderVisualQualityPreset::Low;
                 break;
             case ShowcaseQuality::High:
                 settings.bloomRadius = 1.0f;
                 settings.contrast = 1.08f;
                 settings.saturation = 1.05f;
+                settings.ssaoRadius = 0.65f;
+                settings.ssaoIntensity = 0.55f;
+                settings.visualQualityPreset = RenderVisualQualityPreset::High;
                 break;
             case ShowcaseQuality::Cinematic:
                 settings.bloomRadius = 1.5f;
@@ -1184,6 +1193,9 @@ namespace
                 settings.vignetteIntensity = 0.28f;
                 settings.enableFilmGrain = true;
                 settings.filmGrainIntensity = 0.12f;
+                settings.ssaoRadius = 0.85f;
+                settings.ssaoIntensity = 0.7f;
+                settings.visualQualityPreset = RenderVisualQualityPreset::Cinematic;
                 break;
             case ShowcaseQuality::Medium:
             default:
@@ -1234,6 +1246,7 @@ namespace
             settings.enableVignette = false;
             settings.enableChromaticAberration = false;
             settings.enableFilmGrain = false;
+            settings.enableSSAO = false;
         }
 
         sceneRenderer->ApplyPostProcessSettings(settings);

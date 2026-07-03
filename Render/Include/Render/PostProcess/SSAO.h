@@ -9,7 +9,10 @@
 
 #include "Core/Types.h"
 #include "Core/MathTypes.h"
+#include "Render/PostProcess/PostProcessStack.h"
 #include "RHI/RHI.h"
+
+#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
@@ -17,8 +20,10 @@
 namespace RVX
 {
     class IRHIDevice;
+    class PipelineCache;
     class RHICommandContext;
     class RHITexture;
+    class ResourceViewCache;
 
     /**
      * @brief SSAO quality preset
@@ -216,6 +221,55 @@ namespace RVX
 
         // Sample kernel
         std::vector<Vec4> m_sampleKernel;
+    };
+
+    class SSAOPass : public IPostProcessPass
+    {
+    public:
+        SSAOPass();
+        ~SSAOPass() override = default;
+
+        const char* GetName() const override { return "SSAO"; }
+        int32 GetPriority() const override { return 150; }
+
+        void Configure(const PostProcessSettings& settings) override;
+        PostProcessFrameInputRequirements GetFrameInputRequirements() const override
+        {
+            return {.requiresDepth = true};
+        }
+
+        void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override;
+        void AddToGraph(RenderGraph& graph,
+                        const PostProcessFrameInputs& frameInputs,
+                        RGTextureHandle output) override;
+
+        /**
+         * @brief Provide GPU resources required by the fullscreen depth-only SSAO path
+         */
+        void SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache);
+
+        void SetConfig(const SSAOConfig& config);
+        const SSAOConfig& GetConfig() const { return m_config; }
+        const SSAOComputeStats& GetLastGraphStats() const { return m_lastGraphStats; }
+
+    private:
+        bool EnsureRuntimeResources();
+        bool UpdateConstants(uint32 width,
+                             uint32 height,
+                             const SSAOConfig& config,
+                             bool normalFallbackUsed,
+                             bool temporalFallbackUsed);
+        uint32 ResolveSampleCount() const;
+        void RefreshSupportState();
+
+        SSAOConfig m_config;
+        PipelineCache* m_pipelineCache = nullptr;
+        ResourceViewCache* m_viewCache = nullptr;
+        IRHIDevice* m_resourceDevice = nullptr;
+        RHIBufferRef m_constantBuffer;
+        RHISamplerRef m_sampler;
+        SSAOComputeStats m_lastGraphStats;
+        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
     };
 
 } // namespace RVX
