@@ -3,6 +3,7 @@
 #include "Render/Debug/GPUProfiler.h"
 #include "Render/Material/MaterialBinder.h"
 #include "Render/Material/MaterialTemplate.h"
+#include "Render/Passes/ParticleFeaturePass.h"
 #include "Render/Passes/RayTracedShadowPass.h"
 #include "Render/Passes/SkyboxPass.h"
 #include "Render/PostProcess/Bloom.h"
@@ -35,7 +36,6 @@
 #include "Terrain/TerrainMaterial.h"
 #include "Particle/ParticleSystem.h"
 #include "Particle/ParticleSystemInstance.h"
-#include "Particle/Rendering/ParticlePass.h"
 #include "Particle/Rendering/ParticleRenderer.h"
 #include "Tools/AssetDatabase.h"
 #include "Tools/AssetPipeline.h"
@@ -3226,18 +3226,27 @@ TEST_F(RenderHonestyValidationFixture, ParticleRenderingAndSimulationExposeDisco
     EXPECT_FALSE(renderer.IsRenderingSupported());
     EXPECT_FALSE(renderer.GetUnsupportedReason().empty());
 
-    RVX::Particle::ParticlePass pass;
-    RVX::RenderPassStatus status = pass.GetStatus();
-    EXPECT_FALSE(status.supported);
-    EXPECT_FALSE(status.enabled);
-    EXPECT_FALSE(status.unsupportedReason.empty());
+    RVX::ParticleRenderSnapshot snapshot;
+    snapshot.BeginBuild(1);
+    RVX::ParticleRenderSnapshotItem item;
+    item.instanceId = 1;
+    item.systemId = 1;
+    item.systemName = "honesty-particles";
+    item.payloadStatus = RVX::ParticleRenderSnapshotPayloadStatus::MetadataOnly;
+    item.aliveParticleCount = 4;
+    item.renderPayloadAvailable = false;
+    snapshot.items.push_back(item);
+    snapshot.metadata.totalAliveParticles = item.aliveParticleCount;
+    snapshot.MarkComplete();
 
-    pass.SetRenderer(&renderer);
-    status = pass.GetStatus();
+    RVX::ParticleFeaturePass pass;
+    pass.SetSnapshot(&snapshot);
+    RVX::RenderPassStatus status = pass.GetStatus();
     EXPECT_TRUE(status.requestedEnabled);
     EXPECT_FALSE(status.supported);
     EXPECT_FALSE(status.enabled);
     EXPECT_FALSE(status.unsupportedReason.empty());
+    EXPECT_NE(status.unsupportedReason.find("metadata-only"), std::string::npos);
     EXPECT_FALSE(pass.IsEnabled());
 }
 
@@ -3312,7 +3321,6 @@ TEST_F(RenderHonestyValidationFixture, RenderGraphCompileDiagnosticsExposeInvali
                            }),
               diagnostics.end());
 }
-
 TEST_F(RenderHonestyValidationFixture, RenderGraphCompileDiagnosticsExposeReadBeforeWrite)
 {
     NullDevice device;
@@ -3364,37 +3372,4 @@ TEST_F(RenderHonestyValidationFixture, RenderGraphCompileDiagnosticsExposeReadBe
                                       diagnostic.find("before any producing write") != std::string::npos;
                            }),
               diagnostics.end());
-}
-
-TEST_F(RenderHonestyValidationFixture, ParticlePassUnsupportedSetupDeclaresNoGraphResources)
-{
-    NullDevice device;
-    RVX::RenderGraph graph;
-    graph.SetDevice(&device);
-
-    RVX::ViewData view;
-    RVX::RHITextureDesc colorDesc = RVX::RHITextureDesc::RenderTarget(32, 32, RVX::RHIFormat::RGBA8_UNORM);
-    colorDesc.debugName = "ParticleUnsupportedColor";
-    view.colorTarget = graph.CreateTexture(colorDesc);
-
-    RVX::RHITextureDesc depthDesc = RVX::RHITextureDesc::DepthStencil(32, 32, RVX::RHIFormat::D32_FLOAT);
-    depthDesc.debugName = "ParticleUnsupportedDepth";
-    view.depthTarget = graph.CreateTexture(depthDesc);
-
-    RVX::Particle::ParticleRenderer renderer;
-    RVX::Particle::ParticlePass pass;
-    pass.SetRenderer(&renderer);
-    pass.AddToGraph(graph, view);
-    graph.Compile();
-
-    const RVX::RenderGraph::CompileStats& stats = graph.GetCompileStats();
-    EXPECT_TRUE(stats.compileValid);
-    EXPECT_EQ(stats.totalPasses, 1u);
-    EXPECT_EQ(stats.emptyPassUsageCount, 1u);
-    EXPECT_EQ(stats.culledPasses, 1u);
-
-    NoOpCommandContext ctx;
-    graph.Execute(ctx);
-    EXPECT_EQ(ctx.drawIndexedCount, 0u);
-    EXPECT_EQ(ctx.drawIndexedIndirectCount, 0u);
 }

@@ -43,8 +43,8 @@ namespace RVX::Particle
     /**
      * @brief Minimal view constants needed by the particle renderer.
      *
-     * ParticlePass adapts Render::ViewData into this local contract so the
-     * billboard renderer does not depend on Render module view types.
+     * Render-owned particle paths adapt frame data into this local contract so
+     * the billboard renderer does not depend on Render module view types.
      */
     struct ParticleRendererViewData
     {

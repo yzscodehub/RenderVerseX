@@ -185,13 +185,11 @@
     }
   },
   "legacyEdges": {
-    "Particle->Render": "Phase 4 migration: move particle GPU/rendering ownership behind RenderContracts/RenderExtraction.",
     "Particle->RHI": "Phase 4 migration: remove particle public RHI exposure and move GPU calls into Render-owned paths.",
     "Terrain->RHI": "Phase 4 migration: remove terrain public RHI exposure and move GPU calls into Render-owned paths.",
     "Water->RHI": "Phase 4 migration: remove water public RHI exposure and move GPU calls into Render-owned paths."
   },
   "legacyBudgets": {
-    "Particle->Render": 2,
     "Particle->RHI": 2,
     "Terrain->RHI": 5,
     "Water->RHI": 8

@@ -527,7 +527,7 @@ SoftParticleConfig ParticleRenderer::ResolveSoftParticleConfig(const ParticleSys
         softConfig.enabled = false;
         m_lastDrawStats.softParticlesEnabled = false;
         m_lastDrawStats.softParticleFallbackReason =
-            "Soft particles disabled by ParticlePass configuration";
+            "Soft particles disabled by particle draw configuration";
         return softConfig;
     }
 
