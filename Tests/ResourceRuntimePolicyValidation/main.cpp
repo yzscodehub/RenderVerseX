@@ -177,6 +177,26 @@ namespace
                            std::istreambuf_iterator<char>());
     }
 
+    fs::path FindRepositoryRoot()
+    {
+        fs::path cursor = fs::current_path();
+        for (uint32 i = 0; i < 8; ++i)
+        {
+            if (fs::exists(cursor / "CMakeLists.txt") &&
+                fs::exists(cursor / "Resource/Include/Resource/ResourceManager.h"))
+            {
+                return cursor;
+            }
+
+            if (!cursor.has_parent_path() || cursor == cursor.parent_path())
+                break;
+
+            cursor = cursor.parent_path();
+        }
+
+        return {};
+    }
+
     void WriteShaderArtifact(const fs::path& path,
                              const std::vector<uint8>& bytecode,
                              const std::string& glsl,
@@ -961,6 +981,42 @@ TEST(ResourceRuntimePolicyValidation, AppModeBuildsEditorPreviewAndRuntimeResour
         ResolveRuntimeResourcePath(testPolicy, "", "source://textures/albedo.png");
     EXPECT_TRUE(testSource.allowed);
     EXPECT_EQ(testSource.domain, ResourceLoadDomain::SourceAsset);
+}
+
+TEST(ResourceRuntimePolicyValidation, ResourceAsyncPathStaysOnCoreJobSystemContracts)
+{
+    const fs::path repoRoot = FindRepositoryRoot();
+    ASSERT_FALSE(repoRoot.empty());
+
+    const std::string managerHeader =
+        ReadTextFile(repoRoot / "Resource/Include/Resource/ResourceManager.h");
+    const std::string managerSource =
+        ReadTextFile(repoRoot / "Resource/Private/ResourceManager.cpp");
+    const std::string resourceSource =
+        ReadTextFile(repoRoot / "Resource/Private/IResource.cpp");
+    ASSERT_FALSE(managerHeader.empty());
+    ASSERT_FALSE(managerSource.empty());
+    ASSERT_FALSE(resourceSource.empty());
+
+    EXPECT_NE(managerHeader.find("JobSubmissionDesc desc"), std::string::npos);
+    EXPECT_NE(managerHeader.find("desc.category = \"Resource.LoadAsync\""), std::string::npos);
+    EXPECT_NE(managerHeader.find("JobCompletionDispatch::MainThread"), std::string::npos);
+    EXPECT_NE(managerHeader.find("JobSystem::Get().SubmitWithResult"), std::string::npos);
+    EXPECT_NE(managerHeader.find("JobSystem::Get().Submit"), std::string::npos);
+    EXPECT_NE(managerSource.find("JobSystem::Get().ProcessMainThreadCompletions()"), std::string::npos);
+
+    EXPECT_EQ(managerHeader.find("std::thread"), std::string::npos);
+    EXPECT_EQ(managerHeader.find("ThreadPool"), std::string::npos);
+    EXPECT_EQ(managerHeader.find("condition_variable"), std::string::npos);
+    EXPECT_EQ(managerSource.find("std::thread"), std::string::npos);
+    EXPECT_EQ(managerSource.find("ThreadPool"), std::string::npos);
+    EXPECT_EQ(managerSource.find("std::this_thread::sleep_for"), std::string::npos);
+    EXPECT_EQ(managerSource.find("std::this_thread::yield"), std::string::npos);
+
+    EXPECT_NE(resourceSource.find("m_stateCondition.wait("), std::string::npos);
+    EXPECT_NE(resourceSource.find("m_stateCondition.wait_for("), std::string::npos);
+    EXPECT_EQ(resourceSource.find("std::this_thread::sleep_for"), std::string::npos);
+    EXPECT_EQ(resourceSource.find("std::this_thread::yield"), std::string::npos);
 }
 
 TEST(ResourceRuntimePolicyValidation, LoadAsyncRunsInlineWhenAsyncDisabledAndJobSystemMissing)
