@@ -16,6 +16,8 @@ namespace
         std::string quality;
         uint32_t frameCount = 0;
         std::vector<std::string> requiredEnabledFeatures;
+        std::vector<std::string> requiredUnsupportedFeatures;
+        std::vector<std::string> requiredFallbackReasons;
         std::vector<std::string> requiredResourceDiagnostics;
     };
 
@@ -109,6 +111,18 @@ namespace
                 if (!value) return false;
                 options.requiredEnabledFeatures.emplace_back(value);
             }
+            else if (arg == "--require-unsupported-feature")
+            {
+                const char* value = requireValue("--require-unsupported-feature");
+                if (!value) return false;
+                options.requiredUnsupportedFeatures.emplace_back(value);
+            }
+            else if (arg == "--require-fallback-reason")
+            {
+                const char* value = requireValue("--require-fallback-reason");
+                if (!value) return false;
+                options.requiredFallbackReasons.emplace_back(value);
+            }
             else if (arg == "--require-resource-diagnostic")
             {
                 const char* value = requireValue("--require-resource-diagnostic");
@@ -185,6 +199,16 @@ int main(int argc, char* argv[])
     for (const std::string& feature : options.requiredEnabledFeatures)
     {
         passed &= RequireContains(json, "\"" + feature + "\"", "required enabled feature");
+    }
+
+    for (const std::string& feature : options.requiredUnsupportedFeatures)
+    {
+        passed &= RequireContains(json, feature, "required unsupported feature");
+    }
+
+    for (const std::string& reason : options.requiredFallbackReasons)
+    {
+        passed &= RequireContains(json, reason, "required fallback reason");
     }
 
     for (const std::string& diagnostic : options.requiredResourceDiagnostics)

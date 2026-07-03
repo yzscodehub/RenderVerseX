@@ -881,6 +881,7 @@ function(rvx_add_showcase_smoke_test TARGET_NAME)
                 --backend dx11
                 --quality low
                 --frame-count 2
+                ${ARGN}
         )
         set_tests_properties(${TARGET_NAME}DX11ReportSchemaValidation PROPERTIES
             LABELS "visual;gpu;sample;showcase;dx11"
@@ -891,15 +892,50 @@ function(rvx_add_showcase_smoke_test TARGET_NAME)
     endif()
 endfunction()
 
-rvx_add_showcase_smoke_test(RenderingShowcase)
-rvx_add_showcase_smoke_test(PostProcessShowcase)
-rvx_add_showcase_smoke_test(MaterialShowcase)
-rvx_add_showcase_smoke_test(LightingShowcase)
-rvx_add_showcase_smoke_test(SceneInteractionShowcase)
-rvx_add_showcase_smoke_test(TerrainWaterShowcase)
-rvx_add_showcase_smoke_test(ParticleFXShowcase)
-rvx_add_showcase_smoke_test(ResourceRuntimeShowcase)
-rvx_add_showcase_smoke_test(PhysicsAudioShowcase)
+rvx_add_showcase_smoke_test(RenderingShowcase
+    --require-enabled-feature IntegratedSceneRender
+    --require-enabled-feature PostProcess
+)
+rvx_add_showcase_smoke_test(PostProcessShowcase
+    --require-enabled-feature ToneMapping
+    --require-enabled-feature FilmGrain
+    --require-enabled-feature "SSAO depth-only low-tier"
+    --require-unsupported-feature "TAA/SSR"
+)
+rvx_add_showcase_smoke_test(MaterialShowcase
+    --require-enabled-feature PBRMaterialSwatch
+)
+rvx_add_showcase_smoke_test(LightingShowcase
+    --require-enabled-feature DirectionalLight
+    --require-enabled-feature ClusteredLightingStats
+)
+rvx_add_showcase_smoke_test(SceneInteractionShowcase
+    --require-enabled-feature ActorSceneSetup
+    --require-unsupported-feature "Picking smoke"
+    --require-fallback-reason "Picking uses runtime scene diagnostics"
+)
+rvx_add_showcase_smoke_test(TerrainWaterShowcase
+    --require-enabled-feature TerrainWaterStagingScene
+    --require-unsupported-feature "Terrain/Water Render-owned draw passes"
+    --require-fallback-reason "Terrain/Water snapshot diagnostics"
+)
+rvx_add_showcase_smoke_test(ParticleFXShowcase
+    --require-enabled-feature ParticleFXStagingScene
+    --require-unsupported-feature "GPU particle pipelines"
+    --require-fallback-reason "CPU particle staging path"
+)
+rvx_add_showcase_smoke_test(ResourceRuntimeShowcase
+    --require-enabled-feature ResourceManager
+    --require-enabled-feature RuntimeResourcePolicyFixture
+    --require-unsupported-feature "Full package archive loading"
+    --require-fallback-reason "package:// resolves through mount-table fixtures"
+)
+rvx_add_showcase_smoke_test(PhysicsAudioShowcase
+    --require-enabled-feature PhysicsAudioStagingScene
+    --require-unsupported-feature "Physics query and audio streaming"
+    --require-fallback-reason "Physics advanced collider/query backend gaps"
+    --require-fallback-reason "Audio streaming falls back"
+)
 
 if(RVX_ENABLE_DX11 AND TARGET ResourceRuntimeShowcase AND TARGET SampleReportContentValidation)
     set(resource_runtime_report

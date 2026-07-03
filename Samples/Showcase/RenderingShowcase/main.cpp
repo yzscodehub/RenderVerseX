@@ -852,24 +852,30 @@ namespace
                 report.enabledFeatures.push_back("OrbitCamera");
                 report.enabledFeatures.push_back("ActorSceneSetup");
                 report.unsupportedFeatures.push_back("Picking smoke is reported by diagnostics until a dedicated hit-test fixture is added");
+                report.fallbackReasons.push_back("Picking uses runtime scene diagnostics until the dedicated hit-test fixture lands");
                 break;
             case ShowcaseMode::TerrainWater:
                 report.enabledFeatures.push_back("TerrainWaterStagingScene");
                 report.unsupportedFeatures.push_back("Terrain/Water Render-owned draw passes are snapshot-ready but not fully connected yet");
+                report.fallbackReasons.push_back("Terrain/Water snapshot diagnostics are shown while Render-owned draw passes are connected");
                 break;
             case ShowcaseMode::ParticleFX:
                 report.enabledFeatures.push_back("ParticleFXStagingScene");
                 report.unsupportedFeatures.push_back("GPU particle pipelines are explicit unsupported diagnostics in this showcase");
+                report.fallbackReasons.push_back("CPU particle staging path is active while GPU particles remain Render-owned unsupported diagnostics");
                 break;
             case ShowcaseMode::ResourceRuntime:
                 report.enabledFeatures.push_back("ResourceManager");
                 report.enabledFeatures.push_back("ModelResourceLoad");
                 report.enabledFeatures.push_back("RuntimeResourcePolicyFixture");
                 report.unsupportedFeatures.push_back("Full package archive loading is deferred; showcase uses mount-table fixture diagnostics");
+                report.fallbackReasons.push_back("package:// resolves through mount-table fixtures until archive package loading lands");
                 break;
             case ShowcaseMode::PhysicsAudio:
                 report.enabledFeatures.push_back("PhysicsAudioStagingScene");
                 report.unsupportedFeatures.push_back("Physics query and audio streaming are staged as explicit fallback diagnostics");
+                report.fallbackReasons.push_back("Physics advanced collider/query backend gaps are reported through explicit diagnostics");
+                report.fallbackReasons.push_back("Audio streaming falls back to full-buffer runtime diagnostics until mixer streaming lands");
                 break;
         }
     }
