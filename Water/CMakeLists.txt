@@ -30,9 +30,11 @@ target_include_directories(RVX_Water PUBLIC
 
 target_link_libraries(RVX_Water PUBLIC
     RVX_Core
-    RVX_RHI
-    RVX::Render
+    RVX::RenderContracts
     RVX::Scene
+    PRIVATE
+        RVX_RHI
+        RVX::Render
 )
 
 add_library(RVX::Water ALIAS RVX_Water)

@@ -585,6 +585,23 @@ if(RVX_ENABLE_OPENGL)
     target_link_libraries(ParticleValidation PRIVATE RVX::RHI_OpenGL)
 endif()
 
+# Feature boundary validation tests
+rvx_add_gtest(
+    NAME FeatureBoundaryValidation
+    SOURCES FeatureBoundaryValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::RenderContracts
+        RVX::Scene
+        RVX::Water
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/RenderContracts/Include
+        ${CMAKE_SOURCE_DIR}/Scene/Include
+        ${CMAKE_SOURCE_DIR}/Water/Include
+    LABELS unit
+    TIMEOUT 60
+)
+
 # Actor component validation tests
 rvx_add_gtest(
     NAME ActorComponentValidation

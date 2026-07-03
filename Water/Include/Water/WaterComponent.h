@@ -8,6 +8,7 @@
  * water rendering, simulation, and interaction.
  */
 
+#include "RenderContracts/WaterRenderSnapshot.h"
 #include "Scene/Component.h"
 #include "Water/WaterTypes.h"
 
@@ -15,7 +16,6 @@
 
 namespace RVX
 {
-    class IRHIDevice;
     class Caustics;
     class Underwater;
     class WaterSimulation;
@@ -189,6 +189,11 @@ namespace RVX
          */
         Vec3 CalculateBuoyancy(const Vec3& position, float volume, float objectDensity) const;
 
+        /**
+         * @brief Build a Render-facing water snapshot without exposing Render/RHI objects.
+         */
+        bool BuildRenderSnapshot(WaterRenderSnapshot& outSnapshot) const;
+
         // =====================================================================
         // Effects
         // =====================================================================
@@ -202,17 +207,6 @@ namespace RVX
          * @brief Get the underwater effects
          */
         Underwater* GetUnderwater() const { return m_underwater.get(); }
-
-        // =====================================================================
-        // GPU Resources
-        // =====================================================================
-
-        /**
-         * @brief Initialize GPU resources
-         * @param device RHI device
-         * @return true if initialization succeeded
-         */
-        bool InitializeGPU(IRHIDevice* device);
 
         /**
          * @brief Check if GPU resources are initialized
@@ -232,6 +226,7 @@ namespace RVX
 
         bool m_gpuInitialized = false;
         AABB m_localBounds;
+        mutable uint64 m_nextRenderSnapshotSequence = 0;
     };
 
 } // namespace RVX

@@ -177,7 +177,7 @@
     },
     "Water": {
       "path": "Water",
-      "allowed": ["Core", "Scene", "Water"]
+      "allowed": ["Core", "RenderContracts", "Scene", "Water"]
     },
     "World": {
       "path": "World",

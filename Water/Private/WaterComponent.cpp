@@ -16,6 +16,40 @@
 
 namespace RVX
 {
+namespace
+{
+    WaterRenderSnapshotSurfaceType ToSnapshotSurfaceType(WaterSurfaceType type)
+    {
+        switch (type)
+        {
+            case WaterSurfaceType::Ocean:
+                return WaterRenderSnapshotSurfaceType::Ocean;
+            case WaterSurfaceType::Lake:
+                return WaterRenderSnapshotSurfaceType::Lake;
+            case WaterSurfaceType::River:
+                return WaterRenderSnapshotSurfaceType::River;
+            case WaterSurfaceType::Pool:
+                return WaterRenderSnapshotSurfaceType::Pool;
+        }
+
+        return WaterRenderSnapshotSurfaceType::Ocean;
+    }
+
+    WaterRenderSnapshotSimulationType ToSnapshotSimulationType(WaterSimulationType type)
+    {
+        switch (type)
+        {
+            case WaterSimulationType::Simple:
+                return WaterRenderSnapshotSimulationType::Simple;
+            case WaterSimulationType::Gerstner:
+                return WaterRenderSnapshotSimulationType::Gerstner;
+            case WaterSimulationType::FFT:
+                return WaterRenderSnapshotSimulationType::FFT;
+        }
+
+        return WaterRenderSnapshotSimulationType::Gerstner;
+    }
+} // namespace
 
 WaterComponent::WaterComponent() = default;
 
@@ -228,52 +262,45 @@ Vec3 WaterComponent::CalculateBuoyancy(const Vec3& position, float volume, float
     return Vec3(0, netForce, 0);
 }
 
-bool WaterComponent::InitializeGPU(IRHIDevice* device)
+bool WaterComponent::BuildRenderSnapshot(WaterRenderSnapshot& outSnapshot) const
 {
-    if (!device)
+    outSnapshot.BeginBuild(++m_nextRenderSnapshotSequence);
+
+    WaterRenderSnapshotItem item;
+    if (auto* owner = GetOwner())
     {
-        RVX_CORE_ERROR("WaterComponent: Invalid device");
-        return false;
+        item.componentId = owner->GetHandle();
+        item.worldPosition = owner->GetWorldPosition();
+        item.worldBounds = owner->GetWorldBounds();
+    }
+    else
+    {
+        item.worldBounds = m_localBounds;
     }
 
-    if (m_surface)
-    {
-        if (!m_surface->InitializeGPU(device))
-        {
-            RVX_CORE_ERROR("WaterComponent: Failed to initialize surface");
-            return false;
-        }
-    }
+    const WaterVisualProperties visual = m_surface ? m_surface->GetVisualProperties() : WaterVisualProperties{};
+    item.size = m_settings.size;
+    item.depth = m_settings.depth;
+    item.resolution = m_settings.resolution;
+    item.surfaceType = ToSnapshotSurfaceType(m_settings.surfaceType);
+    item.simulationType = ToSnapshotSimulationType(m_settings.simulationType);
+    item.shallowColor = visual.shallowColor;
+    item.deepColor = visual.deepColor;
+    item.foamColor = visual.foamColor;
+    item.transparency = visual.transparency;
+    item.reflectionStrength = visual.reflectionStrength;
+    item.refractionStrength = visual.refractionStrength;
+    item.roughness = visual.roughness;
+    item.foamIntensity = visual.foamIntensity;
+    item.reflectionEnabled = m_settings.enableReflection;
+    item.refractionEnabled = m_settings.enableRefraction;
+    item.causticsEnabled = m_settings.enableCaustics;
+    item.underwaterEffectsEnabled = m_settings.enableUnderwaterEffects;
+    item.foamEnabled = m_settings.enableFoam;
+    item.gpuInitialized = m_gpuInitialized;
 
-    if (m_simulation)
-    {
-        if (!m_simulation->InitializeGPU(device))
-        {
-            RVX_CORE_ERROR("WaterComponent: Failed to initialize simulation");
-            return false;
-        }
-    }
-
-    if (m_caustics && m_settings.enableCaustics)
-    {
-        if (!m_caustics->InitializeGPU(device))
-        {
-            RVX_CORE_ERROR("WaterComponent: Failed to initialize caustics");
-            return false;
-        }
-    }
-
-    if (m_underwater && m_settings.enableUnderwaterEffects)
-    {
-        if (!m_underwater->InitializeGPU(device))
-        {
-            RVX_CORE_ERROR("WaterComponent: Failed to initialize underwater effects");
-            return false;
-        }
-    }
-
-    m_gpuInitialized = true;
-    RVX_CORE_INFO("WaterComponent: GPU resources initialized");
+    outSnapshot.items.push_back(item);
+    outSnapshot.MarkComplete();
     return true;
 }
 
