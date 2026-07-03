@@ -2,31 +2,28 @@
 
 /**
  * @file WaterSurface.h
- * @brief Water surface mesh and properties
+ * @brief CPU water surface mesh and properties
  * 
- * Defines the water surface mesh generation and visual properties.
+ * Defines the water surface mesh generation and visual properties exported to
+ * Render-owned water passes.
  */
 
 #include "Water/WaterTypes.h"
-#include "RHI/RHI.h"
 
 #include <memory>
 #include <vector>
 
 namespace RVX
 {
-    class IRHIDevice;
-
     /**
-     * @brief Water surface mesh and rendering data
+     * @brief Water surface mesh and rendering data source
      * 
-     * Manages the water surface mesh, textures, and rendering properties.
+     * Manages CPU water surface data. GPU resources are owned by Render.
      * 
      * Features:
      * - Tessellated grid mesh with LOD
-     * - Normal map generation from displacement
-     * - Foam texture support
-     * - Flow map support for rivers
+     * - Surface visual configuration
+     * - Render snapshot source data
      * 
      * Usage:
      * @code
@@ -37,7 +34,6 @@ namespace RVX
      * 
      * auto surface = std::make_shared<WaterSurface>();
      * surface->Create(desc);
-     * surface->InitializeGPU(device);
      * @endcode
      */
     class WaterSurface
@@ -75,64 +71,10 @@ namespace RVX
         const WaterVisualProperties& GetVisualProperties() const { return m_visual; }
         void SetVisualProperties(const WaterVisualProperties& props);
 
-        // =====================================================================
-        // Textures
-        // =====================================================================
-
-        /**
-         * @brief Set the normal map texture
-         */
-        void SetNormalMap(RHITextureRef normalMap);
-        RHITexture* GetNormalMap() const { return m_normalMap.Get(); }
-
-        /**
-         * @brief Set the foam texture
-         */
-        void SetFoamTexture(RHITextureRef foamTexture);
-        RHITexture* GetFoamTexture() const { return m_foamTexture.Get(); }
-
-        /**
-         * @brief Set the flow map (for rivers)
-         */
-        void SetFlowMap(RHITextureRef flowMap);
-        RHITexture* GetFlowMap() const { return m_flowMap.Get(); }
-
-        /**
-         * @brief Set environment cubemap for reflections
-         */
-        void SetEnvironmentMap(RHITextureRef envMap);
-        RHITexture* GetEnvironmentMap() const { return m_environmentMap.Get(); }
-
-        // =====================================================================
-        // GPU Resources
-        // =====================================================================
-
-        /**
-         * @brief Initialize GPU resources
-         * @param device RHI device
-         * @return true if initialization succeeded
-         */
-        bool InitializeGPU(IRHIDevice* device);
-
-        /**
-         * @brief Get the vertex buffer
-         */
-        RHIBuffer* GetVertexBuffer() const { return m_vertexBuffer.Get(); }
-
-        /**
-         * @brief Get the index buffer
-         */
-        RHIBuffer* GetIndexBuffer() const { return m_indexBuffer.Get(); }
-
         /**
          * @brief Get index count
          */
         uint32 GetIndexCount() const { return m_indexCount; }
-
-        /**
-         * @brief Check if GPU initialized
-         */
-        bool IsGPUInitialized() const { return m_gpuInitialized; }
 
     private:
         void GenerateMesh();
@@ -142,22 +84,12 @@ namespace RVX
         WaterSurfaceType m_type = WaterSurfaceType::Ocean;
         WaterVisualProperties m_visual;
 
-        // Textures
-        RHITextureRef m_normalMap;
-        RHITextureRef m_foamTexture;
-        RHITextureRef m_flowMap;
-        RHITextureRef m_environmentMap;
-
         // Mesh data
         std::vector<Vec3> m_vertices;
         std::vector<Vec2> m_uvs;
         std::vector<uint32> m_indices;
 
-        // GPU resources
-        RHIBufferRef m_vertexBuffer;
-        RHIBufferRef m_indexBuffer;
         uint32 m_indexCount = 0;
-        bool m_gpuInitialized = false;
     };
 
 } // namespace RVX

@@ -190,7 +190,7 @@ namespace RVX
         Vec3 CalculateBuoyancy(const Vec3& position, float volume, float objectDensity) const;
 
         /**
-         * @brief Build a Render-facing water snapshot without exposing Render/RHI objects.
+         * @brief Build a Render-facing water snapshot without exposing renderer backend objects.
          */
         bool BuildRenderSnapshot(WaterRenderSnapshot& outSnapshot) const;
 
@@ -214,9 +214,9 @@ namespace RVX
         Underwater* GetUnderwater() const { return m_underwater.get(); }
 
         /**
-         * @brief Check if GPU resources are initialized
+         * @brief Feature modules do not own water GPU resources.
          */
-        bool IsGPUInitialized() const { return m_gpuInitialized; }
+        bool IsGPUInitialized() const { return false; }
 
     private:
         void UpdateBounds();
@@ -229,7 +229,6 @@ namespace RVX
         std::unique_ptr<Caustics> m_caustics;
         std::unique_ptr<Underwater> m_underwater;
 
-        bool m_gpuInitialized = false;
         AABB m_localBounds;
         mutable uint64 m_nextRenderSnapshotSequence = 0;
     };

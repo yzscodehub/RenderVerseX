@@ -2,49 +2,24 @@
 
 /**
  * @file Caustics.h
- * @brief Underwater light caustics rendering
- * 
- * Simulates the light patterns created by water surface
- * focusing light onto underwater surfaces.
+ * @brief Underwater light caustics state.
+ *
+ * Stores caustics settings that can be exported to Render-owned passes.
  */
 
 #include "Water/WaterTypes.h"
-#include "RHI/RHI.h"
 
 #include <memory>
 
 namespace RVX
 {
-    class IRHIDevice;
-    class RHICommandContext;
     class WaterSimulation;
 
     /**
-     * @brief Underwater caustics renderer
-     * 
-     * Generates and renders caustic light patterns that appear on
-     * underwater surfaces when light is refracted through water.
-     * 
-     * Features:
-     * - Dynamic caustics from wave simulation
-     * - Animated caustics texture
-     * - Depth-based intensity falloff
-     * - Multiple quality levels
-     * 
-     * Usage:
-     * @code
-     * CausticsDesc desc;
-     * desc.quality = CausticsQuality::High;
-     * desc.intensity = 1.5f;
-     * 
-     * auto caustics = std::make_unique<Caustics>();
-     * caustics->Initialize(desc);
-     * caustics->InitializeGPU(device);
-     * 
-     * // Per frame
-     * caustics->Update(deltaTime, waterSimulation);
-     * caustics->GenerateCaustics(commandContext);
-     * @endcode
+     * @brief Underwater caustics state.
+     *
+     * Tracks caustics animation/configuration on the Feature side. Texture
+     * generation and scene application belong to Render.
      */
     class Caustics
     {
@@ -54,58 +29,11 @@ namespace RVX
         Caustics() = default;
         ~Caustics() = default;
 
-        // Non-copyable
         Caustics(const Caustics&) = delete;
         Caustics& operator=(const Caustics&) = delete;
 
-        // =====================================================================
-        // Initialization
-        // =====================================================================
-
-        /**
-         * @brief Initialize caustics renderer
-         * @param desc Caustics descriptor
-         * @return true if initialization succeeded
-         */
         bool Initialize(const CausticsDesc& desc);
-
-        /**
-         * @brief Initialize GPU resources
-         * @param device RHI device
-         * @return true if initialization succeeded
-         */
-        bool InitializeGPU(IRHIDevice* device);
-
-        // =====================================================================
-        // Rendering
-        // =====================================================================
-
-        /**
-         * @brief Update caustics animation
-         * @param deltaTime Frame delta time
-         * @param simulation Water simulation for wave data
-         */
         void Update(float deltaTime, const WaterSimulation* simulation);
-
-        /**
-         * @brief Generate caustics texture
-         * @param ctx Command context
-         */
-        void GenerateCaustics(RHICommandContext& ctx);
-
-        /**
-         * @brief Apply caustics to scene
-         * @param ctx Command context
-         * @param depthTexture Scene depth texture
-         * @param lightDir Light direction
-         * @param waterHeight Water surface height
-         */
-        void ApplyCaustics(RHICommandContext& ctx, RHITexture* depthTexture,
-                           const Vec3& lightDir, float waterHeight);
-
-        // =====================================================================
-        // Properties
-        // =====================================================================
 
         void SetIntensity(float intensity) { m_intensity = intensity; }
         float GetIntensity() const { return m_intensity; }
@@ -121,24 +49,13 @@ namespace RVX
 
         CausticsQuality GetQuality() const { return m_quality; }
 
-        // =====================================================================
-        // GPU Resources
-        // =====================================================================
-
-        /**
-         * @brief Get the caustics texture
-         */
-        RHITexture* GetCausticsTexture() const { return m_causticsTexture.Get(); }
-
-        /**
-         * @brief Check if GPU initialized
-         */
-        bool IsGPUInitialized() const { return m_gpuInitialized; }
+        bool IsRenderPathAvailable() const { return false; }
+        const char* GetRenderPathReason() const
+        {
+            return "Water caustics are exported as snapshot state; Render-owned caustics pass is not implemented yet";
+        }
 
     private:
-        void GenerateAnimatedCaustics(RHICommandContext& ctx);
-        void GenerateRaytracedCaustics(RHICommandContext& ctx);
-
         CausticsQuality m_quality = CausticsQuality::Medium;
         uint32 m_textureSize = 512;
         float m_intensity = 1.0f;
@@ -147,15 +64,6 @@ namespace RVX
         float m_maxDepth = 20.0f;
         float m_focusFalloff = 0.5f;
         float m_time = 0.0f;
-
-        // GPU resources
-        RHITextureRef m_causticsTexture;
-        RHITextureRef m_tempTexture;
-        RHIBufferRef m_paramBuffer;
-        RHIPipelineRef m_generatePipeline;
-        RHIPipelineRef m_applyPipeline;
-
-        bool m_gpuInitialized = false;
     };
 
 } // namespace RVX

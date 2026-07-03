@@ -108,6 +108,31 @@ TEST(FeatureBoundaryValidation, WaterComponentPublicHeaderDoesNotExposeRenderOrR
     EXPECT_NE(waterHeader.find("WaterRenderSnapshot"), std::string::npos);
 }
 
+TEST(FeatureBoundaryValidation, WaterModuleDoesNotIncludeOrLinkRHI)
+{
+    const std::filesystem::path waterRoot = FindSourcePath("Water");
+    ASSERT_FALSE(waterRoot.empty());
+
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(waterRoot))
+    {
+        if (!entry.is_regular_file())
+            continue;
+
+        const std::filesystem::path extension = entry.path().extension();
+        if (extension != ".h" && extension != ".cpp")
+            continue;
+
+        std::ifstream stream(entry.path(), std::ios::binary);
+        const std::string source{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+        EXPECT_EQ(source.find("#include \"RHI/"), std::string::npos) << entry.path().string();
+        EXPECT_EQ(source.find("#include <RHI/"), std::string::npos) << entry.path().string();
+    }
+
+    const std::string waterCMake = ReadSourceFile("Water/CMakeLists.txt");
+    ASSERT_FALSE(waterCMake.empty());
+    EXPECT_EQ(waterCMake.find("RVX_RHI"), std::string::npos);
+}
+
 TEST(FeatureBoundaryValidation, WaterComponentBuildsRenderSnapshotWithoutGPUHandles)
 {
     EnsureLogInitialized();
@@ -158,6 +183,11 @@ TEST(FeatureBoundaryValidation, WaterComponentBuildsRenderSnapshotWithoutGPUHand
     EXPECT_FALSE(item.underwaterEffectsEnabled);
     EXPECT_TRUE(item.foamEnabled);
     EXPECT_FALSE(item.gpuInitialized);
+    EXPECT_TRUE(item.cpuSimulationAvailable);
+    EXPECT_FALSE(item.renderGpuPathAvailable);
+    EXPECT_FALSE(item.gpuInitializationReason.empty());
+    EXPECT_FALSE(item.renderPathReason.empty());
+    EXPECT_FALSE(item.simulationFallbackReason.empty());
 }
 
 TEST(FeatureBoundaryValidation, TerrainComponentPublicHeaderDoesNotExposeRenderOrRHI)

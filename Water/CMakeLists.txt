@@ -31,8 +31,6 @@ target_link_libraries(RVX_Water PUBLIC
     RVX_Core
     RVX::RenderContracts
     RVX::Scene
-    PRIVATE
-        RVX_RHI
 )
 
 add_library(RVX::Water ALIAS RVX_Water)

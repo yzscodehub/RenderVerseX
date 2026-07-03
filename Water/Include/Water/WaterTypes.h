@@ -2,7 +2,7 @@
 
 /**
  * @file WaterTypes.h
- * @brief Runtime-facing water configuration contracts without Render/RHI types
+ * @brief Runtime-facing water configuration contracts without renderer backend types
  */
 
 #include "Core/MathTypes.h"

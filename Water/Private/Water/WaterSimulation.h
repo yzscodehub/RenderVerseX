@@ -4,35 +4,28 @@
  * @file WaterSimulation.h
  * @brief Water wave simulation systems
  * 
- * Provides multiple wave simulation methods from simple sine waves
- * to full FFT-based ocean simulation.
+ * Provides CPU wave queries used by gameplay and Render snapshot extraction.
  */
 
 #include "Water/WaterTypes.h"
-#include "RHI/RHI.h"
 
 #include <memory>
 #include <vector>
 
 namespace RVX
 {
-    class IRHIDevice;
-    class RHICommandContext;
-
     /**
      * @brief Water wave simulation system
      * 
-     * Simulates water surface waves using different methods based on
-     * quality/performance requirements.
+     * Simulates water surface waves on the CPU. Render-owned water passes are
+     * responsible for any GPU simulation or textures.
      * 
      * Simulation Types:
      * - Simple: Basic sine waves, very fast
      * - Gerstner: Sum of Gerstner waves, good visual quality
-     * - FFT: Phillips spectrum ocean simulation, most realistic
+     * - FFT: Currently uses a deterministic CPU fallback profile
      * 
      * Features:
-     * - GPU-accelerated simulation
-     * - Displacement and normal map generation
      * - Multiple wave layers/cascades
      * - Time-based animation
      * 
@@ -45,11 +38,9 @@ namespace RVX
      * 
      * auto simulation = std::make_unique<WaterSimulation>();
      * simulation->Initialize(desc);
-     * simulation->InitializeGPU(device);
      * 
      * // Per frame
      * simulation->Update(deltaTime);
-     * simulation->Dispatch(commandContext);
      * @endcode
      */
     class WaterSimulation
@@ -75,13 +66,6 @@ namespace RVX
          */
         bool Initialize(const WaterSimulationDesc& desc);
 
-        /**
-         * @brief Initialize GPU resources
-         * @param device RHI device
-         * @return true if initialization succeeded
-         */
-        bool InitializeGPU(IRHIDevice* device);
-
         // =====================================================================
         // Simulation Control
         // =====================================================================
@@ -91,12 +75,6 @@ namespace RVX
          * @param deltaTime Frame delta time
          */
         void Update(float deltaTime);
-
-        /**
-         * @brief Dispatch GPU simulation
-         * @param ctx Command context
-         */
-        void Dispatch(RHICommandContext& ctx);
 
         /**
          * @brief Reset simulation to initial state
@@ -176,40 +154,7 @@ namespace RVX
          */
         Vec3 SampleNormal(float x, float z) const;
 
-        // =====================================================================
-        // GPU Resources
-        // =====================================================================
-
-        /**
-         * @brief Get displacement map texture
-         */
-        RHITexture* GetDisplacementMap() const { return m_displacementMap.Get(); }
-
-        /**
-         * @brief Get normal map texture
-         */
-        RHITexture* GetNormalMap() const { return m_normalMap.Get(); }
-
-        /**
-         * @brief Get foam map texture
-         */
-        RHITexture* GetFoamMap() const { return m_foamMap.Get(); }
-
-        /**
-         * @brief Check if GPU initialized
-         */
-        bool IsGPUInitialized() const { return m_gpuInitialized; }
-
     private:
-        // Simulation methods
-        void UpdateSimple(float time);
-        void UpdateGerstner(float time);
-        void UpdateFFT(float time);
-
-        // FFT helpers
-        void GenerateSpectrum();
-        void PerformFFT(RHICommandContext& ctx);
-
         WaterSimulationType m_type = WaterSimulationType::Gerstner;
         uint32 m_resolution = 256;
         float m_domainSize = 100.0f;
@@ -222,19 +167,6 @@ namespace RVX
 
         // FFT ocean
         OceanSpectrumParams m_oceanParams;
-
-        // GPU resources
-        RHITextureRef m_displacementMap;
-        RHITextureRef m_normalMap;
-        RHITextureRef m_foamMap;
-        RHITextureRef m_spectrumTexture;
-        RHITextureRef m_fftTempTexture;
-        RHIBufferRef m_paramBuffer;
-        RHIPipelineRef m_spectrumPipeline;
-        RHIPipelineRef m_fftPipeline;
-        RHIPipelineRef m_normalPipeline;
-
-        bool m_gpuInitialized = false;
         bool m_spectrumDirty = true;
     };
 

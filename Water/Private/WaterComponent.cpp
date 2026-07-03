@@ -297,7 +297,18 @@ bool WaterComponent::BuildRenderSnapshot(WaterRenderSnapshot& outSnapshot) const
     item.causticsEnabled = m_settings.enableCaustics;
     item.underwaterEffectsEnabled = m_settings.enableUnderwaterEffects;
     item.foamEnabled = m_settings.enableFoam;
-    item.gpuInitialized = m_gpuInitialized;
+    item.gpuInitialized = false;
+    item.cpuSimulationAvailable = (m_simulation != nullptr);
+    item.renderGpuPathAvailable = false;
+    item.gpuInitializationReason =
+        "Water feature module exports CPU state only; GPU resources are owned by Render water passes";
+    item.renderPathReason =
+        "Render-owned water surface, caustics, and underwater passes are not connected to this snapshot yet";
+    if (m_settings.simulationType == WaterSimulationType::FFT)
+    {
+        item.simulationFallbackReason =
+            "FFT water simulation uses a deterministic CPU fallback until Render-owned GPU simulation is implemented";
+    }
 
     outSnapshot.items.push_back(item);
     outSnapshot.MarkComplete();

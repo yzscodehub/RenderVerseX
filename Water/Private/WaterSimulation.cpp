@@ -1,14 +1,13 @@
 /**
  * @file WaterSimulation.cpp
- * @brief Implementation of water wave simulation
+ * @brief Implementation of CPU water wave simulation
  */
 
 #include "Water/WaterSimulation.h"
-#include "RHI/RHIDevice.h"
 #include "Core/Log.h"
 
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 
 namespace RVX
 {
@@ -34,100 +33,10 @@ bool WaterSimulation::Initialize(const WaterSimulationDesc& desc)
         m_gerstnerWaves.push_back(wave);
     }
 
-    RVX_CORE_INFO("WaterSimulation: Initialized {} simulation at {}x{} resolution",
+    RVX_CORE_INFO("WaterSimulation: Initialized CPU {} simulation at {}x{} resolution",
                   m_type == WaterSimulationType::FFT ? "FFT" :
                   m_type == WaterSimulationType::Gerstner ? "Gerstner" : "Simple",
                   m_resolution, m_resolution);
-    return true;
-}
-
-bool WaterSimulation::InitializeGPU(IRHIDevice* device)
-{
-    if (!device)
-    {
-        RVX_CORE_ERROR("WaterSimulation: Invalid device");
-        return false;
-    }
-
-    // Create displacement map
-    RHITextureDesc dispDesc;
-    dispDesc.width = m_resolution;
-    dispDesc.height = m_resolution;
-    dispDesc.format = RHIFormat::RGBA16_FLOAT;
-    dispDesc.usage = RHITextureUsage::ShaderResource | RHITextureUsage::UnorderedAccess;
-    dispDesc.dimension = RHITextureDimension::Texture2D;
-    dispDesc.debugName = "WaterDisplacement";
-
-    m_displacementMap = device->CreateTexture(dispDesc);
-    if (!m_displacementMap)
-    {
-        RVX_CORE_ERROR("WaterSimulation: Failed to create displacement map");
-        return false;
-    }
-
-    // Create normal map
-    RHITextureDesc normalDesc;
-    normalDesc.width = m_resolution;
-    normalDesc.height = m_resolution;
-    normalDesc.format = RHIFormat::RGBA8_UNORM;
-    normalDesc.usage = RHITextureUsage::ShaderResource | RHITextureUsage::UnorderedAccess;
-    normalDesc.dimension = RHITextureDimension::Texture2D;
-    normalDesc.debugName = "WaterNormal";
-
-    m_normalMap = device->CreateTexture(normalDesc);
-    if (!m_normalMap)
-    {
-        RVX_CORE_ERROR("WaterSimulation: Failed to create normal map");
-        return false;
-    }
-
-    // Create foam map
-    RHITextureDesc foamDesc;
-    foamDesc.width = m_resolution;
-    foamDesc.height = m_resolution;
-    foamDesc.format = RHIFormat::R16_FLOAT;
-    foamDesc.usage = RHITextureUsage::ShaderResource | RHITextureUsage::UnorderedAccess;
-    foamDesc.dimension = RHITextureDimension::Texture2D;
-    foamDesc.debugName = "WaterFoam";
-
-    m_foamMap = device->CreateTexture(foamDesc);
-    if (!m_foamMap)
-    {
-        RVX_CORE_ERROR("WaterSimulation: Failed to create foam map");
-        return false;
-    }
-
-    // Create parameter buffer
-    RHIBufferDesc paramDesc;
-    paramDesc.size = 256;  // Enough for simulation parameters
-    paramDesc.usage = RHIBufferUsage::Constant;
-    paramDesc.memoryType = RHIMemoryType::Upload;
-    paramDesc.debugName = "WaterSimParams";
-
-    m_paramBuffer = device->CreateBuffer(paramDesc);
-    if (!m_paramBuffer)
-    {
-        RVX_CORE_ERROR("WaterSimulation: Failed to create parameter buffer");
-        return false;
-    }
-
-    // FFT-specific resources
-    if (m_type == WaterSimulationType::FFT)
-    {
-        RHITextureDesc specDesc;
-        specDesc.width = m_resolution;
-        specDesc.height = m_resolution;
-        specDesc.format = RHIFormat::RGBA32_FLOAT;  // Complex numbers
-        specDesc.usage = RHITextureUsage::ShaderResource | RHITextureUsage::UnorderedAccess;
-        specDesc.dimension = RHITextureDimension::Texture2D;
-        specDesc.debugName = "WaterSpectrum";
-
-        m_spectrumTexture = device->CreateTexture(specDesc);
-        m_fftTempTexture = device->CreateTexture(specDesc);
-    }
-
-    m_gpuInitialized = true;
-    RVX_CORE_INFO("WaterSimulation: GPU resources initialized");
     return true;
 }
 
@@ -136,33 +45,6 @@ void WaterSimulation::Update(float deltaTime)
     if (m_paused) return;
 
     m_time += deltaTime * m_timeScale;
-}
-
-void WaterSimulation::Dispatch(RHICommandContext& ctx)
-{
-    if (!m_gpuInitialized) return;
-
-    switch (m_type)
-    {
-    case WaterSimulationType::Simple:
-        // Simple waves can be done entirely in vertex shader
-        break;
-
-    case WaterSimulationType::Gerstner:
-        // Gerstner waves - update displacement map
-        // This would dispatch a compute shader
-        break;
-
-    case WaterSimulationType::FFT:
-        // FFT simulation
-        if (m_spectrumDirty)
-        {
-            GenerateSpectrum();
-            m_spectrumDirty = false;
-        }
-        PerformFFT(ctx);
-        break;
-    }
 }
 
 void WaterSimulation::Reset()
@@ -222,7 +104,8 @@ Vec3 WaterSimulation::SampleDisplacement(float x, float z) const
             Vec2 dir = normalize(wave.direction);
             float k = 2.0f * 3.14159f / wave.wavelength;
             float omega = std::sqrt(9.81f * k);
-            float Q = wave.steepness / (k * wave.amplitude);
+            float amplitude = std::max(std::abs(wave.amplitude), 0.001f);
+            float Q = wave.steepness / (k * amplitude);
 
             float phase = k * (dir.x * x + dir.y * z) - omega * m_time * wave.speed;
             float s = std::sin(phase);
@@ -236,10 +119,31 @@ Vec3 WaterSimulation::SampleDisplacement(float x, float z) const
     }
 
     case WaterSimulationType::FFT:
-        // FFT displacement would be read from GPU texture
-        // This is a CPU fallback
-        displacement = SampleDisplacement(x, z);  // Would sample texture
+    {
+        Vec2 dir = normalize(m_oceanParams.windDirection);
+        if (std::abs(dir.x) < 0.001f && std::abs(dir.y) < 0.001f)
+        {
+            dir = Vec2(1.0f, 0.0f);
+        }
+
+        const float windScale = std::max(m_oceanParams.windSpeed, 1.0f) / 10.0f;
+        const float amplitude = std::max(m_oceanParams.spectrumScale * windScale * 0.35f, 0.05f);
+        const float primaryWavelength = std::max(m_domainSize * 0.18f, 8.0f);
+        const float secondaryWavelength = std::max(primaryWavelength * 0.47f, 4.0f);
+
+        const float primaryK = 2.0f * 3.14159f / primaryWavelength;
+        const float secondaryK = 2.0f * 3.14159f / secondaryWavelength;
+        const float primaryPhase = primaryK * (dir.x * x + dir.y * z) - m_time * (0.8f + windScale);
+        const Vec2 crossDir(-dir.y, dir.x);
+        const float secondaryPhase =
+            secondaryK * (crossDir.x * x + crossDir.y * z) - m_time * (0.5f + windScale * 0.5f);
+
+        displacement.y = std::sin(primaryPhase) * amplitude;
+        displacement.y += std::sin(secondaryPhase) * amplitude * 0.35f;
+        displacement.x = std::cos(primaryPhase) * amplitude * m_oceanParams.choppiness * dir.x * 0.15f;
+        displacement.z = std::cos(primaryPhase) * amplitude * m_oceanParams.choppiness * dir.y * 0.15f;
         break;
+    }
     }
 
     return displacement;
@@ -257,20 +161,6 @@ Vec3 WaterSimulation::SampleNormal(float x, float z) const
     Vec3 tangentZ = Vec3(0.0f, dZ.y, 2.0f * epsilon);
 
     return normalize(cross(tangentZ, tangentX));
-}
-
-void WaterSimulation::GenerateSpectrum()
-{
-    // Generate Phillips spectrum for FFT ocean
-    // This would be done on GPU via compute shader
-    RVX_CORE_INFO("WaterSimulation: Generating ocean spectrum");
-}
-
-void WaterSimulation::PerformFFT(RHICommandContext& ctx)
-{
-    (void)ctx;
-    // Perform inverse FFT to generate displacement map
-    // This would dispatch FFT compute passes
 }
 
 } // namespace RVX
