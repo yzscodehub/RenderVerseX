@@ -242,6 +242,8 @@ TEST(ResourceRuntimePolicyValidation, RejectsSourceAssetsWhenCookedArtifactsAreR
     EXPECT_NE(diagnosticJson.find("\"id\": \"resourceLoadDiagnosticJson\""), std::string::npos);
     EXPECT_NE(diagnosticJson.find("\"kind\": \"ResourceLoadDiagnosticJson\""), std::string::npos);
     EXPECT_NE(diagnosticJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(diagnosticJson.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(diagnosticJson.find("\"relativePath\": \"\""), std::string::npos);
     EXPECT_NE(diagnosticJson.find("\"attempted\": true"), std::string::npos);
     EXPECT_NE(diagnosticJson.find("\"success\": false"), std::string::npos);
     EXPECT_NE(diagnosticJson.find("\"domain\": \"SourceAsset\""), std::string::npos);
@@ -600,6 +602,8 @@ TEST(ResourceRuntimePolicyValidation, CookedShaderArtifactExposesStableRuntimeCo
     EXPECT_NE(contractJson.find("\"id\": \"shaderRuntimeContractJson\""), std::string::npos);
     EXPECT_NE(contractJson.find("\"kind\": \"ShaderRuntimeContractJson\""), std::string::npos);
     EXPECT_NE(contractJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(contractJson.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(contractJson.find("\"relativePath\": \"\""), std::string::npos);
     EXPECT_NE(contractJson.find("\"resource\": {"), std::string::npos);
     EXPECT_NE(contractJson.find("\"type\": \"Shader\""), std::string::npos);
     EXPECT_NE(contractJson.find("\"metadata\": {"), std::string::npos);
@@ -947,6 +951,8 @@ TEST(ResourceRuntimePolicyValidation, HotReloadRejectedByCookedRuntimePolicy)
     EXPECT_NE(diagnosticJson.find("\"kind\": \"ResourceHotReloadDiagnosticJson\""),
               std::string::npos);
     EXPECT_NE(diagnosticJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(diagnosticJson.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(diagnosticJson.find("\"relativePath\": \"\""), std::string::npos);
     EXPECT_NE(diagnosticJson.find("\"requested\": true"), std::string::npos);
     EXPECT_NE(diagnosticJson.find("\"enabled\": false"), std::string::npos);
     EXPECT_NE(diagnosticJson.find("\"sourceAssetAccessRequired\": true"), std::string::npos);

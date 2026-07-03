@@ -408,6 +408,8 @@ namespace RVX::Tests
         EXPECT_NE(json.find("\"id\": \"rhiCapabilityReportJson\""), std::string::npos);
         EXPECT_NE(json.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);
         EXPECT_NE(json.find("\"contentType\": \"application/json\""), std::string::npos);
+        EXPECT_NE(json.find("\"contentHash\": \"\""), std::string::npos);
+        EXPECT_NE(json.find("\"relativePath\": \"\""), std::string::npos);
         EXPECT_NE(json.find("\"backend\": \"OpenGL\""), std::string::npos);
         EXPECT_NE(json.find("\"adapterName\": \"OpenGL Test Adapter\""), std::string::npos);
         EXPECT_NE(json.find("\"driverVersion\": \"TestDriver.1\""), std::string::npos);

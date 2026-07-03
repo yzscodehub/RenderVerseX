@@ -1274,6 +1274,8 @@ namespace RVX
         ss << "  \"id\": \"renderGraphDiagnosticsJson\",\n";
         ss << "  \"kind\": \"RenderGraphDiagnosticsJson\",\n";
         ss << "  \"contentType\": \"application/json\",\n";
+        ss << "  \"contentHash\": \"\",\n";
+        ss << "  \"relativePath\": \"\",\n";
         ss << "  \"compileStats\": {\n";
         ss << "    \"compileValid\": " << JsonBool(stats.compileValid) << ",\n";
         ss << "    \"executionOrderFallbackUsed\": " << JsonBool(stats.executionOrderFallbackUsed) << ",\n";

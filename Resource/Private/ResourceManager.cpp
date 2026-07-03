@@ -134,6 +134,8 @@ std::string ExportResourceHotReloadDiagnosticJson(const ResourceHotReloadDiagnos
     AppendJsonString(json, "id", "resourceHotReloadDiagnosticJson");
     AppendJsonString(json, "kind", "ResourceHotReloadDiagnosticJson");
     AppendJsonString(json, "contentType", "application/json");
+    AppendJsonString(json, "contentHash", "");
+    AppendJsonString(json, "relativePath", "");
     AppendJsonBool(json, "requested", diagnostic.requested);
     AppendJsonBool(json, "enabled", diagnostic.enabled);
     AppendJsonBool(json, "sourceAssetAccessRequired", diagnostic.sourceAssetAccessRequired);

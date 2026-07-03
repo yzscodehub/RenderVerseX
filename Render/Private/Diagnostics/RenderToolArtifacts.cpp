@@ -862,6 +862,8 @@ std::string SceneRenderer::ExportToolDiagnosticsManifestJson(
     ss << "  \"id\": \"manifestJson\",\n";
     ss << "  \"kind\": \"ToolDiagnosticsManifestJson\",\n";
     ss << "  \"contentType\": \"application/json\",\n";
+    ss << "  \"contentHash\": \"\",\n";
+    ss << "  \"relativePath\": \"\",\n";
     ss << "  \"frameDiagnosticsSchemaVersion\": " << frame.schemaVersion << ",\n";
     ss << "  \"frameDiagnosticsAvailable\": " << JsonBool(snapshot.frameDiagnosticsAvailable) << ",\n";
     ss << "  \"renderGraphDiagnosticsAvailable\": "
@@ -1097,6 +1099,8 @@ std::string SceneRenderer::ExportToolDiagnosticsArtifactSummaryJson(
     ss << "  \"id\": \"artifactSummaryJson\",\n";
     ss << "  \"kind\": \"ToolDiagnosticsArtifactSummaryJson\",\n";
     ss << "  \"contentType\": \"application/json\",\n";
+    ss << "  \"contentHash\": \"\",\n";
+    ss << "  \"relativePath\": \"\",\n";
     ss << "  \"toolDiagnosticsSchemaVersion\": "
        << RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION << ",\n";
     ss << "  \"artifactResultAvailable\": " << JsonBool(artifacts != nullptr) << ",\n";
@@ -1753,6 +1757,8 @@ std::string SceneRenderer::ExportToolDiagnosticsArtifactValidationJson(
     ss << "  \"id\": \"artifactValidationJson\",\n";
     ss << "  \"kind\": \"ToolDiagnosticsArtifactValidationJson\",\n";
     ss << "  \"contentType\": \"application/json\",\n";
+    ss << "  \"contentHash\": \"\",\n";
+    ss << "  \"relativePath\": \"\",\n";
     ss << "  \"capture\": {\n";
     ss << "    \"metadataAvailable\": " << JsonBool(validation.captureMetadataAvailable) << ",\n";
     ss << "    \"captureId\": " << JsonString(validation.captureId) << ",\n";

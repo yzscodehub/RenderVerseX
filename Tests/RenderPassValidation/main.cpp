@@ -3137,6 +3137,8 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
     EXPECT_NE(rhiCapabilityJson.find("\"id\": \"rhiCapabilityReportJson\""), std::string::npos);
     EXPECT_NE(rhiCapabilityJson.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);
     EXPECT_NE(rhiCapabilityJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(rhiCapabilityJson.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(rhiCapabilityJson.find("\"relativePath\": \"\""), std::string::npos);
     EXPECT_NE(rhiCapabilityJson.find("\"adapterName\": \"RenderPassValidation Test Adapter\""),
               std::string::npos);
     EXPECT_NE(rhiCapabilityJson.find("\"driverVersion\": \"RenderPassValidation.Driver.1\""),
@@ -3350,6 +3352,8 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(renderGraphDiagnosticsJson.find("\"id\": \"renderGraphDiagnosticsJson\""), std::string::npos);
     EXPECT_NE(renderGraphDiagnosticsJson.find("\"kind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
     EXPECT_NE(renderGraphDiagnosticsJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsJson.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsJson.find("\"relativePath\": \"\""), std::string::npos);
     EXPECT_NE(renderGraphDiagnosticsJson.find("\"compileStats\": {"), std::string::npos);
     EXPECT_NE(renderGraphDiagnosticsJson.find("\"passes\": ["), std::string::npos);
     EXPECT_NE(renderGraphDiagnosticsJson.find("\"resources\": ["), std::string::npos);
@@ -3371,6 +3375,8 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(manifestJson.find("\"id\": \"manifestJson\""), std::string::npos);
     EXPECT_NE(manifestJson.find("\"kind\": \"ToolDiagnosticsManifestJson\""), std::string::npos);
     EXPECT_NE(manifestJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"relativePath\": \"\""), std::string::npos);
     EXPECT_NE(manifestJson.find("\"frameDiagnosticsAvailable\": true"), std::string::npos);
     EXPECT_NE(manifestJson.find("\"renderGraphDiagnosticsAvailable\": true"), std::string::npos);
     EXPECT_NE(manifestJson.find("\"rhiCapabilityReportAvailable\": false"), std::string::npos);
@@ -3395,6 +3401,8 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(emptyArtifactSummaryJson.find("\"kind\": \"ToolDiagnosticsArtifactSummaryJson\""),
               std::string::npos);
     EXPECT_NE(emptyArtifactSummaryJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"relativePath\": \"\""), std::string::npos);
     EXPECT_NE(emptyArtifactSummaryJson.find("\"toolDiagnosticsSchemaVersion\": 24"), std::string::npos);
     EXPECT_NE(emptyArtifactSummaryJson.find("\"artifactResultAvailable\": false"), std::string::npos);
     EXPECT_NE(emptyArtifactSummaryJson.find("\"metadataAvailable\": false"), std::string::npos);
@@ -3576,6 +3584,8 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(artifactSummaryJson.find("\"id\": \"artifactSummaryJson\""), std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"kind\": \"ToolDiagnosticsArtifactSummaryJson\""), std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"relativePath\": \"\""), std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"toolDiagnosticsSchemaVersion\": 24"), std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"artifactResultAvailable\": true"), std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"capture\": {"), std::string::npos);
@@ -3822,6 +3832,8 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(validationJson.find("\"kind\": \"ToolDiagnosticsArtifactValidationJson\""),
               std::string::npos);
     EXPECT_NE(validationJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"relativePath\": \"\""), std::string::npos);
     EXPECT_NE(validationJson.find("\"capture\": {"), std::string::npos);
     EXPECT_NE(validationJson.find("\"metadataAvailable\": true"), std::string::npos);
     EXPECT_NE(validationJson.find("\"captureId\": \"" + artifactResult.captureId + "\""), std::string::npos);

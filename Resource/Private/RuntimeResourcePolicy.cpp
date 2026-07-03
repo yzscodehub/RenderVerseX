@@ -192,6 +192,8 @@ namespace RVX::Resource
         ss << "  \"id\": \"resourceLoadDiagnosticJson\",\n";
         ss << "  \"kind\": \"ResourceLoadDiagnosticJson\",\n";
         ss << "  \"contentType\": \"application/json\",\n";
+        ss << "  \"contentHash\": \"\",\n";
+        ss << "  \"relativePath\": \"\",\n";
         ss << "  \"attempted\": " << JsonBool(diagnostic.attempted) << ",\n";
         ss << "  \"success\": " << JsonBool(diagnostic.success) << ",\n";
         ss << "  \"domain\": " << JsonString(GetResourceLoadDomainName(diagnostic.domain)) << ",\n";

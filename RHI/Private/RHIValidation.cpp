@@ -592,6 +592,8 @@ namespace RVX
         ss << "  \"id\": \"rhiCapabilityReportJson\",\n";
         ss << "  \"kind\": \"RHICapabilityReportJson\",\n";
         ss << "  \"contentType\": \"application/json\",\n";
+        ss << "  \"contentHash\": \"\",\n";
+        ss << "  \"relativePath\": \"\",\n";
         ss << "  \"backend\": " << JsonString(ToString(report.backendType)) << ",\n";
         ss << "  \"adapterName\": " << JsonString(report.adapterName) << ",\n";
         ss << "  \"driverVersion\": " << JsonString(report.driverVersion) << ",\n";

@@ -341,6 +341,8 @@ std::string MaterialResource::ExportShaderContractSnapshotJson() const
     ss << "  \"id\": \"materialShaderContractSnapshotJson\",\n";
     ss << "  \"kind\": \"MaterialShaderContractSnapshotJson\",\n";
     ss << "  \"contentType\": \"application/json\",\n";
+    ss << "  \"contentHash\": \"\",\n";
+    ss << "  \"relativePath\": \"\",\n";
     ss << "  \"material\": {\n";
     ss << "    \"resourceId\": " << GetId() << ",\n";
     ss << "    \"name\": " << JsonString(GetName()) << ",\n";

@@ -675,6 +675,8 @@ TEST(RenderGraphValidation, DiagnosticsSnapshotReportsPassResourcesLifetimesAndM
     EXPECT_NE(json.find("\"id\": \"renderGraphDiagnosticsJson\""), std::string::npos);
     EXPECT_NE(json.find("\"kind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
     EXPECT_NE(json.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(json.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(json.find("\"relativePath\": \"\""), std::string::npos);
     EXPECT_NE(json.find("\"compileStats\": {"), std::string::npos);
     EXPECT_NE(json.find("\"memory\": {"), std::string::npos);
     EXPECT_NE(json.find("\"schedule\": {"), std::string::npos);

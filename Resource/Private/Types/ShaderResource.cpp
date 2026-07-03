@@ -259,6 +259,8 @@ std::string ShaderResource::ExportRuntimeContractJson() const
     ss << "  \"id\": \"shaderRuntimeContractJson\",\n";
     ss << "  \"kind\": \"ShaderRuntimeContractJson\",\n";
     ss << "  \"contentType\": \"application/json\",\n";
+    ss << "  \"contentHash\": \"\",\n";
+    ss << "  \"relativePath\": \"\",\n";
     ss << "  \"resource\": {\n";
     ss << "    \"type\": \"Shader\",\n";
     ss << "    \"name\": " << JsonString(GetName()) << ",\n";

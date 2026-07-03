@@ -1783,6 +1783,8 @@ namespace
         EXPECT_NE(snapshotJson.find("\"id\": \"materialShaderContractSnapshotJson\""), std::string::npos);
         EXPECT_NE(snapshotJson.find("\"kind\": \"MaterialShaderContractSnapshotJson\""), std::string::npos);
         EXPECT_NE(snapshotJson.find("\"contentType\": \"application/json\""), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"contentHash\": \"\""), std::string::npos);
+        EXPECT_NE(snapshotJson.find("\"relativePath\": \"\""), std::string::npos);
         EXPECT_NE(snapshotJson.find("\"material\": {"), std::string::npos);
         EXPECT_NE(snapshotJson.find("\"resourceId\": 601"), std::string::npos);
         EXPECT_NE(snapshotJson.find("\"name\": \"ShaderContractMaterial\""), std::string::npos);
