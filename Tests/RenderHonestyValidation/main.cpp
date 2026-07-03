@@ -3213,6 +3213,33 @@ TEST_F(RenderHonestyValidationFixture, SkyAndAtmosphereDoNotReportReadyWithoutPi
     EXPECT_FALSE(atmosphere.IsSupported());
     EXPECT_FALSE(atmosphere.IsEnabled());
     EXPECT_FALSE(atmosphere.GetUnsupportedReason().empty());
+    EXPECT_TRUE(atmosphere.IsCpuAnalyticBaselineAvailable());
+
+    const RVX::AtmosphericScatteringDiagnostics diagnostics = atmosphere.GetDiagnostics();
+    EXPECT_TRUE(diagnostics.requested);
+    EXPECT_FALSE(diagnostics.initialized);
+    EXPECT_FALSE(diagnostics.gpuLutSupported);
+    EXPECT_TRUE(diagnostics.cpuAnalyticBaselineAvailable);
+    EXPECT_EQ(diagnostics.implementationTier,
+              RVX::AtmosphericScatteringImplementationTier::CpuAnalyticBaseline);
+    EXPECT_STREQ(RVX::GetAtmosphericScatteringImplementationTierName(diagnostics.implementationTier),
+                 "CpuAnalyticBaseline");
+    EXPECT_NE(diagnostics.unsupportedReason.find("CPU analytic baseline"), std::string::npos);
+
+    const RVX::Vec3 zenith = atmosphere.GetSkyColor(RVX::Vec3(0.0f, 1.0f, 0.0f));
+    const RVX::Vec3 horizon = atmosphere.GetSkyColor(RVX::Vec3(1.0f, 0.02f, 0.0f));
+    EXPECT_GT(zenith.z, zenith.x);
+    EXPECT_GT(horizon.z, horizon.x);
+    EXPECT_GT(std::abs(zenith.z - horizon.z), 0.01f);
+
+    const RVX::AtmosphericScatteringConfig& config = atmosphere.GetConfig();
+    const RVX::Vec3 transmittance =
+        atmosphere.GetTransmittance(RVX::Vec3(0.0f, config.planetRadius + 1000.0f, 0.0f),
+                                    RVX::Vec3(1.0f, 0.0f, 0.0f),
+                                    100000.0f);
+    EXPECT_LT(transmittance.x, 1.0f);
+    EXPECT_LT(transmittance.y, 1.0f);
+    EXPECT_LT(transmittance.z, 1.0f);
 }
 
 TEST_F(RenderHonestyValidationFixture, ParticleRenderingAndSimulationExposeDisconnectedState)
