@@ -812,6 +812,12 @@ target_include_directories(ImageContentValidation PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+add_executable(SampleReportContentValidation
+    SampleReportContentValidation/main.cpp
+)
+
+target_compile_features(SampleReportContentValidation PRIVATE cxx_std_20)
+
 function(rvx_add_showcase_smoke_test TARGET_NAME)
     if(NOT RVX_ENABLE_DX11 OR NOT TARGET ${TARGET_NAME} OR NOT TARGET ImageContentValidation)
         return()
@@ -876,6 +882,29 @@ rvx_add_showcase_smoke_test(TerrainWaterShowcase)
 rvx_add_showcase_smoke_test(ParticleFXShowcase)
 rvx_add_showcase_smoke_test(ResourceRuntimeShowcase)
 rvx_add_showcase_smoke_test(PhysicsAudioShowcase)
+
+if(RVX_ENABLE_DX11 AND TARGET ResourceRuntimeShowcase AND TARGET SampleReportContentValidation)
+    set(resource_runtime_report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/Showcase/ResourceRuntimeShowcase_DX11_320x180.json")
+    add_test(
+        NAME ResourceRuntimeShowcaseDX11ReportValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${resource_runtime_report}"
+            --sample-name ResourceRuntimeShowcase
+            --backend dx11
+            --quality low
+            --frame-count 2
+            --require-enabled-feature ResourceManager
+            --require-enabled-feature ModelResourceLoad
+            --require-resource-diagnostic "model fixture"
+    )
+    set_tests_properties(ResourceRuntimeShowcaseDX11ReportValidation PROPERTIES
+        LABELS "visual;gpu;sample;showcase;dx11"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+    set_property(TEST ResourceRuntimeShowcaseDX11ReportValidation PROPERTY DEPENDS ResourceRuntimeShowcaseDX11Smoke)
+endif()
 
 add_executable(ModelViewerHDRIFixtureWriter
     ModelViewerHDRIFixtureWriter/main.cpp
