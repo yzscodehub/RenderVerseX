@@ -42,6 +42,7 @@ namespace RVX::Resource
         PackageRootMissing,
         LoaderUnavailable,
         LoaderFailed,
+        PathEscapesRoot,
     };
 
     struct ResourceRuntimePolicy

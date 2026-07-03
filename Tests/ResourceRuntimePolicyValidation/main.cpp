@@ -5,12 +5,15 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace RVX;
@@ -81,6 +84,44 @@ namespace
         ResourceType m_type = ResourceType::Unknown;
         uint32 loadCount = 0;
         std::string lastPath;
+    };
+
+    class BlockingLoader final : public IResourceLoader
+    {
+    public:
+        BlockingLoader(std::promise<void>* started, std::shared_future<void> release)
+            : m_started(started)
+            , m_release(std::move(release))
+        {
+        }
+
+        ResourceType GetResourceType() const override { return ResourceType::Texture; }
+
+        std::vector<std::string> GetSupportedExtensions() const override
+        {
+            return {".png"};
+        }
+
+        IResource* Load(const std::string& path) override
+        {
+            loadCount.fetch_add(1, std::memory_order_relaxed);
+            lastPath = path;
+            loaderThreadId = std::this_thread::get_id();
+            if (m_started)
+            {
+                m_started->set_value();
+            }
+            m_release.wait();
+            return new RecordingResource(ResourceType::Texture);
+        }
+
+        std::atomic<uint32> loadCount{0};
+        std::string lastPath;
+        std::thread::id loaderThreadId;
+
+    private:
+        std::promise<void>* m_started = nullptr;
+        std::shared_future<void> m_release;
     };
 
     class ResourceManagerTestGuard
@@ -349,6 +390,82 @@ TEST(ResourceRuntimePolicyValidation, MapsRuntimePackageEntriesThroughMountedPac
     fs::remove_all(root, removeError);
 }
 
+TEST(ResourceRuntimePolicyValidation, RejectsRuntimePackagePathsEscapingMountedRoot)
+{
+    const fs::path root = MakeTempDirectory("PackageRootEscape");
+
+    ResourceManagerConfig config;
+    config.asyncThreadCount = 0;
+    config.runtimePolicy.mode = ResourceRuntimeMode::PackagedRuntime;
+    config.runtimePolicy.allowSourceAssetReads = false;
+    config.runtimePolicy.requireRuntimePackage = true;
+    config.runtimePolicy.packageRoot = root.string();
+
+    ResourceManagerTestGuard guard(config);
+    auto& manager = ResourceManager::Get();
+
+    auto loader = std::make_unique<RecordingLoader>(ResourceType::Shader);
+    RecordingLoader* loaderPtr = loader.get();
+    manager.RegisterLoader(ResourceType::Shader, std::move(loader));
+
+    EXPECT_EQ(manager.LoadResource("package://Base/../../outside.rva"), nullptr);
+    EXPECT_EQ(loaderPtr->loadCount, 0u);
+
+    const ResourceLoadDiagnostic diagnostic = manager.GetLastLoadDiagnostic();
+    EXPECT_TRUE(diagnostic.attempted);
+    EXPECT_FALSE(diagnostic.success);
+    EXPECT_EQ(diagnostic.domain, ResourceLoadDomain::RuntimePackage);
+    EXPECT_EQ(diagnostic.failure, ResourceLoadFailureCode::PathEscapesRoot);
+    EXPECT_FALSE(diagnostic.sourceAssetRead);
+    EXPECT_FALSE(diagnostic.cookedArtifactRead);
+    EXPECT_TRUE(diagnostic.runtimePackageRead);
+    EXPECT_NE(diagnostic.message.find("escapes"), std::string::npos);
+
+    const std::string diagnosticJson = manager.ExportLastLoadDiagnosticJson();
+    EXPECT_NE(diagnosticJson.find("\"failure\": \"PathEscapesRoot\""), std::string::npos);
+    EXPECT_NE(diagnosticJson.find("\"runtimePackageRead\": true"), std::string::npos);
+
+    std::error_code removeError;
+    fs::remove_all(root, removeError);
+}
+
+TEST(ResourceRuntimePolicyValidation, RejectsCookedAndSourcePathsEscapingMountedRoots)
+{
+    const fs::path sourceRoot = MakeTempDirectory("SourceRootEscape");
+    const fs::path cookedRoot = MakeTempDirectory("CookedRootEscape");
+
+    ResourceRuntimePolicy sourcePolicy;
+    sourcePolicy.mode = ResourceRuntimeMode::Editor;
+    sourcePolicy.allowSourceAssetReads = true;
+    sourcePolicy.sourceRoot = sourceRoot.string();
+
+    const ResourcePathResolution sourceResolution =
+        ResolveRuntimeResourcePath(sourcePolicy, "", "source://../outside.png");
+    EXPECT_FALSE(sourceResolution.allowed);
+    EXPECT_EQ(sourceResolution.domain, ResourceLoadDomain::SourceAsset);
+    EXPECT_EQ(sourceResolution.failure, ResourceLoadFailureCode::PathEscapesRoot);
+    EXPECT_TRUE(sourceResolution.sourceAssetRead);
+    EXPECT_NE(sourceResolution.diagnosticMessage.find("escapes"), std::string::npos);
+
+    ResourceRuntimePolicy cookedPolicy;
+    cookedPolicy.mode = ResourceRuntimeMode::CookedRuntime;
+    cookedPolicy.allowSourceAssetReads = false;
+    cookedPolicy.requireCookedArtifacts = true;
+    cookedPolicy.cookedRoot = cookedRoot.string();
+
+    const ResourcePathResolution cookedResolution =
+        ResolveRuntimeResourcePath(cookedPolicy, "", "cooked://../outside.rva");
+    EXPECT_FALSE(cookedResolution.allowed);
+    EXPECT_EQ(cookedResolution.domain, ResourceLoadDomain::CookedArtifact);
+    EXPECT_EQ(cookedResolution.failure, ResourceLoadFailureCode::PathEscapesRoot);
+    EXPECT_TRUE(cookedResolution.cookedArtifactRead);
+    EXPECT_NE(cookedResolution.diagnosticMessage.find("escapes"), std::string::npos);
+
+    std::error_code removeError;
+    fs::remove_all(sourceRoot, removeError);
+    fs::remove_all(cookedRoot, removeError);
+}
+
 TEST(ResourceRuntimePolicyValidation, CookedShaderArtifactExposesStableRuntimeContract)
 {
     const fs::path root = MakeTempDirectory("ShaderContract");
@@ -499,33 +616,45 @@ TEST(ResourceRuntimePolicyValidation, ShaderRuntimeContractJsonReportsInvalidCon
 
 TEST(ResourceRuntimePolicyValidation, AppModeBuildsEditorPreviewAndRuntimeResourcePolicies)
 {
+    const ResourceManagerConfig editorConfig =
+        MakeResourceManagerConfigForAppMode(AppMode::Editor);
     const ResourceRuntimePolicy editorPolicy =
-        MakeResourceRuntimePolicyForAppMode(AppMode::Editor);
+        editorConfig.runtimePolicy;
     EXPECT_EQ(editorPolicy.mode, ResourceRuntimeMode::Editor);
     EXPECT_TRUE(editorPolicy.allowSourceAssetReads);
     EXPECT_FALSE(editorPolicy.requireCookedArtifacts);
     EXPECT_FALSE(editorPolicy.requireRuntimePackage);
+    EXPECT_TRUE(editorConfig.enableHotReload);
 
+    const ResourceManagerConfig previewConfig =
+        MakeResourceManagerConfigForAppMode(AppMode::Preview);
     const ResourceRuntimePolicy previewPolicy =
-        MakeResourceRuntimePolicyForAppMode(AppMode::Preview);
+        previewConfig.runtimePolicy;
     EXPECT_EQ(previewPolicy.mode, ResourceRuntimeMode::Editor);
     EXPECT_TRUE(previewPolicy.allowSourceAssetReads);
     EXPECT_FALSE(previewPolicy.requireCookedArtifacts);
     EXPECT_FALSE(previewPolicy.requireRuntimePackage);
+    EXPECT_TRUE(previewConfig.enableHotReload);
 
+    const ResourceManagerConfig runtimeConfig =
+        MakeResourceManagerConfigForAppMode(AppMode::Runtime);
     const ResourceRuntimePolicy runtimePolicy =
-        MakeResourceRuntimePolicyForAppMode(AppMode::Runtime);
+        runtimeConfig.runtimePolicy;
     EXPECT_EQ(runtimePolicy.mode, ResourceRuntimeMode::CookedRuntime);
     EXPECT_FALSE(runtimePolicy.allowSourceAssetReads);
     EXPECT_TRUE(runtimePolicy.requireCookedArtifacts);
     EXPECT_FALSE(runtimePolicy.requireRuntimePackage);
+    EXPECT_FALSE(runtimeConfig.enableHotReload);
 
+    const ResourceManagerConfig pieConfig =
+        MakeResourceManagerConfigForAppMode(AppMode::PlayInEditor);
     const ResourceRuntimePolicy piePolicy =
-        MakeResourceRuntimePolicyForAppMode(AppMode::PlayInEditor);
+        pieConfig.runtimePolicy;
     EXPECT_EQ(piePolicy.mode, ResourceRuntimeMode::CookedRuntime);
     EXPECT_FALSE(piePolicy.allowSourceAssetReads);
     EXPECT_TRUE(piePolicy.requireCookedArtifacts);
     EXPECT_FALSE(piePolicy.requireRuntimePackage);
+    EXPECT_FALSE(pieConfig.enableHotReload);
 
     const ResourcePathResolution runtimeSource =
         ResolveRuntimeResourcePath(runtimePolicy, "", "source://textures/albedo.png");
@@ -536,6 +665,148 @@ TEST(ResourceRuntimePolicyValidation, AppModeBuildsEditorPreviewAndRuntimeResour
         ResolveRuntimeResourcePath(editorPolicy, "", "source://textures/albedo.png");
     EXPECT_TRUE(editorSource.allowed);
     EXPECT_EQ(editorSource.domain, ResourceLoadDomain::SourceAsset);
+}
+
+TEST(ResourceRuntimePolicyValidation, LoadAsyncRunsInlineWhenAsyncDisabledAndJobSystemMissing)
+{
+    JobSystem::Get().Shutdown();
+
+    const fs::path root = MakeTempDirectory("InlineAsync");
+    const fs::path sourcePath = root / "textures" / "inline.png";
+    WriteTextFile(sourcePath, "source texture placeholder");
+
+    ResourceManagerConfig config;
+    config.asyncThreadCount = 0;
+    config.runtimePolicy.mode = ResourceRuntimeMode::Editor;
+    config.runtimePolicy.allowSourceAssetReads = true;
+    config.runtimePolicy.sourceRoot = root.string();
+
+    ResourceManagerTestGuard guard(config);
+    auto& manager = ResourceManager::Get();
+
+    auto loader = std::make_unique<RecordingLoader>(ResourceType::Texture);
+    RecordingLoader* loaderPtr = loader.get();
+    manager.RegisterLoader(ResourceType::Texture, std::move(loader));
+
+    std::future<ResourceHandle<RecordingResource>> future =
+        manager.LoadAsync<RecordingResource>("source://textures/inline.png");
+
+    EXPECT_EQ(future.wait_for(std::chrono::seconds(0)), std::future_status::ready);
+    ResourceHandle<RecordingResource> handle = future.get();
+    EXPECT_TRUE(handle.IsValid());
+    EXPECT_EQ(loaderPtr->loadCount, 1u);
+    EXPECT_EQ(loaderPtr->lastPath, sourcePath.string());
+    EXPECT_EQ(manager.GetStats().pendingLoads, static_cast<size_t>(0));
+
+    std::error_code removeError;
+    fs::remove_all(root, removeError);
+}
+
+TEST(ResourceRuntimePolicyValidation, LoadAsyncUsesCoreJobSystemWhenEnabled)
+{
+    JobSystem::Get().Shutdown();
+
+    const fs::path root = MakeTempDirectory("AsyncJobSystem");
+    const fs::path sourcePath = root / "textures" / "async.png";
+    WriteTextFile(sourcePath, "source texture placeholder");
+
+    ResourceManagerConfig config;
+    config.asyncThreadCount = 1;
+    config.runtimePolicy.mode = ResourceRuntimeMode::Editor;
+    config.runtimePolicy.allowSourceAssetReads = true;
+    config.runtimePolicy.sourceRoot = root.string();
+
+    std::promise<void> releaseLoadPromise;
+    std::shared_future<void> releaseLoadFuture = releaseLoadPromise.get_future().share();
+    releaseLoadPromise.set_value();
+
+    ResourceManagerTestGuard guard(config);
+    auto& manager = ResourceManager::Get();
+
+    auto loader = std::make_unique<BlockingLoader>(nullptr, releaseLoadFuture);
+    BlockingLoader* loaderPtr = loader.get();
+    manager.RegisterLoader(ResourceType::Texture, std::move(loader));
+
+    std::future<ResourceHandle<RecordingResource>> future =
+        manager.LoadAsync<RecordingResource>("source://textures/async.png");
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    ResourceHandle<RecordingResource> handle = future.get();
+    EXPECT_TRUE(handle.IsValid());
+    EXPECT_EQ(loaderPtr->loadCount.load(std::memory_order_relaxed), 1u);
+    EXPECT_EQ(loaderPtr->lastPath, sourcePath.string());
+    EXPECT_NE(loaderPtr->loaderThreadId, std::this_thread::get_id());
+    EXPECT_EQ(manager.GetStats().pendingLoads, static_cast<size_t>(0));
+
+    std::error_code removeError;
+    fs::remove_all(root, removeError);
+}
+
+TEST(ResourceRuntimePolicyValidation, LoadAsyncCallbackDispatchesOnlyFromProcessCompletedLoadsThread)
+{
+    JobSystem::Get().Shutdown();
+
+    const fs::path root = MakeTempDirectory("AsyncCallbackPump");
+    const fs::path sourcePath = root / "textures" / "async.png";
+    WriteTextFile(sourcePath, "source texture placeholder");
+
+    ResourceManagerConfig config;
+    config.asyncThreadCount = 0;
+    config.runtimePolicy.mode = ResourceRuntimeMode::Editor;
+    config.runtimePolicy.allowSourceAssetReads = true;
+    config.runtimePolicy.sourceRoot = root.string();
+
+    ResourceManagerTestGuard guard(config);
+    auto& manager = ResourceManager::Get();
+
+    auto loader = std::make_unique<RecordingLoader>(ResourceType::Texture);
+    RecordingLoader* loaderPtr = loader.get();
+    manager.RegisterLoader(ResourceType::Texture, std::move(loader));
+
+    const std::thread::id pumpThreadId = std::this_thread::get_id();
+    bool callbackCalled = false;
+    std::thread::id callbackThreadId;
+
+    manager.LoadAsync<RecordingResource>(
+        "source://textures/async.png",
+        [&](ResourceHandle<RecordingResource> handle)
+        {
+            callbackThreadId = std::this_thread::get_id();
+            callbackCalled = true;
+            EXPECT_TRUE(handle.IsValid());
+        });
+
+    EXPECT_EQ(loaderPtr->loadCount, 1u);
+    EXPECT_EQ(loaderPtr->lastPath, sourcePath.string());
+    EXPECT_FALSE(callbackCalled);
+    EXPECT_EQ(manager.GetStats().pendingLoads, static_cast<size_t>(1));
+
+    manager.ProcessCompletedLoads();
+    EXPECT_TRUE(callbackCalled);
+    EXPECT_EQ(callbackThreadId, pumpThreadId);
+    EXPECT_EQ(manager.GetStats().pendingLoads, static_cast<size_t>(0));
+
+    std::error_code removeError;
+    fs::remove_all(root, removeError);
+}
+
+TEST(ResourceRuntimePolicyValidation, ResourceManagerDoesNotOwnPreexistingJobSystem)
+{
+    JobSystem::Get().Shutdown();
+    JobSystem::Get().Initialize(1);
+    ASSERT_TRUE(JobSystem::Get().IsInitialized());
+
+    ResourceManagerConfig config;
+    config.asyncThreadCount = 2;
+    config.runtimePolicy.mode = ResourceRuntimeMode::Editor;
+    config.runtimePolicy.allowSourceAssetReads = true;
+
+    {
+        ResourceManagerTestGuard guard(config);
+        EXPECT_TRUE(JobSystem::Get().IsInitialized());
+    }
+
+    EXPECT_TRUE(JobSystem::Get().IsInitialized());
+    JobSystem::Get().Shutdown();
 }
 
 TEST(ResourceRuntimePolicyValidation, HotReloadRejectedByCookedRuntimePolicy)

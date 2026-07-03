@@ -40,6 +40,57 @@ namespace RVX::Resource
             return resolvedPath.string();
         }
 
+        bool IsPathWithinRoot(const std::filesystem::path& path, const std::filesystem::path& root)
+        {
+            auto rootIt = root.begin();
+            auto pathIt = path.begin();
+            for (; rootIt != root.end(); ++rootIt, ++pathIt)
+            {
+                if (pathIt == path.end())
+                {
+                    return false;
+                }
+
+                if (ToLower(rootIt->string()) != ToLower(pathIt->string()))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        bool TryResolveAgainstMountedRoot(const std::string& root,
+                                          const std::string& path,
+                                          std::string& resolvedPath,
+                                          std::string& failureMessage)
+        {
+            if (root.empty())
+            {
+                resolvedPath = ResolveAgainstRoot(root, path);
+                return true;
+            }
+
+            std::filesystem::path resourcePath(path);
+            if (resourcePath.is_absolute())
+            {
+                failureMessage = "Resource path must be relative to the mounted root.";
+                return false;
+            }
+
+            std::filesystem::path rootPath = std::filesystem::absolute(std::filesystem::path(root)).lexically_normal();
+            std::filesystem::path candidatePath = (rootPath / resourcePath).lexically_normal();
+            if (!IsPathWithinRoot(candidatePath, rootPath))
+            {
+                failureMessage = "Resource path escapes the mounted resource root.";
+                return false;
+            }
+
+            candidatePath.make_preferred();
+            resolvedPath = candidatePath.string();
+            return true;
+        }
+
         std::string GetExtensionLower(const std::string& path)
         {
             std::string extension = std::filesystem::path(path).extension().string();
@@ -128,6 +179,7 @@ namespace RVX::Resource
             case ResourceLoadFailureCode::PackageRootMissing: return "PackageRootMissing";
             case ResourceLoadFailureCode::LoaderUnavailable: return "LoaderUnavailable";
             case ResourceLoadFailureCode::LoaderFailed: return "LoaderFailed";
+            case ResourceLoadFailureCode::PathEscapesRoot: return "PathEscapesRoot";
             default: return "Invalid";
         }
     }
@@ -276,17 +328,38 @@ namespace RVX::Resource
                             "Runtime package root is not mounted.");
             }
 
-            resolution.resolvedPath = ResolveAgainstRoot(policy.packageRoot, logicalPath);
+            std::string failureMessage;
+            if (!TryResolveAgainstMountedRoot(policy.packageRoot,
+                                              logicalPath,
+                                              resolution.resolvedPath,
+                                              failureMessage))
+            {
+                return Deny(resolution, ResourceLoadFailureCode::PathEscapesRoot, failureMessage);
+            }
         }
         else if (resolution.domain == ResourceLoadDomain::CookedArtifact)
         {
             const std::string& cookedRoot = policy.cookedRoot.empty() ? basePath : policy.cookedRoot;
-            resolution.resolvedPath = ResolveAgainstRoot(cookedRoot, logicalPath);
+            std::string failureMessage;
+            if (!TryResolveAgainstMountedRoot(cookedRoot,
+                                              logicalPath,
+                                              resolution.resolvedPath,
+                                              failureMessage))
+            {
+                return Deny(resolution, ResourceLoadFailureCode::PathEscapesRoot, failureMessage);
+            }
         }
         else
         {
             const std::string& sourceRoot = policy.sourceRoot.empty() ? basePath : policy.sourceRoot;
-            resolution.resolvedPath = ResolveAgainstRoot(sourceRoot, logicalPath);
+            std::string failureMessage;
+            if (!TryResolveAgainstMountedRoot(sourceRoot,
+                                              logicalPath,
+                                              resolution.resolvedPath,
+                                              failureMessage))
+            {
+                return Deny(resolution, ResourceLoadFailureCode::PathEscapesRoot, failureMessage);
+            }
         }
 
         resolution.allowed = true;

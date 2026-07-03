@@ -845,10 +845,7 @@ ResourceManager::Stats ResourceManager::GetStats() const
         stats.gpuMemory = cacheStats.gpuMemoryUsage;
     }
 
-    {
-        std::lock_guard<std::mutex> asyncLock(m_asyncMutex);
-        stats.pendingLoads += m_asyncJobs.size();
-    }
+    stats.pendingLoads += m_pendingAsyncJobCount.load(std::memory_order_relaxed);
 
     {
         std::lock_guard<std::mutex> callbacksLock(m_pendingCallbacksMutex);
@@ -919,101 +916,39 @@ std::string ResourceManager::ResolvePath(const std::string& path) const
 
 void ResourceManager::StartAsyncWorkers()
 {
-    StopAsyncWorkers();
-
-    {
-        std::lock_guard<std::mutex> lock(m_asyncMutex);
-        m_asyncStopping = false;
-    }
-
     const int requestedCount = m_config.asyncThreadCount;
     if (requestedCount <= 0)
     {
-        RVX_RESOURCE_INFO("ResourceManager async loading workers disabled");
+        RVX_RESOURCE_INFO("ResourceManager async loading uses inline fallback because asyncThreadCount is disabled");
         return;
     }
 
-    m_asyncWorkers.reserve(static_cast<size_t>(requestedCount));
-    for (int i = 0; i < requestedCount; ++i)
+    JobSystem& jobSystem = JobSystem::Get();
+    if (jobSystem.IsInitialized())
     {
-        m_asyncWorkers.emplace_back(&ResourceManager::AsyncWorkerLoop, this);
+        RVX_RESOURCE_INFO("ResourceManager async loading using existing Core JobSystem with {} worker(s)",
+                          jobSystem.GetWorkerCount());
+        return;
     }
 
-    RVX_RESOURCE_INFO("ResourceManager started {} async loading worker(s)", requestedCount);
+    jobSystem.Initialize(static_cast<size_t>(requestedCount));
+    m_jobSystemInitializedByManager = true;
+    RVX_RESOURCE_INFO("ResourceManager initialized Core JobSystem with {} worker(s) for async loading",
+                      jobSystem.GetWorkerCount());
 }
 
 void ResourceManager::StopAsyncWorkers()
 {
+    JobSystem& jobSystem = JobSystem::Get();
+    if (jobSystem.IsInitialized())
     {
-        std::lock_guard<std::mutex> lock(m_asyncMutex);
-        m_asyncStopping = true;
+        jobSystem.WaitAllPending();
     }
 
-    m_asyncCondition.notify_all();
-
-    for (auto& worker : m_asyncWorkers)
+    if (m_jobSystemInitializedByManager)
     {
-        if (worker.joinable())
-        {
-            worker.join();
-        }
-    }
-    m_asyncWorkers.clear();
-}
-
-void ResourceManager::EnqueueAsyncJob(std::function<void()> job)
-{
-    if (!job)
-    {
-        return;
-    }
-
-    bool runInline = false;
-
-    {
-        std::lock_guard<std::mutex> lock(m_asyncMutex);
-        runInline = m_asyncWorkers.empty() || m_asyncStopping;
-
-        if (!runInline && !m_asyncStopping)
-        {
-            m_asyncJobs.push_back(std::move(job));
-        }
-    }
-
-    if (runInline)
-    {
-        job();
-        return;
-    }
-
-    m_asyncCondition.notify_one();
-}
-
-void ResourceManager::AsyncWorkerLoop()
-{
-    while (true)
-    {
-        std::function<void()> job;
-
-        {
-            std::unique_lock<std::mutex> lock(m_asyncMutex);
-            m_asyncCondition.wait(lock, [this]() {
-                return m_asyncStopping || !m_asyncJobs.empty();
-            });
-
-            if (m_asyncStopping && m_asyncJobs.empty())
-            {
-                return;
-            }
-
-            job = std::move(m_asyncJobs.front());
-            m_asyncJobs.pop_front();
-        }
-
-        if (job)
-        {
-            job();
-        }
+        jobSystem.Shutdown();
+        m_jobSystemInitializedByManager = false;
     }
 }
 

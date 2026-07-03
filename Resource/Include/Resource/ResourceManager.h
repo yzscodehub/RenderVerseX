@@ -5,20 +5,19 @@
  * @brief Main facade for the resource management system
  */
 
+#include "Core/Job/JobSystem.h"
 #include "Resource/DependencyGraph.h"
 #include "Resource/IResource.h"
 #include "Resource/ResourceCache.h"
 #include "Resource/ResourceHandle.h"
 #include "Resource/ResourceRegistry.h"
 #include "Resource/RuntimeResourcePolicy.h"
+#include <atomic>
 #include <chrono>
-#include <condition_variable>
-#include <deque>
 #include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -36,6 +35,7 @@ namespace RVX::Resource
         CacheConfig cacheConfig;
 
         /// Number of async loading threads
+        /// Used when ResourceManager initializes Core JobSystem for async loads.
         int asyncThreadCount = 2;
 
         /// Base path for resources
@@ -47,6 +47,14 @@ namespace RVX::Resource
         /// Enable hot reload
         bool enableHotReload = false;
     };
+
+    inline ResourceManagerConfig MakeResourceManagerConfigForAppMode(AppMode mode)
+    {
+        ResourceManagerConfig config;
+        config.runtimePolicy = MakeResourceRuntimePolicyForAppMode(mode);
+        config.enableHotReload = AllowsSourceAssetAccess(mode);
+        return config;
+    }
 
     enum class ResourceHotReloadStatus : uint8
     {
@@ -288,11 +296,8 @@ namespace RVX::Resource
 
         mutable std::recursive_mutex m_loadMutex;
 
-        std::vector<std::thread> m_asyncWorkers;
-        std::deque<std::function<void()>> m_asyncJobs;
-        mutable std::mutex m_asyncMutex;
-        std::condition_variable m_asyncCondition;
-        bool m_asyncStopping = false;
+        bool m_jobSystemInitializedByManager = false;
+        std::atomic<size_t> m_pendingAsyncJobCount{0};
 
         std::vector<PendingAsyncCallback> m_pendingCallbacks;
         mutable std::mutex m_pendingCallbacksMutex;
@@ -324,8 +329,6 @@ namespace RVX::Resource
 
         void StartAsyncWorkers();
         void StopAsyncWorkers();
-        void EnqueueAsyncJob(std::function<void()> job);
-        void AsyncWorkerLoop();
     };
 
     /**
@@ -370,25 +373,38 @@ namespace RVX::Resource
     template<typename T>
     std::future<ResourceHandle<T>> ResourceManager::LoadAsync(const std::string& path)
     {
-        auto task = std::make_shared<std::packaged_task<ResourceHandle<T>()>>([this, path]() {
+        m_pendingAsyncJobCount.fetch_add(1, std::memory_order_relaxed);
+        return JobSystem::Get().SubmitWithResult([this, path]() {
+            struct PendingLoadGuard
+            {
+                std::atomic<size_t>& counter;
+                ~PendingLoadGuard()
+                {
+                    counter.fetch_sub(1, std::memory_order_relaxed);
+                }
+            } guard{m_pendingAsyncJobCount};
+
             return Load<T>(path);
         });
-
-        auto future = task->get_future();
-        EnqueueAsyncJob([task]() {
-            (*task)();
-        });
-
-        return future;
     }
 
     template<typename T>
     void ResourceManager::LoadAsync(const std::string& path, std::function<void(ResourceHandle<T>)> callback)
     {
-        auto task = std::make_shared<std::packaged_task<ResourceHandle<T>()>>([this, path]() {
+        m_pendingAsyncJobCount.fetch_add(1, std::memory_order_relaxed);
+        auto future = std::make_shared<std::future<ResourceHandle<T>>>(
+            JobSystem::Get().SubmitWithResult([this, path]() {
+                struct PendingLoadGuard
+                {
+                    std::atomic<size_t>& counter;
+                    ~PendingLoadGuard()
+                    {
+                        counter.fetch_sub(1, std::memory_order_relaxed);
+                    }
+                } guard{m_pendingAsyncJobCount};
+
             return Load<T>(path);
-        });
-        auto future = std::make_shared<std::future<ResourceHandle<T>>>(task->get_future());
+            }));
 
         {
             std::lock_guard<std::mutex> lock(m_pendingCallbacksMutex);
@@ -406,9 +422,6 @@ namespace RVX::Resource
             });
         }
 
-        EnqueueAsyncJob([task]() {
-            (*task)();
-        });
     }
 
 } // namespace RVX::Resource
@@ -423,5 +436,6 @@ namespace RVX
     using Resource::ResourceHotReloadStatus;
     using Resource::ResourceManager;
     using Resource::ResourceManagerConfig;
+    using Resource::MakeResourceManagerConfigForAppMode;
     using Resource::SaveResourceHotReloadDiagnosticJson;
 }
