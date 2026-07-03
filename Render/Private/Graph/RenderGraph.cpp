@@ -1,15 +1,17 @@
 #include "RenderGraphInternal.h"
 #include "Core/Log.h"
+#include "../Diagnostics/RenderDiagnosticsJson.h"
 #include <algorithm>
 #include <fstream>
-#include <iomanip>
 #include <sstream>
-#include <string_view>
 
 namespace RVX
 {
     namespace
     {
+        using RenderDiagnostics::JsonBool;
+        using RenderDiagnostics::JsonString;
+
         uint64 AlignUp(uint64 value, uint64 alignment)
         {
             return alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
@@ -159,53 +161,6 @@ namespace RVX
                 default:
                     return "Unknown";
             }
-        }
-
-        const char* JsonBool(bool value)
-        {
-            return value ? "true" : "false";
-        }
-
-        std::string JsonString(std::string_view value)
-        {
-            std::ostringstream ss;
-            ss << '"';
-            for (unsigned char ch : value)
-            {
-                switch (ch)
-                {
-                    case '\\':
-                        ss << "\\\\";
-                        break;
-                    case '"':
-                        ss << "\\\"";
-                        break;
-                    case '\n':
-                        ss << "\\n";
-                        break;
-                    case '\r':
-                        ss << "\\r";
-                        break;
-                    case '\t':
-                        ss << "\\t";
-                        break;
-                    default:
-                        if (ch < 0x20)
-                        {
-                            ss << "\\u"
-                               << std::hex << std::uppercase << std::setw(4) << std::setfill('0')
-                               << static_cast<uint32>(ch)
-                               << std::dec << std::nouppercase << std::setfill(' ');
-                        }
-                        else
-                        {
-                            ss << static_cast<char>(ch);
-                        }
-                        break;
-                }
-            }
-            ss << '"';
-            return ss.str();
         }
 
         void WriteOptionalIndex(std::ostringstream& ss, uint32 value)

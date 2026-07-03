@@ -291,6 +291,7 @@ rvx_add_gtest(
     NAME RenderGraphValidation
     SOURCES
         RenderGraphValidation/main.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Diagnostics/RenderDiagnosticsJson.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraph.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraphCompiler.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraphExecutor.cpp

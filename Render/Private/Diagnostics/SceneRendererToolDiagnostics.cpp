@@ -4,6 +4,7 @@
  */
 
 #include "Render/Renderer/SceneRenderer.h"
+#include "RenderDiagnosticsJson.h"
 
 #include <algorithm>
 #include <array>
@@ -19,53 +20,9 @@ namespace RVX
 {
 namespace
 {
-    const char* JsonBool(bool value)
-    {
-        return value ? "true" : "false";
-    }
-
-    std::string JsonString(const std::string& value)
-    {
-        std::string escaped;
-        escaped.reserve(value.size() + 2);
-        escaped.push_back('"');
-        for (char ch : value)
-        {
-            switch (ch)
-            {
-                case '\\':
-                    escaped += "\\\\";
-                    break;
-                case '"':
-                    escaped += "\\\"";
-                    break;
-                case '\n':
-                    escaped += "\\n";
-                    break;
-                case '\r':
-                    escaped += "\\r";
-                    break;
-                case '\t':
-                    escaped += "\\t";
-                    break;
-                default:
-                    escaped.push_back(ch);
-                    break;
-            }
-        }
-        escaped.push_back('"');
-        return escaped;
-    }
-
-    std::string JsonOptionalIndex(uint32 value)
-    {
-        if (value == RVX_INVALID_INDEX)
-        {
-            return "null";
-        }
-
-        return std::to_string(value);
-    }
+    using RenderDiagnostics::JsonBool;
+    using RenderDiagnostics::JsonOptionalIndex;
+    using RenderDiagnostics::JsonString;
 
     struct ToolArtifactSummaryEntry
     {
