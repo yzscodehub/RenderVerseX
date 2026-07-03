@@ -41,6 +41,9 @@ void TAA::Shutdown()
     m_copyPipeline.Reset();
     m_constantBuffer.Reset();
     m_device = nullptr;
+    m_supported = false;
+    m_unsupportedReason = "TAA resolve resources are not initialized";
+    m_lastResolveStats = {};
 }
 
 void TAA::Resize(uint32 width, uint32 height)
@@ -54,11 +57,21 @@ void TAA::Resize(uint32 width, uint32 height)
 void TAA::SetConfig(const TAAConfig& config)
 {
     m_config = config;
+    if (m_config.jitterPhase <= 0)
+    {
+        m_config.jitterPhase = 1;
+    }
 }
 
 void TAA::CreateResources(uint32 width, uint32 height)
 {
     if (!m_device) return;
+    if (width == 0 || height == 0)
+    {
+        m_supported = false;
+        m_unsupportedReason = "TAA requires a non-zero render extent";
+        return;
+    }
 
     RHITextureDesc desc;
     desc.width = width;
@@ -79,6 +92,11 @@ void TAA::CreateResources(uint32 width, uint32 height)
     bufDesc.usage = RHIBufferUsage::Constant;
     bufDesc.memoryType = RHIMemoryType::Upload;
     m_constantBuffer = m_device->CreateBuffer(bufDesc);
+
+    m_supported = m_history[0] && m_history[1] && m_result && m_constantBuffer;
+    m_unsupportedReason = m_supported
+                              ? std::string()
+                              : "TAA history/result resources could not be created";
 }
 
 float TAA::Halton(int index, int base)
@@ -104,7 +122,8 @@ Vec2 TAA::HaltonSequence(int index)
 
 Vec2 TAA::GetJitterOffset(uint64 frameIndex) const
 {
-    int phase = static_cast<int>(frameIndex % m_config.jitterPhase);
+    const int jitterPhase = m_config.jitterPhase > 0 ? m_config.jitterPhase : 1;
+    int phase = static_cast<int>(frameIndex % static_cast<uint64>(jitterPhase));
     Vec2 halton = HaltonSequence(phase);
     
     // Map from [0,1] to [-0.5, 0.5]
@@ -119,6 +138,11 @@ Vec2 TAA::GetJitterOffsetPixels(uint64 frameIndex) const
 
 Mat4 TAA::JitterProjectionMatrix(const Mat4& projMatrix, uint64 frameIndex) const
 {
+    if (m_width == 0 || m_height == 0)
+    {
+        return projMatrix;
+    }
+
     Vec2 offset = GetJitterOffset(frameIndex);
     
     // Convert to clip space offset
@@ -140,22 +164,39 @@ void TAA::Resolve(RHICommandContext& ctx,
                   RHITexture* motionVectors,
                   uint64 frameIndex)
 {
+    m_lastResolveStats = {};
+    m_lastResolveStats.requested = IsRequestedEnabled();
+    m_lastResolveStats.supported = IsSupported();
+    m_lastResolveStats.frameIndex = frameIndex;
+    m_lastResolveStats.jitterOffset = GetJitterOffset(frameIndex);
+    m_lastResolveStats.historyValidBefore = m_historyValid;
+    m_lastResolveStats.depthAvailable = depthTexture != nullptr;
+    m_lastResolveStats.motionVectorsAvailable = motionVectors != nullptr;
+
     if (!IsEnabled() || !m_device)
     {
         if (IsRequestedEnabled() && !IsSupported())
         {
             RVX_CORE_WARN("TAA: unsupported resolve skipped: {}", GetUnsupportedReason());
         }
+        m_lastResolveStats.fallbackReason = GetUnsupportedReason();
+        m_lastResolveStats.historyValidAfter = m_historyValid;
         return;
     }
 
-    // On first frame or after reset, just copy input
-    if (!m_historyValid)
+    if (!currentColor)
     {
-        // TODO: Copy currentColor to history[m_currentHistory]
-        m_historyValid = true;
-        SwapHistory();
+        m_lastResolveStats.fallbackReason = "TAA resolve skipped because current color is unavailable";
+        m_lastResolveStats.historyValidAfter = m_historyValid;
+        RVX_CORE_WARN("TAA: {}", m_lastResolveStats.fallbackReason);
         return;
+    }
+
+    if (m_config.useMotionVectors && !motionVectors)
+    {
+        m_lastResolveStats.motionVectorFallbackUsed = true;
+        m_lastResolveStats.fallbackReason =
+            "TAA minimal resolve used current-frame copy because motion vectors are unavailable";
     }
 
     // Update constants
@@ -183,18 +224,19 @@ void TAA::Resolve(RHICommandContext& ctx,
 
     m_constantBuffer->Upload(&constants, 1);
 
-    // TODO: Dispatch TAA resolve shader
-    // - Sample current color
-    // - Reproject history using motion vectors
-    // - Neighborhood clamping (min/max of 3x3 or plus pattern)
-    // - Blend based on velocity and confidence
-    // - Output to result
-
-    // Apply sharpening if enabled
-    if (m_config.sharpen)
+    if (m_result)
     {
-        // TODO: Apply CAS or similar sharpening
+        ctx.CopyTexture(currentColor, m_result.Get());
     }
+    if (m_history[m_currentHistory])
+    {
+        ctx.CopyTexture(currentColor, m_history[m_currentHistory].Get());
+    }
+
+    m_lastResolveStats.copiedCurrentFrame = true;
+    m_lastResolveStats.resolved = true;
+    m_historyValid = true;
+    m_lastResolveStats.historyValidAfter = m_historyValid;
 
     SwapHistory();
 }

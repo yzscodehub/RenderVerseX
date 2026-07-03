@@ -54,6 +54,16 @@ namespace RVX
         float blurSharpness = 8.0f;     ///< Bilateral blur edge sharpness
     };
 
+    struct SSAOComputeStats
+    {
+        bool requested = false;
+        bool supported = false;
+        bool executed = false;
+        bool depthAvailable = false;
+        bool normalAvailable = false;
+        std::string fallbackReason;
+    };
+
     /**
      * @brief Screen-Space Ambient Occlusion
      * 
@@ -121,6 +131,7 @@ namespace RVX
         bool IsRequestedEnabled() const { return m_enabled; }
         bool IsSupported() const { return m_supported; }
         const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
+        const SSAOComputeStats& GetLastComputeStats() const { return m_lastComputeStats; }
 
         // =========================================================================
         // Rendering
@@ -162,6 +173,7 @@ namespace RVX
         bool m_enabled = true;
         bool m_supported = false;
         std::string m_unsupportedReason = "SSAO noise upload, AO, blur, and temporal pipelines are not implemented";
+        SSAOComputeStats m_lastComputeStats;
 
         uint32 m_width = 0;
         uint32 m_height = 0;

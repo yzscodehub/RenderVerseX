@@ -448,6 +448,7 @@ rvx_add_gtest(
         RVX::Scene
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Render/Private
         ${CMAKE_SOURCE_DIR}/Resource/Include
         ${CMAKE_SOURCE_DIR}/RHI/Include
         ${CMAKE_SOURCE_DIR}/Scene/Include

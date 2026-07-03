@@ -99,6 +99,8 @@ void GPUCulling::Shutdown()
     m_statsBuffer.Reset();
     m_transientUploadBuffers.clear();
     m_device = nullptr;
+    m_lastFallbackReason = GPUCullingFallbackReason::None;
+    m_pipelineFallbackReason = GPUCullingFallbackReason::None;
 }
 
 void GPUCulling::SetConfig(const GPUCullingConfig& config)
@@ -202,6 +204,7 @@ void GPUCulling::CreateResources()
 
 void GPUCulling::CreatePipelineResources()
 {
+    m_pipelineFallbackReason = GPUCullingFallbackReason::None;
     m_frustumCullShader.Reset();
     m_compactShader.Reset();
     m_cullingDescriptorSetLayout.Reset();
@@ -211,14 +214,20 @@ void GPUCulling::CreatePipelineResources()
     m_occlusionCullPipeline.Reset();
     m_compactPipeline.Reset();
 
-    if (!SupportsGpuExecution() ||
-        !m_instanceBuffer ||
+    if (!SupportsGpuExecution())
+    {
+        m_pipelineFallbackReason = EvaluateGpuExecution(false).fallbackReason;
+        return;
+    }
+
+    if (!m_instanceBuffer ||
         !m_visibilityBuffer ||
         !m_visibleInstanceBuffer ||
         !m_indirectBuffer ||
         !m_drawCountBuffer ||
         !m_cullingConstantsBuffer)
     {
+        m_pipelineFallbackReason = GPUCullingFallbackReason::PipelineResourcesUnavailable;
         return;
     }
 
@@ -226,6 +235,7 @@ void GPUCulling::CreatePipelineResources()
     if (shaderPath.empty())
     {
         RVX_RENDER_WARN("GPUCulling: GPU shader file not found; CPU fallback remains active");
+        m_pipelineFallbackReason = GPUCullingFallbackReason::ShaderFileMissing;
         return;
     }
 
@@ -241,6 +251,7 @@ void GPUCulling::CreatePipelineResources()
     if (!m_cullingDescriptorSetLayout)
     {
         RVX_RENDER_WARN("GPUCulling: failed to create descriptor set layout; CPU fallback remains active");
+        m_pipelineFallbackReason = GPUCullingFallbackReason::DescriptorSetLayoutCreationFailed;
         return;
     }
 
@@ -251,6 +262,7 @@ void GPUCulling::CreatePipelineResources()
     if (!m_cullingPipelineLayout)
     {
         RVX_RENDER_WARN("GPUCulling: failed to create pipeline layout; CPU fallback remains active");
+        m_pipelineFallbackReason = GPUCullingFallbackReason::PipelineLayoutCreationFailed;
         return;
     }
 
@@ -277,6 +289,7 @@ void GPUCulling::CreatePipelineResources()
     {
         RVX_RENDER_WARN("GPUCulling: failed to compile frustum cull shader: {}",
                         frustumResult.compileResult.errorMessage);
+        m_pipelineFallbackReason = GPUCullingFallbackReason::ShaderCompilationFailed;
         return;
     }
     m_frustumCullShader = frustumResult.shader;
@@ -287,6 +300,7 @@ void GPUCulling::CreatePipelineResources()
     {
         RVX_RENDER_WARN("GPUCulling: failed to compile compact shader: {}",
                         compactResult.compileResult.errorMessage);
+        m_pipelineFallbackReason = GPUCullingFallbackReason::ShaderCompilationFailed;
         return;
     }
     m_compactShader = compactResult.shader;
@@ -307,6 +321,7 @@ void GPUCulling::CreatePipelineResources()
         RVX_RENDER_WARN("GPUCulling: failed to create compute pipelines; CPU fallback remains active");
         m_frustumCullPipeline.Reset();
         m_compactPipeline.Reset();
+        m_pipelineFallbackReason = GPUCullingFallbackReason::PipelineCreationFailed;
         return;
     }
 
@@ -325,20 +340,78 @@ void GPUCulling::CreatePipelineResources()
         RVX_RENDER_WARN("GPUCulling: failed to create descriptor set; CPU fallback remains active");
         m_frustumCullPipeline.Reset();
         m_compactPipeline.Reset();
+        m_pipelineFallbackReason = GPUCullingFallbackReason::DescriptorSetCreationFailed;
     }
+}
+
+GPUCullingExecutionDecision GPUCulling::EvaluateGpuExecution(bool requirePipelineResources) const
+{
+    GPUCullingExecutionDecision decision;
+    if (!m_device)
+    {
+        decision.fallbackReason = GPUCullingFallbackReason::DeviceMissing;
+        return decision;
+    }
+
+    const RHICapabilities& capabilities = m_device->GetCapabilities();
+    if (!capabilities.supportsComputePipeline)
+    {
+        decision.fallbackReason = GPUCullingFallbackReason::ComputePipelineUnsupported;
+        return decision;
+    }
+
+    if (!capabilities.supportsDescriptorSets)
+    {
+        decision.fallbackReason = GPUCullingFallbackReason::DescriptorSetsUnsupported;
+        return decision;
+    }
+
+    if (!capabilities.supportsIndirectDrawCount)
+    {
+        decision.fallbackReason = GPUCullingFallbackReason::IndirectDrawCountUnsupported;
+        return decision;
+    }
+
+    if (m_device->GetBackendType() != RHIBackendType::DX12)
+    {
+        decision.fallbackReason = GPUCullingFallbackReason::ShaderBackendUnsupported;
+        return decision;
+    }
+
+    decision.gpuCapable = true;
+    if (!requirePipelineResources)
+    {
+        decision.mode = GPUCullingExecutionMode::GpuCompute;
+        decision.fallbackReason = GPUCullingFallbackReason::None;
+        return decision;
+    }
+
+    if (m_pipelineFallbackReason != GPUCullingFallbackReason::None)
+    {
+        decision.fallbackReason = m_pipelineFallbackReason;
+        return decision;
+    }
+
+    if (!m_frustumCullPipeline || !m_compactPipeline || !m_cullingDescriptorSet)
+    {
+        decision.fallbackReason = GPUCullingFallbackReason::PipelineResourcesUnavailable;
+        return decision;
+    }
+
+    decision.mode = GPUCullingExecutionMode::GpuCompute;
+    decision.fallbackReason = GPUCullingFallbackReason::None;
+    decision.pipelineReady = true;
+    return decision;
 }
 
 bool GPUCulling::SupportsGpuExecution() const
 {
-    if (!m_device)
-    {
-        return false;
-    }
+    return EvaluateGpuExecution(false).gpuCapable;
+}
 
-    const RHICapabilities& capabilities = m_device->GetCapabilities();
-    return capabilities.supportsDescriptorSets &&
-           capabilities.supportsIndirectDrawCount &&
-           m_device->GetBackendType() == RHIBackendType::DX12;
+GPUCullingExecutionDecision GPUCulling::GetExecutionDecision() const
+{
+    return EvaluateGpuExecution(true);
 }
 
 void GPUCulling::BeginFrame()
@@ -354,6 +427,7 @@ void GPUCulling::BeginFrame()
     m_activeDrawGroupIndex = RVX_INVALID_INDEX;
     m_usedCpuFallbackLastCull = false;
     m_usedGpuExecutionLastCull = false;
+    m_lastFallbackReason = GPUCullingFallbackReason::None;
     m_stats = {};
     m_transientUploadBuffers.clear();
 }
@@ -763,6 +837,7 @@ void GPUCulling::Cull(RHICommandContext& ctx,
     m_drawCount = 0;
     m_usedCpuFallbackLastCull = false;
     m_usedGpuExecutionLastCull = false;
+    m_lastFallbackReason = GPUCullingFallbackReason::None;
 
     if (m_instanceCount == 0)
     {
@@ -796,9 +871,11 @@ void GPUCulling::Cull(RHICommandContext& ctx,
         UploadBufferData(m_cullingConstantsBuffer.Get(), &constants, sizeof(constants), &ctx);
     }
 
-    if (!m_frustumCullPipeline || !m_compactPipeline || !m_cullingDescriptorSet)
+    const GPUCullingExecutionDecision executionDecision = EvaluateGpuExecution(true);
+    if (executionDecision.mode != GPUCullingExecutionMode::GpuCompute)
     {
         m_usedCpuFallbackLastCull = true;
+        m_lastFallbackReason = executionDecision.fallbackReason;
         const Mat4 cpuViewProj = projMatrix * viewMatrix;
         Vec4 frustumPlanes[6];
         ExtractFrustumPlanes(cpuViewProj, frustumPlanes);
@@ -827,6 +904,7 @@ void GPUCulling::Cull(RHICommandContext& ctx,
     ctx.Dispatch(groupCount, 1, 1);
 
     m_usedGpuExecutionLastCull = true;
+    m_lastFallbackReason = GPUCullingFallbackReason::None;
     m_stats.totalInstances = m_instanceCount;
 }
 
@@ -843,6 +921,7 @@ void GPUCulling::CullCpuFallback(const Mat4& viewMatrix, const Mat4& projMatrix)
     m_drawCount = 0;
     m_usedCpuFallbackLastCull = true;
     m_usedGpuExecutionLastCull = false;
+    m_lastFallbackReason = GPUCullingFallbackReason::None;
 
     if (m_instanceCount == 0)
     {

@@ -27,6 +27,7 @@
 #include "Render/RayTracing/RayTracingSceneManager.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "RenderContracts/RenderProxy.h"
+#include "RHI/RHICapabilities.h"
 
 #include <cstddef>
 #include <functional>
@@ -71,7 +72,7 @@ namespace RVX
     {
         None = 0,
         Proxy,
-        LegacyFallback,
+        SceneManagerDirect,
         ProxyRejected
     };
 
@@ -80,6 +81,7 @@ namespace RVX
         SceneRenderCollectionPath lastPath = SceneRenderCollectionPath::None;
         uint64 proxyFrameCount = 0;
         uint64 legacyFallbackFrameCount = 0;
+        uint64 sceneManagerDirectFrameCount = 0;
         uint64 rejectedProxyFrameCount = 0;
         size_t lastProxyPrimitiveCount = 0;
         size_t lastProxyLightCount = 0;
@@ -124,6 +126,9 @@ namespace RVX
         ToneMappingOutputColorSpace toneMappingOutputColorSpace = ToneMappingOutputColorSpace::SRGB;
         bool hdrSceneColorEnabled = false;
         std::string hdrFallbackReason;
+        bool frameInputDepthAvailable = false;
+        bool frameInputVelocityAvailable = false;
+        bool frameInputTemporalHistoryAvailable = false;
         PostProcessStackExecuteStats stackStats;
     };
 
@@ -156,8 +161,91 @@ namespace RVX
         std::string fallbackReason;
     };
 
+    struct SceneGPUDrivenCullingStats
+    {
+        bool enabled = false;
+        bool fallbackUsed = false;
+        bool graphPassAdded = false;
+        bool graphPassRecorded = false;
+        bool gpuExecutionRecorded = false;
+        bool executionDecisionAvailable = false;
+        GPUCullingExecutionDecision executionDecision;
+        uint32 inputOpaqueDrawItemCount = 0;
+        uint32 inputMaskedDrawItemCount = 0;
+        uint32 outputOpaqueDrawItemCount = 0;
+        uint32 outputMaskedDrawItemCount = 0;
+        uint32 cullableOpaqueDrawItemCount = 0;
+        uint32 cullableMaskedDrawItemCount = 0;
+        uint32 graphInputDrawItemCount = 0;
+        uint32 skippedMissingGpuDataCount = 0;
+        uint32 visibleCullableDrawItemCount = 0;
+        uint32 frustumCulledDrawItemCount = 0;
+        uint32 distanceCulledDrawItemCount = 0;
+        bool opaqueIndirectRequested = false;
+        bool opaqueIndirectEligible = false;
+        uint32 opaqueGpuDrivenIndirectBatchCount = 0;
+        uint32 opaqueGpuDrivenIndirectDrawCount = 0;
+    };
+
+    inline constexpr uint32 RVX_SCENE_RENDER_FEATURE_REPORT_SCHEMA_VERSION = 1;
+    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 1;
+    inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 24;
+    inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION = 24;
+    inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION = 25;
+
+    enum class SceneRenderFeature : uint8
+    {
+        PBR = 0,
+        Shadows,
+        IBL,
+        PostProcess,
+        GPUDriven,
+        Instancing,
+        RayTracing,
+    };
+
+    enum class SceneRenderFeatureStatus : uint8
+    {
+        Unknown = 0,
+        Supported,
+        Fallback,
+        Unsupported,
+        Skipped,
+    };
+
+    const char* GetSceneRenderFeatureName(SceneRenderFeature feature);
+    const char* GetSceneRenderFeatureStatusName(SceneRenderFeatureStatus status);
+
+    struct SceneRenderFeatureCapability
+    {
+        SceneRenderFeature feature = SceneRenderFeature::PBR;
+        SceneRenderFeatureStatus status = SceneRenderFeatureStatus::Unknown;
+        bool requested = false;
+        bool supported = false;
+        bool enabled = false;
+        bool fallbackUsed = false;
+        bool renderGraphBacked = false;
+        bool rhiCapabilityKnown = false;
+        std::string requiredCapability;
+        std::string diagnosticMessage;
+        uint32 graphPassCount = 0;
+        uint64 estimatedWorkItems = 0;
+    };
+
+    struct SceneRenderFeatureReport
+    {
+        uint32 schemaVersion = RVX_SCENE_RENDER_FEATURE_REPORT_SCHEMA_VERSION;
+        std::vector<SceneRenderFeatureCapability> features;
+        uint32 supportedCount = 0;
+        uint32 fallbackCount = 0;
+        uint32 unsupportedCount = 0;
+        uint32 skippedCount = 0;
+        uint32 unknownCount = 0;
+    };
+
     struct SceneRendererFrameDiagnostics
     {
+        uint32 schemaVersion = RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION;
         uint64 frameCount = 0;
         bool renderAttempted = false;
         bool rendered = false;
@@ -216,15 +304,28 @@ namespace RVX
         size_t skippedUnsupportedPassCount = 0;
         std::vector<RenderPassStatus> passStatuses;
 
+        GPUResourceManager::Stats gpuResourceStats;
+        SceneGPUDrivenCullingStats gpuDrivenCullingStats;
+        RayTracingSceneManagerStats rayTracingSceneStats;
+
         uint32 requestedPostProcessEffectCount = 0;
         uint32 enabledPostProcessEffectCount = 0;
         uint32 unsupportedPostProcessSkippedCount = 0;
         uint32 postProcessGraphPassCount = 0;
         bool hdrSceneColorEnabled = false;
         ToneMappingOutputColorSpace toneMappingOutputColorSpace = ToneMappingOutputColorSpace::SRGB;
+        RHIFormat postProcessFinalOutputFormat = RHIFormat::Unknown;
         bool postProcessToneMappingBoundaryValid = true;
+        bool postProcessFallbackCopyApplied = false;
+        uint32 postProcessFallbackCopyPassCount = 0;
+        bool postProcessDepthInputAvailable = false;
+        bool postProcessVelocityInputAvailable = false;
+        bool postProcessTemporalHistoryAvailable = false;
         std::string hdrFallbackReason;
+        std::string postProcessFallbackCopyReason;
         std::string postProcessToneMappingBoundaryWarning;
+        std::vector<PostProcessEffectExecutionPlan> postProcessEffectPlans;
+        SceneRenderFeatureReport featureReport;
 
         bool externalTargetRequested = false;
         bool externalTargetActive = false;
@@ -233,6 +334,199 @@ namespace RVX
         std::string externalTargetFallbackReason;
 
         std::vector<std::string> graphDiagnostics;
+    };
+
+    struct SceneRendererToolDiagnosticsSnapshot
+    {
+        uint32 schemaVersion = RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION;
+        bool frameDiagnosticsAvailable = false;
+        bool renderGraphDiagnosticsAvailable = false;
+        bool rhiCapabilityReportAvailable = false;
+        SceneRendererFrameDiagnostics frame;
+        RenderGraph::Diagnostics renderGraph;
+        RHICapabilityReport rhiCapabilityReport;
+    };
+
+    struct SceneRendererToolDiagnosticsArtifactValidationCodeCount
+    {
+        std::string code;
+        uint32 count = 0;
+    };
+
+    struct SceneRendererToolDiagnosticsArtifactResult
+    {
+        bool requested = false;
+        bool directoryReady = false;
+        bool captureMetadataAvailable = false;
+        uint32 toolDiagnosticsSchemaVersion = RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION;
+        uint32 frameDiagnosticsSchemaVersion = RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION;
+        uint32 renderGraphDiagnosticsSchemaVersion = RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION;
+        uint32 rhiCapabilityReportSchemaVersion = RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION;
+        uint32 artifactSummarySchemaVersion = RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION;
+        uint32 artifactValidationSchemaVersion = RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION;
+        std::string renderGraphDiagnosticsSchemaId = RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID;
+        std::string rhiCapabilityReportSchemaId = RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID;
+        uint64 frameIndex = 0;
+        size_t renderGraphPassCount = 0;
+        size_t renderGraphResourceCount = 0;
+        bool rhiCapabilityReportJsonExpected = false;
+        bool toolDiagnosticsTextSaved = false;
+        bool renderGraphGraphvizSaved = false;
+        bool renderGraphDiagnosticsTextSaved = false;
+        bool renderGraphDiagnosticsJsonSaved = false;
+        bool rhiCapabilityReportJsonSaved = false;
+        bool manifestJsonSaved = false;
+        bool artifactSummaryJsonSaved = false;
+        bool artifactValidationJsonSaved = false;
+        bool allPrimaryArtifactsSaved = false;
+        bool artifactValidationResultAvailable = false;
+        bool artifactValidationAllPrimaryArtifactsValid = false;
+        bool artifactValidationBundleHashMatches = false;
+        std::string artifactValidationVerdictCode = "Unavailable";
+        std::string artifactValidationPrimaryFailureCode = "Unavailable";
+        uint32 artifactValidationPrimaryFailureEntryIndex = RVX_INVALID_INDEX;
+        uint32 artifactValidationPrimaryFailureEntryCount = 0;
+        uint32 artifactValidationEntryCount = 0;
+        bool artifactValidationEntryCountMatchesCheckedPrimaryArtifactCount = false;
+        std::string artifactValidationEntryCoverageCode = "Unavailable";
+        std::string artifactValidationEntryCoverageMessage = "validation result is unavailable";
+        std::string artifactValidationPrimaryFailureArtifactId;
+        std::string artifactValidationPrimaryFailureArtifactRelativePath;
+        std::string artifactValidationPrimaryFailureArtifactKind;
+        std::string artifactValidationPrimaryFailureArtifactContentType;
+        std::string artifactValidationPrimaryFailureArtifactSchemaId;
+        uint32 artifactValidationPrimaryFailureArtifactSchemaVersion = 0;
+        std::string artifactValidationPrimaryFailureMessage;
+        uint32 primaryArtifactCount = 0;
+        uint32 savedPrimaryArtifactCount = 0;
+        uint32 artifactValidationCheckedPrimaryArtifactCount = 0;
+        uint32 artifactValidationValidPrimaryArtifactCount = 0;
+        uint32 artifactValidationFailedPrimaryArtifactCount = 0;
+        uint64 totalPrimaryArtifactBytes = 0;
+        uint64 artifactValidationActualTotalPrimaryArtifactBytes = 0;
+        bool toolDiagnosticsTextExists = false;
+        bool renderGraphGraphvizExists = false;
+        bool renderGraphDiagnosticsTextExists = false;
+        bool renderGraphDiagnosticsJsonExists = false;
+        bool rhiCapabilityReportJsonExists = false;
+        bool manifestJsonExists = false;
+        bool artifactValidationJsonExists = false;
+        uint64 toolDiagnosticsTextBytes = 0;
+        uint64 renderGraphGraphvizBytes = 0;
+        uint64 renderGraphDiagnosticsTextBytes = 0;
+        uint64 renderGraphDiagnosticsJsonBytes = 0;
+        uint64 rhiCapabilityReportJsonBytes = 0;
+        uint64 manifestJsonBytes = 0;
+        uint64 artifactValidationJsonBytes = 0;
+        std::string toolDiagnosticsTextContentHash;
+        std::string renderGraphGraphvizContentHash;
+        std::string renderGraphDiagnosticsTextContentHash;
+        std::string renderGraphDiagnosticsJsonContentHash;
+        std::string rhiCapabilityReportJsonContentHash;
+        std::string manifestJsonContentHash;
+        std::string artifactValidationJsonContentHash;
+        std::string primaryArtifactBundleHash;
+        std::string artifactValidationExpectedPrimaryArtifactBundleHash;
+        std::string artifactValidationActualPrimaryArtifactBundleHash;
+        std::vector<SceneRendererToolDiagnosticsArtifactValidationCodeCount> artifactValidationDiagnosticCodeCounts;
+        std::string outputDirectory;
+        std::string captureId;
+        std::string captureBaseName;
+        std::string toolDiagnosticsTextPath;
+        std::string renderGraphGraphvizPath;
+        std::string renderGraphDiagnosticsTextPath;
+        std::string renderGraphDiagnosticsJsonPath;
+        std::string rhiCapabilityReportJsonPath;
+        std::string manifestJsonPath;
+        std::string artifactSummaryJsonPath;
+        std::string artifactValidationJsonPath;
+        std::string toolDiagnosticsTextRelativePath;
+        std::string renderGraphGraphvizRelativePath;
+        std::string renderGraphDiagnosticsTextRelativePath;
+        std::string renderGraphDiagnosticsJsonRelativePath;
+        std::string rhiCapabilityReportJsonRelativePath;
+        std::string manifestJsonRelativePath;
+        std::string artifactSummaryJsonRelativePath;
+        std::string artifactValidationJsonRelativePath;
+    };
+
+    struct SceneRendererToolDiagnosticsArtifactValidationEntry
+    {
+        uint32 entryIndex = RVX_INVALID_INDEX;
+        std::string id;
+        std::string kind;
+        std::string contentType;
+        std::string schemaId;
+        uint32 schemaVersion = 0;
+        std::string path;
+        std::string relativePath;
+        bool expectedSaved = false;
+        bool exists = false;
+        bool valid = false;
+        bool primaryFailure = false;
+        bool byteSizeMatches = false;
+        bool contentHashMatches = false;
+        bool identityChecked = false;
+        bool identityMatches = false;
+        bool schemaChecked = false;
+        bool schemaMatches = false;
+        uint64 expectedByteSize = 0;
+        uint64 actualByteSize = 0;
+        std::string expectedContentHash;
+        std::string actualContentHash;
+        std::string actualId;
+        std::string actualKind;
+        std::string actualContentType;
+        std::string actualSchemaId;
+        uint32 actualSchemaVersion = 0;
+        std::string diagnosticCode = "None";
+        std::string diagnosticMessage;
+    };
+
+    struct SceneRendererToolDiagnosticsArtifactValidationResult
+    {
+        uint32 schemaVersion = RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION;
+        bool artifactResultAvailable = false;
+        bool allPrimaryArtifactsValid = false;
+        bool bundleHashMatches = false;
+        std::string verdictCode = "Unavailable";
+        std::string primaryFailureCode = "Unavailable";
+        uint32 primaryFailureEntryIndex = RVX_INVALID_INDEX;
+        uint32 primaryFailureEntryCount = 0;
+        uint32 entryCount = 0;
+        bool entryCountMatchesCheckedPrimaryArtifactCount = false;
+        std::string entryCoverageCode = "Unavailable";
+        std::string entryCoverageMessage = "validation result is unavailable";
+        std::string primaryFailureArtifactId;
+        std::string primaryFailureArtifactRelativePath;
+        std::string primaryFailureArtifactKind;
+        std::string primaryFailureArtifactContentType;
+        std::string primaryFailureArtifactSchemaId;
+        uint32 primaryFailureArtifactSchemaVersion = 0;
+        std::string primaryFailureMessage;
+        uint32 checkedPrimaryArtifactCount = 0;
+        uint32 validPrimaryArtifactCount = 0;
+        uint32 failedPrimaryArtifactCount = 0;
+        uint64 actualTotalPrimaryArtifactBytes = 0;
+        std::string expectedPrimaryArtifactBundleHash;
+        std::string actualPrimaryArtifactBundleHash;
+        bool captureMetadataAvailable = false;
+        std::string captureId;
+        std::string captureBaseName;
+        std::string outputDirectory;
+        uint64 frameIndex = 0;
+        uint32 toolDiagnosticsSchemaVersion = RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION;
+        uint32 frameDiagnosticsSchemaVersion = RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION;
+        uint32 renderGraphDiagnosticsSchemaVersion = RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION;
+        uint32 rhiCapabilityReportSchemaVersion = RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION;
+        uint32 artifactSummarySchemaVersion = RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION;
+        uint32 artifactValidationSchemaVersion = RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION;
+        std::string renderGraphDiagnosticsSchemaId = RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID;
+        std::string rhiCapabilityReportSchemaId = RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID;
+        size_t renderGraphPassCount = 0;
+        size_t renderGraphResourceCount = 0;
+        std::vector<SceneRendererToolDiagnosticsArtifactValidationCodeCount> diagnosticCodeCounts;
+        std::vector<SceneRendererToolDiagnosticsArtifactValidationEntry> entries;
     };
 
     struct SceneLocalLightingStats
@@ -281,30 +575,6 @@ namespace RVX
         uint32 prefilteredMipLevels = 1;
         float intensity = 1.0f;
         std::string fallbackReason;
-    };
-
-    struct SceneGPUDrivenCullingStats
-    {
-        bool enabled = false;
-        bool fallbackUsed = false;
-        bool graphPassAdded = false;
-        bool graphPassRecorded = false;
-        bool gpuExecutionRecorded = false;
-        uint32 inputOpaqueDrawItemCount = 0;
-        uint32 inputMaskedDrawItemCount = 0;
-        uint32 outputOpaqueDrawItemCount = 0;
-        uint32 outputMaskedDrawItemCount = 0;
-        uint32 cullableOpaqueDrawItemCount = 0;
-        uint32 cullableMaskedDrawItemCount = 0;
-        uint32 graphInputDrawItemCount = 0;
-        uint32 skippedMissingGpuDataCount = 0;
-        uint32 visibleCullableDrawItemCount = 0;
-        uint32 frustumCulledDrawItemCount = 0;
-        uint32 distanceCulledDrawItemCount = 0;
-        bool opaqueIndirectRequested = false;
-        bool opaqueIndirectEligible = false;
-        uint32 opaqueGpuDrivenIndirectBatchCount = 0;
-        uint32 opaqueGpuDrivenIndirectDrawCount = 0;
     };
 
     struct SceneRayTracingBudgetSettings
@@ -670,6 +940,15 @@ namespace RVX
             RefreshFrameDiagnostics(false, false, true, false, nullptr);
         }
 
+        /// Refresh frame diagnostics for focused validation without building a full RenderGraph.
+        void RefreshFrameDiagnosticsForTesting(bool graphBuilt = false);
+
+        /// Override the RHI capability source for focused feature-report tests.
+        void SetRenderFeatureReportDeviceForTesting(IRHIDevice* device)
+        {
+            m_featureReportDeviceForTesting = device;
+        }
+
         // =====================================================================
         // Accessors
         // =====================================================================
@@ -738,6 +1017,80 @@ namespace RVX
 
         /// Get aggregate frame diagnostics for editor/debug tooling.
         const SceneRendererFrameDiagnostics& GetFrameDiagnostics() const { return m_frameDiagnostics; }
+
+        /// Get the coherent modern-rendering feature capability report from the latest diagnostics refresh.
+        const SceneRenderFeatureReport& GetRenderFeatureReport() const { return m_frameDiagnostics.featureReport; }
+
+        /// Get versioned frame and RenderGraph diagnostics for editor/profiler tooling.
+        const SceneRendererToolDiagnosticsSnapshot& GetToolDiagnosticsSnapshot() const
+        {
+            return m_toolDiagnosticsSnapshot;
+        }
+
+        /// Export the latest tool diagnostics snapshot as readable text for logs/debug panels.
+        std::string ExportToolDiagnosticsText() const;
+
+        /// Save the latest tool diagnostics snapshot as readable text.
+        bool SaveToolDiagnosticsText(const char* filename) const;
+
+        /// Export the latest RenderGraph from the tool diagnostics snapshot as Graphviz DOT.
+        std::string ExportToolRenderGraphGraphviz() const;
+
+        /// Save the latest RenderGraph from the tool diagnostics snapshot as Graphviz DOT.
+        bool SaveToolRenderGraphGraphviz(const char* filename) const;
+
+        /// Export the latest RenderGraph detailed diagnostics as readable text.
+        std::string ExportToolRenderGraphDiagnosticsText() const;
+
+        /// Save the latest RenderGraph detailed diagnostics as readable text.
+        bool SaveToolRenderGraphDiagnosticsText(const char* filename) const;
+
+        /// Export the latest RenderGraph detailed diagnostics as machine-readable JSON.
+        std::string ExportToolRenderGraphDiagnosticsJson() const;
+
+        /// Save the latest RenderGraph detailed diagnostics as machine-readable JSON.
+        bool SaveToolRenderGraphDiagnosticsJson(const char* filename) const;
+
+        /// Export the latest RHI capability report from the tool diagnostics snapshot as machine-readable JSON.
+        std::string ExportToolRHICapabilityReportJson() const;
+
+        /// Save the latest RHI capability report from the tool diagnostics snapshot as machine-readable JSON.
+        bool SaveToolRHICapabilityReportJson(const char* filename) const;
+
+        /// Export a machine-readable manifest for the latest tool diagnostics snapshot.
+        std::string ExportToolDiagnosticsManifestJson(
+            const SceneRendererToolDiagnosticsArtifactResult* artifacts = nullptr) const;
+
+        /// Save a machine-readable manifest for the latest tool diagnostics snapshot.
+        bool SaveToolDiagnosticsManifestJson(
+            const char* filename,
+            const SceneRendererToolDiagnosticsArtifactResult* artifacts = nullptr) const;
+
+        /// Export a machine-readable summary of the saved tool diagnostics artifacts.
+        std::string ExportToolDiagnosticsArtifactSummaryJson(
+            const SceneRendererToolDiagnosticsArtifactResult* artifacts = nullptr) const;
+
+        /// Save a machine-readable summary of the saved tool diagnostics artifacts.
+        bool SaveToolDiagnosticsArtifactSummaryJson(
+            const char* filename,
+            const SceneRendererToolDiagnosticsArtifactResult* artifacts = nullptr) const;
+
+        /// Save all tool diagnostics artifacts into a directory using a shared base name.
+        SceneRendererToolDiagnosticsArtifactResult SaveToolDiagnosticsArtifacts(const char* directory,
+                                                                               const char* baseName) const;
+
+        /// Validate a saved primary diagnostics artifact bundle against its recorded hashes and sizes.
+        static SceneRendererToolDiagnosticsArtifactValidationResult ValidateToolDiagnosticsArtifacts(
+            const SceneRendererToolDiagnosticsArtifactResult& artifacts);
+
+        /// Export a tool diagnostics artifact validation result as machine-readable JSON.
+        static std::string ExportToolDiagnosticsArtifactValidationJson(
+            const SceneRendererToolDiagnosticsArtifactValidationResult& validation);
+
+        /// Save a tool diagnostics artifact validation result as machine-readable JSON.
+        static bool SaveToolDiagnosticsArtifactValidationJson(
+            const char* filename,
+            const SceneRendererToolDiagnosticsArtifactValidationResult& validation);
 
         /// Get environment IBL binding statistics from the last view setup.
         const SceneEnvironmentIBLStats& GetEnvironmentIBLStats() const { return m_environmentIBLStats; }
@@ -862,6 +1215,7 @@ namespace RVX
                                      bool graphBuilt,
                                      bool graphCompiled,
                                      const char* skippedReason);
+        SceneRenderFeatureReport BuildRenderFeatureReport(const SceneRendererFrameDiagnostics& diagnostics) const;
 
         struct PreGraphPrepareCallbackEntry
         {
@@ -897,7 +1251,9 @@ namespace RVX
         SceneLocalLightingStats m_localLightingStats;
         SceneClusteredLightingStats m_clusteredLightingStats;
         SceneRendererFrameDiagnostics m_frameDiagnostics;
+        SceneRendererToolDiagnosticsSnapshot m_toolDiagnosticsSnapshot;
         uint64 m_frameDiagnosticsCounter = 0;
+        IRHIDevice* m_featureReportDeviceForTesting = nullptr;
         SceneEnvironmentIBLStats m_environmentIBLStats;
         SceneGPUDrivenCullingStats m_gpuDrivenCullingStats;
         RayTracingSceneManagerStats m_rayTracingSceneStats;

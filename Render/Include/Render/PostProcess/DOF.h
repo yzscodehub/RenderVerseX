@@ -93,6 +93,10 @@ namespace RVX
         int32 GetPriority() const override { return 200; }  // Early in pipeline (after SSAO)
 
         void Configure(const PostProcessSettings& settings) override;
+        PostProcessFrameInputRequirements GetFrameInputRequirements() const override
+        {
+            return {.requiresDepth = true};
+        }
         void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override;
 
         // =========================================================================

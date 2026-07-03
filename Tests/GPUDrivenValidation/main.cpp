@@ -410,6 +410,7 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackBuffersAvoidDx11InvalidGpuOnlyFlag
 TEST_F(GPUDrivenValidationFixture, GpuExecutionBuffersKeepStructuredUavFlags)
 {
     FakeDevice device;
+    device.capabilities.supportsComputePipeline = true;
     device.capabilities.supportsDescriptorSets = true;
     device.capabilities.supportsIndirectDrawCount = true;
 
@@ -439,6 +440,58 @@ TEST_F(GPUDrivenValidationFixture, GpuExecutionBuffersKeepStructuredUavFlags)
     expectGpuWritableStructuredBuffer(*drawCountBuffer);
     EXPECT_TRUE(HasFlag(indirectBuffer->GetUsage(), RHIBufferUsage::IndirectArgs));
     EXPECT_TRUE(HasFlag(drawCountBuffer->GetUsage(), RHIBufferUsage::IndirectArgs));
+}
+
+TEST_F(GPUDrivenValidationFixture, GpuExecutionDecisionReportsCapabilityAndPipelineFallbacks)
+{
+    {
+        FakeDevice device;
+        device.capabilities.supportsDescriptorSets = true;
+        device.capabilities.supportsIndirectDrawCount = true;
+
+        GPUCullingConfig config;
+        config.maxInstances = 8;
+
+        GPUCulling culling;
+        culling.Initialize(&device, config);
+
+        GPUCullingExecutionDecision decision = culling.GetExecutionDecision();
+        EXPECT_EQ(GPUCullingExecutionMode::CpuFallback, decision.mode);
+        EXPECT_FALSE(decision.gpuCapable);
+        EXPECT_FALSE(decision.pipelineReady);
+        EXPECT_EQ(GPUCullingFallbackReason::ComputePipelineUnsupported, decision.fallbackReason);
+    }
+
+    {
+        FakeDevice device;
+        device.capabilities.supportsComputePipeline = true;
+        device.capabilities.supportsDescriptorSets = true;
+        device.capabilities.supportsIndirectDrawCount = true;
+
+        GPUCullingConfig config;
+        config.maxInstances = 8;
+
+        GPUCulling culling;
+        culling.Initialize(&device, config);
+
+        GPUCullingExecutionDecision decision = culling.GetExecutionDecision();
+        EXPECT_EQ(GPUCullingExecutionMode::CpuFallback, decision.mode);
+        EXPECT_TRUE(decision.gpuCapable);
+        EXPECT_FALSE(decision.pipelineReady);
+        EXPECT_EQ(GPUCullingFallbackReason::DescriptorSetLayoutCreationFailed, decision.fallbackReason);
+
+        culling.BeginFrame();
+        EXPECT_EQ(0u, culling.AddInstance(MakeInstance(Vec3(0.0f, 0.0f, -5.0f), 1.0f, 36)));
+        culling.EndFrame();
+
+        FakeCommandContext ctx;
+        culling.Cull(ctx, TestView(), TestProjection());
+
+        EXPECT_TRUE(culling.WasCpuFallbackUsedLastCull());
+        EXPECT_FALSE(culling.WasGpuExecutionUsedLastCull());
+        EXPECT_EQ(GPUCullingFallbackReason::DescriptorSetLayoutCreationFailed,
+                  culling.GetLastFallbackReason());
+    }
 }
 
 TEST_F(GPUDrivenValidationFixture, DrawIndexedIndirectHonorsMaxDrawCount)
@@ -656,6 +709,29 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresGpuCullingBeforePassResourc
               std::string::npos);
 }
 
+TEST_F(GPUDrivenValidationFixture, SceneRendererFrameDiagnosticsExposeGPUDrivenExecutionDecision)
+{
+    const std::filesystem::path root = FindWorkspaceRoot();
+    ASSERT_FALSE(root.empty());
+
+    const std::string header =
+        ReadTextFile(root / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
+    const std::string source =
+        ReadTextFile(root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+    ASSERT_FALSE(header.empty());
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(header.find("bool executionDecisionAvailable = false;"), std::string::npos);
+    EXPECT_NE(header.find("GPUCullingExecutionDecision executionDecision;"), std::string::npos);
+    EXPECT_NE(header.find("SceneGPUDrivenCullingStats gpuDrivenCullingStats;"), std::string::npos);
+    EXPECT_NE(source.find("diagnostics.gpuDrivenCullingStats = m_gpuDrivenCullingStats;"),
+              std::string::npos);
+    EXPECT_NE(source.find("m_gpuDrivenCullingStats.executionDecisionAvailable = true;"),
+              std::string::npos);
+    EXPECT_NE(source.find("m_gpuDrivenCullingStats.executionDecision = m_gpuCulling->GetExecutionDecision();"),
+              std::string::npos);
+}
+
 TEST_F(GPUDrivenValidationFixture, GPUCullingDeclaresComputeCompactionAndIndirectCountContracts)
 {
     const std::filesystem::path root = FindWorkspaceRoot();
@@ -678,8 +754,13 @@ TEST_F(GPUDrivenValidationFixture, GPUCullingDeclaresComputeCompactionAndIndirec
     EXPECT_NE(header.find("RHIPipelineRef m_frustumCullPipeline"), std::string::npos);
     EXPECT_NE(header.find("RHIPipelineRef m_compactPipeline"), std::string::npos);
     EXPECT_NE(header.find("WasGpuExecutionUsedLastCull"), std::string::npos);
+    EXPECT_NE(header.find("GPUCullingFallbackReason"), std::string::npos);
+    EXPECT_NE(header.find("GetExecutionDecision"), std::string::npos);
+    EXPECT_NE(header.find("GetLastFallbackReason"), std::string::npos);
 
     EXPECT_NE(source.find("CreatePipelineResources()"), std::string::npos);
+    EXPECT_NE(source.find("EvaluateGpuExecution"), std::string::npos);
+    EXPECT_NE(source.find("supportsComputePipeline"), std::string::npos);
     EXPECT_NE(source.find("CreateComputePipeline"), std::string::npos);
     EXPECT_NE(source.find("ctx.SetDescriptorSet(0, m_cullingDescriptorSet.Get())"), std::string::npos);
     EXPECT_NE(source.find("ctx.DrawIndexedIndirectCount"), std::string::npos);

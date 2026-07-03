@@ -47,6 +47,7 @@ void SSAO::Shutdown()
     m_blurVPipeline.Reset();
     m_temporalPipeline.Reset();
     m_device = nullptr;
+    m_lastComputeStats = {};
 }
 
 void SSAO::Resize(uint32 width, uint32 height)
@@ -175,12 +176,32 @@ void SSAO::Compute(RHICommandContext& ctx,
                    const Mat4& viewMatrix,
                    const Mat4& projMatrix)
 {
+    (void)viewMatrix;
+    (void)projMatrix;
+
+    m_lastComputeStats = {};
+    m_lastComputeStats.requested = IsRequestedEnabled();
+    m_lastComputeStats.supported = IsSupported();
+    m_lastComputeStats.depthAvailable = depthTexture != nullptr;
+    m_lastComputeStats.normalAvailable = normalTexture != nullptr;
+
+    if (!depthTexture)
+    {
+        m_lastComputeStats.fallbackReason = "SSAO skipped because depth input is unavailable";
+        if (IsRequestedEnabled())
+        {
+            RVX_CORE_WARN("SSAO: {}", m_lastComputeStats.fallbackReason);
+        }
+        return;
+    }
+
     if (!IsEnabled() || !m_device)
     {
         if (IsRequestedEnabled() && !IsSupported())
         {
             RVX_CORE_WARN("SSAO: unsupported compute skipped: {}", GetUnsupportedReason());
         }
+        m_lastComputeStats.fallbackReason = GetUnsupportedReason();
         return;
     }
 
@@ -190,10 +211,15 @@ void SSAO::Compute(RHICommandContext& ctx,
     {
         BlurSSAO(ctx, depthTexture);
     }
+    m_lastComputeStats.executed = true;
 }
 
 void SSAO::ComputeSSAO(RHICommandContext& ctx, RHITexture* depth, RHITexture* normal)
 {
+    (void)ctx;
+    (void)depth;
+    (void)normal;
+
     // TODO: Dispatch SSAO compute shader
     // - Sample depth buffer
     // - Reconstruct view-space position
@@ -203,6 +229,9 @@ void SSAO::ComputeSSAO(RHICommandContext& ctx, RHITexture* depth, RHITexture* no
 
 void SSAO::BlurSSAO(RHICommandContext& ctx, RHITexture* depth)
 {
+    (void)ctx;
+    (void)depth;
+
     // TODO: Dispatch bilateral blur passes
     // - Horizontal pass
     // - Vertical pass

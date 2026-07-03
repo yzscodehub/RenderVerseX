@@ -333,19 +333,22 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
 
     if (!m_device)
     {
-        SetFallback("ray tracing scene manager has no RHI device");
+        SetFallback(RayTracingSceneFallbackCode::MissingDevice,
+                    "ray tracing scene manager has no RHI device");
         return false;
     }
 
     if (!m_stats.supported)
     {
-        SetFallback("RHI device does not support ray tracing");
+        SetFallback(RayTracingSceneFallbackCode::RayTracingUnsupported,
+                    "RHI device does not support ray tracing");
         return false;
     }
 
     if (!plan.HasWork())
     {
-        SetFallback("ray tracing scene plan has no buildable work");
+        SetFallback(RayTracingSceneFallbackCode::EmptyBuildPlan,
+                    "ray tracing scene plan has no buildable work");
         return false;
     }
 
@@ -357,7 +360,8 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
         BLASCacheEntry* entry = GetOrCreateBLAS(build);
         if (!entry)
         {
-            SetFallback("failed to create bottom-level acceleration structure");
+            SetFallback(RayTracingSceneFallbackCode::BottomLevelASCreationFailed,
+                        "failed to create bottom-level acceleration structure");
             return false;
         }
 
@@ -402,7 +406,8 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
     std::vector<RHIAccelerationStructure*> blasResources;
     if (!collectFrameBLAS(&blasResources))
     {
-        SetFallback("failed to create bottom-level acceleration structure");
+        SetFallback(RayTracingSceneFallbackCode::BottomLevelASCreationFailed,
+                    "failed to create bottom-level acceleration structure");
         return false;
     }
 
@@ -411,13 +416,15 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
         std::span<RHIAccelerationStructure* const>(blasResources.data(), blasResources.size()));
     if (cpuTopLevelDesc.instances.size() != plan.instances.size())
     {
-        SetFallback("failed to map all ray tracing TLAS instances");
+        SetFallback(RayTracingSceneFallbackCode::TopLevelInstanceMappingFailed,
+                    "failed to map all ray tracing TLAS instances");
         return false;
     }
 
     if (!ValidateRHITopLevelASDesc(cpuTopLevelDesc))
     {
-        SetFallback("failed to build a valid CPU TLAS description");
+        SetFallback(RayTracingSceneFallbackCode::InvalidTopLevelDescription,
+                    "failed to build a valid CPU TLAS description");
         return false;
     }
 
@@ -435,14 +442,16 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
         const uint32 expectedInstanceId = static_cast<uint32>(m_instanceRecords.size());
         if (instance.instanceId != expectedInstanceId)
         {
-            SetFallback("ray tracing TLAS instance IDs must match metadata order");
+            SetFallback(RayTracingSceneFallbackCode::InstanceMetadataOrderMismatch,
+                        "ray tracing TLAS instance IDs must match metadata order");
             return false;
         }
 
         const uint64 address = instance.bottomLevel ? instance.bottomLevel->GetGPUVirtualAddress() : 0;
         if (address == 0)
         {
-            SetFallback("BLAS GPU address is unavailable");
+            SetFallback(RayTracingSceneFallbackCode::MissingBottomLevelASAddress,
+                        "BLAS GPU address is unavailable");
             return false;
         }
 
@@ -537,19 +546,22 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
 
     if (!EnsureInstanceBuffer(m_instanceRecords))
     {
-        SetFallback("failed to update TLAS instance buffer");
+        SetFallback(RayTracingSceneFallbackCode::InstanceBufferUpdateFailed,
+                    "failed to update TLAS instance buffer");
         return false;
     }
 
     if (!EnsureInstanceMaterialMetadataBuffer(m_instanceMaterialMetadataRecords))
     {
-        SetFallback("failed to update ray tracing instance material metadata buffer");
+        SetFallback(RayTracingSceneFallbackCode::MaterialMetadataBufferUpdateFailed,
+                    "failed to update ray tracing instance material metadata buffer");
         return false;
     }
 
     if (!EnsureInstanceAlphaMetadataBuffer(m_instanceAlphaMetadataRecords))
     {
-        SetFallback("failed to update ray tracing instance alpha metadata buffer");
+        SetFallback(RayTracingSceneFallbackCode::AlphaMetadataBufferUpdateFailed,
+                    "failed to update ray tracing instance alpha metadata buffer");
         return false;
     }
 
@@ -561,7 +573,8 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
 
     if (!EnsureTopLevelAS(m_topLevelBuildDesc))
     {
-        SetFallback("failed to create top-level acceleration structure");
+        SetFallback(RayTracingSceneFallbackCode::TopLevelASCreationFailed,
+                    "failed to create top-level acceleration structure");
         return false;
     }
 
@@ -585,10 +598,12 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
     EvictUnusedBLASForResourceBudget(plan.blasBuilds);
     if (!collectFrameBLAS(nullptr))
     {
-        SetFallback("failed to create bottom-level acceleration structure");
+        SetFallback(RayTracingSceneFallbackCode::BottomLevelASCreationFailed,
+                    "failed to create bottom-level acceleration structure");
         return false;
     }
     m_stats.pendingBLASBuildCount = m_pendingBLASBuilds.size();
+    m_stats.fallbackCode = RayTracingSceneFallbackCode::None;
     m_stats.fallbackReason = "";
     return m_stats.prepared;
 }
@@ -1113,7 +1128,7 @@ void RayTracingSceneManager::InvalidateFrameOutputs()
     m_topLevelBuildDesc = {};
 }
 
-void RayTracingSceneManager::SetFallback(const char* reason)
+void RayTracingSceneManager::SetFallback(RayTracingSceneFallbackCode code, const char* reason)
 {
     InvalidateFrameOutputs();
     m_stats.prepared = false;
@@ -1130,6 +1145,7 @@ void RayTracingSceneManager::SetFallback(const char* reason)
     m_stats.alphaNormalBufferCount = 0;
     m_stats.alphaTangentBufferCount = 0;
     UpdateResourceStats();
+    m_stats.fallbackCode = code;
     m_stats.fallbackReason = reason ? reason : "unknown ray tracing scene fallback";
 }
 

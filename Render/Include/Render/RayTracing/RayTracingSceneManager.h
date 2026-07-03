@@ -106,6 +106,23 @@ namespace RVX
     static_assert(sizeof(RayTracingInstanceMaterialMetadata) == 208,
                   "RayTracingInstanceMaterialMetadata must match the ray tracing shader layout");
 
+    enum class RayTracingSceneFallbackCode : uint8
+    {
+        None,
+        MissingDevice,
+        RayTracingUnsupported,
+        EmptyBuildPlan,
+        BottomLevelASCreationFailed,
+        TopLevelInstanceMappingFailed,
+        InvalidTopLevelDescription,
+        InstanceMetadataOrderMismatch,
+        MissingBottomLevelASAddress,
+        InstanceBufferUpdateFailed,
+        MaterialMetadataBufferUpdateFailed,
+        AlphaMetadataBufferUpdateFailed,
+        TopLevelASCreationFailed,
+    };
+
     struct RayTracingSceneManagerStats
     {
         bool supported = false;
@@ -147,6 +164,7 @@ namespace RVX
         bool resourceBudgetEvictionAttempted = false;
         bool resourceByteAccountingOverflowed = false;
         bool recordedTLASBuild = false;
+        RayTracingSceneFallbackCode fallbackCode = RayTracingSceneFallbackCode::None;
         const char* fallbackReason = "";
     };
 
@@ -265,7 +283,7 @@ namespace RVX
         void UpdateResourceStats();
         void ResetFrameState();
         void InvalidateFrameOutputs();
-        void SetFallback(const char* reason);
+        void SetFallback(RayTracingSceneFallbackCode code, const char* reason);
 
         IRHIDevice* m_device = nullptr;
         std::deque<BLASCacheEntry> m_blasCache;

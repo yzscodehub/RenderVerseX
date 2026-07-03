@@ -80,6 +80,14 @@ namespace RVX
         int32 GetPriority() const override { return 100; }  // Very early, before DOF
 
         void Configure(const PostProcessSettings& settings) override;
+        PostProcessFrameInputRequirements GetFrameInputRequirements() const override
+        {
+            return {
+                .requiresDepth = true,
+                .requiresVelocity = true,
+                .requiresHistory = true,
+            };
+        }
         void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override;
 
         // =========================================================================

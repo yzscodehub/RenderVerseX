@@ -2037,8 +2037,8 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerLoadsCookedShaderArtifactB
 
     auto* shaderResource = dynamic_cast<RVX::Resource::ShaderResource*>(resource);
     ASSERT_NE(shaderResource, nullptr);
-    EXPECT_EQ(shaderResource->GetBackend(), RVX::RHIBackendType::DX12);
-    EXPECT_EQ(shaderResource->GetStage(), RVX::RHIShaderStage::Pixel);
+    EXPECT_EQ(shaderResource->GetBackend(), RVX::Resource::ShaderBackendType::DX12);
+    EXPECT_EQ(shaderResource->GetStage(), RVX::Resource::ShaderStage::Pixel);
     EXPECT_EQ(shaderResource->GetEntryPoint(), "main");
     EXPECT_EQ(shaderResource->GetTargetProfile(), "ps_6_0");
     EXPECT_EQ(shaderResource->GetSourceHash(), 123456789u);

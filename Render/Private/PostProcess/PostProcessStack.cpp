@@ -7,6 +7,7 @@
 #include "Core/Log.h"
 #include "RHI/RHICommandContext.h"
 #include <algorithm>
+#include <utility>
 
 namespace RVX
 {
@@ -41,6 +42,27 @@ namespace
                 return true;
             default:
                 return false;
+        }
+    }
+
+    PostProcessColorDomain GetColorDomainForFormat(RHIFormat format)
+    {
+        if (format == RHIFormat::Unknown)
+        {
+            return PostProcessColorDomain::Unknown;
+        }
+
+        return IsLDROutputFormat(format) ? PostProcessColorDomain::LDR : PostProcessColorDomain::HDR;
+    }
+
+    void MarkEnabledEffectPlansSkipped(PostProcessStackExecuteStats& stats, const std::string& reason)
+    {
+        for (PostProcessEffectExecutionPlan& plan : stats.effectPlans)
+        {
+            if (plan.enabled)
+            {
+                plan.skippedReason = reason;
+            }
         }
     }
 
@@ -173,6 +195,39 @@ namespace
         stats.fallbackCopyReason = reason ? reason : "fallback copy";
         return true;
     }
+
+    std::string BuildMissingFrameInputReason(const PostProcessFrameInputRequirements& requirements,
+                                             const PostProcessFrameInputs& inputs)
+    {
+        std::string reason;
+        auto append = [&reason](const char* name)
+        {
+            if (!reason.empty())
+            {
+                reason += ", ";
+            }
+            reason += name;
+        };
+
+        if (requirements.requiresDepth && !inputs.HasDepth())
+        {
+            append("depth");
+        }
+        if (requirements.requiresNormal && !inputs.HasNormal())
+        {
+            append("normal");
+        }
+        if (requirements.requiresVelocity && !inputs.HasVelocity())
+        {
+            append("velocity");
+        }
+        if (requirements.requiresHistory && !inputs.HasHistory())
+        {
+            append("temporal history");
+        }
+
+        return reason.empty() ? reason : "missing required frame input(s): " + reason;
+    }
 } // namespace
 
 PostProcessStack::~PostProcessStack()
@@ -227,11 +282,35 @@ void PostProcessStack::ApplySettings(const PostProcessSettings& settings)
 }
 
 std::vector<IPostProcessPass*> PostProcessStack::GatherEnabledEffects(PostProcessStackExecuteStats& stats,
-                                                                      bool logUnsupported) const
+                                                                      bool logUnsupported,
+                                                                      const PostProcessFrameInputs* frameInputs) const
 {
     std::vector<IPostProcessPass*> enabledEffects;
     for (const auto& effect : m_effects)
     {
+        const PostProcessFrameInputRequirements requirements = effect->GetFrameInputRequirements();
+
+        PostProcessEffectExecutionPlan plan;
+        plan.effectName = effect->GetName() ? effect->GetName() : "";
+        plan.sequenceIndex = static_cast<uint32>(stats.effectPlans.size());
+        plan.priority = effect->GetPriority();
+        plan.requested = effect->IsRequestedEnabled();
+        plan.supported = effect->IsSupported();
+        plan.enabled = effect->IsEnabled();
+        plan.pipelineReady = effect->IsSupported();
+        plan.pipelineReadinessReason = effect->IsSupported()
+                                           ? std::string()
+                                           : effect->GetUnsupportedReason();
+        plan.requiresDepth = requirements.requiresDepth;
+        plan.requiresNormal = requirements.requiresNormal;
+        plan.requiresVelocity = requirements.requiresVelocity;
+        plan.requiresHistory = requirements.requiresHistory;
+        if (frameInputs)
+        {
+            plan.frameInputsSatisfied = requirements.IsSatisfiedBy(*frameInputs);
+            plan.missingFrameInputReason = BuildMissingFrameInputReason(requirements, *frameInputs);
+        }
+
         if (effect->IsRequestedEnabled())
         {
             stats.requestedEffectCount++;
@@ -240,6 +319,9 @@ std::vector<IPostProcessPass*> PostProcessStack::GatherEnabledEffects(PostProces
         if (effect->IsRequestedEnabled() && !effect->IsSupported())
         {
             stats.unsupportedSkippedCount++;
+            plan.skippedReason = effect->GetUnsupportedReason().empty()
+                                     ? "Unsupported"
+                                     : effect->GetUnsupportedReason();
             if (logUnsupported)
             {
                 RVX_CORE_WARN(
@@ -249,10 +331,27 @@ std::vector<IPostProcessPass*> PostProcessStack::GatherEnabledEffects(PostProces
             }
         }
 
-        if (effect->IsEnabled())
+        if (effect->IsRequestedEnabled() && frameInputs && !plan.frameInputsSatisfied)
+        {
+            if (plan.skippedReason.empty())
+            {
+                plan.skippedReason = plan.missingFrameInputReason;
+            }
+            if (logUnsupported)
+            {
+                RVX_CORE_WARN(
+                    "PostProcessStack: Skipping effect '{}' because {}",
+                    effect->GetName(),
+                    plan.missingFrameInputReason);
+            }
+        }
+
+        if (effect->IsEnabled() && (!frameInputs || plan.frameInputsSatisfied))
         {
             enabledEffects.push_back(effect.get());
         }
+
+        stats.effectPlans.push_back(std::move(plan));
     }
     stats.enabledEffectCount = static_cast<uint32>(enabledEffects.size());
 
@@ -267,7 +366,7 @@ std::vector<IPostProcessPass*> PostProcessStack::GatherEnabledEffects(PostProces
 PostProcessStackExecuteStats PostProcessStack::EvaluateEffects() const
 {
     PostProcessStackExecuteStats stats;
-    std::vector<IPostProcessPass*> enabledEffects = GatherEnabledEffects(stats, false);
+    std::vector<IPostProcessPass*> enabledEffects = GatherEnabledEffects(stats, false, nullptr);
     if (!enabledEffects.empty())
     {
         (void)ValidateToneMappingBoundary(enabledEffects, RHIFormat::Unknown, stats, false);
@@ -277,15 +376,29 @@ PostProcessStackExecuteStats PostProcessStack::EvaluateEffects() const
 
 void PostProcessStack::Execute(RenderGraph& graph, RGTextureHandle sceneColor, RGTextureHandle output)
 {
-    m_lastExecuteStats = {};
+    PostProcessFrameInputs frameInputs;
+    frameInputs.sceneColor = sceneColor;
+    if (const RHITextureDesc* outputDesc = graph.GetTextureDesc(output))
+    {
+        frameInputs.outputFormat = outputDesc->format;
+    }
+    Execute(graph, frameInputs, output);
+}
 
-    std::vector<IPostProcessPass*> enabledEffects = GatherEnabledEffects(m_lastExecuteStats, true);
+void PostProcessStack::Execute(RenderGraph& graph,
+                               const PostProcessFrameInputs& frameInputs,
+                               RGTextureHandle output)
+{
+    m_lastExecuteStats = {};
+    m_lastExecuteStats.frameInputs = frameInputs;
+
+    std::vector<IPostProcessPass*> enabledEffects = GatherEnabledEffects(m_lastExecuteStats, true, &frameInputs);
 
     if (enabledEffects.empty())
     {
         m_lastExecuteStats.noEffectNoWork = true;
         AddFallbackCopyPass(graph,
-                            sceneColor,
+                            frameInputs.sceneColor,
                             output,
                             m_lastExecuteStats,
                             "no supported enabled effects; copied scene color to output");
@@ -300,8 +413,9 @@ void PostProcessStack::Execute(RenderGraph& graph, RGTextureHandle sceneColor, R
     if (!ValidateToneMappingBoundary(enabledEffects, m_lastExecuteStats.finalOutputFormat, m_lastExecuteStats, true))
     {
         RVX_CORE_WARN("PostProcessStack: invalid ToneMapping boundary; skipping post-process execution");
+        MarkEnabledEffectPlansSkipped(m_lastExecuteStats, m_lastExecuteStats.toneMappingBoundaryWarning);
         AddFallbackCopyPass(graph,
-                            sceneColor,
+                            frameInputs.sceneColor,
                             output,
                             m_lastExecuteStats,
                             "invalid ToneMapping boundary; copied scene color to output");
@@ -311,7 +425,7 @@ void PostProcessStack::Execute(RenderGraph& graph, RGTextureHandle sceneColor, R
     std::vector<RGTextureHandle> intermediates;
     if (enabledEffects.size() > 1)
     {
-        const RHITextureDesc* sceneDescPtr = graph.GetTextureDesc(sceneColor);
+        const RHITextureDesc* sceneDescPtr = graph.GetTextureDesc(frameInputs.sceneColor);
         const RHITextureDesc* outputDescPtr = graph.GetTextureDesc(output);
         if (!sceneDescPtr || !outputDescPtr)
         {
@@ -352,14 +466,41 @@ void PostProcessStack::Execute(RenderGraph& graph, RGTextureHandle sceneColor, R
         m_lastExecuteStats.transientIntermediateCount = static_cast<uint32>(intermediates.size());
     }
 
-    RGTextureHandle currentInput = sceneColor;
+    RGTextureHandle currentInput = frameInputs.sceneColor;
+    size_t nextPlanIndex = 0;
 
     for (size_t i = 0; i < enabledEffects.size(); ++i)
     {
         bool isLast = (i == enabledEffects.size() - 1);
         RGTextureHandle currentOutput = isLast ? output : intermediates[i];
 
-        enabledEffects[i]->AddToGraph(graph, currentInput, currentOutput);
+        PostProcessEffectExecutionPlan* plan = nullptr;
+        while (nextPlanIndex < m_lastExecuteStats.effectPlans.size())
+        {
+            PostProcessEffectExecutionPlan& candidate = m_lastExecuteStats.effectPlans[nextPlanIndex++];
+            if (candidate.enabled)
+            {
+                plan = &candidate;
+                break;
+            }
+        }
+
+        if (plan)
+        {
+            const RHITextureDesc* inputDesc = graph.GetTextureDesc(currentInput);
+            const RHITextureDesc* outputDesc = graph.GetTextureDesc(currentOutput);
+            plan->inputFormat = inputDesc ? inputDesc->format : RHIFormat::Unknown;
+            plan->outputFormat = outputDesc ? outputDesc->format : RHIFormat::Unknown;
+            plan->inputDomain = GetColorDomainForFormat(plan->inputFormat);
+            plan->outputDomain = GetColorDomainForFormat(plan->outputFormat);
+            plan->inputIsSceneColor = (i == 0);
+            plan->outputIsTransientIntermediate = !isLast;
+            plan->outputIsFinalTarget = isLast;
+        }
+
+        PostProcessFrameInputs passInputs = frameInputs;
+        passInputs.sceneColor = currentInput;
+        enabledEffects[i]->AddToGraph(graph, passInputs, currentOutput);
         m_lastExecuteStats.graphPassCount++;
         currentInput = currentOutput;
     }

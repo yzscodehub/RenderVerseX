@@ -41,6 +41,22 @@ namespace RVX
         bool clampHistory = true;           ///< Clamp history to neighborhood
     };
 
+    struct TAAResolveStats
+    {
+        bool requested = false;
+        bool supported = false;
+        bool resolved = false;
+        bool copiedCurrentFrame = false;
+        bool historyValidBefore = false;
+        bool historyValidAfter = false;
+        bool depthAvailable = false;
+        bool motionVectorsAvailable = false;
+        bool motionVectorFallbackUsed = false;
+        uint64 frameIndex = 0;
+        Vec2 jitterOffset = Vec2(0.0f);
+        std::string fallbackReason;
+    };
+
     /**
      * @brief Temporal Anti-Aliasing
      * 
@@ -86,6 +102,8 @@ namespace RVX
         bool IsRequestedEnabled() const { return m_enabled; }
         bool IsSupported() const { return m_supported; }
         const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
+        const TAAResolveStats& GetLastResolveStats() const { return m_lastResolveStats; }
+        bool HasValidHistory() const { return m_historyValid; }
 
         // =========================================================================
         // Jitter
@@ -176,6 +194,7 @@ namespace RVX
         // State
         bool m_historyValid = false;
         Mat4 m_prevViewProj;
+        TAAResolveStats m_lastResolveStats;
     };
 
 } // namespace RVX

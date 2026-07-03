@@ -44,6 +44,7 @@ void SSR::Shutdown()
     m_temporalPipeline.Reset();
     m_constantBuffer.Reset();
     m_device = nullptr;
+    m_lastComputeStats = {};
 }
 
 void SSR::Resize(uint32 width, uint32 height)
@@ -115,12 +116,36 @@ void SSR::Compute(RHICommandContext& ctx,
                   const Mat4& viewMatrix,
                   const Mat4& projMatrix)
 {
+    (void)viewMatrix;
+    (void)projMatrix;
+
+    m_lastComputeStats = {};
+    m_lastComputeStats.requested = IsRequestedEnabled();
+    m_lastComputeStats.supported = IsSupported();
+    m_lastComputeStats.colorAvailable = colorTexture != nullptr;
+    m_lastComputeStats.depthAvailable = depthTexture != nullptr;
+    m_lastComputeStats.normalAvailable = normalTexture != nullptr;
+    m_lastComputeStats.roughnessAvailable = roughnessTexture != nullptr;
+    m_lastComputeStats.temporalHistoryRequired = m_config.temporalFilter;
+
+    if (!colorTexture || !depthTexture || !normalTexture || !roughnessTexture)
+    {
+        m_lastComputeStats.fallbackReason =
+            "SSR skipped because color, depth, normal, or roughness input is unavailable";
+        if (IsRequestedEnabled())
+        {
+            RVX_CORE_WARN("SSR: {}", m_lastComputeStats.fallbackReason);
+        }
+        return;
+    }
+
     if (!IsEnabled() || !m_device)
     {
         if (IsRequestedEnabled() && !IsSupported())
         {
             RVX_CORE_WARN("SSR: unsupported compute skipped: {}", GetUnsupportedReason());
         }
+        m_lastComputeStats.fallbackReason = GetUnsupportedReason();
         return;
     }
 
@@ -138,10 +163,14 @@ void SSR::Compute(RHICommandContext& ctx,
     {
         TemporalFilter(ctx);
     }
+    m_lastComputeStats.executed = true;
 }
 
 void SSR::BuildHiZPyramid(RHICommandContext& ctx, RHITexture* depth)
 {
+    (void)ctx;
+    (void)depth;
+
     // TODO: Dispatch HiZ pyramid generation
     // - Copy depth to mip 0
     // - For each subsequent mip: take min of 2x2 region
@@ -149,6 +178,8 @@ void SSR::BuildHiZPyramid(RHICommandContext& ctx, RHITexture* depth)
 
 void SSR::RayMarch(RHICommandContext& ctx)
 {
+    (void)ctx;
+
     // TODO: Dispatch ray marching compute shader
     // - For each pixel: reflect view direction around normal
     // - March ray through HiZ pyramid
@@ -158,6 +189,9 @@ void SSR::RayMarch(RHICommandContext& ctx)
 
 void SSR::Resolve(RHICommandContext& ctx, RHITexture* color)
 {
+    (void)ctx;
+    (void)color;
+
     // TODO: Sample color at hit UVs
     // - Apply edge fade
     // - Handle misses (use environment map fallback)
@@ -165,6 +199,8 @@ void SSR::Resolve(RHICommandContext& ctx, RHITexture* color)
 
 void SSR::TemporalFilter(RHICommandContext& ctx)
 {
+    (void)ctx;
+
     // TODO: Blend with history
     // - Reproject using motion vectors
     // - Apply neighborhood clamping

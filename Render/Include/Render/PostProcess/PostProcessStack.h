@@ -5,6 +5,7 @@
  * @brief Post-processing effect chain manager
  */
 
+#include "Core/MathTypes.h"
 #include "Core/Types.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/PostProcess/ToneMappingTypes.h"
@@ -18,6 +19,43 @@ namespace RVX
     class RenderGraph;
     class IRHIDevice;
     class RHICommandContext;
+
+    struct PostProcessFrameInputs
+    {
+        RGTextureHandle sceneColor;
+        RGTextureHandle depth;
+        RGTextureHandle normal;
+        RGTextureHandle velocity;
+        RHIFormat outputFormat = RHIFormat::Unknown;
+        uint64 frameIndex = 0;
+        Vec2 jitterOffset = Vec2(0.0f);
+        Mat4 currentViewProjection = Mat4(1.0f);
+        Mat4 previousViewProjection = Mat4(1.0f);
+        bool currentViewProjectionValid = false;
+        bool previousViewProjectionValid = false;
+        bool resetTemporalHistory = false;
+
+        bool HasDepth() const { return depth.IsValid(); }
+        bool HasNormal() const { return normal.IsValid(); }
+        bool HasVelocity() const { return velocity.IsValid(); }
+        bool HasHistory() const { return !resetTemporalHistory; }
+    };
+
+    struct PostProcessFrameInputRequirements
+    {
+        bool requiresDepth = false;
+        bool requiresNormal = false;
+        bool requiresVelocity = false;
+        bool requiresHistory = false;
+
+        bool IsSatisfiedBy(const PostProcessFrameInputs& inputs) const
+        {
+            return (!requiresDepth || inputs.HasDepth()) &&
+                   (!requiresNormal || inputs.HasNormal()) &&
+                   (!requiresVelocity || inputs.HasVelocity()) &&
+                   (!requiresHistory || inputs.HasHistory());
+        }
+    };
 
     /**
      * @brief Post-process settings accessible by all effects
@@ -197,12 +235,30 @@ namespace RVX
         virtual void Configure(const PostProcessSettings& settings) = 0;
 
         /**
+         * @brief Declare frame inputs required by this effect.
+         */
+        virtual PostProcessFrameInputRequirements GetFrameInputRequirements() const
+        {
+            return {};
+        }
+
+        /**
          * @brief Add the pass to the render graph
          * @param graph The render graph
          * @param input Input texture handle
          * @param output Output texture handle
          */
         virtual void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) = 0;
+
+        /**
+         * @brief Add the pass to the render graph with the full frame input contract.
+         */
+        virtual void AddToGraph(RenderGraph& graph,
+                                const PostProcessFrameInputs& frameInputs,
+                                RGTextureHandle output)
+        {
+            AddToGraph(graph, frameInputs.sceneColor, output);
+        }
 
     protected:
         void MarkUnsupported(const char* reason)
@@ -216,9 +272,42 @@ namespace RVX
         std::string m_unsupportedReason;
     };
 
+    enum class PostProcessColorDomain : uint8
+    {
+        Unknown = 0,
+        HDR,
+        LDR,
+    };
+
+    struct PostProcessEffectExecutionPlan
+    {
+        std::string effectName;
+        uint32 sequenceIndex = 0;
+        int32 priority = 0;
+        bool requested = false;
+        bool supported = false;
+        bool enabled = false;
+        PostProcessColorDomain inputDomain = PostProcessColorDomain::Unknown;
+        PostProcessColorDomain outputDomain = PostProcessColorDomain::Unknown;
+        RHIFormat inputFormat = RHIFormat::Unknown;
+        RHIFormat outputFormat = RHIFormat::Unknown;
+        bool inputIsSceneColor = false;
+        bool outputIsTransientIntermediate = false;
+        bool outputIsFinalTarget = false;
+        bool pipelineReady = false;
+        bool requiresDepth = false;
+        bool requiresNormal = false;
+        bool requiresVelocity = false;
+        bool requiresHistory = false;
+        bool frameInputsSatisfied = true;
+        std::string pipelineReadinessReason;
+        std::string missingFrameInputReason;
+        std::string skippedReason;
+    };
+
     /**
      * @brief Manages post-processing effect chain
-     * 
+     *
      * PostProcessStack handles:
      * - Effect ordering by priority
      * - Ping-pong buffer management
@@ -243,6 +332,8 @@ namespace RVX
         bool fallbackCopyApplied = false;
         uint32 fallbackCopyPassCount = 0;
         std::string fallbackCopyReason;
+        PostProcessFrameInputs frameInputs;
+        std::vector<PostProcessEffectExecutionPlan> effectPlans;
     };
 
     class PostProcessStack
@@ -316,6 +407,10 @@ namespace RVX
          */
         void Execute(RenderGraph& graph, RGTextureHandle sceneColor, RGTextureHandle output);
 
+        void Execute(RenderGraph& graph,
+                     const PostProcessFrameInputs& frameInputs,
+                     RGTextureHandle output);
+
         /**
          * @brief Evaluate currently configured effects without adding graph passes
          */
@@ -334,7 +429,8 @@ namespace RVX
 
     private:
         std::vector<IPostProcessPass*> GatherEnabledEffects(PostProcessStackExecuteStats& stats,
-                                                            bool logUnsupported) const;
+                                                            bool logUnsupported,
+                                                            const PostProcessFrameInputs* frameInputs = nullptr) const;
         void SortEffects();
 
         IRHIDevice* m_device = nullptr;

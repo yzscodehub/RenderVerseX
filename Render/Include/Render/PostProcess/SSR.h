@@ -50,6 +50,19 @@ namespace RVX
         bool stochastic = false;            ///< Enable stochastic sampling for rough surfaces
     };
 
+    struct SSRComputeStats
+    {
+        bool requested = false;
+        bool supported = false;
+        bool executed = false;
+        bool colorAvailable = false;
+        bool depthAvailable = false;
+        bool normalAvailable = false;
+        bool roughnessAvailable = false;
+        bool temporalHistoryRequired = false;
+        std::string fallbackReason;
+    };
+
     /**
      * @brief Screen-Space Reflections
      * 
@@ -92,6 +105,7 @@ namespace RVX
         bool IsRequestedEnabled() const { return m_enabled; }
         bool IsSupported() const { return m_supported; }
         const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
+        const SSRComputeStats& GetLastComputeStats() const { return m_lastComputeStats; }
 
         // =========================================================================
         // Rendering
@@ -137,6 +151,7 @@ namespace RVX
         bool m_enabled = true;
         bool m_supported = false;
         std::string m_unsupportedReason = "SSR HiZ, ray march, resolve, and temporal pipelines are not implemented";
+        SSRComputeStats m_lastComputeStats;
 
         uint32 m_width = 0;
         uint32 m_height = 0;

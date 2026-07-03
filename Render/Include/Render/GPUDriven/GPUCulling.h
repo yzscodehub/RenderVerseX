@@ -79,6 +79,37 @@ namespace RVX
         bool twoPhaseOcclusion = true;  // Re-test with HiZ from current frame
     };
 
+    enum class GPUCullingExecutionMode : uint8
+    {
+        CpuFallback,
+        GpuCompute,
+    };
+
+    enum class GPUCullingFallbackReason : uint8
+    {
+        None,
+        DeviceMissing,
+        ComputePipelineUnsupported,
+        DescriptorSetsUnsupported,
+        IndirectDrawCountUnsupported,
+        ShaderBackendUnsupported,
+        ShaderFileMissing,
+        DescriptorSetLayoutCreationFailed,
+        PipelineLayoutCreationFailed,
+        ShaderCompilationFailed,
+        PipelineCreationFailed,
+        DescriptorSetCreationFailed,
+        PipelineResourcesUnavailable,
+    };
+
+    struct GPUCullingExecutionDecision
+    {
+        GPUCullingExecutionMode mode = GPUCullingExecutionMode::CpuFallback;
+        GPUCullingFallbackReason fallbackReason = GPUCullingFallbackReason::DeviceMissing;
+        bool gpuCapable = false;
+        bool pipelineReady = false;
+    };
+
     /**
      * @brief GPU-driven culling system
      *
@@ -267,6 +298,21 @@ namespace RVX
         bool WasGpuExecutionUsedLastCull() const { return m_usedGpuExecutionLastCull; }
 
         /**
+         * @brief Current GPU compute execution decision and fallback reason
+         */
+        GPUCullingExecutionDecision GetExecutionDecision() const;
+
+        /**
+         * @brief Whether the current device/capability/pipeline state can execute GPU culling
+         */
+        bool IsGpuExecutionReady() const { return GetExecutionDecision().mode == GPUCullingExecutionMode::GpuCompute; }
+
+        /**
+         * @brief Fallback reason recorded by the last Cull() call
+         */
+        GPUCullingFallbackReason GetLastFallbackReason() const { return m_lastFallbackReason; }
+
+        /**
          * @brief Submit the generated indexed indirect draw buffer
          * @return Number of indirect draw commands submitted
          */
@@ -305,6 +351,7 @@ namespace RVX
     private:
         void CreateResources();
         void CreatePipelineResources();
+        GPUCullingExecutionDecision EvaluateGpuExecution(bool requirePipelineResources) const;
         bool SupportsGpuExecution() const;
         uint32 EnsureDefaultDrawGroup();
         void UploadInstances();
@@ -330,6 +377,8 @@ namespace RVX
         uint32 m_activeDrawGroupIndex = RVX_INVALID_INDEX;
         bool m_usedCpuFallbackLastCull = false;
         bool m_usedGpuExecutionLastCull = false;
+        GPUCullingFallbackReason m_lastFallbackReason = GPUCullingFallbackReason::None;
+        GPUCullingFallbackReason m_pipelineFallbackReason = GPUCullingFallbackReason::None;
         std::vector<RHIBufferRef> m_transientUploadBuffers;
 
         // GPU buffers
