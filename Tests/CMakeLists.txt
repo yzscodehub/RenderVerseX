@@ -591,11 +591,14 @@ rvx_add_gtest(
     SOURCES FeatureBoundaryValidation/main.cpp
     LIBS
         RVX::Core
+        RVX::RenderExtraction
         RVX::RenderContracts
         RVX::Scene
         RVX::Terrain
         RVX::Water
+        RVX::World
     INCLUDES
+        ${CMAKE_SOURCE_DIR}/RenderExtraction/Include
         ${CMAKE_SOURCE_DIR}/RenderContracts/Include
         ${CMAKE_SOURCE_DIR}/Scene/Include
         ${CMAKE_SOURCE_DIR}/Terrain/Include

@@ -8,7 +8,7 @@
  * terrain rendering and collision in the scene graph.
  */
 
-#include "RenderContracts/TerrainRenderSnapshot.h"
+#include "RenderContracts/FeatureRenderSnapshot.h"
 #include "Scene/Component.h"
 #include "Terrain/TerrainTypes.h"
 
@@ -56,7 +56,7 @@ namespace RVX
      * terrain->SetSettings(settings);
      * @endcode
      */
-    class TerrainComponent : public Component
+    class TerrainComponent : public Component, public IRenderFeatureSnapshotProvider
     {
     public:
         TerrainComponent();
@@ -186,6 +186,11 @@ namespace RVX
          * @brief Build a Render-facing terrain snapshot without exposing Render/RHI objects.
          */
         bool BuildRenderSnapshot(TerrainRenderSnapshot& outSnapshot) const;
+
+        /**
+         * @brief Append this component's terrain data into a scene-level feature snapshot.
+         */
+        bool AppendRenderFeatureSnapshot(RenderFeatureSnapshot& outSnapshot) const override;
 
         /**
          * @brief Check if GPU resources are initialized

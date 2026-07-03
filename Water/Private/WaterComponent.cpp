@@ -304,6 +304,18 @@ bool WaterComponent::BuildRenderSnapshot(WaterRenderSnapshot& outSnapshot) const
     return true;
 }
 
+bool WaterComponent::AppendRenderFeatureSnapshot(RenderFeatureSnapshot& outSnapshot) const
+{
+    WaterRenderSnapshot waterSnapshot;
+    if (!BuildRenderSnapshot(waterSnapshot))
+        return false;
+
+    outSnapshot.water.items.insert(outSnapshot.water.items.end(),
+                                   waterSnapshot.items.begin(),
+                                   waterSnapshot.items.end());
+    return true;
+}
+
 void WaterComponent::UpdateBounds()
 {
     Vec3 halfSize(m_settings.size.x * 0.5f, 

@@ -1,7 +1,9 @@
 #include "Core/Log.h"
 #include "RenderContracts/TerrainRenderSnapshot.h"
 #include "RenderContracts/WaterRenderSnapshot.h"
+#include "RenderExtraction/RenderFeatureSceneBridge.h"
 #include "Scene/SceneEntity.h"
+#include "Scene/SceneManager.h"
 #include "Terrain/TerrainComponent.h"
 #include "Water/WaterComponent.h"
 
@@ -185,4 +187,64 @@ TEST(FeatureBoundaryValidation, TerrainComponentBuildsRenderSnapshotWithoutGPUHa
     EXPECT_FALSE(item.heightmapValid);
     EXPECT_FALSE(item.hasMaterial);
     EXPECT_FALSE(item.gpuInitialized);
+}
+
+TEST(FeatureBoundaryValidation, RenderFeatureSceneBridgeCollectsFeatureSnapshotsThroughProviderContract)
+{
+    EnsureLogInitialized();
+
+    SceneManager sceneManager;
+    sceneManager.Initialize();
+
+    SceneEntity* waterEntity = sceneManager.GetEntity(sceneManager.CreateEntity("ExtractedWater"));
+    ASSERT_NE(waterEntity, nullptr);
+    waterEntity->SetPosition(Vec3(10.0f, 0.0f, 20.0f));
+    auto* water = waterEntity->AddComponent<WaterComponent>();
+    ASSERT_NE(water, nullptr);
+    WaterSettings waterSettings;
+    waterSettings.size = Vec2(64.0f, 32.0f);
+    waterSettings.surfaceType = WaterSurfaceType::Lake;
+    water->SetSettings(waterSettings);
+
+    SceneEntity* terrainEntity = sceneManager.GetEntity(sceneManager.CreateEntity("ExtractedTerrain"));
+    ASSERT_NE(terrainEntity, nullptr);
+    terrainEntity->SetPosition(Vec3(-20.0f, 0.0f, -10.0f));
+    auto* terrain = terrainEntity->AddComponent<TerrainComponent>();
+    ASSERT_NE(terrain, nullptr);
+    TerrainSettings terrainSettings;
+    terrainSettings.size = Vec3(128.0f, 24.0f, 96.0f);
+    terrainSettings.patchSize = 16;
+    terrain->SetSettings(terrainSettings);
+
+    RenderFeatureSceneBridge bridge;
+    RenderFeatureSnapshot snapshot;
+    RenderFeatureSceneBridgeResult result;
+    EXPECT_TRUE(bridge.BuildSnapshot(&sceneManager, snapshot, &result));
+
+    const RenderFeatureSnapshotMetadata metadata = snapshot.GetMetadata();
+    EXPECT_EQ(metadata.schemaVersion, RVX_RENDER_FEATURE_SNAPSHOT_SCHEMA_VERSION);
+    EXPECT_EQ(metadata.status, RenderFeatureSnapshotStatus::Complete);
+    EXPECT_TRUE(metadata.complete);
+    EXPECT_EQ(metadata.providerCount, 2u);
+    EXPECT_EQ(metadata.skippedProviderCount, 0u);
+    EXPECT_EQ(metadata.particleItemCount, 0u);
+    EXPECT_EQ(metadata.waterItemCount, 1u);
+    EXPECT_EQ(metadata.terrainItemCount, 1u);
+
+    EXPECT_TRUE(result.usedProviderPath);
+    EXPECT_FALSE(result.requiresLegacyFallback);
+    EXPECT_EQ(result.fallbackReason, RenderFeatureSceneBridgeFallbackReason::None);
+    EXPECT_EQ(result.providerCount, 2u);
+    EXPECT_EQ(result.waterItemCount, 1u);
+    EXPECT_EQ(result.terrainItemCount, 1u);
+
+    ASSERT_EQ(snapshot.water.items.size(), 1u);
+    EXPECT_EQ(snapshot.water.items.front().componentId, waterEntity->GetHandle());
+    EXPECT_EQ(snapshot.water.items.front().surfaceType, WaterRenderSnapshotSurfaceType::Lake);
+
+    ASSERT_EQ(snapshot.terrain.items.size(), 1u);
+    EXPECT_EQ(snapshot.terrain.items.front().componentId, terrainEntity->GetHandle());
+    EXPECT_EQ(snapshot.terrain.items.front().patchSize, 16u);
+
+    sceneManager.Shutdown();
 }

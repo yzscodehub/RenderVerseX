@@ -5,10 +5,11 @@
  * @brief Scene component for particle systems
  */
 
-#include "Scene/Component.h"
+#include "Core/Math/AABB.h"
 #include "Particle/ParticleSystem.h"
 #include "Particle/ParticleSystemInstance.h"
-#include "Core/Math/AABB.h"
+#include "RenderContracts/FeatureRenderSnapshot.h"
+#include "Scene/Component.h"
 #include <string>
 
 namespace RVX::Particle
@@ -25,7 +26,7 @@ namespace RVX::Particle
     /**
      * @brief Scene component that attaches a particle system to an entity
      */
-    class ParticleComponent : public Component
+    class ParticleComponent : public Component, public RVX::IRenderFeatureSnapshotProvider
     {
     public:
         ParticleComponent() = default;
@@ -133,6 +134,9 @@ namespace RVX::Particle
         /// Set simulate when hidden
         void SetSimulateWhenHidden(bool simulate);
         bool GetSimulateWhenHidden() const { return m_simulateWhenHidden; }
+
+        /// Append this component's particle data into a scene-level feature snapshot.
+        bool AppendRenderFeatureSnapshot(RVX::RenderFeatureSnapshot& outSnapshot) const override;
 
     private:
         void CreateInstance();

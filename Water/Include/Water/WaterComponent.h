@@ -8,7 +8,7 @@
  * water rendering, simulation, and interaction.
  */
 
-#include "RenderContracts/WaterRenderSnapshot.h"
+#include "RenderContracts/FeatureRenderSnapshot.h"
 #include "Scene/Component.h"
 #include "Water/WaterTypes.h"
 
@@ -69,7 +69,7 @@ namespace RVX
      * visual.deepColor = Vec3(0.0f, 0.1f, 0.15f);
      * @endcode
      */
-    class WaterComponent : public Component
+    class WaterComponent : public Component, public IRenderFeatureSnapshotProvider
     {
     public:
         WaterComponent();
@@ -193,6 +193,11 @@ namespace RVX
          * @brief Build a Render-facing water snapshot without exposing Render/RHI objects.
          */
         bool BuildRenderSnapshot(WaterRenderSnapshot& outSnapshot) const;
+
+        /**
+         * @brief Append this component's water data into a scene-level feature snapshot.
+         */
+        bool AppendRenderFeatureSnapshot(RenderFeatureSnapshot& outSnapshot) const override;
 
         // =====================================================================
         // Effects

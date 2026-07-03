@@ -192,6 +192,18 @@ bool TerrainComponent::BuildRenderSnapshot(TerrainRenderSnapshot& outSnapshot) c
     return true;
 }
 
+bool TerrainComponent::AppendRenderFeatureSnapshot(RenderFeatureSnapshot& outSnapshot) const
+{
+    TerrainRenderSnapshot terrainSnapshot;
+    if (!BuildRenderSnapshot(terrainSnapshot))
+        return false;
+
+    outSnapshot.terrain.items.insert(outSnapshot.terrain.items.end(),
+                                     terrainSnapshot.items.begin(),
+                                     terrainSnapshot.items.end());
+    return true;
+}
+
 void TerrainComponent::RebuildMesh()
 {
     if (!m_heightmap || !m_heightmap->IsValid())
