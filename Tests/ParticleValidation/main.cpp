@@ -385,6 +385,51 @@ namespace
         return config;
     }
 
+    class SceneRendererParticleRenderHost final : public IParticleRenderIntegrationHost
+    {
+    public:
+        explicit SceneRendererParticleRenderHost(SceneRenderer& renderer)
+            : m_renderer(renderer)
+        {
+        }
+
+        bool AddParticlePass(std::unique_ptr<ParticlePass> pass) override
+        {
+            if (!pass)
+                return false;
+
+            m_renderer.AddPass(std::move(pass));
+            return true;
+        }
+
+        bool RemoveParticlePass(const char* name) override
+        {
+            return m_renderer.RemovePass(name);
+        }
+
+        bool AddPreGraphPrepareCallback(const void* owner,
+                                        ParticlePreGraphPrepareCallback callback) override
+        {
+            if (!callback)
+                return false;
+
+            return m_renderer.AddPreGraphPrepareCallback(
+                owner,
+                [callback = std::move(callback)](const ViewData& view)
+                {
+                    callback(view.cameraPosition);
+                });
+        }
+
+        bool RemovePreGraphPrepareCallback(const void* owner) override
+        {
+            return m_renderer.RemovePreGraphPrepareCallback(owner);
+        }
+
+    private:
+        SceneRenderer& m_renderer;
+    };
+
     ViewData MakeView(RenderGraph* graph = nullptr, ResourceViewCache* cache = nullptr)
     {
         ViewData view;
@@ -572,9 +617,10 @@ TEST(ParticleValidation, ParticleSubsystemRegistersPassAndCallbackIntoSceneRende
     EnsureLogInitialized();
     FakeDevice device;
     SceneRenderer renderer;
+    SceneRendererParticleRenderHost renderHost(renderer);
     ParticleSubsystem subsystem;
     ParticleSubsystemRenderAccess::SetDeviceForTesting(subsystem, &device);
-    ParticleSubsystemRenderAccess::SetSceneRendererForTesting(subsystem, &renderer);
+    ParticleSubsystemRenderAccess::SetRenderHostForTesting(subsystem, &renderHost);
     ParticleSubsystemRenderAccess::SetRendererConfigForTesting(subsystem, MakeRendererConfig());
     subsystem.GetConfig().enableGPUSimulation = false;
     subsystem.Initialize();
@@ -620,9 +666,10 @@ TEST(ParticleValidation, ParticleSubsystemDoesNotReportReadyWhenRendererUnsuppor
     FakeDevice device;
     device.failGraphicsPipelineCreation = true;
     SceneRenderer renderer;
+    SceneRendererParticleRenderHost renderHost(renderer);
     ParticleSubsystem subsystem;
     ParticleSubsystemRenderAccess::SetDeviceForTesting(subsystem, &device);
-    ParticleSubsystemRenderAccess::SetSceneRendererForTesting(subsystem, &renderer);
+    ParticleSubsystemRenderAccess::SetRenderHostForTesting(subsystem, &renderHost);
     ParticleSubsystemRenderAccess::SetRendererConfigForTesting(subsystem, MakeRendererConfig());
     subsystem.GetConfig().enableGPUSimulation = false;
     subsystem.Initialize();
@@ -652,7 +699,9 @@ TEST(ParticleValidation, ParticleSubsystemProductionDeviceAcquisitionSourceGuard
     EXPECT_EQ(subsystemSource.find("Engine/Engine.h"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("Engine::Get"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("#include \"Render/RenderSubsystem.h\""), std::string::npos);
+    EXPECT_EQ(subsystemSource.find("#include \"Render/Renderer/SceneRenderer.h\""), std::string::npos);
     EXPECT_EQ(subsystemSource.find("RenderSubsystem*"), std::string::npos);
+    EXPECT_EQ(subsystemSource.find("SceneRenderer*"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("GetSubsystem<RenderSubsystem>"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("SetRenderSubsystem"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("->GetDevice()"), std::string::npos);
@@ -827,9 +876,10 @@ TEST(ParticleValidation, ParticleComponentUsesSubsystemOwnedInstanceWhenRenderRe
     EnsureLogInitialized();
     FakeDevice device;
     SceneRenderer renderer;
+    SceneRendererParticleRenderHost renderHost(renderer);
     ParticleSubsystem subsystem;
     ParticleSubsystemRenderAccess::SetDeviceForTesting(subsystem, &device);
-    ParticleSubsystemRenderAccess::SetSceneRendererForTesting(subsystem, &renderer);
+    ParticleSubsystemRenderAccess::SetRenderHostForTesting(subsystem, &renderHost);
     ParticleSubsystemRenderAccess::SetRendererConfigForTesting(subsystem, MakeRendererConfig());
     subsystem.GetConfig().enableGPUSimulation = false;
     subsystem.Initialize();

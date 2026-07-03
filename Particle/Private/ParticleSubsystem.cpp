@@ -5,7 +5,6 @@
 #include "Particle/ParticleSubsystemRenderAccess.h"
 #include "Particle/Rendering/ParticlePass.h"
 #include "Particle/Rendering/ParticleRenderer.h"
-#include "Render/Renderer/SceneRenderer.h"
 #include "Resource/ResourceSubsystem.h"
 #include <algorithm>
 #include <utility>
@@ -15,7 +14,7 @@ namespace RVX::Particle
 struct ParticleSubsystemRenderState
 {
     IRHIDevice* device = nullptr;
-    SceneRenderer* sceneRenderer = nullptr;
+    IParticleRenderIntegrationHost* renderHost = nullptr;
     std::unique_ptr<ParticleRendererConfig> rendererConfigOverride;
     std::unique_ptr<ParticleRenderer> renderer;
     ParticlePass* renderPass = nullptr;
@@ -88,9 +87,10 @@ void ParticleSubsystemRenderAccess::SetDeviceForTesting(ParticleSubsystem& subsy
     subsystem.m_renderState->device = device;
 }
 
-void ParticleSubsystemRenderAccess::SetSceneRendererForTesting(ParticleSubsystem& subsystem, SceneRenderer* renderer)
+void ParticleSubsystemRenderAccess::SetRenderHostForTesting(ParticleSubsystem& subsystem,
+                                                            IParticleRenderIntegrationHost* host)
 {
-    subsystem.m_renderState->sceneRenderer = renderer;
+    subsystem.m_renderState->renderHost = host;
 }
 
 void ParticleSubsystemRenderAccess::SetRendererConfigForTesting(ParticleSubsystem& subsystem,
@@ -194,9 +194,9 @@ void ParticleSubsystem::CreateRenderComponents()
 
 void ParticleSubsystem::RegisterRenderIntegration()
 {
-    if (!m_renderState->sceneRenderer)
+    if (!m_renderState->renderHost)
     {
-        MarkRenderIntegrationUnsupported("SceneRenderer is unavailable for particle pass registration");
+        MarkRenderIntegrationUnsupported("Particle render integration host is unavailable for pass registration");
         RVX_CORE_WARN("ParticleSubsystem: {}", m_renderIntegrationUnsupportedReason);
         return;
     }
@@ -217,17 +217,24 @@ void ParticleSubsystem::RegisterRenderIntegration()
     renderPass->SetSoftParticlesEnabled(m_config.enableSoftParticles);
 
     m_renderState->renderPass = renderPass.get();
-    m_renderState->sceneRenderer->AddPass(std::move(renderPass));
+    if (!m_renderState->renderHost->AddParticlePass(std::move(renderPass)))
+    {
+        m_renderState->renderPass = nullptr;
+        MarkRenderIntegrationUnsupported("Particle render integration host rejected particle pass registration");
+        RVX_CORE_WARN("ParticleSubsystem: {}", m_renderIntegrationUnsupportedReason);
+        return;
+    }
+
     m_renderPassRegistered = true;
     m_stats.renderPassRegistered = true;
 
-    if (!m_renderState->sceneRenderer->AddPreGraphPrepareCallback(
+    if (!m_renderState->renderHost->AddPreGraphPrepareCallback(
             this,
-            [this](const ViewData& view)
+            [this](const Vec3& cameraPosition)
             {
                 if (m_renderIntegrationReady)
                 {
-                    PrepareRenderForCamera(view.cameraPosition);
+                    PrepareRenderForCamera(cameraPosition);
                 }
                 else
                 {
@@ -235,7 +242,7 @@ void ParticleSubsystem::RegisterRenderIntegration()
                 }
             }))
     {
-        m_renderState->sceneRenderer->RemovePass("ParticlePass");
+        m_renderState->renderHost->RemoveParticlePass("ParticlePass");
         m_renderState->renderPass = nullptr;
         m_renderPassRegistered = false;
         m_stats.renderPassRegistered = false;
@@ -263,18 +270,18 @@ void ParticleSubsystem::Deinitialize()
         s_activeSubsystem = nullptr;
     }
 
-    if (m_renderState->sceneRenderer && m_preGraphCallbackRegistered)
+    if (m_renderState->renderHost && m_preGraphCallbackRegistered)
     {
-        m_renderState->sceneRenderer->RemovePreGraphPrepareCallback(this);
+        m_renderState->renderHost->RemovePreGraphPrepareCallback(this);
     }
     m_preGraphCallbackRegistered = false;
     m_stats.preGraphCallbackRegistered = false;
 
     MarkRenderIntegrationUnsupported("Particle subsystem is deinitialized");
 
-    if (m_renderState->sceneRenderer && m_renderPassRegistered)
+    if (m_renderState->renderHost && m_renderPassRegistered)
     {
-        m_renderState->sceneRenderer->RemovePass("ParticlePass");
+        m_renderState->renderHost->RemoveParticlePass("ParticlePass");
     }
     m_renderPassRegistered = false;
     m_stats.renderPassRegistered = false;
@@ -291,7 +298,7 @@ void ParticleSubsystem::Deinitialize()
 
     m_renderState->renderer.reset();
 
-    m_renderState->sceneRenderer = nullptr;
+    m_renderState->renderHost = nullptr;
     m_renderState->device = nullptr;
 
     RVX_CORE_INFO("ParticleSubsystem: Deinitialized");
