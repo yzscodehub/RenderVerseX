@@ -59,17 +59,21 @@ set(PARTICLE_HEADERS
     Include/Particle/Events/ParticleEvent.h
     Include/Particle/Events/ParticleEventHandler.h
     
-    # GPU
-    Include/Particle/GPU/IParticleSimulator.h
-    Include/Particle/GPU/GPUParticleSimulator.h
-    Include/Particle/GPU/CPUParticleSimulator.h
-    Include/Particle/GPU/ParticleSorter.h
-    
     # Rendering
     Include/Particle/Rendering/SoftParticleConfig.h
-    Include/Particle/Rendering/ParticleRenderer.h
-    Include/Particle/Rendering/TrailRenderer.h
-    Include/Particle/Rendering/ParticlePass.h
+)
+
+set(PARTICLE_PRIVATE_HEADERS
+    # GPU
+    Private/Particle/GPU/IParticleSimulator.h
+    Private/Particle/GPU/GPUParticleSimulator.h
+    Private/Particle/GPU/CPUParticleSimulator.h
+    Private/Particle/GPU/ParticleSorter.h
+
+    # Rendering
+    Private/Particle/Rendering/ParticleRenderer.h
+    Private/Particle/Rendering/TrailRenderer.h
+    Private/Particle/Rendering/ParticlePass.h
 )
 
 set(PARTICLE_SOURCES
@@ -121,6 +125,7 @@ set(PARTICLE_SHADERS
 
 add_library(${MODULE_NAME} STATIC
     ${PARTICLE_HEADERS}
+    ${PARTICLE_PRIVATE_HEADERS}
     ${PARTICLE_SOURCES}
 )
 
@@ -219,18 +224,8 @@ source_group("Include\\Particle\\Events" FILES
     Include/Particle/Events/ParticleEventHandler.h
 )
 
-source_group("Include\\Particle\\GPU" FILES
-    Include/Particle/GPU/IParticleSimulator.h
-    Include/Particle/GPU/GPUParticleSimulator.h
-    Include/Particle/GPU/CPUParticleSimulator.h
-    Include/Particle/GPU/ParticleSorter.h
-)
-
 source_group("Include\\Particle\\Rendering" FILES
     Include/Particle/Rendering/SoftParticleConfig.h
-    Include/Particle/Rendering/ParticleRenderer.h
-    Include/Particle/Rendering/TrailRenderer.h
-    Include/Particle/Rendering/ParticlePass.h
 )
 
 source_group("Private" FILES 
@@ -242,7 +237,11 @@ source_group("Private" FILES
     Private/ParticleSystemLoader.cpp
 )
 
-source_group("Private\\GPU" FILES 
+source_group("Private\\GPU" FILES
+    Private/Particle/GPU/IParticleSimulator.h
+    Private/Particle/GPU/GPUParticleSimulator.h
+    Private/Particle/GPU/CPUParticleSimulator.h
+    Private/Particle/GPU/ParticleSorter.h
     Private/GPU/GPUParticleSimulator.cpp
     Private/GPU/CPUParticleSimulator.cpp
     Private/GPU/ParticleSorter.cpp
@@ -264,6 +263,9 @@ source_group("Private\\Modules" FILES
 )
 
 source_group("Private\\Rendering" FILES
+    Private/Particle/Rendering/ParticleRenderer.h
+    Private/Particle/Rendering/TrailRenderer.h
+    Private/Particle/Rendering/ParticlePass.h
     Private/Rendering/ParticleRenderer.cpp
     Private/Rendering/TrailRenderer.cpp
     Private/Rendering/ParticlePass.cpp

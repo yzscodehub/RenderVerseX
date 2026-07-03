@@ -444,7 +444,7 @@ namespace
         return it == calls.end() ? calls.size() : static_cast<size_t>(std::distance(calls.begin(), it));
     }
 
-    std::string ReadSourceFile(const std::filesystem::path& relativePath)
+    std::filesystem::path FindSourcePath(const std::filesystem::path& relativePath)
     {
         std::filesystem::path cursor = std::filesystem::current_path();
         for (uint32 i = 0; i < 8; ++i)
@@ -452,14 +452,25 @@ namespace
             const std::filesystem::path candidate = cursor / relativePath;
             if (std::filesystem::exists(candidate))
             {
-                std::ifstream stream(candidate, std::ios::binary);
-                return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+                return candidate;
             }
 
             if (!cursor.has_parent_path() || cursor == cursor.parent_path())
                 break;
 
             cursor = cursor.parent_path();
+        }
+
+        return {};
+    }
+
+    std::string ReadSourceFile(const std::filesystem::path& relativePath)
+    {
+        const std::filesystem::path sourcePath = FindSourcePath(relativePath);
+        if (!sourcePath.empty())
+        {
+            std::ifstream stream(sourcePath, std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
         }
 
         return {};
@@ -640,6 +651,32 @@ TEST(ParticleValidation, ParticleSubsystemProductionDeviceAcquisitionSourceGuard
     EXPECT_EQ(componentSource.find("Engine::Get"), std::string::npos);
     EXPECT_EQ(componentSource.find("GetSubsystem<ParticleSubsystem>"), std::string::npos);
     EXPECT_NE(componentSource.find("GetActiveSubsystem"), std::string::npos);
+}
+
+TEST(ParticleValidation, PublicParticleHeadersDoNotIncludeRenderOrRHI)
+{
+    const std::filesystem::path includeRoot = FindSourcePath("Particle/Include");
+    ASSERT_FALSE(includeRoot.empty());
+
+    std::string violations;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(includeRoot))
+    {
+        if (!entry.is_regular_file() || entry.path().extension() != ".h")
+            continue;
+
+        std::ifstream stream(entry.path(), std::ios::binary);
+        const std::string contents{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+        if (contents.find("#include \"Render/") != std::string::npos ||
+            contents.find("#include <Render/") != std::string::npos ||
+            contents.find("#include \"RHI/") != std::string::npos ||
+            contents.find("#include <RHI/") != std::string::npos)
+        {
+            violations += entry.path().lexically_relative(includeRoot).generic_string();
+            violations += "\n";
+        }
+    }
+
+    EXPECT_TRUE(violations.empty()) << violations;
 }
 
 TEST(ParticleValidation, ParticleComponentUsesSubsystemOwnedInstanceWhenRenderReady)
