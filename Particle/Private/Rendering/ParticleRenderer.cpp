@@ -143,7 +143,7 @@ void ParticleRenderer::Initialize(IRHIDevice* device, const ParticleRendererConf
 
     // Initialize trail renderer
     m_trailRenderer = std::make_unique<TrailRenderer>();
-    m_trailRenderer->Initialize(device, 100000);  // 100k trail vertices
+    m_trailRenderer->Initialize(100000);  // 100k trail vertices
 
     if (!CreateSharedResources())
     {

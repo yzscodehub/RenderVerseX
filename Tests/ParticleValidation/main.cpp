@@ -7,6 +7,7 @@
 #include "Particle/ParticleSubsystemRenderAccess.h"
 #include "Particle/Rendering/ParticlePass.h"
 #include "Particle/Rendering/ParticleRenderer.h"
+#include "Particle/Rendering/TrailRenderer.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/PipelineCache.h"
@@ -732,6 +733,47 @@ TEST(ParticleValidation, ParticleRendererUsesLocalViewContract)
     EXPECT_EQ(rendererHeader.find("const ViewData&"), std::string::npos);
     EXPECT_EQ(rendererSource.find("Render/Renderer/ViewData.h"), std::string::npos);
     EXPECT_EQ(rendererSource.find("const ViewData&"), std::string::npos);
+}
+
+TEST(ParticleValidation, TrailRendererBuildsCpuMeshWithoutRHI)
+{
+    EnsureLogInitialized();
+
+    const std::string trailHeader =
+        ReadSourceFile("Particle/Private/Particle/Rendering/TrailRenderer.h");
+    const std::string trailSource =
+        ReadSourceFile("Particle/Private/Rendering/TrailRenderer.cpp");
+    ASSERT_FALSE(trailHeader.empty());
+    ASSERT_FALSE(trailSource.empty());
+
+    EXPECT_EQ(trailHeader.find("RHI/"), std::string::npos);
+    EXPECT_EQ(trailHeader.find("IRHIDevice"), std::string::npos);
+    EXPECT_EQ(trailHeader.find("RHICommandContext"), std::string::npos);
+    EXPECT_EQ(trailHeader.find("RHIBuffer"), std::string::npos);
+    EXPECT_EQ(trailSource.find("CreateBuffer"), std::string::npos);
+    EXPECT_EQ(trailSource.find("SetVertexBuffer"), std::string::npos);
+    EXPECT_EQ(trailSource.find("DrawIndexed"), std::string::npos);
+
+    TrailRenderer trailRenderer;
+    trailRenderer.Initialize(32);
+    trailRenderer.BeginFrame();
+    trailRenderer.AddTrailPoint(1, Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, 0.0f), 1.0f, Vec4(1.0f));
+    trailRenderer.EndFrame();
+    EXPECT_TRUE(trailRenderer.GetVertices().empty());
+    EXPECT_TRUE(trailRenderer.GetIndices().empty());
+    EXPECT_EQ(trailRenderer.GetIndexCount(), 0u);
+
+    trailRenderer.AddTrailPoint(1, Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, 0.0f), 1.0f, Vec4(1.0f));
+    trailRenderer.EndFrame();
+
+    EXPECT_EQ(trailRenderer.GetVertices().size(), 4u);
+    EXPECT_EQ(trailRenderer.GetIndices().size(), 6u);
+    EXPECT_EQ(trailRenderer.GetIndexCount(), 6u);
+
+    trailRenderer.Shutdown();
+    EXPECT_TRUE(trailRenderer.GetVertices().empty());
+    EXPECT_TRUE(trailRenderer.GetIndices().empty());
+    EXPECT_EQ(trailRenderer.GetIndexCount(), 0u);
 }
 
 TEST(ParticleValidation, ParticleComponentUsesSubsystemOwnedInstanceWhenRenderReady)

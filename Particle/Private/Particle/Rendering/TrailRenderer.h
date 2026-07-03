@@ -2,19 +2,14 @@
 
 /**
  * @file TrailRenderer.h
- * @brief Trail/ribbon rendering for particles
+ * @brief CPU-side trail/ribbon mesh building for particles
  */
 
 #include "Particle/ParticleTypes.h"
 #include "Particle/Modules/TrailModule.h"
-#include "RHI/RHI.h"
+
 #include <unordered_map>
 #include <vector>
-
-namespace RVX
-{
-    struct ViewData;
-} // namespace RVX
 
 namespace RVX::Particle
 {
@@ -41,7 +36,10 @@ namespace RVX::Particle
     };
 
     /**
-     * @brief Trail/ribbon renderer
+     * @brief Trail/ribbon CPU mesh builder.
+     *
+     * The Particle feature module owns trail simulation state only. GPU upload
+     * and draw ownership belongs in Render once trail snapshots are consumed.
      */
     class TrailRenderer
     {
@@ -53,7 +51,7 @@ namespace RVX::Particle
         // Lifecycle
         // =====================================================================
 
-        void Initialize(IRHIDevice* device, uint32 maxTrailVertices);
+        void Initialize(uint32 maxTrailVertices);
         void Shutdown();
 
         // =====================================================================
@@ -73,14 +71,16 @@ namespace RVX::Particle
         /// Mark a particle's trail as dead
         void MarkTrailDead(uint32 particleId);
 
-        /// End frame and upload to GPU
-        void EndFrame(RHICommandContext& ctx);
+        /// End frame and rebuild CPU trail mesh
+        void EndFrame();
 
         // =====================================================================
-        // Rendering
+        // Mesh Access
         // =====================================================================
 
-        void Draw(RHICommandContext& ctx, const ViewData& view);
+        const std::vector<TrailVertex>& GetVertices() const { return m_vertices; }
+        const std::vector<uint32>& GetIndices() const { return m_indices; }
+        uint32 GetIndexCount() const { return m_indexCount; }
 
         // =====================================================================
         // Configuration
@@ -91,9 +91,6 @@ namespace RVX::Particle
     private:
         void UpdateTrailHistory(uint32 particleId, const TrailVertex& vertex);
         void BuildTrailMesh();
-        void UploadToGPU();
-
-        IRHIDevice* m_device = nullptr;
         uint32 m_maxVertices = 0;
 
         // Trail configuration
@@ -106,9 +103,6 @@ namespace RVX::Particle
         std::vector<TrailVertex> m_vertices;
         std::vector<uint32> m_indices;
 
-        // GPU buffers
-        RHIBufferRef m_vertexBuffer;
-        RHIBufferRef m_indexBuffer;
         uint32 m_indexCount = 0;
     };
 
