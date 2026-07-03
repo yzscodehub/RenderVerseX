@@ -953,7 +953,13 @@ if(RVX_ENABLE_DX11 AND TARGET ResourceRuntimeShowcase AND TARGET SampleReportCon
             --require-resource-diagnostic "model fixture"
             --require-resource-diagnostic "source denied"
             --require-resource-diagnostic "cooked artifact resolved"
+            --require-resource-diagnostic "cooked mesh artifact resolved"
+            --require-resource-diagnostic "cooked material artifact resolved"
+            --require-resource-diagnostic "cooked audio artifact resolved"
             --require-resource-diagnostic "package artifact resolved"
+            --require-resource-diagnostic "package mesh artifact resolved"
+            --require-resource-diagnostic "package material artifact resolved"
+            --require-resource-diagnostic "package audio artifact resolved"
             --require-resource-diagnostic "hash mismatch"
     )
     set_tests_properties(ResourceRuntimeShowcaseDX11ReportValidation PROPERTIES

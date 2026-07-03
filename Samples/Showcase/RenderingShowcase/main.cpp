@@ -961,11 +961,23 @@ namespace
         const std::filesystem::path packageRoot = root / "Package";
 
         const std::filesystem::path cookedArtifact = cookedRoot / "textures" / "albedo.rva";
+        const std::filesystem::path cookedMeshArtifact = cookedRoot / "meshes" / "cube.rvm";
+        const std::filesystem::path cookedMaterialArtifact = cookedRoot / "materials" / "basic.rmat";
+        const std::filesystem::path cookedAudioArtifact = cookedRoot / "audio" / "silence.rvaudio";
         const std::filesystem::path packageArtifact = packageRoot / "compiled" / "basic.rva";
+        const std::filesystem::path packageMeshArtifact = packageRoot / "compiled" / "cube.rvm";
+        const std::filesystem::path packageMaterialArtifact = packageRoot / "compiled" / "basic.rmat";
+        const std::filesystem::path packageAudioArtifact = packageRoot / "compiled" / "silence.rvaudio";
         const std::filesystem::path mismatchedPackageArtifact = packageRoot / "compiled" / "mismatch.rva";
 
         if (!WriteRuntimeFixtureFile(cookedArtifact, "RVX_TEXTURE_PREBAKE_V1\n") ||
+            !WriteRuntimeFixtureFile(cookedMeshArtifact, "RVX_MESH_PREBAKE_V1\ncube\n") ||
+            !WriteRuntimeFixtureFile(cookedMaterialArtifact, "RVX_MATERIAL_PREBAKE_V1\nbasic\n") ||
+            !WriteRuntimeFixtureFile(cookedAudioArtifact, "RVX_AUDIO_PREBAKE_V1\nsilence\n") ||
             !WriteRuntimeFixtureFile(packageArtifact, "RVX_SHADER_PREBAKE_V1\nshowcase\n") ||
+            !WriteRuntimeFixtureFile(packageMeshArtifact, "RVX_MESH_PREBAKE_V1\ncube-package\n") ||
+            !WriteRuntimeFixtureFile(packageMaterialArtifact, "RVX_MATERIAL_PREBAKE_V1\nbasic-package\n") ||
+            !WriteRuntimeFixtureFile(packageAudioArtifact, "RVX_AUDIO_PREBAKE_V1\nsilence-package\n") ||
             !WriteRuntimeFixtureFile(mismatchedPackageArtifact, "RVX_SHADER_PREBAKE_V1\nmismatch\n"))
         {
             report.resourceDiagnostics.push_back("runtime policy fixture setup failed");
@@ -1008,6 +1020,18 @@ namespace
                          Resource::ResolveRuntimeResourcePath(cookedPolicy,
                                                               "",
                                                               "cooked://textures/albedo.rva"));
+        appendResolution("cooked mesh artifact resolved",
+                         Resource::ResolveRuntimeResourcePath(cookedPolicy,
+                                                              "",
+                                                              "cooked://meshes/cube.rvm"));
+        appendResolution("cooked material artifact resolved",
+                         Resource::ResolveRuntimeResourcePath(cookedPolicy,
+                                                              "",
+                                                              "cooked://materials/basic.rmat"));
+        appendResolution("cooked audio artifact resolved",
+                         Resource::ResolveRuntimeResourcePath(cookedPolicy,
+                                                              "",
+                                                              "cooked://audio/silence.rvaudio"));
 
         Resource::ResourceRuntimePolicy packagePolicy;
         packagePolicy.mode = Resource::ResourceRuntimeMode::PackagedRuntime;
@@ -1024,6 +1048,18 @@ namespace
                         "compiled/basic.rva",
                         Diagnostics::ComputeFileContentHash(packageArtifact)},
                     Resource::ResourcePackageArtifact{
+                        "meshes/cube.rvm",
+                        "compiled/cube.rvm",
+                        Diagnostics::ComputeFileContentHash(packageMeshArtifact)},
+                    Resource::ResourcePackageArtifact{
+                        "materials/basic.rmat",
+                        "compiled/basic.rmat",
+                        Diagnostics::ComputeFileContentHash(packageMaterialArtifact)},
+                    Resource::ResourcePackageArtifact{
+                        "audio/silence.rvaudio",
+                        "compiled/silence.rvaudio",
+                        Diagnostics::ComputeFileContentHash(packageAudioArtifact)},
+                    Resource::ResourcePackageArtifact{
                         "shaders/mismatch.rva",
                         "compiled/mismatch.rva",
                         "0000000000000000"},
@@ -1034,6 +1070,18 @@ namespace
                          Resource::ResolveRuntimeResourcePath(packagePolicy,
                                                               "",
                                                               "package://Base/shaders/basic.rva"));
+        appendResolution("package mesh artifact resolved",
+                         Resource::ResolveRuntimeResourcePath(packagePolicy,
+                                                              "",
+                                                              "package://Base/meshes/cube.rvm"));
+        appendResolution("package material artifact resolved",
+                         Resource::ResolveRuntimeResourcePath(packagePolicy,
+                                                              "",
+                                                              "package://Base/materials/basic.rmat"));
+        appendResolution("package audio artifact resolved",
+                         Resource::ResolveRuntimeResourcePath(packagePolicy,
+                                                              "",
+                                                              "package://Base/audio/silence.rvaudio"));
         appendResolution("missing package",
                          Resource::ResolveRuntimeResourcePath(packagePolicy,
                                                               "",
