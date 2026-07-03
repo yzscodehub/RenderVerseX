@@ -9,7 +9,6 @@
 #include "Render/Renderer/SceneRenderer.h"
 #include "Render/RenderSubsystem.h"
 #include "Resource/ResourceSubsystem.h"
-#include "RHI/RHI.h"
 #include <algorithm>
 #include <utility>
 
@@ -190,8 +189,6 @@ void ParticleSubsystem::CreateRenderComponents()
     else
     {
         ParticleRendererConfig rendererConfig;
-        // Matches PipelineCache::GetDefaultDepthStencilFormat() used by SceneRenderer.
-        rendererConfig.depthStencilFormat = RHIFormat::D32_FLOAT;
         m_renderState->renderer->Initialize(m_renderState->device, rendererConfig);
     }
 
