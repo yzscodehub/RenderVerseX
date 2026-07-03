@@ -311,7 +311,10 @@ namespace RVX
         uint32 requestedPostProcessEffectCount = 0;
         uint32 enabledPostProcessEffectCount = 0;
         uint32 unsupportedPostProcessSkippedCount = 0;
+        uint32 scheduledPostProcessEffectCount = 0;
         uint32 postProcessGraphPassCount = 0;
+        RenderVisualQualityPreset requestedVisualQualityPreset = RenderVisualQualityPreset::Medium;
+        RenderVisualQualityPreset appliedVisualQualityPreset = RenderVisualQualityPreset::Medium;
         bool hdrSceneColorEnabled = false;
         ToneMappingOutputColorSpace toneMappingOutputColorSpace = ToneMappingOutputColorSpace::SRGB;
         RHIFormat postProcessFinalOutputFormat = RHIFormat::Unknown;

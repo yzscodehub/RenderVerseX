@@ -62,6 +62,7 @@ namespace
             if (plan.enabled)
             {
                 plan.skippedReason = reason;
+                plan.reason = reason;
             }
         }
     }
@@ -228,7 +229,93 @@ namespace
 
         return reason.empty() ? reason : "missing required frame input(s): " + reason;
     }
+
+    void SetQualityPresetStats(PostProcessStackExecuteStats& stats, const PostProcessSettings& settings)
+    {
+        stats.requestedQualityPreset = settings.visualQualityPreset;
+        stats.appliedQualityPreset = settings.visualQualityPreset;
+    }
 } // namespace
+
+const char* GetRenderVisualQualityPresetName(RenderVisualQualityPreset preset)
+{
+    switch (preset)
+    {
+        case RenderVisualQualityPreset::Off:
+            return "off";
+        case RenderVisualQualityPreset::Low:
+            return "low";
+        case RenderVisualQualityPreset::Medium:
+            return "medium";
+        case RenderVisualQualityPreset::High:
+            return "high";
+        case RenderVisualQualityPreset::Cinematic:
+            return "cinematic";
+        default:
+            return "unknown";
+    }
+}
+
+void ApplyRenderVisualQualityPreset(PostProcessSettings& settings, RenderVisualQualityPreset preset)
+{
+    settings.visualQualityPreset = preset;
+
+    settings.enableToneMapping = false;
+    settings.enableBloom = false;
+    settings.enableFXAA = false;
+    settings.enableColorGrading = false;
+    settings.enableVignette = false;
+    settings.enableChromaticAberration = false;
+    settings.enableFilmGrain = false;
+    settings.enableSSAO = false;
+    settings.enableSSR = false;
+    settings.enableTAA = false;
+    settings.enableDOF = false;
+    settings.enableMotionBlur = false;
+    settings.enableVolumetricLighting = false;
+
+    switch (preset)
+    {
+        case RenderVisualQualityPreset::Off:
+            return;
+        case RenderVisualQualityPreset::Low:
+            settings.enableToneMapping = true;
+            settings.enableFXAA = true;
+            return;
+        case RenderVisualQualityPreset::Medium:
+            settings.enableToneMapping = true;
+            settings.enableBloom = true;
+            settings.enableFXAA = true;
+            settings.enableColorGrading = true;
+            return;
+        case RenderVisualQualityPreset::High:
+            settings.enableToneMapping = true;
+            settings.enableBloom = true;
+            settings.enableFXAA = true;
+            settings.enableColorGrading = true;
+            settings.enableVignette = true;
+            settings.enableChromaticAberration = true;
+            settings.enableSSAO = true;
+            return;
+        case RenderVisualQualityPreset::Cinematic:
+            settings.enableToneMapping = true;
+            settings.enableBloom = true;
+            settings.enableFXAA = true;
+            settings.enableColorGrading = true;
+            settings.enableVignette = true;
+            settings.enableChromaticAberration = true;
+            settings.enableFilmGrain = true;
+            settings.enableSSAO = true;
+            settings.enableSSR = true;
+            settings.enableTAA = true;
+            settings.enableDOF = true;
+            settings.enableMotionBlur = true;
+            settings.enableVolumetricLighting = true;
+            return;
+        default:
+            return;
+    }
+}
 
 PostProcessStack::~PostProcessStack()
 {
@@ -322,6 +409,7 @@ std::vector<IPostProcessPass*> PostProcessStack::GatherEnabledEffects(PostProces
             plan.skippedReason = effect->GetUnsupportedReason().empty()
                                      ? "Unsupported"
                                      : effect->GetUnsupportedReason();
+            plan.reason = plan.skippedReason;
             if (logUnsupported)
             {
                 RVX_CORE_WARN(
@@ -337,6 +425,10 @@ std::vector<IPostProcessPass*> PostProcessStack::GatherEnabledEffects(PostProces
             {
                 plan.skippedReason = plan.missingFrameInputReason;
             }
+            if (plan.reason.empty())
+            {
+                plan.reason = plan.missingFrameInputReason;
+            }
             if (logUnsupported)
             {
                 RVX_CORE_WARN(
@@ -344,6 +436,11 @@ std::vector<IPostProcessPass*> PostProcessStack::GatherEnabledEffects(PostProces
                     effect->GetName(),
                     plan.missingFrameInputReason);
             }
+        }
+
+        if (!plan.requested)
+        {
+            plan.reason = "not requested";
         }
 
         if (effect->IsEnabled() && (!frameInputs || plan.frameInputsSatisfied))
@@ -366,6 +463,7 @@ std::vector<IPostProcessPass*> PostProcessStack::GatherEnabledEffects(PostProces
 PostProcessStackExecuteStats PostProcessStack::EvaluateEffects() const
 {
     PostProcessStackExecuteStats stats;
+    SetQualityPresetStats(stats, m_settings);
     std::vector<IPostProcessPass*> enabledEffects = GatherEnabledEffects(stats, false, nullptr);
     if (!enabledEffects.empty())
     {
@@ -390,6 +488,7 @@ void PostProcessStack::Execute(RenderGraph& graph,
                                RGTextureHandle output)
 {
     m_lastExecuteStats = {};
+    SetQualityPresetStats(m_lastExecuteStats, m_settings);
     m_lastExecuteStats.frameInputs = frameInputs;
 
     std::vector<IPostProcessPass*> enabledEffects = GatherEnabledEffects(m_lastExecuteStats, true, &frameInputs);
@@ -489,6 +588,8 @@ void PostProcessStack::Execute(RenderGraph& graph,
         {
             const RHITextureDesc* inputDesc = graph.GetTextureDesc(currentInput);
             const RHITextureDesc* outputDesc = graph.GetTextureDesc(currentOutput);
+            plan->scheduled = true;
+            m_lastExecuteStats.scheduledEffectCount++;
             plan->inputFormat = inputDesc ? inputDesc->format : RHIFormat::Unknown;
             plan->outputFormat = outputDesc ? outputDesc->format : RHIFormat::Unknown;
             plan->inputDomain = GetColorDomainForFormat(plan->inputFormat);

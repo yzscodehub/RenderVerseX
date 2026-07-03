@@ -6326,6 +6326,39 @@ TEST_F(RenderPassValidationFixture, PostProcessStackEvaluateEffectsCountsRuntime
     EXPECT_EQ(stats.transientIntermediateCount, 0u);
 }
 
+TEST(RenderPostProcessStackValidation, RenderVisualQualityPresetAppliesExplicitEffectPolicy)
+{
+    PostProcessSettings settings;
+    ApplyRenderVisualQualityPreset(settings, RenderVisualQualityPreset::Off);
+    EXPECT_EQ(settings.visualQualityPreset, RenderVisualQualityPreset::Off);
+    EXPECT_STREQ(GetRenderVisualQualityPresetName(settings.visualQualityPreset), "off");
+    EXPECT_FALSE(settings.enableToneMapping);
+    EXPECT_FALSE(settings.enableBloom);
+    EXPECT_FALSE(settings.enableFXAA);
+    EXPECT_FALSE(settings.enableSSAO);
+    EXPECT_FALSE(settings.enableTAA);
+
+    ApplyRenderVisualQualityPreset(settings, RenderVisualQualityPreset::Low);
+    EXPECT_EQ(settings.visualQualityPreset, RenderVisualQualityPreset::Low);
+    EXPECT_TRUE(settings.enableToneMapping);
+    EXPECT_TRUE(settings.enableFXAA);
+    EXPECT_FALSE(settings.enableBloom);
+    EXPECT_FALSE(settings.enableSSAO);
+
+    ApplyRenderVisualQualityPreset(settings, RenderVisualQualityPreset::Cinematic);
+    EXPECT_EQ(settings.visualQualityPreset, RenderVisualQualityPreset::Cinematic);
+    EXPECT_TRUE(settings.enableToneMapping);
+    EXPECT_TRUE(settings.enableBloom);
+    EXPECT_TRUE(settings.enableFXAA);
+    EXPECT_TRUE(settings.enableFilmGrain);
+    EXPECT_TRUE(settings.enableSSAO);
+    EXPECT_TRUE(settings.enableSSR);
+    EXPECT_TRUE(settings.enableTAA);
+    EXPECT_TRUE(settings.enableDOF);
+    EXPECT_TRUE(settings.enableMotionBlur);
+    EXPECT_TRUE(settings.enableVolumetricLighting);
+}
+
 TEST(RenderPostProcessStackValidation, SceneRendererWiresLDREffectsWithoutFlippingRuntimeDefaults)
 {
     const fs::path shaderDir = FindShaderDirectory();
@@ -6379,6 +6412,10 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposePostPr
               std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("bool postProcessFallbackCopyApplied = false;"),
               std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("uint32 scheduledPostProcessEffectCount = 0;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("RenderVisualQualityPreset requestedVisualQualityPreset = RenderVisualQualityPreset::Medium;"),
+              std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("bool postProcessDepthInputAvailable = false;"),
               std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("bool postProcessVelocityInputAvailable = false;"),
@@ -6388,6 +6425,12 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposePostPr
               std::string::npos);
     EXPECT_NE(sceneRendererSource.find(
                   "diagnostics.postProcessFallbackCopyApplied = m_postProcessStats.stackStats.fallbackCopyApplied;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find(
+                  "diagnostics.scheduledPostProcessEffectCount = m_postProcessStats.stackStats.scheduledEffectCount;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find(
+                  "diagnostics.requestedVisualQualityPreset = m_postProcessStats.stackStats.requestedQualityPreset;"),
               std::string::npos);
     EXPECT_NE(sceneRendererSource.find(
                   "diagnostics.postProcessDepthInputAvailable = m_postProcessStats.frameInputDepthAvailable;"),
@@ -6451,22 +6494,29 @@ TEST(RenderPostProcessStackValidation, EvaluateEffectsReportsRequestedButUnsuppo
     EXPECT_EQ(stats.requestedEffectCount, 2u);
     EXPECT_EQ(stats.unsupportedSkippedCount, 2u);
     EXPECT_EQ(stats.enabledEffectCount, 0u);
+    EXPECT_EQ(stats.scheduledEffectCount, 0u);
     EXPECT_EQ(stats.graphPassCount, 0u);
+    EXPECT_EQ(stats.requestedQualityPreset, RenderVisualQualityPreset::Medium);
+    EXPECT_EQ(stats.appliedQualityPreset, RenderVisualQualityPreset::Medium);
     ASSERT_EQ(stats.effectPlans.size(), static_cast<size_t>(2));
     EXPECT_EQ(stats.effectPlans[0].effectName, "Bloom");
     EXPECT_TRUE(stats.effectPlans[0].requested);
     EXPECT_FALSE(stats.effectPlans[0].supported);
     EXPECT_FALSE(stats.effectPlans[0].enabled);
+    EXPECT_FALSE(stats.effectPlans[0].scheduled);
     EXPECT_FALSE(stats.effectPlans[0].pipelineReady);
     EXPECT_FALSE(stats.effectPlans[0].pipelineReadinessReason.empty());
     EXPECT_FALSE(stats.effectPlans[0].skippedReason.empty());
+    EXPECT_EQ(stats.effectPlans[0].reason, stats.effectPlans[0].skippedReason);
     EXPECT_EQ(stats.effectPlans[1].effectName, "ToneMapping");
     EXPECT_TRUE(stats.effectPlans[1].requested);
     EXPECT_FALSE(stats.effectPlans[1].supported);
     EXPECT_FALSE(stats.effectPlans[1].enabled);
+    EXPECT_FALSE(stats.effectPlans[1].scheduled);
     EXPECT_FALSE(stats.effectPlans[1].pipelineReady);
     EXPECT_FALSE(stats.effectPlans[1].pipelineReadinessReason.empty());
     EXPECT_FALSE(stats.effectPlans[1].skippedReason.empty());
+    EXPECT_EQ(stats.effectPlans[1].reason, stats.effectPlans[1].skippedReason);
 }
 
 TEST_F(RenderPassValidationFixture, NoSupportedEffectsReportsNoWork)
@@ -6629,7 +6679,10 @@ TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPla
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     ASSERT_EQ(executeStats.effectPlans.size(), static_cast<size_t>(3));
     EXPECT_EQ(executeStats.enabledEffectCount, 3u);
+    EXPECT_EQ(executeStats.scheduledEffectCount, 3u);
     EXPECT_EQ(executeStats.graphPassCount, 3u);
+    EXPECT_EQ(executeStats.requestedQualityPreset, RenderVisualQualityPreset::Medium);
+    EXPECT_EQ(executeStats.appliedQualityPreset, RenderVisualQualityPreset::Medium);
     EXPECT_EQ(executeStats.transientIntermediateCount, 2u);
     EXPECT_EQ(executeStats.hdrIntermediateCount, 1u);
     EXPECT_EQ(executeStats.ldrIntermediateCount, 1u);
@@ -6640,6 +6693,7 @@ TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPla
     EXPECT_TRUE(bloomPlan.requested);
     EXPECT_TRUE(bloomPlan.supported);
     EXPECT_TRUE(bloomPlan.enabled);
+    EXPECT_TRUE(bloomPlan.scheduled);
     EXPECT_EQ(bloomPlan.inputFormat, RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(bloomPlan.outputFormat, RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(bloomPlan.inputDomain, PostProcessColorDomain::HDR);
@@ -6648,9 +6702,11 @@ TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPla
     EXPECT_TRUE(bloomPlan.outputIsTransientIntermediate);
     EXPECT_FALSE(bloomPlan.outputIsFinalTarget);
     EXPECT_TRUE(bloomPlan.skippedReason.empty());
+    EXPECT_TRUE(bloomPlan.reason.empty());
 
     const PostProcessEffectExecutionPlan& toneMappingPlan = executeStats.effectPlans[1];
     EXPECT_EQ(toneMappingPlan.effectName, "ToneMapping");
+    EXPECT_TRUE(toneMappingPlan.scheduled);
     EXPECT_EQ(toneMappingPlan.inputFormat, RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(toneMappingPlan.outputFormat, RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(toneMappingPlan.inputDomain, PostProcessColorDomain::HDR);
@@ -6661,6 +6717,7 @@ TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPla
 
     const PostProcessEffectExecutionPlan& fxaaPlan = executeStats.effectPlans[2];
     EXPECT_EQ(fxaaPlan.effectName, "FXAA");
+    EXPECT_TRUE(fxaaPlan.scheduled);
     EXPECT_EQ(fxaaPlan.inputFormat, RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(fxaaPlan.outputFormat, RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(fxaaPlan.inputDomain, PostProcessColorDomain::LDR);
@@ -6723,6 +6780,8 @@ TEST_F(RenderPassValidationFixture, PostProcessFrameInputContractReportsMissingV
     EXPECT_NE(plan.missingFrameInputReason.find("velocity"), std::string::npos);
     EXPECT_NE(plan.missingFrameInputReason.find("temporal history"), std::string::npos);
     EXPECT_EQ(plan.skippedReason, plan.missingFrameInputReason);
+    EXPECT_FALSE(plan.scheduled);
+    EXPECT_EQ(plan.reason, plan.missingFrameInputReason);
     EXPECT_TRUE(executeStats.fallbackCopyApplied);
 }
 

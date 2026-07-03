@@ -856,7 +856,10 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
     diagnostics.requestedPostProcessEffectCount = m_postProcessStats.stackStats.requestedEffectCount;
     diagnostics.enabledPostProcessEffectCount = m_postProcessStats.stackStats.enabledEffectCount;
     diagnostics.unsupportedPostProcessSkippedCount = m_postProcessStats.stackStats.unsupportedSkippedCount;
+    diagnostics.scheduledPostProcessEffectCount = m_postProcessStats.stackStats.scheduledEffectCount;
     diagnostics.postProcessGraphPassCount = m_postProcessStats.stackStats.graphPassCount;
+    diagnostics.requestedVisualQualityPreset = m_postProcessStats.stackStats.requestedQualityPreset;
+    diagnostics.appliedVisualQualityPreset = m_postProcessStats.stackStats.appliedQualityPreset;
     diagnostics.hdrSceneColorEnabled = m_postProcessStats.hdrSceneColorEnabled;
     diagnostics.toneMappingOutputColorSpace = m_postProcessStats.toneMappingOutputColorSpace;
     diagnostics.postProcessFinalOutputFormat = m_postProcessStats.stackStats.finalOutputFormat;

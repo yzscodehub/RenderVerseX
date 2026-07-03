@@ -57,11 +57,24 @@ namespace RVX
         }
     };
 
+    enum class RenderVisualQualityPreset : uint8
+    {
+        Off = 0,
+        Low,
+        Medium,
+        High,
+        Cinematic
+    };
+
+    const char* GetRenderVisualQualityPresetName(RenderVisualQualityPreset preset);
+
     /**
      * @brief Post-process settings accessible by all effects
      */
     struct PostProcessSettings
     {
+        RenderVisualQualityPreset visualQualityPreset = RenderVisualQualityPreset::Medium;
+
         // =========================================================================
         // Tone mapping
         // =========================================================================
@@ -186,6 +199,8 @@ namespace RVX
         float taaJitterScale = 1.0f;
     };
 
+    void ApplyRenderVisualQualityPreset(PostProcessSettings& settings, RenderVisualQualityPreset preset);
+
     /**
      * @brief Base interface for post-process effects
      */
@@ -287,6 +302,7 @@ namespace RVX
         bool requested = false;
         bool supported = false;
         bool enabled = false;
+        bool scheduled = false;
         PostProcessColorDomain inputDomain = PostProcessColorDomain::Unknown;
         PostProcessColorDomain outputDomain = PostProcessColorDomain::Unknown;
         RHIFormat inputFormat = RHIFormat::Unknown;
@@ -303,6 +319,7 @@ namespace RVX
         std::string pipelineReadinessReason;
         std::string missingFrameInputReason;
         std::string skippedReason;
+        std::string reason;
     };
 
     /**
@@ -318,6 +335,7 @@ namespace RVX
         uint32 requestedEffectCount = 0;
         uint32 unsupportedSkippedCount = 0;
         uint32 enabledEffectCount = 0;
+        uint32 scheduledEffectCount = 0;
         uint32 graphPassCount = 0;
         uint32 transientIntermediateCount = 0;
         uint32 hdrIntermediateCount = 0;
@@ -332,6 +350,8 @@ namespace RVX
         bool fallbackCopyApplied = false;
         uint32 fallbackCopyPassCount = 0;
         std::string fallbackCopyReason;
+        RenderVisualQualityPreset requestedQualityPreset = RenderVisualQualityPreset::Medium;
+        RenderVisualQualityPreset appliedQualityPreset = RenderVisualQualityPreset::Medium;
         PostProcessFrameInputs frameInputs;
         std::vector<PostProcessEffectExecutionPlan> effectPlans;
     };

@@ -28,6 +28,8 @@ $baselineRegex = @(
     "PhysicsWorldIntegrationValidation\.(BackendQueryAndShapeStubsReportExplicitMisses|UnsupportedColliderTypesDoNotCreateFallbackShapesOrQueryHits)",
     "RHIContractValidation\.",
     "SampleCLIValidation\.",
+    "RenderPassValidationFixture\.(PostProcessStackEvaluateEffectsCountsRuntimeSupportedEffects|PostProcessFrameInputContractReportsMissingVelocityDepthAndHistory)",
+    "RenderPostProcessStackValidation\.(RenderVisualQualityPresetAppliesExplicitEffectPolicy|SceneRendererFrameDiagnosticsExposePostProcessEffectPlans|EvaluateEffectsReportsRequestedButUnsupportedResources|PostProcessStackReportsEffectExecutionPlanDomainsAndTargets)",
     "RenderGraphValidation\.(GraphCreation|PassChain|MemoryAliasing|ExecuteAsyncFallsBackToGraphicsWhenBackendDoesNotSupportQueueSync)",
     "RenderSceneValidation\.(RenderSceneApplyProxySnapshotPopulatesObjectsAndLights|RenderProxyBridgeBuildsPrimitiveAndLightSnapshot|RenderProxyBridgeBuildsLegacyMeshRendererProxy)",
     "ActorComponentValidation\.(ActorOwnsComponentsAndDispatchesLifecycle|WorldSpawnActorDelegatesToSceneManager|ActorAddComponentRejectsLegacyComponentToAvoidContainerSplit)",
