@@ -4,6 +4,7 @@
 #include "Resource/Loader/ModelLoader.h"
 #include "Resource/Loader/ShaderLoader.h"
 #include "Resource/Loader/TextureLoader.h"
+#include "Core/Diagnostics/JsonWriter.h"
 #include "Core/Log.h"
 #include <algorithm>
 #include <exception>
@@ -28,32 +29,15 @@ static ResourceManager* s_instance = nullptr;
 
 namespace
 {
-    std::string EscapeJsonString(std::string_view value)
-    {
-        std::ostringstream escaped;
-        for (const char c : value)
-        {
-            switch (c)
-            {
-                case '"': escaped << "\\\""; break;
-                case '\\': escaped << "\\\\"; break;
-                case '\b': escaped << "\\b"; break;
-                case '\f': escaped << "\\f"; break;
-                case '\n': escaped << "\\n"; break;
-                case '\r': escaped << "\\r"; break;
-                case '\t': escaped << "\\t"; break;
-                default: escaped << c; break;
-            }
-        }
-        return escaped.str();
-    }
+    using Diagnostics::JsonBool;
+    using Diagnostics::JsonString;
 
     void AppendJsonString(std::ostringstream& json,
                           std::string_view name,
                           std::string_view value,
                           bool trailingComma = true)
     {
-        json << "  \"" << name << "\": \"" << EscapeJsonString(value) << "\"";
+        json << "  \"" << name << "\": " << JsonString(value);
         json << (trailingComma ? ",\n" : "\n");
     }
 
@@ -62,7 +46,7 @@ namespace
                         bool value,
                         bool trailingComma = true)
     {
-        json << "  \"" << name << "\": " << (value ? "true" : "false");
+        json << "  \"" << name << "\": " << JsonBool(value);
         json << (trailingComma ? ",\n" : "\n");
     }
 

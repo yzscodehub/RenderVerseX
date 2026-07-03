@@ -1,16 +1,19 @@
 #include "Resource/RuntimeResourcePolicy.h"
+#include "Core/Diagnostics/JsonWriter.h"
 
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
-#include <string_view>
 
 namespace RVX::Resource
 {
     namespace
     {
+        using Diagnostics::JsonBool;
+        using Diagnostics::JsonString;
+
         std::string ToLower(std::string value)
         {
             std::transform(value.begin(),
@@ -146,43 +149,6 @@ namespace RVX::Resource
             resolution.runtimePackageRead = resolution.domain == ResourceLoadDomain::RuntimePackage;
         }
 
-        const char* JsonBool(bool value)
-        {
-            return value ? "true" : "false";
-        }
-
-        std::string JsonString(std::string_view value)
-        {
-            std::string escaped;
-            escaped.reserve(value.size() + 2);
-            escaped.push_back('"');
-            for (char ch : value)
-            {
-                switch (ch)
-                {
-                    case '\\':
-                        escaped += "\\\\";
-                        break;
-                    case '"':
-                        escaped += "\\\"";
-                        break;
-                    case '\n':
-                        escaped += "\\n";
-                        break;
-                    case '\r':
-                        escaped += "\\r";
-                        break;
-                    case '\t':
-                        escaped += "\\t";
-                        break;
-                    default:
-                        escaped.push_back(ch);
-                        break;
-                }
-            }
-            escaped.push_back('"');
-            return escaped;
-        }
     } // namespace
 
     const char* GetResourceLoadDomainName(ResourceLoadDomain domain)

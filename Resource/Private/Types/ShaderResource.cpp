@@ -1,4 +1,5 @@
 #include "Resource/Types/ShaderResource.h"
+#include "Core/Diagnostics/JsonWriter.h"
 
 #include <fstream>
 #include <sstream>
@@ -9,6 +10,9 @@ namespace RVX::Resource
 {
 namespace
 {
+    using Diagnostics::JsonBool;
+    using Diagnostics::JsonString;
+
     constexpr std::uint64_t RVX_SHADER_CONTRACT_FNV_OFFSET = 14695981039346656037ull;
     constexpr std::uint64_t RVX_SHADER_CONTRACT_FNV_PRIME = 1099511628211ull;
 
@@ -112,43 +116,6 @@ namespace
         }
     }
 
-    const char* JsonBool(bool value)
-    {
-        return value ? "true" : "false";
-    }
-
-    std::string JsonString(std::string_view value)
-    {
-        std::string escaped;
-        escaped.reserve(value.size() + 2);
-        escaped.push_back('"');
-        for (char ch : value)
-        {
-            switch (ch)
-            {
-                case '\\':
-                    escaped += "\\\\";
-                    break;
-                case '"':
-                    escaped += "\\\"";
-                    break;
-                case '\n':
-                    escaped += "\\n";
-                    break;
-                case '\r':
-                    escaped += "\\r";
-                    break;
-                case '\t':
-                    escaped += "\\t";
-                    break;
-                default:
-                    escaped.push_back(ch);
-                    break;
-            }
-        }
-        escaped.push_back('"');
-        return escaped;
-    }
 
     void MarkContractInvalid(ShaderRuntimeContract& contract,
                              ShaderRuntimeContractStatus status,

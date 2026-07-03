@@ -1,14 +1,17 @@
 #include "Resource/Types/MaterialResource.h"
+#include "Core/Diagnostics/JsonWriter.h"
 
 #include <fstream>
 #include <sstream>
-#include <string_view>
 #include <utility>
 
 namespace RVX::Resource
 {
 namespace
 {
+    using Diagnostics::JsonBool;
+    using Diagnostics::JsonString;
+
     MaterialSourceAlphaMode ToMaterialSourceAlphaMode(MaterialAlphaMode alphaMode)
     {
         switch (alphaMode)
@@ -92,43 +95,6 @@ namespace
         binding.magFilter = ToRenderTextureFilterMode(textureInfo->magFilter);
     }
 
-    const char* JsonBool(bool value)
-    {
-        return value ? "true" : "false";
-    }
-
-    std::string JsonString(std::string_view value)
-    {
-        std::string escaped;
-        escaped.reserve(value.size() + 2);
-        escaped.push_back('"');
-        for (char ch : value)
-        {
-            switch (ch)
-            {
-                case '\\':
-                    escaped += "\\\\";
-                    break;
-                case '"':
-                    escaped += "\\\"";
-                    break;
-                case '\n':
-                    escaped += "\\n";
-                    break;
-                case '\r':
-                    escaped += "\\r";
-                    break;
-                case '\t':
-                    escaped += "\\t";
-                    break;
-                default:
-                    escaped.push_back(ch);
-                    break;
-            }
-        }
-        escaped.push_back('"');
-        return escaped;
-    }
 } // namespace
 
 MaterialResource::MaterialResource() = default;
