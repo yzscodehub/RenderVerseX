@@ -871,6 +871,11 @@ rvx_add_showcase_smoke_test(RenderingShowcase)
 rvx_add_showcase_smoke_test(PostProcessShowcase)
 rvx_add_showcase_smoke_test(MaterialShowcase)
 rvx_add_showcase_smoke_test(LightingShowcase)
+rvx_add_showcase_smoke_test(SceneInteractionShowcase)
+rvx_add_showcase_smoke_test(TerrainWaterShowcase)
+rvx_add_showcase_smoke_test(ParticleFXShowcase)
+rvx_add_showcase_smoke_test(ResourceRuntimeShowcase)
+rvx_add_showcase_smoke_test(PhysicsAudioShowcase)
 
 add_executable(ModelViewerHDRIFixtureWriter
     ModelViewerHDRIFixtureWriter/main.cpp
