@@ -347,9 +347,11 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::RHI
+        RVX::RenderContracts
         RVX::ShaderCompiler
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/RenderContracts/Include
         ${CMAKE_SOURCE_DIR}/RHI/Include
         ${CMAKE_SOURCE_DIR}/ShaderCompiler/Include
     LABELS unit

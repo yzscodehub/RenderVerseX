@@ -15,6 +15,9 @@
 #include <vector>
 namespace RVX
 {
+    inline constexpr const char* RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID = "RVX.RenderGraph.Diagnostics";
+    inline constexpr uint32 RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 3;
+
     class TransientResourcePool;
 
     // =============================================================================
@@ -155,6 +158,18 @@ namespace RVX
                           RHIFence* computeFence,
                           uint64 frameIndex = 0);
 
+        enum class AsyncComputeFallbackReason : uint8
+        {
+            None,
+            GraphNotCompiled,
+            BackendUnsupported,
+            QueueFenceSignalUnsupported,
+            QueueFenceWaitUnsupported,
+            MissingComputeContext,
+            MissingFence,
+            NoEligibleComputePasses,
+        };
+
         struct CompileStats
         {
             // Compile validity / capability honesty
@@ -162,6 +177,16 @@ namespace RVX
             bool executionOrderFallbackUsed = false;
             bool asyncComputeSupported = false;
             bool asyncFallbackUsed = false;
+            AsyncComputeFallbackReason asyncFallbackReason = AsyncComputeFallbackReason::None;
+            uint32 asyncComputeEligiblePasses = 0;
+            uint32 asyncComputeScheduledPasses = 0;
+            uint32 asyncGraphicsScheduledPasses = 0;
+            uint32 asyncFenceSignalCount = 0;
+            uint32 asyncFenceWaitCount = 0;
+            uint32 asyncCrossQueueDependencyCount = 0;
+            uint32 asyncFinalQueueJoinCount = 0;
+            uint32 lastExecutedPassCount = 0;
+            uint64 lastExecutionCpuDurationNanoseconds = 0;
             bool memoryAliasingEnabled = false;
             bool memoryAliasingUnsupportedRequested = false;
             bool explicitAliasingBarriersSupported = false;
@@ -206,8 +231,193 @@ namespace RVX
             }
         };
 
+        enum class DiagnosticResourceType : uint8
+        {
+            Texture,
+            Buffer,
+        };
+
+        enum class DiagnosticExecutionQueue : uint8
+        {
+            Unknown,
+            Graphics,
+            Compute,
+        };
+
+        enum class DiagnosticSyncReason : uint8
+        {
+            CrossQueueDependency,
+            FinalQueueJoin,
+        };
+
+        enum class DiagnosticAccessType : uint8
+        {
+            Read,
+            Write,
+            ReadWrite,
+        };
+
+        struct ResourceUsageDiagnostic
+        {
+            DiagnosticResourceType type = DiagnosticResourceType::Texture;
+            DiagnosticAccessType access = DiagnosticAccessType::Read;
+            uint32 resourceIndex = RVX_INVALID_INDEX;
+            RHIResourceState desiredState = RHIResourceState::Common;
+            RHIShaderStage stages = RHIShaderStage::None;
+            bool hasSubresourceRange = false;
+            RHISubresourceRange subresourceRange = RHISubresourceRange::All();
+            bool hasRange = false;
+            uint64 offset = 0;
+            uint64 size = RVX_WHOLE_SIZE;
+        };
+
+        struct PassDiagnostic
+        {
+            uint32 index = RVX_INVALID_INDEX;
+            std::string name;
+            RenderGraphPassType type = RenderGraphPassType::Graphics;
+            bool culled = false;
+            bool executedLastRun = false;
+            DiagnosticExecutionQueue executionQueue = DiagnosticExecutionQueue::Unknown;
+            uint32 executionSerial = RVX_INVALID_INDEX;
+            uint64 cpuDurationNanoseconds = 0;
+            uint32 textureBarrierCount = 0;
+            uint32 bufferBarrierCount = 0;
+            uint32 aliasingBarrierCount = 0;
+            std::vector<uint32> dependencies;
+            std::vector<uint32> dependents;
+            std::vector<ResourceUsageDiagnostic> usages;
+        };
+
+        struct ResourceDiagnostic
+        {
+            DiagnosticResourceType type = DiagnosticResourceType::Texture;
+            uint32 index = RVX_INVALID_INDEX;
+            std::string name;
+            bool imported = false;
+            bool pooled = false;
+            bool used = false;
+            uint32 firstUsePass = RVX_INVALID_INDEX;
+            uint32 lastUsePass = RVX_INVALID_INDEX;
+            uint64 estimatedMemoryBytes = 0;
+            bool aliased = false;
+            uint32 aliasHeapIndex = RVX_INVALID_INDEX;
+            uint64 aliasHeapOffset = 0;
+            RHIResourceState initialState = RHIResourceState::Undefined;
+            RHIResourceState currentState = RHIResourceState::Undefined;
+            bool hasExportState = false;
+            RHIResourceState exportState = RHIResourceState::Undefined;
+
+            // Texture fields
+            uint32 width = 0;
+            uint32 height = 0;
+            uint32 depth = 0;
+            uint32 mipLevels = 0;
+            uint32 arraySize = 0;
+            RHIFormat format = RHIFormat::Unknown;
+
+            // Buffer fields
+            uint64 bufferSize = 0;
+            uint32 stride = 0;
+        };
+
+        struct QueueBatchDiagnostic
+        {
+            uint32 batchIndex = RVX_INVALID_INDEX;
+            DiagnosticExecutionQueue queue = DiagnosticExecutionQueue::Unknown;
+            uint32 firstExecutionSerial = RVX_INVALID_INDEX;
+            uint32 lastExecutionSerial = RVX_INVALID_INDEX;
+            uint64 cpuDurationNanoseconds = 0;
+            std::vector<uint32> passIndices;
+        };
+
+        struct PlannedQueueBatchDiagnostic
+        {
+            uint32 batchIndex = RVX_INVALID_INDEX;
+            uint32 dependencyLevel = 0;
+            DiagnosticExecutionQueue queue = DiagnosticExecutionQueue::Unknown;
+            std::vector<uint32> passIndices;
+            std::vector<uint32> prerequisiteSyncIndices;
+        };
+
+        struct PlannedQueueSyncDiagnostic
+        {
+            uint32 syncIndex = RVX_INVALID_INDEX;
+            uint32 sourceBatchIndex = RVX_INVALID_INDEX;
+            uint32 targetBatchIndex = RVX_INVALID_INDEX;
+            DiagnosticExecutionQueue sourceQueue = DiagnosticExecutionQueue::Unknown;
+            DiagnosticExecutionQueue targetQueue = DiagnosticExecutionQueue::Unknown;
+            DiagnosticSyncReason reason = DiagnosticSyncReason::CrossQueueDependency;
+            uint32 sourcePassIndex = RVX_INVALID_INDEX;
+            uint32 targetPassIndex = RVX_INVALID_INDEX;
+            bool coveredByActualSync = false;
+            uint32 actualSyncIndex = RVX_INVALID_INDEX;
+        };
+
+        struct SubmissionPlan
+        {
+            std::vector<PlannedQueueBatchDiagnostic> queueBatches;
+            std::vector<PlannedQueueSyncDiagnostic> queueSyncs;
+            uint32 queueBatchCount = 0;
+            uint32 dependencyLevelCount = 0;
+            uint32 asyncOverlapCandidateLevelCount = 0;
+            uint32 computeBatchCount = 0;
+            uint32 queueSyncCount = 0;
+            uint32 crossQueueSyncCount = 0;
+        };
+
+        struct QueueSyncDiagnostic
+        {
+            uint32 syncIndex = RVX_INVALID_INDEX;
+            DiagnosticExecutionQueue sourceQueue = DiagnosticExecutionQueue::Unknown;
+            DiagnosticExecutionQueue targetQueue = DiagnosticExecutionQueue::Unknown;
+            DiagnosticSyncReason reason = DiagnosticSyncReason::CrossQueueDependency;
+            uint64 fenceValue = 0;
+            uint32 sourcePassIndex = RVX_INVALID_INDEX;
+            uint32 targetPassIndex = RVX_INVALID_INDEX;
+            bool coversPlannedSync = false;
+            uint32 plannedSyncIndex = RVX_INVALID_INDEX;
+        };
+
+        struct Diagnostics
+        {
+            const char* schemaId = RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID;
+            uint32 schemaVersion = RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION;
+            CompileStats compileStats;
+            std::vector<PassDiagnostic> passes;
+            std::vector<ResourceDiagnostic> resources;
+            std::vector<QueueBatchDiagnostic> queueBatches;
+            std::vector<PlannedQueueBatchDiagnostic> plannedQueueBatches;
+            std::vector<PlannedQueueSyncDiagnostic> plannedQueueSyncs;
+            std::vector<QueueSyncDiagnostic> queueSyncs;
+            std::vector<uint32> executionOrder;
+            uint32 plannedQueueBatchCount = 0;
+            uint32 plannedDependencyLevelCount = 0;
+            uint32 plannedAsyncOverlapCandidateLevelCount = 0;
+            uint32 plannedComputeBatchCount = 0;
+            uint32 plannedQueueSyncCount = 0;
+            uint32 plannedCrossQueueSyncCount = 0;
+            uint32 plannedQueueSyncCoveredCount = 0;
+            uint32 plannedQueueSyncUncoveredCount = 0;
+            uint32 actualQueueBatchCount = 0;
+            uint32 actualQueueSwitchCount = 0;
+            uint32 actualQueueSyncCount = 0;
+            uint32 actualCrossQueueSyncCount = 0;
+            uint32 actualMatchedPlannedSyncCount = 0;
+            uint32 actualUnplannedQueueSyncCount = 0;
+            uint32 actualConservativeFinalJoinCount = 0;
+            uint64 estimatedTransientMemoryBytes = 0;
+            uint64 estimatedUsedTransientMemoryBytes = 0;
+            uint64 estimatedImportedMemoryBytes = 0;
+        };
+
         const CompileStats& GetCompileStats() const;
         const std::vector<std::string>& GetCompileDiagnostics() const;
+        SubmissionPlan GetSubmissionPlan() const;
+        Diagnostics GetDiagnostics() const;
+        std::string ExportDiagnosticsText() const;
+        std::string ExportDiagnosticsJson() const;
+        bool SaveDiagnosticsJson(const char* filename) const;
 
         // Memory aliasing control
         void SetMemoryAliasingEnabled(bool enabled);

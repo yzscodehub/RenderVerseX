@@ -156,6 +156,10 @@ namespace RVX
         std::vector<uint32> readBuffers;
         std::vector<uint32> writeBuffers;
         bool culled = false;
+        bool executedLastRun = false;
+        RenderGraph::DiagnosticExecutionQueue lastExecutionQueue = RenderGraph::DiagnosticExecutionQueue::Unknown;
+        uint32 lastExecutionSerial = RVX_INVALID_INDEX;
+        uint64 lastCpuDurationNanoseconds = 0;
         std::vector<RHITextureBarrier> textureBarriers;
         std::vector<RHIBufferBarrier> bufferBarriers;
         std::vector<AliasingBarrier> aliasingBarriers;  // For memory aliasing
@@ -164,6 +168,16 @@ namespace RVX
 
     struct RenderGraphImpl
     {
+        struct QueueSyncPoint
+        {
+            RenderGraph::DiagnosticExecutionQueue sourceQueue = RenderGraph::DiagnosticExecutionQueue::Unknown;
+            RenderGraph::DiagnosticExecutionQueue targetQueue = RenderGraph::DiagnosticExecutionQueue::Unknown;
+            RenderGraph::DiagnosticSyncReason reason = RenderGraph::DiagnosticSyncReason::CrossQueueDependency;
+            uint64 fenceValue = 0;
+            uint32 sourcePassIndex = RVX_INVALID_INDEX;
+            uint32 targetPassIndex = RVX_INVALID_INDEX;
+        };
+
         struct RetiredFrameResources
         {
             // Keep heaps after placed resources so destruction releases resources first.
@@ -178,6 +192,9 @@ namespace RVX
         std::vector<BufferResource> buffers;
         std::vector<Pass> passes;
         std::vector<uint32> executionOrder;
+        std::vector<std::vector<uint32>> passDependencies;
+        std::vector<std::vector<uint32>> passDependents;
+        std::vector<QueueSyncPoint> lastQueueSyncs;
         RenderGraph::CompileStats stats;
         std::vector<std::string> compileDiagnostics;
         std::deque<RetiredFrameResources> retiredFrameResources;
@@ -195,6 +212,11 @@ namespace RVX
     };
 
     void CompileRenderGraph(RenderGraphImpl& graph);
+    std::vector<RenderGraph::PassDiagnostic> BuildRenderGraphPassDiagnostics(const RenderGraphImpl& graph);
+    RenderGraph::SubmissionPlan BuildRenderGraphSubmissionPlan(
+        const std::vector<RenderGraph::PassDiagnostic>& passes,
+        const std::vector<uint32>& executionOrder);
+    RenderGraph::SubmissionPlan BuildRenderGraphSubmissionPlan(const RenderGraphImpl& graph);
     void ExecuteRenderGraph(RenderGraphImpl& graph, RHICommandContext& ctx);
     void ExecuteRenderGraphAsync(RenderGraphImpl& graph,
                                   RHICommandContext& graphicsCtx,

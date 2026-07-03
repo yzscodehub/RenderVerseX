@@ -1,13 +1,508 @@
 #include "RenderGraphInternal.h"
 #include "Core/Log.h"
-#include <sstream>
+#include <algorithm>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <string_view>
 
 namespace RVX
 {
+    namespace
+    {
+        uint64 AlignUp(uint64 value, uint64 alignment)
+        {
+            return alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
+        }
+
+        uint64 EstimateTextureMemorySize(const RHITextureDesc& desc)
+        {
+            uint64 bytesPerPixel = GetFormatBytesPerPixel(desc.format);
+            if (bytesPerPixel == 0)
+            {
+                bytesPerPixel = 4;
+            }
+
+            uint64 totalSize = 0;
+            uint32 width = std::max(1u, desc.width);
+            uint32 height = std::max(1u, desc.height);
+            uint32 depth = std::max(1u, desc.depth);
+            const uint32 mipLevels = std::max(1u, desc.mipLevels);
+
+            for (uint32 mip = 0; mip < mipLevels; ++mip)
+            {
+                totalSize += static_cast<uint64>(width) * height * depth * bytesPerPixel * std::max(1u, desc.arraySize);
+                width = std::max(1u, width / 2);
+                height = std::max(1u, height / 2);
+                depth = std::max(1u, depth / 2);
+            }
+
+            totalSize *= static_cast<uint32>(desc.sampleCount);
+            return AlignUp(totalSize, 65536);
+        }
+
+        uint64 EstimateBufferMemorySize(const RHIBufferDesc& desc)
+        {
+            return AlignUp(desc.size, 256);
+        }
+
+        RenderGraph::DiagnosticResourceType ToDiagnosticResourceType(ResourceType type)
+        {
+            return type == ResourceType::Texture
+                       ? RenderGraph::DiagnosticResourceType::Texture
+                       : RenderGraph::DiagnosticResourceType::Buffer;
+        }
+
+        RenderGraph::DiagnosticAccessType ToDiagnosticAccessType(RGAccessType access)
+        {
+            switch (access)
+            {
+                case RGAccessType::Write:
+                    return RenderGraph::DiagnosticAccessType::Write;
+                case RGAccessType::ReadWrite:
+                    return RenderGraph::DiagnosticAccessType::ReadWrite;
+                case RGAccessType::Read:
+                default:
+                    return RenderGraph::DiagnosticAccessType::Read;
+            }
+        }
+
+        const char* ToDiagnosticString(RenderGraphPassType type)
+        {
+            switch (type)
+            {
+                case RenderGraphPassType::Graphics:
+                    return "Graphics";
+                case RenderGraphPassType::Compute:
+                    return "Compute";
+                case RenderGraphPassType::RayTracing:
+                    return "RayTracing";
+                case RenderGraphPassType::Copy:
+                    return "Copy";
+                default:
+                    return "Unknown";
+            }
+        }
+
+        const char* ToDiagnosticString(RenderGraph::DiagnosticResourceType type)
+        {
+            return type == RenderGraph::DiagnosticResourceType::Texture ? "Texture" : "Buffer";
+        }
+
+        const char* ToDiagnosticString(RenderGraph::DiagnosticAccessType access)
+        {
+            switch (access)
+            {
+                case RenderGraph::DiagnosticAccessType::Write:
+                    return "Write";
+                case RenderGraph::DiagnosticAccessType::ReadWrite:
+                    return "ReadWrite";
+                case RenderGraph::DiagnosticAccessType::Read:
+                default:
+                    return "Read";
+            }
+        }
+
+        const char* ToDiagnosticString(RenderGraph::DiagnosticExecutionQueue queue)
+        {
+            switch (queue)
+            {
+                case RenderGraph::DiagnosticExecutionQueue::Graphics:
+                    return "Graphics";
+                case RenderGraph::DiagnosticExecutionQueue::Compute:
+                    return "Compute";
+                case RenderGraph::DiagnosticExecutionQueue::Unknown:
+                default:
+                    return "Unknown";
+            }
+        }
+
+        RenderGraph::DiagnosticExecutionQueue ToDiagnosticExecutionQueue(RenderGraphPassType type)
+        {
+            return type == RenderGraphPassType::Compute
+                       ? RenderGraph::DiagnosticExecutionQueue::Compute
+                       : RenderGraph::DiagnosticExecutionQueue::Graphics;
+        }
+
+        const char* ToDiagnosticString(RenderGraph::DiagnosticSyncReason reason)
+        {
+            switch (reason)
+            {
+                case RenderGraph::DiagnosticSyncReason::FinalQueueJoin:
+                    return "FinalQueueJoin";
+                case RenderGraph::DiagnosticSyncReason::CrossQueueDependency:
+                default:
+                    return "CrossQueueDependency";
+            }
+        }
+
+        const char* ToDiagnosticString(RenderGraph::AsyncComputeFallbackReason reason)
+        {
+            switch (reason)
+            {
+                case RenderGraph::AsyncComputeFallbackReason::None:
+                    return "None";
+                case RenderGraph::AsyncComputeFallbackReason::GraphNotCompiled:
+                    return "GraphNotCompiled";
+                case RenderGraph::AsyncComputeFallbackReason::BackendUnsupported:
+                    return "BackendUnsupported";
+                case RenderGraph::AsyncComputeFallbackReason::QueueFenceSignalUnsupported:
+                    return "QueueFenceSignalUnsupported";
+                case RenderGraph::AsyncComputeFallbackReason::QueueFenceWaitUnsupported:
+                    return "QueueFenceWaitUnsupported";
+                case RenderGraph::AsyncComputeFallbackReason::MissingComputeContext:
+                    return "MissingComputeContext";
+                case RenderGraph::AsyncComputeFallbackReason::MissingFence:
+                    return "MissingFence";
+                case RenderGraph::AsyncComputeFallbackReason::NoEligibleComputePasses:
+                    return "NoEligibleComputePasses";
+                default:
+                    return "Unknown";
+            }
+        }
+
+        const char* JsonBool(bool value)
+        {
+            return value ? "true" : "false";
+        }
+
+        std::string JsonString(std::string_view value)
+        {
+            std::ostringstream ss;
+            ss << '"';
+            for (unsigned char ch : value)
+            {
+                switch (ch)
+                {
+                    case '\\':
+                        ss << "\\\\";
+                        break;
+                    case '"':
+                        ss << "\\\"";
+                        break;
+                    case '\n':
+                        ss << "\\n";
+                        break;
+                    case '\r':
+                        ss << "\\r";
+                        break;
+                    case '\t':
+                        ss << "\\t";
+                        break;
+                    default:
+                        if (ch < 0x20)
+                        {
+                            ss << "\\u"
+                               << std::hex << std::uppercase << std::setw(4) << std::setfill('0')
+                               << static_cast<uint32>(ch)
+                               << std::dec << std::nouppercase << std::setfill(' ');
+                        }
+                        else
+                        {
+                            ss << static_cast<char>(ch);
+                        }
+                        break;
+                }
+            }
+            ss << '"';
+            return ss.str();
+        }
+
+        void WriteOptionalIndex(std::ostringstream& ss, uint32 value)
+        {
+            if (value == RVX_INVALID_INDEX)
+            {
+                ss << "null";
+            }
+            else
+            {
+                ss << value;
+            }
+        }
+
+        void WriteIndexArray(std::ostringstream& ss, const std::vector<uint32>& values)
+        {
+            ss << "[";
+            for (size_t i = 0; i < values.size(); ++i)
+            {
+                if (i > 0)
+                {
+                    ss << ", ";
+                }
+                ss << values[i];
+            }
+            ss << "]";
+        }
+
+        std::string FormatPassIndexList(const std::vector<uint32>& values)
+        {
+            std::ostringstream ss;
+            ss << "[";
+            for (size_t i = 0; i < values.size(); ++i)
+            {
+                if (i > 0)
+                {
+                    ss << ",";
+                }
+                ss << values[i];
+            }
+            ss << "]";
+            return ss.str();
+        }
+
+        std::vector<RenderGraph::PassDiagnostic> BuildPassDiagnostics(const RenderGraphImpl& graph)
+        {
+            std::vector<RenderGraph::PassDiagnostic> passDiagnostics;
+            passDiagnostics.reserve(graph.passes.size());
+            for (uint32 passIndex = 0; passIndex < graph.passes.size(); ++passIndex)
+            {
+                const Pass& pass = graph.passes[passIndex];
+                RenderGraph::PassDiagnostic passDiagnostic;
+                passDiagnostic.index = passIndex;
+                passDiagnostic.name = pass.name;
+                passDiagnostic.type = pass.type;
+                passDiagnostic.culled = pass.culled;
+                passDiagnostic.executedLastRun = pass.executedLastRun;
+                passDiagnostic.executionQueue = pass.lastExecutionQueue;
+                passDiagnostic.executionSerial = pass.lastExecutionSerial;
+                passDiagnostic.cpuDurationNanoseconds = pass.lastCpuDurationNanoseconds;
+                passDiagnostic.textureBarrierCount = static_cast<uint32>(pass.textureBarriers.size());
+                passDiagnostic.bufferBarrierCount = static_cast<uint32>(pass.bufferBarriers.size());
+                passDiagnostic.aliasingBarrierCount = static_cast<uint32>(pass.aliasingBarriers.size());
+                if (passIndex < graph.passDependencies.size())
+                {
+                    passDiagnostic.dependencies = graph.passDependencies[passIndex];
+                }
+                if (passIndex < graph.passDependents.size())
+                {
+                    passDiagnostic.dependents = graph.passDependents[passIndex];
+                }
+                passDiagnostic.usages.reserve(pass.usages.size());
+
+                for (const ResourceUsage& usage : pass.usages)
+                {
+                    RenderGraph::ResourceUsageDiagnostic usageDiagnostic;
+                    usageDiagnostic.type = ToDiagnosticResourceType(usage.type);
+                    usageDiagnostic.access = ToDiagnosticAccessType(usage.access);
+                    usageDiagnostic.resourceIndex = usage.index;
+                    usageDiagnostic.desiredState = usage.desiredState;
+                    usageDiagnostic.stages = usage.stages;
+                    usageDiagnostic.hasSubresourceRange = usage.hasSubresourceRange;
+                    usageDiagnostic.subresourceRange = usage.subresourceRange;
+                    usageDiagnostic.hasRange = usage.hasRange;
+                    usageDiagnostic.offset = usage.offset;
+                    usageDiagnostic.size = usage.size;
+                    passDiagnostic.usages.push_back(usageDiagnostic);
+                }
+
+                passDiagnostics.push_back(std::move(passDiagnostic));
+            }
+            return passDiagnostics;
+        }
+
+        RenderGraph::SubmissionPlan BuildSubmissionPlan(
+            const std::vector<RenderGraph::PassDiagnostic>& passes,
+            const std::vector<uint32>& executionOrder)
+        {
+            RenderGraph::SubmissionPlan plan;
+            std::vector<uint32> plannedDependencyLevels(passes.size(), 0);
+            std::vector<uint8> plannedLevelResolved(passes.size(), 0);
+            for (uint32 passIndex : executionOrder)
+            {
+                if (passIndex >= passes.size())
+                    continue;
+
+                const RenderGraph::PassDiagnostic& pass = passes[passIndex];
+                if (pass.culled)
+                    continue;
+
+                uint32 dependencyLevel = 0;
+                for (uint32 dependencyIndex : pass.dependencies)
+                {
+                    if (dependencyIndex >= passes.size() ||
+                        passes[dependencyIndex].culled ||
+                        !plannedLevelResolved[dependencyIndex])
+                    {
+                        continue;
+                    }
+
+                    dependencyLevel = std::max(dependencyLevel, plannedDependencyLevels[dependencyIndex] + 1u);
+                }
+
+                plannedDependencyLevels[passIndex] = dependencyLevel;
+                plannedLevelResolved[passIndex] = 1;
+
+                const RenderGraph::DiagnosticExecutionQueue queue = ToDiagnosticExecutionQueue(pass.type);
+                auto batchIt = std::find_if(
+                    plan.queueBatches.begin(),
+                    plan.queueBatches.end(),
+                    [&](const RenderGraph::PlannedQueueBatchDiagnostic& batch)
+                    {
+                        return batch.dependencyLevel == dependencyLevel && batch.queue == queue;
+                    });
+
+                if (batchIt == plan.queueBatches.end())
+                {
+                    RenderGraph::PlannedQueueBatchDiagnostic batch;
+                    batch.batchIndex = static_cast<uint32>(plan.queueBatches.size());
+                    batch.dependencyLevel = dependencyLevel;
+                    batch.queue = queue;
+                    batch.passIndices.push_back(passIndex);
+                    plan.queueBatches.push_back(std::move(batch));
+                }
+                else
+                {
+                    batchIt->passIndices.push_back(passIndex);
+                }
+            }
+
+            plan.queueBatchCount = static_cast<uint32>(plan.queueBatches.size());
+            uint32 maxPlannedDependencyLevel = 0;
+            bool hasPlannedDependencyLevel = false;
+            for (const RenderGraph::PlannedQueueBatchDiagnostic& batch : plan.queueBatches)
+            {
+                hasPlannedDependencyLevel = true;
+                maxPlannedDependencyLevel = std::max(maxPlannedDependencyLevel, batch.dependencyLevel);
+                if (batch.queue == RenderGraph::DiagnosticExecutionQueue::Compute)
+                {
+                    plan.computeBatchCount++;
+                }
+            }
+            plan.dependencyLevelCount =
+                hasPlannedDependencyLevel ? (maxPlannedDependencyLevel + 1u) : 0u;
+
+            for (uint32 level = 0; level < plan.dependencyLevelCount; ++level)
+            {
+                bool hasGraphics = false;
+                bool hasCompute = false;
+                for (const RenderGraph::PlannedQueueBatchDiagnostic& batch : plan.queueBatches)
+                {
+                    if (batch.dependencyLevel != level)
+                        continue;
+
+                    hasGraphics = hasGraphics || batch.queue == RenderGraph::DiagnosticExecutionQueue::Graphics;
+                    hasCompute = hasCompute || batch.queue == RenderGraph::DiagnosticExecutionQueue::Compute;
+                }
+
+                if (hasGraphics && hasCompute)
+                {
+                    plan.asyncOverlapCandidateLevelCount++;
+                }
+            }
+
+            std::vector<uint32> plannedBatchIndexByPass(passes.size(), RVX_INVALID_INDEX);
+            for (const RenderGraph::PlannedQueueBatchDiagnostic& batch : plan.queueBatches)
+            {
+                for (uint32 passIndex : batch.passIndices)
+                {
+                    if (passIndex < plannedBatchIndexByPass.size())
+                    {
+                        plannedBatchIndexByPass[passIndex] = batch.batchIndex;
+                    }
+                }
+            }
+
+            for (RenderGraph::PlannedQueueBatchDiagnostic& targetBatch : plan.queueBatches)
+            {
+                for (uint32 targetPassIndex : targetBatch.passIndices)
+                {
+                    if (targetPassIndex >= passes.size())
+                        continue;
+
+                    const RenderGraph::PassDiagnostic& targetPass = passes[targetPassIndex];
+                    for (uint32 sourcePassIndex : targetPass.dependencies)
+                    {
+                        if (sourcePassIndex >= passes.size() ||
+                            sourcePassIndex >= plannedBatchIndexByPass.size())
+                        {
+                            continue;
+                        }
+
+                        const uint32 sourceBatchIndex = plannedBatchIndexByPass[sourcePassIndex];
+                        if (sourceBatchIndex == RVX_INVALID_INDEX ||
+                            sourceBatchIndex == targetBatch.batchIndex ||
+                            sourceBatchIndex >= plan.queueBatches.size())
+                        {
+                            continue;
+                        }
+
+                        const RenderGraph::PlannedQueueBatchDiagnostic& sourceBatch =
+                            plan.queueBatches[sourceBatchIndex];
+                        if (sourceBatch.queue == targetBatch.queue)
+                            continue;
+
+                        auto syncIt = std::find_if(
+                            plan.queueSyncs.begin(),
+                            plan.queueSyncs.end(),
+                            [&](const RenderGraph::PlannedQueueSyncDiagnostic& sync)
+                            {
+                                return sync.sourceBatchIndex == sourceBatchIndex &&
+                                       sync.targetBatchIndex == targetBatch.batchIndex;
+                            });
+
+                        uint32 syncIndex = RVX_INVALID_INDEX;
+                        if (syncIt == plan.queueSyncs.end())
+                        {
+                            RenderGraph::PlannedQueueSyncDiagnostic sync;
+                            sync.syncIndex = static_cast<uint32>(plan.queueSyncs.size());
+                            sync.sourceBatchIndex = sourceBatchIndex;
+                            sync.targetBatchIndex = targetBatch.batchIndex;
+                            sync.sourceQueue = sourceBatch.queue;
+                            sync.targetQueue = targetBatch.queue;
+                            sync.reason = RenderGraph::DiagnosticSyncReason::CrossQueueDependency;
+                            sync.sourcePassIndex = sourcePassIndex;
+                            sync.targetPassIndex = targetPassIndex;
+                            syncIndex = sync.syncIndex;
+                            plan.queueSyncs.push_back(sync);
+                        }
+                        else
+                        {
+                            syncIndex = syncIt->syncIndex;
+                        }
+
+                        if (std::find(
+                                targetBatch.prerequisiteSyncIndices.begin(),
+                                targetBatch.prerequisiteSyncIndices.end(),
+                                syncIndex) == targetBatch.prerequisiteSyncIndices.end())
+                        {
+                            targetBatch.prerequisiteSyncIndices.push_back(syncIndex);
+                        }
+                    }
+                }
+            }
+            plan.queueSyncCount = static_cast<uint32>(plan.queueSyncs.size());
+            for (const RenderGraph::PlannedQueueSyncDiagnostic& sync : plan.queueSyncs)
+            {
+                if (sync.reason == RenderGraph::DiagnosticSyncReason::CrossQueueDependency)
+                {
+                    plan.crossQueueSyncCount++;
+                }
+            }
+            return plan;
+        }
+    } // namespace
+
     class RenderGraph::Impl : public RenderGraphImpl
     {
     };
+
+    std::vector<RenderGraph::PassDiagnostic> BuildRenderGraphPassDiagnostics(const RenderGraphImpl& graph)
+    {
+        return BuildPassDiagnostics(graph);
+    }
+
+    RenderGraph::SubmissionPlan BuildRenderGraphSubmissionPlan(
+        const std::vector<RenderGraph::PassDiagnostic>& passes,
+        const std::vector<uint32>& executionOrder)
+    {
+        return BuildSubmissionPlan(passes, executionOrder);
+    }
+
+    RenderGraph::SubmissionPlan BuildRenderGraphSubmissionPlan(const RenderGraphImpl& graph)
+    {
+        std::vector<RenderGraph::PassDiagnostic> passDiagnostics = BuildRenderGraphPassDiagnostics(graph);
+        return BuildRenderGraphSubmissionPlan(passDiagnostics, graph.executionOrder);
+    }
 
     RGTextureHandle RGTextureHandle::Subresource(uint32 mipLevel, uint32 arraySlice) const
     {
@@ -366,6 +861,731 @@ namespace RVX
         return m_impl->compileDiagnostics;
     }
 
+    RenderGraph::SubmissionPlan RenderGraph::GetSubmissionPlan() const
+    {
+        return BuildRenderGraphSubmissionPlan(*m_impl);
+    }
+
+    RenderGraph::Diagnostics RenderGraph::GetDiagnostics() const
+    {
+        Diagnostics diagnostics;
+        diagnostics.compileStats = m_impl->stats;
+        diagnostics.executionOrder = m_impl->executionOrder;
+
+        diagnostics.passes = BuildRenderGraphPassDiagnostics(*m_impl);
+        SubmissionPlan submissionPlan = BuildRenderGraphSubmissionPlan(diagnostics.passes, diagnostics.executionOrder);
+        diagnostics.plannedQueueBatches = submissionPlan.queueBatches;
+        diagnostics.plannedQueueSyncs = submissionPlan.queueSyncs;
+        diagnostics.plannedQueueBatchCount = submissionPlan.queueBatchCount;
+        diagnostics.plannedDependencyLevelCount = submissionPlan.dependencyLevelCount;
+        diagnostics.plannedAsyncOverlapCandidateLevelCount = submissionPlan.asyncOverlapCandidateLevelCount;
+        diagnostics.plannedComputeBatchCount = submissionPlan.computeBatchCount;
+        diagnostics.plannedQueueSyncCount = submissionPlan.queueSyncCount;
+        diagnostics.plannedCrossQueueSyncCount = submissionPlan.crossQueueSyncCount;
+
+        std::vector<uint32> executedPassIndices;
+        executedPassIndices.reserve(diagnostics.passes.size());
+        for (const PassDiagnostic& pass : diagnostics.passes)
+        {
+            if (pass.executedLastRun && pass.executionSerial != RVX_INVALID_INDEX)
+            {
+                executedPassIndices.push_back(pass.index);
+            }
+        }
+        std::sort(
+            executedPassIndices.begin(),
+            executedPassIndices.end(),
+            [&](uint32 lhs, uint32 rhs)
+            {
+                return diagnostics.passes[lhs].executionSerial < diagnostics.passes[rhs].executionSerial;
+            });
+
+        for (uint32 passIndex : executedPassIndices)
+        {
+            const PassDiagnostic& pass = diagnostics.passes[passIndex];
+            if (diagnostics.queueBatches.empty() ||
+                diagnostics.queueBatches.back().queue != pass.executionQueue ||
+                diagnostics.queueBatches.back().lastExecutionSerial + 1u != pass.executionSerial)
+            {
+                QueueBatchDiagnostic batch;
+                batch.batchIndex = static_cast<uint32>(diagnostics.queueBatches.size());
+                batch.queue = pass.executionQueue;
+                batch.firstExecutionSerial = pass.executionSerial;
+                batch.lastExecutionSerial = pass.executionSerial;
+                diagnostics.queueBatches.push_back(std::move(batch));
+            }
+
+            QueueBatchDiagnostic& batch = diagnostics.queueBatches.back();
+            batch.lastExecutionSerial = pass.executionSerial;
+            batch.cpuDurationNanoseconds += pass.cpuDurationNanoseconds;
+            batch.passIndices.push_back(pass.index);
+        }
+
+        diagnostics.actualQueueBatchCount = static_cast<uint32>(diagnostics.queueBatches.size());
+        if (!diagnostics.queueBatches.empty())
+        {
+            for (size_t batchIndex = 1; batchIndex < diagnostics.queueBatches.size(); ++batchIndex)
+            {
+                if (diagnostics.queueBatches[batchIndex - 1].queue != diagnostics.queueBatches[batchIndex].queue)
+                {
+                    diagnostics.actualQueueSwitchCount++;
+                }
+            }
+        }
+
+        diagnostics.queueSyncs.reserve(m_impl->lastQueueSyncs.size());
+        for (uint32 syncIndex = 0; syncIndex < m_impl->lastQueueSyncs.size(); ++syncIndex)
+        {
+            const RenderGraphImpl::QueueSyncPoint& syncPoint = m_impl->lastQueueSyncs[syncIndex];
+            QueueSyncDiagnostic syncDiagnostic;
+            syncDiagnostic.syncIndex = syncIndex;
+            syncDiagnostic.sourceQueue = syncPoint.sourceQueue;
+            syncDiagnostic.targetQueue = syncPoint.targetQueue;
+            syncDiagnostic.reason = syncPoint.reason;
+            syncDiagnostic.fenceValue = syncPoint.fenceValue;
+            syncDiagnostic.sourcePassIndex = syncPoint.sourcePassIndex;
+            syncDiagnostic.targetPassIndex = syncPoint.targetPassIndex;
+            diagnostics.queueSyncs.push_back(syncDiagnostic);
+        }
+        diagnostics.actualQueueSyncCount = static_cast<uint32>(diagnostics.queueSyncs.size());
+        for (const QueueSyncDiagnostic& sync : diagnostics.queueSyncs)
+        {
+            if (sync.reason == DiagnosticSyncReason::CrossQueueDependency)
+            {
+                diagnostics.actualCrossQueueSyncCount++;
+            }
+        }
+        for (QueueSyncDiagnostic& actualSync : diagnostics.queueSyncs)
+        {
+            if (actualSync.reason == DiagnosticSyncReason::FinalQueueJoin)
+            {
+                diagnostics.actualConservativeFinalJoinCount++;
+            }
+
+            auto plannedIt = std::find_if(
+                diagnostics.plannedQueueSyncs.begin(),
+                diagnostics.plannedQueueSyncs.end(),
+                [&](const PlannedQueueSyncDiagnostic& plannedSync)
+                {
+                    if (plannedSync.sourceQueue != actualSync.sourceQueue ||
+                        plannedSync.targetQueue != actualSync.targetQueue ||
+                        plannedSync.reason != actualSync.reason ||
+                        plannedSync.targetPassIndex != actualSync.targetPassIndex ||
+                        plannedSync.sourceBatchIndex >= diagnostics.plannedQueueBatches.size())
+                    {
+                        return false;
+                    }
+
+                    const PlannedQueueBatchDiagnostic& sourceBatch =
+                        diagnostics.plannedQueueBatches[plannedSync.sourceBatchIndex];
+                    return std::find(
+                               sourceBatch.passIndices.begin(),
+                               sourceBatch.passIndices.end(),
+                               actualSync.sourcePassIndex) != sourceBatch.passIndices.end();
+                });
+
+            if (plannedIt != diagnostics.plannedQueueSyncs.end())
+            {
+                actualSync.coversPlannedSync = true;
+                actualSync.plannedSyncIndex = plannedIt->syncIndex;
+                plannedIt->coveredByActualSync = true;
+                plannedIt->actualSyncIndex = actualSync.syncIndex;
+                diagnostics.actualMatchedPlannedSyncCount++;
+            }
+            else
+            {
+                diagnostics.actualUnplannedQueueSyncCount++;
+            }
+        }
+        for (const PlannedQueueSyncDiagnostic& plannedSync : diagnostics.plannedQueueSyncs)
+        {
+            if (plannedSync.coveredByActualSync)
+            {
+                diagnostics.plannedQueueSyncCoveredCount++;
+            }
+            else
+            {
+                diagnostics.plannedQueueSyncUncoveredCount++;
+            }
+        }
+
+        diagnostics.resources.reserve(m_impl->textures.size() + m_impl->buffers.size());
+        for (uint32 textureIndex = 0; textureIndex < m_impl->textures.size(); ++textureIndex)
+        {
+            const TextureResource& texture = m_impl->textures[textureIndex];
+            ResourceDiagnostic resource;
+            resource.type = DiagnosticResourceType::Texture;
+            resource.index = textureIndex;
+            resource.name = texture.desc.debugName ? texture.desc.debugName : ("Texture" + std::to_string(textureIndex));
+            resource.imported = texture.imported;
+            resource.pooled = texture.pooled;
+            resource.used = texture.lifetime.isUsed;
+            resource.firstUsePass = texture.lifetime.isUsed ? texture.lifetime.firstUsePass : RVX_INVALID_INDEX;
+            resource.lastUsePass = texture.lifetime.isUsed ? texture.lifetime.lastUsePass : RVX_INVALID_INDEX;
+            resource.estimatedMemoryBytes = texture.lifetime.memorySize != 0
+                                                ? texture.lifetime.memorySize
+                                                : EstimateTextureMemorySize(texture.desc);
+            resource.aliased = texture.alias.isAliased;
+            resource.aliasHeapIndex = texture.alias.heapIndex;
+            resource.aliasHeapOffset = texture.alias.heapOffset;
+            resource.initialState = texture.initialState;
+            resource.currentState = texture.currentState;
+            resource.hasExportState = texture.exportState.has_value();
+            resource.exportState = texture.exportState.value_or(RHIResourceState::Undefined);
+            resource.width = texture.desc.width;
+            resource.height = texture.desc.height;
+            resource.depth = texture.desc.depth;
+            resource.mipLevels = texture.desc.mipLevels;
+            resource.arraySize = texture.desc.arraySize;
+            resource.format = texture.desc.format;
+
+            if (resource.imported)
+            {
+                diagnostics.estimatedImportedMemoryBytes += resource.estimatedMemoryBytes;
+            }
+            else
+            {
+                diagnostics.estimatedTransientMemoryBytes += resource.estimatedMemoryBytes;
+                if (resource.used)
+                {
+                    diagnostics.estimatedUsedTransientMemoryBytes += resource.estimatedMemoryBytes;
+                }
+            }
+
+            diagnostics.resources.push_back(std::move(resource));
+        }
+
+        for (uint32 bufferIndex = 0; bufferIndex < m_impl->buffers.size(); ++bufferIndex)
+        {
+            const BufferResource& buffer = m_impl->buffers[bufferIndex];
+            ResourceDiagnostic resource;
+            resource.type = DiagnosticResourceType::Buffer;
+            resource.index = bufferIndex;
+            resource.name = buffer.desc.debugName ? buffer.desc.debugName : ("Buffer" + std::to_string(bufferIndex));
+            resource.imported = buffer.imported;
+            resource.pooled = buffer.pooled;
+            resource.used = buffer.lifetime.isUsed;
+            resource.firstUsePass = buffer.lifetime.isUsed ? buffer.lifetime.firstUsePass : RVX_INVALID_INDEX;
+            resource.lastUsePass = buffer.lifetime.isUsed ? buffer.lifetime.lastUsePass : RVX_INVALID_INDEX;
+            resource.estimatedMemoryBytes = buffer.lifetime.memorySize != 0
+                                                ? buffer.lifetime.memorySize
+                                                : EstimateBufferMemorySize(buffer.desc);
+            resource.aliased = buffer.alias.isAliased;
+            resource.aliasHeapIndex = buffer.alias.heapIndex;
+            resource.aliasHeapOffset = buffer.alias.heapOffset;
+            resource.initialState = buffer.initialState;
+            resource.currentState = buffer.currentState;
+            resource.hasExportState = buffer.exportState.has_value();
+            resource.exportState = buffer.exportState.value_or(RHIResourceState::Undefined);
+            resource.bufferSize = buffer.desc.size;
+            resource.stride = buffer.desc.stride;
+
+            if (resource.imported)
+            {
+                diagnostics.estimatedImportedMemoryBytes += resource.estimatedMemoryBytes;
+            }
+            else
+            {
+                diagnostics.estimatedTransientMemoryBytes += resource.estimatedMemoryBytes;
+                if (resource.used)
+                {
+                    diagnostics.estimatedUsedTransientMemoryBytes += resource.estimatedMemoryBytes;
+                }
+            }
+
+            diagnostics.resources.push_back(std::move(resource));
+        }
+
+        return diagnostics;
+    }
+
+    std::string RenderGraph::ExportDiagnosticsText() const
+    {
+        Diagnostics diagnostics = GetDiagnostics();
+        std::ostringstream ss;
+
+        ss << "RenderGraph Diagnostics\n";
+        ss << "Schema: " << diagnostics.schemaVersion << " (" << diagnostics.schemaId << ")\n";
+        ss << "Passes: " << diagnostics.passes.size()
+           << " total, " << diagnostics.compileStats.culledPasses << " culled\n";
+        ss << "Resources: " << diagnostics.resources.size()
+           << " total, " << diagnostics.compileStats.totalTransientTextures << " transient textures, "
+           << diagnostics.compileStats.totalTransientBuffers << " transient buffers\n";
+        ss << "Barriers: " << diagnostics.compileStats.barrierCount
+           << " total (" << diagnostics.compileStats.textureBarrierCount << " texture, "
+           << diagnostics.compileStats.bufferBarrierCount << " buffer)\n";
+        ss << "Last execution: passes=" << diagnostics.compileStats.lastExecutedPassCount
+           << ", cpuNs=" << diagnostics.compileStats.lastExecutionCpuDurationNanoseconds << "\n";
+        ss << "Estimated transient memory: " << diagnostics.estimatedTransientMemoryBytes << " bytes\n";
+        ss << "Estimated used transient memory: " << diagnostics.estimatedUsedTransientMemoryBytes << " bytes\n";
+        ss << "Estimated imported memory: " << diagnostics.estimatedImportedMemoryBytes << " bytes\n";
+        ss << "Aliasing: " << (diagnostics.compileStats.memoryAliasingEnabled ? "enabled" : "disabled")
+           << ", memory without aliasing " << diagnostics.compileStats.memoryWithoutAliasing
+           << " bytes, memory with aliasing " << diagnostics.compileStats.memoryWithAliasing << " bytes\n";
+        ss << "Async compute: supported=" << (diagnostics.compileStats.asyncComputeSupported ? "true" : "false")
+           << ", fallback=" << (diagnostics.compileStats.asyncFallbackUsed ? "true" : "false")
+           << ", reason=" << ToDiagnosticString(diagnostics.compileStats.asyncFallbackReason)
+           << ", eligible=" << diagnostics.compileStats.asyncComputeEligiblePasses
+           << ", scheduled=" << diagnostics.compileStats.asyncComputeScheduledPasses
+           << ", graphicsScheduled=" << diagnostics.compileStats.asyncGraphicsScheduledPasses
+           << ", fenceSignals=" << diagnostics.compileStats.asyncFenceSignalCount
+           << ", fenceWaits=" << diagnostics.compileStats.asyncFenceWaitCount
+           << ", crossQueueDeps=" << diagnostics.compileStats.asyncCrossQueueDependencyCount
+           << ", finalJoins=" << diagnostics.compileStats.asyncFinalQueueJoinCount << "\n";
+        ss << "Schedule efficiency: plannedBatches=" << diagnostics.plannedQueueBatchCount
+           << ", plannedLevels=" << diagnostics.plannedDependencyLevelCount
+           << ", plannedComputeBatches=" << diagnostics.plannedComputeBatchCount
+           << ", plannedOverlapLevels=" << diagnostics.plannedAsyncOverlapCandidateLevelCount
+           << ", plannedSyncs=" << diagnostics.plannedQueueSyncCount
+           << ", plannedCrossQueueSyncs=" << diagnostics.plannedCrossQueueSyncCount
+           << ", plannedCoveredSyncs=" << diagnostics.plannedQueueSyncCoveredCount
+           << ", plannedUncoveredSyncs=" << diagnostics.plannedQueueSyncUncoveredCount
+           << ", actualBatches=" << diagnostics.actualQueueBatchCount
+           << ", actualSwitches=" << diagnostics.actualQueueSwitchCount
+           << ", actualSyncs=" << diagnostics.actualQueueSyncCount
+           << ", actualCrossQueueSyncs=" << diagnostics.actualCrossQueueSyncCount
+           << ", actualMatchedPlannedSyncs=" << diagnostics.actualMatchedPlannedSyncCount
+           << ", actualUnplannedSyncs=" << diagnostics.actualUnplannedQueueSyncCount
+           << ", actualConservativeFinalJoins=" << diagnostics.actualConservativeFinalJoinCount << "\n";
+
+        ss << "\nExecution Order:\n";
+        for (uint32 passIndex : diagnostics.executionOrder)
+        {
+            ss << "  " << passIndex << "\n";
+        }
+
+        ss << "\nPlanned Queue Batches:\n";
+        for (const PlannedQueueBatchDiagnostic& batch : diagnostics.plannedQueueBatches)
+        {
+            ss << "  [" << batch.batchIndex << "] level=" << batch.dependencyLevel
+               << " queue=" << ToDiagnosticString(batch.queue)
+               << " passes=" << FormatPassIndexList(batch.passIndices)
+               << " prerequisites=" << FormatPassIndexList(batch.prerequisiteSyncIndices) << "\n";
+        }
+
+        ss << "\nPlanned Queue Syncs:\n";
+        for (const PlannedQueueSyncDiagnostic& sync : diagnostics.plannedQueueSyncs)
+        {
+            ss << "  [" << sync.syncIndex << "] batch" << sync.sourceBatchIndex
+               << " " << ToDiagnosticString(sync.sourceQueue)
+               << " -> batch" << sync.targetBatchIndex
+               << " " << ToDiagnosticString(sync.targetQueue)
+               << " reason=" << ToDiagnosticString(sync.reason)
+               << " sourcePass=";
+            if (sync.sourcePassIndex == RVX_INVALID_INDEX)
+            {
+                ss << "invalid";
+            }
+            else
+            {
+                ss << sync.sourcePassIndex;
+            }
+            ss << " targetPass=";
+            if (sync.targetPassIndex == RVX_INVALID_INDEX)
+            {
+                ss << "invalid";
+            }
+            else
+            {
+                ss << sync.targetPassIndex;
+            }
+            ss << " covered=" << (sync.coveredByActualSync ? "true" : "false")
+               << " actualSync=";
+            if (sync.actualSyncIndex == RVX_INVALID_INDEX)
+            {
+                ss << "invalid";
+            }
+            else
+            {
+                ss << sync.actualSyncIndex;
+            }
+            ss << "\n";
+        }
+
+        ss << "\nQueue Batches:\n";
+        for (const QueueBatchDiagnostic& batch : diagnostics.queueBatches)
+        {
+            ss << "  [" << batch.batchIndex << "] queue=" << ToDiagnosticString(batch.queue)
+               << " serial=[" << batch.firstExecutionSerial << "," << batch.lastExecutionSerial << "]"
+               << " passes=" << FormatPassIndexList(batch.passIndices)
+               << " cpuNs=" << batch.cpuDurationNanoseconds << "\n";
+        }
+
+        ss << "\nQueue Syncs:\n";
+        for (const QueueSyncDiagnostic& sync : diagnostics.queueSyncs)
+        {
+            ss << "  [" << sync.syncIndex << "] "
+               << ToDiagnosticString(sync.sourceQueue) << " -> "
+               << ToDiagnosticString(sync.targetQueue)
+               << " reason=" << ToDiagnosticString(sync.reason)
+               << " fence=" << sync.fenceValue
+               << " sourcePass=";
+            if (sync.sourcePassIndex == RVX_INVALID_INDEX)
+            {
+                ss << "invalid";
+            }
+            else
+            {
+                ss << sync.sourcePassIndex;
+            }
+            ss << " targetPass=";
+            if (sync.targetPassIndex == RVX_INVALID_INDEX)
+            {
+                ss << "invalid";
+            }
+            else
+            {
+                ss << sync.targetPassIndex;
+            }
+            ss << " coversPlanned=" << (sync.coversPlannedSync ? "true" : "false")
+               << " plannedSync=";
+            if (sync.plannedSyncIndex == RVX_INVALID_INDEX)
+            {
+                ss << "invalid";
+            }
+            else
+            {
+                ss << sync.plannedSyncIndex;
+            }
+            ss << "\n";
+        }
+
+        ss << "\nPasses:\n";
+        for (const PassDiagnostic& pass : diagnostics.passes)
+        {
+            ss << "  [" << pass.index << "] " << pass.name
+               << " type=" << ToDiagnosticString(pass.type)
+               << " culled=" << (pass.culled ? "true" : "false")
+               << " executed=" << (pass.executedLastRun ? "true" : "false")
+               << " queue=" << ToDiagnosticString(pass.executionQueue)
+               << " serial=";
+            if (pass.executionSerial == RVX_INVALID_INDEX)
+            {
+                ss << "invalid";
+            }
+            else
+            {
+                ss << pass.executionSerial;
+            }
+            ss << " cpuNs=" << pass.cpuDurationNanoseconds
+               << " dependencies=" << FormatPassIndexList(pass.dependencies)
+               << " dependents=" << FormatPassIndexList(pass.dependents)
+               << " usages=" << pass.usages.size()
+               << " barriers=" << (pass.textureBarrierCount + pass.bufferBarrierCount)
+               << "\n";
+
+            for (const ResourceUsageDiagnostic& usage : pass.usages)
+            {
+                ss << "    " << ToDiagnosticString(usage.access)
+                   << " " << ToDiagnosticString(usage.type)
+                   << "[" << usage.resourceIndex << "]"
+                   << " state=" << static_cast<uint32>(usage.desiredState)
+                   << "\n";
+            }
+        }
+
+        ss << "\nResources:\n";
+        for (const ResourceDiagnostic& resource : diagnostics.resources)
+        {
+            ss << "  " << ToDiagnosticString(resource.type)
+               << "[" << resource.index << "] " << resource.name
+               << " imported=" << (resource.imported ? "true" : "false")
+               << " used=" << (resource.used ? "true" : "false")
+               << " memory=" << resource.estimatedMemoryBytes;
+            if (resource.used)
+            {
+                ss << " lifetime=[" << resource.firstUsePass << "," << resource.lastUsePass << "]";
+            }
+            if (resource.aliased)
+            {
+                ss << " aliasHeap=" << resource.aliasHeapIndex
+                   << " offset=" << resource.aliasHeapOffset;
+            }
+            ss << "\n";
+        }
+
+        return ss.str();
+    }
+
+    std::string RenderGraph::ExportDiagnosticsJson() const
+    {
+        const Diagnostics diagnostics = GetDiagnostics();
+        const CompileStats& stats = diagnostics.compileStats;
+        std::ostringstream ss;
+
+        ss << "{\n";
+        ss << "  \"schemaVersion\": " << diagnostics.schemaVersion << ",\n";
+        ss << "  \"schemaId\": " << JsonString(diagnostics.schemaId) << ",\n";
+        ss << "  \"id\": \"renderGraphDiagnosticsJson\",\n";
+        ss << "  \"kind\": \"RenderGraphDiagnosticsJson\",\n";
+        ss << "  \"contentType\": \"application/json\",\n";
+        ss << "  \"compileStats\": {\n";
+        ss << "    \"compileValid\": " << JsonBool(stats.compileValid) << ",\n";
+        ss << "    \"executionOrderFallbackUsed\": " << JsonBool(stats.executionOrderFallbackUsed) << ",\n";
+        ss << "    \"totalPasses\": " << stats.totalPasses << ",\n";
+        ss << "    \"culledPasses\": " << stats.culledPasses << ",\n";
+        ss << "    \"validationWarningCount\": " << stats.validationWarningCount << ",\n";
+        ss << "    \"validationErrorCount\": " << stats.validationErrorCount << ",\n";
+        ss << "    \"barrierCount\": " << stats.barrierCount << ",\n";
+        ss << "    \"textureBarrierCount\": " << stats.textureBarrierCount << ",\n";
+        ss << "    \"bufferBarrierCount\": " << stats.bufferBarrierCount << ",\n";
+        ss << "    \"asyncComputeSupported\": " << JsonBool(stats.asyncComputeSupported) << ",\n";
+        ss << "    \"asyncFallbackUsed\": " << JsonBool(stats.asyncFallbackUsed) << ",\n";
+        ss << "    \"asyncFallbackReason\": " << JsonString(ToDiagnosticString(stats.asyncFallbackReason)) << ",\n";
+        ss << "    \"asyncComputeEligiblePasses\": " << stats.asyncComputeEligiblePasses << ",\n";
+        ss << "    \"asyncComputeScheduledPasses\": " << stats.asyncComputeScheduledPasses << ",\n";
+        ss << "    \"asyncGraphicsScheduledPasses\": " << stats.asyncGraphicsScheduledPasses << ",\n";
+        ss << "    \"asyncFenceSignalCount\": " << stats.asyncFenceSignalCount << ",\n";
+        ss << "    \"asyncFenceWaitCount\": " << stats.asyncFenceWaitCount << ",\n";
+        ss << "    \"asyncCrossQueueDependencyCount\": " << stats.asyncCrossQueueDependencyCount << ",\n";
+        ss << "    \"asyncFinalQueueJoinCount\": " << stats.asyncFinalQueueJoinCount << ",\n";
+        ss << "    \"lastExecutedPassCount\": " << stats.lastExecutedPassCount << ",\n";
+        ss << "    \"lastExecutionCpuDurationNanoseconds\": " << stats.lastExecutionCpuDurationNanoseconds << "\n";
+        ss << "  },\n";
+
+        ss << "  \"memory\": {\n";
+        ss << "    \"memoryAliasingEnabled\": " << JsonBool(stats.memoryAliasingEnabled) << ",\n";
+        ss << "    \"memoryAliasingUnsupportedRequested\": "
+           << JsonBool(stats.memoryAliasingUnsupportedRequested) << ",\n";
+        ss << "    \"explicitAliasingBarriersSupported\": "
+           << JsonBool(stats.explicitAliasingBarriersSupported) << ",\n";
+        ss << "    \"totalTransientTextures\": " << stats.totalTransientTextures << ",\n";
+        ss << "    \"totalTransientBuffers\": " << stats.totalTransientBuffers << ",\n";
+        ss << "    \"aliasedTextureCount\": " << stats.aliasedTextureCount << ",\n";
+        ss << "    \"aliasedBufferCount\": " << stats.aliasedBufferCount << ",\n";
+        ss << "    \"transientHeapCount\": " << stats.transientHeapCount << ",\n";
+        ss << "    \"memoryWithoutAliasing\": " << stats.memoryWithoutAliasing << ",\n";
+        ss << "    \"memoryWithAliasing\": " << stats.memoryWithAliasing << ",\n";
+        ss << "    \"estimatedTransientMemoryBytes\": " << diagnostics.estimatedTransientMemoryBytes << ",\n";
+        ss << "    \"estimatedUsedTransientMemoryBytes\": " << diagnostics.estimatedUsedTransientMemoryBytes << ",\n";
+        ss << "    \"estimatedImportedMemoryBytes\": " << diagnostics.estimatedImportedMemoryBytes << "\n";
+        ss << "  },\n";
+
+        ss << "  \"schedule\": {\n";
+        ss << "    \"plannedQueueBatchCount\": " << diagnostics.plannedQueueBatchCount << ",\n";
+        ss << "    \"plannedDependencyLevelCount\": " << diagnostics.plannedDependencyLevelCount << ",\n";
+        ss << "    \"plannedAsyncOverlapCandidateLevelCount\": "
+           << diagnostics.plannedAsyncOverlapCandidateLevelCount << ",\n";
+        ss << "    \"plannedComputeBatchCount\": " << diagnostics.plannedComputeBatchCount << ",\n";
+        ss << "    \"plannedQueueSyncCount\": " << diagnostics.plannedQueueSyncCount << ",\n";
+        ss << "    \"plannedCrossQueueSyncCount\": " << diagnostics.plannedCrossQueueSyncCount << ",\n";
+        ss << "    \"plannedQueueSyncCoveredCount\": " << diagnostics.plannedQueueSyncCoveredCount << ",\n";
+        ss << "    \"plannedQueueSyncUncoveredCount\": " << diagnostics.plannedQueueSyncUncoveredCount << ",\n";
+        ss << "    \"actualQueueBatchCount\": " << diagnostics.actualQueueBatchCount << ",\n";
+        ss << "    \"actualQueueSwitchCount\": " << diagnostics.actualQueueSwitchCount << ",\n";
+        ss << "    \"actualQueueSyncCount\": " << diagnostics.actualQueueSyncCount << ",\n";
+        ss << "    \"actualCrossQueueSyncCount\": " << diagnostics.actualCrossQueueSyncCount << ",\n";
+        ss << "    \"actualMatchedPlannedSyncCount\": "
+           << diagnostics.actualMatchedPlannedSyncCount << ",\n";
+        ss << "    \"actualUnplannedQueueSyncCount\": "
+           << diagnostics.actualUnplannedQueueSyncCount << ",\n";
+        ss << "    \"actualConservativeFinalJoinCount\": "
+           << diagnostics.actualConservativeFinalJoinCount << "\n";
+        ss << "  },\n";
+
+        ss << "  \"executionOrder\": ";
+        WriteIndexArray(ss, diagnostics.executionOrder);
+        ss << ",\n";
+
+        ss << "  \"passes\": [\n";
+        for (size_t i = 0; i < diagnostics.passes.size(); ++i)
+        {
+            const PassDiagnostic& pass = diagnostics.passes[i];
+            ss << "    {\n";
+            ss << "      \"index\": " << pass.index << ",\n";
+            ss << "      \"name\": " << JsonString(pass.name) << ",\n";
+            ss << "      \"type\": " << JsonString(ToDiagnosticString(pass.type)) << ",\n";
+            ss << "      \"culled\": " << JsonBool(pass.culled) << ",\n";
+            ss << "      \"executedLastRun\": " << JsonBool(pass.executedLastRun) << ",\n";
+            ss << "      \"executionQueue\": " << JsonString(ToDiagnosticString(pass.executionQueue)) << ",\n";
+            ss << "      \"executionSerial\": ";
+            WriteOptionalIndex(ss, pass.executionSerial);
+            ss << ",\n";
+            ss << "      \"cpuDurationNanoseconds\": " << pass.cpuDurationNanoseconds << ",\n";
+            ss << "      \"textureBarrierCount\": " << pass.textureBarrierCount << ",\n";
+            ss << "      \"bufferBarrierCount\": " << pass.bufferBarrierCount << ",\n";
+            ss << "      \"aliasingBarrierCount\": " << pass.aliasingBarrierCount << ",\n";
+            ss << "      \"dependencies\": ";
+            WriteIndexArray(ss, pass.dependencies);
+            ss << ",\n";
+            ss << "      \"dependents\": ";
+            WriteIndexArray(ss, pass.dependents);
+            ss << ",\n";
+            ss << "      \"usages\": [\n";
+            for (size_t usageIndex = 0; usageIndex < pass.usages.size(); ++usageIndex)
+            {
+                const ResourceUsageDiagnostic& usage = pass.usages[usageIndex];
+                ss << "        {\n";
+                ss << "          \"type\": " << JsonString(ToDiagnosticString(usage.type)) << ",\n";
+                ss << "          \"access\": " << JsonString(ToDiagnosticString(usage.access)) << ",\n";
+                ss << "          \"resourceIndex\": ";
+                WriteOptionalIndex(ss, usage.resourceIndex);
+                ss << ",\n";
+                ss << "          \"desiredState\": " << static_cast<uint32>(usage.desiredState) << ",\n";
+                ss << "          \"shaderStages\": " << static_cast<uint32>(usage.stages) << ",\n";
+                ss << "          \"hasSubresourceRange\": " << JsonBool(usage.hasSubresourceRange) << ",\n";
+                ss << "          \"hasRange\": " << JsonBool(usage.hasRange) << ",\n";
+                ss << "          \"offset\": " << usage.offset << ",\n";
+                ss << "          \"size\": " << usage.size << "\n";
+                ss << "        }" << (usageIndex + 1 < pass.usages.size() ? "," : "") << "\n";
+            }
+            ss << "      ]\n";
+            ss << "    }" << (i + 1 < diagnostics.passes.size() ? "," : "") << "\n";
+        }
+        ss << "  ],\n";
+
+        ss << "  \"resources\": [\n";
+        for (size_t i = 0; i < diagnostics.resources.size(); ++i)
+        {
+            const ResourceDiagnostic& resource = diagnostics.resources[i];
+            ss << "    {\n";
+            ss << "      \"type\": " << JsonString(ToDiagnosticString(resource.type)) << ",\n";
+            ss << "      \"index\": " << resource.index << ",\n";
+            ss << "      \"name\": " << JsonString(resource.name) << ",\n";
+            ss << "      \"imported\": " << JsonBool(resource.imported) << ",\n";
+            ss << "      \"pooled\": " << JsonBool(resource.pooled) << ",\n";
+            ss << "      \"used\": " << JsonBool(resource.used) << ",\n";
+            ss << "      \"firstUsePass\": ";
+            WriteOptionalIndex(ss, resource.firstUsePass);
+            ss << ",\n";
+            ss << "      \"lastUsePass\": ";
+            WriteOptionalIndex(ss, resource.lastUsePass);
+            ss << ",\n";
+            ss << "      \"estimatedMemoryBytes\": " << resource.estimatedMemoryBytes << ",\n";
+            ss << "      \"aliased\": " << JsonBool(resource.aliased) << ",\n";
+            ss << "      \"aliasHeapIndex\": ";
+            WriteOptionalIndex(ss, resource.aliasHeapIndex);
+            ss << ",\n";
+            ss << "      \"aliasHeapOffset\": " << resource.aliasHeapOffset << ",\n";
+            ss << "      \"initialState\": " << static_cast<uint32>(resource.initialState) << ",\n";
+            ss << "      \"currentState\": " << static_cast<uint32>(resource.currentState) << ",\n";
+            ss << "      \"hasExportState\": " << JsonBool(resource.hasExportState) << ",\n";
+            ss << "      \"exportState\": " << static_cast<uint32>(resource.exportState) << ",\n";
+            ss << "      \"width\": " << resource.width << ",\n";
+            ss << "      \"height\": " << resource.height << ",\n";
+            ss << "      \"depth\": " << resource.depth << ",\n";
+            ss << "      \"mipLevels\": " << resource.mipLevels << ",\n";
+            ss << "      \"arraySize\": " << resource.arraySize << ",\n";
+            ss << "      \"format\": " << static_cast<uint32>(resource.format) << ",\n";
+            ss << "      \"bufferSize\": " << resource.bufferSize << ",\n";
+            ss << "      \"stride\": " << resource.stride << "\n";
+            ss << "    }" << (i + 1 < diagnostics.resources.size() ? "," : "") << "\n";
+        }
+        ss << "  ],\n";
+
+        ss << "  \"plannedQueueBatches\": [\n";
+        for (size_t i = 0; i < diagnostics.plannedQueueBatches.size(); ++i)
+        {
+            const PlannedQueueBatchDiagnostic& batch = diagnostics.plannedQueueBatches[i];
+            ss << "    {\n";
+            ss << "      \"batchIndex\": " << batch.batchIndex << ",\n";
+            ss << "      \"dependencyLevel\": " << batch.dependencyLevel << ",\n";
+            ss << "      \"queue\": " << JsonString(ToDiagnosticString(batch.queue)) << ",\n";
+            ss << "      \"passIndices\": ";
+            WriteIndexArray(ss, batch.passIndices);
+            ss << ",\n";
+            ss << "      \"prerequisiteSyncIndices\": ";
+            WriteIndexArray(ss, batch.prerequisiteSyncIndices);
+            ss << "\n";
+            ss << "    }" << (i + 1 < diagnostics.plannedQueueBatches.size() ? "," : "") << "\n";
+        }
+        ss << "  ],\n";
+
+        ss << "  \"plannedQueueSyncs\": [\n";
+        for (size_t i = 0; i < diagnostics.plannedQueueSyncs.size(); ++i)
+        {
+            const PlannedQueueSyncDiagnostic& sync = diagnostics.plannedQueueSyncs[i];
+            ss << "    {\n";
+            ss << "      \"syncIndex\": " << sync.syncIndex << ",\n";
+            ss << "      \"sourceBatchIndex\": ";
+            WriteOptionalIndex(ss, sync.sourceBatchIndex);
+            ss << ",\n";
+            ss << "      \"targetBatchIndex\": ";
+            WriteOptionalIndex(ss, sync.targetBatchIndex);
+            ss << ",\n";
+            ss << "      \"sourceQueue\": " << JsonString(ToDiagnosticString(sync.sourceQueue)) << ",\n";
+            ss << "      \"targetQueue\": " << JsonString(ToDiagnosticString(sync.targetQueue)) << ",\n";
+            ss << "      \"reason\": " << JsonString(ToDiagnosticString(sync.reason)) << ",\n";
+            ss << "      \"sourcePassIndex\": ";
+            WriteOptionalIndex(ss, sync.sourcePassIndex);
+            ss << ",\n";
+            ss << "      \"targetPassIndex\": ";
+            WriteOptionalIndex(ss, sync.targetPassIndex);
+            ss << ",\n";
+            ss << "      \"coveredByActualSync\": " << JsonBool(sync.coveredByActualSync) << ",\n";
+            ss << "      \"actualSyncIndex\": ";
+            WriteOptionalIndex(ss, sync.actualSyncIndex);
+            ss << "\n";
+            ss << "    }" << (i + 1 < diagnostics.plannedQueueSyncs.size() ? "," : "") << "\n";
+        }
+        ss << "  ],\n";
+
+        ss << "  \"queueBatches\": [\n";
+        for (size_t i = 0; i < diagnostics.queueBatches.size(); ++i)
+        {
+            const QueueBatchDiagnostic& batch = diagnostics.queueBatches[i];
+            ss << "    {\n";
+            ss << "      \"batchIndex\": " << batch.batchIndex << ",\n";
+            ss << "      \"queue\": " << JsonString(ToDiagnosticString(batch.queue)) << ",\n";
+            ss << "      \"firstExecutionSerial\": ";
+            WriteOptionalIndex(ss, batch.firstExecutionSerial);
+            ss << ",\n";
+            ss << "      \"lastExecutionSerial\": ";
+            WriteOptionalIndex(ss, batch.lastExecutionSerial);
+            ss << ",\n";
+            ss << "      \"cpuDurationNanoseconds\": " << batch.cpuDurationNanoseconds << ",\n";
+            ss << "      \"passIndices\": ";
+            WriteIndexArray(ss, batch.passIndices);
+            ss << "\n";
+            ss << "    }" << (i + 1 < diagnostics.queueBatches.size() ? "," : "") << "\n";
+        }
+        ss << "  ],\n";
+
+        ss << "  \"queueSyncs\": [\n";
+        for (size_t i = 0; i < diagnostics.queueSyncs.size(); ++i)
+        {
+            const QueueSyncDiagnostic& sync = diagnostics.queueSyncs[i];
+            ss << "    {\n";
+            ss << "      \"syncIndex\": " << sync.syncIndex << ",\n";
+            ss << "      \"sourceQueue\": " << JsonString(ToDiagnosticString(sync.sourceQueue)) << ",\n";
+            ss << "      \"targetQueue\": " << JsonString(ToDiagnosticString(sync.targetQueue)) << ",\n";
+            ss << "      \"reason\": " << JsonString(ToDiagnosticString(sync.reason)) << ",\n";
+            ss << "      \"fenceValue\": " << sync.fenceValue << ",\n";
+            ss << "      \"sourcePassIndex\": ";
+            WriteOptionalIndex(ss, sync.sourcePassIndex);
+            ss << ",\n";
+            ss << "      \"targetPassIndex\": ";
+            WriteOptionalIndex(ss, sync.targetPassIndex);
+            ss << ",\n";
+            ss << "      \"coversPlannedSync\": " << JsonBool(sync.coversPlannedSync) << ",\n";
+            ss << "      \"plannedSyncIndex\": ";
+            WriteOptionalIndex(ss, sync.plannedSyncIndex);
+            ss << "\n";
+            ss << "    }" << (i + 1 < diagnostics.queueSyncs.size() ? "," : "") << "\n";
+        }
+        ss << "  ]\n";
+        ss << "}\n";
+
+        return ss.str();
+    }
+
+    bool RenderGraph::SaveDiagnosticsJson(const char* filename) const
+    {
+        if (!filename || filename[0] == '\0')
+        {
+            return false;
+        }
+
+        std::ofstream file(filename, std::ios::binary);
+        if (!file.is_open())
+        {
+            return false;
+        }
+
+        file << ExportDiagnosticsJson();
+        return file.good();
+    }
+
     void RenderGraph::SetMemoryAliasingEnabled(bool enabled)
     {
         m_impl->memoryAliasingRequested = enabled;
@@ -438,6 +1658,9 @@ namespace RVX
         m_impl->textures.clear();
         m_impl->buffers.clear();
         m_impl->executionOrder.clear();
+        m_impl->passDependencies.clear();
+        m_impl->passDependents.clear();
+        m_impl->lastQueueSyncs.clear();
         m_impl->compileDiagnostics.clear();
         m_impl->transientHeaps.clear();
         m_impl->stats = {};

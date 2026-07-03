@@ -3,6 +3,11 @@
 #include "Render/Graph/TransientResourcePool.h"
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -10,6 +15,12 @@ using namespace RVX;
 
 namespace
 {
+    std::string ReadTextFile(const std::filesystem::path& path)
+    {
+        std::ifstream file(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    }
+
     class FakeTexture final : public RHITexture
     {
     public:
@@ -57,7 +68,13 @@ namespace
         void Begin() override {}
         void End() override {}
         void Reset() override {}
-        void BeginEvent(const char*, uint32 = 0) override {}
+        void BeginEvent(const char* name, uint32 = 0) override
+        {
+            if (name)
+            {
+                events.push_back(name);
+            }
+        }
         void EndEvent() override {}
         void SetMarker(const char*, uint32 = 0) override {}
         void BufferBarrier(const RHIBufferBarrier& barrier) override { bufferBarriers.push_back(barrier); }
@@ -104,11 +121,14 @@ namespace
         void SetDepthBounds(float, float) override {}
         void SetStencilReferenceSeparate(uint32, uint32) override {}
         void SetLineWidth(float) override {}
-        void SignalFence(RHIFence*, uint64) override {}
-        void WaitFence(RHIFence*, uint64) override {}
+        void SignalFence(RHIFence*, uint64 value) override { signaledFenceValues.push_back(value); }
+        void WaitFence(RHIFence*, uint64 value) override { waitedFenceValues.push_back(value); }
 
+        std::vector<std::string> events;
         std::vector<RHIBufferBarrier> bufferBarriers;
         std::vector<RHITextureBarrier> textureBarriers;
+        std::vector<uint64> signaledFenceValues;
+        std::vector<uint64> waitedFenceValues;
     };
 
     class FakeFence final : public RHIFence
@@ -175,6 +195,8 @@ namespace
         const RHICapabilities& GetCapabilities() const override { return m_capabilities; }
         RHIBackendType GetBackendType() const override { return RHIBackendType::DX12; }
 
+        RHICapabilities& MutableCapabilities() { return m_capabilities; }
+
         uint32 createTextureCount = 0;
         uint32 createBufferCount = 0;
 
@@ -220,6 +242,52 @@ TEST(RenderGraphValidation, TextureResourceCreation)
 
     // Handle should be valid
     EXPECT_TRUE(texture.IsValid());
+}
+
+TEST(RenderGraphValidation, ExecuteDiagnosticsRecordsGraphicsQueueTimeline)
+{
+    RenderGraph graph;
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(bufferDesc);
+
+    RGBufferHandle imported = graph.ImportBuffer(&buffer, RHIResourceState::Common);
+
+    struct BufferPassData
+    {
+        RGBufferHandle buffer;
+    };
+
+    graph.AddPass<BufferPassData>(
+        "GraphicsTimeline",
+        RenderGraphPassType::Graphics,
+        [imported](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(imported, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.SetExportState(imported, RHIResourceState::ShaderResource);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    FakeCommandContext ctx;
+    graph.Execute(ctx);
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_EQ(stats.lastExecutedPassCount, 1u);
+
+    RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(diagnostics.passes.size(), 1u);
+    EXPECT_TRUE(diagnostics.passes[0].executedLastRun);
+    EXPECT_EQ(diagnostics.passes[0].executionQueue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.passes[0].executionSerial, 0u);
+
+    std::string dump = graph.ExportDiagnosticsText();
+    EXPECT_NE(dump.find("Last execution: passes=1"), std::string::npos);
+    EXPECT_NE(dump.find("GraphicsTimeline type=Graphics culled=false executed=true queue=Graphics serial=0"), std::string::npos);
 }
 
 TEST(RenderGraphValidation, TransientResourcePoolReusesTexturesAcrossClear)
@@ -482,6 +550,164 @@ TEST(RenderGraphValidation, PassChain)
 
     graph.SetExportState(final, RHIResourceState::Present);
     graph.Compile();
+}
+
+TEST(RenderGraphValidation, DiagnosticsSnapshotReportsPassResourcesLifetimesAndMemory)
+{
+    RenderGraph graph;
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
+    colorDesc.debugName = "DiagnosticColor";
+    RGTextureHandle color = graph.CreateTexture(colorDesc);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    bufferDesc.debugName = "DiagnosticBuffer";
+    RGBufferHandle buffer = graph.CreateBuffer(bufferDesc);
+
+    struct ProduceColorData
+    {
+        RGTextureHandle output;
+    };
+
+    graph.AddPass<ProduceColorData>(
+        "ProduceColor",
+        RenderGraphPassType::Graphics,
+        [color](RenderGraphBuilder& builder, ProduceColorData& data)
+        {
+            data.output = builder.Write(color, RHIResourceState::RenderTarget);
+        },
+        [](const ProduceColorData&, RHICommandContext&)
+        {
+        });
+
+    struct ConsumeColorData
+    {
+        RGTextureHandle input;
+        RGBufferHandle output;
+    };
+
+    graph.AddPass<ConsumeColorData>(
+        "ConsumeColor",
+        RenderGraphPassType::Compute,
+        [color, buffer](RenderGraphBuilder& builder, ConsumeColorData& data)
+        {
+            data.input = builder.Read(color, RHIResourceState::ShaderResource, RHIShaderStage::Compute);
+            data.output = builder.Write(buffer, RHIResourceState::UnorderedAccess);
+        },
+        [](const ConsumeColorData&, RHICommandContext&)
+        {
+        });
+
+    graph.SetExportState(buffer, RHIResourceState::ShaderResource);
+    graph.Compile();
+
+    auto diagnostics = graph.GetDiagnostics();
+    EXPECT_STREQ(diagnostics.schemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
+    EXPECT_EQ(diagnostics.schemaVersion, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
+    ASSERT_TRUE(diagnostics.compileStats.compileValid);
+    ASSERT_EQ(diagnostics.passes.size(), 2u);
+    ASSERT_EQ(diagnostics.resources.size(), 2u);
+    ASSERT_EQ(diagnostics.executionOrder.size(), 2u);
+
+    EXPECT_EQ(diagnostics.passes[0].name, "ProduceColor");
+    EXPECT_EQ(diagnostics.passes[0].type, RenderGraphPassType::Graphics);
+    EXPECT_FALSE(diagnostics.passes[0].culled);
+    ASSERT_EQ(diagnostics.passes[0].usages.size(), 1u);
+    EXPECT_EQ(diagnostics.passes[0].usages[0].access, RenderGraph::DiagnosticAccessType::Write);
+    EXPECT_EQ(diagnostics.passes[0].usages[0].type, RenderGraph::DiagnosticResourceType::Texture);
+
+    EXPECT_EQ(diagnostics.passes[1].name, "ConsumeColor");
+    EXPECT_EQ(diagnostics.passes[1].type, RenderGraphPassType::Compute);
+    ASSERT_EQ(diagnostics.passes[1].usages.size(), 2u);
+    EXPECT_EQ(diagnostics.passes[1].usages[0].access, RenderGraph::DiagnosticAccessType::Read);
+    EXPECT_EQ(diagnostics.passes[1].usages[0].stages, RHIShaderStage::Compute);
+    EXPECT_EQ(diagnostics.passes[1].usages[1].access, RenderGraph::DiagnosticAccessType::Write);
+
+    auto textureIt = std::find_if(
+        diagnostics.resources.begin(),
+        diagnostics.resources.end(),
+        [](const RenderGraph::ResourceDiagnostic& resource)
+        {
+            return resource.type == RenderGraph::DiagnosticResourceType::Texture;
+        });
+    ASSERT_NE(textureIt, diagnostics.resources.end());
+    EXPECT_EQ(textureIt->name, "DiagnosticColor");
+    EXPECT_TRUE(textureIt->used);
+    EXPECT_EQ(textureIt->firstUsePass, 0u);
+    EXPECT_EQ(textureIt->lastUsePass, 1u);
+    EXPECT_EQ(textureIt->width, 64u);
+    EXPECT_EQ(textureIt->height, 64u);
+    EXPECT_GE(textureIt->estimatedMemoryBytes, 64u * 64u * 4u);
+
+    auto bufferIt = std::find_if(
+        diagnostics.resources.begin(),
+        diagnostics.resources.end(),
+        [](const RenderGraph::ResourceDiagnostic& resource)
+        {
+            return resource.type == RenderGraph::DiagnosticResourceType::Buffer;
+        });
+    ASSERT_NE(bufferIt, diagnostics.resources.end());
+    EXPECT_EQ(bufferIt->name, "DiagnosticBuffer");
+    EXPECT_TRUE(bufferIt->used);
+    EXPECT_TRUE(bufferIt->hasExportState);
+    EXPECT_EQ(bufferIt->exportState, RHIResourceState::ShaderResource);
+    EXPECT_EQ(bufferIt->bufferSize, 1024u);
+    EXPECT_GE(bufferIt->estimatedMemoryBytes, 1024u);
+
+    EXPECT_GE(diagnostics.estimatedTransientMemoryBytes,
+              textureIt->estimatedMemoryBytes + bufferIt->estimatedMemoryBytes);
+    EXPECT_EQ(diagnostics.estimatedUsedTransientMemoryBytes,
+              diagnostics.estimatedTransientMemoryBytes);
+
+    std::string dump = graph.ExportDiagnosticsText();
+    EXPECT_NE(dump.find("RenderGraph Diagnostics"), std::string::npos);
+    EXPECT_NE(dump.find("Schema: 3"), std::string::npos);
+    EXPECT_NE(dump.find(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID), std::string::npos);
+    EXPECT_NE(dump.find("ProduceColor"), std::string::npos);
+    EXPECT_NE(dump.find("DiagnosticColor"), std::string::npos);
+    EXPECT_NE(dump.find("Estimated transient memory"), std::string::npos);
+
+    std::string json = graph.ExportDiagnosticsJson();
+    EXPECT_NE(json.find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(json.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
+    EXPECT_NE(json.find("\"id\": \"renderGraphDiagnosticsJson\""), std::string::npos);
+    EXPECT_NE(json.find("\"kind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
+    EXPECT_NE(json.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(json.find("\"compileStats\": {"), std::string::npos);
+    EXPECT_NE(json.find("\"memory\": {"), std::string::npos);
+    EXPECT_NE(json.find("\"schedule\": {"), std::string::npos);
+    EXPECT_NE(json.find("\"executionOrder\": [0, 1]"), std::string::npos);
+    EXPECT_NE(json.find("\"passes\": ["), std::string::npos);
+    EXPECT_NE(json.find("\"name\": \"ProduceColor\""), std::string::npos);
+    EXPECT_NE(json.find("\"type\": \"Compute\""), std::string::npos);
+    EXPECT_NE(json.find("\"usages\": ["), std::string::npos);
+    EXPECT_NE(json.find("\"resources\": ["), std::string::npos);
+    EXPECT_NE(json.find("\"name\": \"DiagnosticColor\""), std::string::npos);
+    EXPECT_NE(json.find("\"plannedQueueBatches\": ["), std::string::npos);
+    EXPECT_NE(json.find("\"queueSyncs\": ["), std::string::npos);
+    EXPECT_FALSE(graph.SaveDiagnosticsJson(nullptr));
+    EXPECT_FALSE(graph.SaveDiagnosticsJson(""));
+
+    const std::string suffix =
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    const std::filesystem::path jsonPath =
+        std::filesystem::temp_directory_path() / ("RVX_RenderGraphDiagnostics_" + suffix + ".json");
+    const std::string jsonPathString = jsonPath.string();
+    ASSERT_TRUE(graph.SaveDiagnosticsJson(jsonPathString.c_str()));
+    EXPECT_EQ(ReadTextFile(jsonPath), json);
+    std::error_code removeError;
+    std::filesystem::remove(jsonPath, removeError);
+
+    graph.Clear();
+    diagnostics = graph.GetDiagnostics();
+    EXPECT_STREQ(diagnostics.schemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
+    EXPECT_EQ(diagnostics.schemaVersion, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
+    EXPECT_TRUE(diagnostics.passes.empty());
+    EXPECT_TRUE(diagnostics.resources.empty());
+    EXPECT_TRUE(diagnostics.executionOrder.empty());
+    EXPECT_EQ(diagnostics.estimatedTransientMemoryBytes, 0u);
 }
 
 TEST(RenderGraphValidation, PassCulling)
@@ -1161,7 +1387,7 @@ TEST(RenderGraphValidation, LifetimeHazardStatsResetAfterClear)
     EXPECT_EQ(stats.validationErrorCount, 0u);
 }
 
-TEST(RenderGraphValidation, ExecuteAsyncFallsBackToGraphicsUntilQueueSchedulerExists)
+TEST(RenderGraphValidation, ExecuteAsyncFallsBackToGraphicsWhenBackendDoesNotSupportQueueSync)
 {
     RenderGraph graph;
 
@@ -1203,8 +1429,873 @@ TEST(RenderGraphValidation, ExecuteAsyncFallsBackToGraphicsUntilQueueSchedulerEx
     const auto& stats = graph.GetCompileStats();
     EXPECT_FALSE(stats.asyncComputeSupported);
     EXPECT_TRUE(stats.asyncFallbackUsed);
+    EXPECT_EQ(stats.asyncFallbackReason, RenderGraph::AsyncComputeFallbackReason::BackendUnsupported);
+    EXPECT_EQ(stats.asyncComputeEligiblePasses, 1u);
+    EXPECT_EQ(stats.asyncComputeScheduledPasses, 0u);
+    EXPECT_EQ(stats.lastExecutedPassCount, 1u);
     EXPECT_TRUE(ranOnGraphicsContext);
     EXPECT_FALSE(ranOnComputeContext);
+
+    RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(diagnostics.passes.size(), 1u);
+    EXPECT_TRUE(diagnostics.passes[0].executedLastRun);
+    EXPECT_EQ(diagnostics.passes[0].executionQueue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.passes[0].executionSerial, 0u);
+}
+
+TEST(RenderGraphValidation, ExecuteAsyncSchedulesComputePassesWhenQueueSyncIsSupported)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsAsyncCompute = true;
+    device.MutableCapabilities().supportsExplicitQueueFenceSignal = true;
+    device.MutableCapabilities().supportsQueueFenceWait = true;
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(bufferDesc);
+
+    RGBufferHandle imported = graph.ImportBuffer(&buffer, RHIResourceState::Common);
+
+    FakeCommandContext graphicsCtx;
+    FakeCommandContext computeCtx;
+    FakeFence computeFence;
+    bool graphicsPassRanOnGraphicsContext = false;
+    bool computePassRanOnComputeContext = false;
+
+    struct BufferPassData
+    {
+        RGBufferHandle buffer;
+    };
+
+    graph.AddPass<BufferPassData>(
+        "GraphicsProduce",
+        RenderGraphPassType::Graphics,
+        [imported](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(imported, RHIResourceState::UnorderedAccess);
+        },
+        [&](const BufferPassData&, RHICommandContext& ctx)
+        {
+            graphicsPassRanOnGraphicsContext = (&ctx == &graphicsCtx);
+        });
+
+    graph.AddPass<BufferPassData>(
+        "ComputeConsume",
+        RenderGraphPassType::Compute,
+        [imported](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.ReadWrite(imported);
+        },
+        [&](const BufferPassData&, RHICommandContext& ctx)
+        {
+            computePassRanOnComputeContext = (&ctx == &computeCtx);
+        });
+
+    graph.SetExportState(imported, RHIResourceState::ShaderResource);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    graph.ExecuteAsync(graphicsCtx, &computeCtx, &computeFence, 7);
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.asyncComputeSupported);
+    EXPECT_FALSE(stats.asyncFallbackUsed);
+    EXPECT_EQ(stats.asyncFallbackReason, RenderGraph::AsyncComputeFallbackReason::None);
+    EXPECT_EQ(stats.asyncComputeEligiblePasses, 1u);
+    EXPECT_EQ(stats.asyncComputeScheduledPasses, 1u);
+    EXPECT_EQ(stats.asyncGraphicsScheduledPasses, 1u);
+    EXPECT_EQ(stats.asyncFenceSignalCount, 2u);
+    EXPECT_EQ(stats.asyncFenceWaitCount, 2u);
+    EXPECT_EQ(stats.asyncCrossQueueDependencyCount, 1u);
+    EXPECT_EQ(stats.asyncFinalQueueJoinCount, 1u);
+    EXPECT_EQ(stats.lastExecutedPassCount, 2u);
+
+    EXPECT_TRUE(graphicsPassRanOnGraphicsContext);
+    EXPECT_TRUE(computePassRanOnComputeContext);
+
+    EXPECT_EQ(graphicsCtx.events.size(), 1u);
+    EXPECT_EQ(graphicsCtx.events[0], "GraphicsProduce");
+    EXPECT_EQ(computeCtx.events.size(), 1u);
+    EXPECT_EQ(computeCtx.events[0], "ComputeConsume");
+
+    EXPECT_EQ(graphicsCtx.signaledFenceValues.size(), 1u);
+    EXPECT_EQ(graphicsCtx.waitedFenceValues.size(), 1u);
+    EXPECT_EQ(computeCtx.signaledFenceValues.size(), 1u);
+    EXPECT_EQ(computeCtx.waitedFenceValues.size(), 1u);
+    EXPECT_EQ(graphicsCtx.signaledFenceValues[0], computeCtx.waitedFenceValues[0]);
+    EXPECT_EQ(computeCtx.signaledFenceValues[0], graphicsCtx.waitedFenceValues[0]);
+    EXPECT_GT(computeCtx.signaledFenceValues[0], graphicsCtx.signaledFenceValues[0]);
+
+    RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(diagnostics.passes.size(), 2u);
+    EXPECT_TRUE(diagnostics.passes[0].executedLastRun);
+    EXPECT_TRUE(diagnostics.passes[1].executedLastRun);
+    EXPECT_EQ(diagnostics.passes[0].executionQueue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.passes[1].executionQueue, RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(diagnostics.passes[0].executionSerial, 0u);
+    EXPECT_EQ(diagnostics.passes[1].executionSerial, 1u);
+    ASSERT_EQ(diagnostics.queueBatches.size(), 2u);
+    EXPECT_EQ(diagnostics.actualQueueBatchCount, 2u);
+    EXPECT_EQ(diagnostics.actualQueueSwitchCount, 1u);
+    EXPECT_EQ(diagnostics.actualQueueSyncCount, 2u);
+    EXPECT_EQ(diagnostics.actualCrossQueueSyncCount, 1u);
+    EXPECT_EQ(diagnostics.queueBatches[0].queue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.queueBatches[0].passIndices, std::vector<uint32>({0u}));
+    EXPECT_EQ(diagnostics.queueBatches[1].queue, RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(diagnostics.queueBatches[1].passIndices, std::vector<uint32>({1u}));
+    ASSERT_EQ(diagnostics.queueSyncs.size(), 2u);
+    EXPECT_EQ(diagnostics.queueSyncs[0].sourceQueue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.queueSyncs[0].targetQueue, RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(diagnostics.queueSyncs[0].reason, RenderGraph::DiagnosticSyncReason::CrossQueueDependency);
+    EXPECT_EQ(diagnostics.queueSyncs[0].sourcePassIndex, 0u);
+    EXPECT_EQ(diagnostics.queueSyncs[0].targetPassIndex, 1u);
+    EXPECT_EQ(diagnostics.queueSyncs[1].sourceQueue, RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(diagnostics.queueSyncs[1].targetQueue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.queueSyncs[1].reason, RenderGraph::DiagnosticSyncReason::FinalQueueJoin);
+    EXPECT_EQ(diagnostics.queueSyncs[1].sourcePassIndex, 1u);
+    EXPECT_EQ(diagnostics.queueSyncs[1].targetPassIndex, RVX_INVALID_INDEX);
+
+    std::string dump = graph.ExportDiagnosticsText();
+    EXPECT_NE(dump.find("Async compute"), std::string::npos);
+    EXPECT_NE(dump.find("scheduled=1"), std::string::npos);
+    EXPECT_NE(dump.find("fenceSignals=2"), std::string::npos);
+    EXPECT_NE(dump.find("crossQueueDeps=1"), std::string::npos);
+    EXPECT_NE(dump.find("finalJoins=1"), std::string::npos);
+    EXPECT_NE(dump.find("dependencies=[0]"), std::string::npos);
+    EXPECT_NE(dump.find("Queue Batches"), std::string::npos);
+    EXPECT_NE(dump.find("Queue Syncs"), std::string::npos);
+    EXPECT_NE(dump.find("Schedule efficiency"), std::string::npos);
+    EXPECT_NE(dump.find("actualBatches=2"), std::string::npos);
+    EXPECT_NE(dump.find("actualCrossQueueSyncs=1"), std::string::npos);
+    EXPECT_NE(dump.find("Graphics -> Compute reason=CrossQueueDependency"), std::string::npos);
+    EXPECT_NE(dump.find("Compute -> Graphics reason=FinalQueueJoin"), std::string::npos);
+    EXPECT_NE(dump.find("ComputeConsume type=Compute culled=false executed=true queue=Compute serial=1"), std::string::npos);
+}
+
+TEST(RenderGraphValidation, DiagnosticsReportsQueueBatchesAndSyncPoints)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsAsyncCompute = true;
+    device.MutableCapabilities().supportsExplicitQueueFenceSignal = true;
+    device.MutableCapabilities().supportsQueueFenceWait = true;
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(bufferDesc);
+
+    RGBufferHandle imported = graph.ImportBuffer(&buffer, RHIResourceState::Common);
+    FakeCommandContext graphicsCtx;
+    FakeCommandContext computeCtx;
+    FakeFence computeFence;
+
+    struct BufferPassData
+    {
+        RGBufferHandle buffer;
+    };
+
+    graph.AddPass<BufferPassData>(
+        "ScheduleGraphics",
+        RenderGraphPassType::Graphics,
+        [imported](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(imported, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "ScheduleCompute",
+        RenderGraphPassType::Compute,
+        [imported](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.ReadWrite(imported);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.SetExportState(imported, RHIResourceState::ShaderResource);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    graph.ExecuteAsync(graphicsCtx, &computeCtx, &computeFence, 3);
+
+    RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(diagnostics.queueBatches.size(), 2u);
+    EXPECT_EQ(diagnostics.actualQueueBatchCount, 2u);
+    EXPECT_EQ(diagnostics.actualQueueSwitchCount, 1u);
+    EXPECT_EQ(diagnostics.actualQueueSyncCount, 2u);
+    EXPECT_EQ(diagnostics.actualCrossQueueSyncCount, 1u);
+    EXPECT_EQ(diagnostics.actualMatchedPlannedSyncCount, 1u);
+    EXPECT_EQ(diagnostics.actualUnplannedQueueSyncCount, 1u);
+    EXPECT_EQ(diagnostics.actualConservativeFinalJoinCount, 1u);
+    EXPECT_EQ(diagnostics.queueBatches[0].batchIndex, 0u);
+    EXPECT_EQ(diagnostics.queueBatches[0].queue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.queueBatches[0].firstExecutionSerial, 0u);
+    EXPECT_EQ(diagnostics.queueBatches[0].lastExecutionSerial, 0u);
+    EXPECT_EQ(diagnostics.queueBatches[0].passIndices, std::vector<uint32>({0u}));
+    EXPECT_EQ(diagnostics.queueBatches[1].batchIndex, 1u);
+    EXPECT_EQ(diagnostics.queueBatches[1].queue, RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(diagnostics.queueBatches[1].firstExecutionSerial, 1u);
+    EXPECT_EQ(diagnostics.queueBatches[1].lastExecutionSerial, 1u);
+    EXPECT_EQ(diagnostics.queueBatches[1].passIndices, std::vector<uint32>({1u}));
+
+    ASSERT_EQ(diagnostics.queueSyncs.size(), 2u);
+    EXPECT_EQ(diagnostics.queueSyncs[0].sourceQueue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.queueSyncs[0].targetQueue, RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(diagnostics.queueSyncs[0].reason, RenderGraph::DiagnosticSyncReason::CrossQueueDependency);
+    EXPECT_EQ(diagnostics.queueSyncs[0].sourcePassIndex, 0u);
+    EXPECT_EQ(diagnostics.queueSyncs[0].targetPassIndex, 1u);
+    EXPECT_TRUE(diagnostics.queueSyncs[0].coversPlannedSync);
+    EXPECT_EQ(diagnostics.queueSyncs[0].plannedSyncIndex, 0u);
+    EXPECT_EQ(diagnostics.queueSyncs[1].sourceQueue, RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(diagnostics.queueSyncs[1].targetQueue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.queueSyncs[1].reason, RenderGraph::DiagnosticSyncReason::FinalQueueJoin);
+    EXPECT_EQ(diagnostics.queueSyncs[1].sourcePassIndex, 1u);
+    EXPECT_EQ(diagnostics.queueSyncs[1].targetPassIndex, RVX_INVALID_INDEX);
+    EXPECT_FALSE(diagnostics.queueSyncs[1].coversPlannedSync);
+    EXPECT_EQ(diagnostics.queueSyncs[1].plannedSyncIndex, RVX_INVALID_INDEX);
+    EXPECT_LT(diagnostics.queueSyncs[0].fenceValue, diagnostics.queueSyncs[1].fenceValue);
+
+    std::string dump = graph.ExportDiagnosticsText();
+    EXPECT_NE(dump.find("Queue Batches"), std::string::npos);
+    EXPECT_NE(dump.find("Queue Syncs"), std::string::npos);
+    EXPECT_NE(dump.find("[0] queue=Graphics serial=[0,0] passes=[0]"), std::string::npos);
+    EXPECT_NE(dump.find("[1] queue=Compute serial=[1,1] passes=[1]"), std::string::npos);
+    EXPECT_NE(dump.find("Graphics -> Compute reason=CrossQueueDependency"), std::string::npos);
+    EXPECT_NE(dump.find("Compute -> Graphics reason=FinalQueueJoin"), std::string::npos);
+    EXPECT_NE(dump.find("actualMatchedPlannedSyncs=1"), std::string::npos);
+    EXPECT_NE(dump.find("actualConservativeFinalJoins=1"), std::string::npos);
+}
+
+TEST(RenderGraphValidation, DiagnosticsReportsReadyListPlannedQueueBatches)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsAsyncCompute = true;
+    device.MutableCapabilities().supportsExplicitQueueFenceSignal = true;
+    device.MutableCapabilities().supportsQueueFenceWait = true;
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHIBufferDesc graphicsBufferDesc;
+    graphicsBufferDesc.size = 1024;
+    graphicsBufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer graphicsBuffer(graphicsBufferDesc);
+
+    RHIBufferDesc computeBufferDesc;
+    computeBufferDesc.size = 1024;
+    computeBufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer computeBuffer(computeBufferDesc);
+
+    RGBufferHandle graphicsResource = graph.ImportBuffer(&graphicsBuffer, RHIResourceState::Common);
+    RGBufferHandle computeResource = graph.ImportBuffer(&computeBuffer, RHIResourceState::Common);
+
+    struct BufferPassData
+    {
+        RGBufferHandle buffer;
+    };
+
+    graph.AddPass<BufferPassData>(
+        "PlanGraphicsProduce",
+        RenderGraphPassType::Graphics,
+        [graphicsResource](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(graphicsResource, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "PlanComputeIndependent",
+        RenderGraphPassType::Compute,
+        [computeResource](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(computeResource, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "PlanGraphicsConsume",
+        RenderGraphPassType::Graphics,
+        [graphicsResource](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.ReadWrite(graphicsResource);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.SetExportState(graphicsResource, RHIResourceState::ShaderResource);
+    graph.SetExportState(computeResource, RHIResourceState::ShaderResource);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(diagnostics.plannedQueueBatches.size(), 3u);
+    EXPECT_EQ(diagnostics.plannedQueueBatchCount, 3u);
+    EXPECT_EQ(diagnostics.plannedDependencyLevelCount, 2u);
+    EXPECT_EQ(diagnostics.plannedComputeBatchCount, 1u);
+    EXPECT_EQ(diagnostics.plannedAsyncOverlapCandidateLevelCount, 1u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncCount, 0u);
+    EXPECT_EQ(diagnostics.plannedCrossQueueSyncCount, 0u);
+    EXPECT_TRUE(diagnostics.plannedQueueSyncs.empty());
+    EXPECT_EQ(diagnostics.plannedQueueBatches[0].dependencyLevel, 0u);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[0].queue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[0].passIndices, std::vector<uint32>({0u}));
+    EXPECT_EQ(diagnostics.plannedQueueBatches[1].dependencyLevel, 0u);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[1].queue, RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[1].passIndices, std::vector<uint32>({1u}));
+    EXPECT_EQ(diagnostics.plannedQueueBatches[2].dependencyLevel, 1u);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[2].queue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[2].passIndices, std::vector<uint32>({2u}));
+
+    EXPECT_TRUE(diagnostics.queueBatches.empty());
+    EXPECT_TRUE(diagnostics.queueSyncs.empty());
+
+    std::string dump = graph.ExportDiagnosticsText();
+    EXPECT_NE(dump.find("Planned Queue Batches"), std::string::npos);
+    EXPECT_NE(dump.find("plannedBatches=3"), std::string::npos);
+    EXPECT_NE(dump.find("plannedOverlapLevels=1"), std::string::npos);
+    EXPECT_NE(dump.find("plannedSyncs=0"), std::string::npos);
+    EXPECT_NE(dump.find("[0] level=0 queue=Graphics passes=[0]"), std::string::npos);
+    EXPECT_NE(dump.find("[1] level=0 queue=Compute passes=[1]"), std::string::npos);
+    EXPECT_NE(dump.find("[2] level=1 queue=Graphics passes=[2]"), std::string::npos);
+}
+
+TEST(RenderGraphValidation, DiagnosticsReportsPlannedSubmissionSyncGraph)
+{
+    RenderGraph graph;
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(bufferDesc);
+
+    RGBufferHandle imported = graph.ImportBuffer(&buffer, RHIResourceState::Common);
+
+    struct BufferPassData
+    {
+        RGBufferHandle buffer;
+    };
+
+    graph.AddPass<BufferPassData>(
+        "PlannedSyncGraphicsProduce",
+        RenderGraphPassType::Graphics,
+        [imported](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(imported, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "PlannedSyncComputeConsume",
+        RenderGraphPassType::Compute,
+        [imported](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.ReadWrite(imported);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.SetExportState(imported, RHIResourceState::ShaderResource);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(diagnostics.plannedQueueBatches.size(), 2u);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[0].queue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[0].passIndices, std::vector<uint32>({0u}));
+    EXPECT_TRUE(diagnostics.plannedQueueBatches[0].prerequisiteSyncIndices.empty());
+    EXPECT_EQ(diagnostics.plannedQueueBatches[1].queue, RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[1].passIndices, std::vector<uint32>({1u}));
+    EXPECT_EQ(diagnostics.plannedQueueBatches[1].prerequisiteSyncIndices, std::vector<uint32>({0u}));
+
+    ASSERT_EQ(diagnostics.plannedQueueSyncs.size(), 1u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncCount, 1u);
+    EXPECT_EQ(diagnostics.plannedCrossQueueSyncCount, 1u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncCoveredCount, 0u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncUncoveredCount, 1u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].syncIndex, 0u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].sourceBatchIndex, 0u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].targetBatchIndex, 1u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].sourceQueue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].targetQueue, RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].reason, RenderGraph::DiagnosticSyncReason::CrossQueueDependency);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].sourcePassIndex, 0u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].targetPassIndex, 1u);
+    EXPECT_FALSE(diagnostics.plannedQueueSyncs[0].coveredByActualSync);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].actualSyncIndex, RVX_INVALID_INDEX);
+    EXPECT_EQ(diagnostics.actualQueueSyncCount, 0u);
+
+    std::string dump = graph.ExportDiagnosticsText();
+    EXPECT_NE(dump.find("Planned Queue Syncs"), std::string::npos);
+    EXPECT_NE(dump.find("plannedSyncs=1"), std::string::npos);
+    EXPECT_NE(dump.find("plannedCrossQueueSyncs=1"), std::string::npos);
+    EXPECT_NE(dump.find("plannedUncoveredSyncs=1"), std::string::npos);
+    EXPECT_NE(dump.find("[1] level=1 queue=Compute passes=[1] prerequisites=[0]"), std::string::npos);
+    EXPECT_NE(dump.find("batch0 Graphics -> batch1 Compute reason=CrossQueueDependency"), std::string::npos);
+}
+
+TEST(RenderGraphValidation, SubmissionPlanExposesReusableReadyListPlan)
+{
+    RenderGraph graph;
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(bufferDesc);
+
+    RGBufferHandle imported = graph.ImportBuffer(&buffer, RHIResourceState::Common);
+
+    struct BufferPassData
+    {
+        RGBufferHandle buffer;
+    };
+
+    graph.AddPass<BufferPassData>(
+        "PlanApiGraphicsProduce",
+        RenderGraphPassType::Graphics,
+        [imported](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(imported, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "PlanApiComputeConsume",
+        RenderGraphPassType::Compute,
+        [imported](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.ReadWrite(imported);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.SetExportState(imported, RHIResourceState::ShaderResource);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    RenderGraph::SubmissionPlan plan = graph.GetSubmissionPlan();
+    ASSERT_EQ(plan.queueBatches.size(), 2u);
+    EXPECT_EQ(plan.queueBatchCount, 2u);
+    EXPECT_EQ(plan.dependencyLevelCount, 2u);
+    EXPECT_EQ(plan.computeBatchCount, 1u);
+    EXPECT_EQ(plan.asyncOverlapCandidateLevelCount, 0u);
+    ASSERT_EQ(plan.queueSyncs.size(), 1u);
+    EXPECT_EQ(plan.queueSyncCount, 1u);
+    EXPECT_EQ(plan.crossQueueSyncCount, 1u);
+    EXPECT_EQ(plan.queueBatches[1].prerequisiteSyncIndices, std::vector<uint32>({0u}));
+    EXPECT_EQ(plan.queueSyncs[0].sourceBatchIndex, 0u);
+    EXPECT_EQ(plan.queueSyncs[0].targetBatchIndex, 1u);
+    EXPECT_EQ(plan.queueSyncs[0].sourcePassIndex, 0u);
+    EXPECT_EQ(plan.queueSyncs[0].targetPassIndex, 1u);
+
+    RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    EXPECT_EQ(diagnostics.plannedQueueBatchCount, plan.queueBatchCount);
+    EXPECT_EQ(diagnostics.plannedDependencyLevelCount, plan.dependencyLevelCount);
+    EXPECT_EQ(diagnostics.plannedComputeBatchCount, plan.computeBatchCount);
+    EXPECT_EQ(diagnostics.plannedQueueSyncCount, plan.queueSyncCount);
+    EXPECT_EQ(diagnostics.plannedCrossQueueSyncCount, plan.crossQueueSyncCount);
+    ASSERT_EQ(diagnostics.plannedQueueBatches.size(), plan.queueBatches.size());
+    ASSERT_EQ(diagnostics.plannedQueueSyncs.size(), plan.queueSyncs.size());
+    EXPECT_EQ(diagnostics.plannedQueueBatches[0].passIndices, plan.queueBatches[0].passIndices);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[1].prerequisiteSyncIndices,
+              plan.queueBatches[1].prerequisiteSyncIndices);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].sourceBatchIndex, plan.queueSyncs[0].sourceBatchIndex);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].targetBatchIndex, plan.queueSyncs[0].targetBatchIndex);
+}
+
+TEST(RenderGraphValidation, ExecuteAsyncUsesSubmissionPlanForCrossQueueSyncStats)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsAsyncCompute = true;
+    device.MutableCapabilities().supportsExplicitQueueFenceSignal = true;
+    device.MutableCapabilities().supportsQueueFenceWait = true;
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer bufferA(bufferDesc);
+    FakeBuffer bufferB(bufferDesc);
+
+    RGBufferHandle resourceA = graph.ImportBuffer(&bufferA, RHIResourceState::Common);
+    RGBufferHandle resourceB = graph.ImportBuffer(&bufferB, RHIResourceState::Common);
+
+    struct BufferPassData
+    {
+        RGBufferHandle buffer;
+    };
+
+    graph.AddPass<BufferPassData>(
+        "PlanStatsGraphicsProduceA",
+        RenderGraphPassType::Graphics,
+        [resourceA](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(resourceA, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "PlanStatsGraphicsProduceB",
+        RenderGraphPassType::Graphics,
+        [resourceB](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(resourceB, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "PlanStatsComputeConsumeA",
+        RenderGraphPassType::Compute,
+        [resourceA](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.ReadWrite(resourceA);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "PlanStatsComputeConsumeB",
+        RenderGraphPassType::Compute,
+        [resourceB](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.ReadWrite(resourceB);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.SetExportState(resourceA, RHIResourceState::ShaderResource);
+    graph.SetExportState(resourceB, RHIResourceState::ShaderResource);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    RenderGraph::SubmissionPlan plan = graph.GetSubmissionPlan();
+    ASSERT_EQ(plan.queueBatches.size(), 2u);
+    EXPECT_EQ(plan.queueBatches[0].passIndices, std::vector<uint32>({0u, 1u}));
+    EXPECT_EQ(plan.queueBatches[1].passIndices, std::vector<uint32>({2u, 3u}));
+    EXPECT_EQ(plan.queueSyncCount, 1u);
+    EXPECT_EQ(plan.crossQueueSyncCount, 1u);
+
+    FakeCommandContext graphicsCtx;
+    FakeCommandContext computeCtx;
+    FakeFence computeFence;
+    graph.ExecuteAsync(graphicsCtx, &computeCtx, &computeFence, 31);
+
+    const RenderGraph::CompileStats& stats = graph.GetCompileStats();
+    EXPECT_FALSE(stats.asyncFallbackUsed);
+    EXPECT_EQ(stats.asyncComputeEligiblePasses, 2u);
+    EXPECT_EQ(stats.asyncComputeScheduledPasses, 2u);
+    EXPECT_EQ(stats.asyncGraphicsScheduledPasses, 2u);
+    EXPECT_EQ(stats.asyncCrossQueueDependencyCount, plan.crossQueueSyncCount);
+    EXPECT_EQ(stats.asyncFenceSignalCount, 2u);
+    EXPECT_EQ(stats.asyncFenceWaitCount, 2u);
+    EXPECT_EQ(stats.asyncFinalQueueJoinCount, 1u);
+
+    RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    EXPECT_EQ(diagnostics.plannedQueueSyncCount, plan.queueSyncCount);
+    EXPECT_EQ(diagnostics.plannedCrossQueueSyncCount, stats.asyncCrossQueueDependencyCount);
+    EXPECT_EQ(diagnostics.plannedQueueSyncCoveredCount, 1u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncUncoveredCount, 0u);
+    EXPECT_EQ(diagnostics.actualMatchedPlannedSyncCount, 1u);
+    EXPECT_EQ(diagnostics.actualUnplannedQueueSyncCount, 1u);
+    ASSERT_EQ(diagnostics.queueSyncs.size(), 2u);
+    EXPECT_TRUE(diagnostics.queueSyncs[0].coversPlannedSync);
+    EXPECT_EQ(diagnostics.queueSyncs[0].plannedSyncIndex, 0u);
+    EXPECT_EQ(diagnostics.queueSyncs[1].reason, RenderGraph::DiagnosticSyncReason::FinalQueueJoin);
+}
+
+TEST(RenderGraphValidation, DiagnosticsReportsPlannedActualSyncCoverage)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsAsyncCompute = true;
+    device.MutableCapabilities().supportsExplicitQueueFenceSignal = true;
+    device.MutableCapabilities().supportsQueueFenceWait = true;
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(bufferDesc);
+
+    RGBufferHandle imported = graph.ImportBuffer(&buffer, RHIResourceState::Common);
+    FakeCommandContext graphicsCtx;
+    FakeCommandContext computeCtx;
+    FakeFence computeFence;
+
+    struct BufferPassData
+    {
+        RGBufferHandle buffer;
+    };
+
+    graph.AddPass<BufferPassData>(
+        "CoverageGraphicsProduce",
+        RenderGraphPassType::Graphics,
+        [imported](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(imported, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "CoverageComputeConsume",
+        RenderGraphPassType::Compute,
+        [imported](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.ReadWrite(imported);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.SetExportState(imported, RHIResourceState::ShaderResource);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    graph.ExecuteAsync(graphicsCtx, &computeCtx, &computeFence, 23);
+
+    RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(diagnostics.plannedQueueSyncs.size(), 1u);
+    ASSERT_EQ(diagnostics.queueSyncs.size(), 2u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncCoveredCount, 1u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncUncoveredCount, 0u);
+    EXPECT_TRUE(diagnostics.plannedQueueSyncs[0].coveredByActualSync);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].actualSyncIndex, 0u);
+
+    EXPECT_EQ(diagnostics.actualMatchedPlannedSyncCount, 1u);
+    EXPECT_EQ(diagnostics.actualUnplannedQueueSyncCount, 1u);
+    EXPECT_EQ(diagnostics.actualConservativeFinalJoinCount, 1u);
+    EXPECT_TRUE(diagnostics.queueSyncs[0].coversPlannedSync);
+    EXPECT_EQ(diagnostics.queueSyncs[0].plannedSyncIndex, 0u);
+    EXPECT_FALSE(diagnostics.queueSyncs[1].coversPlannedSync);
+    EXPECT_EQ(diagnostics.queueSyncs[1].plannedSyncIndex, RVX_INVALID_INDEX);
+    EXPECT_EQ(diagnostics.queueSyncs[1].reason, RenderGraph::DiagnosticSyncReason::FinalQueueJoin);
+
+    std::string dump = graph.ExportDiagnosticsText();
+    EXPECT_NE(dump.find("plannedCoveredSyncs=1"), std::string::npos);
+    EXPECT_NE(dump.find("plannedUncoveredSyncs=0"), std::string::npos);
+    EXPECT_NE(dump.find("actualMatchedPlannedSyncs=1"), std::string::npos);
+    EXPECT_NE(dump.find("actualUnplannedSyncs=1"), std::string::npos);
+    EXPECT_NE(dump.find("actualConservativeFinalJoins=1"), std::string::npos);
+    EXPECT_NE(dump.find("covered=true actualSync=0"), std::string::npos);
+    EXPECT_NE(dump.find("coversPlanned=true plannedSync=0"), std::string::npos);
+}
+
+TEST(RenderGraphValidation, DiagnosticsReportsAsyncEfficiencyStats)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsAsyncCompute = true;
+    device.MutableCapabilities().supportsExplicitQueueFenceSignal = true;
+    device.MutableCapabilities().supportsQueueFenceWait = true;
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHIBufferDesc graphicsBufferDesc;
+    graphicsBufferDesc.size = 1024;
+    graphicsBufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer graphicsBuffer(graphicsBufferDesc);
+
+    RHIBufferDesc computeBufferDesc;
+    computeBufferDesc.size = 1024;
+    computeBufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer computeBuffer(computeBufferDesc);
+
+    RGBufferHandle graphicsResource = graph.ImportBuffer(&graphicsBuffer, RHIResourceState::Common);
+    RGBufferHandle computeResource = graph.ImportBuffer(&computeBuffer, RHIResourceState::Common);
+
+    struct BufferPassData
+    {
+        RGBufferHandle buffer;
+    };
+
+    graph.AddPass<BufferPassData>(
+        "EfficiencyGraphicsProduce",
+        RenderGraphPassType::Graphics,
+        [graphicsResource](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(graphicsResource, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "EfficiencyComputeIndependent",
+        RenderGraphPassType::Compute,
+        [computeResource](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(computeResource, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "EfficiencyGraphicsConsume",
+        RenderGraphPassType::Graphics,
+        [graphicsResource](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.ReadWrite(graphicsResource);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.SetExportState(graphicsResource, RHIResourceState::ShaderResource);
+    graph.SetExportState(computeResource, RHIResourceState::ShaderResource);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    RenderGraph::Diagnostics plannedOnly = graph.GetDiagnostics();
+    EXPECT_EQ(plannedOnly.plannedQueueBatchCount, 3u);
+    EXPECT_EQ(plannedOnly.plannedDependencyLevelCount, 2u);
+    EXPECT_EQ(plannedOnly.plannedComputeBatchCount, 1u);
+    EXPECT_EQ(plannedOnly.plannedAsyncOverlapCandidateLevelCount, 1u);
+    EXPECT_EQ(plannedOnly.actualQueueBatchCount, 0u);
+    EXPECT_EQ(plannedOnly.actualQueueSwitchCount, 0u);
+    EXPECT_EQ(plannedOnly.actualQueueSyncCount, 0u);
+    EXPECT_EQ(plannedOnly.actualCrossQueueSyncCount, 0u);
+
+    FakeCommandContext graphicsCtx;
+    FakeCommandContext computeCtx;
+    FakeFence computeFence;
+    graph.ExecuteAsync(graphicsCtx, &computeCtx, &computeFence, 17);
+
+    RenderGraph::Diagnostics executed = graph.GetDiagnostics();
+    EXPECT_EQ(executed.plannedQueueBatchCount, 3u);
+    EXPECT_EQ(executed.plannedAsyncOverlapCandidateLevelCount, 1u);
+    EXPECT_EQ(executed.actualQueueBatchCount, 3u);
+    EXPECT_EQ(executed.actualQueueSwitchCount, 2u);
+    EXPECT_EQ(executed.actualQueueSyncCount, 1u);
+    EXPECT_EQ(executed.actualCrossQueueSyncCount, 0u);
+
+    std::string dump = graph.ExportDiagnosticsText();
+    EXPECT_NE(dump.find("Schedule efficiency"), std::string::npos);
+    EXPECT_NE(dump.find("plannedBatches=3"), std::string::npos);
+    EXPECT_NE(dump.find("plannedLevels=2"), std::string::npos);
+    EXPECT_NE(dump.find("plannedOverlapLevels=1"), std::string::npos);
+    EXPECT_NE(dump.find("actualBatches=3"), std::string::npos);
+    EXPECT_NE(dump.find("actualSwitches=2"), std::string::npos);
+    EXPECT_NE(dump.find("actualSyncs=1"), std::string::npos);
+    EXPECT_NE(dump.find("actualCrossQueueSyncs=0"), std::string::npos);
+}
+
+TEST(RenderGraphValidation, ExecuteAsyncDoesNotFenceIndependentComputeAndGraphicsPasses)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsAsyncCompute = true;
+    device.MutableCapabilities().supportsExplicitQueueFenceSignal = true;
+    device.MutableCapabilities().supportsQueueFenceWait = true;
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHIBufferDesc graphicsBufferDesc;
+    graphicsBufferDesc.size = 1024;
+    graphicsBufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer graphicsBuffer(graphicsBufferDesc);
+
+    RHIBufferDesc computeBufferDesc;
+    computeBufferDesc.size = 1024;
+    computeBufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer computeBuffer(computeBufferDesc);
+
+    RGBufferHandle graphicsResource = graph.ImportBuffer(&graphicsBuffer, RHIResourceState::Common);
+    RGBufferHandle computeResource = graph.ImportBuffer(&computeBuffer, RHIResourceState::Common);
+
+    FakeCommandContext graphicsCtx;
+    FakeCommandContext computeCtx;
+    FakeFence computeFence;
+
+    struct BufferPassData
+    {
+        RGBufferHandle buffer;
+    };
+
+    graph.AddPass<BufferPassData>(
+        "GraphicsProduce",
+        RenderGraphPassType::Graphics,
+        [graphicsResource](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(graphicsResource, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "ComputeIndependent",
+        RenderGraphPassType::Compute,
+        [computeResource](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(computeResource, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "GraphicsConsume",
+        RenderGraphPassType::Graphics,
+        [graphicsResource](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.ReadWrite(graphicsResource);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.SetExportState(graphicsResource, RHIResourceState::ShaderResource);
+    graph.SetExportState(computeResource, RHIResourceState::ShaderResource);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    graph.ExecuteAsync(graphicsCtx, &computeCtx, &computeFence, 11);
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_FALSE(stats.asyncFallbackUsed);
+    EXPECT_EQ(stats.asyncComputeEligiblePasses, 1u);
+    EXPECT_EQ(stats.asyncComputeScheduledPasses, 1u);
+    EXPECT_EQ(stats.asyncGraphicsScheduledPasses, 2u);
+    EXPECT_EQ(stats.asyncCrossQueueDependencyCount, 0u);
+    EXPECT_EQ(stats.asyncFenceSignalCount, 1u);
+    EXPECT_EQ(stats.asyncFenceWaitCount, 1u);
+    EXPECT_EQ(stats.asyncFinalQueueJoinCount, 1u);
+    EXPECT_EQ(stats.lastExecutedPassCount, 3u);
+
+    ASSERT_EQ(graphicsCtx.events.size(), 2u);
+    EXPECT_EQ(graphicsCtx.events[0], "GraphicsProduce");
+    EXPECT_EQ(graphicsCtx.events[1], "GraphicsConsume");
+    ASSERT_EQ(computeCtx.events.size(), 1u);
+    EXPECT_EQ(computeCtx.events[0], "ComputeIndependent");
+
+    EXPECT_TRUE(graphicsCtx.signaledFenceValues.empty());
+    ASSERT_EQ(computeCtx.signaledFenceValues.size(), 1u);
+    ASSERT_EQ(graphicsCtx.waitedFenceValues.size(), 1u);
+    EXPECT_EQ(computeCtx.signaledFenceValues[0], graphicsCtx.waitedFenceValues[0]);
+    EXPECT_TRUE(computeCtx.waitedFenceValues.empty());
+
+    RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(diagnostics.passes.size(), 3u);
+    EXPECT_TRUE(diagnostics.passes[1].dependencies.empty());
+    EXPECT_TRUE(diagnostics.passes[1].dependents.empty());
+    ASSERT_EQ(diagnostics.passes[2].dependencies.size(), 1u);
+    EXPECT_EQ(diagnostics.passes[2].dependencies[0], 0u);
+    EXPECT_EQ(diagnostics.passes[0].executionQueue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.passes[1].executionQueue, RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(diagnostics.passes[2].executionQueue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.passes[0].executionSerial, 0u);
+    EXPECT_EQ(diagnostics.passes[1].executionSerial, 1u);
+    EXPECT_EQ(diagnostics.passes[2].executionSerial, 2u);
+    ASSERT_EQ(diagnostics.queueBatches.size(), 3u);
+    EXPECT_EQ(diagnostics.queueBatches[0].queue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.queueBatches[0].passIndices, std::vector<uint32>({0u}));
+    EXPECT_EQ(diagnostics.queueBatches[1].queue, RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(diagnostics.queueBatches[1].passIndices, std::vector<uint32>({1u}));
+    EXPECT_EQ(diagnostics.queueBatches[2].queue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.queueBatches[2].passIndices, std::vector<uint32>({2u}));
+    ASSERT_EQ(diagnostics.queueSyncs.size(), 1u);
+    EXPECT_EQ(diagnostics.queueSyncs[0].sourceQueue, RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(diagnostics.queueSyncs[0].targetQueue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.queueSyncs[0].reason, RenderGraph::DiagnosticSyncReason::FinalQueueJoin);
+    EXPECT_EQ(diagnostics.queueSyncs[0].sourcePassIndex, 1u);
+    EXPECT_EQ(diagnostics.queueSyncs[0].targetPassIndex, RVX_INVALID_INDEX);
+
+    std::string dump = graph.ExportDiagnosticsText();
+    EXPECT_NE(dump.find("crossQueueDeps=0"), std::string::npos);
+    EXPECT_NE(dump.find("finalJoins=1"), std::string::npos);
+    EXPECT_NE(dump.find("ComputeIndependent type=Compute culled=false executed=true queue=Compute serial=1"), std::string::npos);
+    EXPECT_NE(dump.find("dependencies=[] dependents=[]"), std::string::npos);
 }
 
 TEST(RenderGraphValidation, ClearAndRecompile)

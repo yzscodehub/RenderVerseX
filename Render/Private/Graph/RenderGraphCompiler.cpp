@@ -1269,6 +1269,8 @@ namespace RVX
         graph.stats.memoryAliasingEnabled = graph.enableMemoryAliasing;
         graph.stats.memoryAliasingUnsupportedRequested = graph.memoryAliasingRequested && !graph.enableMemoryAliasing;
         graph.stats.explicitAliasingBarriersSupported = false;
+        graph.passDependencies.clear();
+        graph.passDependents.clear();
         graph.totalMemoryWithoutAliasing = 0;
         graph.totalMemoryWithAliasing = 0;
         graph.aliasedTextureCount = 0;
@@ -1279,6 +1281,8 @@ namespace RVX
         {
             graph.stats.compileValid = false;
             graph.executionOrder.clear();
+            graph.passDependencies.clear();
+            graph.passDependents.clear();
             return;
         }
 
@@ -1415,6 +1419,8 @@ namespace RVX
         {
             graph.stats.compileValid = false;
             graph.executionOrder.clear();
+            graph.passDependencies.clear();
+            graph.passDependents.clear();
             return;
         }
 
@@ -1490,6 +1496,19 @@ namespace RVX
             }
         }
 
+        graph.passDependents = adjacency;
+        graph.passDependencies.assign(graph.passes.size(), {});
+        for (uint32 beforePass = 0; beforePass < graph.passDependents.size(); ++beforePass)
+        {
+            for (uint32 afterPass : graph.passDependents[beforePass])
+            {
+                if (afterPass < graph.passDependencies.size())
+                {
+                    graph.passDependencies[afterPass].push_back(beforePass);
+                }
+            }
+        }
+
         graph.executionOrder.clear();
         graph.executionOrder.reserve(graph.passes.size());
         std::vector<uint32> topoQueue;
@@ -1520,6 +1539,8 @@ namespace RVX
             graph.stats.validationErrorCount++;
             AddCompileError(graph, "RenderGraph compile failed: execution order topology is incomplete");
             graph.executionOrder.clear();
+            graph.passDependencies.clear();
+            graph.passDependents.clear();
             return;
         }
 
