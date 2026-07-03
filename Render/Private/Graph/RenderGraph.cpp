@@ -1,6 +1,6 @@
 #include "RenderGraphInternal.h"
+#include "Core/Diagnostics/JsonWriter.h"
 #include "Core/Log.h"
-#include "../Diagnostics/RenderDiagnosticsJson.h"
 #include <algorithm>
 #include <fstream>
 #include <sstream>
@@ -9,8 +9,8 @@ namespace RVX
 {
     namespace
     {
-        using RenderDiagnostics::JsonBool;
-        using RenderDiagnostics::JsonString;
+        using Diagnostics::JsonBool;
+        using Diagnostics::JsonString;
 
         uint64 AlignUp(uint64 value, uint64 alignment)
         {

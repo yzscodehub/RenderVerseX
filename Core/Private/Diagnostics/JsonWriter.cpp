@@ -1,21 +1,21 @@
 /**
- * @file RenderDiagnosticsJson.cpp
- * @brief Lightweight JSON helper implementation for render diagnostics artifacts.
+ * @file JsonWriter.cpp
+ * @brief Lightweight JSON formatting helpers for diagnostics artifacts.
  */
 
-#include "RenderDiagnosticsJson.h"
+#include "Core/Diagnostics/JsonWriter.h"
 
 #include <iomanip>
 #include <sstream>
 
-namespace RVX::RenderDiagnostics
+namespace RVX::Diagnostics
 {
-    const char* JsonBool(bool value)
+    const char* JsonWriter::Bool(bool value)
     {
         return value ? "true" : "false";
     }
 
-    std::string JsonString(std::string_view value)
+    std::string JsonWriter::String(std::string_view value)
     {
         std::ostringstream ss;
         ss << '"';
@@ -57,7 +57,7 @@ namespace RVX::RenderDiagnostics
         return ss.str();
     }
 
-    std::string JsonOptionalIndex(uint32 value)
+    std::string JsonWriter::OptionalIndex(uint32 value)
     {
         if (value == RVX_INVALID_INDEX)
         {
@@ -66,4 +66,19 @@ namespace RVX::RenderDiagnostics
 
         return std::to_string(value);
     }
-} // namespace RVX::RenderDiagnostics
+
+    const char* JsonBool(bool value)
+    {
+        return JsonWriter::Bool(value);
+    }
+
+    std::string JsonString(std::string_view value)
+    {
+        return JsonWriter::String(value);
+    }
+
+    std::string JsonOptionalIndex(uint32 value)
+    {
+        return JsonWriter::OptionalIndex(value);
+    }
+} // namespace RVX::Diagnostics

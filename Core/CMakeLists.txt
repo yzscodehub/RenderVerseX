@@ -10,6 +10,9 @@ target_sources(RVX_Core PRIVATE
     Private/PathUtils.cpp
     Private/SystemManager.cpp
 
+    # Diagnostics
+    Private/Diagnostics/JsonWriter.cpp
+
     # Camera contracts
     Private/Camera/Camera.cpp
     

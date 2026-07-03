@@ -30,7 +30,6 @@ target_sources(RVX_Render PRIVATE
     Private/Renderer/RenderPassRegistry.cpp
     Private/Renderer/SceneRenderer.cpp
     # Diagnostics
-    Private/Diagnostics/RenderDiagnosticsJson.cpp
     Private/Diagnostics/RenderFeatureReport.cpp
     Private/Diagnostics/RenderToolArtifacts.cpp
     # Ray tracing

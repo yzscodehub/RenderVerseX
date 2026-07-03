@@ -4,7 +4,7 @@
  */
 
 #include "Render/Renderer/SceneRenderer.h"
-#include "RenderDiagnosticsJson.h"
+#include "Core/Diagnostics/JsonWriter.h"
 
 #include <algorithm>
 #include <array>
@@ -20,9 +20,9 @@ namespace RVX
 {
 namespace
 {
-    using RenderDiagnostics::JsonBool;
-    using RenderDiagnostics::JsonOptionalIndex;
-    using RenderDiagnostics::JsonString;
+    using Diagnostics::JsonBool;
+    using Diagnostics::JsonOptionalIndex;
+    using Diagnostics::JsonString;
 
     struct ToolArtifactSummaryEntry
     {
