@@ -9,13 +9,17 @@
 #include "Particle/ParticleTypes.h"
 #include "Particle/Rendering/SoftParticleConfig.h"
 #include "RHI/RHI.h"
-#include "Render/Renderer/ViewData.h"
 
 #include <deque>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+namespace RVX
+{
+    struct ViewData;
+} // namespace RVX
 
 namespace RVX::Particle
 {
