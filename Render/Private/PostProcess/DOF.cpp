@@ -10,11 +10,28 @@
 namespace RVX
 {
 
+namespace
+{
+    constexpr const char* RVX_DOF_UNSUPPORTED_REASON =
+        "Depth of field gather/composite pipeline is not implemented";
+} // namespace
+
+const char* GetDOFImplementationTierName(DOFImplementationTier tier)
+{
+    switch (tier)
+    {
+        case DOFImplementationTier::Unsupported: return "Unsupported";
+        case DOFImplementationTier::GatherComposite: return "GatherComposite";
+    }
+    return "Unknown";
+}
+
 DOFPass::DOFPass()
 {
     m_enabled = true;
-    MarkUnsupported("Depth of field shaders and composite pipeline are not implemented");
+    MarkUnsupported(RVX_DOF_UNSUPPORTED_REASON);
     m_currentFocusDistance = m_config.focusDistance;
+    RecordUnsupportedDiagnostics(false);
 }
 
 void DOFPass::Configure(const PostProcessSettings& settings)
@@ -26,6 +43,9 @@ void DOFPass::Configure(const PostProcessSettings& settings)
         m_config.aperture = settings.dofAperture;
     if (settings.dofFocalLength > 0.0f)
         m_config.focalLength = settings.dofFocalLength;
+
+    MarkUnsupported(RVX_DOF_UNSUPPORTED_REASON);
+    RecordUnsupportedDiagnostics(false);
 }
 
 float DOFPass::CalculateCoC(float depth) const
@@ -83,7 +103,12 @@ void DOFPass::SetAutoFocus(float screenX, float screenY, float depth)
 
 void DOFPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output)
 {
-    // Basic version without depth - just copy
+    (void)graph;
+    (void)input;
+    (void)output;
+
+    RecordUnsupportedDiagnostics(false);
+
     if (!IsEnabled())
     {
         if (IsRequestedEnabled() && !IsSupported())
@@ -93,32 +118,18 @@ void DOFPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHan
         return;
     }
 
-    struct DOFPassData
-    {
-        RGTextureHandle input;
-        RGTextureHandle output;
-    };
-
-    graph.AddPass<DOFPassData>(
-        "DOF_Fallback",
-        RenderGraphPassType::Graphics,
-        [input, output](RenderGraphBuilder& builder, DOFPassData& data)
-        {
-            data.input = builder.Read(input);
-            data.output = builder.Write(output, RHIResourceState::RenderTarget);
-        },
-        [](const DOFPassData& data, RHICommandContext& ctx)
-        {
-            (void)data;
-            (void)ctx;
-            // Fallback: just copy without DOF (no depth available)
-            RVX_CORE_WARN("DOF: No depth buffer provided, effect disabled");
-        });
+    RVX_CORE_WARN("DOF: graph pass requested but {}", GetUnsupportedReason());
 }
 
 void DOFPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, 
                          RGTextureHandle depth, RGTextureHandle output)
 {
+    (void)graph;
+    (void)input;
+    (void)output;
+
+    RecordUnsupportedDiagnostics(depth.IsValid());
+
     if (!IsEnabled())
     {
         if (IsRequestedEnabled() && !IsSupported())
@@ -128,190 +139,30 @@ void DOFPass::AddToGraph(RenderGraph& graph, RGTextureHandle input,
         return;
     }
 
-    // Get sample count based on quality
-    uint32 sampleCount = 8;
+    RVX_CORE_WARN("DOF: graph pass requested but {}", GetUnsupportedReason());
+}
+
+uint32 DOFPass::GetSampleCount() const
+{
     switch (m_config.quality)
     {
-        case DOFQuality::Low:    sampleCount = 4; break;
-        case DOFQuality::Medium: sampleCount = 8; break;
-        case DOFQuality::High:   sampleCount = 16; break;
-        case DOFQuality::Ultra:  sampleCount = 32; break;
+        case DOFQuality::Low: return 4;
+        case DOFQuality::Medium: return 8;
+        case DOFQuality::High: return 16;
+        case DOFQuality::Ultra: return 32;
     }
+    return 8;
+}
 
-    // =========================================================================
-    // Pass 1: Calculate CoC and separate near/far
-    // =========================================================================
-    struct CoCPassData
-    {
-        RGTextureHandle inputColor;
-        RGTextureHandle inputDepth;
-        RGTextureHandle cocOutput;
-        RGTextureHandle nearField;
-        RGTextureHandle farField;
-        
-        float focusDistance;
-        float focusRange;
-        float aperture;
-        float focalLength;
-        float sensorSize;
-        float maxBlurRadius;
-        float nearBlurScale;
-        float farBlurScale;
-    };
-
-    // Create intermediate textures
-    RHITextureDesc cocDesc{};
-    cocDesc.width = 0;   // Will be set from input
-    cocDesc.height = 0;
-    cocDesc.format = RHIFormat::R16_FLOAT;
-    cocDesc.usage = RHITextureUsage::ShaderResource | RHITextureUsage::RenderTarget;
-    RGTextureHandle cocTexture = graph.CreateTexture(cocDesc);
-
-    graph.AddPass<CoCPassData>(
-        "DOF_CalculateCoC",
-        RenderGraphPassType::Compute,
-        [this, input, depth, cocTexture](RenderGraphBuilder& builder, CoCPassData& data)
-        {
-            data.inputColor = builder.Read(input);
-            data.inputDepth = builder.Read(depth);
-            data.cocOutput = builder.Write(cocTexture, RHIResourceState::UnorderedAccess);
-            
-            data.focusDistance = m_config.focusDistance;
-            data.focusRange = m_config.focusRange;
-            data.aperture = m_config.aperture;
-            data.focalLength = m_config.focalLength;
-            data.sensorSize = m_config.sensorSize;
-            data.maxBlurRadius = m_config.maxBlurRadius;
-            data.nearBlurScale = m_config.nearBlurScale;
-            data.farBlurScale = m_config.farBlurScale;
-        },
-        [](const CoCPassData& data, RHICommandContext& ctx)
-        {
-            (void)data;
-            (void)ctx;
-            // TODO: Dispatch compute shader to calculate CoC
-            // - Sample depth
-            // - Calculate CoC using physically-based formula
-            // - Output signed CoC (negative = near, positive = far)
-        });
-
-    // =========================================================================
-    // Pass 2: Downsample and blur far field
-    // =========================================================================
-    struct FarBlurPassData
-    {
-        RGTextureHandle inputColor;
-        RGTextureHandle cocTexture;
-        RGTextureHandle blurOutput;
-        
-        uint32 sampleCount;
-        float maxBlurRadius;
-        uint32 bokehShape;
-        float anamorphicRatio;
-    };
-
-    RHITextureDesc blurDesc{};
-    blurDesc.format = RHIFormat::RGBA16_FLOAT;
-    blurDesc.usage = RHITextureUsage::ShaderResource | RHITextureUsage::RenderTarget;
-    RGTextureHandle farBlurTexture = graph.CreateTexture(blurDesc);
-
-    graph.AddPass<FarBlurPassData>(
-        "DOF_FarFieldBlur",
-        RenderGraphPassType::Compute,
-        [this, input, cocTexture, farBlurTexture, sampleCount](RenderGraphBuilder& builder, FarBlurPassData& data)
-        {
-            data.inputColor = builder.Read(input);
-            data.cocTexture = builder.Read(cocTexture);
-            data.blurOutput = builder.Write(farBlurTexture, RHIResourceState::UnorderedAccess);
-            
-            data.sampleCount = sampleCount;
-            data.maxBlurRadius = m_config.maxBlurRadius;
-            data.bokehShape = static_cast<uint32>(m_config.bokehShape);
-            data.anamorphicRatio = m_config.anamorphicRatio;
-        },
-        [](const FarBlurPassData& data, RHICommandContext& ctx)
-        {
-            (void)data;
-            (void)ctx;
-            // TODO: Dispatch blur shader for far field
-            // - Use CoC as blur kernel size
-            // - Apply bokeh shape weighting
-            // - Handle anamorphic stretching
-        });
-
-    // =========================================================================
-    // Pass 3: Blur near field (with dilation)
-    // =========================================================================
-    struct NearBlurPassData
-    {
-        RGTextureHandle inputColor;
-        RGTextureHandle cocTexture;
-        RGTextureHandle blurOutput;
-        
-        uint32 sampleCount;
-        float maxBlurRadius;
-    };
-
-    RGTextureHandle nearBlurTexture = graph.CreateTexture(blurDesc);
-
-    graph.AddPass<NearBlurPassData>(
-        "DOF_NearFieldBlur",
-        RenderGraphPassType::Compute,
-        [this, input, cocTexture, nearBlurTexture, sampleCount](RenderGraphBuilder& builder, NearBlurPassData& data)
-        {
-            data.inputColor = builder.Read(input);
-            data.cocTexture = builder.Read(cocTexture);
-            data.blurOutput = builder.Write(nearBlurTexture, RHIResourceState::UnorderedAccess);
-            
-            data.sampleCount = sampleCount;
-            data.maxBlurRadius = m_config.maxBlurRadius;
-        },
-        [](const NearBlurPassData& data, RHICommandContext& ctx)
-        {
-            (void)data;
-            (void)ctx;
-            // TODO: Dispatch blur shader for near field
-            // - Dilate CoC before blur (near field bleeds over sharp areas)
-            // - Apply larger kernel for foreground objects
-        });
-
-    // =========================================================================
-    // Pass 4: Composite final result
-    // =========================================================================
-    struct CompositePassData
-    {
-        RGTextureHandle inputColor;
-        RGTextureHandle cocTexture;
-        RGTextureHandle farBlur;
-        RGTextureHandle nearBlur;
-        RGTextureHandle output;
-        
-        float focusRange;
-    };
-
-    graph.AddPass<CompositePassData>(
-        "DOF_Composite",
-        RenderGraphPassType::Graphics,
-        [this, input, cocTexture, farBlurTexture, nearBlurTexture, output]
-        (RenderGraphBuilder& builder, CompositePassData& data)
-        {
-            data.inputColor = builder.Read(input);
-            data.cocTexture = builder.Read(cocTexture);
-            data.farBlur = builder.Read(farBlurTexture);
-            data.nearBlur = builder.Read(nearBlurTexture);
-            data.output = builder.Write(output, RHIResourceState::RenderTarget);
-            
-            data.focusRange = m_config.focusRange;
-        },
-        [](const CompositePassData& data, RHICommandContext& ctx)
-        {
-            (void)data;
-            (void)ctx;
-            // TODO: Composite shader
-            // - Blend between sharp, far blur, and near blur based on CoC
-            // - Apply smooth transitions at focus boundaries
-            // - Handle alpha properly for transparency
-        });
+void DOFPass::RecordUnsupportedDiagnostics(bool depthAvailable)
+{
+    m_lastDiagnostics.requested = m_enabled;
+    m_lastDiagnostics.supported = false;
+    m_lastDiagnostics.scheduled = false;
+    m_lastDiagnostics.depthAvailable = depthAvailable;
+    m_lastDiagnostics.sampleCount = GetSampleCount();
+    m_lastDiagnostics.implementationTier = DOFImplementationTier::Unsupported;
+    m_lastDiagnostics.reason = GetUnsupportedReason();
 }
 
 } // namespace RVX

@@ -50,6 +50,7 @@
 #include "Render/PostProcess/TAA.h"
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
+#include "Render/PostProcess/VolumetricLighting.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
 #include "Render/RayTracing/RayTracingScene.h"
 #include "Render/RayTracing/RayTracingSceneManager.h"
@@ -7240,6 +7241,58 @@ TEST(RenderPostProcessStackValidation, MotionBlurReportsUnsupportedDiagnosticsWi
     const std::string motionBlurSource = ReadTextFile(motionBlurSourcePath);
     EXPECT_EQ(motionBlurSource.find("graph.AddPass"), std::string::npos);
     EXPECT_EQ(motionBlurSource.find("TODO"), std::string::npos);
+}
+
+TEST(RenderPostProcessStackValidation, UnsupportedCinematicEffectsReportDiagnosticsWithoutScheduling)
+{
+    DOFPass dof;
+    PostProcessSettings dofSettings;
+    dofSettings.enableDOF = true;
+    dofSettings.dofFocusDistance = 8.0f;
+    dof.Configure(dofSettings);
+
+    const DOFDiagnostics& dofDiagnostics = dof.GetLastDiagnostics();
+    EXPECT_TRUE(dofDiagnostics.requested);
+    EXPECT_FALSE(dofDiagnostics.supported);
+    EXPECT_FALSE(dofDiagnostics.scheduled);
+    EXPECT_FALSE(dofDiagnostics.depthAvailable);
+    EXPECT_EQ(dofDiagnostics.sampleCount, 8u);
+    EXPECT_EQ(dofDiagnostics.implementationTier, DOFImplementationTier::Unsupported);
+    EXPECT_STREQ(GetDOFImplementationTierName(dofDiagnostics.implementationTier), "Unsupported");
+    EXPECT_NE(dofDiagnostics.reason.find("gather/composite pipeline"), std::string::npos);
+
+    VolumetricLightingPass volumetric;
+    PostProcessSettings volumetricSettings;
+    volumetricSettings.enableVolumetricLighting = true;
+    volumetric.Configure(volumetricSettings);
+
+    const VolumetricLightingDiagnostics& volumetricDiagnostics =
+        volumetric.GetLastDiagnostics();
+    EXPECT_TRUE(volumetricDiagnostics.requested);
+    EXPECT_FALSE(volumetricDiagnostics.supported);
+    EXPECT_FALSE(volumetricDiagnostics.scheduled);
+    EXPECT_FALSE(volumetricDiagnostics.depthAvailable);
+    EXPECT_FALSE(volumetricDiagnostics.shadowMapAvailable);
+    EXPECT_TRUE(volumetricDiagnostics.temporalRequested);
+    EXPECT_TRUE(volumetricDiagnostics.halfResolution);
+    EXPECT_EQ(volumetricDiagnostics.sampleCount, 32u);
+    EXPECT_EQ(volumetricDiagnostics.implementationTier,
+              VolumetricLightingImplementationTier::Unsupported);
+    EXPECT_STREQ(GetVolumetricLightingImplementationTierName(
+                     volumetricDiagnostics.implementationTier),
+                 "Unsupported");
+    EXPECT_NE(volumetricDiagnostics.reason.find("ray march/composite pipeline"),
+              std::string::npos);
+
+    const fs::path postProcessDir =
+        FindShaderDirectory().parent_path() / "Private" / "PostProcess";
+    const std::string dofSource = ReadTextFile(postProcessDir / "DOF.cpp");
+    const std::string volumetricSource =
+        ReadTextFile(postProcessDir / "VolumetricLighting.cpp");
+    EXPECT_EQ(dofSource.find("graph.AddPass"), std::string::npos);
+    EXPECT_EQ(dofSource.find("TODO"), std::string::npos);
+    EXPECT_EQ(volumetricSource.find("graph.AddPass"), std::string::npos);
+    EXPECT_EQ(volumetricSource.find("TODO"), std::string::npos);
 }
 
 TEST_F(RenderPassValidationFixture, TAAMinimalResolveCopiesCurrentFrameAndUpdatesHistory)
