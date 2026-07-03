@@ -146,18 +146,16 @@ void ParticleComponent::CreateInstance()
 
     if (auto* subsystem = ParticleSubsystem::GetActiveSubsystem())
     {
-        if (subsystem->IsRenderIntegrationReady())
+        m_instance = subsystem->CreateInstance(m_particleSystem);
+        if (m_instance)
         {
-            m_instance = subsystem->CreateInstance(m_particleSystem);
-            if (m_instance)
-            {
-                m_instanceSubsystem = subsystem;
-                m_instanceOwnership = ParticleInstanceOwnership::SubsystemOwned;
-            }
+            m_instanceSubsystem = subsystem;
+            m_instanceOwnership = ParticleInstanceOwnership::SubsystemOwned;
         }
-        else
+        if (!subsystem->IsRenderIntegrationReady() &&
+            !subsystem->GetRenderIntegrationUnsupportedReason().empty())
         {
-            RVX_CORE_WARN("ParticleComponent: ParticleSubsystem fallback for '{}': {}",
+            RVX_CORE_INFO("ParticleComponent: ParticleSubsystem render path for '{}': {}",
                           GetOwner() ? GetOwner()->GetName() : "<no-owner>",
                           subsystem->GetRenderIntegrationUnsupportedReason());
         }

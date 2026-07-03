@@ -944,20 +944,17 @@ TEST(ParticleValidation, ParticleSorterReportsUnsupportedWithoutRHI)
     EXPECT_EQ(sorter.GetLastRequestedParticleCount(), 0u);
 }
 
-TEST(ParticleValidation, ParticleComponentUsesSubsystemOwnedInstanceWhenRenderReady)
+TEST(ParticleValidation, ParticleComponentUsesSubsystemOwnedInstanceWithSnapshotDefault)
 {
     EnsureLogInitialized();
     FakeDevice device;
-    SceneRenderer renderer;
-    SceneRendererParticleRenderHost renderHost(renderer);
     ParticleSubsystem subsystem;
     ParticleSubsystemRenderAccess::SetDeviceForTesting(subsystem, &device);
-    ParticleSubsystemRenderAccess::SetRenderHostForTesting(subsystem, &renderHost);
-    ParticleSubsystemRenderAccess::SetRendererConfigForTesting(subsystem, MakeRendererConfig());
     subsystem.GetConfig().enableGPUSimulation = false;
-    subsystem.GetConfig().enableLegacyRenderPassRegistration = true;
     subsystem.Initialize();
-    ASSERT_TRUE(subsystem.IsRenderIntegrationReady()) << subsystem.GetRenderIntegrationUnsupportedReason();
+    ASSERT_FALSE(subsystem.IsRenderIntegrationReady());
+    EXPECT_NE(subsystem.GetRenderIntegrationUnsupportedReason().find("Legacy ParticlePass registration is disabled"),
+              std::string::npos);
 
     SceneEntity entity("ParticleComponentOwner");
     auto* component = entity.AddComponent<ParticleComponent>();
