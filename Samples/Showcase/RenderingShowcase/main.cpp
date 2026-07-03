@@ -822,7 +822,8 @@ namespace
                 report.enabledFeatures.push_back("ColorGrading");
                 report.enabledFeatures.push_back("Vignette");
                 report.enabledFeatures.push_back("FilmGrain");
-                report.unsupportedFeatures.push_back("SSAO/TAA/SSR are diagnostic-only until their low-tier passes land");
+                report.enabledFeatures.push_back("SSAO minimal runtime fallback diagnostics");
+                report.unsupportedFeatures.push_back("TAA/SSR are diagnostic-only until their low-tier passes land");
                 break;
             case ShowcaseMode::Lighting:
                 report.enabledFeatures.push_back("DirectionalLight");

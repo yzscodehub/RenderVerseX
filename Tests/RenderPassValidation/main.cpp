@@ -7052,6 +7052,61 @@ TEST_F(RenderPassValidationFixture, StandaloneSSAOAndSSRReportMissingFrameInputs
               std::string::npos);
 }
 
+TEST_F(RenderPassValidationFixture, StandaloneSSAOInitializesMinimalLowTierAndReportsFallbacks)
+{
+    RecordingCommandContext ctx;
+    FakeDevice localDevice;
+    localDevice.EnableBasicCapabilities();
+
+    SSAOConfig config;
+    config.quality = SSAOQuality::High;
+    config.temporalFilter = true;
+    config.blurPasses = 2;
+
+    SSAO ssao;
+    ssao.SetConfig(config);
+    ssao.SetEnabled(true);
+    ssao.Initialize(&localDevice, 64, 48);
+
+    EXPECT_TRUE(ssao.IsInitialized());
+    EXPECT_TRUE(ssao.IsSupported());
+    EXPECT_TRUE(ssao.IsEnabled());
+    EXPECT_TRUE(ssao.GetUnsupportedReason().empty());
+    ASSERT_NE(ssao.GetResult(), nullptr);
+    ASSERT_NE(ssao.GetBlurredResult(), nullptr);
+
+    RHITextureRef depthTexture =
+        localDevice.CreateTexture(RHITextureDesc::DepthStencil(64, 48, RHIFormat::D32_FLOAT));
+    ASSERT_TRUE(depthTexture);
+
+    ssao.Compute(ctx, depthTexture.Get(), nullptr, Mat4Identity(), Mat4Identity());
+
+    const SSAOComputeStats& stats = ssao.GetLastComputeStats();
+    EXPECT_TRUE(stats.requested);
+    EXPECT_TRUE(stats.supported);
+    EXPECT_TRUE(stats.executed);
+    EXPECT_TRUE(stats.depthAvailable);
+    EXPECT_FALSE(stats.normalAvailable);
+    EXPECT_TRUE(stats.normalFallbackUsed);
+    EXPECT_TRUE(stats.temporalFallbackUsed);
+    EXPECT_TRUE(stats.neutralOutputFallbackUsed);
+    EXPECT_EQ(stats.sampleCount, 16u);
+    EXPECT_EQ(stats.aoPassCount, 1u);
+    EXPECT_EQ(stats.blurPassCount, 1u);
+    EXPECT_EQ(stats.implementationTier, SSAOImplementationTier::MinimalNeutralOutput);
+    EXPECT_STREQ(GetSSAOImplementationTierName(stats.implementationTier), "MinimalNeutralOutput");
+    EXPECT_NE(stats.fallbackReason.find("normal"), std::string::npos);
+    EXPECT_NE(stats.fallbackReason.find("temporal"), std::string::npos);
+    EXPECT_NE(stats.fallbackReason.find("neutral AO"), std::string::npos);
+
+    EXPECT_EQ(ctx.beginRenderPassCount, 1u);
+    EXPECT_EQ(ctx.endRenderPassCount, 1u);
+    EXPECT_EQ(ctx.copyTextureCount, 1u);
+    ASSERT_EQ(ctx.renderPasses.size(), 1u);
+    EXPECT_EQ(ctx.renderPasses[0].colorAttachmentCount, 1u);
+    EXPECT_FLOAT_EQ(ctx.renderPasses[0].colorAttachments[0].clearColor.r, 1.0f);
+}
+
 TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMaterialSet)
 {
     ASSERT_NO_FATAL_FAILURE(Initialize());

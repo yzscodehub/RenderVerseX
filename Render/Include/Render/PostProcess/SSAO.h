@@ -31,6 +31,16 @@ namespace RVX
         Ultra       ///< Maximum quality (32 samples)
     };
 
+    enum class SSAOImplementationTier : uint8
+    {
+        Unsupported = 0,
+        MinimalNeutralOutput,
+        DepthOnlyLowTier,
+        DepthNormalLowTier
+    };
+
+    const char* GetSSAOImplementationTierName(SSAOImplementationTier tier);
+
     /**
      * @brief SSAO configuration
      */
@@ -61,6 +71,13 @@ namespace RVX
         bool executed = false;
         bool depthAvailable = false;
         bool normalAvailable = false;
+        bool normalFallbackUsed = false;
+        bool temporalFallbackUsed = false;
+        bool neutralOutputFallbackUsed = false;
+        uint32 sampleCount = 0;
+        uint32 aoPassCount = 0;
+        uint32 blurPassCount = 0;
+        SSAOImplementationTier implementationTier = SSAOImplementationTier::Unsupported;
         std::string fallbackReason;
     };
 
@@ -165,6 +182,7 @@ namespace RVX
         void CreateResources(uint32 width, uint32 height);
         void CreateNoiseTexture();
         void CreateSampleKernel();
+        void RefreshSupportState();
         void ComputeSSAO(RHICommandContext& ctx, RHITexture* depth, RHITexture* normal);
         void BlurSSAO(RHICommandContext& ctx, RHITexture* depth);
 
@@ -172,7 +190,7 @@ namespace RVX
         SSAOConfig m_config;
         bool m_enabled = true;
         bool m_supported = false;
-        std::string m_unsupportedReason = "SSAO noise upload, AO, blur, and temporal pipelines are not implemented";
+        std::string m_unsupportedReason = "SSAO resources are not initialized";
         SSAOComputeStats m_lastComputeStats;
 
         uint32 m_width = 0;
@@ -182,6 +200,8 @@ namespace RVX
         RHITextureRef m_aoResult;
         RHITextureRef m_aoBlurred;
         RHITextureRef m_aoHistory;  // For temporal filtering
+        RHITextureViewRef m_aoResultRTV;
+        RHITextureViewRef m_aoBlurredRTV;
 
         // Resources
         RHITextureRef m_noiseTexture;
