@@ -3245,7 +3245,7 @@ TEST_F(RenderHonestyValidationFixture, ParticleRendererDrawsReturnFalseWhenUnsup
 {
     NullDevice device;
     NoOpCommandContext ctx;
-    RVX::ViewData view;
+    RVX::Particle::ParticleRendererViewData view;
     auto system = RVX::Particle::ParticleSystem::Create("draw-return-particles");
     RVX::Particle::ParticleSystemInstance instance(system);
     instance.Play();

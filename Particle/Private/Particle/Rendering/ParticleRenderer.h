@@ -16,11 +16,6 @@
 #include <unordered_map>
 #include <vector>
 
-namespace RVX
-{
-    struct ViewData;
-} // namespace RVX
-
 namespace RVX::Particle
 {
     class ParticleSystemInstance;
@@ -43,6 +38,26 @@ namespace RVX::Particle
         // platform shader compiler while production uses shaderDirectory.
         std::vector<uint8> vertexShaderBytecode;
         std::vector<uint8> pixelShaderBytecode;
+    };
+
+    /**
+     * @brief Minimal view constants needed by the particle renderer.
+     *
+     * ParticlePass adapts Render::ViewData into this local contract so the
+     * billboard renderer does not depend on Render module view types.
+     */
+    struct ParticleRendererViewData
+    {
+        Mat4 viewMatrix = Mat4Identity();
+        Mat4 projectionMatrix = Mat4Identity();
+        Mat4 viewProjectionMatrix = Mat4Identity();
+        Mat4 inverseViewMatrix = Mat4Identity();
+        Vec3 cameraPosition{0.0f, 0.0f, 0.0f};
+        Vec3 cameraForward{0.0f, 0.0f, -1.0f};
+        uint32 viewportWidth = 0;
+        uint32 viewportHeight = 0;
+        float nearPlane = 0.1f;
+        float farPlane = 1000.0f;
     };
 
     /**
@@ -79,12 +94,12 @@ namespace RVX::Particle
          * @brief Draw particles for an instance
          * @param ctx Command context
          * @param instance Particle system instance
-         * @param view View data
+         * @param view Particle renderer view constants
          * @param depthTexture Scene depth texture (for soft particles)
          */
         bool DrawParticles(RHICommandContext& ctx,
                           ParticleSystemInstance* instance,
-                          const ViewData& view,
+                          const ParticleRendererViewData& view,
                           RHITextureView* sceneDepthView,
                           ParticleDepthMode depthMode = ParticleDepthMode::FixedFunction,
                           bool allowSoftParticles = true);
@@ -94,7 +109,7 @@ namespace RVX::Particle
          */
         bool DrawParticlesIndirect(RHICommandContext& ctx,
                                    ParticleSystemInstance* instance,
-                                   const ViewData& view,
+                                   const ParticleRendererViewData& view,
                                    RHITextureView* sceneDepthView,
                                    ParticleDepthMode depthMode = ParticleDepthMode::FixedFunction,
                                    bool allowSoftParticles = true);
@@ -139,7 +154,7 @@ namespace RVX::Particle
         bool CreateFallbackTextureResources();
         RHIDescriptorSetRef CreateParticleDescriptorSet(ParticleSystemInstance* instance,
                                                         RHITextureView* sceneDepthView);
-        void UploadRenderConstants(const ViewData& view,
+        void UploadRenderConstants(const ParticleRendererViewData& view,
                                    const SoftParticleConfig& softConfig,
                                    bool sceneDepthTestEnabled);
         SoftParticleConfig ResolveSoftParticleConfig(const ParticleSystemInstance& instance,

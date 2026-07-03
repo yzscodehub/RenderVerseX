@@ -4,7 +4,6 @@
 #include "Particle/ParticleSystem.h"
 #include "Particle/ParticleSystemInstance.h"
 #include "Particle/Rendering/TrailRenderer.h"
-#include "Render/Renderer/ViewData.h"
 #include "ShaderCompiler/ShaderCompiler.h"
 
 #include <algorithm>
@@ -270,7 +269,7 @@ bool ParticleRenderer::ValidateConfig()
 
 bool ParticleRenderer::DrawParticles(RHICommandContext& ctx,
                                      ParticleSystemInstance* instance,
-                                     const ViewData& view,
+                                     const ParticleRendererViewData& view,
                                      RHITextureView* sceneDepthView,
                                      ParticleDepthMode depthMode,
                                      bool allowSoftParticles)
@@ -369,7 +368,7 @@ bool ParticleRenderer::DrawParticles(RHICommandContext& ctx,
 
 bool ParticleRenderer::DrawParticlesIndirect(RHICommandContext& ctx,
                                      ParticleSystemInstance* instance,
-                                     const ViewData& view,
+                                     const ParticleRendererViewData& view,
                                      RHITextureView* sceneDepthView,
                                      ParticleDepthMode depthMode,
                                      bool allowSoftParticles)
@@ -469,7 +468,7 @@ bool ParticleRenderer::DrawParticlesIndirect(RHICommandContext& ctx,
     return true;
 }
 
-void ParticleRenderer::UploadRenderConstants(const ViewData& view,
+void ParticleRenderer::UploadRenderConstants(const ParticleRendererViewData& view,
                                              const SoftParticleConfig& softConfig,
                                              bool sceneDepthTestEnabled)
 {

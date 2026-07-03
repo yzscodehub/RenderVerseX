@@ -14,6 +14,24 @@
 
 namespace RVX::Particle
 {
+namespace
+{
+    ParticleRendererViewData MakeParticleRendererViewData(const ViewData& view)
+    {
+        ParticleRendererViewData rendererView;
+        rendererView.viewMatrix = view.viewMatrix;
+        rendererView.projectionMatrix = view.projectionMatrix;
+        rendererView.viewProjectionMatrix = view.viewProjectionMatrix;
+        rendererView.inverseViewMatrix = view.inverseViewMatrix;
+        rendererView.cameraPosition = view.cameraPosition;
+        rendererView.cameraForward = view.cameraForward;
+        rendererView.viewportWidth = view.viewportWidth;
+        rendererView.viewportHeight = view.viewportHeight;
+        rendererView.nearPlane = view.nearPlane;
+        rendererView.farPlane = view.farPlane;
+        return rendererView;
+    }
+} // namespace
 
 ParticlePass::ParticlePass() = default;
 ParticlePass::~ParticlePass() = default;
@@ -201,6 +219,8 @@ void ParticlePass::Execute(RHICommandContext& ctx, const ViewData& view)
     ctx.SetViewport(view.GetRHIViewport());
     ctx.SetScissor(view.GetRHIScissor());
 
+    const ParticleRendererViewData rendererView = MakeParticleRendererViewData(view);
+
     // Render each batch
     for (const auto& batch : m_batches)
     {
@@ -222,11 +242,21 @@ void ParticlePass::Execute(RHICommandContext& ctx, const ViewData& view)
             // Use indirect draw if GPU simulator
             if (simulator->IsGPUBased())
             {
-                m_renderer->DrawParticlesIndirect(ctx, instance, view, sceneDepthView, m_depthMode, m_softParticlesEnabled);
+                m_renderer->DrawParticlesIndirect(ctx,
+                                                  instance,
+                                                  rendererView,
+                                                  sceneDepthView,
+                                                  m_depthMode,
+                                                  m_softParticlesEnabled);
             }
             else
             {
-                m_renderer->DrawParticles(ctx, instance, view, sceneDepthView, m_depthMode, m_softParticlesEnabled);
+                m_renderer->DrawParticles(ctx,
+                                          instance,
+                                          rendererView,
+                                          sceneDepthView,
+                                          m_depthMode,
+                                          m_softParticlesEnabled);
             }
         }
     }

@@ -393,6 +393,14 @@ namespace
         return view;
     }
 
+    ParticleRendererViewData MakeParticleRendererView()
+    {
+        ParticleRendererViewData view;
+        view.viewportWidth = 64;
+        view.viewportHeight = 64;
+        return view;
+    }
+
     ParticleSystemInstance MakeCpuInstance(FakeDevice& device, uint32 maxParticles = 32)
     {
         auto system = ParticleSystem::CreateSimple("ParticleValidation");
@@ -710,6 +718,22 @@ TEST(ParticleValidation, ParticleSubsystemPublicHeaderDoesNotExposeRenderOrRHITy
     EXPECT_NE(subsystemHeader.find("ParticleRenderSnapshot"), std::string::npos);
 }
 
+TEST(ParticleValidation, ParticleRendererUsesLocalViewContract)
+{
+    const std::string rendererHeader =
+        ReadSourceFile("Particle/Private/Particle/Rendering/ParticleRenderer.h");
+    const std::string rendererSource =
+        ReadSourceFile("Particle/Private/Rendering/ParticleRenderer.cpp");
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+
+    EXPECT_NE(rendererHeader.find("struct ParticleRendererViewData"), std::string::npos);
+    EXPECT_EQ(rendererHeader.find("struct ViewData"), std::string::npos);
+    EXPECT_EQ(rendererHeader.find("const ViewData&"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("Render/Renderer/ViewData.h"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("const ViewData&"), std::string::npos);
+}
+
 TEST(ParticleValidation, ParticleComponentUsesSubsystemOwnedInstanceWhenRenderReady)
 {
     EnsureLogInitialized();
@@ -957,7 +981,7 @@ TEST(ParticleValidation, ParticleRendererCreatesDescriptorLayoutAndDrawsBillboar
     instance.GetSimulator()->PrepareRender(ctx);
     const uint32 aliveCount = instance.GetAliveCount();
 
-    EXPECT_TRUE(renderer.DrawParticles(ctx, &instance, MakeView(), nullptr));
+    EXPECT_TRUE(renderer.DrawParticles(ctx, &instance, MakeParticleRendererView(), nullptr));
     ASSERT_FALSE(device.createdDescriptorSetDescs.empty());
     const RHIDescriptorSetDesc& descriptorSet = device.createdDescriptorSetDescs.back();
     const RHIDescriptorBinding* renderConstants = FindDescriptorBinding(descriptorSet, 0);
@@ -1053,7 +1077,7 @@ TEST(ParticleValidation, ParticleRendererBindsRealDepthSrvForShaderDepthPath)
     softInstance.GetSimulator()->PrepareRender(softCtx);
     EXPECT_TRUE(renderer.DrawParticles(softCtx,
                                        &softInstance,
-                                       MakeView(),
+                                       MakeParticleRendererView(),
                                        sceneDepthSrv.Get(),
                                        ParticleDepthMode::ShaderDepth,
                                        true));
@@ -1075,7 +1099,7 @@ TEST(ParticleValidation, ParticleRendererBindsRealDepthSrvForShaderDepthPath)
     hardInstance.GetSimulator()->PrepareRender(hardCtx);
     EXPECT_TRUE(renderer.DrawParticles(hardCtx,
                                        &hardInstance,
-                                       MakeView(),
+                                       MakeParticleRendererView(),
                                        sceneDepthSrv.Get(),
                                        ParticleDepthMode::ShaderDepth,
                                        true));
@@ -1126,7 +1150,7 @@ TEST(ParticleValidation, SupportedParticleRendererRejectsOutOfScopeModesWithoutD
     meshInstance.GetSystem()->renderMode = ParticleRenderMode::Mesh;
     RecordingCommandContext meshCtx;
     meshInstance.GetSimulator()->PrepareRender(meshCtx);
-    EXPECT_FALSE(renderer.DrawParticles(meshCtx, &meshInstance, MakeView(), nullptr));
+    EXPECT_FALSE(renderer.DrawParticles(meshCtx, &meshInstance, MakeParticleRendererView(), nullptr));
     EXPECT_EQ(meshCtx.lastDrawVertexCount, 0u);
     EXPECT_EQ(meshCtx.lastDrawIndexCount, 0u);
 
@@ -1134,7 +1158,7 @@ TEST(ParticleValidation, SupportedParticleRendererRejectsOutOfScopeModesWithoutD
     multiplyInstance.GetSystem()->blendMode = ParticleBlendMode::Multiply;
     RecordingCommandContext blendCtx;
     multiplyInstance.GetSimulator()->PrepareRender(blendCtx);
-    EXPECT_FALSE(renderer.DrawParticles(blendCtx, &multiplyInstance, MakeView(), nullptr));
+    EXPECT_FALSE(renderer.DrawParticles(blendCtx, &multiplyInstance, MakeParticleRendererView(), nullptr));
     EXPECT_EQ(blendCtx.lastDrawVertexCount, 0u);
     EXPECT_EQ(blendCtx.lastDrawIndexCount, 0u);
 }
