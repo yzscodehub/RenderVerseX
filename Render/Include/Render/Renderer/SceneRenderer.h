@@ -17,6 +17,7 @@
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Passes/CameraVelocityPass.h"
 #include "Render/Passes/ObjectVelocityPass.h"
+#include "Render/Passes/ParticleFeaturePass.h"
 #include "Render/Passes/RayTracedReflectionCompositePass.h"
 #include "Render/Passes/RayTracedReflectionDenoisePass.h"
 #include "Render/Passes/RayTracedReflectionPass.h"
@@ -57,6 +58,7 @@ namespace RVX
     class IRenderPass;
     class DepthPrepass;
     class OpaquePass;
+    class ParticleFeaturePass;
     class RenderPassRegistry;
     class RenderFeatureSceneBridge;
     class RenderProxySceneBridge;
@@ -1156,6 +1158,9 @@ namespace RVX
         /// Get runtime object velocity pass statistics.
         const ObjectVelocityPassStats& GetObjectVelocityStats() const;
 
+        /// Get runtime particle feature pass statistics.
+        const ParticleFeaturePassStats& GetParticleFeaturePassStats() const;
+
         /// Get the current frame top-level acceleration structure, if prepared.
         RHIAccelerationStructure* GetRayTracingTopLevelAS() const;
 
@@ -1338,6 +1343,7 @@ namespace RVX
         RayTracedShadowPass* m_rayTracedShadowPass = nullptr;  // Cached pointer to ray traced shadow pass
         CameraVelocityPass* m_cameraVelocityPass = nullptr;  // Cached pointer to camera velocity pass
         ObjectVelocityPass* m_objectVelocityPass = nullptr;  // Cached pointer to object velocity pass
+        ParticleFeaturePass* m_particleFeaturePass = nullptr;  // Cached pointer to particle feature pass
         RayTracedReflectionPass* m_rayTracedReflectionPass = nullptr;  // Cached pointer to ray traced reflection pass
         RayTracedReflectionDenoisePass* m_rayTracedReflectionDenoisePass = nullptr;  // Cached pointer to RT reflection denoise pass
         RayTracedReflectionCompositePass* m_rayTracedReflectionCompositePass = nullptr;  // Cached pointer to RT reflection composite pass

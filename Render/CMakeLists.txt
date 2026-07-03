@@ -41,6 +41,7 @@ target_sources(RVX_Render PRIVATE
     Private/Passes/TransparentPass.cpp
     Private/Passes/CameraVelocityPass.cpp
     Private/Passes/ObjectVelocityPass.cpp
+    Private/Passes/ParticleFeaturePass.cpp
     Private/Passes/SkyboxPass.cpp
     Private/Passes/ShadowPass.cpp
     Private/Passes/TerrainPass.cpp

@@ -982,6 +982,10 @@ void SceneRenderer::UpdateFeatureExtraction(World* world)
     if (!m_featureBridge)
     {
         m_featureSnapshot.Clear();
+        if (m_particleFeaturePass)
+        {
+            m_particleFeaturePass->SetSnapshot(nullptr);
+        }
         m_featureExtractionStats.requiresLegacyFallback = true;
         m_featureExtractionStats.fallbackReason = "Feature bridge unavailable";
         return;
@@ -990,6 +994,10 @@ void SceneRenderer::UpdateFeatureExtraction(World* world)
     RenderFeatureSceneBridgeResult result;
     const bool complete = m_featureBridge->BuildSnapshot(world, m_featureSnapshot, &result);
     PopulateFeatureExtractionStats(m_featureSnapshot, result, complete, m_featureExtractionStats);
+    if (m_particleFeaturePass)
+    {
+        m_particleFeaturePass->SetSnapshot(&m_featureSnapshot.particles);
+    }
 }
 
 void SceneRenderer::UpdateFeatureExtraction(SceneManager* sceneManager)
@@ -1000,6 +1008,10 @@ void SceneRenderer::UpdateFeatureExtraction(SceneManager* sceneManager)
     if (!m_featureBridge)
     {
         m_featureSnapshot.Clear();
+        if (m_particleFeaturePass)
+        {
+            m_particleFeaturePass->SetSnapshot(nullptr);
+        }
         m_featureExtractionStats.requiresLegacyFallback = true;
         m_featureExtractionStats.fallbackReason = "Feature bridge unavailable";
         return;
@@ -1008,6 +1020,10 @@ void SceneRenderer::UpdateFeatureExtraction(SceneManager* sceneManager)
     RenderFeatureSceneBridgeResult result;
     const bool complete = m_featureBridge->BuildSnapshot(sceneManager, m_featureSnapshot, &result);
     PopulateFeatureExtractionStats(m_featureSnapshot, result, complete, m_featureExtractionStats);
+    if (m_particleFeaturePass)
+    {
+        m_particleFeaturePass->SetSnapshot(&m_featureSnapshot.particles);
+    }
 }
 
 void SceneRenderer::SetupView(const Camera& camera, World* world)
@@ -1434,6 +1450,12 @@ const ObjectVelocityPassStats& SceneRenderer::GetObjectVelocityStats() const
 {
     static const ObjectVelocityPassStats emptyStats;
     return m_objectVelocityPass ? m_objectVelocityPass->GetStats() : emptyStats;
+}
+
+const ParticleFeaturePassStats& SceneRenderer::GetParticleFeaturePassStats() const
+{
+    static const ParticleFeaturePassStats emptyStats;
+    return m_particleFeaturePass ? m_particleFeaturePass->GetStats() : emptyStats;
 }
 
 RHIAccelerationStructure* SceneRenderer::GetRayTracingTopLevelAS() const
@@ -3489,6 +3511,11 @@ void SceneRenderer::SetupDefaultPasses()
                                   m_clusteredLighting.get());
     m_transparentPass = transparentPass.get();
     AddPass(std::move(transparentPass));
+
+    auto particleFeaturePass = std::make_unique<ParticleFeaturePass>();
+    particleFeaturePass->SetSnapshot(&m_featureSnapshot.particles);
+    m_particleFeaturePass = particleFeaturePass.get();
+    AddPass(std::move(particleFeaturePass));
 
     RVX_CORE_DEBUG("SceneRenderer: Default passes setup complete");
 }

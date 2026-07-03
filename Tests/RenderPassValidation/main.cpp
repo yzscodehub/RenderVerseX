@@ -29,6 +29,7 @@
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Passes/ObjectVelocityPass.h"
 #include "Render/Passes/OpaquePass.h"
+#include "Render/Passes/ParticleFeaturePass.h"
 #include "Render/Passes/RayTracedReflectionCompositePass.h"
 #include "Render/Passes/RayTracedReflectionDenoisePass.h"
 #include "Render/Passes/RayTracedReflectionPass.h"
@@ -1227,6 +1228,70 @@ TEST(RenderPassStatusValidation, RegistryStatusSnapshotsPreserveSortedPassOrder)
 
     EXPECT_EQ("Late", statuses[2].name);
     EXPECT_TRUE(statuses[2].enabled);
+}
+
+TEST(RenderPassStatusValidation, ParticleFeaturePassStaysDisabledWithoutSnapshotItems)
+{
+    ParticleRenderSnapshot snapshot;
+    snapshot.BeginBuild(3);
+    snapshot.MarkComplete();
+
+    ParticleFeaturePass pass;
+    pass.SetSnapshot(&snapshot);
+
+    const ParticleFeaturePassStats& stats = pass.GetStats();
+    EXPECT_FALSE(stats.requested);
+    EXPECT_FALSE(stats.supported);
+    EXPECT_FALSE(stats.enabled);
+    EXPECT_EQ(stats.itemCount, 0u);
+
+    const RenderPassStatus status = pass.GetStatus();
+    EXPECT_EQ("ParticleFeaturePass", status.name);
+    EXPECT_FALSE(status.requestedEnabled);
+    EXPECT_TRUE(status.supported);
+    EXPECT_FALSE(status.enabled);
+    EXPECT_TRUE(status.unsupportedReason.empty());
+}
+
+TEST(RenderPassStatusValidation, ParticleFeaturePassReportsMetadataOnlySnapshotsUnsupported)
+{
+    ParticleRenderSnapshot snapshot;
+    snapshot.BeginBuild(7);
+
+    ParticleRenderSnapshotItem item;
+    item.instanceId = 42;
+    item.systemId = 11;
+    item.systemName = "CPU metadata-only particles";
+    item.aliveParticleCount = 12;
+    item.maxParticleCount = 64;
+    item.payloadStatus = ParticleRenderSnapshotPayloadStatus::MetadataOnly;
+    item.renderPayloadAvailable = false;
+    item.sortingSupported = false;
+    snapshot.items.push_back(item);
+    snapshot.metadata.totalAliveParticles = 12;
+    snapshot.MarkComplete();
+
+    ParticleFeaturePass pass;
+    pass.SetSnapshot(&snapshot);
+
+    const ParticleFeaturePassStats& stats = pass.GetStats();
+    EXPECT_TRUE(stats.requested);
+    EXPECT_FALSE(stats.supported);
+    EXPECT_FALSE(stats.enabled);
+    EXPECT_EQ(stats.itemCount, 1u);
+    EXPECT_EQ(stats.metadataOnlyItemCount, 1u);
+    EXPECT_EQ(stats.renderPayloadReadyItemCount, 0u);
+    EXPECT_EQ(stats.sortingSupportedItemCount, 0u);
+    EXPECT_EQ(stats.totalAliveParticles, 12u);
+    EXPECT_NE(stats.unsupportedReason.find("metadata-only"), std::string::npos);
+    EXPECT_NE(stats.unsupportedReason.find("Render-owned"), std::string::npos);
+
+    const RenderPassStatus status = pass.GetStatus();
+    EXPECT_EQ("ParticleFeaturePass", status.name);
+    EXPECT_TRUE(status.requestedEnabled);
+    EXPECT_FALSE(status.supported);
+    EXPECT_FALSE(status.enabled);
+    EXPECT_EQ(status.unsupportedReason, stats.unsupportedReason);
 }
 
 TEST(RenderPassStatusValidation, BuiltInProductionPassStatusesAreHonest)
@@ -6783,17 +6848,27 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatur
         ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
     const std::string artifactSource =
         ReadTextFile(renderRoot / "Private" / "Diagnostics" / "RenderToolArtifacts.cpp");
+    const std::string renderCMake = ReadTextFile(renderRoot / "CMakeLists.txt");
 
     EXPECT_NE(sceneRendererHeader.find("struct SceneFeatureExtractionStats"), std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("size_t particleMetadataOnlyCount = 0;"), std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("size_t particleRenderPayloadReadyCount = 0;"), std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("size_t particleSortingSupportedCount = 0;"), std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("RenderFeatureSnapshot m_featureSnapshot;"), std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("ParticleFeaturePass* m_particleFeaturePass = nullptr;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("const ParticleFeaturePassStats& GetParticleFeaturePassStats() const;"),
+              std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("std::unique_ptr<RenderFeatureSceneBridge> m_featureBridge;"),
               std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("SceneFeatureExtractionStats featureExtractionStats;"),
               std::string::npos);
     EXPECT_NE(sceneRendererSource.find("m_featureBridge = std::make_unique<RenderFeatureSceneBridge>();"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("std::make_unique<ParticleFeaturePass>()"), std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("m_particleFeaturePass->SetSnapshot(&m_featureSnapshot.particles)"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("return m_particleFeaturePass ? m_particleFeaturePass->GetStats()"),
               std::string::npos);
     EXPECT_NE(sceneRendererSource.find("PopulateFeatureExtractionStats("), std::string::npos);
     EXPECT_NE(sceneRendererSource.find("ParticleRenderSnapshotPayloadStatus::MetadataOnly"), std::string::npos);
@@ -6811,6 +6886,7 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatur
     EXPECT_NE(artifactSource.find("\\\"particleSortingSupportedCount\\\": "), std::string::npos);
     EXPECT_NE(artifactSource.find("\\\"waterItemCount\\\": "), std::string::npos);
     EXPECT_NE(artifactSource.find("\\\"terrainItemCount\\\": "), std::string::npos);
+    EXPECT_NE(renderCMake.find("Private/Passes/ParticleFeaturePass.cpp"), std::string::npos);
 }
 
 TEST(RenderPostProcessStackValidation, EvaluateEffectsReportsRequestedButUnsupportedResources)
