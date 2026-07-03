@@ -1721,7 +1721,7 @@ def check_p38_validation_entry_artifact_identity_contract(root: Path) -> list[Fi
         ),
         (
             "Render/Private/Renderer/SceneRenderer.cpp",
-            "entry.kind = source.kind",
+            "entry.kind = source.metadata.kind",
             "P38 artifact validation must copy entry artifact kind from validation sources.",
         ),
         (

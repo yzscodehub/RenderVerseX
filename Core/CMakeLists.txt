@@ -11,6 +11,7 @@ target_sources(RVX_Core PRIVATE
     Private/SystemManager.cpp
 
     # Diagnostics
+    Private/Diagnostics/ArtifactMetadata.cpp
     Private/Diagnostics/ContentHash.cpp
     Private/Diagnostics/JsonWriter.cpp
     Private/Diagnostics/PortablePath.cpp

@@ -4,6 +4,7 @@
  */
 
 #include "Render/Renderer/SceneRenderer.h"
+#include "Core/Diagnostics/ArtifactMetadata.h"
 #include "Core/Diagnostics/ContentHash.h"
 #include "Core/Diagnostics/JsonWriter.h"
 #include "Core/Diagnostics/PortablePath.h"
@@ -21,6 +22,7 @@ namespace RVX
 {
 namespace
 {
+    using Diagnostics::ArtifactMetadata;
     using Diagnostics::JsonBool;
     using Diagnostics::JsonOptionalIndex;
     using Diagnostics::JsonString;
@@ -32,17 +34,11 @@ namespace
 
     struct ToolArtifactSummaryEntry
     {
-        const char* id = "";
-        const char* kind = "";
-        const char* contentType = "";
-        const char* schemaId = "";
-        uint32 schemaVersion = 0;
+        ArtifactMetadata metadata;
         bool saved = false;
         bool exists = false;
         uint64 byteSize = 0;
-        const std::string* contentHash = nullptr;
         const std::string* path = nullptr;
-        const std::string* relativePath = nullptr;
     };
 
     void WriteToolArtifactSummaryEntry(std::ostringstream& ss,
@@ -50,19 +46,19 @@ namespace
                                        bool trailingComma)
     {
         ss << "    {\n";
-        ss << "      \"id\": " << JsonString(entry.id) << ",\n";
-        ss << "      \"kind\": " << JsonString(entry.kind) << ",\n";
-        ss << "      \"contentType\": " << JsonString(entry.contentType) << ",\n";
-        if (entry.schemaId && entry.schemaId[0] != '\0')
+        ss << "      \"id\": " << JsonString(entry.metadata.id) << ",\n";
+        ss << "      \"kind\": " << JsonString(entry.metadata.kind) << ",\n";
+        ss << "      \"contentType\": " << JsonString(entry.metadata.contentType) << ",\n";
+        if (entry.metadata.HasSchema())
         {
-            ss << "      \"schemaId\": " << JsonString(entry.schemaId) << ",\n";
-            ss << "      \"schemaVersion\": " << entry.schemaVersion << ",\n";
+            ss << "      \"schemaId\": " << JsonString(entry.metadata.schemaId) << ",\n";
+            ss << "      \"schemaVersion\": " << entry.metadata.schemaVersion << ",\n";
         }
         ss << "      \"saved\": " << JsonBool(entry.saved) << ",\n";
         ss << "      \"exists\": " << JsonBool(entry.exists) << ",\n";
         ss << "      \"byteSize\": " << entry.byteSize << ",\n";
-        ss << "      \"contentHash\": " << JsonString(entry.contentHash ? *entry.contentHash : std::string()) << ",\n";
-        ss << "      \"relativePath\": " << JsonString(entry.relativePath ? *entry.relativePath : std::string()) << ",\n";
+        ss << "      \"contentHash\": " << JsonString(entry.metadata.contentHash) << ",\n";
+        ss << "      \"relativePath\": " << JsonString(entry.metadata.relativePath) << ",\n";
         ss << "      \"path\": " << JsonString(entry.path ? *entry.path : std::string()) << "\n";
         ss << "    }" << (trailingComma ? "," : "") << "\n";
     }
@@ -1180,45 +1176,74 @@ std::string SceneRenderer::ExportToolDiagnosticsArtifactSummaryJson(
     }
 
     std::vector<ToolArtifactSummaryEntry> entries = {
-        {"sceneRendererText", "SceneRendererText", "text/plain", "", 0, artifacts->toolDiagnosticsTextSaved,
-         artifacts->toolDiagnosticsTextExists, artifacts->toolDiagnosticsTextBytes,
-         &artifacts->toolDiagnosticsTextContentHash, &artifacts->toolDiagnosticsTextPath,
-         &artifacts->toolDiagnosticsTextRelativePath},
-        {"renderGraphGraphviz", "RenderGraphGraphviz", "text/vnd.graphviz", "", 0,
-         artifacts->renderGraphGraphvizSaved, artifacts->renderGraphGraphvizExists,
-         artifacts->renderGraphGraphvizBytes, &artifacts->renderGraphGraphvizContentHash,
-         &artifacts->renderGraphGraphvizPath,
-         &artifacts->renderGraphGraphvizRelativePath},
-        {"renderGraphDiagnosticsText", "RenderGraphDiagnosticsText", "text/plain", "", 0,
-         artifacts->renderGraphDiagnosticsTextSaved, artifacts->renderGraphDiagnosticsTextExists,
-         artifacts->renderGraphDiagnosticsTextBytes, &artifacts->renderGraphDiagnosticsTextContentHash,
-         &artifacts->renderGraphDiagnosticsTextPath,
-         &artifacts->renderGraphDiagnosticsTextRelativePath},
-        {"renderGraphDiagnosticsJson", "RenderGraphDiagnosticsJson", "application/json",
-         artifacts->renderGraphDiagnosticsSchemaId.c_str(), artifacts->renderGraphDiagnosticsSchemaVersion,
-         artifacts->renderGraphDiagnosticsJsonSaved, artifacts->renderGraphDiagnosticsJsonExists,
-         artifacts->renderGraphDiagnosticsJsonBytes, &artifacts->renderGraphDiagnosticsJsonContentHash,
-         &artifacts->renderGraphDiagnosticsJsonPath,
-         &artifacts->renderGraphDiagnosticsJsonRelativePath},
+        {{"sceneRendererText",
+          "SceneRendererText",
+          "text/plain",
+          "",
+          0,
+          artifacts->toolDiagnosticsTextContentHash,
+          artifacts->toolDiagnosticsTextRelativePath},
+         artifacts->toolDiagnosticsTextSaved,
+         artifacts->toolDiagnosticsTextExists,
+         artifacts->toolDiagnosticsTextBytes,
+         &artifacts->toolDiagnosticsTextPath},
+        {{"renderGraphGraphviz",
+          "RenderGraphGraphviz",
+          "text/vnd.graphviz",
+          "",
+          0,
+          artifacts->renderGraphGraphvizContentHash,
+          artifacts->renderGraphGraphvizRelativePath},
+         artifacts->renderGraphGraphvizSaved,
+         artifacts->renderGraphGraphvizExists,
+         artifacts->renderGraphGraphvizBytes,
+         &artifacts->renderGraphGraphvizPath},
+        {{"renderGraphDiagnosticsText",
+          "RenderGraphDiagnosticsText",
+          "text/plain",
+          "",
+          0,
+          artifacts->renderGraphDiagnosticsTextContentHash,
+          artifacts->renderGraphDiagnosticsTextRelativePath},
+         artifacts->renderGraphDiagnosticsTextSaved,
+         artifacts->renderGraphDiagnosticsTextExists,
+         artifacts->renderGraphDiagnosticsTextBytes,
+         &artifacts->renderGraphDiagnosticsTextPath},
+        {{"renderGraphDiagnosticsJson",
+          "RenderGraphDiagnosticsJson",
+          "application/json",
+          artifacts->renderGraphDiagnosticsSchemaId,
+          artifacts->renderGraphDiagnosticsSchemaVersion,
+          artifacts->renderGraphDiagnosticsJsonContentHash,
+          artifacts->renderGraphDiagnosticsJsonRelativePath},
+         artifacts->renderGraphDiagnosticsJsonSaved,
+         artifacts->renderGraphDiagnosticsJsonExists,
+         artifacts->renderGraphDiagnosticsJsonBytes,
+         &artifacts->renderGraphDiagnosticsJsonPath},
     };
     if (artifacts->rhiCapabilityReportJsonExpected)
     {
-        entries.push_back({"rhiCapabilityReportJson",
-                           "RHICapabilityReportJson",
-                           "application/json",
-                           artifacts->rhiCapabilityReportSchemaId.c_str(),
-                           artifacts->rhiCapabilityReportSchemaVersion,
+        entries.push_back({{"rhiCapabilityReportJson",
+                            "RHICapabilityReportJson",
+                            "application/json",
+                            artifacts->rhiCapabilityReportSchemaId,
+                            artifacts->rhiCapabilityReportSchemaVersion,
+                            artifacts->rhiCapabilityReportJsonContentHash,
+                            artifacts->rhiCapabilityReportJsonRelativePath},
                            artifacts->rhiCapabilityReportJsonSaved,
                            artifacts->rhiCapabilityReportJsonExists,
                            artifacts->rhiCapabilityReportJsonBytes,
-                           &artifacts->rhiCapabilityReportJsonContentHash,
-                           &artifacts->rhiCapabilityReportJsonPath,
-                           &artifacts->rhiCapabilityReportJsonRelativePath});
+                           &artifacts->rhiCapabilityReportJsonPath});
     }
-    entries.push_back({"manifestJson", "ToolDiagnosticsManifestJson", "application/json", "", 0,
+    entries.push_back({{"manifestJson",
+                        "ToolDiagnosticsManifestJson",
+                        "application/json",
+                        "",
+                        0,
+                        artifacts->manifestJsonContentHash,
+                        artifacts->manifestJsonRelativePath},
                        artifacts->manifestJsonSaved, artifacts->manifestJsonExists, artifacts->manifestJsonBytes,
-                       &artifacts->manifestJsonContentHash, &artifacts->manifestJsonPath,
-                       &artifacts->manifestJsonRelativePath});
+                       &artifacts->manifestJsonPath});
 
     uint32 savedCount = 0;
     uint64 totalArtifactBytes = 0;
@@ -1489,117 +1514,111 @@ SceneRendererToolDiagnosticsArtifactValidationResult SceneRenderer::ValidateTool
 
     struct ArtifactValidationSource
     {
-        const char* id = "";
-        const char* kind = "";
-        const char* contentType = "";
-        const char* schemaId = "";
-        uint32 schemaVersion = 0;
+        ArtifactMetadata metadata;
         bool identityChecked = false;
         bool schemaChecked = false;
         const std::string* path = nullptr;
-        const std::string* relativePath = nullptr;
         bool expectedSaved = false;
         bool actualExists = false;
         uint64 expectedByteSize = 0;
         uint64 actualByteSize = 0;
-        const std::string* expectedContentHash = nullptr;
         const std::string* actualContentHash = nullptr;
     };
 
     std::vector<ArtifactValidationSource> sources = {
-        {"sceneRendererText",
-         "SceneRendererText",
-         "text/plain",
-         "",
-         0,
+        {{"sceneRendererText",
+          "SceneRendererText",
+          "text/plain",
+          "",
+          0,
+          artifacts.toolDiagnosticsTextContentHash,
+          artifacts.toolDiagnosticsTextRelativePath},
          false,
          false,
          &artifacts.toolDiagnosticsTextPath,
-         &artifacts.toolDiagnosticsTextRelativePath,
          artifacts.toolDiagnosticsTextSaved,
          actual.toolDiagnosticsTextExists,
          artifacts.toolDiagnosticsTextBytes,
          actual.toolDiagnosticsTextBytes,
-         &artifacts.toolDiagnosticsTextContentHash,
          &actual.toolDiagnosticsTextContentHash},
-        {"renderGraphGraphviz",
-         "RenderGraphGraphviz",
-         "text/vnd.graphviz",
-         "",
-         0,
+        {{"renderGraphGraphviz",
+          "RenderGraphGraphviz",
+          "text/vnd.graphviz",
+          "",
+          0,
+          artifacts.renderGraphGraphvizContentHash,
+          artifacts.renderGraphGraphvizRelativePath},
          false,
          false,
          &artifacts.renderGraphGraphvizPath,
-         &artifacts.renderGraphGraphvizRelativePath,
          artifacts.renderGraphGraphvizSaved,
          actual.renderGraphGraphvizExists,
          artifacts.renderGraphGraphvizBytes,
          actual.renderGraphGraphvizBytes,
-         &artifacts.renderGraphGraphvizContentHash,
          &actual.renderGraphGraphvizContentHash},
-        {"renderGraphDiagnosticsText",
-         "RenderGraphDiagnosticsText",
-         "text/plain",
-         "",
-         0,
+        {{"renderGraphDiagnosticsText",
+          "RenderGraphDiagnosticsText",
+          "text/plain",
+          "",
+          0,
+          artifacts.renderGraphDiagnosticsTextContentHash,
+          artifacts.renderGraphDiagnosticsTextRelativePath},
          false,
          false,
          &artifacts.renderGraphDiagnosticsTextPath,
-         &artifacts.renderGraphDiagnosticsTextRelativePath,
          artifacts.renderGraphDiagnosticsTextSaved,
          actual.renderGraphDiagnosticsTextExists,
          artifacts.renderGraphDiagnosticsTextBytes,
          actual.renderGraphDiagnosticsTextBytes,
-         &artifacts.renderGraphDiagnosticsTextContentHash,
          &actual.renderGraphDiagnosticsTextContentHash},
-        {"renderGraphDiagnosticsJson",
-         "RenderGraphDiagnosticsJson",
-         "application/json",
-         artifacts.renderGraphDiagnosticsSchemaId.c_str(),
-         artifacts.renderGraphDiagnosticsSchemaVersion,
+        {{"renderGraphDiagnosticsJson",
+          "RenderGraphDiagnosticsJson",
+          "application/json",
+          artifacts.renderGraphDiagnosticsSchemaId,
+          artifacts.renderGraphDiagnosticsSchemaVersion,
+          artifacts.renderGraphDiagnosticsJsonContentHash,
+          artifacts.renderGraphDiagnosticsJsonRelativePath},
          true,
          true,
          &artifacts.renderGraphDiagnosticsJsonPath,
-         &artifacts.renderGraphDiagnosticsJsonRelativePath,
          artifacts.renderGraphDiagnosticsJsonSaved,
          actual.renderGraphDiagnosticsJsonExists,
          artifacts.renderGraphDiagnosticsJsonBytes,
          actual.renderGraphDiagnosticsJsonBytes,
-         &artifacts.renderGraphDiagnosticsJsonContentHash,
          &actual.renderGraphDiagnosticsJsonContentHash},
     };
     if (artifacts.rhiCapabilityReportJsonExpected)
     {
-        sources.push_back({"rhiCapabilityReportJson",
-                           "RHICapabilityReportJson",
-                           "application/json",
-                           artifacts.rhiCapabilityReportSchemaId.c_str(),
-                           artifacts.rhiCapabilityReportSchemaVersion,
+        sources.push_back({{"rhiCapabilityReportJson",
+                            "RHICapabilityReportJson",
+                            "application/json",
+                            artifacts.rhiCapabilityReportSchemaId,
+                            artifacts.rhiCapabilityReportSchemaVersion,
+                            artifacts.rhiCapabilityReportJsonContentHash,
+                            artifacts.rhiCapabilityReportJsonRelativePath},
                            true,
                            true,
                            &artifacts.rhiCapabilityReportJsonPath,
-                           &artifacts.rhiCapabilityReportJsonRelativePath,
                            artifacts.rhiCapabilityReportJsonSaved,
                            actual.rhiCapabilityReportJsonExists,
                            artifacts.rhiCapabilityReportJsonBytes,
                            actual.rhiCapabilityReportJsonBytes,
-                           &artifacts.rhiCapabilityReportJsonContentHash,
                            &actual.rhiCapabilityReportJsonContentHash});
     }
-    sources.push_back({"manifestJson",
-                       "ToolDiagnosticsManifestJson",
-                       "application/json",
-                       "",
-                       artifacts.toolDiagnosticsSchemaVersion,
+    sources.push_back({{"manifestJson",
+                        "ToolDiagnosticsManifestJson",
+                        "application/json",
+                        "",
+                        artifacts.toolDiagnosticsSchemaVersion,
+                        artifacts.manifestJsonContentHash,
+                        artifacts.manifestJsonRelativePath},
                        true,
                        true,
                        &artifacts.manifestJsonPath,
-                       &artifacts.manifestJsonRelativePath,
                        artifacts.manifestJsonSaved,
                        actual.manifestJsonExists,
                        artifacts.manifestJsonBytes,
                        actual.manifestJsonBytes,
-                       &artifacts.manifestJsonContentHash,
                        &actual.manifestJsonContentHash});
 
     validation.checkedPrimaryArtifactCount = static_cast<uint32>(sources.size());
@@ -1610,20 +1629,20 @@ SceneRendererToolDiagnosticsArtifactValidationResult SceneRenderer::ValidateTool
         const ArtifactValidationSource& source = sources[sourceIndex];
         SceneRendererToolDiagnosticsArtifactValidationEntry entry;
         entry.entryIndex = static_cast<uint32>(sourceIndex);
-        entry.id = source.id;
-        entry.kind = source.kind;
-        entry.contentType = source.contentType;
-        entry.schemaId = source.schemaId ? source.schemaId : "";
-        entry.schemaVersion = source.schemaVersion;
+        entry.id = source.metadata.id;
+        entry.kind = source.metadata.kind;
+        entry.contentType = source.metadata.contentType;
+        entry.schemaId = source.metadata.schemaId;
+        entry.schemaVersion = source.metadata.schemaVersion;
         entry.identityChecked = source.identityChecked;
         entry.schemaChecked = source.schemaChecked;
         entry.path = source.path ? *source.path : std::string();
-        entry.relativePath = source.relativePath ? *source.relativePath : std::string();
+        entry.relativePath = source.metadata.relativePath;
         entry.expectedSaved = source.expectedSaved;
         entry.exists = source.actualExists;
         entry.expectedByteSize = source.expectedByteSize;
         entry.actualByteSize = source.actualByteSize;
-        entry.expectedContentHash = source.expectedContentHash ? *source.expectedContentHash : std::string();
+        entry.expectedContentHash = source.metadata.contentHash;
         entry.actualContentHash = source.actualContentHash ? *source.actualContentHash : std::string();
         entry.byteSizeMatches = entry.expectedByteSize == entry.actualByteSize;
         entry.contentHashMatches =
