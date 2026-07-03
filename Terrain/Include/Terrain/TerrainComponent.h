@@ -9,28 +9,17 @@
  */
 
 #include "Scene/Component.h"
-#include "Terrain/Heightmap.h"
-#include "Terrain/TerrainLOD.h"
-#include "Terrain/TerrainMaterial.h"
+#include "Terrain/TerrainTypes.h"
 
 #include <memory>
 
 namespace RVX
 {
+    class IRHIDevice;
+    class Heightmap;
     class TerrainCollider;
-
-    /**
-     * @brief Terrain component settings
-     */
-    struct TerrainSettings
-    {
-        Vec3 size{1000.0f, 100.0f, 1000.0f};    ///< Terrain size (width, height, depth)
-        float lodBias = 0.0f;                    ///< LOD bias (negative = higher quality)
-        uint32 patchSize = 32;                   ///< Patch size in vertices (power of 2)
-        uint32 maxLODLevels = 8;                 ///< Maximum LOD levels
-        bool castShadows = true;                 ///< Whether terrain casts shadows
-        bool receiveShadows = true;              ///< Whether terrain receives shadows
-    };
+    class TerrainLOD;
+    class TerrainMaterial;
 
     /**
      * @brief Component for scene terrain
@@ -70,8 +59,8 @@ namespace RVX
     class TerrainComponent : public Component
     {
     public:
-        TerrainComponent() = default;
-        ~TerrainComponent() override = default;
+        TerrainComponent();
+        ~TerrainComponent() override;
 
         // =====================================================================
         // Component Interface
@@ -98,12 +87,12 @@ namespace RVX
          * @brief Set the heightmap
          * @param heightmap Heightmap to use
          */
-        void SetHeightmap(Heightmap::Ptr heightmap);
+        void SetHeightmap(std::shared_ptr<Heightmap> heightmap);
 
         /**
          * @brief Get the heightmap
          */
-        Heightmap::Ptr GetHeightmap() const { return m_heightmap; }
+        std::shared_ptr<Heightmap> GetHeightmap() const { return m_heightmap; }
 
         // =====================================================================
         // Material
@@ -113,12 +102,12 @@ namespace RVX
          * @brief Set the terrain material
          * @param material Material to use
          */
-        void SetMaterial(TerrainMaterial::Ptr material);
+        void SetMaterial(std::shared_ptr<TerrainMaterial> material);
 
         /**
          * @brief Get the terrain material
          */
-        TerrainMaterial::Ptr GetMaterial() const { return m_material; }
+        std::shared_ptr<TerrainMaterial> GetMaterial() const { return m_material; }
 
         // =====================================================================
         // Settings
@@ -213,8 +202,8 @@ namespace RVX
         void RebuildMesh();
         void UpdateBounds();
 
-        Heightmap::Ptr m_heightmap;
-        TerrainMaterial::Ptr m_material;
+        std::shared_ptr<Heightmap> m_heightmap;
+        std::shared_ptr<TerrainMaterial> m_material;
         TerrainSettings m_settings;
 
         std::unique_ptr<TerrainLOD> m_lodSystem;

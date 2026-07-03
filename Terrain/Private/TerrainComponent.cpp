@@ -4,12 +4,19 @@
  */
 
 #include "Terrain/TerrainComponent.h"
+#include "Terrain/Heightmap.h"
 #include "Terrain/TerrainCollider.h"
+#include "Terrain/TerrainLOD.h"
+#include "Terrain/TerrainMaterial.h"
 #include "Scene/SceneEntity.h"
 #include "Core/Log.h"
 
 namespace RVX
 {
+
+TerrainComponent::TerrainComponent() = default;
+
+TerrainComponent::~TerrainComponent() = default;
 
 void TerrainComponent::OnAttach()
 {
@@ -45,7 +52,7 @@ AABB TerrainComponent::GetLocalBounds() const
     return m_localBounds;
 }
 
-void TerrainComponent::SetHeightmap(Heightmap::Ptr heightmap)
+void TerrainComponent::SetHeightmap(std::shared_ptr<Heightmap> heightmap)
 {
     m_heightmap = std::move(heightmap);
     m_needsRebuild = true;
@@ -53,7 +60,7 @@ void TerrainComponent::SetHeightmap(Heightmap::Ptr heightmap)
     NotifyBoundsChanged();
 }
 
-void TerrainComponent::SetMaterial(TerrainMaterial::Ptr material)
+void TerrainComponent::SetMaterial(std::shared_ptr<TerrainMaterial> material)
 {
     m_material = std::move(material);
 }
