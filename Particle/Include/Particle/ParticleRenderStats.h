@@ -14,7 +14,7 @@ namespace RVX::Particle
     /**
      * @brief State from the most recent particle draw attempt.
      */
-    struct ParticleRendererDrawStats
+    struct ParticleRenderDrawStats
     {
         ParticleDepthMode depthMode = ParticleDepthMode::None;
         uint32 submittedVertexCount = 0;

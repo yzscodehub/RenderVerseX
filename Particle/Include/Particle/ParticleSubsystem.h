@@ -129,8 +129,8 @@ namespace RVX::Particle
         /// Human-readable reason when render integration is unavailable.
         const std::string& GetRenderIntegrationUnsupportedReason() const { return m_renderIntegrationUnsupportedReason; }
 
-        /// Test/reporting view of the last renderer draw attempt without exposing Render/RHI headers.
-        const ParticleRendererDrawStats& GetLastRenderDrawStats() const;
+        /// Test/reporting view of the last render draw attempt without exposing Render/RHI headers.
+        const ParticleRenderDrawStats& GetLastRenderDrawStats() const;
 
         // =====================================================================
         // Statistics

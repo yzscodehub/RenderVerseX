@@ -1686,8 +1686,12 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
         ReadTextFile(repoRoot / "RHI_OpenGL" / "Private" / "OpenGLResources.h");
     const std::string openGLUpload =
         ReadTextFile(repoRoot / "RHI_OpenGL" / "Private" / "OpenGLUpload.cpp");
-    const std::string particleRenderer =
-        ReadTextFile(repoRoot / "Particle" / "Private" / "Rendering" / "ParticleRenderer.cpp");
+    const std::string particleCMake =
+        ReadTextFile(repoRoot / "Particle" / "CMakeLists.txt");
+    const std::string renderCMake =
+        ReadTextFile(repoRoot / "Render" / "CMakeLists.txt");
+    const std::string particleFeaturePass =
+        ReadTextFile(repoRoot / "Render" / "Private" / "Passes" / "ParticleFeaturePass.cpp");
     EXPECT_NE(openGLCommandContext.find("srcGL->GetHandle() == 0"), std::string::npos);
     EXPECT_NE(openGLCommandContext.find("glReadPixels"), std::string::npos);
     EXPECT_NE(openGLCommandContext.find("GL_PIXEL_PACK_BUFFER"), std::string::npos);
@@ -1701,8 +1705,10 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
               std::string::npos);
     EXPECT_NE(openGLUpload.find("m_wrapperBuffer.Reset();"), std::string::npos);
     EXPECT_EQ(openGLUpload.find("m_wrapperBuffer = m_device->CreateBuffer(desc);"), std::string::npos);
-    EXPECT_NE(particleRenderer.find("m_device->GetBackendType() == RHIBackendType::OpenGL"), std::string::npos);
-    EXPECT_NE(particleRenderer.find("result.glslSource"), std::string::npos);
+    EXPECT_EQ(particleCMake.find("Private/Rendering/ParticleRenderer.cpp"), std::string::npos);
+    EXPECT_EQ(particleCMake.find("RVX_ShaderCompiler"), std::string::npos);
+    EXPECT_NE(renderCMake.find("Private/Passes/ParticleFeaturePass.cpp"), std::string::npos);
+    EXPECT_NE(particleFeaturePass.find("ParticleRenderSnapshotPayloadStatus::MetadataOnly"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, RVXCookWorkflowDocumentationCoversCurrentCliContract)

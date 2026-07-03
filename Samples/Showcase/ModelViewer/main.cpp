@@ -2385,7 +2385,7 @@ namespace
         }
 
         const Particle::ParticleSubsystem::Statistics& stats = particleSubsystem->GetStatistics();
-        const Particle::ParticleRendererDrawStats& drawStats = particleSubsystem->GetLastRenderDrawStats();
+        const Particle::ParticleRenderDrawStats& drawStats = particleSubsystem->GetLastRenderDrawStats();
         return std::string("renderReady=") + BoolText(particleSubsystem->IsRenderIntegrationReady()) +
                ", reason=" + particleSubsystem->GetRenderIntegrationUnsupportedReason() +
                ", renderPassRegistered=" + BoolText(stats.renderPassRegistered) +
@@ -2415,7 +2415,7 @@ namespace
         }
 
         const Particle::ParticleSubsystem::Statistics& stats = particleSubsystem->GetStatistics();
-        const Particle::ParticleRendererDrawStats& drawStats = particleSubsystem->GetLastRenderDrawStats();
+        const Particle::ParticleRenderDrawStats& drawStats = particleSubsystem->GetLastRenderDrawStats();
         const bool ready = particleSubsystem->IsRenderIntegrationReady() &&
                            stats.renderPassRegistered &&
                            stats.preGraphCallbackRegistered &&

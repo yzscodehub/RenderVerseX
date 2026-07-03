@@ -36,7 +36,6 @@
 #include "Terrain/TerrainMaterial.h"
 #include "Particle/ParticleSystem.h"
 #include "Particle/ParticleSystemInstance.h"
-#include "Particle/Rendering/ParticleRenderer.h"
 #include "Tools/AssetDatabase.h"
 #include "Tools/AssetPipeline.h"
 
@@ -3222,10 +3221,6 @@ TEST_F(RenderHonestyValidationFixture, ParticleRenderingAndSimulationExposeDisco
     EXPECT_FALSE(instance.GetSimulationUnsupportedReason().empty());
     EXPECT_EQ(instance.GetSimulationTime(), 0.0f);
 
-    RVX::Particle::ParticleRenderer renderer;
-    EXPECT_FALSE(renderer.IsRenderingSupported());
-    EXPECT_FALSE(renderer.GetUnsupportedReason().empty());
-
     RVX::ParticleRenderSnapshot snapshot;
     snapshot.BeginBuild(1);
     RVX::ParticleRenderSnapshotItem item;
@@ -3248,30 +3243,6 @@ TEST_F(RenderHonestyValidationFixture, ParticleRenderingAndSimulationExposeDisco
     EXPECT_FALSE(status.unsupportedReason.empty());
     EXPECT_NE(status.unsupportedReason.find("metadata-only"), std::string::npos);
     EXPECT_FALSE(pass.IsEnabled());
-}
-
-TEST_F(RenderHonestyValidationFixture, ParticleRendererDrawsReturnFalseWhenUnsupported)
-{
-    NullDevice device;
-    NoOpCommandContext ctx;
-    RVX::Particle::ParticleRendererViewData view;
-    auto system = RVX::Particle::ParticleSystem::Create("draw-return-particles");
-    RVX::Particle::ParticleSystemInstance instance(system);
-    instance.Play();
-
-    RVX::Particle::ParticleRenderer renderer;
-    EXPECT_FALSE(renderer.DrawParticles(ctx, nullptr, view, nullptr));
-    EXPECT_FALSE(renderer.DrawParticlesIndirect(ctx, nullptr, view, nullptr));
-
-    renderer.Initialize(&device);
-    EXPECT_TRUE(renderer.IsInitialized());
-    EXPECT_FALSE(renderer.IsRenderingSupported());
-    EXPECT_FALSE(renderer.GetUnsupportedReason().empty());
-
-    EXPECT_FALSE(renderer.DrawParticles(ctx, &instance, view, nullptr));
-    EXPECT_FALSE(renderer.DrawParticlesIndirect(ctx, &instance, view, nullptr));
-    EXPECT_EQ(ctx.drawIndexedCount, 0u);
-    EXPECT_EQ(ctx.drawIndexedIndirectCount, 0u);
 }
 
 TEST_F(RenderHonestyValidationFixture, RenderGraphCompileDiagnosticsExposeInvalidHandles)

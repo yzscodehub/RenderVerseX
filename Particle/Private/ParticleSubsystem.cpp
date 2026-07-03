@@ -140,9 +140,9 @@ void ParticleSubsystem::CheckCapabilities()
     }
 }
 
-const ParticleRendererDrawStats& ParticleSubsystem::GetLastRenderDrawStats() const
+const ParticleRenderDrawStats& ParticleSubsystem::GetLastRenderDrawStats() const
 {
-    static const ParticleRendererDrawStats emptyStats;
+    static const ParticleRenderDrawStats emptyStats;
     return emptyStats;
 }
 

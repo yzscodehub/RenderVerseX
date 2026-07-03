@@ -72,7 +72,6 @@ set(PARTICLE_PRIVATE_HEADERS
 
     # Rendering
     Private/Particle/ParticleSubsystemRenderAccess.h
-    Private/Particle/Rendering/ParticleRenderer.h
     Private/Particle/Rendering/TrailRenderer.h
 )
 
@@ -102,7 +101,6 @@ set(PARTICLE_SOURCES
     Private/Modules/SubEmitterModuleProcessor.cpp
     
     # Rendering
-    Private/Rendering/ParticleRenderer.cpp
     Private/Rendering/TrailRenderer.cpp
 )
 
@@ -151,7 +149,6 @@ target_link_libraries(${MODULE_NAME}
         RVX_Resource
     PRIVATE
         RVX_RHI
-        RVX_ShaderCompiler
 )
 
 # ==============================================================================
@@ -264,9 +261,7 @@ source_group("Private\\Modules" FILES
 
 source_group("Private\\Rendering" FILES
     Private/Particle/ParticleSubsystemRenderAccess.h
-    Private/Particle/Rendering/ParticleRenderer.h
     Private/Particle/Rendering/TrailRenderer.h
-    Private/Rendering/ParticleRenderer.cpp
     Private/Rendering/TrailRenderer.cpp
 )
 
