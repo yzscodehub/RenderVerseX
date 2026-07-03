@@ -23,6 +23,7 @@ $baselineRegex = @(
     "Architecture\.EditorRuntimeBoundary",
     "Architecture\.PhaseGates",
     "CoreDebugConfigValidation\.DebugConfigurationDefinesRVXDebug",
+    "JobGraphValidation\.",
     "RHIContractValidation\.",
     "RenderGraphValidation\.(GraphCreation|PassChain|MemoryAliasing|ExecuteAsyncFallsBackToGraphicsWhenBackendDoesNotSupportQueueSync)",
     "RenderSceneValidation\.(RenderSceneApplyProxySnapshotPopulatesObjectsAndLights|RenderProxyBridgeBuildsPrimitiveAndLightSnapshot|RenderProxyBridgeBuildsLegacyMeshRendererProxy)",

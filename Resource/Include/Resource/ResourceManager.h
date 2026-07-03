@@ -18,6 +18,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -359,6 +360,7 @@ namespace RVX::Resource
     template<typename T>
     ResourceHandle<T> ResourceManager::Load(const std::string& path)
     {
+        static_assert(std::is_base_of_v<IResource, T>, "T must derive from IResource");
         IResource* resource = LoadResource(path);
         return ResourceHandle<T>(static_cast<T*>(resource));
     }
@@ -366,6 +368,7 @@ namespace RVX::Resource
     template<typename T>
     ResourceHandle<T> ResourceManager::Load(ResourceId id)
     {
+        static_assert(std::is_base_of_v<IResource, T>, "T must derive from IResource");
         IResource* resource = LoadResource(id);
         return ResourceHandle<T>(static_cast<T*>(resource));
     }
@@ -373,6 +376,7 @@ namespace RVX::Resource
     template<typename T>
     std::future<ResourceHandle<T>> ResourceManager::LoadAsync(const std::string& path)
     {
+        static_assert(std::is_base_of_v<IResource, T>, "T must derive from IResource");
         m_pendingAsyncJobCount.fetch_add(1, std::memory_order_relaxed);
         return JobSystem::Get().SubmitWithResult([this, path]() {
             struct PendingLoadGuard
@@ -391,6 +395,7 @@ namespace RVX::Resource
     template<typename T>
     void ResourceManager::LoadAsync(const std::string& path, std::function<void(ResourceHandle<T>)> callback)
     {
+        static_assert(std::is_base_of_v<IResource, T>, "T must derive from IResource");
         m_pendingAsyncJobCount.fetch_add(1, std::memory_order_relaxed);
         auto future = std::make_shared<std::future<ResourceHandle<T>>>(
             JobSystem::Get().SubmitWithResult([this, path]() {
@@ -403,7 +408,7 @@ namespace RVX::Resource
                     }
                 } guard{m_pendingAsyncJobCount};
 
-            return Load<T>(path);
+                return Load<T>(path);
             }));
 
         {

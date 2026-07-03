@@ -212,6 +212,7 @@ namespace RVX::Resource
             case ResourceLoadFailureCode::LoaderUnavailable: return "LoaderUnavailable";
             case ResourceLoadFailureCode::LoaderFailed: return "LoaderFailed";
             case ResourceLoadFailureCode::PathEscapesRoot: return "PathEscapesRoot";
+            case ResourceLoadFailureCode::ResourceRootMissing: return "ResourceRootMissing";
             default: return "Invalid";
         }
     }
@@ -372,6 +373,13 @@ namespace RVX::Resource
         else if (resolution.domain == ResourceLoadDomain::CookedArtifact)
         {
             const std::string& cookedRoot = policy.cookedRoot.empty() ? basePath : policy.cookedRoot;
+            if (policy.mode != ResourceRuntimeMode::Editor && cookedRoot.empty())
+            {
+                return Deny(resolution,
+                            ResourceLoadFailureCode::ResourceRootMissing,
+                            "Cooked runtime resource root is not mounted.");
+            }
+
             std::string failureMessage;
             if (!TryResolveAgainstMountedRoot(cookedRoot,
                                               logicalPath,
@@ -384,6 +392,13 @@ namespace RVX::Resource
         else
         {
             const std::string& sourceRoot = policy.sourceRoot.empty() ? basePath : policy.sourceRoot;
+            if (policy.mode != ResourceRuntimeMode::Editor && sourceRoot.empty())
+            {
+                return Deny(resolution,
+                            ResourceLoadFailureCode::ResourceRootMissing,
+                            "Runtime source resource root is not mounted.");
+            }
+
             std::string failureMessage;
             if (!TryResolveAgainstMountedRoot(sourceRoot,
                                               logicalPath,

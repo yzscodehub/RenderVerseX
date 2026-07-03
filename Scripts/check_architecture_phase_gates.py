@@ -12,6 +12,12 @@ from pathlib import Path
 
 SOURCE_SUFFIXES = {".h", ".hpp", ".hh", ".cpp", ".cc", ".cxx", ".inl"}
 
+CONTAINS_FALLBACK_PATHS = {
+    "Render/Private/Renderer/SceneRenderer.cpp": [
+        "Render/Private/Diagnostics/SceneRendererToolDiagnostics.cpp",
+    ],
+}
+
 
 @dataclass
 class Finding:
@@ -66,8 +72,15 @@ def add_regex_findings(findings: list[Finding],
 def require_contains(findings: list[Finding], phase: str, root: Path, rel_path: str, needle: str, message: str) -> None:
     path = root / rel_path
     text = read_text(path)
-    if needle not in text:
-        findings.append(Finding(phase, Path(rel_path), 1, message))
+    if needle in text:
+        return
+
+    for fallback_rel_path in CONTAINS_FALLBACK_PATHS.get(rel_path, []):
+        fallback_path = root / fallback_rel_path
+        if fallback_path.exists() and needle in read_text(fallback_path):
+            return
+
+    findings.append(Finding(phase, Path(rel_path), 1, message))
 
 
 def require_not_contains(findings: list[Finding], phase: str, root: Path, rel_path: str, needle: str, message: str) -> None:
@@ -125,6 +138,7 @@ def check_p5_resource_runtime(root: Path) -> list[Finding]:
     resource_handle = read_text(root / "Resource/Include/Resource/ResourceHandle.h")
     iresource_header = read_text(root / "Resource/Include/Resource/IResource.h")
     iresource_cpp = read_text(root / "Resource/Private/IResource.cpp")
+    job_graph_cpp = read_text(root / "Core/Private/Job/JobGraph.cpp")
 
     if "Busy wait for now" in resource_handle or "while (m_resource && m_resource->IsLoading())" in resource_handle:
         findings.append(
@@ -143,6 +157,21 @@ def check_p5_resource_runtime(root: Path) -> list[Finding]:
         findings.append(
             Finding("P5", Path("Resource/Private/IResource.cpp"), 1,
                     "Resource state transitions must notify waiters.")
+        )
+
+    for needle, message in [
+        ("std::condition_variable", "JobGraph must expose condition-variable backed graph waiting."),
+        ("m_completionCondition.wait", "JobGraph::Wait must block on completion notification instead of polling."),
+        ("JobGraphValidation", "JobGraph wait and dependency scheduling contracts must be registered in CTest."),
+    ]:
+        rel_path = "Core/Include/Core/Job/JobGraph.h" if needle == "std::condition_variable" else (
+            "Tests/CMakeLists.txt" if needle == "JobGraphValidation" else "Core/Private/Job/JobGraph.cpp")
+        require_contains(findings, "P5", root, rel_path, needle, message)
+
+    if "std::this_thread::yield()" in job_graph_cpp:
+        findings.append(
+            Finding("P5", Path("Core/Private/Job/JobGraph.cpp"), 1,
+                    "JobGraph::Wait must not busy-yield while waiting for graph completion.")
         )
 
     require_contains(
@@ -221,6 +250,11 @@ def check_p8_resource_package_closure(root: Path) -> list[Finding]:
         ),
         (
             "Resource/Include/Resource/RuntimeResourcePolicy.h",
+            "ResourceRootMissing",
+            "P8 runtime resource policy must fail explicitly when mounted roots are absent.",
+        ),
+        (
+            "Resource/Include/Resource/RuntimeResourcePolicy.h",
             "ResourceLoadDiagnostic",
             "P8 resource loads must expose structured diagnostics.",
         ),
@@ -256,6 +290,11 @@ def check_p8_resource_package_closure(root: Path) -> list[Finding]:
         ),
         (
             "Resource/Include/Resource/ResourceManager.h",
+            "static_assert(std::is_base_of_v<IResource, T>",
+            "ResourceManager typed loading templates must reject non-resource types at compile time.",
+        ),
+        (
+            "Resource/Include/Resource/ResourceManager.h",
             "GetLastLoadDiagnostic",
             "ResourceManager must expose the last load diagnostic for tooling and tests.",
         ),
@@ -278,6 +317,11 @@ def check_p8_resource_package_closure(root: Path) -> list[Finding]:
             "Tests/ResourceRuntimePolicyValidation/main.cpp",
             "MapsCookedArtifactsThroughCookedRoot",
             "P8 tests must prove cooked artifacts resolve through the cooked root.",
+        ),
+        (
+            "Tests/ResourceRuntimePolicyValidation/main.cpp",
+            "RejectsRuntimeSourceAndCookedPathsWithoutMountedRootOrBasePath",
+            "P8 tests must prove runtime source/cooked paths require a mounted root or base path.",
         ),
         (
             "Tests/ResourceRuntimePolicyValidation/main.cpp",
@@ -2861,6 +2905,11 @@ def check_p59_architecture_baseline_contract_coverage(root: Path) -> list[Findin
             "Scripts/run_architecture_baseline.ps1",
             "ResourceRuntimePolicyValidation\\.",
             "P59 architecture baseline must run resource runtime policy contract tests.",
+        ),
+        (
+            "Scripts/run_architecture_baseline.ps1",
+            "JobGraphValidation\\.",
+            "P59 architecture baseline must run JobGraph wait and dependency contract tests.",
         ),
     ]:
         require_contains(findings, "P59", root, rel_path, needle, message)

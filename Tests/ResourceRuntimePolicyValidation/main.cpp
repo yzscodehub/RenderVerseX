@@ -324,6 +324,37 @@ TEST(ResourceRuntimePolicyValidation, MapsCookedArtifactsThroughCookedRoot)
     fs::remove_all(root, removeError);
 }
 
+TEST(ResourceRuntimePolicyValidation, RejectsRuntimeSourceAndCookedPathsWithoutMountedRootOrBasePath)
+{
+    ResourceRuntimePolicy cookedPolicy;
+    cookedPolicy.mode = ResourceRuntimeMode::CookedRuntime;
+    cookedPolicy.allowSourceAssetReads = false;
+    cookedPolicy.requireCookedArtifacts = true;
+
+    const ResourcePathResolution cookedResolution =
+        ResolveRuntimeResourcePath(cookedPolicy, "", "cooked://textures/albedo.rva");
+    EXPECT_FALSE(cookedResolution.allowed);
+    EXPECT_EQ(cookedResolution.domain, ResourceLoadDomain::CookedArtifact);
+    EXPECT_EQ(cookedResolution.failure, ResourceLoadFailureCode::ResourceRootMissing);
+    EXPECT_FALSE(cookedResolution.sourceAssetRead);
+    EXPECT_TRUE(cookedResolution.cookedArtifactRead);
+    EXPECT_NE(cookedResolution.diagnosticMessage.find("root is not mounted"), std::string::npos);
+
+    ResourceRuntimePolicy sourcePolicy;
+    sourcePolicy.mode = ResourceRuntimeMode::CookedRuntime;
+    sourcePolicy.allowSourceAssetReads = true;
+    sourcePolicy.requireCookedArtifacts = false;
+
+    const ResourcePathResolution sourceResolution =
+        ResolveRuntimeResourcePath(sourcePolicy, "", "source://textures/albedo.png");
+    EXPECT_FALSE(sourceResolution.allowed);
+    EXPECT_EQ(sourceResolution.domain, ResourceLoadDomain::SourceAsset);
+    EXPECT_EQ(sourceResolution.failure, ResourceLoadFailureCode::ResourceRootMissing);
+    EXPECT_TRUE(sourceResolution.sourceAssetRead);
+    EXPECT_FALSE(sourceResolution.cookedArtifactRead);
+    EXPECT_NE(sourceResolution.diagnosticMessage.find("root is not mounted"), std::string::npos);
+}
+
 TEST(ResourceRuntimePolicyValidation, ReportsMissingRuntimePackageRoot)
 {
     ResourceManagerConfig config;
