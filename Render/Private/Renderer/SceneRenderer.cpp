@@ -178,6 +178,45 @@ namespace
         settings.enableTAA = false;
         return settings;
     }
+
+    void PopulateFeatureExtractionStats(const RenderFeatureSnapshot& snapshot,
+                                        const RenderFeatureSceneBridgeResult& result,
+                                        bool complete,
+                                        SceneFeatureExtractionStats& stats)
+    {
+        stats.usedProviderPath = result.usedProviderPath;
+        stats.requiresLegacyFallback = result.requiresLegacyFallback || !complete;
+        stats.snapshotSchemaVersion = result.snapshotSchemaVersion;
+        stats.snapshotSequence = result.snapshotSequence;
+        stats.snapshotComplete = result.snapshotComplete;
+        stats.providerCount = result.providerCount;
+        stats.skippedProviderCount = result.skippedProviderCount;
+        stats.particleItemCount = result.particleItemCount;
+        stats.waterItemCount = result.waterItemCount;
+        stats.terrainItemCount = result.terrainItemCount;
+        stats.fallbackOwnerId = result.fallbackOwnerId;
+        stats.fallbackReason =
+            result.fallbackReason == RenderFeatureSceneBridgeFallbackReason::None
+                ? ""
+                : ToString(result.fallbackReason);
+
+        for (const ParticleRenderSnapshotItem& item : snapshot.particles.items)
+        {
+            if (item.payloadStatus == ParticleRenderSnapshotPayloadStatus::MetadataOnly)
+            {
+                ++stats.particleMetadataOnlyCount;
+            }
+            if (item.renderPayloadAvailable ||
+                item.payloadStatus == ParticleRenderSnapshotPayloadStatus::RenderOwnedPayloadReady)
+            {
+                ++stats.particleRenderPayloadReadyCount;
+            }
+            if (item.sortingSupported)
+            {
+                ++stats.particleSortingSupportedCount;
+            }
+        }
+    }
 }
 
 bool SceneRendererExternalTargetDesc::IsValid() const
@@ -950,22 +989,7 @@ void SceneRenderer::UpdateFeatureExtraction(World* world)
 
     RenderFeatureSceneBridgeResult result;
     const bool complete = m_featureBridge->BuildSnapshot(world, m_featureSnapshot, &result);
-
-    m_featureExtractionStats.usedProviderPath = result.usedProviderPath;
-    m_featureExtractionStats.requiresLegacyFallback = result.requiresLegacyFallback || !complete;
-    m_featureExtractionStats.snapshotSchemaVersion = result.snapshotSchemaVersion;
-    m_featureExtractionStats.snapshotSequence = result.snapshotSequence;
-    m_featureExtractionStats.snapshotComplete = result.snapshotComplete;
-    m_featureExtractionStats.providerCount = result.providerCount;
-    m_featureExtractionStats.skippedProviderCount = result.skippedProviderCount;
-    m_featureExtractionStats.particleItemCount = result.particleItemCount;
-    m_featureExtractionStats.waterItemCount = result.waterItemCount;
-    m_featureExtractionStats.terrainItemCount = result.terrainItemCount;
-    m_featureExtractionStats.fallbackOwnerId = result.fallbackOwnerId;
-    m_featureExtractionStats.fallbackReason =
-        result.fallbackReason == RenderFeatureSceneBridgeFallbackReason::None
-            ? ""
-            : ToString(result.fallbackReason);
+    PopulateFeatureExtractionStats(m_featureSnapshot, result, complete, m_featureExtractionStats);
 }
 
 void SceneRenderer::UpdateFeatureExtraction(SceneManager* sceneManager)
@@ -983,22 +1007,7 @@ void SceneRenderer::UpdateFeatureExtraction(SceneManager* sceneManager)
 
     RenderFeatureSceneBridgeResult result;
     const bool complete = m_featureBridge->BuildSnapshot(sceneManager, m_featureSnapshot, &result);
-
-    m_featureExtractionStats.usedProviderPath = result.usedProviderPath;
-    m_featureExtractionStats.requiresLegacyFallback = result.requiresLegacyFallback || !complete;
-    m_featureExtractionStats.snapshotSchemaVersion = result.snapshotSchemaVersion;
-    m_featureExtractionStats.snapshotSequence = result.snapshotSequence;
-    m_featureExtractionStats.snapshotComplete = result.snapshotComplete;
-    m_featureExtractionStats.providerCount = result.providerCount;
-    m_featureExtractionStats.skippedProviderCount = result.skippedProviderCount;
-    m_featureExtractionStats.particleItemCount = result.particleItemCount;
-    m_featureExtractionStats.waterItemCount = result.waterItemCount;
-    m_featureExtractionStats.terrainItemCount = result.terrainItemCount;
-    m_featureExtractionStats.fallbackOwnerId = result.fallbackOwnerId;
-    m_featureExtractionStats.fallbackReason =
-        result.fallbackReason == RenderFeatureSceneBridgeFallbackReason::None
-            ? ""
-            : ToString(result.fallbackReason);
+    PopulateFeatureExtractionStats(m_featureSnapshot, result, complete, m_featureExtractionStats);
 }
 
 void SceneRenderer::SetupView(const Camera& camera, World* world)

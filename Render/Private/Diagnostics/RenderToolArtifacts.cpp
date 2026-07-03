@@ -589,6 +589,9 @@ std::string SceneRenderer::ExportToolDiagnosticsText() const
        << ", providers=" << frame.featureExtractionStats.providerCount
        << ", skippedProviders=" << frame.featureExtractionStats.skippedProviderCount
        << ", particles=" << frame.featureExtractionStats.particleItemCount
+       << ", particleMetadataOnly=" << frame.featureExtractionStats.particleMetadataOnlyCount
+       << ", particleRenderPayloadReady=" << frame.featureExtractionStats.particleRenderPayloadReadyCount
+       << ", particleSortingSupported=" << frame.featureExtractionStats.particleSortingSupportedCount
        << ", water=" << frame.featureExtractionStats.waterItemCount
        << ", terrain=" << frame.featureExtractionStats.terrainItemCount
        << ", fallback=" << frame.featureExtractionStats.requiresLegacyFallback
@@ -911,6 +914,11 @@ std::string SceneRenderer::ExportToolDiagnosticsManifestJson(
     ss << "    \"providerCount\": " << frame.featureExtractionStats.providerCount << ",\n";
     ss << "    \"skippedProviderCount\": " << frame.featureExtractionStats.skippedProviderCount << ",\n";
     ss << "    \"particleItemCount\": " << frame.featureExtractionStats.particleItemCount << ",\n";
+    ss << "    \"particleMetadataOnlyCount\": " << frame.featureExtractionStats.particleMetadataOnlyCount << ",\n";
+    ss << "    \"particleRenderPayloadReadyCount\": "
+       << frame.featureExtractionStats.particleRenderPayloadReadyCount << ",\n";
+    ss << "    \"particleSortingSupportedCount\": "
+       << frame.featureExtractionStats.particleSortingSupportedCount << ",\n";
     ss << "    \"waterItemCount\": " << frame.featureExtractionStats.waterItemCount << ",\n";
     ss << "    \"terrainItemCount\": " << frame.featureExtractionStats.terrainItemCount << ",\n";
     ss << "    \"fallbackOwnerId\": " << frame.featureExtractionStats.fallbackOwnerId << ",\n";

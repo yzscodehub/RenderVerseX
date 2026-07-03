@@ -105,6 +105,9 @@ namespace RVX
         size_t providerCount = 0;
         size_t skippedProviderCount = 0;
         size_t particleItemCount = 0;
+        size_t particleMetadataOnlyCount = 0;
+        size_t particleRenderPayloadReadyCount = 0;
+        size_t particleSortingSupportedCount = 0;
         size_t waterItemCount = 0;
         size_t terrainItemCount = 0;
         uint64 fallbackOwnerId = 0;
@@ -209,7 +212,7 @@ namespace RVX
     };
 
     inline constexpr uint32 RVX_SCENE_RENDER_FEATURE_REPORT_SCHEMA_VERSION = 1;
-    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 1;
+    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 2;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 24;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION = 24;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION = 25;

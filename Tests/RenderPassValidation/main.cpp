@@ -6785,12 +6785,19 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatur
         ReadTextFile(renderRoot / "Private" / "Diagnostics" / "RenderToolArtifacts.cpp");
 
     EXPECT_NE(sceneRendererHeader.find("struct SceneFeatureExtractionStats"), std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("size_t particleMetadataOnlyCount = 0;"), std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("size_t particleRenderPayloadReadyCount = 0;"), std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("size_t particleSortingSupportedCount = 0;"), std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("RenderFeatureSnapshot m_featureSnapshot;"), std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("std::unique_ptr<RenderFeatureSceneBridge> m_featureBridge;"),
               std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("SceneFeatureExtractionStats featureExtractionStats;"),
               std::string::npos);
     EXPECT_NE(sceneRendererSource.find("m_featureBridge = std::make_unique<RenderFeatureSceneBridge>();"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("PopulateFeatureExtractionStats("), std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("ParticleRenderSnapshotPayloadStatus::MetadataOnly"), std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("ParticleRenderSnapshotPayloadStatus::RenderOwnedPayloadReady"),
               std::string::npos);
     EXPECT_NE(sceneRendererSource.find("diagnostics.featureExtractionStats = m_featureExtractionStats;"),
               std::string::npos);
@@ -6799,6 +6806,9 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatur
     EXPECT_NE(artifactSource.find("FeatureExtraction: attempted="), std::string::npos);
     EXPECT_NE(artifactSource.find("\\\"featureExtraction\\\": {"), std::string::npos);
     EXPECT_NE(artifactSource.find("\\\"particleItemCount\\\": "), std::string::npos);
+    EXPECT_NE(artifactSource.find("\\\"particleMetadataOnlyCount\\\": "), std::string::npos);
+    EXPECT_NE(artifactSource.find("\\\"particleRenderPayloadReadyCount\\\": "), std::string::npos);
+    EXPECT_NE(artifactSource.find("\\\"particleSortingSupportedCount\\\": "), std::string::npos);
     EXPECT_NE(artifactSource.find("\\\"waterItemCount\\\": "), std::string::npos);
     EXPECT_NE(artifactSource.find("\\\"terrainItemCount\\\": "), std::string::npos);
 }
