@@ -30,9 +30,11 @@ target_include_directories(RVX_Terrain PUBLIC
 
 target_link_libraries(RVX_Terrain PUBLIC
     RVX_Core
-    RVX_RHI
-    RVX::Render
+    RVX::RenderContracts
     RVX::Scene
+    PRIVATE
+        RVX_RHI
+        RVX::Render
 )
 
 add_library(RVX::Terrain ALIAS RVX_Terrain)

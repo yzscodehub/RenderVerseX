@@ -159,49 +159,36 @@ void TerrainComponent::SetCollisionEnabled(bool enabled)
     m_collisionEnabled = enabled;
 }
 
-bool TerrainComponent::InitializeGPU(IRHIDevice* device)
+bool TerrainComponent::BuildRenderSnapshot(TerrainRenderSnapshot& outSnapshot) const
 {
-    if (!device)
+    outSnapshot.BeginBuild(++m_nextRenderSnapshotSequence);
+
+    TerrainRenderSnapshotItem item;
+    if (auto* owner = GetOwner())
     {
-        RVX_CORE_ERROR("TerrainComponent: Invalid device");
-        return false;
+        item.componentId = owner->GetHandle();
+        item.worldPosition = owner->GetWorldPosition();
+        item.worldBounds = owner->GetWorldBounds();
+    }
+    else
+    {
+        item.worldBounds = m_localBounds;
     }
 
-    if (m_heightmap)
-    {
-        if (!m_heightmap->CreateGPUTexture(device))
-        {
-            RVX_CORE_ERROR("TerrainComponent: Failed to create heightmap texture");
-            return false;
-        }
+    item.size = m_settings.size;
+    item.lodBias = m_settings.lodBias;
+    item.patchSize = m_settings.patchSize;
+    item.maxLODLevels = m_settings.maxLODLevels;
+    item.castsShadow = m_settings.castShadows;
+    item.receivesShadow = m_settings.receiveShadows;
+    item.collisionEnabled = m_collisionEnabled;
+    item.hasHeightmap = m_heightmap != nullptr;
+    item.heightmapValid = m_heightmap && m_heightmap->IsValid();
+    item.hasMaterial = m_material != nullptr;
+    item.gpuInitialized = m_gpuInitialized;
 
-        if (!m_heightmap->GenerateNormalMap(device, m_settings.size))
-        {
-            RVX_CORE_ERROR("TerrainComponent: Failed to generate normal map");
-            return false;
-        }
-    }
-
-    if (m_lodSystem)
-    {
-        if (!m_lodSystem->CreateGPUResources(device))
-        {
-            RVX_CORE_ERROR("TerrainComponent: Failed to create LOD GPU resources");
-            return false;
-        }
-    }
-
-    if (m_material)
-    {
-        if (!m_material->InitializeGPU(device))
-        {
-            RVX_CORE_ERROR("TerrainComponent: Failed to initialize material");
-            return false;
-        }
-    }
-
-    m_gpuInitialized = true;
-    RVX_CORE_INFO("TerrainComponent: GPU resources initialized");
+    outSnapshot.items.push_back(item);
+    outSnapshot.MarkComplete();
     return true;
 }
 

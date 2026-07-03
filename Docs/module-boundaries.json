@@ -161,7 +161,7 @@
     },
     "Terrain": {
       "path": "Terrain",
-      "allowed": ["Core", "Scene", "Terrain"]
+      "allowed": ["Core", "RenderContracts", "Scene", "Terrain"]
     },
     "Tests": {
       "path": "Tests",

@@ -593,10 +593,12 @@ rvx_add_gtest(
         RVX::Core
         RVX::RenderContracts
         RVX::Scene
+        RVX::Terrain
         RVX::Water
     INCLUDES
         ${CMAKE_SOURCE_DIR}/RenderContracts/Include
         ${CMAKE_SOURCE_DIR}/Scene/Include
+        ${CMAKE_SOURCE_DIR}/Terrain/Include
         ${CMAKE_SOURCE_DIR}/Water/Include
     LABELS unit
     TIMEOUT 60

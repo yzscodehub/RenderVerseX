@@ -8,6 +8,7 @@
  * terrain rendering and collision in the scene graph.
  */
 
+#include "RenderContracts/TerrainRenderSnapshot.h"
 #include "Scene/Component.h"
 #include "Terrain/TerrainTypes.h"
 
@@ -15,7 +16,6 @@
 
 namespace RVX
 {
-    class IRHIDevice;
     class Heightmap;
     class TerrainCollider;
     class TerrainLOD;
@@ -182,16 +182,10 @@ namespace RVX
          */
         TerrainCollider* GetCollider() const { return m_collider.get(); }
 
-        // =====================================================================
-        // GPU Resources
-        // =====================================================================
-
         /**
-         * @brief Initialize GPU resources
-         * @param device RHI device
-         * @return true if initialization succeeded
+         * @brief Build a Render-facing terrain snapshot without exposing Render/RHI objects.
          */
-        bool InitializeGPU(IRHIDevice* device);
+        bool BuildRenderSnapshot(TerrainRenderSnapshot& outSnapshot) const;
 
         /**
          * @brief Check if GPU resources are initialized
@@ -214,6 +208,7 @@ namespace RVX
         bool m_needsRebuild = true;
 
         AABB m_localBounds;
+        mutable uint64 m_nextRenderSnapshotSequence = 0;
     };
 
 } // namespace RVX
