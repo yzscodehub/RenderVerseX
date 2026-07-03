@@ -18,6 +18,23 @@ namespace RVX
             value ^= value >> 33;
             return value;
         }
+
+        MaterialRenderMode ResolveMaterialRenderMode(const RenderObject& object,
+                                                     size_t submeshIndex,
+                                                     const IRenderMaterialSource* materialResource)
+        {
+            if (submeshIndex < object.materialModes.size())
+            {
+                return object.materialModes[submeshIndex];
+            }
+
+            if (materialResource)
+            {
+                return ClassifyMaterialRenderMode(materialResource->GetRenderMaterialSourceData());
+            }
+
+            return MaterialRenderMode::Opaque;
+        }
     } // namespace
 
     void BuildMaterialDrawLists(const RenderScene& scene,
@@ -48,9 +65,7 @@ namespace RVX
             {
                 IRenderMaterialSource* materialResource =
                     submeshIndex < obj.materialResources.size() ? obj.materialResources[submeshIndex] : nullptr;
-                const MaterialRenderMode mode =
-                    submeshIndex < obj.materialModes.size() ? obj.materialModes[submeshIndex]
-                                                            : MaterialRenderMode::Opaque;
+                const MaterialRenderMode mode = ResolveMaterialRenderMode(obj, submeshIndex, materialResource);
 
                 RenderDrawItem item;
                 item.objectIndex = objectIndex;

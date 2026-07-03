@@ -9,6 +9,7 @@
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
 #include "RenderContracts/RenderMaterial.h"
+#include "RenderContracts/RenderProxy.h"
 #include "RenderContracts/RenderResource.h"
 
 #include <vector>
@@ -18,7 +19,6 @@ namespace RVX
     class Camera;
     class SceneManager;
     class World;
-    struct RenderProxySnapshot;
 
     /**
      * @brief Renderable object data
@@ -91,6 +91,7 @@ namespace RVX
 
         const std::vector<RenderObject>& GetObjects() const { return m_objects; }
         const std::vector<RenderLight>& GetLights() const { return m_lights; }
+        const RenderProxySnapshotMetadata& GetSourceSnapshotMetadata() const { return m_sourceSnapshotMetadata; }
 
         void AddObject(const RenderObject& obj) { m_objects.push_back(obj); }
         void AddLight(const RenderLight& light) { m_lights.push_back(light); }
@@ -105,6 +106,7 @@ namespace RVX
     private:
         std::vector<RenderObject> m_objects;
         std::vector<RenderLight> m_lights;
+        RenderProxySnapshotMetadata m_sourceSnapshotMetadata;
     };
 
 } // namespace RVX

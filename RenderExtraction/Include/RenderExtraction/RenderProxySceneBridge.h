@@ -34,6 +34,9 @@ namespace RVX
         bool requiresLegacyFallback = false;
         RenderProxySceneBridgeFallbackReason fallbackReason = RenderProxySceneBridgeFallbackReason::None;
         uint64 fallbackOwnerId = 0;
+        uint32 snapshotSchemaVersion = RVX_RENDER_PROXY_SNAPSHOT_SCHEMA_VERSION;
+        uint64 snapshotSequence = 0;
+        bool snapshotComplete = false;
         size_t primitiveCount = 0;
         size_t lightCount = 0;
     };
@@ -57,6 +60,8 @@ namespace RVX
         void MarkFallback(RenderProxySceneBridgeResult& result,
                           RenderProxySceneBridgeFallbackReason reason,
                           uint64 ownerId) const;
+
+        mutable uint64 m_nextSnapshotSequence = 0;
     };
 
 } // namespace RVX

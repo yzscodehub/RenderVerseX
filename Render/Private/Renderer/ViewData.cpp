@@ -4,7 +4,7 @@
  */
 
 #include "Render/Renderer/ViewData.h"
-#include "Runtime/Camera/Camera.h"
+#include "Core/Camera/Camera.h"
 
 namespace RVX
 {

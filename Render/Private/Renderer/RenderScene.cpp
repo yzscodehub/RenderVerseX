@@ -5,11 +5,11 @@
 
 #include "Render/Renderer/RenderScene.h"
 
-#include "RenderExtraction/RenderProxySceneBridge.h"
-#include "RenderContracts/RenderProxy.h"
+#include "Core/Camera/Camera.h"
 #include "Core/Log.h"
 #include "Core/Math/Frustum.h"
-#include "Runtime/Camera/Camera.h"
+#include "RenderContracts/RenderProxy.h"
+#include "RenderExtraction/RenderProxySceneBridge.h"
 
 #include <algorithm>
 #include <utility>
@@ -21,6 +21,7 @@ void RenderScene::Clear()
 {
     m_objects.clear();
     m_lights.clear();
+    m_sourceSnapshotMetadata = {};
 }
 
 void RenderScene::CollectFromWorld(World* world)
@@ -60,6 +61,7 @@ void RenderScene::CollectFromSceneManager(SceneManager* sceneManager)
 void RenderScene::ApplyProxySnapshot(const RenderProxySnapshot& snapshot)
 {
     Clear();
+    m_sourceSnapshotMetadata = snapshot.GetMetadata();
 
     m_objects.reserve(snapshot.primitives.size());
     for (const RenderPrimitiveProxy& proxy : snapshot.primitives)

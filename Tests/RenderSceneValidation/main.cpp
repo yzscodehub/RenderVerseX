@@ -357,6 +357,40 @@ TEST(RenderSceneValidation, BuildMaterialDrawListsRoutesMaterialModesAndPreserve
     EXPECT_EQ(MaterialRenderMode::Transparent, transparentItems[0].renderMode);
 }
 
+TEST(RenderSceneValidation, BuildMaterialDrawListsInfersMissingMaterialModesFromMaterialSource)
+{
+    auto maskedMaterial = MakeMaterialResource(2151, Material::AlphaMode::Mask);
+    auto transparentMaterial = MakeMaterialResource(2152, Material::AlphaMode::Blend);
+
+    RenderObject object = MakeMaterialObject(3151, {maskedMaterial.Get(), transparentMaterial.Get()});
+    object.materialModes.clear();
+
+    RenderScene scene;
+    scene.AddObject(object);
+
+    std::vector<uint32_t> visibleIndices = {0};
+    std::vector<RenderDrawItem> opaqueItems;
+    std::vector<RenderDrawItem> maskedItems;
+    std::vector<RenderDrawItem> transparentItems;
+
+    BuildMaterialDrawLists(scene,
+                           visibleIndices,
+                           Vec3(0.0f, 0.0f, 5.0f),
+                           opaqueItems,
+                           maskedItems,
+                           transparentItems);
+
+    EXPECT_TRUE(opaqueItems.empty());
+    ASSERT_EQ(static_cast<size_t>(1), maskedItems.size());
+    ASSERT_EQ(static_cast<size_t>(1), transparentItems.size());
+    EXPECT_EQ(maskedMaterial.GetId(), maskedItems[0].materialId);
+    EXPECT_EQ(maskedMaterial.Get(), maskedItems[0].materialResource);
+    EXPECT_EQ(MaterialRenderMode::Masked, maskedItems[0].renderMode);
+    EXPECT_EQ(transparentMaterial.GetId(), transparentItems[0].materialId);
+    EXPECT_EQ(transparentMaterial.Get(), transparentItems[0].materialResource);
+    EXPECT_EQ(MaterialRenderMode::Transparent, transparentItems[0].renderMode);
+}
+
 TEST(RenderSceneValidation, BuildMaterialDrawListsSortsTransparentBackToFront)
 {
     auto transparentMaterial = MakeMaterialResource(2201, Material::AlphaMode::Blend);
@@ -505,6 +539,7 @@ TEST(RenderSceneValidation, StaticMeshComponentCreatesRenderProxy)
 TEST(RenderSceneValidation, RenderSceneApplyProxySnapshotPopulatesObjectsAndLights)
 {
     RenderProxySnapshot snapshot;
+    snapshot.BeginBuild(77);
 
     RenderPrimitiveProxy primitive;
     primitive.ownerId = 42;
@@ -533,6 +568,7 @@ TEST(RenderSceneValidation, RenderSceneApplyProxySnapshotPopulatesObjectsAndLigh
     light.range = 12.0f;
     light.castsShadow = true;
     snapshot.lights.push_back(light);
+    snapshot.MarkComplete();
 
     RenderScene scene;
     scene.AddObject(MakeObject(Vec3(99.0f)));
@@ -540,6 +576,13 @@ TEST(RenderSceneValidation, RenderSceneApplyProxySnapshotPopulatesObjectsAndLigh
 
     ASSERT_EQ(static_cast<size_t>(1), scene.GetObjectCount());
     ASSERT_EQ(static_cast<size_t>(1), scene.GetLightCount());
+    const RenderProxySnapshotMetadata& metadata = scene.GetSourceSnapshotMetadata();
+    EXPECT_EQ(RVX_RENDER_PROXY_SNAPSHOT_SCHEMA_VERSION, metadata.schemaVersion);
+    EXPECT_EQ(77u, metadata.sequence);
+    EXPECT_EQ(RenderProxySnapshotStatus::Complete, metadata.status);
+    EXPECT_TRUE(metadata.complete);
+    EXPECT_EQ(static_cast<size_t>(1), metadata.primitiveCount);
+    EXPECT_EQ(static_cast<size_t>(1), metadata.lightCount);
 
     const RenderObject& object = scene.GetObject(0);
     EXPECT_EQ(42u, object.entityId);
@@ -615,6 +658,61 @@ TEST(RenderSceneValidation, RenderProxyBridgeBuildsPrimitiveAndLightSnapshot)
     EXPECT_EQ(RenderLightProxy::Type::Point, snapshot.lights[0].type);
     EXPECT_EQ(Vec3(0.0f, 5.0f, 0.0f), snapshot.lights[0].position);
     EXPECT_TRUE(snapshot.lights[0].castsShadow);
+
+    world.Shutdown();
+}
+
+TEST(RenderSceneValidation, RenderProxyBridgePublishesCompleteSnapshotContract)
+{
+    World world;
+    world.Initialize();
+
+    auto* meshEntity = CreateEntity(world, "SnapshotContractMesh");
+    ASSERT_NE(nullptr, meshEntity);
+    auto mesh = MakeMeshResource(1202);
+    auto material = MakeMaterialResource(2202);
+    auto* primitive = static_cast<Actor*>(meshEntity)->AddComponent<StaticMeshComponent>();
+    ASSERT_NE(nullptr, primitive);
+    EXPECT_TRUE(primitive->AttachToComponent(meshEntity->GetRootComponent()));
+    primitive->SetMesh(mesh);
+    primitive->SetMaterial(0, material);
+
+    auto* lightEntity = CreateEntity(world, "SnapshotContractLight");
+    ASSERT_NE(nullptr, lightEntity);
+    auto* light = lightEntity->AddComponent<LightComponent>();
+    ASSERT_NE(nullptr, light);
+    light->SetLightType(LightType::Directional);
+
+    RenderProxySceneBridge bridge;
+    RenderProxySnapshot firstSnapshot;
+    RenderProxySceneBridgeResult firstResult;
+    ASSERT_TRUE(bridge.BuildSnapshot(&world, firstSnapshot, &firstResult));
+
+    EXPECT_EQ(RVX_RENDER_PROXY_SNAPSHOT_SCHEMA_VERSION, firstResult.snapshotSchemaVersion);
+    EXPECT_GT(firstResult.snapshotSequence, 0u);
+    EXPECT_TRUE(firstResult.snapshotComplete);
+    EXPECT_EQ(static_cast<size_t>(1), firstResult.primitiveCount);
+    EXPECT_EQ(static_cast<size_t>(1), firstResult.lightCount);
+
+    const RenderProxySnapshotMetadata firstMetadata = firstSnapshot.GetMetadata();
+    EXPECT_EQ(firstResult.snapshotSchemaVersion, firstMetadata.schemaVersion);
+    EXPECT_EQ(firstResult.snapshotSequence, firstMetadata.sequence);
+    EXPECT_TRUE(firstMetadata.complete);
+    EXPECT_EQ(RenderProxySnapshotStatus::Complete, firstMetadata.status);
+    EXPECT_EQ(firstResult.primitiveCount, firstMetadata.primitiveCount);
+    EXPECT_EQ(firstResult.lightCount, firstMetadata.lightCount);
+
+    RenderScene scene;
+    scene.ApplyProxySnapshot(firstSnapshot);
+    EXPECT_EQ(firstMetadata.sequence, scene.GetSourceSnapshotMetadata().sequence);
+    EXPECT_TRUE(scene.GetSourceSnapshotMetadata().complete);
+    EXPECT_EQ(firstMetadata.primitiveCount, scene.GetSourceSnapshotMetadata().primitiveCount);
+
+    RenderProxySnapshot secondSnapshot;
+    RenderProxySceneBridgeResult secondResult;
+    ASSERT_TRUE(bridge.BuildSnapshot(&world, secondSnapshot, &secondResult));
+    EXPECT_EQ(firstResult.snapshotSequence + 1u, secondResult.snapshotSequence);
+    EXPECT_TRUE(secondSnapshot.GetMetadata().complete);
 
     world.Shutdown();
 }

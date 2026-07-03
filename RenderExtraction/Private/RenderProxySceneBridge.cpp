@@ -21,6 +21,17 @@ namespace RVX
 {
     namespace
     {
+        void CopySnapshotMetadata(const RenderProxySnapshot& snapshot,
+                                  RenderProxySceneBridgeResult& result)
+        {
+            const RenderProxySnapshotMetadata metadata = snapshot.GetMetadata();
+            result.snapshotSchemaVersion = metadata.schemaVersion;
+            result.snapshotSequence = metadata.sequence;
+            result.snapshotComplete = metadata.complete;
+            result.primitiveCount = metadata.primitiveCount;
+            result.lightCount = metadata.lightCount;
+        }
+
         RenderMaterialMode ToRenderMaterialMode(const IRenderMaterialSource* material)
         {
             if (!material)
@@ -63,11 +74,13 @@ namespace RVX
                                                RenderProxySceneBridgeResult* outResult) const
     {
         RenderProxySceneBridgeResult result;
-        outSnapshot.Clear();
 
         if (!world)
         {
+            outSnapshot.BeginBuild(++m_nextSnapshotSequence);
+            outSnapshot.MarkIncomplete();
             MarkFallback(result, RenderProxySceneBridgeFallbackReason::NullWorld, 0);
+            CopySnapshotMetadata(outSnapshot, result);
             if (outResult) *outResult = result;
             return false;
         }
@@ -81,11 +94,13 @@ namespace RVX
                                                RenderProxySceneBridgeResult* outResult) const
     {
         RenderProxySceneBridgeResult result;
-        outSnapshot.Clear();
+        outSnapshot.BeginBuild(++m_nextSnapshotSequence);
 
         if (!sceneManager)
         {
+            outSnapshot.MarkIncomplete();
             MarkFallback(result, RenderProxySceneBridgeFallbackReason::NullSceneManager, 0);
+            CopySnapshotMetadata(outSnapshot, result);
             if (outResult) *outResult = result;
             return false;
         }
@@ -150,17 +165,16 @@ namespace RVX
 
         if (result.requiresLegacyFallback)
         {
-            outSnapshot.Clear();
-            result.primitiveCount = 0;
-            result.lightCount = 0;
+            outSnapshot.MarkIncomplete();
+            CopySnapshotMetadata(outSnapshot, result);
             if (outResult) *outResult = result;
             return false;
         }
 
+        outSnapshot.MarkComplete();
         result.usedProxyPath = true;
         result.fallbackReason = RenderProxySceneBridgeFallbackReason::None;
-        result.primitiveCount = outSnapshot.primitives.size();
-        result.lightCount = outSnapshot.lights.size();
+        CopySnapshotMetadata(outSnapshot, result);
         if (outResult) *outResult = result;
         return true;
     }

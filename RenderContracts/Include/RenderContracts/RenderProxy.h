@@ -11,15 +11,35 @@
 #include "RenderContracts/RenderMaterial.h"
 #include "RenderContracts/RenderResource.h"
 
+#include <cstddef>
 #include <vector>
 
 namespace RVX
 {
+    inline constexpr uint32 RVX_RENDER_PROXY_SNAPSHOT_SCHEMA_VERSION = 1;
+
     struct RenderProxyId
     {
         uint64 value = 0;
 
         bool IsValid() const { return value != 0; }
+    };
+
+    enum class RenderProxySnapshotStatus : uint8
+    {
+        Empty = 0,
+        Complete,
+        Incomplete,
+    };
+
+    struct RenderProxySnapshotMetadata
+    {
+        uint32 schemaVersion = RVX_RENDER_PROXY_SNAPSHOT_SCHEMA_VERSION;
+        uint64 sequence = 0;
+        RenderProxySnapshotStatus status = RenderProxySnapshotStatus::Empty;
+        bool complete = false;
+        size_t primitiveCount = 0;
+        size_t lightCount = 0;
     };
 
     struct RenderPrimitiveProxy
@@ -89,13 +109,48 @@ namespace RVX
 
     struct RenderProxySnapshot
     {
+        RenderProxySnapshotMetadata metadata;
         std::vector<RenderPrimitiveProxy> primitives;
         std::vector<RenderLightProxy> lights;
 
         void Clear()
         {
+            metadata = {};
             primitives.clear();
             lights.clear();
+        }
+
+        void BeginBuild(uint64 sequence)
+        {
+            Clear();
+            metadata.sequence = sequence;
+            metadata.status = RenderProxySnapshotStatus::Incomplete;
+        }
+
+        void MarkComplete()
+        {
+            metadata.status = RenderProxySnapshotStatus::Complete;
+            metadata.complete = true;
+            metadata.primitiveCount = primitives.size();
+            metadata.lightCount = lights.size();
+        }
+
+        void MarkIncomplete()
+        {
+            primitives.clear();
+            lights.clear();
+            metadata.status = RenderProxySnapshotStatus::Incomplete;
+            metadata.complete = false;
+            metadata.primitiveCount = 0;
+            metadata.lightCount = 0;
+        }
+
+        RenderProxySnapshotMetadata GetMetadata() const
+        {
+            RenderProxySnapshotMetadata snapshotMetadata = metadata;
+            snapshotMetadata.primitiveCount = primitives.size();
+            snapshotMetadata.lightCount = lights.size();
+            return snapshotMetadata;
         }
     };
 
