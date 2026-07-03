@@ -66,12 +66,10 @@ set(PARTICLE_HEADERS
 set(PARTICLE_PRIVATE_HEADERS
     # GPU
     Private/Particle/GPU/IParticleSimulator.h
-    Private/Particle/GPU/GPUParticleSimulator.h
     Private/Particle/GPU/CPUParticleSimulator.h
     Private/Particle/GPU/ParticleSorter.h
 
     # Rendering
-    Private/Particle/ParticleSubsystemRenderAccess.h
     Private/Particle/Rendering/TrailRenderer.h
 )
 
@@ -82,12 +80,11 @@ set(PARTICLE_SOURCES
     Private/ParticleComponent.cpp
     Private/ParticlePool.cpp
     Private/ParticleSystemLoader.cpp
-    
+
     # GPU
-    Private/GPU/GPUParticleSimulator.cpp
     Private/GPU/CPUParticleSimulator.cpp
     Private/GPU/ParticleSorter.cpp
-    
+
     # Curves
     Private/Curves/CurveUtils.cpp
     Private/Curves/CurveSerialization.cpp
@@ -147,8 +144,6 @@ target_link_libraries(${MODULE_NAME}
         RVX::RenderContracts
         RVX_Scene
         RVX_Resource
-    PRIVATE
-        RVX_RHI
 )
 
 # ==============================================================================
@@ -236,10 +231,8 @@ source_group("Private" FILES
 
 source_group("Private\\GPU" FILES
     Private/Particle/GPU/IParticleSimulator.h
-    Private/Particle/GPU/GPUParticleSimulator.h
     Private/Particle/GPU/CPUParticleSimulator.h
     Private/Particle/GPU/ParticleSorter.h
-    Private/GPU/GPUParticleSimulator.cpp
     Private/GPU/CPUParticleSimulator.cpp
     Private/GPU/ParticleSorter.cpp
 )
@@ -260,7 +253,6 @@ source_group("Private\\Modules" FILES
 )
 
 source_group("Private\\Rendering" FILES
-    Private/Particle/ParticleSubsystemRenderAccess.h
     Private/Particle/Rendering/TrailRenderer.h
     Private/Rendering/TrailRenderer.cpp
 )

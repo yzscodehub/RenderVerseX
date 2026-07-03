@@ -62,21 +62,18 @@ namespace RVX::Particle
         // IParticleSimulator Interface
         // =====================================================================
 
-        void Initialize(IRHIDevice* device, uint32 maxParticles) override;
+        void Initialize(uint32 maxParticles) override;
         void Shutdown() override;
         bool IsInitialized() const override { return m_initialized; }
 
         void Emit(const EmitParams& params) override;
         void Simulate(float deltaTime, const SimulateParams& params) override;
-        void PrepareRender(RHICommandContext& ctx) override;
         void Clear() override;
 
         /// Set a deterministic random seed for validation and reproducible captures.
         void SetRandomSeed(uint32 seed) { m_rng.seed(seed); }
 
-        RHIBuffer* GetParticleBuffer() const override { return m_gpuParticleBuffer.Get(); }
-        RHIBuffer* GetAliveIndexBuffer() const override { return m_gpuAliveIndexBuffer.Get(); }
-        RHIBuffer* GetIndirectDrawBuffer() const override { return m_gpuIndirectDrawBuffer.Get(); }
+        bool BuildRenderParticlePayload(std::vector<RVX::ParticleRenderParticleData>& outParticles) const override;
         uint32 GetAliveCount() const override { return static_cast<uint32>(m_aliveIndices.size()); }
         uint32 GetMaxParticles() const override { return m_maxParticles; }
 
@@ -101,7 +98,6 @@ namespace RVX::Particle
         void SimulateParticleWithModules(uint32 index, float deltaTime, const CPUSimulateParams& params);
         void SimulateParallel(float deltaTime, const SimulateParams& params);
         void SimulateParallelWithModules(float deltaTime, const CPUSimulateParams& params);
-        void UploadToGPU();
         Vec3 GenerateEmitterPosition(const EmitterGPUData& data, float random);
         Vec3 GenerateEmitterVelocity(const EmitterGPUData& data, float random);
         
@@ -110,7 +106,6 @@ namespace RVX::Particle
         Vec3 SampleCurlNoise(const Vec3& pos, float epsilon) const;
 
         bool m_initialized = false;
-        IRHIDevice* m_device = nullptr;
         uint32 m_maxParticles = 0;
 
         // CPU particle data
@@ -121,18 +116,9 @@ namespace RVX::Particle
         // Event queue for particle events
         std::vector<ParticleEvent> m_queuedEvents;
 
-        // GPU upload buffers
-        RHIBufferRef m_gpuParticleBuffer;
-        RHIBufferRef m_gpuAliveIndexBuffer;
-        RHIBufferRef m_gpuIndirectDrawBuffer;
-        RHIBufferRef m_uploadBuffer;
-
         // Random number generation
         std::mt19937 m_rng;
         std::uniform_real_distribution<float> m_dist{0.0f, 1.0f};
-
-        // Dirty flag for upload
-        bool m_gpuDirty = true;
     };
 
 } // namespace RVX::Particle

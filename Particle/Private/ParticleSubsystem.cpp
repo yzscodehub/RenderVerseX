@@ -2,18 +2,12 @@
 #include "Core/Log.h"
 #include "Particle/GPU/CPUParticleSimulator.h"
 #include "Particle/GPU/IParticleSimulator.h"
-#include "Particle/ParticleSubsystemRenderAccess.h"
 #include "Resource/ResourceSubsystem.h"
 #include <algorithm>
 #include <utility>
 
 namespace RVX::Particle
 {
-struct ParticleSubsystemRenderState
-{
-    IRHIDevice* device = nullptr;
-};
-
 namespace
 {
     RVX::ParticleRenderSnapshotMode ToSnapshotRenderMode(ParticleRenderMode mode)
@@ -71,15 +65,7 @@ namespace
 
 ParticleSubsystem* ParticleSubsystem::s_activeSubsystem = nullptr;
 
-ParticleSubsystem::ParticleSubsystem()
-    : m_renderState(std::make_unique<ParticleSubsystemRenderState>())
-{
-}
-
-void ParticleSubsystemRenderAccess::SetDeviceForTesting(ParticleSubsystem& subsystem, IRHIDevice* device)
-{
-    subsystem.m_renderState->device = device;
-}
+ParticleSubsystem::ParticleSubsystem() = default;
 
 ParticleSubsystem::~ParticleSubsystem()
 {
@@ -102,13 +88,6 @@ void ParticleSubsystem::Initialize()
     m_renderIntegrationReady = false;
     m_renderIntegrationUnsupportedReason = "Particle render integration is not initialized";
 
-    if (!m_renderState->device)
-    {
-        MarkRenderIntegrationUnsupported("No RHI device available");
-        RVX_CORE_ERROR("ParticleSubsystem: {}", m_renderIntegrationUnsupportedReason);
-        return;
-    }
-
     // Check GPU capabilities
     CheckCapabilities();
 
@@ -129,9 +108,6 @@ void ParticleSubsystem::Initialize()
 
 void ParticleSubsystem::CheckCapabilities()
 {
-    if (!m_renderState->device)
-        return;
-
     m_gpuSimulationSupported = false;
 
     if (m_config.enableGPUSimulation)
@@ -176,8 +152,6 @@ void ParticleSubsystem::Deinitialize()
     m_stats.gpuSimulatedParticles = 0;
     m_stats.cpuSimulatedParticles = 0;
 
-    m_renderState->device = nullptr;
-
     RVX_CORE_INFO("ParticleSubsystem: Deinitialized");
 }
 
@@ -192,20 +166,13 @@ ParticleSystemInstance* ParticleSubsystem::CreateInstance(ParticleSystem::Ptr sy
         return nullptr;
 
     auto instance = std::make_unique<ParticleSystemInstance>(system);
-    if (m_renderState->device)
+    auto simulator = std::make_unique<CPUParticleSimulator>();
+    simulator->Initialize(system->maxParticles);
+    if (m_config.deterministicCpuSimulation)
     {
-        auto simulator = std::make_unique<CPUParticleSimulator>();
-        simulator->Initialize(m_renderState->device, system->maxParticles);
-        if (m_config.deterministicCpuSimulation)
-        {
-            simulator->SetRandomSeed(m_config.cpuSimulationSeed + static_cast<uint32>(m_instances.size()));
-        }
-        instance->SetSimulator(std::move(simulator), "CPU");
+        simulator->SetRandomSeed(m_config.cpuSimulationSeed + static_cast<uint32>(m_instances.size()));
     }
-    else
-    {
-        instance->SetSimulationUnsupported("ParticleSubsystem has no RHI device for CPU particle simulation");
-    }
+    instance->SetSimulator(std::move(simulator), "CPU");
 
     ParticleSystemInstance* ptr = instance.get();
     m_instances.push_back(std::move(instance));
@@ -327,7 +294,6 @@ bool ParticleSubsystem::BuildRenderSnapshot(RVX::ParticleRenderSnapshot& outSnap
         item.renderMode = ToSnapshotRenderMode(system->renderMode);
         item.blendMode = ToSnapshotBlendMode(system->blendMode);
         item.simulationBackend = ToSnapshotSimulationBackend(*instance);
-        item.payloadStatus = RVX::ParticleRenderSnapshotPayloadStatus::MetadataOnly;
         item.aliveParticleCount = aliveCount;
         item.maxParticleCount = instance->GetMaxParticles();
         item.lodLevel = instance->GetCurrentLODLevel();
@@ -338,8 +304,25 @@ bool ParticleSubsystem::BuildRenderSnapshot(RVX::ParticleRenderSnapshot& outSnap
         item.sortingSupported = false;
         item.softParticlesEnabled = system->softParticleConfig.enabled;
         item.softParticleFadeDistance = system->softParticleConfig.fadeDistance;
-        item.renderPayloadReason =
-            "Particle snapshot contains metadata only; Render-owned particle draw data extraction is not connected";
+
+        if (const IParticleSimulator* simulator = instance->GetSimulator())
+        {
+            item.renderPayloadAvailable = simulator->BuildRenderParticlePayload(item.particles);
+        }
+
+        if (item.renderPayloadAvailable)
+        {
+            item.payloadStatus = RVX::ParticleRenderSnapshotPayloadStatus::RenderOwnedPayloadReady;
+            item.renderPayloadReason =
+                "CPU particle payload exported; Render-owned particle upload/draw implementation is not connected";
+        }
+        else
+        {
+            item.payloadStatus = RVX::ParticleRenderSnapshotPayloadStatus::MetadataOnly;
+            item.renderPayloadReason =
+                "Particle snapshot contains metadata only; Render-owned particle draw data extraction is not connected";
+        }
+
         item.sortingReason =
             "Particle sorting is deferred to Render-owned feature passes";
         if (!item.simulationSupported)

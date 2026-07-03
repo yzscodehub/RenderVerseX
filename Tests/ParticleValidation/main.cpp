@@ -5,7 +5,6 @@
 #include "Particle/ParticleSystem.h"
 #include "Particle/ParticleSystemInstance.h"
 #include "Particle/ParticleSubsystem.h"
-#include "Particle/ParticleSubsystemRenderAccess.h"
 #include "Particle/Rendering/TrailRenderer.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/SceneRenderer.h"
@@ -370,7 +369,7 @@ namespace
         std::vector<RHIDescriptorSetDesc> createdDescriptorSetDescs;
     };
 
-    ParticleSystemInstance MakeCpuInstance(FakeDevice& device, uint32 maxParticles = 32)
+    ParticleSystemInstance MakeCpuInstance(uint32 maxParticles = 32)
     {
         auto system = ParticleSystem::CreateSimple("ParticleValidation");
         system->maxParticles = maxParticles;
@@ -379,7 +378,7 @@ namespace
 
         ParticleSystemInstance instance(system);
         auto simulator = std::make_unique<CPUParticleSimulator>();
-        simulator->Initialize(&device, maxParticles);
+        simulator->Initialize(maxParticles);
         instance.SetSimulator(std::move(simulator), "CPU");
         instance.Play();
         instance.Simulate(0.25f);
@@ -517,9 +516,7 @@ TEST(ParticleValidation, SceneRendererPreGraphCallbacksUseOwnerTokens)
 TEST(ParticleValidation, ParticleSubsystemDefaultsToSnapshotPathWithoutLegacyPass)
 {
     EnsureLogInitialized();
-    FakeDevice device;
     ParticleSubsystem subsystem;
-    ParticleSubsystemRenderAccess::SetDeviceForTesting(subsystem, &device);
     subsystem.GetConfig().enableGPUSimulation = false;
     subsystem.Initialize();
 
@@ -540,9 +537,10 @@ TEST(ParticleValidation, ParticleSubsystemDefaultsToSnapshotPathWithoutLegacyPas
     ParticleRenderSnapshot snapshot;
     EXPECT_TRUE(subsystem.BuildRenderSnapshot(snapshot));
     ASSERT_EQ(snapshot.items.size(), 1u);
-    EXPECT_EQ(snapshot.items.front().payloadStatus, ParticleRenderSnapshotPayloadStatus::MetadataOnly);
-    EXPECT_FALSE(snapshot.items.front().renderPayloadAvailable);
-    EXPECT_NE(snapshot.items.front().renderPayloadReason.find("Render-owned particle draw data extraction"),
+    EXPECT_EQ(snapshot.items.front().payloadStatus, ParticleRenderSnapshotPayloadStatus::RenderOwnedPayloadReady);
+    EXPECT_TRUE(snapshot.items.front().renderPayloadAvailable);
+    EXPECT_EQ(snapshot.items.front().particles.size(), snapshot.items.front().aliveParticleCount);
+    EXPECT_NE(snapshot.items.front().renderPayloadReason.find("Render-owned particle upload/draw"),
               std::string::npos);
 
     subsystem.Deinitialize();
@@ -569,6 +567,9 @@ TEST(ParticleValidation, ParticleSubsystemProductionDeviceAcquisitionSourceGuard
     EXPECT_EQ(subsystemSource.find("ParticleSorter"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("Particle/Rendering/ParticlePass.h"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("Particle/Rendering/ParticleRenderer.h"), std::string::npos);
+    EXPECT_EQ(subsystemSource.find("ParticleSubsystemRenderAccess"), std::string::npos);
+    EXPECT_EQ(subsystemSource.find("IRHIDevice"), std::string::npos);
+    EXPECT_EQ(subsystemSource.find("No RHI device"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("enableLegacyRenderPassRegistration"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("AddParticlePass"), std::string::npos);
     EXPECT_EQ(subsystemSource.find("RemoveParticlePass"), std::string::npos);
@@ -632,6 +633,8 @@ TEST(ParticleValidation, ParticleSubsystemPublicHeaderDoesNotExposeRenderOrRHITy
     EXPECT_EQ(subsystemHeader.find("ParticleRenderer*"), std::string::npos);
     EXPECT_EQ(subsystemHeader.find("ParticleRendererConfig"), std::string::npos);
     EXPECT_EQ(subsystemHeader.find("ParticleRendererDrawStats"), std::string::npos);
+    EXPECT_EQ(subsystemHeader.find("ParticleSubsystemRenderAccess"), std::string::npos);
+    EXPECT_EQ(subsystemHeader.find("ParticleSubsystemRenderState"), std::string::npos);
     EXPECT_EQ(subsystemHeader.find("ParticleSorter"), std::string::npos);
     EXPECT_EQ(subsystemHeader.find("ParticlePass"), std::string::npos);
     EXPECT_NE(subsystemHeader.find("ParticleRenderSnapshot"), std::string::npos);
@@ -717,9 +720,7 @@ TEST(ParticleValidation, ParticleSorterReportsUnsupportedWithoutRHI)
 TEST(ParticleValidation, ParticleComponentUsesSubsystemOwnedInstanceWithSnapshotDefault)
 {
     EnsureLogInitialized();
-    FakeDevice device;
     ParticleSubsystem subsystem;
-    ParticleSubsystemRenderAccess::SetDeviceForTesting(subsystem, &device);
     subsystem.GetConfig().enableGPUSimulation = false;
     subsystem.Initialize();
     ASSERT_FALSE(subsystem.IsRenderIntegrationReady());
@@ -771,9 +772,7 @@ TEST(ParticleValidation, ParticleComponentFallbackWithoutRenderReadySubsystemIsO
 TEST(ParticleValidation, ParticleSubsystemBuildsRenderSnapshotWithoutRenderHandles)
 {
     EnsureLogInitialized();
-    FakeDevice device;
     ParticleSubsystem subsystem;
-    ParticleSubsystemRenderAccess::SetDeviceForTesting(subsystem, &device);
     subsystem.GetConfig().enableGPUSimulation = false;
     subsystem.Initialize();
 
@@ -814,12 +813,14 @@ TEST(ParticleValidation, ParticleSubsystemBuildsRenderSnapshotWithoutRenderHandl
     EXPECT_EQ(item.renderMode, ParticleRenderSnapshotMode::StretchedBillboard);
     EXPECT_EQ(item.blendMode, ParticleRenderSnapshotBlendMode::Additive);
     EXPECT_EQ(item.simulationBackend, ParticleRenderSnapshotSimulationBackend::CPU);
-    EXPECT_EQ(item.payloadStatus, ParticleRenderSnapshotPayloadStatus::MetadataOnly);
+    EXPECT_EQ(item.payloadStatus, ParticleRenderSnapshotPayloadStatus::RenderOwnedPayloadReady);
     EXPECT_EQ(item.aliveParticleCount, liveInstance->GetAliveCount());
     EXPECT_EQ(item.maxParticleCount, 32u);
     EXPECT_TRUE(item.visible);
     EXPECT_TRUE(item.simulationSupported);
-    EXPECT_FALSE(item.renderPayloadAvailable);
+    EXPECT_TRUE(item.renderPayloadAvailable);
+    ASSERT_EQ(item.particles.size(), item.aliveParticleCount);
+    EXPECT_NE(item.particles.front().flags & PARTICLE_FLAG_ALIVE, 0u);
     EXPECT_FALSE(item.sortingSupported);
     EXPECT_TRUE(item.softParticlesEnabled);
     EXPECT_FLOAT_EQ(item.softParticleFadeDistance, 2.5f);
@@ -827,7 +828,7 @@ TEST(ParticleValidation, ParticleSubsystemBuildsRenderSnapshotWithoutRenderHandl
     EXPECT_FLOAT_EQ(item.position.y, 2.0f);
     EXPECT_FLOAT_EQ(item.position.z, 3.0f);
     EXPECT_TRUE(item.unsupportedReason.empty());
-    EXPECT_NE(item.renderPayloadReason.find("metadata only"), std::string::npos);
+    EXPECT_NE(item.renderPayloadReason.find("CPU particle payload"), std::string::npos);
     EXPECT_NE(item.renderPayloadReason.find("Render-owned"), std::string::npos);
     EXPECT_NE(item.sortingReason.find("Render-owned"), std::string::npos);
 
@@ -837,12 +838,10 @@ TEST(ParticleValidation, ParticleSubsystemBuildsRenderSnapshotWithoutRenderHandl
     subsystem.Deinitialize();
 }
 
-TEST(ParticleValidation, ParticleSubsystemCreatesCpuSimulatorWhenDeviceIsInjected)
+TEST(ParticleValidation, ParticleSubsystemCreatesCpuSimulatorWithoutRHI)
 {
     EnsureLogInitialized();
-    FakeDevice device;
     ParticleSubsystem subsystem;
-    ParticleSubsystemRenderAccess::SetDeviceForTesting(subsystem, &device);
     subsystem.GetConfig().enableGPUSimulation = false;
     subsystem.Initialize();
 
@@ -857,24 +856,25 @@ TEST(ParticleValidation, ParticleSubsystemCreatesCpuSimulatorWhenDeviceIsInjecte
     subsystem.Deinitialize();
 }
 
-TEST(ParticleValidation, CpuSimulationEmitsUploadsAndClears)
+TEST(ParticleValidation, CpuSimulationExportsPayloadAndClears)
 {
     EnsureLogInitialized();
-    FakeDevice device;
-    RecordingCommandContext ctx;
-    ParticleSystemInstance instance = MakeCpuInstance(device);
+    ParticleSystemInstance instance = MakeCpuInstance();
 
     ASSERT_TRUE(instance.IsSimulationSupported());
     EXPECT_GT(instance.GetAliveCount(), 0u);
     ASSERT_NE(instance.GetSimulator(), nullptr);
 
-    instance.GetSimulator()->PrepareRender(ctx);
-    EXPECT_NE(instance.GetSimulator()->GetParticleBuffer(), nullptr);
-    EXPECT_NE(instance.GetSimulator()->GetAliveIndexBuffer(), nullptr);
+    std::vector<ParticleRenderParticleData> particles;
+    EXPECT_TRUE(instance.GetSimulator()->BuildRenderParticlePayload(particles));
+    EXPECT_EQ(particles.size(), instance.GetAliveCount());
+    EXPECT_NE(particles.front().flags & PARTICLE_FLAG_ALIVE, 0u);
 
     instance.Clear();
     EXPECT_EQ(instance.GetAliveCount(), 0u);
     EXPECT_EQ(instance.GetSimulator()->GetAliveCount(), 0u);
+    EXPECT_FALSE(instance.GetSimulator()->BuildRenderParticlePayload(particles));
+    EXPECT_TRUE(particles.empty());
 }
 
 TEST(ParticleValidation, ParticleBillboardShaderUsesUniqueRQ32Bindings)

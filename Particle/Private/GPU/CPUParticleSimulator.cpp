@@ -14,12 +14,11 @@ CPUParticleSimulator::~CPUParticleSimulator()
     Shutdown();
 }
 
-void CPUParticleSimulator::Initialize(IRHIDevice* device, uint32 maxParticles)
+void CPUParticleSimulator::Initialize(uint32 maxParticles)
 {
     if (m_initialized)
         Shutdown();
 
-    m_device = device;
     m_maxParticles = maxParticles;
 
     // Initialize CPU buffers
@@ -37,23 +36,6 @@ void CPUParticleSimulator::Initialize(IRHIDevice* device, uint32 maxParticles)
     // Initialize RNG
     m_rng.seed(std::random_device{}());
 
-    // Create GPU buffers for rendering
-    RHIBufferDesc particleDesc;
-    particleDesc.size = sizeof(GPUParticle) * maxParticles;
-    particleDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
-    particleDesc.stride = sizeof(GPUParticle);
-    particleDesc.memoryType = RHIMemoryType::Upload;
-    particleDesc.debugName = "CPUParticleBuffer";
-    m_gpuParticleBuffer = m_device->CreateBuffer(particleDesc);
-
-    RHIBufferDesc indexDesc;
-    indexDesc.size = sizeof(uint32) * maxParticles;
-    indexDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
-    indexDesc.stride = sizeof(uint32);
-    indexDesc.memoryType = RHIMemoryType::Upload;
-    indexDesc.debugName = "CPUAliveIndexBuffer";
-    m_gpuAliveIndexBuffer = m_device->CreateBuffer(indexDesc);
-
     m_initialized = true;
     RVX_CORE_INFO("CPUParticleSimulator: Initialized with {} max particles", maxParticles);
 }
@@ -63,14 +45,8 @@ void CPUParticleSimulator::Shutdown()
     m_particles.clear();
     m_aliveIndices.clear();
     m_deadIndices.clear();
-    
-    m_gpuParticleBuffer.Reset();
-    m_gpuAliveIndexBuffer.Reset();
-    m_gpuIndirectDrawBuffer.Reset();
-    m_uploadBuffer.Reset();
 
     m_initialized = false;
-    m_device = nullptr;
 }
 
 void CPUParticleSimulator::Emit(const EmitParams& params)
@@ -88,8 +64,6 @@ void CPUParticleSimulator::Emit(const EmitParams& params)
         EmitParticle(params, particleIndex);
         m_aliveIndices.push_back(particleIndex);
     }
-
-    m_gpuDirty = true;
 }
 
 void CPUParticleSimulator::EmitParticle(const EmitParams& params, uint32 index)
@@ -427,7 +401,6 @@ void CPUParticleSimulator::Simulate(float deltaTime, const SimulateParams& param
     }
 
     m_aliveIndices = std::move(newAlive);
-    m_gpuDirty = true;
 }
 
 void CPUParticleSimulator::SimulateParticle(uint32 index, float deltaTime, const SimulateParams& params)
@@ -536,7 +509,6 @@ void CPUParticleSimulator::SimulateWithModules(float deltaTime, const CPUSimulat
     }
 
     m_aliveIndices = std::move(newAlive);
-    m_gpuDirty = true;
     
     // Dispatch events if handler provided
     if (params.eventHandler && !m_queuedEvents.empty())
@@ -859,49 +831,31 @@ void CPUParticleSimulator::SimulateParallel(float deltaTime, const SimulateParam
         });
 }
 
-void CPUParticleSimulator::PrepareRender(RHICommandContext& ctx)
+bool CPUParticleSimulator::BuildRenderParticlePayload(std::vector<RVX::ParticleRenderParticleData>& outParticles) const
 {
-    (void)ctx;
-    
-    if (!m_gpuDirty)
-        return;
-
-    UploadToGPU();
-    m_gpuDirty = false;
-}
-
-void CPUParticleSimulator::UploadToGPU()
-{
+    outParticles.clear();
     if (m_aliveIndices.empty())
-        return;
+        return false;
 
-    // Convert CPU particles to GPU format and upload
-    std::vector<GPUParticle> gpuParticles(m_aliveIndices.size());
-    
-    for (size_t i = 0; i < m_aliveIndices.size(); ++i)
+    outParticles.reserve(m_aliveIndices.size());
+
+    for (uint32 aliveIndex : m_aliveIndices)
     {
-        const CPUParticle& cpu = m_particles[m_aliveIndices[i]];
-        GPUParticle& gpu = gpuParticles[i];
-        
-        gpu.position = cpu.position;
-        gpu.lifetime = cpu.lifetime;
-        gpu.velocity = cpu.velocity;
-        gpu.age = cpu.age;
-        gpu.color = cpu.color;
-        gpu.size = cpu.size;
-        gpu.rotation = cpu.rotation;
-        gpu.flags = cpu.flags;
+        const CPUParticle& cpu = m_particles[aliveIndex];
+        RVX::ParticleRenderParticleData particle;
+
+        particle.position = cpu.position;
+        particle.lifetime = cpu.lifetime;
+        particle.velocity = cpu.velocity;
+        particle.age = cpu.age;
+        particle.color = cpu.color;
+        particle.size = cpu.size;
+        particle.rotation = cpu.rotation;
+        particle.flags = cpu.flags;
+        outParticles.push_back(particle);
     }
 
-    // Upload particle data
-    m_gpuParticleBuffer->Upload(gpuParticles.data(), gpuParticles.size());
-
-    // Upload alive indices (0, 1, 2, ... for sequential access)
-    std::vector<uint32> indices(m_aliveIndices.size());
-    for (size_t i = 0; i < indices.size(); ++i)
-        indices[i] = static_cast<uint32>(i);
-    m_gpuAliveIndexBuffer->Upload(indices.data(), indices.size());
-
+    return true;
 }
 
 void CPUParticleSimulator::Clear()
@@ -913,7 +867,6 @@ void CPUParticleSimulator::Clear()
         m_deadIndices.push_back(index);
     }
     m_aliveIndices.clear();
-    m_gpuDirty = true;
 }
 
 } // namespace RVX::Particle

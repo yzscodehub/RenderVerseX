@@ -56,6 +56,18 @@ namespace RVX
         RenderOwnedPayloadReady
     };
 
+    struct ParticleRenderParticleData
+    {
+        Vec3 position{0.0f, 0.0f, 0.0f};
+        float lifetime = 0.0f;
+        Vec3 velocity{0.0f, 0.0f, 0.0f};
+        float age = 0.0f;
+        Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
+        Vec2 size{1.0f, 1.0f};
+        float rotation = 0.0f;
+        uint32 flags = 0;
+    };
+
     struct ParticleRenderSnapshotItem
     {
         uint64 instanceId = 0;
@@ -82,6 +94,7 @@ namespace RVX
         bool sortingSupported = false;
         bool softParticlesEnabled = false;
         float softParticleFadeDistance = 0.0f;
+        std::vector<ParticleRenderParticleData> particles;
         std::string unsupportedReason;
         std::string renderPayloadReason;
         std::string sortingReason;

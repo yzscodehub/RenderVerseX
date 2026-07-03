@@ -17,9 +17,6 @@
 
 namespace RVX::Particle
 {
-    class ParticleSubsystemRenderAccess;
-    struct ParticleSubsystemRenderState;
-
     /**
      * @brief Configuration for particle subsystem
      */
@@ -27,7 +24,7 @@ namespace RVX::Particle
     {
         uint32 maxGlobalParticles = 1000000;    ///< Maximum particles across all systems
         uint32 maxInstances = 1000;             ///< Maximum particle system instances
-        bool enableGPUSimulation = true;        ///< Prefer GPU simulation when available
+        bool enableGPUSimulation = true;        ///< Request GPU simulation when a Render-owned backend is available
         bool enableSorting = true;              ///< Enable transparency sorting
         bool enableSoftParticles = true;        ///< Enable soft particle depth fade
         float globalSimulationSpeed = 1.0f;     ///< Global simulation speed multiplier
@@ -40,7 +37,7 @@ namespace RVX::Particle
      * 
      * Handles:
      * - Particle system instance creation and destruction
-     * - GPU/CPU simulation backend selection
+     * - CPU simulation state and snapshot export
      * - LOD and culling
      * - Integration with RenderGraph
      * - Object pooling
@@ -159,7 +156,6 @@ namespace RVX::Particle
         void UpdateLODsForCamera(const Vec3& cameraPosition);
 
         ParticleSubsystemConfig m_config;
-        std::unique_ptr<ParticleSubsystemRenderState> m_renderState;
 
         // Simulation capability
         bool m_gpuSimulationSupported = false;
@@ -182,8 +178,6 @@ namespace RVX::Particle
         mutable uint64 m_nextRenderSnapshotSequence = 0;
 
         static ParticleSubsystem* s_activeSubsystem;
-
-        friend class ParticleSubsystemRenderAccess;
     };
 
 } // namespace RVX::Particle
