@@ -32,7 +32,7 @@ target_sources(RVX_Render PRIVATE
     # Diagnostics
     Private/Diagnostics/RenderDiagnosticsJson.cpp
     Private/Diagnostics/RenderFeatureReport.cpp
-    Private/Diagnostics/SceneRendererToolDiagnostics.cpp
+    Private/Diagnostics/RenderToolArtifacts.cpp
     # Ray tracing
     Private/RayTracing/RayTracingScene.cpp
     Private/RayTracing/RayTracingSceneManager.cpp

@@ -1,5 +1,5 @@
 /**
- * @file SceneRendererToolDiagnostics.cpp
+ * @file RenderToolArtifacts.cpp
  * @brief Tool diagnostics artifact export and validation for SceneRenderer
  */
 
