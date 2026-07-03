@@ -7,6 +7,7 @@
 #include "Core/MathTypes.h"
 #include "Engine/Engine.h"
 #include "HAL/Input/KeyCodes.h"
+#include "Render/Context/RenderContext.h"
 #include "Render/Passes/ShadowPass.h"
 #include "Render/PostProcess/PostProcessStack.h"
 #include "Render/PostProcess/ToneMappingTypes.h"
@@ -29,8 +30,10 @@
 #include <cctype>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -42,6 +45,8 @@ using namespace RVX;
 
 namespace
 {
+    constexpr uint32 kDX12TextureCopyPitchAlignment = 256;
+
     enum class ShowcaseMode : uint8
     {
         PostProcess = 0,
@@ -50,19 +55,75 @@ namespace
         Rendering = 3,
         SceneInteraction = 4,
         TerrainWater = 5,
-        ParticleFX = 6
+        ParticleFX = 6,
+        ResourceRuntime = 7,
+        PhysicsAudio = 8
+    };
+
+    enum class ShowcaseQuality : uint8
+    {
+        Low = 0,
+        Medium,
+        High,
+        Cinematic
+    };
+
+    enum class ScreenshotChannelOrder : uint8
+    {
+        RGBA = 0,
+        BGRA
+    };
+
+    struct PendingScreenshot
+    {
+        RHIBufferRef readbackBuffer;
+        uint32 width = 0;
+        uint32 height = 0;
+        uint32 rowPitch = 0;
+        uint32 bytesPerPixel = 0;
+        ScreenshotChannelOrder channelOrder = ScreenshotChannelOrder::BGRA;
+        bool originBottomLeft = false;
+        std::string failureReason;
     };
 
     struct ShowcaseOptions
     {
         ShowcaseMode mode = static_cast<ShowcaseMode>(RVX_FEATURE_SHOWCASE_DEFAULT_MODE);
+        ShowcaseQuality quality = ShowcaseQuality::Medium;
         RHIBackendType backend = RHIBackendType::Auto;
         std::string modelPath;
+        std::filesystem::path screenshotPath;
+        std::filesystem::path reportPath;
         uint32 width = 1280;
         uint32 height = 720;
         uint32 frames = 0;
         bool enableValidation = true;
+        bool diagnostics = false;
+        bool postProcessEnabled = true;
+        bool iblEnabled = true;
+        bool shadowsEnabled = true;
         bool showHelp = false;
+    };
+
+    struct ShowcaseReport
+    {
+        std::string sampleName;
+        std::string description;
+        std::string requestedBackend;
+        std::string activeBackend;
+        std::string quality;
+        std::filesystem::path screenshotPath;
+        uint32 width = 0;
+        uint32 height = 0;
+        uint32 frameCount = 0;
+        bool pass = true;
+        std::vector<std::string> enabledFeatures;
+        std::vector<std::string> unsupportedFeatures;
+        std::vector<std::string> fallbackReasons;
+        std::vector<std::string> resourceDiagnostics;
+        SceneRendererFrameDiagnostics renderDiagnostics;
+        SceneEnvironmentIBLStats iblStats;
+        SceneClusteredLightingStats clusteredStats;
     };
 
     struct OrbitCamera
@@ -107,13 +168,15 @@ namespace
     {
         switch (mode)
         {
-            case ShowcaseMode::PostProcess: return "RenderingShowcase-PostProcess";
-            case ShowcaseMode::Lighting: return "RenderingShowcase-Lighting";
-            case ShowcaseMode::Material: return "RenderingShowcase-Material";
+            case ShowcaseMode::PostProcess: return "PostProcessShowcase";
+            case ShowcaseMode::Lighting: return "LightingShowcase";
+            case ShowcaseMode::Material: return "MaterialShowcase";
             case ShowcaseMode::Rendering: return "RenderingShowcase";
             case ShowcaseMode::SceneInteraction: return "SceneInteractionShowcase";
             case ShowcaseMode::TerrainWater: return "TerrainWaterShowcase";
             case ShowcaseMode::ParticleFX: return "ParticleFXShowcase";
+            case ShowcaseMode::ResourceRuntime: return "ResourceRuntimeShowcase";
+            case ShowcaseMode::PhysicsAudio: return "PhysicsAudioShowcase";
         }
 
         return "EngineShowcase";
@@ -137,9 +200,26 @@ namespace
                 return "terrain/water rendering staging with sky, lighting, and post-process presets";
             case ShowcaseMode::ParticleFX:
                 return "particle FX staging with camera, lighting, and render pipeline integration";
+            case ShowcaseMode::ResourceRuntime:
+                return "runtime resource policy, cooked/package diagnostics, and GPU residency staging";
+            case ShowcaseMode::PhysicsAudio:
+                return "physics query, collider, spatial audio, and streaming fallback staging";
         }
 
         return "render feature showcase";
+    }
+
+    const char* GetQualityName(ShowcaseQuality quality)
+    {
+        switch (quality)
+        {
+            case ShowcaseQuality::Low: return "low";
+            case ShowcaseQuality::Medium: return "medium";
+            case ShowcaseQuality::High: return "high";
+            case ShowcaseQuality::Cinematic: return "cinematic";
+        }
+
+        return "medium";
     }
 
     bool ParseMode(const std::string& text, ShowcaseMode& outMode)
@@ -178,6 +258,43 @@ namespace
         if (value == "particle" || value == "particles" || value == "particle-fx")
         {
             outMode = ShowcaseMode::ParticleFX;
+            return true;
+        }
+        if (value == "resource" || value == "resources" || value == "resource-runtime")
+        {
+            outMode = ShowcaseMode::ResourceRuntime;
+            return true;
+        }
+        if (value == "physics" || value == "audio" || value == "physics-audio")
+        {
+            outMode = ShowcaseMode::PhysicsAudio;
+            return true;
+        }
+
+        return false;
+    }
+
+    bool ParseQuality(const std::string& text, ShowcaseQuality& outQuality)
+    {
+        const std::string value = ToLower(text);
+        if (value == "low")
+        {
+            outQuality = ShowcaseQuality::Low;
+            return true;
+        }
+        if (value == "medium" || value == "default")
+        {
+            outQuality = ShowcaseQuality::Medium;
+            return true;
+        }
+        if (value == "high")
+        {
+            outQuality = ShowcaseQuality::High;
+            return true;
+        }
+        if (value == "cinematic" || value == "film")
+        {
+            outQuality = ShowcaseQuality::Cinematic;
             return true;
         }
 
@@ -242,6 +359,29 @@ namespace
         }
     }
 
+    bool ParseUIntAllowZero(const char* text, uint32& outValue)
+    {
+        if (!text)
+        {
+            return false;
+        }
+
+        try
+        {
+            const unsigned long parsed = std::stoul(text);
+            if (parsed > std::numeric_limits<uint32>::max())
+            {
+                return false;
+            }
+            outValue = static_cast<uint32>(parsed);
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
     void PrintUsage()
     {
         std::cout
@@ -249,13 +389,20 @@ namespace
             << "Usage:\n"
             << "  <ShowcaseTarget> [options]\n"
             << "Options:\n"
-            << "  --mode <postprocess|lighting|material|rendering|scene-interaction|terrain-water|particle-fx>\n"
+            << "  --mode <postprocess|lighting|material|rendering|scene-interaction|terrain-water|particle-fx|resource-runtime|physics-audio>\n"
             << "  --model <path.gltf>       Override the default fixture model\n"
             << "  --backend <auto|dx11|dx12|vulkan|metal|opengl>\n"
             << "  --width <pixels>\n"
             << "  --height <pixels>\n"
             << "  --frames <count>       Run a bounded smoke loop, 0 means interactive\n"
             << "  --smoke                Alias for --frames 8\n"
+            << "  --screenshot <path.ppm>\n"
+            << "  --report <path.json>\n"
+            << "  --quality <low|medium|high|cinematic>\n"
+            << "  --diagnostics\n"
+            << "  --no-postprocess\n"
+            << "  --no-ibl\n"
+            << "  --no-shadows\n"
             << "  --validation\n"
             << "  --no-validation\n"
             << "  --help\n";
@@ -298,6 +445,28 @@ namespace
                 }
                 options.modelPath = value;
             }
+            else if (arg == "--screenshot")
+            {
+                const char* value = requireValue("--screenshot");
+                if (!value)
+                {
+                    return false;
+                }
+                options.screenshotPath = value;
+                if (options.frames == 0)
+                {
+                    options.frames = 8;
+                }
+            }
+            else if (arg == "--report")
+            {
+                const char* value = requireValue("--report");
+                if (!value)
+                {
+                    return false;
+                }
+                options.reportPath = value;
+            }
             else if (arg == "--backend")
             {
                 const char* value = requireValue("--backend");
@@ -328,7 +497,7 @@ namespace
             else if (arg == "--frames")
             {
                 const char* value = requireValue("--frames");
-                if (!ParseUInt(value, options.frames))
+                if (!ParseUIntAllowZero(value, options.frames))
                 {
                     RVX_CORE_ERROR("Invalid --frames value: {}", value ? value : "");
                     return false;
@@ -337,6 +506,31 @@ namespace
             else if (arg == "--smoke")
             {
                 options.frames = 8;
+            }
+            else if (arg == "--quality")
+            {
+                const char* value = requireValue("--quality");
+                if (!value || !ParseQuality(value, options.quality))
+                {
+                    RVX_CORE_ERROR("Invalid --quality value: {}", value ? value : "");
+                    return false;
+                }
+            }
+            else if (arg == "--diagnostics")
+            {
+                options.diagnostics = true;
+            }
+            else if (arg == "--no-postprocess")
+            {
+                options.postProcessEnabled = false;
+            }
+            else if (arg == "--no-ibl")
+            {
+                options.iblEnabled = false;
+            }
+            else if (arg == "--no-shadows")
+            {
+                options.shadowsEnabled = false;
             }
             else if (arg == "--validation")
             {
@@ -434,9 +628,11 @@ namespace
             case ShowcaseMode::SceneInteraction:
             case ShowcaseMode::TerrainWater:
             case ShowcaseMode::ParticleFX:
+            case ShowcaseMode::PhysicsAudio:
                 return "Tests/Fixtures/ModelViewer/ShadowPlaneCaster.gltf";
             case ShowcaseMode::PostProcess:
             case ShowcaseMode::Material:
+            case ShowcaseMode::ResourceRuntime:
                 return "Tests/Fixtures/ModelViewer/PBRMaterialSwatch.gltf";
         }
 
@@ -446,6 +642,375 @@ namespace
     std::filesystem::path GetDefaultMaterialSwatchRelativePath()
     {
         return "Tests/Fixtures/ModelViewer/PBRMaterialSwatch.gltf";
+    }
+
+    std::string JsonString(const std::string& value)
+    {
+        std::ostringstream stream;
+        stream << '"';
+        for (char ch : value)
+        {
+            switch (ch)
+            {
+                case '\\': stream << "\\\\"; break;
+                case '"': stream << "\\\""; break;
+                case '\n': stream << "\\n"; break;
+                case '\r': stream << "\\r"; break;
+                case '\t': stream << "\\t"; break;
+                default:
+                    stream << ch;
+                    break;
+            }
+        }
+        stream << '"';
+        return stream.str();
+    }
+
+    void WriteJsonStringArray(std::ostream& stream,
+                              const char* name,
+                              const std::vector<std::string>& values,
+                              bool trailingComma)
+    {
+        stream << "  " << JsonString(name ? name : "") << ": [";
+        for (size_t i = 0; i < values.size(); ++i)
+        {
+            if (i > 0)
+            {
+                stream << ", ";
+            }
+            stream << JsonString(values[i]);
+        }
+        stream << "]";
+        if (trailingComma)
+        {
+            stream << ",";
+        }
+        stream << "\n";
+    }
+
+    bool IsScreenshotBackendSupported(RHIBackendType backendType)
+    {
+        return backendType == RHIBackendType::DX11 ||
+               backendType == RHIBackendType::DX12 ||
+               backendType == RHIBackendType::OpenGL;
+    }
+
+    bool TryGetScreenshotChannelOrder(RHIFormat format, ScreenshotChannelOrder& outChannelOrder)
+    {
+        switch (format)
+        {
+            case RHIFormat::RGBA8_UNORM:
+            case RHIFormat::RGBA8_UNORM_SRGB:
+                outChannelOrder = ScreenshotChannelOrder::RGBA;
+                return true;
+            case RHIFormat::BGRA8_UNORM:
+            case RHIFormat::BGRA8_UNORM_SRGB:
+                outChannelOrder = ScreenshotChannelOrder::BGRA;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    bool QueueBackBufferScreenshot(RenderSubsystem* renderSubsystem, PendingScreenshot& outScreenshot)
+    {
+        if (!renderSubsystem || !renderSubsystem->GetRenderContext())
+        {
+            outScreenshot.failureReason = "render subsystem is not ready";
+            return false;
+        }
+
+        RenderContext* renderContext = renderSubsystem->GetRenderContext();
+        IRHIDevice* device = renderSubsystem->GetDevice();
+        if (!device)
+        {
+            outScreenshot.failureReason = "RHI device is not ready";
+            return false;
+        }
+
+        const RHIBackendType backendType = device->GetBackendType();
+        if (!IsScreenshotBackendSupported(backendType))
+        {
+            outScreenshot.failureReason =
+                std::string("screenshot readback is not supported for backend ") + ToString(backendType);
+            return false;
+        }
+
+        RHITexture* backBuffer = renderContext->GetCurrentBackBuffer();
+        RHICommandContext* commandContext = renderContext->GetGraphicsContext();
+        if (!backBuffer || !commandContext)
+        {
+            outScreenshot.failureReason = "back buffer or command context is not ready";
+            return false;
+        }
+
+        ScreenshotChannelOrder channelOrder = ScreenshotChannelOrder::BGRA;
+        if (!TryGetScreenshotChannelOrder(backBuffer->GetFormat(), channelOrder))
+        {
+            outScreenshot.failureReason = "unsupported screenshot back buffer channel order";
+            return false;
+        }
+
+        const uint32 bytesPerPixel = GetFormatBytesPerPixel(backBuffer->GetFormat());
+        if (bytesPerPixel != 4)
+        {
+            outScreenshot.failureReason = "unsupported screenshot back buffer format";
+            return false;
+        }
+
+        const uint32 width = backBuffer->GetWidth();
+        const uint32 height = backBuffer->GetHeight();
+        uint32 rowPitch = width * bytesPerPixel;
+        if (backendType == RHIBackendType::DX12)
+        {
+            rowPitch = (rowPitch + kDX12TextureCopyPitchAlignment - 1u) &
+                       ~(kDX12TextureCopyPitchAlignment - 1u);
+        }
+
+        RHIBufferDesc readbackDesc;
+        readbackDesc.size = static_cast<uint64>(rowPitch) * height;
+        readbackDesc.usage = RHIBufferUsage::CopyDst;
+        readbackDesc.memoryType = RHIMemoryType::Readback;
+        readbackDesc.debugName = "ShowcaseSmokeReadback";
+
+        outScreenshot.readbackBuffer = device->CreateBuffer(readbackDesc);
+        if (!outScreenshot.readbackBuffer)
+        {
+            outScreenshot.failureReason = "failed to create screenshot readback buffer";
+            return false;
+        }
+
+        RHIBufferTextureCopyDesc copyDesc;
+        copyDesc.bufferRowPitch = rowPitch;
+        copyDesc.textureRegion = {0, 0, width, height};
+
+        commandContext->TextureBarrier(backBuffer, RHIResourceState::Present, RHIResourceState::CopySource);
+        commandContext->CopyTextureToBuffer(backBuffer, outScreenshot.readbackBuffer.Get(), copyDesc);
+        commandContext->TextureBarrier(backBuffer, RHIResourceState::CopySource, RHIResourceState::Present);
+
+        outScreenshot.width = width;
+        outScreenshot.height = height;
+        outScreenshot.rowPitch = rowPitch;
+        outScreenshot.bytesPerPixel = bytesPerPixel;
+        outScreenshot.channelOrder = channelOrder;
+        outScreenshot.originBottomLeft = backendType == RHIBackendType::OpenGL;
+        outScreenshot.failureReason.clear();
+        return true;
+    }
+
+    bool WriteScreenshotPPM(const PendingScreenshot& screenshot, const std::filesystem::path& path)
+    {
+        if (!screenshot.readbackBuffer || screenshot.width == 0 || screenshot.height == 0)
+        {
+            return false;
+        }
+
+        const std::filesystem::path parent = path.parent_path();
+        if (!parent.empty())
+        {
+            std::filesystem::create_directories(parent);
+        }
+
+        void* mapped = screenshot.readbackBuffer->Map();
+        if (!mapped)
+        {
+            return false;
+        }
+
+        std::ofstream stream(path, std::ios::binary);
+        if (!stream)
+        {
+            screenshot.readbackBuffer->Unmap();
+            return false;
+        }
+
+        stream << "P6\n" << screenshot.width << " " << screenshot.height << "\n255\n";
+        const uint8* data = static_cast<const uint8*>(mapped);
+        for (uint32 y = 0; y < screenshot.height; ++y)
+        {
+            const uint32 sourceY = screenshot.originBottomLeft ? (screenshot.height - 1u - y) : y;
+            const uint8* row = data + static_cast<uint64>(sourceY) * screenshot.rowPitch;
+            for (uint32 x = 0; x < screenshot.width; ++x)
+            {
+                const uint8* pixel = row + static_cast<uint64>(x) * screenshot.bytesPerPixel;
+                uint8 rgb[3] = {};
+                if (screenshot.channelOrder == ScreenshotChannelOrder::BGRA)
+                {
+                    rgb[0] = pixel[2];
+                    rgb[1] = pixel[1];
+                    rgb[2] = pixel[0];
+                }
+                else
+                {
+                    rgb[0] = pixel[0];
+                    rgb[1] = pixel[1];
+                    rgb[2] = pixel[2];
+                }
+                stream.write(reinterpret_cast<const char*>(rgb), sizeof(rgb));
+            }
+        }
+
+        screenshot.readbackBuffer->Unmap();
+        return static_cast<bool>(stream);
+    }
+
+    void AddModeFeatureDiagnostics(ShowcaseMode mode, ShowcaseReport& report)
+    {
+        switch (mode)
+        {
+            case ShowcaseMode::PostProcess:
+                report.enabledFeatures.push_back("ToneMapping");
+                report.enabledFeatures.push_back("Bloom");
+                report.enabledFeatures.push_back("FXAA");
+                report.enabledFeatures.push_back("ColorGrading");
+                report.enabledFeatures.push_back("Vignette");
+                report.unsupportedFeatures.push_back("FilmGrain pipeline is staged for a later visual pass");
+                report.unsupportedFeatures.push_back("SSAO/TAA/SSR are diagnostic-only until their low-tier passes land");
+                break;
+            case ShowcaseMode::Lighting:
+                report.enabledFeatures.push_back("DirectionalLight");
+                report.enabledFeatures.push_back("PointLights");
+                report.enabledFeatures.push_back("SpotLight");
+                report.enabledFeatures.push_back("CSMShadow");
+                report.enabledFeatures.push_back("ClusteredLightingStats");
+                break;
+            case ShowcaseMode::Material:
+                report.enabledFeatures.push_back("PBRMaterialSwatch");
+                report.enabledFeatures.push_back("ToneMapping");
+                report.enabledFeatures.push_back("FilmicGrade");
+                break;
+            case ShowcaseMode::Rendering:
+                report.enabledFeatures.push_back("IntegratedSceneRender");
+                report.enabledFeatures.push_back("PBR");
+                report.enabledFeatures.push_back("Skybox");
+                report.enabledFeatures.push_back("Lighting");
+                report.enabledFeatures.push_back("PostProcess");
+                break;
+            case ShowcaseMode::SceneInteraction:
+                report.enabledFeatures.push_back("OrbitCamera");
+                report.enabledFeatures.push_back("ActorSceneSetup");
+                report.unsupportedFeatures.push_back("Picking smoke is reported by diagnostics until a dedicated hit-test fixture is added");
+                break;
+            case ShowcaseMode::TerrainWater:
+                report.enabledFeatures.push_back("TerrainWaterStagingScene");
+                report.unsupportedFeatures.push_back("Terrain/Water GPU renderer remains fallback-only until feature render boundaries are migrated");
+                break;
+            case ShowcaseMode::ParticleFX:
+                report.enabledFeatures.push_back("ParticleFXStagingScene");
+                report.unsupportedFeatures.push_back("GPU particle pipelines are explicit unsupported diagnostics in this showcase");
+                break;
+            case ShowcaseMode::ResourceRuntime:
+                report.enabledFeatures.push_back("ResourceManager");
+                report.enabledFeatures.push_back("ModelResourceLoad");
+                report.unsupportedFeatures.push_back("Cooked/package fixture loading is covered by ResourceRuntimePolicyValidation until sample assets are added");
+                break;
+            case ShowcaseMode::PhysicsAudio:
+                report.enabledFeatures.push_back("PhysicsAudioStagingScene");
+                report.unsupportedFeatures.push_back("Physics query and audio streaming are staged as explicit fallback diagnostics");
+                break;
+        }
+    }
+
+    void AppendRendererDiagnostics(SceneRenderer* sceneRenderer, ShowcaseReport& report)
+    {
+        if (!sceneRenderer)
+        {
+            report.fallbackReasons.push_back("SceneRenderer unavailable");
+            return;
+        }
+
+        report.renderDiagnostics = sceneRenderer->GetFrameDiagnostics();
+        report.iblStats = sceneRenderer->GetEnvironmentIBLStats();
+        report.clusteredStats = sceneRenderer->GetClusteredLightingStats();
+
+        const SceneRendererFrameDiagnostics& diagnostics = report.renderDiagnostics;
+        if (!diagnostics.skippedReason.empty())
+        {
+            report.fallbackReasons.push_back(diagnostics.skippedReason);
+        }
+        if (!diagnostics.hdrFallbackReason.empty())
+        {
+            report.fallbackReasons.push_back(diagnostics.hdrFallbackReason);
+        }
+        if (!diagnostics.localShadowFallbackReason.empty())
+        {
+            report.fallbackReasons.push_back(diagnostics.localShadowFallbackReason);
+        }
+        if (!diagnostics.clusteredLightingFallbackReason.empty())
+        {
+            report.fallbackReasons.push_back(diagnostics.clusteredLightingFallbackReason);
+        }
+        if (!diagnostics.externalTargetFallbackReason.empty())
+        {
+            report.fallbackReasons.push_back(diagnostics.externalTargetFallbackReason);
+        }
+        if (!diagnostics.postProcessToneMappingBoundaryWarning.empty())
+        {
+            report.fallbackReasons.push_back(diagnostics.postProcessToneMappingBoundaryWarning);
+        }
+        if (!report.iblStats.fallbackReason.empty())
+        {
+            report.fallbackReasons.push_back(report.iblStats.fallbackReason);
+        }
+
+        for (const RenderPassStatus& status : diagnostics.passStatuses)
+        {
+            if (status.requestedEnabled && !status.supported && !status.unsupportedReason.empty())
+            {
+                report.unsupportedFeatures.push_back(status.name + ": " + status.unsupportedReason);
+            }
+        }
+    }
+
+    bool WriteShowcaseReport(const ShowcaseReport& report, const std::filesystem::path& path)
+    {
+        const std::filesystem::path parent = path.parent_path();
+        if (!parent.empty())
+        {
+            std::filesystem::create_directories(parent);
+        }
+
+        std::ofstream stream(path);
+        if (!stream)
+        {
+            return false;
+        }
+
+        const SceneRendererFrameDiagnostics& diagnostics = report.renderDiagnostics;
+        stream << "{\n";
+        stream << "  \"sampleName\": " << JsonString(report.sampleName) << ",\n";
+        stream << "  \"description\": " << JsonString(report.description) << ",\n";
+        stream << "  \"requestedBackend\": " << JsonString(report.requestedBackend) << ",\n";
+        stream << "  \"activeBackend\": " << JsonString(report.activeBackend) << ",\n";
+        stream << "  \"quality\": " << JsonString(report.quality) << ",\n";
+        stream << "  \"frameCount\": " << report.frameCount << ",\n";
+        stream << "  \"width\": " << report.width << ",\n";
+        stream << "  \"height\": " << report.height << ",\n";
+        stream << "  \"screenshotPath\": " << JsonString(report.screenshotPath.string()) << ",\n";
+        stream << "  \"pass\": " << (report.pass ? "true" : "false") << ",\n";
+        WriteJsonStringArray(stream, "enabledFeatures", report.enabledFeatures, true);
+        WriteJsonStringArray(stream, "unsupportedFeatures", report.unsupportedFeatures, true);
+        WriteJsonStringArray(stream, "fallbackReasons", report.fallbackReasons, true);
+        WriteJsonStringArray(stream, "resourceDiagnostics", report.resourceDiagnostics, true);
+        stream << "  \"renderDiagnostics\": {\n";
+        stream << "    \"renderAttempted\": " << (diagnostics.renderAttempted ? "true" : "false") << ",\n";
+        stream << "    \"rendered\": " << (diagnostics.rendered ? "true" : "false") << ",\n";
+        stream << "    \"graphBuilt\": " << (diagnostics.graphBuilt ? "true" : "false") << ",\n";
+        stream << "    \"graphCompiled\": " << (diagnostics.graphCompiled ? "true" : "false") << ",\n";
+        stream << "    \"renderGraphTotalPasses\": " << diagnostics.renderGraphTotalPasses << ",\n";
+        stream << "    \"visibleObjectCount\": " << diagnostics.visibleObjectCount << ",\n";
+        stream << "    \"renderSceneLightCount\": " << diagnostics.renderSceneLightCount << ",\n";
+        stream << "    \"requestedPostProcessEffectCount\": " << diagnostics.requestedPostProcessEffectCount << ",\n";
+        stream << "    \"enabledPostProcessEffectCount\": " << diagnostics.enabledPostProcessEffectCount << ",\n";
+        stream << "    \"unsupportedPostProcessSkippedCount\": " << diagnostics.unsupportedPostProcessSkippedCount << ",\n";
+        stream << "    \"postProcessGraphPassCount\": " << diagnostics.postProcessGraphPassCount << ",\n";
+        stream << "    \"clusteredLightingInitialized\": "
+               << (diagnostics.clusteredLightingInitialized ? "true" : "false") << ",\n";
+        stream << "    \"clusteredLightingActiveClusters\": " << diagnostics.clusteredLightingActiveClusters << ",\n";
+        stream << "    \"textureIBLEnabled\": " << (report.iblStats.textureIBLEnabled ? "true" : "false") << "\n";
+        stream << "  }\n";
+        stream << "}\n";
+        return static_cast<bool>(stream);
     }
 
     Quat MakeLookRotation(const Vec3& direction, const Vec3& up)
@@ -568,7 +1133,7 @@ namespace
         }
     }
 
-    void ApplyLightPreset(LightRig& rig, int presetIndex)
+    void ApplyLightPreset(LightRig& rig, int presetIndex, bool shadowsEnabled)
     {
         SetLightActive(rig.sun, false);
         SetLightActive(rig.warmPoint, false);
@@ -594,7 +1159,7 @@ namespace
                 if (auto* light = rig.sun ? rig.sun->GetComponent<LightComponent>() : nullptr)
                 {
                     light->SetIntensity(5.0f);
-                    light->SetCastsShadow(true);
+                    light->SetCastsShadow(shadowsEnabled);
                     light->SetShadowBias(0.0008f);
                 }
                 RVX_CORE_INFO("Lighting preset 3: directional shadow");
@@ -613,7 +1178,10 @@ namespace
         }
     }
 
-    void ApplyPostProcessPreset(SceneRenderer* sceneRenderer, int presetIndex)
+    void ApplyPostProcessPreset(SceneRenderer* sceneRenderer,
+                                int presetIndex,
+                                ShowcaseQuality quality,
+                                bool postProcessEnabled)
     {
         if (!sceneRenderer)
         {
@@ -639,6 +1207,30 @@ namespace
         settings.vignetteIntensity = 0.25f;
         settings.enableChromaticAberration = false;
         settings.chromaticAberrationIntensity = 0.05f;
+
+        switch (quality)
+        {
+            case ShowcaseQuality::Low:
+                settings.enableFXAA = false;
+                settings.enableBloom = false;
+                settings.enableColorGrading = false;
+                break;
+            case ShowcaseQuality::High:
+                settings.bloomRadius = 1.0f;
+                settings.contrast = 1.08f;
+                settings.saturation = 1.05f;
+                break;
+            case ShowcaseQuality::Cinematic:
+                settings.bloomRadius = 1.5f;
+                settings.contrast = 1.16f;
+                settings.saturation = 1.1f;
+                settings.enableVignette = true;
+                settings.vignetteIntensity = 0.28f;
+                break;
+            case ShowcaseQuality::Medium:
+            default:
+                break;
+        }
 
         switch (presetIndex)
         {
@@ -673,10 +1265,20 @@ namespace
                 break;
         }
 
+        if (!postProcessEnabled)
+        {
+            settings.enableToneMapping = false;
+            settings.enableBloom = false;
+            settings.enableFXAA = false;
+            settings.enableColorGrading = false;
+            settings.enableVignette = false;
+            settings.enableChromaticAberration = false;
+        }
+
         sceneRenderer->ApplyPostProcessSettings(settings);
     }
 
-    ShadowPassConfig MakeShowcaseShadowConfig()
+    ShadowPassConfig MakeShowcaseShadowConfig(ShowcaseQuality quality, bool shadowsEnabled)
     {
         ShadowPassConfig config;
         config.shadowMapSize = 2048;
@@ -686,6 +1288,36 @@ namespace
         config.shadowBias = 0.0035f;
         config.normalBias = 0.02f;
         config.cascadeBlendRatio = 0.05f;
+
+        switch (quality)
+        {
+            case ShowcaseQuality::Low:
+                config.shadowMapSize = 1024;
+                config.numCascades = 1;
+                config.filterRadiusTexels = 0.75f;
+                break;
+            case ShowcaseQuality::High:
+                config.shadowMapSize = 2048;
+                config.numCascades = 4;
+                config.filterRadiusTexels = 1.5f;
+                break;
+            case ShowcaseQuality::Cinematic:
+                config.shadowMapSize = 4096;
+                config.numCascades = 4;
+                config.filterRadiusTexels = 2.0f;
+                break;
+            case ShowcaseQuality::Medium:
+            default:
+                break;
+        }
+
+        if (!shadowsEnabled)
+        {
+            config.shadowMapSize = 512;
+            config.numCascades = 1;
+            config.filterRadiusTexels = 0.0f;
+        }
+
         return config;
     }
 
@@ -793,6 +1425,16 @@ namespace
                 orbit.distance = 4.2f;
                 orbit.pitch = 0.3f;
                 break;
+            case ShowcaseMode::ResourceRuntime:
+                orbit.target = Vec3(0.0f, 0.2f, 0.0f);
+                orbit.distance = 3.0f;
+                orbit.pitch = 0.2f;
+                break;
+            case ShowcaseMode::PhysicsAudio:
+                orbit.target = Vec3(0.0f, 0.4f, -0.2f);
+                orbit.distance = 4.8f;
+                orbit.pitch = 0.22f;
+                break;
             case ShowcaseMode::PostProcess:
             default:
                 orbit.target = Vec3(0.0f, 0.2f, 0.0f);
@@ -891,7 +1533,7 @@ int main(int argc, char* argv[])
     renderConfig.enableValidation = options.enableValidation;
     renderConfig.vsync = options.frames == 0;
     renderConfig.autoBindWindow = true;
-    renderConfig.autoRender = true;
+    renderConfig.autoRender = false;
     renderSubsystem->SetConfig(renderConfig);
 
     engine.Initialize();
@@ -911,13 +1553,16 @@ int main(int argc, char* argv[])
     SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
     if (sceneRenderer)
     {
-        sceneRenderer->ApplyShadowPassConfig(MakeShowcaseShadowConfig());
+        sceneRenderer->ApplyShadowPassConfig(MakeShowcaseShadowConfig(options.quality, options.shadowsEnabled));
         const int startupPostPreset =
             (options.mode == ShowcaseMode::Material ||
              options.mode == ShowcaseMode::Rendering ||
              options.mode == ShowcaseMode::TerrainWater ||
              options.mode == ShowcaseMode::ParticleFX) ? 2 : 0;
-        ApplyPostProcessPreset(sceneRenderer, startupPostPreset);
+        ApplyPostProcessPreset(sceneRenderer,
+                               startupPostPreset,
+                               options.quality,
+                               options.postProcessEnabled);
     }
 
     World* world = engine.CreateWorld("ShowcaseWorld");
@@ -990,7 +1635,7 @@ int main(int argc, char* argv[])
          options.mode == ShowcaseMode::SceneInteraction ||
          options.mode == ShowcaseMode::TerrainWater ||
          options.mode == ShowcaseMode::ParticleFX) ? 2 : 0;
-    ApplyLightPreset(lightRig, initialLightPreset);
+    ApplyLightPreset(lightRig, initialLightPreset, options.shadowsEnabled);
 
     bool isVulkan = false;
     if (auto* device = renderSubsystem->GetDevice())
@@ -1013,6 +1658,9 @@ int main(int argc, char* argv[])
                       options.mode == ShowcaseMode::ParticleFX) ? 2 : 0;
     int lightPreset = initialLightPreset;
     uint32 renderedFrames = 0;
+    bool sampleSucceeded = true;
+    bool screenshotWritten = false;
+    std::string screenshotFailureReason;
     PrintControls(options.mode);
 
     while (!engine.ShouldShutdown())
@@ -1027,38 +1675,38 @@ int main(int argc, char* argv[])
             if (input->IsKeyPressed(Key::Num1))
             {
                 postPreset = 0;
-                ApplyPostProcessPreset(sceneRenderer, postPreset);
+                ApplyPostProcessPreset(sceneRenderer, postPreset, options.quality, options.postProcessEnabled);
             }
             if (input->IsKeyPressed(Key::Num2))
             {
                 postPreset = 1;
-                ApplyPostProcessPreset(sceneRenderer, postPreset);
+                ApplyPostProcessPreset(sceneRenderer, postPreset, options.quality, options.postProcessEnabled);
             }
             if (input->IsKeyPressed(Key::Num3))
             {
                 postPreset = 2;
-                ApplyPostProcessPreset(sceneRenderer, postPreset);
+                ApplyPostProcessPreset(sceneRenderer, postPreset, options.quality, options.postProcessEnabled);
             }
             if (input->IsKeyPressed(Key::Num4))
             {
                 postPreset = 3;
-                ApplyPostProcessPreset(sceneRenderer, postPreset);
+                ApplyPostProcessPreset(sceneRenderer, postPreset, options.quality, options.postProcessEnabled);
             }
 
             if (input->IsKeyPressed(Key::F1))
             {
                 lightPreset = 0;
-                ApplyLightPreset(lightRig, lightPreset);
+                ApplyLightPreset(lightRig, lightPreset, options.shadowsEnabled);
             }
             if (input->IsKeyPressed(Key::F2))
             {
                 lightPreset = 1;
-                ApplyLightPreset(lightRig, lightPreset);
+                ApplyLightPreset(lightRig, lightPreset, options.shadowsEnabled);
             }
             if (input->IsKeyPressed(Key::F3))
             {
                 lightPreset = 2;
-                ApplyLightPreset(lightRig, lightPreset);
+                ApplyLightPreset(lightRig, lightPreset, options.shadowsEnabled);
             }
 
             float mouseX = 0.0f;
@@ -1105,16 +1753,112 @@ int main(int argc, char* argv[])
 
         (void)postPreset;
         (void)lightPreset;
-        engine.Tick();
 
-        if (options.frames > 0 && ++renderedFrames >= options.frames)
+        const bool captureFrame =
+            !options.screenshotPath.empty() &&
+            options.frames > 0 &&
+            (renderedFrames + 1u >= options.frames);
+        PendingScreenshot pendingScreenshot;
+
+        engine.TickWithoutRender();
+        renderSubsystem->BeginFrame();
+        renderSubsystem->Render(world, camera);
+
+        if (captureFrame && !QueueBackBufferScreenshot(renderSubsystem, pendingScreenshot))
+        {
+            screenshotFailureReason = pendingScreenshot.failureReason.empty()
+                ? "failed to queue back buffer screenshot"
+                : pendingScreenshot.failureReason;
+            RVX_CORE_ERROR("Showcase screenshot capture failed: {}", screenshotFailureReason);
+            sampleSucceeded = false;
+        }
+
+        renderSubsystem->EndFrame();
+
+        if (captureFrame && sampleSucceeded)
+        {
+            if (RenderContext* renderContext = renderSubsystem->GetRenderContext())
+            {
+                renderContext->WaitIdle();
+            }
+
+            if (WriteScreenshotPPM(pendingScreenshot, options.screenshotPath))
+            {
+                screenshotWritten = true;
+                RVX_CORE_INFO("Showcase screenshot wrote {}", options.screenshotPath.string());
+            }
+            else
+            {
+                screenshotFailureReason = "failed to write screenshot PPM";
+                RVX_CORE_ERROR("Showcase screenshot write failed: {}", options.screenshotPath.string());
+                sampleSucceeded = false;
+            }
+        }
+
+        renderSubsystem->Present();
+
+        ++renderedFrames;
+        if (options.frames > 0 && renderedFrames >= options.frames)
         {
             engine.RequestShutdown();
+        }
+    }
+
+    ShowcaseReport report;
+    report.sampleName = GetModeName(options.mode);
+    report.description = GetModeDescription(options.mode);
+    report.requestedBackend = ToString(options.backend);
+    report.activeBackend = renderSubsystem->GetDevice()
+        ? ToString(renderSubsystem->GetDevice()->GetBackendType())
+        : "None";
+    report.quality = GetQualityName(options.quality);
+    report.width = options.width;
+    report.height = options.height;
+    report.frameCount = renderedFrames;
+    report.screenshotPath = screenshotWritten ? options.screenshotPath : std::filesystem::path{};
+    report.pass = sampleSucceeded;
+    AddModeFeatureDiagnostics(options.mode, report);
+    if (!options.postProcessEnabled)
+    {
+        report.fallbackReasons.push_back("post-process disabled by --no-postprocess");
+    }
+    if (!options.iblEnabled)
+    {
+        report.fallbackReasons.push_back("IBL disabled by --no-ibl");
+    }
+    if (!options.shadowsEnabled)
+    {
+        report.fallbackReasons.push_back("shadows disabled by --no-shadows");
+    }
+    if (!screenshotFailureReason.empty())
+    {
+        report.fallbackReasons.push_back(screenshotFailureReason);
+    }
+    if (modelPath.empty())
+    {
+        report.resourceDiagnostics.push_back("default model fixture was not found");
+    }
+    else
+    {
+        report.resourceDiagnostics.push_back("model fixture loaded: " + modelPath.string());
+    }
+    AppendRendererDiagnostics(sceneRenderer, report);
+
+    if (!options.reportPath.empty())
+    {
+        if (!WriteShowcaseReport(report, options.reportPath))
+        {
+            RVX_CORE_ERROR("Failed to write showcase report {}", options.reportPath.string());
+            sampleSucceeded = false;
+        }
+        else
+        {
+            RVX_CORE_INFO("Showcase report wrote {}", options.reportPath.string());
         }
     }
 
     engine.Shutdown();
     RVX_CORE_INFO("=== {} Complete ===", GetModeName(options.mode));
     Log::Shutdown();
-    return 0;
+    return sampleSucceeded ? 0 : -1;
 }
