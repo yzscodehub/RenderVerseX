@@ -265,11 +265,6 @@ void ResourceManager::Shutdown()
     StopAsyncWorkers();
     ProcessCompletedLoads();
 
-    {
-        std::lock_guard<std::mutex> lock(m_pendingCallbacksMutex);
-        m_pendingCallbacks.clear();
-    }
-
     std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
     m_loaders.clear();
     m_cache->Clear();
@@ -790,40 +785,7 @@ IResourceLoader* ResourceManager::GetLoader(ResourceType type)
 
 void ResourceManager::ProcessCompletedLoads()
 {
-    std::vector<PendingAsyncCallback> readyCallbacks;
-
-    {
-        std::lock_guard<std::mutex> lock(m_pendingCallbacksMutex);
-
-        auto it = m_pendingCallbacks.begin();
-        while (it != m_pendingCallbacks.end())
-        {
-            if (it->isReady && it->isReady())
-            {
-                readyCallbacks.push_back(std::move(*it));
-                it = m_pendingCallbacks.erase(it);
-            }
-            else
-            {
-                ++it;
-            }
-        }
-    }
-
-    for (auto& callback : readyCallbacks)
-    {
-        try
-        {
-            if (callback.dispatch)
-            {
-                callback.dispatch();
-            }
-        }
-        catch (const std::exception& e)
-        {
-            RVX_RESOURCE_ERROR("Async resource callback failed: {}", e.what());
-        }
-    }
+    JobSystem::Get().ProcessMainThreadCompletions();
 }
 
 ResourceManager::Stats ResourceManager::GetStats() const
@@ -846,11 +808,7 @@ ResourceManager::Stats ResourceManager::GetStats() const
     }
 
     stats.pendingLoads += m_pendingAsyncJobCount.load(std::memory_order_relaxed);
-
-    {
-        std::lock_guard<std::mutex> callbacksLock(m_pendingCallbacksMutex);
-        stats.pendingLoads += m_pendingCallbacks.size();
-    }
+    stats.pendingLoads += m_pendingAsyncCompletionCount.load(std::memory_order_relaxed);
 
     return stats;
 }

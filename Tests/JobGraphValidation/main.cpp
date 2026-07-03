@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <future>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -27,6 +28,90 @@ namespace
         }
     };
 } // namespace
+
+TEST(JobGraphValidation, JobHandleTracksCategoryAndTimeoutWait)
+{
+    ScopedJobSystemShutdown shutdown;
+    JobSystem::Get().Initialize(1);
+
+    std::promise<void> releasePromise;
+    std::shared_future<void> releaseFuture = releasePromise.get_future().share();
+
+    JobSubmissionDesc desc;
+    desc.category = "Resource.Load";
+    desc.priority = JobPriority::High;
+
+    JobHandle handle = JobSystem::Get().Submit([releaseFuture]() {
+        releaseFuture.wait();
+    }, desc);
+
+    EXPECT_EQ(handle.GetCategory(), "Resource.Load");
+    EXPECT_EQ(handle.GetPriority(), JobPriority::High);
+    EXPECT_FALSE(handle.WaitFor(5));
+
+    releasePromise.set_value();
+    EXPECT_TRUE(handle.WaitFor(1000));
+    EXPECT_TRUE(handle.IsComplete());
+}
+
+TEST(JobGraphValidation, MainThreadCompletionRunsOnlyWhenPumped)
+{
+    ScopedJobSystemShutdown shutdown;
+    JobSystem::Get().Initialize(1);
+
+    const std::thread::id pumpThreadId = std::this_thread::get_id();
+    std::thread::id callbackThreadId;
+    std::atomic<bool> jobRan{false};
+    bool callbackCalled = false;
+
+    JobSubmissionDesc desc;
+    desc.category = "Resource.Load";
+    desc.completionDispatch = JobCompletionDispatch::MainThread;
+    desc.continuation = [&]() {
+        callbackThreadId = std::this_thread::get_id();
+        callbackCalled = true;
+    };
+
+    JobHandle handle = JobSystem::Get().Submit([&jobRan]() {
+        jobRan.store(true, std::memory_order_release);
+    }, desc);
+
+    handle.Wait();
+    EXPECT_TRUE(jobRan.load(std::memory_order_acquire));
+    EXPECT_FALSE(callbackCalled);
+    EXPECT_EQ(JobSystem::Get().GetPendingMainThreadCompletionCount(), 1u);
+
+    EXPECT_EQ(JobSystem::Get().ProcessMainThreadCompletions(), 1u);
+    EXPECT_TRUE(callbackCalled);
+    EXPECT_EQ(callbackThreadId, pumpThreadId);
+    EXPECT_EQ(JobSystem::Get().GetPendingMainThreadCompletionCount(), 0u);
+}
+
+TEST(JobGraphValidation, ResultJobQueuesMainThreadContinuationAfterResultReady)
+{
+    ScopedJobSystemShutdown shutdown;
+    JobSystem::Get().Initialize(1);
+
+    bool continuationCalled = false;
+
+    JobSubmissionDesc desc;
+    desc.category = "Resource.Load";
+    desc.completionDispatch = JobCompletionDispatch::MainThread;
+    desc.continuation = [&continuationCalled]() {
+        continuationCalled = true;
+    };
+
+    std::future<int> future = JobSystem::Get().SubmitWithResult([]() {
+        return 42;
+    }, desc);
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+    EXPECT_EQ(future.get(), 42);
+    EXPECT_FALSE(continuationCalled);
+
+    EXPECT_EQ(JobSystem::Get().ProcessMainThreadCompletions(), 1u);
+    EXPECT_TRUE(continuationCalled);
+}
 
 TEST(JobGraphValidation, ExecuteRunsDependencyChainWhenJobSystemFallsBackInline)
 {

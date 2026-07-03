@@ -278,12 +278,6 @@ namespace RVX::Resource
         std::string ResolvePath(const std::string& path) const;
 
     private:
-        struct PendingAsyncCallback
-        {
-            std::function<bool()> isReady;
-            std::function<void()> dispatch;
-        };
-
         bool m_initialized = false;
         ResourceManagerConfig m_config;
 
@@ -299,9 +293,7 @@ namespace RVX::Resource
 
         bool m_jobSystemInitializedByManager = false;
         std::atomic<size_t> m_pendingAsyncJobCount{0};
-
-        std::vector<PendingAsyncCallback> m_pendingCallbacks;
-        mutable std::mutex m_pendingCallbacksMutex;
+        std::atomic<size_t> m_pendingAsyncCompletionCount{0};
 
         mutable std::mutex m_diagnosticMutex;
         ResourceLoadDiagnostic m_lastLoadDiagnostic;
@@ -378,6 +370,10 @@ namespace RVX::Resource
     {
         static_assert(std::is_base_of_v<IResource, T>, "T must derive from IResource");
         m_pendingAsyncJobCount.fetch_add(1, std::memory_order_relaxed);
+        JobSubmissionDesc desc;
+        desc.category = "Resource.LoadAsync";
+        desc.priority = JobPriority::Normal;
+
         return JobSystem::Get().SubmitWithResult([this, path]() {
             struct PendingLoadGuard
             {
@@ -389,43 +385,49 @@ namespace RVX::Resource
             } guard{m_pendingAsyncJobCount};
 
             return Load<T>(path);
-        });
+        }, desc);
     }
 
     template<typename T>
     void ResourceManager::LoadAsync(const std::string& path, std::function<void(ResourceHandle<T>)> callback)
     {
         static_assert(std::is_base_of_v<IResource, T>, "T must derive from IResource");
+        auto completedHandle = std::make_shared<ResourceHandle<T>>();
         m_pendingAsyncJobCount.fetch_add(1, std::memory_order_relaxed);
-        auto future = std::make_shared<std::future<ResourceHandle<T>>>(
-            JobSystem::Get().SubmitWithResult([this, path]() {
-                struct PendingLoadGuard
+        m_pendingAsyncCompletionCount.fetch_add(1, std::memory_order_relaxed);
+
+        JobSubmissionDesc desc;
+        desc.category = "Resource.LoadAsync";
+        desc.priority = JobPriority::Normal;
+        desc.completionDispatch = JobCompletionDispatch::MainThread;
+        desc.continuation = [this, completedHandle, callback = std::move(callback)]() mutable {
+            struct PendingCompletionGuard
+            {
+                std::atomic<size_t>& counter;
+                ~PendingCompletionGuard()
                 {
-                    std::atomic<size_t>& counter;
-                    ~PendingLoadGuard()
-                    {
-                        counter.fetch_sub(1, std::memory_order_relaxed);
-                    }
-                } guard{m_pendingAsyncJobCount};
-
-                return Load<T>(path);
-            }));
-
-        {
-            std::lock_guard<std::mutex> lock(m_pendingCallbacksMutex);
-            m_pendingCallbacks.push_back(PendingAsyncCallback{
-                [future]() {
-                    return future->wait_for(std::chrono::seconds(0)) == std::future_status::ready;
-                },
-                [future, callback = std::move(callback)]() mutable {
-                    auto handle = future->get();
-                    if (callback)
-                    {
-                        callback(handle);
-                    }
+                    counter.fetch_sub(1, std::memory_order_relaxed);
                 }
-            });
-        }
+            } guard{m_pendingAsyncCompletionCount};
+
+            if (callback)
+            {
+                callback(*completedHandle);
+            }
+        };
+
+        JobSystem::Get().Submit([this, path, completedHandle]() {
+            struct PendingLoadGuard
+            {
+                std::atomic<size_t>& counter;
+                ~PendingLoadGuard()
+                {
+                    counter.fetch_sub(1, std::memory_order_relaxed);
+                }
+            } guard{m_pendingAsyncJobCount};
+
+            *completedHandle = Load<T>(path);
+        }, desc);
 
     }
 
