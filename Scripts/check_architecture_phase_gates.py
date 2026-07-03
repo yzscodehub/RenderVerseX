@@ -14,6 +14,7 @@ SOURCE_SUFFIXES = {".h", ".hpp", ".hh", ".cpp", ".cc", ".cxx", ".inl"}
 
 CONTAINS_FALLBACK_PATHS = {
     "Render/Private/Renderer/SceneRenderer.cpp": [
+        "Render/Private/Diagnostics/RenderFeatureReport.cpp",
         "Render/Private/Diagnostics/SceneRendererToolDiagnostics.cpp",
     ],
 }
