@@ -871,6 +871,24 @@ function(rvx_add_showcase_smoke_test TARGET_NAME)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
     set_property(TEST ${TARGET_NAME}DX11ImageContentValidation PROPERTY DEPENDS ${TARGET_NAME}DX11Smoke)
+
+    if(TARGET SampleReportContentValidation)
+        add_test(
+            NAME ${TARGET_NAME}DX11ReportSchemaValidation
+            COMMAND $<TARGET_FILE:SampleReportContentValidation>
+                --report "${smoke_report}"
+                --sample-name ${TARGET_NAME}
+                --backend dx11
+                --quality low
+                --frame-count 2
+        )
+        set_tests_properties(${TARGET_NAME}DX11ReportSchemaValidation PROPERTIES
+            LABELS "visual;gpu;sample;showcase;dx11"
+            TIMEOUT 30
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+        set_property(TEST ${TARGET_NAME}DX11ReportSchemaValidation PROPERTY DEPENDS ${TARGET_NAME}DX11Smoke)
+    endif()
 endfunction()
 
 rvx_add_showcase_smoke_test(RenderingShowcase)

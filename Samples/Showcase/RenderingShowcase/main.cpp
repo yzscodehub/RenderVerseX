@@ -855,7 +855,7 @@ namespace
                 break;
             case ShowcaseMode::TerrainWater:
                 report.enabledFeatures.push_back("TerrainWaterStagingScene");
-                report.unsupportedFeatures.push_back("Terrain/Water GPU renderer remains fallback-only until feature render boundaries are migrated");
+                report.unsupportedFeatures.push_back("Terrain/Water Render-owned draw passes are snapshot-ready but not fully connected yet");
                 break;
             case ShowcaseMode::ParticleFX:
                 report.enabledFeatures.push_back("ParticleFXStagingScene");
