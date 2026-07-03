@@ -1,22 +1,25 @@
 /**
- * @file TerrainRenderer.cpp
- * @brief Implementation of terrain rendering pass
+ * @file TerrainPass.cpp
+ * @brief Render-owned terrain passes.
  */
 
-#include "Terrain/Terrain.h"
 #include "Render/Passes/IRenderPass.h"
-#include "RHI/RHIDevice.h"
-#include "RHI/RHICommandContext.h"
+
 #include "Core/Log.h"
+#include "Core/MathTypes.h"
+#include "RHI/RHICommandContext.h"
+#include "RHI/RHIDevice.h"
+
+#include <memory>
+#include <vector>
 
 namespace RVX
 {
 
 /**
- * @brief Terrain rendering pass
- * 
- * Renders all terrain components in the scene using the LOD system
- * and terrain materials.
+ * @brief Terrain rendering pass.
+ *
+ * Renders extracted terrain snapshots through RenderGraph.
  */
 class TerrainPass : public IRenderPass
 {
@@ -48,9 +51,7 @@ public:
     {
         (void)builder;
         (void)view;
-        // Declare resource usage
-        // builder.Write(view.colorTarget);
-        // builder.SetDepthStencil(view.depthTarget, true, false);
+        // Declare snapshot-driven resource usage once terrain pass scheduling is enabled.
     }
 
     void Execute(RHICommandContext& ctx, const ViewData& view) override
@@ -64,10 +65,6 @@ public:
         }
 
         ctx.SetPipeline(m_pipeline.Get());
-
-        // Render terrain patches
-        // This would iterate through terrain components in the scene
-        // and render each patch with the appropriate LOD level
     }
 
 private:
@@ -79,8 +76,6 @@ private:
             return;
         }
 
-        // Pipeline creation would be done here
-        // For now, just log
         RVX_CORE_INFO("TerrainPass: Pipeline created");
     }
 
@@ -89,8 +84,8 @@ private:
 };
 
 /**
- * @brief Terrain shadow pass
- * 
+ * @brief Terrain shadow pass.
+ *
  * Renders terrain depth for shadow mapping.
  */
 class TerrainShadowPass : public IRenderPass
@@ -113,7 +108,6 @@ public:
     {
         (void)ctx;
         (void)view;
-        // Render terrain depth for shadows
     }
 };
 
@@ -122,8 +116,8 @@ public:
 // =========================================================================
 
 /**
- * @brief Create terrain passes for the renderer
- * @return Vector of terrain render passes
+ * @brief Create terrain passes for the renderer.
+ * @return Vector of terrain render passes.
  */
 std::vector<std::unique_ptr<IRenderPass>> CreateTerrainPasses()
 {
@@ -134,7 +128,7 @@ std::vector<std::unique_ptr<IRenderPass>> CreateTerrainPasses()
 }
 
 /**
- * @brief GPU data for terrain rendering
+ * @brief GPU data for terrain rendering.
  */
 struct TerrainGPUData
 {
@@ -146,7 +140,7 @@ struct TerrainGPUData
 };
 
 /**
- * @brief GPU data for a single terrain patch
+ * @brief GPU data for a single terrain patch.
  */
 struct TerrainPatchGPUData
 {

@@ -43,11 +43,13 @@ target_sources(RVX_Render PRIVATE
     Private/Passes/ObjectVelocityPass.cpp
     Private/Passes/SkyboxPass.cpp
     Private/Passes/ShadowPass.cpp
+    Private/Passes/TerrainPass.cpp
     Private/Passes/RayTracedShadowPass.cpp
     Private/Passes/RayTracedReflectionPass.cpp
     Private/Passes/RayTracedReflectionDenoisePass.cpp
     Private/Passes/RayTracedReflectionCompositePass.cpp
     Private/Passes/GBufferPass.cpp
+    Private/Passes/WaterPass.cpp
     # Graph (merged from RenderGraph module)
     Private/Graph/RenderGraph.cpp
     Private/Graph/RenderGraphCompiler.cpp

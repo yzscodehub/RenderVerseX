@@ -7,13 +7,12 @@
 # - WaterSimulation (wave and physics simulation)
 # - Caustics (underwater light patterns)
 # - Underwater (underwater post-processing effects)
-# - WaterRenderer (water rendering pass)
+# - Runtime water data used by Render-owned water passes
 # =============================================================================
 add_library(RVX_Water STATIC)
 
 target_sources(RVX_Water PRIVATE
     # Core
-    Private/WaterRenderer.cpp
     Private/WaterSimulation.cpp
     Private/Caustics.cpp
     Private/WaterComponent.cpp
@@ -34,7 +33,6 @@ target_link_libraries(RVX_Water PUBLIC
     RVX::Scene
     PRIVATE
         RVX_RHI
-        RVX::Render
 )
 
 add_library(RVX::Water ALIAS RVX_Water)

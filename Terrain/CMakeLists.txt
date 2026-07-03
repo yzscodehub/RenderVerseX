@@ -7,13 +7,12 @@
 # - TerrainLOD (level-of-detail system with CDLOD/Clipmap support)
 # - TerrainMaterial (multi-layer terrain texturing)
 # - TerrainCollider (physics collision for terrain)
-# - TerrainRenderer (terrain rendering pass)
+# - Runtime terrain data used by Render-owned terrain passes
 # =============================================================================
 add_library(RVX_Terrain STATIC)
 
 target_sources(RVX_Terrain PRIVATE
     # Core
-    Private/TerrainRenderer.cpp
     Private/TerrainLOD.cpp
     Private/TerrainCollider.cpp
     Private/Heightmap.cpp
@@ -34,7 +33,6 @@ target_link_libraries(RVX_Terrain PUBLIC
     RVX::Scene
     PRIVATE
         RVX_RHI
-        RVX::Render
 )
 
 add_library(RVX::Terrain ALIAS RVX_Terrain)

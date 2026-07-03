@@ -1,23 +1,26 @@
 /**
- * @file WaterRenderer.cpp
- * @brief Implementation of water rendering pass
+ * @file WaterPass.cpp
+ * @brief Render-owned water passes.
  */
 
-#include "Water/Water.h"
 #include "Render/Passes/IRenderPass.h"
-#include "RHI/RHIDevice.h"
-#include "RHI/RHICommandContext.h"
-#include "RHI/RHIPipeline.h"
+
 #include "Core/Log.h"
+#include "Core/MathTypes.h"
+#include "RHI/RHICommandContext.h"
+#include "RHI/RHIDevice.h"
+#include "RHI/RHIPipeline.h"
+
+#include <memory>
+#include <vector>
 
 namespace RVX
 {
 
 /**
- * @brief Water rendering pass
- * 
- * Renders all water components in the scene with proper transparency
- * and effects ordering.
+ * @brief Water rendering pass.
+ *
+ * Renders extracted water snapshots with proper transparency ordering.
  */
 class WaterPass : public IRenderPass
 {
@@ -50,9 +53,7 @@ public:
     {
         (void)builder;
         (void)view;
-        // Declare resource usage
-        // builder.Read(view.depthTarget);
-        // builder.Write(view.colorTarget);
+        // Declare snapshot-driven resource usage once water pass scheduling is enabled.
     }
 
     void Execute(RHICommandContext& ctx, const ViewData& view) override
@@ -65,15 +66,7 @@ public:
             return;
         }
 
-        // Render water surfaces
         ctx.SetPipeline(m_surfacePipeline.Get());
-
-        // This would iterate through water components in the scene
-        // For each water component:
-        // 1. Dispatch wave simulation (if needed)
-        // 2. Generate reflection texture (if planar reflections enabled)
-        // 3. Render water surface mesh
-        // 4. Apply caustics (for underwater objects)
     }
 
 private:
@@ -85,7 +78,6 @@ private:
             return;
         }
 
-        // Pipeline creation would be done here
         RVX_CORE_INFO("WaterPass: Pipelines created");
     }
 
@@ -95,8 +87,8 @@ private:
 };
 
 /**
- * @brief Water reflection pass
- * 
+ * @brief Water reflection pass.
+ *
  * Renders scene reflection for planar water reflections.
  */
 class WaterReflectionPass : public IRenderPass
@@ -113,21 +105,18 @@ public:
     {
         (void)builder;
         (void)view;
-        // Setup reflection render target
     }
 
     void Execute(RHICommandContext& ctx, const ViewData& view) override
     {
         (void)ctx;
         (void)view;
-        // Render scene from reflected camera
-        // Clip objects below water plane
     }
 };
 
 /**
- * @brief Underwater post-process pass
- * 
+ * @brief Underwater post-process pass.
+ *
  * Applies underwater visual effects when camera is submerged.
  */
 class UnderwaterPostPass : public IRenderPass
@@ -150,7 +139,6 @@ public:
     {
         (void)ctx;
         (void)view;
-        // Apply underwater effects if camera is submerged
     }
 
     void SetUnderwater(bool underwater) { m_isUnderwater = underwater; }
@@ -165,8 +153,8 @@ private:
 // =========================================================================
 
 /**
- * @brief Create water passes for the renderer
- * @return Vector of water render passes
+ * @brief Create water passes for the renderer.
+ * @return Vector of water render passes.
  */
 std::vector<std::unique_ptr<IRenderPass>> CreateWaterPasses()
 {
@@ -178,7 +166,7 @@ std::vector<std::unique_ptr<IRenderPass>> CreateWaterPasses()
 }
 
 /**
- * @brief GPU data for water rendering
+ * @brief GPU data for water rendering.
  */
 struct WaterGPUData
 {
@@ -193,19 +181,19 @@ struct WaterGPUData
 };
 
 /**
- * @brief GPU data for caustics
+ * @brief GPU data for caustics.
  */
 struct CausticsGPUData
 {
     Vec4 causticsParams;        // (intensity, scale, speed, maxDepth)
     Vec4 lightDirection;
-    float waterHeight;
-    float focusFalloff;
-    float padding[2];
+    float waterHeight = 0.0f;
+    float focusFalloff = 0.0f;
+    float padding[2] = {};
 };
 
 /**
- * @brief GPU data for underwater effects
+ * @brief GPU data for underwater effects.
  */
 struct UnderwaterGPUData
 {
