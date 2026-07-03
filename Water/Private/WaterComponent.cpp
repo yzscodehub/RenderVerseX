@@ -6,6 +6,8 @@
 #include "Water/WaterComponent.h"
 #include "Water/Caustics.h"
 #include "Water/Underwater.h"
+#include "Water/WaterSimulation.h"
+#include "Water/WaterSurface.h"
 #include "Scene/SceneEntity.h"
 #include "Core/Log.h"
 
@@ -14,6 +16,10 @@
 
 namespace RVX
 {
+
+WaterComponent::WaterComponent() = default;
+
+WaterComponent::~WaterComponent() = default;
 
 void WaterComponent::OnAttach()
 {

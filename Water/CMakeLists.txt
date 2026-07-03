@@ -24,6 +24,8 @@ target_sources(RVX_Water PRIVATE
 target_include_directories(RVX_Water PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
     $<INSTALL_INTERFACE:include>
+    PRIVATE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Private>
 )
 
 target_link_libraries(RVX_Water PUBLIC

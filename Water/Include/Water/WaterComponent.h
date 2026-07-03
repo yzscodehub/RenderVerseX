@@ -9,15 +9,17 @@
  */
 
 #include "Scene/Component.h"
-#include "Water/WaterSurface.h"
-#include "Water/WaterSimulation.h"
+#include "Water/WaterTypes.h"
 
 #include <memory>
 
 namespace RVX
 {
+    class IRHIDevice;
     class Caustics;
     class Underwater;
+    class WaterSimulation;
+    class WaterSurface;
 
     /**
      * @brief Water component settings
@@ -70,8 +72,8 @@ namespace RVX
     class WaterComponent : public Component
     {
     public:
-        WaterComponent() = default;
-        ~WaterComponent() override = default;
+        WaterComponent();
+        ~WaterComponent() override;
 
         // =====================================================================
         // Component Interface

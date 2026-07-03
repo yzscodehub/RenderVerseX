@@ -8,8 +8,7 @@
  * to full FFT-based ocean simulation.
  */
 
-#include "Core/Types.h"
-#include "Core/MathTypes.h"
+#include "Water/WaterTypes.h"
 #include "RHI/RHITexture.h"
 #include "RHI/RHIBuffer.h"
 #include "RHI/RHIPipeline.h"
@@ -21,53 +20,6 @@ namespace RVX
 {
     class IRHIDevice;
     class RHICommandContext;
-
-    /**
-     * @brief Water simulation type
-     */
-    enum class WaterSimulationType : uint8
-    {
-        Simple,     ///< Simple sine wave (fastest)
-        Gerstner,   ///< Gerstner waves (good balance)
-        FFT         ///< FFT-based ocean simulation (most realistic)
-    };
-
-    /**
-     * @brief Gerstner wave parameters
-     */
-    struct GerstnerWave
-    {
-        Vec2 direction{1.0f, 0.0f};     ///< Wave direction (normalized)
-        float wavelength = 10.0f;        ///< Wavelength in meters
-        float amplitude = 0.5f;          ///< Wave amplitude
-        float speed = 1.0f;              ///< Wave speed multiplier
-        float steepness = 0.5f;          ///< Wave steepness (0-1)
-    };
-
-    /**
-     * @brief FFT ocean spectrum parameters
-     */
-    struct OceanSpectrumParams
-    {
-        float windSpeed = 10.0f;         ///< Wind speed (m/s)
-        Vec2 windDirection{1.0f, 0.0f};  ///< Wind direction
-        float fetch = 1000.0f;           ///< Fetch distance (wind travel distance)
-        float spectrumScale = 1.0f;      ///< Spectrum amplitude scale
-        float choppiness = 1.0f;         ///< Horizontal displacement scale
-        float depth = 100.0f;            ///< Water depth (affects wave speed)
-    };
-
-    /**
-     * @brief Water simulation configuration
-     */
-    struct WaterSimulationDesc
-    {
-        WaterSimulationType type = WaterSimulationType::Gerstner;
-        uint32 resolution = 256;                     ///< Simulation resolution (power of 2)
-        float domainSize = 100.0f;                   ///< Simulation domain size in meters
-        std::vector<GerstnerWave> gerstnerWaves;     ///< Gerstner wave parameters
-        OceanSpectrumParams oceanParams;             ///< FFT ocean parameters
-    };
 
     /**
      * @brief Water wave simulation system

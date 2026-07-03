@@ -8,8 +8,7 @@
  * focusing light onto underwater surfaces.
  */
 
-#include "Core/Types.h"
-#include "Core/MathTypes.h"
+#include "Water/WaterTypes.h"
 #include "RHI/RHITexture.h"
 #include "RHI/RHIBuffer.h"
 #include "RHI/RHIPipeline.h"
@@ -21,31 +20,6 @@ namespace RVX
     class IRHIDevice;
     class RHICommandContext;
     class WaterSimulation;
-
-    /**
-     * @brief Caustics rendering quality
-     */
-    enum class CausticsQuality : uint8
-    {
-        Off,        ///< Disabled
-        Low,        ///< Simple projected texture
-        Medium,     ///< Animated caustics
-        High        ///< Ray-traced caustics
-    };
-
-    /**
-     * @brief Caustics configuration
-     */
-    struct CausticsDesc
-    {
-        CausticsQuality quality = CausticsQuality::Medium;
-        uint32 textureSize = 512;           ///< Caustics texture resolution
-        float intensity = 1.0f;             ///< Caustics brightness
-        float scale = 5.0f;                 ///< UV scale for caustics pattern
-        float speed = 1.0f;                 ///< Animation speed
-        float maxDepth = 20.0f;             ///< Maximum depth for caustics
-        float focusFalloff = 0.5f;          ///< How fast caustics fade with depth
-    };
 
     /**
      * @brief Underwater caustics renderer

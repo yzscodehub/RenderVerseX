@@ -7,8 +7,7 @@
  * Provides visual effects for when the camera is below the water surface.
  */
 
-#include "Core/Types.h"
-#include "Core/MathTypes.h"
+#include "Water/WaterTypes.h"
 #include "RHI/RHITexture.h"
 #include "RHI/RHIBuffer.h"
 #include "RHI/RHIPipeline.h"
@@ -19,61 +18,6 @@ namespace RVX
 {
     class IRHIDevice;
     class RHICommandContext;
-
-    /**
-     * @brief Underwater effect quality
-     */
-    enum class UnderwaterQuality : uint8
-    {
-        Off,        ///< Disabled
-        Low,        ///< Simple tint
-        Medium,     ///< Tint + blur
-        High        ///< Full effects (god rays, distortion)
-    };
-
-    /**
-     * @brief Underwater visual properties
-     */
-    struct UnderwaterProperties
-    {
-        // Color/fog
-        Vec3 fogColor{0.0f, 0.15f, 0.25f};      ///< Underwater fog color
-        float fogDensity = 0.05f;                ///< Fog density
-        float fogStart = 0.0f;                   ///< Fog start distance
-        float fogEnd = 100.0f;                   ///< Fog end distance
-        
-        // Color absorption
-        Vec3 absorptionColor{1.0f, 0.5f, 0.2f};  ///< Color absorption rates (RGB)
-        float absorptionScale = 0.1f;            ///< Absorption intensity
-        
-        // Distortion
-        float distortionStrength = 0.02f;        ///< Screen distortion amount
-        float distortionSpeed = 1.0f;            ///< Distortion animation speed
-        
-        // Blur
-        float blurAmount = 0.5f;                 ///< Blur intensity
-        float blurFalloff = 0.1f;                ///< Blur distance falloff
-        
-        // God rays
-        bool enableGodRays = true;               ///< Enable underwater god rays
-        float godRayIntensity = 0.5f;            ///< God ray brightness
-        float godRayDecay = 0.95f;               ///< God ray decay
-        int godRaySamples = 64;                  ///< God ray sample count
-        
-        // Particles
-        bool enableParticles = true;             ///< Enable floating particles
-        float particleDensity = 100.0f;          ///< Particles per cubic meter
-        float particleSize = 0.01f;              ///< Particle size
-    };
-
-    /**
-     * @brief Underwater configuration
-     */
-    struct UnderwaterDesc
-    {
-        UnderwaterQuality quality = UnderwaterQuality::High;
-        UnderwaterProperties properties;
-    };
 
     /**
      * @brief Underwater post-processing effects
