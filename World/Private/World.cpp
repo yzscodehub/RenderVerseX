@@ -30,12 +30,12 @@ World::~World()
     }
 }
 
-void World::Initialize(const WorldConfig& config)
+bool World::Initialize(const WorldConfig& config)
 {
     if (m_initialized)
     {
         RVX_CORE_WARN("World already initialized");
-        return;
+        return true;
     }
 
     m_config = config;
@@ -62,11 +62,23 @@ void World::Initialize(const WorldConfig& config)
     }
 
     // Initialize all subsystems
-    m_subsystems.InitializeAll();
+    if (!m_subsystems.InitializeAll())
+    {
+        RVX_CORE_ERROR("World subsystem initialization failed: {}", m_config.name);
+        m_subsystems.DeinitializeAll();
+        if (m_sceneManager)
+        {
+            m_sceneManager->Shutdown();
+            m_sceneManager.reset();
+        }
+        m_initialized = false;
+        return false;
+    }
 
     m_initialized = true;
 
     RVX_CORE_INFO("World initialized: {}", m_config.name);
+    return true;
 }
 
 void World::Load(const std::string& path)

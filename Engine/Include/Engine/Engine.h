@@ -161,7 +161,7 @@ namespace RVX
         // =====================================================================
 
         /// Initialize the engine and all subsystems
-        void Initialize();
+        bool Initialize();
 
         /// Process one frame (uses internal time tracking)
         void Tick();
@@ -205,10 +205,10 @@ namespace RVX
         uint64_t GetFrameNumber() const { return m_frameNumber; }
 
         /// Compatibility alias
-        void Init() { Initialize(); }
+        bool Init() { return Initialize(); }
 
     private:
-        void InitializeSubsystems();
+        bool InitializeSubsystems();
         void TickSubsystems(float deltaTime);
         void ShutdownSubsystems();
         void TickWorlds(float deltaTime);

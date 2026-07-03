@@ -2,11 +2,97 @@
 
 #include "Core/App/AppMode.h"
 #include "Core/Camera/Camera.h"
+#include "Core/Log.h"
+#include "Core/Subsystem/EngineSubsystem.h"
+#include "Core/Subsystem/SubsystemCollection.h"
+
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 using namespace RVX;
 
 namespace
 {
+    class ScopedCoreLog
+    {
+    public:
+        ScopedCoreLog()
+        {
+            if (!Log::GetCoreLogger())
+            {
+                Log::Initialize();
+                m_owned = true;
+            }
+        }
+
+        ~ScopedCoreLog()
+        {
+            if (m_owned)
+            {
+                Log::Shutdown();
+            }
+        }
+
+    private:
+        bool m_owned = false;
+    };
+
+    class RecordingLifecycleSubsystem final : public EngineSubsystem
+    {
+    public:
+        explicit RecordingLifecycleSubsystem(std::vector<std::string>* events)
+            : m_events(events)
+        {
+        }
+
+        const char* GetName() const override { return "RecordingLifecycleSubsystem"; }
+
+        void Initialize() override
+        {
+            if (m_events)
+            {
+                m_events->push_back("recording:init");
+            }
+        }
+
+        void Deinitialize() override
+        {
+            if (m_events)
+            {
+                m_events->push_back("recording:shutdown");
+            }
+        }
+
+    private:
+        std::vector<std::string>* m_events = nullptr;
+    };
+
+    class FailingLifecycleSubsystem final : public EngineSubsystem
+    {
+    public:
+        explicit FailingLifecycleSubsystem(std::vector<std::string>* events)
+            : m_events(events)
+        {
+        }
+
+        const char* GetName() const override { return "FailingLifecycleSubsystem"; }
+
+        RVX_SUBSYSTEM_DEPENDENCIES(RecordingLifecycleSubsystem)
+
+        void Initialize() override
+        {
+            if (m_events)
+            {
+                m_events->push_back("failing:init");
+            }
+            throw std::runtime_error("intentional lifecycle failure");
+        }
+
+    private:
+        std::vector<std::string>* m_events = nullptr;
+    };
+
     TEST(AppModeBoundaryValidation, RuntimeModeUsesCookedRuntimeContracts)
     {
         constexpr AppModeTraits traits = GetAppModeTraits(AppMode::Runtime);
@@ -95,6 +181,27 @@ namespace
         EXPECT_FALSE(IsRuntimeExecutionMode(AppMode::Test));
         EXPECT_TRUE(AllowsSourceAssetAccess(AppMode::Test));
         EXPECT_FALSE(AllowsHotReload(AppMode::Test));
+    }
+
+    TEST(AppModeBoundaryValidation, SubsystemInitializationFailureUnwindsInitializedDependencies)
+    {
+        ScopedCoreLog log;
+        std::vector<std::string> events;
+        SubsystemCollection<EngineSubsystem> collection;
+
+        auto* recording = collection.AddSubsystem<RecordingLifecycleSubsystem>(&events);
+        auto* failing = collection.AddSubsystem<FailingLifecycleSubsystem>(&events);
+
+        EXPECT_FALSE(collection.InitializeAll());
+        EXPECT_FALSE(collection.IsInitialized());
+        EXPECT_FALSE(recording->IsInitialized());
+        EXPECT_FALSE(failing->IsInitialized());
+        EXPECT_EQ((std::vector<std::string>{
+                      "recording:init",
+                      "failing:init",
+                      "recording:shutdown",
+                  }),
+                  events);
     }
 
     TEST(AppModeBoundaryValidation, CameraContractLivesInCoreForSharedEditorRuntimeUse)

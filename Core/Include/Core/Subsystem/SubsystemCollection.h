@@ -19,6 +19,7 @@
 #include <unordered_set>
 #include <typeindex>
 #include <algorithm>
+#include <exception>
 #include <string>
 #include <queue>
 #include <sstream>
@@ -208,26 +209,53 @@ namespace RVX
         /**
          * @brief Initialize all subsystems in dependency order
          */
-        void InitializeAll()
+        bool InitializeAll()
         {
+            if (m_initialized)
+            {
+                return true;
+            }
+
             // Validate first
             auto validation = ValidateDependencies();
             if (!validation.valid)
             {
                 RVX_CORE_ERROR("Subsystem dependency validation failed: {}", 
                                validation.GetErrorMessage());
+                return false;
             }
 
             BuildOrder();
 
+            std::vector<TBase*> initializedThisCall;
             for (auto* subsystem : m_ordered)
             {
-                RVX_CORE_DEBUG("Initializing subsystem: {}", subsystem->GetName());
-                subsystem->Initialize();
-                subsystem->SetInitialized(true);
+                try
+                {
+                    RVX_CORE_DEBUG("Initializing subsystem: {}", subsystem->GetName());
+                    subsystem->Initialize();
+                    subsystem->SetInitialized(true);
+                    initializedThisCall.push_back(subsystem);
+                }
+                catch (const std::exception& e)
+                {
+                    RVX_CORE_ERROR("Subsystem '{}' failed to initialize: {}",
+                                   subsystem->GetName(),
+                                   e.what());
+                    UnwindInitialized(initializedThisCall);
+                    return false;
+                }
+                catch (...)
+                {
+                    RVX_CORE_ERROR("Subsystem '{}' failed to initialize with an unknown exception",
+                                   subsystem->GetName());
+                    UnwindInitialized(initializedThisCall);
+                    return false;
+                }
             }
 
             m_initialized = true;
+            return true;
         }
 
         /**
@@ -242,7 +270,21 @@ namespace RVX
             for (auto it = m_ordered.rbegin(); it != m_ordered.rend(); ++it)
             {
                 RVX_CORE_DEBUG("Deinitializing subsystem: {}", (*it)->GetName());
-                (*it)->Deinitialize();
+                try
+                {
+                    (*it)->Deinitialize();
+                }
+                catch (const std::exception& e)
+                {
+                    RVX_CORE_ERROR("Subsystem '{}' failed during deinitialize: {}",
+                                   (*it)->GetName(),
+                                   e.what());
+                }
+                catch (...)
+                {
+                    RVX_CORE_ERROR("Subsystem '{}' failed during deinitialize with an unknown exception",
+                                   (*it)->GetName());
+                }
                 (*it)->SetInitialized(false);
             }
 
@@ -498,6 +540,39 @@ namespace RVX
             }
 
             m_orderDirty = false;
+        }
+
+        void UnwindInitialized(std::vector<TBase*>& initialized)
+        {
+            for (auto it = initialized.rbegin(); it != initialized.rend(); ++it)
+            {
+                TBase* subsystem = *it;
+                if (!subsystem || !subsystem->IsInitialized())
+                {
+                    continue;
+                }
+
+                RVX_CORE_DEBUG("Unwinding subsystem: {}", subsystem->GetName());
+                try
+                {
+                    subsystem->Deinitialize();
+                }
+                catch (const std::exception& e)
+                {
+                    RVX_CORE_ERROR("Subsystem '{}' failed during initialization unwind: {}",
+                                   subsystem->GetName(),
+                                   e.what());
+                }
+                catch (...)
+                {
+                    RVX_CORE_ERROR("Subsystem '{}' failed during initialization unwind with an unknown exception",
+                                   subsystem->GetName());
+                }
+                subsystem->SetInitialized(false);
+            }
+
+            initialized.clear();
+            m_initialized = false;
         }
 
         std::vector<std::unique_ptr<TBase>> m_subsystems;

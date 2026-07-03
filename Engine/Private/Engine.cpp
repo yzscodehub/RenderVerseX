@@ -38,12 +38,12 @@ Engine* Engine::Get()
     return s_instance;
 }
 
-void Engine::Initialize()
+bool Engine::Initialize()
 {
     if (m_initialized)
     {
         RVX_CORE_WARN("Engine already initialized");
-        return;
+        return true;
     }
 
     RVX_CORE_INFO("=== RenderVerseX Engine Initializing ===");
@@ -58,13 +58,24 @@ void Engine::Initialize()
     }
 
     // Initialize subsystems (in dependency order)
-    InitializeSubsystems();
+    if (!InitializeSubsystems())
+    {
+        RVX_CORE_ERROR("=== RenderVerseX Engine Initialization Failed ===");
+        if (m_config.enableJobSystem)
+        {
+            JobSystem::Get().Shutdown();
+        }
+        m_initialized = false;
+        m_shouldShutdown = true;
+        return false;
+    }
 
     m_initialized = true;
     m_shouldShutdown = false;
     m_frameNumber = 0;
 
     RVX_CORE_INFO("=== RenderVerseX Engine Initialized ===");
+    return true;
 }
 
 void Engine::Tick()
@@ -187,7 +198,11 @@ World* Engine::CreateWorld(const std::string& name)
     auto world = std::make_unique<World>();
     WorldConfig config;
     config.name = name;
-    world->Initialize(config);
+    if (!world->Initialize(config))
+    {
+        RVX_CORE_ERROR("Failed to create world: {}", name);
+        return nullptr;
+    }
 
     World* ptr = world.get();
     m_worlds[name] = std::move(world);
@@ -257,7 +272,7 @@ void Engine::ShutdownWorlds()
     m_worlds.clear();
 }
 
-void Engine::InitializeSubsystems()
+bool Engine::InitializeSubsystems()
 {
     // Set engine reference for all subsystems
     for (const auto& subsystem : m_subsystems.GetAll())
@@ -266,7 +281,7 @@ void Engine::InitializeSubsystems()
     }
 
     // Initialize in dependency order
-    m_subsystems.InitializeAll();
+    return m_subsystems.InitializeAll();
 }
 
 void Engine::TickSubsystems(float deltaTime)

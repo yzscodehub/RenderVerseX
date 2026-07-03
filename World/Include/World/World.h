@@ -87,7 +87,7 @@ namespace RVX
         // =====================================================================
 
         /// Initialize the world
-        void Initialize(const WorldConfig& config = {});
+        bool Initialize(const WorldConfig& config = {});
 
         /// Load world content from a path/asset
         void Load(const std::string& path);
