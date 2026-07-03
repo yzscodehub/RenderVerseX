@@ -18,6 +18,7 @@ function(rvx_add_engine_showcase TARGET_NAME SOURCE_FILE DEFAULT_MODE)
         RVX::Render
         RVX::Resource
         RVX::Scene
+        RVX::SampleCommon
         RVX::World
         RVX::RHI
         RVX::ShaderCompiler

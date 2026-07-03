@@ -310,6 +310,30 @@ namespace RVX
         WriteStringArray(stream, "enabledFeatures", report.enabledFeatures, ",");
         WriteStringArray(stream, "unsupportedFeatures", report.unsupportedFeatures, ",");
         WriteStringArray(stream, "fallbackReasons", report.fallbackReasons, ",");
+        WriteStringArray(stream, "resourceDiagnostics", report.resourceDiagnostics, ",");
+        const SampleRenderDiagnostics& renderDiagnostics = report.renderDiagnostics;
+        stream << "  \"renderDiagnostics\": {\n";
+        stream << "    \"available\": " << Diagnostics::JsonBool(renderDiagnostics.available) << ",\n";
+        stream << "    \"renderAttempted\": " << Diagnostics::JsonBool(renderDiagnostics.renderAttempted) << ",\n";
+        stream << "    \"rendered\": " << Diagnostics::JsonBool(renderDiagnostics.rendered) << ",\n";
+        stream << "    \"graphBuilt\": " << Diagnostics::JsonBool(renderDiagnostics.graphBuilt) << ",\n";
+        stream << "    \"graphCompiled\": " << Diagnostics::JsonBool(renderDiagnostics.graphCompiled) << ",\n";
+        stream << "    \"renderGraphTotalPasses\": " << renderDiagnostics.renderGraphTotalPasses << ",\n";
+        stream << "    \"visibleObjectCount\": " << renderDiagnostics.visibleObjectCount << ",\n";
+        stream << "    \"renderSceneLightCount\": " << renderDiagnostics.renderSceneLightCount << ",\n";
+        stream << "    \"requestedPostProcessEffectCount\": "
+               << renderDiagnostics.requestedPostProcessEffectCount << ",\n";
+        stream << "    \"enabledPostProcessEffectCount\": "
+               << renderDiagnostics.enabledPostProcessEffectCount << ",\n";
+        stream << "    \"unsupportedPostProcessSkippedCount\": "
+               << renderDiagnostics.unsupportedPostProcessSkippedCount << ",\n";
+        stream << "    \"postProcessGraphPassCount\": " << renderDiagnostics.postProcessGraphPassCount << ",\n";
+        stream << "    \"clusteredLightingInitialized\": "
+               << Diagnostics::JsonBool(renderDiagnostics.clusteredLightingInitialized) << ",\n";
+        stream << "    \"clusteredLightingActiveClusters\": "
+               << renderDiagnostics.clusteredLightingActiveClusters << ",\n";
+        stream << "    \"textureIBLEnabled\": " << Diagnostics::JsonBool(renderDiagnostics.textureIBLEnabled) << "\n";
+        stream << "  },\n";
         stream << "  \"pass\": " << Diagnostics::JsonBool(report.pass) << "\n";
         stream << "}\n";
     }

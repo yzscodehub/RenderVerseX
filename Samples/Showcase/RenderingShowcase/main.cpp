@@ -19,6 +19,7 @@
 #include "Runtime/Camera/Camera.h"
 #include "Runtime/Input/InputSubsystem.h"
 #include "Runtime/Window/WindowSubsystem.h"
+#include "Samples/SampleCLI.h"
 #include "Scene/Components/LightComponent.h"
 #include "Scene/Components/SkyboxComponent.h"
 #include "Scene/SceneEntity.h"
@@ -33,7 +34,6 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -109,18 +109,19 @@ namespace
     {
         std::string sampleName;
         std::string description;
-        std::string requestedBackend;
-        std::string activeBackend;
+        RHIBackendType activeBackend = RHIBackendType::Auto;
         std::string quality;
         std::filesystem::path screenshotPath;
         uint32 width = 0;
         uint32 height = 0;
         uint32 frameCount = 0;
+        bool diagnostics = false;
         bool pass = true;
         std::vector<std::string> enabledFeatures;
         std::vector<std::string> unsupportedFeatures;
         std::vector<std::string> fallbackReasons;
         std::vector<std::string> resourceDiagnostics;
+        bool renderDiagnosticsAvailable = false;
         SceneRendererFrameDiagnostics renderDiagnostics;
         SceneEnvironmentIBLStats iblStats;
         SceneClusteredLightingStats clusteredStats;
@@ -644,50 +645,6 @@ namespace
         return "Tests/Fixtures/ModelViewer/PBRMaterialSwatch.gltf";
     }
 
-    std::string JsonString(const std::string& value)
-    {
-        std::ostringstream stream;
-        stream << '"';
-        for (char ch : value)
-        {
-            switch (ch)
-            {
-                case '\\': stream << "\\\\"; break;
-                case '"': stream << "\\\""; break;
-                case '\n': stream << "\\n"; break;
-                case '\r': stream << "\\r"; break;
-                case '\t': stream << "\\t"; break;
-                default:
-                    stream << ch;
-                    break;
-            }
-        }
-        stream << '"';
-        return stream.str();
-    }
-
-    void WriteJsonStringArray(std::ostream& stream,
-                              const char* name,
-                              const std::vector<std::string>& values,
-                              bool trailingComma)
-    {
-        stream << "  " << JsonString(name ? name : "") << ": [";
-        for (size_t i = 0; i < values.size(); ++i)
-        {
-            if (i > 0)
-            {
-                stream << ", ";
-            }
-            stream << JsonString(values[i]);
-        }
-        stream << "]";
-        if (trailingComma)
-        {
-            stream << ",";
-        }
-        stream << "\n";
-    }
-
     bool IsScreenshotBackendSupported(RHIBackendType backendType)
     {
         return backendType == RHIBackendType::DX11 ||
@@ -920,6 +877,7 @@ namespace
         }
 
         report.renderDiagnostics = sceneRenderer->GetFrameDiagnostics();
+        report.renderDiagnosticsAvailable = true;
         report.iblStats = sceneRenderer->GetEnvironmentIBLStats();
         report.clusteredStats = sceneRenderer->GetClusteredLightingStats();
 
@@ -964,53 +922,48 @@ namespace
 
     bool WriteShowcaseReport(const ShowcaseReport& report, const std::filesystem::path& path)
     {
-        const std::filesystem::path parent = path.parent_path();
-        if (!parent.empty())
-        {
-            std::filesystem::create_directories(parent);
-        }
+        SampleReport sampleReport;
+        const SceneRendererFrameDiagnostics& diagnostics = report.renderDiagnostics;
+        sampleReport.sampleName = report.sampleName;
+        sampleReport.backend = report.activeBackend;
+        sampleReport.frameCount = report.frameCount;
+        sampleReport.width = report.width;
+        sampleReport.height = report.height;
+        sampleReport.quality = report.quality;
+        sampleReport.diagnostics = report.diagnostics;
+        sampleReport.screenshotPath = report.screenshotPath;
+        sampleReport.enabledFeatures = report.enabledFeatures;
+        sampleReport.unsupportedFeatures = report.unsupportedFeatures;
+        sampleReport.fallbackReasons = report.fallbackReasons;
+        sampleReport.resourceDiagnostics = report.resourceDiagnostics;
+        sampleReport.pass = report.pass;
 
-        std::ofstream stream(path);
-        if (!stream)
+        sampleReport.renderDiagnostics.available = report.renderDiagnosticsAvailable;
+        sampleReport.renderDiagnostics.renderAttempted = diagnostics.renderAttempted;
+        sampleReport.renderDiagnostics.rendered = diagnostics.rendered;
+        sampleReport.renderDiagnostics.graphBuilt = diagnostics.graphBuilt;
+        sampleReport.renderDiagnostics.graphCompiled = diagnostics.graphCompiled;
+        sampleReport.renderDiagnostics.renderGraphTotalPasses = diagnostics.renderGraphTotalPasses;
+        sampleReport.renderDiagnostics.visibleObjectCount = static_cast<uint32>(diagnostics.visibleObjectCount);
+        sampleReport.renderDiagnostics.renderSceneLightCount = static_cast<uint32>(diagnostics.renderSceneLightCount);
+        sampleReport.renderDiagnostics.requestedPostProcessEffectCount =
+            diagnostics.requestedPostProcessEffectCount;
+        sampleReport.renderDiagnostics.enabledPostProcessEffectCount =
+            diagnostics.enabledPostProcessEffectCount;
+        sampleReport.renderDiagnostics.unsupportedPostProcessSkippedCount =
+            diagnostics.unsupportedPostProcessSkippedCount;
+        sampleReport.renderDiagnostics.postProcessGraphPassCount = diagnostics.postProcessGraphPassCount;
+        sampleReport.renderDiagnostics.clusteredLightingInitialized = diagnostics.clusteredLightingInitialized;
+        sampleReport.renderDiagnostics.clusteredLightingActiveClusters = diagnostics.clusteredLightingActiveClusters;
+        sampleReport.renderDiagnostics.textureIBLEnabled = report.iblStats.textureIBLEnabled;
+
+        std::string reportError;
+        if (!WriteSampleReportJson(sampleReport, path, &reportError))
         {
+            RVX_CORE_ERROR("Failed to write showcase report JSON: {}", reportError);
             return false;
         }
-
-        const SceneRendererFrameDiagnostics& diagnostics = report.renderDiagnostics;
-        stream << "{\n";
-        stream << "  \"sampleName\": " << JsonString(report.sampleName) << ",\n";
-        stream << "  \"description\": " << JsonString(report.description) << ",\n";
-        stream << "  \"requestedBackend\": " << JsonString(report.requestedBackend) << ",\n";
-        stream << "  \"activeBackend\": " << JsonString(report.activeBackend) << ",\n";
-        stream << "  \"quality\": " << JsonString(report.quality) << ",\n";
-        stream << "  \"frameCount\": " << report.frameCount << ",\n";
-        stream << "  \"width\": " << report.width << ",\n";
-        stream << "  \"height\": " << report.height << ",\n";
-        stream << "  \"screenshotPath\": " << JsonString(report.screenshotPath.string()) << ",\n";
-        stream << "  \"pass\": " << (report.pass ? "true" : "false") << ",\n";
-        WriteJsonStringArray(stream, "enabledFeatures", report.enabledFeatures, true);
-        WriteJsonStringArray(stream, "unsupportedFeatures", report.unsupportedFeatures, true);
-        WriteJsonStringArray(stream, "fallbackReasons", report.fallbackReasons, true);
-        WriteJsonStringArray(stream, "resourceDiagnostics", report.resourceDiagnostics, true);
-        stream << "  \"renderDiagnostics\": {\n";
-        stream << "    \"renderAttempted\": " << (diagnostics.renderAttempted ? "true" : "false") << ",\n";
-        stream << "    \"rendered\": " << (diagnostics.rendered ? "true" : "false") << ",\n";
-        stream << "    \"graphBuilt\": " << (diagnostics.graphBuilt ? "true" : "false") << ",\n";
-        stream << "    \"graphCompiled\": " << (diagnostics.graphCompiled ? "true" : "false") << ",\n";
-        stream << "    \"renderGraphTotalPasses\": " << diagnostics.renderGraphTotalPasses << ",\n";
-        stream << "    \"visibleObjectCount\": " << diagnostics.visibleObjectCount << ",\n";
-        stream << "    \"renderSceneLightCount\": " << diagnostics.renderSceneLightCount << ",\n";
-        stream << "    \"requestedPostProcessEffectCount\": " << diagnostics.requestedPostProcessEffectCount << ",\n";
-        stream << "    \"enabledPostProcessEffectCount\": " << diagnostics.enabledPostProcessEffectCount << ",\n";
-        stream << "    \"unsupportedPostProcessSkippedCount\": " << diagnostics.unsupportedPostProcessSkippedCount << ",\n";
-        stream << "    \"postProcessGraphPassCount\": " << diagnostics.postProcessGraphPassCount << ",\n";
-        stream << "    \"clusteredLightingInitialized\": "
-               << (diagnostics.clusteredLightingInitialized ? "true" : "false") << ",\n";
-        stream << "    \"clusteredLightingActiveClusters\": " << diagnostics.clusteredLightingActiveClusters << ",\n";
-        stream << "    \"textureIBLEnabled\": " << (report.iblStats.textureIBLEnabled ? "true" : "false") << "\n";
-        stream << "  }\n";
-        stream << "}\n";
-        return static_cast<bool>(stream);
+        return true;
     }
 
     Quat MakeLookRotation(const Vec3& direction, const Vec3& up)
@@ -1544,6 +1497,8 @@ int main(int argc, char* argv[])
         return -1;
     }
 
+    renderSubsystem->SetWindowSubsystem(windowSubsystem);
+
     auto* input = engine.GetSubsystem<InputSubsystem>();
     if (input && windowSubsystem->GetWindow())
     {
@@ -1807,15 +1762,15 @@ int main(int argc, char* argv[])
     ShowcaseReport report;
     report.sampleName = GetModeName(options.mode);
     report.description = GetModeDescription(options.mode);
-    report.requestedBackend = ToString(options.backend);
     report.activeBackend = renderSubsystem->GetDevice()
-        ? ToString(renderSubsystem->GetDevice()->GetBackendType())
-        : "None";
+        ? renderSubsystem->GetDevice()->GetBackendType()
+        : options.backend;
     report.quality = GetQualityName(options.quality);
     report.width = options.width;
     report.height = options.height;
     report.frameCount = renderedFrames;
     report.screenshotPath = screenshotWritten ? options.screenshotPath : std::filesystem::path{};
+    report.diagnostics = options.diagnostics;
     report.pass = sampleSucceeded;
     AddModeFeatureDiagnostics(options.mode, report);
     if (!options.postProcessEnabled)

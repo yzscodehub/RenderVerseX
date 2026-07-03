@@ -93,6 +93,13 @@ namespace
         report.enabledFeatures = {"RHI", "RenderGraph"};
         report.unsupportedFeatures = {"ScreenshotCapture"};
         report.fallbackReasons = {"BasicRHI does not capture screenshots yet"};
+        report.resourceDiagnostics = {"fixture loaded"};
+        report.renderDiagnostics.available = true;
+        report.renderDiagnostics.renderAttempted = true;
+        report.renderDiagnostics.rendered = true;
+        report.renderDiagnostics.graphBuilt = true;
+        report.renderDiagnostics.graphCompiled = true;
+        report.renderDiagnostics.renderGraphTotalPasses = 3;
         report.pass = true;
 
         std::ostringstream stream;
@@ -108,6 +115,10 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"fallbackReasons\": [\"BasicRHI does not capture screenshots yet\"]"),
                   std::string::npos);
+        EXPECT_NE(json.find("\"resourceDiagnostics\": [\"fixture loaded\"]"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"renderDiagnostics\": {"), std::string::npos);
+        EXPECT_NE(json.find("\"renderGraphTotalPasses\": 3"), std::string::npos);
         EXPECT_NE(json.find("\"pass\": true"), std::string::npos);
     }
 } // namespace

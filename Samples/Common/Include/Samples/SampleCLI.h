@@ -29,6 +29,25 @@ namespace RVX
         bool showHelp = false;
     };
 
+    struct SampleRenderDiagnostics
+    {
+        bool available = false;
+        bool renderAttempted = false;
+        bool rendered = false;
+        bool graphBuilt = false;
+        bool graphCompiled = false;
+        uint32 renderGraphTotalPasses = 0;
+        uint32 visibleObjectCount = 0;
+        uint32 renderSceneLightCount = 0;
+        uint32 requestedPostProcessEffectCount = 0;
+        uint32 enabledPostProcessEffectCount = 0;
+        uint32 unsupportedPostProcessSkippedCount = 0;
+        uint32 postProcessGraphPassCount = 0;
+        bool clusteredLightingInitialized = false;
+        uint32 clusteredLightingActiveClusters = 0;
+        bool textureIBLEnabled = false;
+    };
+
     struct SampleReport
     {
         std::string sampleName;
@@ -42,6 +61,8 @@ namespace RVX
         std::vector<std::string> enabledFeatures;
         std::vector<std::string> unsupportedFeatures;
         std::vector<std::string> fallbackReasons;
+        std::vector<std::string> resourceDiagnostics;
+        SampleRenderDiagnostics renderDiagnostics;
         bool pass = false;
     };
 

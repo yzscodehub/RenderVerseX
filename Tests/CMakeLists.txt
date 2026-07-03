@@ -812,6 +812,66 @@ target_include_directories(ImageContentValidation PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+function(rvx_add_showcase_smoke_test TARGET_NAME)
+    if(NOT RVX_ENABLE_DX11 OR NOT TARGET ${TARGET_NAME} OR NOT TARGET ImageContentValidation)
+        return()
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/Showcase")
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/Showcase")
+    endforeach()
+
+    set(smoke_actual
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/Showcase/${TARGET_NAME}_DX11_320x180.ppm")
+    set(smoke_report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/Showcase/${TARGET_NAME}_DX11_320x180.json")
+
+    add_test(
+        NAME ${TARGET_NAME}DX11Smoke
+        COMMAND $<TARGET_FILE:${TARGET_NAME}>
+            --smoke
+            --frames 2
+            --backend dx11
+            --width 320
+            --height 180
+            --quality low
+            --screenshot "${smoke_actual}"
+            --report "${smoke_report}"
+            --diagnostics
+            --validation
+    )
+    set_tests_properties(${TARGET_NAME}DX11Smoke PROPERTIES
+        LABELS "visual;gpu;sample;showcase;dx11"
+        TIMEOUT 120
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME ${TARGET_NAME}DX11ImageContentValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${smoke_actual}"
+            --min-width 320
+            --min-height 180
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+    )
+    set_tests_properties(${TARGET_NAME}DX11ImageContentValidation PROPERTIES
+        LABELS "visual;gpu;sample;showcase;dx11"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+    set_property(TEST ${TARGET_NAME}DX11ImageContentValidation PROPERTY DEPENDS ${TARGET_NAME}DX11Smoke)
+endfunction()
+
+rvx_add_showcase_smoke_test(RenderingShowcase)
+rvx_add_showcase_smoke_test(PostProcessShowcase)
+rvx_add_showcase_smoke_test(MaterialShowcase)
+rvx_add_showcase_smoke_test(LightingShowcase)
+
 add_executable(ModelViewerHDRIFixtureWriter
     ModelViewerHDRIFixtureWriter/main.cpp
 )
