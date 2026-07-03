@@ -7212,6 +7212,36 @@ TEST(RenderPostProcessStackValidation, DOFAndMotionBlurDeclareFrameInputRequirem
     EXPECT_TRUE(motionRequirements.requiresHistory);
 }
 
+TEST(RenderPostProcessStackValidation, MotionBlurReportsUnsupportedDiagnosticsWithoutScheduling)
+{
+    MotionBlurPass motionBlur;
+    PostProcessSettings settings;
+    settings.enableMotionBlur = true;
+    settings.motionBlurIntensity = 0.75f;
+    settings.motionBlurMaxVelocity = 24.0f;
+    motionBlur.Configure(settings);
+    motionBlur.SetCameraMatrices(Mat4Identity(), Mat4Identity());
+
+    const MotionBlurDiagnostics& diagnostics = motionBlur.GetLastDiagnostics();
+    EXPECT_TRUE(diagnostics.requested);
+    EXPECT_FALSE(diagnostics.supported);
+    EXPECT_FALSE(diagnostics.scheduled);
+    EXPECT_TRUE(diagnostics.cameraDataAvailable);
+    EXPECT_FALSE(diagnostics.velocityAvailable);
+    EXPECT_FALSE(diagnostics.depthAvailable);
+    EXPECT_TRUE(diagnostics.historyAvailable);
+    EXPECT_EQ(diagnostics.sampleCount, 8u);
+    EXPECT_EQ(diagnostics.implementationTier, MotionBlurImplementationTier::Unsupported);
+    EXPECT_STREQ(GetMotionBlurImplementationTierName(diagnostics.implementationTier), "Unsupported");
+    EXPECT_NE(diagnostics.reason.find("velocity gather pipeline"), std::string::npos);
+
+    const fs::path motionBlurSourcePath =
+        FindShaderDirectory().parent_path() / "Private" / "PostProcess" / "MotionBlur.cpp";
+    const std::string motionBlurSource = ReadTextFile(motionBlurSourcePath);
+    EXPECT_EQ(motionBlurSource.find("graph.AddPass"), std::string::npos);
+    EXPECT_EQ(motionBlurSource.find("TODO"), std::string::npos);
+}
+
 TEST_F(RenderPassValidationFixture, TAAMinimalResolveCopiesCurrentFrameAndUpdatesHistory)
 {
     FakeDevice localDevice;

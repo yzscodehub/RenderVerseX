@@ -10,6 +10,8 @@
 #include "Core/MathTypes.h"
 #include "Render/PostProcess/PostProcessStack.h"
 
+#include <string>
+
 namespace RVX
 {
     /**
@@ -21,6 +23,28 @@ namespace RVX
         Medium,         ///< 8 samples  
         High,           ///< 16 samples
         Ultra           ///< 32 samples
+    };
+
+    enum class MotionBlurImplementationTier : uint8
+    {
+        Unsupported = 0,
+        VelocityGather
+    };
+
+    const char* GetMotionBlurImplementationTierName(MotionBlurImplementationTier tier);
+
+    struct MotionBlurDiagnostics
+    {
+        bool requested = false;
+        bool supported = false;
+        bool scheduled = false;
+        bool cameraDataAvailable = false;
+        bool velocityAvailable = false;
+        bool depthAvailable = false;
+        bool historyAvailable = false;
+        uint32 sampleCount = 0;
+        MotionBlurImplementationTier implementationTier = MotionBlurImplementationTier::Unsupported;
+        std::string reason;
     };
 
     /**
@@ -143,11 +167,17 @@ namespace RVX
          */
         void SetCameraMatrices(const Mat4& currentViewProj, const Mat4& prevViewProj);
 
+        const MotionBlurDiagnostics& GetLastDiagnostics() const { return m_lastDiagnostics; }
+
     private:
+        uint32 GetSampleCount() const;
+        void RecordUnsupportedDiagnostics(bool velocityAvailable, bool depthAvailable);
+
         MotionBlurConfig m_config;
         Mat4 m_currentViewProj;
         Mat4 m_prevViewProj;
         bool m_hasCameraData = false;
+        MotionBlurDiagnostics m_lastDiagnostics;
     };
 
 } // namespace RVX
