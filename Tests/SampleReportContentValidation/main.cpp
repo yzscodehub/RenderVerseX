@@ -12,6 +12,7 @@ namespace
     {
         std::filesystem::path reportPath;
         std::string sampleName;
+        std::string category;
         std::string backend;
         std::string quality;
         uint32_t frameCount = 0;
@@ -19,6 +20,7 @@ namespace
         std::vector<std::string> requiredUnsupportedFeatures;
         std::vector<std::string> requiredFallbackReasons;
         std::vector<std::string> requiredResourceDiagnostics;
+        bool allowDiagnosticOnlyRender = false;
     };
 
     bool ReadTextFile(const std::filesystem::path& path, std::string& outText)
@@ -83,6 +85,12 @@ namespace
                 if (!value) return false;
                 options.sampleName = value;
             }
+            else if (arg == "--category")
+            {
+                const char* value = requireValue("--category");
+                if (!value) return false;
+                options.category = value;
+            }
             else if (arg == "--backend")
             {
                 const char* value = requireValue("--backend");
@@ -129,6 +137,10 @@ namespace
                 if (!value) return false;
                 options.requiredResourceDiagnostics.emplace_back(value);
             }
+            else if (arg == "--allow-diagnostic-only-render")
+            {
+                options.allowDiagnosticOnlyRender = true;
+            }
             else
             {
                 std::cerr << "Unknown argument: " << arg << "\n";
@@ -174,6 +186,10 @@ int main(int argc, char* argv[])
     {
         passed &= RequireContains(json, "\"sampleName\": \"" + options.sampleName + "\"", "sampleName");
     }
+    if (!options.category.empty())
+    {
+        passed &= RequireContains(json, "\"category\": \"" + options.category + "\"", "category");
+    }
     if (!options.backend.empty())
     {
         passed &= RequireContains(json, "\"backend\": \"" + options.backend + "\"", "backend");
@@ -192,8 +208,11 @@ int main(int argc, char* argv[])
     passed &= RequireContains(json, "\"fallbackReasons\": [", "fallbackReasons array");
     passed &= RequireContains(json, "\"resourceDiagnostics\": [", "resourceDiagnostics array");
     passed &= RequireContains(json, "\"renderDiagnostics\": {", "renderDiagnostics object");
-    passed &= RequireContains(json, "\"available\": true", "available render diagnostics");
-    passed &= RequireContains(json, "\"graphCompiled\": true", "compiled render graph diagnostics");
+    if (!options.allowDiagnosticOnlyRender)
+    {
+        passed &= RequireContains(json, "\"available\": true", "available render diagnostics");
+        passed &= RequireContains(json, "\"graphCompiled\": true", "compiled render graph diagnostics");
+    }
     passed &= RequireContains(json, "\"pass\": true", "pass status");
 
     for (const std::string& feature : options.requiredEnabledFeatures)
@@ -216,11 +235,5 @@ int main(int argc, char* argv[])
         passed &= RequireContains(json, diagnostic, "required resource diagnostic");
     }
 
-    if (!passed)
-    {
-        return 1;
-    }
-
-    std::cout << "Sample report content validation passed: " << options.reportPath << "\n";
-    return 0;
+    return passed ? 0 : 1;
 }

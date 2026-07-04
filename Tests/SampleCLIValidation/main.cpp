@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <iterator>
 #include <sstream>
 #include <string>
@@ -107,6 +108,7 @@ namespace
         const std::string json = stream.str();
 
         EXPECT_NE(json.find("\"sampleName\": \"BasicRHI\""), std::string::npos);
+        EXPECT_NE(json.find("\"category\": \"sample\""), std::string::npos);
         EXPECT_NE(json.find("\"backend\": \"dx12\""), std::string::npos);
         EXPECT_NE(json.find("\"frameCount\": 1"), std::string::npos);
         EXPECT_NE(json.find("\"enabledFeatures\": [\"RHI\", \"RenderGraph\"]"),
@@ -120,5 +122,41 @@ namespace
         EXPECT_NE(json.find("\"renderDiagnostics\": {"), std::string::npos);
         EXPECT_NE(json.find("\"renderGraphTotalPasses\": 3"), std::string::npos);
         EXPECT_NE(json.find("\"pass\": true"), std::string::npos);
+    }
+
+    TEST(SampleCLIValidation, BuildReportOnlySampleAddsCategoryAndFallbacks)
+    {
+        RVX::SampleAppDesc desc;
+        desc.sampleName = "BackendInfoSample";
+        desc.category = "basic";
+        desc.enabledFeatures = {"BackendSelection"};
+
+        RVX::SampleRunContext context;
+        context.resolvedBackend = RVX::RHIBackendType::DX11;
+        context.frameCount = 2;
+        context.options.width = 320;
+        context.options.height = 180;
+        context.options.quality = "low";
+        context.options.screenshotPath = "actual.ppm";
+
+        const RVX::SampleReport report = RVX::BuildSampleReport(desc, context);
+        EXPECT_EQ(report.sampleName, "BackendInfoSample");
+        EXPECT_EQ(report.category, "basic");
+        EXPECT_EQ(report.backend, RVX::RHIBackendType::DX11);
+        EXPECT_EQ(report.frameCount, 2u);
+        EXPECT_EQ(report.width, 320u);
+        EXPECT_EQ(report.height, 180u);
+        EXPECT_TRUE(report.pass);
+        ASSERT_EQ(report.enabledFeatures.size(), 1u);
+        EXPECT_EQ(report.enabledFeatures[0], "BackendSelection");
+        EXPECT_NE(std::find(report.unsupportedFeatures.begin(),
+                            report.unsupportedFeatures.end(),
+                            "ScreenshotCapture"),
+                  report.unsupportedFeatures.end());
+        EXPECT_NE(std::find(report.unsupportedFeatures.begin(),
+                            report.unsupportedFeatures.end(),
+                            "QualityProfile"),
+                  report.unsupportedFeatures.end());
+        ASSERT_GE(report.fallbackReasons.size(), 2u);
     }
 } // namespace

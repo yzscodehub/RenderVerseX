@@ -6,14 +6,17 @@
 #include "Samples/SampleCLI.h"
 
 #include "Core/Diagnostics/JsonWriter.h"
+#include "RHI/RHI.h"
 
 #include <algorithm>
 #include <charconv>
 #include <cctype>
 #include <fstream>
+#include <iostream>
 #include <ostream>
 #include <string>
 #include <system_error>
+#include <utility>
 
 namespace RVX
 {
@@ -75,6 +78,43 @@ namespace RVX
             stream << "]" << suffix << "\n";
         }
     } // namespace
+
+    SampleFeatureReporter::SampleFeatureReporter(SampleReport& report)
+        : m_report(&report)
+    {
+    }
+
+    void SampleFeatureReporter::Enable(std::string feature)
+    {
+        if (m_report)
+        {
+            m_report->enabledFeatures.push_back(std::move(feature));
+        }
+    }
+
+    void SampleFeatureReporter::Unsupported(std::string feature)
+    {
+        if (m_report)
+        {
+            m_report->unsupportedFeatures.push_back(std::move(feature));
+        }
+    }
+
+    void SampleFeatureReporter::Fallback(std::string reason)
+    {
+        if (m_report)
+        {
+            m_report->fallbackReasons.push_back(std::move(reason));
+        }
+    }
+
+    void SampleFeatureReporter::ResourceDiagnostic(std::string diagnostic)
+    {
+        if (m_report)
+        {
+            m_report->resourceDiagnostics.push_back(std::move(diagnostic));
+        }
+    }
 
     bool ParseSampleBackend(const std::string& text, RHIBackendType& outBackend)
     {
@@ -300,6 +340,7 @@ namespace RVX
     {
         stream << "{\n";
         stream << "  \"sampleName\": " << Diagnostics::JsonString(report.sampleName) << ",\n";
+        stream << "  \"category\": " << Diagnostics::JsonString(report.category) << ",\n";
         stream << "  \"backend\": " << Diagnostics::JsonString(GetSampleBackendName(report.backend)) << ",\n";
         stream << "  \"frameCount\": " << report.frameCount << ",\n";
         stream << "  \"width\": " << report.width << ",\n";
@@ -363,5 +404,83 @@ namespace RVX
 
         WriteSampleReportJson(stream, report);
         return true;
+    }
+
+    SampleReport BuildSampleReport(const SampleAppDesc& desc, const SampleRunContext& context)
+    {
+        SampleReport report;
+        report.sampleName = desc.sampleName;
+        report.category = desc.category;
+        report.backend = context.resolvedBackend;
+        report.frameCount = context.frameCount;
+        report.width = context.options.width;
+        report.height = context.options.height;
+        report.quality = context.options.quality;
+        report.diagnostics = context.options.diagnostics;
+        report.screenshotPath = context.options.screenshotPath;
+        report.enabledFeatures = desc.enabledFeatures;
+        report.unsupportedFeatures = desc.unsupportedFeatures;
+        report.fallbackReasons = desc.fallbackReasons;
+        report.resourceDiagnostics = desc.resourceDiagnostics;
+        report.renderDiagnostics = desc.renderDiagnostics;
+        report.pass = true;
+
+        SampleFeatureReporter reporter(report);
+        if (!context.options.screenshotPath.empty() && !desc.supportsScreenshot)
+        {
+            reporter.Unsupported("ScreenshotCapture");
+            reporter.Fallback(desc.sampleName + " is a report-driven sample and does not capture screenshots yet");
+        }
+        if (context.options.quality != "default" && !desc.supportsQualityProfiles)
+        {
+            reporter.Unsupported("QualityProfile");
+            reporter.Fallback(desc.sampleName + " reports fixed capability diagnostics for all quality presets");
+        }
+
+        return report;
+    }
+
+    int RunReportOnlySample(int argc, char* argv[], const SampleAppDesc& desc)
+    {
+        SampleCLIOptions options;
+        std::string parseError;
+        if (!ParseSampleCLI(argc, argv, options, &parseError))
+        {
+            if (!parseError.empty())
+            {
+                std::cerr << parseError << "\n";
+            }
+            PrintSampleCLIUsage(std::cerr, desc.sampleName.c_str());
+            return 2;
+        }
+
+        if (options.showHelp)
+        {
+            PrintSampleCLIUsage(std::cout, desc.sampleName.c_str());
+            return 0;
+        }
+
+        SampleRunContext context;
+        context.options = options;
+        context.resolvedBackend =
+            options.backend == RHIBackendType::Auto ? SelectBestBackend() : options.backend;
+        context.frameCount = options.frames > 0 ? options.frames : 1;
+
+        SampleReport report = BuildSampleReport(desc, context);
+        if (!options.reportPath.empty())
+        {
+            std::string reportError;
+            if (!WriteSampleReportJson(report, options.reportPath, &reportError))
+            {
+                std::cerr << reportError << "\n";
+                return 1;
+            }
+        }
+        else if (options.diagnostics)
+        {
+            WriteSampleReportJson(std::cout, report);
+        }
+
+        return report.pass ? 0 : 1;
     }
 } // namespace RVX

@@ -51,6 +51,7 @@ namespace RVX
     struct SampleReport
     {
         std::string sampleName;
+        std::string category = "sample";
         RHIBackendType backend = RHIBackendType::Auto;
         uint32 frameCount = 0;
         uint32 width = 0;
@@ -66,6 +67,39 @@ namespace RVX
         bool pass = false;
     };
 
+    struct SampleAppDesc
+    {
+        std::string sampleName;
+        std::string category = "sample";
+        std::vector<std::string> enabledFeatures;
+        std::vector<std::string> unsupportedFeatures;
+        std::vector<std::string> fallbackReasons;
+        std::vector<std::string> resourceDiagnostics;
+        SampleRenderDiagnostics renderDiagnostics;
+        bool supportsScreenshot = false;
+        bool supportsQualityProfiles = false;
+    };
+
+    struct SampleRunContext
+    {
+        SampleCLIOptions options;
+        RHIBackendType resolvedBackend = RHIBackendType::Auto;
+        uint32 frameCount = 0;
+    };
+
+    class SampleFeatureReporter
+    {
+    public:
+        explicit SampleFeatureReporter(SampleReport& report);
+
+        void Enable(std::string feature);
+        void Unsupported(std::string feature);
+        void Fallback(std::string reason);
+        void ResourceDiagnostic(std::string diagnostic);
+
+    private:
+        SampleReport* m_report = nullptr;
+    };
     bool ParseSampleBackend(const std::string& text, RHIBackendType& outBackend);
     const char* GetSampleBackendName(RHIBackendType backend);
 
@@ -80,4 +114,7 @@ namespace RVX
     bool WriteSampleReportJson(const SampleReport& report,
                                const std::filesystem::path& path,
                                std::string* outError = nullptr);
+
+    SampleReport BuildSampleReport(const SampleAppDesc& desc, const SampleRunContext& context);
+    int RunReportOnlySample(int argc, char* argv[], const SampleAppDesc& desc);
 } // namespace RVX

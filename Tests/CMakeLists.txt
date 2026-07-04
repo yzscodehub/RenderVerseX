@@ -892,6 +892,104 @@ function(rvx_add_showcase_smoke_test TARGET_NAME)
     endif()
 endfunction()
 
+function(rvx_add_sample_smoke_test TARGET_NAME CATEGORY)
+    if(NOT TARGET ${TARGET_NAME} OR NOT TARGET SampleReportContentValidation)
+        return()
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/${CATEGORY}")
+    endforeach()
+
+    set(sample_report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/${CATEGORY}/${TARGET_NAME}_ReportOnly.json")
+
+    add_test(
+        NAME ${TARGET_NAME}ReportOnlySmoke
+        COMMAND $<TARGET_FILE:${TARGET_NAME}>
+            --smoke
+            --frames 1
+            --backend auto
+            --width 320
+            --height 180
+            --quality low
+            --report "${sample_report}"
+            --diagnostics
+    )
+    set_tests_properties(${TARGET_NAME}ReportOnlySmoke PROPERTIES
+        LABELS "unit;sample;${CATEGORY}"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME ${TARGET_NAME}ReportValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${sample_report}"
+            --sample-name ${TARGET_NAME}
+            --category ${CATEGORY}
+            --quality low
+            --frame-count 1
+            --allow-diagnostic-only-render
+            ${ARGN}
+    )
+    set_tests_properties(${TARGET_NAME}ReportValidation PROPERTIES
+        LABELS "unit;sample;${CATEGORY}"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+    set_property(TEST ${TARGET_NAME}ReportValidation PROPERTY DEPENDS ${TARGET_NAME}ReportOnlySmoke)
+endfunction()
+
+rvx_add_sample_smoke_test(BackendInfoSample basic
+    --require-enabled-feature BackendSelection
+    --require-enabled-feature RHICapabilityReportContract
+    --require-resource-diagnostic "capability report schema"
+)
+rvx_add_sample_smoke_test(RenderGraphBasics basic
+    --require-enabled-feature RenderGraphPassChain
+    --require-enabled-feature TransientTexture
+    --require-resource-diagnostic "graph contract"
+)
+rvx_add_sample_smoke_test(ResourcePolicySample basic
+    --require-enabled-feature RuntimeResourcePolicy
+    --require-resource-diagnostic "source denied"
+    --require-resource-diagnostic "cooked texture resolved"
+    --require-resource-diagnostic "package shader resolved"
+    --require-resource-diagnostic "hash mismatch"
+)
+rvx_add_sample_smoke_test(TextureUploadSample basic
+    --require-enabled-feature CookedTextureArtifact
+    --require-enabled-feature GPUUploadService
+)
+rvx_add_sample_smoke_test(MeshMaterialSample basic
+    --require-enabled-feature MeshResource
+    --require-enabled-feature PBRMaterial
+)
+rvx_add_sample_smoke_test(SceneActorComponentSample basic
+    --require-enabled-feature ActorComponent
+    --require-enabled-feature RenderExtractionSnapshot
+)
+rvx_add_sample_smoke_test(PostProcessChainSample basic
+    --require-enabled-feature ToneMapping
+    --require-enabled-feature "SSAO low-tier"
+    --require-unsupported-feature "SSR low-tier"
+    --require-unsupported-feature "VolumetricLighting"
+)
+rvx_add_sample_smoke_test(LightingShadowSample basic
+    --require-enabled-feature DirectionalLight
+    --require-enabled-feature ClusteredLightingStats
+    --require-enabled-feature ProceduralSkyboxPass
+)
+rvx_add_sample_smoke_test(GpuResidencySample basic
+    --require-enabled-feature GPUResourceManager
+    --require-resource-diagnostic "gpu memory budget"
+    --require-resource-diagnostic "eviction reason"
+)
+rvx_add_sample_smoke_test(InputCameraSample basic
+    --require-enabled-feature RuntimeCamera
+    --require-enabled-feature InputSubsystemDiagnostics
+)
 rvx_add_showcase_smoke_test(RenderingShowcase
     --require-enabled-feature IntegratedSceneRender
     --require-enabled-feature PostProcess
