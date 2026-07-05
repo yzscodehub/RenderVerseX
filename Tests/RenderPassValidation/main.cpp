@@ -21,6 +21,7 @@
 #include "Render/PipelineCache.h"
 #undef private
 
+#include "Render/Decal/DecalRenderer.h"
 #include "Render/GPUResourceManager.h"
 #include "Render/GPUDriven/GPUCulling.h"
 #include "Render/Graph/ResourceViewCache.h"
@@ -7293,6 +7294,70 @@ TEST(RenderPostProcessStackValidation, UnsupportedCinematicEffectsReportDiagnost
     EXPECT_EQ(dofSource.find("TODO"), std::string::npos);
     EXPECT_EQ(volumetricSource.find("graph.AddPass"), std::string::npos);
     EXPECT_EQ(volumetricSource.find("TODO"), std::string::npos);
+}
+
+TEST_F(RenderPassValidationFixture, DecalRendererReportsUnsupportedWithoutSchedulingGraphPass)
+{
+    FakeDevice localDevice;
+    localDevice.EnableBasicCapabilities();
+
+    DecalRenderer decals;
+    decals.Initialize(&localDevice);
+    ASSERT_TRUE(decals.IsInitialized());
+    EXPECT_FALSE(decals.IsSupported());
+    EXPECT_FALSE(decals.GetUnsupportedReason().empty());
+
+    DecalData decal;
+    decal.transform = Mat4Identity();
+    EXPECT_NE(decals.AddDecal(decal), RVX_INVALID_INDEX);
+
+    RenderGraph graph;
+    graph.SetDevice(&localDevice);
+
+    RHITextureRef albedoTexture =
+        localDevice.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    RHITextureRef normalTexture =
+        localDevice.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef roughnessTexture =
+        localDevice.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::R8_UNORM));
+    RHITextureRef depthTexture =
+        localDevice.CreateTexture(RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    ASSERT_TRUE(albedoTexture);
+    ASSERT_TRUE(normalTexture);
+    ASSERT_TRUE(roughnessTexture);
+    ASSERT_TRUE(depthTexture);
+
+    RGTextureHandle albedo = graph.ImportTexture(albedoTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle normal = graph.ImportTexture(normalTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle roughness = graph.ImportTexture(roughnessTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle depth = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+
+    decals.AddToGraph(graph, albedo, normal, roughness, depth, Mat4Identity(), Mat4Identity());
+
+    const DecalRendererDiagnostics& diagnostics = decals.GetLastDiagnostics();
+    EXPECT_TRUE(diagnostics.requested);
+    EXPECT_FALSE(diagnostics.supported);
+    EXPECT_FALSE(diagnostics.scheduled);
+    EXPECT_FALSE(diagnostics.executed);
+    EXPECT_TRUE(diagnostics.initialized);
+    EXPECT_TRUE(diagnostics.enabled);
+    EXPECT_TRUE(diagnostics.gBufferAlbedoAvailable);
+    EXPECT_TRUE(diagnostics.gBufferNormalAvailable);
+    EXPECT_TRUE(diagnostics.gBufferRoughnessAvailable);
+    EXPECT_TRUE(diagnostics.depthAvailable);
+    EXPECT_EQ(diagnostics.decalCount, 1u);
+    EXPECT_EQ(diagnostics.implementationTier, DecalRendererImplementationTier::Unsupported);
+    EXPECT_STREQ(GetDecalRendererImplementationTierName(diagnostics.implementationTier), "Unsupported");
+    EXPECT_NE(diagnostics.reason.find("not implemented"), std::string::npos);
+
+    graph.Compile();
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
+
+    const fs::path decalSourcePath =
+        FindShaderDirectory().parent_path() / "Private" / "Decal" / "DecalRenderer.cpp";
+    const std::string decalSource = ReadTextFile(decalSourcePath);
+    EXPECT_EQ(decalSource.find("graph.AddPass"), std::string::npos);
+    EXPECT_EQ(decalSource.find("TODO"), std::string::npos);
 }
 
 TEST_F(RenderPassValidationFixture, SSRReportsUnsupportedDiagnosticsWithoutScheduling)

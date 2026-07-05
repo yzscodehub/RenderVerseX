@@ -4,14 +4,15 @@
  * @file DecalRenderer.h
  * @brief Deferred decal rendering system
  * 
- * Renders decals onto scene geometry using deferred projection.
+ * Manages decal requests and reports capability-gated projection diagnostics.
  */
 
-#include "Core/Types.h"
 #include "Core/MathTypes.h"
+#include "Core/Types.h"
 #include "RHI/RHI.h"
-#include <vector>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace RVX
 {
@@ -80,23 +81,36 @@ namespace RVX
         bool clusterDecals = false;         ///< Use clustered decal rendering
     };
 
+    enum class DecalRendererImplementationTier : uint8
+    {
+        Unsupported = 0,
+        DeferredProjection
+    };
+
+    const char* GetDecalRendererImplementationTierName(DecalRendererImplementationTier tier);
+
+    struct DecalRendererDiagnostics
+    {
+        bool requested = false;
+        bool supported = false;
+        bool scheduled = false;
+        bool executed = false;
+        bool initialized = false;
+        bool enabled = false;
+        bool gBufferAlbedoAvailable = false;
+        bool gBufferNormalAvailable = false;
+        bool gBufferRoughnessAvailable = false;
+        bool depthAvailable = false;
+        uint32 decalCount = 0;
+        DecalRendererImplementationTier implementationTier = DecalRendererImplementationTier::Unsupported;
+        std::string reason;
+    };
+
     /**
      * @brief Deferred decal renderer
      * 
-     * Renders decals by projecting textures onto existing geometry.
-     * 
-     * Features:
-     * - Deferred decal projection
-     * - Normal map decals
-     * - Multiple blend modes
-     * - Distance and angle fading
-     * - Layer masking
-     * - Clustered rendering (optional)
-     * 
-     * Usage:
-     * 1. Add decals with AddDecal() before rendering
-     * 2. Call Render() after the GBuffer pass
-     * 3. Decals modify the GBuffer in-place
+     * Owns CPU-side decal lists and reports when the deferred projection GPU path is requested.
+     * The RenderGraph path stays disabled until the projection shaders and pipelines land.
      */
     class DecalRenderer
     {
@@ -125,6 +139,9 @@ namespace RVX
 
         void SetEnabled(bool enabled) { m_enabled = enabled; }
         bool IsEnabled() const { return m_enabled; }
+        bool IsSupported() const { return m_supported; }
+        const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
+        const DecalRendererDiagnostics& GetLastDiagnostics() const { return m_lastDiagnostics; }
 
         // =========================================================================
         // Decal Management
@@ -207,12 +224,21 @@ namespace RVX
 
     private:
         void SortDecals();
+        void RecordUnsupportedDiagnostics(bool requested,
+                                          bool albedoAvailable,
+                                          bool normalAvailable,
+                                          bool roughnessAvailable,
+                                          bool depthAvailable,
+                                          const std::string& reason);
         void UploadDecalData(RHICommandContext& ctx);
         void RenderDecalBatch(RHICommandContext& ctx, uint32 startIndex, uint32 count);
 
         IRHIDevice* m_device = nullptr;
         DecalRendererConfig m_config;
         bool m_enabled = true;
+        bool m_supported = false;
+        std::string m_unsupportedReason = "Decal deferred projection pipeline is not implemented";
+        DecalRendererDiagnostics m_lastDiagnostics;
 
         // Decal list
         std::vector<DecalData> m_decals;
