@@ -16,7 +16,9 @@ function(rvx_add_basic_sample TARGET_NAME SAMPLE_KIND)
 
     target_link_libraries(${TARGET_NAME} PRIVATE
         RVX::Core
+        RVX::Physics
         RVX::Render
+        RVX::RenderContracts
         RVX::Resource
         RVX::SampleCommon
     )
@@ -41,3 +43,8 @@ rvx_add_basic_sample(InputCameraSample 10)
 rvx_add_basic_sample(DebugDrawSample 11)
 rvx_add_basic_sample(DecalDiagnosticsSample 12)
 rvx_add_basic_sample(SwapChainPolicySample 13)
+rvx_add_basic_sample(ParticleSnapshotSample 14)
+rvx_add_basic_sample(TerrainSnapshotSample 15)
+rvx_add_basic_sample(WaterSnapshotSample 16)
+rvx_add_basic_sample(PhysicsQuerySample 17)
+rvx_add_basic_sample(AudioFallbackSample 18)

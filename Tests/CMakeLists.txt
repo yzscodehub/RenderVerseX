@@ -1008,6 +1008,37 @@ rvx_add_sample_smoke_test(SwapChainPolicySample basic
     --require-unsupported-feature "Raw window handle"
     --require-resource-diagnostic "window handle creation"
 )
+rvx_add_sample_smoke_test(ParticleSnapshotSample basic
+    --require-enabled-feature ParticleRenderSnapshot
+    --require-enabled-feature CPUParticleSimulationMetadata
+    --require-unsupported-feature "GPU particle render payload"
+    --require-resource-diagnostic "particle snapshot schema"
+)
+rvx_add_sample_smoke_test(TerrainSnapshotSample basic
+    --require-enabled-feature TerrainRenderSnapshot
+    --require-enabled-feature TerrainLODDiagnostic
+    --require-unsupported-feature "Terrain render-owned draw pass"
+    --require-resource-diagnostic "terrain heightmap diagnostic"
+)
+rvx_add_sample_smoke_test(WaterSnapshotSample basic
+    --require-enabled-feature WaterRenderSnapshot
+    --require-enabled-feature SimpleCPUWaveMetadata
+    --require-unsupported-feature "Water render-owned draw pass"
+    --require-resource-diagnostic "water simulation fallback"
+)
+rvx_add_sample_smoke_test(PhysicsQuerySample basic
+    --require-enabled-feature PhysicsRaycast
+    --require-enabled-feature PhysicsQueryStats
+    --require-unsupported-feature "HeightField/TriangleMesh"
+    --require-resource-diagnostic "raycast hit=true"
+)
+rvx_add_sample_smoke_test(AudioFallbackSample basic
+    --require-enabled-feature AudioFullBufferFallback
+    --require-enabled-feature AudioLoaderDiagnostics
+    --require-unsupported-feature "Audio resource streaming"
+    --require-resource-diagnostic "audio streaming status=UnsupportedStreaming"
+    --require-resource-diagnostic "audio threshold fallback status=FallbackStreamingUnsupported"
+)
 rvx_add_showcase_smoke_test(RenderingShowcase
     --require-enabled-feature IntegratedSceneRender
     --require-enabled-feature PostProcess
