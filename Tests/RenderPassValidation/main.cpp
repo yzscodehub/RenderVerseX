@@ -21,6 +21,7 @@
 #include "Render/PipelineCache.h"
 #undef private
 
+#include "Render/Debug/DebugRenderer.h"
 #include "Render/Decal/DecalRenderer.h"
 #include "Render/GPUResourceManager.h"
 #include "Render/GPUDriven/GPUCulling.h"
@@ -58,6 +59,7 @@
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/SceneRenderer.h"
 #include "Render/Renderer/ViewData.h"
+#include "Render/SwapChainManager.h"
 #include "Renderer/RenderPassRegistry.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MeshResource.h"
@@ -7296,6 +7298,67 @@ TEST(RenderPostProcessStackValidation, UnsupportedCinematicEffectsReportDiagnost
     EXPECT_EQ(volumetricSource.find("TODO"), std::string::npos);
 }
 
+TEST_F(RenderPassValidationFixture, SwapChainManagerReportsUnsupportedWindowHandleCreation)
+{
+    FakeDevice localDevice;
+    SwapChainManager manager;
+    int fakeWindow = 1;
+
+    manager.Initialize(&localDevice, &fakeWindow, 1280, 720);
+
+    const SwapChainManagerDiagnostics& diagnostics = manager.GetLastDiagnostics();
+    EXPECT_TRUE(diagnostics.requested);
+    EXPECT_FALSE(diagnostics.initialized);
+    EXPECT_TRUE(diagnostics.hasDevice);
+    EXPECT_TRUE(diagnostics.hasWindowHandle);
+    EXPECT_FALSE(diagnostics.hasSwapChain);
+    EXPECT_FALSE(diagnostics.ownsSwapChain);
+    EXPECT_EQ(diagnostics.width, 1280u);
+    EXPECT_EQ(diagnostics.height, 720u);
+    EXPECT_EQ(manager.GetSwapChain(), nullptr);
+    EXPECT_FALSE(manager.OwnsSwapChain());
+    EXPECT_NE(diagnostics.reason.find("provide a platform-created RHISwapChain"), std::string::npos);
+
+    const fs::path swapChainSourcePath =
+        FindShaderDirectory().parent_path() / "Private" / "SwapChainManager.cpp";
+    const std::string swapChainSource = ReadTextFile(swapChainSourcePath);
+    EXPECT_EQ(swapChainSource.find("TODO"), std::string::npos);
+}
+
+TEST_F(RenderPassValidationFixture, DebugRendererFrustumQueuesLinesButRenderReportsMissingPipeline)
+{
+    RecordingCommandContext ctx;
+    FakeDevice localDevice;
+    localDevice.EnableBasicCapabilities();
+
+    DebugRenderer debugRenderer;
+    debugRenderer.Initialize(&localDevice, nullptr);
+    ASSERT_TRUE(debugRenderer.IsInitialized());
+
+    debugRenderer.BeginFrame();
+    debugRenderer.DrawFrustum(Mat4Identity(), Vec4(1.0f, 0.8f, 0.2f, 1.0f));
+
+    ViewData debugView;
+    debugRenderer.Render(ctx, debugView);
+
+    const DebugRendererDiagnostics& diagnostics = debugRenderer.GetLastDiagnostics();
+    EXPECT_TRUE(diagnostics.requested);
+    EXPECT_FALSE(diagnostics.supported);
+    EXPECT_FALSE(diagnostics.scheduled);
+    EXPECT_FALSE(diagnostics.executed);
+    EXPECT_TRUE(diagnostics.initialized);
+    EXPECT_TRUE(diagnostics.enabled);
+    EXPECT_TRUE(diagnostics.vertexBufferAvailable);
+    EXPECT_FALSE(diagnostics.pipelineAvailable);
+    EXPECT_TRUE(diagnostics.depthTestEnabled);
+    EXPECT_EQ(diagnostics.vertexCount, 24u);
+    EXPECT_NE(diagnostics.reason.find("Debug line pipeline"), std::string::npos);
+
+    const fs::path debugSourcePath =
+        FindShaderDirectory().parent_path() / "Private" / "Debug" / "DebugRenderer.cpp";
+    const std::string debugSource = ReadTextFile(debugSourcePath);
+    EXPECT_EQ(debugSource.find("TODO"), std::string::npos);
+}
 TEST_F(RenderPassValidationFixture, DecalRendererReportsUnsupportedWithoutSchedulingGraphPass)
 {
     FakeDevice localDevice;

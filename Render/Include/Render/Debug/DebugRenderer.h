@@ -8,6 +8,7 @@
 #include "Core/Types.h"
 #include "Core/MathTypes.h"
 #include "RHI/RHI.h"
+#include <string>
 #include <vector>
 
 namespace RVX
@@ -24,9 +25,23 @@ namespace RVX
         Vec4 color;
     };
 
+    struct DebugRendererDiagnostics
+    {
+        bool requested = false;
+        bool supported = false;
+        bool scheduled = false;
+        bool executed = false;
+        bool initialized = false;
+        bool enabled = false;
+        bool vertexBufferAvailable = false;
+        bool pipelineAvailable = false;
+        bool depthTestEnabled = false;
+        uint32 vertexCount = 0;
+        std::string reason;
+    };
     /**
      * @brief Debug rendering capabilities
-     * 
+     *
      * Provides immediate-mode debug drawing for:
      * - Lines and polylines
      * - Bounding boxes (AABB, OBB)
@@ -120,6 +135,7 @@ namespace RVX
          */
         void SetEnabled(bool enabled) { m_enabled = enabled; }
         bool IsEnabled() const { return m_enabled; }
+        const DebugRendererDiagnostics& GetLastDiagnostics() const { return m_lastDiagnostics; }
 
         // =========================================================================
         // Configuration
@@ -138,6 +154,7 @@ namespace RVX
         PipelineCache* m_pipelineCache = nullptr;
         bool m_enabled = true;
         bool m_depthTestEnabled = true;
+        DebugRendererDiagnostics m_lastDiagnostics;
 
         // Accumulated vertices for current frame
         std::vector<DebugVertex> m_vertices;
