@@ -173,15 +173,40 @@ Tests are standalone executables (no GoogleTest framework).
 
 ## Sample Applications
 
+Samples are the Runtime-first demonstration surface while the Editor remains a thin shell. Basic samples focus on one contract or subsystem; Showcase samples compose multiple runtime systems and support smoke/report validation.
+
 | Sample | Description |
 |--------|-------------|
-| **Basic/BasicRHI** | Consolidated basic RHI sample for triangle, textured quad, and cube fundamentals |
+| **Basic/BasicRHI** | Consolidated RHI sample for triangle, textured quad, and cube fundamentals |
 | **Basic/ComputeDemo** | GPU compute shader demonstration |
+| **Basic/BackendInfoSample** | Backend selection and RHI capability report contract |
+| **Basic/RenderGraphBasics** | RenderGraph pass chain, import/export, transient resource, and diagnostics artifact |
+| **Basic/ResourcePolicySample** | source/cooked/package policy resolution, missing artifact, and hash mismatch diagnostics |
+| **Basic/TextureUploadSample** | Cooked texture, GPU upload, and texture residency contract |
+| **Basic/MeshMaterialSample** | Mesh resource, PBR material fields, and fallback material reporting |
+| **Basic/SceneActorComponentSample** | Engine, World, ActorComponent, StaticMeshComponent, and RenderExtraction snapshot path |
+| **Basic/PostProcessChainSample** | ToneMapping, Bloom, FXAA, ColorGrading, Vignette, FilmGrain, SSAO, and gated effects |
+| **Basic/LightingShadowSample** | Directional/point/spot lighting, clustered stats, CSM, and procedural sky baseline |
+| **Basic/GpuResidencySample** | GPUResourceManager memory budget, upload, residency, and eviction diagnostics |
+| **Basic/InputCameraSample** | Runtime camera contracts and platform input fallback reporting |
+| **Basic/DebugDrawSample** | CPU debug primitive extraction and explicit missing debug-line GPU pipeline diagnostic |
+| **Basic/DecalDiagnosticsSample** | Decal CPU list/sort contract and explicit deferred decal GPU pass diagnostic |
+| **Basic/SwapChainPolicySample** | External swapchain ownership and raw window-handle unsupported diagnostic |
+| **Basic/ParticleSnapshotSample** | Particle snapshot contract, CPU particle metadata, and GPU payload gating |
+| **Basic/TerrainSnapshotSample** | Terrain snapshot metadata, heightmap/material/LOD diagnostics, and GPU upload gating |
+| **Basic/WaterSnapshotSample** | Water snapshot metadata, simple CPU wave state, and GPU draw/simulation gating |
+| **Basic/PhysicsQuerySample** | PhysicsWorld raycast/overlap query stats and advanced collider fallback reporting |
+| **Basic/AudioFallbackSample** | WAV decode, streaming unsupported diagnostic, and full-buffer fallback path |
 | **Showcase/ModelViewer** | Full-featured glTF model viewer |
-| **Showcase/RenderingShowcase** | Integrated PBR, lighting, shadows, skybox, camera, and post-process showcase |
-| **Showcase/SceneInteractionShowcase** | Scene, camera, input, and picking-oriented showcase entry |
-| **Showcase/TerrainWaterShowcase** | Terrain/water showcase entry point |
-| **Showcase/ParticleFXShowcase** | Particle FX showcase entry point |
+| **Showcase/RenderingShowcase** | Integrated PBR, lighting, shadows, skybox, camera, post-process, and diagnostics |
+| **Showcase/PostProcessShowcase** | Focused post-process presets and enabled/unsupported effect reporting |
+| **Showcase/MaterialShowcase** | PBR material response, material variants, and fallback material reporting |
+| **Showcase/LightingShowcase** | Directional, local, clustered, shadow, sky, and IBL fallback demonstration |
+| **Showcase/SceneInteractionShowcase** | Scene, camera, input, ActorComponent, transform, and picking-oriented smoke |
+| **Showcase/TerrainWaterShowcase** | Terrain/water staging scene with snapshot diagnostics and honest GPU path status |
+| **Showcase/ParticleFXShowcase** | CPU particle staging and GPU particle unsupported diagnostic |
+| **Showcase/ResourceRuntimeShowcase** | cooked/package fixture, ResourceManager diagnostics, and GPU residency summary |
+| **Showcase/PhysicsAudioShowcase** | Physics query/collider smoke, spatial audio staging, and audio streaming fallback |
 
 ## Project Structure
 
