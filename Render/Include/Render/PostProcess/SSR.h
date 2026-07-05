@@ -1,8 +1,8 @@
 /**
  * @file SSR.h
  * @brief Screen-Space Reflections effect
- * 
- * Implements hierarchical ray marching for efficient SSR.
+ *
+ * Exposes capability-gated screen-space reflection diagnostics.
  */
 
 #pragma once
@@ -10,8 +10,10 @@
 #include "Core/Types.h"
 #include "Core/MathTypes.h"
 #include "RHI/RHI.h"
+
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace RVX
 {
@@ -30,21 +32,29 @@ namespace RVX
         Ultra       ///< Maximum quality (stochastic ray march)
     };
 
+    enum class SSRImplementationTier : uint8
+    {
+        Unsupported = 0,
+        HiZRayMarch
+    };
+
+    const char* GetSSRImplementationTierName(SSRImplementationTier tier);
+
     /**
      * @brief SSR configuration
      */
     struct SSRConfig
     {
         SSRQuality quality = SSRQuality::Medium;
-        
+
         float maxDistance = 100.0f;         ///< Maximum reflection ray distance
         float thickness = 0.1f;             ///< Depth buffer thickness for ray-surface test
         int maxSteps = 64;                  ///< Maximum ray march steps
         int binarySearchSteps = 8;          ///< Binary search refinement steps
-        
+
         float roughnessThreshold = 0.5f;    ///< Don't compute SSR above this roughness
         float edgeFade = 0.1f;              ///< Fade reflections near screen edges
-        
+
         bool halfResolution = true;         ///< Compute at half resolution
         bool temporalFilter = true;         ///< Enable temporal filtering
         bool stochastic = false;            ///< Enable stochastic sampling for rough surfaces
@@ -54,25 +64,23 @@ namespace RVX
     {
         bool requested = false;
         bool supported = false;
+        bool scheduled = false;
         bool executed = false;
         bool colorAvailable = false;
         bool depthAvailable = false;
         bool normalAvailable = false;
         bool roughnessAvailable = false;
         bool temporalHistoryRequired = false;
+        SSRImplementationTier implementationTier = SSRImplementationTier::Unsupported;
+        std::string missingInputReason;
         std::string fallbackReason;
     };
 
     /**
      * @brief Screen-Space Reflections
-     * 
-     * Implements high-quality SSR using hierarchical ray marching.
-     * 
-     * Features:
-     * - HiZ acceleration for fast ray marching
-     * - Stochastic sampling for rough reflections
-     * - Temporal accumulation for stability
-     * - Edge fade and sky fallback
+     *
+     * Reports the SSR request state and keeps the feature disabled until the
+     * HiZ, ray-march, resolve, and temporal pipelines are implemented.
      */
     class SSR
     {

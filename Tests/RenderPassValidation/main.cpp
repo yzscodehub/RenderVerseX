@@ -7295,6 +7295,64 @@ TEST(RenderPostProcessStackValidation, UnsupportedCinematicEffectsReportDiagnost
     EXPECT_EQ(volumetricSource.find("TODO"), std::string::npos);
 }
 
+TEST_F(RenderPassValidationFixture, SSRReportsUnsupportedDiagnosticsWithoutScheduling)
+{
+    RecordingCommandContext ctx;
+    FakeDevice localDevice;
+    localDevice.EnableBasicCapabilities();
+
+    SSR ssr;
+    ssr.SetEnabled(true);
+    ssr.Initialize(&localDevice, 64, 48);
+
+    ASSERT_TRUE(ssr.IsInitialized());
+    EXPECT_FALSE(ssr.IsSupported());
+    EXPECT_FALSE(ssr.IsEnabled());
+    EXPECT_FALSE(ssr.GetUnsupportedReason().empty());
+
+    RHITextureRef ssrColorTexture =
+        localDevice.CreateTexture(RHITextureDesc::RenderTarget(64, 48, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef ssrDepthTexture =
+        localDevice.CreateTexture(RHITextureDesc::DepthStencil(64, 48, RHIFormat::D32_FLOAT));
+    RHITextureRef ssrNormalTexture =
+        localDevice.CreateTexture(RHITextureDesc::RenderTarget(64, 48, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef ssrRoughnessTexture =
+        localDevice.CreateTexture(RHITextureDesc::RenderTarget(64, 48, RHIFormat::R8_UNORM));
+    ASSERT_TRUE(ssrColorTexture);
+    ASSERT_TRUE(ssrDepthTexture);
+    ASSERT_TRUE(ssrNormalTexture);
+    ASSERT_TRUE(ssrRoughnessTexture);
+
+    ssr.Compute(ctx,
+                ssrColorTexture.Get(),
+                ssrDepthTexture.Get(),
+                ssrNormalTexture.Get(),
+                ssrRoughnessTexture.Get(),
+                Mat4Identity(),
+                Mat4Identity());
+
+    const SSRComputeStats& diagnostics = ssr.GetLastComputeStats();
+    EXPECT_TRUE(diagnostics.requested);
+    EXPECT_FALSE(diagnostics.supported);
+    EXPECT_FALSE(diagnostics.scheduled);
+    EXPECT_FALSE(diagnostics.executed);
+    EXPECT_TRUE(diagnostics.colorAvailable);
+    EXPECT_TRUE(diagnostics.depthAvailable);
+    EXPECT_TRUE(diagnostics.normalAvailable);
+    EXPECT_TRUE(diagnostics.roughnessAvailable);
+    EXPECT_TRUE(diagnostics.temporalHistoryRequired);
+    EXPECT_EQ(diagnostics.implementationTier, SSRImplementationTier::Unsupported);
+    EXPECT_STREQ(GetSSRImplementationTierName(diagnostics.implementationTier), "Unsupported");
+    EXPECT_TRUE(diagnostics.missingInputReason.empty());
+    EXPECT_NE(diagnostics.fallbackReason.find("not implemented"), std::string::npos);
+
+    const fs::path ssrSourcePath =
+        FindShaderDirectory().parent_path() / "Private" / "PostProcess" / "SSR.cpp";
+    const std::string ssrSource = ReadTextFile(ssrSourcePath);
+    EXPECT_EQ(ssrSource.find("graph.AddPass"), std::string::npos);
+    EXPECT_EQ(ssrSource.find("TODO"), std::string::npos);
+}
+
 TEST_F(RenderPassValidationFixture, TAAMinimalResolveCopiesCurrentFrameAndUpdatesHistory)
 {
     FakeDevice localDevice;
@@ -7348,13 +7406,16 @@ TEST_F(RenderPassValidationFixture, StandaloneSSAOAndSSRReportMissingFrameInputs
     const SSRComputeStats& ssrStats = ssr.GetLastComputeStats();
     EXPECT_TRUE(ssrStats.requested);
     EXPECT_FALSE(ssrStats.supported);
+    EXPECT_FALSE(ssrStats.scheduled);
     EXPECT_FALSE(ssrStats.executed);
     EXPECT_FALSE(ssrStats.colorAvailable);
     EXPECT_FALSE(ssrStats.depthAvailable);
     EXPECT_FALSE(ssrStats.normalAvailable);
     EXPECT_FALSE(ssrStats.roughnessAvailable);
-    EXPECT_NE(ssrStats.fallbackReason.find("color, depth, normal, or roughness"),
+    EXPECT_EQ(ssrStats.implementationTier, SSRImplementationTier::Unsupported);
+    EXPECT_NE(ssrStats.missingInputReason.find("color, depth, normal, or roughness"),
               std::string::npos);
+    EXPECT_EQ(ssrStats.fallbackReason, ssrStats.missingInputReason);
 }
 
 TEST_F(RenderPassValidationFixture, StandaloneSSAOInitializesMinimalLowTierAndReportsFallbacks)
