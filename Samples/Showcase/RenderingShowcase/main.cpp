@@ -932,6 +932,27 @@ namespace
         }
     }
 
+    void AppendGPUResidencyDiagnostics(ShowcaseReport& report)
+    {
+        if (!report.renderDiagnosticsAvailable)
+        {
+            report.resourceDiagnostics.push_back("gpu residency unavailable: render diagnostics unavailable");
+            return;
+        }
+
+        const GPUResourceManager::Stats& stats = report.renderDiagnostics.gpuResourceStats;
+        report.resourceDiagnostics.push_back("gpu residency memory budget=" + std::to_string(stats.memoryBudget));
+        report.resourceDiagnostics.push_back("gpu residency used memory=" + std::to_string(stats.usedMemory));
+        report.resourceDiagnostics.push_back("gpu residency resident meshes=" + std::to_string(stats.residentMeshCount));
+        report.resourceDiagnostics.push_back("gpu residency resident textures=" + std::to_string(stats.residentTextureCount));
+        report.resourceDiagnostics.push_back("gpu residency pending uploads=" + std::to_string(stats.pendingUploadCount));
+        report.resourceDiagnostics.push_back("gpu residency queued uploads=" + std::to_string(stats.queuedUploadCount));
+        report.resourceDiagnostics.push_back("gpu residency failed uploads=" + std::to_string(stats.failedUploadCount));
+        report.resourceDiagnostics.push_back(stats.usedMemory > stats.memoryBudget
+                                                   ? "gpu residency eviction reason=over budget"
+                                                   : "gpu residency eviction reason=none");
+    }
+
     bool WriteRuntimeFixtureFile(const std::filesystem::path& path, const std::string& contents)
     {
         std::error_code error;
@@ -2001,6 +2022,10 @@ int main(int argc, char* argv[])
         AppendResourceRuntimePolicyDiagnostics(report);
     }
     AppendRendererDiagnostics(sceneRenderer, report);
+    if (options.mode == ShowcaseMode::ResourceRuntime)
+    {
+        AppendGPUResidencyDiagnostics(report);
+    }
 
     if (!options.reportPath.empty())
     {

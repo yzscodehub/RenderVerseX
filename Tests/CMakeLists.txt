@@ -1108,6 +1108,12 @@ if(RVX_ENABLE_DX11 AND TARGET ResourceRuntimeShowcase AND TARGET SampleReportCon
             --require-resource-diagnostic "package material artifact resolved"
             --require-resource-diagnostic "package audio artifact resolved"
             --require-resource-diagnostic "hash mismatch"
+            --require-resource-diagnostic "gpu residency memory budget"
+            --require-resource-diagnostic "gpu residency used memory"
+            --require-resource-diagnostic "gpu residency resident meshes"
+            --require-resource-diagnostic "gpu residency resident textures"
+            --require-resource-diagnostic "gpu residency pending uploads"
+            --require-resource-diagnostic "gpu residency eviction reason"
     )
     set_tests_properties(ResourceRuntimeShowcaseDX11ReportValidation PROPERTIES
         LABELS "visual;gpu;sample;showcase;dx11"
