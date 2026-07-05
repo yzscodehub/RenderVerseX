@@ -28,6 +28,9 @@ namespace
         LightingShadow = 8,
         GPUResidency = 9,
         InputCamera = 10,
+        DebugDraw = 11,
+        DecalDiagnostics = 12,
+        SwapChainPolicy = 13,
     };
 
     RVX::SampleRenderDiagnostics MakeRenderDiagnostics(RVX::uint32 passCount)
@@ -312,6 +315,57 @@ namespace
         };
         desc.fallbackReasons = {
             "Platform input events require a windowed sample; this target reports runtime input contracts",
+        };
+#elif RVX_BASIC_SAMPLE_KIND == 11
+        desc.sampleName = "DebugDrawSample";
+        desc.enabledFeatures = {
+            "DebugLineCommandBuffer",
+            "FrustumWireframeCPUExtraction",
+            "DebugRendererDiagnostics",
+        };
+        desc.unsupportedFeatures = {
+            "Debug line GPU pipeline",
+        };
+        desc.fallbackReasons = {
+            "Debug line pipeline is not implemented; CPU debug primitives are queued without issuing a draw",
+        };
+        desc.resourceDiagnostics = {
+            "frustum wireframe vertices=24",
+            "debug renderer reports scheduled=false until a debug line pipeline exists",
+        };
+#elif RVX_BASIC_SAMPLE_KIND == 12
+        desc.sampleName = "DecalDiagnosticsSample";
+        desc.enabledFeatures = {
+            "DecalCPUList",
+            "DecalSortOrder",
+            "DecalRendererDiagnostics",
+        };
+        desc.unsupportedFeatures = {
+            "Deferred decal projection GPU pass",
+        };
+        desc.fallbackReasons = {
+            "Decal RenderGraph pass is not scheduled until projection shaders and pipelines land",
+        };
+        desc.resourceDiagnostics = {
+            "decal diagnostics report requested/supported/scheduled/executed",
+            "GBuffer inputs are validated before any decal pass can be scheduled",
+        };
+#elif RVX_BASIC_SAMPLE_KIND == 13
+        desc.sampleName = "SwapChainPolicySample";
+        desc.enabledFeatures = {
+            "ExternalSwapChainInjection",
+            "SwapChainManagerDiagnostics",
+            "ResizePresentFallbackReasons",
+        };
+        desc.unsupportedFeatures = {
+            "Raw window handle swapchain creation",
+        };
+        desc.fallbackReasons = {
+            "SwapChainManager expects a platform-created RHISwapChain for runtime presentation",
+        };
+        desc.resourceDiagnostics = {
+            "window handle creation reports initialized=false and hasWindowHandle=true",
+            "present/resize report structured reasons when no swap chain is available",
         };
 #else
         desc.sampleName = "UnknownBasicSample";

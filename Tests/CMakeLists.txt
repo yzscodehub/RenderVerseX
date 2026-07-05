@@ -990,6 +990,24 @@ rvx_add_sample_smoke_test(InputCameraSample basic
     --require-enabled-feature RuntimeCamera
     --require-enabled-feature InputSubsystemDiagnostics
 )
+rvx_add_sample_smoke_test(DebugDrawSample basic
+    --require-enabled-feature DebugLineCommandBuffer
+    --require-enabled-feature FrustumWireframeCPUExtraction
+    --require-unsupported-feature "Debug line GPU pipeline"
+    --require-resource-diagnostic "frustum wireframe vertices"
+)
+rvx_add_sample_smoke_test(DecalDiagnosticsSample basic
+    --require-enabled-feature DecalCPUList
+    --require-enabled-feature DecalRendererDiagnostics
+    --require-unsupported-feature "Deferred decal projection"
+    --require-resource-diagnostic "GBuffer inputs"
+)
+rvx_add_sample_smoke_test(SwapChainPolicySample basic
+    --require-enabled-feature ExternalSwapChainInjection
+    --require-enabled-feature SwapChainManagerDiagnostics
+    --require-unsupported-feature "Raw window handle"
+    --require-resource-diagnostic "window handle creation"
+)
 rvx_add_showcase_smoke_test(RenderingShowcase
     --require-enabled-feature IntegratedSceneRender
     --require-enabled-feature PostProcess
