@@ -49,5 +49,6 @@ Thumbs.db
 
 # Local agent/tool state
 .codex
+.superpowers/
 .claude/settings.local.json
 .claude/worktrees/
