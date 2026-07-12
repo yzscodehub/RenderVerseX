@@ -17,7 +17,7 @@ namespace RVX
     {
         size_t elementSize = GetAttributeTypeSize(type);
         size_t totalSize = vertexCount * components * elementSize;
-        
+
         if (totalSize > 0 && data)
         {
             m_data = std::malloc(totalSize);
@@ -158,7 +158,7 @@ namespace RVX
             m_components = other.m_components;
             m_type = other.m_type;
             m_normalized = other.m_normalized;
-            
+
             other.m_data = nullptr;
             other.m_vertexCount = 0;
         }

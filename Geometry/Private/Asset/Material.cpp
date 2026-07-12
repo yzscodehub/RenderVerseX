@@ -20,12 +20,12 @@ namespace RVX
     Material::Ptr Material::Clone(bool generateNewId) const
     {
         auto clone = std::make_shared<Material>(m_name);
-        
+
         if (!generateNewId)
         {
             clone->m_materialId = m_materialId;
         }
-        
+
         clone->m_workflow = m_workflow;
         clone->m_doubleSided = m_doubleSided;
         clone->m_alphaMode = m_alphaMode;
@@ -42,7 +42,7 @@ namespace RVX
         clone->m_emissiveColor = m_emissiveColor;
         clone->m_emissiveTexture = m_emissiveTexture;
         clone->m_emissiveStrength = m_emissiveStrength;
-        
+
         return clone;
     }
 

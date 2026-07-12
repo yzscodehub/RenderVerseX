@@ -3,7 +3,7 @@
 /**
  * @file Model.h
  * @brief Model container class - holds scene graph and associated data
- * 
+ *
  * Migrated from found::model::Model
  */
 
@@ -25,7 +25,7 @@ namespace RVX
 
     /**
      * @brief Model class - container for scene graph and related data
-     * 
+     *
      * Holds:
      * - Scene node hierarchy (tree structure)
      * - Materials (optional)
@@ -36,7 +36,7 @@ namespace RVX
     {
     public:
         using Ptr = std::shared_ptr<Model>;
-        
+
         Model() = default;
         ~Model() = default;
 

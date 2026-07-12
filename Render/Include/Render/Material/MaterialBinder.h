@@ -26,7 +26,7 @@ namespace RVX
 
     /**
      * @brief Binds material data to the rendering pipeline
-     * 
+     *
      * MaterialBinder handles:
      * - Converting CPU Material data to GPU constants
      * - Managing material constant buffers
@@ -75,7 +75,7 @@ namespace RVX
          * @param ctx Command context to bind to
          * @param material Source material data to bind
          * @param setIndex Descriptor set index for material constants
-         * 
+         *
          * Updates the material constant buffer and binds textures.
          */
         void Bind(RHICommandContext& ctx, const MaterialSourceData& material, uint32 setIndex = 2);

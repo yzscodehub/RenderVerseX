@@ -24,7 +24,7 @@ namespace RVX
     void Model::ComputeBoundingBox()
     {
         if (!m_root) return;
-        
+
         if (auto bounds = m_root->ComputeWorldBoundingBox())
         {
             m_bbox = *bounds;

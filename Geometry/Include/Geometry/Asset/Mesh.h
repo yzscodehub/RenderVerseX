@@ -3,7 +3,7 @@
 /**
  * @file Mesh.h
  * @brief Modern mesh class with flexible vertex attributes and submesh support
- * 
+ *
  * Migrated from found::model::Mesh
  */
 
@@ -62,7 +62,7 @@ namespace RVX
 
     /**
      * @brief Modern mesh class supporting flexible vertex attributes
-     * 
+     *
      * Features:
      * - Arbitrary vertex attributes (position, normal, uv, etc.)
      * - Multiple index types (8/16/32-bit)
@@ -258,16 +258,16 @@ namespace RVX
     private:
         // Vertex attributes
         std::unordered_map<std::string, std::unique_ptr<VertexAttribute>> m_attributes;
-        
+
         // Index data
         std::vector<uint8_t> m_indexData;
         size_t m_indexCount = 0;
         IndexType m_indexType = IndexType::UInt32;
-        
+
         // Geometry info
         size_t m_vertexCount = 0;
         PrimitiveType m_primitiveType = PrimitiveType::Triangles;
-        
+
         // Bounding box
         mutable std::optional<BoundingBox> m_boundingBox;
 

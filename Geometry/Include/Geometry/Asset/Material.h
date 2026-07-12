@@ -3,7 +3,7 @@
 /**
  * @file Material.h
  * @brief PBR material system supporting multiple workflows
- * 
+ *
  * Migrated from found::model::Material
  */
 
@@ -17,7 +17,7 @@
 
 namespace RVX
 {
-    /**  
+    /**
      * @brief Material workflow type
      */
     enum class MaterialWorkflow
@@ -36,12 +36,12 @@ namespace RVX
         std::string texturePath;
         int32_t uvSet = 0;
         int32_t imageId = -1;  // Resolved image ID (-1 = unresolved)
-        
+
         // Texture transform
         Vec2 offset{0.0f, 0.0f};
         Vec2 scale{1.0f, 1.0f};
         float rotation = 0.0f;
-        
+
         // Sampling parameters
         enum class WrapMode
         {
@@ -52,7 +52,7 @@ namespace RVX
         };
         WrapMode wrapS = WrapMode::Repeat;
         WrapMode wrapT = WrapMode::Repeat;
-        
+
         enum class FilterMode
         {
             Nearest,
@@ -72,7 +72,7 @@ namespace RVX
 
     /**
      * @brief PBR Material class
-     * 
+     *
      * Supports:
      * - Metallic/Roughness workflow (glTF 2.0 standard)
      * - Specular/Glossiness workflow (legacy/traditional)
@@ -106,7 +106,7 @@ namespace RVX
 
         uint32_t GetMaterialId() const { return m_materialId; }
         void SetMaterialId(uint32_t id) { m_materialId = id; }
-        
+
         MaterialWorkflow GetWorkflow() const { return m_workflow; }
         void SetWorkflow(MaterialWorkflow workflow) { m_workflow = workflow; }
 
@@ -123,10 +123,10 @@ namespace RVX
             Mask,       // Alpha testing
             Blend       // Alpha blending
         };
-        
+
         AlphaMode GetAlphaMode() const { return m_alphaMode; }
         void SetAlphaMode(AlphaMode mode) { m_alphaMode = mode; }
-        
+
         float GetAlphaCutoff() const { return m_alphaCutoff; }
         void SetAlphaCutoff(float cutoff) { m_alphaCutoff = cutoff; }
 
@@ -192,7 +192,7 @@ namespace RVX
         uint32_t m_materialId = 0;
         MaterialWorkflow m_workflow = MaterialWorkflow::MetallicRoughness;
         bool m_doubleSided = false;
-        
+
         // Alpha
         AlphaMode m_alphaMode = AlphaMode::Opaque;
         float m_alphaCutoff = 0.5f;

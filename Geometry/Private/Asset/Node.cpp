@@ -126,7 +126,7 @@ namespace RVX
     {
         Vec3 pos = GetPosition();
         Vec3 direction = normalize(target - pos);
-        
+
         // Handle case where direction is parallel to up
         Vec3 right = normalize(cross(up, direction));
         if (length(right) < 0.001f)
@@ -134,13 +134,13 @@ namespace RVX
             right = Vec3(1, 0, 0);
         }
         Vec3 correctedUp = cross(direction, right);
-        
+
         Mat4 lookMatrix;
         lookMatrix[0] = Vec4(right, 0);
         lookMatrix[1] = Vec4(correctedUp, 0);
         lookMatrix[2] = Vec4(-direction, 0);
         lookMatrix[3] = Vec4(0, 0, 0, 1);
-        
+
         SetRotation(Mat4ToQuat(lookMatrix));
     }
 
@@ -247,13 +247,13 @@ namespace RVX
     void Node::AddChild(Ptr child)
     {
         if (!child) return;
-        
+
         // Remove from previous parent
         if (child->m_parent)
         {
             child->RemoveFromParent();
         }
-        
+
         child->m_parent = this;
         child->MarkWorldMatrixDirty();
         m_children.push_back(std::move(child));
@@ -262,7 +262,7 @@ namespace RVX
     bool Node::RemoveChild(Node* child)
     {
         if (!child) return false;
-        
+
         for (auto it = m_children.begin(); it != m_children.end(); ++it)
         {
             if (it->get() == child)
@@ -348,14 +348,14 @@ namespace RVX
     {
         std::queue<Node*> queue;
         queue.push(this);
-        
+
         while (!queue.empty())
         {
             Node* current = queue.front();
             queue.pop();
-            
+
             visitor(current);
-            
+
             for (auto& child : current->m_children)
             {
                 queue.push(child.get());
@@ -371,7 +371,7 @@ namespace RVX
             {
                 return child.get();
             }
-            
+
             if (recursive)
             {
                 if (Node* found = child->FindChild(name, true))
@@ -386,18 +386,18 @@ namespace RVX
     Node* Node::FindChildByPath(const std::string& path) const
     {
         if (path.empty()) return nullptr;
-        
+
         size_t start = 0;
         if (path[0] == '/') start = 1;
-        
+
         const Node* current = this;
         size_t pos = start;
-        
+
         while (pos < path.size() && current)
         {
             size_t next = path.find('/', pos);
             std::string segment = path.substr(pos, next - pos);
-            
+
             if (segment.empty() || segment == ".")
             {
                 // Skip
@@ -410,10 +410,10 @@ namespace RVX
             {
                 current = current->GetChild(segment);
             }
-            
+
             pos = (next == std::string::npos) ? path.size() : next + 1;
         }
-        
+
         return const_cast<Node*>(current);
     }
 
@@ -421,13 +421,13 @@ namespace RVX
     {
         std::string path = m_name;
         const Node* current = m_parent;
-        
+
         while (current)
         {
             path = current->m_name + "/" + path;
             current = current->m_parent;
         }
-        
+
         return "/" + path;
     }
 
@@ -435,20 +435,20 @@ namespace RVX
     {
         size_t depth = 0;
         const Node* current = m_parent;
-        
+
         while (current)
         {
             ++depth;
             current = current->m_parent;
         }
-        
+
         return depth;
     }
 
     bool Node::IsAncestorOf(const Node* node) const
     {
         if (!node) return false;
-        
+
         const Node* current = node->m_parent;
         while (current)
         {
@@ -467,18 +467,18 @@ namespace RVX
     {
         BoundingBox result;
         bool hasAny = false;
-        
+
         // Include this node's mesh bounds
         if (auto mesh = GetMesh())
         {
             if (const auto& localBounds = mesh->GetBoundingBox())
             {
                 const Mat4& world = GetWorldMatrix();
-                
+
                 // Transform all 8 corners
                 const Vec3& min = localBounds->GetMin();
                 const Vec3& max = localBounds->GetMax();
-                
+
                 Vec3 corners[8] = {
                     {min.x, min.y, min.z},
                     {max.x, min.y, min.z},
@@ -489,7 +489,7 @@ namespace RVX
                     {min.x, max.y, max.z},
                     {max.x, max.y, max.z}
                 };
-                
+
                 for (const auto& corner : corners)
                 {
                     Vec4 worldCorner = world * Vec4(corner, 1.0f);
@@ -498,7 +498,7 @@ namespace RVX
                 }
             }
         }
-        
+
         // Include children bounds
         for (const auto& child : m_children)
         {
@@ -508,7 +508,7 @@ namespace RVX
                 hasAny = true;
             }
         }
-        
+
         if (hasAny)
         {
             return result;

@@ -97,4 +97,3 @@ namespace RVX::Resource
         return entity;
     }
 } // namespace RVX::Resource
-

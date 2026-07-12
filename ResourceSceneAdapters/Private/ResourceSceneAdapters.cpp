@@ -9,4 +9,3 @@ namespace RVX::ResourceSceneAdapters
         ComponentFactory::RegisterDefaults();
     }
 } // namespace RVX::ResourceSceneAdapters
-

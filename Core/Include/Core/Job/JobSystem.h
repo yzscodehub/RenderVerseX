@@ -62,9 +62,9 @@ namespace RVX
         JobHandle() = default;
 
         /// Check if the job has completed
-        bool IsComplete() const 
-        { 
-            return m_completed ? m_completed->load() : true; 
+        bool IsComplete() const
+        {
+            return m_completed ? m_completed->load() : true;
         }
 
         /// Wait for the job to complete
@@ -95,7 +95,7 @@ namespace RVX
 
     private:
         friend class JobSystem;
-        
+
         std::shared_future<void> m_future;
         std::shared_ptr<std::atomic<bool>> m_completed;
         std::string m_category;
@@ -104,26 +104,26 @@ namespace RVX
 
     /**
      * @brief High-level job system for parallel task execution
-     * 
+     *
      * The JobSystem provides a convenient interface for submitting
      * parallel work. It wraps the ThreadPool with additional features
      * like job handles and priority scheduling.
-     * 
+     *
      * Usage:
      * @code
      * // Get the global job system
      * JobSystem& jobs = JobSystem::Get();
-     * 
+     *
      * // Submit a job
      * JobHandle handle = jobs.Submit([]() {
      *     DoExpensiveWork();
      * });
-     * 
+     *
      * // Continue with other work...
-     * 
+     *
      * // Wait for completion
      * handle.Wait();
-     * 
+     *
      * // Or submit many jobs and wait for all
      * std::vector<JobHandle> handles;
      * for (int i = 0; i < 100; ++i) {
@@ -335,11 +335,11 @@ namespace RVX
             }
 
             std::vector<std::future<void>> futures;
-            
+
             for (size_t batchStart = start; batchStart < end; batchStart += batchSize)
             {
                 size_t batchEnd = std::min(batchStart + batchSize, end);
-                
+
                 futures.push_back(m_threadPool->Submit([&func, batchStart, batchEnd]() {
                     for (size_t i = batchStart; i < batchEnd; ++i)
                     {

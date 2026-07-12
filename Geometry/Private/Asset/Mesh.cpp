@@ -44,13 +44,13 @@ namespace RVX
     void Mesh::AddAttribute(const std::string& attrName, std::unique_ptr<VertexAttribute> attribute)
     {
         if (!attribute) return;
-        
+
         // Update vertex count from first valid attribute
         if (m_vertexCount == 0)
         {
             m_vertexCount = attribute->GetVertexCount();
         }
-        
+
         m_attributes[attrName] = std::move(attribute);
     }
 
@@ -141,13 +141,13 @@ namespace RVX
         BoundingBox bbox;
         const float* data = static_cast<const float*>(posAttr->GetData());
         size_t vertexCount = posAttr->GetVertexCount();
-        
+
         for (size_t i = 0; i < vertexCount; ++i)
         {
             Vec3 pos(data[i * 3], data[i * 3 + 1], data[i * 3 + 2]);
             bbox.Expand(pos);
         }
-        
+
         m_boundingBox = bbox;
         return true;
     }
@@ -216,7 +216,7 @@ namespace RVX
 
         std::vector<uint32_t> indices = GetIndices32();
         std::vector<Vec3> normals = ComputeVertexNormalsTriList(positions, indices);
-        
+
         if (normals.empty())
         {
             return false;
@@ -325,7 +325,7 @@ namespace RVX
         clone->m_primitiveType = m_primitiveType;
         clone->m_boundingBox = m_boundingBox;
         clone->m_subMeshes = m_subMeshes;
-        
+
         for (const auto& [attrName, attr] : m_attributes)
         {
             if (attr)
@@ -333,7 +333,7 @@ namespace RVX
                 clone->m_attributes[attrName] = attr->Clone();
             }
         }
-        
+
         return clone;
     }
 
@@ -410,33 +410,33 @@ namespace RVX
         {
             auto mesh = std::make_shared<Mesh>();
             mesh->name = "Triangle";
-            
+
             std::vector<Vec3> positions = {
                 {0.0f, 0.5f, 0.0f},
                 {-0.5f, -0.5f, 0.0f},
                 {0.5f, -0.5f, 0.0f}
             };
-            
+
             std::vector<Vec3> normals = {
                 {0.0f, 0.0f, 1.0f},
                 {0.0f, 0.0f, 1.0f},
                 {0.0f, 0.0f, 1.0f}
             };
-            
+
             std::vector<Vec2> uvs = {
                 {0.5f, 1.0f},
                 {0.0f, 0.0f},
                 {1.0f, 0.0f}
             };
-            
+
             std::vector<uint32_t> indices = {0, 1, 2};
-            
+
             mesh->SetPositions(positions);
             mesh->SetNormals(normals);
             mesh->SetUVs(uvs);
             mesh->SetIndices(indices);
             mesh->ComputeBoundingBox();
-            
+
             return mesh;
         }
 
@@ -444,36 +444,36 @@ namespace RVX
         {
             auto mesh = std::make_shared<Mesh>();
             mesh->name = "Quad";
-            
+
             std::vector<Vec3> positions = {
                 {-0.5f, -0.5f, 0.0f},
                 {0.5f, -0.5f, 0.0f},
                 {0.5f, 0.5f, 0.0f},
                 {-0.5f, 0.5f, 0.0f}
             };
-            
+
             std::vector<Vec3> normals = {
                 {0.0f, 0.0f, 1.0f},
                 {0.0f, 0.0f, 1.0f},
                 {0.0f, 0.0f, 1.0f},
                 {0.0f, 0.0f, 1.0f}
             };
-            
+
             std::vector<Vec2> uvs = {
                 {0.0f, 0.0f},
                 {1.0f, 0.0f},
                 {1.0f, 1.0f},
                 {0.0f, 1.0f}
             };
-            
+
             std::vector<uint32_t> indices = {0, 1, 2, 0, 2, 3};
-            
+
             mesh->SetPositions(positions);
             mesh->SetNormals(normals);
             mesh->SetUVs(uvs);
             mesh->SetIndices(indices);
             mesh->ComputeBoundingBox();
-            
+
             return mesh;
         }
 
@@ -481,30 +481,30 @@ namespace RVX
         {
             auto mesh = std::make_shared<Mesh>();
             mesh->name = "Cube";
-            
+
             // 24 vertices (4 per face, for proper normals)
             std::vector<Vec3> positions;
             std::vector<Vec3> normals;
             std::vector<Vec2> uvs;
             std::vector<uint32_t> indices;
-            
+
             // Helper to add a face
             auto addFace = [&](const Vec3& normal, const Vec3& right, const Vec3& up) {
                 uint32_t baseIdx = static_cast<uint32_t>(positions.size());
                 Vec3 center = normal * 0.5f;
-                
+
                 positions.push_back(center - right * 0.5f - up * 0.5f);
                 positions.push_back(center + right * 0.5f - up * 0.5f);
                 positions.push_back(center + right * 0.5f + up * 0.5f);
                 positions.push_back(center - right * 0.5f + up * 0.5f);
-                
+
                 for (int i = 0; i < 4; ++i) normals.push_back(normal);
-                
+
                 uvs.push_back({0.0f, 0.0f});
                 uvs.push_back({1.0f, 0.0f});
                 uvs.push_back({1.0f, 1.0f});
                 uvs.push_back({0.0f, 1.0f});
-                
+
                 indices.push_back(baseIdx);
                 indices.push_back(baseIdx + 1);
                 indices.push_back(baseIdx + 2);
@@ -512,7 +512,7 @@ namespace RVX
                 indices.push_back(baseIdx + 2);
                 indices.push_back(baseIdx + 3);
             };
-            
+
             // +Z, -Z, +X, -X, +Y, -Y
             addFace({0, 0, 1}, {1, 0, 0}, {0, 1, 0});   // Front
             addFace({0, 0, -1}, {-1, 0, 0}, {0, 1, 0}); // Back
@@ -520,13 +520,13 @@ namespace RVX
             addFace({-1, 0, 0}, {0, 0, 1}, {0, 1, 0});  // Left
             addFace({0, 1, 0}, {1, 0, 0}, {0, 0, -1});  // Top
             addFace({0, -1, 0}, {1, 0, 0}, {0, 0, 1});  // Bottom
-            
+
             mesh->SetPositions(positions);
             mesh->SetNormals(normals);
             mesh->SetUVs(uvs);
             mesh->SetIndices(indices);
             mesh->ComputeBoundingBox();
-            
+
             return mesh;
         }
 
@@ -534,59 +534,59 @@ namespace RVX
         {
             auto mesh = std::make_shared<Mesh>();
             mesh->name = "Sphere";
-            
+
             std::vector<Vec3> positions;
             std::vector<Vec3> normals;
             std::vector<Vec2> uvs;
             std::vector<uint32_t> indices;
-            
+
             const float radius = 0.5f;
-            
+
             for (int ring = 0; ring <= rings; ++ring)
             {
                 float phi = static_cast<float>(ring) / rings * glm::pi<float>();
                 float sinPhi = std::sin(phi);
                 float cosPhi = std::cos(phi);
-                
+
                 for (int seg = 0; seg <= segments; ++seg)
                 {
                     float theta = static_cast<float>(seg) / segments * 2.0f * glm::pi<float>();
                     float sinTheta = std::sin(theta);
                     float cosTheta = std::cos(theta);
-                    
+
                     Vec3 normal(sinPhi * cosTheta, cosPhi, sinPhi * sinTheta);
                     Vec3 pos = normal * radius;
                     Vec2 uv(static_cast<float>(seg) / segments, static_cast<float>(ring) / rings);
-                    
+
                     positions.push_back(pos);
                     normals.push_back(normal);
                     uvs.push_back(uv);
                 }
             }
-            
+
             for (int ring = 0; ring < rings; ++ring)
             {
                 for (int seg = 0; seg < segments; ++seg)
                 {
                     uint32_t curr = ring * (segments + 1) + seg;
                     uint32_t next = curr + segments + 1;
-                    
+
                     indices.push_back(curr);
                     indices.push_back(next);
                     indices.push_back(curr + 1);
-                    
+
                     indices.push_back(curr + 1);
                     indices.push_back(next);
                     indices.push_back(next + 1);
                 }
             }
-            
+
             mesh->SetPositions(positions);
             mesh->SetNormals(normals);
             mesh->SetUVs(uvs);
             mesh->SetIndices(indices);
             mesh->ComputeBoundingBox();
-            
+
             return mesh;
         }
 
@@ -594,15 +594,15 @@ namespace RVX
         {
             auto mesh = std::make_shared<Mesh>();
             mesh->name = "Cylinder";
-            
+
             std::vector<Vec3> positions;
             std::vector<Vec3> normals;
             std::vector<Vec2> uvs;
             std::vector<uint32_t> indices;
-            
+
             const float radius = 0.5f;
             const float halfHeight = height * 0.5f;
-            
+
             // Side vertices
             for (int i = 0; i <= segments; ++i)
             {
@@ -610,7 +610,7 @@ namespace RVX
                 float x = std::cos(angle) * radius;
                 float z = std::sin(angle) * radius;
                 Vec3 normal(std::cos(angle), 0.0f, std::sin(angle));
-                
+
                 positions.push_back({x, halfHeight, z});
                 positions.push_back({x, -halfHeight, z});
                 normals.push_back(normal);
@@ -618,7 +618,7 @@ namespace RVX
                 uvs.push_back({static_cast<float>(i) / segments, 1.0f});
                 uvs.push_back({static_cast<float>(i) / segments, 0.0f});
             }
-            
+
             // Side indices
             for (int i = 0; i < segments; ++i)
             {
@@ -630,13 +630,13 @@ namespace RVX
                 indices.push_back(base + 1);
                 indices.push_back(base + 3);
             }
-            
+
             // Top cap
             uint32_t topCenter = static_cast<uint32_t>(positions.size());
             positions.push_back({0.0f, halfHeight, 0.0f});
             normals.push_back({0.0f, 1.0f, 0.0f});
             uvs.push_back({0.5f, 0.5f});
-            
+
             for (int i = 0; i <= segments; ++i)
             {
                 float angle = static_cast<float>(i) / segments * 2.0f * glm::pi<float>();
@@ -646,20 +646,20 @@ namespace RVX
                 normals.push_back({0.0f, 1.0f, 0.0f});
                 uvs.push_back({std::cos(angle) * 0.5f + 0.5f, std::sin(angle) * 0.5f + 0.5f});
             }
-            
+
             for (int i = 0; i < segments; ++i)
             {
                 indices.push_back(topCenter);
                 indices.push_back(topCenter + 1 + i);
                 indices.push_back(topCenter + 2 + i);
             }
-            
+
             // Bottom cap
             uint32_t bottomCenter = static_cast<uint32_t>(positions.size());
             positions.push_back({0.0f, -halfHeight, 0.0f});
             normals.push_back({0.0f, -1.0f, 0.0f});
             uvs.push_back({0.5f, 0.5f});
-            
+
             for (int i = 0; i <= segments; ++i)
             {
                 float angle = static_cast<float>(i) / segments * 2.0f * glm::pi<float>();
@@ -669,20 +669,20 @@ namespace RVX
                 normals.push_back({0.0f, -1.0f, 0.0f});
                 uvs.push_back({std::cos(angle) * 0.5f + 0.5f, std::sin(angle) * 0.5f + 0.5f});
             }
-            
+
             for (int i = 0; i < segments; ++i)
             {
                 indices.push_back(bottomCenter);
                 indices.push_back(bottomCenter + 2 + i);
                 indices.push_back(bottomCenter + 1 + i);
             }
-            
+
             mesh->SetPositions(positions);
             mesh->SetNormals(normals);
             mesh->SetUVs(uvs);
             mesh->SetIndices(indices);
             mesh->ComputeBoundingBox();
-            
+
             return mesh;
         }
 
@@ -690,51 +690,51 @@ namespace RVX
         {
             auto mesh = std::make_shared<Mesh>();
             mesh->name = "Plane";
-            
+
             std::vector<Vec3> positions;
             std::vector<Vec3> normals;
             std::vector<Vec2> uvs;
             std::vector<uint32_t> indices;
-            
+
             float halfW = width * 0.5f;
             float halfH = height * 0.5f;
-            
+
             for (int y = 0; y <= heightSegments; ++y)
             {
                 for (int x = 0; x <= widthSegments; ++x)
                 {
                     float u = static_cast<float>(x) / widthSegments;
                     float v = static_cast<float>(y) / heightSegments;
-                    
+
                     positions.push_back({u * width - halfW, 0.0f, v * height - halfH});
                     normals.push_back({0.0f, 1.0f, 0.0f});
                     uvs.push_back({u, v});
                 }
             }
-            
+
             for (int y = 0; y < heightSegments; ++y)
             {
                 for (int x = 0; x < widthSegments; ++x)
                 {
                     uint32_t curr = y * (widthSegments + 1) + x;
                     uint32_t next = curr + widthSegments + 1;
-                    
+
                     indices.push_back(curr);
                     indices.push_back(next);
                     indices.push_back(curr + 1);
-                    
+
                     indices.push_back(curr + 1);
                     indices.push_back(next);
                     indices.push_back(next + 1);
                 }
             }
-            
+
             mesh->SetPositions(positions);
             mesh->SetNormals(normals);
             mesh->SetUVs(uvs);
             mesh->SetIndices(indices);
             mesh->ComputeBoundingBox();
-            
+
             return mesh;
         }
     }

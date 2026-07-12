@@ -3,7 +3,7 @@
 /**
  * @file WaterSurface.h
  * @brief CPU water surface mesh and properties
- * 
+ *
  * Defines the water surface mesh generation and visual properties exported to
  * Render-owned water passes.
  */
@@ -17,21 +17,21 @@ namespace RVX
 {
     /**
      * @brief Water surface mesh and rendering data source
-     * 
+     *
      * Manages CPU water surface data. GPU resources are owned by Render.
-     * 
+     *
      * Features:
      * - Tessellated grid mesh with LOD
      * - Surface visual configuration
      * - Render snapshot source data
-     * 
+     *
      * Usage:
      * @code
      * WaterSurfaceDesc desc;
      * desc.size = Vec2(500.0f, 500.0f);
      * desc.resolution = 256;
      * desc.type = WaterSurfaceType::Ocean;
-     * 
+     *
      * auto surface = std::make_shared<WaterSurface>();
      * surface->Create(desc);
      * @endcode

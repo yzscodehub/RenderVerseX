@@ -3,7 +3,7 @@
 /**
  * @file Node.h
  * @brief Scene graph node with transform and component system
- * 
+ *
  * Migrated from found::model::Node
  */
 
@@ -178,7 +178,7 @@ namespace RVX
 
     /**
      * @brief Scene graph node
-     * 
+     *
      * Features:
      * - Hierarchical parent-child relationships
      * - Component-based extension system
@@ -235,7 +235,7 @@ namespace RVX
         Node* GetParent() const { return m_parent; }
         const std::vector<Ptr>& GetChildren() const { return m_children; }
         size_t GetChildCount() const { return m_children.size(); }
-        
+
         Node* GetChild(size_t index) const;
         Node* GetChild(const std::string& name) const;
         void AddChild(Ptr child);

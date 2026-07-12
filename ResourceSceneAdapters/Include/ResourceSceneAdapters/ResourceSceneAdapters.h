@@ -10,4 +10,3 @@ namespace RVX::ResourceSceneAdapters
     /** @brief Register Scene component factories used by Resource model instantiation. */
     void RegisterDefaults();
 }
-

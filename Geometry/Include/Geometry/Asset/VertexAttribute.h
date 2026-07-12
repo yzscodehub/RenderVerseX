@@ -3,7 +3,7 @@
 /**
  * @file VertexAttribute.h
  * @brief Type-safe vertex attribute storage
- * 
+ *
  * Migrated from found::model::VertexAttribute
  */
 
@@ -87,7 +87,7 @@ namespace RVX
 
     /**
      * @brief Vertex attribute class - stores a single vertex attribute
-     * 
+     *
      * Features:
      * - Type-safe storage with compile-time type checking
      * - Memory-safe with RAII semantics
@@ -124,12 +124,12 @@ namespace RVX
             , m_data(nullptr)
         {
             static_assert(std::is_arithmetic_v<T>, "Attribute data type must be arithmetic");
-            
+
             if (data.size() % components != 0)
             {
                 throw std::invalid_argument("Data size must be divisible by component count");
             }
-            
+
             size_t totalSize = data.size() * sizeof(T);
             m_data = std::malloc(totalSize);
             if (!m_data)
@@ -160,13 +160,13 @@ namespace RVX
         // =====================================================================
         // Accessors
         // =====================================================================
-        
+
         const void* GetData() const { return m_data; }
         size_t GetVertexCount() const { return m_vertexCount; }
         size_t GetComponents() const { return m_components; }
         AttributeType GetType() const { return m_type; }
         bool IsNormalized() const { return m_normalized; }
-        
+
         size_t GetElementSize() const { return GetAttributeTypeSize(m_type); }
         size_t GetStride() const { return m_components * GetElementSize(); }
         size_t GetTotalSize() const { return m_vertexCount * GetStride(); }
@@ -185,11 +185,11 @@ namespace RVX
             {
                 throw std::out_of_range("Index out of range");
             }
-            
+
             const T* typedData = static_cast<const T*>(m_data);
             return typedData[vertexIndex * m_components + componentIndex];
         }
-        
+
         /**
          * @brief Get a vector value
          */
@@ -201,7 +201,7 @@ namespace RVX
             {
                 throw std::invalid_argument("Vector component count mismatch");
             }
-            
+
             using ComponentType = typename VecType::value_type;
             VecType result;
             for (int i = 0; i < vecComponents; ++i)
@@ -214,7 +214,7 @@ namespace RVX
         // =====================================================================
         // Utility
         // =====================================================================
-        
+
         bool IsValid() const;
         std::unique_ptr<VertexAttribute> Clone() const;
 
