@@ -845,6 +845,10 @@ function(rvx_add_showcase_smoke_test TARGET_NAME)
         return()
     endif()
 
+    set_property(GLOBAL APPEND PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
+        ${TARGET_NAME}
+    )
+
     foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
         file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/Showcase")
         file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/Showcase")
@@ -918,6 +922,10 @@ function(rvx_add_sample_smoke_test TARGET_NAME CATEGORY)
     if(NOT TARGET ${TARGET_NAME} OR NOT TARGET SampleReportContentValidation)
         return()
     endif()
+
+    set_property(GLOBAL APPEND PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
+        ${TARGET_NAME}
+    )
 
     foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
         file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/${CATEGORY}")
