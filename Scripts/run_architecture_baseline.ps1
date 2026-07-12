@@ -1,9 +1,11 @@
 param(
     [string]$BuildDir = "build\win_x64_debug",
     [string]$Configuration = "Debug",
+    [string]$ReportPath = "",
     [switch]$ListOnly
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -13,7 +15,15 @@ if (-not (Test-Path $buildPath)) {
     Write-Error "Build directory '$buildPath' does not exist. Configure this worktree first, for example: cmake --preset win_x64_debug"
 }
 
-$baselineRegex = @(
+if ([string]::IsNullOrWhiteSpace($ReportPath)) {
+    $ReportPath = Join-Path $buildPath "BuildTruth\ArchitectureBaseline.json"
+}
+$reportDirectory = Split-Path -Parent $ReportPath
+New-Item -ItemType Directory -Force -Path $reportDirectory | Out-Null
+$junitPath = Join-Path $reportDirectory "ArchitectureBaseline.junit.xml"
+
+$baselinePatterns = @(
+    "Architecture\.GateInputsFailClosed",
     "Architecture\.ModuleBoundaries",
     "Architecture\.ModuleBoundaryManifest",
     "Architecture\.CMakeModuleVisibility",
@@ -40,12 +50,62 @@ $baselineRegex = @(
     "ResourceRuntimePolicyValidation\.",
     "RenderHonestyValidationFixture\.(JsonArchiveReadPathReportsUnsupportedInsteadOfPretendingSuccess|PlaceholderAssetImportersFailInsteadOfReportingSuccess|PostProcessStubPassesAreUnsupportedAndDisabled|TerrainMaterialRenderDataExportDoesNotPretendGpuUpload|TerrainHeightmapGpuTextureUploadIsHonestWhenUnavailable|TerrainLODFallbacksExposeDeterministicStatus|TerrainPlaceholderPathsExposeHonestDiagnostics|SceneRendererLegacyCollectionFallbackIsRemoved|RenderGraphCompileDiagnosticsExposeReadBeforeWrite)",
     "SystemIntegration\.(SceneEntityAndManager|ResourceBasics)"
-) -join "|"
+)
+$baselineRegex = $baselinePatterns -join "|"
 
-$ctestArgs = @("--test-dir", $buildPath, "-C", $Configuration, "-R", $baselineRegex, "--output-on-failure")
-if ($ListOnly) {
-    $ctestArgs += "-N"
+function Get-CTestInventory([string]$Pattern) {
+    $jsonLines = & ctest --test-dir $buildPath -C $Configuration -R $Pattern --show-only=json-v1
+    if ($LASTEXITCODE -ne 0) {
+        throw "CTest inventory query failed for pattern '$Pattern'"
+    }
+    return (($jsonLines -join "`n") | ConvertFrom-Json)
 }
+
+$missingPatterns = @()
+foreach ($pattern in $baselinePatterns) {
+    $probe = Get-CTestInventory $pattern
+    if (@($probe.tests).Count -eq 0) {
+        $missingPatterns += $pattern
+    }
+}
+
+if ($missingPatterns.Count -ne 0) {
+    throw "Architecture baseline requirements are not discovered: $($missingPatterns -join ', ')"
+}
+
+$selectedInventory = Get-CTestInventory $baselineRegex
+$selectedNames = @($selectedInventory.tests | ForEach-Object { $_.name })
+$unbuiltNames = @($selectedNames | Where-Object { $_ -match "_NOT_BUILT$" })
+if ($unbuiltNames.Count -ne 0) {
+    throw "Architecture baseline contains unbuilt tests: $($unbuiltNames -join ', ')"
+}
+
+if ($ListOnly) {
+    $selectedNames | Write-Output
+    Write-Host "Selected tests: $($selectedNames.Count)"
+    $report = [ordered]@{
+        schema = "RVX.BuildTruth.ArchitectureBaseline"
+        schemaVersion = 1
+        sourceCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
+        buildDir = $buildPath.ToString()
+        configuration = $Configuration
+        selectedTestCount = $selectedNames.Count
+        selectedTests = $selectedNames
+        status = "listed"
+        ctestExitCode = 0
+        junitPath = $junitPath
+    }
+    $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ReportPath -Encoding utf8
+    exit 0
+}
+
+$ctestArgs = @(
+    "--test-dir", $buildPath,
+    "-C", $Configuration,
+    "-R", $baselineRegex,
+    "--output-on-failure",
+    "--output-junit", $junitPath
+)
 
 Write-Host "Running architecture baseline from $repoRoot"
 Write-Host "BuildDir: $buildPath"
@@ -53,4 +113,18 @@ Write-Host "Configuration: $Configuration"
 Write-Host "Regex: $baselineRegex"
 
 & ctest @ctestArgs
-exit $LASTEXITCODE
+$ctestExitCode = $LASTEXITCODE
+$report = [ordered]@{
+    schema = "RVX.BuildTruth.ArchitectureBaseline"
+    schemaVersion = 1
+    sourceCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
+    buildDir = $buildPath.ToString()
+    configuration = $Configuration
+    selectedTestCount = $selectedNames.Count
+    selectedTests = $selectedNames
+    status = if ($ctestExitCode -eq 0) { "passed" } else { "failed" }
+    ctestExitCode = $ctestExitCode
+    junitPath = $junitPath
+}
+$report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ReportPath -Encoding utf8
+exit $ctestExitCode
