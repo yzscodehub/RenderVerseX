@@ -24,6 +24,7 @@ option(RVX_ENABLE_DX12 "Enable DirectX 12 backend" ON)
 option(RVX_ENABLE_VULKAN "Enable Vulkan backend" ON)
 option(RVX_ENABLE_METAL "Enable Metal backend (macOS/iOS)" OFF)
 option(RVX_ENABLE_OPENGL "Enable OpenGL backend" OFF)
+option(RVX_BUILD_EDITOR "Build the Editor application and Editor-only validation" ON)
 option(RVX_BUILD_SAMPLES "Build sample applications" ON)
 option(RVX_BUILD_TESTS "Build validation tests" ON)
 
@@ -205,7 +206,10 @@ add_subdirectory(Tools)      # Asset pipeline and tools
 add_subdirectory(UI)         # UI framework
 add_subdirectory(Terrain)    # Terrain module (heightmap terrain rendering)
 add_subdirectory(Water)      # Water module (water surface and effects)
-add_subdirectory(Editor)     # Editor application with ImGui
+
+if(RVX_BUILD_EDITOR)
+    add_subdirectory(Editor)
+endif()
 
 if(RVX_BUILD_SAMPLES)
     add_subdirectory(Samples)
@@ -229,6 +233,7 @@ message(STATUS "  DX12 Backend: ${RVX_ENABLE_DX12}")
 message(STATUS "  Vulkan:       ${RVX_ENABLE_VULKAN}")
 message(STATUS "  Metal:        ${RVX_ENABLE_METAL}")
 message(STATUS "  OpenGL:       ${RVX_ENABLE_OPENGL}")
+message(STATUS "  Editor:       ${RVX_BUILD_EDITOR}")
 message(STATUS "  Samples:      ${RVX_BUILD_SAMPLES}")
 message(STATUS "  Tests:        ${RVX_BUILD_TESTS}")
 message(STATUS "")

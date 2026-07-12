@@ -63,6 +63,9 @@ function(rvx_add_gtest)
     add_executable(${RVX_GTEST_NAME}
         ${RVX_GTEST_SOURCES}
     )
+    set_property(GLOBAL APPEND PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
+        ${RVX_GTEST_NAME}
+    )
     target_link_libraries(${RVX_GTEST_NAME} PRIVATE
         GTest::gtest_main
         ${RVX_GTEST_LIBS}
@@ -645,22 +648,24 @@ rvx_add_gtest(
 )
 
 # Editor context validation tests
-rvx_add_gtest(
-    NAME EditorContextValidation
-    SOURCES EditorContextValidation/main.cpp
-    LIBS
-        RVX::Core
-        RVX::Editor
-        RVX::Scene
-        ${RVX_ALL_BACKENDS}
-    INCLUDES
-        ${CMAKE_SOURCE_DIR}/Editor/Include
-    LABELS unit
-    TIMEOUT 120
-)
-target_compile_options(EditorContextValidation PRIVATE
-    $<$<CXX_COMPILER_ID:MSVC>:/bigobj>
-)
+if(TARGET RVX::Editor)
+    rvx_add_gtest(
+        NAME EditorContextValidation
+        SOURCES EditorContextValidation/main.cpp
+        LIBS
+            RVX::Core
+            RVX::Editor
+            RVX::Scene
+            ${RVX_ALL_BACKENDS}
+        INCLUDES
+            ${CMAKE_SOURCE_DIR}/Editor/Include
+        LABELS "unit;editor"
+        TIMEOUT 120
+    )
+    target_compile_options(EditorContextValidation PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/bigobj>
+    )
+endif()
 
 # App mode and editor/runtime shared-core boundary validation tests
 rvx_add_gtest(
@@ -778,6 +783,9 @@ rvx_add_gtest(
 add_executable(VisualGoldenValidation
     VisualGoldenValidation/main.cpp
 )
+set_property(GLOBAL APPEND PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
+    VisualGoldenValidation
+)
 
 target_link_libraries(VisualGoldenValidation PRIVATE
     RVX_TestCommon
@@ -810,6 +818,9 @@ endif()
 add_executable(ImageContentValidation
     ImageContentValidation/main.cpp
 )
+set_property(GLOBAL APPEND PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
+    ImageContentValidation
+)
 
 target_link_libraries(ImageContentValidation PRIVATE
     RVX_TestCommon
@@ -822,6 +833,9 @@ target_include_directories(ImageContentValidation PRIVATE
 
 add_executable(SampleReportContentValidation
     SampleReportContentValidation/main.cpp
+)
+set_property(GLOBAL APPEND PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
+    SampleReportContentValidation
 )
 
 target_compile_features(SampleReportContentValidation PRIVATE cxx_std_20)
@@ -1134,10 +1148,16 @@ endif()
 add_executable(ModelViewerHDRIFixtureWriter
     ModelViewerHDRIFixtureWriter/main.cpp
 )
+set_property(GLOBAL APPEND PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
+    ModelViewerHDRIFixtureWriter
+)
 target_compile_features(ModelViewerHDRIFixtureWriter PRIVATE cxx_std_20)
 
 add_executable(ModelViewerCookedBCFixtureWriter
     ModelViewerCookedBCFixtureWriter/main.cpp
+)
+set_property(GLOBAL APPEND PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
+    ModelViewerCookedBCFixtureWriter
 )
 target_link_libraries(ModelViewerCookedBCFixtureWriter PRIVATE
     RVX::Tools
@@ -2173,3 +2193,24 @@ foreach(SHADER ${TEST_SHADERS})
     get_filename_component(SHADER_NAME ${SHADER} NAME)
     configure_file(${SHADER} ${CMAKE_CURRENT_BINARY_DIR}/Shaders/${SHADER_NAME} COPYONLY)
 endforeach()
+
+get_property(RVX_VALIDATION_EXECUTABLE_TARGETS GLOBAL
+    PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
+)
+
+foreach(RVX_EXTERNAL_TEST_TARGET IN ITEMS
+    ModelViewer
+    RVXCook
+)
+    if(TARGET ${RVX_EXTERNAL_TEST_TARGET})
+        list(APPEND RVX_VALIDATION_EXECUTABLE_TARGETS
+            ${RVX_EXTERNAL_TEST_TARGET}
+        )
+    endif()
+endforeach()
+
+list(REMOVE_DUPLICATES RVX_VALIDATION_EXECUTABLE_TARGETS)
+
+add_custom_target(RVXValidationInventory
+    DEPENDS ${RVX_VALIDATION_EXECUTABLE_TARGETS}
+)

@@ -20,6 +20,7 @@
         "RVX_ENABLE_VULKAN": "ON",
         "RVX_ENABLE_METAL": "OFF",
         "RVX_ENABLE_OPENGL": "ON",
+        "RVX_BUILD_EDITOR": "OFF",
         "RVX_BUILD_SAMPLES": "ON",
         "RVX_BUILD_TESTS": "ON",
         "VCPKG_TARGET_TRIPLET": "x64-windows"
@@ -45,6 +46,7 @@
         "RVX_ENABLE_VULKAN": "ON",
         "RVX_ENABLE_METAL": "OFF",
         "RVX_ENABLE_OPENGL": "ON",
+        "RVX_BUILD_EDITOR": "OFF",
         "RVX_BUILD_SAMPLES": "ON",
         "RVX_BUILD_TESTS": "ON",
         "VCPKG_TARGET_TRIPLET": "x64-linux"
@@ -69,6 +71,7 @@
         "RVX_ENABLE_DX12": "OFF",
         "RVX_ENABLE_VULKAN": "OFF",
         "RVX_ENABLE_METAL": "ON",
+        "RVX_BUILD_EDITOR": "OFF",
         "CMAKE_OSX_ARCHITECTURES": "arm64",
         "VCPKG_TARGET_TRIPLET": "arm64-osx",
         "RVX_BUILD_SAMPLES": "ON",
