@@ -9,6 +9,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from architecture_gate_common import resolve_repo_root, run_gate
+
 
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s+[<"]([^">]+)[">]')
 SOURCE_SUFFIXES = {".h", ".hpp", ".hh", ".cpp", ".cc", ".cxx", ".inl", ".mm"}
@@ -192,7 +194,7 @@ def scan_cmake_links(root: Path) -> list[Finding]:
 
 def main() -> int:
     args = parse_args()
-    root = Path(args.root).resolve()
+    root = resolve_repo_root(args.root)
 
     findings = scan_includes(root)
     findings.extend(scan_cmake_links(root))
@@ -209,4 +211,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run_gate(main))

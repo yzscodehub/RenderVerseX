@@ -10,6 +10,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from architecture_gate_common import resolve_repo_root, resolve_required_file, run_gate
+
 
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s+[<"]([^">]+)[">]')
 SOURCE_SUFFIXES = {
@@ -129,8 +131,9 @@ def print_use(use: IncludeUse) -> None:
 
 def main() -> int:
     args = parse_args()
-    root = Path(args.root).resolve()
-    config = load_config(root, args.config)
+    root = resolve_repo_root(args.root)
+    config_path = resolve_required_file(root, args.config, "module boundary configuration")
+    config = load_config(root, str(config_path))
     legacy_edges = set(config.get("legacyEdges", {}).keys())
     legacy_budgets = config.get("legacyBudgets", {})
 
@@ -190,4 +193,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run_gate(main))

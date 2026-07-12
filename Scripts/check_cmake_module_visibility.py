@@ -9,6 +9,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from architecture_gate_common import resolve_repo_root, run_gate
+
 
 SCOPE_TOKENS = {"PUBLIC", "PRIVATE", "INTERFACE"}
 MODIFIER_TOKENS = {"SYSTEM", "BEFORE", "AFTER"}
@@ -164,7 +166,7 @@ def scan(root: Path) -> list[Finding]:
 
 def main() -> int:
     args = parse_args()
-    root = Path(args.root).resolve()
+    root = resolve_repo_root(args.root)
     findings = scan(root)
 
     if findings:
@@ -182,4 +184,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run_gate(main))

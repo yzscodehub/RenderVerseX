@@ -9,6 +9,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from architecture_gate_common import resolve_repo_root, run_gate
+
 
 SOURCE_SUFFIXES = {".h", ".hpp", ".hh", ".cpp", ".cc", ".cxx", ".inl"}
 
@@ -3966,7 +3968,7 @@ def check_p75_p80_runtime_visible_rendering_contract(root: Path) -> list[Finding
 
 def main() -> int:
     args = parse_args()
-    root = Path(args.root).resolve()
+    root = resolve_repo_root(args.root)
 
     findings: list[Finding] = []
     findings.extend(check_p3_actor_component(root))
@@ -4054,4 +4056,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run_gate(main))

@@ -88,8 +88,20 @@ function(rvx_add_gtest)
     )
 endfunction()
 
-find_package(Python3 COMPONENTS Interpreter QUIET)
-if(Python3_Interpreter_FOUND)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+add_test(
+    NAME Architecture.GateInputsFailClosed
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/test_architecture_gate_inputs.py
+        -v
+)
+set_tests_properties(Architecture.GateInputsFailClosed PROPERTIES
+    LABELS "unit;architecture"
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
     add_test(
         NAME Architecture.ModuleBoundaries
         COMMAND ${Python3_EXECUTABLE}
@@ -190,10 +202,6 @@ if(Python3_Interpreter_FOUND)
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
-else()
-    message(WARNING "Python3 interpreter not found; architecture script tests disabled")
-endif()
-
 # Core debug configuration validation tests
 rvx_add_gtest(
     NAME CoreDebugConfigValidation

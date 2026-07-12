@@ -10,6 +10,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from architecture_gate_common import resolve_repo_root, resolve_required_file, run_gate
+
 
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s+[<"]([^">]+)[">]')
 PROJECT_ALIAS_PREFIX = "RVX::"
@@ -290,8 +292,9 @@ def scan_public_includes(root: Path, config: dict) -> list[PublicIncludeUse]:
 
 def main() -> int:
     args = parse_args()
-    root = Path(args.root).resolve()
-    config = load_config(root, args.config)
+    root = resolve_repo_root(args.root)
+    config_path = resolve_required_file(root, args.config, "module boundary configuration")
+    config = load_config(root, str(config_path))
     modules = set(config["modules"].keys())
 
     public_edges = build_public_link_edges(root, modules)
@@ -328,4 +331,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run_gate(main))

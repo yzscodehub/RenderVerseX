@@ -10,6 +10,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from architecture_gate_common import resolve_repo_root, resolve_required_file, run_gate
+
 
 PROJECT_ALIAS_PREFIX = "RVX::"
 PROJECT_TARGET_PREFIX = "RVX_"
@@ -324,8 +326,9 @@ def validate_cmake_coverage(root: Path, config: dict) -> list[Finding]:
 
 def main() -> int:
     args = parse_args()
-    root = Path(args.root).resolve()
-    config, config_path = load_config(root, args.config)
+    root = resolve_repo_root(args.root)
+    config_path = resolve_required_file(root, args.config, "module boundary configuration")
+    config, config_path = load_config(root, str(config_path))
     config_rel = config_path.relative_to(root)
 
     findings = validate_config(root, config, config_rel, config_path)
@@ -343,4 +346,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run_gate(main))
