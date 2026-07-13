@@ -12,6 +12,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$gitSafeDirectory = $repoRoot.Replace([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 $buildPath = [IO.Path]::GetFullPath((Join-Path $repoRoot $BuildDir))
 $buildRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "build"))
 $buildRootPrefix = $buildRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
@@ -22,6 +23,7 @@ $commands = [Collections.Generic.List[object]]::new()
 $status = "failed"
 $failure = ""
 $testCount = 0
+$sourceCommit = ""
 
 function Invoke-Checked([string]$Name, [scriptblock]$Command) {
     $started = Get-Date
@@ -55,8 +57,12 @@ if (-not $buildPath.StartsWith($buildRootPrefix, [StringComparison]::OrdinalIgno
 Push-Location $repoRoot
 try {
     Invoke-Checked "verify-base-ref" {
-        git rev-parse --verify "$BaseRef^{commit}" | Out-Null
+        git -c "safe.directory=$gitSafeDirectory" -C $repoRoot rev-parse --verify "$BaseRef^{commit}" | Out-Null
     }
+    $sourceCommitLines = Invoke-Checked "source-commit" {
+        git -c "safe.directory=$gitSafeDirectory" -C $repoRoot rev-parse HEAD
+    }
+    $sourceCommit = ($sourceCommitLines -join "`n").Trim()
 
     if ($Fresh -and (Test-Path -LiteralPath $buildPath)) {
         Remove-Item -LiteralPath $buildPath -Recurse -Force
@@ -116,13 +122,13 @@ try {
     }
 
     Invoke-Checked "branch-diff-hygiene" {
-        git diff --check "$BaseRef...HEAD"
+        git -c "safe.directory=$gitSafeDirectory" -C $repoRoot diff --check "$BaseRef...HEAD"
     }
     Invoke-Checked "working-diff-hygiene" {
-        git diff --check
+        git -c "safe.directory=$gitSafeDirectory" -C $repoRoot diff --check
     }
     Invoke-Checked "staged-diff-hygiene" {
-        git diff --cached --check
+        git -c "safe.directory=$gitSafeDirectory" -C $repoRoot diff --cached --check
     }
     $status = "passed"
 }
@@ -131,28 +137,25 @@ catch {
     throw
 }
 finally {
-    if (Test-Path -LiteralPath $buildPath) {
-        New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
-        $sourceCommit = (& git rev-parse HEAD).Trim()
-        $report = [ordered]@{
-            schema = "RVX.BuildTruth.Report"
-            schemaVersion = 1
-            sourceCommit = $sourceCommit
-            baseRef = $BaseRef
-            configurePreset = $ConfigurePreset
-            buildPreset = $BuildPreset
-            testPreset = $TestPreset
-            buildDir = $buildPath
-            configuration = $Configuration
-            fresh = [bool]$Fresh
-            ctestInventoryCount = $testCount
-            architectureBaselineReport = $baselineReport
-            status = $status
-            failure = $failure
-            commands = $commands
-        }
-        $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $reportPath -Encoding utf8
+    New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
+    $report = [ordered]@{
+        schema = "RVX.BuildTruth.Report"
+        schemaVersion = 1
+        sourceCommit = $sourceCommit
+        baseRef = $BaseRef
+        configurePreset = $ConfigurePreset
+        buildPreset = $BuildPreset
+        testPreset = $TestPreset
+        buildDir = $buildPath
+        configuration = $Configuration
+        fresh = [bool]$Fresh
+        ctestInventoryCount = $testCount
+        architectureBaselineReport = $baselineReport
+        status = $status
+        failure = $failure
+        commands = $commands
     }
+    $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $reportPath -Encoding utf8
     Pop-Location
 }
 

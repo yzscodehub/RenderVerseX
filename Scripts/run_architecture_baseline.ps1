@@ -9,6 +9,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$gitSafeDirectory = $repoRoot.ToString().Replace([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 $buildPath = Join-Path $repoRoot $BuildDir
 
 if (-not (Test-Path $buildPath)) {
@@ -56,28 +57,55 @@ $baselineRegex = $baselinePatterns -join "|"
 function Get-CTestInventory([string]$Pattern) {
     $jsonLines = & ctest --test-dir $buildPath -C $Configuration -R $Pattern --show-only=json-v1
     if ($LASTEXITCODE -ne 0) {
-        throw "CTest inventory query failed for pattern '$Pattern'"
+        throw "CTest inventory query failed for pattern '$Pattern' with exit code $LASTEXITCODE"
     }
     return (($jsonLines -join "`n") | ConvertFrom-Json)
 }
 
-$missingPatterns = @()
-foreach ($pattern in $baselinePatterns) {
-    $probe = Get-CTestInventory $pattern
-    if (@($probe.tests).Count -eq 0) {
-        $missingPatterns += $pattern
+$sourceCommit = ""
+try {
+    $sourceCommitLines = & git -c "safe.directory=$gitSafeDirectory" -C $repoRoot rev-parse HEAD 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Git source commit query failed with exit code $LASTEXITCODE`: $($sourceCommitLines -join ' ')"
+    }
+    $sourceCommit = ($sourceCommitLines -join "`n").Trim()
+
+    $missingPatterns = @()
+    foreach ($pattern in $baselinePatterns) {
+        $probe = Get-CTestInventory $pattern
+        if (@($probe.tests).Count -eq 0) {
+            $missingPatterns += $pattern
+        }
+    }
+
+    if ($missingPatterns.Count -ne 0) {
+        throw "Architecture baseline requirements are not discovered: $($missingPatterns -join ', ')"
+    }
+
+    $selectedInventory = Get-CTestInventory $baselineRegex
+    $selectedNames = @($selectedInventory.tests | ForEach-Object { $_.name })
+    $unbuiltNames = @($selectedNames | Where-Object { $_ -match "_NOT_BUILT$" })
+    if ($unbuiltNames.Count -ne 0) {
+        throw "Architecture baseline contains unbuilt tests: $($unbuiltNames -join ', ')"
     }
 }
-
-if ($missingPatterns.Count -ne 0) {
-    throw "Architecture baseline requirements are not discovered: $($missingPatterns -join ', ')"
-}
-
-$selectedInventory = Get-CTestInventory $baselineRegex
-$selectedNames = @($selectedInventory.tests | ForEach-Object { $_.name })
-$unbuiltNames = @($selectedNames | Where-Object { $_ -match "_NOT_BUILT$" })
-if ($unbuiltNames.Count -ne 0) {
-    throw "Architecture baseline contains unbuilt tests: $($unbuiltNames -join ', ')"
+catch {
+    $report = [ordered]@{
+        schema = "RVX.BuildTruth.ArchitectureBaseline"
+        schemaVersion = 1
+        sourceCommit = $sourceCommit
+        buildDir = $buildPath.ToString()
+        configuration = $Configuration
+        selectedTestCount = 0
+        selectedTests = @()
+        status = "failed"
+        failure = $_.Exception.Message
+        ctestExitCode = 1
+        junitPath = $junitPath
+    }
+    $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ReportPath -Encoding utf8
+    Write-Error $report.failure -ErrorAction Continue
+    exit 1
 }
 
 if ($ListOnly) {
@@ -86,7 +114,7 @@ if ($ListOnly) {
     $report = [ordered]@{
         schema = "RVX.BuildTruth.ArchitectureBaseline"
         schemaVersion = 1
-        sourceCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
+        sourceCommit = $sourceCommit
         buildDir = $buildPath.ToString()
         configuration = $Configuration
         selectedTestCount = $selectedNames.Count
@@ -117,7 +145,7 @@ $ctestExitCode = $LASTEXITCODE
 $report = [ordered]@{
     schema = "RVX.BuildTruth.ArchitectureBaseline"
     schemaVersion = 1
-    sourceCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
+    sourceCommit = $sourceCommit
     buildDir = $buildPath.ToString()
     configuration = $Configuration
     selectedTestCount = $selectedNames.Count
