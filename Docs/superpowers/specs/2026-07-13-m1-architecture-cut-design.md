@@ -4,7 +4,7 @@ Date: 2026-07-13
 
 Branch baseline: `codex/architecture-implementation` at `9ae22bad45d1acc39a26dbf7ecb7853dde143f60`
 
-Status: Design approved in discussion; written specification awaiting final user review
+Status: Design approved in discussion; written specification self-reviewed; awaiting final user review
 
 Parent design: `2026-07-10-runtime-production-foundation-design.md`
 
@@ -196,7 +196,7 @@ RenderExtraction constructs packets through `RenderFramePacketBuilder`. The buil
 std::unique_ptr<const RenderFramePacket>
 ```
 
-There is no public default-construct-and-mutate path for `RenderFramePacket`. Once sealed, its semantic data cannot change. The mailbox takes exclusive ownership; the render thread acquires exclusive ownership; destruction occurs on the render thread after consumption unless the update thread receives an immediate publication rejection.
+There is no public default-construct-and-mutate path for `RenderFramePacket`. Once sealed, its semantic data cannot change. The mailbox takes exclusive ownership and the render thread acquires exclusive ownership. A rejected or replaced packet may be destroyed by the publishing thread; a consumed packet may be destroyed by the render thread. This is safe because packets contain CPU values only and have no thread-affine destructor. The render-thread-only final-destruction rule applies to strong RHI ownership, not to frame packets.
 
 ### 6.2 Required packet content
 
@@ -254,6 +254,8 @@ Every request contains:
 
 Cancellation before Render begins upload is represented by gateway/resource state, not by a callback in the request. Once GPU submission occurs, cancellation means "do not publish this generation as usable" and still requires fence-safe retirement.
 
+Queued-byte accounting is derived from the checked sizes of the request's owned payload containers. Any declared byte-cost field is diagnostic metadata and must match the overflow-checked derived total; callers cannot bypass queue limits by reporting a smaller cost.
+
 ### 7.3 Producer rule
 
 The Main/Update Thread is the sole producer of gateway operations. Worker jobs may load, decode, validate, and prepare immutable payloads, but completion is marshalled to ResourceSubsystem's update-thread phase before reservation, enqueue, release, or status-driven state transition.
@@ -289,6 +291,8 @@ public:
 
 `ReserveResource` outcomes are `Reserved`, `Existing`, `InvalidAsset`, `KindMismatch`, `CapacityExceeded`, and `ShuttingDown`.
 
+The result contains a valid handle only for `Reserved` or `Existing`; `Existing` returns the already reserved generation and its observed status. All failure outcomes contain an invalid handle.
+
 `TryEnqueueUpload` outcomes are `Accepted`, `QueueFullByCount`, `QueueFullByBytes`, `InvalidRequest`, `StaleGeneration`, `Cancelled`, and `ShuttingDown`.
 
 `RequestRelease` outcomes are `Accepted`, `StaleGeneration`, `AlreadyPending`, and `ShuttingDown`.
@@ -300,8 +304,11 @@ No result contains an exception, RHI object, or pointer into Render.
 The public render-resource states are:
 
 ```text
-Reserved -> UploadQueued -> Uploading -> GPUReady -> Evicting -> Released
-                       \-> Failed ---------------------> Released
+Reserved -> UploadQueued -> Uploading -> GPUReady
+                              \-------> Failed
+
+Reserved / UploadQueued / Uploading / GPUReady / Failed
+                    -- RequestRelease --> Evicting -> Released
 ```
 
 `QueryResourceStatus` validates generation. A mismatch returns `StaleGeneration`; it never returns the newer generation's state. Failure status includes a stable failure code, not a free-form string as the machine-readable identity.
@@ -310,7 +317,21 @@ Reserved -> UploadQueued -> Uploading -> GPUReady -> Evicting -> Released
 
 `RenderResourceStatusTable` is allocated before the render thread starts. M1 defaults to 262,144 slots, including invalid slot zero, and supports an explicit configured capacity no smaller than 1,024. Capacity does not grow at runtime.
 
-Each slot exposes one atomically packed 64-bit publication containing generation, public state, and compact failure code. The render thread publishes with release semantics; the update thread queries with acquire semantics. Reservation uses an explicitly synchronized update-side allocator plus render-thread state transitions; it does not expose registry storage.
+Each slot exposes one atomically packed 64-bit publication containing generation, public state, and compact failure code. Readers use acquire semantics and successful transitions publish with release semantics. The packed value is an intentionally narrow cross-thread state machine; it is not RHI registry storage.
+
+The update thread owns the `AssetId -> RenderResourceHandle` reservation directory and free-slot allocator. It may perform only these generation-checked compare/exchange transitions:
+
+- `Released -> Reserved` while assigning the next nonzero generation;
+- `Reserved -> UploadQueued` after the upload queue accepts the matching request;
+- `Reserved`, `UploadQueued`, `Uploading`, `GPUReady`, or `Failed` -> `Evicting` when a matching release request is accepted.
+
+The render thread may perform only:
+
+- `UploadQueued -> Uploading`;
+- `Uploading -> GPUReady` or `Uploading -> Failed`;
+- `Evicting -> Released` after any submitted work and last-use fence are safe.
+
+If release races upload completion, compare/exchange decides the winner: Render must not publish `GPUReady` over `Evicting`, and an upload that observes `Evicting` retires any partial RHI state before publishing `Released`. The update allocator does not reuse the slot until it observes the matching `Released` generation. This controlled multi-writer state channel does not weaken the rule that RenderResourceRegistry and all RHI state are render-thread-only.
 
 Strings, byte counts, asset names, and rich failure context are published through the immutable diagnostics snapshot, not stuffed into the atomic table. The table is the fast state channel; diagnostics are the support channel.
 
@@ -405,6 +426,8 @@ The frame mailbox is a mutex-protected SPSC bounded deque. It avoids lock-free l
 
 `TryPublishFrame` returns `Accepted`, `ReplacedOlder`, `InvalidPacket`, `OutOfOrder`, or `ShuttingDown`. Replacement records both replaced and replacement sequence numbers in diagnostics. Invalid schema/completeness and non-monotonic publication are rejected before queue mutation.
 
+Replacement moves the old packet out while holding the mailbox lock and destroys it after unlocking. Large CPU packet destruction therefore does not lengthen the mailbox critical section.
+
 ### 10.2 Upload queue
 
 The upload queue is a mutex-protected SPSC queue bounded by both request count and retained payload bytes.
@@ -417,7 +440,19 @@ All defaults are explicit configuration values constrained to safe nonzero range
 
 On pressure, Resource remains CPU-ready and retries later by its priority policy. The update thread does not block, Render does not silently drop an accepted request, and queue-full outcomes are counted by cause.
 
-### 10.3 Coalesced control
+Enqueue publication is atomic with the public status transition: under the queue's producer critical section, the gateway validates count and derived-byte capacity, compare/exchanges the matching `Reserved` state to `UploadQueued`, appends the request, then unlocks and wakes Render. A capacity failure leaves the state `Reserved`; the consumer cannot observe a queued request before it observes `UploadQueued`.
+
+### 10.3 Release queue
+
+Accepted releases are transported through a fixed SPSC ring with usable capacity equal to the number of nonzero status slots. The update thread is its sole producer and the render thread is its sole consumer. The status transition to `Evicting` happens before publication to the ring.
+
+Normal runtime drain is bounded to 1,024 releases and 1 ms per render iteration, stopping when either limit is reached. Terminal shutdown ignores the per-iteration limit and drains the sealed queue subject to the global shutdown watchdog.
+
+At most one release may be pending for a slot/generation: a second request observes `Evicting` and returns `AlreadyPending`. Therefore the ring is capacity-proven for every live slot and does not need a `QueueFull` public outcome. Failure to publish after a successful state transition is an internal ownership invariant violation: RenderSubsystem seals the gateway, records a runtime-fatal result, and begins terminal shutdown.
+
+The render thread validates generation again before acting. It cancels an unstarted upload or records the last-use fence for live GPU state, then eventually publishes `Released`. A stale ring entry can never release a reused slot.
+
+### 10.4 Coalesced control
 
 M1 does not introduce an unbounded control-command queue. It uses fixed coalesced slots:
 
@@ -436,7 +471,7 @@ Each `RenderThreadRuntime::PumpOnce()` iteration performs:
 
 1. Observe stop and high-priority surface control.
 2. Acquire/coalesce the newest available complete frame.
-3. Process uploads within request, byte, and time budgets.
+3. Process release/cancellation requests, then uploads, within their count, byte, and time budgets.
 4. Validate and apply the acquired packet to RenderScene.
 5. Build/validate/execute RenderGraph and submit/present only for a new accepted frame or an explicit resize redraw.
 6. Poll submission/upload fence completion and process resource state transitions.
@@ -539,13 +574,14 @@ M1 classifies device removal/loss, records backend diagnostics, stops submission
 
 ## 14. Diagnostics Contract
 
-Render publishes an immutable `RenderDiagnosticsSnapshot` through a double-buffered or equivalently race-free snapshot channel. It contains at least:
+Render builds an immutable `RenderDiagnosticsSnapshot` and atomically publishes `std::shared_ptr<const RenderDiagnosticsSnapshot>`. `GetDiagnosticsSnapshot()` loads the current immutable snapshot and returns a value copy; a concurrent reader may safely retain the prior publication while Render publishes the next one. No snapshot owns an RHI reference. It contains at least:
 
 - executor kind, lifecycle state, render-thread identity hash, and last transition;
 - backend, surface generation, extent, and resize/coalescing counts;
 - last published, acquired, applied, submitted, and presented frame sequence;
 - frame queue capacity, high-water mark, replacements, invalid packets, and out-of-order rejections;
 - upload queue request/byte capacity, current usage, high-water marks, pressure outcomes, accepted/completed/failed counts;
+- release queue capacity, current usage, high-water mark, accepted/completed/stale counts, and oldest pending generation;
 - resource state counts, stale-generation attempts, fallbacks, and skipped draws;
 - last submitted/completed fence values;
 - retirement entry count, estimated bytes, and oldest fence value;
