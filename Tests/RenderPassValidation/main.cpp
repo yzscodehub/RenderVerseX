@@ -3365,8 +3365,11 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_EQ(toolSnapshot.renderGraph.resources.size(), renderer.GetRenderGraph()->GetDiagnostics().resources.size());
 
     const std::string diagnosticsText = renderer.ExportToolDiagnosticsText();
+    const std::string expectedSchemaText =
+        "Schema: tool=" + std::to_string(RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION) +
+        ", frame=" + std::to_string(RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION);
     EXPECT_NE(diagnosticsText.find("SceneRenderer Tool Diagnostics"), std::string::npos);
-    EXPECT_NE(diagnosticsText.find("Schema: tool=24, frame=1"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find(expectedSchemaText), std::string::npos);
     EXPECT_NE(diagnosticsText.find("Availability: frame=true, renderGraph=true"), std::string::npos);
     EXPECT_NE(diagnosticsText.find("ExternalTarget: requested=true, active=true"), std::string::npos);
     EXPECT_NE(diagnosticsText.find("RenderGraph: passes="), std::string::npos);

@@ -263,16 +263,16 @@ namespace
                         source.doubleSided);
         AddMaterialFlag(flags,
                         RayTracingMaterialMetadataFlags::HasBaseColorTexture,
-                        baseColorTexture.IsValid());
+                        baseColorTexture.hasTextureInfo);
         AddMaterialFlag(flags,
                         RayTracingMaterialMetadataFlags::HasMetallicRoughnessTexture,
-                        metallicRoughnessTexture.IsValid());
+                        metallicRoughnessTexture.hasTextureInfo);
         AddMaterialFlag(flags,
                         RayTracingMaterialMetadataFlags::HasNormalTexture,
-                        normalTexture.IsValid());
+                        normalTexture.hasTextureInfo);
         AddMaterialFlag(flags,
                         RayTracingMaterialMetadataFlags::HasEmissiveTexture,
-                        emissiveTexture.IsValid());
+                        emissiveTexture.hasTextureInfo);
         AddMaterialFlag(flags,
                         RayTracingMaterialMetadataFlags::Unlit,
                         source.workflow == MaterialSourceWorkflow::Unlit);
@@ -316,6 +316,7 @@ namespace
 
         const RenderMaterialTextureBinding baseColorTexture =
             materialResource->GetRenderMaterialTextureBinding(RenderMaterialTextureSlot::BaseColor);
+        metadata.hasBaseColorTexture = baseColorTexture.hasTextureInfo;
         if (baseColorTexture.hasTextureInfo)
         {
             metadata.baseColorUVSet = static_cast<uint32>(std::max(baseColorTexture.uvSet, 0));
@@ -327,7 +328,6 @@ namespace
 
         if (baseColorTexture.IsValid())
         {
-            metadata.hasBaseColorTexture = true;
             metadata.hasResolvedBaseColorTexture = baseColorTexture.textureId != 0;
             metadata.baseColorTextureId = baseColorTexture.textureId;
         }
