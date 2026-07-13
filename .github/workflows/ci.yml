@@ -19,6 +19,8 @@ jobs:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Prepare vcpkg binary cache dir
         run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
@@ -31,14 +33,24 @@ jobs:
           key: vcpkg-windows-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-windows-
 
-      - name: Configure (debug preset)
-        run: cmake --preset win_x64_debug
+      - name: Build truth (Windows Debug)
+        shell: pwsh
+        run: >-
+          ./Scripts/run_build_truth.ps1
+          -ConfigurePreset win_x64_debug
+          -BuildPreset win_x64_debug
+          -TestPreset win_x64_debug_unit_lint
+          -BuildDir build/win_x64_debug
+          -Configuration Debug
+          -BaseRef origin/master
+          -Fresh
 
-      - name: Build
-        run: cmake --build --preset win_x64_debug
-
-      - name: Test (unit + lint, GPU tests skipped on headless runner)
-        run: ctest --preset win_x64_debug_unit_lint
+      - name: Upload build-truth evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-truth-windows-debug
+          path: build/win_x64_debug/BuildTruth
 
   linux:
     name: Linux (Vulkan/OpenGL configure)
@@ -48,6 +60,8 @@ jobs:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install system deps for vcpkg ports
         run: |
@@ -65,14 +79,24 @@ jobs:
           key: vcpkg-linux-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-linux-
 
-      - name: Configure
-        run: cmake --preset linux_x64_debug
+      - name: Build truth (Linux Debug)
+        shell: pwsh
+        run: >-
+          ./Scripts/run_build_truth.ps1
+          -ConfigurePreset linux_x64_debug
+          -BuildPreset linux_x64_debug
+          -TestPreset linux_x64_debug_unit_lint
+          -BuildDir build/linux_x64_debug
+          -Configuration Debug
+          -BaseRef origin/master
+          -Fresh
 
-      - name: Build
-        run: cmake --build --preset linux_x64_debug
-
-      - name: Test (unit + lint)
-        run: ctest --preset linux_x64_debug_unit_lint
+      - name: Upload build-truth evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-truth-linux-debug
+          path: build/linux_x64_debug/BuildTruth
 
   macos:
     name: macOS ARM64 (Metal)
@@ -81,6 +105,8 @@ jobs:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Resolve vcpkg root
         run: echo "VCPKG_ROOT=${VCPKG_INSTALLATION_ROOT:-/usr/local/share/vcpkg}" >> "$GITHUB_ENV"
@@ -95,11 +121,21 @@ jobs:
           key: vcpkg-macos-arm64-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-macos-arm64-
 
-      - name: Configure (Metal debug preset)
-        run: cmake --preset mac_arm64_debug
+      - name: Build truth (macOS ARM64 Debug)
+        shell: pwsh
+        run: >-
+          ./Scripts/run_build_truth.ps1
+          -ConfigurePreset mac_arm64_debug
+          -BuildPreset mac_arm64_debug
+          -TestPreset mac_arm64_debug_unit_lint
+          -BuildDir build/mac_arm64_debug
+          -Configuration Debug
+          -BaseRef origin/master
+          -Fresh
 
-      - name: Build
-        run: cmake --build --preset mac_arm64_debug
-
-      - name: Test (unit + lint, GPU tests skipped on headless runner)
-        run: ctest --preset mac_arm64_debug_unit_lint
+      - name: Upload build-truth evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-truth-macos-arm64-debug
+          path: build/mac_arm64_debug/BuildTruth

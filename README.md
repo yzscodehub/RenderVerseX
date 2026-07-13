@@ -171,6 +171,12 @@ Tests are standalone executables (no GoogleTest framework).
 ./build/Tests/Release/CrossBackendValidation.exe
 ```
 
+### Architecture preflight
+
+Before architecture implementation work, run the clean M0 gate documented in
+[`Docs/build-truth.md`](Docs/build-truth.md). It is stricter than an ordinary
+incremental build because it rejects missing tests and writes reviewable evidence.
+
 ## Sample Applications
 
 Samples are the Runtime-first demonstration surface while the Editor remains a thin shell. Basic samples focus on one contract or subsystem; Showcase samples compose multiple runtime systems and support smoke/report validation.
