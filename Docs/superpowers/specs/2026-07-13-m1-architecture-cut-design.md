@@ -4,7 +4,7 @@ Date: 2026-07-13
 
 Branch baseline: `codex/architecture-implementation` at `9ae22bad45d1acc39a26dbf7ecb7853dde143f60`
 
-Status: Design approved in discussion; written specification self-reviewed; awaiting final user review
+Status: Design approved in discussion; best-practice review incorporated and self-reviewed; awaiting final user review
 
 Parent design: `2026-07-10-runtime-production-foundation-design.md`
 
@@ -33,7 +33,7 @@ The central decisions are:
 2. Inline execution exists only as a test implementation of the same runtime pump. It is not a runtime fallback and is not selectable in Shipping.
 3. Engine coordinates extraction, publication, initialization order, and shutdown order. RenderSubsystem owns the executor, queues, and render-thread runtime.
 4. RenderExtraction produces immutable values. Render consumes no World, Scene, Resource, Camera, callback, or update-owned object pointer.
-5. Render owns the RHI device, swapchain, RenderGraph execution, GPU registry, upload realization, presentation, and fence-based retirement.
+5. Render owns the RHI device, swapchain, RenderGraph execution, GPU registry, upload realization, presentation, and queue-domain completion-token retirement.
 6. M1 is a hard API cut. All in-repository callers are migrated and the old synchronous or pointer-bearing Render APIs are removed before M1 exits.
 7. The migration is contract-first and vertical. It does not begin as a thread wrapper around the current unsafe call graph, and it does not attempt a single big-bang rewrite.
 
@@ -75,6 +75,7 @@ The branch contains useful seams but does not yet enforce safe runtime ownership
 - `Engine::Tick` synchronously calls `ProcessGPUUploads()` and then `RenderFrame(m_activeWorld)`.
 - There is no render thread. Core's thread pool does not establish render ownership.
 - `GPUResourceManager` combines upload queuing, realization, registry, status, and residency concerns.
+- `GPUUploadService` records staged uploads on a Copy command context and passes an explicit `RHIFence` to `SubmitCommandContext`; current fence values are not a proven device-global scalar and cannot be compared without their timeline identity.
 - `FrameResourceManager` relies on frame-count deletion and a global deferred-deleter registry rather than a Render-owned last-use fence.
 - `EngineSubsystem::Initialize()` returns `void`, while `SubsystemCollection::InitializeAll()` already catches exceptions and unwinds initialized subsystems.
 
@@ -204,7 +205,7 @@ The M1 packet is a complete snapshot and contains:
 
 - schema ID and schema version;
 - strictly increasing frame sequence;
-- world revision and extraction completeness counters;
+- world revision, temporal epoch, and extraction completeness counters;
 - `RenderViewSnapshot` with numeric camera, viewport, clipping, time, and exposure values;
 - primitive snapshots containing transforms, bounds, flags, sort/layer data, and render-resource handles;
 - light snapshots containing numeric light state and handles only;
@@ -217,15 +218,17 @@ Every collection owns its storage. A packet never aliases builder, World, Scene,
 
 ### 6.3 Complete-snapshot semantics
 
-M1 publishes complete snapshots, not deltas. This is required for safe latest-complete-wins replacement. `worldRevision` changes when the logical world is replaced or reset. The render thread treats either of these as a temporal discontinuity:
+M1 publishes complete snapshots, not deltas. This is required for safe latest-complete-wins replacement. `worldRevision` changes when the logical world is replaced or reset. `temporalEpoch` changes on a camera cut, an explicit history reset, or another update-side event that makes reprojection invalid.
 
-- a gap between acquired/rendered frame sequence numbers;
-- a changed world revision;
-- an explicit packet discontinuity flag for camera cuts or reset events.
-
-On discontinuity, temporal history is invalidated. Previous camera/object state is derived only from the last packet actually rendered, never from a packet that was replaced or rejected.
+A changed world revision, changed temporal epoch, incompatible surface history, or explicit discontinuity flag invalidates temporal history. A gap between acquired/rendered frame sequence numbers is recorded but does not reset history by itself: skipped complete snapshots are not equivalent to a camera cut. Previous camera/object state is always derived from the last packet actually rendered, never from a packet that was replaced or rejected.
 
 An incomplete extraction is not published. The renderer retains its last accepted scene and records an update-side extraction failure. If no valid scene has ever been accepted, Render uses a deterministic clear.
+
+### 6.4 Packet-to-scene ownership
+
+Applying a packet must not create borrowed state whose lifetime exceeds the call. RenderScene either copies every value it needs across render iterations or retains ownership of the complete current packet. It must not store a pointer, reference, `std::span`, iterator, or string view into a packet that can be replaced or destroyed.
+
+If RenderScene retains the current packet, replacement occurs only after any Render-owned CPU jobs that read the prior packet have joined. M1 has no parallel recording jobs, but this invariant prevents a later M2 optimization from silently weakening packet lifetime.
 
 ## 7. Immutable Resource Upload Contract
 
@@ -239,7 +242,9 @@ The request owns a value payload variant such as `MeshUploadPayload`, `TextureUp
 
 Material payloads contain `MaterialSourceData` values and texture `RenderResourceHandle`s. They do not contain material/texture source pointers.
 
-ResourceSubsystem retains one request reference until the request reaches a terminal state. This makes the last release of large CPU payload memory occur on the update thread after status observation, not unpredictably during a render-thread queue operation. Render never stores an update-domain Resource object merely to control payload lifetime.
+ResourceSubsystem retains one request reference until the request reaches a terminal state. Only ResourceSubsystem and Render's bounded upload path may retain request references after gateway publication; worker/build references must be gone before enqueue. Render never stores an update-domain Resource object merely to control payload lifetime.
+
+Terminal publication has a required release order. Render first copies the compact terminal result, removes the request from all Render-owned containers, and releases every Render-owned `ResourceUploadRequestRef`. Only then may it release-store `GPUReady`, `Failed`, or `Released`. ResourceSubsystem keeps its reference until an acquire-load observes that terminal state and releases it on the update thread. This makes the last release of large CPU payload memory occur on the update thread rather than unpredictably on Render Thread. Requests are created through the contract factory; custom deleters that bypass this ownership rule are forbidden.
 
 ### 7.2 Request fields
 
@@ -252,7 +257,7 @@ Every request contains:
 - dependency handles and readiness policy;
 - byte cost, priority, and compact diagnostic provenance.
 
-Cancellation before Render begins upload is represented by gateway/resource state, not by a callback in the request. Once GPU submission occurs, cancellation means "do not publish this generation as usable" and still requires fence-safe retirement.
+Cancellation before Render begins upload is represented by gateway/resource state, not by a callback in the request. Once GPU submission occurs, cancellation means "do not publish this generation as usable" and still requires completion-token-safe retirement.
 
 Queued-byte accounting is derived from the checked sizes of the request's owned payload containers. Any declared byte-cost field is diagnostic metadata and must match the overflow-checked derived total; callers cannot bypass queue limits by reporting a smaller cost.
 
@@ -329,7 +334,7 @@ The render thread may perform only:
 
 - `UploadQueued -> Uploading`;
 - `Uploading -> GPUReady` or `Uploading -> Failed`;
-- `Evicting -> Released` after any submitted work and last-use fence are safe.
+- `Evicting -> Released` after every point in the generation's last-use completion token is safe.
 
 If release races upload completion, compare/exchange decides the winner: Render must not publish `GPUReady` over `Evicting`, and an upload that observes `Evicting` retires any partial RHI state before publishing `Released`. The update allocator does not reuse the slot until it observes the matching `Released` generation. This controlled multi-writer state channel does not weaken the rule that RenderResourceRegistry and all RHI state are render-thread-only.
 
@@ -376,10 +381,12 @@ Tests and Samples use public contracts or explicit test harnesses. They do not r
 
 ```text
 Stopped -> Starting -> Running -> StopRequested -> Draining -> Stopped
-              \-> Failed            \---------------------> Failed
+Starting / Running / StopRequested / Draining -- terminal failure --> Failed
 ```
 
 Only RenderSubsystem transitions lifecycle state. Observers receive atomic state or immutable diagnostics; they cannot mutate it.
+
+`Failed` carries a terminal cause and teardown mode. Device loss enters `StopRequested` with cause `DeviceLost`, then finishes in `Failed`; it does not masquerade as an ordinary clean stop.
 
 Startup sequence:
 
@@ -400,6 +407,8 @@ Startup sequence:
 - `InlineRenderExecutor`: compiled only into test support; invokes the same `PumpOnce()` synchronously under an explicit render-thread test scope.
 
 Shipping configuration cannot select, discover, or fall back to Inline execution. A dedicated-thread startup failure is fatal initialization failure.
+
+DedicatedRenderExecutor invokes a narrow platform thread bootstrap before any RHI call. It assigns the `RVX Render` thread name and applies a documented, non-realtime platform priority/QoS policy that cannot starve the update or OS event thread. On Apple platforms, an Objective-C++ bootstrap owns a top-level autorelease pool for thread startup/shutdown and a nested `@autoreleasepool` around every `PumpOnce()` iteration so Metal/Foundation temporary objects do not accumulate on the long-lived thread. Other platforms provide a no-op iteration scope behind the same internal hook.
 
 ### 9.5 Native surface contract
 
@@ -428,6 +437,8 @@ The frame mailbox is a mutex-protected SPSC bounded deque. It avoids lock-free l
 
 Replacement moves the old packet out while holding the mailbox lock and destroys it after unlocking. Large CPU packet destruction therefore does not lengthen the mailbox critical section.
 
+Consumer coalescing is equally explicit: under the lock, Render moves the newest packet into acquired ownership and moves every older queued packet into a discard list; after unlocking, it records and destroys the discarded packets. The acquired packet is never replaced. A resulting sequence gap updates diagnostics but follows the temporal-continuity rules in section 6.3.
+
 ### 10.2 Upload queue
 
 The upload queue is a mutex-protected SPSC queue bounded by both request count and retained payload bytes.
@@ -450,7 +461,7 @@ Normal runtime drain is bounded to 1,024 releases and 1 ms per render iteration,
 
 At most one release may be pending for a slot/generation: a second request observes `Evicting` and returns `AlreadyPending`. Therefore the ring is capacity-proven for every live slot and does not need a `QueueFull` public outcome. Failure to publish after a successful state transition is an internal ownership invariant violation: RenderSubsystem seals the gateway, records a runtime-fatal result, and begins terminal shutdown.
 
-The render thread validates generation again before acting. It cancels an unstarted upload or records the last-use fence for live GPU state, then eventually publishes `Released`. A stale ring entry can never release a reused slot.
+The render thread validates generation again before acting. It cancels an unstarted upload or reads the recorded last-use completion token for live GPU state, then eventually publishes `Released`. A stale ring entry can never release a reused slot.
 
 ### 10.4 Coalesced control
 
@@ -474,8 +485,8 @@ Each `RenderThreadRuntime::PumpOnce()` iteration performs:
 3. Process release/cancellation requests, then uploads, within their count, byte, and time budgets.
 4. Validate and apply the acquired packet to RenderScene.
 5. Build/validate/execute RenderGraph and submit/present only for a new accepted frame or an explicit resize redraw.
-6. Poll submission/upload fence completion and process resource state transitions.
-7. Retire fence-safe RHI objects.
+6. Poll each active queue timeline and process submission/upload state transitions.
+7. Retire completion-token-safe RHI objects.
 8. Publish lifecycle and diagnostics snapshots.
 9. Wait on a condition variable when there is no actionable work.
 
@@ -498,7 +509,7 @@ M1 splits the current monolithic responsibilities into:
 - `RenderResourceStatusTable`: fixed cross-thread public state channel;
 - `RenderResourceRegistry`: render-thread-only slot/generation to strong-RHI-state mapping;
 - `RenderUploadProcessor`: validates accepted requests, creates resources, submits uploads, and processes completion;
-- `RenderRetirementQueue`: retains objects until last-use fences complete;
+- `RenderRetirementQueue`: retains objects until every point in their last-use completion token completes;
 - temporary `GPUResourceManager` facade during migration only.
 
 The temporary facade is removed before M1 exits. New code targets the split components directly; the facade exists only to keep intermediate commits buildable.
@@ -510,20 +521,55 @@ Upload realization follows:
 1. Validate request schema, handle generation, kind, dependencies, and payload bounds.
 2. Create a pending registry entry for the exact generation.
 3. Create RHI objects and submit upload work.
-4. Retain partial objects and request state until the submission fence completes.
-5. On success, publish `GPUReady` with release semantics.
-6. On failure, publish a stable failure, transfer partial RHI objects to retirement, and never expose the pending generation as usable.
+4. Retain partial objects and request state until the matching submission completion token completes.
+5. On success, commit the registry generation, release every Render-owned request reference, then publish `GPUReady` with release semantics.
+6. On failure, transfer partial RHI objects to retirement, release every Render-owned request reference, then publish a stable failure; never expose the pending generation as usable.
 
-An older valid generation remains independent until its own release request and last-use fence complete. Failure of a replacement generation does not invalidate an older generation implicitly.
+An older valid generation remains independent until its own release request and last-use completion token complete. Failure of a replacement generation does not invalidate an older generation implicitly.
 
-### 12.2 Fence-based retirement
+### 12.2 Queue-domain completion
+
+Fence values are meaningful only within the fence/timeline that produced them. Current RenderVerseX can submit frames on Graphics contexts and uploads on Copy contexts, so M1 must not treat a bare `uint64` as a device-global completion value.
+
+`RenderSubmissionTracker` owns one long-lived monotonically increasing RHI fence timeline for every active physical submission domain. M1 supports at most one physical Graphics, Compute, and Copy timeline. Backend initialization publishes the mapping from logical `RHICommandQueueType` to these domains; collapsed logical queues map to the same physical domain. Adding multiple native queue instances of one class requires a stable timeline ID and is deferred until M2.
+
+```cpp
+enum class GPUQueueDomain : uint8
+{
+    Graphics = 0,
+    Compute,
+    Copy
+};
+
+struct GPUCompletionPoint
+{
+    GPUQueueDomain domain = GPUQueueDomain::Graphics;
+    uint64 value = 0;
+};
+
+struct GPUCompletionToken
+{
+    std::array<GPUCompletionPoint, 3> points{};
+    uint8 count = 0;
+};
+```
+
+The token is Render-internal and never appears in a frame or upload contract. At most one point per physical domain is stored; merging tokens takes the maximum value only within the same domain. Values from different domains are never compared. A token is complete only when every referenced domain timeline has reached its point.
+
+DX12 and Vulkan backends implement these as native queue-signaled timelines. Metal may advance the matching monotonic completion value from a command-buffer completion handler, but that handler only publishes the atomic completion/error signal for Render Thread consumption. A Tier 2 backend may collapse Compute/Copy onto Graphics, but it must expose the mapping and a real completion condition. If DX11/OpenGL cannot provide one, compatibility mode performs a bounded `WaitIdle` before retirement and reports `CompatibilityWaitIdle`; it must not fabricate asynchronous completion or weaken Tier 1 semantics.
+
+M1 conservatively publishes an uploaded generation as `GPUReady` only after its Copy completion point has completed. Therefore a later Graphics use does not require an implicit CPU-visible resource to race unfinished Copy work. If a backend path performs GPU-side Copy-to-Graphics or Graphics-to-Compute handoff, it must encode an explicit queue wait and retain both completion points.
+
+At successful submission, RenderGraph/SceneRenderer reports the exact registry generations referenced by the command contexts. `RenderSubmissionTracker` merges the matching queue point into each generation's last-use token. Release processing reads that recorded token; it never guesses last use from the current frame number or from the time at which `RequestRelease()` arrived.
+
+### 12.3 Fence-based retirement
 
 Frame-count deletion and the global deferred-deleter path are not sufficient for production ownership. Render introduces a queue whose entries contain at least:
 
 ```cpp
 struct RenderRetirementEntry
 {
-    uint64 lastUseFenceValue = 0;
+    GPUCompletionToken completion;
     Ref<RefCounted> object;
     uint64 estimatedBytes = 0;
 };
@@ -532,8 +578,9 @@ struct RenderRetirementEntry
 The exact type-erasure may differ, but these invariants do not:
 
 - only Render-thread components create retirement entries;
-- registry, cache, or pass code explicitly transfers its last strong RHI reference;
-- an entry releases only when `completedFenceValue >= lastUseFenceValue`;
+- registry, cache, or pass code explicitly transfers its last strong RHI reference and the recorded completion token;
+- an entry releases only when every point in its completion token is complete;
+- normal completion and device-lost teardown are separate paths and cannot be reported as one another;
 - the last strong RHI release and final destructor run on the render thread;
 - no strong RHI reference crosses into a frame packet, upload request, Resource object, or update-side diagnostics object.
 
@@ -570,7 +617,18 @@ The render-thread entry catches all exceptions. No exception crosses the thread 
 
 ### 13.4 Device loss
 
-M1 classifies device removal/loss, records backend diagnostics, stops submission, and reaches a bounded terminal outcome. It may perform orderly fatal termination rather than in-process recovery. Recreate/rehydrate/resume behavior remains M5 work and is not simulated by continuing with invalid RHI objects.
+M1 classifies device removal/loss, records backend diagnostics, stops submission, and reaches a bounded terminal outcome. Recreate/rehydrate/resume behavior remains M5 work and is not simulated by continuing with invalid RHI objects.
+
+Device loss selects a distinct `DeviceLostTeardown` mode:
+
+1. Seal frame/gateway publication and stop all new GPU submissions.
+2. Preserve the last normal per-queue timeline values and capture backend evidence such as DRED, Vulkan device-fault data when available, or Metal command-buffer error/log data.
+3. Mark every queue timeline `Lost`. A backend's device-lost fence sentinel or error return is recorded as loss; it is never reported as ordinary completion of a normal token.
+4. Cancel queued CPU work and publish resource/request terminal failures using the request-release ordering from section 7.1.
+5. Stop the normal retirement predicate. On Render Thread, destroy registry/pass/cache/device-child objects in dependency order, then destroy the swapchain and device. Vulkan allocations are explicitly freed before `vkDestroyDevice`; no object is left to an update-domain destructor.
+6. Publish the structured device-lost result, leave the executor loop, and join.
+
+The device-lost path does not claim that outstanding work completed normally. Vulkan permits lost-device waits to return `VK_ERROR_DEVICE_LOST` in finite time and treats that result as terminating pending/in-use status for teardown. DX12 device removal can signal monitored fences to `UINT64_MAX`; Render must treat that value together with the removed-device state as a loss sentinel, not successful frame completion. If backend diagnostic or destruction calls do not return within the shutdown watchdog, the host writes the last immutable diagnostics snapshot and performs fatal process termination; it never detaches the render thread or continues with the lost device.
 
 ## 14. Diagnostics Contract
 
@@ -583,8 +641,8 @@ Render builds an immutable `RenderDiagnosticsSnapshot` and atomically publishes 
 - upload queue request/byte capacity, current usage, high-water marks, pressure outcomes, accepted/completed/failed counts;
 - release queue capacity, current usage, high-water mark, accepted/completed/stale counts, and oldest pending generation;
 - resource state counts, stale-generation attempts, fallbacks, and skipped draws;
-- last submitted/completed fence values;
-- retirement entry count, estimated bytes, and oldest fence value;
+- queue-domain mapping, native/compatibility completion mode, timeline state, and last submitted/completed values per active queue;
+- retirement entry count, estimated bytes, and oldest pending completion point per queue;
 - last stable startup, runtime, or shutdown failure with compact context.
 
 The snapshot owns all strings and arrays it exposes. Engine, tests, Build Truth, and future support tooling consume the snapshot without accessing render-owned live objects.
@@ -593,22 +651,26 @@ The snapshot owns all strings and arrays it exposes. Engine, tests, Build Truth,
 
 ### 15.1 Ordered shutdown
 
-The required order is:
+The normal, non-device-lost order is:
 
 1. Stop simulation/load production and prevent new gateway reservations.
 2. Seal frame, upload, release, and resize publication.
 3. Set the out-of-band stop request and wake Render Thread.
 4. Discard unacquired frames with counters.
 5. Cancel uploads not yet started; finish or classify already submitted uploads.
-6. Wait for the last submitted GPU fence within the shutdown budget.
-7. Drain fence-safe retirement and report any object that cannot become safe.
+6. Wait for the last submitted point on every active queue timeline within the shutdown budget.
+7. Drain completion-token-safe retirement and report any object that cannot become safe.
 8. Destroy registry, upload processor, SceneRenderer/RenderContext, swapchain, and device on Render Thread.
 9. Publish the structured shutdown result, exit the executor loop, and join the thread.
 10. Destroy World, Resource, and remaining CPU subsystems.
 
-Engine shutdown does not enqueue one release request per live resource. Once production is sealed, Render performs authoritative registry teardown after its last-use fence. This prevents shutdown queue floods and preserves ownership.
+Engine shutdown does not enqueue one release request per live resource. Once production is sealed, Render performs authoritative registry teardown after the matching last-use completion tokens. This prevents shutdown queue floods and preserves ownership.
 
-### 15.2 Bounded waits
+### 15.2 Device-lost shutdown
+
+When the terminal cause is `DeviceLost`, steps 6 and 7 of the normal path are replaced by `DeviceLostTeardown` from section 13.4. Render does not wait for normal queue-timeline progress that the lost device can no longer provide, and diagnostics distinguish `Completed`, `Lost`, and `TimedOut` queue outcomes.
+
+### 15.3 Bounded waits
 
 - Startup watchdog default: 60 seconds.
 - Shutdown watchdog default: 30 seconds.
@@ -624,7 +686,7 @@ M1 uses a contract-first vertical sequence:
 2. Add the generational handle allocator, status table contract, and narrow gateway.
 3. Add bounded mailbox/control structures plus Inline and Dedicated executors around one runtime pump.
 4. Start a minimal RenderThreadRuntime and move device/swapchain/RenderContext ownership into it.
-5. Add fence-based RenderRetirementQueue and remove RHI dependence on global deferred deletion.
+5. Add queue-domain submission tracking and RenderRetirementQueue, then remove RHI dependence on global deferred deletion.
 6. Split RenderResourceRegistry and RenderUploadProcessor from GPUResourceManager behind a temporary facade.
 7. Build the complete `RenderFramePacketBuilder` aggregate and migrate feature snapshots.
 8. Move extraction invocation to Engine and publish packets through RenderSubsystem.
@@ -643,13 +705,16 @@ Core scenarios are parameterized against both `InlineRenderExecutor` and `Dedica
 
 - startup success and each startup failure stage;
 - complete packet publication and transactional application;
+- packet replacement/destruction without any RenderScene view into released packet storage;
 - out-of-order, unsupported schema, incomplete, and stale-handle rejection;
 - capacity two through four and latest-complete-wins replacement;
 - upload count/byte pressure and deterministic retry;
 - two-phase resource success/failure/replacement;
+- independent Graphics/Compute/Copy timeline values, multi-point completion, and last-use stamping at submission;
+- update-thread final destruction of accepted upload payloads for every terminal outcome;
 - resize generation coalescing and idle no-present behavior;
 - stop while idle, under frame pressure, during upload, and after submission;
-- bounded shutdown and complete retirement.
+- normal bounded shutdown, complete retirement, and device-lost teardown without normal timeline progress.
 
 Dedicated-only tests additionally prove real thread separation, wakeup behavior, stress publication, and same-thread RHI construction/destruction.
 
@@ -665,6 +730,7 @@ The fake RHI can fail deterministically at:
 - the Nth resource creation;
 - upload submission;
 - fence signal/wait/completion;
+- device loss before submission, with submitted work in flight, and during shutdown;
 - resize;
 - present.
 
@@ -674,6 +740,9 @@ For each injected failure, tests verify:
 - no exception crosses the executor boundary;
 - creation and destruction of every fake RHI object occur on the recorded render thread;
 - live fake RHI object count reaches zero;
+- completion values from different queue timelines are never compared or merged as one scalar;
+- a tracked payload deleter runs on the update thread after Render has dropped every request reference;
+- device-lost sentinels are reported as `Lost`, never as ordinary token completion;
 - no stale generation mutates a replacement;
 - queues and diagnostics reach a terminal consistent state.
 
@@ -701,12 +770,14 @@ Required M1 evidence is:
 - dedicated-thread stress and fault suites pass;
 - Linux TSAN target passes;
 - Runtime Samples compile and execute their existing smoke scope through packet publication;
+- Windows DX12, Linux Vulkan, and macOS Metal each complete a minimal native lifecycle smoke: create a non-fake native backend device/surface on Render Thread, publish and present one deterministic frame, process one resize, prove idle does not re-present, then destroy every RHI child and the device on Render Thread; an approved software adapter/ICD is sufficient for this M1 lifecycle proof but not for M2 production-support evidence;
+- Vulkan-on-Windows and the enabled DX11/OpenGL compatibility backends run the same lifecycle smoke when the CI runner exposes the required driver/context capability; capability absence is an explicit environment skip rather than fake success;
 - Editor adapter receives compile-only smoke coverage;
 - Windows local Fresh Build Truth passes from a clean build tree;
 - Windows, Linux, and macOS CI Build Truth passes and retains artifacts;
 - the final evidence records the exact source commit.
 
-M1 does not claim real-device Tier 1 RHI support from these results. That evidence belongs to M2.
+These native lifecycle smokes prove only the M1 thread/surface lifetime cut. They do not claim Tier 1 RHI behavioral conformance, feature parity, or production support; that evidence belongs to M2.
 
 ## 18. M1 Exit Criteria
 
@@ -718,11 +789,11 @@ M1 is complete only when all conditions are true:
 4. Render Thread is the sole owner of device, swapchain, RenderScene, RenderGraph execution, registry, uploads, submission, presentation, and RHI destruction.
 5. Frame packets and upload requests contain only owned values, stable identities, and generational handles permitted by this specification.
 6. Frame/upload/control publication is bounded, non-blocking, generation-aware, and observable.
-7. RHI retirement is last-use-fence-based, and final RHI destruction occurs on Render Thread.
-8. Startup, idle, resize, pressure, failure, and shutdown behavior match the documented state machines and watchdog policies.
+7. RHI retirement uses submission-stamped per-queue last-use completion tokens, never compares values from different timelines, and performs final RHI destruction on Render Thread.
+8. Startup, idle, resize, pressure, device loss, and normal/device-lost shutdown match the documented state machines and watchdog policies.
 9. GPUResourceManager's temporary facade and every named old synchronous/pointer API are removed.
-10. Shared executor, dedicated stress, fault injection, architecture, symbol-absence, and TSAN gates pass.
-11. Runtime Samples pass smoke coverage; Editor is compile-only and is not a correctness dependency.
+10. Shared executor, dedicated stress, per-queue completion, payload-reclamation, device-loss fault injection, architecture, symbol-absence, and TSAN gates pass.
+11. Runtime Samples and required native DX12/Vulkan/Metal lifecycle smokes pass; Editor is compile-only and is not a correctness dependency.
 12. Local and CI Fresh Build Truth artifacts are green and tied to the final source commit.
 
 M2 and M3 planning begins only after this exit review. Changes to the frozen M1 identity, queue, upload, or ownership contracts require an explicit architecture review and updated concurrency evidence.
@@ -762,10 +833,14 @@ The design adopts principles, not source implementations:
 - Unity exposes dedicated and parallel rendering-thread modes, reinforcing that execution policy must be explicit rather than an invisible fallback: <https://docs.unity3d.com/ja/6000.0/ScriptReference/Rendering.RenderingThreadingMode.html>
 - Vulkan requires external synchronization for specified host access and recommends per-thread command-pool ownership for parallel recording: <https://docs.vulkan.org/guide/latest/threading.html> and <https://docs.vulkan.org/spec/latest/chapters/fundamentals.html>
 - Direct3D 12 permits command-list generation from multiple threads while command-queue submission remains explicitly ordered: <https://learn.microsoft.com/en-us/windows/win32/direct3d12/design-philosophy-of-command-queues-and-command-lists>
+- Direct3D 12 requires the application to keep referenced resources alive until the corresponding GPU work has completed, motivating submission-stamped completion tokens: <https://learn.microsoft.com/en-us/windows/win32/direct3d12/binding-model> and <https://learn.microsoft.com/en-us/windows/win32/direct3d12/fence-based-resource-management>
+- Vulkan defines lost-device waits as finite error outcomes rather than ordinary completion and still requires explicit device-child cleanup before device destruction: <https://docs.vulkan.org/spec/latest/chapters/devsandqueues.html>
+- DX12 device removal can signal monitored fences to `UINT64_MAX`, which must be classified as device loss rather than normal frame progress: <https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12device5-removedevice>
 - Metal command queues are thread-safe and support parallel command-buffer encoding, leaving room for later recording parallelism behind the same M1 owner contract: <https://developer.apple.com/documentation/metal/mtlcommandqueue> and <https://developer.apple.com/documentation/Metal/setting-up-a-command-structure>
+- Apple requires long-lived secondary threads that use Cocoa/Objective-C facilities to own and regularly drain autorelease pools: <https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/MemoryMgmt/Articles/mmAutoreleasePools.html>
 
 ## 21. Implementation Planning Boundary
 
 After this written specification is approved, a separate M1 implementation plan will decompose section 16 into small, verifiable tasks with exact files, tests-first steps, review checkpoints, and rollback-safe commits.
 
-The implementation plan may refine names and file placement when repository evidence requires it, but it may not change the approved ownership direction, hard API cut, Shipping executor policy, cross-thread forbidden types, bounded queue semantics, fence-based retirement, failure policy, or exit gates without returning to design review.
+The implementation plan may refine names and file placement when repository evidence requires it, but it may not change the approved ownership direction, hard API cut, Shipping executor policy, cross-thread forbidden types, bounded queue semantics, queue-domain completion-token retirement, failure policy, or exit gates without returning to design review.
