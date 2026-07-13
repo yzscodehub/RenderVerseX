@@ -4,7 +4,7 @@ Date: 2026-07-13
 
 Branch baseline: `codex/architecture-implementation` at `9ae22bad45d1acc39a26dbf7ecb7853dde143f60`
 
-Status: Design approved in discussion; best-practice review incorporated and self-reviewed; awaiting final user review
+Status: Approved; best-practice review and execution-preflight amendments incorporated
 
 Parent design: `2026-07-10-runtime-production-foundation-design.md`
 
@@ -362,6 +362,8 @@ RenderShutdownResult GetLastShutdownResult() const;
 
 It also implements `IRenderResourceGateway`.
 
+The exact enum values, result fields, defaults, and outcome-to-class mappings for `RenderFramePublishResult`, `RenderResizeResult`, `RenderRuntimeResult`, and `RenderShutdownResult` are frozen by Task 7 of `2026-07-13-m1-architecture-cut-implementation-plan.md` and are a normative execution-preflight expansion of this approved design. In particular, publication/resize outcomes distinguish success, expected pressure, and recoverable rejection; runtime results carry lifecycle/executor/terminal/teardown plus owned diagnostic context; and shutdown distinguishes normal drain, device-lost teardown, watchdog timeout, and executor-join failure. Implementations may not add alternate result identities or use messages for control flow without architecture review.
+
 `Configure` is valid only before subsystem initialization. `EngineSubsystem::Initialize()` remains `void`; RenderSubsystem's override calls its private `StartRenderRuntime()`. A startup failure stores the structured result and throws `RenderSubsystemInitializationError`. Existing `SubsystemCollection::InitializeAll()` catches the exception and unwinds already initialized subsystems. This avoids changing the base subsystem contract in M1 while preserving structured diagnostics.
 
 ### 9.2 APIs removed by M1 exit
@@ -408,6 +410,8 @@ Startup sequence:
 
 Shipping configuration cannot select, discover, or fall back to Inline execution. A dedicated-thread startup failure is fatal initialization failure.
 
+`RenderRuntimeConfig` has no executor-selection field. Runtime and Shipping construct `DedicatedRenderExecutor` unconditionally; tests inject `InlineRenderExecutor` only through a test-only factory that is not linked into shipping binaries. Any temporary migration bridge is bounded to the implementation sequence and must be absent at M1 exit.
+
 DedicatedRenderExecutor invokes a narrow platform thread bootstrap before any RHI call. It assigns the `RVX Render` thread name and applies a documented, non-realtime platform priority/QoS policy that cannot starve the update or OS event thread. On Apple platforms, an Objective-C++ bootstrap owns a top-level autorelease pool for thread startup/shutdown and a nested `@autoreleasepool` around every `PumpOnce()` iteration so Metal/Foundation temporary objects do not accumulate on the long-lived thread. Other platforms provide a no-op iteration scope behind the same internal hook.
 
 ### 9.5 Native surface contract
@@ -416,10 +420,13 @@ DedicatedRenderExecutor invokes a narrow platform thread bootstrap before any RH
 
 - platform tag;
 - non-owning native handles stored as `uintptr_t` values with platform-specific validation;
+- on Apple platforms, a non-owning `CAMetalLayer` handle created and attached by HAL on the application main thread;
 - width, height, format/presentation preferences required by the existing RHI path;
 - monotonically increasing surface generation.
 
-The descriptor owns no OS object. HAL owns the referenced window/layer/view and keeps it alive until Render acknowledges shutdown. A resize/surface update with an older generation is ignored and counted.
+The descriptor owns no OS object. HAL owns the referenced window/layer/view and keeps it alive until Render acknowledges shutdown. On Apple platforms, HAL creates and attaches the `CAMetalLayer` to `NSView`/`UIView` on the application main thread before publication; the Render Thread receives only the layer handle plus immutable surface values and must never dereference or mutate `NSWindow`, `NSView`, or `UIView`. Layer detachment and view teardown occur on the main thread only after Render acknowledges surface shutdown. A resize/surface update with an older generation is ignored and counted.
+
+The Render Thread owns Metal device/queue/swapchain state and calls `CAMetalLayer::nextDrawable` only while processing an actionable frame. Idle pump iterations do not acquire drawables. Presentation is encoded through the owning Metal command buffer (`presentDrawable:`); directly presenting a drawable is forbidden because it would bypass the submission/completion ownership model.
 
 ## 10. Bounded Queues and Control Publication
 
@@ -586,6 +593,17 @@ The exact type-erasure may differ, but these invariants do not:
 
 M1 removes RHI use of the global `DeferredDeleterRegistry`. Non-RHI uses, if any are proven, require separate ownership and are not silently redirected through Render.
 
+This removal is a cutover gate, not an early cleanup. Before the global path or fixed-frame lifetime helpers are deleted, every RHI-owning holder must be classified and migrated under one explicit policy:
+
+- `RegistryExactGeneration`: registry-owned resources retire using the exact generation's submission-stamped last-use token;
+- `SubmissionBatch`: transient RenderGraph, pass, and command-context references are retained by a submission batch until that batch's completion token completes;
+- `PoolAvailability`: allocator/pool entries become reusable only after their recorded completion token completes;
+- `OwnerSnapshot`: cache replacement and shutdown detach the old strong reference together with the token snapshot recorded for that exact owner entry;
+- `SurfaceGeneration`: swapchain/backbuffer generations retire after the final submission that references that generation;
+- `ShutdownAfterDrain`: objects that cannot be individually stamped remain owned until all accepted work is drained and the backend reaches the documented shutdown condition.
+
+The cutover requires a checked inventory of all strong RHI holders, evidence that each holder has exactly one policy, a runtime test proving the registry is not installed, and source/link absence checks for the legacy global and fixed-frame paths. Creating `RenderRetirementQueue` alone is scaffolding and does not authorize deletion of those paths.
+
 ## 13. Error and Failure Policy
 
 ### 13.1 Structured result model
@@ -686,14 +704,17 @@ M1 uses a contract-first vertical sequence:
 2. Add the generational handle allocator, status table contract, and narrow gateway.
 3. Add bounded mailbox/control structures plus Inline and Dedicated executors around one runtime pump.
 4. Start a minimal RenderThreadRuntime and move device/swapchain/RenderContext ownership into it.
-5. Add queue-domain submission tracking and RenderRetirementQueue, then remove RHI dependence on global deferred deletion.
+5. Add queue-domain submission tracking and `RenderRetirementQueue` as scaffolding while preserving legacy lifetime paths for intermediate build compatibility only.
 6. Split RenderResourceRegistry and RenderUploadProcessor from GPUResourceManager behind a temporary facade.
 7. Build the complete `RenderFramePacketBuilder` aggregate and migrate feature snapshots.
 8. Move extraction invocation to Engine and publish packets through RenderSubsystem.
 9. Convert SceneRenderer/RenderScene to packet-only input and handle-only resource lookup.
-10. Migrate Samples, validation executables, and the Editor's adapter mechanically.
-11. Delete the facade, old pointer APIs, old synchronous frame APIs, and forbidden module links.
-12. Enable architecture, concurrency, failure-injection, TSAN, smoke, and Fresh Build Truth gates.
+10. Stamp exact registry generations at successful submission and add submission batches, pool-availability tokens, cache-owner snapshots, and surface-generation retirement.
+11. Complete the checked strong-RHI-holder inventory and prove every holder has one documented lifetime policy.
+12. Only after steps 10–11 pass, remove global deferred deletion, fixed-frame deletion, and reference-count side paths from RHI ownership.
+13. Migrate Samples, validation executables, and the Editor's adapter mechanically.
+14. Delete the facade, old pointer APIs, old synchronous frame APIs, and forbidden module links.
+15. Enable architecture, concurrency, failure-injection, TSAN, smoke, and Fresh Build Truth gates.
 
 Every intermediate commit must build or be explicitly scoped as a mechanical compile-boundary commit in the implementation plan. No long-lived deprecated dual path is accepted.
 
@@ -770,7 +791,7 @@ Required M1 evidence is:
 - dedicated-thread stress and fault suites pass;
 - Linux TSAN target passes;
 - Runtime Samples compile and execute their existing smoke scope through packet publication;
-- Windows DX12, Linux Vulkan, and macOS Metal each complete a minimal native lifecycle smoke: create a non-fake native backend device/surface on Render Thread, publish and present one deterministic frame, process one resize, prove idle does not re-present, then destroy every RHI child and the device on Render Thread; an approved software adapter/ICD is sufficient for this M1 lifecycle proof but not for M2 production-support evidence;
+- Windows DX12 and Linux Vulkan each complete a minimal native lifecycle smoke by creating the non-fake backend device/surface on Render Thread. The macOS Metal smoke first creates and attaches `CAMetalLayer` on the application main thread, then creates Metal/RHI state and consumes that layer on Render Thread. Every smoke publishes and presents one deterministic frame, processes one resize, proves idle does not re-present/acquire, retires the surface generation, destroys every RHI child and device on Render Thread, and finally detaches the Apple layer on the main thread; an approved software adapter/ICD is sufficient for this M1 lifecycle proof but not for M2 production-support evidence;
 - Vulkan-on-Windows and the enabled DX11/OpenGL compatibility backends run the same lifecycle smoke when the CI runner exposes the required driver/context capability; capability absence is an explicit environment skip rather than fake success;
 - Editor adapter receives compile-only smoke coverage;
 - Windows local Fresh Build Truth passes from a clean build tree;
@@ -785,7 +806,7 @@ M1 is complete only when all conditions are true:
 
 1. Render has no source or link dependency on RenderExtraction, ResourceSceneAdapters, World, Scene, or Resource.
 2. Engine owns extraction invocation and publishes complete immutable packets.
-3. Runtime/Shipping always use DedicatedRenderExecutor; Inline cannot be selected in Shipping.
+3. Runtime/Shipping construct DedicatedRenderExecutor unconditionally; no shipping configuration, factory, fallback, or linked test support can select Inline execution, and every temporary migration bridge is absent.
 4. Render Thread is the sole owner of device, swapchain, RenderScene, RenderGraph execution, registry, uploads, submission, presentation, and RHI destruction.
 5. Frame packets and upload requests contain only owned values, stable identities, and generational handles permitted by this specification.
 6. Frame/upload/control publication is bounded, non-blocking, generation-aware, and observable.

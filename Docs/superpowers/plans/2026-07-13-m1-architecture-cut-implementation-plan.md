@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - The approved design in `Docs/superpowers/specs/2026-07-13-m1-architecture-cut-design.md` is authoritative. Contract changes require architecture review before implementation continues.
-- Runtime and Shipping always select `DedicatedRenderExecutor`. `InlineRenderExecutor` exists only in `RVX_RenderTestSupport` and cannot be selected by production configuration.
+- At M1 exit, Runtime and Shipping always select `DedicatedRenderExecutor`. During the named migration window, legacy callers may compile through `LegacySynchronousRenderBridge`; once a caller is connected to the new runtime it cannot fall back, and the bridge is absent from the M1 exit revision. `InlineRenderExecutor` exists only in `RVX_RenderTestSupport` and cannot be selected by production configuration.
 - M1 has one Render Thread, no RHI Thread, no parallel command recording, and at most one physical Graphics, Compute, and Copy timeline.
 - Render must finish with no source or link dependency on RenderExtraction, ResourceSceneAdapters, World, Scene, or Resource.
 - Frame packets and upload requests own values only. No World/Scene/Camera/Resource pointer, RHI object, callback, `Core::Ref<>`, span, raw byte pointer, or external view may cross the thread boundary.
@@ -21,7 +21,7 @@
 - Render drops every Render-owned upload-request reference before release-publishing a terminal state. ResourceSubsystem acquire-loads that state and performs the final update-thread release.
 - Normal completion, device loss, and watchdog timeout are distinct terminal outcomes. Render Thread is never detached.
 - Runtime is the correctness path. Editor receives only a compile-checked mechanical publication adapter; Editor rendering behavior is not an M1 exit dependency.
-- Tier 1 native lifecycle evidence is mandatory for Windows DX12, Linux Vulkan, and macOS Metal. Vulkan on Windows and Tier 2 DX11/OpenGL run when the runner exposes the capability.
+- Tier 1 native lifecycle evidence is mandatory for Windows DX12, Linux Vulkan, and macOS Metal. On Apple, HAL/Main Thread owns and attaches `CAMetalLayer`; Render Thread never dereferences `NSWindow`, `NSView`, or `UIView`. Vulkan on Windows and Tier 2 DX11/OpenGL run when the runner exposes the capability.
 - Preserve all naming, include-order, ownership, logging, initialization, and Doxygen rules in `AGENTS.md`.
 - Each task starts red, ends with focused verification, receives an independent review, and is committed separately. Do not combine cleanup from later tasks into an earlier commit.
 
@@ -37,16 +37,17 @@
 6. Add staged subsystem initialization and targeted deinitialization.
 7. Introduce the runtime shell, structured results, and immutable diagnostics.
 8. Publish physical queue topology and add per-domain submission tracking.
-9. Add completion-token retirement and remove global frame-count RHI deletion.
+9. Add completion-token retirement while retaining legacy lifetime paths only for intermediate build compatibility.
 10. Split registry/upload ownership behind a temporary GPUResourceManager facade.
 11. Move upload production, retries, and final request reclamation into ResourceSubsystem.
 12. Complete Engine-side extraction, frame settings, and capture values.
 13. Convert RenderScene/SceneRenderer and the runtime pump to packet-only rendering.
-14. Harden startup, runtime failure, device loss, and bounded shutdown.
-15. Compose extraction/resource/render lifecycle in Engine.
-16. Migrate Samples, tests, and the Editor compile-only adapter.
-17. Delete every legacy facade/API/link and enable static architecture proof.
-18. Enable TSAN, native lifecycle, Build Truth, and the M1 exit review.
+14. Audit every RHI strong-reference holder and cut over from global frame-count deletion.
+15. Harden startup, runtime failure, device loss, and bounded shutdown.
+16. Compose extraction/resource/render lifecycle in Engine.
+17. Migrate Samples, tests, and the Editor compile-only adapter.
+18. Delete every legacy facade/API/link and enable static architecture proof.
+19. Enable TSAN, native lifecycle, Build Truth, and the M1 exit review.
 
 ## File Responsibility Map
 
@@ -54,7 +55,8 @@
 
 - `RenderContracts/Include/RenderContracts/RenderIdentity.h` — `AssetId`, `RenderResourceHandle`, resource kinds, equality, and hashing.
 - `RenderContracts/Include/RenderContracts/ResourceUploadRequest.h` — immutable owning upload payloads and the only request factory.
-- `RenderContracts/Include/RenderContracts/RenderResourceGateway.h` — reservation/enqueue/release/query outcomes and the narrow gateway interface.
+- `RenderContracts/Private/ResourceUploadRequestInternal.h` — private checked byte-accounting seam used by the factory and focused tests; never installed.
+- `RenderContracts/Include/RenderContracts/IRenderResourceGateway.h` — reservation/enqueue/release/query outcomes and the narrow public gateway interface, frozen in Task 2.
 - `RenderContracts/Include/RenderContracts/RenderFramePacket.h` — immutable frame header, view, primitives, lights, sky/environment, settings, capture request, and feature snapshots.
 - `RenderContracts/Private/ResourceUploadRequest.cpp` and `RenderContracts/Private/RenderFramePacket.cpp` — checked construction behind the public immutable contracts.
 - `RenderExtraction/Include/RenderExtraction/RenderFramePacketBuilder.h` — mutable update-thread builder whose `Seal()` returns `std::unique_ptr<const RenderFramePacket>`.
@@ -63,6 +65,7 @@
 - `RHI/Include/RHI/RHINativeSurface.h` — tagged non-owning native surface value.
 - `RHI/Include/RHI/RHIQueueTopology.h` — logical-to-physical queue mapping and completion mode.
 - `RHI/Include/RHI/RHIDeviceStatus.h` — stable device-ready/lost/fault diagnostics.
+- `Render/Include/Render/RenderTransportTypes.h` — public bounded transport capacities and per-iteration budgets shared by Tasks 3 and 7.
 - `Render/Include/Render/RenderRuntimeTypes.h` — configuration, lifecycle, structured startup/runtime/shutdown results.
 - `Render/Include/Render/RenderDiagnostics.h` — immutable update-readable diagnostics and owned frame-capture result.
 
@@ -116,6 +119,7 @@
 - `Tests/RenderFrameExtractionValidation/main.cpp`
 - `Tests/RenderThreadRuntimeValidation/main.cpp`
 - `Tests/EngineRenderCompositionValidation/main.cpp`
+- `Tests/RenderLifetimeCutoverValidation/main.cpp`
 - `Tests/NativeRenderLifecycleValidation/main.cpp`
 - `Tests/RenderConcurrencyTSAN/main.cpp`
 
@@ -123,6 +127,7 @@
 
 - `Scripts/check_render_contract_fields.py` — declaration-aware field checker for packet/request types.
 - `Scripts/test_render_contract_field_checker.py` — positive/negative checker fixtures.
+- `Scripts/check_rhi_ownership_inventory.py` and `Scripts/test_rhi_ownership_inventory_checker.py` — fail-closed ownership inventory for every production RHI strong-reference holder.
 - `Scripts/check_m1_architecture.py` — M1 module, symbol-absence, executor, ownership, and native-smoke registration gate.
 - `Scripts/run_build_truth.ps1`, `Docs/build-truth.md`, `CMakePresets.json`, and `.github/workflows/ci.yml` — TSAN, native lifecycle, Editor compile-only, and final evidence integration.
 
@@ -134,8 +139,8 @@
 
 - Create: `RenderContracts/Include/RenderContracts/RenderIdentity.h`
 - Create: `RenderContracts/Include/RenderContracts/ResourceUploadRequest.h`
-- Create: `RenderContracts/Include/RenderContracts/RenderResourceGateway.h`
 - Create: `RenderContracts/Include/RenderContracts/RenderFramePacket.h`
+- Create: `RenderContracts/Private/ResourceUploadRequestInternal.h`
 - Create: `RenderContracts/Private/ResourceUploadRequest.cpp`
 - Create: `RenderContracts/Private/RenderFramePacket.cpp`
 - Create: `RenderExtraction/Include/RenderExtraction/RenderFramePacketBuilder.h`
@@ -171,10 +176,51 @@ struct RenderResourceHandle
     auto operator<=>(const RenderResourceHandle&) const = default;
 };
 
+struct AssetIdHash final
+{
+    [[nodiscard]] size_t operator()(AssetId id) const noexcept
+    {
+        return std::hash<uint64>{}(id.value);
+    }
+};
+
+struct RenderResourceHandleHash final
+{
+    [[nodiscard]] size_t operator()(RenderResourceHandle handle) const noexcept
+    {
+        const uint64 packed =
+            (static_cast<uint64>(handle.slot) << 32U) |
+            static_cast<uint64>(handle.generation);
+        return std::hash<uint64>{}(packed);
+    }
+};
+
+enum class RenderResourceKind : uint8
+{
+    Invalid = 0,
+    Mesh = 1,
+    Texture = 2,
+    Material = 3
+};
+
+enum class RenderUploadPriority : uint8
+{
+    Low = 0,
+    Normal = 1,
+    High = 2
+};
+
+enum class RenderDependencyReadiness : uint8
+{
+    RequireAll = 0,
+    AllowFallback = 1
+};
+
+class ResourceUploadRequest;
 using ResourceUploadRequestRef = std::shared_ptr<const ResourceUploadRequest>;
 ```
 
-`ResourceUploadRequest::Create(ResourceUploadRequestCreateInfo)` is the only constructor path. It overflow-checks payload ranges, derives retained bytes from owned vectors, rejects a mismatched declared diagnostic byte count, and returns a stable create result. `RenderFramePacket` has no public default constructor or mutator. `RenderFramePacketBuilder::Seal()` validates schema, strictly positive sequence, complete extraction markers, owned feature snapshots, and viewport values before returning exclusive immutable ownership.
+`RenderIdentity.h` includes `<compare>`, `<cstddef>`, and `<functional>` and defines the identities plus both hashers; `ResourceUploadRequestRef` is declared in `ResourceUploadRequest.h`, not the identity header. All public enums in this task use the explicit values shown by the declarations and receive ABI `static_assert`s. `AssetIdHash` and `RenderResourceHandleHash` are the only contract hashers; Task 2 uses `AssetIdHash` rather than inventing a specialization or ordered-container fallback. Do not include or reuse the pointer-bearing `RenderContracts/RenderResource.h`; new upload types use `MeshUpload*`, `TextureUpload*`, and `MaterialUpload*` names until the legacy header is removed. `ResourceUploadRequest::Create(ResourceUploadRequestCreateInfo)` is the only constructor path. It overflow-checks payload ranges and byte accounting, rejects mismatched diagnostic bytes, and returns immutable shared ownership. `RenderFramePacket` has no public default/copy/move constructor or mutator. `RenderFramePacketBuilder::Seal()` validates schema, strictly positive sequence, complete extraction markers, owned feature snapshots, numeric view validity, and required handles before returning exclusive immutable ownership.
 
 - [ ] **Step 1: Register failing contract and checker tests**
 
@@ -182,6 +228,13 @@ Add `RenderContractsValidation` to `Tests/CMakeLists.txt` with `RVX::Core`, `RVX
 
 ```cpp
 static_assert(!std::is_default_constructible_v<RenderFramePacket>);
+static_assert(!std::is_copy_constructible_v<RenderFramePacket>);
+static_assert(!std::is_move_constructible_v<RenderFramePacket>);
+static_assert(!std::is_copy_constructible_v<ResourceUploadRequest>);
+static_assert(!std::is_move_constructible_v<ResourceUploadRequest>);
+static_assert(!std::is_default_constructible_v<ResourceUploadRequest>);
+static_assert(!std::is_copy_constructible_v<RenderFramePacketBuilder>);
+static_assert(!std::is_move_constructible_v<RenderFramePacketBuilder>);
 static_assert(std::is_same_v<
     decltype(std::declval<RenderFramePacketBuilder>().Seal()),
     std::unique_ptr<const RenderFramePacket>>);
@@ -196,16 +249,63 @@ TEST(RenderContractsValidation, ZeroIdentityValuesAreInvalid)
 
 TEST(RenderContractsValidation, UploadRequestOwnsCopiedPayloadBytes)
 {
-    ResourceUploadRequestCreateInfo info = MakeTextureRequestInfo();
-    const uint8 expected = info.texturePayload.bytes.front();
-    const auto created = ResourceUploadRequest::Create(std::move(info));
+    ResourceUploadRequestCreateInfo info = MakeValidTextureRequestInfo();
+    const uint8 expected =
+        std::get<TextureUploadPayload>(info.payload).bytes.front();
+    const auto created = ResourceUploadRequest::Create(info);
+    std::get<TextureUploadPayload>(info.payload).bytes.clear();
     ASSERT_EQ(created.code, ResourceUploadRequestCreateCode::Created);
     ASSERT_TRUE(created.request);
-    EXPECT_EQ(created.request->GetTexturePayload().bytes.front(), expected);
+    const auto* payload =
+        std::get_if<TextureUploadPayload>(&created.request->GetPayload());
+    ASSERT_NE(payload, nullptr);
+    EXPECT_EQ(payload->bytes.front(), expected);
 }
 ```
 
-Register the Python checker regression as `Architecture.RenderContractFieldChecker` with the `architecture;unit` labels.
+The test file defines three request fixtures and one in-place builder populator, with no hidden production helper: `MakeValidMeshRequestInfo()` creates three non-indexed vertices in 36 owned bytes with a position range `{0, 36, 12}`; `MakeValidTextureRequestInfo()` creates one 1x1x1 RGBA8 mip/layer in four bytes with subresource `{bytes={0,4,0}, mip=0, layer=0, rowPitch=4, slicePitch=4}`; `MakeValidMaterialRequestInfo()` uses finite default `MaterialSourceData` with no bindings; and `void PopulateCompletePacketBuilder(RenderFramePacketBuilder& builder, uint32 omittedSingletonMask = 0)` sets every singleton whose bit is not omitted for sequence one, a 1x1 viewport, zero primitive/light/provider counts, `RenderFeatureSnapshot::BeginBuild(1)` followed by `MarkComplete()`, disabled sky/environment handles, default valid settings/capture, and complete zero-skip diagnostics. It never returns a nonmovable builder by value. Each request fixture uses asset one, handle `{1,1}`, sequence one, matching kind, no dependencies, and manually computes its expected `declaredPayloadBytes` from the fixture's known vector sizes without calling the production byte-account helper. Assert both hashers are deterministic and that `RenderResourceHandleHash` equals `std::hash<uint64>` of the documented packed value.
+
+Implement this exact request matrix; each row is an independently named test and changes only the listed field from its valid fixture:
+
+| Test suffix | Mutation | Expected |
+|---|---|---|
+| `CreatesMesh` / `CreatesTexture` / `CreatesMaterial` | none | `Created`, matching payload alternative and all schema/identity/byte getters |
+| `RejectsSchema` | version 2 | `InvalidSchema` |
+| `RejectsZeroSequence` | sequence 0 | `InvalidSequence` |
+| `RejectsZeroAsset` | `AssetId{}` | `InvalidAsset` |
+| `RejectsZeroHandlePart` | `{1,0}` | `InvalidHandle` |
+| `RejectsInvalidKind` | `Invalid` | `InvalidKind` |
+| `RejectsVariantKindMismatch` | texture kind with mesh payload | `PayloadKindMismatch` |
+| `RejectsMeshShape` | empty mesh bytes | `InvalidPayload` |
+| `RejectsTextureShape` | duplicate `(0,0)` subresource | `InvalidPayload` |
+| `RejectsMaterialShape` | duplicate binding slot | `InvalidPayload` |
+| `RejectsRangeOverflow` | texture range `{UINT64_MAX,2,0}` | `PayloadRangeOverflow` |
+| `RejectsDeclaredBytes` | increment valid declared total | `DiagnosticByteCountMismatch` |
+| `RejectsInvalidDependency` | add `{0,0}` and add one handle element to declared bytes | `InvalidDependency` |
+| `RejectsSelfDependency` | add request handle and add one handle element to declared bytes | `SelfDependency` |
+| `RejectsDuplicateDependency` | add the same valid non-self handle twice and add two handle elements to declared bytes | `DuplicateDependency` |
+| `OwnsCopiedSourceValues` | create each alternative, then clear/overwrite/destroy create-info | request getters retain original values |
+
+The matrix's “single mutation” rule permits only the dependency rows' paired declared-byte update, because dependencies are part of retained-byte accounting. Add parameterized payload-rule cases for every bullet in Step 3, including zero/nonzero index-range symmetry, submesh overflow, optional range canonical zero, texture pair completeness, cubemap/array invariants, invalid top-level readiness/priority enums, invalid material alpha/workflow enums, material finite/range rules, and fallback-free material creation. Call `Detail::AccumulateOwnedBytes` directly for normal multiply/add, multiply overflow, and add overflow; assert overflow returns `PayloadByteCountOverflow` and leaves `total` unchanged. The production factory must return that helper's non-`Created` code unchanged, so the private seam freezes the otherwise non-allocatable error mapping.
+
+Implement this exact builder matrix using `PopulateCompletePacketBuilder(builder, omittedSingletonMask)`:
+
+| Test | Mutation | Expected |
+|---|---|---|
+| `MissingEachSingletonIsRepairable` | omit each of header/view/sky/environment/settings/capture/features/diagnostics in a parameterized case, seal, then set it | first `MissingValue`/`Building`, then successful `Sealed` |
+| `RejectsSchemaThenRepairs` | header version 2, then replace header | `InvalidSchema`, then success |
+| `RejectsZeroSequence` | sequence 0 | `InvalidSequence` |
+| `RejectsZeroViewport` | width 0 | `InvalidViewport` |
+| `RejectsEachNonFiniteNumericFamily` | one NaN in view, primitive, light, sky/environment, and settings cases | `InvalidNumericValue` |
+| `RejectsIncompleteExtraction` | diagnostics incomplete or skipped count nonzero | `IncompleteExtraction` |
+| `RejectsIncompleteFeatureSnapshot` | bad schema, sequence, status, or complete bit in aggregate and each nested snapshot | `IncompleteFeatureSnapshot` |
+| `RejectsEachCountMismatch` | primitive, light, provider, aggregate item, nested item, and skipped-reason mismatches | `CountMismatch` |
+| `RejectsResourceReferenceRules` | invalid required mesh, shadow mismatch, or partial environment trio | `InvalidResourceReference` |
+| `RejectsCaptureRules` | invalid `None`, zero-ID capture, zero-extent capture, undeclared kind | `InvalidCaptureRequest` |
+| `SuccessfulSealIsImmutable` | valid fixture | non-null packet, exact getter values, `Sealed/Sealed` |
+| `PostSealOperationsAreRejected` | call every setter/adder and seal again | setters false/no mutation; seal null, `Sealed/AlreadySealed` |
+
+Register `RenderContractsValidation` exactly with `rvx_add_gtest(NAME RenderContractsValidation SOURCES RenderContractsValidation/main.cpp LIBS RVX::Core RVX::RenderContracts RVX::RenderExtraction INCLUDES ${CMAKE_SOURCE_DIR}/RenderContracts/Private LABELS "unit;architecture" TIMEOUT 60)`. Register the Python regression with `add_test(NAME Architecture.RenderContractFieldChecker COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Scripts/test_render_contract_field_checker.py -v)` and set `LABELS "unit;architecture"`, `TIMEOUT 30`, and `WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"`.
 
 - [ ] **Step 2: Run red verification**
 
@@ -219,63 +319,620 @@ Expected: build/test failure because the new headers, builder, and checker do no
 
 - [ ] **Step 3: Implement the value identities and upload payload variant**
 
-Define `RenderResourceKind::{Mesh, Texture, Material}`, `RenderUploadPriority`, `RenderDependencyReadiness`, owned `MeshUploadPayload`, `TextureUploadPayload`, and `MaterialUploadPayload`. Mesh byte ranges use offsets into one owned `std::vector<uint8>` and are validated with checked `offset + size`; texture and material dependency storage is owned. Material texture bindings contain `RenderResourceHandle`, never source pointers.
-
-Use this request shape:
+Define the request contract below in `ResourceUploadRequest.h`. These names are intentionally distinct from legacy `RenderMeshUploadData`, `RenderTextureUploadData`, and `RenderMaterialTextureBinding`.
 
 ```cpp
+inline constexpr uint32 RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_ID = 0x52565855U;
+inline constexpr uint32 RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_VERSION = 1;
+
+enum class MeshUploadIndexType : uint8
+{
+    UInt8 = 0,
+    UInt16 = 1,
+    UInt32 = 2
+};
+
+enum class MeshUploadPrimitiveTopology : uint8
+{
+    Triangles = 0,
+    TriangleStrip = 1,
+    TriangleFan = 2,
+    Lines = 3,
+    LineStrip = 4,
+    LineLoop = 5,
+    Points = 6
+};
+
+enum class TextureUploadFormat : uint8
+{
+    Unknown = 0,
+    RGBA8 = 1,
+    RGBA16F = 2,
+    RGBA32F = 3,
+    RGB8 = 4,
+    RG8 = 5,
+    R8 = 6,
+    BC1 = 7,
+    BC3 = 8,
+    BC5 = 9,
+    BC7 = 10
+};
+
+enum class MaterialUploadTextureSlot : uint8
+{
+    BaseColor = 0,
+    Normal = 1,
+    MetallicRoughness = 2,
+    Occlusion = 3,
+    Emissive = 4
+};
+
+enum class MaterialUploadWrapMode : uint8
+{
+    Repeat = 0,
+    MirrorRepeat = 1,
+    ClampToEdge = 2,
+    ClampToBorder = 3
+};
+
+enum class MaterialUploadFilterMode : uint8
+{
+    Nearest = 0,
+    Linear = 1,
+    NearestMipmapNearest = 2,
+    LinearMipmapNearest = 3,
+    NearestMipmapLinear = 4,
+    LinearMipmapLinear = 5
+};
+
+struct UploadByteRange
+{
+    uint64 offset = 0;
+    uint64 size = 0;
+    uint32 stride = 0;
+};
+
+struct MeshUploadCreateInfo
+{
+    uint64 vertexCount = 0;
+    uint64 indexCount = 0;
+    MeshUploadIndexType indexType = MeshUploadIndexType::UInt32;
+    MeshUploadPrimitiveTopology topology =
+        MeshUploadPrimitiveTopology::Triangles;
+    Vec3 boundsMin{0.0f};
+    Vec3 boundsMax{0.0f};
+};
+
+struct MeshUploadSubmesh
+{
+    uint32 indexOffset = 0;
+    uint32 indexCount = 0;
+    int32 baseVertex = 0;
+    MeshUploadPrimitiveTopology topology =
+        MeshUploadPrimitiveTopology::Triangles;
+};
+
+struct MeshUploadPayload
+{
+    MeshUploadCreateInfo createInfo;
+    std::vector<uint8> bytes;
+    UploadByteRange indexRange;
+    UploadByteRange positionRange;
+    UploadByteRange normalRange;
+    UploadByteRange uvRange;
+    UploadByteRange tangentRange;
+    UploadByteRange boneIndexRange;
+    UploadByteRange boneWeightRange;
+    std::vector<MeshUploadSubmesh> submeshes;
+};
+
+struct TextureUploadCreateInfo
+{
+    uint32 width = 0;
+    uint32 height = 0;
+    uint32 depth = 1;
+    uint32 mipLevels = 1;
+    uint32 arrayLayers = 1;
+    TextureUploadFormat format = TextureUploadFormat::Unknown;
+    bool isCubemap = false;
+    bool isArray = false;
+    bool isSRGB = true;
+};
+
+struct TextureUploadSubresource
+{
+    UploadByteRange bytes;
+    uint32 mipLevel = 0;
+    uint32 arrayLayer = 0;
+    uint64 rowPitch = 0;
+    uint64 slicePitch = 0;
+};
+
+struct TextureUploadPayload
+{
+    TextureUploadCreateInfo createInfo;
+    std::vector<uint8> bytes;
+    std::vector<TextureUploadSubresource> subresources;
+};
+
+struct MaterialUploadTextureBinding
+{
+    MaterialUploadTextureSlot slot = MaterialUploadTextureSlot::BaseColor;
+    RenderResourceHandle texture;
+    int32 uvSet = 0;
+    Vec2 offset{0.0f, 0.0f};
+    Vec2 scale{1.0f, 1.0f};
+    float32 rotation = 0.0f;
+    MaterialUploadWrapMode wrapS = MaterialUploadWrapMode::Repeat;
+    MaterialUploadWrapMode wrapT = MaterialUploadWrapMode::Repeat;
+    MaterialUploadFilterMode minFilter =
+        MaterialUploadFilterMode::LinearMipmapLinear;
+    MaterialUploadFilterMode magFilter = MaterialUploadFilterMode::Linear;
+};
+
+struct MaterialUploadPayload
+{
+    MaterialSourceData sourceData;
+    std::vector<MaterialUploadTextureBinding> textureBindings;
+};
+
+using ResourceUploadPayload = std::variant<
+    MeshUploadPayload,
+    TextureUploadPayload,
+    MaterialUploadPayload>;
+
+struct ResourceUploadDiagnosticProvenance
+{
+    uint64 sourceRevision = 0;
+    uint32 sourceKind = 0;
+    uint32 flags = 0;
+};
+
+struct ResourceUploadRequestCreateInfo
+{
+    uint32 schemaId = RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_ID;
+    uint32 schemaVersion = RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_VERSION;
+    uint64 sequence = 0;
+    AssetId assetId;
+    RenderResourceHandle handle;
+    RenderResourceKind kind = RenderResourceKind::Invalid;
+    ResourceUploadPayload payload;
+    std::vector<RenderResourceHandle> dependencies;
+    RenderDependencyReadiness dependencyReadiness =
+        RenderDependencyReadiness::RequireAll;
+    uint64 declaredPayloadBytes = 0;
+    RenderUploadPriority priority = RenderUploadPriority::Normal;
+    ResourceUploadDiagnosticProvenance provenance;
+};
+
+enum class ResourceUploadRequestCreateCode : uint8
+{
+    Created = 0,
+    InvalidSchema = 1,
+    InvalidSequence = 2,
+    InvalidAsset = 3,
+    InvalidHandle = 4,
+    InvalidKind = 5,
+    PayloadKindMismatch = 6,
+    InvalidPayload = 7,
+    PayloadRangeOverflow = 8,
+    PayloadByteCountOverflow = 9,
+    DiagnosticByteCountMismatch = 10,
+    InvalidDependency = 11,
+    DuplicateDependency = 12,
+    SelfDependency = 13
+};
+
+struct ResourceUploadRequestCreateResult
+{
+    ResourceUploadRequestCreateCode code =
+        ResourceUploadRequestCreateCode::InvalidPayload;
+    ResourceUploadRequestRef request;
+};
+
 class ResourceUploadRequest final
 {
 public:
     static ResourceUploadRequestCreateResult Create(ResourceUploadRequestCreateInfo info);
 
+    ~ResourceUploadRequest() = default;
+    ResourceUploadRequest(const ResourceUploadRequest&) = delete;
+    ResourceUploadRequest& operator=(const ResourceUploadRequest&) = delete;
+    ResourceUploadRequest(ResourceUploadRequest&&) = delete;
+    ResourceUploadRequest& operator=(ResourceUploadRequest&&) = delete;
+
+    [[nodiscard]] uint32 GetSchemaId() const noexcept;
+    [[nodiscard]] uint32 GetSchemaVersion() const noexcept;
     [[nodiscard]] uint64 GetSequence() const noexcept;
     [[nodiscard]] AssetId GetAssetId() const noexcept;
     [[nodiscard]] RenderResourceHandle GetHandle() const noexcept;
     [[nodiscard]] RenderResourceKind GetKind() const noexcept;
     [[nodiscard]] uint64 GetDerivedPayloadBytes() const noexcept;
+    [[nodiscard]] uint64 GetDeclaredPayloadBytes() const noexcept;
     [[nodiscard]] const ResourceUploadPayload& GetPayload() const noexcept;
     [[nodiscard]] const std::vector<RenderResourceHandle>& GetDependencies() const noexcept;
+    [[nodiscard]] RenderDependencyReadiness GetDependencyReadiness() const noexcept;
+    [[nodiscard]] RenderUploadPriority GetPriority() const noexcept;
+    [[nodiscard]] const ResourceUploadDiagnosticProvenance&
+        GetProvenance() const noexcept;
 
 private:
     explicit ResourceUploadRequest(ResourceUploadRequestCreateInfo&& info,
                                    uint64 derivedPayloadBytes);
+
+    uint32 m_schemaId = RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_ID;
+    uint32 m_schemaVersion = RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_VERSION;
+    uint64 m_sequence = 0;
+    AssetId m_assetId{};
+    RenderResourceHandle m_handle{};
+    RenderResourceKind m_kind = RenderResourceKind::Invalid;
+    ResourceUploadPayload m_payload{MeshUploadPayload{}};
+    std::vector<RenderResourceHandle> m_dependencies{};
+    RenderDependencyReadiness m_dependencyReadiness =
+        RenderDependencyReadiness::RequireAll;
+    uint64 m_derivedPayloadBytes = 0;
+    uint64 m_declaredPayloadBytes = 0;
+    RenderUploadPriority m_priority = RenderUploadPriority::Normal;
+    ResourceUploadDiagnosticProvenance m_provenance{};
 };
 ```
 
-Keep the destructor ordinary and constructor private. Do not add a raw-pointer factory or custom-deleter overload. Convert `RVX_RenderContracts` from INTERFACE to STATIC, compile the two private implementation files, keep its public include directory, and link Core publicly; do not add Resource, Scene, RHI, or Render dependencies.
+The factory validates in this exact first-failure order: schema, sequence, asset, handle, kind, payload/variant kind, payload shape/numerics/enums, payload ranges, derived-byte multiplication/addition, declared-byte equality, then dependencies in input order. Top-level readiness and priority must be declared enum values; invalid values are `InvalidPayload`. Within each dependency, invalid wins first, self-reference second, and duplicate third. The returned code is the code for the first failed stage; tests freeze this ordering. Every failed result has a null request; only `Created` has a non-null request. The private factory implementation may use `ResourceUploadRequestRef(new ResourceUploadRequest(...))` to create the standard shared control block; the raw pointer must not escape and no custom deleter is permitted.
+
+Payload validity is exact:
+
+- An empty byte range is exactly `{0, 0, 0}`. A nonempty range requires checked `offset + size` within the owning byte vector; arithmetic overflow is `PayloadRangeOverflow`, while a non-overflowing out-of-bounds end or insufficient size is `InvalidPayload`. Checked count/stride multiplication overflow is `PayloadRangeOverflow`.
+- Mesh requires nonempty bytes, `vertexCount > 0`, finite ordered bounds, and a nonempty position range with nonzero stride and checked `vertexCount * stride <= positionRange.size`. Optional vertex ranges are canonical-empty or nonempty/in-bounds with nonzero stride and enough bytes for every vertex; bone-index and bone-weight ranges are both empty or both nonempty. `indexCount == 0` requires an empty index range and no submeshes; otherwise the range is nonempty/in-bounds, its stride is exactly 1/2/4 for `UInt8`/`UInt16`/`UInt32`, checked `indexCount * stride <= size`, and every submesh has nonzero count with checked `indexOffset + indexCount <= createInfo.indexCount`. All enum values must be declared values.
+- Texture requires nonzero dimensions/mips/layers, known format, nonempty bytes and subresources. `isCubemap` requires depth one and at least six layers in a multiple of six; `isArray` requires more than one layer; a non-cubemap/non-array requires exactly one layer. Checked `mipLevels * arrayLayers` must equal the subresource count. Every `(mipLevel, arrayLayer)` pair appears exactly once, every byte range is nonempty/in-bounds with stride zero, `rowPitch > 0`, `slicePitch >= rowPitch`, and range size is at least `slicePitch`; duplicate/missing pairs and non-overflowing bounds violations are `InvalidPayload`.
+- Material requires every scalar/vector in `MaterialSourceData` and every binding transform to be finite; metallic, roughness, occlusion, alpha cutoff, and color factors are in `[0, 1]`; normal/emissive strengths are nonnegative; alpha mode and workflow are declared enum values; every texture binding has a valid handle, nonnegative UV set, nonzero scale components, a unique declared slot, declared wrap/filter modes, and a `magFilter` of only `Nearest` or `Linear`. An empty binding vector is legal.
+- Dependencies must be valid, different from the request handle, and unique. For each dependency scanned from index zero, `InvalidDependency` precedes `SelfDependency`, which precedes `DuplicateDependency`.
+
+Compute `derivedPayloadBytes` with checked `uint64` additions of `size() * sizeof(element)` for every owned vector: mesh bytes/submeshes, texture bytes/subresources, material bindings, and dependencies. Never use `capacity()`. `declaredPayloadBytes` must equal that total exactly.
+
+`ResourceUploadRequestInternal.h` declares only this private implementation helper so overflow is testable without impossible allocations:
+
+```cpp
+namespace RVX::Detail
+{
+    [[nodiscard]] ResourceUploadRequestCreateCode AccumulateOwnedBytes(
+        uint64 elementCount,
+        uint64 elementSize,
+        uint64& total) noexcept;
+} // namespace RVX::Detail
+```
+
+The helper returns `Created` after updating `total`, or `PayloadByteCountOverflow` without modifying `total`. The factory uses it for every vector multiplication/addition and immediately returns any non-`Created` code unchanged. `AccumulateOwnedBytes(UINT64_MAX, 2, total)` and `total = UINT64_MAX; AccumulateOwnedBytes(1, 1, total)` return `PayloadByteCountOverflow`; the normal case returns `Created` and updates the total. The helper is not installed or included by a public header. `RenderContractsValidation` receives `RenderContracts/Private` as a private test include directory.
+
+Keep the destructor ordinary and constructor private. The factory allocates the object directly into a standard `ResourceUploadRequestRef`; do not add a value-return, raw-pointer API/escape, copy/move, or custom-deleter path. Convert `RVX_RenderContracts` from INTERFACE to STATIC, compile the two private implementation files, keep its public include directory, and link Core publicly; do not add Resource, Scene, RHI, or Render dependencies.
 
 - [ ] **Step 4: Implement the immutable packet and builder**
 
-The packet privately owns:
+Define the value types with the exact fields below. Primitive/light types do not reuse pointer-bearing `RenderPrimitiveProxy` or `RenderLightProxy`.
 
 ```cpp
-RenderFrameHeader m_header;
-RenderViewSnapshot m_view;
-std::vector<RenderPrimitiveSnapshot> m_primitives;
-std::vector<RenderLightSnapshot> m_lights;
-RenderSkySnapshot m_sky;
-RenderEnvironmentSnapshot m_environment;
-RenderFrameSettings m_settings;
-RenderFrameCaptureRequest m_captureRequest;
-RenderFeatureSnapshot m_features;
-RenderExtractionDiagnostics m_extractionDiagnostics;
+inline constexpr uint32 RVX_RENDER_FRAME_PACKET_SCHEMA_ID = 0x52565846U;
+inline constexpr uint32 RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION = 1;
+
+enum class RenderLightType : uint8
+{
+    Directional = 0,
+    Point = 1,
+    Spot = 2
+};
+
+enum class RenderFrameCaptureKind : uint8
+{
+    None = 0,
+    Color = 1,
+    Depth = 2,
+    ObjectId = 3
+};
+
+enum class RenderExtractionCode : uint8
+{
+    Complete = 0,
+    MissingProvider = 1,
+    InvalidResourceReference = 2,
+    InvalidNumericValue = 3,
+    CountMismatch = 4
+};
+
+struct RenderFrameHeader
+{
+    uint32 schemaId = RVX_RENDER_FRAME_PACKET_SCHEMA_ID;
+    uint32 schemaVersion = RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION;
+    uint64 sequence = 0;
+    uint64 worldRevision = 0;
+    uint64 temporalEpoch = 0;
+    uint32 expectedPrimitiveCount = 0;
+    uint32 extractedPrimitiveCount = 0;
+    uint32 expectedLightCount = 0;
+    uint32 extractedLightCount = 0;
+    uint32 expectedFeatureProviderCount = 0;
+    uint32 extractedFeatureProviderCount = 0;
+    bool explicitDiscontinuity = false;
+};
+
+struct RenderViewSnapshot
+{
+    Mat4 viewMatrix{1.0f};
+    Mat4 projectionMatrix{1.0f};
+    Mat4 viewProjectionMatrix{1.0f};
+    Mat4 inverseViewProjectionMatrix{1.0f};
+    Vec3 cameraPosition{0.0f};
+    Vec3 cameraDirection{0.0f, 0.0f, -1.0f};
+    Vec3 cameraUp{0.0f, 1.0f, 0.0f};
+    uint32 viewportX = 0;
+    uint32 viewportY = 0;
+    uint32 viewportWidth = 0;
+    uint32 viewportHeight = 0;
+    float32 nearPlane = 0.1f;
+    float32 farPlane = 1000.0f;
+    float32 absoluteTime = 0.0f;
+    float32 deltaTime = 0.0f;
+    float32 exposure = 1.0f;
+};
+
+struct RenderPrimitiveSnapshot
+{
+    uint64 objectId = 0;
+    RenderResourceHandle mesh;
+    RenderResourceHandle material;
+    RenderResourceHandle fallbackMesh;
+    RenderResourceHandle fallbackMaterial;
+    Mat4 worldTransform{1.0f};
+    Mat4 previousWorldTransform{1.0f};
+    Vec3 boundsMin{0.0f};
+    Vec3 boundsMax{0.0f};
+    uint32 flags = 0;
+    uint32 layerMask = 0xFFFFFFFFU;
+    uint64 sortKey = 0;
+    std::vector<Mat4> skinMatrices;
+};
+
+struct RenderLightSnapshot
+{
+    uint64 lightId = 0;
+    RenderLightType type = RenderLightType::Directional;
+    Vec3 position{0.0f};
+    Vec3 direction{0.0f, -1.0f, 0.0f};
+    Vec3 color{1.0f};
+    float32 intensity = 1.0f;
+    float32 range = 0.0f;
+    float32 innerConeRadians = 0.0f;
+    float32 outerConeRadians = 0.0f;
+    RenderResourceHandle shadowResource;
+    bool castsShadows = false;
+};
+
+struct RenderSkySnapshot
+{
+    RenderResourceHandle skyTexture;
+    Vec3 tint{1.0f};
+    float32 intensity = 1.0f;
+    float32 rotationRadians = 0.0f;
+};
+
+struct RenderEnvironmentSnapshot
+{
+    RenderResourceHandle irradianceTexture;
+    RenderResourceHandle prefilteredTexture;
+    RenderResourceHandle brdfLutTexture;
+    float32 intensity = 1.0f;
+};
+
+struct RenderPostProcessSettings
+{
+    bool enabled = true;
+    bool enableTAA = true;
+    bool enableBloom = true;
+    bool enableSSAO = true;
+    bool enableSSR = true;
+    float32 bloomThreshold = 1.0f;
+    float32 bloomIntensity = 1.0f;
+};
+
+struct RenderShadowSettings
+{
+    bool enabled = true;
+    uint32 atlasResolution = 4096;
+    uint32 cascadeCount = 4;
+    float32 maxDistance = 200.0f;
+};
+
+struct RenderGPUCullingSettings
+{
+    bool enabled = true;
+    uint32 maxVisibleObjects = 1048576;
+};
+
+struct RenderRayTracingSettings
+{
+    bool enabled = false;
+    bool enableShadows = false;
+    bool enableReflections = false;
+    uint32 maxInstances = 262144;
+    uint32 maxRaysPerPixel = 1;
+};
+
+struct RenderTemporalSettings
+{
+    bool resetHistory = false;
+    uint32 jitterIndex = 0;
+};
+
+struct RenderFrameSettings
+{
+    float32 renderScale = 1.0f;
+    uint32 debugView = 0;
+    RenderPostProcessSettings postProcess;
+    RenderShadowSettings shadows;
+    RenderGPUCullingSettings gpuCulling;
+    RenderRayTracingSettings rayTracing;
+    RenderTemporalSettings temporal;
+};
+
+struct RenderFrameCaptureRequest
+{
+    uint64 requestId = 0;
+    RenderFrameCaptureKind kind = RenderFrameCaptureKind::None;
+    uint32 width = 0;
+    uint32 height = 0;
+    bool includeAlpha = false;
+};
+
+struct RenderExtractionDiagnostics
+{
+    RenderExtractionCode code = RenderExtractionCode::Complete;
+    uint32 skippedPrimitiveCount = 0;
+    uint32 skippedLightCount = 0;
+    uint32 skippedFeatureProviderCount = 0;
+    bool complete = false;
+};
 ```
 
-Primitive/material/sky/environment references use `RenderResourceHandle`. The builder exposes explicit setters/adders, tracks the completeness counters, and returns:
+`RenderFramePacket.h` forward-declares `class RenderFramePacketBuilder;`. `RenderFramePacket` owns these values, deletes default/copy/move construction, exposes only the const accessors below, and grants construction access only to `RenderFramePacketBuilder`:
 
 ```cpp
-std::unique_ptr<const RenderFramePacket> Seal();
-RenderFrameSealCode GetLastSealCode() const noexcept;
+class RenderFramePacket final
+{
+public:
+    ~RenderFramePacket() = default;
+    RenderFramePacket() = delete;
+    RenderFramePacket(const RenderFramePacket&) = delete;
+    RenderFramePacket& operator=(const RenderFramePacket&) = delete;
+    RenderFramePacket(RenderFramePacket&&) = delete;
+    RenderFramePacket& operator=(RenderFramePacket&&) = delete;
+
+    [[nodiscard]] const RenderFrameHeader& GetHeader() const noexcept;
+    [[nodiscard]] const RenderViewSnapshot& GetView() const noexcept;
+    [[nodiscard]] const std::vector<RenderPrimitiveSnapshot>&
+        GetPrimitives() const noexcept;
+    [[nodiscard]] const std::vector<RenderLightSnapshot>&
+        GetLights() const noexcept;
+    [[nodiscard]] const RenderSkySnapshot& GetSky() const noexcept;
+    [[nodiscard]] const RenderEnvironmentSnapshot&
+        GetEnvironment() const noexcept;
+    [[nodiscard]] const RenderFrameSettings& GetSettings() const noexcept;
+    [[nodiscard]] const RenderFrameCaptureRequest&
+        GetCaptureRequest() const noexcept;
+    [[nodiscard]] const RenderFeatureSnapshot& GetFeatures() const noexcept;
+    [[nodiscard]] const RenderExtractionDiagnostics&
+        GetExtractionDiagnostics() const noexcept;
+
+private:
+    friend class RenderFramePacketBuilder;
+    RenderFramePacket(RenderFrameHeader header,
+                      RenderViewSnapshot view,
+                      std::vector<RenderPrimitiveSnapshot> primitives,
+                      std::vector<RenderLightSnapshot> lights,
+                      RenderSkySnapshot sky,
+                      RenderEnvironmentSnapshot environment,
+                      RenderFrameSettings settings,
+                      RenderFrameCaptureRequest captureRequest,
+                      RenderFeatureSnapshot features,
+                      RenderExtractionDiagnostics extractionDiagnostics);
+
+    RenderFrameHeader m_header{};
+    RenderViewSnapshot m_view{};
+    std::vector<RenderPrimitiveSnapshot> m_primitives{};
+    std::vector<RenderLightSnapshot> m_lights{};
+    RenderSkySnapshot m_sky{};
+    RenderEnvironmentSnapshot m_environment{};
+    RenderFrameSettings m_settings{};
+    RenderFrameCaptureRequest m_captureRequest{};
+    RenderFeatureSnapshot m_features{};
+    RenderExtractionDiagnostics m_extractionDiagnostics{};
+};
+
+enum class RenderFramePacketBuilderState : uint8
+{
+    Building = 0,
+    Sealed = 1
+};
+
+enum class RenderFrameSealCode : uint8
+{
+    None = 0,
+    Sealed = 1,
+    AlreadySealed = 2,
+    InvalidSchema = 3,
+    InvalidSequence = 4,
+    MissingValue = 5,
+    InvalidViewport = 6,
+    InvalidNumericValue = 7,
+    IncompleteExtraction = 8,
+    IncompleteFeatureSnapshot = 9,
+    CountMismatch = 10,
+    InvalidResourceReference = 11,
+    InvalidCaptureRequest = 12
+};
+
+class RenderFramePacketBuilder final
+{
+public:
+    RenderFramePacketBuilder() = default;
+    RenderFramePacketBuilder(const RenderFramePacketBuilder&) = delete;
+    RenderFramePacketBuilder& operator=(const RenderFramePacketBuilder&) = delete;
+    RenderFramePacketBuilder(RenderFramePacketBuilder&&) = delete;
+    RenderFramePacketBuilder& operator=(RenderFramePacketBuilder&&) = delete;
+
+    bool SetHeader(RenderFrameHeader header);
+    bool SetView(RenderViewSnapshot view);
+    bool AddPrimitive(RenderPrimitiveSnapshot primitive);
+    bool AddLight(RenderLightSnapshot light);
+    bool SetSky(RenderSkySnapshot sky);
+    bool SetEnvironment(RenderEnvironmentSnapshot environment);
+    bool SetSettings(RenderFrameSettings settings);
+    bool SetCaptureRequest(RenderFrameCaptureRequest request);
+    bool SetFeatures(RenderFeatureSnapshot features);
+    bool SetExtractionDiagnostics(RenderExtractionDiagnostics diagnostics);
+
+    [[nodiscard]] std::unique_ptr<const RenderFramePacket> Seal();
+    [[nodiscard]] RenderFrameSealCode GetLastSealCode() const noexcept;
+    [[nodiscard]] RenderFramePacketBuilderState GetState() const noexcept;
+
+private:
+    RenderFramePacketBuilderState m_state =
+        RenderFramePacketBuilderState::Building;
+    RenderFrameSealCode m_lastSealCode = RenderFrameSealCode::None;
+    std::optional<RenderFrameHeader> m_header{};
+    std::optional<RenderViewSnapshot> m_view{};
+    std::vector<RenderPrimitiveSnapshot> m_primitives{};
+    std::vector<RenderLightSnapshot> m_lights{};
+    std::optional<RenderSkySnapshot> m_sky{};
+    std::optional<RenderEnvironmentSnapshot> m_environment{};
+    std::optional<RenderFrameSettings> m_settings{};
+    std::optional<RenderFrameCaptureRequest> m_captureRequest{};
+    std::optional<RenderFeatureSnapshot> m_features{};
+    std::optional<RenderExtractionDiagnostics> m_extractionDiagnostics{};
+};
 ```
 
-The builder becomes unusable after a successful `Seal()`. A failed seal returns null, exposes its stable reason through `GetLastSealCode()`, retains its data so the extractor can record a diagnostic, and may not publish the packet.
+The builder starts `Building/None`. A failed `Seal()` returns null, stores the exact failure code, retains every value, remains `Building`, and may be repaired and retried. Successful `Seal()` moves values into one packet and becomes `Sealed/Sealed`; every subsequent setter/adder returns false without mutation, and a second `Seal()` returns null with `AlreadySealed` while state stays `Sealed`. The eight `std::optional` singleton values are the presence bits; primitive/light vectors may legally remain empty when their exact header counts are zero. Because `std::make_unique` is not a friend, the successful builder path constructs `std::unique_ptr<const RenderFramePacket>(new RenderFramePacket(...))` inside the friend method; the raw pointer never escapes and no alternate constructor API is added.
+
+`Seal()` evaluates these stages in order and returns the named first failure:
+
+1. `AlreadySealed` when state is `Sealed`; otherwise `MissingValue` when any singleton optional is absent.
+2. `InvalidSchema` unless the packet schema ID/version are exact.
+3. `InvalidSequence` unless header sequence is nonzero.
+4. `InvalidViewport` unless width and height are nonzero.
+5. `InvalidNumericValue` unless every view matrix/vector/scalar, primitive transform/bounds, light numeric value, sky/environment numeric value, and settings scalar is finite; bounds are ordered; `nearPlane > 0`, `farPlane > nearPlane`, `deltaTime >= 0`, `exposure > 0`, and `renderScale > 0`; post-process intensities/thresholds are nonnegative; enabled shadows require nonzero atlas/cascade counts and positive finite max distance; enabled GPU culling requires a nonzero visibility limit; enabled ray tracing requires nonzero instance/ray limits, while disabled ray tracing requires both shadow/reflection sub-switches false.
+6. `IncompleteExtraction` unless diagnostics are `Complete`, `complete == true`, and all three skipped counts are zero.
+7. `IncompleteFeatureSnapshot` unless aggregate/particle/water/terrain schema versions are exact, sequences equal the header sequence, statuses are `Complete`, and every `complete` flag is true.
+8. `CountMismatch` unless header expected/extracted primitive counts equal `m_primitives.size()`, expected/extracted light counts equal `m_lights.size()`, expected/extracted feature-provider counts equal `features.metadata.providerCount`, both feature skipped-provider and particle skipped-instance counts are zero, particle skipped-reason storage is empty, aggregate item counts equal the three nested vector sizes, and each nested item count equals its vector size. Every `size_t -> uint32` comparison rejects values above `UINT32_MAX` rather than truncating.
+9. `InvalidResourceReference` unless every primitive has nonzero object ID and a valid mesh handle; material, fallback mesh, and fallback material are independent optional bindings whose invalid value means that binding is disabled; every light has nonzero ID, uses a declared light type, and has a valid shadow handle exactly when `castsShadows` is true; an invalid sky handle means sky is disabled; environment IBL handles are either all invalid (disabled) or all valid.
+10. `InvalidCaptureRequest` unless `None` has zero request ID/extent and false alpha, or a non-`None` declared kind has nonzero ID/extent.
+
+Cross-packet monotonic sequence checking belongs to Task 3's mailbox, not the builder. A repaired seal reruns the whole ordered table; no earlier failed stage is cached.
 
 - [ ] **Step 5: Implement a declaration-aware contract checker**
 
-`check_render_contract_fields.py` tokenizes class/struct bodies in `RenderFramePacket.h` and `ResourceUploadRequest.h`, removes comments, identifies field declarations, recursively follows locally declared aggregate field types, and rejects pointer/reference declarators, `std::function`, `std::span`, `std::string_view`, `Core::Ref`, and any `RHI` type. It explicitly ignores method parameter/return types so `unique_ptr<const RenderFramePacket>` and `shared_ptr<const ResourceUploadRequest>` API wrappers remain legal.
+`check_render_contract_fields.py` starts from the `RenderFramePacket` and `ResourceUploadRequest` instance-field graphs, tokenizes quoted includes recursively, and builds a cross-header index of aggregate/enum declarations plus `using`/`typedef` aliases. It traverses public, protected, and private instance fields while ignoring only methods, constructors/destructors, friends, and static data. The only owning templates are recursively traversed `std::vector`, `std::array`, `std::optional`, and `std::variant`; the only standard owning leaf is `std::string`. Primitive leaves are C++ fundamental types, RVX fixed-width numeric aliases, `size_t`/`std::size_t`, and resolved enums. The only external math leaves are resolved glm vec2/3/4, mat3/4, and quat aliases; project `AABB` must resolve and be traversed as an aggregate.
 
-The checker regression creates temporary headers proving one legal owned-vector aggregate passes and one raw pointer, callback, span, RHI alias, and nested forbidden aggregate each fail with exit code 1.
+Any reachable non-allowlisted type that cannot be resolved is a failure with `unresolved reachable type: <type> via <field path>`. Missing roots/includes, parser/CLI errors, and conflicting duplicate declarations also fail closed. Raw pointers/references/function pointers and `std::function`, `std::span`, `std::string_view`, `std::reference_wrapper`, all smart pointers, `Core::Ref`/`Ref<>`, and RHI/DX11/DX12/Vulkan/Metal/OpenGL types or aliases are forbidden at any reachable depth. The traversal must cover `RenderFramePacket -> RenderFeatureSnapshot -> Particle/Water/TerrainRenderSnapshot` and `ResourceUploadRequest -> ResourceUploadPayload -> MaterialSourceData`; accessor return/parameter wrappers are ignored because they are methods rather than instance fields.
+
+The checker regression creates isolated temporary include graphs for: a legal three-level vector/variant/optional/array/string contract; separate raw pointer, reference, function pointer, callback, span, string-view, `Ref`, shared-pointer, and RHI-alias failures; a forbidden second-level aggregate field; an alias-to-pointer in another header; an unresolved reachable type; and a root const-reference accessor that passes because methods are ignored. Finally it scans both real roots, requires exit zero, and asserts each reported reachable instance-field count is greater than zero. A same-file-only nested test or unknown-type-as-leaf behavior is insufficient.
 
 - [ ] **Step 6: Run green verification**
 
@@ -292,7 +949,7 @@ Expected: all selected tests pass; the checker reports both contract headers sca
 Review packet/request fields against design sections 5–7, run `git diff --check`, then:
 
 ```powershell
-git add RenderContracts RenderExtraction Scripts\check_render_contract_fields.py Scripts\test_render_contract_field_checker.py Tests\RenderContractsValidation Tests\CMakeLists.txt
+git add RenderContracts\Include\RenderContracts\RenderIdentity.h RenderContracts\Include\RenderContracts\ResourceUploadRequest.h RenderContracts\Include\RenderContracts\RenderFramePacket.h RenderContracts\Private\ResourceUploadRequestInternal.h RenderContracts\Private\ResourceUploadRequest.cpp RenderContracts\Private\RenderFramePacket.cpp RenderContracts\CMakeLists.txt RenderExtraction\Include\RenderExtraction\RenderFramePacketBuilder.h RenderExtraction\Private\RenderFramePacketBuilder.cpp RenderExtraction\CMakeLists.txt Scripts\check_render_contract_fields.py Scripts\test_render_contract_field_checker.py Tests\RenderContractsValidation\main.cpp Tests\CMakeLists.txt
 git commit -m "feat: freeze m1 render contracts"
 ```
 
@@ -302,6 +959,7 @@ git commit -m "feat: freeze m1 render contracts"
 
 **Files:**
 
+- Create: `RenderContracts/Include/RenderContracts/IRenderResourceGateway.h`
 - Create: `Render/Private/Runtime/RenderResourceStatusTable.h`
 - Create: `Render/Private/Runtime/RenderResourceStatusTable.cpp`
 - Create: `Render/Private/Runtime/RenderResourceReservationDirectory.h`
@@ -312,6 +970,110 @@ git commit -m "feat: freeze m1 render contracts"
 
 **Interfaces:**
 
+Freeze the public gateway/status ABI before implementing storage. Task 3 consumes this header unchanged:
+
+```cpp
+enum class RenderResourcePublicState : uint8
+{
+    Released = 0,
+    Reserved = 1,
+    UploadQueued = 2,
+    Uploading = 3,
+    GPUReady = 4,
+    Failed = 5,
+    Evicting = 6
+};
+
+enum class RenderResourceFailureCode : uint16
+{
+    None = 0,
+    InvalidPayload = 1,
+    DependencyUnavailable = 2,
+    ResourceCreationFailed = 3,
+    UploadSubmissionFailed = 4,
+    DeviceLost = 5,
+    Cancelled = 6,
+    RuntimeFailure = 7
+};
+
+enum class RenderResourceReserveCode : uint8
+{
+    Reserved = 0,
+    Existing = 1,
+    InvalidAsset = 2,
+    KindMismatch = 3,
+    CapacityExceeded = 4,
+    ShuttingDown = 5
+};
+
+enum class RenderUploadEnqueueCode : uint8
+{
+    Accepted = 0,
+    QueueFullByCount = 1,
+    QueueFullByBytes = 2,
+    InvalidRequest = 3,
+    StaleGeneration = 4,
+    Cancelled = 5,
+    ShuttingDown = 6
+};
+
+enum class RenderReleaseCode : uint8
+{
+    Accepted = 0,
+    StaleGeneration = 1,
+    AlreadyPending = 2,
+    ShuttingDown = 3
+};
+
+enum class RenderResourceStatusCode : uint8
+{
+    Current = 0,
+    InvalidHandle = 1,
+    StaleGeneration = 2
+};
+
+struct RenderResourceStatus
+{
+    RenderResourceStatusCode code = RenderResourceStatusCode::InvalidHandle;
+    RenderResourcePublicState state = RenderResourcePublicState::Released;
+    RenderResourceFailureCode failure = RenderResourceFailureCode::None;
+};
+
+struct RenderResourceReserveResult
+{
+    RenderResourceReserveCode code = RenderResourceReserveCode::InvalidAsset;
+    RenderResourceHandle handle;
+    RenderResourceStatus status;
+};
+
+struct RenderUploadEnqueueResult
+{
+    RenderUploadEnqueueCode code = RenderUploadEnqueueCode::InvalidRequest;
+};
+
+struct RenderReleaseResult
+{
+    RenderReleaseCode code = RenderReleaseCode::StaleGeneration;
+};
+
+class IRenderResourceGateway
+{
+public:
+    virtual ~IRenderResourceGateway() = default;
+    virtual RenderResourceReserveResult ReserveResource(
+        AssetId assetId,
+        RenderResourceKind kind) noexcept = 0;
+    virtual RenderUploadEnqueueResult TryEnqueueUpload(
+        const ResourceUploadRequestRef& request) noexcept = 0;
+    virtual RenderReleaseResult RequestRelease(
+        RenderResourceHandle handle) noexcept = 0;
+    [[nodiscard]] virtual RenderResourceStatus QueryResourceStatus(
+        RenderResourceHandle handle) const noexcept = 0;
+};
+```
+
+`Existing` is the only non-new success and returns the existing valid handle plus the status observed by the same acquire read. Every reserve failure returns an invalid handle. Invalid/stale queries never expose the newer generation's state. Tasks 2 and 3 may not add or rename public enum values/result fields; a discovered contract gap requires architecture review.
+
 The atomic word layout is fixed as `generation[63:32] | failure[31:16] | state[7:0]`; bits 15:8 remain zero and are rejected when decoding. The table allocates `capacity` atomics before thread start, requires capacity >= 1,024, reserves slot zero, and never resizes.
 
 ```cpp
@@ -320,6 +1082,12 @@ struct PackedRenderResourceStatus
     uint32 generation = 0;
     RenderResourcePublicState state = RenderResourcePublicState::Released;
     RenderResourceFailureCode failure = RenderResourceFailureCode::None;
+};
+
+enum class RenderStatusWriter : uint8
+{
+    Update = 0,
+    Render = 1
 };
 
 class RenderResourceStatusTable final
@@ -336,7 +1104,7 @@ public:
 
 - [ ] **Step 1: Write failing state/generation tests**
 
-Cover minimum capacity rejection, slot zero, first generation one, exact acquire query, stale generation, update-writer transition whitelist, render-writer transition whitelist, release/reuse, and generation wrap retirement. Add a two-thread latch test proving a released terminal payload value is visible after an acquire query observes the terminal state.
+Add ABI `static_assert`s for every public state/failure/outcome enum value and for both internal `RenderStatusWriter` values, plus default-result tests proving failures carry invalid handles. Cover minimum capacity rejection, slot zero, first generation one, exact acquire query, stale generation without newer-state disclosure, `Existing` handle/status consistency, update-writer transition whitelist, render-writer transition whitelist, rejection of an undeclared writer value, release/reuse, and generation wrap retirement. Add a two-thread latch test proving a released terminal payload value is visible after an acquire query observes the terminal state.
 
 - [ ] **Step 2: Run red verification**
 
@@ -354,7 +1122,7 @@ In `Render/CMakeLists.txt`, create internal static target `RVX_RenderRuntimeCore
 
 - [ ] **Step 4: Implement reservation ownership and wrap retirement**
 
-The directory owns `AssetId -> {kind, handle}`, the free-slot list, and retired-slot bits on the update thread. First use assigns generation one. Reuse increments before publication. `UINT32_MAX` is never incremented to zero; that slot is retired and capacity decreases observably. Removing an asset mapping on accepted release permits a replacement asset generation to reserve a different free slot while the old generation remains independently evicting.
+The directory owns `std::unordered_map<AssetId, ReservationEntry, AssetIdHash>` where `ReservationEntry` is exactly `{RenderResourceKind kind; RenderResourceHandle handle;}`, plus the free-slot list and retired-slot bits on the update thread. First use assigns generation one. Reuse increments before publication. `UINT32_MAX` is never incremented to zero; that slot is retired and capacity decreases observably. Removing an asset mapping on accepted release permits a replacement asset generation to reserve a different free slot while the old generation remains independently evicting.
 
 - [ ] **Step 5: Run green verification**
 
@@ -369,7 +1137,7 @@ Expected: status, stale-generation, writer-whitelist, replacement, and wrap-reti
 
 ```powershell
 git diff --check
-git add Render\Private\Runtime Render\CMakeLists.txt Tests\RenderConcurrencyValidation Tests\CMakeLists.txt
+git add RenderContracts\Include\RenderContracts\IRenderResourceGateway.h Render\Private\Runtime Render\CMakeLists.txt Tests\RenderConcurrencyValidation Tests\CMakeLists.txt
 git commit -m "feat: add generational render status table"
 ```
 
@@ -379,6 +1147,7 @@ git commit -m "feat: add generational render status table"
 
 **Files:**
 
+- Create: `Render/Include/Render/RenderTransportTypes.h`
 - Create: `Render/Private/Runtime/RenderFrameMailbox.h`
 - Create: `Render/Private/Runtime/RenderFrameMailbox.cpp`
 - Create: `Render/Private/Runtime/RenderUploadQueue.h`
@@ -415,7 +1184,9 @@ struct RenderIterationBudgets
 };
 ```
 
-`RenderResourceGateway` owns the update-side reservation directory and composes the fixed table plus upload/release transports. It is the implementation delegated to by RenderSubsystem’s `IRenderResourceGateway` overrides.
+Both structs are defined once in public `Render/RenderTransportTypes.h`, which includes only Core/standard value dependencies and has no private runtime declarations. Task 3 private queues include this header; Task 7's public `RenderRuntimeTypes.h` includes it. Neither task redeclares the structs, and no public header includes `Render/Private`.
+
+`RenderResourceGateway final : public IRenderResourceGateway` owns the update-side reservation directory and composes the fixed table plus upload/release transports. It implements the Task 2 signatures with `noexcept` unchanged and is the object delegated to by RenderSubsystem. Task 3 may map internal pressure/state outcomes to the frozen public codes but may not alter `ResourceUploadRequest`, packet/builder, or any public gateway enum/result.
 
 - [ ] **Step 1: Extend failing concurrency tests**
 
@@ -458,7 +1229,7 @@ Expected: all queue capacities, pressure outcomes, coalescing, stale generation,
 
 ```powershell
 git diff --check
-git add Render\Private\Runtime Render\CMakeLists.txt Tests\RenderConcurrencyValidation
+git add Render\Include\Render\RenderTransportTypes.h Render\Private\Runtime Render\CMakeLists.txt Tests\RenderConcurrencyValidation
 git commit -m "feat: add bounded render transports"
 ```
 
@@ -492,6 +1263,32 @@ enum class RenderPumpDecision : uint8
     Stop
 };
 
+enum class RenderExecutorStartCode : uint8
+{
+    Started = 0,
+    AlreadyStarted = 1,
+    ThreadCreationFailed = 2
+};
+
+struct RenderExecutorStartResult
+{
+    RenderExecutorStartCode code =
+        RenderExecutorStartCode::ThreadCreationFailed;
+    uint32 nativeError = 0;
+};
+
+enum class RenderExecutorJoinCode : uint8
+{
+    Joined = 0,
+    NotStarted = 1,
+    TimedOut = 2
+};
+
+struct RenderExecutorJoinResult
+{
+    RenderExecutorJoinCode code = RenderExecutorJoinCode::NotStarted;
+};
+
 class IRenderExecutorPump
 {
 public:
@@ -515,9 +1312,11 @@ public:
 
 Production CMake exposes only a `CreateDedicatedRenderExecutor()` factory. `InlineRenderExecutor` is defined and linked only by `RVX_RenderTestSupport`.
 
+These executor-local result types are defined in `IRenderExecutor.h` in Task 4 and are independently buildable; Task 7's public runtime/startup/shutdown results wrap them but do not redefine or replace them. `Start()` returns `AlreadyStarted` without mutation, maps `std::system_error` during thread creation to `ThreadCreationFailed` plus the native error when available, and returns `Started` only after the worker has entered its platform bootstrap. `JoinUntil()` returns `NotStarted` before a successful start, `TimedOut` without detaching or joining when the deadline expires, and `Joined` only after exit was signaled and `join()` completed.
+
 - [ ] **Step 1: Write failing shared and dedicated executor tests**
 
-Parameterize a pump-conformance fixture over Inline and Dedicated executors. Prove the same `PumpOnce()` sequence, thread guard ownership, wake from idle, stop while idle, exception containment, and no repeated work while idle. Dedicated-only tests prove construction and destruction thread IDs differ from update, the name is `RVX Render`, and join returns only after the pump stops.
+Parameterize a pump-conformance fixture over Inline and Dedicated executors. Prove the same `PumpOnce()` sequence, thread guard ownership, wake from idle, stop while idle, exception containment, and no repeated work while idle. Add ABI/default-result tests for every executor enum/result and explicit already-started/not-started/timed-out cases. Dedicated-only tests prove construction and destruction thread IDs differ from update, the name is `RVX Render`, and join returns only after the pump stops.
 
 - [ ] **Step 2: Run red verification**
 
@@ -567,9 +1366,15 @@ git commit -m "feat: add dedicated render executor"
 - Modify: `RHI/Include/RHI/RHISwapChain.h`
 - Modify: `Render/Include/Render/Context/RenderContext.h`
 - Modify: `Render/Private/Context/RenderContext.cpp`
+- Modify: `Render/Include/Render/RenderSubsystem.h`
+- Modify: `Render/Private/RenderSubsystem.cpp`
+- Create: `HAL/Include/HAL/Window/WindowRenderSurfaceHandles.h`
 - Modify: `HAL/Include/HAL/Window/IWindow.h`
 - Modify: `HAL/Private/GLFW/GLFWWindow.h`
 - Modify: `HAL/Private/GLFW/GLFWWindow.cpp`
+- Create: `HAL/Private/Apple/GLFWMetalLayerBridge.h`
+- Create: `HAL/Private/Apple/GLFWMetalLayerBridge.mm`
+- Modify: `HAL/CMakeLists.txt`
 - Modify: `Runtime/Include/Runtime/Window/WindowSubsystem.h`
 - Modify: `Runtime/Private/Window/WindowSubsystem.cpp`
 - Modify: `RHI_DX12/Private/DX12SwapChain.cpp`
@@ -578,11 +1383,19 @@ git commit -m "feat: add dedicated render executor"
 - Modify: `RHI_Vulkan/Private/VulkanSwapChain.h`
 - Modify: `RHI_Vulkan/Private/VulkanSwapChain.cpp`
 - Modify: `RHI_Vulkan/CMakeLists.txt`
+- Modify: `RHI_Metal/Private/MetalSwapChain.h`
 - Modify: `RHI_Metal/Private/MetalSwapChain.mm`
+- Modify: `RHI_Metal/Private/MetalCommandContext.h`
+- Modify: `RHI_Metal/Private/MetalCommandContext.mm`
 - Modify: `RHI_OpenGL/Private/OpenGLDevice.cpp`
 - Modify: `RHI_OpenGL/Private/OpenGLSwapChain.cpp`
+- Modify: `Samples/Basic/BasicRHI/main.cpp`
+- Modify: `Samples/Basic/ComputeDemo/main.cpp`
+- Modify: `Editor/Include/Editor/EditorMainSwapChainService.h`
+- Modify: `Editor/Private/EditorMainSwapChainService.cpp`
+- Modify: `Editor/Private/EditorRenderBootstrapService.cpp`
+- Modify: `Tests/EditorContextValidation/main.cpp`
 - Modify: `Tests/RHIContractValidation/main.cpp`
-- Modify: backend fake devices that construct `RHISwapChainDesc`
 
 **Interface:**
 
@@ -603,22 +1416,53 @@ struct NativeSurfaceDesc
     NativeSurfacePlatform platform = NativeSurfacePlatform::None;
     uintptr_t nativeWindow = 0;
     uintptr_t nativeDisplay = 0;
+    uintptr_t nativeLayer = 0;
     uintptr_t backendWindow = 0;
     uint32 width = 0;
     uint32 height = 0;
+    float32 contentScale = 1.0f;
     RHIFormat preferredFormat = RHIFormat::BGRA8_UNORM;
     bool vsync = true;
     uint64 generation = 0;
 
     [[nodiscard]] bool IsValidFor(RHIBackendType backend) const noexcept;
 };
+
+struct RHISwapChainDesc
+{
+    NativeSurfaceDesc surface;
+    uint32 bufferCount = 3;
+    const char* debugName = nullptr;
+};
 ```
 
-`nativeWindow` is HWND/NSWindow/UIView where required; `backendWindow` is the GLFW window used by Vulkan/OpenGL. The descriptor never owns either object.
+HAL does not depend on RHI. `IWindow` instead publishes the platform handles through:
+
+```cpp
+struct WindowRenderSurfaceHandles
+{
+    uintptr_t nativeWindow = 0;
+    uintptr_t nativeDisplay = 0;
+    uintptr_t nativeLayer = 0;
+    uintptr_t backendWindow = 0;
+    uint32 width = 0;
+    uint32 height = 0;
+    float32 contentScale = 1.0f;
+};
+
+virtual WindowRenderSurfaceHandles CaptureRenderSurfaceHandles() = 0;
+virtual void ReleaseGraphicsContextFromCurrentThread() = 0;
+```
+
+WindowSubsystem captures this value on Main/Update Thread and maps it into `NativeSurfaceDesc`; no HAL header includes RHI.
+
+`nativeWindow` is the platform window handle required by DX/Vulkan, `nativeLayer` is an already attached `CAMetalLayer*` required by Metal, and `backendWindow` is the GLFW window used by Vulkan/OpenGL. The descriptor never owns any object. On Apple, `nativeWindow` is diagnostic only for Metal and Metal RHI code may not dereference it. Extent, format, and vsync have one source of truth in `NativeSurfaceDesc`; `RHISwapChainDesc` must not retain duplicate width/height/format/vsync fields whose values could diverge.
+
+`RenderContext` changes atomically to `bool Initialize(const RenderContextConfig&, const NativeSurfaceDesc& initialSurface = {})` and `bool CreateSwapChain(const NativeSurfaceDesc&)`; the old raw-pointer overload is removed in this task. RenderSubsystem, Editor's compile-only bootstrap/service, and both Basic diagnostic samples are migrated in the same commit, so no intermediate caller still writes the removed `RHISwapChainDesc` fields. Editor's result stores the captured `NativeSurfaceDesc` rather than `void* windowHandle`. Tests that only implement `IRHIDevice::CreateSwapChain(const RHISwapChainDesc&)` need no source change because the virtual signature itself is unchanged.
 
 - [ ] **Step 1: Add failing RHI surface contract tests**
 
-Test backend-specific validation, zero extent/generation, stale generation ordering, absence of `void* windowHandle` in `RHISwapChainDesc`, and that OpenGL initialization receives the backend window before GLAD loading.
+Test backend-specific validation, zero extent/generation, non-finite/non-positive `contentScale`, stale generation ordering, absence of the old window/width/height/format/vsync fields in `RHISwapChainDesc`, and that OpenGL initialization receives the backend window before GLAD loading. Add compile/source checks proving BasicRHI, ComputeDemo, RenderSubsystem, and Editor no longer assign those removed fields or call the removed raw `RenderContext::CreateSwapChain` overload. Add a source-boundary test that fails while `MetalSwapChain.mm` references `NSWindow`, `NSView`, `UIView`, `contentView`, `setWantsLayer:`, `setLayer:`, or `[m_currentDrawable present]`; prove the acquired drawable is forwarded to `MetalCommandContext` and scheduled through `presentDrawable:` before commit.
 
 - [ ] **Step 2: Run red verification**
 
@@ -630,7 +1474,7 @@ Expected: failure until the descriptor and backend migrations exist.
 
 - [ ] **Step 3: Add the descriptor to RHI device/swapchain creation**
 
-Add `NativeSurfaceDesc initialSurface` to `RHIDeviceDesc`; replace `RHISwapChainDesc::windowHandle/width/height` with `NativeSurfaceDesc surface`. `RenderContext::Initialize` passes the initial surface to device creation, and `CreateSwapChain` accepts one `NativeSurfaceDesc`.
+Add `NativeSurfaceDesc initialSurface` to `RHIDeviceDesc`; replace `RHISwapChainDesc::windowHandle/width/height/format/vsync` with the single `NativeSurfaceDesc surface`. `RenderContext::Initialize(config, initialSurface)` passes that value to device creation, and `CreateSwapChain` accepts one `NativeSurfaceDesc`. RenderSubsystem captures/maps the WindowSubsystem surface before context initialization. Editor captures its compile-only surface before bootstrap initialization. BasicRHI/ComputeDemo construct a tagged descriptor before direct device creation and reuse the same value for swapchain creation; their macOS diagnostic path may report unsupported when no HAL-owned layer is available, but it must compile and may not synthesize a Render-thread view/layer mutation.
 
 - [ ] **Step 4: Transfer OpenGL context ownership**
 
@@ -640,15 +1484,18 @@ Add `IWindow::ReleaseGraphicsContextFromCurrentThread()` and forward it through 
 
 Link `RVX_RHI_Vulkan` privately to GLFW. Build the Vulkan instance-extension list from `glfwGetRequiredInstanceExtensions` when `initialSurface.backendWindow` is present. Replace Win32-only surface construction with `glfwCreateWindowSurface`; reject missing/failed surfaces before present-support queries. Keep backend-native diagnostic codes in the error result.
 
-- [ ] **Step 6: Migrate DX and Metal consumers**
+- [ ] **Step 6: Attach the Apple presentation layer on Main Thread and migrate DX/Metal consumers**
 
-DX11/DX12 validate `Win32` and cast `surface.nativeWindow` through `uintptr_t` to HWND. Metal validates Cocoa/UIKit and bridges `surface.nativeWindow` to NSWindow/UIView. GLFW exposes `glfwGetCocoaWindow` on macOS and `glfwGetWin32Window` on Windows; Linux supplies the GLFW backend handle for Vulkan/OpenGL.
+DX11/DX12 validate `Win32` and cast `surface.nativeWindow` through `uintptr_t` to HWND. `GLFWMetalLayerBridge.mm` asserts the caller is Main Thread, obtains the Cocoa window/view through GLFW, creates or reuses one attached `CAMetalLayer`, and returns its non-owning handle without creating an `MTLDevice`. `GLFWWindow::CaptureRenderSurfaceHandles()` invokes that bridge only on Apple and returns the layer plus content scale; HAL keeps the window/view/layer alive until Render shutdown acknowledgement and detaches it on Main Thread afterward. Metal validates Cocoa/UIKit plus nonzero `nativeLayer`, bridges only that field to `CAMetalLayer*`, and never imports or messages `NSWindow`, `NSView`, or `UIView`. Render Thread sets the Metal-facing layer properties (`device`, pixel format, framebuffer-only, drawable size/count, presentation policy); resize updates layer/swapchain properties without acquiring a drawable. Only an actionable frame may call `nextDrawable`; that drawable is forwarded to `MetalCommandContext` and scheduled through `presentDrawable:` before command-buffer commit. Drawable unavailability is a structured non-terminal skip; idle and resize-only work do not acquire/present, and `MetalSwapChain::Present()` never invokes direct drawable presentation. GLFW exposes `glfwGetWin32Window` on Windows; Linux supplies the GLFW backend handle for Vulkan/OpenGL.
 
 - [ ] **Step 7: Run focused backend contract verification**
 
 ```powershell
-cmake --build build\win_x64_debug --config Debug --target RHIContractValidation DX12Validation VulkanValidation DX11Validation
+cmake --build build\win_x64_debug --config Debug --target RHIContractValidation DX12Validation VulkanValidation DX11Validation BasicRHI ComputeDemo
 ctest --test-dir build\win_x64_debug -C Debug -R "RHIContractValidation|DX12Validation.DeviceCreation|VulkanValidation.DeviceCreation|DX11Validation.DeviceCreation" --output-on-failure
+cmake --preset win_x64_debug -B build\win_x64_editor_compile -DRVX_BUILD_EDITOR=ON
+cmake --build build\win_x64_editor_compile --config Debug --target RVXEditor EditorContextValidation
+ctest --test-dir build\win_x64_editor_compile -C Debug -R EditorContextValidation --output-on-failure
 ```
 
 Expected: contract tests and available backend device tests pass. This task does not yet claim native lifecycle smoke completion.
@@ -657,7 +1504,7 @@ Expected: contract tests and available backend device tests pass. This task does
 
 ```powershell
 git diff --check
-git add RHI RHI_DX11 RHI_DX12 RHI_Vulkan RHI_Metal RHI_OpenGL HAL Runtime Render\Include\Render\Context Render\Private\Context Tests
+git add RHI RHI_DX11 RHI_DX12 RHI_Vulkan RHI_Metal RHI_OpenGL HAL Runtime Render\Include\Render\Context Render\Private\Context Render\Include\Render\RenderSubsystem.h Render\Private\RenderSubsystem.cpp Samples\Basic\BasicRHI\main.cpp Samples\Basic\ComputeDemo\main.cpp Editor\Include\Editor\EditorMainSwapChainService.h Editor\Private\EditorMainSwapChainService.cpp Editor\Private\EditorRenderBootstrapService.cpp Tests\RHIContractValidation\main.cpp Tests\EditorContextValidation\main.cpp Tests\CMakeLists.txt
 git commit -m "feat: add tagged native surface contract"
 ```
 
@@ -743,14 +1590,157 @@ git commit -m "feat: stage subsystem startup and shutdown"
 **Interfaces:**
 
 ```cpp
+enum class RenderExecutorKind : uint8
+{
+    None = 0,
+    Dedicated = 1,
+    InlineTest = 2
+};
+
+enum class RenderLifecycleState : uint8
+{
+    Stopped = 0,
+    Starting = 1,
+    Running = 2,
+    StopRequested = 3,
+    Draining = 4,
+    Failed = 5
+};
+
+enum class RenderResultClass : uint8
+{
+    Success = 0,
+    ExpectedPressure = 1,
+    RecoverableFrame = 2,
+    FrameFatal = 3,
+    RuntimeFatal = 4
+};
+
+enum class RenderFramePublishCode : uint8
+{
+    Accepted = 0,
+    ReplacedOlder = 1,
+    InvalidPacket = 2,
+    OutOfOrder = 3,
+    ShuttingDown = 4,
+    NotRunning = 5
+};
+
+struct RenderFramePublishResult
+{
+    RenderFramePublishCode code = RenderFramePublishCode::InvalidPacket;
+    RenderResultClass resultClass = RenderResultClass::RecoverableFrame;
+    uint64 sequence = 0;
+    uint64 replacedSequence = 0;
+};
+
+enum class RenderResizeCode : uint8
+{
+    Accepted = 0,
+    CoalescedOlder = 1,
+    StaleGeneration = 2,
+    InvalidSurface = 3,
+    ShuttingDown = 4,
+    NotRunning = 5
+};
+
+struct RenderResizeResult
+{
+    RenderResizeCode code = RenderResizeCode::InvalidSurface;
+    RenderResultClass resultClass = RenderResultClass::RecoverableFrame;
+    uint64 generation = 0;
+    uint64 replacedGeneration = 0;
+};
+
+enum class RenderRuntimeCode : uint8
+{
+    None = 0,
+    Running = 1,
+    StopRequested = 2,
+    Stopped = 3,
+    InvalidConfiguration = 4,
+    InvalidSurface = 5,
+    ExecutorStartFailed = 6,
+    DeviceCreationFailed = 7,
+    SurfaceCreationFailed = 8,
+    RenderGraphValidationFailed = 9,
+    DeviceLost = 10,
+    UnhandledException = 11,
+    OwnershipViolation = 12,
+    StartupTimedOut = 13,
+    ShutdownTimedOut = 14
+};
+
+enum class RenderTerminalCause : uint8
+{
+    None = 0,
+    NormalStop = 1,
+    StartupFailure = 2,
+    DeviceLost = 3,
+    UnhandledException = 4,
+    OwnershipViolation = 5,
+    WatchdogTimeout = 6,
+    ExecutorFailure = 7
+};
+
+enum class RenderTeardownMode : uint8
+{
+    None = 0,
+    NormalDrain = 1,
+    DeviceLostTeardown = 2,
+    FatalTimeout = 3
+};
+
+struct RenderRuntimeResult
+{
+    RenderRuntimeCode code = RenderRuntimeCode::None;
+    RenderResultClass resultClass = RenderResultClass::Success;
+    RenderLifecycleState lifecycle = RenderLifecycleState::Stopped;
+    RenderExecutorKind executor = RenderExecutorKind::None;
+    RenderTerminalCause terminalCause = RenderTerminalCause::None;
+    RenderTeardownMode teardownMode = RenderTeardownMode::None;
+    RHIBackendType backend = RHIBackendType::None;
+    uint64 frameSequence = 0;
+    uint64 requestSequence = 0;
+    AssetId assetId{};
+    RenderResourceHandle handle{};
+    uint64 surfaceGeneration = 0;
+    uint32 nativeError = 0;
+    std::string message{};
+};
+
+enum class RenderShutdownCode : uint8
+{
+    None = 0,
+    Completed = 1,
+    AlreadyStopped = 2,
+    DeviceLost = 3,
+    TimedOut = 4,
+    ExecutorJoinFailed = 5
+};
+
+struct RenderShutdownResult
+{
+    RenderShutdownCode code = RenderShutdownCode::None;
+    RenderResultClass resultClass = RenderResultClass::Success;
+    RenderLifecycleState lifecycle = RenderLifecycleState::Stopped;
+    RenderTerminalCause terminalCause = RenderTerminalCause::None;
+    RenderTeardownMode teardownMode = RenderTeardownMode::None;
+    RHIBackendType backend = RHIBackendType::None;
+    uint64 lastSubmittedFrameSequence = 0;
+    uint64 surfaceGeneration = 0;
+    uint32 nativeError = 0;
+    std::string message{};
+};
+
 struct RenderRuntimeConfig
 {
     RHIBackendType backendType = RHIBackendType::Auto;
     bool enableValidation = true;
     bool enableGPUValidation = false;
     uint32 frameBuffering = 2;
-    RenderTransportConfig transports;
-    RenderIterationBudgets iterationBudgets;
+    RenderTransportConfig transports{};
+    RenderIterationBudgets iterationBudgets{};
     std::chrono::milliseconds startupWatchdog{60000};
     std::chrono::milliseconds shutdownWatchdog{30000};
 };
@@ -765,11 +1755,19 @@ RenderRuntimeResult GetLastRuntimeResult() const;
 RenderShutdownResult GetLastShutdownResult() const;
 ```
 
-RenderSubsystem also overrides all `IRenderResourceGateway` methods by delegating to its owned gateway core. During tasks 7–16 only, the old synchronous implementation remains behind a clearly named `LegacySynchronousRenderBridge` so existing callers compile. The bridge is not reachable after `Configure()` selects the new runtime and is deleted in task 17.
+Every enum/result/config declaration above lives in public `RenderRuntimeTypes.h`; the six composition/publication/control/getter signatures are `RenderSubsystem` members declared in `RenderSubsystem.h`, not free functions. No public type includes private `IRenderExecutor.h`. Task 4's `RenderExecutorStartResult`/`RenderExecutorJoinResult` are mapped into `RenderRuntimeCode`/`RenderShutdownCode` and `nativeError` at the RenderSubsystem boundary.
+
+Outcome classification is fixed. Frame `Accepted` is `Success`; `ReplacedOlder`, `ShuttingDown`, and `NotRunning` are `ExpectedPressure`; invalid/out-of-order packets are `RecoverableFrame`. Resize `Accepted` is `Success`; `CoalescedOlder`, `ShuttingDown`, and `NotRunning` are `ExpectedPressure`; stale/invalid surfaces are `RecoverableFrame`.
+
+Runtime code mappings are exact: `None -> Success/Stopped/None/None`; `Running -> Success/Running/None/None`; `StopRequested -> Success/StopRequested/NormalStop/NormalDrain`; `Stopped -> Success/Stopped/NormalStop/NormalDrain`; configuration/surface/executor/device/surface-creation failures each map to `RuntimeFatal/Failed/StartupFailure/NormalDrain`; graph validation maps to `FrameFatal/Running/None/None`; device loss maps to `RuntimeFatal/Failed/DeviceLost/DeviceLostTeardown`; unhandled exception maps to `RuntimeFatal/Failed/UnhandledException/NormalDrain`; ownership violation maps to `RuntimeFatal/Failed/OwnershipViolation/NormalDrain`; and either watchdog code maps to `RuntimeFatal/Failed/WatchdogTimeout/FatalTimeout`.
+
+Shutdown mappings are exact: `None -> Success/Stopped/None/None`; `Completed -> Success/Stopped/NormalStop/NormalDrain`; `AlreadyStopped -> Success/Stopped/NormalStop/None`; `DeviceLost -> RuntimeFatal/Failed/DeviceLost/DeviceLostTeardown`; `TimedOut -> RuntimeFatal/Failed/WatchdogTimeout/FatalTimeout`; and `ExecutorJoinFailed -> RuntimeFatal/Failed/ExecutorFailure/FatalTimeout`. Executor join failure never detaches. Context fields carry the exact latest known value or their declared zero/invalid default; messages never affect identity or mapping.
+
+RenderSubsystem also overrides all `IRenderResourceGateway` methods by delegating to its owned gateway core. During tasks 7–17 only, the old synchronous implementation remains behind a clearly named `LegacySynchronousRenderBridge` so not-yet-migrated callers compile. The bridge is a compile-preservation adapter, not a selectable executor: after any caller invokes `Configure()`, all frame/control work for that caller goes only through `DedicatedRenderExecutor`, startup failure is terminal, and fallback to the bridge is forbidden. The bridge is deleted in task 18.
 
 - [ ] **Step 1: Write failing runtime-shell tests**
 
-Use the Inline and Dedicated fixtures to cover configure-only-before-initialize, invalid configuration, startup acknowledgement, state sequence `Stopped -> Starting -> Running`, immutable diagnostics publication, frame/control wakeup, idle blocking/no repeated present, stop acknowledgement, and teardown on the same owner thread. Assert `GetDiagnosticsSnapshot()` remains valid after a newer shared snapshot is published.
+Add underlying-type/value `static_assert`s for every enum above and exact default-value tests for all four public result structs. Use the Inline and Dedicated fixtures to cover configure-only-before-initialize, invalid configuration, startup acknowledgement, state sequence `Stopped -> Starting -> Running`, every publish/resize code-to-class mapping, immutable diagnostics publication, frame/control wakeup, idle blocking/no repeated present, stop acknowledgement, and teardown on the same owner thread. Assert `GetDiagnosticsSnapshot()` remains valid after a newer shared snapshot is published.
 
 - [ ] **Step 2: Run red verification**
 
@@ -781,7 +1779,7 @@ Expected: failure because runtime/result/diagnostics types are absent.
 
 - [ ] **Step 3: Implement structured public result types**
 
-Use stable enums for result class, code, lifecycle, executor kind, terminal cause, and teardown mode. Context fields include backend, frame/request sequence, asset/handle, surface generation, native error, and owned supplemental message. Do not use messages for control flow or test identity.
+Implement the exact enums, values, fields, defaults, and mapping table above. Reject undeclared enum values when decoding persisted/test input. Context fields include backend, frame/request sequence, asset/handle, surface generation, native error, and owned supplemental message. Do not use messages for control flow or test identity and do not add alternate result structs.
 
 - [ ] **Step 4: Implement immutable diagnostics publication**
 
@@ -907,14 +1905,12 @@ git commit -m "feat: track per-queue gpu completion"
 
 ---
 
-### Task 9: Add completion-token retirement and remove global frame-count deletion
+### Task 9: Add completion-token retirement without cutting over global deletion
 
 **Files:**
 
 - Create: `Render/Private/Resources/RenderRetirementQueue.h`
 - Create: `Render/Private/Resources/RenderRetirementQueue.cpp`
-- Delete: `Render/Private/Graph/FrameResourceManager.cpp`
-- Modify: `Core/Include/Core/RefCounted.h`
 - Modify: `Render/CMakeLists.txt`
 - Modify: `Tests/RenderSubmissionValidation/main.cpp`
 
@@ -945,9 +1941,9 @@ Expected: missing retirement queue failures.
 
 Only Render Thread may enqueue, poll, or force device-lost teardown. Normal polling erases an entry only when tracker completion says every point is complete. Erasure drops the final strong reference on Render Thread. Diagnostics track count, estimated bytes, and oldest point per domain.
 
-- [ ] **Step 4: Remove global deferred deletion**
+- [ ] **Step 4: Integrate the queue without removing the migration fallback**
 
-Delete `IDeferredDeleter`, `DeferredDeleterRegistry`, and the frame-count manager. `Ref<T>` returns to immediate deletion when its last owner releases. Safety now comes from explicit Render-owned strong references in registry, submission, upload, cache, and retirement components; do not install another global hook.
+Expose the retirement queue to later Render-owned registry/upload/cache work, but do not delete or weaken `IDeferredDeleter`, `DeferredDeleterRegistry`, or `FrameResourceManager` in this task. Their definitions remain only to preserve intermediate build compatibility; M1 correctness does not rely on them and no task may claim they are a proven GPU-safety fallback. Migrated code transfers its strong reference and completion token into `RenderRetirementQueue`. No new producer may enqueue directly into the global mechanism, and tests run with the registry uninstalled so they prove exact completion-token behavior rather than frame-count behavior.
 
 - [ ] **Step 5: Run green verification**
 
@@ -956,18 +1952,18 @@ cmake --build build\win_x64_debug --config Debug --target RenderSubmissionValida
 ctest --test-dir build\win_x64_debug -C Debug -R "RenderSubmissionValidation|RenderGraphValidation" --output-on-failure
 ```
 
-Expected: retirement ownership tests and existing RenderGraph lifetime tests pass; repository search finds no `DeferredDeleterRegistry`.
+Expected: retirement ownership tests and existing RenderGraph lifetime tests pass; `DeferredDeleterRegistry` and `FrameResourceManager` remain unchanged for the bounded migration window.
 
 - [ ] **Step 6: Review and commit**
 
 ```powershell
-rg -n "DeferredDeleterRegistry|IDeferredDeleter" Core Render RHI
 git diff --check
-git add Core\Include\Core\RefCounted.h Render\Private\Resources Render\Private\Graph\FrameResourceManager.cpp Render\CMakeLists.txt Tests
-git commit -m "feat: retire rhi objects by completion token"
+git diff --name-only -- Core\Include\Core\RefCounted.h Render\Private\Graph\FrameResourceManager.cpp
+git add Render\Private\Resources Render\CMakeLists.txt Tests\RenderSubmissionValidation Tests\CMakeLists.txt
+git commit -m "feat: add completion-token retirement queue"
 ```
 
-Expected search result before commit: no matches.
+Expected scoped diff result before commit: no output; the cutover files are deliberately untouched.
 
 ---
 
@@ -1023,7 +2019,7 @@ Validate request, create pending registry data, submit Copy work, and retain the
 
 - [ ] **Step 6: Convert the facade into a pure migration adapter**
 
-The facade contains no maps, queues, status state, fence pools, or RHI ownership. Its legacy pointer overloads construct owned requests through one explicitly named legacy adapter and forward; task 17 deletes both. Add deprecation comments with the task-17 removal condition, not an open-ended compatibility promise.
+The facade contains no maps, queues, status state, fence pools, or RHI ownership. Its legacy pointer overloads construct owned requests through one explicitly named legacy adapter and forward; task 18 deletes both. Add deprecation comments with the task-18 removal condition, not an open-ended compatibility promise.
 
 - [ ] **Step 7: Run green verification**
 
@@ -1173,7 +2169,7 @@ The extractor receives sequence, world revision, temporal epoch, discontinuity, 
 
 - [ ] **Step 6: Put mutable render controls into the packet**
 
-Define value-only post-process, shadow, GPU-culling, ray-tracing budget, and temporal-reset settings in `RenderFrameSettings`. Define `RenderFrameCaptureRequest { uint64 requestId; uint32 width; uint32 height; bool includeAlpha; }`. No settings object references SceneRenderer. This is the migration target for ModelViewer/RenderingShowcase in task 16.
+Populate the Task 1 `RenderFrameSettings` sub-values and exact `RenderFrameCaptureRequest` without adding fields or alternate control objects. Validate settings/capture on the update side before passing them to the builder. No settings object references SceneRenderer. These frozen values are the migration target for ModelViewer/RenderingShowcase in task 17.
 
 - [ ] **Step 7: Run green verification and the contract checker**
 
@@ -1299,7 +2295,181 @@ git commit -m "refactor: render immutable frame packets"
 
 ---
 
-### Task 14: Harden startup, runtime failure, device loss, and bounded shutdown
+### Task 14: Cut over every RHI strong-reference holder to completion-token ownership
+
+**Files:**
+
+- Create: `Render/Private/Resources/RenderSubmissionResourceBatch.h`
+- Create: `Render/Private/Resources/RenderSubmissionResourceBatch.cpp`
+- Create: `Tests/RenderLifetimeCutoverValidation/main.cpp`
+- Create: `Scripts/rhi_ownership_inventory_m1.json`
+- Create: `Scripts/check_rhi_ownership_inventory.py`
+- Create: `Scripts/test_rhi_ownership_inventory_checker.py`
+- Modify: `Render/Private/Resources/RenderRetirementQueue.h`
+- Modify: `Render/Private/Resources/RenderRetirementQueue.cpp`
+- Modify: `Render/Private/Resources/RenderSubmissionTracker.h`
+- Modify: `Render/Private/Resources/RenderSubmissionTracker.cpp`
+- Modify: `Render/Private/Runtime/RenderThreadRuntime.h`
+- Modify: `Render/Private/Runtime/RenderThreadRuntime.cpp`
+- Modify: `Render/Private/Graph/RenderGraphInternal.h`
+- Modify: `Render/Private/Graph/RenderGraph.cpp`
+- Modify: `Render/Include/Render/Graph/TransientResourcePool.h`
+- Modify: `Render/Private/Graph/TransientResourcePool.cpp`
+- Modify: `Render/Include/Render/Graph/ResourceViewCache.h`
+- Modify: `Render/Private/Graph/ResourceViewCache.cpp`
+- Modify: `Render/Include/Render/Context/RenderContext.h`
+- Modify: `Render/Private/Context/RenderContext.cpp`
+- Modify: `Render/Include/Render/Renderer/SceneRenderer.h`
+- Modify: `Render/Private/Renderer/SceneRenderer.cpp`
+- Modify: `Render/Include/Render/Passes/CameraVelocityPass.h`
+- Modify: `Render/Private/Passes/CameraVelocityPass.cpp`
+- Modify: `Render/Include/Render/Passes/RayTracedReflectionCompositePass.h`
+- Modify: `Render/Private/Passes/RayTracedReflectionCompositePass.cpp`
+- Modify: `Render/Include/Render/Passes/RayTracedReflectionDenoisePass.h`
+- Modify: `Render/Private/Passes/RayTracedReflectionDenoisePass.cpp`
+- Modify: `Render/Include/Render/Passes/RayTracedReflectionPass.h`
+- Modify: `Render/Private/Passes/RayTracedReflectionPass.cpp`
+- Modify: `Render/Include/Render/Passes/RayTracedShadowPass.h`
+- Modify: `Render/Private/Passes/RayTracedShadowPass.cpp`
+- Modify: `Render/Include/Render/Passes/SkyboxPass.h`
+- Modify: `Render/Private/Passes/SkyboxPass.cpp`
+- Modify: `Render/Include/Render/PostProcess/Bloom.h`
+- Modify: `Render/Private/PostProcess/Bloom.cpp`
+- Modify: `Render/Include/Render/PostProcess/ChromaticAberration.h`
+- Modify: `Render/Private/PostProcess/ChromaticAberration.cpp`
+- Modify: `Render/Include/Render/PostProcess/ColorGrading.h`
+- Modify: `Render/Private/PostProcess/ColorGrading.cpp`
+- Modify: `Render/Include/Render/PostProcess/FilmGrain.h`
+- Modify: `Render/Private/PostProcess/FilmGrain.cpp`
+- Modify: `Render/Include/Render/PostProcess/FXAA.h`
+- Modify: `Render/Private/PostProcess/FXAA.cpp`
+- Modify: `Render/Include/Render/PostProcess/SSAO.h`
+- Modify: `Render/Private/PostProcess/SSAO.cpp`
+- Modify: `Render/Include/Render/PostProcess/ToneMapping.h`
+- Modify: `Render/Private/PostProcess/ToneMapping.cpp`
+- Modify: `Render/Include/Render/PostProcess/Vignette.h`
+- Modify: `Render/Private/PostProcess/Vignette.cpp`
+- Modify: `Render/Include/Render/GPUDriven/GPUCulling.h`
+- Modify: `Render/Private/GPUDriven/GPUCulling.cpp`
+- Modify: `Render/Include/Render/RayTracing/RayTracingSceneManager.h`
+- Modify: `Render/Private/RayTracing/RayTracingSceneManager.cpp`
+- Modify: `Render/Include/Render/PipelineCache.h`
+- Modify: `Render/Private/PipelineCache.cpp`
+- Modify: `Render/Include/Render/Material/MaterialSystem.h`
+- Modify: `Render/Private/Material/MaterialSystem.cpp`
+- Modify: `Core/Include/Core/RefCounted.h`
+- Delete: `Render/Private/Graph/FrameResourceManager.cpp`
+- Modify: `Render/CMakeLists.txt`
+- Modify: `Tests/RenderGraphValidation/main.cpp`
+- Modify: `Tests/ResourceViewCacheValidation/main.cpp`
+- Modify: `Tests/PipelineCacheValidation/main.cpp`
+- Modify: `Tests/MaterialSystemValidation/main.cpp`
+- Modify: `Tests/GPUResourceManagerValidation/main.cpp`
+- Modify: `Tests/GPUUploadServiceValidation/main.cpp`
+- Modify: `Tests/RenderSubmissionValidation/main.cpp`
+- Modify: `Tests/RenderPassValidation/main.cpp`
+- Modify: `Tests/CMakeLists.txt`
+
+**Interfaces:**
+
+```cpp
+enum class RenderRHILifetimePolicy : uint8
+{
+    RegistryExactGeneration = 0,
+    SubmissionBatch = 1,
+    PoolAvailability = 2,
+    OwnerSnapshot = 3,
+    SurfaceGeneration = 4,
+    ShutdownAfterDrain = 5
+};
+
+class RenderSubmissionResourceBatch final
+{
+public:
+    bool Retain(Ref<RefCounted> object,
+                uint64 estimatedBytes = 0);
+    void SealAndTransfer(const GPUCompletionToken& completion,
+                         RenderRetirementQueue& retirement);
+    void ReleaseUnsubmitted(RenderRetirementQueue& retirement);
+    [[nodiscard]] bool IsSealed() const noexcept;
+};
+```
+
+`Retain` runs only while recording on Render Thread, rejects null/sealed input, and deduplicates by object address. A successful submission seals the batch with the exact returned token and transfers all refs to retirement. Validation/submission failure releases an unsubmitted batch with an empty token on Render Thread. Partially successful submission uses the actual token. No code uses packet sequence, presentation count, CPU frame, or “N frames later” as completion evidence.
+
+The inventory JSON schema is fixed as `schemaVersion` plus entries containing `path`, `owner`, `symbol`, `policy`, `completionSource`, `normalRelease`, and `deviceLostRelease`. The checker scans production Render/RHI/backend headers and sources for `RHI*Ref`, `Ref<RHI...>`, their containers, and ownership-bearing backend wrappers; every discovered holder must have exactly one live inventory entry and every entry must resolve to a discovered holder. `--phase pre-delete` requires complete classification and rejects every fixed-frame/global invocation or registration while permitting only the dormant definitions in `Core/Include/Core/RefCounted.h` and `Render/Private/Graph/FrameResourceManager.cpp`. `--phase final` also rejects those definitions. Any other phase/path combination fails closed.
+
+- [ ] **Step 1: Add failing inventory-checker tests**
+
+Register `Architecture.RHIOwnershipInventory` with `architecture;unit` labels. Fixtures prove a complete classified holder passes and that an unclassified holder, stale manifest entry, invalid policy, missing completion source, fixed-frame retention, and residual global-deleter symbol each fail closed. The production inventory initially fails because current holders are unclassified.
+
+- [ ] **Step 2: Add failing Fake-RHI cutover tests**
+
+Cover multi-domain submission batches, deduplication, zero-submit failure, failure after a real submission, destructor thread, pooled-resource reuse/eviction, ResourceViewCache invalidation, pipeline/material/ray-tracing replacement, every former fixed-frame descriptor-retention owner, old surface-generation resize, compatibility `WaitIdle`, normal drain, and device-lost teardown. A fake object records `objectId`, last-use token, destruction thread, and teardown mode; destruction is valid only after every token point completes, with an empty never-submitted token, or under explicit Lost teardown.
+
+- [ ] **Step 3: Run red verification**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target RenderLifetimeCutoverValidation RenderGraphValidation
+python Scripts\check_rhi_ownership_inventory.py --root . --phase pre-delete
+```
+
+Expected: tests/checker report fixed-frame retention, unclassified holders, unsafe pool/view/cache release, and the still-present global path.
+
+- [ ] **Step 4: Implement submission-batch and pool-availability ownership**
+
+Command recording retains every ephemeral descriptor set, upload/staging object, resource view, and pass-local RHI object into one batch. Seal only after the backend returns its actual queue point. RenderGraph pooled textures/buffers store `GPUCompletionToken availableAfter`; CPU release only marks them unused, acquisition cannot reuse them until the tracker reports that token complete, and eviction transfers the same token into retirement.
+
+- [ ] **Step 5: Migrate replacement and surface ownership**
+
+Cache-, material-, pipeline-, history-, GPU-culling-, and ray-tracing-owned replacements use a per-domain last-submitted snapshot captured on Render Thread after the last recording that could reference the old object. Mutation is permitted only before recording or after submission. Each surface generation stores its last Graphics completion point; resize/recreation clears old back-buffer wrappers only after completion, or after one bounded compatibility `WaitIdle`. Objects never replaced at runtime use `ShutdownAfterDrain` and remain component-owned until the Render Thread drains active timelines. Lost teardown is always classified separately.
+
+- [ ] **Step 6: Complete the fail-closed ownership inventory**
+
+Inventory every discovered strong holder, including RenderGraph internal resources, transient pools, ResourceViewCache, upload staging, pipeline/material/ray-tracing/history caches, GPU-driven buffers, pass/post-process retained descriptors, swapchain/back buffers, runtime members, and backend wrappers. Each entry names the concrete completion source and both normal/device-lost release paths; directory-level wildcard entries are invalid.
+
+- [ ] **Step 7: Remove frame-count/global deletion only after the cutover gates pass**
+
+First run the mandatory migration-complete/pre-deletion gate against the still-present dormant definitions:
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target RenderLifetimeCutoverValidation RenderSubmissionValidation RenderGraphValidation ResourceViewCacheValidation PipelineCacheValidation MaterialSystemValidation GPUResourceManagerValidation GPUUploadServiceValidation RenderPassValidation
+ctest --test-dir build\win_x64_debug -C Debug -R "RenderLifetimeCutoverValidation|RenderSubmissionValidation|RenderGraphValidation|ResourceViewCacheValidation|PipelineCacheValidation|MaterialSystemValidation|GPUResourceManagerValidation|GPUUploadServiceValidation|RenderPassValidation" --output-on-failure
+python Scripts\check_rhi_ownership_inventory.py --root . --phase pre-delete
+```
+
+Expected before deletion: all Fake-RHI/lifetime suites pass; inventory reports zero missing/stale holders; every runtime drop/reuse path has exactly one non-frame policy; the only legacy-symbol matches are the two permitted dormant definition files; and Task 13's packet-only exact-generation stamping is green. If any condition fails, stop and do not edit either legacy definition.
+
+Only after that gate, delete `IDeferredDeleter`, `DeferredDeleterRegistry`, and `FrameResourceManager`; restore direct last-reference deletion in `Ref<T>`. Remove `Private/Graph/FrameResourceManager.cpp` from CMake.
+
+```powershell
+rg -n "DeferredDeleterRegistry|IDeferredDeleter|FrameResourceManager" Core Render RHI RHI_DX11 RHI_DX12 RHI_Vulkan RHI_Metal RHI_OpenGL
+rg -n "kViewRetireFrameLag|retiredFrameResources|RVX_MAX_FRAME_COUNT\s*\+\s*1" Render\Private\Graph Render\Private\Passes Render\Private\PostProcess
+```
+
+Expected after deletion: no matches.
+
+- [ ] **Step 8: Run green verification**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target RenderLifetimeCutoverValidation RenderSubmissionValidation RenderGraphValidation ResourceViewCacheValidation PipelineCacheValidation MaterialSystemValidation GPUResourceManagerValidation GPUUploadServiceValidation RenderPassValidation
+ctest --test-dir build\win_x64_debug -C Debug -R "RenderLifetimeCutoverValidation|RenderSubmissionValidation|RenderGraphValidation|ResourceViewCacheValidation|PipelineCacheValidation|MaterialSystemValidation|GPUResourceManagerValidation|GPUUploadServiceValidation|RenderPassValidation|Architecture.RHIOwnershipInventory" --output-on-failure
+python Scripts\check_rhi_ownership_inventory.py --root . --phase final
+```
+
+Expected: every focused lifetime suite passes, inventory reports zero unclassified/stale holders and zero forbidden frame/global patterns, and all recorded final destructors run on Render Thread under completed or explicit Lost evidence.
+
+- [ ] **Step 9: Review and commit**
+
+```powershell
+git diff --check
+git add Core\Include\Core\RefCounted.h Render Scripts\rhi_ownership_inventory_m1.json Scripts\check_rhi_ownership_inventory.py Scripts\test_rhi_ownership_inventory_checker.py Tests
+git commit -m "refactor: cut over rhi completion ownership"
+```
+
+---
+
+### Task 15: Harden startup, runtime failure, device loss, and bounded shutdown
 
 **Files:**
 
@@ -1385,7 +2555,7 @@ git commit -m "feat: harden render runtime failure handling"
 
 ---
 
-### Task 15: Compose extraction, resources, surface lifetime, and shutdown in Engine
+### Task 16: Compose extraction, resources, surface lifetime, and shutdown in Engine
 
 **Files:**
 
@@ -1462,7 +2632,7 @@ git commit -m "feat: compose dedicated rendering in engine"
 
 ---
 
-### Task 16: Migrate Runtime Samples, tests, and the Editor compile-only adapter
+### Task 17: Migrate Runtime Samples, tests, and the Editor compile-only adapter
 
 **Files:**
 
@@ -1574,7 +2744,7 @@ git commit -m "refactor: migrate callers to render publication"
 
 ---
 
-### Task 17: Delete legacy APIs/facades and enforce the final module boundary
+### Task 18: Delete legacy APIs/facades and enforce the final module boundary
 
 **Files:**
 
@@ -1617,7 +2787,7 @@ git commit -m "refactor: migrate callers to render publication"
 
 - [ ] **Step 1: Add the failing M1 architecture gate**
 
-`check_m1_architecture.py` parses Render CMake links, scans Render includes, verifies required public methods, forbids the named symbols, verifies production has no Inline factory/config, checks Runtime Sample source boundaries, and confirms the core M1 contract/executor/resource/runtime validation targets are registered. Add it to CTest as `Architecture.M1ArchitectureCut` with `architecture;unit` labels. Task 18 extends the same gate with TSAN/native evidence registration.
+`check_m1_architecture.py` parses Render CMake links, scans Render includes, verifies required public methods, forbids the named symbols, verifies production has no Inline factory/config, checks Runtime Sample source boundaries, and confirms the core M1 contract/executor/resource/runtime/lifetime validation targets are registered. Add it to CTest as `Architecture.M1ArchitectureCut` with `architecture;unit` labels. Task 19 extends the same gate with TSAN/native evidence registration.
 
 - [ ] **Step 2: Run red verification**
 
@@ -1671,7 +2841,7 @@ git commit -m "refactor: enforce m1 render ownership boundary"
 
 ---
 
-### Task 18: Enable TSAN, native lifecycle, Build Truth, and final M1 evidence
+### Task 19: Enable TSAN, native lifecycle, Build Truth, and final M1 evidence
 
 **Files:**
 
@@ -1690,7 +2860,7 @@ git commit -m "refactor: enforce m1 render ownership boundary"
 
 **Required native scenario:**
 
-Create a real hidden native window/surface on the update thread; start Render; prove device/surface/children are created on Render Thread; publish/present one deterministic frame; request one newer-generation resize; wait idle and prove no re-present; stop; prove every RHI child/device destructor ran on the same Render Thread.
+Create a real hidden native window on Main/Update Thread; on Apple also create/attach `CAMetalLayer` there and record its owner thread. Start Render; prove device/surface wrappers/children are created on Render Thread and Metal never touches the view hierarchy; publish/present one deterministic frame; request one newer-generation resize; prove old surface resources survive until their Graphics completion point; wait idle and prove no drawable acquisition/re-present; stop; prove every RHI child/device destructor ran on Render Thread, then detach/destroy the Apple layer/window on Main Thread after shutdown acknowledgement.
 
 - [ ] **Step 1: Extend the M1 gate with failing TSAN/native registration requirements**
 
@@ -1710,7 +2880,7 @@ Stress frame replacement, upload count/bytes, release/status CAS, diagnostics sh
 
 - [ ] **Step 4: Implement native lifecycle smoke**
 
-Use DX12 on Windows, Vulkan on Linux, and Metal on macOS as required non-fake cases. Permit WARP/software Vulkan for M1 and record adapter identity. Windows Vulkan and DX11/OpenGL execute when capability exists; capability absence records an environment skip, not pass. Assertions consume Render diagnostics and test ownership records, not live Render objects.
+Use DX12 on Windows, Vulkan on Linux, and Metal on macOS as required non-fake cases. The Metal case asserts Main Thread layer attachment/detachment, Render Thread device/`nextDrawable`/command-buffer `presentDrawable:`/RHI destruction, and zero `NSWindow`/`NSView` access from Render Thread. Permit WARP/software Vulkan for M1 and record adapter identity. Windows Vulkan and DX11/OpenGL execute when capability exists; capability absence records an environment skip, not pass. Assertions consume Render diagnostics and test ownership records, not live Render objects.
 
 - [ ] **Step 5: Add presets and CI environment support**
 
@@ -1784,15 +2954,15 @@ The phase log records the candidate implementation revision validated by the art
 |---|---|---|
 | 5–7 Identity, frame packet, upload request | 1, 11, 12 | RenderContractsValidation, field checker, RenderFrameExtractionValidation, request reclamation cases |
 | 8 Gateway and fixed status table | 2, 3, 11 | RenderConcurrencyValidation, stale-generation and pressure/retry cases |
-| 9 RenderSubsystem, lifecycle, executor, native surface | 4–7, 15, 17 | RenderExecutorValidation, RHIContractValidation, EngineRenderCompositionValidation, M1 architecture gate |
+| 9 RenderSubsystem, lifecycle, executor, native surface | 4–7, 15–17, 19 | RenderExecutorValidation, RHIContractValidation, EngineRenderCompositionValidation, native lifecycle smoke, M1 architecture gate |
 | 10–11 Bounded queues and runtime pump | 3, 7, 13 | capacity/coalescing tests, shared runtime suite, idle/no-present proof |
-| 12 Registry, completion, retirement | 8–10, 13 | RenderSubmissionValidation, RenderResourceRuntimeValidation, exact last-use stamping |
-| 13 Failure/device loss | 14 | fake-RHI fault matrix and distinct lost teardown assertions |
-| 14 Diagnostics | 7, 13–16 | immutable snapshot retention, settings/result/capture migrations |
-| 15 Ordered shutdown/watchdogs | 6, 14, 15 | staged subsystem tests, fake-clock watchdogs, Engine shutdown trace |
-| 16 Migration strategy | 1–17 in order | per-task build/review/commit gates and final legacy deletion |
-| 17 Validation design | 1–18 | Inline/Dedicated suites, static gates, fake RHI, TSAN, native smoke |
-| 18 Exit criteria | 17–18 | absence/module gates and commit-tied three-platform Build Truth evidence |
+| 12 Registry, completion, retirement | 8–10, 13–14 | RenderSubmissionValidation, RenderResourceRuntimeValidation, ownership inventory, exact last-use and non-registry-holder cutover |
+| 13 Failure/device loss | 15 | fake-RHI fault matrix and distinct lost teardown assertions |
+| 14 Diagnostics | 7, 13, 15–17 | immutable snapshot retention, settings/result/capture migrations |
+| 15 Ordered shutdown/watchdogs | 6, 15–16 | staged subsystem tests, fake-clock watchdogs, Engine shutdown trace |
+| 16 Migration strategy | 1–18 in order | per-task build/review/commit gates and final legacy deletion |
+| 17 Validation design | 1–19 | Inline/Dedicated suites, static gates, fake RHI, TSAN, native smoke |
+| 18 Exit criteria | 18–19 | absence/module gates and commit-tied three-platform Build Truth evidence |
 
 ---
 
@@ -1823,4 +2993,4 @@ After each task and before its commit:
 
 ## Execution Handoff
 
-Execute strictly in task order. The recommended mode is `superpowers:subagent-driven-development`, one fresh implementation worker and one independent reviewer per task, because tasks 1–18 have explicit buildable checkpoints. If execution remains in the current agent context, use `superpowers:executing-plans` and stop at each review/commit gate. Do not start Task 2 until Task 1’s focused tests and review are complete, and do not declare M1 complete until Task 18’s cross-platform artifacts match the recorded commit.
+Execute strictly in task order. The recommended mode is `superpowers:subagent-driven-development`, one fresh implementation worker and one independent reviewer per task, because tasks 1–19 have explicit buildable checkpoints. If execution remains in the current agent context, use `superpowers:executing-plans` and stop at each review/commit gate. Do not start Task 2 until Task 1’s focused tests and review are complete, and do not declare M1 complete until Task 19’s cross-platform artifacts match the recorded commit.
