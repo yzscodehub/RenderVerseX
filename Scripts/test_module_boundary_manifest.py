@@ -24,6 +24,12 @@ def write_fixture(root: Path, runtime_target_directory: str) -> None:
         "add_library(RVX_Render STATIC)\n",
         encoding="utf-8",
     )
+    scene_directory = root / "Scene"
+    scene_directory.mkdir(parents=True)
+    (scene_directory / "CMakeLists.txt").write_text(
+        "add_library(RVX_Scene STATIC)\n",
+        encoding="utf-8",
+    )
 
     target_directory = root / runtime_target_directory
     target_directory.mkdir(parents=True, exist_ok=True)
@@ -34,12 +40,16 @@ def write_fixture(root: Path, runtime_target_directory: str) -> None:
     docs_directory = root / "Docs"
     docs_directory.mkdir(parents=True)
     manifest = {
-        "projectIncludePrefixes": ["Render"],
+        "projectIncludePrefixes": ["Render", "Scene"],
         "modules": {
             "Render": {
                 "path": "Render",
                 "allowed": ["Render"],
-            }
+            },
+            "Scene": {
+                "path": "Scene",
+                "allowed": ["Scene"],
+            },
         },
     }
     (docs_directory / "module-boundaries.json").write_text(
@@ -85,6 +95,17 @@ class ModuleBoundaryManifestTests(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0, output)
             self.assertIn("outside any registered module path", output)
+
+    def test_render_runtime_core_in_registered_wrong_module_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            write_fixture(root, "Scene")
+
+            result = run_checker(root)
+            output = result.stdout + result.stderr
+
+            self.assertNotEqual(result.returncode, 0, output)
+            self.assertIn("declared under Scene, not Render", output)
 
 
 if __name__ == "__main__":

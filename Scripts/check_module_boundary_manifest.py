@@ -28,12 +28,12 @@ KNOWN_NON_MODULE_TARGETS = {
     "RVX_Options",
     "RVX::Options",
 }
-KNOWN_SUBMODULE_TARGETS = {
-    "RVX_SampleCommon",
-    "RVX::SampleCommon",
-    "RVX_TestCommon",
-    "RVX::RenderGraph",
-    "RVX_RenderRuntimeCore",
+KNOWN_SUBMODULE_TARGET_OWNERS = {
+    "RVX_SampleCommon": "Samples",
+    "RVX::SampleCommon": "Samples",
+    "RVX_TestCommon": "Tests",
+    "RVX::RenderGraph": "Render",
+    "RVX_RenderRuntimeCore": "Render",
 }
 
 
@@ -310,7 +310,18 @@ def validate_cmake_coverage(root: Path, config: dict) -> list[Finding]:
             continue
 
         for target, line in project_target_lines:
-            if target in KNOWN_NON_MODULE_TARGETS or target in KNOWN_SUBMODULE_TARGETS:
+            if target in KNOWN_NON_MODULE_TARGETS:
+                continue
+            expected_owner = KNOWN_SUBMODULE_TARGET_OWNERS.get(target)
+            if expected_owner is not None:
+                if owner != expected_owner:
+                    findings.append(
+                        Finding(
+                            rel,
+                            line,
+                            f"Project target {target} is declared under {owner}, not {expected_owner}.",
+                        )
+                    )
                 continue
             module_name = target_module_name(target) or target
             if module_name not in module_names:
