@@ -1,13 +1,22 @@
+#include "Render/RenderTransportTypes.h"
 #include "RenderContracts/IRenderResourceGateway.h"
+#include "Runtime/RenderControlMailbox.h"
+#include "Runtime/RenderFrameMailbox.h"
+#include "Runtime/RenderReleaseQueue.h"
+#include "Runtime/RenderResourceGateway.h"
 #include "Runtime/RenderResourceReservationDirectory.h"
 #include "Runtime/RenderResourceStatusTable.h"
+#include "Runtime/RenderUploadQueue.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <latch>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
@@ -49,6 +58,15 @@ namespace RVX
             uint32 generation) noexcept
         {
             directory.m_pendingReleases[pendingIndex].generation = generation;
+        }
+    };
+
+    struct RenderReleaseQueueTestAccess
+    {
+        static void ForcePublicationInvariantFailure(
+            RenderReleaseQueue& queue) noexcept
+        {
+            queue.m_count = queue.m_usableCapacity;
         }
     };
 
@@ -122,6 +140,131 @@ namespace
                                .QueryResourceStatus(RenderResourceHandle{})));
 
     constexpr uint32 RVX_TEST_CAPACITY = 1024;
+
+    void CountWake(void* context) noexcept
+    {
+        static_cast<std::atomic<uint32>*>(context)->fetch_add(
+            1, std::memory_order_relaxed);
+    }
+
+    void CountFatal(void* context, const char*) noexcept
+    {
+        static_cast<std::atomic<uint32>*>(context)->fetch_add(
+            1, std::memory_order_relaxed);
+    }
+
+    struct DestructionProbe
+    {
+        std::atomic<bool> armed = false;
+        std::latch entered{1};
+        std::latch release{1};
+    };
+
+    class TestFramePacket final
+    {
+    public:
+        explicit TestFramePacket(uint64 sequence,
+                                 DestructionProbe* destructionProbe = nullptr)
+            : m_destructionProbe(destructionProbe)
+        {
+            m_header.sequence = sequence;
+            m_features.BeginBuild(sequence);
+            m_features.MarkComplete();
+            m_diagnostics.complete = true;
+        }
+
+        ~TestFramePacket()
+        {
+            if (m_destructionProbe != nullptr &&
+                m_destructionProbe->armed.load(std::memory_order_acquire))
+            {
+                m_destructionProbe->entered.count_down();
+                m_destructionProbe->release.wait();
+            }
+        }
+
+        TestFramePacket(const TestFramePacket&) = delete;
+        TestFramePacket& operator=(const TestFramePacket&) = delete;
+
+        [[nodiscard]] const RenderFrameHeader& GetHeader() const noexcept
+        {
+            return m_header;
+        }
+
+        [[nodiscard]] const std::vector<RenderPrimitiveSnapshot>&
+            GetPrimitives() const noexcept
+        {
+            return m_primitives;
+        }
+
+        [[nodiscard]] const std::vector<RenderLightSnapshot>&
+            GetLights() const noexcept
+        {
+            return m_lights;
+        }
+
+        [[nodiscard]] const RenderFeatureSnapshot& GetFeatures() const noexcept
+        {
+            return m_features;
+        }
+
+        [[nodiscard]] const RenderExtractionDiagnostics&
+            GetExtractionDiagnostics() const noexcept
+        {
+            return m_diagnostics;
+        }
+
+        void SetComplete(bool complete) noexcept
+        {
+            m_diagnostics.complete = complete;
+        }
+
+    private:
+        RenderFrameHeader m_header{};
+        std::vector<RenderPrimitiveSnapshot> m_primitives{};
+        std::vector<RenderLightSnapshot> m_lights{};
+        RenderFeatureSnapshot m_features{};
+        RenderExtractionDiagnostics m_diagnostics{};
+        DestructionProbe* m_destructionProbe = nullptr;
+    };
+
+    using TestFrameMailbox = BasicRenderFrameMailbox<
+        TestFramePacket,
+        CompleteRenderFramePacketValidator<TestFramePacket>>;
+
+    std::unique_ptr<const TestFramePacket> MakeTestFrame(
+        uint64 sequence,
+        DestructionProbe* destructionProbe = nullptr)
+    {
+        return std::make_unique<const TestFramePacket>(sequence,
+                                                       destructionProbe);
+    }
+
+    ResourceUploadRequestRef MakeMeshUploadRequest(
+        RenderResourceHandle handle,
+        AssetId assetId,
+        uint64 sequence,
+        uint64 byteCount = 36)
+    {
+        MeshUploadPayload payload;
+        payload.createInfo.vertexCount = byteCount / 12U;
+        payload.createInfo.boundsMin = Vec3(-1.0f);
+        payload.createInfo.boundsMax = Vec3(1.0f);
+        payload.bytes.resize(static_cast<size_t>(byteCount), 7U);
+        payload.positionRange = UploadByteRange{0, byteCount, 12};
+
+        ResourceUploadRequestCreateInfo info;
+        info.sequence = sequence;
+        info.assetId = assetId;
+        info.handle = handle;
+        info.kind = RenderResourceKind::Mesh;
+        info.payload = std::move(payload);
+        info.declaredPayloadBytes = byteCount;
+        const ResourceUploadRequestCreateResult result =
+            ResourceUploadRequest::Create(std::move(info));
+        EXPECT_EQ(result.code, ResourceUploadRequestCreateCode::Created);
+        return result.request;
+    }
 
     PackedRenderResourceStatus MakePacked(
         uint32 generation,
@@ -636,6 +779,499 @@ namespace
         EXPECT_TRUE(transitioned.load(std::memory_order_relaxed));
         EXPECT_TRUE(observedReleased.load(std::memory_order_relaxed));
         EXPECT_EQ(observedPayload, 0xC0FFEEU);
+    }
+
+    TEST(RenderConcurrencyValidation, TransportConfigurationRejectsUnsafeValues)
+    {
+        RenderTransportConfig config;
+        EXPECT_TRUE(config.IsValid());
+
+        config.frameCapacity = 1;
+        EXPECT_FALSE(config.IsValid());
+        config.frameCapacity = 5;
+        EXPECT_FALSE(config.IsValid());
+        config.frameCapacity = 3;
+        config.uploadRequestCapacity = 0;
+        EXPECT_FALSE(config.IsValid());
+        config.uploadRequestCapacity = 1;
+        config.uploadByteCapacity = 0;
+        EXPECT_FALSE(config.IsValid());
+        config.uploadByteCapacity = 1;
+        config.statusSlotCapacity = RVX_TEST_CAPACITY - 1U;
+        EXPECT_FALSE(config.IsValid());
+
+        RenderIterationBudgets budgets;
+        EXPECT_TRUE(budgets.IsValid());
+        budgets.uploadRequestCount = 0;
+        EXPECT_FALSE(budgets.IsValid());
+        budgets.uploadRequestCount = 1;
+        budgets.uploadBytes = 0;
+        EXPECT_FALSE(budgets.IsValid());
+        budgets.uploadBytes = 1;
+        budgets.uploadTime = std::chrono::milliseconds::zero();
+        EXPECT_FALSE(budgets.IsValid());
+        budgets.uploadTime = std::chrono::milliseconds{1};
+        budgets.releaseCount = 0;
+        EXPECT_FALSE(budgets.IsValid());
+        budgets.releaseCount = 1;
+        budgets.releaseTime = std::chrono::milliseconds::zero();
+        EXPECT_FALSE(budgets.IsValid());
+    }
+
+    class RenderFrameMailboxCapacityTest :
+        public testing::TestWithParam<uint32>
+    {
+    };
+
+    TEST_P(RenderFrameMailboxCapacityTest,
+           FullMailboxReplacesOldestAndConsumerAcquiresLatest)
+    {
+        const uint32 capacity = GetParam();
+        std::atomic<uint32> wakeCount = 0;
+        TestFrameMailbox mailbox(capacity, &CountWake, &wakeCount);
+
+        for (uint64 sequence = 1; sequence <= capacity; ++sequence)
+        {
+            const auto result = mailbox.TryPublish(MakeTestFrame(sequence));
+            EXPECT_EQ(result.code, RenderFrameMailboxPublishCode::Accepted);
+            EXPECT_EQ(result.replacedSequence, 0);
+        }
+
+        const auto replacement =
+            mailbox.TryPublish(MakeTestFrame(capacity + 1U));
+        EXPECT_EQ(replacement.code,
+                  RenderFrameMailboxPublishCode::ReplacedOldest);
+        EXPECT_EQ(replacement.replacedSequence, 1);
+        EXPECT_EQ(mailbox.GetPendingCount(), capacity);
+
+        auto acquired = mailbox.AcquireLatest();
+        ASSERT_NE(acquired.packet, nullptr);
+        EXPECT_EQ(acquired.packet->GetHeader().sequence, capacity + 1U);
+        ASSERT_EQ(acquired.discardedCount, capacity - 1U);
+        for (uint32 index = 0; index < acquired.discardedCount; ++index)
+        {
+            EXPECT_EQ(acquired.discardedSequences[index], index + 2U);
+        }
+        EXPECT_EQ(mailbox.GetPendingCount(), 0U);
+        EXPECT_EQ(wakeCount.load(std::memory_order_relaxed), capacity + 1U);
+    }
+
+    INSTANTIATE_TEST_SUITE_P(RenderConcurrencyValidationCapacitiesTwoThroughFour,
+                             RenderFrameMailboxCapacityTest,
+                             testing::Values(2U, 3U, 4U));
+
+    TEST(RenderConcurrencyValidation,
+         FrameMailboxRejectsInvalidAndOutOfOrderPacketsWithoutWake)
+    {
+        std::atomic<uint32> wakeCount = 0;
+        TestFrameMailbox mailbox(3, &CountWake, &wakeCount);
+        auto incomplete = std::make_unique<TestFramePacket>(1);
+        incomplete->SetComplete(false);
+
+        EXPECT_EQ(mailbox.TryPublish(std::move(incomplete)).code,
+                  RenderFrameMailboxPublishCode::InvalidPacket);
+        EXPECT_EQ(mailbox.TryPublish(MakeTestFrame(2)).code,
+                  RenderFrameMailboxPublishCode::Accepted);
+        EXPECT_EQ(mailbox.TryPublish(MakeTestFrame(1)).code,
+                  RenderFrameMailboxPublishCode::OutOfOrder);
+        EXPECT_EQ(mailbox.TryPublish(nullptr).code,
+                  RenderFrameMailboxPublishCode::InvalidPacket);
+        EXPECT_EQ(mailbox.GetPendingCount(), 1U);
+        EXPECT_EQ(wakeCount.load(std::memory_order_relaxed), 1U);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         AcquiredFrameOwnershipIsIndependentOfLaterReplacement)
+    {
+        TestFrameMailbox mailbox(2);
+        ASSERT_EQ(mailbox.TryPublish(MakeTestFrame(1)).code,
+                  RenderFrameMailboxPublishCode::Accepted);
+        auto acquired = mailbox.AcquireLatest();
+        ASSERT_NE(acquired.packet, nullptr);
+
+        ASSERT_EQ(mailbox.TryPublish(MakeTestFrame(2)).code,
+                  RenderFrameMailboxPublishCode::Accepted);
+        ASSERT_EQ(mailbox.TryPublish(MakeTestFrame(3)).code,
+                  RenderFrameMailboxPublishCode::Accepted);
+        ASSERT_EQ(mailbox.TryPublish(MakeTestFrame(4)).code,
+                  RenderFrameMailboxPublishCode::ReplacedOldest);
+
+        EXPECT_EQ(acquired.packet->GetHeader().sequence, 1U);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         FrameReplacementDestroysOldestOwnershipOutsideMailboxLock)
+    {
+        TestFrameMailbox mailbox(2);
+        DestructionProbe probe;
+        ASSERT_EQ(mailbox.TryPublish(MakeTestFrame(1, &probe)).code,
+                  RenderFrameMailboxPublishCode::Accepted);
+        ASSERT_EQ(mailbox.TryPublish(MakeTestFrame(2)).code,
+                  RenderFrameMailboxPublishCode::Accepted);
+        probe.armed.store(true, std::memory_order_release);
+
+        std::thread publisher([&]() {
+            const auto result = mailbox.TryPublish(MakeTestFrame(3));
+            EXPECT_EQ(result.code,
+                      RenderFrameMailboxPublishCode::ReplacedOldest);
+        });
+        probe.entered.wait();
+
+        std::atomic<uint32> pendingCount = 0;
+        std::latch queried{1};
+        std::thread observer([&]() {
+            pendingCount.store(mailbox.GetPendingCount(),
+                               std::memory_order_relaxed);
+            queried.count_down();
+        });
+        queried.wait();
+        probe.release.count_down();
+
+        observer.join();
+        publisher.join();
+        EXPECT_EQ(pendingCount.load(std::memory_order_relaxed), 2U);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         FrameCoalescingDestroysDiscardedOwnershipOutsideMailboxLock)
+    {
+        TestFrameMailbox mailbox(2);
+        DestructionProbe probe;
+        ASSERT_EQ(mailbox.TryPublish(MakeTestFrame(1, &probe)).code,
+                  RenderFrameMailboxPublishCode::Accepted);
+        ASSERT_EQ(mailbox.TryPublish(MakeTestFrame(2)).code,
+                  RenderFrameMailboxPublishCode::Accepted);
+        probe.armed.store(true, std::memory_order_release);
+
+        std::thread consumer([&]() {
+            auto acquired = mailbox.AcquireLatest();
+            ASSERT_NE(acquired.packet, nullptr);
+            EXPECT_EQ(acquired.packet->GetHeader().sequence, 2U);
+        });
+        probe.entered.wait();
+
+        std::atomic<uint32> pendingCount = 1;
+        std::latch queried{1};
+        std::thread observer([&]() {
+            pendingCount.store(mailbox.GetPendingCount(),
+                               std::memory_order_relaxed);
+            queried.count_down();
+        });
+        queried.wait();
+        probe.release.count_down();
+
+        observer.join();
+        consumer.join();
+        EXPECT_EQ(pendingCount.load(std::memory_order_relaxed), 0U);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         UploadCountPressureLeavesRejectedReservationUnchanged)
+    {
+        RenderTransportConfig config;
+        config.uploadRequestCapacity = 1;
+        config.uploadByteCapacity = 1024;
+        std::atomic<uint32> wakeCount = 0;
+        RenderResourceGateway gateway(config, &CountWake, &wakeCount);
+        const auto first =
+            gateway.ReserveResource(AssetId{1001}, RenderResourceKind::Mesh);
+        const auto second =
+            gateway.ReserveResource(AssetId{1002}, RenderResourceKind::Mesh);
+        ASSERT_EQ(first.code, RenderResourceReserveCode::Reserved);
+        ASSERT_EQ(second.code, RenderResourceReserveCode::Reserved);
+
+        const auto firstRequest =
+            MakeMeshUploadRequest(first.handle, AssetId{1001}, 1);
+        const auto secondRequest =
+            MakeMeshUploadRequest(second.handle, AssetId{1002}, 2);
+        EXPECT_EQ(gateway.TryEnqueueUpload(firstRequest).code,
+                  RenderUploadEnqueueCode::Accepted);
+        EXPECT_EQ(gateway.TryEnqueueUpload(secondRequest).code,
+                  RenderUploadEnqueueCode::QueueFullByCount);
+        EXPECT_EQ(gateway.QueryResourceStatus(second.handle).state,
+                  RenderResourcePublicState::Reserved);
+        EXPECT_EQ(gateway.GetRetainedUploadCount(), 1U);
+        EXPECT_EQ(gateway.GetRetainedUploadBytes(),
+                  firstRequest->GetDerivedPayloadBytes());
+        EXPECT_EQ(wakeCount.load(std::memory_order_relaxed), 1U);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         UploadDerivedBytePressureIsExactAndDequeueBalancesCounters)
+    {
+        RenderTransportConfig config;
+        config.uploadRequestCapacity = 2;
+        config.uploadByteCapacity = 36;
+        std::atomic<uint32> wakeCount = 0;
+        RenderResourceGateway gateway(config, &CountWake, &wakeCount);
+        const auto first =
+            gateway.ReserveResource(AssetId{1101}, RenderResourceKind::Mesh);
+        const auto second =
+            gateway.ReserveResource(AssetId{1102}, RenderResourceKind::Mesh);
+        const auto firstRequest =
+            MakeMeshUploadRequest(first.handle, AssetId{1101}, 1, 36);
+        const auto secondRequest =
+            MakeMeshUploadRequest(second.handle, AssetId{1102}, 2, 36);
+        ASSERT_EQ(firstRequest->GetDerivedPayloadBytes(), 36U);
+
+        EXPECT_EQ(gateway.TryEnqueueUpload(firstRequest).code,
+                  RenderUploadEnqueueCode::Accepted);
+        EXPECT_EQ(gateway.TryEnqueueUpload(secondRequest).code,
+                  RenderUploadEnqueueCode::QueueFullByBytes);
+        EXPECT_EQ(gateway.QueryResourceStatus(second.handle).state,
+                  RenderResourcePublicState::Reserved);
+
+        const ResourceUploadRequestRef dequeued = gateway.TryDequeueUpload();
+        EXPECT_EQ(dequeued, firstRequest);
+        EXPECT_EQ(gateway.GetRetainedUploadCount(), 0U);
+        EXPECT_EQ(gateway.GetRetainedUploadBytes(), 0U);
+        EXPECT_EQ(wakeCount.load(std::memory_order_relaxed), 1U);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         UploadGatewayMapsInvalidStaleAndCancelledRequestsExactly)
+    {
+        RenderTransportConfig config;
+        RenderResourceGateway gateway(config);
+        EXPECT_EQ(gateway.TryEnqueueUpload({}).code,
+                  RenderUploadEnqueueCode::InvalidRequest);
+
+        const auto cancelled =
+            gateway.ReserveResource(AssetId{1201}, RenderResourceKind::Mesh);
+        const auto cancelledRequest =
+            MakeMeshUploadRequest(cancelled.handle, AssetId{1201}, 1);
+        ASSERT_EQ(gateway.RequestRelease(cancelled.handle).code,
+                  RenderReleaseCode::Accepted);
+        EXPECT_EQ(gateway.TryEnqueueUpload(cancelledRequest).code,
+                  RenderUploadEnqueueCode::Cancelled);
+
+        const RenderResourceHandle released = gateway.TryDequeueRelease();
+        ASSERT_EQ(released, cancelled.handle);
+        ASSERT_TRUE(gateway.GetStatusTable().CompareExchange(
+            released,
+            MakePacked(released.generation,
+                       RenderResourcePublicState::Evicting),
+            MakePacked(released.generation,
+                       RenderResourcePublicState::Released),
+            RenderStatusWriter::Render));
+        const auto replacement =
+            gateway.ReserveResource(AssetId{1202}, RenderResourceKind::Mesh);
+        ASSERT_EQ(replacement.handle.slot, cancelled.handle.slot);
+        ASSERT_GT(replacement.handle.generation,
+                  cancelled.handle.generation);
+        EXPECT_EQ(gateway.TryEnqueueUpload(cancelledRequest).code,
+                  RenderUploadEnqueueCode::StaleGeneration);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         ReleaseRingUsesEveryNonzeroStatusSlot)
+    {
+        RenderResourceStatusTable table(RVX_TEST_CAPACITY);
+        RenderResourceReservationDirectory directory(table);
+        std::atomic<uint32> wakeCount = 0;
+        std::atomic<uint32> fatalCount = 0;
+        RenderReleaseQueue queue(directory,
+                                 table,
+                                 RVX_TEST_CAPACITY,
+                                 &CountWake,
+                                 &wakeCount,
+                                 &CountFatal,
+                                 &fatalCount);
+
+        EXPECT_EQ(queue.GetUsableCapacity(), RVX_TEST_CAPACITY - 1U);
+        for (uint32 index = 1; index < RVX_TEST_CAPACITY; ++index)
+        {
+            const auto reserved = directory.ReserveResource(
+                AssetId{2000U + index}, RenderResourceKind::Texture);
+            ASSERT_EQ(reserved.code, RenderResourceReserveCode::Reserved);
+            EXPECT_EQ(queue.RequestRelease(reserved.handle).code,
+                      RenderReleaseCode::Accepted);
+        }
+
+        EXPECT_EQ(queue.GetPendingCount(), RVX_TEST_CAPACITY - 1U);
+        EXPECT_EQ(wakeCount.load(std::memory_order_relaxed),
+                  RVX_TEST_CAPACITY - 1U);
+        EXPECT_EQ(fatalCount.load(std::memory_order_relaxed), 0U);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         ReleaseQueueReportsDuplicateAndStaleWithoutExtraWake)
+    {
+        RenderResourceStatusTable table(RVX_TEST_CAPACITY);
+        RenderResourceReservationDirectory directory(table);
+        std::atomic<uint32> wakeCount = 0;
+        RenderReleaseQueue queue(directory,
+                                 table,
+                                 RVX_TEST_CAPACITY,
+                                 &CountWake,
+                                 &wakeCount);
+        const auto first =
+            directory.ReserveResource(AssetId{3101}, RenderResourceKind::Mesh);
+        ASSERT_EQ(queue.RequestRelease(first.handle).code,
+                  RenderReleaseCode::Accepted);
+        EXPECT_EQ(queue.RequestRelease(first.handle).code,
+                  RenderReleaseCode::AlreadyPending);
+
+        const RenderResourceHandle released = queue.TryDequeue();
+        ASSERT_EQ(released, first.handle);
+        ASSERT_TRUE(table.CompareExchange(
+            released,
+            MakePacked(released.generation,
+                       RenderResourcePublicState::Evicting),
+            MakePacked(released.generation,
+                       RenderResourcePublicState::Released),
+            RenderStatusWriter::Render));
+        const auto replacement =
+            directory.ReserveResource(AssetId{3102}, RenderResourceKind::Mesh);
+        ASSERT_EQ(replacement.handle.slot, first.handle.slot);
+        EXPECT_EQ(queue.RequestRelease(first.handle).code,
+                  RenderReleaseCode::StaleGeneration);
+        EXPECT_EQ(wakeCount.load(std::memory_order_relaxed), 1U);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         ReleasePublicationInvariantFailureUsesRuntimeFatalSink)
+    {
+        RenderResourceStatusTable table(RVX_TEST_CAPACITY);
+        RenderResourceReservationDirectory directory(table);
+        std::atomic<uint32> wakeCount = 0;
+        std::atomic<uint32> fatalCount = 0;
+        RenderReleaseQueue queue(directory,
+                                 table,
+                                 RVX_TEST_CAPACITY,
+                                 &CountWake,
+                                 &wakeCount,
+                                 &CountFatal,
+                                 &fatalCount);
+        const auto reserved =
+            directory.ReserveResource(AssetId{3201}, RenderResourceKind::Mesh);
+        RenderReleaseQueueTestAccess::ForcePublicationInvariantFailure(queue);
+
+        EXPECT_EQ(queue.RequestRelease(reserved.handle).code,
+                  RenderReleaseCode::Accepted);
+        EXPECT_EQ(table.Query(reserved.handle).state,
+                  RenderResourcePublicState::Evicting);
+        EXPECT_EQ(fatalCount.load(std::memory_order_relaxed), 1U);
+        EXPECT_EQ(wakeCount.load(std::memory_order_relaxed), 0U);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         ReleaseQueueRejectsCapacityThatDoesNotMatchStatusTable)
+    {
+        RenderResourceStatusTable table(RVX_TEST_CAPACITY);
+        RenderResourceReservationDirectory directory(table);
+
+        EXPECT_THROW(RenderReleaseQueue(directory, table, 0),
+                     std::invalid_argument);
+        EXPECT_THROW(RenderReleaseQueue(directory,
+                                        table,
+                                        RVX_TEST_CAPACITY - 1U),
+                     std::invalid_argument);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         ControlMailboxCoalescesOwnedGenerationValues)
+    {
+        std::atomic<uint32> wakeCount = 0;
+        BasicRenderControlMailbox<std::unique_ptr<uint32>,
+                                  std::unique_ptr<uint32>>
+            mailbox(&CountWake, &wakeCount);
+
+        EXPECT_TRUE(mailbox.TryPublishSurface(
+            1, std::make_unique<uint32>(11)));
+        EXPECT_TRUE(mailbox.TryPublishSurface(
+            3, std::make_unique<uint32>(33)));
+        EXPECT_FALSE(mailbox.TryPublishSurface(
+            2, std::make_unique<uint32>(22)));
+        EXPECT_TRUE(mailbox.TryPublishResize(
+            4, std::make_unique<uint32>(44)));
+        EXPECT_TRUE(mailbox.TryPublishResize(
+            5, std::make_unique<uint32>(55)));
+
+        auto controls = mailbox.AcquireLatest();
+        EXPECT_FALSE(controls.stopRequested);
+        ASSERT_TRUE(controls.surface.has_value());
+        EXPECT_EQ(controls.surface->generation, 3U);
+        ASSERT_NE(controls.surface->value, nullptr);
+        EXPECT_EQ(*controls.surface->value, 33U);
+        ASSERT_TRUE(controls.resize.has_value());
+        EXPECT_EQ(controls.resize->generation, 5U);
+        ASSERT_NE(controls.resize->value, nullptr);
+        EXPECT_EQ(*controls.resize->value, 55U);
+        EXPECT_EQ(wakeCount.load(std::memory_order_relaxed), 4U);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         ControlStopFlagPreemptsQueuedSurfaceAndResizeValues)
+    {
+        std::atomic<uint32> wakeCount = 0;
+        BasicRenderControlMailbox<uint64, uint64> mailbox(&CountWake,
+                                                          &wakeCount);
+        ASSERT_TRUE(mailbox.TryPublishSurface(1, 101));
+        ASSERT_TRUE(mailbox.TryPublishResize(1, 202));
+        mailbox.RequestStop();
+
+        const auto controls = mailbox.AcquireLatest();
+        EXPECT_TRUE(controls.stopRequested);
+        EXPECT_FALSE(controls.surface.has_value());
+        EXPECT_FALSE(controls.resize.has_value());
+        EXPECT_TRUE(mailbox.IsStopRequested());
+        EXPECT_EQ(wakeCount.load(std::memory_order_relaxed), 3U);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         GatewayPreservesFrozenOutcomesAndShutdownIsNarrow)
+    {
+        RenderTransportConfig config;
+        RenderResourceGateway gateway(config);
+        const auto invalid =
+            gateway.ReserveResource(AssetId{}, RenderResourceKind::Mesh);
+        EXPECT_EQ(invalid.code, RenderResourceReserveCode::InvalidAsset);
+        EXPECT_FALSE(invalid.handle.IsValid());
+        const auto invalidKind =
+            gateway.ReserveResource(AssetId{4001},
+                                    RenderResourceKind::Invalid);
+        EXPECT_EQ(invalidKind.code, RenderResourceReserveCode::KindMismatch);
+        EXPECT_FALSE(invalidKind.handle.IsValid());
+
+        const auto reserved =
+            gateway.ReserveResource(AssetId{4002}, RenderResourceKind::Material);
+        const auto existing =
+            gateway.ReserveResource(AssetId{4002}, RenderResourceKind::Material);
+        ASSERT_EQ(existing.code, RenderResourceReserveCode::Existing);
+        EXPECT_EQ(existing.handle, reserved.handle);
+        EXPECT_EQ(existing.status.code, RenderResourceStatusCode::Current);
+        EXPECT_EQ(existing.status.state, RenderResourcePublicState::Reserved);
+
+        gateway.BeginShutdown();
+        const auto shuttingDown =
+            gateway.ReserveResource(AssetId{4003}, RenderResourceKind::Mesh);
+        EXPECT_EQ(shuttingDown.code, RenderResourceReserveCode::ShuttingDown);
+        EXPECT_FALSE(shuttingDown.handle.IsValid());
+        EXPECT_EQ(gateway.TryEnqueueUpload({}).code,
+                  RenderUploadEnqueueCode::ShuttingDown);
+        EXPECT_EQ(gateway.RequestRelease(reserved.handle).code,
+                  RenderReleaseCode::ShuttingDown);
+        EXPECT_EQ(gateway.QueryResourceStatus(reserved.handle).state,
+                  RenderResourcePublicState::Reserved);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         GatewayRejectsRequestWhoseAssetDoesNotMatchReservation)
+    {
+        RenderTransportConfig config;
+        RenderResourceGateway gateway(config);
+        const auto reserved =
+            gateway.ReserveResource(AssetId{4101}, RenderResourceKind::Mesh);
+        ASSERT_EQ(reserved.code, RenderResourceReserveCode::Reserved);
+        const auto mismatched =
+            MakeMeshUploadRequest(reserved.handle, AssetId{4102}, 1);
+
+        EXPECT_EQ(gateway.TryEnqueueUpload(mismatched).code,
+                  RenderUploadEnqueueCode::InvalidRequest);
+        EXPECT_EQ(gateway.QueryResourceStatus(reserved.handle).state,
+                  RenderResourcePublicState::Reserved);
+        EXPECT_EQ(gateway.GetRetainedUploadCount(), 0U);
     }
 } // namespace
 } // namespace RVX

@@ -12,8 +12,17 @@
 add_library(RVX_RenderRuntimeCore STATIC)
 
 target_sources(RVX_RenderRuntimeCore PRIVATE
+    Private/Runtime/RenderControlMailbox.cpp
+    Private/Runtime/RenderFrameMailbox.cpp
+    Private/Runtime/RenderReleaseQueue.cpp
+    Private/Runtime/RenderResourceGateway.cpp
     Private/Runtime/RenderResourceReservationDirectory.cpp
     Private/Runtime/RenderResourceStatusTable.cpp
+    Private/Runtime/RenderUploadQueue.cpp
+)
+
+target_include_directories(RVX_RenderRuntimeCore PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
 )
 
 target_include_directories(RVX_RenderRuntimeCore PRIVATE

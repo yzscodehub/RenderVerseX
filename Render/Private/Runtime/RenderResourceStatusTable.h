@@ -37,12 +37,12 @@ namespace RVX
                              PackedRenderResourceStatus expected,
                              PackedRenderResourceStatus desired,
                              RenderStatusWriter writer) noexcept;
+        [[nodiscard]] uint32 GetCapacity() const noexcept;
 
     private:
         friend class RenderResourceReservationDirectory;
         friend struct RenderResourceStatusTableTestAccess;
 
-        [[nodiscard]] uint32 GetCapacity() const noexcept;
         bool LoadSlot(uint32 slot,
                       PackedRenderResourceStatus& status) const noexcept;
 
