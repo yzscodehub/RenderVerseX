@@ -9,6 +9,22 @@
 # - SceneRenderer, ViewData, RenderScene
 # - IRenderPass interface and built-in passes
 # =============================================================================
+add_library(RVX_RenderRuntimeCore STATIC)
+
+target_sources(RVX_RenderRuntimeCore PRIVATE
+    Private/Runtime/RenderResourceReservationDirectory.cpp
+    Private/Runtime/RenderResourceStatusTable.cpp
+)
+
+target_include_directories(RVX_RenderRuntimeCore PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Private>
+)
+
+target_link_libraries(RVX_RenderRuntimeCore PUBLIC
+    RVX::Core
+    RVX::RenderContracts
+)
+
 add_library(RVX_Render STATIC)
 
 target_sources(RVX_Render PRIVATE
@@ -110,6 +126,10 @@ target_link_libraries(RVX_Render PUBLIC
     RVX_Runtime
     Spatial
     RVX::ShaderCompiler
+)
+
+target_link_libraries(RVX_Render PRIVATE
+    RVX_RenderRuntimeCore
 )
 
 add_library(RVX::Render ALIAS RVX_Render)

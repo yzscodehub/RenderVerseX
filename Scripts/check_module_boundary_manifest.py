@@ -33,6 +33,7 @@ KNOWN_SUBMODULE_TARGETS = {
     "RVX::SampleCommon",
     "RVX_TestCommon",
     "RVX::RenderGraph",
+    "RVX_RenderRuntimeCore",
 }
 
 
