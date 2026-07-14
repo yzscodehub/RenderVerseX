@@ -105,6 +105,18 @@ set_tests_properties(Architecture.GateInputsFailClosed PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
 
+add_test(
+    NAME Architecture.RenderContractFieldChecker
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/test_render_contract_field_checker.py
+        -v
+)
+set_tests_properties(Architecture.RenderContractFieldChecker PROPERTIES
+    LABELS "unit;architecture"
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
     add_test(
         NAME Architecture.ModuleBoundaries
         COMMAND ${Python3_EXECUTABLE}
@@ -221,6 +233,15 @@ rvx_add_gtest(
     LIBS RVX::Core
     LABELS unit
     TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME RenderContractsValidation
+    SOURCES RenderContractsValidation/main.cpp
+    LIBS RVX::Core RVX::RenderContracts RVX::RenderExtraction
+    INCLUDES ${CMAKE_SOURCE_DIR}/RenderContracts/Private
+    LABELS "unit;architecture"
+    TIMEOUT 60
 )
 
 rvx_add_gtest(

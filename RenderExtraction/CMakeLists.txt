@@ -4,6 +4,7 @@
 add_library(RVX_RenderExtraction STATIC)
 
 target_sources(RVX_RenderExtraction PRIVATE
+    Private/RenderFramePacketBuilder.cpp
     Private/RenderFeatureSceneBridge.cpp
     Private/RenderProxySceneBridge.cpp
     Private/SceneEnvironmentIBLBridge.cpp
