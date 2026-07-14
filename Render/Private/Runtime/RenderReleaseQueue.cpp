@@ -30,6 +30,7 @@ namespace
         RuntimeFatalFunction runtimeFatalFunction,
         void* runtimeFatalContext)
         : m_reservationDirectory(reservationDirectory),
+          m_statusTable(statusTable),
           m_usableCapacity(
               GetUsableCapacityOrThrow(statusTable, statusSlotCapacity)),
           m_slots(m_usableCapacity),
@@ -79,17 +80,27 @@ namespace
 
     RenderResourceHandle RenderReleaseQueue::TryDequeue() noexcept
     {
-        std::lock_guard lock(m_mutex);
-        if (m_count == 0U)
+        RenderResourceHandle handle;
         {
-            return {};
+            std::lock_guard lock(m_mutex);
+            if (m_count == 0U)
+            {
+                return {};
+            }
+
+            handle = m_slots[m_head];
+            m_slots[m_head] = {};
+            m_head = (m_head + 1U) % m_usableCapacity;
+            --m_count;
         }
 
-        const RenderResourceHandle handle = m_slots[m_head];
-        m_slots[m_head] = {};
-        m_head = (m_head + 1U) % m_usableCapacity;
-        --m_count;
-        return handle;
+        const RenderResourceStatus status = m_statusTable.Query(handle);
+        if (status.code == RenderResourceStatusCode::Current &&
+            status.state == RenderResourcePublicState::Evicting)
+        {
+            return handle;
+        }
+        return {};
     }
 
     uint32 RenderReleaseQueue::GetUsableCapacity() const noexcept

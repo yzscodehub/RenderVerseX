@@ -9,7 +9,6 @@
 #include "RenderContracts/RenderFramePacket.h"
 
 #include <array>
-#include <atomic>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -75,6 +74,14 @@ namespace RVX
         uint32 discardedCount = 0;
     };
 
+    /**
+     * @brief Mutex-protected single-producer/single-consumer frame mailbox.
+     *
+     * Exactly one Update producer calls TryPublish(), and exactly one Render
+     * consumer calls AcquireLatest(). The producer-owned sequence value is
+     * validated and advanced before the mutex because it is never shared with
+     * another publisher.
+     */
     template <typename Packet, typename Validator>
     class BasicRenderFrameMailbox final
     {
@@ -110,24 +117,12 @@ namespace RVX
             }
 
             const uint64 sequence = packet->GetHeader().sequence;
-            uint64 observed =
-                m_lastPublishedSequence.load(std::memory_order_acquire);
-            for (;;)
+            if (sequence <= m_lastPublishedSequence)
             {
-                if (sequence <= observed)
-                {
-                    result.code = RenderFrameMailboxPublishCode::OutOfOrder;
-                    return result;
-                }
-                if (m_lastPublishedSequence.compare_exchange_weak(
-                        observed,
-                        sequence,
-                        std::memory_order_acq_rel,
-                        std::memory_order_acquire))
-                {
-                    break;
-                }
+                result.code = RenderFrameMailboxPublishCode::OutOfOrder;
+                return result;
             }
+            m_lastPublishedSequence = sequence;
 
             std::unique_ptr<const Packet> replaced;
             {
@@ -208,7 +203,8 @@ namespace RVX
         std::vector<std::unique_ptr<const Packet>> m_slots;
         uint32 m_head = 0;
         uint32 m_count = 0;
-        std::atomic<uint64> m_lastPublishedSequence = 0;
+        // Sole-producer-owned; never read by the Render consumer.
+        uint64 m_lastPublishedSequence = 0;
         WakeFunction m_wakeFunction = nullptr;
         void* m_wakeContext = nullptr;
     };

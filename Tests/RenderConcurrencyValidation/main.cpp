@@ -966,11 +966,11 @@ namespace
     }
 
     TEST(RenderConcurrencyValidation,
-         UploadCountPressureLeavesRejectedReservationUnchanged)
+         UploadCountPressurePrecedesBytePressureAndLeavesStateUnchanged)
     {
         RenderTransportConfig config;
         config.uploadRequestCapacity = 1;
-        config.uploadByteCapacity = 1024;
+        config.uploadByteCapacity = 36;
         std::atomic<uint32> wakeCount = 0;
         RenderResourceGateway gateway(config, &CountWake, &wakeCount);
         const auto first =
@@ -1127,6 +1127,37 @@ namespace
         EXPECT_EQ(queue.RequestRelease(first.handle).code,
                   RenderReleaseCode::StaleGeneration);
         EXPECT_EQ(wakeCount.load(std::memory_order_relaxed), 1U);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         ReleaseConsumerDropsHandleWhoseSlotWasReusedBeforeDequeue)
+    {
+        RenderResourceStatusTable table(RVX_TEST_CAPACITY);
+        RenderResourceReservationDirectory directory(table);
+        RenderReleaseQueue queue(directory, table, RVX_TEST_CAPACITY);
+        const auto first =
+            directory.ReserveResource(AssetId{3151}, RenderResourceKind::Mesh);
+        ASSERT_EQ(queue.RequestRelease(first.handle).code,
+                  RenderReleaseCode::Accepted);
+        ASSERT_TRUE(table.CompareExchange(
+            first.handle,
+            MakePacked(first.handle.generation,
+                       RenderResourcePublicState::Evicting),
+            MakePacked(first.handle.generation,
+                       RenderResourcePublicState::Released),
+            RenderStatusWriter::Render));
+
+        const auto replacement =
+            directory.ReserveResource(AssetId{3152}, RenderResourceKind::Mesh);
+        ASSERT_EQ(replacement.handle.slot, first.handle.slot);
+        ASSERT_GT(replacement.handle.generation, first.handle.generation);
+
+        EXPECT_FALSE(queue.TryDequeue().IsValid());
+        const RenderResourceStatus replacementStatus =
+            table.Query(replacement.handle);
+        EXPECT_EQ(replacementStatus.code, RenderResourceStatusCode::Current);
+        EXPECT_EQ(replacementStatus.state,
+                  RenderResourcePublicState::Reserved);
     }
 
     TEST(RenderConcurrencyValidation,

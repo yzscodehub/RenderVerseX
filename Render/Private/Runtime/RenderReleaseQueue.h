@@ -35,6 +35,11 @@ namespace RVX
 
         RenderReleaseResult RequestRelease(
             RenderResourceHandle handle) noexcept;
+        /**
+         * @brief Pop at most one ring entry and return it only while its exact
+         * generation is still Current and Evicting; otherwise consume that
+         * obsolete entry and return an invalid handle.
+         */
         [[nodiscard]] RenderResourceHandle TryDequeue() noexcept;
         [[nodiscard]] uint32 GetUsableCapacity() const noexcept;
         [[nodiscard]] uint32 GetPendingCount() const noexcept;
@@ -46,6 +51,7 @@ namespace RVX
         void RuntimeFatal(const char* message) const noexcept;
 
         RenderResourceReservationDirectory& m_reservationDirectory;
+        const RenderResourceStatusTable& m_statusTable;
         uint32 m_usableCapacity = 0;
         mutable std::mutex m_mutex;
         std::vector<RenderResourceHandle> m_slots;

@@ -69,15 +69,15 @@ namespace
     RenderUploadEnqueueResult RenderUploadQueue::TryEnqueue(
         const ResourceUploadRequestRef& request) noexcept
     {
-        if (!IsRequestLocallyValid(request))
-        {
-            return MakeUploadResult(RenderUploadEnqueueCode::InvalidRequest);
-        }
-
-        const RenderResourceHandle handle = request->GetHandle();
-        const uint64 requestBytes = request->GetDerivedPayloadBytes();
         {
             std::lock_guard lock(m_mutex);
+            if (!IsRequestLocallyValid(request))
+            {
+                return MakeUploadResult(
+                    RenderUploadEnqueueCode::InvalidRequest);
+            }
+
+            const RenderResourceHandle handle = request->GetHandle();
             const RenderResourceStatus status = m_statusTable.Query(handle);
             if (status.code != RenderResourceStatusCode::Current ||
                 status.state != RenderResourcePublicState::Reserved)
@@ -89,6 +89,8 @@ namespace
                 return MakeUploadResult(
                     RenderUploadEnqueueCode::QueueFullByCount);
             }
+
+            const uint64 requestBytes = request->GetDerivedPayloadBytes();
             if (requestBytes > m_byteCapacity ||
                 m_retainedBytes > m_byteCapacity - requestBytes)
             {
