@@ -37,6 +37,22 @@ target_link_libraries(RVX_TestCommon PUBLIC
     RVX::Core
 )
 
+add_library(RVX_RenderTestSupport STATIC
+    Common/RenderRuntimeTestSupport.cpp
+)
+
+target_include_directories(RVX_RenderTestSupport PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_include_directories(RVX_RenderTestSupport PRIVATE
+    ${CMAKE_SOURCE_DIR}/Render/Private
+)
+
+target_link_libraries(RVX_RenderTestSupport PUBLIC
+    RVX_RenderRuntimeCore
+)
+
 function(rvx_add_gtest)
     set(options "")
     set(oneValueArgs NAME TIMEOUT LABELS)
@@ -264,6 +280,19 @@ rvx_add_gtest(
         RVX::RenderContracts
         RVX_RenderRuntimeCore
     INCLUDES ${CMAKE_SOURCE_DIR}/Render/Private
+    LABELS "unit;architecture"
+    TIMEOUT 60
+)
+
+rvx_add_gtest(
+    NAME RenderExecutorValidation
+    SOURCES RenderExecutorValidation/main.cpp
+    LIBS
+        RVX_RenderTestSupport
+        RVX_RenderRuntimeCore
+    INCLUDES
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/Render/Private
     LABELS "unit;architecture"
     TIMEOUT 60
 )

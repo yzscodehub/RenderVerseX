@@ -32,6 +32,7 @@ KNOWN_SUBMODULE_TARGET_OWNERS = {
     "RVX_SampleCommon": "Samples",
     "RVX::SampleCommon": "Samples",
     "RVX_TestCommon": "Tests",
+    "RVX_RenderTestSupport": "Tests",
     "RVX::RenderGraph": "Render",
     "RVX_RenderRuntimeCore": "Render",
 }

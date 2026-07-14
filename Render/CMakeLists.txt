@@ -11,7 +11,10 @@
 # =============================================================================
 add_library(RVX_RenderRuntimeCore STATIC)
 
+find_package(Threads REQUIRED)
+
 target_sources(RVX_RenderRuntimeCore PRIVATE
+    Private/Runtime/DedicatedRenderExecutor.cpp
     Private/Runtime/RenderControlMailbox.cpp
     Private/Runtime/RenderFrameMailbox.cpp
     Private/Runtime/RenderReleaseQueue.cpp
@@ -19,7 +22,26 @@ target_sources(RVX_RenderRuntimeCore PRIVATE
     Private/Runtime/RenderResourceReservationDirectory.cpp
     Private/Runtime/RenderResourceStatusTable.cpp
     Private/Runtime/RenderUploadQueue.cpp
+    Private/Runtime/RenderThreadGuard.cpp
 )
+
+if(APPLE)
+    target_sources(RVX_RenderRuntimeCore PRIVATE
+        Private/Runtime/RenderThreadPlatformApple.mm
+    )
+    set_source_files_properties(
+        Private/Runtime/RenderThreadPlatformApple.mm
+        PROPERTIES COMPILE_OPTIONS "-fno-objc-arc"
+    )
+    find_library(RVX_FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    target_link_libraries(RVX_RenderRuntimeCore PRIVATE
+        ${RVX_FOUNDATION_FRAMEWORK}
+    )
+else()
+    target_sources(RVX_RenderRuntimeCore PRIVATE
+        Private/Runtime/RenderThreadPlatform.cpp
+    )
+endif()
 
 target_include_directories(RVX_RenderRuntimeCore PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
@@ -32,6 +54,10 @@ target_include_directories(RVX_RenderRuntimeCore PRIVATE
 target_link_libraries(RVX_RenderRuntimeCore PUBLIC
     RVX::Core
     RVX::RenderContracts
+)
+
+target_link_libraries(RVX_RenderRuntimeCore PRIVATE
+    Threads::Threads
 )
 
 add_library(RVX_Render STATIC)

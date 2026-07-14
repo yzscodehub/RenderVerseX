@@ -75,6 +75,42 @@ def run_checker(root: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def write_render_test_support_fixture(root: Path, target_directory: str) -> None:
+    (root / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.21)\n",
+        encoding="utf-8",
+    )
+    for module_name in ("Tests", "Scene"):
+        module_directory = root / module_name
+        module_directory.mkdir(parents=True)
+        (module_directory / "CMakeLists.txt").write_text(
+            "add_library(RVX_RenderTestSupport STATIC)\n"
+            if module_name == target_directory
+            else "",
+            encoding="utf-8",
+        )
+
+    docs_directory = root / "Docs"
+    docs_directory.mkdir(parents=True)
+    manifest = {
+        "projectIncludePrefixes": ["Tests", "Scene"],
+        "modules": {
+            "Tests": {
+                "path": "Tests",
+                "allowed": ["*"],
+            },
+            "Scene": {
+                "path": "Scene",
+                "allowed": ["Scene"],
+            },
+        },
+    }
+    (docs_directory / "module-boundaries.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+
+
 class ModuleBoundaryManifestTests(unittest.TestCase):
     def test_render_runtime_core_is_valid_render_submodule(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -106,6 +142,26 @@ class ModuleBoundaryManifestTests(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0, output)
             self.assertIn("declared under Scene, not Render", output)
+
+    def test_render_test_support_is_valid_tests_submodule(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            write_render_test_support_fixture(root, "Tests")
+
+            result = run_checker(root)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_render_test_support_in_registered_wrong_module_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            write_render_test_support_fixture(root, "Scene")
+
+            result = run_checker(root)
+            output = result.stdout + result.stderr
+
+            self.assertNotEqual(result.returncode, 0, output)
+            self.assertIn("declared under Scene, not Tests", output)
 
 
 if __name__ == "__main__":
