@@ -5,28 +5,28 @@ namespace RVX
 {
     DX12SwapChain::DX12SwapChain(DX12Device* device, const RHISwapChainDesc& desc)
         : m_device(device)
-        , m_width(desc.width)
-        , m_height(desc.height)
-        , m_format(desc.format)
+        , m_width(desc.surface.width)
+        , m_height(desc.surface.height)
+        , m_format(desc.surface.preferredFormat)
         , m_bufferCount(desc.bufferCount)
-        , m_vsync(desc.vsync)
+        , m_vsync(desc.surface.vsync)
     {
         if (desc.debugName)
         {
             SetDebugName(desc.debugName);
         }
 
-        HWND hwnd = static_cast<HWND>(desc.windowHandle);
-        if (!hwnd)
+        if (!desc.surface.IsValidFor(RHIBackendType::DX12))
         {
-            RVX_RHI_ERROR("Invalid window handle for swap chain");
+            RVX_RHI_ERROR("Invalid Win32 surface for DX12 swap chain");
             return;
         }
+        HWND hwnd = reinterpret_cast<HWND>(desc.surface.nativeWindow);
 
         DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
-        swapChainDesc.Width = desc.width;
-        swapChainDesc.Height = desc.height;
-        swapChainDesc.Format = ToDXGIFormat(desc.format);
+        swapChainDesc.Width = desc.surface.width;
+        swapChainDesc.Height = desc.surface.height;
+        swapChainDesc.Format = ToDXGIFormat(desc.surface.preferredFormat);
         swapChainDesc.Stereo = FALSE;
         swapChainDesc.SampleDesc.Count = 1;
         swapChainDesc.SampleDesc.Quality = 0;
@@ -48,7 +48,7 @@ namespace RVX
         if (FAILED(hr))
         {
             // Some drivers reject sRGB swapchains; fall back to UNORM.
-            if (desc.format == RHIFormat::BGRA8_UNORM_SRGB)
+            if (desc.surface.preferredFormat == RHIFormat::BGRA8_UNORM_SRGB)
             {
                 RVX_RHI_WARN("DX12 swapchain sRGB not supported (0x{:08X}), falling back to UNORM",
                     static_cast<uint32>(hr));
@@ -78,7 +78,8 @@ namespace RVX
         CreateBackBufferResources();
 
         RVX_RHI_INFO("DX12 SwapChain created: {}x{}, {} buffers, format {}",
-            desc.width, desc.height, desc.bufferCount, static_cast<int>(desc.format));
+            desc.surface.width, desc.surface.height, desc.bufferCount,
+            static_cast<int>(desc.surface.preferredFormat));
     }
 
     DX12SwapChain::~DX12SwapChain()

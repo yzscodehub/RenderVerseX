@@ -6,20 +6,19 @@ namespace RVX
 {
     OpenGLSwapChain::OpenGLSwapChain(OpenGLDevice* device, const RHISwapChainDesc& desc)
         : m_device(device)
-        , m_width(desc.width)
-        , m_height(desc.height)
-        , m_format(desc.format)
+        , m_width(desc.surface.width)
+        , m_height(desc.surface.height)
+        , m_format(desc.surface.preferredFormat)
         , m_bufferCount(desc.bufferCount)
-        , m_vsync(desc.vsync)
+        , m_vsync(desc.surface.vsync)
     {
-        // In OpenGL with GLFW, the window handle is the GLFWwindow*
-        m_window = static_cast<GLFWwindow*>(desc.windowHandle);
-        
-        if (!m_window)
+        if (!desc.surface.IsValidFor(RHIBackendType::OpenGL))
         {
-            RVX_RHI_ERROR("OpenGLSwapChain: Invalid window handle");
+            RVX_RHI_ERROR("OpenGLSwapChain: Invalid GLFW backend surface");
             return;
         }
+
+        m_window = reinterpret_cast<GLFWwindow*>(desc.surface.backendWindow);
 
         // Set VSync
         glfwSwapInterval(m_vsync ? 1 : 0);

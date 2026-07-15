@@ -6,6 +6,8 @@
 #include "VulkanUpload.h"
 #include "RHI/RHITexture.h"
 
+#include <GLFW/glfw3.h>
+
 #include <set>
 #include <algorithm>
 #include <cstdio>
@@ -100,7 +102,7 @@ namespace RVX
 
         m_validationEnabled = desc.enableDebugLayer;
 
-        if (!CreateInstance(desc.enableDebugLayer))
+        if (!CreateInstance(desc))
         {
             RVX_RHI_ERROR("Failed to create Vulkan instance");
             return;
@@ -230,8 +232,9 @@ namespace RVX
     // =============================================================================
     // Instance Creation
     // =============================================================================
-    bool VulkanDevice::CreateInstance(bool enableValidation)
+    bool VulkanDevice::CreateInstance(const RHIDeviceDesc& desc)
     {
+        bool enableValidation = desc.enableDebugLayer;
         // Check validation layer support
         if (enableValidation)
         {
@@ -267,12 +270,28 @@ namespace RVX
         appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
         appInfo.apiVersion = VK_API_VERSION_1_3;
 
-        std::vector<const char*> extensions = {
-            VK_KHR_SURFACE_EXTENSION_NAME,
+        std::vector<const char*> extensions;
+        if (desc.initialSurface.backendWindow != 0)
+        {
+            uint32 glfwExtensionCount = 0;
+            const char** glfwExtensions =
+                glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+            if (!glfwExtensions || glfwExtensionCount == 0)
+            {
+                RVX_RHI_ERROR("GLFW did not provide required Vulkan instance extensions");
+                return false;
+            }
+            extensions.assign(glfwExtensions, glfwExtensions + glfwExtensionCount);
+        }
+        else
+        {
+            extensions = {
+                VK_KHR_SURFACE_EXTENSION_NAME,
 #ifdef _WIN32
-            VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+                VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
 #endif
-        };
+            };
+        }
 
         if (enableValidation)
         {
@@ -1256,6 +1275,11 @@ namespace RVX
 
     RHISwapChainRef VulkanDevice::CreateSwapChain(const RHISwapChainDesc& desc)
     {
+        if (!desc.surface.IsValidFor(RHIBackendType::Vulkan))
+        {
+            RVX_RHI_ERROR("Vulkan swap chain requires a valid GLFW-backed surface");
+            return nullptr;
+        }
         auto swapChain = CreateVulkanSwapChain(this, desc);
         m_primarySwapChain = static_cast<VulkanSwapChain*>(swapChain.Get());
         return swapChain;

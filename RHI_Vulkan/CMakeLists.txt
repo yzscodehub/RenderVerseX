@@ -27,4 +27,8 @@ target_link_libraries(RVX_RHI_Vulkan PUBLIC
     GPUOpen::VulkanMemoryAllocator
 )
 
+target_link_libraries(RVX_RHI_Vulkan PRIVATE
+    glfw
+)
+
 add_library(RVX::RHI_Vulkan ALIAS RVX_RHI_Vulkan)

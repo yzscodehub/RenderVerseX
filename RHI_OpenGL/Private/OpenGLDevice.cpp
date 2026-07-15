@@ -82,10 +82,20 @@ namespace RVX
     {
         RVX_RHI_INFO("Creating OpenGL Device...");
 
+        if (!desc.initialSurface.IsValidFor(RHIBackendType::OpenGL))
+        {
+            RVX_RHI_ERROR("OpenGL requires a valid GLFW backend surface at device creation");
+            return;
+        }
+
+        auto* backendWindow =
+            reinterpret_cast<GLFWwindow*>(desc.initialSurface.backendWindow);
+        glfwMakeContextCurrent(backendWindow);
+
         // Store the GL thread ID
         m_glThreadId = std::this_thread::get_id();
 
-        // Initialize OpenGL context (assumes GLFW window already exists with context)
+        // Initialize OpenGL functions after this thread has claimed the GLFW context.
         if (!InitializeContext())
         {
             RVX_RHI_ERROR("Failed to initialize OpenGL context");

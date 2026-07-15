@@ -44,8 +44,9 @@ namespace RVX
      * config.enableValidation = true;
      * 
      * RenderContext ctx;
-     * ctx.Initialize(config);
-     * ctx.CreateSwapChain(windowHandle, 1280, 720);
+     * NativeSurfaceDesc surface;
+     * ctx.Initialize(config, surface);
+     * ctx.CreateSwapChain(surface);
      * 
      * // Main loop
      * while (running)
@@ -79,7 +80,8 @@ namespace RVX
          * @param config Configuration options
          * @return true if initialization succeeded
          */
-        bool Initialize(const RenderContextConfig& config);
+        bool Initialize(const RenderContextConfig& config,
+                        const NativeSurfaceDesc& initialSurface = {});
 
         /**
          * @brief Shutdown and release all resources
@@ -102,7 +104,7 @@ namespace RVX
          * @param height Initial height
          * @return true if creation succeeded
          */
-        bool CreateSwapChain(void* windowHandle, uint32_t width, uint32_t height);
+        bool CreateSwapChain(const NativeSurfaceDesc& surface);
 
         /**
          * @brief Resize the swap chain
@@ -206,6 +208,7 @@ namespace RVX
         uint32_t m_frameIndex = 0;
         uint64_t m_frameNumber = 0;
         bool m_supportsAsyncCompute = false;
+        uint64 m_surfaceGeneration = 0;
     };
 
 } // namespace RVX

@@ -14,7 +14,8 @@ RenderContext::~RenderContext()
     Shutdown();
 }
 
-bool RenderContext::Initialize(const RenderContextConfig& config)
+bool RenderContext::Initialize(const RenderContextConfig& config,
+                               const NativeSurfaceDesc& initialSurface)
 {
     if (m_initialized)
     {
@@ -28,6 +29,7 @@ bool RenderContext::Initialize(const RenderContextConfig& config)
 
     // Create RHI device
     RHIDeviceDesc deviceDesc;
+    deviceDesc.initialSurface = initialSurface;
     deviceDesc.enableDebugLayer = config.enableValidation;
     deviceDesc.enableGPUValidation = config.enableGPUValidation;
     deviceDesc.applicationName = config.appName;
@@ -61,6 +63,7 @@ bool RenderContext::Initialize(const RenderContextConfig& config)
     m_initialized = true;
     m_frameIndex = 0;
     m_frameNumber = 0;
+    m_surfaceGeneration = 0;
 
     RVX_CORE_INFO("RenderContext initialized successfully");
     return true;
@@ -84,11 +87,12 @@ void RenderContext::Shutdown()
 
     m_initialized = false;
     m_frameActive = false;
+    m_surfaceGeneration = 0;
 
     RVX_CORE_INFO("RenderContext shutdown complete");
 }
 
-bool RenderContext::CreateSwapChain(void* windowHandle, uint32_t width, uint32_t height)
+bool RenderContext::CreateSwapChain(const NativeSurfaceDesc& surface)
 {
     if (!m_device)
     {
@@ -96,9 +100,18 @@ bool RenderContext::CreateSwapChain(void* windowHandle, uint32_t width, uint32_t
         return false;
     }
 
-    if (!windowHandle)
+    const RHIBackendType backend = m_device->GetBackendType();
+    if (!surface.IsValidFor(backend))
     {
-        RVX_CORE_ERROR("RenderContext: Invalid window handle");
+        RVX_CORE_ERROR("RenderContext: Invalid native surface for {}", ToString(backend));
+        return false;
+    }
+
+    if (m_swapChain && surface.generation <= m_surfaceGeneration)
+    {
+        RVX_CORE_WARN("RenderContext: Ignoring stale surface generation {} (current {})",
+                      surface.generation,
+                      m_surfaceGeneration);
         return false;
     }
 
@@ -110,12 +123,8 @@ bool RenderContext::CreateSwapChain(void* windowHandle, uint32_t width, uint32_t
     }
 
     RHISwapChainDesc swapChainDesc;
-    swapChainDesc.windowHandle = windowHandle;
-    swapChainDesc.width = width;
-    swapChainDesc.height = height;
-    swapChainDesc.format = RHIFormat::BGRA8_UNORM;
+    swapChainDesc.surface = surface;
     swapChainDesc.bufferCount = m_config.frameBuffering + 1;  // One extra for presentation
-    swapChainDesc.vsync = m_config.vsync;
     swapChainDesc.debugName = "MainSwapChain";
 
     m_swapChain = m_device->CreateSwapChain(swapChainDesc);
@@ -125,7 +134,10 @@ bool RenderContext::CreateSwapChain(void* windowHandle, uint32_t width, uint32_t
         return false;
     }
 
-    RVX_CORE_INFO("RenderContext: Created swap chain {}x{}", width, height);
+    m_surfaceGeneration = surface.generation;
+    RVX_CORE_INFO("RenderContext: Created swap chain {}x{}",
+                  surface.width,
+                  surface.height);
     return true;
 }
 

@@ -310,6 +310,7 @@ rvx_add_gtest(
     NAME RHIContractValidation
     SOURCES RHIContractValidation/main.cpp
     LIBS RVX::RHI
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     LABELS unit
     TIMEOUT 30
 )

@@ -54,7 +54,15 @@ void RenderSubsystem::Initialize(const RenderConfig& config)
     ctxConfig.frameBuffering = config.frameBuffering;
     ctxConfig.appName = "RenderVerseX";
 
-    if (!m_renderContext->Initialize(ctxConfig))
+    NativeSurfaceDesc initialSurface;
+    if (m_config.autoBindWindow && m_windowSubsystem)
+    {
+        initialSurface = m_windowSubsystem->CaptureRenderSurface();
+        initialSurface.vsync = config.vsync;
+        m_windowSubsystem->ReleaseGraphicsContextFromCurrentThread();
+    }
+
+    if (!m_renderContext->Initialize(ctxConfig, initialSurface))
     {
         RVX_CORE_ERROR("RenderSubsystem: Failed to initialize render context");
         m_renderContext.reset();
@@ -70,7 +78,14 @@ void RenderSubsystem::Initialize(const RenderConfig& config)
     // Auto-bind to window if enabled
     if (m_config.autoBindWindow)
     {
-        AutoBindWindow();
+        if (initialSurface.IsValidFor(actualBackend))
+        {
+            SetWindow(initialSurface);
+        }
+        else
+        {
+            AutoBindWindow();
+        }
     }
 
     // Subscribe to window resize events
@@ -223,15 +238,17 @@ RenderGraph* RenderSubsystem::GetRenderGraph() const
     return m_sceneRenderer ? m_sceneRenderer->GetRenderGraph() : nullptr;
 }
 
-void RenderSubsystem::SetWindow(void* windowHandle, uint32_t width, uint32_t height)
+void RenderSubsystem::SetWindow(const NativeSurfaceDesc& surface)
 {
-    RVX_CORE_INFO("RenderSubsystem setting window: {}x{}", width, height);
+    RVX_CORE_INFO("RenderSubsystem setting window: {}x{}",
+                  surface.width,
+                  surface.height);
 
     if (m_renderContext)
     {
         if (!m_renderContext->HasSwapChain())
         {
-            m_renderContext->CreateSwapChain(windowHandle, width, height);
+            m_renderContext->CreateSwapChain(surface);
         }
         else
         {
@@ -241,7 +258,7 @@ void RenderSubsystem::SetWindow(void* windowHandle, uint32_t width, uint32_t hei
             {
                 m_sceneRenderer->PrepareForSwapChainResize();
             }
-            m_renderContext->ResizeSwapChain(width, height);
+            m_renderContext->ResizeSwapChain(surface.width, surface.height);
         }
     }
 }
@@ -320,26 +337,25 @@ void RenderSubsystem::AutoBindWindow()
         return;
     }
 
-    RHIBackendType backendType = RHIBackendType::None;
-    if (m_renderContext && m_renderContext->GetDevice())
+    if (!m_renderContext || !m_renderContext->GetDevice())
     {
-        backendType = m_renderContext->GetDevice()->GetBackendType();
-    }
-
-    void* handle = backendType == RHIBackendType::OpenGL ?
-        m_windowSubsystem->GetInternalHandle() :
-        m_windowSubsystem->GetNativeHandle();
-    if (!handle)
-    {
-        RVX_CORE_WARN("RenderSubsystem: WindowSubsystem has no valid window handle");
+        RVX_CORE_WARN("RenderSubsystem: RenderContext has no valid device");
         return;
     }
 
-    uint32_t width, height;
-    m_windowSubsystem->GetFramebufferSize(width, height);
+    NativeSurfaceDesc surface = m_windowSubsystem->CaptureRenderSurface();
+    surface.vsync = m_config.vsync;
+    if (!surface.IsValidFor(m_renderContext->GetDevice()->GetBackendType()))
+    {
+        RVX_CORE_WARN("RenderSubsystem: WindowSubsystem has no valid native surface");
+        return;
+    }
 
-    RVX_CORE_INFO("RenderSubsystem: Auto-binding to window {}x{}", width, height);
-    SetWindow(handle, width, height);
+    m_windowSubsystem->ReleaseGraphicsContextFromCurrentThread();
+    RVX_CORE_INFO("RenderSubsystem: Auto-binding to window {}x{}",
+                  surface.width,
+                  surface.height);
+    SetWindow(surface);
 }
 
 } // namespace RVX

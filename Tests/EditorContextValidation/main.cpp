@@ -3223,7 +3223,12 @@ namespace
         EditorMainSwapChainService service;
 
         EXPECT_FALSE(service.HasSwapChain(nullptr));
-        EXPECT_EQ(nullptr, service.ResolveWindowHandle(nullptr, nullptr));
+        const NativeSurfaceDesc missingSurface = service.CaptureSurface(
+            nullptr,
+            RHIBackendType::DX12,
+            RHIFormat::BGRA8_UNORM,
+            true);
+        EXPECT_EQ(NativeSurfacePlatform::None, missingSurface.platform);
 
         const EditorMainSwapChainEnsureResult result = service.Ensure({});
         EXPECT_FALSE(result.ready);
@@ -3231,7 +3236,7 @@ namespace
         EXPECT_FALSE(result.resized);
         EXPECT_EQ(0u, result.width);
         EXPECT_EQ(0u, result.height);
-        EXPECT_EQ(nullptr, result.windowHandle);
+        EXPECT_EQ(NativeSurfacePlatform::None, result.surface.platform);
         EXPECT_EQ("Main window or RenderContext unavailable",
                   result.fallbackReason);
     }

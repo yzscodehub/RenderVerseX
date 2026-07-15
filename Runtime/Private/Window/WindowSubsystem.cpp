@@ -105,4 +105,42 @@ void* WindowSubsystem::GetInternalHandle() const
     return m_window ? m_window->GetInternalHandle() : nullptr;
 }
 
+NativeSurfaceDesc WindowSubsystem::CaptureRenderSurface(RHIFormat preferredFormat)
+{
+    NativeSurfaceDesc surface;
+    if (!m_window)
+    {
+        return surface;
+    }
+
+    const HAL::WindowRenderSurfaceHandles handles =
+        m_window->CaptureRenderSurfaceHandles();
+#if defined(_WIN32)
+    surface.platform = NativeSurfacePlatform::Win32;
+#elif defined(__APPLE__)
+    surface.platform = NativeSurfacePlatform::Cocoa;
+#else
+    surface.platform = NativeSurfacePlatform::GLFW;
+#endif
+    surface.nativeWindow = handles.nativeWindow;
+    surface.nativeDisplay = handles.nativeDisplay;
+    surface.nativeLayer = handles.nativeLayer;
+    surface.backendWindow = handles.backendWindow;
+    surface.width = handles.width;
+    surface.height = handles.height;
+    surface.contentScale = handles.contentScale;
+    surface.preferredFormat = preferredFormat;
+    surface.vsync = m_config.vsync;
+    surface.generation = ++m_surfaceGeneration;
+    return surface;
+}
+
+void WindowSubsystem::ReleaseGraphicsContextFromCurrentThread()
+{
+    if (m_window)
+    {
+        m_window->ReleaseGraphicsContextFromCurrentThread();
+    }
+}
+
 } // namespace RVX

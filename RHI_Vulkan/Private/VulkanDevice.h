@@ -123,7 +123,7 @@ namespace RVX
 
     private:
         void LoadDebugUtilsFunctions();
-        bool CreateInstance(bool enableValidation);
+        bool CreateInstance(const RHIDeviceDesc& desc);
         bool SelectPhysicalDevice();
         bool CreateLogicalDevice();
         bool CreateAllocator();

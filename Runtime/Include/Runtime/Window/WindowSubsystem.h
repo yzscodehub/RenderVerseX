@@ -9,6 +9,7 @@
 #include "Core/Event/EventBus.h"
 #include "HAL/Window/IWindow.h"
 #include "HAL/Window/WindowEvents.h"
+#include "RHI/RHINativeSurface.h"
 #include <memory>
 #include <functional>
 
@@ -79,11 +80,19 @@ namespace RVX
         /// Get backend implementation handle (for APIs that need the windowing object)
         void* GetInternalHandle() const;
 
+        /// Capture and tag the current non-owning rendering surface value.
+        NativeSurfaceDesc CaptureRenderSurface(
+            RHIFormat preferredFormat = RHIFormat::BGRA8_UNORM);
+
+        /// Release an OpenGL context from the main/update thread before Render claims it.
+        void ReleaseGraphicsContextFromCurrentThread();
+
     private:
         WindowConfig m_config;
         std::unique_ptr<HAL::IWindow> m_window;
         uint32_t m_lastWidth = 0;
         uint32_t m_lastHeight = 0;
+        uint64 m_surfaceGeneration = 0;
     };
 
 } // namespace RVX

@@ -2,41 +2,55 @@
 #include "VulkanDevice.h"
 #include "VulkanResources.h"
 
+#include <GLFW/glfw3.h>
+
 #include <algorithm>
 
 namespace RVX
 {
     VulkanSwapChain::VulkanSwapChain(VulkanDevice* device, const RHISwapChainDesc& desc)
         : m_device(device)
-        , m_width(desc.width)
-        , m_height(desc.height)
-        , m_format(desc.format)
-        , m_vsync(desc.vsync)
-        , m_windowHandle(desc.windowHandle)
+        , m_width(desc.surface.width)
+        , m_height(desc.surface.height)
+        , m_format(desc.surface.preferredFormat)
+        , m_vsync(desc.surface.vsync)
+        , m_backendWindow(
+              reinterpret_cast<GLFWwindow*>(desc.surface.backendWindow))
     {
-        if (m_device)
+        if (!m_device || !desc.surface.IsValidFor(RHIBackendType::Vulkan))
         {
-            m_device->SetPrimarySwapChain(this);
-        }
-        // Create surface
-#ifdef _WIN32
-        VkWin32SurfaceCreateInfoKHR surfaceInfo = {VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
-        surfaceInfo.hwnd = static_cast<HWND>(desc.windowHandle);
-        surfaceInfo.hinstance = GetModuleHandle(nullptr);
-        VK_CHECK(vkCreateWin32SurfaceKHR(device->GetInstance(), &surfaceInfo, nullptr, &m_surface));
-#endif
-
-        // Verify present support
-        VkBool32 presentSupport = VK_FALSE;
-        vkGetPhysicalDeviceSurfaceSupportKHR(device->GetPhysicalDevice(), 
-            device->GetGraphicsQueueFamily(), m_surface, &presentSupport);
-        
-        if (!presentSupport)
-        {
-            RVX_RHI_ERROR("Graphics queue does not support present");
+            RVX_RHI_ERROR("VulkanSwapChain: Invalid GLFW-backed native surface");
             return;
         }
 
+        // Create surface
+        const VkResult surfaceResult = glfwCreateWindowSurface(
+            device->GetInstance(), m_backendWindow, nullptr, &m_surface);
+        if (surfaceResult != VK_SUCCESS || m_surface == VK_NULL_HANDLE)
+        {
+            RVX_RHI_ERROR("glfwCreateWindowSurface failed: {} ({})",
+                          VkResultToString(surfaceResult),
+                          static_cast<int32>(surfaceResult));
+            return;
+        }
+
+        // Verify present support
+        VkBool32 presentSupport = VK_FALSE;
+        const VkResult presentSupportResult = vkGetPhysicalDeviceSurfaceSupportKHR(
+            device->GetPhysicalDevice(),
+            device->GetGraphicsQueueFamily(),
+            m_surface,
+            &presentSupport);
+
+        if (presentSupportResult != VK_SUCCESS || !presentSupport)
+        {
+            RVX_RHI_ERROR("Graphics queue present support query failed: {} ({})",
+                          VkResultToString(presentSupportResult),
+                          static_cast<int32>(presentSupportResult));
+            return;
+        }
+
+        m_device->SetPrimarySwapChain(this);
         CreateSwapchain();
         CreateImageViews();
 
@@ -399,7 +413,12 @@ namespace RVX
     // Factory
     RHISwapChainRef CreateVulkanSwapChain(VulkanDevice* device, const RHISwapChainDesc& desc)
     {
-        return Ref<VulkanSwapChain>(new VulkanSwapChain(device, desc));
+        Ref<VulkanSwapChain> swapChain(new VulkanSwapChain(device, desc));
+        if (!swapChain->IsValid())
+        {
+            return nullptr;
+        }
+        return swapChain;
     }
 
 } // namespace RVX

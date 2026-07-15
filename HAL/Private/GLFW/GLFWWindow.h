@@ -29,6 +29,8 @@ namespace RVX::HAL
         float GetDpiScale() const override;
         void* GetNativeHandle() const override;
         void* GetInternalHandle() const override { return m_window; }
+        WindowRenderSurfaceHandles CaptureRenderSurfaceHandles() override;
+        void ReleaseGraphicsContextFromCurrentThread() override;
 
         /// Get the underlying GLFW window handle
         GLFWwindow* GetGLFWWindow() const { return m_window; }

@@ -123,8 +123,8 @@ namespace RVX
         // Window Association
         // =====================================================================
 
-        /// Set the window for rendering
-        void SetWindow(void* windowHandle, uint32_t width, uint32_t height);
+        /// Set the captured native surface for rendering
+        void SetWindow(const NativeSurfaceDesc& surface);
 
         /// Set the window subsystem used by auto window binding.
         void SetWindowSubsystem(WindowSubsystem* windowSubsystem);

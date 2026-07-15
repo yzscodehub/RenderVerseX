@@ -6,6 +6,7 @@
  */
 
 #include "Core/Types.h"
+#include "HAL/Window/WindowRenderSurfaceHandles.h"
 #include <memory>
 
 // Undefine Windows macros that conflict with our API
@@ -63,6 +64,12 @@ namespace RVX::HAL
         /// Get internal implementation handle (e.g., GLFWwindow* for GLFW backend)
         /// Used for input systems that need direct access to the windowing library
         virtual void* GetInternalHandle() const = 0;
+
+        /// Capture non-owning rendering handles on the main/update thread.
+        virtual WindowRenderSurfaceHandles CaptureRenderSurfaceHandles() = 0;
+
+        /// Release a graphics context that was made current during window creation.
+        virtual void ReleaseGraphicsContextFromCurrentThread() = 0;
     };
 
     /**

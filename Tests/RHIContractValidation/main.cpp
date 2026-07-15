@@ -1,11 +1,16 @@
 #include "RHI/RHICapabilities.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
+#include "RHI/RHINativeSurface.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <limits>
 #include <string>
+#include <type_traits>
 
 namespace RVX::Tests
 {
@@ -105,7 +110,211 @@ namespace RVX::Tests
                              report.renderGraphBaselineMissingRequirements.end(),
                              requirement) != report.renderGraphBaselineMissingRequirements.end();
         }
+
+        std::string ReadSource(const std::filesystem::path& relativePath)
+        {
+            std::ifstream stream(std::filesystem::path(RVX_SOURCE_DIR) / relativePath,
+                                 std::ios::binary);
+            return {std::istreambuf_iterator<char>(stream),
+                    std::istreambuf_iterator<char>()};
+        }
+
+        template <typename T>
+        concept HasWindowHandleField = requires(T value) { value.windowHandle; };
+
+        template <typename T>
+        concept HasWidthField = requires(T value) { value.width; };
+
+        template <typename T>
+        concept HasHeightField = requires(T value) { value.height; };
+
+        template <typename T>
+        concept HasFormatField = requires(T value) { value.format; };
+
+        template <typename T>
+        concept HasVsyncField = requires(T value) { value.vsync; };
+
+        NativeSurfaceDesc MakeSurface(NativeSurfacePlatform platform)
+        {
+            NativeSurfaceDesc surface;
+            surface.platform = platform;
+            surface.nativeWindow = 0x1000;
+            surface.nativeDisplay = 0x2000;
+            surface.nativeLayer = 0x3000;
+            surface.backendWindow = 0x4000;
+            surface.width = 1280;
+            surface.height = 720;
+            surface.contentScale = 1.0f;
+            surface.generation = 1;
+            return surface;
+        }
     } // namespace
+
+    TEST(RHIContractValidation, NativeSurfaceRequiresBackendSpecificHandles)
+    {
+        EXPECT_TRUE(MakeSurface(NativeSurfacePlatform::Win32).IsValidFor(RHIBackendType::DX11));
+        EXPECT_TRUE(MakeSurface(NativeSurfacePlatform::Win32).IsValidFor(RHIBackendType::DX12));
+        EXPECT_TRUE(MakeSurface(NativeSurfacePlatform::Win32).IsValidFor(RHIBackendType::Vulkan));
+        EXPECT_TRUE(MakeSurface(NativeSurfacePlatform::X11).IsValidFor(RHIBackendType::Vulkan));
+        EXPECT_TRUE(MakeSurface(NativeSurfacePlatform::Wayland).IsValidFor(RHIBackendType::Vulkan));
+        EXPECT_TRUE(MakeSurface(NativeSurfacePlatform::Cocoa).IsValidFor(RHIBackendType::Metal));
+        EXPECT_TRUE(MakeSurface(NativeSurfacePlatform::UIKit).IsValidFor(RHIBackendType::Metal));
+        EXPECT_TRUE(MakeSurface(NativeSurfacePlatform::GLFW).IsValidFor(RHIBackendType::OpenGL));
+
+        NativeSurfaceDesc surface = MakeSurface(NativeSurfacePlatform::Win32);
+        surface.nativeWindow = 0;
+        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
+
+        surface = MakeSurface(NativeSurfacePlatform::X11);
+        surface.backendWindow = 0;
+        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::Vulkan));
+
+        surface = MakeSurface(NativeSurfacePlatform::Cocoa);
+        surface.nativeLayer = 0;
+        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::Metal));
+
+        surface = MakeSurface(NativeSurfacePlatform::GLFW);
+        surface.backendWindow = 0;
+        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::OpenGL));
+    }
+
+    TEST(RHIContractValidation, NativeSurfaceRejectsInvalidValueFields)
+    {
+        NativeSurfaceDesc surface = MakeSurface(NativeSurfacePlatform::Win32);
+
+        surface.width = 0;
+        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
+        surface = MakeSurface(NativeSurfacePlatform::Win32);
+        surface.height = 0;
+        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
+        surface = MakeSurface(NativeSurfacePlatform::Win32);
+        surface.generation = 0;
+        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
+        surface = MakeSurface(NativeSurfacePlatform::Win32);
+        surface.contentScale = 0.0f;
+        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
+        surface.contentScale = -1.0f;
+        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
+        surface.contentScale = std::numeric_limits<float32>::infinity();
+        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
+        surface.contentScale = std::numeric_limits<float32>::quiet_NaN();
+        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
+    }
+
+    TEST(RHIContractValidation, NativeSurfaceGenerationOrdersUpdatesMonotonically)
+    {
+        NativeSurfaceDesc current = MakeSurface(NativeSurfacePlatform::Win32);
+        current.generation = 42;
+        NativeSurfaceDesc stale = current;
+        stale.generation = 41;
+        NativeSurfaceDesc replacement = current;
+        replacement.generation = 43;
+
+        EXPECT_LE(stale.generation, current.generation);
+        EXPECT_GT(replacement.generation, current.generation);
+    }
+
+    TEST(RHIContractValidation, SwapChainDescriptionHasSingleSurfaceSourceOfTruth)
+    {
+        static_assert(std::is_same_v<decltype(RHISwapChainDesc::surface), NativeSurfaceDesc>);
+        static_assert(!HasWindowHandleField<RHISwapChainDesc>);
+        static_assert(!HasWidthField<RHISwapChainDesc>);
+        static_assert(!HasHeightField<RHISwapChainDesc>);
+        static_assert(!HasFormatField<RHISwapChainDesc>);
+        static_assert(!HasVsyncField<RHISwapChainDesc>);
+    }
+
+    TEST(RHIContractValidation, NativeSurfaceCallersUseTheAtomicDescriptorContract)
+    {
+        const std::filesystem::path root;
+        const std::string basicRHI = ReadSource(root / "Samples/Basic/BasicRHI/main.cpp");
+        const std::string computeDemo = ReadSource(root / "Samples/Basic/ComputeDemo/main.cpp");
+        const std::string renderContextHeader =
+            ReadSource(root / "Render/Include/Render/Context/RenderContext.h");
+        const std::string renderSubsystem =
+            ReadSource(root / "Render/Private/RenderSubsystem.cpp");
+        const std::string windowSubsystem =
+            ReadSource(root / "Runtime/Private/Window/WindowSubsystem.cpp");
+        const std::string editorSwapChain =
+            ReadSource(root / "Editor/Private/EditorMainSwapChainService.cpp");
+        const std::string editorBootstrap =
+            ReadSource(root / "Editor/Private/EditorRenderBootstrapService.cpp");
+
+        for (const std::string* source : {&basicRHI, &computeDemo, &renderSubsystem})
+        {
+            EXPECT_EQ(source->find("swapChainDesc.windowHandle"), std::string::npos);
+            EXPECT_EQ(source->find("swapChainDesc.width"), std::string::npos);
+            EXPECT_EQ(source->find("swapChainDesc.height"), std::string::npos);
+            EXPECT_EQ(source->find("swapChainDesc.format"), std::string::npos);
+            EXPECT_EQ(source->find("swapChainDesc.vsync"), std::string::npos);
+        }
+        EXPECT_NE(renderContextHeader.find("CreateSwapChain(const NativeSurfaceDesc&"),
+                  std::string::npos);
+        EXPECT_EQ(renderContextHeader.find("CreateSwapChain(void*"), std::string::npos);
+        EXPECT_EQ(editorSwapChain.find("windowHandle"), std::string::npos);
+        EXPECT_NE(editorBootstrap.find("Initialize(config, initialSurface)"),
+                  std::string::npos);
+        EXPECT_NE(windowSubsystem.find(
+                      "surface.platform = NativeSurfacePlatform::GLFW;"),
+                  std::string::npos);
+    }
+
+    TEST(RHIContractValidation, OpenGLClaimsTheBackendWindowBeforeLoadingGlad)
+    {
+        const std::string source = ReadSource("RHI_OpenGL/Private/OpenGLDevice.cpp");
+        const size_t backendWindow = source.find("desc.initialSurface.backendWindow");
+        const size_t makeCurrent = source.find("glfwMakeContextCurrent");
+        const size_t loadGlad = source.find("gladLoadGLLoader");
+
+        ASSERT_NE(backendWindow, std::string::npos);
+        ASSERT_NE(makeCurrent, std::string::npos);
+        ASSERT_NE(loadGlad, std::string::npos);
+        EXPECT_LT(backendWindow, makeCurrent);
+        EXPECT_LT(makeCurrent, loadGlad);
+    }
+
+    TEST(RHIContractValidation, MetalPresentationStaysInsideCommandBufferOwnership)
+    {
+        const std::string swapChain = ReadSource("RHI_Metal/Private/MetalSwapChain.mm");
+        for (const char* forbidden : {"NSWindow", "NSView", "UIView", "contentView",
+                                      "setWantsLayer:", "setLayer:",
+                                      "[m_currentDrawable present]"})
+        {
+            EXPECT_EQ(swapChain.find(forbidden), std::string::npos) << forbidden;
+        }
+        EXPECT_NE(swapChain.find("SetPresentationDrawable"), std::string::npos);
+        EXPECT_NE(swapChain.find("maximumDrawableCount = m_bufferCount"),
+                  std::string::npos);
+
+        const std::string commandContext =
+            ReadSource("RHI_Metal/Private/MetalCommandContext.mm");
+        const size_t present = commandContext.find("presentDrawable:");
+        const size_t commit = commandContext.find("[m_commandBuffer commit]");
+        ASSERT_NE(present, std::string::npos);
+        ASSERT_NE(commit, std::string::npos);
+        EXPECT_LT(present, commit);
+    }
+
+    TEST(RHIContractValidation, PlatformSurfaceBridgesRejectPartialConstruction)
+    {
+        const std::string vulkanHeader =
+            ReadSource("RHI_Vulkan/Private/VulkanSwapChain.h");
+        const std::string vulkanSwapChain =
+            ReadSource("RHI_Vulkan/Private/VulkanSwapChain.cpp");
+        EXPECT_NE(vulkanHeader.find("bool IsValid() const"),
+                  std::string::npos);
+        EXPECT_NE(vulkanSwapChain.find("if (!swapChain->IsValid())"),
+                  std::string::npos);
+        EXPECT_NE(vulkanSwapChain.find("return nullptr;"),
+                  std::string::npos);
+
+        const std::string appleBridge =
+            ReadSource("HAL/Private/Apple/GLFWMetalLayerBridge.mm");
+        EXPECT_EQ(appleBridge.find("static_cast<CAMetalLayer*>"),
+                  std::string::npos);
+        EXPECT_NE(appleBridge.find("(CAMetalLayer*)view.layer"),
+                  std::string::npos);
+    }
 
     TEST(RHIContractValidation, AcceptsMinimalConcreteBackendCapabilities)
     {

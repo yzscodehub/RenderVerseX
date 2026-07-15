@@ -229,7 +229,10 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_CLIENT_API,
+                   backend == RVX::RHIBackendType::OpenGL
+                       ? GLFW_OPENGL_API
+                       : GLFW_NO_API);
     GLFWwindow *window = glfwCreateWindow(
         static_cast<int>(options.width),
         static_cast<int>(options.height),
@@ -247,10 +250,41 @@ int main(int argc, char *argv[])
 
     RVX_CORE_INFO("Using backend: {}", RVX::ToString(backend));
 
+    RVX::NativeSurfaceDesc surface;
+#ifdef _WIN32
+    surface.platform = RVX::NativeSurfacePlatform::Win32;
+    surface.nativeWindow =
+        reinterpret_cast<uintptr_t>(glfwGetWin32Window(window));
+#elif defined(__APPLE__)
+    surface.platform = RVX::NativeSurfacePlatform::Cocoa;
+    surface.nativeWindow =
+        reinterpret_cast<uintptr_t>(glfwGetCocoaWindow(window));
+#else
+    surface.platform = RVX::NativeSurfacePlatform::GLFW;
+#endif
+    surface.backendWindow = reinterpret_cast<uintptr_t>(window);
+    surface.width = options.width;
+    surface.height = options.height;
+    surface.preferredFormat = RVX::RHIFormat::RGBA8_UNORM;
+    surface.vsync = true;
+    surface.generation = 1;
+
+    if (!surface.IsValidFor(backend))
+    {
+        RVX_CORE_ERROR("BasicRHI has no HAL-owned native surface for {}",
+                       RVX::ToString(backend));
+        writeReport(false, 0, {"HAL-owned native surface unavailable"});
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        RVX::Log::Shutdown();
+        return -1;
+    }
+
     // =========================================================================
     // RHI Device Creation
     // =========================================================================
     RVX::RHIDeviceDesc deviceDesc;
+    deviceDesc.initialSurface = surface;
     deviceDesc.enableDebugLayer = true;
     deviceDesc.applicationName = "BasicRHI Sample";
 
@@ -272,16 +306,8 @@ int main(int argc, char *argv[])
     // Swap Chain Creation
     // =========================================================================
     RVX::RHISwapChainDesc swapChainDesc;
-#ifdef _WIN32
-    swapChainDesc.windowHandle = glfwGetWin32Window(window);
-#elif __APPLE__
-    swapChainDesc.windowHandle = glfwGetCocoaWindow(window);
-#endif
-    swapChainDesc.width = options.width;
-    swapChainDesc.height = options.height;
+    swapChainDesc.surface = surface;
     swapChainDesc.bufferCount = 3;
-    swapChainDesc.format = RVX::RHIFormat::RGBA8_UNORM;
-    swapChainDesc.vsync = true;
 
     auto swapChain = device->CreateSwapChain(swapChainDesc);
     if (!swapChain)

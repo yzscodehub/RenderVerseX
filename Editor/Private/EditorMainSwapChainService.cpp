@@ -11,6 +11,9 @@
 #ifdef _WIN32
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
+#elif defined(__APPLE__)
+#define GLFW_EXPOSE_NATIVE_COCOA
+#include <GLFW/glfw3native.h>
 #endif
 
 namespace RVX::Editor
@@ -23,34 +26,53 @@ bool EditorMainSwapChainService::HasSwapChain(RenderContext* renderContext) cons
            renderContext->HasSwapChain();
 }
 
-void* EditorMainSwapChainService::ResolveWindowHandle(
+NativeSurfaceDesc EditorMainSwapChainService::CaptureSurface(
     GLFWwindow* window,
-    RenderContext* renderContext) const
+    RHIBackendType backend,
+    RHIFormat preferredFormat,
+    bool vsync) const
 {
-    if (!window ||
-        !renderContext ||
-        !renderContext->IsInitialized() ||
-        !renderContext->GetDevice())
+    NativeSurfaceDesc surface;
+    if (!window)
     {
-        return nullptr;
+        return surface;
     }
 
-    const RHIBackendType backend = renderContext->GetDevice()->GetBackendType();
-    if (backend == RHIBackendType::OpenGL)
-    {
-        return window;
-    }
+    int framebufferWidth = 0;
+    int framebufferHeight = 0;
+    glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+    float xScale = 1.0f;
+    float yScale = 1.0f;
+    glfwGetWindowContentScale(window, &xScale, &yScale);
 
 #ifdef _WIN32
-    if (backend == RHIBackendType::DX11 ||
-        backend == RHIBackendType::DX12 ||
-        backend == RHIBackendType::Vulkan)
-    {
-        return glfwGetWin32Window(window);
-    }
+    surface.platform = NativeSurfacePlatform::Win32;
+    surface.nativeWindow =
+        reinterpret_cast<uintptr_t>(glfwGetWin32Window(window));
+#elif defined(__APPLE__)
+    surface.platform = NativeSurfacePlatform::Cocoa;
+    surface.nativeWindow =
+        reinterpret_cast<uintptr_t>(glfwGetCocoaWindow(window));
+#else
+    surface.platform = NativeSurfacePlatform::GLFW;
 #endif
+    surface.backendWindow = reinterpret_cast<uintptr_t>(window);
+    surface.width = framebufferWidth > 0
+        ? static_cast<uint32>(framebufferWidth)
+        : 0;
+    surface.height = framebufferHeight > 0
+        ? static_cast<uint32>(framebufferHeight)
+        : 0;
+    surface.contentScale = xScale;
+    surface.preferredFormat = preferredFormat;
+    surface.vsync = vsync;
+    surface.generation = 1;
 
-    return nullptr;
+    if (!surface.IsValidFor(backend))
+    {
+        return surface;
+    }
+    return surface;
 }
 
 EditorMainSwapChainEnsureResult EditorMainSwapChainService::Ensure(
@@ -94,18 +116,20 @@ EditorMainSwapChainEnsureResult EditorMainSwapChainService::Ensure(
         return result;
     }
 
-    result.windowHandle =
-        ResolveWindowHandle(desc.window, desc.renderContext);
-    if (!result.windowHandle)
+    const RHIBackendType backend =
+        desc.renderContext->GetDevice()->GetBackendType();
+    result.surface = CaptureSurface(desc.window,
+                                    backend,
+                                    RHIFormat::BGRA8_UNORM,
+                                    desc.renderContext->GetConfig().vsync);
+    if (!result.surface.IsValidFor(backend))
     {
         result.fallbackReason =
             "Main window native handle is unavailable for the active RHI backend";
         return result;
     }
 
-    if (!desc.renderContext->CreateSwapChain(result.windowHandle,
-                                             result.width,
-                                             result.height))
+    if (!desc.renderContext->CreateSwapChain(result.surface))
     {
         result.fallbackReason =
             "RenderContext failed to create the Editor main-window swap chain";

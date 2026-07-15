@@ -131,9 +131,18 @@ namespace RVX
         id<MTLCommandBuffer> GetCommandBuffer() const { return m_commandBuffer; }
 
         // SwapChain presentation support
-        void SetPendingDrawable(id<CAMetalDrawable> drawable) { m_pendingDrawable = drawable; }
-        id<CAMetalDrawable> GetPendingDrawable() const { return m_pendingDrawable; }
-        bool HasPendingDrawable() const { return m_pendingDrawable != nil; }
+        void SetPresentationDrawable(id<CAMetalDrawable> drawable)
+        {
+            m_presentationDrawable = drawable;
+        }
+        id<CAMetalDrawable> GetPresentationDrawable() const
+        {
+            return m_presentationDrawable;
+        }
+        bool HasPresentationDrawable() const
+        {
+            return m_presentationDrawable != nil;
+        }
 
     private:
         void EndCurrentEncoder();
@@ -160,7 +169,7 @@ namespace RVX
         class MetalComputePipeline* m_currentComputePipeline = nullptr;
 
         // Pending drawable for presentation
-        id<CAMetalDrawable> m_pendingDrawable = nil;
+        id<CAMetalDrawable> m_presentationDrawable = nil;
     };
 
 } // namespace RVX

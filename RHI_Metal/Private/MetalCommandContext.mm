@@ -1007,10 +1007,10 @@ namespace RVX
 
         // Present drawable through command buffer for optimal scheduling
         // This allows Metal to schedule the present at the optimal time
-        if (m_pendingDrawable)
+        if (m_presentationDrawable)
         {
-            [m_commandBuffer presentDrawable:m_pendingDrawable];
-            m_pendingDrawable = nil;
+            [m_commandBuffer presentDrawable:m_presentationDrawable];
+            m_presentationDrawable = nil;
         }
 
         uint64 submittedValue = 0;

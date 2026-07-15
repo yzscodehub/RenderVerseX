@@ -35,6 +35,7 @@ target_include_directories(RVX_Runtime PUBLIC
 target_link_libraries(RVX_Runtime PUBLIC
     RVX_Core
     RVX_HAL
+    RVX::RHI
 )
 
 # Windows-specific: Link XInput for gamepad vibration

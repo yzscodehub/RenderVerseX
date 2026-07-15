@@ -7,12 +7,18 @@ namespace RVX
 {
     DX11SwapChain::DX11SwapChain(DX11Device* device, const RHISwapChainDesc& desc)
         : m_device(device)
-        , m_width(desc.width)
-        , m_height(desc.height)
+        , m_width(desc.surface.width)
+        , m_height(desc.surface.height)
         , m_backBufferCount(desc.bufferCount)
-        , m_format(desc.format)
-        , m_vsyncEnabled(desc.vsync)
+        , m_format(desc.surface.preferredFormat)
+        , m_vsyncEnabled(desc.surface.vsync)
     {
+        if (!desc.surface.IsValidFor(RHIBackendType::DX11))
+        {
+            RVX_RHI_ERROR("Invalid Win32 surface for DX11 swap chain");
+            return;
+        }
+
         if (!CreateSwapChain(desc))
         {
             RVX_RHI_ERROR("Failed to create DX11 swap chain");
@@ -51,17 +57,17 @@ namespace RVX
     bool DX11SwapChain::CreateSwapChain(const RHISwapChainDesc& desc)
     {
         // Store the requested format for RTV creation
-        m_requestedFormat = desc.format;
-        
-        HWND hwnd = reinterpret_cast<HWND>(desc.windowHandle);
+        m_requestedFormat = desc.surface.preferredFormat;
+
+        HWND hwnd = reinterpret_cast<HWND>(desc.surface.nativeWindow);
 
         // Check tearing support for variable refresh rate displays
         m_tearingSupported = CheckTearingSupport();
 
         // Try FLIP_DISCARD first (Windows 10+, better performance)
         DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
-        swapChainDesc.Width = desc.width;
-        swapChainDesc.Height = desc.height;
+        swapChainDesc.Width = desc.surface.width;
+        swapChainDesc.Height = desc.surface.height;
         swapChainDesc.Stereo = FALSE;
         swapChainDesc.SampleDesc.Count = 1;
         swapChainDesc.SampleDesc.Quality = 0;
@@ -74,7 +80,7 @@ namespace RVX
         // Try FLIP_DISCARD model first (requires Windows 10, DXGI 1.4+)
         {
             // FLIP model requires non-SRGB format for the buffer
-            swapChainDesc.Format = GetSwapChainBufferFormat(desc.format);
+            swapChainDesc.Format = GetSwapChainBufferFormat(desc.surface.preferredFormat);
             swapChainDesc.BufferCount = std::max(2u, desc.bufferCount);  // FLIP requires at least 2 buffers
             swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
             swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
@@ -108,7 +114,7 @@ namespace RVX
         {
             RVX_RHI_DEBUG("FLIP_DISCARD not available, falling back to DISCARD mode");
 
-            swapChainDesc.Format = ToDXGIFormat(desc.format);  // DISCARD supports SRGB directly
+            swapChainDesc.Format = ToDXGIFormat(desc.surface.preferredFormat);  // DISCARD supports SRGB directly
             swapChainDesc.BufferCount = 1;  // DISCARD mode only needs 1 buffer
             swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
             swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;

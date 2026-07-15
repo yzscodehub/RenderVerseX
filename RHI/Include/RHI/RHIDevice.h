@@ -14,6 +14,7 @@
 #include "RHI/RHIHeap.h"
 #include "RHI/RHIQuery.h"
 #include "RHI/RHIUpload.h"
+#include "RHI/RHINativeSurface.h"
 
 namespace RVX
 {
@@ -42,6 +43,7 @@ namespace RVX
     // =============================================================================
     struct RHIDeviceDesc
     {
+        NativeSurfaceDesc initialSurface;
         bool enableDebugLayer = true;
         bool enableGPUValidation = false;
         uint32 preferredAdapterIndex = 0;  // 0 = auto-select

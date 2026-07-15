@@ -99,8 +99,38 @@ int main(int argc, char* argv[])
 
     RVX_CORE_INFO("Using backend: {}", RVX::ToString(backend));
 
+    RVX::NativeSurfaceDesc surface;
+#ifdef _WIN32
+    surface.platform = RVX::NativeSurfacePlatform::Win32;
+    surface.nativeWindow =
+        reinterpret_cast<uintptr_t>(glfwGetWin32Window(window));
+#elif defined(__APPLE__)
+    surface.platform = RVX::NativeSurfacePlatform::Cocoa;
+    surface.nativeWindow =
+        reinterpret_cast<uintptr_t>(glfwGetCocoaWindow(window));
+#else
+    surface.platform = RVX::NativeSurfacePlatform::GLFW;
+#endif
+    surface.backendWindow = reinterpret_cast<uintptr_t>(window);
+    surface.width = 1280;
+    surface.height = 720;
+    surface.preferredFormat = RVX::RHIFormat::BGRA8_UNORM_SRGB;
+    surface.vsync = true;
+    surface.generation = 1;
+
+    if (!surface.IsValidFor(backend))
+    {
+        RVX_CORE_ERROR("ComputeDemo has no HAL-owned native surface for {}",
+                       RVX::ToString(backend));
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        RVX::Log::Shutdown();
+        return -1;
+    }
+
     // Create RHI device
     RVX::RHIDeviceDesc deviceDesc;
+    deviceDesc.initialSurface = surface;
     deviceDesc.enableDebugLayer = true;
     deviceDesc.applicationName = "Compute Demo";
 
@@ -117,16 +147,8 @@ int main(int argc, char* argv[])
 
     // Create swap chain
     RVX::RHISwapChainDesc swapChainDesc;
-#ifdef _WIN32
-    swapChainDesc.windowHandle = glfwGetWin32Window(window);
-#elif __APPLE__
-    swapChainDesc.windowHandle = glfwGetCocoaWindow(window);
-#endif
-    swapChainDesc.width = 1280;
-    swapChainDesc.height = 720;
-    swapChainDesc.format = RVX::RHIFormat::BGRA8_UNORM_SRGB;
+    swapChainDesc.surface = surface;
     swapChainDesc.bufferCount = 3;
-    swapChainDesc.vsync = true;
 
     auto swapChain = device->CreateSwapChain(swapChainDesc);
     if (!swapChain)

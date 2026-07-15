@@ -21,6 +21,20 @@ target_sources(RVX_HAL PRIVATE
     Private/Input/Input.cpp
 )
 
+if(APPLE)
+    target_sources(RVX_HAL PRIVATE
+        Private/Apple/GLFWMetalLayerBridge.mm
+    )
+    target_link_libraries(RVX_HAL PRIVATE
+        "-framework Cocoa"
+        "-framework QuartzCore"
+    )
+    set_source_files_properties(
+        Private/Apple/GLFWMetalLayerBridge.mm
+        PROPERTIES COMPILE_FLAGS "-fobjc-arc"
+    )
+endif()
+
 target_include_directories(RVX_HAL PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
     $<INSTALL_INTERFACE:include>

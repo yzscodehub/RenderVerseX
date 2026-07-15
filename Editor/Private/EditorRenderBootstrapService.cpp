@@ -116,8 +116,14 @@ EditorRenderBootstrapService::Bootstrap(
     config.frameBuffering = desc.frameBuffering;
     config.appName = desc.appName ? desc.appName : "RenderVerseX Editor";
 
+    const NativeSurfaceDesc initialSurface =
+        desc.mainSwapChainService->CaptureSurface(
+            desc.window,
+            backend,
+            RHIFormat::BGRA8_UNORM,
+            desc.vsync);
     *desc.renderContext = std::make_unique<RenderContext>();
-    if (!(*desc.renderContext)->Initialize(config))
+    if (!(*desc.renderContext)->Initialize(config, initialSurface))
     {
         RVX_CORE_ERROR("Editor failed to initialize RenderContext for backend {}",
                        ToString(backend));

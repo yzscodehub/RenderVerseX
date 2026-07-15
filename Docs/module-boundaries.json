@@ -137,7 +137,7 @@
     },
     "Runtime": {
       "path": "Runtime",
-      "allowed": ["Core", "HAL", "Runtime"]
+      "allowed": ["Core", "HAL", "RHI", "Runtime"]
     },
     "Samples": {
       "path": "Samples",
