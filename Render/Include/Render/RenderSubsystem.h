@@ -6,8 +6,13 @@
  */
 
 #include "Core/Subsystem/EngineSubsystem.h"
+#include "Render/RenderDiagnostics.h"
+#include "Render/RenderRuntimeTypes.h"
+#include "RenderContracts/IRenderResourceGateway.h"
+#include "RenderContracts/RenderFramePacket.h"
 #include "RHI/RHI.h"
 #include "Runtime/Window/WindowSubsystem.h"
+
 #include <memory>
 
 namespace RVX
@@ -18,6 +23,8 @@ namespace RVX
     class RenderContext;
     class SceneRenderer;
     class RenderGraph;
+    class LegacySynchronousRenderBridge;
+    class RenderThreadRuntime;
 
     /**
      * @brief Render configuration
@@ -56,7 +63,8 @@ namespace RVX
      * renderSys->Present();
      * @endcode
      */
-    class RenderSubsystem : public EngineSubsystem
+    class RenderSubsystem : public EngineSubsystem,
+                            public IRenderResourceGateway
     {
     public:
         RenderSubsystem();
@@ -70,6 +78,21 @@ namespace RVX
 
         void Initialize() override;
         void Deinitialize() override;
+
+        // =====================================================================
+        // Render Runtime
+        // =====================================================================
+
+        /** @brief Configure the dedicated runtime before Initialize(). */
+        void Configure(const RenderRuntimeConfig& config,
+                       const NativeSurfaceDesc& surface);
+        RenderFramePublishResult TryPublishFrame(
+            std::unique_ptr<const RenderFramePacket> packet);
+        RenderResizeResult RequestResize(const NativeSurfaceDesc& surface);
+        [[nodiscard]] RenderDiagnosticsSnapshot
+            GetDiagnosticsSnapshot() const;
+        [[nodiscard]] RenderRuntimeResult GetLastRuntimeResult() const;
+        [[nodiscard]] RenderShutdownResult GetLastShutdownResult() const;
 
         /// Initialize with custom config
         void Initialize(const RenderConfig& config);
@@ -105,10 +128,10 @@ namespace RVX
         // =====================================================================
 
         /// Get the render context (manages RHI resources)
-        RenderContext* GetRenderContext() const { return m_renderContext.get(); }
+        RenderContext* GetRenderContext() const;
 
         /// Get the scene renderer (manages render passes)
-        SceneRenderer* GetSceneRenderer() const { return m_sceneRenderer.get(); }
+        SceneRenderer* GetSceneRenderer() const;
 
         /// Get the RHI device (convenience accessor)
         IRHIDevice* GetDevice() const;
@@ -143,13 +166,23 @@ namespace RVX
         /// Get the GPU resource manager
         class GPUResourceManager* GetGPUResourceManager() const;
 
+        RenderResourceReserveResult ReserveResource(
+            AssetId assetId,
+            RenderResourceKind kind) noexcept override;
+        RenderUploadEnqueueResult TryEnqueueUpload(
+            const ResourceUploadRequestRef& request) noexcept override;
+        RenderReleaseResult RequestRelease(
+            RenderResourceHandle handle) noexcept override;
+        [[nodiscard]] RenderResourceStatus QueryResourceStatus(
+            RenderResourceHandle handle) const noexcept override;
+
         // =====================================================================
         // Configuration
         // =====================================================================
 
         /// Set configuration (call before Initialize)
-        void SetConfig(const RenderConfig& config) { m_config = config; }
-        const RenderConfig& GetConfig() const { return m_config; }
+        void SetConfig(const RenderConfig& config);
+        const RenderConfig& GetConfig() const;
 
         /// Check if initialized and ready to render
         bool IsReady() const;
@@ -158,11 +191,14 @@ namespace RVX
         void AutoBindWindow();
         void EnsureVisibleResourcesResident();
         
-        RenderConfig m_config;
-        WindowSubsystem* m_windowSubsystem = nullptr;
-        std::unique_ptr<RenderContext> m_renderContext;
-        std::unique_ptr<SceneRenderer> m_sceneRenderer;
-        bool m_frameActive = false;
+        std::unique_ptr<LegacySynchronousRenderBridge> m_legacyBridge;
+        std::unique_ptr<RenderThreadRuntime> m_runtime;
+        RenderRuntimeConfig m_runtimeConfig{};
+        NativeSurfaceDesc m_runtimeSurface{};
+        RenderRuntimeResult m_preRuntimeResult{};
+        RenderShutdownResult m_preShutdownResult{};
+        bool m_runtimeConfigured = false;
+        bool m_runtimeInitializeAttempted = false;
     };
 
 } // namespace RVX

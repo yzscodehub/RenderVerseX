@@ -50,6 +50,7 @@ target_include_directories(RVX_RenderTestSupport PRIVATE
 )
 
 target_link_libraries(RVX_RenderTestSupport PUBLIC
+    RVX::RHI
     RVX_RenderRuntimeCore
 )
 
@@ -290,6 +291,22 @@ rvx_add_gtest(
     LIBS
         RVX_RenderTestSupport
         RVX_RenderRuntimeCore
+    INCLUDES
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/Render/Private
+    LABELS "unit;architecture"
+    TIMEOUT 60
+)
+
+rvx_add_gtest(
+    NAME RenderThreadRuntimeValidation
+    SOURCES RenderThreadRuntimeValidation/main.cpp
+    LIBS
+        RVX::Render
+        RVX::RenderExtraction
+        RVX_RenderTestSupport
+        RVX_RenderRuntimeCore
+        ${RVX_ALL_BACKENDS}
     INCLUDES
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/Render/Private

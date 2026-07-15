@@ -47,6 +47,8 @@ namespace RVX
         void BeginShutdown() noexcept;
         [[nodiscard]] ResourceUploadRequestRef TryDequeueUpload() noexcept;
         [[nodiscard]] RenderResourceHandle TryDequeueRelease() noexcept;
+        [[nodiscard]] RenderReleaseQueueSnapshot
+            GetReleaseQueueSnapshot() const noexcept;
         [[nodiscard]] uint32 GetRetainedUploadCount() const noexcept;
         [[nodiscard]] uint64 GetRetainedUploadBytes() const noexcept;
         [[nodiscard]] RenderResourceStatusTable& GetStatusTable() noexcept;

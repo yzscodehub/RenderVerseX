@@ -114,6 +114,18 @@ namespace
         return m_count;
     }
 
+    RenderReleaseQueueSnapshot RenderReleaseQueue::GetSnapshot() const noexcept
+    {
+        std::lock_guard lock(m_mutex);
+        RenderReleaseQueueSnapshot snapshot;
+        snapshot.pendingCount = m_count;
+        if (m_count != 0U)
+        {
+            snapshot.oldestPendingGeneration = m_slots[m_head].generation;
+        }
+        return snapshot;
+    }
+
     void RenderReleaseQueue::Wake() const noexcept
     {
         if (m_wakeFunction != nullptr)

@@ -16,6 +16,12 @@ namespace RVX
 {
     struct RenderReleaseQueueTestAccess;
 
+    struct RenderReleaseQueueSnapshot
+    {
+        uint32 pendingCount = 0;
+        uint32 oldestPendingGeneration = 0;
+    };
+
     class RenderReleaseQueue final
     {
     public:
@@ -43,6 +49,7 @@ namespace RVX
         [[nodiscard]] RenderResourceHandle TryDequeue() noexcept;
         [[nodiscard]] uint32 GetUsableCapacity() const noexcept;
         [[nodiscard]] uint32 GetPendingCount() const noexcept;
+        [[nodiscard]] RenderReleaseQueueSnapshot GetSnapshot() const noexcept;
 
     private:
         friend struct RenderReleaseQueueTestAccess;

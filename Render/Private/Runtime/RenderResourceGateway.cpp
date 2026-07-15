@@ -110,6 +110,12 @@ namespace RVX
         return m_releaseQueue.TryDequeue();
     }
 
+    RenderReleaseQueueSnapshot
+        RenderResourceGateway::GetReleaseQueueSnapshot() const noexcept
+    {
+        return m_releaseQueue.GetSnapshot();
+    }
+
     uint32 RenderResourceGateway::GetRetainedUploadCount() const noexcept
     {
         return m_uploadQueue.GetRetainedCount();

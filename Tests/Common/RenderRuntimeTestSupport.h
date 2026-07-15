@@ -6,11 +6,103 @@
  */
 
 #include "Runtime/IRenderExecutor.h"
+#include "Runtime/RenderThreadRuntime.h"
 
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 namespace RVX
 {
     /** @brief Create the synchronous executor used only by validation tests. */
     std::unique_ptr<IRenderExecutor> CreateInlineRenderExecutor();
+    /** @brief Create a deterministic executor-start failure for mapping tests. */
+    std::unique_ptr<IRenderExecutor> CreateFailingRenderExecutor(
+        uint32 nativeError);
+
+    /** @brief Observable join calls around the real dedicated executor. */
+    class RenderExecutorJoinTestProbe final : public NonMovable
+    {
+    public:
+        void Record(RenderExecutorJoinCode code) noexcept;
+        [[nodiscard]] uint32 GetCallCount() const noexcept;
+        [[nodiscard]] RenderExecutorJoinCode GetLastCode() const noexcept;
+
+    private:
+        std::atomic<uint32> m_callCount = 0;
+        std::atomic<RenderExecutorJoinCode> m_lastCode =
+            RenderExecutorJoinCode::NotStarted;
+    };
+
+    /** @brief Decorate the real dedicated executor with join observations. */
+    std::unique_ptr<IRenderExecutor> CreateJoinRecordingDedicatedExecutor(
+        std::shared_ptr<RenderExecutorJoinTestProbe> probe);
+
+    enum class RenderRuntimeTestEvent : uint8
+    {
+        Started = 0,
+        Surface = 1,
+        Release = 2,
+        Upload = 3,
+        Frame = 4,
+        Poll = 5,
+        Retire = 6,
+        Shutdown = 7
+    };
+
+    /** @brief Shared observations for the real runtime conformance fixtures. */
+    class RenderFrameConsumerTestProbe final : public NonMovable
+    {
+    public:
+        void Record(RenderRuntimeTestEvent event);
+        [[nodiscard]] uint32 GetEventCount(
+            RenderRuntimeTestEvent event) const;
+        [[nodiscard]] bool WaitForEventCount(
+            RenderRuntimeTestEvent event,
+            uint32 count,
+            std::chrono::milliseconds timeout) const;
+        [[nodiscard]] std::vector<RenderRuntimeTestEvent> GetEvents() const;
+        void ClearEvents();
+
+        void BlockFrames();
+        void ReleaseFrames();
+        void WaitWhileFrameBlocked();
+        void BlockStartup();
+        void ReleaseStartup();
+        void WaitWhileStartupBlocked();
+
+        void SetStartupThread(std::thread::id thread);
+        void SetShutdownThread(std::thread::id thread);
+        void SetDestructionThread(std::thread::id thread);
+        [[nodiscard]] std::thread::id GetStartupThread() const;
+        [[nodiscard]] std::thread::id GetShutdownThread() const;
+        [[nodiscard]] std::thread::id GetDestructionThread() const;
+
+        RenderRuntimeCode startupCode = RenderRuntimeCode::Running;
+        uint32 startupNativeError = 0;
+        RenderShutdownCode shutdownCode = RenderShutdownCode::Completed;
+        uint32 shutdownNativeError = 0;
+
+    private:
+        static constexpr size_t EVENT_COUNT = 8;
+        mutable std::mutex m_mutex;
+        mutable std::condition_variable m_cv;
+        std::array<uint32, EVENT_COUNT> m_eventCounts{};
+        std::vector<RenderRuntimeTestEvent> m_events;
+        bool m_blockFrames = false;
+        bool m_blockStartup = false;
+        std::thread::id m_startupThread{};
+        std::thread::id m_shutdownThread{};
+        std::thread::id m_destructionThread{};
+    };
+
+    /** @brief Create a value-only consumer that records real pump behavior. */
+    std::unique_ptr<IRenderFrameConsumer>
+        CreateRecordingRenderFrameConsumer(
+            std::shared_ptr<RenderFrameConsumerTestProbe> probe);
 } // namespace RVX

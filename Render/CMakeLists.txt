@@ -67,6 +67,9 @@ target_sources(RVX_Render PRIVATE
     Private/RenderService.cpp
     Private/SwapChainManager.cpp
     Private/RenderSubsystem.cpp
+    # Runtime shell
+    Private/Runtime/RenderDiagnosticsPublisher.cpp
+    Private/Runtime/RenderThreadRuntime.cpp
     Private/GPUUploadService.cpp
     Private/GPUResourceManager.cpp
     Private/PipelineCache.cpp

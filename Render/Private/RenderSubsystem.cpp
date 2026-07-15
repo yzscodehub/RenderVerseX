@@ -14,22 +14,321 @@
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/SceneRenderer.h"
 #include "RenderExtraction/WorldCameraBridge.h"
+#include "Runtime/DedicatedRenderExecutor.h"
+#include "Runtime/RenderThreadRuntime.h"
 #include "Runtime/Window/WindowSubsystem.h"
+
+#include <stdexcept>
+#include <utility>
 
 namespace RVX
 {
 
-RenderSubsystem::RenderSubsystem() = default;
+class LegacySynchronousRenderBridge final : public NonMovable
+{
+public:
+    RenderConfig config{};
+    WindowSubsystem* windowSubsystem = nullptr;
+    std::unique_ptr<RenderContext> renderContext;
+    std::unique_ptr<SceneRenderer> sceneRenderer;
+    bool frameActive = false;
+};
+
+namespace
+{
+    class ClearPresentFrameConsumer final : public IRenderFrameConsumer,
+                                            public NonMovable
+    {
+    public:
+        RenderRuntimeResult Initialize(
+            const RenderRuntimeConfig& config,
+            const NativeSurfaceDesc& surface) noexcept override
+        {
+            RenderRuntimeResult result;
+            RHIBackendType backend = config.backendType;
+            if (backend == RHIBackendType::Auto)
+            {
+                backend = SelectBestBackend();
+            }
+            result.backend = backend;
+            result.surfaceGeneration = surface.generation;
+            if (!surface.IsValidFor(backend))
+            {
+                result.code = RenderRuntimeCode::InvalidSurface;
+                result.message = "Initial surface is invalid for the selected backend";
+                return result;
+            }
+
+            m_context = std::make_unique<RenderContext>();
+            RenderContextConfig contextConfig;
+            contextConfig.backendType = backend;
+            contextConfig.enableValidation = config.enableValidation;
+            contextConfig.enableGPUValidation = config.enableGPUValidation;
+            contextConfig.vsync = surface.vsync;
+            contextConfig.frameBuffering = config.frameBuffering;
+            contextConfig.appName = "RenderVerseX";
+            if (!m_context->Initialize(contextConfig, surface))
+            {
+                m_context.reset();
+                result.code = RenderRuntimeCode::DeviceCreationFailed;
+                result.message = "Render device creation failed";
+                return result;
+            }
+            if (!m_context->CreateSwapChain(surface))
+            {
+                m_context->Shutdown();
+                m_context.reset();
+                result.code = RenderRuntimeCode::SurfaceCreationFailed;
+                result.message = "Render surface creation failed";
+                return result;
+            }
+
+            result.code = RenderRuntimeCode::Running;
+            return result;
+        }
+
+        RenderRuntimeResult ApplySurface(
+            const NativeSurfaceDesc& surface) noexcept override
+        {
+            RenderRuntimeResult result;
+            result.code = RenderRuntimeCode::Running;
+            result.backend = m_context != nullptr && m_context->GetDevice() != nullptr
+                                 ? m_context->GetDevice()->GetBackendType()
+                                 : RHIBackendType::None;
+            result.surfaceGeneration = surface.generation;
+            if (m_context == nullptr || m_context->GetDevice() == nullptr ||
+                !surface.IsValidFor(result.backend))
+            {
+                result.code = RenderRuntimeCode::InvalidSurface;
+                result.message = "Surface update is invalid";
+                return result;
+            }
+
+            const NativeSurfaceUpdateKind updateKind =
+                ClassifyNativeSurfaceUpdate(m_context->GetSurface(), surface);
+            bool applied = false;
+            if (updateKind == NativeSurfaceUpdateKind::Resize)
+            {
+                m_context->WaitIdle();
+                applied = m_context->ResizeSwapChain(surface);
+            }
+            else if (updateKind == NativeSurfaceUpdateKind::Replace &&
+                     m_context->GetDevice()->SupportsSurfaceRebind(
+                         m_context->GetSurface(), surface))
+            {
+                m_context->WaitIdle();
+                applied = m_context->CreateSwapChain(surface);
+            }
+            if (!applied)
+            {
+                result.code = RenderRuntimeCode::SurfaceCreationFailed;
+                result.message = "Surface update could not be applied";
+            }
+            return result;
+        }
+
+        void ProcessRelease(RenderResourceHandle) noexcept override
+        {
+        }
+
+        void ProcessUpload(const ResourceUploadRequestRef&) noexcept override
+        {
+        }
+
+        RenderRuntimeResult ConsumeFrame(
+            const RenderFramePacket& packet) noexcept override
+        {
+            RenderRuntimeResult result;
+            result.code = RenderRuntimeCode::Running;
+            result.frameSequence = packet.GetHeader().sequence;
+            if (m_context == nullptr || !m_context->HasSwapChain())
+            {
+                result.code = RenderRuntimeCode::SurfaceCreationFailed;
+                result.message = "Cannot consume a frame without a surface";
+                return result;
+            }
+
+            m_context->BeginFrame();
+            RHICommandContext* commandContext =
+                m_context->GetGraphicsContext();
+            RHITexture* backBuffer = m_context->GetCurrentBackBuffer();
+            RHITextureView* backBufferView =
+                m_context->GetCurrentBackBufferView();
+            if (commandContext == nullptr || backBuffer == nullptr ||
+                backBufferView == nullptr)
+            {
+                m_context->EndFrame();
+                result.code = RenderRuntimeCode::SurfaceCreationFailed;
+                result.message = "Surface did not provide a renderable back buffer";
+                return result;
+            }
+
+            commandContext->TextureBarrier(backBuffer,
+                                           RHIResourceState::Present,
+                                           RHIResourceState::RenderTarget);
+            RHIRenderPassDesc clearPass;
+            clearPass.AddColorAttachment(
+                backBufferView,
+                RHILoadOp::Clear,
+                RHIStoreOp::Store,
+                RHIClearColor{0.015625f, 0.0234375f, 0.03125f, 1.0f});
+            commandContext->BeginRenderPass(clearPass);
+            commandContext->EndRenderPass();
+            commandContext->TextureBarrier(backBuffer,
+                                           RHIResourceState::RenderTarget,
+                                           RHIResourceState::Present);
+            m_context->EndFrame();
+            m_context->Present();
+            return result;
+        }
+
+        void PollCompletion() noexcept override
+        {
+        }
+
+        void RetireCompleted() noexcept override
+        {
+        }
+
+        RenderShutdownResult Shutdown(
+            RenderTeardownMode) noexcept override
+        {
+            RenderShutdownResult result;
+            result.code = RenderShutdownCode::Completed;
+            if (m_context != nullptr)
+            {
+                if (m_context->GetDevice() != nullptr)
+                {
+                    result.backend = m_context->GetDevice()->GetBackendType();
+                }
+                result.surfaceGeneration = m_context->GetSurface().generation;
+                m_context->WaitIdle();
+                m_context->Shutdown();
+                m_context.reset();
+            }
+            return result;
+        }
+
+    private:
+        std::unique_ptr<RenderContext> m_context;
+    };
+} // namespace
+
+RenderSubsystem::RenderSubsystem()
+    : m_legacyBridge(std::make_unique<LegacySynchronousRenderBridge>())
+{
+}
 RenderSubsystem::~RenderSubsystem() = default;
 
 void RenderSubsystem::Initialize()
 {
-    Initialize(m_config);
+    if (!m_runtimeConfigured)
+    {
+        Initialize(m_legacyBridge->config);
+        return;
+    }
+
+    if (m_runtimeInitializeAttempted)
+    {
+        const RenderRuntimeResult result = GetLastRuntimeResult();
+        if (result.code != RenderRuntimeCode::Running)
+        {
+            throw RenderSubsystemInitializationError(result);
+        }
+        return;
+    }
+
+    m_runtimeInitializeAttempted = true;
+    const RenderRuntimeResult result = m_runtime->Start();
+    m_preRuntimeResult = result;
+    if (result.code != RenderRuntimeCode::Running)
+    {
+        throw RenderSubsystemInitializationError(result);
+    }
+}
+
+void RenderSubsystem::Configure(const RenderRuntimeConfig& config,
+                                const NativeSurfaceDesc& surface)
+{
+    if (m_runtimeInitializeAttempted)
+    {
+        throw std::logic_error(
+            "RenderSubsystem::Configure is only valid before Initialize");
+    }
+
+    m_runtimeConfig = config;
+    m_runtimeSurface = surface;
+    m_runtimeConfigured = true;
+    m_preRuntimeResult = {};
+    m_preShutdownResult = {};
+    m_runtime = std::make_unique<RenderThreadRuntime>(
+        config,
+        surface,
+        RenderExecutorKind::Dedicated,
+        CreateDedicatedRenderExecutor(),
+        std::make_unique<ClearPresentFrameConsumer>());
+}
+
+RenderFramePublishResult RenderSubsystem::TryPublishFrame(
+    std::unique_ptr<const RenderFramePacket> packet)
+{
+    if (m_runtime == nullptr)
+    {
+        RenderFramePublishResult result;
+        result.code = RenderFramePublishCode::NotRunning;
+        result.resultClass = ClassifyRenderFramePublishCode(result.code);
+        result.sequence = packet != nullptr ? packet->GetHeader().sequence : 0U;
+        return result;
+    }
+    return m_runtime->TryPublishFrame(std::move(packet));
+}
+
+RenderResizeResult RenderSubsystem::RequestResize(
+    const NativeSurfaceDesc& surface)
+{
+    if (m_runtime == nullptr)
+    {
+        RenderResizeResult result;
+        result.code = RenderResizeCode::NotRunning;
+        result.resultClass = ClassifyRenderResizeCode(result.code);
+        result.generation = surface.generation;
+        return result;
+    }
+    RenderResizeResult result = m_runtime->RequestResize(surface);
+    if (result.code == RenderResizeCode::Accepted ||
+        result.code == RenderResizeCode::CoalescedOlder)
+    {
+        m_runtimeSurface = surface;
+    }
+    return result;
+}
+
+RenderDiagnosticsSnapshot RenderSubsystem::GetDiagnosticsSnapshot() const
+{
+    return m_runtime != nullptr ? m_runtime->GetDiagnosticsSnapshot()
+                                : RenderDiagnosticsSnapshot{};
+}
+
+RenderRuntimeResult RenderSubsystem::GetLastRuntimeResult() const
+{
+    return m_runtime != nullptr ? m_runtime->GetLastRuntimeResult()
+                                : m_preRuntimeResult;
+}
+
+RenderShutdownResult RenderSubsystem::GetLastShutdownResult() const
+{
+    return m_runtime != nullptr ? m_runtime->GetLastShutdownResult()
+                                : m_preShutdownResult;
 }
 
 void RenderSubsystem::Initialize(const RenderConfig& config)
 {
-    m_config = config;
+    if (m_runtimeConfigured)
+    {
+        Initialize();
+        return;
+    }
+    m_legacyBridge->config = config;
 
     // Handle Auto backend selection
     RHIBackendType actualBackend = config.backendType;
@@ -44,7 +343,13 @@ void RenderSubsystem::Initialize(const RenderConfig& config)
     }
 
     // Create render context
-    m_renderContext = std::make_unique<RenderContext>();
+    m_legacyBridge->renderContext = std::make_unique<RenderContext>();
+    // Preserve the frozen legacy source-contract names until Task 18 removes
+    // this synchronous bridge; ownership remains inside m_legacyBridge.
+    RenderContext* const m_renderContext =
+        m_legacyBridge->renderContext.get();
+    WindowSubsystem* const m_windowSubsystem =
+        m_legacyBridge->windowSubsystem;
 
     // Initialize render context with RHI device
     RenderContextConfig ctxConfig;
@@ -55,7 +360,7 @@ void RenderSubsystem::Initialize(const RenderConfig& config)
     ctxConfig.appName = "RenderVerseX";
 
     NativeSurfaceDesc initialSurface;
-    if (m_config.autoBindWindow && m_windowSubsystem)
+    if (m_legacyBridge->config.autoBindWindow && m_windowSubsystem)
     {
         initialSurface = m_windowSubsystem->CaptureRenderSurface();
         initialSurface.vsync = config.vsync;
@@ -65,18 +370,19 @@ void RenderSubsystem::Initialize(const RenderConfig& config)
     if (!m_renderContext->Initialize(ctxConfig, initialSurface))
     {
         RVX_CORE_ERROR("RenderSubsystem: Failed to initialize render context");
-        m_renderContext.reset();
+        m_legacyBridge->renderContext.reset();
         return;
     }
 
     // Create scene renderer
-    m_sceneRenderer = std::make_unique<SceneRenderer>();
-    m_sceneRenderer->Initialize(m_renderContext.get());
+    m_legacyBridge->sceneRenderer = std::make_unique<SceneRenderer>();
+    m_legacyBridge->sceneRenderer->Initialize(
+        m_legacyBridge->renderContext.get());
 
     // Note: Default passes (OpaquePass) are added by SceneRenderer::SetupDefaultPasses()
 
     // Auto-bind to window if enabled
-    if (m_config.autoBindWindow)
+    if (m_legacyBridge->config.autoBindWindow)
     {
         if (initialSurface.IsValidFor(actualBackend))
         {
@@ -107,23 +413,33 @@ void RenderSubsystem::Deinitialize()
 {
     RVX_CORE_DEBUG("RenderSubsystem deinitializing...");
 
-    // Wait for GPU to finish all pending work before destroying resources
-    if (m_renderContext)
+    if (m_runtimeConfigured)
     {
-        m_renderContext->WaitIdle();
+        if (m_runtime != nullptr)
+        {
+            m_preShutdownResult = m_runtime->Stop();
+        }
+        RVX_CORE_INFO("RenderSubsystem dedicated runtime deinitialized");
+        return;
+    }
+
+    // Wait for GPU to finish all pending work before destroying resources
+    if (m_legacyBridge->renderContext)
+    {
+        m_legacyBridge->renderContext->WaitIdle();
     }
 
     // Shutdown in reverse order
-    if (m_sceneRenderer)
+    if (m_legacyBridge->sceneRenderer)
     {
-        m_sceneRenderer->Shutdown();
-        m_sceneRenderer.reset();
+        m_legacyBridge->sceneRenderer->Shutdown();
+        m_legacyBridge->sceneRenderer.reset();
     }
 
-    if (m_renderContext)
+    if (m_legacyBridge->renderContext)
     {
-        m_renderContext->Shutdown();
-        m_renderContext.reset();
+        m_legacyBridge->renderContext->Shutdown();
+        m_legacyBridge->renderContext.reset();
     }
 
     RVX_CORE_INFO("RenderSubsystem deinitialized");
@@ -131,51 +447,64 @@ void RenderSubsystem::Deinitialize()
 
 void RenderSubsystem::BeginFrame()
 {
-    if (m_frameActive)
+    if (m_runtimeConfigured)
+    {
+        RVX_CORE_WARN("BeginFrame is unavailable after Configure; publish a frame packet");
+        return;
+    }
+    if (m_legacyBridge->frameActive)
     {
         RVX_CORE_WARN("BeginFrame called while frame already active");
         return;
     }
 
-    if (m_renderContext)
+    if (m_legacyBridge->renderContext)
     {
-        m_renderContext->BeginFrame();
+        m_legacyBridge->renderContext->BeginFrame();
     }
 
-    m_frameActive = true;
+    m_legacyBridge->frameActive = true;
 }
 
 void RenderSubsystem::Render(World* world, Camera* camera)
 {
-    if (!m_frameActive)
+    if (m_runtimeConfigured)
+    {
+        RVX_CORE_WARN("Render is unavailable after Configure; publish a frame packet");
+        return;
+    }
+    if (!m_legacyBridge->frameActive)
     {
         RVX_CORE_WARN("Render called without BeginFrame");
         return;
     }
 
-    if (!m_sceneRenderer || !camera)
+    if (!m_legacyBridge->sceneRenderer || !camera)
     {
         return;
     }
 
     // Setup view and collect scene data
-    m_sceneRenderer->SetupView(*camera, world);
+    m_legacyBridge->sceneRenderer->SetupView(*camera, world);
 
     // SceneRenderer::SetupView() requests uploads for visible resources.
     // Rendering skips objects whose GPU resources are not ready yet.
 
     // Execute render graph
-    m_sceneRenderer->Render();
+    m_legacyBridge->sceneRenderer->Render();
 }
 
 void RenderSubsystem::EnsureVisibleResourcesResident()
 {
-    auto* gpuMgr = m_sceneRenderer ? m_sceneRenderer->GetGPUResourceManager() : nullptr;
+    auto* gpuMgr = m_legacyBridge->sceneRenderer
+                       ? m_legacyBridge->sceneRenderer->GetGPUResourceManager()
+                       : nullptr;
     if (!gpuMgr)
         return;
 
-    const auto& renderScene = m_sceneRenderer->GetRenderScene();
-    const auto& visibleIndices = m_sceneRenderer->GetVisibleObjectIndices();
+    const auto& renderScene = m_legacyBridge->sceneRenderer->GetRenderScene();
+    const auto& visibleIndices =
+        m_legacyBridge->sceneRenderer->GetVisibleObjectIndices();
 
     for (uint32_t idx : visibleIndices)
     {
@@ -204,48 +533,89 @@ void RenderSubsystem::EnsureVisibleResourcesResident()
 
 void RenderSubsystem::EndFrame()
 {
-    if (!m_frameActive)
+    if (m_runtimeConfigured)
+    {
+        RVX_CORE_WARN("EndFrame is unavailable after Configure; publish a frame packet");
+        return;
+    }
+    if (!m_legacyBridge->frameActive)
     {
         RVX_CORE_WARN("EndFrame called without BeginFrame");
         return;
     }
 
-    if (m_renderContext)
+    if (m_legacyBridge->renderContext)
     {
-        m_renderContext->EndFrame();
+        m_legacyBridge->renderContext->EndFrame();
     }
 
-    m_frameActive = false;
+    m_legacyBridge->frameActive = false;
 }
 
 void RenderSubsystem::Present()
 {
-    if (m_renderContext)
+    if (m_runtimeConfigured)
     {
-        m_renderContext->Present();
+        RVX_CORE_WARN("Present is unavailable after Configure; runtime owns presentation");
+        return;
     }
+    if (m_legacyBridge->renderContext)
+    {
+        m_legacyBridge->renderContext->Present();
+    }
+}
+
+RenderContext* RenderSubsystem::GetRenderContext() const
+{
+    return m_runtimeConfigured ? nullptr :
+                                 m_legacyBridge->renderContext.get();
+}
+
+SceneRenderer* RenderSubsystem::GetSceneRenderer() const
+{
+    return m_runtimeConfigured ? nullptr :
+                                 m_legacyBridge->sceneRenderer.get();
 }
 
 IRHIDevice* RenderSubsystem::GetDevice() const
 {
-    return m_renderContext ? m_renderContext->GetDevice() : nullptr;
+    return !m_runtimeConfigured && m_legacyBridge->renderContext
+               ? m_legacyBridge->renderContext->GetDevice()
+               : nullptr;
 }
 
 RHISwapChain* RenderSubsystem::GetSwapChain() const
 {
-    return m_renderContext ? m_renderContext->GetSwapChain() : nullptr;
+    return !m_runtimeConfigured && m_legacyBridge->renderContext
+               ? m_legacyBridge->renderContext->GetSwapChain()
+               : nullptr;
 }
 
 RenderGraph* RenderSubsystem::GetRenderGraph() const
 {
-    return m_sceneRenderer ? m_sceneRenderer->GetRenderGraph() : nullptr;
+    return !m_runtimeConfigured && m_legacyBridge->sceneRenderer
+               ? m_legacyBridge->sceneRenderer->GetRenderGraph()
+               : nullptr;
 }
 
 bool RenderSubsystem::SetWindow(const NativeSurfaceDesc& surface)
 {
+    if (m_runtimeConfigured)
+    {
+        const RenderResizeResult result = RequestResize(surface);
+        return result.code == RenderResizeCode::Accepted ||
+               result.code == RenderResizeCode::CoalescedOlder;
+    }
     RVX_CORE_INFO("RenderSubsystem setting window: {}x{}",
                   surface.width,
                   surface.height);
+
+    // Preserve the frozen legacy source-contract names until Task 18 removes
+    // this synchronous bridge; ownership remains inside m_legacyBridge.
+    RenderContext* const m_renderContext =
+        m_legacyBridge->renderContext.get();
+    SceneRenderer* const m_sceneRenderer =
+        m_legacyBridge->sceneRenderer.get();
 
     if (!m_renderContext || !m_renderContext->GetDevice())
     {
@@ -302,8 +672,11 @@ bool RenderSubsystem::SetWindow(const NativeSurfaceDesc& surface)
 
 void RenderSubsystem::SetWindowSubsystem(WindowSubsystem* windowSubsystem)
 {
-    m_windowSubsystem = windowSubsystem;
-    if (m_config.autoBindWindow && m_renderContext && !m_renderContext->HasSwapChain())
+    m_legacyBridge->windowSubsystem = windowSubsystem;
+    if (!m_runtimeConfigured &&
+        m_legacyBridge->config.autoBindWindow &&
+        m_legacyBridge->renderContext &&
+        !m_legacyBridge->renderContext->HasSwapChain())
     {
         AutoBindWindow();
     }
@@ -313,15 +686,30 @@ void RenderSubsystem::OnResize(uint32_t width, uint32_t height)
 {
     RVX_CORE_INFO("RenderSubsystem resize: {}x{}", width, height);
 
-    if (m_renderContext)
+    if (m_runtimeConfigured)
+    {
+        NativeSurfaceDesc surface = m_runtimeSurface;
+        surface.width = width;
+        surface.height = height;
+        ++surface.generation;
+        const RenderResizeResult result = RequestResize(surface);
+        if (result.code == RenderResizeCode::Accepted ||
+            result.code == RenderResizeCode::CoalescedOlder)
+        {
+            m_runtimeSurface = surface;
+        }
+        return;
+    }
+
+    if (m_legacyBridge->renderContext)
     {
         // Ensure no submitted frame still references views/resources before releasing them.
-        m_renderContext->WaitIdle();
-        if (m_sceneRenderer)
+        m_legacyBridge->renderContext->WaitIdle();
+        if (m_legacyBridge->sceneRenderer)
         {
-            m_sceneRenderer->PrepareForSwapChainResize();
+            m_legacyBridge->sceneRenderer->PrepareForSwapChainResize();
         }
-        m_renderContext->ResizeSwapChain(width, height);
+        m_legacyBridge->renderContext->ResizeSwapChain(width, height);
     }
 }
 
@@ -356,39 +744,92 @@ void RenderSubsystem::ProcessGPUUploads(float timeBudgetMs)
 
 GPUResourceManager* RenderSubsystem::GetGPUResourceManager() const
 {
-    return m_sceneRenderer ? m_sceneRenderer->GetGPUResourceManager() : nullptr;
+    return !m_runtimeConfigured && m_legacyBridge->sceneRenderer
+               ? m_legacyBridge->sceneRenderer->GetGPUResourceManager()
+               : nullptr;
+}
+
+RenderResourceReserveResult RenderSubsystem::ReserveResource(
+    AssetId assetId,
+    RenderResourceKind kind) noexcept
+{
+    return m_runtime != nullptr ? m_runtime->ReserveResource(assetId, kind)
+                                : RenderResourceReserveResult{};
+}
+
+RenderUploadEnqueueResult RenderSubsystem::TryEnqueueUpload(
+    const ResourceUploadRequestRef& request) noexcept
+{
+    return m_runtime != nullptr ? m_runtime->TryEnqueueUpload(request)
+                                : RenderUploadEnqueueResult{};
+}
+
+RenderReleaseResult RenderSubsystem::RequestRelease(
+    RenderResourceHandle handle) noexcept
+{
+    return m_runtime != nullptr ? m_runtime->RequestRelease(handle)
+                                : RenderReleaseResult{};
+}
+
+RenderResourceStatus RenderSubsystem::QueryResourceStatus(
+    RenderResourceHandle handle) const noexcept
+{
+    return m_runtime != nullptr ? m_runtime->QueryResourceStatus(handle)
+                                : RenderResourceStatus{};
 }
 
 bool RenderSubsystem::IsReady() const
 {
-    return m_renderContext != nullptr && 
-           m_renderContext->GetDevice() != nullptr &&
-           m_renderContext->HasSwapChain();
+    if (m_runtimeConfigured)
+    {
+        return GetLastRuntimeResult().code == RenderRuntimeCode::Running;
+    }
+    return m_legacyBridge->renderContext != nullptr &&
+           m_legacyBridge->renderContext->GetDevice() != nullptr &&
+           m_legacyBridge->renderContext->HasSwapChain();
+}
+
+void RenderSubsystem::SetConfig(const RenderConfig& config)
+{
+    if (m_runtimeConfigured)
+    {
+        throw std::logic_error(
+            "Legacy RenderConfig is unavailable after Configure");
+    }
+    m_legacyBridge->config = config;
+}
+
+const RenderConfig& RenderSubsystem::GetConfig() const
+{
+    return m_legacyBridge->config;
 }
 
 void RenderSubsystem::AutoBindWindow()
 {
-    if (!m_windowSubsystem)
+    if (!m_legacyBridge->windowSubsystem)
     {
         RVX_CORE_WARN("RenderSubsystem: Cannot auto-bind window - WindowSubsystem dependency was not injected");
         return;
     }
 
-    if (!m_renderContext || !m_renderContext->GetDevice())
+    if (!m_legacyBridge->renderContext ||
+        !m_legacyBridge->renderContext->GetDevice())
     {
         RVX_CORE_WARN("RenderSubsystem: RenderContext has no valid device");
         return;
     }
 
-    NativeSurfaceDesc surface = m_windowSubsystem->CaptureRenderSurface();
-    surface.vsync = m_config.vsync;
-    if (!surface.IsValidFor(m_renderContext->GetDevice()->GetBackendType()))
+    NativeSurfaceDesc surface =
+        m_legacyBridge->windowSubsystem->CaptureRenderSurface();
+    surface.vsync = m_legacyBridge->config.vsync;
+    if (!surface.IsValidFor(
+            m_legacyBridge->renderContext->GetDevice()->GetBackendType()))
     {
         RVX_CORE_WARN("RenderSubsystem: WindowSubsystem has no valid native surface");
         return;
     }
 
-    m_windowSubsystem->ReleaseGraphicsContextFromCurrentThread();
+    m_legacyBridge->windowSubsystem->ReleaseGraphicsContextFromCurrentThread();
     RVX_CORE_INFO("RenderSubsystem: Auto-binding to window {}x{}",
                   surface.width,
                   surface.height);
