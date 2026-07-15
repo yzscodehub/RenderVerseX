@@ -19,7 +19,6 @@ namespace RVX
         }
 
         m_window = reinterpret_cast<GLFWwindow*>(desc.surface.backendWindow);
-
         // Set VSync
         glfwSwapInterval(m_vsync ? 1 : 0);
 
