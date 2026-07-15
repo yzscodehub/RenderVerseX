@@ -106,6 +106,9 @@ namespace RVX
          */
         bool CreateSwapChain(const NativeSurfaceDesc& surface);
 
+        /** @brief Apply a newer extent-only complete surface snapshot. */
+        bool ResizeSwapChain(const NativeSurfaceDesc& surface);
+
         /**
          * @brief Resize the swap chain
          * @param width New width
@@ -159,6 +162,9 @@ namespace RVX
         /// Get the swap chain
         RHISwapChain* GetSwapChain() const { return m_swapChain.Get(); }
 
+        /// Get the complete snapshot backing the current swap chain.
+        const NativeSurfaceDesc& GetSurface() const { return m_surface; }
+
         /// Get the current frame's graphics command context
         RHICommandContext* GetGraphicsContext() const;
 
@@ -208,7 +214,7 @@ namespace RVX
         uint32_t m_frameIndex = 0;
         uint64_t m_frameNumber = 0;
         bool m_supportsAsyncCompute = false;
-        uint64 m_surfaceGeneration = 0;
+        NativeSurfaceDesc m_surface;
     };
 
 } // namespace RVX

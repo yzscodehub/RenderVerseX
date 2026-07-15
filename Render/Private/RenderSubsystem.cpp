@@ -80,7 +80,10 @@ void RenderSubsystem::Initialize(const RenderConfig& config)
     {
         if (initialSurface.IsValidFor(actualBackend))
         {
-            SetWindow(initialSurface);
+            if (!SetWindow(initialSurface))
+            {
+                RVX_CORE_ERROR("RenderSubsystem: Initial surface binding failed");
+            }
         }
         else
         {
@@ -238,29 +241,56 @@ RenderGraph* RenderSubsystem::GetRenderGraph() const
     return m_sceneRenderer ? m_sceneRenderer->GetRenderGraph() : nullptr;
 }
 
-void RenderSubsystem::SetWindow(const NativeSurfaceDesc& surface)
+bool RenderSubsystem::SetWindow(const NativeSurfaceDesc& surface)
 {
     RVX_CORE_INFO("RenderSubsystem setting window: {}x{}",
                   surface.width,
                   surface.height);
 
-    if (m_renderContext)
+    if (!m_renderContext || !m_renderContext->GetDevice())
     {
-        if (!m_renderContext->HasSwapChain())
-        {
-            m_renderContext->CreateSwapChain(surface);
-        }
-        else
-        {
-            // Ensure no submitted frame still references views/resources before releasing them.
+        RVX_CORE_ERROR("RenderSubsystem: Cannot bind a surface without a render device");
+        return false;
+    }
+
+    if (!surface.IsValidFor(m_renderContext->GetDevice()->GetBackendType()))
+    {
+        RVX_CORE_ERROR("RenderSubsystem: Invalid native surface update");
+        return false;
+    }
+
+    if (!m_renderContext->HasSwapChain())
+    {
+        return m_renderContext->CreateSwapChain(surface);
+    }
+
+    const NativeSurfaceUpdateKind updateKind = ClassifyNativeSurfaceUpdate(
+        m_renderContext->GetSurface(), surface);
+    switch (updateKind)
+    {
+        case NativeSurfaceUpdateKind::Reject:
+            RVX_CORE_WARN("RenderSubsystem: Rejected stale surface generation {}",
+                          surface.generation);
+            return false;
+
+        case NativeSurfaceUpdateKind::Resize:
             m_renderContext->WaitIdle();
             if (m_sceneRenderer)
             {
                 m_sceneRenderer->PrepareForSwapChainResize();
             }
-            m_renderContext->ResizeSwapChain(surface.width, surface.height);
-        }
+            return m_renderContext->ResizeSwapChain(surface);
+
+        case NativeSurfaceUpdateKind::Replace:
+            m_renderContext->WaitIdle();
+            if (m_sceneRenderer)
+            {
+                m_sceneRenderer->PrepareForSwapChainResize();
+            }
+            return m_renderContext->CreateSwapChain(surface);
     }
+
+    RVX_UNREACHABLE();
 }
 
 void RenderSubsystem::SetWindowSubsystem(WindowSubsystem* windowSubsystem)
@@ -355,7 +385,10 @@ void RenderSubsystem::AutoBindWindow()
     RVX_CORE_INFO("RenderSubsystem: Auto-binding to window {}x{}",
                   surface.width,
                   surface.height);
-    SetWindow(surface);
+    if (!SetWindow(surface))
+    {
+        RVX_CORE_WARN("RenderSubsystem: Auto-binding the native surface failed");
+    }
 }
 
 } // namespace RVX

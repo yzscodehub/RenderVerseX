@@ -32,6 +32,10 @@ namespace RVX
         // Get current drawable for command buffer presentation
         id<CAMetalDrawable> GetCurrentDrawable() const { return m_currentDrawable; }
         bool HasPendingDrawable() const { return m_currentDrawable != nil; }
+        bool IsValid() const
+        {
+            return m_metalLayer != nil && !m_backBuffers.empty();
+        }
 
         // Called after present to advance to next frame
         void AdvanceFrame();

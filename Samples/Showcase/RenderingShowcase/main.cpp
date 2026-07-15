@@ -1717,8 +1717,6 @@ int main(int argc, char* argv[])
         return -1;
     }
 
-    renderSubsystem->SetWindowSubsystem(windowSubsystem);
-
     auto* input = engine.GetSubsystem<InputSubsystem>();
     if (input && windowSubsystem->GetWindow())
     {

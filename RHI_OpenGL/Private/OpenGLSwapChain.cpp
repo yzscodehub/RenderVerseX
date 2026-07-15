@@ -23,12 +23,6 @@ namespace RVX
         // Set VSync
         glfwSwapInterval(m_vsync ? 1 : 0);
 
-        // Get actual framebuffer size
-        int fbWidth, fbHeight;
-        glfwGetFramebufferSize(m_window, &fbWidth, &fbHeight);
-        m_width = static_cast<uint32>(fbWidth);
-        m_height = static_cast<uint32>(fbHeight);
-
         // Create proxy textures for the back buffers
         CreateBackBufferProxies();
 

@@ -280,6 +280,16 @@ bool Engine::InitializeSubsystems()
         subsystem->SetEngine(this);
     }
 
+    // Resolve the standard window dependency before Render initialization so
+    // native handles and OpenGL ownership are transferred on the main thread.
+    if (auto* render = GetSubsystem<RenderSubsystem>())
+    {
+        if (auto* window = GetSubsystem<WindowSubsystem>())
+        {
+            render->SetWindowSubsystem(window);
+        }
+    }
+
     // Initialize in dependency order
     return m_subsystems.InitializeAll();
 }

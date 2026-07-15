@@ -81,4 +81,41 @@ namespace RVX
         }
     };
 
+    /** @brief Required action for a complete native-surface snapshot update. */
+    enum class NativeSurfaceUpdateKind : uint8
+    {
+        Reject = 0,
+        Resize,
+        Replace
+    };
+
+    /** @brief Classify a newer complete surface snapshot for lifecycle routing. */
+    [[nodiscard]] inline NativeSurfaceUpdateKind ClassifyNativeSurfaceUpdate(
+        const NativeSurfaceDesc& current,
+        const NativeSurfaceDesc& update) noexcept
+    {
+        if (update.generation <= current.generation)
+        {
+            return NativeSurfaceUpdateKind::Reject;
+        }
+
+        const bool sameBinding =
+            update.platform == current.platform &&
+            update.nativeWindow == current.nativeWindow &&
+            update.nativeDisplay == current.nativeDisplay &&
+            update.nativeLayer == current.nativeLayer &&
+            update.backendWindow == current.backendWindow &&
+            update.contentScale == current.contentScale &&
+            update.preferredFormat == current.preferredFormat &&
+            update.vsync == current.vsync;
+        const bool extentChanged =
+            update.width != current.width || update.height != current.height;
+
+        if (sameBinding && extentChanged)
+        {
+            return NativeSurfaceUpdateKind::Resize;
+        }
+        return NativeSurfaceUpdateKind::Replace;
+    }
+
 } // namespace RVX

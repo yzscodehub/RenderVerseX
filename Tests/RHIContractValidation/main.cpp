@@ -201,17 +201,102 @@ namespace RVX::Tests
         EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
     }
 
-    TEST(RHIContractValidation, NativeSurfaceGenerationOrdersUpdatesMonotonically)
+    TEST(RHIContractValidation, NativeSurfaceUpdateClassificationUsesProductionLifecycleRules)
     {
         NativeSurfaceDesc current = MakeSurface(NativeSurfacePlatform::Win32);
         current.generation = 42;
-        NativeSurfaceDesc stale = current;
-        stale.generation = 41;
-        NativeSurfaceDesc replacement = current;
-        replacement.generation = 43;
+        NativeSurfaceDesc update = current;
 
-        EXPECT_LE(stale.generation, current.generation);
-        EXPECT_GT(replacement.generation, current.generation);
+        update.generation = 42;
+        EXPECT_EQ(NativeSurfaceUpdateKind::Reject,
+                  ClassifyNativeSurfaceUpdate(current, update));
+        update.generation = 41;
+        EXPECT_EQ(NativeSurfaceUpdateKind::Reject,
+                  ClassifyNativeSurfaceUpdate(current, update));
+
+        update = current;
+        update.generation = 43;
+        update.width = 1920;
+        update.height = 1080;
+        EXPECT_EQ(NativeSurfaceUpdateKind::Resize,
+                  ClassifyNativeSurfaceUpdate(current, update));
+
+        const auto expectReplacement = [&](NativeSurfaceDesc replacement) {
+            replacement.generation = 43;
+            replacement.width = 1920;
+            EXPECT_EQ(NativeSurfaceUpdateKind::Replace,
+                      ClassifyNativeSurfaceUpdate(current, replacement));
+        };
+
+        update = current;
+        update.nativeWindow = 0x5000;
+        expectReplacement(update);
+        update = current;
+        update.nativeDisplay = 0x5000;
+        expectReplacement(update);
+        update = current;
+        update.nativeLayer = 0x5000;
+        expectReplacement(update);
+        update = current;
+        update.backendWindow = 0x5000;
+        expectReplacement(update);
+        update = current;
+        update.platform = NativeSurfacePlatform::GLFW;
+        expectReplacement(update);
+        update = current;
+        update.preferredFormat = RHIFormat::RGBA8_UNORM;
+        expectReplacement(update);
+        update = current;
+        update.contentScale = 2.0f;
+        expectReplacement(update);
+        update = current;
+        update.vsync = false;
+        expectReplacement(update);
+
+        update = current;
+        update.generation = 43;
+        EXPECT_EQ(NativeSurfaceUpdateKind::Replace,
+                  ClassifyNativeSurfaceUpdate(current, update));
+    }
+
+    TEST(RHIContractValidation, RenderSubsystemRoutesCompleteSurfaceUpdates)
+    {
+        const std::string renderHeader =
+            ReadSource("Render/Include/Render/RenderSubsystem.h");
+        const std::string contextHeader =
+            ReadSource("Render/Include/Render/Context/RenderContext.h");
+        const std::string renderSubsystem =
+            ReadSource("Render/Private/RenderSubsystem.cpp");
+
+        EXPECT_NE(renderHeader.find(
+                      "bool SetWindow(const NativeSurfaceDesc& surface)"),
+                  std::string::npos);
+        EXPECT_NE(contextHeader.find(
+                      "bool ResizeSwapChain(const NativeSurfaceDesc& surface)"),
+                  std::string::npos);
+        EXPECT_NE(contextHeader.find("GetSurface() const"), std::string::npos);
+
+        const size_t classify =
+            renderSubsystem.find("ClassifyNativeSurfaceUpdate(");
+        const size_t resizeCase = renderSubsystem.find(
+            "case NativeSurfaceUpdateKind::Resize:", classify);
+        const size_t replaceCase = renderSubsystem.find(
+            "case NativeSurfaceUpdateKind::Replace:", classify);
+        ASSERT_NE(classify, std::string::npos);
+        ASSERT_NE(resizeCase, std::string::npos);
+        ASSERT_NE(replaceCase, std::string::npos);
+        EXPECT_NE(renderSubsystem.find("ResizeSwapChain(surface)", resizeCase),
+                  std::string::npos);
+        EXPECT_NE(renderSubsystem.find("CreateSwapChain(surface)", replaceCase),
+                  std::string::npos);
+        EXPECT_NE(renderSubsystem.find("return false;", classify),
+                  std::string::npos);
+
+        const size_t onResize = renderSubsystem.find(
+            "void RenderSubsystem::OnResize(uint32_t width, uint32_t height)");
+        ASSERT_NE(onResize, std::string::npos);
+        EXPECT_NE(renderSubsystem.find("ResizeSwapChain(width, height)", onResize),
+                  std::string::npos);
     }
 
     TEST(RHIContractValidation, SwapChainDescriptionHasSingleSurfaceSourceOfTruth)
@@ -259,6 +344,45 @@ namespace RVX::Tests
                   std::string::npos);
     }
 
+    TEST(RHIContractValidation, StandardEngineInjectsWindowBeforeRenderInitialization)
+    {
+        const std::string renderHeader =
+            ReadSource("Render/Include/Render/RenderSubsystem.h");
+        const std::string engine = ReadSource("Engine/Private/Engine.cpp");
+        const std::string renderSubsystem =
+            ReadSource("Render/Private/RenderSubsystem.cpp");
+        const std::string showcase =
+            ReadSource("Samples/Showcase/RenderingShowcase/main.cpp");
+
+        EXPECT_NE(renderHeader.find("RVX_SUBSYSTEM_DEPENDENCIES(WindowSubsystem)"),
+                  std::string::npos);
+        const size_t inject =
+            engine.find("render->SetWindowSubsystem(window)");
+        const size_t initialize =
+            engine.find("return m_subsystems.InitializeAll()");
+        ASSERT_NE(inject, std::string::npos);
+        ASSERT_NE(initialize, std::string::npos);
+        EXPECT_LT(inject, initialize);
+
+        const size_t capture = renderSubsystem.find(
+            "initialSurface = m_windowSubsystem->CaptureRenderSurface()");
+        const size_t release = renderSubsystem.find(
+            "m_windowSubsystem->ReleaseGraphicsContextFromCurrentThread()",
+            capture);
+        const size_t rhiStartup = renderSubsystem.find(
+            "m_renderContext->Initialize(ctxConfig, initialSurface)",
+            release);
+        ASSERT_NE(capture, std::string::npos);
+        ASSERT_NE(release, std::string::npos);
+        ASSERT_NE(rhiStartup, std::string::npos);
+        EXPECT_LT(capture, release);
+        EXPECT_LT(release, rhiStartup);
+
+        EXPECT_EQ(showcase.find(
+                      "renderSubsystem->SetWindowSubsystem(windowSubsystem);"),
+                  std::string::npos);
+    }
+
     TEST(RHIContractValidation, OpenGLClaimsTheBackendWindowBeforeLoadingGlad)
     {
         const std::string source = ReadSource("RHI_OpenGL/Private/OpenGLDevice.cpp");
@@ -271,6 +395,17 @@ namespace RVX::Tests
         ASSERT_NE(loadGlad, std::string::npos);
         EXPECT_LT(backendWindow, makeCurrent);
         EXPECT_LT(makeCurrent, loadGlad);
+    }
+
+    TEST(RHIContractValidation, OpenGLSwapChainRetainsCapturedSurfaceExtent)
+    {
+        const std::string source =
+            ReadSource("RHI_OpenGL/Private/OpenGLSwapChain.cpp");
+        EXPECT_EQ(source.find("glfwGetFramebufferSize"), std::string::npos);
+        EXPECT_NE(source.find("m_width(desc.surface.width)"),
+                  std::string::npos);
+        EXPECT_NE(source.find("m_height(desc.surface.height)"),
+                  std::string::npos);
     }
 
     TEST(RHIContractValidation, MetalPresentationStaysInsideCommandBufferOwnership)
@@ -314,6 +449,37 @@ namespace RVX::Tests
                   std::string::npos);
         EXPECT_NE(appleBridge.find("(CAMetalLayer*)view.layer"),
                   std::string::npos);
+    }
+
+    TEST(RHIContractValidation, SwapChainFactoriesRejectFailedConstruction)
+    {
+        const std::string dx12Header =
+            ReadSource("RHI_DX12/Private/DX12SwapChain.h");
+        const std::string dx12Factory =
+            ReadSource("RHI_DX12/Private/DX12SwapChain.cpp");
+        const std::string metalHeader =
+            ReadSource("RHI_Metal/Private/MetalSwapChain.h");
+        const std::string metalFactory =
+            ReadSource("RHI_Metal/Private/MetalDevice.mm");
+        const std::string openGLHeader =
+            ReadSource("RHI_OpenGL/Private/OpenGLSwapChain.h");
+        const std::string openGLFactory =
+            ReadSource("RHI_OpenGL/Private/OpenGLDevice.cpp");
+
+        for (const std::string* header :
+             {&dx12Header, &metalHeader, &openGLHeader})
+        {
+            EXPECT_NE(header->find("bool IsValid() const"),
+                      std::string::npos);
+        }
+        for (const std::string* factory :
+             {&dx12Factory, &metalFactory, &openGLFactory})
+        {
+            EXPECT_NE(factory->find("if (!swapChain->IsValid())"),
+                      std::string::npos);
+            EXPECT_NE(factory->find("return nullptr;"),
+                      std::string::npos);
+        }
     }
 
     TEST(RHIContractValidation, AcceptsMinimalConcreteBackendCapabilities)

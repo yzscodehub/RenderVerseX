@@ -592,7 +592,12 @@ namespace RVX
     RHISwapChainRef OpenGLDevice::CreateSwapChain(const RHISwapChainDesc& desc)
     {
         GL_DEBUG_SCOPE("CreateSwapChain");
-        return MakeRef<OpenGLSwapChain>(this, desc);
+        auto swapChain = MakeRef<OpenGLSwapChain>(this, desc);
+        if (!swapChain->IsValid())
+        {
+            return nullptr;
+        }
+        return swapChain;
     }
 
     // =============================================================================

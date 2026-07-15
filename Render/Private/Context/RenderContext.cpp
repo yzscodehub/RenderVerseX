@@ -63,7 +63,7 @@ bool RenderContext::Initialize(const RenderContextConfig& config,
     m_initialized = true;
     m_frameIndex = 0;
     m_frameNumber = 0;
-    m_surfaceGeneration = 0;
+    m_surface = {};
 
     RVX_CORE_INFO("RenderContext initialized successfully");
     return true;
@@ -87,7 +87,7 @@ void RenderContext::Shutdown()
 
     m_initialized = false;
     m_frameActive = false;
-    m_surfaceGeneration = 0;
+    m_surface = {};
 
     RVX_CORE_INFO("RenderContext shutdown complete");
 }
@@ -107,11 +107,11 @@ bool RenderContext::CreateSwapChain(const NativeSurfaceDesc& surface)
         return false;
     }
 
-    if (m_swapChain && surface.generation <= m_surfaceGeneration)
+    if (m_swapChain && surface.generation <= m_surface.generation)
     {
         RVX_CORE_WARN("RenderContext: Ignoring stale surface generation {} (current {})",
                       surface.generation,
-                      m_surfaceGeneration);
+                      m_surface.generation);
         return false;
     }
 
@@ -120,6 +120,7 @@ bool RenderContext::CreateSwapChain(const NativeSurfaceDesc& surface)
     {
         WaitIdle();
         m_swapChain.Reset();
+        m_surface = {};
     }
 
     RHISwapChainDesc swapChainDesc;
@@ -134,10 +135,34 @@ bool RenderContext::CreateSwapChain(const NativeSurfaceDesc& surface)
         return false;
     }
 
-    m_surfaceGeneration = surface.generation;
+    m_surface = surface;
     RVX_CORE_INFO("RenderContext: Created swap chain {}x{}",
                   surface.width,
                   surface.height);
+    return true;
+}
+
+bool RenderContext::ResizeSwapChain(const NativeSurfaceDesc& surface)
+{
+    if (!m_swapChain || !m_device)
+    {
+        RVX_CORE_ERROR("RenderContext: Cannot update a missing swap chain");
+        return false;
+    }
+    if (!surface.IsValidFor(m_device->GetBackendType()))
+    {
+        RVX_CORE_ERROR("RenderContext: Invalid native surface resize update");
+        return false;
+    }
+    if (ClassifyNativeSurfaceUpdate(m_surface, surface) !=
+        NativeSurfaceUpdateKind::Resize)
+    {
+        RVX_CORE_WARN("RenderContext: Surface update is not a newer extent-only change");
+        return false;
+    }
+
+    ResizeSwapChain(surface.width, surface.height);
+    m_surface = surface;
     return true;
 }
 
@@ -161,6 +186,8 @@ void RenderContext::ResizeSwapChain(uint32_t width, uint32_t height)
     WaitIdle();
 
     m_swapChain->Resize(width, height);
+    m_surface.width = width;
+    m_surface.height = height;
 }
 
 void RenderContext::BeginFrame()

@@ -35,6 +35,10 @@ namespace RVX
 
         // OpenGL specific
         GLFWwindow* GetWindow() const { return m_window; }
+        bool IsValid() const
+        {
+            return m_window != nullptr && !m_backBufferTextures.empty();
+        }
 
     private:
         void CreateBackBufferProxies();

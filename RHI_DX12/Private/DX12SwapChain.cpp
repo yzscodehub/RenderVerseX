@@ -214,7 +214,12 @@ namespace RVX
     // =============================================================================
     RHISwapChainRef CreateDX12SwapChain(DX12Device* device, const RHISwapChainDesc& desc)
     {
-        return Ref<DX12SwapChain>(new DX12SwapChain(device, desc));
+        Ref<DX12SwapChain> swapChain(new DX12SwapChain(device, desc));
+        if (!swapChain->IsValid())
+        {
+            return nullptr;
+        }
+        return swapChain;
     }
 
 } // namespace RVX

@@ -404,7 +404,12 @@ namespace RVX
     // =============================================================================
     RHISwapChainRef MetalDevice::CreateSwapChain(const RHISwapChainDesc& desc)
     {
-        return MakeRef<MetalSwapChain>(this, desc);
+        auto swapChain = MakeRef<MetalSwapChain>(this, desc);
+        if (!swapChain->IsValid())
+        {
+            return nullptr;
+        }
+        return swapChain;
     }
 
     // =============================================================================

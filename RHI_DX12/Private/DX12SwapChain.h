@@ -32,6 +32,10 @@ namespace RVX
 
         // DX12 Specific
         IDXGISwapChain4* GetSwapChain() const { return m_swapChain.Get(); }
+        bool IsValid() const
+        {
+            return m_swapChain.Get() != nullptr && !m_backBuffers.empty();
+        }
 
     private:
         void CreateBackBufferResources();

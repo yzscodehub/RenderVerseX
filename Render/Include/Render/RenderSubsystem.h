@@ -124,7 +124,7 @@ namespace RVX
         // =====================================================================
 
         /// Set the captured native surface for rendering
-        void SetWindow(const NativeSurfaceDesc& surface);
+        bool SetWindow(const NativeSurfaceDesc& surface);
 
         /// Set the window subsystem used by auto window binding.
         void SetWindowSubsystem(WindowSubsystem* windowSubsystem);
