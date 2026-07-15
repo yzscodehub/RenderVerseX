@@ -13,16 +13,17 @@
 
 #include "Core/Subsystem/ISubsystem.h"
 #include "Core/Log.h"
-#include <memory>
-#include <vector>
-#include <unordered_map>
-#include <unordered_set>
-#include <typeindex>
 #include <algorithm>
 #include <exception>
-#include <string>
+#include <functional>
+#include <memory>
 #include <queue>
 #include <sstream>
+#include <string>
+#include <typeindex>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace RVX
 {
@@ -76,6 +77,8 @@ namespace RVX
     class SubsystemCollection
     {
     public:
+        using InitializeHook = std::function<void(TBase&)>;
+
         SubsystemCollection() = default;
         ~SubsystemCollection() { DeinitializeAll(); }
 
@@ -209,7 +212,8 @@ namespace RVX
         /**
          * @brief Initialize all subsystems in dependency order
          */
-        bool InitializeAll()
+        bool InitializeAll(const InitializeHook& beforeInitialize = {},
+                           const InitializeHook& afterInitialize = {})
         {
             if (m_initialized)
             {
@@ -228,14 +232,23 @@ namespace RVX
             BuildOrder();
 
             std::vector<TBase*> initializedThisCall;
+            initializedThisCall.reserve(m_ordered.size());
             for (auto* subsystem : m_ordered)
             {
                 try
                 {
                     RVX_CORE_DEBUG("Initializing subsystem: {}", subsystem->GetName());
+                    if (beforeInitialize)
+                    {
+                        beforeInitialize(*subsystem);
+                    }
                     subsystem->Initialize();
                     subsystem->SetInitialized(true);
                     initializedThisCall.push_back(subsystem);
+                    if (afterInitialize)
+                    {
+                        afterInitialize(*subsystem);
+                    }
                 }
                 catch (const std::exception& e)
                 {
@@ -259,6 +272,52 @@ namespace RVX
         }
 
         /**
+         * @brief Deinitialize a subsystem by type
+         * @return False if the subsystem is missing or deinitialization fails
+         */
+        template<typename T>
+        bool DeinitializeSubsystem()
+        {
+            T* subsystem = GetSubsystem<T>();
+            if (!subsystem)
+            {
+                return false;
+            }
+
+            if (!subsystem->IsInitialized())
+            {
+                return true;
+            }
+
+            bool succeeded = true;
+            RVX_CORE_DEBUG("Deinitializing subsystem: {}", subsystem->GetName());
+            try
+            {
+                subsystem->Deinitialize();
+            }
+            catch (const std::exception& e)
+            {
+                RVX_CORE_ERROR("Subsystem '{}' failed during deinitialize: {}",
+                               subsystem->GetName(),
+                               e.what());
+                succeeded = false;
+            }
+            catch (...)
+            {
+                RVX_CORE_ERROR("Subsystem '{}' failed during deinitialize with an unknown exception",
+                               subsystem->GetName());
+                succeeded = false;
+            }
+
+            subsystem->SetInitialized(false);
+            m_initialized = std::any_of(
+                m_subsystems.begin(),
+                m_subsystems.end(),
+                [](const std::unique_ptr<TBase>& entry) { return entry->IsInitialized(); });
+            return succeeded;
+        }
+
+        /**
          * @brief Deinitialize all subsystems in reverse order
          */
         void DeinitializeAll()
@@ -269,6 +328,11 @@ namespace RVX
             // Shutdown in reverse order
             for (auto it = m_ordered.rbegin(); it != m_ordered.rend(); ++it)
             {
+                if (!(*it)->IsInitialized())
+                {
+                    continue;
+                }
+
                 RVX_CORE_DEBUG("Deinitializing subsystem: {}", (*it)->GetName());
                 try
                 {
@@ -298,7 +362,7 @@ namespace RVX
         {
             for (auto* subsystem : m_ordered)
             {
-                if (subsystem->ShouldTick())
+                if (subsystem->IsInitialized() && subsystem->ShouldTick())
                 {
                     subsystem->Tick(deltaTime);
                 }
@@ -312,7 +376,9 @@ namespace RVX
         {
             for (auto* subsystem : m_ordered)
             {
-                if (subsystem->ShouldTick() && subsystem->GetTickPhase() == phase)
+                if (subsystem->IsInitialized() &&
+                    subsystem->ShouldTick() &&
+                    subsystem->GetTickPhase() == phase)
                 {
                     subsystem->Tick(deltaTime);
                 }

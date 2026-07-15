@@ -93,6 +93,92 @@ namespace
         std::vector<std::string>* m_events = nullptr;
     };
 
+    class StagedDependencySubsystem final : public EngineSubsystem
+    {
+    public:
+        explicit StagedDependencySubsystem(std::vector<std::string>* events)
+            : m_events(events)
+        {
+        }
+
+        const char* GetName() const override { return "StagedDependencySubsystem"; }
+
+        void Initialize() override
+        {
+            m_events->push_back("dependency:init");
+        }
+
+        void Deinitialize() override
+        {
+            m_events->push_back("dependency:shutdown");
+        }
+
+        void Tick(float deltaTime) override
+        {
+            (void)deltaTime;
+            m_events->push_back("dependency:tick");
+        }
+
+        bool ShouldTick() const override { return true; }
+
+    private:
+        std::vector<std::string>* m_events = nullptr;
+    };
+
+    class StagedTargetSubsystem final : public EngineSubsystem
+    {
+    public:
+        explicit StagedTargetSubsystem(std::vector<std::string>* events)
+            : m_events(events)
+        {
+        }
+
+        const char* GetName() const override { return "StagedTargetSubsystem"; }
+
+        RVX_SUBSYSTEM_DEPENDENCIES(StagedDependencySubsystem)
+
+        void Initialize() override
+        {
+            m_events->push_back("target:init");
+        }
+
+        void Deinitialize() override
+        {
+            m_events->push_back("target:shutdown");
+        }
+
+        void Tick(float deltaTime) override
+        {
+            (void)deltaTime;
+            m_events->push_back("target:tick");
+        }
+
+        bool ShouldTick() const override { return true; }
+
+    private:
+        std::vector<std::string>* m_events = nullptr;
+    };
+
+    class ThrowingShutdownSubsystem final : public EngineSubsystem
+    {
+    public:
+        explicit ThrowingShutdownSubsystem(std::vector<std::string>* events)
+            : m_events(events)
+        {
+        }
+
+        const char* GetName() const override { return "ThrowingShutdownSubsystem"; }
+
+        void Deinitialize() override
+        {
+            m_events->push_back("throwing:shutdown");
+            throw std::runtime_error("intentional shutdown failure");
+        }
+
+    private:
+        std::vector<std::string>* m_events = nullptr;
+    };
+
     TEST(AppModeBoundaryValidation, RuntimeModeUsesCookedRuntimeContracts)
     {
         constexpr AppModeTraits traits = GetAppModeTraits(AppMode::Runtime);
@@ -202,6 +288,184 @@ namespace
                       "recording:shutdown",
                   }),
                   events);
+    }
+
+    TEST(AppModeBoundaryValidation, StagedInitializationHooksObserveDependencyAndTargetState)
+    {
+        ScopedCoreLog log;
+        std::vector<std::string> events;
+        SubsystemCollection<EngineSubsystem> collection;
+
+        auto* dependency = collection.AddSubsystem<StagedDependencySubsystem>(&events);
+        auto* target = collection.AddSubsystem<StagedTargetSubsystem>(&events);
+        bool beforeSawRequiredState = false;
+        bool afterSawInitializedTarget = false;
+
+        EXPECT_TRUE(collection.InitializeAll(
+            [&](EngineSubsystem& subsystem) {
+                if (&subsystem == target)
+                {
+                    beforeSawRequiredState = dependency->IsInitialized() &&
+                                             !target->IsInitialized();
+                    events.push_back("target:before");
+                }
+            },
+            [&](EngineSubsystem& subsystem) {
+                if (&subsystem == target)
+                {
+                    afterSawInitializedTarget = target->IsInitialized();
+                    events.push_back("target:after");
+                }
+            }));
+
+        EXPECT_TRUE(beforeSawRequiredState);
+        EXPECT_TRUE(afterSawInitializedTarget);
+        EXPECT_EQ((std::vector<std::string>{
+                      "dependency:init",
+                      "target:before",
+                      "target:init",
+                      "target:after",
+                  }),
+                  events);
+    }
+
+    TEST(AppModeBoundaryValidation, BeforeInitializeHookFailureUnwindsOnlyInitializedDependencies)
+    {
+        ScopedCoreLog log;
+        std::vector<std::string> events;
+        SubsystemCollection<EngineSubsystem> collection;
+
+        auto* dependency = collection.AddSubsystem<StagedDependencySubsystem>(&events);
+        auto* target = collection.AddSubsystem<StagedTargetSubsystem>(&events);
+
+        EXPECT_FALSE(collection.InitializeAll(
+            [&](EngineSubsystem& subsystem) {
+                if (&subsystem == target)
+                {
+                    events.push_back("target:before-throws");
+                    throw std::runtime_error("intentional before-hook failure");
+                }
+            }));
+
+        EXPECT_FALSE(collection.IsInitialized());
+        EXPECT_FALSE(dependency->IsInitialized());
+        EXPECT_FALSE(target->IsInitialized());
+        EXPECT_EQ((std::vector<std::string>{
+                      "dependency:init",
+                      "target:before-throws",
+                      "dependency:shutdown",
+                  }),
+                  events);
+    }
+
+    TEST(AppModeBoundaryValidation, AfterInitializeHookFailureUnwindsTargetAndDependencies)
+    {
+        ScopedCoreLog log;
+        std::vector<std::string> events;
+        SubsystemCollection<EngineSubsystem> collection;
+
+        auto* dependency = collection.AddSubsystem<StagedDependencySubsystem>(&events);
+        auto* target = collection.AddSubsystem<StagedTargetSubsystem>(&events);
+
+        EXPECT_FALSE(collection.InitializeAll(
+            {},
+            [&](EngineSubsystem& subsystem) {
+                if (&subsystem == target)
+                {
+                    events.push_back("target:after-throws");
+                    throw std::runtime_error("intentional after-hook failure");
+                }
+            }));
+
+        EXPECT_FALSE(collection.IsInitialized());
+        EXPECT_FALSE(dependency->IsInitialized());
+        EXPECT_FALSE(target->IsInitialized());
+        EXPECT_EQ((std::vector<std::string>{
+                      "dependency:init",
+                      "target:init",
+                      "target:after-throws",
+                      "target:shutdown",
+                      "dependency:shutdown",
+                  }),
+                  events);
+    }
+
+    TEST(AppModeBoundaryValidation, TargetedShutdownIsIdempotentAndSkipsTicksAndLaterShutdown)
+    {
+        ScopedCoreLog log;
+        std::vector<std::string> events;
+        SubsystemCollection<EngineSubsystem> collection;
+
+        auto* dependency = collection.AddSubsystem<StagedDependencySubsystem>(&events);
+        auto* target = collection.AddSubsystem<StagedTargetSubsystem>(&events);
+        ASSERT_TRUE(collection.InitializeAll());
+        events.clear();
+
+        EXPECT_TRUE(collection.DeinitializeSubsystem<StagedTargetSubsystem>());
+        EXPECT_FALSE(target->IsInitialized());
+        EXPECT_TRUE(dependency->IsInitialized());
+        EXPECT_TRUE(collection.IsInitialized());
+        EXPECT_TRUE(collection.DeinitializeSubsystem<StagedTargetSubsystem>());
+
+        collection.TickAll(1.0f / 60.0f);
+        collection.TickPhase(TickPhase::Update, 1.0f / 60.0f);
+
+        collection.DeinitializeAll();
+        EXPECT_FALSE(dependency->IsInitialized());
+        EXPECT_FALSE(collection.IsInitialized());
+        EXPECT_FALSE(collection.DeinitializeSubsystem<FailingLifecycleSubsystem>());
+
+        EXPECT_EQ((std::vector<std::string>{
+                      "target:shutdown",
+                      "dependency:tick",
+                      "dependency:tick",
+                      "dependency:shutdown",
+                  }),
+                  events);
+    }
+
+    TEST(AppModeBoundaryValidation, TargetedShutdownRecomputesStateAfterFinalLiveSubsystemStops)
+    {
+        ScopedCoreLog log;
+        std::vector<std::string> events;
+        SubsystemCollection<EngineSubsystem> collection;
+
+        auto* dependency = collection.AddSubsystem<StagedDependencySubsystem>(&events);
+        auto* target = collection.AddSubsystem<StagedTargetSubsystem>(&events);
+        ASSERT_TRUE(collection.InitializeAll());
+        events.clear();
+
+        EXPECT_TRUE(collection.DeinitializeSubsystem<StagedTargetSubsystem>());
+        EXPECT_FALSE(target->IsInitialized());
+        EXPECT_TRUE(dependency->IsInitialized());
+        EXPECT_TRUE(collection.IsInitialized());
+
+        EXPECT_TRUE(collection.DeinitializeSubsystem<StagedDependencySubsystem>());
+        EXPECT_FALSE(dependency->IsInitialized());
+        EXPECT_FALSE(collection.IsInitialized());
+        EXPECT_EQ((std::vector<std::string>{
+                      "target:shutdown",
+                      "dependency:shutdown",
+                  }),
+                  events);
+    }
+
+    TEST(AppModeBoundaryValidation, TargetedShutdownFailureClearsLifecycleState)
+    {
+        ScopedCoreLog log;
+        std::vector<std::string> events;
+        SubsystemCollection<EngineSubsystem> collection;
+
+        auto* throwing = collection.AddSubsystem<ThrowingShutdownSubsystem>(&events);
+        ASSERT_TRUE(collection.InitializeAll());
+
+        EXPECT_FALSE(collection.DeinitializeSubsystem<ThrowingShutdownSubsystem>());
+        EXPECT_FALSE(throwing->IsInitialized());
+        EXPECT_FALSE(collection.IsInitialized());
+        EXPECT_TRUE(collection.DeinitializeSubsystem<ThrowingShutdownSubsystem>());
+        collection.DeinitializeAll();
+
+        EXPECT_EQ((std::vector<std::string>{"throwing:shutdown"}), events);
     }
 
     TEST(AppModeBoundaryValidation, CameraContractLivesInCoreForSharedEditorRuntimeUse)
