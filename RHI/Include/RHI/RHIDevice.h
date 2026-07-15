@@ -160,6 +160,21 @@ namespace RVX
         // =========================================================================
         virtual RHISwapChainRef CreateSwapChain(const RHISwapChainDesc& desc) = 0;
 
+        /**
+         * @brief Query whether this device can replace an active swap-chain surface.
+         * @param currentSurface Surface currently owned by the active swap chain.
+         * @param replacementSurface Requested replacement surface.
+         * @return True when replacement can proceed without recreating the device.
+         */
+        virtual bool SupportsSurfaceRebind(
+            const NativeSurfaceDesc& currentSurface,
+            const NativeSurfaceDesc& replacementSurface) const
+        {
+            (void)currentSurface;
+            (void)replacementSurface;
+            return true;
+        }
+
         // =========================================================================
         // Synchronization
         // =========================================================================

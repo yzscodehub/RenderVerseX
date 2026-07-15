@@ -115,6 +115,15 @@ bool RenderContext::CreateSwapChain(const NativeSurfaceDesc& surface)
         return false;
     }
 
+    if (m_swapChain &&
+        !m_device->SupportsSurfaceRebind(m_surface, surface))
+    {
+        RVX_CORE_WARN(
+            "RenderContext: Surface replacement requires device recreation for {}",
+            ToString(backend));
+        return false;
+    }
+
     // Destroy existing swap chain
     if (m_swapChain)
     {

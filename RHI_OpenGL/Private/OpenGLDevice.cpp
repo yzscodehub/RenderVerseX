@@ -88,9 +88,9 @@ namespace RVX
             return;
         }
 
-        auto* backendWindow =
+        m_contextWindow =
             reinterpret_cast<GLFWwindow*>(desc.initialSurface.backendWindow);
-        glfwMakeContextCurrent(backendWindow);
+        glfwMakeContextCurrent(m_contextWindow);
 
         // Store the GL thread ID
         m_glThreadId = std::this_thread::get_id();
@@ -589,8 +589,25 @@ namespace RVX
     // =============================================================================
     // SwapChain
     // =============================================================================
+    bool OpenGLDevice::IsSurfaceContextCurrent(
+        const NativeSurfaceDesc& surface) const
+    {
+        auto* targetWindow =
+            reinterpret_cast<GLFWwindow*>(surface.backendWindow);
+        return m_initialized && IsOnGLThread() &&
+               targetWindow == m_contextWindow &&
+               glfwGetCurrentContext() == m_contextWindow;
+    }
+
     RHISwapChainRef OpenGLDevice::CreateSwapChain(const RHISwapChainDesc& desc)
     {
+        if (!IsSurfaceContextCurrent(desc.surface))
+        {
+            RVX_RHI_ERROR(
+                "OpenGL swap chain requires the device-owned context to be current on the GL thread");
+            return nullptr;
+        }
+
         GL_DEBUG_SCOPE("CreateSwapChain");
         auto swapChain = MakeRef<OpenGLSwapChain>(this, desc);
         if (!swapChain->IsValid())
@@ -598,6 +615,16 @@ namespace RVX
             return nullptr;
         }
         return swapChain;
+    }
+
+    bool OpenGLDevice::SupportsSurfaceRebind(
+        const NativeSurfaceDesc& currentSurface,
+        const NativeSurfaceDesc& replacementSurface) const
+    {
+        const bool sameBackendWindow =
+            currentSurface.backendWindow == replacementSurface.backendWindow;
+        return sameBackendWindow &&
+               IsSurfaceContextCurrent(replacementSurface);
     }
 
     // =============================================================================

@@ -408,6 +408,128 @@ namespace RVX::Tests
                   std::string::npos);
     }
 
+    TEST(RHIContractValidation, OpenGLSurfaceRebindIsRejectedBeforeActiveSwapChainMutation)
+    {
+        const std::string deviceInterface =
+            ReadSource("RHI/Include/RHI/RHIDevice.h");
+        const std::string openGLHeader =
+            ReadSource("RHI_OpenGL/Private/OpenGLDevice.h");
+        const std::string openGLDevice =
+            ReadSource("RHI_OpenGL/Private/OpenGLDevice.cpp");
+        const std::string renderSubsystem =
+            ReadSource("Render/Private/RenderSubsystem.cpp");
+        const std::string renderContext =
+            ReadSource("Render/Private/Context/RenderContext.cpp");
+
+        EXPECT_NE(deviceInterface.find("virtual bool SupportsSurfaceRebind("),
+                  std::string::npos);
+        EXPECT_NE(openGLHeader.find("bool SupportsSurfaceRebind("),
+                  std::string::npos);
+
+        const size_t openGLPolicy = openGLDevice.find(
+            "bool OpenGLDevice::SupportsSurfaceRebind(");
+        ASSERT_NE(openGLPolicy, std::string::npos);
+        EXPECT_NE(openGLDevice.find("currentSurface.backendWindow ==",
+                                    openGLPolicy),
+                  std::string::npos);
+        EXPECT_NE(openGLDevice.find(
+                      "IsSurfaceContextCurrent(replacementSurface)",
+                      openGLPolicy),
+                  std::string::npos);
+
+        const size_t create = renderContext.find(
+            "bool RenderContext::CreateSwapChain(");
+        const size_t policy = renderContext.find(
+            "m_device->SupportsSurfaceRebind(m_surface, surface)", create);
+        const size_t rejection = renderContext.find("return false;", policy);
+        const size_t destroy = renderContext.find("m_swapChain.Reset()", create);
+        const size_t clearSnapshot = renderContext.find("m_surface = {};", create);
+        ASSERT_NE(create, std::string::npos);
+        ASSERT_NE(policy, std::string::npos);
+        ASSERT_NE(rejection, std::string::npos);
+        ASSERT_NE(destroy, std::string::npos);
+        ASSERT_NE(clearSnapshot, std::string::npos);
+        EXPECT_LT(policy, rejection);
+        EXPECT_LT(rejection, destroy);
+        EXPECT_LT(rejection, clearSnapshot);
+
+        const size_t replaceCase = renderSubsystem.find(
+            "case NativeSurfaceUpdateKind::Replace:");
+        const size_t subsystemPolicy = renderSubsystem.find(
+            "SupportsSurfaceRebind(", replaceCase);
+        const size_t subsystemRejection = renderSubsystem.find(
+            "return false;", subsystemPolicy);
+        const size_t waitIdle = renderSubsystem.find(
+            "m_renderContext->WaitIdle()", replaceCase);
+        const size_t prepare = renderSubsystem.find(
+            "m_sceneRenderer->PrepareForSwapChainResize()", replaceCase);
+        ASSERT_NE(replaceCase, std::string::npos);
+        ASSERT_NE(subsystemPolicy, std::string::npos);
+        ASSERT_NE(subsystemRejection, std::string::npos);
+        ASSERT_NE(waitIdle, std::string::npos);
+        ASSERT_NE(prepare, std::string::npos);
+        EXPECT_LT(subsystemRejection, waitIdle);
+        EXPECT_LT(subsystemRejection, prepare);
+    }
+
+    TEST(RHIContractValidation, OpenGLFactoryRequiresItsOwnedCurrentContext)
+    {
+        const std::string header =
+            ReadSource("RHI_OpenGL/Private/OpenGLDevice.h");
+        const std::string source =
+            ReadSource("RHI_OpenGL/Private/OpenGLDevice.cpp");
+
+        EXPECT_NE(header.find("bool IsSurfaceContextCurrent("),
+                  std::string::npos);
+        EXPECT_NE(header.find("GLFWwindow* m_contextWindow"),
+                  std::string::npos);
+
+        const size_t create = source.find(
+            "RHISwapChainRef OpenGLDevice::CreateSwapChain(");
+        const size_t validate = source.find(
+            "IsSurfaceContextCurrent(desc.surface)", create);
+        const size_t construct = source.find(
+            "MakeRef<OpenGLSwapChain>", create);
+        ASSERT_NE(create, std::string::npos);
+        ASSERT_NE(validate, std::string::npos);
+        ASSERT_NE(construct, std::string::npos);
+        EXPECT_LT(validate, construct);
+
+        const size_t validator = source.find(
+            "bool OpenGLDevice::IsSurfaceContextCurrent(");
+        ASSERT_NE(validator, std::string::npos);
+        EXPECT_NE(source.find("surface.backendWindow", validator),
+                  std::string::npos);
+        EXPECT_NE(source.find("IsOnGLThread()", validator),
+                  std::string::npos);
+        EXPECT_NE(source.find("targetWindow == m_contextWindow", validator),
+                  std::string::npos);
+        EXPECT_NE(source.find("glfwGetCurrentContext() == m_contextWindow",
+                              validator),
+                  std::string::npos);
+    }
+
+    TEST(RHIContractValidation, SurfaceRebindPolicyDoesNotDisableVulkanReplacement)
+    {
+        const FakeRHIDevice vulkanDevice(
+            MakeValidCapabilities(RHIBackendType::Vulkan));
+        NativeSurfaceDesc current = MakeSurface(NativeSurfacePlatform::Win32);
+        NativeSurfaceDesc replacement = current;
+        replacement.backendWindow = 0x5000;
+        replacement.generation++;
+
+        EXPECT_TRUE(vulkanDevice.SupportsSurfaceRebind(current, replacement));
+
+        const std::string vulkanHeader =
+            ReadSource("RHI_Vulkan/Private/VulkanDevice.h");
+        const std::string openGLSwapChain =
+            ReadSource("RHI_OpenGL/Private/OpenGLSwapChain.cpp");
+        EXPECT_EQ(vulkanHeader.find("SupportsSurfaceRebind"),
+                  std::string::npos);
+        EXPECT_EQ(openGLSwapChain.find("glfwMakeContextCurrent"),
+                  std::string::npos);
+    }
+
     TEST(RHIContractValidation, MetalPresentationStaysInsideCommandBufferOwnership)
     {
         const std::string swapChain = ReadSource("RHI_Metal/Private/MetalSwapChain.mm");

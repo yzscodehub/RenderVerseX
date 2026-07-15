@@ -282,6 +282,13 @@ bool RenderSubsystem::SetWindow(const NativeSurfaceDesc& surface)
             return m_renderContext->ResizeSwapChain(surface);
 
         case NativeSurfaceUpdateKind::Replace:
+            if (!m_renderContext->GetDevice()->SupportsSurfaceRebind(
+                    m_renderContext->GetSurface(), surface))
+            {
+                RVX_CORE_WARN(
+                    "RenderSubsystem: Surface replacement requires device recreation");
+                return false;
+            }
             m_renderContext->WaitIdle();
             if (m_sceneRenderer)
             {

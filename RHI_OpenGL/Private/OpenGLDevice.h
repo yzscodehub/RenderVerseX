@@ -52,6 +52,9 @@ namespace RVX
         uint64 SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence) override;
 
         RHISwapChainRef CreateSwapChain(const RHISwapChainDesc& desc) override;
+        bool SupportsSurfaceRebind(
+            const NativeSurfaceDesc& currentSurface,
+            const NativeSurfaceDesc& replacementSurface) const override;
 
         RHIFenceRef CreateFence(uint64 initialValue) override;
         void WaitForFence(RHIFence* fence, uint64 value) override;
@@ -92,6 +95,8 @@ namespace RVX
 
     private:
         bool InitializeContext();
+        bool IsSurfaceContextCurrent(
+            const NativeSurfaceDesc& surface) const;
         void QueryCapabilities();
         void LoadExtensions();
 
@@ -101,6 +106,7 @@ namespace RVX
         uint64 m_frameIndex = 0;  // Total frame count for deletion queue
         
         std::thread::id m_glThreadId;
+        GLFWwindow* m_contextWindow = nullptr;
         bool m_initialized = false;
 
         // Subsystems
