@@ -301,6 +301,7 @@ namespace
             RenderRuntimeResult result;
             result.code = m_probe->frameCode;
             result.frameSequence = packet.GetHeader().sequence;
+            result.message = m_probe->frameMessage;
             return result;
         }
 

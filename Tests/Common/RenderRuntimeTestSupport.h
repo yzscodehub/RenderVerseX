@@ -164,6 +164,7 @@ namespace RVX
         uint32 startupNativeError = 0;
         std::string startupMessage;
         RenderRuntimeCode frameCode = RenderRuntimeCode::Running;
+        std::string frameMessage;
         RenderShutdownCode shutdownCode = RenderShutdownCode::Completed;
         RHIBackendType shutdownBackend = RHIBackendType::None;
         uint32 shutdownNativeError = 0;

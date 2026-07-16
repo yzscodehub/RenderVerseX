@@ -11,12 +11,14 @@
 
 namespace RVX
 {
-    /** @brief Private observation seam immediately before platform bootstrap. */
+    /** @brief Private observations around worker entry and platform bootstrap. */
     class IDedicatedRenderExecutorBootstrapHook
     {
     public:
         virtual ~IDedicatedRenderExecutorBootstrapHook() = default;
 
+        /** @brief Observe worker entry before any bootstrap work begins. */
+        virtual void OnWorkerEntry() noexcept {}
         virtual void BeforePlatformBootstrap() noexcept = 0;
     };
 

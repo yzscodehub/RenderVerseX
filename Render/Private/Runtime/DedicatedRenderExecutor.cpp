@@ -55,6 +55,7 @@ namespace
             m_pump.store(&pump, std::memory_order_release);
             m_exited = false;
             m_joined = false;
+            m_workerEnteredBootstrapBoundary = false;
             try
             {
                 m_thread = std::thread(&DedicatedRenderExecutor::ThreadMain,
@@ -69,6 +70,13 @@ namespace
             }
 
             m_started = true;
+            // This handshake confirms only that the worker was scheduled and
+            // entered the platform-bootstrap boundary. Bootstrap hooks,
+            // platform setup, and consumer initialization remain asynchronous
+            // so RenderThreadRuntime's startup watchdog covers all of them.
+            m_workerEntryCv.wait(lock, [this]() {
+                return m_workerEnteredBootstrapBoundary;
+            });
             return RenderExecutorStartResult{
                 RenderExecutorStartCode::Started,
                 0};
@@ -119,10 +127,16 @@ namespace
         {
             IRenderExecutorPump* pump =
                 m_pump.load(std::memory_order_acquire);
+            {
+                std::lock_guard lock(m_stateMutex);
+                m_workerEnteredBootstrapBoundary = true;
+            }
+            m_workerEntryCv.notify_all();
             try
             {
                 if (m_bootstrapHook != nullptr)
                 {
+                    m_bootstrapHook->OnWorkerEntry();
                     m_bootstrapHook->BeforePlatformBootstrap();
                 }
                 RenderThreadPlatformBootstrap platformBootstrap;
@@ -162,8 +176,10 @@ namespace
             m_bootstrapHook;
         std::thread m_thread;
         std::mutex m_stateMutex;
+        std::condition_variable m_workerEntryCv;
         std::condition_variable m_exitCv;
         bool m_started = false;
+        bool m_workerEnteredBootstrapBoundary = false;
         bool m_exited = false;
         bool m_joined = false;
     };

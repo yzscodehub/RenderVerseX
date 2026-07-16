@@ -73,6 +73,11 @@ namespace
           public NonMovable
     {
     public:
+        void OnWorkerEntry() noexcept override
+        {
+            m_workerEntryCount.fetch_add(1U, std::memory_order_release);
+        }
+
         void BeforePlatformBootstrap() noexcept override
         {
             std::unique_lock lock(m_mutex);
@@ -99,7 +104,13 @@ namespace
             m_cv.notify_all();
         }
 
+        [[nodiscard]] uint32 GetWorkerEntryCount() const noexcept
+        {
+            return m_workerEntryCount.load(std::memory_order_acquire);
+        }
+
     private:
+        std::atomic<uint32> m_workerEntryCount = 0;
         std::mutex m_mutex;
         std::condition_variable m_cv;
         bool m_entered = false;
@@ -564,7 +575,7 @@ namespace
     }
 
     TEST(RenderExecutorValidation,
-         DedicatedStartOnlyAcknowledgesThreadCreation)
+         DedicatedStartReturnsOnlyAfterWorkerEntersBootstrapBoundary)
     {
         auto bootstrapHook = std::make_shared<BlockingBootstrapHook>();
         std::unique_ptr<IRenderExecutor> executor =
@@ -591,6 +602,7 @@ namespace
                                          std::chrono::milliseconds(100),
                                          [&]() { return startReturned; }));
         }
+        EXPECT_EQ(bootstrapHook->GetWorkerEntryCount(), 1U);
 
         bootstrapHook->Release();
         starter.join();

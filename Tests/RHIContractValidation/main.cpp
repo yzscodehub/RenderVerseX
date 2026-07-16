@@ -299,6 +299,26 @@ namespace RVX::Tests
                   std::string::npos);
     }
 
+    TEST(RHIContractValidation,
+         RenderSubsystemReadinessDelegatesWithoutPublicTestPrivilege)
+    {
+        const std::string renderHeader =
+            ReadSource("Render/Include/Render/RenderSubsystem.h");
+        const std::string renderSubsystem =
+            ReadSource("Render/Private/RenderSubsystem.cpp");
+
+        EXPECT_EQ(renderHeader.find("friend struct RenderSubsystemTestAccess"),
+                  std::string::npos);
+        const size_t isReady = renderSubsystem.find(
+            "bool RenderSubsystem::IsReady() const");
+        ASSERT_NE(isReady, std::string::npos);
+        const size_t functionEnd = renderSubsystem.find("\n}", isReady);
+        ASSERT_NE(functionEnd, std::string::npos);
+        const std::string body =
+            renderSubsystem.substr(isReady, functionEnd - isReady);
+        EXPECT_NE(body.find("m_runtime->IsReady()"), std::string::npos);
+    }
+
     TEST(RHIContractValidation, SwapChainDescriptionHasSingleSurfaceSourceOfTruth)
     {
         static_assert(std::is_same_v<decltype(RHISwapChainDesc::surface), NativeSurfaceDesc>);

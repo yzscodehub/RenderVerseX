@@ -204,8 +204,9 @@ namespace RenderRuntimeDetail
         void SealPublicationLocked() noexcept;
         void StoreRuntimeResult(RenderRuntimeResult result);
         void StoreShutdownResult(RenderShutdownResult result);
+        void StoreShutdownResultAndRecordFailure(
+            RenderShutdownResult result);
         void RecordFailure(const RenderRuntimeResult& result);
-        void RecordFailure(const RenderShutdownResult& result);
         void PublishDiagnostics();
         [[noreturn]] void TerminateAfterFatalDiagnostics();
         RenderPumpDecision InitializeOnRenderThread();

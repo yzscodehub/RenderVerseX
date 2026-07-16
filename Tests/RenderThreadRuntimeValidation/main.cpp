@@ -21,23 +21,6 @@
 
 namespace RVX
 {
-    struct RenderSubsystemTestAccess
-    {
-        static void InstallConfiguredRuntime(
-            RenderSubsystem& subsystem,
-            std::unique_ptr<RenderThreadRuntime> runtime)
-        {
-            subsystem.m_runtime = std::move(runtime);
-            subsystem.m_runtimeConfigured = true;
-        }
-
-        static RenderShutdownResult StopRuntime(
-            RenderSubsystem& subsystem)
-        {
-            return subsystem.m_runtime->Stop();
-        }
-    };
-
     void RenderThreadRuntimeTestAccess::ReportTransportFatal(
         RenderThreadRuntime& runtime,
         const char* message) noexcept
@@ -345,6 +328,19 @@ namespace
         EXPECT_TRUE(builder.SetFeatures(std::move(features)));
         EXPECT_TRUE(builder.SetExtractionDiagnostics(extraction));
         return builder.Seal();
+    }
+
+    size_t CountOccurrences(const std::string& value,
+                            const std::string& needle)
+    {
+        size_t count = 0;
+        size_t offset = 0;
+        while ((offset = value.find(needle, offset)) != std::string::npos)
+        {
+            ++count;
+            offset += needle.size();
+        }
+        return count;
     }
 
     struct PendingGatewayWork
@@ -692,6 +688,11 @@ namespace
                   RenderShutdownCode::Completed);
         EXPECT_EQ(second.terminalCause, RenderTerminalCause::NormalStop);
         EXPECT_EQ(second.teardownMode, RenderTeardownMode::NormalDrain);
+        const RenderFailureDiagnostics failure =
+            runtime.GetDiagnosticsSnapshot().lastFailure;
+        EXPECT_FALSE(failure.available);
+        EXPECT_EQ(failure.shutdown.code, RenderShutdownCode::None);
+        EXPECT_TRUE(failure.context.empty());
     }
 
     TEST(RenderThreadRuntimeValidation, ExecutorStartFailurePreservesNativeError)
@@ -757,6 +758,136 @@ namespace
         EXPECT_EQ(failure.shutdown.code, RenderShutdownCode::DeviceLost);
         EXPECT_EQ(runtime.GetLastRuntimeResult().code,
                   RenderRuntimeCode::DeviceCreationFailed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         UnhandledCleanupFatalIsAtomicWithFailureDiagnostics)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->shutdownCode = RenderShutdownCode::DeviceLost;
+        probe->shutdownNativeError = 901U;
+        probe->shutdownMessage = "unhandled cleanup device lost";
+        probe->throwOnFrame = true;
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateInlineRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        ASSERT_EQ(runtime.TryPublishFrame(MakePacket(900)).code,
+                  RenderFramePublishCode::Accepted);
+
+        const RenderShutdownResult shutdown =
+            runtime.GetLastShutdownResult();
+        const RenderFailureDiagnostics failure =
+            runtime.GetDiagnosticsSnapshot().lastFailure;
+        EXPECT_EQ(shutdown.code, RenderShutdownCode::DeviceLost);
+        EXPECT_EQ(failure.runtime.code,
+                  RenderRuntimeCode::UnhandledException);
+        EXPECT_EQ(failure.shutdown.code, shutdown.code);
+        EXPECT_EQ(failure.shutdown.nativeError, shutdown.nativeError);
+        EXPECT_NE(failure.context.find(
+                      "Unhandled exception escaped the render pump"),
+                  std::string::npos);
+        EXPECT_EQ(CountOccurrences(failure.context,
+                                   probe->shutdownMessage),
+                  1U);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         StartupTimeoutCleanupFatalIsAtomicWithFailureDiagnostics)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->BlockStartup();
+        probe->shutdownCode = RenderShutdownCode::TimedOut;
+        probe->shutdownNativeError = 902U;
+        probe->shutdownMessage = "startup timeout cleanup timed out";
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        config.startupWatchdog = 20ms;
+        config.shutdownWatchdog = RVX_TEST_TIMEOUT;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+
+        std::thread releaseStartup([&]() {
+            (void)probe->WaitForEventCount(RenderRuntimeTestEvent::Started,
+                                           1U,
+                                           RVX_TEST_TIMEOUT);
+            const auto deadline =
+                std::chrono::steady_clock::now() + RVX_TEST_TIMEOUT;
+            while (std::chrono::steady_clock::now() < deadline &&
+                   runtime.GetLastRuntimeResult().code !=
+                       RenderRuntimeCode::StartupTimedOut)
+            {
+                std::this_thread::yield();
+            }
+            probe->ReleaseStartup();
+        });
+        const RenderRuntimeResult start = runtime.Start();
+        releaseStartup.join();
+
+        ASSERT_EQ(start.code, RenderRuntimeCode::StartupTimedOut);
+        const RenderShutdownResult shutdown =
+            runtime.GetLastShutdownResult();
+        const RenderFailureDiagnostics failure =
+            runtime.GetDiagnosticsSnapshot().lastFailure;
+        EXPECT_EQ(shutdown.code, RenderShutdownCode::TimedOut);
+        EXPECT_EQ(failure.runtime.code,
+                  RenderRuntimeCode::StartupTimedOut);
+        EXPECT_EQ(failure.shutdown.code, shutdown.code);
+        EXPECT_EQ(failure.shutdown.nativeError, shutdown.nativeError);
+        EXPECT_NE(failure.context.find(
+                      "Render runtime startup watchdog expired"),
+                  std::string::npos);
+        EXPECT_EQ(CountOccurrences(failure.context,
+                                   probe->shutdownMessage),
+                  1U);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         RuntimeFatalCleanupIsAtomicWithFailureDiagnostics)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->frameCode = RenderRuntimeCode::DeviceLost;
+        probe->frameMessage = "frame reported device lost";
+        probe->shutdownCode = RenderShutdownCode::TimedOut;
+        probe->shutdownNativeError = 903U;
+        probe->shutdownMessage = "device-lost cleanup timed out";
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateInlineRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        ASSERT_EQ(runtime.TryPublishFrame(MakePacket(901)).code,
+                  RenderFramePublishCode::Accepted);
+
+        const RenderShutdownResult shutdown =
+            runtime.GetLastShutdownResult();
+        const RenderFailureDiagnostics failure =
+            runtime.GetDiagnosticsSnapshot().lastFailure;
+        EXPECT_EQ(shutdown.code, RenderShutdownCode::TimedOut);
+        EXPECT_EQ(failure.runtime.code, RenderRuntimeCode::DeviceLost);
+        EXPECT_EQ(failure.shutdown.code, shutdown.code);
+        EXPECT_EQ(failure.shutdown.nativeError, shutdown.nativeError);
+        EXPECT_EQ(CountOccurrences(failure.context,
+                                   probe->frameMessage),
+                  1U);
+        EXPECT_EQ(CountOccurrences(failure.context,
+                                   probe->shutdownMessage),
+                  1U);
     }
 
     TEST(RenderThreadRuntimeValidation,
@@ -1995,38 +2126,34 @@ namespace
     }
 
     TEST(RenderThreadRuntimeValidation,
-         ConfiguredSubsystemReadinessUsesAcknowledgedRunningValueState)
+         RuntimeReadinessUsesAcknowledgedRunningValueState)
     {
         auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
         RenderRuntimeConfig config;
         config.backendType = RHIBackendType::DX11;
-        auto runtime = std::make_unique<RenderThreadRuntime>(
+        RenderThreadRuntime runtime(
             config,
             MakeSurface(),
             RenderExecutorKind::InlineTest,
             CreateInlineRenderExecutor(),
             CreateRecordingRenderFrameConsumer(probe));
-        RenderSubsystem subsystem;
-        RenderSubsystemTestAccess::InstallConfiguredRuntime(
-            subsystem, std::move(runtime));
-        subsystem.Initialize();
-        ASSERT_TRUE(subsystem.IsReady());
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        ASSERT_TRUE(runtime.IsReady());
 
         probe->frameCode =
             RenderRuntimeCode::RenderGraphValidationFailed;
-        ASSERT_EQ(subsystem.TryPublishFrame(MakePacket(7301)).code,
+        ASSERT_EQ(runtime.TryPublishFrame(MakePacket(7301)).code,
                   RenderFramePublishCode::Accepted);
         const RenderRuntimeResult frameResult =
-            subsystem.GetLastRuntimeResult();
+            runtime.GetLastRuntimeResult();
         ASSERT_EQ(frameResult.code,
                   RenderRuntimeCode::RenderGraphValidationFailed);
         ASSERT_EQ(frameResult.lifecycle,
                   RenderLifecycleState::Running);
-        EXPECT_TRUE(subsystem.IsReady());
+        EXPECT_TRUE(runtime.IsReady());
 
-        EXPECT_EQ(RenderSubsystemTestAccess::StopRuntime(subsystem).code,
-                  RenderShutdownCode::Completed);
-        EXPECT_FALSE(subsystem.IsReady());
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+        EXPECT_FALSE(runtime.IsReady());
     }
 
     struct RuntimeCase
