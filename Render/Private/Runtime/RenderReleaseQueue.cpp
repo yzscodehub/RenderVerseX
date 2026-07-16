@@ -42,7 +42,8 @@ namespace
     }
 
     RenderReleaseResult RenderReleaseQueue::RequestRelease(
-        RenderResourceHandle handle) noexcept
+        RenderResourceHandle handle,
+        RenderReleaseQueueSnapshot* observation) noexcept
     {
         const RenderReleaseResult result =
             m_reservationDirectory.RequestRelease(handle);
@@ -64,6 +65,17 @@ namespace
                     (m_head + m_count) % m_usableCapacity;
                 m_slots[appendIndex] = handle;
                 ++m_count;
+                if (m_count > m_highWaterMark)
+                {
+                    m_highWaterMark = m_count;
+                }
+                if (observation != nullptr)
+                {
+                    *observation = RenderReleaseQueueSnapshot{
+                        m_count,
+                        m_slots[m_head].generation,
+                        m_highWaterMark};
+                }
             }
         }
 
@@ -123,6 +135,7 @@ namespace
         {
             snapshot.oldestPendingGeneration = m_slots[m_head].generation;
         }
+        snapshot.highWaterMark = m_highWaterMark;
         return snapshot;
     }
 

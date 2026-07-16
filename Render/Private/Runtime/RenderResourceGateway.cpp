@@ -53,10 +53,18 @@ namespace RVX
     RenderUploadEnqueueResult RenderResourceGateway::TryEnqueueUpload(
         const ResourceUploadRequestRef& request) noexcept
     {
+        return TryEnqueueUploadObserved(request).result;
+    }
+
+    RenderGatewayUploadEnqueueResult
+        RenderResourceGateway::TryEnqueueUploadObserved(
+            const ResourceUploadRequestRef& request) noexcept
+    {
+        RenderGatewayUploadEnqueueResult observed;
         if (m_shuttingDown.load(std::memory_order_acquire))
         {
-            return RenderUploadEnqueueResult{
-                RenderUploadEnqueueCode::ShuttingDown};
+            observed.result.code = RenderUploadEnqueueCode::ShuttingDown;
+            return observed;
         }
         if (request != nullptr && request->GetHandle().IsValid())
         {
@@ -71,22 +79,34 @@ namespace RVX
                     identity.assetId != request->GetAssetId() ||
                     identity.kind != request->GetKind())
                 {
-                    return RenderUploadEnqueueResult{
-                        RenderUploadEnqueueCode::InvalidRequest};
+                    observed.result.code =
+                        RenderUploadEnqueueCode::InvalidRequest;
+                    return observed;
                 }
             }
         }
-        return m_uploadQueue.TryEnqueue(request);
+        observed.result = m_uploadQueue.TryEnqueue(request, &observed.queue);
+        return observed;
     }
 
     RenderReleaseResult RenderResourceGateway::RequestRelease(
         RenderResourceHandle handle) noexcept
     {
+        return RequestReleaseObserved(handle).result;
+    }
+
+    RenderGatewayReleaseResult RenderResourceGateway::RequestReleaseObserved(
+        RenderResourceHandle handle) noexcept
+    {
+        RenderGatewayReleaseResult observed;
         if (m_shuttingDown.load(std::memory_order_acquire))
         {
-            return RenderReleaseResult{RenderReleaseCode::ShuttingDown};
+            observed.result.code = RenderReleaseCode::ShuttingDown;
+            return observed;
         }
-        return m_releaseQueue.RequestRelease(handle);
+        observed.result =
+            m_releaseQueue.RequestRelease(handle, &observed.queue);
+        return observed;
     }
 
     RenderResourceStatus RenderResourceGateway::QueryResourceStatus(
@@ -108,6 +128,12 @@ namespace RVX
     RenderResourceHandle RenderResourceGateway::TryDequeueRelease() noexcept
     {
         return m_releaseQueue.TryDequeue();
+    }
+
+    RenderUploadQueueSnapshot
+        RenderResourceGateway::GetUploadQueueSnapshot() const noexcept
+    {
+        return m_uploadQueue.GetSnapshot();
     }
 
     RenderReleaseQueueSnapshot

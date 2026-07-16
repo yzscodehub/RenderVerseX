@@ -24,11 +24,18 @@ namespace RVX
         OutOfOrder = 3
     };
 
+    struct RenderFrameMailboxSnapshot
+    {
+        uint32 pendingCount = 0;
+        uint32 highWaterMark = 0;
+    };
+
     struct RenderFrameMailboxPublishResult
     {
         RenderFrameMailboxPublishCode code =
             RenderFrameMailboxPublishCode::InvalidPacket;
         uint64 replacedSequence = 0;
+        RenderFrameMailboxSnapshot snapshot{};
     };
 
     template <typename Packet>
@@ -146,6 +153,12 @@ namespace RVX
                     ++m_count;
                     result.code = RenderFrameMailboxPublishCode::Accepted;
                 }
+                if (m_count > m_highWaterMark)
+                {
+                    m_highWaterMark = m_count;
+                }
+                result.snapshot = RenderFrameMailboxSnapshot{
+                    m_count, m_highWaterMark};
             }
 
             Wake();
@@ -189,6 +202,12 @@ namespace RVX
             return m_count;
         }
 
+        [[nodiscard]] RenderFrameMailboxSnapshot GetSnapshot() const noexcept
+        {
+            std::lock_guard lock(m_mutex);
+            return RenderFrameMailboxSnapshot{m_count, m_highWaterMark};
+        }
+
     private:
         void Wake() const noexcept
         {
@@ -203,6 +222,7 @@ namespace RVX
         std::vector<std::unique_ptr<const Packet>> m_slots;
         uint32 m_head = 0;
         uint32 m_count = 0;
+        uint32 m_highWaterMark = 0;
         // Sole-producer-owned; never read by the Render consumer.
         uint64 m_lastPublishedSequence = 0;
         WakeFunction m_wakeFunction = nullptr;

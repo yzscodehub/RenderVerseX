@@ -14,6 +14,14 @@
 
 namespace RVX
 {
+    struct RenderUploadQueueSnapshot
+    {
+        uint32 retainedCount = 0;
+        uint64 retainedBytes = 0;
+        uint32 requestHighWaterMark = 0;
+        uint64 byteHighWaterMark = 0;
+    };
+
     class RenderUploadQueue final
     {
     public:
@@ -27,10 +35,12 @@ namespace RVX
         RenderUploadQueue& operator=(const RenderUploadQueue&) = delete;
 
         RenderUploadEnqueueResult TryEnqueue(
-            const ResourceUploadRequestRef& request) noexcept;
+            const ResourceUploadRequestRef& request,
+            RenderUploadQueueSnapshot* observation = nullptr) noexcept;
         [[nodiscard]] ResourceUploadRequestRef TryDequeue() noexcept;
         [[nodiscard]] uint32 GetRetainedCount() const noexcept;
         [[nodiscard]] uint64 GetRetainedBytes() const noexcept;
+        [[nodiscard]] RenderUploadQueueSnapshot GetSnapshot() const noexcept;
 
     private:
         void Wake() const noexcept;
@@ -43,6 +53,8 @@ namespace RVX
         uint32 m_head = 0;
         uint32 m_count = 0;
         uint64 m_retainedBytes = 0;
+        uint32 m_requestHighWaterMark = 0;
+        uint64 m_byteHighWaterMark = 0;
         WakeFunction m_wakeFunction = nullptr;
         void* m_wakeContext = nullptr;
     };

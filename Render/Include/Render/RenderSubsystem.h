@@ -188,6 +188,8 @@ namespace RVX
         bool IsReady() const;
 
     private:
+        void InitializeRuntime();
+        void InitializeLegacy(const RenderConfig& config);
         void AutoBindWindow();
         void EnsureVisibleResourcesResident();
         
@@ -198,7 +200,7 @@ namespace RVX
         RenderRuntimeResult m_preRuntimeResult{};
         RenderShutdownResult m_preShutdownResult{};
         bool m_runtimeConfigured = false;
-        bool m_runtimeInitializeAttempted = false;
+        bool m_initializeAttempted = false;
     };
 
 } // namespace RVX

@@ -54,18 +54,40 @@ namespace RenderRuntimeDetail
 
         virtual RenderRuntimeResult Initialize(
             const RenderRuntimeConfig& config,
-            const NativeSurfaceDesc& surface) noexcept = 0;
+            const NativeSurfaceDesc& surface) = 0;
         virtual RenderRuntimeResult ApplySurface(
-            const NativeSurfaceDesc& surface) noexcept = 0;
-        virtual void ProcessRelease(RenderResourceHandle handle) noexcept = 0;
+            const NativeSurfaceDesc& surface) = 0;
+        virtual void ProcessRelease(RenderResourceHandle handle) = 0;
         virtual void ProcessUpload(
-            const ResourceUploadRequestRef& request) noexcept = 0;
+            const ResourceUploadRequestRef& request) = 0;
         virtual RenderRuntimeResult ConsumeFrame(
-            const RenderFramePacket& packet) noexcept = 0;
-        virtual void PollCompletion() noexcept = 0;
-        virtual void RetireCompleted() noexcept = 0;
+            const RenderFramePacket& packet) = 0;
+        virtual void PollCompletion() = 0;
+        virtual void RetireCompleted() = 0;
         virtual RenderShutdownResult Shutdown(
             RenderTeardownMode mode) noexcept = 0;
+    };
+
+    /** @brief Private lifecycle observation seam used around runtime publication. */
+    class IRenderRuntimeLifecycleHook
+    {
+    public:
+        virtual ~IRenderRuntimeLifecycleHook() = default;
+
+        virtual void BeforeStartupAcknowledgement() noexcept = 0;
+        virtual void DuringStartupPublication() noexcept
+        {
+        }
+    };
+
+    /** @brief Private process-fatal boundary for an unjoined render executor. */
+    class IRenderFatalPolicy
+    {
+    public:
+        virtual ~IRenderFatalPolicy() = default;
+
+        virtual void Terminate(
+            const RenderDiagnosticsSnapshot& diagnostics) = 0;
     };
 
     class RenderThreadRuntime final : public IRenderExecutorPump,
@@ -77,7 +99,11 @@ namespace RenderRuntimeDetail
                             NativeSurfaceDesc surface,
                             RenderExecutorKind executorKind,
                             std::unique_ptr<IRenderExecutor> executor,
-                            std::unique_ptr<IRenderFrameConsumer> consumer);
+                            std::unique_ptr<IRenderFrameConsumer> consumer,
+                            std::shared_ptr<IRenderRuntimeLifecycleHook>
+                                lifecycleHook = nullptr,
+                            std::shared_ptr<IRenderFatalPolicy> fatalPolicy =
+                                nullptr);
         ~RenderThreadRuntime() override;
 
         [[nodiscard]] RenderRuntimeResult Start();
@@ -107,10 +133,12 @@ namespace RenderRuntimeDetail
         void OnUnhandledExecutorException() noexcept override;
 
     private:
+        friend struct RenderThreadRuntimeTestAccess;
+
         enum class StartupResolution : uint8
         {
             Pending = 0,
-            RenderResultClaimed = 1,
+            RenderCompleted = 1,
             TimedOut = 2
         };
 
@@ -130,11 +158,18 @@ namespace RenderRuntimeDetail
         void NotifyExecutor() noexcept;
         void TransitionTo(RenderLifecycleState lifecycle,
                           const char* message);
+        [[nodiscard]] bool TryClaimTerminalResult(
+            const RenderRuntimeResult& result);
+        [[nodiscard]] bool TryClaimTerminalResultLocked(
+            const RenderRuntimeResult& result);
+        [[nodiscard]] bool HasTerminalResult() const;
+        void SealPublication() noexcept;
         void StoreRuntimeResult(RenderRuntimeResult result);
         void StoreShutdownResult(RenderShutdownResult result);
         void RecordFailure(const RenderRuntimeResult& result);
         void RecordFailure(const RenderShutdownResult& result);
         void PublishDiagnostics();
+        [[noreturn]] void TerminateAfterFatalDiagnostics();
         RenderPumpDecision InitializeOnRenderThread();
         RenderPumpDecision FinishTimedOutStartupOnRenderThread();
         RenderPumpDecision StopOnRenderThread();
@@ -145,6 +180,8 @@ namespace RenderRuntimeDetail
         RenderExecutorKind m_executorKind = RenderExecutorKind::None;
         std::unique_ptr<IRenderExecutor> m_executor;
         std::unique_ptr<IRenderFrameConsumer> m_consumer;
+        std::shared_ptr<IRenderRuntimeLifecycleHook> m_lifecycleHook;
+        std::shared_ptr<IRenderFatalPolicy> m_fatalPolicy;
         std::unique_ptr<RenderFrameMailbox> m_frameMailbox;
         std::unique_ptr<SurfaceControlMailbox> m_controlMailbox;
         std::unique_ptr<RenderResourceGateway> m_resourceGateway;
@@ -159,10 +196,14 @@ namespace RenderRuntimeDetail
         std::atomic<bool> m_started = false;
         std::atomic<bool> m_joined = false;
         std::atomic<bool> m_wakePending = false;
+        std::atomic<bool> m_publicationSealed = false;
+        std::atomic<bool> m_ownerFatalPending = false;
 
         mutable std::mutex m_stateMutex;
+        std::timed_mutex m_startupArbitrationMutex;
         std::condition_variable m_startupCv;
         bool m_startupAcknowledged = false;
+        bool m_terminalResultClaimed = false;
         RenderRuntimeResult m_lastRuntimeResult{};
         RenderShutdownResult m_lastShutdownResult{};
         RenderDiagnosticsSnapshot m_diagnosticsState{};
@@ -183,20 +224,16 @@ namespace RenderRuntimeDetail
         std::atomic<uint64> m_lastAppliedFrameSequence = 0;
         std::atomic<uint64> m_lastSubmittedFrameSequence = 0;
         std::atomic<uint64> m_lastPresentedFrameSequence = 0;
-        std::atomic<uint32> m_frameHighWaterMark = 0;
         std::atomic<uint64> m_frameReplacementCount = 0;
         std::atomic<uint64> m_invalidFrameCount = 0;
         std::atomic<uint64> m_outOfOrderFrameCount = 0;
         std::atomic<uint64> m_resizeAcceptedCount = 0;
         std::atomic<uint64> m_resizeCoalescedCount = 0;
         std::atomic<uint64> m_resizeRejectedCount = 0;
-        std::atomic<uint32> m_uploadRequestHighWaterMark = 0;
-        std::atomic<uint64> m_uploadByteHighWaterMark = 0;
         std::atomic<uint64> m_uploadAcceptedCount = 0;
         std::atomic<uint64> m_uploadPressureCount = 0;
         std::atomic<uint64> m_uploadCompletedCount = 0;
         std::atomic<uint64> m_uploadFailedCount = 0;
-        std::atomic<uint32> m_releaseHighWaterMark = 0;
         std::atomic<uint64> m_releaseAcceptedCount = 0;
         std::atomic<uint64> m_releaseDequeuedCount = 0;
         std::atomic<uint64> m_releaseCompletedCount = 0;

@@ -17,6 +17,18 @@
 
 namespace RVX
 {
+    struct RenderGatewayUploadEnqueueResult
+    {
+        RenderUploadEnqueueResult result{};
+        RenderUploadQueueSnapshot queue{};
+    };
+
+    struct RenderGatewayReleaseResult
+    {
+        RenderReleaseResult result{};
+        RenderReleaseQueueSnapshot queue{};
+    };
+
     class RenderResourceGateway final : public IRenderResourceGateway
     {
     public:
@@ -47,6 +59,13 @@ namespace RVX
         void BeginShutdown() noexcept;
         [[nodiscard]] ResourceUploadRequestRef TryDequeueUpload() noexcept;
         [[nodiscard]] RenderResourceHandle TryDequeueRelease() noexcept;
+        [[nodiscard]] RenderGatewayUploadEnqueueResult
+            TryEnqueueUploadObserved(
+                const ResourceUploadRequestRef& request) noexcept;
+        [[nodiscard]] RenderGatewayReleaseResult RequestReleaseObserved(
+            RenderResourceHandle handle) noexcept;
+        [[nodiscard]] RenderUploadQueueSnapshot
+            GetUploadQueueSnapshot() const noexcept;
         [[nodiscard]] RenderReleaseQueueSnapshot
             GetReleaseQueueSnapshot() const noexcept;
         [[nodiscard]] uint32 GetRetainedUploadCount() const noexcept;

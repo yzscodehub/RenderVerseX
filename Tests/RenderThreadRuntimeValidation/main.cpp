@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <stdexcept>
 #include <thread>
@@ -20,6 +21,13 @@
 
 namespace RVX
 {
+    void RenderThreadRuntimeTestAccess::ReportTransportFatal(
+        RenderThreadRuntime& runtime,
+        const char* message) noexcept
+    {
+        RenderThreadRuntime::RuntimeFatalThunk(&runtime, message);
+    }
+
 namespace
 {
     using namespace std::chrono_literals;
@@ -141,6 +149,61 @@ namespace
         return builder.Seal();
     }
 
+    struct PendingGatewayWork
+    {
+        RenderResourceHandle handle;
+        ResourceUploadRequestRef request;
+    };
+
+    PendingGatewayWork PrepareGatewayWork(RenderThreadRuntime& runtime,
+                                          uint64 assetValue)
+    {
+        const AssetId assetId{assetValue};
+        const RenderResourceReserveResult reserve =
+            runtime.ReserveResource(assetId, RenderResourceKind::Material);
+        EXPECT_EQ(reserve.code, RenderResourceReserveCode::Reserved);
+
+        ResourceUploadRequestCreateInfo requestInfo;
+        requestInfo.sequence = 1;
+        requestInfo.assetId = assetId;
+        requestInfo.handle = reserve.handle;
+        requestInfo.kind = RenderResourceKind::Material;
+        requestInfo.payload = MaterialUploadPayload{};
+        requestInfo.declaredPayloadBytes = 0;
+        const ResourceUploadRequestCreateResult request =
+            ResourceUploadRequest::Create(std::move(requestInfo));
+        EXPECT_EQ(request.code, ResourceUploadRequestCreateCode::Created);
+        return PendingGatewayWork{reserve.handle, request.request};
+    }
+
+    void ExpectTerminalPublicationSealed(RenderThreadRuntime& runtime,
+                                         const PendingGatewayWork& work,
+                                         uint64 nextAssetValue)
+    {
+        EXPECT_EQ(runtime.ReserveResource(
+                      AssetId{nextAssetValue},
+                      RenderResourceKind::Material)
+                      .code,
+                  RenderResourceReserveCode::ShuttingDown);
+        EXPECT_EQ(runtime.TryEnqueueUpload(work.request).code,
+                  RenderUploadEnqueueCode::ShuttingDown);
+        EXPECT_EQ(runtime.RequestRelease(work.handle).code,
+                  RenderReleaseCode::ShuttingDown);
+        const RenderResourceStatus status =
+            runtime.QueryResourceStatus(work.handle);
+        EXPECT_EQ(status.code, RenderResourceStatusCode::Current);
+        EXPECT_EQ(status.state, RenderResourcePublicState::Reserved);
+        EXPECT_EQ(runtime.TryPublishFrame(MakePacket(4000)).code,
+                  RenderFramePublishCode::ShuttingDown);
+        EXPECT_EQ(runtime.RequestResize(MakeSurface(4000)).code,
+                  RenderResizeCode::ShuttingDown);
+        const RenderDiagnosticsSnapshot diagnostics =
+            runtime.GetDiagnosticsSnapshot();
+        EXPECT_EQ(diagnostics.frameTransport.currentUsage, 0U);
+        EXPECT_EQ(diagnostics.uploadTransport.currentRequestUsage, 0U);
+        EXPECT_EQ(diagnostics.releaseTransport.currentUsage, 0U);
+    }
+
     bool WaitForPresentedFrame(const RenderThreadRuntime& runtime,
                                uint64 sequence)
     {
@@ -203,6 +266,29 @@ namespace
                 runtime.GetDiagnosticsSnapshot().releaseTransport;
             if (diagnostics.acceptedCount == acceptedCount &&
                 diagnostics.currentUsage == currentUsage)
+            {
+                return true;
+            }
+            std::this_thread::sleep_for(1ms);
+        }
+        return false;
+    }
+
+    bool WaitForTransportHighWaterAndDrain(
+        const RenderThreadRuntime& runtime)
+    {
+        const auto deadline =
+            std::chrono::steady_clock::now() + RVX_TEST_TIMEOUT;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            const RenderDiagnosticsSnapshot diagnostics =
+                runtime.GetDiagnosticsSnapshot();
+            if (diagnostics.frameTransport.highWaterMark >= 1U &&
+                diagnostics.frameTransport.currentUsage == 0U &&
+                diagnostics.uploadTransport.requestHighWaterMark >= 1U &&
+                diagnostics.uploadTransport.currentRequestUsage == 0U &&
+                diagnostics.releaseTransport.highWaterMark >= 1U &&
+                diagnostics.releaseTransport.currentUsage == 0U)
             {
                 return true;
             }
@@ -420,6 +506,7 @@ namespace
             RenderExecutorKind::Dedicated,
             CreateJoinRecordingDedicatedExecutor(joinProbe),
             CreateRecordingRenderFrameConsumer(consumerProbe));
+        const PendingGatewayWork work = PrepareGatewayWork(runtime, 5001);
 
         bool observedTimeout = false;
         std::thread lateAcknowledgement([&]() {
@@ -461,6 +548,639 @@ namespace
                   consumerProbe->GetStartupThread());
         EXPECT_EQ(consumerProbe->GetDestructionThread(),
                   consumerProbe->GetStartupThread());
+        ExpectTerminalPublicationSealed(runtime, work, 5002);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         StartupTimeoutWinsPreAcknowledgementPublicationWindow)
+    {
+        auto consumerProbe =
+            std::make_shared<RenderFrameConsumerTestProbe>();
+        auto lifecycleHook =
+            std::make_shared<RenderRuntimeLifecycleTestHook>();
+        auto joinProbe = std::make_shared<RenderExecutorJoinTestProbe>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        config.startupWatchdog = 50ms;
+        config.shutdownWatchdog = RVX_TEST_TIMEOUT;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateJoinRecordingDedicatedExecutor(joinProbe),
+            CreateRecordingRenderFrameConsumer(consumerProbe),
+            lifecycleHook);
+
+        std::atomic<bool> hookEntered = false;
+        std::atomic<bool> timeoutPublishedBeforeRelease = false;
+        std::thread releasePublication([&]() {
+            hookEntered.store(
+                lifecycleHook->WaitUntilEntered(RVX_TEST_TIMEOUT),
+                std::memory_order_release);
+            const auto deadline =
+                std::chrono::steady_clock::now() + 1s;
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                if (runtime.GetLastRuntimeResult().code ==
+                    RenderRuntimeCode::StartupTimedOut)
+                {
+                    timeoutPublishedBeforeRelease.store(
+                        true, std::memory_order_release);
+                    break;
+                }
+                std::this_thread::yield();
+            }
+            lifecycleHook->Release();
+        });
+
+        const auto startTime = std::chrono::steady_clock::now();
+        const RenderRuntimeResult result = runtime.Start();
+        const auto elapsed =
+            std::chrono::steady_clock::now() - startTime;
+        releasePublication.join();
+        if (result.code == RenderRuntimeCode::Running)
+        {
+            (void)runtime.Stop();
+        }
+
+        EXPECT_TRUE(hookEntered.load(std::memory_order_acquire));
+        EXPECT_TRUE(timeoutPublishedBeforeRelease.load(
+            std::memory_order_acquire));
+        EXPECT_LT(elapsed, 500ms);
+        EXPECT_EQ(result.code, RenderRuntimeCode::StartupTimedOut);
+        EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                  RenderRuntimeCode::StartupTimedOut);
+        EXPECT_EQ(runtime.GetDiagnosticsSnapshot().lifecycle,
+                  RenderLifecycleState::Failed);
+        EXPECT_EQ(joinProbe->GetCallCount(), 1U);
+        EXPECT_EQ(joinProbe->GetLastCode(),
+                  RenderExecutorJoinCode::Joined);
+        EXPECT_EQ(consumerProbe->GetShutdownThread(),
+                  consumerProbe->GetStartupThread());
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         StartupJoinFailureInvokesFatalPolicyAfterDiagnostics)
+    {
+        auto consumerProbe =
+            std::make_shared<RenderFrameConsumerTestProbe>();
+        consumerProbe->startupCode =
+            RenderRuntimeCode::DeviceCreationFailed;
+        auto joinProbe = std::make_shared<RenderExecutorJoinTestProbe>();
+        auto fatalPolicy =
+            std::make_shared<RenderFatalPolicyTestProbe>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateSequencedJoinInlineRenderExecutor(
+                {RenderExecutorJoinCode::TimedOut,
+                 RenderExecutorJoinCode::Joined},
+                joinProbe),
+            CreateRecordingRenderFrameConsumer(consumerProbe),
+            nullptr,
+            fatalPolicy);
+
+        bool intercepted = false;
+        try
+        {
+            (void)runtime.Start();
+        }
+        catch (const RenderFatalPolicyIntercept&)
+        {
+            intercepted = true;
+        }
+
+        EXPECT_TRUE(intercepted);
+        EXPECT_EQ(fatalPolicy->GetCallCount(), 1U);
+        EXPECT_EQ(joinProbe->GetCallCount(), 1U);
+        EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                  RenderRuntimeCode::DeviceCreationFailed);
+        EXPECT_EQ(runtime.GetLastShutdownResult().code,
+                  RenderShutdownCode::TimedOut);
+        const RenderDiagnosticsSnapshot fatalDiagnostics =
+            fatalPolicy->GetDiagnostics();
+        EXPECT_EQ(fatalDiagnostics.lastFailure.runtime.code,
+                  RenderRuntimeCode::DeviceCreationFailed);
+        EXPECT_EQ(fatalDiagnostics.lastFailure.shutdown.code,
+                  RenderShutdownCode::TimedOut);
+
+        const RenderShutdownResult retry = runtime.Stop();
+        EXPECT_EQ(joinProbe->GetCallCount(), 2U);
+        EXPECT_EQ(retry.code, RenderShutdownCode::TimedOut);
+        EXPECT_EQ(runtime.GetLastShutdownResult().code,
+                  RenderShutdownCode::TimedOut);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         StartupPublicationWindowUsesBoundedFatalPolicy)
+    {
+        auto consumerProbe =
+            std::make_shared<RenderFrameConsumerTestProbe>();
+        auto publicationHook =
+            std::make_shared<RenderRuntimePublicationTestHook>();
+        auto fatalPolicy =
+            std::make_shared<RenderFatalPolicyTestProbe>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        config.startupWatchdog = 20ms;
+        config.shutdownWatchdog = 50ms;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(consumerProbe),
+            publicationHook,
+            fatalPolicy);
+
+        bool intercepted = false;
+        try
+        {
+            (void)runtime.Start();
+        }
+        catch (const RenderFatalPolicyIntercept&)
+        {
+            intercepted = true;
+        }
+
+        ASSERT_TRUE(publicationHook->WaitUntilEntered(RVX_TEST_TIMEOUT));
+        EXPECT_TRUE(intercepted);
+        EXPECT_EQ(fatalPolicy->GetCallCount(), 1U);
+        const RenderDiagnosticsSnapshot fatalDiagnostics =
+            fatalPolicy->GetDiagnostics();
+        EXPECT_EQ(fatalDiagnostics.lastFailure.runtime.code,
+                  RenderRuntimeCode::StartupTimedOut);
+        EXPECT_EQ(fatalDiagnostics.lastFailure.shutdown.code,
+                  RenderShutdownCode::TimedOut);
+
+        publicationHook->Release();
+        ASSERT_TRUE(consumerProbe->WaitForEventCount(
+            RenderRuntimeTestEvent::Shutdown, 1U, RVX_TEST_TIMEOUT));
+        const RenderShutdownResult retry = runtime.Stop();
+        EXPECT_EQ(retry.code, RenderShutdownCode::TimedOut);
+        EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                  RenderRuntimeCode::StartupTimedOut);
+        EXPECT_EQ(runtime.GetLastShutdownResult().code,
+                  RenderShutdownCode::TimedOut);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         StartupJoinRejectionInvokesFatalPolicyAfterDiagnostics)
+    {
+        auto consumerProbe =
+            std::make_shared<RenderFrameConsumerTestProbe>();
+        consumerProbe->startupCode =
+            RenderRuntimeCode::DeviceCreationFailed;
+        auto joinProbe = std::make_shared<RenderExecutorJoinTestProbe>();
+        auto fatalPolicy =
+            std::make_shared<RenderFatalPolicyTestProbe>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateSequencedJoinInlineRenderExecutor(
+                {RenderExecutorJoinCode::NotStarted,
+                 RenderExecutorJoinCode::Joined},
+                joinProbe),
+            CreateRecordingRenderFrameConsumer(consumerProbe),
+            nullptr,
+            fatalPolicy);
+
+        bool intercepted = false;
+        try
+        {
+            (void)runtime.Start();
+        }
+        catch (const RenderFatalPolicyIntercept&)
+        {
+            intercepted = true;
+        }
+
+        EXPECT_TRUE(intercepted);
+        EXPECT_EQ(fatalPolicy->GetCallCount(), 1U);
+        EXPECT_EQ(joinProbe->GetCallCount(), 1U);
+        EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                  RenderRuntimeCode::DeviceCreationFailed);
+        EXPECT_EQ(runtime.GetLastShutdownResult().code,
+                  RenderShutdownCode::ExecutorJoinFailed);
+        const RenderDiagnosticsSnapshot fatalDiagnostics =
+            fatalPolicy->GetDiagnostics();
+        EXPECT_EQ(fatalDiagnostics.lastFailure.runtime.code,
+                  RenderRuntimeCode::DeviceCreationFailed);
+        EXPECT_EQ(fatalDiagnostics.lastFailure.shutdown.code,
+                  RenderShutdownCode::ExecutorJoinFailed);
+
+        const RenderShutdownResult retry = runtime.Stop();
+        EXPECT_EQ(joinProbe->GetCallCount(), 2U);
+        EXPECT_EQ(retry.code, RenderShutdownCode::ExecutorJoinFailed);
+        EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                  RenderRuntimeCode::DeviceCreationFailed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         NormalShutdownTimeoutInvokesFatalPolicyAndRetryPreservesFailure)
+    {
+        auto consumerProbe =
+            std::make_shared<RenderFrameConsumerTestProbe>();
+        auto joinProbe = std::make_shared<RenderExecutorJoinTestProbe>();
+        auto fatalPolicy =
+            std::make_shared<RenderFatalPolicyTestProbe>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateSequencedJoinInlineRenderExecutor(
+                {RenderExecutorJoinCode::TimedOut,
+                 RenderExecutorJoinCode::Joined},
+                joinProbe),
+            CreateRecordingRenderFrameConsumer(consumerProbe),
+            nullptr,
+            fatalPolicy);
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        bool intercepted = false;
+        try
+        {
+            (void)runtime.Stop();
+        }
+        catch (const RenderFatalPolicyIntercept&)
+        {
+            intercepted = true;
+        }
+
+        EXPECT_TRUE(intercepted);
+        EXPECT_EQ(fatalPolicy->GetCallCount(), 1U);
+        EXPECT_EQ(joinProbe->GetCallCount(), 1U);
+        EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                  RenderRuntimeCode::ShutdownTimedOut);
+        EXPECT_EQ(runtime.GetLastShutdownResult().code,
+                  RenderShutdownCode::TimedOut);
+        EXPECT_EQ(runtime.GetDiagnosticsSnapshot().lifecycle,
+                  RenderLifecycleState::Failed);
+        const RenderDiagnosticsSnapshot fatalDiagnostics =
+            fatalPolicy->GetDiagnostics();
+        EXPECT_EQ(fatalDiagnostics.lastFailure.runtime.code,
+                  RenderRuntimeCode::ShutdownTimedOut);
+        EXPECT_EQ(fatalDiagnostics.lastFailure.shutdown.code,
+                  RenderShutdownCode::TimedOut);
+
+        const RenderShutdownResult retry = runtime.Stop();
+        EXPECT_EQ(joinProbe->GetCallCount(), 2U);
+        EXPECT_EQ(retry.code, RenderShutdownCode::TimedOut);
+        EXPECT_EQ(runtime.GetLastShutdownResult().code,
+                  RenderShutdownCode::TimedOut);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         NormalJoinRejectionInvokesFatalPolicyAfterDiagnostics)
+    {
+        auto consumerProbe =
+            std::make_shared<RenderFrameConsumerTestProbe>();
+        auto joinProbe = std::make_shared<RenderExecutorJoinTestProbe>();
+        auto fatalPolicy =
+            std::make_shared<RenderFatalPolicyTestProbe>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateSequencedJoinInlineRenderExecutor(
+                {RenderExecutorJoinCode::NotStarted,
+                 RenderExecutorJoinCode::Joined},
+                joinProbe),
+            CreateRecordingRenderFrameConsumer(consumerProbe),
+            nullptr,
+            fatalPolicy);
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        bool intercepted = false;
+        try
+        {
+            (void)runtime.Stop();
+        }
+        catch (const RenderFatalPolicyIntercept&)
+        {
+            intercepted = true;
+        }
+
+        EXPECT_TRUE(intercepted);
+        EXPECT_EQ(fatalPolicy->GetCallCount(), 1U);
+        EXPECT_EQ(joinProbe->GetCallCount(), 1U);
+        EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                  RenderRuntimeCode::OwnershipViolation);
+        EXPECT_EQ(runtime.GetLastShutdownResult().code,
+                  RenderShutdownCode::ExecutorJoinFailed);
+        const RenderDiagnosticsSnapshot fatalDiagnostics =
+            fatalPolicy->GetDiagnostics();
+        EXPECT_EQ(fatalDiagnostics.lastFailure.runtime.code,
+                  RenderRuntimeCode::OwnershipViolation);
+        EXPECT_EQ(fatalDiagnostics.lastFailure.shutdown.code,
+                  RenderShutdownCode::ExecutorJoinFailed);
+
+        const RenderShutdownResult retry = runtime.Stop();
+        EXPECT_EQ(joinProbe->GetCallCount(), 2U);
+        EXPECT_EQ(retry.code, RenderShutdownCode::ExecutorJoinFailed);
+        EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                  RenderRuntimeCode::OwnershipViolation);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         StartupTimeoutIdentitySurvivesLateUnhandledException)
+    {
+        auto consumerProbe =
+            std::make_shared<RenderFrameConsumerTestProbe>();
+        auto lifecycleHook =
+            std::make_shared<RenderRuntimeLifecycleTestHook>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        config.startupWatchdog = 50ms;
+        config.shutdownWatchdog = RVX_TEST_TIMEOUT;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(consumerProbe),
+            lifecycleHook);
+
+        std::atomic<bool> timeoutObserved = false;
+        std::atomic<bool> hookEntered = false;
+        std::thread lateUnhandled([&]() {
+            hookEntered.store(
+                lifecycleHook->WaitUntilEntered(RVX_TEST_TIMEOUT),
+                std::memory_order_release);
+            const auto deadline =
+                std::chrono::steady_clock::now() + RVX_TEST_TIMEOUT;
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                if (runtime.GetLastRuntimeResult().code ==
+                    RenderRuntimeCode::StartupTimedOut)
+                {
+                    timeoutObserved.store(true, std::memory_order_release);
+                    runtime.OnUnhandledExecutorException();
+                    break;
+                }
+                std::this_thread::yield();
+            }
+            lifecycleHook->Release();
+        });
+
+        const RenderRuntimeResult result = runtime.Start();
+        lateUnhandled.join();
+
+        ASSERT_TRUE(hookEntered.load(std::memory_order_acquire));
+        ASSERT_TRUE(timeoutObserved.load(std::memory_order_acquire));
+        EXPECT_EQ(result.code, RenderRuntimeCode::StartupTimedOut);
+        EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                  RenderRuntimeCode::StartupTimedOut);
+        EXPECT_EQ(runtime.GetDiagnosticsSnapshot().lastFailure.runtime.code,
+                  RenderRuntimeCode::StartupTimedOut);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         TransportFatalFailsOnOwnerAndSealsPublication)
+    {
+        auto consumerProbe =
+            std::make_shared<RenderFrameConsumerTestProbe>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(consumerProbe));
+        const PendingGatewayWork work = PrepareGatewayWork(runtime, 5101);
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        RenderThreadRuntimeTestAccess::ReportTransportFatal(
+            runtime, "forced transport invariant failure");
+        ASSERT_TRUE(consumerProbe->WaitForEventCount(
+            RenderRuntimeTestEvent::Shutdown, 1U, RVX_TEST_TIMEOUT));
+        (void)runtime.Stop();
+
+        EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                  RenderRuntimeCode::OwnershipViolation);
+        EXPECT_EQ(runtime.GetLastRuntimeResult().lifecycle,
+                  RenderLifecycleState::Failed);
+        EXPECT_EQ(runtime.GetDiagnosticsSnapshot().lastFailure.runtime.code,
+                  RenderRuntimeCode::OwnershipViolation);
+        ExpectTerminalPublicationSealed(runtime, work, 5102);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         GatewayIsSealedAfterEveryTerminalStartupFailure)
+    {
+        {
+            auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+            RenderRuntimeConfig config;
+            config.backendType = RHIBackendType::DX11;
+            config.frameBuffering = 1;
+            RenderThreadRuntime runtime(
+                config,
+                MakeSurface(),
+                RenderExecutorKind::InlineTest,
+                CreateInlineRenderExecutor(),
+                CreateRecordingRenderFrameConsumer(probe));
+            const PendingGatewayWork work =
+                PrepareGatewayWork(runtime, 5201);
+            ASSERT_EQ(runtime.Start().code,
+                      RenderRuntimeCode::InvalidConfiguration);
+            ExpectTerminalPublicationSealed(runtime, work, 5202);
+        }
+        {
+            auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+            RenderRuntimeConfig config;
+            config.backendType = RHIBackendType::DX11;
+            NativeSurfaceDesc invalidSurface = MakeSurface();
+            invalidSurface.nativeWindow = 0;
+            RenderThreadRuntime runtime(
+                config,
+                invalidSurface,
+                RenderExecutorKind::InlineTest,
+                CreateInlineRenderExecutor(),
+                CreateRecordingRenderFrameConsumer(probe));
+            const PendingGatewayWork work =
+                PrepareGatewayWork(runtime, 5301);
+            ASSERT_EQ(runtime.Start().code,
+                      RenderRuntimeCode::InvalidSurface);
+            ExpectTerminalPublicationSealed(runtime, work, 5302);
+        }
+        {
+            auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+            RenderRuntimeConfig config;
+            config.backendType = RHIBackendType::DX11;
+            RenderThreadRuntime runtime(
+                config,
+                MakeSurface(),
+                RenderExecutorKind::Dedicated,
+                CreateFailingRenderExecutor(77U),
+                CreateRecordingRenderFrameConsumer(probe));
+            const PendingGatewayWork work =
+                PrepareGatewayWork(runtime, 5401);
+            ASSERT_EQ(runtime.Start().code,
+                      RenderRuntimeCode::ExecutorStartFailed);
+            ExpectTerminalPublicationSealed(runtime, work, 5402);
+        }
+        {
+            auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+            probe->startupCode = RenderRuntimeCode::DeviceCreationFailed;
+            RenderRuntimeConfig config;
+            config.backendType = RHIBackendType::DX11;
+            RenderThreadRuntime runtime(
+                config,
+                MakeSurface(),
+                RenderExecutorKind::InlineTest,
+                CreateInlineRenderExecutor(),
+                CreateRecordingRenderFrameConsumer(probe));
+            const PendingGatewayWork work =
+                PrepareGatewayWork(runtime, 5501);
+            ASSERT_EQ(runtime.Start().code,
+                      RenderRuntimeCode::DeviceCreationFailed);
+            ExpectTerminalPublicationSealed(runtime, work, 5502);
+        }
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         UnknownConsumerRuntimeCodeNormalizesToOwnershipViolation)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->startupCode = static_cast<RenderRuntimeCode>(255);
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateInlineRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+
+        const RenderRuntimeResult result = runtime.Start();
+
+        EXPECT_EQ(result.code, RenderRuntimeCode::OwnershipViolation);
+        EXPECT_EQ(result.resultClass, RenderResultClass::RuntimeFatal);
+        EXPECT_EQ(result.lifecycle, RenderLifecycleState::Failed);
+        EXPECT_EQ(result.terminalCause,
+                  RenderTerminalCause::OwnershipViolation);
+        EXPECT_NE(result.message.find("undeclared"), std::string::npos);
+        EXPECT_TRUE(IsDeclaredRenderRuntimeCode(result.code));
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         UnknownConsumerShutdownCodeNormalizesToFatalShutdown)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->shutdownCode = static_cast<RenderShutdownCode>(255);
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateInlineRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        const RenderShutdownResult result = runtime.Stop();
+
+        EXPECT_EQ(result.code, RenderShutdownCode::ExecutorJoinFailed);
+        EXPECT_EQ(result.resultClass, RenderResultClass::RuntimeFatal);
+        EXPECT_EQ(result.lifecycle, RenderLifecycleState::Failed);
+        EXPECT_NE(result.message.find("undeclared"), std::string::npos);
+        EXPECT_TRUE(IsDeclaredRenderShutdownCode(result.code));
+        EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                  RenderRuntimeCode::OwnershipViolation);
+        EXPECT_EQ(runtime.GetDiagnosticsSnapshot().lastFailure.runtime.code,
+                  RenderRuntimeCode::OwnershipViolation);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         ThrowingConsumerBecomesUnhandledAndTearsDownOnOwner)
+    {
+        EXPECT_EXIT(
+            {
+                auto probe =
+                    std::make_shared<RenderFrameConsumerTestProbe>();
+                probe->throwOnFrame = true;
+                RenderRuntimeConfig config;
+                config.backendType = RHIBackendType::DX11;
+                RenderThreadRuntime runtime(
+                    config,
+                    MakeSurface(),
+                    RenderExecutorKind::InlineTest,
+                    CreateInlineRenderExecutor(),
+                    CreateRecordingRenderFrameConsumer(probe));
+                if (runtime.Start().code != RenderRuntimeCode::Running)
+                {
+                    std::_Exit(11);
+                }
+                if (runtime.TryPublishFrame(MakePacket(6001)).code !=
+                    RenderFramePublishCode::Accepted)
+                {
+                    std::_Exit(12);
+                }
+                if (runtime.GetLastRuntimeResult().code !=
+                    RenderRuntimeCode::UnhandledException)
+                {
+                    std::_Exit(13);
+                }
+                if (probe->GetEventCount(RenderRuntimeTestEvent::Shutdown) !=
+                        1U ||
+                    probe->GetShutdownThread() != probe->GetStartupThread() ||
+                    probe->GetDestructionThread() !=
+                        probe->GetStartupThread())
+                {
+                    std::_Exit(14);
+                }
+                if (runtime.ReserveResource(
+                               AssetId{6002},
+                               RenderResourceKind::Material)
+                        .code != RenderResourceReserveCode::ShuttingDown)
+                {
+                    std::_Exit(15);
+                }
+                (void)runtime.Stop();
+                std::_Exit(0);
+            },
+            testing::ExitedWithCode(0),
+            "");
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         ThrowingDedicatedConsumerSealsEveryPublicationPath)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->throwOnFrame = true;
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+        const PendingGatewayWork work = PrepareGatewayWork(runtime, 6003);
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        ASSERT_EQ(runtime.TryPublishFrame(MakePacket(6003)).code,
+                  RenderFramePublishCode::Accepted);
+        ASSERT_TRUE(probe->WaitForEventCount(RenderRuntimeTestEvent::Shutdown,
+                                             1U,
+                                             RVX_TEST_TIMEOUT));
+        (void)runtime.Stop();
+
+        EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                  RenderRuntimeCode::UnhandledException);
+        EXPECT_EQ(probe->GetShutdownThread(), probe->GetStartupThread());
+        EXPECT_EQ(probe->GetDestructionThread(), probe->GetStartupThread());
+        ExpectTerminalPublicationSealed(runtime, work, 6004);
     }
 
     TEST(RenderThreadRuntimeValidation, DiagnosticsPublicationIsImmutableAndOwned)
@@ -539,6 +1259,36 @@ namespace
         EXPECT_THROW(subsystem.Configure(RenderRuntimeConfig{}, MakeSurface()),
                      std::logic_error);
         EXPECT_EQ(subsystem.GetDevice(), nullptr);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         ConfigureAfterEitherLegacyInitializeEntryIsRejected)
+    {
+        RenderConfig legacyConfig;
+#if RVX_ENABLE_METAL
+        legacyConfig.backendType = RHIBackendType::DX11;
+#else
+        legacyConfig.backendType = RHIBackendType::Metal;
+#endif
+        legacyConfig.autoBindWindow = false;
+
+        {
+            RenderSubsystem subsystem;
+            subsystem.SetConfig(legacyConfig);
+            subsystem.Initialize();
+            EXPECT_THROW(
+                subsystem.Configure(RenderRuntimeConfig{}, MakeSurface()),
+                std::logic_error);
+            EXPECT_EQ(subsystem.GetDevice(), nullptr);
+        }
+        {
+            RenderSubsystem subsystem;
+            subsystem.Initialize(legacyConfig);
+            EXPECT_THROW(
+                subsystem.Configure(RenderRuntimeConfig{}, MakeSurface()),
+                std::logic_error);
+            EXPECT_EQ(subsystem.GetDevice(), nullptr);
+        }
     }
 
     TEST(RenderThreadRuntimeValidation, SubsystemDelegatesItsResourceGatewayCore)
@@ -699,12 +1449,8 @@ namespace
         ASSERT_TRUE(probe->WaitForEventCount(RenderRuntimeTestEvent::Surface,
                                              1,
                                              RVX_TEST_TIMEOUT));
-        const uint32 pollCount =
-            probe->GetEventCount(RenderRuntimeTestEvent::Poll);
-        ASSERT_TRUE(probe->WaitForEventCount(RenderRuntimeTestEvent::Poll,
-                                             pollCount + 1U,
-                                             RVX_TEST_TIMEOUT));
         ASSERT_TRUE(WaitForSurfaceGeneration(runtime, 3U));
+        EXPECT_GE(probe->GetEventCount(RenderRuntimeTestEvent::Poll), 2U);
         EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
     }
 
@@ -774,6 +1520,115 @@ namespace
         EXPECT_EQ(releaseDiagnostics.currentUsage, 0U);
         EXPECT_EQ(releaseDiagnostics.oldestPendingGeneration, 0U);
         EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         DedicatedFastDrainPreservesTransportHighWaterDiagnostics)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(config,
+                                    MakeSurface(),
+                                    RenderExecutorKind::Dedicated,
+                                    CreateDedicatedRenderExecutor(),
+                                    CreateRecordingRenderFrameConsumer(probe));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        const PendingGatewayWork upload = PrepareGatewayWork(runtime, 6101);
+        const RenderResourceReserveResult release =
+            runtime.ReserveResource(AssetId{6102},
+                                    RenderResourceKind::Texture);
+        ASSERT_EQ(release.code, RenderResourceReserveCode::Reserved);
+
+        ASSERT_EQ(runtime.TryPublishFrame(MakePacket(6101)).code,
+                  RenderFramePublishCode::Accepted);
+        ASSERT_EQ(runtime.TryEnqueueUpload(upload.request).code,
+                  RenderUploadEnqueueCode::Accepted);
+        ASSERT_EQ(runtime.RequestRelease(release.handle).code,
+                  RenderReleaseCode::Accepted);
+
+        ASSERT_TRUE(probe->WaitForEventCount(RenderRuntimeTestEvent::Frame,
+                                             1U,
+                                             RVX_TEST_TIMEOUT));
+        ASSERT_TRUE(probe->WaitForEventCount(RenderRuntimeTestEvent::Upload,
+                                             1U,
+                                             RVX_TEST_TIMEOUT));
+        ASSERT_TRUE(probe->WaitForEventCount(RenderRuntimeTestEvent::Release,
+                                             1U,
+                                             RVX_TEST_TIMEOUT));
+        ASSERT_TRUE(WaitForTransportHighWaterAndDrain(runtime));
+
+        const RenderDiagnosticsSnapshot diagnostics =
+            runtime.GetDiagnosticsSnapshot();
+        EXPECT_GE(diagnostics.frameTransport.highWaterMark, 1U);
+        EXPECT_GE(diagnostics.uploadTransport.requestHighWaterMark, 1U);
+        EXPECT_GE(diagnostics.releaseTransport.highWaterMark, 1U);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         StopJoinsBeforeQueuedCpuPayloadDestruction)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->BlockFrames();
+        auto joinProbe = std::make_shared<RenderExecutorJoinTestProbe>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        auto runtime = std::make_shared<RenderThreadRuntime>(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateJoinRecordingDedicatedExecutor(joinProbe),
+            CreateRecordingRenderFrameConsumer(probe));
+        ASSERT_EQ(runtime->Start().code, RenderRuntimeCode::Running);
+        ASSERT_EQ(runtime->TryPublishFrame(MakePacket(6201)).code,
+                  RenderFramePublishCode::Accepted);
+        ASSERT_TRUE(probe->WaitForEventCount(RenderRuntimeTestEvent::Frame,
+                                             1U,
+                                             RVX_TEST_TIMEOUT));
+
+        PendingGatewayWork upload = PrepareGatewayWork(*runtime, 6201);
+        std::weak_ptr<const ResourceUploadRequest> queuedPayload =
+            upload.request;
+        ASSERT_EQ(runtime->TryEnqueueUpload(upload.request).code,
+                  RenderUploadEnqueueCode::Accepted);
+        upload.request.reset();
+        const RenderResourceReserveResult release =
+            runtime->ReserveResource(AssetId{6202},
+                                     RenderResourceKind::Texture);
+        ASSERT_EQ(release.code, RenderResourceReserveCode::Reserved);
+        ASSERT_EQ(runtime->RequestRelease(release.handle).code,
+                  RenderReleaseCode::Accepted);
+        ASSERT_EQ(runtime->TryPublishFrame(MakePacket(6202)).code,
+                  RenderFramePublishCode::Accepted);
+        ASSERT_FALSE(queuedPayload.expired());
+
+        RenderShutdownResult shutdown;
+        bool retainedAfterJoin = false;
+        std::thread stopper(
+            [heldRuntime = runtime,
+             &shutdown,
+             &retainedAfterJoin,
+             queuedPayload]() mutable {
+                shutdown = heldRuntime->Stop();
+                retainedAfterJoin = !queuedPayload.expired();
+            });
+        ASSERT_TRUE(WaitForRuntimeLifecycle(
+            *runtime,
+            RenderLifecycleState::StopRequested));
+        runtime.reset();
+        probe->ReleaseFrames();
+        stopper.join();
+
+        EXPECT_EQ(shutdown.code, RenderShutdownCode::Completed);
+        EXPECT_TRUE(retainedAfterJoin);
+        EXPECT_TRUE(queuedPayload.expired());
+        EXPECT_EQ(joinProbe->GetCallCount(), 1U);
+        EXPECT_EQ(joinProbe->GetLastCode(),
+                  RenderExecutorJoinCode::Joined);
+        EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Upload), 0U);
+        EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Release), 0U);
     }
 
     TEST(RenderThreadRuntimeValidation, StopPreemptsQueuedFrameAndSurfaceWork)

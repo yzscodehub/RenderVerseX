@@ -19,6 +19,13 @@
 
 namespace RVX
 {
+    /** @brief Narrow access to private runtime callbacks for validation. */
+    struct RenderThreadRuntimeTestAccess
+    {
+        static void ReportTransportFatal(RenderThreadRuntime& runtime,
+                                         const char* message) noexcept;
+    };
+
     /** @brief Create the synchronous executor used only by validation tests. */
     std::unique_ptr<IRenderExecutor> CreateInlineRenderExecutor();
     /** @brief Create a deterministic executor-start failure for mapping tests. */
@@ -42,6 +49,67 @@ namespace RVX
     /** @brief Decorate the real dedicated executor with join observations. */
     std::unique_ptr<IRenderExecutor> CreateJoinRecordingDedicatedExecutor(
         std::shared_ptr<RenderExecutorJoinTestProbe> probe);
+    /** @brief Create an inline pump with deterministic JoinUntil outcomes. */
+    std::unique_ptr<IRenderExecutor> CreateSequencedJoinInlineRenderExecutor(
+        std::vector<RenderExecutorJoinCode> joinCodes,
+        std::shared_ptr<RenderExecutorJoinTestProbe> probe);
+
+    /** @brief Latch at the private startup publication boundary. */
+    class RenderRuntimeLifecycleTestHook final
+        : public IRenderRuntimeLifecycleHook,
+          public NonMovable
+    {
+    public:
+        void BeforeStartupAcknowledgement() noexcept override;
+        [[nodiscard]] bool WaitUntilEntered(
+            std::chrono::milliseconds timeout) const;
+        void Release();
+
+    private:
+        mutable std::mutex m_mutex;
+        mutable std::condition_variable m_cv;
+        bool m_entered = false;
+        bool m_released = false;
+    };
+
+    /** @brief Latch while the Render side owns startup arbitration. */
+    class RenderRuntimePublicationTestHook final
+        : public IRenderRuntimeLifecycleHook,
+          public NonMovable
+    {
+    public:
+        void BeforeStartupAcknowledgement() noexcept override;
+        void DuringStartupPublication() noexcept override;
+        [[nodiscard]] bool WaitUntilEntered(
+            std::chrono::milliseconds timeout) const;
+        void Release();
+
+    private:
+        mutable std::mutex m_mutex;
+        mutable std::condition_variable m_cv;
+        bool m_entered = false;
+        bool m_released = false;
+    };
+
+    struct RenderFatalPolicyIntercept final
+    {
+    };
+
+    /** @brief Record fatal diagnostics and intercept process termination. */
+    class RenderFatalPolicyTestProbe final : public IRenderFatalPolicy,
+                                             public NonMovable
+    {
+    public:
+        void Terminate(
+            const RenderDiagnosticsSnapshot& diagnostics) override;
+        [[nodiscard]] uint32 GetCallCount() const noexcept;
+        [[nodiscard]] RenderDiagnosticsSnapshot GetDiagnostics() const;
+
+    private:
+        mutable std::mutex m_mutex;
+        uint32 m_callCount = 0;
+        RenderDiagnosticsSnapshot m_diagnostics{};
+    };
 
     enum class RenderRuntimeTestEvent : uint8
     {
@@ -87,6 +155,7 @@ namespace RVX
         uint32 startupNativeError = 0;
         RenderShutdownCode shutdownCode = RenderShutdownCode::Completed;
         uint32 shutdownNativeError = 0;
+        bool throwOnFrame = false;
 
     private:
         static constexpr size_t EVENT_COUNT = 8;

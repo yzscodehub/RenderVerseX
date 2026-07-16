@@ -9,18 +9,14 @@ namespace RVX
 {
 namespace
 {
-    template <typename Value>
-    void AtomicMax(std::atomic<Value>& target, Value value) noexcept
+    class TerminatingRenderFatalPolicy final : public IRenderFatalPolicy
     {
-        Value current = target.load(std::memory_order_relaxed);
-        while (current < value &&
-               !target.compare_exchange_weak(current,
-                                             value,
-                                             std::memory_order_relaxed,
-                                             std::memory_order_relaxed))
+    public:
+        void Terminate(const RenderDiagnosticsSnapshot&) override
         {
+            std::terminate();
         }
-    }
+    };
 
     RenderRuntimeResult MakeRuntimeResult(RenderRuntimeCode code,
                                           RenderExecutorKind executor,
@@ -99,6 +95,26 @@ namespace
         RHIBackendType fallbackBackend,
         uint64 surfaceGeneration)
     {
+        if (!IsDeclaredRenderRuntimeCode(source.code))
+        {
+            RenderRuntimeResult result = MakeRuntimeResult(
+                RenderRuntimeCode::OwnershipViolation,
+                executor,
+                source.backend == RHIBackendType::None
+                    ? fallbackBackend
+                    : source.backend,
+                source.surfaceGeneration == 0U
+                    ? surfaceGeneration
+                    : source.surfaceGeneration);
+            result.frameSequence = source.frameSequence;
+            result.requestSequence = source.requestSequence;
+            result.assetId = source.assetId;
+            result.handle = source.handle;
+            result.nativeError = source.nativeError;
+            result.message =
+                "Render consumer returned an undeclared runtime code";
+            return result;
+        }
         RenderRuntimeResult result = MakeRuntimeResult(
             source.code, executor, fallbackBackend, surfaceGeneration);
         result.backend = source.backend == RHIBackendType::None
@@ -163,6 +179,24 @@ namespace
         uint64 frameSequence,
         uint64 surfaceGeneration)
     {
+        if (!IsDeclaredRenderShutdownCode(source.code))
+        {
+            RenderShutdownResult result = MakeShutdownResult(
+                RenderShutdownCode::ExecutorJoinFailed,
+                source.backend == RHIBackendType::None
+                    ? fallbackBackend
+                    : source.backend,
+                source.lastSubmittedFrameSequence == 0U
+                    ? frameSequence
+                    : source.lastSubmittedFrameSequence,
+                source.surfaceGeneration == 0U
+                    ? surfaceGeneration
+                    : source.surfaceGeneration);
+            result.nativeError = source.nativeError;
+            result.message =
+                "Render consumer returned an undeclared shutdown code";
+            return result;
+        }
         RenderShutdownResult result = MakeShutdownResult(
             source.code, fallbackBackend, frameSequence, surfaceGeneration);
         result.backend = source.backend == RHIBackendType::None
@@ -179,12 +213,16 @@ namespace
         NativeSurfaceDesc surface,
         RenderExecutorKind executorKind,
         std::unique_ptr<IRenderExecutor> executor,
-        std::unique_ptr<IRenderFrameConsumer> consumer)
+        std::unique_ptr<IRenderFrameConsumer> consumer,
+        std::shared_ptr<IRenderRuntimeLifecycleHook> lifecycleHook,
+        std::shared_ptr<IRenderFatalPolicy> fatalPolicy)
         : m_config(std::move(config)),
           m_initialSurface(surface),
           m_executorKind(executorKind),
           m_executor(std::move(executor)),
           m_consumer(std::move(consumer)),
+          m_lifecycleHook(std::move(lifecycleHook)),
+          m_fatalPolicy(std::move(fatalPolicy)),
           m_currentSurface(surface),
           m_latestResizeGeneration(surface.generation)
     {
@@ -200,6 +238,11 @@ namespace
                 this,
                 &RuntimeFatalThunk,
                 this);
+        }
+        if (m_fatalPolicy == nullptr)
+        {
+            m_fatalPolicy =
+                std::make_shared<TerminatingRenderFatalPolicy>();
         }
 
         m_diagnosticsState.executor = m_executorKind;
@@ -222,12 +265,8 @@ namespace
 
     RenderThreadRuntime::~RenderThreadRuntime()
     {
-        const RenderLifecycleState lifecycle =
-            m_lifecycle.load(std::memory_order_acquire);
-        if (lifecycle == RenderLifecycleState::Running ||
-            lifecycle == RenderLifecycleState::Starting ||
-            lifecycle == RenderLifecycleState::StopRequested ||
-            lifecycle == RenderLifecycleState::Draining)
+        if (m_started.load(std::memory_order_acquire) &&
+            !m_joined.load(std::memory_order_acquire))
         {
             (void)Stop();
         }
@@ -253,10 +292,10 @@ namespace
                 m_config.backendType,
                 m_initialSurface.generation);
             result.message = "Invalid render runtime configuration";
-            StoreRuntimeResult(result);
-            RecordFailure(result);
+            (void)TryClaimTerminalResult(result);
             TransitionTo(RenderLifecycleState::Failed,
                          "configuration validation failed");
+            SealPublication();
             PublishDiagnostics();
             return result;
         }
@@ -268,10 +307,10 @@ namespace
                 m_config.backendType,
                 m_initialSurface.generation);
             result.message = "Invalid initial native surface";
-            StoreRuntimeResult(result);
-            RecordFailure(result);
+            (void)TryClaimTerminalResult(result);
             TransitionTo(RenderLifecycleState::Failed,
                          "surface validation failed");
+            SealPublication();
             PublishDiagnostics();
             return result;
         }
@@ -286,10 +325,10 @@ namespace
                 m_initialSurface.generation);
             result.nativeError = executorStart.nativeError;
             result.message = "Render executor failed to start";
-            StoreRuntimeResult(result);
-            RecordFailure(result);
+            (void)TryClaimTerminalResult(result);
             TransitionTo(RenderLifecycleState::Failed,
                          "executor start failed");
+            SealPublication();
             PublishDiagnostics();
             return result;
         }
@@ -305,14 +344,44 @@ namespace
                                     deadline,
                                     [this]() { return m_startupAcknowledged; }))
         {
-            StartupResolution expected = StartupResolution::Pending;
-            if (m_startupResolution.compare_exchange_strong(
-                    expected,
-                    StartupResolution::TimedOut,
-                    std::memory_order_acq_rel,
-                    std::memory_order_acquire))
+            lock.unlock();
+            std::unique_lock arbitrationLock(
+                m_startupArbitrationMutex, std::defer_lock);
+            if (!arbitrationLock.try_lock_until(
+                    std::chrono::steady_clock::now() +
+                    m_config.shutdownWatchdog))
+            {
+                RenderRuntimeResult timeout = MakeRuntimeResult(
+                    RenderRuntimeCode::StartupTimedOut,
+                    m_executorKind,
+                    m_config.backendType,
+                    m_initialSurface.generation);
+                timeout.message =
+                    "Render runtime startup publication did not converge";
+                (void)TryClaimTerminalResult(timeout);
+                TransitionTo(RenderLifecycleState::Failed,
+                             "startup publication watchdog expired");
+                SealPublication();
+                RenderShutdownResult shutdown = MakeShutdownResult(
+                    RenderShutdownCode::TimedOut,
+                    timeout.backend,
+                    m_lastSubmittedFrameSequence.load(
+                        std::memory_order_acquire),
+                    timeout.surfaceGeneration);
+                shutdown.message =
+                    "Startup publication fatal policy watchdog expired";
+                StoreShutdownResult(shutdown);
+                RecordFailure(shutdown);
+                PublishDiagnostics();
+                TerminateAfterFatalDiagnostics();
+            }
+
+            lock.lock();
+            if (!m_startupAcknowledged)
             {
                 startupTimedOut = true;
+                m_startupResolution.store(StartupResolution::TimedOut,
+                                          std::memory_order_release);
                 RenderRuntimeResult timeout = MakeRuntimeResult(
                     RenderRuntimeCode::StartupTimedOut,
                     m_executorKind,
@@ -320,16 +389,7 @@ namespace
                     m_initialSurface.generation);
                 timeout.message =
                     "Render runtime startup watchdog expired";
-                m_lastRuntimeResult = timeout;
-                m_diagnosticsState.lastFailure.available = true;
-                m_diagnosticsState.lastFailure.runtime = timeout;
-                m_diagnosticsState.lastFailure.context = timeout.message;
-            }
-            else
-            {
-                m_startupCv.wait(
-                    lock,
-                    [this]() { return m_startupAcknowledged; });
+                (void)TryClaimTerminalResultLocked(timeout);
             }
         }
         const RenderRuntimeResult result = m_lastRuntimeResult;
@@ -339,7 +399,7 @@ namespace
         {
             TransitionTo(RenderLifecycleState::Failed,
                          "startup watchdog expired");
-            m_resourceGateway->BeginShutdown();
+            SealPublication();
             m_controlMailbox->RequestStop();
             PublishDiagnostics();
             NotifyExecutor();
@@ -368,28 +428,51 @@ namespace
             StoreShutdownResult(shutdown);
             RecordFailure(shutdown);
             PublishDiagnostics();
-            return result;
+            TerminateAfterFatalDiagnostics();
         }
 
         if (result.code != RenderRuntimeCode::Running)
         {
             const RenderExecutorJoinResult join = m_executor->JoinUntil(
                 std::chrono::steady_clock::now() + m_config.shutdownWatchdog);
-            m_joined.store(join.code == RenderExecutorJoinCode::Joined,
-                           std::memory_order_release);
+            if (join.code == RenderExecutorJoinCode::Joined)
+            {
+                m_joined.store(true, std::memory_order_release);
+            }
+            else
+            {
+                RenderShutdownResult shutdown = MakeShutdownResult(
+                    join.code == RenderExecutorJoinCode::TimedOut
+                        ? RenderShutdownCode::TimedOut
+                        : RenderShutdownCode::ExecutorJoinFailed,
+                    result.backend,
+                    m_lastSubmittedFrameSequence.load(
+                        std::memory_order_acquire),
+                    result.surfaceGeneration);
+                shutdown.message =
+                    join.code == RenderExecutorJoinCode::TimedOut
+                        ? "Render executor join watchdog expired after startup failure"
+                        : "Render executor rejected join after startup failure";
+                StoreShutdownResult(shutdown);
+                RecordFailure(shutdown);
+                PublishDiagnostics();
+                TerminateAfterFatalDiagnostics();
+            }
         }
         return result;
     }
 
     RenderShutdownResult RenderThreadRuntime::Stop()
     {
-        const RenderLifecycleState lifecycle =
-            m_lifecycle.load(std::memory_order_acquire);
-        if (!m_started.load(std::memory_order_acquire) ||
-            m_joined.load(std::memory_order_acquire) ||
-            lifecycle == RenderLifecycleState::Stopped ||
-            lifecycle == RenderLifecycleState::Failed)
+        const bool started = m_started.load(std::memory_order_acquire);
+        const bool joined = m_joined.load(std::memory_order_acquire);
+        if (!started || joined)
         {
+            const RenderShutdownResult existing = GetLastShutdownResult();
+            if (existing.resultClass == RenderResultClass::RuntimeFatal)
+            {
+                return existing;
+            }
             const RenderRuntimeResult runtime = GetLastRuntimeResult();
             RenderShutdownResult result = MakeShutdownResult(
                 RenderShutdownCode::AlreadyStopped,
@@ -400,16 +483,23 @@ namespace
             return result;
         }
 
-        TransitionTo(RenderLifecycleState::StopRequested, "stop requested");
         const NativeSurfaceDesc currentSurface = GetCurrentSurfaceSnapshot();
-        StoreRuntimeResult(MakeRuntimeResult(
-            RenderRuntimeCode::StopRequested,
-            m_executorKind,
-            GetLastRuntimeResult().backend,
-            currentSurface.generation));
-        m_resourceGateway->BeginShutdown();
-        m_controlMailbox->RequestStop();
-        NotifyExecutor();
+        const RenderLifecycleState lifecycle =
+            m_lifecycle.load(std::memory_order_acquire);
+        if (lifecycle != RenderLifecycleState::Failed &&
+            lifecycle != RenderLifecycleState::Stopped)
+        {
+            TransitionTo(RenderLifecycleState::StopRequested,
+                         "stop requested");
+            StoreRuntimeResult(MakeRuntimeResult(
+                RenderRuntimeCode::StopRequested,
+                m_executorKind,
+                GetLastRuntimeResult().backend,
+                currentSurface.generation));
+            SealPublication();
+            m_controlMailbox->RequestStop();
+            NotifyExecutor();
+        }
 
         const RenderExecutorJoinResult join = m_executor->JoinUntil(
             std::chrono::steady_clock::now() + m_config.shutdownWatchdog);
@@ -423,6 +513,8 @@ namespace
             join.code == RenderExecutorJoinCode::TimedOut
                 ? RenderShutdownCode::TimedOut
                 : RenderShutdownCode::ExecutorJoinFailed;
+        const RenderShutdownResult existingShutdown =
+            GetLastShutdownResult();
         RenderShutdownResult result = MakeShutdownResult(
             code,
             GetLastRuntimeResult().backend,
@@ -431,9 +523,36 @@ namespace
         result.message = join.code == RenderExecutorJoinCode::TimedOut
                              ? "Render executor join watchdog expired"
                              : "Render executor rejected join";
-        StoreShutdownResult(result);
-        RecordFailure(result);
-        return result;
+        if (existingShutdown.resultClass != RenderResultClass::RuntimeFatal)
+        {
+            if (join.code == RenderExecutorJoinCode::TimedOut)
+            {
+                RenderRuntimeResult runtime = MakeRuntimeResult(
+                    RenderRuntimeCode::ShutdownTimedOut,
+                    m_executorKind,
+                    GetLastRuntimeResult().backend,
+                    currentSurface.generation);
+                runtime.message = result.message;
+                (void)TryClaimTerminalResult(runtime);
+            }
+            else if (GetLastRuntimeResult().resultClass !=
+                     RenderResultClass::RuntimeFatal)
+            {
+                RenderRuntimeResult runtime = MakeRuntimeResult(
+                    RenderRuntimeCode::OwnershipViolation,
+                    m_executorKind,
+                    GetLastRuntimeResult().backend,
+                    currentSurface.generation);
+                runtime.message = result.message;
+                (void)TryClaimTerminalResult(runtime);
+            }
+            StoreShutdownResult(result);
+            RecordFailure(result);
+        }
+        TransitionTo(RenderLifecycleState::Failed,
+                     "render executor did not join");
+        PublishDiagnostics();
+        TerminateAfterFatalDiagnostics();
     }
 
     RenderFramePublishResult RenderThreadRuntime::TryPublishFrame(
@@ -482,8 +601,6 @@ namespace
         {
             m_lastPublishedFrameSequence.store(result.sequence,
                                                std::memory_order_release);
-            AtomicMax(m_frameHighWaterMark,
-                      m_frameMailbox->GetPendingCount());
             NotifyExecutor();
         }
         return result;
@@ -577,6 +694,12 @@ namespace
         AssetId assetId,
         RenderResourceKind kind) noexcept
     {
+        if (m_publicationSealed.load(std::memory_order_acquire))
+        {
+            RenderResourceReserveResult result;
+            result.code = RenderResourceReserveCode::ShuttingDown;
+            return result;
+        }
         if (m_resourceGateway == nullptr)
         {
             return {};
@@ -587,19 +710,21 @@ namespace
     RenderUploadEnqueueResult RenderThreadRuntime::TryEnqueueUpload(
         const ResourceUploadRequestRef& request) noexcept
     {
+        if (m_publicationSealed.load(std::memory_order_acquire))
+        {
+            return RenderUploadEnqueueResult{
+                RenderUploadEnqueueCode::ShuttingDown};
+        }
         if (m_resourceGateway == nullptr)
         {
             return {};
         }
-        const RenderUploadEnqueueResult result =
-            m_resourceGateway->TryEnqueueUpload(request);
+        const RenderGatewayUploadEnqueueResult observed =
+            m_resourceGateway->TryEnqueueUploadObserved(request);
+        const RenderUploadEnqueueResult result = observed.result;
         if (result.code == RenderUploadEnqueueCode::Accepted)
         {
             m_uploadAcceptedCount.fetch_add(1, std::memory_order_relaxed);
-            AtomicMax(m_uploadRequestHighWaterMark,
-                      m_resourceGateway->GetRetainedUploadCount());
-            AtomicMax(m_uploadByteHighWaterMark,
-                      m_resourceGateway->GetRetainedUploadBytes());
             NotifyExecutor();
         }
         else if (result.code == RenderUploadEnqueueCode::QueueFullByCount ||
@@ -613,20 +738,21 @@ namespace
     RenderReleaseResult RenderThreadRuntime::RequestRelease(
         RenderResourceHandle handle) noexcept
     {
+        if (m_publicationSealed.load(std::memory_order_acquire))
+        {
+            return RenderReleaseResult{RenderReleaseCode::ShuttingDown};
+        }
         if (m_resourceGateway == nullptr)
         {
             return {};
         }
-        const RenderReleaseResult result =
-            m_resourceGateway->RequestRelease(handle);
+        const RenderGatewayReleaseResult observed =
+            m_resourceGateway->RequestReleaseObserved(handle);
+        const RenderReleaseResult result = observed.result;
         if (result.code == RenderReleaseCode::Accepted)
         {
             m_releaseAcceptedCount.fetch_add(1,
                                              std::memory_order_relaxed);
-            const RenderReleaseQueueSnapshot queue =
-                m_resourceGateway->GetReleaseQueueSnapshot();
-            AtomicMax(m_releaseHighWaterMark,
-                      queue.pendingCount);
             NotifyExecutor();
         }
         else if (result.code == RenderReleaseCode::StaleGeneration)
@@ -655,6 +781,11 @@ namespace
                                              std::memory_order_acq_rel))
             {
                 return InitializeOnRenderThread();
+            }
+            if (m_ownerFatalPending.exchange(false,
+                                             std::memory_order_acq_rel))
+            {
+                return FailOnRenderThread(GetLastRuntimeResult());
             }
             const RenderLifecycleState lifecycle =
                 m_lifecycle.load(std::memory_order_acquire);
@@ -843,22 +974,31 @@ namespace
                 GetLastRuntimeResult().backend,
                 GetCurrentSurfaceSnapshot().generation);
             result.message = "Unhandled exception escaped the render pump";
-            StoreRuntimeResult(result);
-            RecordFailure(result);
+            (void)TryClaimTerminalResult(result);
+            const RenderRuntimeResult terminal = GetLastRuntimeResult();
+            SealPublication();
             TransitionTo(RenderLifecycleState::Failed,
                          "unhandled executor exception");
-            if (m_consumer != nullptr &&
+            const bool onOwnerThread =
                 m_renderThreadGuard.QueryCurrentThread() ==
-                    RenderThreadGuardCode::Owner)
+                RenderThreadGuardCode::Owner;
+            if (m_consumer != nullptr && onOwnerThread)
             {
-                (void)m_consumer->Shutdown(RenderTeardownMode::NormalDrain);
+                RenderShutdownResult shutdown = NormalizeShutdownResult(
+                    m_consumer->Shutdown(terminal.teardownMode),
+                    terminal.backend,
+                    m_lastSubmittedFrameSequence.load(
+                        std::memory_order_acquire),
+                    terminal.surfaceGeneration);
+                StoreShutdownResult(shutdown);
                 m_consumer.reset();
             }
+            if (onOwnerThread || m_consumer == nullptr)
             {
                 std::lock_guard lock(m_stateMutex);
                 m_startupAcknowledged = true;
+                m_startupCv.notify_all();
             }
-            m_startupCv.notify_all();
             PublishDiagnostics();
         }
         catch (...)
@@ -885,12 +1025,10 @@ namespace
                 runtime->GetCurrentSurfaceSnapshot().generation);
             result.message = message != nullptr ? message :
                                                   "Render transport invariant failed";
-            runtime->StoreRuntimeResult(result);
-            runtime->RecordFailure(result);
-            if (runtime->m_controlMailbox != nullptr)
-            {
-                runtime->m_controlMailbox->RequestStop();
-            }
+            (void)runtime->TryClaimTerminalResult(result);
+            runtime->SealPublication();
+            runtime->m_ownerFatalPending.store(true,
+                                               std::memory_order_release);
             runtime->NotifyExecutor();
         }
         catch (...)
@@ -942,6 +1080,10 @@ namespace
 
     bool RenderThreadRuntime::IsShuttingDownForPublication() const noexcept
     {
+        if (m_publicationSealed.load(std::memory_order_acquire))
+        {
+            return true;
+        }
         const RenderLifecycleState lifecycle =
             m_lifecycle.load(std::memory_order_acquire);
         return lifecycle == RenderLifecycleState::StopRequested ||
@@ -994,15 +1136,72 @@ namespace
         m_diagnosticsState.lifecycle = lifecycle;
     }
 
+    bool RenderThreadRuntime::TryClaimTerminalResult(
+        const RenderRuntimeResult& result)
+    {
+        std::lock_guard lock(m_stateMutex);
+        return TryClaimTerminalResultLocked(result);
+    }
+
+    bool RenderThreadRuntime::TryClaimTerminalResultLocked(
+        const RenderRuntimeResult& result)
+    {
+        if (m_terminalResultClaimed)
+        {
+            if (!result.message.empty() &&
+                m_diagnosticsState.lastFailure.context.find(result.message) ==
+                    std::string::npos)
+            {
+                if (!m_diagnosticsState.lastFailure.context.empty())
+                {
+                    m_diagnosticsState.lastFailure.context += " | ";
+                }
+                m_diagnosticsState.lastFailure.context += result.message;
+            }
+            return false;
+        }
+
+        m_terminalResultClaimed = true;
+        m_lastRuntimeResult = result;
+        m_diagnosticsState.lastFailure.available = true;
+        m_diagnosticsState.lastFailure.runtime = result;
+        m_diagnosticsState.lastFailure.context = result.message;
+        return true;
+    }
+
+    bool RenderThreadRuntime::HasTerminalResult() const
+    {
+        std::lock_guard lock(m_stateMutex);
+        return m_terminalResultClaimed;
+    }
+
+    void RenderThreadRuntime::SealPublication() noexcept
+    {
+        m_publicationSealed.store(true, std::memory_order_release);
+        if (m_resourceGateway != nullptr)
+        {
+            m_resourceGateway->BeginShutdown();
+        }
+    }
+
     void RenderThreadRuntime::StoreRuntimeResult(RenderRuntimeResult result)
     {
         std::lock_guard lock(m_stateMutex);
+        if (m_terminalResultClaimed)
+        {
+            return;
+        }
         m_lastRuntimeResult = std::move(result);
     }
 
     void RenderThreadRuntime::StoreShutdownResult(RenderShutdownResult result)
     {
         std::lock_guard lock(m_stateMutex);
+        if (m_lastShutdownResult.resultClass ==
+            RenderResultClass::RuntimeFatal)
+        {
+            return;
+        }
         m_lastShutdownResult = std::move(result);
     }
 
@@ -1010,6 +1209,19 @@ namespace
         const RenderRuntimeResult& result)
     {
         std::lock_guard lock(m_stateMutex);
+        if (m_terminalResultClaimed &&
+            m_diagnosticsState.lastFailure.runtime.code != result.code)
+        {
+            if (!result.message.empty())
+            {
+                if (!m_diagnosticsState.lastFailure.context.empty())
+                {
+                    m_diagnosticsState.lastFailure.context += " | ";
+                }
+                m_diagnosticsState.lastFailure.context += result.message;
+            }
+            return;
+        }
         m_diagnosticsState.lastFailure.available = true;
         m_diagnosticsState.lastFailure.runtime = result;
         m_diagnosticsState.lastFailure.context = result.message;
@@ -1070,11 +1282,12 @@ namespace
 
         if (m_frameMailbox != nullptr)
         {
-            snapshot.frameTransport.currentUsage =
-                m_frameMailbox->GetPendingCount();
+            const RenderFrameMailboxSnapshot frameQueue =
+                m_frameMailbox->GetSnapshot();
+            snapshot.frameTransport.currentUsage = frameQueue.pendingCount;
+            snapshot.frameTransport.highWaterMark =
+                frameQueue.highWaterMark;
         }
-        snapshot.frameTransport.highWaterMark =
-            m_frameHighWaterMark.load(std::memory_order_relaxed);
         snapshot.frameTransport.replacements =
             m_frameReplacementCount.load(std::memory_order_relaxed);
         snapshot.frameTransport.invalidPackets =
@@ -1084,15 +1297,17 @@ namespace
 
         if (m_resourceGateway != nullptr)
         {
+            const RenderUploadQueueSnapshot uploadQueue =
+                m_resourceGateway->GetUploadQueueSnapshot();
             snapshot.uploadTransport.currentRequestUsage =
-                m_resourceGateway->GetRetainedUploadCount();
+                uploadQueue.retainedCount;
             snapshot.uploadTransport.currentByteUsage =
-                m_resourceGateway->GetRetainedUploadBytes();
+                uploadQueue.retainedBytes;
+            snapshot.uploadTransport.requestHighWaterMark =
+                uploadQueue.requestHighWaterMark;
+            snapshot.uploadTransport.byteHighWaterMark =
+                uploadQueue.byteHighWaterMark;
         }
-        snapshot.uploadTransport.requestHighWaterMark =
-            m_uploadRequestHighWaterMark.load(std::memory_order_relaxed);
-        snapshot.uploadTransport.byteHighWaterMark =
-            m_uploadByteHighWaterMark.load(std::memory_order_relaxed);
         snapshot.uploadTransport.pressureOutcomes =
             m_uploadPressureCount.load(std::memory_order_relaxed);
         snapshot.uploadTransport.acceptedCount =
@@ -1101,8 +1316,6 @@ namespace
             m_uploadCompletedCount.load(std::memory_order_relaxed);
         snapshot.uploadTransport.failedCount =
             m_uploadFailedCount.load(std::memory_order_relaxed);
-        snapshot.releaseTransport.highWaterMark =
-            m_releaseHighWaterMark.load(std::memory_order_relaxed);
         const uint64 releaseAccepted =
             m_releaseAcceptedCount.load(std::memory_order_relaxed);
         const uint64 releaseDequeued =
@@ -1119,6 +1332,8 @@ namespace
                     releaseQueue);
         snapshot.releaseTransport.currentUsage =
             releaseObservation.currentUsage;
+        snapshot.releaseTransport.highWaterMark =
+            releaseQueue.highWaterMark;
         snapshot.releaseTransport.acceptedCount =
             releaseAccepted;
         snapshot.releaseTransport.completedCount =
@@ -1129,6 +1344,12 @@ namespace
             releaseObservation.oldestPendingGeneration;
 
         m_diagnosticsPublisher.Publish(std::move(snapshot));
+    }
+
+    [[noreturn]] void RenderThreadRuntime::TerminateAfterFatalDiagnostics()
+    {
+        m_fatalPolicy->Terminate(GetDiagnosticsSnapshot());
+        std::terminate();
     }
 
     RenderPumpDecision RenderThreadRuntime::InitializeOnRenderThread()
@@ -1163,23 +1384,37 @@ namespace
             m_executorKind,
             m_config.backendType,
             m_initialSurface.generation);
-        StartupResolution expected = StartupResolution::Pending;
-        if (!m_startupResolution.compare_exchange_strong(
-                expected,
-                StartupResolution::RenderResultClaimed,
-                std::memory_order_acq_rel,
-                std::memory_order_acquire))
+        if (m_lifecycleHook != nullptr)
         {
+            m_lifecycleHook->BeforeStartupAcknowledgement();
+        }
+
+        std::unique_lock arbitrationLock(m_startupArbitrationMutex);
+        if (m_lifecycleHook != nullptr)
+        {
+            m_lifecycleHook->DuringStartupPublication();
+        }
+        if (m_startupResolution.load(std::memory_order_acquire) ==
+            StartupResolution::TimedOut)
+        {
+            arbitrationLock.unlock();
             return FinishTimedOutStartupOnRenderThread();
+        }
+        if (HasTerminalResult())
+        {
+            arbitrationLock.unlock();
+            return FailOnRenderThread(GetLastRuntimeResult());
         }
         if (result.code != RenderRuntimeCode::Running)
         {
+            (void)TryClaimTerminalResult(result);
+            SealPublication();
             (void)m_consumer->Shutdown(result.teardownMode);
             m_consumer.reset();
-            StoreRuntimeResult(result);
-            RecordFailure(result);
             TransitionTo(RenderLifecycleState::Failed, "startup failed");
             PublishDiagnostics();
+            m_startupResolution.store(StartupResolution::RenderCompleted,
+                                      std::memory_order_release);
             {
                 std::lock_guard lock(m_stateMutex);
                 m_startupAcknowledged = true;
@@ -1191,6 +1426,8 @@ namespace
         StoreRuntimeResult(result);
         TransitionTo(RenderLifecycleState::Running, "startup acknowledged");
         PublishDiagnostics();
+        m_startupResolution.store(StartupResolution::RenderCompleted,
+                                  std::memory_order_release);
         {
             std::lock_guard lock(m_stateMutex);
             m_startupAcknowledged = true;
@@ -1254,9 +1491,34 @@ namespace
                                                   currentSurface.generation);
         m_consumer.reset();
         StoreShutdownResult(shutdown);
-        if (shutdown.resultClass == RenderResultClass::RuntimeFatal)
+        if (shutdown.resultClass == RenderResultClass::RuntimeFatal ||
+            HasTerminalResult())
         {
-            RecordFailure(shutdown);
+            if (shutdown.resultClass == RenderResultClass::RuntimeFatal)
+            {
+                if (!HasTerminalResult())
+                {
+                    RenderRuntimeCode runtimeCode =
+                        RenderRuntimeCode::OwnershipViolation;
+                    if (shutdown.code == RenderShutdownCode::DeviceLost)
+                    {
+                        runtimeCode = RenderRuntimeCode::DeviceLost;
+                    }
+                    else if (shutdown.code == RenderShutdownCode::TimedOut)
+                    {
+                        runtimeCode = RenderRuntimeCode::ShutdownTimedOut;
+                    }
+                    RenderRuntimeResult shutdownRuntime = MakeRuntimeResult(
+                        runtimeCode,
+                        m_executorKind,
+                        shutdown.backend,
+                        currentSurface.generation);
+                    shutdownRuntime.nativeError = shutdown.nativeError;
+                    shutdownRuntime.message = shutdown.message;
+                    (void)TryClaimTerminalResult(shutdownRuntime);
+                }
+                RecordFailure(shutdown);
+            }
             TransitionTo(RenderLifecycleState::Failed, "shutdown failed");
         }
         else
@@ -1276,13 +1538,10 @@ namespace
         RenderRuntimeResult result)
     {
         const NativeSurfaceDesc currentSurface = GetCurrentSurfaceSnapshot();
-        StoreRuntimeResult(result);
-        RecordFailure(result);
+        (void)TryClaimTerminalResult(result);
+        result = GetLastRuntimeResult();
+        SealPublication();
         TransitionTo(RenderLifecycleState::Failed, "runtime fatal failure");
-        if (m_resourceGateway != nullptr)
-        {
-            m_resourceGateway->BeginShutdown();
-        }
         if (m_consumer != nullptr)
         {
             RenderShutdownResult shutdown = NormalizeShutdownResult(

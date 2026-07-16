@@ -20,6 +20,7 @@ namespace RVX
     {
         uint32 pendingCount = 0;
         uint32 oldestPendingGeneration = 0;
+        uint32 highWaterMark = 0;
     };
 
     class RenderReleaseQueue final
@@ -40,7 +41,8 @@ namespace RVX
         RenderReleaseQueue& operator=(const RenderReleaseQueue&) = delete;
 
         RenderReleaseResult RequestRelease(
-            RenderResourceHandle handle) noexcept;
+            RenderResourceHandle handle,
+            RenderReleaseQueueSnapshot* observation = nullptr) noexcept;
         /**
          * @brief Pop at most one ring entry and return it only while its exact
          * generation is still Current and Evicting; otherwise consume that
@@ -64,6 +66,7 @@ namespace RVX
         std::vector<RenderResourceHandle> m_slots;
         uint32 m_head = 0;
         uint32 m_count = 0;
+        uint32 m_highWaterMark = 0;
         WakeFunction m_wakeFunction = nullptr;
         void* m_wakeContext = nullptr;
         RuntimeFatalFunction m_runtimeFatalFunction = nullptr;

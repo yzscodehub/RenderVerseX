@@ -36,13 +36,43 @@ public:
 
 namespace
 {
+    [[nodiscard]] bool IsBackendEnabledInBuild(
+        RHIBackendType backend) noexcept
+    {
+        switch (backend)
+        {
+#if RVX_ENABLE_DX11
+            case RHIBackendType::DX11:
+                return true;
+#endif
+#if RVX_ENABLE_DX12
+            case RHIBackendType::DX12:
+                return true;
+#endif
+#if RVX_ENABLE_VULKAN
+            case RHIBackendType::Vulkan:
+                return true;
+#endif
+#if RVX_ENABLE_METAL
+            case RHIBackendType::Metal:
+                return true;
+#endif
+#if RVX_ENABLE_OPENGL
+            case RHIBackendType::OpenGL:
+                return true;
+#endif
+            default:
+                return false;
+        }
+    }
+
     class ClearPresentFrameConsumer final : public IRenderFrameConsumer,
                                             public NonMovable
     {
     public:
         RenderRuntimeResult Initialize(
             const RenderRuntimeConfig& config,
-            const NativeSurfaceDesc& surface) noexcept override
+            const NativeSurfaceDesc& surface) override
         {
             RenderRuntimeResult result;
             RHIBackendType backend = config.backendType;
@@ -88,7 +118,7 @@ namespace
         }
 
         RenderRuntimeResult ApplySurface(
-            const NativeSurfaceDesc& surface) noexcept override
+            const NativeSurfaceDesc& surface) override
         {
             RenderRuntimeResult result;
             result.code = RenderRuntimeCode::Running;
@@ -127,16 +157,16 @@ namespace
             return result;
         }
 
-        void ProcessRelease(RenderResourceHandle) noexcept override
+        void ProcessRelease(RenderResourceHandle) override
         {
         }
 
-        void ProcessUpload(const ResourceUploadRequestRef&) noexcept override
+        void ProcessUpload(const ResourceUploadRequestRef&) override
         {
         }
 
         RenderRuntimeResult ConsumeFrame(
-            const RenderFramePacket& packet) noexcept override
+            const RenderFramePacket& packet) override
         {
             RenderRuntimeResult result;
             result.code = RenderRuntimeCode::Running;
@@ -182,11 +212,11 @@ namespace
             return result;
         }
 
-        void PollCompletion() noexcept override
+        void PollCompletion() override
         {
         }
 
-        void RetireCompleted() noexcept override
+        void RetireCompleted() override
         {
         }
 
@@ -195,16 +225,33 @@ namespace
         {
             RenderShutdownResult result;
             result.code = RenderShutdownCode::Completed;
-            if (m_context != nullptr)
+            try
             {
-                if (m_context->GetDevice() != nullptr)
+                if (m_context != nullptr)
                 {
-                    result.backend = m_context->GetDevice()->GetBackendType();
+                    if (m_context->GetDevice() != nullptr)
+                    {
+                        result.backend =
+                            m_context->GetDevice()->GetBackendType();
+                    }
+                    result.surfaceGeneration =
+                        m_context->GetSurface().generation;
+                    m_context->WaitIdle();
+                    m_context->Shutdown();
+                    m_context.reset();
                 }
-                result.surfaceGeneration = m_context->GetSurface().generation;
-                m_context->WaitIdle();
-                m_context->Shutdown();
-                m_context.reset();
+            }
+            catch (const std::exception& exception)
+            {
+                result.code = RenderShutdownCode::ExecutorJoinFailed;
+                result.message =
+                    std::string("Render consumer cleanup threw: ") +
+                    exception.what();
+            }
+            catch (...)
+            {
+                result.code = RenderShutdownCode::ExecutorJoinFailed;
+                result.message = "Render consumer cleanup threw";
             }
             return result;
         }
@@ -222,23 +269,30 @@ RenderSubsystem::~RenderSubsystem() = default;
 
 void RenderSubsystem::Initialize()
 {
-    if (!m_runtimeConfigured)
+    if (m_initializeAttempted)
     {
-        Initialize(m_legacyBridge->config);
-        return;
-    }
-
-    if (m_runtimeInitializeAttempted)
-    {
-        const RenderRuntimeResult result = GetLastRuntimeResult();
-        if (result.code != RenderRuntimeCode::Running)
+        if (m_runtimeConfigured)
         {
-            throw RenderSubsystemInitializationError(result);
+            const RenderRuntimeResult result = GetLastRuntimeResult();
+            if (result.code != RenderRuntimeCode::Running)
+            {
+                throw RenderSubsystemInitializationError(result);
+            }
         }
         return;
     }
+    m_initializeAttempted = true;
 
-    m_runtimeInitializeAttempted = true;
+    if (m_runtimeConfigured)
+    {
+        InitializeRuntime();
+        return;
+    }
+    InitializeLegacy(m_legacyBridge->config);
+}
+
+void RenderSubsystem::InitializeRuntime()
+{
     const RenderRuntimeResult result = m_runtime->Start();
     m_preRuntimeResult = result;
     if (result.code != RenderRuntimeCode::Running)
@@ -250,23 +304,24 @@ void RenderSubsystem::Initialize()
 void RenderSubsystem::Configure(const RenderRuntimeConfig& config,
                                 const NativeSurfaceDesc& surface)
 {
-    if (m_runtimeInitializeAttempted)
+    if (m_initializeAttempted)
     {
         throw std::logic_error(
             "RenderSubsystem::Configure is only valid before Initialize");
     }
 
-    m_runtimeConfig = config;
-    m_runtimeSurface = surface;
-    m_runtimeConfigured = true;
-    m_preRuntimeResult = {};
-    m_preShutdownResult = {};
-    m_runtime = std::make_unique<RenderThreadRuntime>(
+    auto runtime = std::make_unique<RenderThreadRuntime>(
         config,
         surface,
         RenderExecutorKind::Dedicated,
         CreateDedicatedRenderExecutor(),
         std::make_unique<ClearPresentFrameConsumer>());
+    m_runtime = std::move(runtime);
+    m_runtimeConfig = config;
+    m_runtimeSurface = surface;
+    m_runtimeConfigured = true;
+    m_preRuntimeResult = {};
+    m_preShutdownResult = {};
 }
 
 RenderFramePublishResult RenderSubsystem::TryPublishFrame(
@@ -323,11 +378,30 @@ RenderShutdownResult RenderSubsystem::GetLastShutdownResult() const
 
 void RenderSubsystem::Initialize(const RenderConfig& config)
 {
-    if (m_runtimeConfigured)
+    if (m_initializeAttempted)
     {
-        Initialize();
+        if (m_runtimeConfigured)
+        {
+            const RenderRuntimeResult result = GetLastRuntimeResult();
+            if (result.code != RenderRuntimeCode::Running)
+            {
+                throw RenderSubsystemInitializationError(result);
+            }
+        }
         return;
     }
+    m_initializeAttempted = true;
+
+    if (m_runtimeConfigured)
+    {
+        InitializeRuntime();
+        return;
+    }
+    InitializeLegacy(config);
+}
+
+void RenderSubsystem::InitializeLegacy(const RenderConfig& config)
+{
     m_legacyBridge->config = config;
 
     // Handle Auto backend selection
@@ -335,6 +409,13 @@ void RenderSubsystem::Initialize(const RenderConfig& config)
     if (actualBackend == RHIBackendType::Auto)
     {
         actualBackend = SelectBestBackend();
+    }
+    if (!IsBackendEnabledInBuild(actualBackend))
+    {
+        return;
+    }
+    if (config.backendType == RHIBackendType::Auto)
+    {
         RVX_CORE_INFO("RenderSubsystem auto-selected backend: {}", ToString(actualBackend));
     }
     else

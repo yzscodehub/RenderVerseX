@@ -1,11 +1,11 @@
 #include "Common/RenderRuntimeTestSupport.h"
 
 #include "Runtime/DedicatedRenderExecutor.h"
-
 #include "Runtime/RenderThreadGuard.h"
 
 #include <condition_variable>
 #include <mutex>
+#include <stdexcept>
 #include <utility>
 
 namespace RVX
@@ -16,6 +16,16 @@ namespace
                                        public NonMovable
     {
     public:
+        InlineRenderExecutor() = default;
+
+        InlineRenderExecutor(
+            std::vector<RenderExecutorJoinCode> joinCodes,
+            std::shared_ptr<RenderExecutorJoinTestProbe> joinProbe)
+            : m_joinCodes(std::move(joinCodes)),
+              m_joinProbe(std::move(joinProbe))
+        {
+        }
+
         RenderExecutorStartResult Start(IRenderExecutorPump& pump) override
         {
             std::lock_guard lock(m_stateMutex);
@@ -87,6 +97,20 @@ namespace
         RenderExecutorJoinResult JoinUntil(
             std::chrono::steady_clock::time_point deadline) override
         {
+            if (m_nextJoinCode < m_joinCodes.size())
+            {
+                const RenderExecutorJoinCode code =
+                    m_joinCodes[m_nextJoinCode++];
+                if (m_joinProbe != nullptr)
+                {
+                    m_joinProbe->Record(code);
+                }
+                if (code != RenderExecutorJoinCode::Joined)
+                {
+                    return RenderExecutorJoinResult{code};
+                }
+            }
+
             std::unique_lock lock(m_stateMutex);
             if (!m_started)
             {
@@ -119,6 +143,9 @@ namespace
         IRenderExecutorPump* m_pump = nullptr;
         bool m_started = false;
         bool m_exited = false;
+        std::vector<RenderExecutorJoinCode> m_joinCodes;
+        size_t m_nextJoinCode = 0;
+        std::shared_ptr<RenderExecutorJoinTestProbe> m_joinProbe;
     };
 
     class FailingRenderExecutor final : public IRenderExecutor,
@@ -220,7 +247,7 @@ namespace
 
         RenderRuntimeResult Initialize(
             const RenderRuntimeConfig& config,
-            const NativeSurfaceDesc& surface) noexcept override
+            const NativeSurfaceDesc& surface) override
         {
             m_probe->SetStartupThread(std::this_thread::get_id());
             m_probe->Record(RenderRuntimeTestEvent::Started);
@@ -234,7 +261,7 @@ namespace
         }
 
         RenderRuntimeResult ApplySurface(
-            const NativeSurfaceDesc& surface) noexcept override
+            const NativeSurfaceDesc& surface) override
         {
             m_probe->Record(RenderRuntimeTestEvent::Surface);
             RenderRuntimeResult result;
@@ -243,21 +270,25 @@ namespace
             return result;
         }
 
-        void ProcessRelease(RenderResourceHandle) noexcept override
+        void ProcessRelease(RenderResourceHandle) override
         {
             m_probe->Record(RenderRuntimeTestEvent::Release);
         }
 
         void ProcessUpload(
-            const ResourceUploadRequestRef&) noexcept override
+            const ResourceUploadRequestRef&) override
         {
             m_probe->Record(RenderRuntimeTestEvent::Upload);
         }
 
         RenderRuntimeResult ConsumeFrame(
-            const RenderFramePacket& packet) noexcept override
+            const RenderFramePacket& packet) override
         {
             m_probe->Record(RenderRuntimeTestEvent::Frame);
+            if (m_probe->throwOnFrame)
+            {
+                throw std::runtime_error("forced consumer frame exception");
+            }
             m_probe->WaitWhileFrameBlocked();
             RenderRuntimeResult result;
             result.code = RenderRuntimeCode::Running;
@@ -265,12 +296,12 @@ namespace
             return result;
         }
 
-        void PollCompletion() noexcept override
+        void PollCompletion() override
         {
             m_probe->Record(RenderRuntimeTestEvent::Poll);
         }
 
-        void RetireCompleted() noexcept override
+        void RetireCompleted() override
         {
             m_probe->Record(RenderRuntimeTestEvent::Retire);
         }
@@ -325,6 +356,93 @@ namespace
     {
         return std::make_unique<JoinRecordingDedicatedExecutor>(
             std::move(probe));
+    }
+
+    std::unique_ptr<IRenderExecutor>
+        CreateSequencedJoinInlineRenderExecutor(
+            std::vector<RenderExecutorJoinCode> joinCodes,
+            std::shared_ptr<RenderExecutorJoinTestProbe> probe)
+    {
+        return std::make_unique<InlineRenderExecutor>(
+            std::move(joinCodes), std::move(probe));
+    }
+
+    void RenderRuntimeLifecycleTestHook::BeforeStartupAcknowledgement()
+        noexcept
+    {
+        std::unique_lock lock(m_mutex);
+        m_entered = true;
+        m_cv.notify_all();
+        m_cv.wait(lock, [this]() { return m_released; });
+    }
+
+    bool RenderRuntimeLifecycleTestHook::WaitUntilEntered(
+        std::chrono::milliseconds timeout) const
+    {
+        std::unique_lock lock(m_mutex);
+        return m_cv.wait_for(lock, timeout, [this]() { return m_entered; });
+    }
+
+    void RenderRuntimeLifecycleTestHook::Release()
+    {
+        {
+            std::lock_guard lock(m_mutex);
+            m_released = true;
+        }
+        m_cv.notify_all();
+    }
+
+    void RenderRuntimePublicationTestHook::BeforeStartupAcknowledgement()
+        noexcept
+    {
+    }
+
+    void RenderRuntimePublicationTestHook::DuringStartupPublication() noexcept
+    {
+        std::unique_lock lock(m_mutex);
+        m_entered = true;
+        m_cv.notify_all();
+        m_cv.wait(lock, [this]() { return m_released; });
+    }
+
+    bool RenderRuntimePublicationTestHook::WaitUntilEntered(
+        std::chrono::milliseconds timeout) const
+    {
+        std::unique_lock lock(m_mutex);
+        return m_cv.wait_for(lock, timeout, [this]() { return m_entered; });
+    }
+
+    void RenderRuntimePublicationTestHook::Release()
+    {
+        {
+            std::lock_guard lock(m_mutex);
+            m_released = true;
+        }
+        m_cv.notify_all();
+    }
+
+    void RenderFatalPolicyTestProbe::Terminate(
+        const RenderDiagnosticsSnapshot& diagnostics)
+    {
+        {
+            std::lock_guard lock(m_mutex);
+            ++m_callCount;
+            m_diagnostics = diagnostics;
+        }
+        throw RenderFatalPolicyIntercept{};
+    }
+
+    uint32 RenderFatalPolicyTestProbe::GetCallCount() const noexcept
+    {
+        std::lock_guard lock(m_mutex);
+        return m_callCount;
+    }
+
+    RenderDiagnosticsSnapshot
+        RenderFatalPolicyTestProbe::GetDiagnostics() const
+    {
+        std::lock_guard lock(m_mutex);
+        return m_diagnostics;
     }
 
     void RenderFrameConsumerTestProbe::Record(RenderRuntimeTestEvent event)

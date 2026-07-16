@@ -266,6 +266,46 @@ namespace
         return result.request;
     }
 
+    struct FastFrameDrainContext
+    {
+        TestFrameMailbox* mailbox = nullptr;
+        uint64 drainedSequence = 0;
+    };
+
+    void DrainFrameOnWake(void* context) noexcept
+    {
+        auto& drain = *static_cast<FastFrameDrainContext*>(context);
+        auto acquired = drain.mailbox->AcquireLatest();
+        if (acquired.packet != nullptr)
+        {
+            drain.drainedSequence = acquired.packet->GetHeader().sequence;
+        }
+    }
+
+    struct FastUploadDrainContext
+    {
+        RenderUploadQueue* queue = nullptr;
+        ResourceUploadRequestRef drained;
+    };
+
+    void DrainUploadOnWake(void* context) noexcept
+    {
+        auto& drain = *static_cast<FastUploadDrainContext*>(context);
+        drain.drained = drain.queue->TryDequeue();
+    }
+
+    struct FastReleaseDrainContext
+    {
+        RenderReleaseQueue* queue = nullptr;
+        RenderResourceHandle drained;
+    };
+
+    void DrainReleaseOnWake(void* context) noexcept
+    {
+        auto& drain = *static_cast<FastReleaseDrainContext*>(context);
+        drain.drained = drain.queue->TryDequeue();
+    }
+
     PackedRenderResourceStatus MakePacked(
         uint32 generation,
         RenderResourcePublicState state,
@@ -881,6 +921,25 @@ namespace
     }
 
     TEST(RenderConcurrencyValidation,
+         FramePostEnqueueSnapshotSurvivesWakeTimeFastDrain)
+    {
+        FastFrameDrainContext drain;
+        TestFrameMailbox mailbox(2, &DrainFrameOnWake, &drain);
+        drain.mailbox = &mailbox;
+
+        const RenderFrameMailboxPublishResult result =
+            mailbox.TryPublish(MakeTestFrame(1));
+
+        ASSERT_EQ(result.code, RenderFrameMailboxPublishCode::Accepted);
+        EXPECT_EQ(drain.drainedSequence, 1U);
+        EXPECT_EQ(result.snapshot.pendingCount, 1U);
+        EXPECT_EQ(result.snapshot.highWaterMark, 1U);
+        const RenderFrameMailboxSnapshot current = mailbox.GetSnapshot();
+        EXPECT_EQ(current.pendingCount, 0U);
+        EXPECT_EQ(current.highWaterMark, 1U);
+    }
+
+    TEST(RenderConcurrencyValidation,
          AcquiredFrameOwnershipIsIndependentOfLaterReplacement)
     {
         TestFrameMailbox mailbox(2);
@@ -994,6 +1053,75 @@ namespace
         EXPECT_EQ(gateway.GetRetainedUploadBytes(),
                   firstRequest->GetDerivedPayloadBytes());
         EXPECT_EQ(wakeCount.load(std::memory_order_relaxed), 1U);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         UploadPostEnqueueSnapshotSurvivesWakeTimeFastDrain)
+    {
+        RenderTransportConfig config;
+        RenderResourceStatusTable table(config.statusSlotCapacity);
+        RenderResourceReservationDirectory directory(table);
+        const auto reserve =
+            directory.ReserveResource(AssetId{1051},
+                                      RenderResourceKind::Mesh);
+        ASSERT_EQ(reserve.code, RenderResourceReserveCode::Reserved);
+        const ResourceUploadRequestRef request =
+            MakeMeshUploadRequest(reserve.handle, AssetId{1051}, 1, 36);
+
+        FastUploadDrainContext drain;
+        RenderUploadQueue queue(config, table, &DrainUploadOnWake, &drain);
+        drain.queue = &queue;
+        RenderUploadQueueSnapshot observation;
+
+        const RenderUploadEnqueueResult result =
+            queue.TryEnqueue(request, &observation);
+
+        ASSERT_EQ(result.code, RenderUploadEnqueueCode::Accepted);
+        EXPECT_EQ(drain.drained, request);
+        EXPECT_EQ(observation.retainedCount, 1U);
+        EXPECT_EQ(observation.retainedBytes, 36U);
+        EXPECT_EQ(observation.requestHighWaterMark, 1U);
+        EXPECT_EQ(observation.byteHighWaterMark, 36U);
+        const RenderUploadQueueSnapshot current = queue.GetSnapshot();
+        EXPECT_EQ(current.retainedCount, 0U);
+        EXPECT_EQ(current.retainedBytes, 0U);
+        EXPECT_EQ(current.requestHighWaterMark, 1U);
+        EXPECT_EQ(current.byteHighWaterMark, 36U);
+    }
+
+    TEST(RenderConcurrencyValidation,
+         ReleasePostEnqueueSnapshotSurvivesWakeTimeFastDrain)
+    {
+        RenderTransportConfig config;
+        RenderResourceStatusTable table(config.statusSlotCapacity);
+        RenderResourceReservationDirectory directory(table);
+        const auto reserve =
+            directory.ReserveResource(AssetId{1061},
+                                      RenderResourceKind::Texture);
+        ASSERT_EQ(reserve.code, RenderResourceReserveCode::Reserved);
+
+        FastReleaseDrainContext drain;
+        RenderReleaseQueue queue(directory,
+                                 table,
+                                 config.statusSlotCapacity,
+                                 &DrainReleaseOnWake,
+                                 &drain);
+        drain.queue = &queue;
+        RenderReleaseQueueSnapshot observation;
+
+        const RenderReleaseResult result =
+            queue.RequestRelease(reserve.handle, &observation);
+
+        ASSERT_EQ(result.code, RenderReleaseCode::Accepted);
+        EXPECT_EQ(drain.drained, reserve.handle);
+        EXPECT_EQ(observation.pendingCount, 1U);
+        EXPECT_EQ(observation.oldestPendingGeneration,
+                  reserve.handle.generation);
+        EXPECT_EQ(observation.highWaterMark, 1U);
+        const RenderReleaseQueueSnapshot current = queue.GetSnapshot();
+        EXPECT_EQ(current.pendingCount, 0U);
+        EXPECT_EQ(current.oldestPendingGeneration, 0U);
+        EXPECT_EQ(current.highWaterMark, 1U);
     }
 
     TEST(RenderConcurrencyValidation,

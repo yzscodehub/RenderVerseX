@@ -67,7 +67,8 @@ namespace
     }
 
     RenderUploadEnqueueResult RenderUploadQueue::TryEnqueue(
-        const ResourceUploadRequestRef& request) noexcept
+        const ResourceUploadRequestRef& request,
+        RenderUploadQueueSnapshot* observation) noexcept
     {
         {
             std::lock_guard lock(m_mutex);
@@ -118,6 +119,22 @@ namespace
             m_slots[appendIndex] = request;
             ++m_count;
             m_retainedBytes += requestBytes;
+            if (m_count > m_requestHighWaterMark)
+            {
+                m_requestHighWaterMark = m_count;
+            }
+            if (m_retainedBytes > m_byteHighWaterMark)
+            {
+                m_byteHighWaterMark = m_retainedBytes;
+            }
+            if (observation != nullptr)
+            {
+                *observation = RenderUploadQueueSnapshot{
+                    m_count,
+                    m_retainedBytes,
+                    m_requestHighWaterMark,
+                    m_byteHighWaterMark};
+            }
         }
 
         Wake();
@@ -150,6 +167,15 @@ namespace
     {
         std::lock_guard lock(m_mutex);
         return m_retainedBytes;
+    }
+
+    RenderUploadQueueSnapshot RenderUploadQueue::GetSnapshot() const noexcept
+    {
+        std::lock_guard lock(m_mutex);
+        return RenderUploadQueueSnapshot{m_count,
+                                         m_retainedBytes,
+                                         m_requestHighWaterMark,
+                                         m_byteHighWaterMark};
     }
 
     void RenderUploadQueue::Wake() const noexcept
