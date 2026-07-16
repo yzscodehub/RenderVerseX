@@ -17,6 +17,23 @@ namespace RVX
             return static_cast<uint8>(domain);
         }
 
+        constexpr bool IsConcreteBackendType(RHIBackendType backendType)
+        {
+            switch (backendType)
+            {
+                case RHIBackendType::DX11:
+                case RHIBackendType::DX12:
+                case RHIBackendType::Vulkan:
+                case RHIBackendType::Metal:
+                case RHIBackendType::OpenGL:
+                    return true;
+                case RHIBackendType::None:
+                case RHIBackendType::Auto:
+                default:
+                    return false;
+            }
+        }
+
         bool IsCompletionSatisfied(GPUCompletionStatus status)
         {
             return status == GPUCompletionStatus::Completed ||
@@ -113,6 +130,13 @@ namespace RVX
         }
 
         const RHICapabilities& capabilities = device->GetCapabilities();
+        const RHIBackendType deviceBackend = device->GetBackendType();
+        if (!IsConcreteBackendType(deviceBackend) ||
+            !IsConcreteBackendType(capabilities.backendType) ||
+            deviceBackend != capabilities.backendType)
+        {
+            return false;
+        }
         if (!ValidateRHICapabilities(capabilities))
         {
             return false;
@@ -180,13 +204,14 @@ namespace RVX
             return {};
         }
 
+        if (state->lastSubmittedValue == std::numeric_limits<uint64>::max())
+        {
+            state->lost = true;
+            return {};
+        }
+
         if (m_topology.completionMode == RHIQueueCompletionMode::CompatibilityWaitIdle)
         {
-            if (state->lastSubmittedValue == std::numeric_limits<uint64>::max())
-            {
-                state->lost = true;
-                return {};
-            }
             m_device->SubmitCommandContext(context, nullptr);
             ++state->lastSubmittedValue;
             return {domain, state->lastSubmittedValue};

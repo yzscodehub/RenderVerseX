@@ -102,6 +102,7 @@ namespace RVX::Tests
 
             uint64 AllocateValue() { return m_nextValue++; }
             void SetNextValue(uint64 value) { m_nextValue = value; }
+            uint64 GetNextValue() const { return m_nextValue; }
             void Complete(uint64 value)
             {
                 m_completedValue = std::max(m_completedValue, value);
@@ -145,6 +146,13 @@ namespace RVX::Tests
         public:
             explicit FakeDevice(RHICapabilities capabilities)
                 : m_capabilities(std::move(capabilities))
+                , m_backendType(m_capabilities.backendType)
+            {
+            }
+
+            FakeDevice(RHICapabilities capabilities, RHIBackendType backendType)
+                : m_capabilities(std::move(capabilities))
+                , m_backendType(backendType)
             {
             }
 
@@ -207,7 +215,7 @@ namespace RVX::Tests
             void BeginResourceGroup(const char*) override {}
             void EndResourceGroup() override {}
             const RHICapabilities& GetCapabilities() const override { return m_capabilities; }
-            RHIBackendType GetBackendType() const override { return m_capabilities.backendType; }
+            RHIBackendType GetBackendType() const override { return m_backendType; }
 
             FakeFence* GetFence(size_t index) const { return static_cast<FakeFence*>(fences[index].Get()); }
 
@@ -218,6 +226,9 @@ namespace RVX::Tests
             uint32 submitCount = 0;
             uint32 waitIdleCount = 0;
             bool failNextSubmit = false;
+
+        private:
+            RHIBackendType m_backendType = RHIBackendType::None;
         };
     } // namespace
 
@@ -329,6 +340,47 @@ namespace RVX::Tests
         vulkan.backendType = RHIBackendType::Vulkan;
         vulkan.vulkan.apiVersion = 1;
         EXPECT_FALSE(ValidateRHICapabilities(vulkan));
+    }
+
+    TEST(RenderSubmissionValidation, TrackerRejectsMismatchedAndUndeclaredBackendIdentityBeforeAllocation)
+    {
+        FakeCommandContext graphics(RHICommandQueueType::Graphics);
+        const auto expectRejectedBeforeAllocation = [&](RHICapabilities capabilities,
+                                                        RHIBackendType deviceBackend)
+        {
+            FakeDevice device(std::move(capabilities), deviceBackend);
+            RenderSubmissionTracker tracker;
+
+            EXPECT_FALSE(tracker.Initialize(&device));
+            EXPECT_TRUE(device.fences.empty());
+            EXPECT_EQ(tracker.Submit(&graphics).value, 0u);
+            EXPECT_EQ(device.submitCount, 0u);
+        };
+
+        RHICapabilities vulkan = MakeCapabilities(
+            RHIQueueCompletionMode::NativeTimeline,
+            {GPUQueueDomain::Graphics, GPUQueueDomain::Compute, GPUQueueDomain::Copy}, 3);
+        vulkan.backendType = RHIBackendType::Vulkan;
+        expectRejectedBeforeAllocation(vulkan, RHIBackendType::DX11);
+
+        RHICapabilities metal = MakeCapabilities(
+            RHIQueueCompletionMode::NativeTimeline,
+            {GPUQueueDomain::Graphics, GPUQueueDomain::Graphics, GPUQueueDomain::Graphics}, 1);
+        metal.backendType = RHIBackendType::Metal;
+        expectRejectedBeforeAllocation(metal, RHIBackendType::DX11);
+
+        const RHIBackendType unknownBackend = static_cast<RHIBackendType>(0xFF);
+        RHICapabilities validDX12 = MakeCapabilities(
+            RHIQueueCompletionMode::NativeTimeline,
+            {GPUQueueDomain::Graphics, GPUQueueDomain::Compute, GPUQueueDomain::Copy}, 3);
+        expectRejectedBeforeAllocation(validDX12, unknownBackend);
+        expectRejectedBeforeAllocation(validDX12, RHIBackendType::None);
+        expectRejectedBeforeAllocation(validDX12, RHIBackendType::Auto);
+
+        RHICapabilities unknownCapabilities = validDX12;
+        unknownCapabilities.backendType = unknownBackend;
+        EXPECT_FALSE(ValidateRHICapabilities(unknownCapabilities));
+        expectRejectedBeforeAllocation(unknownCapabilities, RHIBackendType::DX12);
     }
 
     TEST(RenderSubmissionValidation, TokenRejectsZeroSortsAndMergesOnlyWithinDomain)
@@ -475,8 +527,18 @@ namespace RVX::Tests
         FakeCommandContext graphics(RHICommandQueueType::Graphics);
         const GPUCompletionPoint last = tracker.Submit(&graphics);
         EXPECT_EQ(last.value, std::numeric_limits<uint64>::max());
+        ASSERT_EQ(device.submitCount, 1u);
+        ASSERT_EQ(tracker.GetLastSubmittedValue(GPUQueueDomain::Graphics), last.value);
+        ASSERT_EQ(device.GetFence(0)->GetNextValue(), 0u);
+
         EXPECT_EQ(tracker.Submit(&graphics).value, 0u);
+        EXPECT_EQ(device.submitCount, 1u)
+            << "overflow must reject before backend work is submitted";
+        EXPECT_EQ(tracker.GetLastSubmittedValue(GPUQueueDomain::Graphics), last.value);
+        EXPECT_EQ(device.GetFence(0)->GetNextValue(), 0u);
         EXPECT_EQ(tracker.Query(last), GPUCompletionStatus::Lost);
+        EXPECT_EQ(tracker.Wait(last), GPUCompletionStatus::Lost);
+        EXPECT_EQ(device.GetFence(0)->waitCount, 0u);
     }
 
     TEST(RenderSubmissionValidation, TokenCompletionRequiresEveryDomainWithoutCrossDomainComparison)

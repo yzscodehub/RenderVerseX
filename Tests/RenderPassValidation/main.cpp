@@ -3205,6 +3205,10 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
     EXPECT_NE(diagnosticsText.find("RHICapabilities: schema=4, backend=DirectX 12"), std::string::npos);
     EXPECT_NE(diagnosticsText.find("adapter=RenderPassValidation Test Adapter"), std::string::npos);
     EXPECT_NE(diagnosticsText.find("driver=RenderPassValidation.Driver.1"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find(
+                  "queueCompletionMode=NativeTimeline, "
+                  "logicalQueueDomains=[Graphics,Compute,Copy], activeDomainCount=3"),
+              std::string::npos);
     EXPECT_NE(diagnosticsText.find("renderGraphBaseline=Passed"), std::string::npos);
     EXPECT_NE(diagnosticsText.find("RenderGraphBaselineMissing: none"), std::string::npos);
     EXPECT_NE(diagnosticsText.find("RHICapability ComputePipeline: status=Supported"), std::string::npos);
@@ -3215,6 +3219,13 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
     EXPECT_NE(manifestJson.find("\"backend\": \"DirectX 12\""), std::string::npos);
     EXPECT_NE(manifestJson.find("\"adapterName\": \"RenderPassValidation Test Adapter\""), std::string::npos);
     EXPECT_NE(manifestJson.find("\"driverVersion\": \"RenderPassValidation.Driver.1\""), std::string::npos);
+    EXPECT_NE(manifestJson.find(
+                  "\"queueTopology\": {\n"
+                  "      \"completionMode\": \"NativeTimeline\",\n"
+                  "      \"logicalQueueDomains\": [\"Graphics\", \"Compute\", \"Copy\"],\n"
+                  "      \"activeDomainCount\": 3\n"
+                  "    }"),
+              std::string::npos);
     EXPECT_NE(manifestJson.find("\"renderGraphBaselineSupported\": true"), std::string::npos);
     EXPECT_NE(manifestJson.find("\"renderGraphBaselineMissingRequirements\": []"), std::string::npos);
     EXPECT_NE(manifestJson.find("\"feature\": \"ComputePipeline\""), std::string::npos);

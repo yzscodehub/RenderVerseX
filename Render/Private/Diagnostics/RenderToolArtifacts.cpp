@@ -660,6 +660,14 @@ std::string SceneRenderer::ExportToolDiagnosticsText() const
            << ", backend=" << ToString(report.backendType)
            << ", adapter=" << report.adapterName
            << ", driver=" << report.driverVersion
+           << ", queueCompletionMode="
+           << GetRHIQueueCompletionModeName(report.queueTopology.completionMode)
+           << ", logicalQueueDomains=["
+           << GetGPUQueueDomainName(report.queueTopology.logicalQueueDomains[0]) << ","
+           << GetGPUQueueDomainName(report.queueTopology.logicalQueueDomains[1]) << ","
+           << GetGPUQueueDomainName(report.queueTopology.logicalQueueDomains[2]) << "]"
+           << ", activeDomainCount="
+           << static_cast<uint32>(report.queueTopology.activeDomainCount)
            << ", validation=" << (report.validationPassed ? "Passed" : "Failed")
            << ", supported=" << report.supportedCount
            << ", emulated=" << report.emulatedCount
@@ -962,6 +970,17 @@ std::string SceneRenderer::ExportToolDiagnosticsManifestJson(
         ss << "    \"driverVersion\": " << JsonString(report.driverVersion) << ",\n";
         ss << "    \"validationPassed\": " << JsonBool(report.validationPassed) << ",\n";
         ss << "    \"validationMessage\": " << JsonString(report.validationMessage) << ",\n";
+        ss << "    \"queueTopology\": {\n";
+        ss << "      \"completionMode\": "
+           << JsonString(GetRHIQueueCompletionModeName(report.queueTopology.completionMode))
+           << ",\n";
+        ss << "      \"logicalQueueDomains\": ["
+           << JsonString(GetGPUQueueDomainName(report.queueTopology.logicalQueueDomains[0])) << ", "
+           << JsonString(GetGPUQueueDomainName(report.queueTopology.logicalQueueDomains[1])) << ", "
+           << JsonString(GetGPUQueueDomainName(report.queueTopology.logicalQueueDomains[2])) << "],\n";
+        ss << "      \"activeDomainCount\": "
+           << static_cast<uint32>(report.queueTopology.activeDomainCount) << "\n";
+        ss << "    },\n";
         ss << "    \"supportedCount\": " << report.supportedCount << ",\n";
         ss << "    \"emulatedCount\": " << report.emulatedCount << ",\n";
         ss << "    \"unsupportedCount\": " << report.unsupportedCount << ",\n";

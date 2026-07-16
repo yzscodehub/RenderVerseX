@@ -13,6 +13,23 @@ namespace RVX
         using Diagnostics::JsonBool;
         using Diagnostics::JsonString;
 
+        constexpr bool IsConcreteBackendType(RHIBackendType backendType)
+        {
+            switch (backendType)
+            {
+                case RHIBackendType::DX11:
+                case RHIBackendType::DX12:
+                case RHIBackendType::Vulkan:
+                case RHIBackendType::Metal:
+                case RHIBackendType::OpenGL:
+                    return true;
+                case RHIBackendType::None:
+                case RHIBackendType::Auto:
+                default:
+                    return false;
+            }
+        }
+
         void AddCapabilityReportEntry(RHICapabilityReport& report,
                                       RHICapabilityReportEntry entry)
         {
@@ -290,8 +307,7 @@ namespace RVX
             issues << issue;
         };
 
-        if (capabilities.backendType == RHIBackendType::None ||
-            capabilities.backendType == RHIBackendType::Auto)
+        if (!IsConcreteBackendType(capabilities.backendType))
         {
             fail("backendType must identify a concrete backend");
         }
@@ -502,7 +518,10 @@ namespace RVX
                     fail("compatibility backend queue topology must publish one WaitIdle Graphics domain");
                 }
                 break;
+            case RHIBackendType::None:
+            case RHIBackendType::Auto:
             default:
+                fail("queue topology backend identity is undeclared");
                 break;
         }
 
