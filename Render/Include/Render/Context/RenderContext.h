@@ -138,7 +138,7 @@ namespace RVX
          * 
          * Submits recorded commands to the GPU.
          */
-        void EndFrame();
+        GPUCompletionPoint EndFrame();
 
         /**
          * @brief Present the frame to the screen
@@ -204,10 +204,6 @@ namespace RVX
         // Per-frame command contexts
         std::array<RHICommandContextRef, RVX_MAX_FRAME_COUNT> m_graphicsContexts;
         std::array<RHICommandContextRef, RVX_MAX_FRAME_COUNT> m_computeContexts;
-        
-        // Async compute fences for graphics-compute synchronization
-        std::array<RHIFenceRef, RVX_MAX_FRAME_COUNT> m_computeFences;
-        std::array<uint64_t, RVX_MAX_FRAME_COUNT> m_computeFenceValues = {};
         
         // Frame synchronization
         FrameSynchronizer m_frameSynchronizer;

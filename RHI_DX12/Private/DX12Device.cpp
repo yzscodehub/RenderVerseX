@@ -938,6 +938,13 @@ namespace RVX
         m_capabilities.supportsQueueFenceWait = true;
         m_capabilities.supportsMultiQueueBatchSubmit = false;
         m_capabilities.emulatesQueueFences = false;
+        m_capabilities.queueTopology.completionMode = RHIQueueCompletionMode::NativeTimeline;
+        m_capabilities.queueTopology.logicalQueueDomains = {
+            GPUQueueDomain::Graphics,
+            GPUQueueDomain::Compute,
+            GPUQueueDomain::Copy,
+        };
+        m_capabilities.queueTopology.activeDomainCount = 3;
 
         return true;
     }

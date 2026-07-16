@@ -3213,7 +3213,7 @@ def check_p65_rhi_render_graph_baseline_contract(root: Path) -> list[Finding]:
         ),
         (
             "RHI/Include/RHI/RHICapabilities.h",
-            "RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 3",
+            "RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 4",
             "P65 must bump the RHI capability report schema for baseline readiness.",
         ),
         (
@@ -3357,7 +3357,7 @@ def check_p68_rhi_capability_report_identity_contract(root: Path) -> list[Findin
         ),
         (
             "RHI/Include/RHI/RHICapabilities.h",
-            "RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 3",
+            "RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 4",
             "P68 must bump the RHI capability report schema for backend identity metadata.",
         ),
         (

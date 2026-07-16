@@ -946,7 +946,44 @@ namespace RVX
         m_capabilities.supportsSplitBarrier = false;            // Event-based split barriers are not implemented yet
         m_capabilities.supportsSecondaryCommandBuffer = true;   // Vulkan supports secondary command buffers
         m_capabilities.supportsComputePipeline = true;          // Vulkan exposes compute pipelines in the base API
-        m_capabilities.supportsAsyncCompute = true;             // Vulkan supports async compute
+        const auto sameQueue = [](uint32 leftFamily,
+                                  VkQueue leftQueue,
+                                  uint32 rightFamily,
+                                  VkQueue rightQueue)
+        {
+            return leftFamily == rightFamily && leftQueue == rightQueue;
+        };
+        const uint32 graphicsFamily = GetGraphicsQueueFamily();
+        const uint32 computeFamily = GetComputeQueueFamily();
+        const uint32 transferFamily = GetTransferQueueFamily();
+        const GPUQueueDomain computeDomain =
+            sameQueue(graphicsFamily, m_graphicsQueue, computeFamily, m_computeQueue)
+                ? GPUQueueDomain::Graphics
+                : GPUQueueDomain::Compute;
+        GPUQueueDomain copyDomain = GPUQueueDomain::Copy;
+        if (sameQueue(graphicsFamily, m_graphicsQueue, transferFamily, m_transferQueue))
+        {
+            copyDomain = GPUQueueDomain::Graphics;
+        }
+        else if (sameQueue(computeFamily, m_computeQueue, transferFamily, m_transferQueue))
+        {
+            copyDomain = computeDomain;
+        }
+
+        m_capabilities.queueTopology.completionMode = RHIQueueCompletionMode::NativeTimeline;
+        m_capabilities.queueTopology.logicalQueueDomains = {
+            GPUQueueDomain::Graphics,
+            computeDomain,
+            copyDomain,
+        };
+        std::array<bool, 3> activeDomains{};
+        for (GPUQueueDomain domain : m_capabilities.queueTopology.logicalQueueDomains)
+        {
+            activeDomains[static_cast<uint8>(domain)] = true;
+        }
+        m_capabilities.queueTopology.activeDomainCount = static_cast<uint8>(
+            std::count(activeDomains.begin(), activeDomains.end(), true));
+        m_capabilities.supportsAsyncCompute = computeDomain != GPUQueueDomain::Graphics;
         m_capabilities.supportsDescriptorSets = true;
         m_capabilities.supportsDynamicDescriptorOffsets = true;
         m_capabilities.maxDescriptorSets = 4;

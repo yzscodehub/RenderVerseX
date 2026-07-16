@@ -781,6 +781,15 @@ namespace
             m_capabilities.maxDescriptorSets = 8;
             m_capabilities.supportsExplicitResourceBarriers = true;
             m_capabilities.supportsDefaultQueueFenceSignal = true;
+            m_capabilities.supportsAsyncCompute = true;
+            m_capabilities.queueTopology.completionMode = RHIQueueCompletionMode::NativeTimeline;
+            m_capabilities.queueTopology.logicalQueueDomains = {
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Compute,
+                GPUQueueDomain::Copy,
+            };
+            m_capabilities.queueTopology.activeDomainCount = 3;
+            m_capabilities.dx12.resourceBindingTier = 2;
         }
 
         void EnableRayTracing()
@@ -800,6 +809,16 @@ namespace
             m_capabilities.supportsDescriptorSets = true;
             m_capabilities.supportsExplicitResourceBarriers = true;
             m_capabilities.maxDescriptorSets = 8;
+            m_capabilities.supportsDefaultQueueFenceSignal = true;
+            m_capabilities.supportsAsyncCompute = true;
+            m_capabilities.queueTopology.completionMode = RHIQueueCompletionMode::NativeTimeline;
+            m_capabilities.queueTopology.logicalQueueDomains = {
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Compute,
+                GPUQueueDomain::Copy,
+            };
+            m_capabilities.queueTopology.activeDomainCount = 3;
+            m_capabilities.dx12.resourceBindingTier = 2;
         }
 
         bool bufferMapSucceeds = true;
@@ -3183,7 +3202,7 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
 
     const std::string diagnosticsText = renderer.ExportToolDiagnosticsText();
     EXPECT_NE(diagnosticsText.find("rhiCapabilities=true"), std::string::npos);
-    EXPECT_NE(diagnosticsText.find("RHICapabilities: schema=3, backend=DirectX 12"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find("RHICapabilities: schema=4, backend=DirectX 12"), std::string::npos);
     EXPECT_NE(diagnosticsText.find("adapter=RenderPassValidation Test Adapter"), std::string::npos);
     EXPECT_NE(diagnosticsText.find("driver=RenderPassValidation.Driver.1"), std::string::npos);
     EXPECT_NE(diagnosticsText.find("renderGraphBaseline=Passed"), std::string::npos);
@@ -3192,7 +3211,7 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
 
     const std::string manifestJson = renderer.ExportToolDiagnosticsManifestJson();
     EXPECT_NE(manifestJson.find("\"rhiCapabilityReportAvailable\": true"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"rhiCapabilities\": {\n    \"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"rhiCapabilities\": {\n    \"schemaVersion\": 4"), std::string::npos);
     EXPECT_NE(manifestJson.find("\"backend\": \"DirectX 12\""), std::string::npos);
     EXPECT_NE(manifestJson.find("\"adapterName\": \"RenderPassValidation Test Adapter\""), std::string::npos);
     EXPECT_NE(manifestJson.find("\"driverVersion\": \"RenderPassValidation.Driver.1\""), std::string::npos);
@@ -3202,7 +3221,7 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
     EXPECT_NE(manifestJson.find("\"status\": \"Supported\""), std::string::npos);
 
     const std::string rhiCapabilityJson = renderer.ExportToolRHICapabilityReportJson();
-    EXPECT_NE(rhiCapabilityJson.find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(rhiCapabilityJson.find("\"schemaVersion\": 4"), std::string::npos);
     EXPECT_NE(rhiCapabilityJson.find("\"schemaId\": \"RVX.RHI.CapabilityReport\""), std::string::npos);
     EXPECT_NE(rhiCapabilityJson.find("\"id\": \"rhiCapabilityReportJson\""), std::string::npos);
     EXPECT_NE(rhiCapabilityJson.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);

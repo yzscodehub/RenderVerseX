@@ -227,12 +227,12 @@ void RenderContext::BeginFrame()
     m_frameActive = true;
 }
 
-void RenderContext::EndFrame()
+GPUCompletionPoint RenderContext::EndFrame()
 {
     if (!m_frameActive)
     {
         RVX_CORE_WARN("RenderContext: EndFrame called without BeginFrame");
-        return;
+        return {};
     }
 
     // End the command context
@@ -243,11 +243,11 @@ void RenderContext::EndFrame()
     }
 
     // Submit commands
+    GPUCompletionPoint submittedPoint;
     if (m_device && ctx)
     {
-        RHIFence* fence = m_frameSynchronizer.GetFence(m_frameIndex);
-        const uint64 submittedFenceValue = m_device->SubmitCommandContext(ctx, fence);
-        m_frameSynchronizer.SignalFrame(m_frameIndex, submittedFenceValue);
+        submittedPoint = m_frameSynchronizer.SubmitGraphics(ctx);
+        m_frameSynchronizer.SignalFrame(m_frameIndex, submittedPoint);
     }
 
     // End device frame
@@ -257,6 +257,7 @@ void RenderContext::EndFrame()
     }
 
     m_frameActive = false;
+    return submittedPoint;
 }
 
 void RenderContext::Present()
@@ -333,13 +334,6 @@ void RenderContext::CreateCommandContexts()
                 RVX_CORE_WARN("RenderContext: Failed to create compute context for frame {}", i);
             }
 
-            // Create fence for graphics-compute synchronization
-            m_computeFences[i] = m_device->CreateFence(0);
-            if (!m_computeFences[i])
-            {
-                RVX_CORE_WARN("RenderContext: Failed to create compute fence for frame {}", i);
-            }
-            m_computeFenceValues[i] = 0;
         }
     }
 }
@@ -350,8 +344,6 @@ void RenderContext::DestroyCommandContexts()
     {
         m_graphicsContexts[i].Reset();
         m_computeContexts[i].Reset();
-        m_computeFences[i].Reset();
-        m_computeFenceValues[i] = 0;
     }
 }
 

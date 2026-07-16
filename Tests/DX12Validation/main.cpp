@@ -539,6 +539,12 @@ TEST(DX12Validation, SynchronizationCapabilities)
     EXPECT_TRUE(caps.supportsQueueFenceWait);
     EXPECT_FALSE(caps.supportsMultiQueueBatchSubmit);
     EXPECT_FALSE(caps.emulatesQueueFences);
+    EXPECT_EQ(caps.queueTopology.completionMode, RHIQueueCompletionMode::NativeTimeline);
+    EXPECT_EQ(caps.queueTopology.activeDomainCount, 3);
+    EXPECT_EQ(caps.queueTopology.logicalQueueDomains[0], GPUQueueDomain::Graphics);
+    EXPECT_EQ(caps.queueTopology.logicalQueueDomains[1], GPUQueueDomain::Compute);
+    EXPECT_EQ(caps.queueTopology.logicalQueueDomains[2], GPUQueueDomain::Copy);
+    EXPECT_TRUE(ValidateRHICapabilities(caps));
 }
 
 TEST(DX12Validation, DescriptorAndBarrierCapabilities)

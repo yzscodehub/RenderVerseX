@@ -18,6 +18,8 @@ namespace RVX
         MetalCommandContext(MetalDevice* device, RHICommandQueueType type);
         ~MetalCommandContext() override;
 
+        RHICommandQueueType GetQueueType() const override { return m_queueType; }
+
         // =========================================================================
         // Lifecycle
         // =========================================================================

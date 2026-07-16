@@ -2,6 +2,7 @@
 #include "RHI/RHIDefinitions.h"
 #include "Core/Diagnostics/JsonWriter.h"
 
+#include <array>
 #include <sstream>
 #include <utility>
 
@@ -252,6 +253,28 @@ namespace RVX
         }
     }
 
+    const char* GetGPUQueueDomainName(GPUQueueDomain domain)
+    {
+        switch (domain)
+        {
+            case GPUQueueDomain::Graphics: return "Graphics";
+            case GPUQueueDomain::Compute: return "Compute";
+            case GPUQueueDomain::Copy: return "Copy";
+            default: return "Unknown";
+        }
+    }
+
+    const char* GetRHIQueueCompletionModeName(RHIQueueCompletionMode mode)
+    {
+        switch (mode)
+        {
+            case RHIQueueCompletionMode::NativeTimeline: return "NativeTimeline";
+            case RHIQueueCompletionMode::CompatibilityWaitIdle: return "CompatibilityWaitIdle";
+            case RHIQueueCompletionMode::None:
+            default: return "Unknown";
+        }
+    }
+
     RHICapabilityValidationResult ValidateRHICapabilities(const RHICapabilities& capabilities)
     {
         RHICapabilityValidationResult result;
@@ -348,6 +371,141 @@ namespace RVX
             fail("async compute support requires compute pipeline support");
         }
 
+        const RHIQueueTopology& topology = capabilities.queueTopology;
+        if (!IsDeclaredQueueCompletionMode(topology.completionMode))
+        {
+            fail("queue topology must declare a completion mode");
+        }
+
+        std::array<bool, 3> activeDomains{};
+        uint8 uniqueDomainCount = 0;
+        bool queueMappingValid = true;
+        for (GPUQueueDomain domain : topology.logicalQueueDomains)
+        {
+            if (!IsDeclaredGPUQueueDomain(domain))
+            {
+                queueMappingValid = false;
+                continue;
+            }
+
+            const uint8 index = static_cast<uint8>(domain);
+            if (!activeDomains[index])
+            {
+                activeDomains[index] = true;
+                ++uniqueDomainCount;
+            }
+        }
+
+        if (!queueMappingValid)
+        {
+            fail("queue topology contains an undeclared physical domain");
+        }
+        if (topology.logicalQueueDomains[0] != GPUQueueDomain::Graphics)
+        {
+            fail("logical Graphics must map to the Graphics physical domain");
+        }
+        if (queueMappingValid &&
+            topology.logicalQueueDomains[1] != GPUQueueDomain::Graphics &&
+            topology.logicalQueueDomains[1] != GPUQueueDomain::Compute)
+        {
+            fail("logical Compute must map to Graphics or Compute");
+        }
+        if (queueMappingValid &&
+            topology.logicalQueueDomains[2] == GPUQueueDomain::Compute &&
+            topology.logicalQueueDomains[1] != GPUQueueDomain::Compute)
+        {
+            fail("logical Copy cannot name an unanchored Compute domain");
+        }
+        if (topology.activeDomainCount == 0 ||
+            topology.activeDomainCount > 3 ||
+            topology.activeDomainCount != uniqueDomainCount)
+        {
+            fail("queue topology activeDomainCount must match distinct mapped domains");
+        }
+
+        const bool hasDistinctCompute =
+            queueMappingValid &&
+            topology.logicalQueueDomains[1] != topology.logicalQueueDomains[0];
+        if (capabilities.supportsAsyncCompute != hasDistinctCompute)
+        {
+            fail("supportsAsyncCompute must agree with the physical Compute queue mapping");
+        }
+
+        if (topology.completionMode == RHIQueueCompletionMode::NativeTimeline)
+        {
+            if (!capabilities.supportsDefaultQueueFenceSignal &&
+                !capabilities.supportsExplicitQueueFenceSignal)
+            {
+                fail("native queue timelines require queue fence signal support");
+            }
+            if (capabilities.emulatesQueueFences)
+            {
+                fail("native queue timelines cannot use emulated queue fences");
+            }
+        }
+        else if (topology.completionMode == RHIQueueCompletionMode::CompatibilityWaitIdle)
+        {
+            if (topology.activeDomainCount != 1 ||
+                topology.logicalQueueDomains[0] != GPUQueueDomain::Graphics ||
+                topology.logicalQueueDomains[1] != GPUQueueDomain::Graphics ||
+                topology.logicalQueueDomains[2] != GPUQueueDomain::Graphics)
+            {
+                fail("compatibility completion requires one collapsed Graphics domain");
+            }
+            if (!capabilities.emulatesQueueFences)
+            {
+                fail("compatibility completion must declare emulated queue fences");
+            }
+            if (capabilities.supportsQueueFenceWait)
+            {
+                fail("compatibility completion cannot advertise native queue fence waits");
+            }
+        }
+
+        const bool collapsedGraphicsTopology =
+            topology.activeDomainCount == 1 &&
+            topology.logicalQueueDomains[0] == GPUQueueDomain::Graphics &&
+            topology.logicalQueueDomains[1] == GPUQueueDomain::Graphics &&
+            topology.logicalQueueDomains[2] == GPUQueueDomain::Graphics;
+        const bool distinctDX12Topology =
+            topology.activeDomainCount == 3 &&
+            topology.logicalQueueDomains[0] == GPUQueueDomain::Graphics &&
+            topology.logicalQueueDomains[1] == GPUQueueDomain::Compute &&
+            topology.logicalQueueDomains[2] == GPUQueueDomain::Copy;
+        switch (capabilities.backendType)
+        {
+            case RHIBackendType::DX12:
+                if (topology.completionMode != RHIQueueCompletionMode::NativeTimeline ||
+                    !distinctDX12Topology)
+                {
+                    fail("DX12 queue topology must publish distinct native Graphics, Compute, and Copy domains");
+                }
+                break;
+            case RHIBackendType::Vulkan:
+                if (topology.completionMode != RHIQueueCompletionMode::NativeTimeline)
+                {
+                    fail("Vulkan queue topology must publish native timeline completion");
+                }
+                break;
+            case RHIBackendType::Metal:
+                if (topology.completionMode != RHIQueueCompletionMode::NativeTimeline ||
+                    !collapsedGraphicsTopology)
+                {
+                    fail("Metal queue topology must publish its single native Graphics domain");
+                }
+                break;
+            case RHIBackendType::DX11:
+            case RHIBackendType::OpenGL:
+                if (topology.completionMode != RHIQueueCompletionMode::CompatibilityWaitIdle ||
+                    !collapsedGraphicsTopology)
+                {
+                    fail("compatibility backend queue topology must publish one WaitIdle Graphics domain");
+                }
+                break;
+            default:
+                break;
+        }
+
         if (capabilities.supportsRaytracingPipeline)
         {
             if (!capabilities.supportsRaytracing)
@@ -409,6 +567,7 @@ namespace RVX
         const RHICapabilityValidationResult validation = ValidateRHICapabilities(capabilities);
         report.validationPassed = validation.valid;
         report.validationMessage = validation.message;
+        report.queueTopology = capabilities.queueTopology;
         report.renderGraphBaselineMissingRequirements =
             BuildRenderGraphBaselineMissingRequirements(capabilities, validation);
         report.renderGraphBaselineSupported = report.renderGraphBaselineMissingRequirements.empty();
@@ -545,6 +704,15 @@ namespace RVX
         ss << "Adapter: " << report.adapterName << "\n";
         ss << "DriverVersion: " << report.driverVersion << "\n";
         ss << "Validation: " << (report.validationPassed ? "Passed" : "Failed") << "\n";
+        ss << "QueueCompletionMode: "
+           << GetRHIQueueCompletionModeName(report.queueTopology.completionMode) << "\n";
+        ss << "QueueDomains: Graphics="
+           << GetGPUQueueDomainName(report.queueTopology.logicalQueueDomains[0])
+           << ", Compute="
+           << GetGPUQueueDomainName(report.queueTopology.logicalQueueDomains[1])
+           << ", Copy="
+           << GetGPUQueueDomainName(report.queueTopology.logicalQueueDomains[2])
+           << ", Active=" << static_cast<uint32>(report.queueTopology.activeDomainCount) << "\n";
         if (!report.validationMessage.empty())
         {
             ss << "ValidationMessage: " << report.validationMessage << "\n";
@@ -599,6 +767,16 @@ namespace RVX
         ss << "  \"driverVersion\": " << JsonString(report.driverVersion) << ",\n";
         ss << "  \"validationPassed\": " << JsonBool(report.validationPassed) << ",\n";
         ss << "  \"validationMessage\": " << JsonString(report.validationMessage) << ",\n";
+        ss << "  \"queueTopology\": {\n";
+        ss << "    \"completionMode\": "
+           << JsonString(GetRHIQueueCompletionModeName(report.queueTopology.completionMode)) << ",\n";
+        ss << "    \"logicalQueueDomains\": ["
+           << JsonString(GetGPUQueueDomainName(report.queueTopology.logicalQueueDomains[0])) << ", "
+           << JsonString(GetGPUQueueDomainName(report.queueTopology.logicalQueueDomains[1])) << ", "
+           << JsonString(GetGPUQueueDomainName(report.queueTopology.logicalQueueDomains[2])) << "],\n";
+        ss << "    \"activeDomainCount\": "
+           << static_cast<uint32>(report.queueTopology.activeDomainCount) << "\n";
+        ss << "  },\n";
         ss << "  \"summary\": {\n";
         ss << "    \"supportedCount\": " << report.supportedCount << ",\n";
         ss << "    \"emulatedCount\": " << report.emulatedCount << ",\n";

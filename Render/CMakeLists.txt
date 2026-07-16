@@ -23,6 +23,7 @@ target_sources(RVX_RenderRuntimeCore PRIVATE
     Private/Runtime/RenderResourceStatusTable.cpp
     Private/Runtime/RenderUploadQueue.cpp
     Private/Runtime/RenderThreadGuard.cpp
+    Private/Resources/RenderSubmissionTracker.cpp
 )
 
 if(APPLE)
@@ -57,6 +58,7 @@ target_link_libraries(RVX_RenderRuntimeCore PUBLIC
 )
 
 target_link_libraries(RVX_RenderRuntimeCore PRIVATE
+    RVX::RHI
     Threads::Threads
 )
 

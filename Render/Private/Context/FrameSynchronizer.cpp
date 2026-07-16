@@ -5,9 +5,12 @@
 
 #include "Render/Context/FrameSynchronizer.h"
 #include "Core/Log.h"
+#include "Resources/RenderSubmissionTracker.h"
 
 namespace RVX
 {
+
+FrameSynchronizer::FrameSynchronizer() = default;
 
 FrameSynchronizer::~FrameSynchronizer()
 {
@@ -28,21 +31,17 @@ bool FrameSynchronizer::Initialize(IRHIDevice* device, uint32_t frameCount)
         return false;
     }
 
+    auto tracker = std::make_unique<RenderSubmissionTracker>();
+    if (!tracker->Initialize(device))
+    {
+        RVX_CORE_ERROR("FrameSynchronizer: Invalid queue topology or failed to create timelines");
+        return false;
+    }
+
     m_device = device;
     m_frameCount = frameCount;
-
-    // Create fences for each frame
-    for (uint32_t i = 0; i < m_frameCount; ++i)
-    {
-        m_fences[i] = m_device->CreateFence(0);
-        if (!m_fences[i])
-        {
-            RVX_CORE_ERROR("FrameSynchronizer: Failed to create fence for frame {}", i);
-            Shutdown();
-            return false;
-        }
-        m_fenceValues[i] = 0;
-    }
+    m_submissionTracker = std::move(tracker);
+    m_framePoints = {};
 
     RVX_CORE_DEBUG("FrameSynchronizer initialized with {} frames", m_frameCount);
     return true;
@@ -56,14 +55,15 @@ void FrameSynchronizer::Shutdown()
         WaitForAllFrames();
     }
 
-    for (uint32_t i = 0; i < RVX_MAX_FRAME_COUNT; ++i)
+    if (m_submissionTracker)
     {
-        m_fences[i].Reset();
-        m_fenceValues[i] = 0;
+        m_submissionTracker->Shutdown();
+        m_submissionTracker.reset();
     }
 
     m_device = nullptr;
     m_frameCount = 0;
+    m_framePoints = {};
 }
 
 void FrameSynchronizer::WaitForFrame(uint32_t frameIndex)
@@ -74,22 +74,19 @@ void FrameSynchronizer::WaitForFrame(uint32_t frameIndex)
         return;
     }
 
-    RHIFence* fence = m_fences[frameIndex].Get();
-    if (!fence)
+    const GPUCompletionPoint point = m_framePoints[frameIndex];
+    if (!m_submissionTracker || point.value == 0)
         return;
 
-    uint64_t expectedValue = m_fenceValues[frameIndex];
-    if (expectedValue == 0)
-        return;  // No work submitted yet for this frame
-
-    // Wait for the fence to reach the expected value
-    if (fence->GetCompletedValue() < expectedValue)
+    const GPUCompletionStatus status = m_submissionTracker->Wait(point);
+    if (status == GPUCompletionStatus::Lost)
     {
-        fence->Wait(expectedValue);
+        RVX_CORE_ERROR("FrameSynchronizer: Graphics completion timeline was lost for frame {}",
+                       frameIndex);
     }
 }
 
-void FrameSynchronizer::SignalFrame(uint32_t frameIndex, uint64_t submittedFenceValue)
+void FrameSynchronizer::SignalFrame(uint32_t frameIndex, GPUCompletionPoint submittedPoint)
 {
     if (frameIndex >= m_frameCount)
     {
@@ -97,16 +94,14 @@ void FrameSynchronizer::SignalFrame(uint32_t frameIndex, uint64_t submittedFence
         return;
     }
 
-    if (submittedFenceValue == 0)
+    if (submittedPoint.domain != GPUQueueDomain::Graphics || submittedPoint.value == 0)
     {
-        RVX_CORE_WARN("FrameSynchronizer: submitted frame {} did not return a fence value", frameIndex);
+        RVX_CORE_WARN("FrameSynchronizer: submitted frame {} did not return a Graphics completion point",
+                      frameIndex);
         return;
     }
 
-    m_fenceValues[frameIndex] = submittedFenceValue;
-
-    // Don't call fence->Signal() here - the GPU queue already signals the fence
-    // through IRHIDevice::SubmitCommandContext.
+    m_framePoints[frameIndex] = submittedPoint;
 }
 
 void FrameSynchronizer::WaitForAllFrames()
@@ -117,18 +112,11 @@ void FrameSynchronizer::WaitForAllFrames()
     }
 }
 
-RHIFence* FrameSynchronizer::GetFence(uint32_t frameIndex) const
+GPUCompletionPoint FrameSynchronizer::GetFrameCompletionPoint(uint32_t frameIndex) const
 {
     if (frameIndex >= m_frameCount)
-        return nullptr;
-    return m_fences[frameIndex].Get();
-}
-
-uint64_t FrameSynchronizer::GetFrameFenceValue(uint32_t frameIndex) const
-{
-    if (frameIndex >= m_frameCount)
-        return 0;
-    return m_fenceValues[frameIndex];
+        return {};
+    return m_framePoints[frameIndex];
 }
 
 bool FrameSynchronizer::IsFrameComplete(uint32_t frameIndex) const
@@ -136,11 +124,22 @@ bool FrameSynchronizer::IsFrameComplete(uint32_t frameIndex) const
     if (frameIndex >= m_frameCount)
         return true;
 
-    RHIFence* fence = m_fences[frameIndex].Get();
-    if (!fence)
+    const GPUCompletionPoint point = m_framePoints[frameIndex];
+    if (!m_submissionTracker || point.value == 0)
         return true;
 
-    return fence->GetCompletedValue() >= m_fenceValues[frameIndex];
+    const GPUCompletionStatus status = m_submissionTracker->Query(point);
+    return status == GPUCompletionStatus::Completed ||
+           status == GPUCompletionStatus::CompatibilityWaitIdle;
+}
+
+GPUCompletionPoint FrameSynchronizer::SubmitGraphics(RHICommandContext* context)
+{
+    if (!m_submissionTracker)
+    {
+        return {};
+    }
+    return m_submissionTracker->Submit(context);
 }
 
 } // namespace RVX

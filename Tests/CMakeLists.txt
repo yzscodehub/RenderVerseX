@@ -332,6 +332,20 @@ rvx_add_gtest(
     TIMEOUT 30
 )
 
+rvx_add_gtest(
+    NAME RenderSubmissionValidation
+    SOURCES RenderSubmissionValidation/main.cpp
+    LIBS
+        RVX::Render
+        RVX::RHI
+        RVX_RenderRuntimeCore
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Private
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    LABELS "unit;architecture"
+    TIMEOUT 30
+)
+
 # Samples CLI/report contract validation tests
 if(TARGET RVX_SampleCommon)
     rvx_add_gtest(
@@ -374,7 +388,9 @@ if(RVX_ENABLE_VULKAN)
             RVX::RHI
             ${RVX_ALL_BACKENDS}
             glfw
-        INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
+        INCLUDES
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/RHI_Vulkan/Private
         LABELS gpu
         TIMEOUT 120
     )

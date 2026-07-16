@@ -74,10 +74,34 @@ namespace RVX::Tests
             capabilities.maxDescriptorSets = 4;
             capabilities.supportsExplicitResourceBarriers = true;
             capabilities.supportsDefaultQueueFenceSignal = true;
+            capabilities.queueTopology.logicalQueueDomains = {
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Graphics,
+            };
+            capabilities.queueTopology.activeDomainCount = 1;
+
+            if (backend == RHIBackendType::DX11 || backend == RHIBackendType::OpenGL)
+            {
+                capabilities.queueTopology.completionMode =
+                    RHIQueueCompletionMode::CompatibilityWaitIdle;
+                capabilities.emulatesQueueFences = true;
+            }
+            else
+            {
+                capabilities.queueTopology.completionMode = RHIQueueCompletionMode::NativeTimeline;
+            }
 
             if (backend == RHIBackendType::DX12)
             {
                 capabilities.dx12.resourceBindingTier = 2;
+                capabilities.supportsAsyncCompute = true;
+                capabilities.queueTopology.logicalQueueDomains = {
+                    GPUQueueDomain::Graphics,
+                    GPUQueueDomain::Compute,
+                    GPUQueueDomain::Copy,
+                };
+                capabilities.queueTopology.activeDomainCount = 3;
             }
             else if (backend == RHIBackendType::Vulkan)
             {
@@ -865,6 +889,8 @@ namespace RVX::Tests
     {
         RHICapabilities capabilities = MakeValidCapabilities(RHIBackendType::Vulkan);
         capabilities.supportsAsyncCompute = true;
+        capabilities.queueTopology.logicalQueueDomains[1] = GPUQueueDomain::Compute;
+        capabilities.queueTopology.activeDomainCount = 2;
         capabilities.supportsIndirectDrawCount = true;
         capabilities.supportsTimestampQueries = true;
 
@@ -897,11 +923,14 @@ namespace RVX::Tests
         const std::string text = device.ExportCapabilityReportText();
 
         EXPECT_NE(text.find("RHI Capability Report"), std::string::npos);
-        EXPECT_NE(text.find("Schema: 3"), std::string::npos);
+        EXPECT_NE(text.find("Schema: 4"), std::string::npos);
         EXPECT_NE(text.find("Backend: OpenGL"), std::string::npos);
         EXPECT_NE(text.find("Adapter: OpenGL Test Adapter"), std::string::npos);
         EXPECT_NE(text.find("DriverVersion: TestDriver.1"), std::string::npos);
         EXPECT_NE(text.find("Validation: Passed"), std::string::npos);
+        EXPECT_NE(text.find("QueueCompletionMode: CompatibilityWaitIdle"), std::string::npos);
+        EXPECT_NE(text.find("QueueDomains: Graphics=Graphics, Compute=Graphics, Copy=Graphics, Active=1"),
+                  std::string::npos);
         EXPECT_NE(text.find("RenderGraphBaseline: Passed"), std::string::npos);
         EXPECT_NE(text.find("RenderGraphBaselineMissing: none"), std::string::npos);
         EXPECT_NE(text.find("ExplicitResourceBarriers: Emulated"), std::string::npos);
@@ -920,7 +949,7 @@ namespace RVX::Tests
         const FakeRHIDevice device(capabilities);
         const std::string json = device.ExportCapabilityReportJson();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 3"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 4"), std::string::npos);
         EXPECT_NE(json.find("\"schemaId\": \"RVX.RHI.CapabilityReport\""), std::string::npos);
         EXPECT_NE(json.find("\"id\": \"rhiCapabilityReportJson\""), std::string::npos);
         EXPECT_NE(json.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);
@@ -931,11 +960,114 @@ namespace RVX::Tests
         EXPECT_NE(json.find("\"adapterName\": \"OpenGL Test Adapter\""), std::string::npos);
         EXPECT_NE(json.find("\"driverVersion\": \"TestDriver.1\""), std::string::npos);
         EXPECT_NE(json.find("\"validationPassed\": true"), std::string::npos);
+        EXPECT_NE(json.find("\"completionMode\": \"CompatibilityWaitIdle\""), std::string::npos);
+        EXPECT_NE(json.find("\"logicalQueueDomains\": [\"Graphics\", \"Graphics\", \"Graphics\"]"),
+                  std::string::npos);
         EXPECT_NE(json.find("\"renderGraphBaseline\": {"), std::string::npos);
         EXPECT_NE(json.find("\"supported\": true"), std::string::npos);
         EXPECT_NE(json.find("\"missingRequirements\": []"), std::string::npos);
         EXPECT_NE(json.find("\"feature\": \"ExplicitResourceBarriers\""), std::string::npos);
         EXPECT_NE(json.find("\"status\": \"Emulated\""), std::string::npos);
+    }
+
+    TEST(RHIContractValidation, QueueTopologyPublicationStaysBackendHonest)
+    {
+        const std::string dx12 = ReadSource("RHI_DX12/Private/DX12Device.cpp");
+        EXPECT_NE(dx12.find("RHIQueueCompletionMode::NativeTimeline"), std::string::npos);
+        EXPECT_NE(dx12.find("GPUQueueDomain::Compute"), std::string::npos);
+        EXPECT_NE(dx12.find("GPUQueueDomain::Copy"), std::string::npos);
+
+        const std::string vulkan = ReadSource("RHI_Vulkan/Private/VulkanDevice.cpp");
+        EXPECT_NE(vulkan.find("leftFamily == rightFamily && leftQueue == rightQueue"),
+                  std::string::npos);
+        EXPECT_NE(vulkan.find("m_capabilities.supportsAsyncCompute = computeDomain != GPUQueueDomain::Graphics"),
+                  std::string::npos);
+
+        const std::string metal = ReadSource("RHI_Metal/Private/MetalDevice.mm");
+        EXPECT_NE(metal.find("m_capabilities.supportsAsyncCompute = false"), std::string::npos);
+        EXPECT_NE(metal.find("RHIQueueCompletionMode::NativeTimeline"), std::string::npos);
+        EXPECT_NE(metal.find("m_capabilities.queueTopology.activeDomainCount = 1"),
+                  std::string::npos);
+        EXPECT_EQ(metal.find("windows.h"), std::string::npos);
+        EXPECT_EQ(metal.find("d3d12.h"), std::string::npos);
+
+        const std::string metalCommandContext =
+            ReadSource("RHI_Metal/Private/MetalCommandContext.mm");
+        const std::string metalSynchronization =
+            ReadSource("RHI_Metal/Private/MetalSynchronization.mm");
+        EXPECT_NE(metalCommandContext.find("SignalFromCommandBuffer(m_commandBuffer)"),
+                  std::string::npos);
+        EXPECT_NE(metalSynchronization.find("encodeSignalEvent:m_event value:newValue"),
+                  std::string::npos);
+        EXPECT_NE(metalSynchronization.find("return m_event.signaledValue"),
+                  std::string::npos);
+
+        for (const char* path : {
+                 "RHI_DX11/Private/DX11Device.cpp",
+                 "RHI_OpenGL/Private/OpenGLDevice.cpp"})
+        {
+            const std::string compatibility = ReadSource(path);
+            EXPECT_NE(compatibility.find("RHIQueueCompletionMode::CompatibilityWaitIdle"),
+                      std::string::npos);
+            EXPECT_NE(compatibility.find("m_capabilities.supportsQueueFenceWait = false"),
+                      std::string::npos);
+            EXPECT_NE(compatibility.find("m_capabilities.emulatesQueueFences = true"),
+                      std::string::npos);
+            EXPECT_NE(compatibility.find("m_capabilities.queueTopology.activeDomainCount = 1"),
+                      std::string::npos);
+        }
+
+        for (const char* path : {
+                 "RHI_DX11/Private/DX11CommandContext.h",
+                 "RHI_DX12/Private/DX12CommandContext.h",
+                 "RHI_Vulkan/Private/VulkanCommandContext.h",
+                 "RHI_Metal/Private/MetalCommandContext.h",
+                 "RHI_OpenGL/Private/OpenGLCommandContext.h"})
+        {
+            const std::string context = ReadSource(path);
+            EXPECT_NE(context.find("RHICommandQueueType GetQueueType() const override"),
+                      std::string::npos) << path;
+        }
+    }
+
+    TEST(RHIContractValidation, RenderSubmissionTrackerRemainsPrivateAndBackendAgnostic)
+    {
+        const std::string frameSynchronizer =
+            ReadSource("Render/Include/Render/Context/FrameSynchronizer.h");
+        EXPECT_EQ(frameSynchronizer.find("RHIFence"), std::string::npos);
+        EXPECT_EQ(frameSynchronizer.find("GetFrameFenceValue"), std::string::npos);
+        EXPECT_NE(frameSynchronizer.find("GPUCompletionPoint"), std::string::npos);
+        EXPECT_NE(frameSynchronizer.find("std::unique_ptr<RenderSubmissionTracker>"),
+                  std::string::npos);
+
+        const std::string renderContext =
+            ReadSource("Render/Include/Render/Context/RenderContext.h");
+        EXPECT_NE(renderContext.find("GPUCompletionPoint EndFrame();"), std::string::npos);
+        EXPECT_EQ(renderContext.find("RenderSubmissionTracker"), std::string::npos);
+        EXPECT_EQ(renderContext.find("m_computeFences"), std::string::npos);
+        EXPECT_EQ(renderContext.find("m_computeFenceValues"), std::string::npos);
+
+        const std::string renderContextSource =
+            ReadSource("Render/Private/Context/RenderContext.cpp");
+        EXPECT_NE(renderContextSource.find(
+                      "submittedPoint = m_frameSynchronizer.SubmitGraphics(ctx)"),
+                  std::string::npos);
+        EXPECT_NE(renderContextSource.find(
+                      "m_frameSynchronizer.SignalFrame(m_frameIndex, submittedPoint)"),
+                  std::string::npos);
+        EXPECT_NE(renderContextSource.find("return submittedPoint"), std::string::npos);
+
+        const std::string frameSynchronizerSource =
+            ReadSource("Render/Private/Context/FrameSynchronizer.cpp");
+        EXPECT_EQ(frameSynchronizerSource.find("CreateFence("), std::string::npos);
+
+        const std::string renderCmake = ReadSource("Render/CMakeLists.txt");
+        EXPECT_NE(renderCmake.find("Private/Resources/RenderSubmissionTracker.cpp"),
+                  std::string::npos);
+        EXPECT_NE(renderCmake.find("RVX::RHI"), std::string::npos);
+        EXPECT_EQ(renderCmake.find("RHI_DX12"), std::string::npos);
+        EXPECT_EQ(renderCmake.find("RHI_Vulkan"), std::string::npos);
+        EXPECT_EQ(renderCmake.find("RHI_Metal"), std::string::npos);
     }
 
 } // namespace RVX::Tests

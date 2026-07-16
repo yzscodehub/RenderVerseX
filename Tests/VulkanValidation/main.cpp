@@ -1,5 +1,6 @@
 #include "Core/Core.h"
 #include "RHI/RHI.h"
+#include "VulkanDevice.h"
 #include "Common/GpuTestUtils.h"
 
 #include <gtest/gtest.h>
@@ -231,6 +232,38 @@ TEST(VulkanValidation, SynchronizationCapabilities)
     EXPECT_FALSE(caps.supportsQueueFenceWait);
     EXPECT_TRUE(caps.supportsMultiQueueBatchSubmit);
     EXPECT_FALSE(caps.emulatesQueueFences);
+    EXPECT_EQ(caps.queueTopology.completionMode, RHIQueueCompletionMode::NativeTimeline);
+    EXPECT_TRUE(ValidateRHICapabilities(caps));
+
+    auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
+    ASSERT_NE(vulkanDevice, nullptr);
+    const auto sameQueue = [](uint32 leftFamily,
+                              VkQueue leftQueue,
+                              uint32 rightFamily,
+                              VkQueue rightQueue)
+    {
+        return leftFamily == rightFamily && leftQueue == rightQueue;
+    };
+    const bool computeAliasesGraphics = sameQueue(
+        vulkanDevice->GetGraphicsQueueFamily(), vulkanDevice->GetGraphicsQueue(),
+        vulkanDevice->GetComputeQueueFamily(), vulkanDevice->GetComputeQueue());
+    const bool copyAliasesGraphics = sameQueue(
+        vulkanDevice->GetGraphicsQueueFamily(), vulkanDevice->GetGraphicsQueue(),
+        vulkanDevice->GetTransferQueueFamily(), vulkanDevice->GetTransferQueue());
+    const bool copyAliasesCompute = sameQueue(
+        vulkanDevice->GetComputeQueueFamily(), vulkanDevice->GetComputeQueue(),
+        vulkanDevice->GetTransferQueueFamily(), vulkanDevice->GetTransferQueue());
+
+    const GPUQueueDomain expectedCompute = computeAliasesGraphics
+        ? GPUQueueDomain::Graphics
+        : GPUQueueDomain::Compute;
+    const GPUQueueDomain expectedCopy = copyAliasesGraphics
+        ? GPUQueueDomain::Graphics
+        : (copyAliasesCompute ? expectedCompute : GPUQueueDomain::Copy);
+    EXPECT_EQ(caps.queueTopology.logicalQueueDomains[0], GPUQueueDomain::Graphics);
+    EXPECT_EQ(caps.queueTopology.logicalQueueDomains[1], expectedCompute);
+    EXPECT_EQ(caps.queueTopology.logicalQueueDomains[2], expectedCopy);
+    EXPECT_EQ(caps.supportsAsyncCompute, !computeAliasesGraphics);
 }
 
 TEST(VulkanValidation, DescriptorAndBarrierCapabilities)

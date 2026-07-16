@@ -5,16 +5,23 @@
  * @brief Frame synchronization management for multi-buffered rendering
  */
 
-#include "RHI/RHI.h"
+#include "RHI/RHIDefinitions.h"
+#include "RHI/RHIQueueTopology.h"
 #include <array>
+#include <memory>
 
 namespace RVX
 {
+    class IRHIDevice;
+    class RHICommandContext;
+    class RenderContext;
+    class RenderSubmissionTracker;
+
     /**
      * @brief Manages GPU/CPU synchronization for multi-frame in-flight rendering
      *
-     * Handles fence creation and waiting to ensure proper synchronization
-     * when using multiple frames in flight (typically 2-3 frames).
+     * Stores one Graphics completion point per frame slot and resolves it
+     * through one shared per-domain submission tracker.
      *
      * Usage:
      * @code
@@ -24,13 +31,13 @@ namespace RVX
      * // Frame loop
      * sync.WaitForFrame(frameIndex);  // Wait for frame to complete
      * // ... record commands ...
-     * sync.SignalFrame(frameIndex, submittedValue);   // Record submitted fence value
+     * sync.SignalFrame(frameIndex, submittedPoint);   // Record submitted completion point
      * @endcode
      */
     class FrameSynchronizer
     {
     public:
-        FrameSynchronizer() = default;
+        FrameSynchronizer();
         ~FrameSynchronizer();
 
         // Non-copyable
@@ -39,14 +46,14 @@ namespace RVX
 
         /**
          * @brief Initialize the synchronizer
-         * @param device RHI device to create fences
+         * @param device RHI device that publishes the queue topology
          * @param frameCount Number of frames in flight (typically 2-3)
          * @return true if initialization succeeded
          */
         bool Initialize(IRHIDevice* device, uint32_t frameCount = RVX_MAX_FRAME_COUNT);
 
         /**
-         * @brief Shutdown and release all fences
+         * @brief Drain frame slots and release the shared tracker
          */
         void Shutdown();
 
@@ -62,11 +69,11 @@ namespace RVX
         /**
          * @brief Record that a frame has been submitted
          * @param frameIndex The frame index that was submitted
-         * @param submittedFenceValue Fence value returned by IRHIDevice::SubmitCommandContext
+         * @param submittedPoint Graphics completion point returned by tracked submission
          *
          * Call this after submitting command buffers for the frame.
          */
-        void SignalFrame(uint32_t frameIndex, uint64_t submittedFenceValue);
+        void SignalFrame(uint32_t frameIndex, GPUCompletionPoint submittedPoint);
 
         /**
          * @brief Wait for all frames to complete
@@ -76,18 +83,11 @@ namespace RVX
         void WaitForAllFrames();
 
         /**
-         * @brief Get the fence for a specific frame
+         * @brief Get the Graphics completion point stored for a frame slot
          * @param frameIndex The frame index
-         * @return The fence, or nullptr if invalid
+         * @return The point, or the zero point if invalid/unsubmitted
          */
-        RHIFence* GetFence(uint32_t frameIndex) const;
-
-        /**
-         * @brief Get the current fence value for a frame
-         * @param frameIndex The frame index
-         * @return The expected fence value for this frame
-         */
-        uint64_t GetFrameFenceValue(uint32_t frameIndex) const;
+        GPUCompletionPoint GetFrameCompletionPoint(uint32_t frameIndex) const;
 
         /**
          * @brief Check if a frame has completed
@@ -102,11 +102,14 @@ namespace RVX
         uint32_t GetFrameCount() const { return m_frameCount; }
 
     private:
+        friend class RenderContext;
+
+        GPUCompletionPoint SubmitGraphics(RHICommandContext* context);
+
         IRHIDevice* m_device = nullptr;
         uint32_t m_frameCount = 0;
-
-        std::array<RHIFenceRef, RVX_MAX_FRAME_COUNT> m_fences;
-        std::array<uint64_t, RVX_MAX_FRAME_COUNT> m_fenceValues = {};
+        std::unique_ptr<RenderSubmissionTracker> m_submissionTracker;
+        std::array<GPUCompletionPoint, RVX_MAX_FRAME_COUNT> m_framePoints{};
     };
 
 } // namespace RVX

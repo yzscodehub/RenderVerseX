@@ -370,6 +370,13 @@ namespace RVX
         m_capabilities.supportsQueueFenceWait = false;
         m_capabilities.supportsMultiQueueBatchSubmit = false;
         m_capabilities.emulatesQueueFences = true;
+        m_capabilities.queueTopology.completionMode = RHIQueueCompletionMode::CompatibilityWaitIdle;
+        m_capabilities.queueTopology.logicalQueueDomains = {
+            GPUQueueDomain::Graphics,
+            GPUQueueDomain::Graphics,
+            GPUQueueDomain::Graphics,
+        };
+        m_capabilities.queueTopology.activeDomainCount = 1;
 
         // Set threading mode
         m_capabilities.dx11.threadingMode = DX11ThreadingMode::SingleThreaded;

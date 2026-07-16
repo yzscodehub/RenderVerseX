@@ -86,7 +86,7 @@ namespace RVX
         void WaitFence(RHIFence* fence, uint64 value) override;
 
         VkCommandBuffer GetCommandBuffer() const { return m_commandBuffer; }
-        RHICommandQueueType GetQueueType() const { return m_queueType; }
+        RHICommandQueueType GetQueueType() const override { return m_queueType; }
 
         // Flush pending barriers before draw/dispatch/copy operations
         void FlushBarriers();

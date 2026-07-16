@@ -1,13 +1,14 @@
 #pragma once
 
 #include "RHI/RHIDefinitions.h"
+#include "RHI/RHIQueueTopology.h"
 #include <string>
 #include <vector>
 
 namespace RVX
 {
     inline constexpr const char* RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID = "RVX.RHI.CapabilityReport";
-    inline constexpr uint32 RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 3;
+    inline constexpr uint32 RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 4;
 
     // =============================================================================
     // DX11 Threading Mode
@@ -80,6 +81,7 @@ namespace RVX
         bool supportsQueueFenceWait = false;           // GPU queue can wait on a fence value without CPU blocking.
         bool supportsMultiQueueBatchSubmit = false;    // SubmitCommandContexts can submit mixed queue types in one batch.
         bool emulatesQueueFences = false;              // Queue fence behavior is emulated rather than native GPU sync.
+        RHIQueueTopology queueTopology;                // Logical queues mapped to stable physical completion domains.
 
         // Dynamic state support
         bool supportsDepthBounds = false;           // DX12/Vulkan only
@@ -210,6 +212,7 @@ namespace RVX
         std::string driverVersion;
         bool validationPassed = false;
         std::string validationMessage;
+        RHIQueueTopology queueTopology;
         std::vector<RHICapabilityReportEntry> entries;
         uint32 supportedCount = 0;
         uint32 emulatedCount = 0;

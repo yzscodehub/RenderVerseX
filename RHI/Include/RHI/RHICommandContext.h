@@ -78,6 +78,12 @@ namespace RVX
     public:
         virtual ~RHICommandContext() = default;
 
+        /** @brief Logical queue that owns this command context. */
+        virtual RHICommandQueueType GetQueueType() const
+        {
+            return static_cast<RHICommandQueueType>(0xFF);
+        }
+
         // =========================================================================
         // Lifecycle
         // =========================================================================

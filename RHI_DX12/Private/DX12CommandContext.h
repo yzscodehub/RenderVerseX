@@ -155,7 +155,7 @@ namespace RVX
         // DX12 Specific
         // =========================================================================
         ID3D12GraphicsCommandList* GetCommandList() const { return m_commandList.Get(); }
-        RHICommandQueueType GetQueueType() const { return m_queueType; }
+        RHICommandQueueType GetQueueType() const override { return m_queueType; }
         D3D12_COMMAND_LIST_TYPE GetD3DListType() const { return m_listType; }
         ComPtr<ID3D12CommandAllocator> DetachCommandAllocator();
 

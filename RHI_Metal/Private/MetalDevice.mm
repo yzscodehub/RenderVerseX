@@ -90,7 +90,7 @@ namespace RVX
 
         // Feature detection
         m_capabilities.supportsComputePipeline = true;
-        m_capabilities.supportsAsyncCompute = true;
+        m_capabilities.supportsAsyncCompute = false;
 
         // Check for raytracing support (Apple Silicon)
         if (@available(macOS 11.0, iOS 14.0, *))
@@ -118,6 +118,13 @@ namespace RVX
         m_capabilities.supportsQueueFenceWait = false;
         m_capabilities.supportsMultiQueueBatchSubmit = false;
         m_capabilities.emulatesQueueFences = false;
+        m_capabilities.queueTopology.completionMode = RHIQueueCompletionMode::NativeTimeline;
+        m_capabilities.queueTopology.logicalQueueDomains = {
+            GPUQueueDomain::Graphics,
+            GPUQueueDomain::Graphics,
+            GPUQueueDomain::Graphics,
+        };
+        m_capabilities.queueTopology.activeDomainCount = 1;
 
         RVX_RHI_INFO("Metal Capabilities:");
         RVX_RHI_INFO("  Adapter: {}", m_capabilities.adapterName);
