@@ -184,9 +184,14 @@ namespace
     {
     public:
         explicit JoinRecordingDedicatedExecutor(
-            std::shared_ptr<RenderExecutorJoinTestProbe> probe)
+            std::shared_ptr<RenderExecutorJoinTestProbe> probe,
+            std::shared_ptr<IDedicatedRenderExecutorBootstrapHook>
+                bootstrapHook = nullptr)
             : m_probe(std::move(probe)),
-              m_executor(CreateDedicatedRenderExecutor())
+              m_executor(bootstrapHook != nullptr
+                             ? CreateDedicatedRenderExecutor(
+                                   std::move(bootstrapHook))
+                             : CreateDedicatedRenderExecutor())
         {
         }
 
@@ -254,9 +259,12 @@ namespace
             m_probe->WaitWhileStartupBlocked();
             RenderRuntimeResult result;
             result.code = m_probe->startupCode;
-            result.backend = config.backendType;
+            result.backend = m_probe->startupBackend == RHIBackendType::None
+                                 ? config.backendType
+                                 : m_probe->startupBackend;
             result.surfaceGeneration = surface.generation;
             result.nativeError = m_probe->startupNativeError;
+            result.message = m_probe->startupMessage;
             return result;
         }
 
@@ -291,7 +299,7 @@ namespace
             }
             m_probe->WaitWhileFrameBlocked();
             RenderRuntimeResult result;
-            result.code = RenderRuntimeCode::Running;
+            result.code = m_probe->frameCode;
             result.frameSequence = packet.GetHeader().sequence;
             return result;
         }
@@ -313,7 +321,9 @@ namespace
             m_probe->Record(RenderRuntimeTestEvent::Shutdown);
             RenderShutdownResult result;
             result.code = m_probe->shutdownCode;
+            result.backend = m_probe->shutdownBackend;
             result.nativeError = m_probe->shutdownNativeError;
+            result.message = m_probe->shutdownMessage;
             return result;
         }
 
@@ -356,6 +366,14 @@ namespace
     {
         return std::make_unique<JoinRecordingDedicatedExecutor>(
             std::move(probe));
+    }
+
+    std::unique_ptr<IRenderExecutor> CreateJoinRecordingDedicatedExecutor(
+        std::shared_ptr<RenderExecutorJoinTestProbe> probe,
+        std::shared_ptr<IDedicatedRenderExecutorBootstrapHook> bootstrapHook)
+    {
+        return std::make_unique<JoinRecordingDedicatedExecutor>(
+            std::move(probe), std::move(bootstrapHook));
     }
 
     std::unique_ptr<IRenderExecutor>

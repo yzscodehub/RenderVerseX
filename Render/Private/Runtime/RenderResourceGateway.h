@@ -17,6 +17,15 @@
 
 namespace RVX
 {
+    struct RenderThreadRuntimeTestAccess;
+
+    enum class RenderGatewayPublicationPath : uint8
+    {
+        Reserve = 0,
+        Upload = 1,
+        Release = 2
+    };
+
     struct RenderGatewayUploadEnqueueResult
     {
         RenderUploadEnqueueResult result{};
@@ -34,13 +43,17 @@ namespace RVX
     public:
         using WakeFunction = void (*)(void*) noexcept;
         using RuntimeFatalFunction = void (*)(void*, const char*) noexcept;
+        using BeforeMutationFunction = void (*)(
+            void*, RenderGatewayPublicationPath) noexcept;
 
         explicit RenderResourceGateway(
             const RenderTransportConfig& config,
             WakeFunction wakeFunction = nullptr,
             void* wakeContext = nullptr,
             RuntimeFatalFunction runtimeFatalFunction = nullptr,
-            void* runtimeFatalContext = nullptr);
+            void* runtimeFatalContext = nullptr,
+            BeforeMutationFunction beforeMutationFunction = nullptr,
+            void* beforeMutationContext = nullptr);
         ~RenderResourceGateway() override = default;
 
         RenderResourceGateway(const RenderResourceGateway&) = delete;
@@ -75,6 +88,8 @@ namespace RVX
             GetStatusTable() const noexcept;
 
     private:
+        friend struct RenderThreadRuntimeTestAccess;
+
         struct ReservationIdentity
         {
             AssetId assetId;
@@ -91,5 +106,7 @@ namespace RVX
         RenderUploadQueue m_uploadQueue;
         RenderReleaseQueue m_releaseQueue;
         std::vector<ReservationIdentity> m_reservationIdentities;
+        BeforeMutationFunction m_beforeMutationFunction = nullptr;
+        void* m_beforeMutationContext = nullptr;
     };
 } // namespace RVX

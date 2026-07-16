@@ -18,6 +18,12 @@ namespace
     {
     public:
         DedicatedRenderExecutor() = default;
+        explicit DedicatedRenderExecutor(
+            std::shared_ptr<IDedicatedRenderExecutorBootstrapHook>
+                bootstrapHook)
+            : m_bootstrapHook(std::move(bootstrapHook))
+        {
+        }
 
         ~DedicatedRenderExecutor() override
         {
@@ -47,7 +53,6 @@ namespace
             }
 
             m_pump.store(&pump, std::memory_order_release);
-            m_bootstrapEntered = false;
             m_exited = false;
             m_joined = false;
             try
@@ -64,7 +69,6 @@ namespace
             }
 
             m_started = true;
-            m_bootstrapCv.wait(lock, [this]() { return m_bootstrapEntered; });
             return RenderExecutorStartResult{
                 RenderExecutorStartCode::Started,
                 0};
@@ -117,12 +121,11 @@ namespace
                 m_pump.load(std::memory_order_acquire);
             try
             {
-                RenderThreadPlatformBootstrap platformBootstrap;
+                if (m_bootstrapHook != nullptr)
                 {
-                    std::lock_guard lock(m_stateMutex);
-                    m_bootstrapEntered = true;
+                    m_bootstrapHook->BeforePlatformBootstrap();
                 }
-                m_bootstrapCv.notify_all();
+                RenderThreadPlatformBootstrap platformBootstrap;
 
                 while (true)
                 {
@@ -155,12 +158,12 @@ namespace
         }
 
         std::atomic<IRenderExecutorPump*> m_pump = nullptr;
+        std::shared_ptr<IDedicatedRenderExecutorBootstrapHook>
+            m_bootstrapHook;
         std::thread m_thread;
         std::mutex m_stateMutex;
-        std::condition_variable m_bootstrapCv;
         std::condition_variable m_exitCv;
         bool m_started = false;
-        bool m_bootstrapEntered = false;
         bool m_exited = false;
         bool m_joined = false;
     };
@@ -169,5 +172,12 @@ namespace
     std::unique_ptr<IRenderExecutor> CreateDedicatedRenderExecutor()
     {
         return std::make_unique<DedicatedRenderExecutor>();
+    }
+
+    std::unique_ptr<IRenderExecutor> CreateDedicatedRenderExecutor(
+        std::shared_ptr<IDedicatedRenderExecutorBootstrapHook> bootstrapHook)
+    {
+        return std::make_unique<DedicatedRenderExecutor>(
+            std::move(bootstrapHook));
     }
 } // namespace RVX

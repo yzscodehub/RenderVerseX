@@ -9,6 +9,36 @@ namespace RVX
 {
 namespace
 {
+    [[nodiscard]] bool IsDeclaredExecutorKind(
+        RenderExecutorKind kind) noexcept
+    {
+        switch (kind)
+        {
+            case RenderExecutorKind::None:
+            case RenderExecutorKind::Dedicated:
+            case RenderExecutorKind::InlineTest:
+                return true;
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool IsDeclaredBackendType(
+        RHIBackendType backend) noexcept
+    {
+        switch (backend)
+        {
+            case RHIBackendType::None:
+            case RHIBackendType::Auto:
+            case RHIBackendType::DX11:
+            case RHIBackendType::DX12:
+            case RHIBackendType::Vulkan:
+            case RHIBackendType::Metal:
+            case RHIBackendType::OpenGL:
+                return true;
+        }
+        return false;
+    }
+
     class TerminatingRenderFatalPolicy final : public IRenderFatalPolicy
     {
     public:
@@ -95,6 +125,28 @@ namespace
         RHIBackendType fallbackBackend,
         uint64 surfaceGeneration)
     {
+        if (!IsDeclaredBackendType(source.backend))
+        {
+            RenderRuntimeResult result = MakeRuntimeResult(
+                RenderRuntimeCode::OwnershipViolation,
+                executor,
+                RHIBackendType::None,
+                source.surfaceGeneration == 0U
+                    ? surfaceGeneration
+                    : source.surfaceGeneration);
+            result.frameSequence = source.frameSequence;
+            result.requestSequence = source.requestSequence;
+            result.assetId = source.assetId;
+            result.handle = source.handle;
+            result.nativeError = source.nativeError;
+            result.message =
+                "Render consumer returned an undeclared backend";
+            if (!source.message.empty())
+            {
+                result.message += " | " + source.message;
+            }
+            return result;
+        }
         if (!IsDeclaredRenderRuntimeCode(source.code))
         {
             RenderRuntimeResult result = MakeRuntimeResult(
@@ -179,6 +231,26 @@ namespace
         uint64 frameSequence,
         uint64 surfaceGeneration)
     {
+        if (!IsDeclaredBackendType(source.backend))
+        {
+            RenderShutdownResult result = MakeShutdownResult(
+                RenderShutdownCode::ExecutorJoinFailed,
+                RHIBackendType::None,
+                source.lastSubmittedFrameSequence == 0U
+                    ? frameSequence
+                    : source.lastSubmittedFrameSequence,
+                source.surfaceGeneration == 0U
+                    ? surfaceGeneration
+                    : source.surfaceGeneration);
+            result.nativeError = source.nativeError;
+            result.message =
+                "Render consumer returned an undeclared backend";
+            if (!source.message.empty())
+            {
+                result.message += " | " + source.message;
+            }
+            return result;
+        }
         if (!IsDeclaredRenderShutdownCode(source.code))
         {
             RenderShutdownResult result = MakeShutdownResult(
@@ -215,28 +287,40 @@ namespace
         std::unique_ptr<IRenderExecutor> executor,
         std::unique_ptr<IRenderFrameConsumer> consumer,
         std::shared_ptr<IRenderRuntimeLifecycleHook> lifecycleHook,
-        std::shared_ptr<IRenderFatalPolicy> fatalPolicy)
+        std::shared_ptr<IRenderFatalPolicy> fatalPolicy,
+        std::shared_ptr<IRenderPublicationHook> publicationHook,
+        std::shared_ptr<IRenderWaitHook> waitHook)
         : m_config(std::move(config)),
           m_initialSurface(surface),
-          m_executorKind(executorKind),
+          m_executorKind(IsDeclaredExecutorKind(executorKind)
+                             ? executorKind
+                             : RenderExecutorKind::None),
           m_executor(std::move(executor)),
           m_consumer(std::move(consumer)),
           m_lifecycleHook(std::move(lifecycleHook)),
           m_fatalPolicy(std::move(fatalPolicy)),
+          m_publicationHook(std::move(publicationHook)),
+          m_waitHook(std::move(waitHook)),
           m_currentSurface(surface),
           m_latestResizeGeneration(surface.generation)
     {
+        if (!IsDeclaredBackendType(m_config.backendType))
+        {
+            m_config.backendType = RHIBackendType::None;
+        }
         if (m_config.transports.IsValid())
         {
             m_frameMailbox = std::make_unique<RenderFrameMailbox>(
-                m_config.transports.frameCapacity, &WakeThunk, this);
+                m_config.transports.frameCapacity);
             m_controlMailbox = std::make_unique<SurfaceControlMailbox>(
-                &WakeThunk, this);
+                nullptr, nullptr);
             m_resourceGateway = std::make_unique<RenderResourceGateway>(
                 m_config.transports,
-                &WakeThunk,
-                this,
+                nullptr,
+                nullptr,
                 &RuntimeFatalThunk,
+                this,
+                &GatewayPublicationThunk,
                 this);
         }
         if (m_fatalPolicy == nullptr)
@@ -469,7 +553,7 @@ namespace
         if (!started || joined)
         {
             const RenderShutdownResult existing = GetLastShutdownResult();
-            if (existing.resultClass == RenderResultClass::RuntimeFatal)
+            if (existing.code != RenderShutdownCode::None)
             {
                 return existing;
             }
@@ -483,7 +567,6 @@ namespace
             return result;
         }
 
-        const NativeSurfaceDesc currentSurface = GetCurrentSurfaceSnapshot();
         const RenderLifecycleState lifecycle =
             m_lifecycle.load(std::memory_order_acquire);
         if (lifecycle != RenderLifecycleState::Failed &&
@@ -491,15 +574,20 @@ namespace
         {
             TransitionTo(RenderLifecycleState::StopRequested,
                          "stop requested");
+            const RHIBackendType backend = GetLastRuntimeResult().backend;
+            SealPublication();
+            const NativeSurfaceDesc currentSurface =
+                GetCurrentSurfaceSnapshot();
             StoreRuntimeResult(MakeRuntimeResult(
                 RenderRuntimeCode::StopRequested,
                 m_executorKind,
-                GetLastRuntimeResult().backend,
+                backend,
                 currentSurface.generation));
-            SealPublication();
             m_controlMailbox->RequestStop();
             NotifyExecutor();
         }
+
+        const NativeSurfaceDesc currentSurface = GetCurrentSurfaceSnapshot();
 
         const RenderExecutorJoinResult join = m_executor->JoinUntil(
             std::chrono::steady_clock::now() + m_config.shutdownWatchdog);
@@ -560,47 +648,60 @@ namespace
     {
         RenderFramePublishResult result;
         result.sequence = packet != nullptr ? packet->GetHeader().sequence : 0U;
-        if (IsShuttingDownForPublication())
         {
-            result.code = RenderFramePublishCode::ShuttingDown;
-        }
-        else if (!IsRunningForPublication())
-        {
-            result.code = RenderFramePublishCode::NotRunning;
-        }
-        else
-        {
-            const RenderFrameMailboxPublishResult mailboxResult =
-                m_frameMailbox->TryPublish(std::move(packet));
-            switch (mailboxResult.code)
+            std::lock_guard lock(m_publicationMutex);
+            if (IsShuttingDownForPublication())
             {
-                case RenderFrameMailboxPublishCode::Accepted:
-                    result.code = RenderFramePublishCode::Accepted;
-                    break;
-                case RenderFrameMailboxPublishCode::ReplacedOldest:
-                    result.code = RenderFramePublishCode::ReplacedOlder;
-                    result.replacedSequence = mailboxResult.replacedSequence;
-                    m_frameReplacementCount.fetch_add(1,
-                                                      std::memory_order_relaxed);
-                    break;
-                case RenderFrameMailboxPublishCode::InvalidPacket:
-                    result.code = RenderFramePublishCode::InvalidPacket;
-                    m_invalidFrameCount.fetch_add(1,
-                                                  std::memory_order_relaxed);
-                    break;
-                case RenderFrameMailboxPublishCode::OutOfOrder:
-                    result.code = RenderFramePublishCode::OutOfOrder;
-                    m_outOfOrderFrameCount.fetch_add(1,
-                                                     std::memory_order_relaxed);
-                    break;
+                result.code = RenderFramePublishCode::ShuttingDown;
+            }
+            else if (!IsRunningForPublication())
+            {
+                result.code = RenderFramePublishCode::NotRunning;
+            }
+            else
+            {
+                if (m_publicationHook != nullptr)
+                {
+                    m_publicationHook->BeforeMutation(
+                        RenderPublicationPath::Frame);
+                }
+                const RenderFrameMailboxPublishResult mailboxResult =
+                    m_frameMailbox->TryPublish(std::move(packet));
+                switch (mailboxResult.code)
+                {
+                    case RenderFrameMailboxPublishCode::Accepted:
+                        result.code = RenderFramePublishCode::Accepted;
+                        break;
+                    case RenderFrameMailboxPublishCode::ReplacedOldest:
+                        result.code = RenderFramePublishCode::ReplacedOlder;
+                        result.replacedSequence =
+                            mailboxResult.replacedSequence;
+                        m_frameReplacementCount.fetch_add(
+                            1, std::memory_order_relaxed);
+                        break;
+                    case RenderFrameMailboxPublishCode::InvalidPacket:
+                        result.code = RenderFramePublishCode::InvalidPacket;
+                        m_invalidFrameCount.fetch_add(
+                            1, std::memory_order_relaxed);
+                        break;
+                    case RenderFrameMailboxPublishCode::OutOfOrder:
+                        result.code = RenderFramePublishCode::OutOfOrder;
+                        m_outOfOrderFrameCount.fetch_add(
+                            1, std::memory_order_relaxed);
+                        break;
+                }
+                if (result.code == RenderFramePublishCode::Accepted ||
+                    result.code == RenderFramePublishCode::ReplacedOlder)
+                {
+                    m_lastPublishedFrameSequence.store(
+                        result.sequence, std::memory_order_release);
+                }
             }
         }
         result.resultClass = ClassifyRenderFramePublishCode(result.code);
         if (result.code == RenderFramePublishCode::Accepted ||
             result.code == RenderFramePublishCode::ReplacedOlder)
         {
-            m_lastPublishedFrameSequence.store(result.sequence,
-                                               std::memory_order_release);
             NotifyExecutor();
         }
         return result;
@@ -611,54 +712,62 @@ namespace
     {
         RenderResizeResult result;
         result.generation = surface.generation;
-        if (IsShuttingDownForPublication())
-        {
-            result.code = RenderResizeCode::ShuttingDown;
-        }
-        else if (!IsRunningForPublication())
-        {
-            result.code = RenderResizeCode::NotRunning;
-        }
-        else if (!IsSurfaceValid(surface))
-        {
-            result.code = RenderResizeCode::InvalidSurface;
-            m_resizeRejectedCount.fetch_add(1, std::memory_order_relaxed);
-        }
-        else
         {
             std::lock_guard lock(m_publicationMutex);
-            if (surface.generation <= m_latestResizeGeneration)
+            if (IsShuttingDownForPublication())
             {
-                result.code = RenderResizeCode::StaleGeneration;
+                result.code = RenderResizeCode::ShuttingDown;
+            }
+            else if (!IsRunningForPublication())
+            {
+                result.code = RenderResizeCode::NotRunning;
+            }
+            else if (!IsSurfaceValid(surface))
+            {
+                result.code = RenderResizeCode::InvalidSurface;
                 m_resizeRejectedCount.fetch_add(1,
                                                 std::memory_order_relaxed);
             }
             else
             {
-                result.replacedGeneration = m_pendingResizeGeneration;
-                const bool published = m_controlMailbox->TryPublishResize(
-                    surface.generation, surface);
-                if (!published)
+                if (m_publicationHook != nullptr)
+                {
+                    m_publicationHook->BeforeMutation(
+                        RenderPublicationPath::Resize);
+                }
+                if (surface.generation <= m_latestResizeGeneration)
                 {
                     result.code = RenderResizeCode::StaleGeneration;
-                    m_resizeRejectedCount.fetch_add(1,
-                                                    std::memory_order_relaxed);
+                    m_resizeRejectedCount.fetch_add(
+                        1, std::memory_order_relaxed);
                 }
                 else
                 {
-                    m_latestResizeGeneration = surface.generation;
-                    m_pendingResizeGeneration = surface.generation;
-                    if (result.replacedGeneration == 0U)
+                    result.replacedGeneration = m_pendingResizeGeneration;
+                    const bool published = m_controlMailbox->TryPublishResize(
+                        surface.generation, surface);
+                    if (!published)
                     {
-                        result.code = RenderResizeCode::Accepted;
-                        m_resizeAcceptedCount.fetch_add(
+                        result.code = RenderResizeCode::StaleGeneration;
+                        m_resizeRejectedCount.fetch_add(
                             1, std::memory_order_relaxed);
                     }
                     else
                     {
-                        result.code = RenderResizeCode::CoalescedOlder;
-                        m_resizeCoalescedCount.fetch_add(
-                            1, std::memory_order_relaxed);
+                        m_latestResizeGeneration = surface.generation;
+                        m_pendingResizeGeneration = surface.generation;
+                        if (result.replacedGeneration == 0U)
+                        {
+                            result.code = RenderResizeCode::Accepted;
+                            m_resizeAcceptedCount.fetch_add(
+                                1, std::memory_order_relaxed);
+                        }
+                        else
+                        {
+                            result.code = RenderResizeCode::CoalescedOlder;
+                            m_resizeCoalescedCount.fetch_add(
+                                1, std::memory_order_relaxed);
+                        }
                     }
                 }
             }
@@ -690,76 +799,110 @@ namespace
         return m_lastShutdownResult;
     }
 
+    bool RenderThreadRuntime::IsReady() const
+    {
+        std::lock_guard lock(m_publicationMutex);
+        if (m_publicationSealed.load(std::memory_order_acquire) ||
+            m_lifecycle.load(std::memory_order_acquire) !=
+                RenderLifecycleState::Running)
+        {
+            return false;
+        }
+        const RenderRuntimeResult result = GetLastRuntimeResult();
+        return result.lifecycle == RenderLifecycleState::Running &&
+               result.terminalCause == RenderTerminalCause::None &&
+               result.teardownMode == RenderTeardownMode::None;
+    }
+
     RenderResourceReserveResult RenderThreadRuntime::ReserveResource(
         AssetId assetId,
         RenderResourceKind kind) noexcept
     {
+        std::lock_guard lock(m_publicationMutex);
         if (m_publicationSealed.load(std::memory_order_acquire))
         {
             RenderResourceReserveResult result;
             result.code = RenderResourceReserveCode::ShuttingDown;
             return result;
         }
-        if (m_resourceGateway == nullptr)
-        {
-            return {};
-        }
-        return m_resourceGateway->ReserveResource(assetId, kind);
+        return m_resourceGateway != nullptr
+                   ? m_resourceGateway->ReserveResource(assetId, kind)
+                   : RenderResourceReserveResult{};
     }
 
     RenderUploadEnqueueResult RenderThreadRuntime::TryEnqueueUpload(
         const ResourceUploadRequestRef& request) noexcept
     {
-        if (m_publicationSealed.load(std::memory_order_acquire))
         {
-            return RenderUploadEnqueueResult{
-                RenderUploadEnqueueCode::ShuttingDown};
+            std::lock_guard lock(m_publicationMutex);
+            if (m_publicationSealed.load(std::memory_order_acquire))
+            {
+                return RenderUploadEnqueueResult{
+                    RenderUploadEnqueueCode::ShuttingDown};
+            }
+            if (m_resourceGateway == nullptr)
+            {
+                return {};
+            }
+            const RenderGatewayUploadEnqueueResult observed =
+                m_resourceGateway->TryEnqueueUploadObserved(request);
+            const RenderUploadEnqueueResult result = observed.result;
+            if (result.code == RenderUploadEnqueueCode::Accepted)
+            {
+                m_uploadAcceptedCount.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            else if (result.code ==
+                         RenderUploadEnqueueCode::QueueFullByCount ||
+                     result.code ==
+                         RenderUploadEnqueueCode::QueueFullByBytes)
+            {
+                m_uploadPressureCount.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            if (result.code != RenderUploadEnqueueCode::Accepted)
+            {
+                return result;
+            }
         }
-        if (m_resourceGateway == nullptr)
-        {
-            return {};
-        }
-        const RenderGatewayUploadEnqueueResult observed =
-            m_resourceGateway->TryEnqueueUploadObserved(request);
-        const RenderUploadEnqueueResult result = observed.result;
-        if (result.code == RenderUploadEnqueueCode::Accepted)
-        {
-            m_uploadAcceptedCount.fetch_add(1, std::memory_order_relaxed);
-            NotifyExecutor();
-        }
-        else if (result.code == RenderUploadEnqueueCode::QueueFullByCount ||
-                 result.code == RenderUploadEnqueueCode::QueueFullByBytes)
-        {
-            m_uploadPressureCount.fetch_add(1, std::memory_order_relaxed);
-        }
-        return result;
+        NotifyExecutor();
+        return RenderUploadEnqueueResult{RenderUploadEnqueueCode::Accepted};
     }
 
     RenderReleaseResult RenderThreadRuntime::RequestRelease(
         RenderResourceHandle handle) noexcept
     {
-        if (m_publicationSealed.load(std::memory_order_acquire))
         {
-            return RenderReleaseResult{RenderReleaseCode::ShuttingDown};
+            std::lock_guard lock(m_publicationMutex);
+            if (m_publicationSealed.load(std::memory_order_acquire))
+            {
+                return RenderReleaseResult{
+                    RenderReleaseCode::ShuttingDown};
+            }
+            if (m_resourceGateway == nullptr)
+            {
+                return {};
+            }
+            const RenderGatewayReleaseResult observed =
+                m_resourceGateway->RequestReleaseObserved(handle);
+            const RenderReleaseResult result = observed.result;
+            if (result.code == RenderReleaseCode::Accepted)
+            {
+                m_releaseAcceptedCount.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            else if (result.code == RenderReleaseCode::StaleGeneration)
+            {
+                m_releaseStaleCount.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            if (result.code != RenderReleaseCode::Accepted)
+            {
+                return result;
+            }
         }
-        if (m_resourceGateway == nullptr)
-        {
-            return {};
-        }
-        const RenderGatewayReleaseResult observed =
-            m_resourceGateway->RequestReleaseObserved(handle);
-        const RenderReleaseResult result = observed.result;
-        if (result.code == RenderReleaseCode::Accepted)
-        {
-            m_releaseAcceptedCount.fetch_add(1,
-                                             std::memory_order_relaxed);
-            NotifyExecutor();
-        }
-        else if (result.code == RenderReleaseCode::StaleGeneration)
-        {
-            m_releaseStaleCount.fetch_add(1, std::memory_order_relaxed);
-        }
-        return result;
+        NotifyExecutor();
+        return RenderReleaseResult{RenderReleaseCode::Accepted};
     }
 
     RenderResourceStatus RenderThreadRuntime::QueryResourceStatus(
@@ -952,15 +1095,24 @@ namespace
         }
         std::unique_lock lock(m_waitMutex);
         m_waitCv.wait(lock, [this]() {
-            return m_wakePending.load(std::memory_order_acquire) ||
-                   (m_controlMailbox != nullptr &&
-                    m_controlMailbox->IsStopRequested());
+            const bool shouldWake =
+                m_wakePending.load(std::memory_order_acquire) ||
+                (m_controlMailbox != nullptr &&
+                 m_controlMailbox->IsStopRequested());
+            if (!shouldWake && m_waitHook != nullptr)
+            {
+                m_waitHook->AfterFalseWaitPredicate();
+            }
+            return shouldWake;
         });
     }
 
     void RenderThreadRuntime::Wake() noexcept
     {
-        m_wakePending.store(true, std::memory_order_release);
+        {
+            std::lock_guard lock(m_waitMutex);
+            m_wakePending.store(true, std::memory_order_release);
+        }
         m_waitCv.notify_all();
     }
 
@@ -1007,9 +1159,26 @@ namespace
         Wake();
     }
 
-    void RenderThreadRuntime::WakeThunk(void* context) noexcept
+    void RenderThreadRuntime::GatewayPublicationThunk(
+        void* context,
+        RenderGatewayPublicationPath path) noexcept
     {
-        static_cast<RenderThreadRuntime*>(context)->Wake();
+        auto* runtime = static_cast<RenderThreadRuntime*>(context);
+        if (runtime->m_publicationHook == nullptr)
+        {
+            return;
+        }
+
+        RenderPublicationPath runtimePath = RenderPublicationPath::Reserve;
+        if (path == RenderGatewayPublicationPath::Upload)
+        {
+            runtimePath = RenderPublicationPath::Upload;
+        }
+        else if (path == RenderGatewayPublicationPath::Release)
+        {
+            runtimePath = RenderPublicationPath::Release;
+        }
+        runtime->m_publicationHook->BeforeMutation(runtimePath);
     }
 
     void RenderThreadRuntime::RuntimeFatalThunk(void* context,
@@ -1022,14 +1191,13 @@ namespace
                 RenderRuntimeCode::OwnershipViolation,
                 runtime->m_executorKind,
                 runtime->GetLastRuntimeResult().backend,
-                runtime->GetCurrentSurfaceSnapshot().generation);
+                runtime->m_currentSurface.generation);
             result.message = message != nullptr ? message :
                                                   "Render transport invariant failed";
             (void)runtime->TryClaimTerminalResult(result);
-            runtime->SealPublication();
+            runtime->SealPublicationLocked();
             runtime->m_ownerFatalPending.store(true,
                                                std::memory_order_release);
-            runtime->NotifyExecutor();
         }
         catch (...)
         {
@@ -1176,6 +1344,16 @@ namespace
     }
 
     void RenderThreadRuntime::SealPublication() noexcept
+    {
+        if (m_publicationHook != nullptr)
+        {
+            m_publicationHook->BeforeSeal();
+        }
+        std::lock_guard lock(m_publicationMutex);
+        SealPublicationLocked();
+    }
+
+    void RenderThreadRuntime::SealPublicationLocked() noexcept
     {
         m_publicationSealed.store(true, std::memory_order_release);
         if (m_resourceGateway != nullptr)
@@ -1409,7 +1587,14 @@ namespace
         {
             (void)TryClaimTerminalResult(result);
             SealPublication();
-            (void)m_consumer->Shutdown(result.teardownMode);
+            RenderShutdownResult shutdown = NormalizeShutdownResult(
+                m_consumer->Shutdown(result.teardownMode),
+                result.backend,
+                m_lastSubmittedFrameSequence.load(
+                    std::memory_order_acquire),
+                result.surfaceGeneration);
+            StoreShutdownResult(shutdown);
+            RecordFailure(shutdown);
             m_consumer.reset();
             TransitionTo(RenderLifecycleState::Failed, "startup failed");
             PublishDiagnostics();

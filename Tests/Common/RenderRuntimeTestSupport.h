@@ -14,16 +14,21 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
 namespace RVX
 {
+    class IDedicatedRenderExecutorBootstrapHook;
+
     /** @brief Narrow access to private runtime callbacks for validation. */
     struct RenderThreadRuntimeTestAccess
     {
         static void ReportTransportFatal(RenderThreadRuntime& runtime,
                                          const char* message) noexcept;
+        static void ForceReleasePublicationInvariantFailure(
+            RenderThreadRuntime& runtime) noexcept;
     };
 
     /** @brief Create the synchronous executor used only by validation tests. */
@@ -49,6 +54,9 @@ namespace RVX
     /** @brief Decorate the real dedicated executor with join observations. */
     std::unique_ptr<IRenderExecutor> CreateJoinRecordingDedicatedExecutor(
         std::shared_ptr<RenderExecutorJoinTestProbe> probe);
+    std::unique_ptr<IRenderExecutor> CreateJoinRecordingDedicatedExecutor(
+        std::shared_ptr<RenderExecutorJoinTestProbe> probe,
+        std::shared_ptr<IDedicatedRenderExecutorBootstrapHook> bootstrapHook);
     /** @brief Create an inline pump with deterministic JoinUntil outcomes. */
     std::unique_ptr<IRenderExecutor> CreateSequencedJoinInlineRenderExecutor(
         std::vector<RenderExecutorJoinCode> joinCodes,
@@ -152,9 +160,14 @@ namespace RVX
         [[nodiscard]] std::thread::id GetDestructionThread() const;
 
         RenderRuntimeCode startupCode = RenderRuntimeCode::Running;
+        RHIBackendType startupBackend = RHIBackendType::None;
         uint32 startupNativeError = 0;
+        std::string startupMessage;
+        RenderRuntimeCode frameCode = RenderRuntimeCode::Running;
         RenderShutdownCode shutdownCode = RenderShutdownCode::Completed;
+        RHIBackendType shutdownBackend = RHIBackendType::None;
         uint32 shutdownNativeError = 0;
+        std::string shutdownMessage;
         bool throwOnFrame = false;
 
     private:

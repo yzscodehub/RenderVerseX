@@ -9,7 +9,9 @@ namespace RVX
         WakeFunction wakeFunction,
         void* wakeContext,
         RuntimeFatalFunction runtimeFatalFunction,
-        void* runtimeFatalContext)
+        void* runtimeFatalContext,
+        BeforeMutationFunction beforeMutationFunction,
+        void* beforeMutationContext)
         : m_statusTable(ValidateConfigAndGetStatusCapacity(config)),
           m_reservationDirectory(m_statusTable),
           m_uploadQueue(config,
@@ -23,7 +25,9 @@ namespace RVX
                          wakeContext,
                          runtimeFatalFunction,
                          runtimeFatalContext),
-          m_reservationIdentities(config.statusSlotCapacity)
+          m_reservationIdentities(config.statusSlotCapacity),
+          m_beforeMutationFunction(beforeMutationFunction),
+          m_beforeMutationContext(beforeMutationContext)
     {
     }
 
@@ -36,6 +40,12 @@ namespace RVX
             RenderResourceReserveResult result;
             result.code = RenderResourceReserveCode::ShuttingDown;
             return result;
+        }
+        if (m_beforeMutationFunction != nullptr)
+        {
+            m_beforeMutationFunction(
+                m_beforeMutationContext,
+                RenderGatewayPublicationPath::Reserve);
         }
         RenderResourceReserveResult result =
             m_reservationDirectory.ReserveResource(assetId, kind);
@@ -65,6 +75,12 @@ namespace RVX
         {
             observed.result.code = RenderUploadEnqueueCode::ShuttingDown;
             return observed;
+        }
+        if (m_beforeMutationFunction != nullptr)
+        {
+            m_beforeMutationFunction(
+                m_beforeMutationContext,
+                RenderGatewayPublicationPath::Upload);
         }
         if (request != nullptr && request->GetHandle().IsValid())
         {
@@ -103,6 +119,12 @@ namespace RVX
         {
             observed.result.code = RenderReleaseCode::ShuttingDown;
             return observed;
+        }
+        if (m_beforeMutationFunction != nullptr)
+        {
+            m_beforeMutationFunction(
+                m_beforeMutationContext,
+                RenderGatewayPublicationPath::Release);
         }
         observed.result =
             m_releaseQueue.RequestRelease(handle, &observed.queue);

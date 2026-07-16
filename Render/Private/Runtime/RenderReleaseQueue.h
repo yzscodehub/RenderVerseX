@@ -15,6 +15,7 @@
 namespace RVX
 {
     struct RenderReleaseQueueTestAccess;
+    struct RenderThreadRuntimeTestAccess;
 
     struct RenderReleaseQueueSnapshot
     {
@@ -55,6 +56,7 @@ namespace RVX
 
     private:
         friend struct RenderReleaseQueueTestAccess;
+        friend struct RenderThreadRuntimeTestAccess;
 
         void Wake() const noexcept;
         void RuntimeFatal(const char* message) const noexcept;

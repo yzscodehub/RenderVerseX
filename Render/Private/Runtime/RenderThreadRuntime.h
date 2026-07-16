@@ -90,6 +90,36 @@ namespace RenderRuntimeDetail
             const RenderDiagnosticsSnapshot& diagnostics) = 0;
     };
 
+    enum class RenderPublicationPath : uint8
+    {
+        Frame = 0,
+        Resize = 1,
+        Reserve = 2,
+        Upload = 3,
+        Release = 4
+    };
+
+    /** @brief Private observation seam after admission and before mutation. */
+    class IRenderPublicationHook
+    {
+    public:
+        virtual ~IRenderPublicationHook() = default;
+
+        virtual void BeforeMutation(RenderPublicationPath path) noexcept = 0;
+        virtual void BeforeSeal() noexcept
+        {
+        }
+    };
+
+    /** @brief Private latch at the wait predicate-to-registration boundary. */
+    class IRenderWaitHook
+    {
+    public:
+        virtual ~IRenderWaitHook() = default;
+
+        virtual void AfterFalseWaitPredicate() noexcept = 0;
+    };
+
     class RenderThreadRuntime final : public IRenderExecutorPump,
                                       public IRenderResourceGateway,
                                       public NonMovable
@@ -103,6 +133,10 @@ namespace RenderRuntimeDetail
                             std::shared_ptr<IRenderRuntimeLifecycleHook>
                                 lifecycleHook = nullptr,
                             std::shared_ptr<IRenderFatalPolicy> fatalPolicy =
+                                nullptr,
+                            std::shared_ptr<IRenderPublicationHook>
+                                publicationHook = nullptr,
+                            std::shared_ptr<IRenderWaitHook> waitHook =
                                 nullptr);
         ~RenderThreadRuntime() override;
 
@@ -116,6 +150,7 @@ namespace RenderRuntimeDetail
             GetDiagnosticsSnapshot() const;
         [[nodiscard]] RenderRuntimeResult GetLastRuntimeResult() const;
         [[nodiscard]] RenderShutdownResult GetLastShutdownResult() const;
+        [[nodiscard]] bool IsReady() const;
 
         RenderResourceReserveResult ReserveResource(
             AssetId assetId,
@@ -145,7 +180,9 @@ namespace RenderRuntimeDetail
         using SurfaceControlMailbox =
             BasicRenderControlMailbox<NativeSurfaceDesc, NativeSurfaceDesc>;
 
-        static void WakeThunk(void* context) noexcept;
+        static void GatewayPublicationThunk(
+            void* context,
+            RenderGatewayPublicationPath path) noexcept;
         static void RuntimeFatalThunk(void* context,
                                       const char* message) noexcept;
 
@@ -164,6 +201,7 @@ namespace RenderRuntimeDetail
             const RenderRuntimeResult& result);
         [[nodiscard]] bool HasTerminalResult() const;
         void SealPublication() noexcept;
+        void SealPublicationLocked() noexcept;
         void StoreRuntimeResult(RenderRuntimeResult result);
         void StoreShutdownResult(RenderShutdownResult result);
         void RecordFailure(const RenderRuntimeResult& result);
@@ -182,6 +220,8 @@ namespace RenderRuntimeDetail
         std::unique_ptr<IRenderFrameConsumer> m_consumer;
         std::shared_ptr<IRenderRuntimeLifecycleHook> m_lifecycleHook;
         std::shared_ptr<IRenderFatalPolicy> m_fatalPolicy;
+        std::shared_ptr<IRenderPublicationHook> m_publicationHook;
+        std::shared_ptr<IRenderWaitHook> m_waitHook;
         std::unique_ptr<RenderFrameMailbox> m_frameMailbox;
         std::unique_ptr<SurfaceControlMailbox> m_controlMailbox;
         std::unique_ptr<RenderResourceGateway> m_resourceGateway;
@@ -208,6 +248,10 @@ namespace RenderRuntimeDetail
         RenderShutdownResult m_lastShutdownResult{};
         RenderDiagnosticsSnapshot m_diagnosticsState{};
 
+        // Startup arbitration precedes publication and state; publication
+        // precedes state or a transport lock. Release-queue fatal callbacks
+        // drop the queue lock before reaching state while publication remains
+        // held. No state, wait, or transport owner may re-enter publication.
         mutable std::mutex m_publicationMutex;
         NativeSurfaceDesc m_currentSurface;
         uint64 m_latestResizeGeneration = 0;

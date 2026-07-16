@@ -188,6 +188,8 @@ namespace RVX
         bool IsReady() const;
 
     private:
+        friend struct RenderSubsystemTestAccess;
+
         void InitializeRuntime();
         void InitializeLegacy(const RenderConfig& config);
         void AutoBindWindow();

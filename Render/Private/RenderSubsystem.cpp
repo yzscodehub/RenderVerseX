@@ -863,7 +863,7 @@ bool RenderSubsystem::IsReady() const
 {
     if (m_runtimeConfigured)
     {
-        return GetLastRuntimeResult().code == RenderRuntimeCode::Running;
+        return m_runtime != nullptr && m_runtime->IsReady();
     }
     return m_legacyBridge->renderContext != nullptr &&
            m_legacyBridge->renderContext->GetDevice() != nullptr &&

@@ -68,6 +68,44 @@ namespace
 
     constexpr auto RVX_TEST_TIMEOUT = std::chrono::seconds(2);
 
+    class BlockingBootstrapHook final
+        : public IDedicatedRenderExecutorBootstrapHook,
+          public NonMovable
+    {
+    public:
+        void BeforePlatformBootstrap() noexcept override
+        {
+            std::unique_lock lock(m_mutex);
+            m_entered = true;
+            m_cv.notify_all();
+            m_cv.wait(lock, [this]() { return m_released; });
+        }
+
+        [[nodiscard]] bool WaitUntilEntered(
+            std::chrono::milliseconds timeout)
+        {
+            std::unique_lock lock(m_mutex);
+            return m_cv.wait_for(lock,
+                                 timeout,
+                                 [this]() { return m_entered; });
+        }
+
+        void Release()
+        {
+            {
+                std::lock_guard lock(m_mutex);
+                m_released = true;
+            }
+            m_cv.notify_all();
+        }
+
+    private:
+        std::mutex m_mutex;
+        std::condition_variable m_cv;
+        bool m_entered = false;
+        bool m_released = false;
+    };
+
     struct PlatformObservation
     {
         std::array<char, 64> name{};
@@ -523,6 +561,43 @@ namespace
 
         StopExecutorAndJoin(*executor, pump);
         EXPECT_EQ(pump.GetProbeDestructionThread(), pump.GetPumpThread());
+    }
+
+    TEST(RenderExecutorValidation,
+         DedicatedStartOnlyAcknowledgesThreadCreation)
+    {
+        auto bootstrapHook = std::make_shared<BlockingBootstrapHook>();
+        std::unique_ptr<IRenderExecutor> executor =
+            CreateDedicatedRenderExecutor(bootstrapHook);
+        ScriptedPump pump{RenderPumpDecision::Idle};
+
+        std::mutex startMutex;
+        std::condition_variable startCv;
+        bool startReturned = false;
+        RenderExecutorStartResult startResult;
+        std::thread starter([&]() {
+            startResult = executor->Start(pump);
+            {
+                std::lock_guard lock(startMutex);
+                startReturned = true;
+            }
+            startCv.notify_all();
+        });
+
+        ASSERT_TRUE(bootstrapHook->WaitUntilEntered(RVX_TEST_TIMEOUT));
+        {
+            std::unique_lock lock(startMutex);
+            EXPECT_TRUE(startCv.wait_for(lock,
+                                         std::chrono::milliseconds(100),
+                                         [&]() { return startReturned; }));
+        }
+
+        bootstrapHook->Release();
+        starter.join();
+        ASSERT_EQ(startResult.code, RenderExecutorStartCode::Started);
+        ASSERT_TRUE(pump.WaitForPumpCount(1U));
+        ASSERT_TRUE(pump.WaitForWaitCount(1U));
+        StopExecutorAndJoin(*executor, pump);
     }
 
     TEST(RenderExecutorValidation,
