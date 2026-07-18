@@ -16,6 +16,7 @@ namespace RVX
     class RHICommandContext;
     class RenderContext;
     class RenderSubmissionTracker;
+    struct RenderContextInternalAccess;
 
     /**
      * @brief Manages GPU/CPU synchronization for multi-frame in-flight rendering
@@ -105,6 +106,7 @@ namespace RVX
 
     private:
         friend class RenderContext;
+        friend struct RenderContextInternalAccess;
 
         GPUCompletionPoint SubmitGraphics(RHICommandContext* context);
 

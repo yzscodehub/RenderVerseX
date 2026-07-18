@@ -147,6 +147,13 @@ namespace
     class FakeCommandContext final : public RHICommandContext
     {
     public:
+        explicit FakeCommandContext(
+            RHICommandQueueType queueType = RHICommandQueueType::Graphics)
+            : m_queueType(queueType)
+        {
+        }
+
+        RHICommandQueueType GetQueueType() const override { return m_queueType; }
         uint32 beginCount = 0;
         uint32 endCount = 0;
         uint32 bufferBarrierCount = 0;
@@ -265,28 +272,64 @@ namespace
         void SetLineWidth(float) override {}
         void SignalFence(RHIFence*, uint64) override {}
         void WaitFence(RHIFence*, uint64) override {}
+
+    private:
+        RHICommandQueueType m_queueType = RHICommandQueueType::Graphics;
     };
 
     class FakeFence final : public RHIFence
     {
     public:
         explicit FakeFence(uint64 initialValue)
-            : m_completedValue(initialValue)
+            : m_completedValue(initialValue), m_nextValue(initialValue + 1U)
         {
         }
 
         uint64 GetCompletedValue() const override { return m_completedValue; }
-        void Signal(uint64 value) override { m_completedValue = value; }
-        void SignalOnQueue(uint64 value, RHICommandQueueType) override { m_completedValue = value; }
-        void Wait(uint64 value, uint64 = UINT64_MAX) override { m_completedValue = value; }
+        void Signal(uint64 value) override
+        {
+            m_completedValue = value;
+            if (value != UINT64_MAX)
+            {
+                m_nextValue = std::max(m_nextValue, value + 1U);
+            }
+        }
+        void SignalOnQueue(uint64 value, RHICommandQueueType) override { Signal(value); }
+        void Wait(uint64 value, uint64 = UINT64_MAX) override { Signal(value); }
+        uint64 AllocateSignalValue() { return m_nextValue++; }
 
     private:
         uint64 m_completedValue = 0;
+        uint64 m_nextValue = 1;
     };
 
     class FakeDevice final : public IRHIDevice
     {
     public:
+        FakeDevice()
+        {
+            capabilities.backendType = RHIBackendType::DX12;
+            capabilities.adapterName = "GPUResourceManagerValidation";
+            capabilities.driverVersion = "1";
+            capabilities.supportsComputePipeline = true;
+            capabilities.supportsDescriptorSets = true;
+            capabilities.supportsDynamicDescriptorOffsets = true;
+            capabilities.maxDescriptorSets = 4;
+            capabilities.supportsExplicitResourceBarriers = true;
+            capabilities.supportsDefaultQueueFenceSignal = true;
+            capabilities.supportsExplicitQueueFenceSignal = true;
+            capabilities.supportsAsyncCompute = true;
+            capabilities.dx12.resourceBindingTier = 2;
+            capabilities.queueTopology.completionMode =
+                RHIQueueCompletionMode::NativeTimeline;
+            capabilities.queueTopology.logicalQueueDomains = {
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Compute,
+                GPUQueueDomain::Copy};
+            capabilities.queueTopology.activeDomainCount = 3;
+            backendType = RHIBackendType::DX12;
+        }
+
         RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
         {
             ++createdBufferCount;
@@ -368,7 +411,7 @@ namespace
             if (!supportStagedCopy)
                 return nullptr;
 
-            retainedCommandContext = RHICommandContextRef(new FakeCommandContext());
+            retainedCommandContext = RHICommandContextRef(new FakeCommandContext(type));
             lastCommandContext = static_cast<FakeCommandContext*>(retainedCommandContext.Get());
             return retainedCommandContext;
         }
@@ -377,7 +420,10 @@ namespace
         {
             ++submittedCommandContextCount;
             lastSubmittedFence = signalFence;
-            uint64 submittedValue = signalFence ? 1 : 0;
+            uint64 submittedValue = signalFence
+                                        ? static_cast<FakeFence*>(signalFence)
+                                              ->AllocateSignalValue()
+                                        : 0;
             if (completeSubmittedFenceImmediately && signalFence)
             {
                 signalFence->Signal(submittedValue);
@@ -425,7 +471,27 @@ namespace
         RHIMemoryStats GetMemoryStats() const override { return {}; }
         void BeginResourceGroup(const char*) override {}
         void EndResourceGroup() override {}
-        const RHICapabilities& GetCapabilities() const override { return capabilities; }
+        const RHICapabilities& GetCapabilities() const override
+        {
+            capabilities.backendType = backendType;
+            if (backendType == RHIBackendType::OpenGL)
+            {
+                capabilities.supportsAsyncCompute = false;
+                capabilities.supportsDefaultQueueFenceSignal = false;
+                capabilities.supportsExplicitQueueFenceSignal = false;
+                capabilities.emulatesQueueFences = true;
+                capabilities.queueTopology.completionMode =
+                    RHIQueueCompletionMode::CompatibilityWaitIdle;
+                capabilities.queueTopology.logicalQueueDomains = {
+                    GPUQueueDomain::Graphics,
+                    GPUQueueDomain::Graphics,
+                    GPUQueueDomain::Graphics};
+                capabilities.queueTopology.activeDomainCount = 1;
+                capabilities.opengl.majorVersion = 4;
+                capabilities.opengl.minorVersion = 6;
+            }
+            return capabilities;
+        }
         RHIBackendType GetBackendType() const override { return backendType; }
 
         uint32 createdBufferCount = 0;
@@ -459,8 +525,8 @@ namespace
         std::vector<RHIBufferDesc> createdBufferDescs;
         std::vector<RHIAccelerationStructureDesc> createdAccelerationStructureDescs;
         RHIAccelerationStructureBuildSizes topLevelBuildSizesOverride;
-        RHICapabilities capabilities;
-        RHIBackendType backendType = RHIBackendType::None;
+        mutable RHICapabilities capabilities;
+        RHIBackendType backendType = RHIBackendType::DX12;
         RHITextureDesc lastCreatedTextureDesc;
     };
 
@@ -855,7 +921,7 @@ TEST(GPUResourceManagerValidation, GPUUploadServiceUsesStagedCopyForBufferWhenAv
     EXPECT_EQ(device.lastCommandContext->beginCount, 1u);
     EXPECT_EQ(device.lastCommandContext->endCount, 0u);
     EXPECT_EQ(device.submittedCommandContextCount, 0u);
-    EXPECT_EQ(device.createdFenceCount, 0u);
+    EXPECT_EQ(device.createdFenceCount, 3u);
 
     uploadService.FlushBatchUploads();
 
@@ -870,7 +936,7 @@ TEST(GPUResourceManagerValidation, GPUUploadServiceUsesStagedCopyForBufferWhenAv
     EXPECT_EQ(device.submittedCommandContextCount, 1u);
     EXPECT_EQ(result.isPending, true);
     EXPECT_TRUE(result.uploadId != 0);
-    EXPECT_EQ(device.createdFenceCount, 1u);
+    EXPECT_EQ(device.createdFenceCount, 3u);
     EXPECT_EQ(device.waitIdleCount, 0u);
 
     const auto stats = uploadService.GetStats();
@@ -1022,7 +1088,7 @@ TEST(GPUResourceManagerValidation, GPUUploadServiceUsesStagedCopyForTextureWhenA
     EXPECT_EQ(device.lastCommandContext->beginCount, 1u);
     EXPECT_EQ(device.lastCommandContext->endCount, 0u);
     EXPECT_EQ(device.submittedCommandContextCount, 0u);
-    EXPECT_EQ(device.createdFenceCount, 0u);
+    EXPECT_EQ(device.createdFenceCount, 3u);
 
     uploadService.FlushBatchUploads();
 
@@ -1039,7 +1105,7 @@ TEST(GPUResourceManagerValidation, GPUUploadServiceUsesStagedCopyForTextureWhenA
     EXPECT_EQ(device.submittedCommandContextCount, 1u);
     EXPECT_EQ(result.isPending, true);
     EXPECT_TRUE(result.uploadId != 0);
-    EXPECT_EQ(device.createdFenceCount, 1u);
+    EXPECT_EQ(device.createdFenceCount, 3u);
     EXPECT_EQ(device.waitIdleCount, 0u);
 
     const auto stats = uploadService.GetStats();
@@ -3304,7 +3370,7 @@ TEST(GPUResourceManagerValidation, StagedMeshUploadImmediateWaitsForFenceComplet
     EXPECT_TRUE(manager.IsResident(mesh->GetId()));
     EXPECT_TRUE(manager.IsGPUReady(mesh->GetId()));
     EXPECT_TRUE(manager.GetMeshBuffers(mesh->GetId()).IsValid());
-    EXPECT_EQ(device.waitIdleCount, 1u);
+    EXPECT_EQ(device.waitIdleCount, 0u);
     {
         const auto stats = manager.GetStats();
         EXPECT_EQ(stats.residentMeshCount, 1ull);

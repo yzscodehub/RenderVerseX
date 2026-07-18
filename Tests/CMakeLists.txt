@@ -435,6 +435,24 @@ rvx_add_gtest(
     TIMEOUT 120
 )
 
+# Render resource ownership and two-phase upload validation
+rvx_add_gtest(
+    NAME RenderResourceRuntimeValidation
+    SOURCES RenderResourceRuntimeValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::RHI
+        RVX::RenderContracts
+        RVX_RenderRuntimeCore
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/RenderContracts/Include
+        ${CMAKE_SOURCE_DIR}/RHI/Include
+    LABELS unit
+    TIMEOUT 120
+)
+
 # Image comparison utility validation tests
 rvx_add_gtest(
     NAME ImageCompareValidation
@@ -526,6 +544,7 @@ rvx_add_gtest(
         GPUResourceManagerValidation/main.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/GPUResourceManager.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/GPUUploadService.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Resources/RenderResourceRegistryLegacy.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Material/MaterialClassification.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/RayTracing/RayTracingScene.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/RayTracing/RayTracingSceneManager.cpp
@@ -533,10 +552,14 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::RHI
+        RVX::RenderContracts
+        RVX_RenderRuntimeCore
         RVX::Resource
         RVX::Scene
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/RenderContracts/Include
     LABELS unit
     TIMEOUT 120
 )
@@ -550,8 +573,12 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::RHI
+        RVX::RenderContracts
+        RVX_RenderRuntimeCore
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/RenderContracts/Include
     LABELS unit
     TIMEOUT 120
 )

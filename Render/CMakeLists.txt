@@ -24,7 +24,9 @@ target_sources(RVX_RenderRuntimeCore PRIVATE
     Private/Runtime/RenderUploadQueue.cpp
     Private/Runtime/RenderThreadGuard.cpp
     Private/Resources/RenderRetirementQueue.cpp
+    Private/Resources/RenderResourceRegistry.cpp
     Private/Resources/RenderSubmissionTracker.cpp
+    Private/Resources/RenderUploadProcessor.cpp
 )
 
 if(APPLE)
@@ -75,6 +77,7 @@ target_sources(RVX_Render PRIVATE
     Private/Runtime/RenderThreadRuntime.cpp
     Private/GPUUploadService.cpp
     Private/GPUResourceManager.cpp
+    Private/Resources/RenderResourceRegistryLegacy.cpp
     Private/PipelineCache.cpp
     # Context
     Private/Context/RenderContext.cpp

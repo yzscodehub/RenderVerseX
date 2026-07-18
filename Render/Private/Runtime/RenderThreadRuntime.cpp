@@ -1032,7 +1032,7 @@ namespace
                     break;
                 }
                 uploadBytes += request->GetDerivedPayloadBytes();
-                m_consumer->ProcessUpload(request);
+                m_consumer->ProcessUpload(std::move(request));
                 progressed = true;
             }
 
@@ -1583,7 +1583,9 @@ namespace
         }
 
         RenderRuntimeResult result = NormalizeRuntimeResult(
-            m_consumer->Initialize(m_config, m_initialSurface),
+            m_consumer->Initialize(m_config,
+                                   m_initialSurface,
+                                   m_resourceGateway->GetStatusTable()),
             m_executorKind,
             m_config.backendType,
             m_initialSurface.generation);

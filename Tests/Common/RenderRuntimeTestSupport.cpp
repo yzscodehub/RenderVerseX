@@ -252,7 +252,8 @@ namespace
 
         RenderRuntimeResult Initialize(
             const RenderRuntimeConfig& config,
-            const NativeSurfaceDesc& surface) override
+            const NativeSurfaceDesc& surface,
+            RenderResourceStatusTable&) override
         {
             m_probe->SetStartupThread(std::this_thread::get_id());
             m_probe->Record(RenderRuntimeTestEvent::Started);
@@ -283,8 +284,7 @@ namespace
             m_probe->Record(RenderRuntimeTestEvent::Release);
         }
 
-        void ProcessUpload(
-            const ResourceUploadRequestRef&) override
+        void ProcessUpload(ResourceUploadRequestRef) override
         {
             m_probe->Record(RenderRuntimeTestEvent::Upload);
         }

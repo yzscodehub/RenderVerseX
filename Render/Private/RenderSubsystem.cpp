@@ -4,6 +4,7 @@
  */
 
 #include "Render/RenderSubsystem.h"
+#include "Context/RenderContextInternal.h"
 #include "Core/Camera/Camera.h"
 #include "Core/Event/EventBus.h"
 #include "Core/Log.h"
@@ -14,6 +15,9 @@
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/SceneRenderer.h"
 #include "RenderExtraction/WorldCameraBridge.h"
+#include "Resources/RenderResourceRegistry.h"
+#include "Resources/RenderRetirementQueue.h"
+#include "Resources/RenderUploadProcessor.h"
 #include "Runtime/DedicatedRenderExecutor.h"
 #include "Runtime/RenderThreadRuntime.h"
 #include "Runtime/Window/WindowSubsystem.h"
@@ -72,7 +76,8 @@ namespace
     public:
         RenderRuntimeResult Initialize(
             const RenderRuntimeConfig& config,
-            const NativeSurfaceDesc& surface) override
+            const NativeSurfaceDesc& surface,
+            RenderResourceStatusTable& statusTable) override
         {
             RenderRuntimeResult result;
             RHIBackendType backend = config.backendType;
@@ -110,6 +115,25 @@ namespace
                 m_context.reset();
                 result.code = RenderRuntimeCode::SurfaceCreationFailed;
                 result.message = "Render surface creation failed";
+                return result;
+            }
+
+            RenderSubmissionTracker* submissionTracker =
+                RenderContextInternalAccess::GetSubmissionTracker(*m_context);
+            if (submissionTracker == nullptr ||
+                !m_retirementQueue.Initialize(submissionTracker) ||
+                !m_resourceRegistry.Initialize(&statusTable,
+                                               &m_retirementQueue) ||
+                !m_uploadProcessor.Initialize(m_context->GetDevice(),
+                                              &statusTable,
+                                              &m_resourceRegistry,
+                                              submissionTracker))
+            {
+                m_resourceRegistry.Shutdown();
+                m_context->Shutdown();
+                m_context.reset();
+                result.code = RenderRuntimeCode::DeviceCreationFailed;
+                result.message = "Render resource runtime initialization failed";
                 return result;
             }
 
@@ -157,12 +181,15 @@ namespace
             return result;
         }
 
-        void ProcessRelease(RenderResourceHandle) override
+        void ProcessRelease(RenderResourceHandle handle) override
         {
+            m_uploadProcessor.ProcessRelease(handle);
         }
 
-        void ProcessUpload(const ResourceUploadRequestRef&) override
+        void ProcessUpload(ResourceUploadRequestRef request) override
         {
+            static_cast<void>(
+                m_uploadProcessor.ProcessUpload(std::move(request)));
         }
 
         RenderRuntimeResult ConsumeFrame(
@@ -233,10 +260,12 @@ namespace
 
         void PollCompletion() override
         {
+            static_cast<void>(m_uploadProcessor.PollCompletion());
         }
 
         void RetireCompleted() override
         {
+            static_cast<void>(m_retirementQueue.Poll());
         }
 
         RenderShutdownResult Shutdown(
@@ -256,6 +285,15 @@ namespace
                     result.surfaceGeneration =
                         m_context->GetSurface().generation;
                     m_context->WaitIdle();
+                    static_cast<void>(m_uploadProcessor.PollCompletion());
+                    m_uploadProcessor.Shutdown();
+                    static_cast<void>(m_retirementQueue.Poll());
+                    m_resourceRegistry.Shutdown();
+                    if (m_retirementQueue.GetDiagnostics().entryCount != 0)
+                    {
+                        static_cast<void>(
+                            m_retirementQueue.ForceDeviceLostTeardown());
+                    }
                     m_context->Shutdown();
                     m_context.reset();
                 }
@@ -277,6 +315,9 @@ namespace
 
     private:
         std::unique_ptr<RenderContext> m_context;
+        RenderRetirementQueue m_retirementQueue;
+        RenderResourceRegistry m_resourceRegistry;
+        RenderUploadProcessor m_uploadProcessor;
     };
 } // namespace
 

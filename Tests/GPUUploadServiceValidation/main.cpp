@@ -90,6 +90,12 @@ namespace
     class FakeCommandContext final : public RHICommandContext
     {
     public:
+        explicit FakeCommandContext(RHICommandQueueType queueType)
+            : m_queueType(queueType)
+        {
+        }
+
+        RHICommandQueueType GetQueueType() const override { return m_queueType; }
         uint32 beginCount = 0;
         uint32 endCount = 0;
         uint32 copyBufferCount = 0;
@@ -150,6 +156,9 @@ namespace
         void SetLineWidth(float) override {}
         void SignalFence(RHIFence*, uint64) override {}
         void WaitFence(RHIFence*, uint64) override {}
+
+    private:
+        RHICommandQueueType m_queueType = RHICommandQueueType::Graphics;
     };
 
     class FakeFence final : public RHIFence
@@ -182,6 +191,30 @@ namespace
     class FakeDevice final : public IRHIDevice
     {
     public:
+        FakeDevice()
+        {
+            capabilities.backendType = RHIBackendType::DX12;
+            capabilities.adapterName = "GPUUploadServiceValidation";
+            capabilities.driverVersion = "1";
+            capabilities.supportsComputePipeline = true;
+            capabilities.supportsDescriptorSets = true;
+            capabilities.supportsDynamicDescriptorOffsets = true;
+            capabilities.maxDescriptorSets = 4;
+            capabilities.supportsExplicitResourceBarriers = true;
+            capabilities.supportsDefaultQueueFenceSignal = true;
+            capabilities.supportsExplicitQueueFenceSignal = true;
+            capabilities.supportsAsyncCompute = true;
+            capabilities.dx12.resourceBindingTier = 2;
+            capabilities.queueTopology.completionMode =
+                RHIQueueCompletionMode::NativeTimeline;
+            capabilities.queueTopology.logicalQueueDomains = {
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Compute,
+                GPUQueueDomain::Copy};
+            capabilities.queueTopology.activeDomainCount = 3;
+            backendType = RHIBackendType::DX12;
+        }
+
         RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
         {
             ++createdBufferCount;
@@ -213,7 +246,7 @@ namespace
         {
             ++createdCommandContextCount;
             lastCommandQueueType = type;
-            retainedCommandContext = RHICommandContextRef(new FakeCommandContext());
+            retainedCommandContext = RHICommandContextRef(new FakeCommandContext(type));
             lastCommandContext = static_cast<FakeCommandContext*>(retainedCommandContext.Get());
             return retainedCommandContext;
         }
@@ -260,7 +293,27 @@ namespace
         RHIMemoryStats GetMemoryStats() const override { return {}; }
         void BeginResourceGroup(const char*) override {}
         void EndResourceGroup() override {}
-        const RHICapabilities& GetCapabilities() const override { return capabilities; }
+        const RHICapabilities& GetCapabilities() const override
+        {
+            capabilities.backendType = backendType;
+            if (backendType == RHIBackendType::OpenGL)
+            {
+                capabilities.supportsAsyncCompute = false;
+                capabilities.supportsDefaultQueueFenceSignal = false;
+                capabilities.supportsExplicitQueueFenceSignal = false;
+                capabilities.emulatesQueueFences = true;
+                capabilities.queueTopology.completionMode =
+                    RHIQueueCompletionMode::CompatibilityWaitIdle;
+                capabilities.queueTopology.logicalQueueDomains = {
+                    GPUQueueDomain::Graphics,
+                    GPUQueueDomain::Graphics,
+                    GPUQueueDomain::Graphics};
+                capabilities.queueTopology.activeDomainCount = 1;
+                capabilities.opengl.majorVersion = 4;
+                capabilities.opengl.minorVersion = 6;
+            }
+            return capabilities;
+        }
         RHIBackendType GetBackendType() const override { return backendType; }
 
         uint32 createdBufferCount = 0;
@@ -277,9 +330,9 @@ namespace
         RHIFence* lastSubmittedFence = nullptr;
         RHICommandContextRef retainedCommandContext;
         std::vector<RHIFenceRef> retainedFences;
-        RHICapabilities capabilities;
+        mutable RHICapabilities capabilities;
         RHITextureDesc lastCreatedTextureDesc;
-        RHIBackendType backendType = RHIBackendType::None;
+        RHIBackendType backendType = RHIBackendType::DX12;
         uint64 fenceInitialValueOverride = 0;
         bool signalLastFenceOnWaitIdle = false;
     };
@@ -353,7 +406,7 @@ TEST(GPUUploadServiceValidation, StagedBufferUploadsBatchUntilFlush)
     EXPECT_TRUE(uploadService.IsUploadPending(secondResult.uploadId));
     EXPECT_EQ(device.createdCommandContextCount, 1u);
     EXPECT_EQ(device.submittedCommandContextCount, 0u);
-    EXPECT_EQ(device.createdFenceCount, 0u);
+    EXPECT_EQ(device.createdFenceCount, 3u);
     ASSERT_NE(nullptr, device.lastCommandContext);
     EXPECT_EQ(device.lastCommandContext->beginCount, 1u);
     EXPECT_EQ(device.lastCommandContext->endCount, 0u);
@@ -362,7 +415,7 @@ TEST(GPUUploadServiceValidation, StagedBufferUploadsBatchUntilFlush)
     uploadService.FlushBatchUploads();
 
     EXPECT_EQ(device.submittedCommandContextCount, 1u);
-    EXPECT_EQ(device.createdFenceCount, 1u);
+    EXPECT_EQ(device.createdFenceCount, 3u);
     EXPECT_EQ(device.lastCommandContext->endCount, 1u);
     EXPECT_EQ(device.lastSubmittedContext, device.lastCommandContext);
     EXPECT_EQ(device.lastSubmittedFence, device.lastFence);
@@ -405,8 +458,8 @@ TEST(GPUUploadServiceValidation, ShutdownFlushesDirtyBatchAndWaitsForPendingUplo
     uploadService.Shutdown();
 
     EXPECT_EQ(device.submittedCommandContextCount, 1u);
-    EXPECT_EQ(device.createdFenceCount, 1u);
-    EXPECT_EQ(device.waitIdleCount, 1u);
+    EXPECT_EQ(device.createdFenceCount, 3u);
+    EXPECT_EQ(device.waitIdleCount, 0u);
     EXPECT_EQ(device.lastCommandContext->endCount, 1u);
 }
 
@@ -465,7 +518,7 @@ TEST(GPUUploadServiceValidation, CompletedFenceIsReusedForNextBatch)
     EXPECT_TRUE(firstResult.succeeded);
     uploadService.FlushBatchUploads();
 
-    EXPECT_EQ(device.createdFenceCount, 1u);
+    EXPECT_EQ(device.createdFenceCount, 3u);
     ASSERT_NE(nullptr, device.lastFence);
     RHIFence* firstFence = device.lastFence;
 
@@ -477,7 +530,7 @@ TEST(GPUUploadServiceValidation, CompletedFenceIsReusedForNextBatch)
     EXPECT_TRUE(secondResult.succeeded);
     uploadService.FlushBatchUploads();
 
-    EXPECT_EQ(device.createdFenceCount, 1u);
+    EXPECT_EQ(device.createdFenceCount, 3u);
     EXPECT_EQ(device.lastSubmittedFence, firstFence);
 
     device.lastFence->Signal(1);
@@ -515,7 +568,7 @@ TEST(GPUUploadServiceValidation, FlushAndWaitSubmitsDirtyBatchAndCompletesUpload
     EXPECT_EQ(uploadService.FlushAndWaitForUploads(), 1u);
 
     EXPECT_EQ(device.submittedCommandContextCount, 1u);
-    EXPECT_EQ(device.waitIdleCount, 1u);
+    EXPECT_EQ(device.waitIdleCount, 0u);
     EXPECT_TRUE(!uploadService.IsUploadPending(result.uploadId));
     EXPECT_TRUE(uploadService.IsUploadComplete(result.uploadId));
 

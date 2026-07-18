@@ -12,6 +12,8 @@
 
 namespace RVX
 {
+    struct RenderContextInternalAccess;
+
     /**
      * @brief Render context configuration
      */
@@ -192,6 +194,8 @@ namespace RVX
         const RenderContextConfig& GetConfig() const { return m_config; }
 
     private:
+        friend struct RenderContextInternalAccess;
+
         void CreateCommandContexts();
         void DestroyCommandContexts();
 

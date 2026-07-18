@@ -54,12 +54,12 @@ namespace RenderRuntimeDetail
 
         virtual RenderRuntimeResult Initialize(
             const RenderRuntimeConfig& config,
-            const NativeSurfaceDesc& surface) = 0;
+            const NativeSurfaceDesc& surface,
+            RenderResourceStatusTable& statusTable) = 0;
         virtual RenderRuntimeResult ApplySurface(
             const NativeSurfaceDesc& surface) = 0;
         virtual void ProcessRelease(RenderResourceHandle handle) = 0;
-        virtual void ProcessUpload(
-            const ResourceUploadRequestRef& request) = 0;
+        virtual void ProcessUpload(ResourceUploadRequestRef request) = 0;
         virtual RenderRuntimeResult ConsumeFrame(
             const RenderFramePacket& packet) = 0;
         virtual void PollCompletion() = 0;

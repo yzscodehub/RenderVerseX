@@ -11,24 +11,21 @@
  * - Resource eviction for unused resources
  */
 
-#include "Core/RefCounted.h"
-#include "Render/GPUUploadService.h"
 #include "RenderContracts/RenderResource.h"
-#include "RHI/RHIBuffer.h"
-#include "RHI/RHITexture.h"
-#include "RHI/RHIDevice.h"
+#include "RHI/RHIDefinitions.h"
 #include <functional>
 #include <memory>
-#include <queue>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace RVX
 {
     class RHICommandContext;
+    class RHIBuffer;
+    class RHITexture;
+    class IRHIDevice;
+    class RenderResourceRegistry;
 
     /**
      * @brief Upload priority levels
@@ -106,47 +103,6 @@ namespace RVX
     };
 
     /**
-     * @brief Internal data for a mesh in GPU memory (separate buffers per attribute)
-     */
-    struct MeshGPUData
-    {
-        // Separate buffers for each attribute (matches glTF storage)
-        RHIBufferRef positionBuffer;    // Slot 0 - required
-        RHIBufferRef normalBuffer;      // Slot 1 - optional
-        RHIBufferRef uvBuffer;          // Slot 2 - optional
-        RHIBufferRef tangentBuffer;     // Slot 3 - optional
-        RHIBufferRef boneIndicesBuffer; // Slot 4 - optional
-        RHIBufferRef boneWeightsBuffer; // Slot 5 - optional
-        RHIBufferRef indexBuffer;
-        
-        std::vector<SubmeshGPUInfo> submeshes;
-        std::vector<uint64> pendingUploadIds;
-        uint64_t lastUsedFrame = 0;
-        size_t gpuMemorySize = 0;
-        bool isResident = false;
-        
-        // Track which attributes are available
-        bool hasNormals = false;
-        bool hasUVs = false;
-        bool hasTangents = false;
-        bool hasBoneIndices = false;
-        bool hasBoneWeights = false;
-    };
-
-    /**
-     * @brief Internal data for a texture in GPU memory
-     */
-    struct TextureGPUData
-    {
-        RHITextureRef texture;
-        std::vector<uint64> pendingUploadIds;
-        uint64_t lastUsedFrame = 0;
-        size_t gpuMemorySize = 0;
-        RHIResourceState currentState = RHIResourceState::Common;
-        bool isResident = false;
-    };
-
-    /**
      * @brief GPU Resource Manager
      * 
      * Manages the lifecycle of GPU resources, handling:
@@ -171,6 +127,10 @@ namespace RVX
      * }
      * @endcode
      */
+    /**
+     * @brief Temporary resource facade removed by task 18 after all callers
+     * resolve exact-generation resources through the Render-owned registry.
+     */
     class GPUResourceManager
     {
     public:
@@ -188,7 +148,7 @@ namespace RVX
         void Shutdown();
 
         /// Check if initialized
-        bool IsInitialized() const { return m_device != nullptr; }
+        bool IsInitialized() const;
 
         // =====================================================================
         // Upload Requests
@@ -213,10 +173,7 @@ namespace RVX
          * derived from the texture before the texture reference is dropped.
          */
         using TextureInvalidatedCallback = std::function<void(RHITexture*)>;
-        void SetTextureInvalidatedCallback(TextureInvalidatedCallback callback)
-        {
-            m_textureInvalidatedCallback = std::move(callback);
-        }
+        void SetTextureInvalidatedCallback(TextureInvalidatedCallback callback);
 
         // =====================================================================
         // Resource Query
@@ -268,13 +225,13 @@ namespace RVX
         void SetMemoryBudget(size_t bytes);
 
         /// Get current GPU memory usage
-        size_t GetUsedMemory() const { return m_usedMemory; }
+        size_t GetUsedMemory() const;
 
         /// Get memory budget
-        size_t GetMemoryBudget() const { return m_memoryBudget; }
+        size_t GetMemoryBudget() const;
 
         /// Check if we're over budget
-        bool IsOverBudget() const { return m_usedMemory > m_memoryBudget; }
+        bool IsOverBudget() const;
 
         // =====================================================================
         // Statistics
@@ -295,57 +252,9 @@ namespace RVX
         Stats GetStats() const;
 
     private:
-        struct PendingUpload
-        {
-            uint64 id = 0;
-            UploadPriority priority;
-            Ref<RefCounted> retainedResource;
-
-            bool operator<(const PendingUpload& other) const
-            {
-                // std::priority_queue is a max-heap, so larger priority values run first.
-                return static_cast<int>(priority) < static_cast<int>(other.priority);
-            }
-        };
-
-        struct PreparedTextureUpload
-        {
-            RHITextureDesc textureDesc;
-            std::vector<uint8> data;
-            std::string debugName;
-            bool valid = false;
-        };
-
-        void UploadMesh(IRenderMeshUploadSource* mesh);
-        void UploadTexture(IRenderTextureUploadSource* texture);
-        PreparedTextureUpload PrepareTextureUpload(const IRenderTextureUploadSource& texture) const;
-        void ReleaseTextureGPUData(uint64 id);
-        size_t RemoveQueuedUploadRequests(uint64 id);
-        void UpdateCompletedResourceUploads();
-        void AbandonUploadIds(const std::vector<uint64>& uploadIds);
-        void NotifyTextureInvalidated(RHITexture* texture);
-        void SetResourceState(uint64 id, GPUResourceState state);
-
-        IRHIDevice* m_device = nullptr;
-
-        // Pending upload queue (priority queue)
-        std::priority_queue<PendingUpload> m_pendingQueue;
-
-        // Resident resources
-        std::unordered_map<uint64, MeshGPUData> m_meshGPUData;
-        std::unordered_map<uint64, TextureGPUData> m_textureGPUData;
-        std::unordered_map<uint64, GPUResourceState> m_resourceStates;
-        std::unordered_set<uint64> m_pendingMeshUploadCompletions;
-        std::unordered_set<uint64> m_pendingTextureUploadCompletions;
-        std::unique_ptr<GPUUploadService> m_uploadService;
-        TextureInvalidatedCallback m_textureInvalidatedCallback;
-
-        // Memory tracking
-        size_t m_usedMemory = 0;
-        size_t m_memoryBudget = 512 * 1024 * 1024;  // Default 512MB
-
-        // Frame counter for eviction
-        uint64_t m_currentFrame = 0;
+        // Temporary task-18 migration adapter. All maps, queues, state, and
+        // strong RHI references live in RenderResourceRegistry.
+        std::unique_ptr<RenderResourceRegistry> m_registry;
     };
 
 } // namespace RVX
