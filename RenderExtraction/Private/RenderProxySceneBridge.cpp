@@ -5,6 +5,7 @@
 
 #include "RenderExtraction/RenderProxySceneBridge.h"
 
+#include "Geometry/Asset/AssetMetadata.h"
 #include "Scene/Components/LightComponent.h"
 #include "Scene/Components/MeshRendererComponent.h"
 #include "Scene/PrimitiveComponent.h"
@@ -32,18 +33,19 @@ namespace RVX
             result.lightCount = metadata.lightCount;
         }
 
-        RenderMaterialMode ToRenderMaterialMode(const IRenderMaterialSource* material)
+        RenderMaterialMode ToRenderMaterialMode(
+            const IMaterialAssetMetadata* material)
         {
             if (!material)
                 return RenderMaterialMode::Opaque;
 
-            switch (material->GetRenderMaterialSourceData().alphaMode)
+            switch (material->GetAssetMaterialMode())
             {
-                case MaterialSourceAlphaMode::Mask:
+                case AssetMaterialMode::Masked:
                     return RenderMaterialMode::Masked;
-                case MaterialSourceAlphaMode::Blend:
+                case AssetMaterialMode::Transparent:
                     return RenderMaterialMode::Transparent;
-                case MaterialSourceAlphaMode::Opaque:
+                case AssetMaterialMode::Opaque:
                 default:
                     return RenderMaterialMode::Opaque;
             }
@@ -202,26 +204,27 @@ namespace RVX
                     proxy.worldMatrix = worldMatrix;
                     proxy.normalMatrix = glm::inverseTranspose(Mat4(Mat3(worldMatrix)));
                     proxy.bounds = entity->GetWorldBounds();
-                    proxy.meshResource = renderer->GetMesh().As<IRenderMeshUploadSource>();
-                    proxy.meshId = renderer->GetMesh().GetId();
+                    proxy.meshAssetId = AssetId{renderer->GetMesh().GetId()};
                     proxy.layerMask = ~0u;
                     proxy.visible = renderer->IsVisible();
                     proxy.castsShadow = renderer->CastsShadow();
                     proxy.receivesShadow = renderer->ReceivesShadow();
 
                     const size_t submeshCount = renderer->GetSubmeshCount();
-                    proxy.materialIds.resize(submeshCount);
+                    proxy.materialAssetIds.resize(submeshCount);
                     proxy.materialModes.resize(submeshCount);
-                    proxy.materialResources.resize(submeshCount);
                     for (size_t i = 0; i < submeshCount; ++i)
                     {
                         auto material = renderer->GetMaterial(i);
-                        proxy.materialIds[i] = material.IsValid() ? material.GetId() : 0;
-                        proxy.materialModes[i] = ToRenderMaterialMode(material.As<IRenderMaterialSource>());
-                        proxy.materialResources[i] = material.As<IRenderMaterialSource>();
+                        proxy.materialAssetIds[i] =
+                            AssetId{material.IsValid() ? material.GetId() : 0};
+                        proxy.materialModes[i] = ToRenderMaterialMode(
+                            material.As<IMaterialAssetMetadata>());
                     }
 
-                    proxy.sortKey = proxy.materialIds.empty() ? 0 : proxy.materialIds[0];
+                    proxy.sortKey = proxy.materialAssetIds.empty()
+                                        ? 0
+                                        : proxy.materialAssetIds[0].value;
                     outSnapshot.primitives.push_back(std::move(proxy));
                 }
             }

@@ -7,6 +7,20 @@
 
 namespace RVX::Resource
 {
+AssetMaterialMode MaterialResource::GetAssetMaterialMode() const
+{
+    switch (GetAlphaMode())
+    {
+        case MaterialAlphaMode::Mask:
+            return AssetMaterialMode::Masked;
+        case MaterialAlphaMode::Blend:
+            return AssetMaterialMode::Transparent;
+        case MaterialAlphaMode::Opaque:
+        default:
+            return AssetMaterialMode::Opaque;
+    }
+}
+
 namespace
 {
     using Diagnostics::JsonBool;

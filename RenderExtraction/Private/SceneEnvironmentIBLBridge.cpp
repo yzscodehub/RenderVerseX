@@ -5,6 +5,7 @@
 
 #include "RenderExtraction/SceneEnvironmentIBLBridge.h"
 
+#include "Resource/Types/TextureResource.h"
 #include "Scene/Components/SkyboxComponent.h"
 #include "Scene/SceneEntity.h"
 #include "Scene/SceneManager.h"
@@ -81,16 +82,27 @@ namespace RVX
 
         result.skyboxFound = true;
         outSnapshot.intensity = skybox->GetExposure();
-        outSnapshot.irradiance = skybox->GetIrradianceMap().As<IRenderTextureUploadSource>();
-        outSnapshot.prefiltered = skybox->GetPrefilteredMap().As<IRenderTextureUploadSource>();
-        outSnapshot.brdfLUT = skybox->GetBRDFLUT().As<IRenderTextureUploadSource>();
+        const SceneTextureHandle irradiance = skybox->GetIrradianceMap();
+        const SceneTextureHandle prefiltered = skybox->GetPrefilteredMap();
+        const SceneTextureHandle brdfLut = skybox->GetBRDFLUT();
+        outSnapshot.irradianceAssetId = AssetId{irradiance.GetId()};
+        outSnapshot.prefilteredAssetId = AssetId{prefiltered.GetId()};
+        outSnapshot.brdfLutAssetId = AssetId{brdfLut.GetId()};
 
-        if (!outSnapshot.irradiance || !outSnapshot.prefiltered || !outSnapshot.brdfLUT)
+        if (!outSnapshot.irradianceAssetId.IsValid() ||
+            !outSnapshot.prefilteredAssetId.IsValid() ||
+            !outSnapshot.brdfLutAssetId.IsValid())
         {
             return fail(SceneEnvironmentIBLFallbackReason::SkyboxIBLResourcesMissing);
         }
 
-        outSnapshot.prefilteredMipLevels = std::max(1u, outSnapshot.prefiltered->GetRenderTextureMipLevels());
+        const auto* prefilteredResource =
+            prefiltered.As<Resource::TextureResource>();
+        outSnapshot.prefilteredMipLevels =
+            std::max(1u,
+                     prefilteredResource != nullptr
+                         ? prefilteredResource->GetMipLevels()
+                         : 1u);
         result.textureIBLEnabled = true;
         result.fallbackReason = SceneEnvironmentIBLFallbackReason::None;
         if (outResult)

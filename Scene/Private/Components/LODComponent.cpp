@@ -1,6 +1,7 @@
 #include "Scene/Components/LODComponent.h"
+
+#include "Geometry/Asset/AssetMetadata.h"
 #include "Scene/SceneEntity.h"
-#include "RenderContracts/RenderResource.h"
 #include <cmath>
 #include <algorithm>
 
@@ -271,9 +272,9 @@ AABB LODComponent::GetLODBounds(size_t lodIndex) const
         return AABB();
     }
 
-    if (auto* meshSource = level.mesh.As<IRenderMeshUploadSource>())
+    if (auto* meshMetadata = level.mesh.As<IMeshAssetMetadata>())
     {
-        return meshSource->GetRenderMeshBounds();
+        return meshMetadata->GetAssetMeshBounds();
     }
 
     return AABB();

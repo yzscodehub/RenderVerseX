@@ -6,6 +6,7 @@
  */
 
 #include "Core/Math/AABB.h"
+#include "Geometry/Asset/AssetMetadata.h"
 #include "Geometry/Asset/Mesh.h"
 #include "RenderContracts/RenderResource.h"
 #include "Resource/IResource.h"
@@ -23,7 +24,9 @@ namespace RVX::Resource
     /**
      * @brief Mesh resource - encapsulates Mesh data with resource lifecycle
      */
-    class MeshResource : public IResource, public IRenderMeshUploadSource
+    class MeshResource : public IResource,
+                         public IMeshAssetMetadata,
+                         public IRenderMeshUploadSource
     {
     public:
         MeshResource();
@@ -37,6 +40,9 @@ namespace RVX::Resource
         const char* GetTypeName() const override { return "Mesh"; }
         size_t GetMemoryUsage() const override;
         size_t GetGPUMemoryUsage() const override;
+
+        AABB GetAssetMeshBounds() const override { return GetBounds(); }
+        size_t GetAssetMeshSubmeshCount() const override;
 
         uint64 GetRenderResourceId() const override { return GetId(); }
         std::string_view GetRenderResourceName() const override { return GetName(); }

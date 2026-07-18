@@ -1,5 +1,6 @@
 #include "Scene/Components/MeshRendererComponent.h"
-#include "RenderContracts/RenderResource.h"
+
+#include "Geometry/Asset/AssetMetadata.h"
 #include "Scene/SceneEntity.h"
 
 namespace RVX
@@ -23,9 +24,9 @@ AABB MeshRendererComponent::GetLocalBounds() const
         return AABB();
     }
 
-    if (auto* meshSource = m_mesh.As<IRenderMeshUploadSource>())
+    if (auto* meshMetadata = m_mesh.As<IMeshAssetMetadata>())
     {
-        return meshSource->GetRenderMeshBounds();
+        return meshMetadata->GetAssetMeshBounds();
     }
 
     return AABB();
@@ -74,13 +75,13 @@ size_t MeshRendererComponent::GetSubmeshCount() const
         return 0;
     }
 
-    auto* meshSource = m_mesh.As<IRenderMeshUploadSource>();
-    if (!meshSource)
+    auto* meshMetadata = m_mesh.As<IMeshAssetMetadata>();
+    if (!meshMetadata)
     {
         return 0;
     }
 
-    return meshSource->GetRenderMeshSubmeshCount();
+    return meshMetadata->GetAssetMeshSubmeshCount();
 }
 
 } // namespace RVX

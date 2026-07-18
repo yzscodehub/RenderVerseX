@@ -5,12 +5,13 @@
  * @brief Material resource type
  */
 
+#include "Geometry/Asset/AssetMetadata.h"
+#include "Geometry/Asset/Material.h"
+#include "RenderContracts/RenderResource.h"
 #include "Resource/IResource.h"
 #include "Resource/ResourceHandle.h"
 #include "Resource/Types/ShaderResource.h"
 #include "Resource/Types/TextureResource.h"
-#include "RenderContracts/RenderResource.h"
-#include "Geometry/Asset/Material.h"
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -50,7 +51,9 @@ namespace RVX::Resource
     /**
      * @brief Material resource - encapsulates Scene::Material with texture references
      */
-    class MaterialResource : public IResource, public IRenderMaterialSource
+    class MaterialResource : public IResource,
+                             public IMaterialAssetMetadata,
+                             public IRenderMaterialSource
     {
     public:
         MaterialResource();
@@ -63,6 +66,8 @@ namespace RVX::Resource
         ResourceType GetType() const override { return ResourceType::Material; }
         const char* GetTypeName() const override { return "Material"; }
         size_t GetMemoryUsage() const override;
+
+        AssetMaterialMode GetAssetMaterialMode() const override;
 
         std::vector<ResourceId> GetRequiredDependencies() const override;
 

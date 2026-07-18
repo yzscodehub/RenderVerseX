@@ -8,8 +8,8 @@
 #include "Core/Math/AABB.h"
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
+#include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderMaterial.h"
-#include "RenderContracts/RenderResource.h"
 
 #include <cstddef>
 #include <vector>
@@ -51,12 +51,9 @@ namespace RVX
         Mat4 normalMatrix = Mat4Identity();
         AABB bounds;
 
-        uint64 meshId = 0;
-        IRenderMeshUploadSource* meshResource = nullptr;
-
-        std::vector<uint64> materialIds;
+        AssetId meshAssetId;
+        std::vector<AssetId> materialAssetIds;
         std::vector<RenderMaterialMode> materialModes;
-        std::vector<IRenderMaterialSource*> materialResources;
 
         std::vector<Mat4> skinningMatrices;
 

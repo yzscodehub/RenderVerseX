@@ -274,6 +274,20 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME RenderFrameExtractionValidation
+    SOURCES RenderFrameExtractionValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::RenderContracts
+        RVX::RenderExtraction
+        RVX::Resource
+        RVX::Scene
+        RVX::World
+    LABELS "unit;architecture"
+    TIMEOUT 60
+)
+
+rvx_add_gtest(
     NAME RenderConcurrencyValidation
     SOURCES RenderConcurrencyValidation/main.cpp
     LIBS

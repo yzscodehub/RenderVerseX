@@ -2,19 +2,25 @@
 
 /**
  * @file SceneSkyboxPassBridge.h
- * @brief Scene-to-skybox-pass selection bridge.
+ * @brief Extract update-owned skybox state into one owned value snapshot.
  */
 
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
-#include "RenderContracts/RenderResource.h"
-
-#include <functional>
+#include "RenderContracts/RenderIdentity.h"
 
 namespace RVX
 {
-    class RHITexture;
     class World;
+
+    enum class SceneSkyboxSnapshotMode : uint8
+    {
+        Disabled = 0,
+        Cubemap,
+        Equirectangular,
+        Procedural,
+        SolidColor
+    };
 
     enum class SceneSkyboxPassBridgeFallbackReason : uint8
     {
@@ -22,56 +28,39 @@ namespace RVX
         NullWorld,
         NullSceneManager,
         NoSkyboxComponent,
-        SkyboxCubemapMissing,
-        SkyboxCubemapNotReady,
-        SkyboxCubemapTextureUnavailable,
-        SkyboxTextureResolverMissing,
-        SkyboxEquirectangularDrawingNotImplemented
+        SkyboxTextureMissing
     };
 
     const char* ToString(SceneSkyboxPassBridgeFallbackReason reason);
 
+    struct SceneSkyboxSnapshot
+    {
+        SceneSkyboxSnapshotMode mode = SceneSkyboxSnapshotMode::Disabled;
+        AssetId textureAssetId;
+        Vec3 tint{1.0f};
+        Vec3 sunDirection{0.0f, 1.0f, 0.0f};
+        Vec3 sunColor{1.0f};
+        Vec3 zenithColor{0.2f, 0.4f, 0.8f};
+        Vec3 horizonColor{0.7f, 0.8f, 0.9f};
+        Vec3 groundColor{0.3f, 0.25f, 0.2f};
+        float32 intensity = 1.0f;
+        float32 rotationRadians = 0.0f;
+        float32 blurLevel = 0.0f;
+        float32 scatteringIntensity = 1.0f;
+    };
+
     struct SceneSkyboxPassBridgeResult
     {
         bool skyboxFound = false;
-        bool uploadRequested = false;
-        RHITexture* selectedCubemap = nullptr;
-        SceneSkyboxPassBridgeFallbackReason fallbackReason = SceneSkyboxPassBridgeFallbackReason::None;
-    };
-
-    struct SceneSkyboxTextureAccess
-    {
-        std::function<void(IRenderTextureUploadSource*)> requestUpload;
-        std::function<bool(uint64)> isGPUReady;
-        std::function<RHITexture*(uint64)> getTexture;
-    };
-
-    struct SceneSkyboxPassActions
-    {
-        std::function<void(const Vec3& sunDirection,
-                           const Vec3& skyColor,
-                           const Vec3& horizonColor,
-                           const Vec3& groundColor,
-                           const Vec3& sunColor,
-                           float exposure,
-                           float scatteringIntensity)> setProcedural;
-        std::function<void(const Vec3& color, float exposure)> setSolidColor;
-        std::function<void(RHITexture* cubemap, float exposure, float rotation, float blurLevel)> setCubemap;
-        std::function<void(const char* reason)> clear;
+        SceneSkyboxPassBridgeFallbackReason fallbackReason =
+            SceneSkyboxPassBridgeFallbackReason::None;
     };
 
     class SceneSkyboxPassBridge
     {
     public:
-        bool Update(World* world,
-                    const SceneSkyboxPassActions& passActions,
-                    const SceneSkyboxTextureAccess& textureAccess,
-                    SceneSkyboxPassBridgeResult* outResult = nullptr) const;
-
-    private:
-        static void MarkFallback(SceneSkyboxPassBridgeResult& result,
-                                 const SceneSkyboxPassActions& passActions,
-                                 SceneSkyboxPassBridgeFallbackReason reason);
+        bool Extract(World* world,
+                     SceneSkyboxSnapshot& outSnapshot,
+                     SceneSkyboxPassBridgeResult* outResult = nullptr) const;
     };
-
 } // namespace RVX

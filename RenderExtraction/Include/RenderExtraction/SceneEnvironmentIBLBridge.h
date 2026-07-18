@@ -6,7 +6,7 @@
  */
 
 #include "Core/Types.h"
-#include "RenderContracts/RenderResource.h"
+#include "RenderContracts/RenderIdentity.h"
 
 namespace RVX
 {
@@ -25,9 +25,9 @@ namespace RVX
 
     struct SceneEnvironmentIBLSnapshot
     {
-        IRenderTextureUploadSource* irradiance = nullptr;
-        IRenderTextureUploadSource* prefiltered = nullptr;
-        IRenderTextureUploadSource* brdfLUT = nullptr;
+        AssetId irradianceAssetId;
+        AssetId prefilteredAssetId;
+        AssetId brdfLutAssetId;
         uint32 prefilteredMipLevels = 1;
         float intensity = 1.0f;
     };

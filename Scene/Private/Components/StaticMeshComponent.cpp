@@ -1,7 +1,8 @@
 #include "Scene/Components/StaticMeshComponent.h"
 
-#include "Scene/Components/SkeletonComponent.h"
+#include "Geometry/Asset/AssetMetadata.h"
 #include "RenderContracts/RenderProxy.h"
+#include "Scene/Components/SkeletonComponent.h"
 #include "Scene/SceneEntity.h"
 
 #include <glm/gtc/matrix_inverse.hpp>
@@ -12,18 +13,19 @@ namespace RVX
 {
 namespace
 {
-    RenderMaterialMode ToRenderMaterialMode(const IRenderMaterialSource* material)
+    RenderMaterialMode ToRenderMaterialMode(
+        const IMaterialAssetMetadata* material)
     {
         if (!material)
             return RenderMaterialMode::Opaque;
 
-        switch (material->GetRenderMaterialSourceData().alphaMode)
+        switch (material->GetAssetMaterialMode())
         {
-            case MaterialSourceAlphaMode::Mask:
+            case AssetMaterialMode::Masked:
                 return RenderMaterialMode::Masked;
-            case MaterialSourceAlphaMode::Blend:
+            case AssetMaterialMode::Transparent:
                 return RenderMaterialMode::Transparent;
-            case MaterialSourceAlphaMode::Opaque:
+            case AssetMaterialMode::Opaque:
             default:
                 return RenderMaterialMode::Opaque;
         }
@@ -41,9 +43,9 @@ void StaticMeshComponent::SetMesh(SceneMeshHandle mesh)
         return;
     }
 
-    if (auto* meshSource = m_mesh.As<IRenderMeshUploadSource>())
+    if (auto* meshMetadata = m_mesh.As<IMeshAssetMetadata>())
     {
-        SetLocalBounds(meshSource->GetRenderMeshBounds());
+        SetLocalBounds(meshMetadata->GetAssetMeshBounds());
         return;
     }
 
@@ -82,13 +84,13 @@ size_t StaticMeshComponent::GetSubmeshCount() const
         return 0;
     }
 
-    auto* meshSource = m_mesh.As<IRenderMeshUploadSource>();
-    if (!meshSource)
+    auto* meshMetadata = m_mesh.As<IMeshAssetMetadata>();
+    if (!meshMetadata)
     {
         return 0;
     }
 
-    return meshSource->GetRenderMeshSubmeshCount();
+    return meshMetadata->GetAssetMeshSubmeshCount();
 }
 
 bool StaticMeshComponent::HasRenderData() const
@@ -107,26 +109,27 @@ bool StaticMeshComponent::CreateRenderProxy(RenderPrimitiveProxy& outProxy) cons
     outProxy.worldMatrix = worldMatrix;
     outProxy.normalMatrix = glm::inverseTranspose(Mat4(Mat3(worldMatrix)));
     outProxy.bounds = GetWorldBounds();
-    outProxy.meshResource = m_mesh.As<IRenderMeshUploadSource>();
-    outProxy.meshId = m_mesh.GetId();
+    outProxy.meshAssetId = AssetId{m_mesh.GetId()};
     outProxy.layerMask = GetLayerMask();
     outProxy.castsShadow = m_castsShadow;
     outProxy.receivesShadow = m_receivesShadow;
     outProxy.visible = IsVisible();
 
     const size_t submeshCount = GetSubmeshCount();
-    outProxy.materialIds.resize(submeshCount);
+    outProxy.materialAssetIds.resize(submeshCount);
     outProxy.materialModes.resize(submeshCount);
-    outProxy.materialResources.resize(submeshCount);
     for (size_t i = 0; i < submeshCount; ++i)
     {
         auto material = GetMaterial(i);
-        outProxy.materialIds[i] = material.IsValid() ? material.GetId() : 0;
-        outProxy.materialModes[i] = ToRenderMaterialMode(material.As<IRenderMaterialSource>());
-        outProxy.materialResources[i] = material.As<IRenderMaterialSource>();
+        outProxy.materialAssetIds[i] =
+            AssetId{material.IsValid() ? material.GetId() : 0};
+        outProxy.materialModes[i] =
+            ToRenderMaterialMode(material.As<IMaterialAssetMetadata>());
     }
 
-    outProxy.sortKey = outProxy.materialIds.empty() ? 0 : outProxy.materialIds[0];
+    outProxy.sortKey = outProxy.materialAssetIds.empty()
+                           ? 0
+                           : outProxy.materialAssetIds[0].value;
 
     if (auto* entity = dynamic_cast<SceneEntity*>(GetOwner()))
     {

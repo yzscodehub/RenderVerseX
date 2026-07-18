@@ -189,6 +189,11 @@ size_t MeshResource::GetRenderMeshSubmeshCount() const
     return m_mesh->HasSubMeshes() ? m_mesh->GetSubMeshes().size() : 1;
 }
 
+size_t MeshResource::GetAssetMeshSubmeshCount() const
+{
+    return GetRenderMeshSubmeshCount();
+}
+
 size_t MeshResource::GetMemoryUsage() const
 {
     size_t size = sizeof(*this);
