@@ -1,6 +1,7 @@
 #include "Common/GpuTestUtils.h"
 #include "Core/Core.h"
 #include "DX12Resources.h"
+#include "Render/Context/RenderContext.h"
 #include "Render/PipelineCache.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
 #include "RHI/RHI.h"
@@ -545,6 +546,41 @@ TEST(DX12Validation, SynchronizationCapabilities)
     EXPECT_EQ(caps.queueTopology.logicalQueueDomains[1], GPUQueueDomain::Compute);
     EXPECT_EQ(caps.queueTopology.logicalQueueDomains[2], GPUQueueDomain::Copy);
     EXPECT_TRUE(ValidateRHICapabilities(caps));
+}
+
+TEST(DX12Validation, RenderContextSubmitsTrackedGraphicsFrameWithoutSurface)
+{
+    RenderContextConfig config;
+    config.backendType = RHIBackendType::DX12;
+    config.enableValidation = false;
+    config.frameBuffering = 2;
+    config.appName = "DX12RenderContextValidation";
+
+    RenderContext context;
+    if (!context.Initialize(config))
+    {
+        GTEST_SKIP() << "DX12 RenderContext is not available";
+    }
+    if (RVX::Test::IsSoftwareAdapterName(
+            context.GetDevice()->GetCapabilities().adapterName))
+    {
+        context.Shutdown();
+        GTEST_SKIP() << "DX12 RenderContext uses a software adapter";
+    }
+
+    const uint32 frameSlot = context.GetFrameIndex();
+    ASSERT_TRUE(context.BeginFrame());
+    const GPUCompletionPoint submittedPoint = context.EndFrame();
+
+    EXPECT_EQ(submittedPoint.domain, GPUQueueDomain::Graphics);
+    EXPECT_GT(submittedPoint.value, 0u);
+    ASSERT_NE(context.GetFrameSynchronizer(), nullptr);
+    EXPECT_EQ(context.GetFrameSynchronizer()->GetFrameCompletionPoint(frameSlot),
+              submittedPoint);
+
+    context.WaitIdle();
+    EXPECT_TRUE(context.GetFrameSynchronizer()->IsFrameComplete(frameSlot));
+    context.Shutdown();
 }
 
 TEST(DX12Validation, DescriptorAndBarrierCapabilities)

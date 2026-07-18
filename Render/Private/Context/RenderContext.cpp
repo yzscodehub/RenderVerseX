@@ -61,6 +61,8 @@ bool RenderContext::Initialize(const RenderContextConfig& config,
     RVX_CORE_INFO("RenderContext: Async compute support: {}", m_supportsAsyncCompute ? "yes" : "no");
 
     m_initialized = true;
+    m_frameActive = false;
+    m_frameReadyToPresent = false;
     m_frameIndex = 0;
     m_frameNumber = 0;
     m_surface = {};
@@ -87,6 +89,7 @@ void RenderContext::Shutdown()
 
     m_initialized = false;
     m_frameActive = false;
+    m_frameReadyToPresent = false;
     m_surface = {};
 
     RVX_CORE_INFO("RenderContext shutdown complete");
@@ -199,32 +202,44 @@ void RenderContext::ResizeSwapChain(uint32_t width, uint32_t height)
     m_surface.height = height;
 }
 
-void RenderContext::BeginFrame()
+bool RenderContext::BeginFrame()
 {
     if (m_frameActive)
     {
         RVX_CORE_WARN("RenderContext: BeginFrame called while frame already active");
-        return;
+        return false;
+    }
+
+    m_frameReadyToPresent = false;
+    if (!m_initialized || !m_device)
+    {
+        RVX_CORE_WARN("RenderContext: BeginFrame called before initialization");
+        return false;
     }
 
     // Wait for this frame slot to be available
-    m_frameSynchronizer.WaitForFrame(m_frameIndex);
+    if (!m_frameSynchronizer.WaitForFrame(m_frameIndex))
+    {
+        RVX_CORE_ERROR("RenderContext: Frame slot {} completion was lost", m_frameIndex);
+        return false;
+    }
 
     // Begin device frame
-    if (m_device)
-    {
-        m_device->BeginFrame();
-    }
+    m_device->BeginFrame();
 
     // Reset and begin the command context for this frame
     RHICommandContext* ctx = GetGraphicsContext();
-    if (ctx)
+    if (!ctx)
     {
-        ctx->Reset();
-        ctx->Begin();
+        RVX_CORE_ERROR("RenderContext: No Graphics command context for frame {}", m_frameIndex);
+        m_device->EndFrame();
+        return false;
     }
+    ctx->Reset();
+    ctx->Begin();
 
     m_frameActive = true;
+    return true;
 }
 
 GPUCompletionPoint RenderContext::EndFrame()
@@ -232,6 +247,7 @@ GPUCompletionPoint RenderContext::EndFrame()
     if (!m_frameActive)
     {
         RVX_CORE_WARN("RenderContext: EndFrame called without BeginFrame");
+        m_frameReadyToPresent = false;
         return {};
     }
 
@@ -247,7 +263,10 @@ GPUCompletionPoint RenderContext::EndFrame()
     if (m_device && ctx)
     {
         submittedPoint = m_frameSynchronizer.SubmitGraphics(ctx);
-        m_frameSynchronizer.SignalFrame(m_frameIndex, submittedPoint);
+        if (submittedPoint.domain == GPUQueueDomain::Graphics && submittedPoint.value != 0)
+        {
+            m_frameSynchronizer.SignalFrame(m_frameIndex, submittedPoint);
+        }
     }
 
     // End device frame
@@ -257,11 +276,19 @@ GPUCompletionPoint RenderContext::EndFrame()
     }
 
     m_frameActive = false;
+    m_frameReadyToPresent =
+        submittedPoint.domain == GPUQueueDomain::Graphics && submittedPoint.value != 0;
     return submittedPoint;
 }
 
 void RenderContext::Present()
 {
+    if (!m_frameReadyToPresent)
+    {
+        RVX_CORE_WARN("RenderContext: Present called without a completed frame submission");
+        return;
+    }
+
     if (m_swapChain)
     {
         m_swapChain->Present();
@@ -270,6 +297,7 @@ void RenderContext::Present()
     // Advance frame index
     m_frameIndex = (m_frameIndex + 1) % m_frameSynchronizer.GetFrameCount();
     m_frameNumber++;
+    m_frameReadyToPresent = false;
 }
 
 void RenderContext::WaitIdle()

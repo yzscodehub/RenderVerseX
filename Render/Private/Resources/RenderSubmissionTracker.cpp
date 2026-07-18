@@ -256,8 +256,13 @@ namespace RVX
             return GPUCompletionStatus::Lost;
         }
 
-        state->lastCompletedValue =
-            std::max(state->lastCompletedValue, state->fence->GetCompletedValue());
+        const uint64 completedValue = state->fence->GetCompletedValue();
+        if (completedValue == std::numeric_limits<uint64>::max())
+        {
+            state->lost = true;
+            return GPUCompletionStatus::Lost;
+        }
+        state->lastCompletedValue = std::max(state->lastCompletedValue, completedValue);
         return state->lastCompletedValue >= point.value
             ? GPUCompletionStatus::Completed
             : GPUCompletionStatus::Pending;
@@ -369,10 +374,19 @@ namespace RVX
         {
             return 0;
         }
+        if (state->lost)
+        {
+            return state->lastCompletedValue;
+        }
         if (m_topology.completionMode == RHIQueueCompletionMode::NativeTimeline && state->fence)
         {
-            state->lastCompletedValue =
-                std::max(state->lastCompletedValue, state->fence->GetCompletedValue());
+            const uint64 completedValue = state->fence->GetCompletedValue();
+            if (completedValue == std::numeric_limits<uint64>::max())
+            {
+                state->lost = true;
+                return state->lastCompletedValue;
+            }
+            state->lastCompletedValue = std::max(state->lastCompletedValue, completedValue);
         }
         return state->lastCompletedValue;
     }

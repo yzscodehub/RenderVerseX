@@ -1,7 +1,8 @@
+#include "Common/GpuTestUtils.h"
 #include "Core/Core.h"
+#include "Render/Context/RenderContext.h"
 #include "RHI/RHI.h"
 #include "VulkanDevice.h"
-#include "Common/GpuTestUtils.h"
 
 #include <gtest/gtest.h>
 
@@ -13,6 +14,41 @@ using namespace RVX;
 // =============================================================================
 // Vulkan Validation Tests
 // =============================================================================
+
+TEST(VulkanValidation, RenderContextSubmitsTrackedGraphicsFrameWithoutSurface)
+{
+    RenderContextConfig config;
+    config.backendType = RHIBackendType::Vulkan;
+    config.enableValidation = false;
+    config.frameBuffering = 2;
+    config.appName = "VulkanRenderContextValidation";
+
+    RenderContext context;
+    if (!context.Initialize(config))
+    {
+        GTEST_SKIP() << "Vulkan RenderContext is not available";
+    }
+    if (RVX::Test::IsSoftwareAdapterName(
+            context.GetDevice()->GetCapabilities().adapterName))
+    {
+        context.Shutdown();
+        GTEST_SKIP() << "Vulkan RenderContext uses a software adapter";
+    }
+
+    const uint32 frameSlot = context.GetFrameIndex();
+    ASSERT_TRUE(context.BeginFrame());
+    const GPUCompletionPoint submittedPoint = context.EndFrame();
+
+    EXPECT_EQ(submittedPoint.domain, GPUQueueDomain::Graphics);
+    EXPECT_GT(submittedPoint.value, 0u);
+    ASSERT_NE(context.GetFrameSynchronizer(), nullptr);
+    EXPECT_EQ(context.GetFrameSynchronizer()->GetFrameCompletionPoint(frameSlot),
+              submittedPoint);
+
+    context.WaitIdle();
+    EXPECT_TRUE(context.GetFrameSynchronizer()->IsFrameComplete(frameSlot));
+    context.Shutdown();
+}
 
 TEST(VulkanValidation, DeviceCreation)
 {

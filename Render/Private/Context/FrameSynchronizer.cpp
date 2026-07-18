@@ -66,24 +66,27 @@ void FrameSynchronizer::Shutdown()
     m_framePoints = {};
 }
 
-void FrameSynchronizer::WaitForFrame(uint32_t frameIndex)
+bool FrameSynchronizer::WaitForFrame(uint32_t frameIndex)
 {
     if (frameIndex >= m_frameCount)
     {
         RVX_CORE_WARN("FrameSynchronizer: Invalid frame index {}", frameIndex);
-        return;
+        return false;
     }
 
     const GPUCompletionPoint point = m_framePoints[frameIndex];
     if (!m_submissionTracker || point.value == 0)
-        return;
+        return true;
 
     const GPUCompletionStatus status = m_submissionTracker->Wait(point);
     if (status == GPUCompletionStatus::Lost)
     {
         RVX_CORE_ERROR("FrameSynchronizer: Graphics completion timeline was lost for frame {}",
                        frameIndex);
+        return false;
     }
+    return status == GPUCompletionStatus::Completed ||
+           status == GPUCompletionStatus::CompatibilityWaitIdle;
 }
 
 void FrameSynchronizer::SignalFrame(uint32_t frameIndex, GPUCompletionPoint submittedPoint)
@@ -104,12 +107,14 @@ void FrameSynchronizer::SignalFrame(uint32_t frameIndex, GPUCompletionPoint subm
     m_framePoints[frameIndex] = submittedPoint;
 }
 
-void FrameSynchronizer::WaitForAllFrames()
+bool FrameSynchronizer::WaitForAllFrames()
 {
+    bool allFramesCompleted = true;
     for (uint32_t i = 0; i < m_frameCount; ++i)
     {
-        WaitForFrame(i);
+        allFramesCompleted = WaitForFrame(i) && allFramesCompleted;
     }
+    return allFramesCompleted;
 }
 
 GPUCompletionPoint FrameSynchronizer::GetFrameCompletionPoint(uint32_t frameIndex) const

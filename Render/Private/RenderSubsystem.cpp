@@ -178,7 +178,12 @@ namespace
                 return result;
             }
 
-            m_context->BeginFrame();
+            if (!m_context->BeginFrame())
+            {
+                result.code = RenderRuntimeCode::DeviceLost;
+                result.message = "Frame slot completion was lost";
+                return result;
+            }
             RHICommandContext* commandContext =
                 m_context->GetGraphicsContext();
             RHITexture* backBuffer = m_context->GetCurrentBackBuffer();
@@ -187,9 +192,17 @@ namespace
             if (commandContext == nullptr || backBuffer == nullptr ||
                 backBufferView == nullptr)
             {
-                m_context->EndFrame();
-                result.code = RenderRuntimeCode::SurfaceCreationFailed;
-                result.message = "Surface did not provide a renderable back buffer";
+                const GPUCompletionPoint submittedPoint = m_context->EndFrame();
+                if (submittedPoint.value == 0)
+                {
+                    result.code = RenderRuntimeCode::DeviceLost;
+                    result.message = "Graphics submission did not produce a completion point";
+                }
+                else
+                {
+                    result.code = RenderRuntimeCode::SurfaceCreationFailed;
+                    result.message = "Surface did not provide a renderable back buffer";
+                }
                 return result;
             }
 
@@ -207,7 +220,13 @@ namespace
             commandContext->TextureBarrier(backBuffer,
                                            RHIResourceState::RenderTarget,
                                            RHIResourceState::Present);
-            m_context->EndFrame();
+            const GPUCompletionPoint submittedPoint = m_context->EndFrame();
+            if (submittedPoint.value == 0)
+            {
+                result.code = RenderRuntimeCode::DeviceLost;
+                result.message = "Graphics submission did not produce a completion point";
+                return result;
+            }
             m_context->Present();
             return result;
         }
@@ -541,10 +560,11 @@ void RenderSubsystem::BeginFrame()
 
     if (m_legacyBridge->renderContext)
     {
-        m_legacyBridge->renderContext->BeginFrame();
+        m_legacyBridge->frameActive = m_legacyBridge->renderContext->BeginFrame();
+        return;
     }
 
-    m_legacyBridge->frameActive = true;
+    m_legacyBridge->frameActive = false;
 }
 
 void RenderSubsystem::Render(World* world, Camera* camera)

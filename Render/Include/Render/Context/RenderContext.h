@@ -51,7 +51,7 @@ namespace RVX
      * // Main loop
      * while (running)
      * {
-     *     ctx.BeginFrame();
+     *     if (!ctx.BeginFrame()) { break; }
      *     auto* cmdCtx = ctx.GetGraphicsContext();
      *     // ... record commands ...
      *     ctx.EndFrame();
@@ -127,15 +127,17 @@ namespace RVX
 
         /**
          * @brief Begin a new frame
+         * @return true when the frame slot is safe and recording began
          * 
          * Waits for the frame's previous work to complete (if using multi-buffering),
          * acquires the next swap chain image, and prepares the command context.
          */
-        void BeginFrame();
+        bool BeginFrame();
 
         /**
          * @brief End the current frame
-         * 
+         * @return Submitted Graphics completion point, or the zero point on failure
+         *
          * Submits recorded commands to the GPU.
          */
         GPUCompletionPoint EndFrame();
@@ -196,6 +198,7 @@ namespace RVX
         RenderContextConfig m_config;
         bool m_initialized = false;
         bool m_frameActive = false;
+        bool m_frameReadyToPresent = false;
 
         // RHI resources
         std::unique_ptr<IRHIDevice> m_device;

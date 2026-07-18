@@ -61,7 +61,7 @@ namespace RVX
             uint64 lastSubmittedValue = 0;
             mutable uint64 lastCompletedValue = 0;
             bool active = false;
-            bool lost = false;
+            mutable bool lost = false;
         };
 
         DomainState* GetDomainState(GPUQueueDomain domain);

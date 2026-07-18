@@ -19,6 +19,27 @@ namespace RVX::Tests
 {
     namespace
     {
+        class ScopedCoreLogLevel final
+        {
+        public:
+            explicit ScopedCoreLogLevel(spdlog::level::level_enum level)
+                : m_previousLevel(Log::GetModuleLevel("CORE"))
+            {
+                Log::SetModuleLevel("CORE", level);
+            }
+
+            ~ScopedCoreLogLevel()
+            {
+                Log::SetModuleLevel("CORE", m_previousLevel);
+            }
+
+            ScopedCoreLogLevel(const ScopedCoreLogLevel&) = delete;
+            ScopedCoreLogLevel& operator=(const ScopedCoreLogLevel&) = delete;
+
+        private:
+            spdlog::level::level_enum m_previousLevel = spdlog::level::info;
+        };
+
         class FakeCommandContext final : public RHICommandContext
         {
         public:
@@ -102,6 +123,7 @@ namespace RVX::Tests
 
             uint64 AllocateValue() { return m_nextValue++; }
             void SetNextValue(uint64 value) { m_nextValue = value; }
+            void SetCompletedValue(uint64 value) { m_completedValue = value; }
             uint64 GetNextValue() const { return m_nextValue; }
             void Complete(uint64 value)
             {
@@ -662,6 +684,69 @@ namespace RVX::Tests
         EXPECT_EQ(tracker.Query(point), GPUCompletionStatus::CompatibilityWaitIdle);
     }
 
+    TEST(RenderSubmissionValidation, NativeFenceDeviceRemovalIsStickyLoss)
+    {
+        RHICapabilities capabilities = MakeCapabilities(
+            RHIQueueCompletionMode::NativeTimeline,
+            {GPUQueueDomain::Graphics, GPUQueueDomain::Graphics, GPUQueueDomain::Graphics}, 1);
+        capabilities.backendType = RHIBackendType::Metal;
+        FakeDevice device(capabilities);
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+
+        FakeCommandContext graphics(RHICommandQueueType::Graphics);
+        const GPUCompletionPoint point = tracker.Submit(&graphics);
+        ASSERT_GT(point.value, 0u);
+
+        FakeFence* fence = device.GetFence(0);
+        ASSERT_NE(fence, nullptr);
+        fence->SetCompletedValue(UINT64_MAX);
+
+        EXPECT_EQ(tracker.Query(point), GPUCompletionStatus::Lost);
+        EXPECT_EQ(tracker.Wait(point), GPUCompletionStatus::Lost);
+        EXPECT_EQ(fence->waitCount, 0u);
+        EXPECT_EQ(tracker.GetLastCompletedValue(GPUQueueDomain::Graphics), 0u);
+
+        fence->SetCompletedValue(point.value);
+        EXPECT_EQ(tracker.GetLastCompletedValue(GPUQueueDomain::Graphics), 0u);
+        EXPECT_EQ(tracker.Query(point), GPUCompletionStatus::Lost);
+    }
+
+    TEST(RenderSubmissionValidation, LostFrameSlotCannotBeReused)
+    {
+        const bool initializedLog = !Log::GetCoreLogger();
+        if (initializedLog)
+        {
+            Log::Initialize();
+        }
+
+        RHICapabilities capabilities = MakeCapabilities(
+            RHIQueueCompletionMode::NativeTimeline,
+            {GPUQueueDomain::Graphics, GPUQueueDomain::Graphics, GPUQueueDomain::Graphics}, 1);
+        capabilities.backendType = RHIBackendType::Metal;
+        FakeDevice device(capabilities);
+        FrameSynchronizer synchronizer;
+        ASSERT_TRUE(synchronizer.Initialize(&device, 2));
+
+        const GPUCompletionPoint point{GPUQueueDomain::Graphics, 7};
+        synchronizer.SignalFrame(0, point);
+        device.GetFence(0)->SetCompletedValue(UINT64_MAX);
+
+        {
+            ScopedCoreLogLevel suppressExpectedLost(spdlog::level::critical);
+            EXPECT_FALSE(synchronizer.WaitForFrame(0));
+            EXPECT_EQ(device.GetFence(0)->waitCount, 0u);
+            EXPECT_EQ(synchronizer.GetFrameCompletionPoint(0), point);
+            EXPECT_FALSE(synchronizer.IsFrameComplete(0));
+            EXPECT_FALSE(synchronizer.WaitForAllFrames());
+            synchronizer.Shutdown();
+        }
+        if (initializedLog)
+        {
+            Log::Shutdown();
+        }
+    }
+
     TEST(RenderSubmissionValidation, CompatibilityTokenPerformsOneExplicitWaitIdle)
     {
         RHICapabilities capabilities = MakeCapabilities(
@@ -706,7 +791,7 @@ namespace RVX::Tests
         synchronizer.SignalFrame(1, point);
         EXPECT_EQ(synchronizer.GetFrameCompletionPoint(1), point);
         EXPECT_FALSE(synchronizer.IsFrameComplete(1));
-        synchronizer.WaitForFrame(1);
+        EXPECT_TRUE(synchronizer.WaitForFrame(1));
         EXPECT_EQ(device.GetFence(0)->waitCount, 1u);
         EXPECT_EQ(device.GetFence(0)->waitedValue, 7u);
         EXPECT_TRUE(synchronizer.IsFrameComplete(1));

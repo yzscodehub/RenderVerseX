@@ -384,6 +384,7 @@ if(RVX_ENABLE_VULKAN)
         SOURCES VulkanValidation/main.cpp
         LIBS
             RVX::Core
+            RVX::Render
             RVX::RenderGraph
             RVX::RHI
             ${RVX_ALL_BACKENDS}

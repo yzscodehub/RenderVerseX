@@ -29,7 +29,7 @@ namespace RVX
      * sync.Initialize(device, 3);  // 3 frames in flight
      *
      * // Frame loop
-     * sync.WaitForFrame(frameIndex);  // Wait for frame to complete
+     * if (!sync.WaitForFrame(frameIndex)) { return; }  // Do not reuse a lost slot
      * // ... record commands ...
      * sync.SignalFrame(frameIndex, submittedPoint);   // Record submitted completion point
      * @endcode
@@ -60,11 +60,12 @@ namespace RVX
         /**
          * @brief Wait for a specific frame to complete
          * @param frameIndex The frame index to wait for
+         * @return true when the slot is safe to reuse; false when completion was lost
          *
          * Call this at the beginning of a frame before reusing resources
          * from that frame index.
          */
-        void WaitForFrame(uint32_t frameIndex);
+        bool WaitForFrame(uint32_t frameIndex);
 
         /**
          * @brief Record that a frame has been submitted
@@ -77,10 +78,11 @@ namespace RVX
 
         /**
          * @brief Wait for all frames to complete
+         * @return true when every frame slot completed successfully
          *
          * Useful during shutdown or when needing to flush all GPU work.
          */
-        void WaitForAllFrames();
+        bool WaitForAllFrames();
 
         /**
          * @brief Get the Graphics completion point stored for a frame slot
