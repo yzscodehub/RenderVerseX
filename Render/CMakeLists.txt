@@ -23,6 +23,7 @@ target_sources(RVX_RenderRuntimeCore PRIVATE
     Private/Runtime/RenderResourceStatusTable.cpp
     Private/Runtime/RenderUploadQueue.cpp
     Private/Runtime/RenderThreadGuard.cpp
+    Private/Resources/RenderRetirementQueue.cpp
     Private/Resources/RenderSubmissionTracker.cpp
 )
 

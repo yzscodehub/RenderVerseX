@@ -1,6 +1,7 @@
-#include "Resources/RenderSubmissionTracker.h"
 #include "Core/Log.h"
 #include "Render/Context/FrameSynchronizer.h"
+#include "Resources/RenderRetirementQueue.h"
+#include "Resources/RenderSubmissionTracker.h"
 #include "RHI/RHICapabilities.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
@@ -10,7 +11,9 @@
 
 #include <array>
 #include <limits>
+#include <memory>
 #include <span>
+#include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -252,6 +255,36 @@ namespace RVX::Tests
         private:
             RHIBackendType m_backendType = RHIBackendType::None;
         };
+
+        struct RetirementProbeState
+        {
+            bool destroyed = false;
+            std::thread::id destructionThread{};
+        };
+
+        class RetirementProbe final : public RefCounted
+        {
+        public:
+            explicit RetirementProbe(std::shared_ptr<RetirementProbeState> state)
+                : m_state(std::move(state))
+            {
+            }
+
+            ~RetirementProbe() override
+            {
+                m_state->destroyed = true;
+                m_state->destructionThread = std::this_thread::get_id();
+            }
+
+        private:
+            std::shared_ptr<RetirementProbeState> m_state;
+        };
+
+        Ref<RefCounted> MakeRetirementProbe(
+            const std::shared_ptr<RetirementProbeState>& state)
+        {
+            return Ref<RefCounted>(new RetirementProbe(state));
+        }
     } // namespace
 
     TEST(RenderSubmissionValidation, PublicTopologyTypesHaveStableDefaultsAndLayout)
@@ -801,5 +834,210 @@ namespace RVX::Tests
         {
             Log::Shutdown();
         }
+    }
+
+    TEST(RenderSubmissionValidation, RetirementWaitsForEveryDomainAndPublishesDiagnostics)
+    {
+        ASSERT_EQ(DeferredDeleterRegistry::Get(), nullptr);
+        FakeDevice device(MakeCapabilities(
+            RHIQueueCompletionMode::NativeTimeline,
+            {GPUQueueDomain::Graphics, GPUQueueDomain::Compute, GPUQueueDomain::Copy}, 3));
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+        RenderRetirementQueue queue;
+        ASSERT_TRUE(queue.Initialize(&tracker));
+
+        FakeCommandContext graphics(RHICommandQueueType::Graphics);
+        FakeCommandContext copy(RHICommandQueueType::Copy);
+        const GPUCompletionPoint graphicsPoint = tracker.Submit(&graphics);
+        const GPUCompletionPoint copyPoint = tracker.Submit(&copy);
+        GPUCompletionToken token;
+        ASSERT_TRUE(InsertGPUCompletionPoint(token, graphicsPoint));
+        ASSERT_TRUE(InsertGPUCompletionPoint(token, copyPoint));
+
+        const auto state = std::make_shared<RetirementProbeState>();
+        RenderRetirementEntry entry{token, MakeRetirementProbe(state), 4096};
+        ASSERT_TRUE(queue.Enqueue(std::move(entry)));
+        EXPECT_FALSE(entry.object);
+
+        const RenderRetirementDiagnostics pending = queue.GetDiagnostics();
+        EXPECT_EQ(pending.entryCount, 1u);
+        EXPECT_EQ(pending.estimatedBytes, 4096u);
+        EXPECT_EQ(pending.oldestPendingCompletionValues[0], graphicsPoint.value);
+        EXPECT_EQ(pending.oldestPendingCompletionValues[1], 0u);
+        EXPECT_EQ(pending.oldestPendingCompletionValues[2], copyPoint.value);
+
+        device.GetFence(0)->Complete(graphicsPoint.value);
+        EXPECT_EQ(queue.Poll(), GPUCompletionStatus::Pending);
+        EXPECT_FALSE(state->destroyed);
+        const RenderRetirementDiagnostics partiallyComplete = queue.GetDiagnostics();
+        EXPECT_EQ(partiallyComplete.oldestPendingCompletionValues[0], 0u);
+        EXPECT_EQ(partiallyComplete.oldestPendingCompletionValues[2], copyPoint.value);
+
+        device.GetFence(2)->Complete(copyPoint.value);
+        EXPECT_EQ(queue.Poll(), GPUCompletionStatus::Completed);
+        EXPECT_TRUE(state->destroyed);
+        EXPECT_EQ(state->destructionThread, std::this_thread::get_id());
+        EXPECT_EQ(queue.GetDiagnostics().entryCount, 0u);
+    }
+
+    TEST(RenderSubmissionValidation, RetirementHonorsSameDomainMaximum)
+    {
+        ASSERT_EQ(DeferredDeleterRegistry::Get(), nullptr);
+        RHICapabilities capabilities = MakeCapabilities(
+            RHIQueueCompletionMode::NativeTimeline,
+            {GPUQueueDomain::Graphics, GPUQueueDomain::Graphics, GPUQueueDomain::Graphics}, 1);
+        capabilities.backendType = RHIBackendType::Metal;
+        FakeDevice device(capabilities);
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+        RenderRetirementQueue queue;
+        ASSERT_TRUE(queue.Initialize(&tracker));
+
+        FakeCommandContext graphics(RHICommandQueueType::Graphics);
+        GPUCompletionToken earlier;
+        GPUCompletionToken later;
+        const GPUCompletionPoint first = tracker.Submit(&graphics);
+        const GPUCompletionPoint second = tracker.Submit(&graphics);
+        ASSERT_TRUE(InsertGPUCompletionPoint(earlier, first));
+        ASSERT_TRUE(InsertGPUCompletionPoint(later, second));
+        ASSERT_TRUE(MergeGPUCompletionToken(earlier, later));
+        ASSERT_EQ(earlier.count, 1u);
+        ASSERT_EQ(earlier.points[0], second);
+
+        const auto state = std::make_shared<RetirementProbeState>();
+        ASSERT_TRUE(queue.Enqueue({earlier, MakeRetirementProbe(state), 64}));
+        device.GetFence(0)->Complete(first.value);
+        EXPECT_EQ(queue.Poll(), GPUCompletionStatus::Pending);
+        EXPECT_FALSE(state->destroyed);
+        device.GetFence(0)->Complete(second.value);
+        EXPECT_EQ(queue.Poll(), GPUCompletionStatus::Completed);
+        EXPECT_TRUE(state->destroyed);
+    }
+
+    TEST(RenderSubmissionValidation, ZeroPointRetirementReleasesOnRenderThread)
+    {
+        ASSERT_EQ(DeferredDeleterRegistry::Get(), nullptr);
+        RenderSubmissionTracker uninitializedTracker;
+        RenderRetirementQueue uninitializedQueue;
+        EXPECT_FALSE(uninitializedQueue.Initialize(&uninitializedTracker));
+
+        FakeDevice device(MakeCapabilities(
+            RHIQueueCompletionMode::NativeTimeline,
+            {GPUQueueDomain::Graphics, GPUQueueDomain::Compute, GPUQueueDomain::Copy}, 3));
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+        RenderRetirementQueue queue;
+        ASSERT_TRUE(queue.Initialize(&tracker));
+
+        const auto state = std::make_shared<RetirementProbeState>();
+        ASSERT_TRUE(queue.Enqueue({{}, MakeRetirementProbe(state), 16}));
+        EXPECT_TRUE(state->destroyed);
+        EXPECT_EQ(state->destructionThread, std::this_thread::get_id());
+        EXPECT_EQ(queue.GetDiagnostics().entryCount, 0u);
+    }
+
+    TEST(RenderSubmissionValidation, CompatibilityRetirementPerformsOneBoundedWaitIdle)
+    {
+        ASSERT_EQ(DeferredDeleterRegistry::Get(), nullptr);
+        RHICapabilities capabilities = MakeCapabilities(
+            RHIQueueCompletionMode::CompatibilityWaitIdle,
+            {GPUQueueDomain::Graphics, GPUQueueDomain::Graphics, GPUQueueDomain::Graphics}, 1);
+        capabilities.backendType = RHIBackendType::DX11;
+        FakeDevice device(capabilities);
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+        RenderRetirementQueue queue;
+        ASSERT_TRUE(queue.Initialize(&tracker));
+
+        FakeCommandContext graphics(RHICommandQueueType::Graphics);
+        FakeCommandContext copy(RHICommandQueueType::Copy);
+        GPUCompletionToken token;
+        ASSERT_TRUE(InsertGPUCompletionPoint(token, tracker.Submit(&graphics)));
+        ASSERT_TRUE(InsertGPUCompletionPoint(token, tracker.Submit(&copy)));
+        const auto state = std::make_shared<RetirementProbeState>();
+        ASSERT_TRUE(queue.Enqueue({token, MakeRetirementProbe(state), 128}));
+
+        EXPECT_EQ(queue.Poll(), GPUCompletionStatus::CompatibilityWaitIdle);
+        EXPECT_EQ(device.waitIdleCount, 1u);
+        EXPECT_TRUE(state->destroyed);
+        EXPECT_EQ(queue.Poll(), GPUCompletionStatus::Completed);
+        EXPECT_EQ(device.waitIdleCount, 1u);
+    }
+
+    TEST(RenderSubmissionValidation, DeviceLostRetirementRequiresExplicitLostTeardown)
+    {
+        ASSERT_EQ(DeferredDeleterRegistry::Get(), nullptr);
+        RHICapabilities capabilities = MakeCapabilities(
+            RHIQueueCompletionMode::NativeTimeline,
+            {GPUQueueDomain::Graphics, GPUQueueDomain::Graphics, GPUQueueDomain::Graphics}, 1);
+        capabilities.backendType = RHIBackendType::Metal;
+        FakeDevice device(capabilities);
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+        RenderRetirementQueue queue;
+        ASSERT_TRUE(queue.Initialize(&tracker));
+
+        FakeCommandContext graphics(RHICommandQueueType::Graphics);
+        GPUCompletionToken token;
+        ASSERT_TRUE(InsertGPUCompletionPoint(token, tracker.Submit(&graphics)));
+        const auto state = std::make_shared<RetirementProbeState>();
+        ASSERT_TRUE(queue.Enqueue({token, MakeRetirementProbe(state), 512}));
+        device.GetFence(0)->SetCompletedValue(UINT64_MAX);
+
+        EXPECT_EQ(queue.Poll(), GPUCompletionStatus::Lost);
+        EXPECT_FALSE(state->destroyed);
+        EXPECT_EQ(queue.GetDiagnostics().entryCount, 1u);
+        EXPECT_EQ(queue.ForceDeviceLostTeardown(), GPUCompletionStatus::Lost);
+        EXPECT_TRUE(state->destroyed);
+        EXPECT_EQ(state->destructionThread, std::this_thread::get_id());
+        EXPECT_EQ(queue.GetDiagnostics().entryCount, 0u);
+    }
+
+    TEST(RenderSubmissionValidation, RetirementMutationIsRejectedOffRenderThread)
+    {
+        ASSERT_EQ(DeferredDeleterRegistry::Get(), nullptr);
+        RHICapabilities capabilities = MakeCapabilities(
+            RHIQueueCompletionMode::NativeTimeline,
+            {GPUQueueDomain::Graphics, GPUQueueDomain::Graphics, GPUQueueDomain::Graphics}, 1);
+        capabilities.backendType = RHIBackendType::Metal;
+        FakeDevice device(capabilities);
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+        RenderRetirementQueue queue;
+        ASSERT_TRUE(queue.Initialize(&tracker));
+
+        FakeCommandContext graphics(RHICommandQueueType::Graphics);
+        GPUCompletionToken token;
+        ASSERT_TRUE(InsertGPUCompletionPoint(token, tracker.Submit(&graphics)));
+        const auto retainedState = std::make_shared<RetirementProbeState>();
+        ASSERT_TRUE(queue.Enqueue({token, MakeRetirementProbe(retainedState), 256}));
+
+        const auto rejectedState = std::make_shared<RetirementProbeState>();
+        RenderRetirementEntry rejected{token, MakeRetirementProbe(rejectedState), 128};
+        bool enqueueResult = true;
+        GPUCompletionStatus pollResult = GPUCompletionStatus::Completed;
+        GPUCompletionStatus teardownResult = GPUCompletionStatus::Completed;
+        std::thread worker([&]
+        {
+            enqueueResult = queue.Enqueue(std::move(rejected));
+            pollResult = queue.Poll();
+            teardownResult = queue.ForceDeviceLostTeardown();
+        });
+        worker.join();
+
+        EXPECT_FALSE(enqueueResult);
+        EXPECT_EQ(pollResult, GPUCompletionStatus::Lost);
+        EXPECT_EQ(teardownResult, GPUCompletionStatus::Lost);
+        EXPECT_TRUE(rejected.object);
+        EXPECT_FALSE(rejectedState->destroyed);
+        EXPECT_FALSE(retainedState->destroyed);
+        EXPECT_EQ(queue.GetDiagnostics().entryCount, 1u);
+
+        rejected.object.Reset();
+        EXPECT_EQ(rejectedState->destructionThread, std::this_thread::get_id());
+        EXPECT_EQ(queue.ForceDeviceLostTeardown(), GPUCompletionStatus::Lost);
+        EXPECT_TRUE(retainedState->destroyed);
+        EXPECT_EQ(retainedState->destructionThread, std::this_thread::get_id());
     }
 } // namespace RVX::Tests
