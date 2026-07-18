@@ -27,7 +27,9 @@ target_sources(RVX_Resource PRIVATE
     Private/ResourceRegistry.cpp
     Private/DependencyGraph.cpp
     Private/RuntimeResourcePolicy.cpp
+    Private/RenderUploadRequestBuilder.cpp
     Private/ResourceManager.cpp
+    Private/ResourceSubsystem.cpp
     Private/DefaultResources.cpp
     
     # Concrete resource types

@@ -1,5 +1,7 @@
 #include "Resource/ResourceCache.h"
 
+#include <utility>
+
 namespace RVX::Resource
 {
 
@@ -57,6 +59,7 @@ void ResourceCache::Store(IResource* resource)
                 if (victimIt != m_resources.end())
                 {
                     currentUsage -= victimIt->second->GetTotalMemoryUsage();
+                    NotifyBeforeRemove(victimIt->second);
                     if (victimIt->second->Release())
                     {
                         delete victimIt->second;
@@ -98,6 +101,7 @@ void ResourceCache::Remove(ResourceId id)
     auto it = m_resources.find(id);
     if (it != m_resources.end())
     {
+        NotifyBeforeRemove(it->second);
         if (it->second->Release())
         {
             delete it->second;
@@ -113,6 +117,7 @@ void ResourceCache::Clear()
 
     for (auto& [id, resource] : m_resources)
     {
+        NotifyBeforeRemove(resource);
         if (resource->Release())
         {
             delete resource;
@@ -166,6 +171,7 @@ void ResourceCache::Evict(size_t targetBytes)
         if (victimIt != m_resources.end())
         {
             currentUsage -= victimIt->second->GetTotalMemoryUsage();
+            NotifyBeforeRemove(victimIt->second);
             if (victimIt->second->Release())
             {
                 delete victimIt->second;
@@ -196,6 +202,7 @@ void ResourceCache::EvictUnused()
         auto it = m_resources.find(id);
         if (it != m_resources.end())
         {
+            NotifyBeforeRemove(it->second);
             if (it->second->Release())
             {
                 delete it->second;
@@ -230,6 +237,21 @@ void ResourceCache::ResetStats()
     std::lock_guard<std::mutex> lock(m_mutex);
     m_hitCount = 0;
     m_missCount = 0;
+}
+
+void ResourceCache::SetBeforeRemoveCallback(
+    std::function<void(IResource*)> callback)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_beforeRemoveCallback = std::move(callback);
+}
+
+void ResourceCache::NotifyBeforeRemove(IResource* resource)
+{
+    if (m_beforeRemoveCallback)
+    {
+        m_beforeRemoveCallback(resource);
+    }
 }
 
 void ResourceCache::TouchLRU(ResourceId id)

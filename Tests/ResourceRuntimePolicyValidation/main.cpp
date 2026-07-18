@@ -1,8 +1,15 @@
 #include "Core/Diagnostics/ContentHash.h"
 #include "Core/Log.h"
+#include "Geometry/Asset/Material.h"
+#include "Geometry/Asset/Mesh.h"
+#include "Resource/RenderUploadRequestBuilder.h"
 #include "Resource/ResourceManager.h"
+#include "Resource/ResourceSubsystem.h"
 #include "Resource/RuntimeResourcePolicy.h"
+#include "Resource/Types/MaterialResource.h"
+#include "Resource/Types/MeshResource.h"
 #include "Resource/Types/ShaderResource.h"
+#include "Resource/Types/TextureResource.h"
 
 #include <gtest/gtest.h>
 
@@ -15,6 +22,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 using namespace RVX;
@@ -1283,6 +1291,594 @@ TEST(ResourceRuntimePolicyValidation, EditorHotReloadTracksSourceResourceLoads)
         EXPECT_EQ(manager.GetHotReloadDiagnostic().status, ResourceHotReloadStatus::Active);
     }
 
+    std::error_code removeError;
+    fs::remove_all(root, removeError);
+}
+
+namespace
+{
+    class RenderTextureLoader final : public IResourceLoader
+    {
+    public:
+        ResourceType GetResourceType() const override
+        {
+            return ResourceType::Texture;
+        }
+
+        std::vector<std::string> GetSupportedExtensions() const override
+        {
+            return {".png"};
+        }
+
+        IResource* Load(const std::string&) override
+        {
+            auto* texture = new TextureResource();
+            TextureMetadata metadata;
+            metadata.width = 2;
+            metadata.height = 2;
+            metadata.format = TextureFormat::RGBA8;
+            texture->SetData(std::vector<uint8>(16, ++loadValue), metadata);
+            return texture;
+        }
+
+        uint8 loadValue = 0;
+    };
+
+    class FakeResourceGateway final : public IRenderResourceGateway
+    {
+    public:
+        RenderResourceReserveResult ReserveResource(
+            AssetId assetId,
+            RenderResourceKind kind) noexcept override
+        {
+            (void)kind;
+            ++reserveAttempts;
+            if (shuttingDown)
+            {
+                return {RenderResourceReserveCode::ShuttingDown, {}, {}};
+            }
+            const auto existing = assets.find(assetId);
+            if (existing != assets.end())
+            {
+                RenderResourceReserveResult result;
+                result.code = RenderResourceReserveCode::Existing;
+                result.handle = existing->second;
+                result.status = QueryResourceStatus(result.handle);
+                return result;
+            }
+
+            const RenderResourceHandle handle{nextSlot++, 1};
+            assets.emplace(assetId, handle);
+            handles.emplace(handle, assetId);
+            statuses.emplace(handle,
+                             RenderResourceStatus{
+                                 RenderResourceStatusCode::Current,
+                                 RenderResourcePublicState::Reserved,
+                                 RenderResourceFailureCode::None});
+            RenderResourceReserveResult result;
+            result.code = RenderResourceReserveCode::Reserved;
+            result.handle = handle;
+            result.status = statuses.at(handle);
+            return result;
+        }
+
+        RenderUploadEnqueueResult TryEnqueueUpload(
+            const ResourceUploadRequestRef& request) noexcept override
+        {
+            ++enqueueAttempts;
+            if (shuttingDown)
+                return {RenderUploadEnqueueCode::ShuttingDown};
+            if (pressureCount != 0)
+            {
+                --pressureCount;
+                return {pressureCode};
+            }
+            if (!request)
+                return {RenderUploadEnqueueCode::InvalidRequest};
+
+            auto status = statuses.find(request->GetHandle());
+            if (status == statuses.end())
+                return {RenderUploadEnqueueCode::StaleGeneration};
+            status->second.state = RenderResourcePublicState::UploadQueued;
+            acceptedRequests[request->GetHandle()] = request;
+            ++acceptedCount;
+            return {RenderUploadEnqueueCode::Accepted};
+        }
+
+        RenderReleaseResult RequestRelease(
+            RenderResourceHandle handle) noexcept override
+        {
+            ++releaseAttempts;
+            if (shuttingDown)
+                return {RenderReleaseCode::ShuttingDown};
+            auto status = statuses.find(handle);
+            if (status == statuses.end())
+                return {RenderReleaseCode::StaleGeneration};
+            if (status->second.state == RenderResourcePublicState::Evicting ||
+                status->second.state == RenderResourcePublicState::Released)
+            {
+                return {RenderReleaseCode::AlreadyPending};
+            }
+            status->second.state = RenderResourcePublicState::Evicting;
+            const AssetId asset = handles.at(handle);
+            assets.erase(asset);
+            return {RenderReleaseCode::Accepted};
+        }
+
+        RenderResourceStatus QueryResourceStatus(
+            RenderResourceHandle handle) const noexcept override
+        {
+            const auto status = statuses.find(handle);
+            if (status == statuses.end())
+            {
+                return {RenderResourceStatusCode::StaleGeneration,
+                        RenderResourcePublicState::Released,
+                        RenderResourceFailureCode::None};
+            }
+            return status->second;
+        }
+
+        void PublishTerminal(RenderResourceHandle handle,
+                             RenderResourcePublicState state,
+                             RenderResourceFailureCode failure =
+                                 RenderResourceFailureCode::None)
+        {
+            auto& status = statuses.at(handle);
+            status.state = state;
+            status.failure = failure;
+            acceptedRequests.erase(handle);
+        }
+
+        std::weak_ptr<const ResourceUploadRequest> GetAcceptedRequest(
+            RenderResourceHandle handle) const
+        {
+            const auto request = acceptedRequests.find(handle);
+            return request == acceptedRequests.end()
+                       ? std::weak_ptr<const ResourceUploadRequest>{}
+                       : std::weak_ptr<const ResourceUploadRequest>{request->second};
+        }
+
+        uint32 nextSlot = 1;
+        uint32 pressureCount = 0;
+        RenderUploadEnqueueCode pressureCode =
+            RenderUploadEnqueueCode::QueueFullByCount;
+        uint32 reserveAttempts = 0;
+        uint32 enqueueAttempts = 0;
+        uint32 acceptedCount = 0;
+        uint32 releaseAttempts = 0;
+        bool shuttingDown = false;
+        std::unordered_map<AssetId, RenderResourceHandle, AssetIdHash> assets;
+        std::unordered_map<RenderResourceHandle,
+                           AssetId,
+                           RenderResourceHandleHash> handles;
+        std::unordered_map<RenderResourceHandle,
+                           RenderResourceStatus,
+                           RenderResourceHandleHash> statuses;
+        std::unordered_map<RenderResourceHandle,
+                           ResourceUploadRequestRef,
+                           RenderResourceHandleHash> acceptedRequests;
+    };
+
+    ResourceManagerConfig MakeRenderResourceTestConfig(const fs::path& root)
+    {
+        ResourceManagerConfig config;
+        config.asyncThreadCount = 0;
+        config.runtimePolicy.mode = ResourceRuntimeMode::Editor;
+        config.runtimePolicy.allowSourceAssetReads = true;
+        config.runtimePolicy.sourceRoot = root.string();
+        return config;
+    }
+} // namespace
+
+TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderOwnsMeshAndTextureBytes)
+{
+    MeshResource meshResource;
+    meshResource.SetId(101);
+    auto mesh = std::make_shared<Mesh>();
+    const std::vector<Vec3> positions = {
+        {-1.0f, 0.0f, 0.0f},
+        {1.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f}};
+    mesh->SetPositions(positions);
+    mesh->SetNormals(std::vector<Vec3>(3, Vec3{0.0f, 0.0f, 1.0f}));
+    mesh->SetUVs({{0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 1.0f}});
+    mesh->SetIndices(std::vector<uint16>{0, 1, 2});
+    mesh->SetBoundingBox({-1.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 0.0f});
+    meshResource.SetMesh(mesh);
+
+    const RenderUploadRequestBuildResult meshBuild =
+        RenderUploadRequestBuilder::Build(
+            meshResource, {1, 1}, 1, {});
+    ASSERT_EQ(meshBuild.code, RenderUploadRequestBuildCode::Built);
+    ASSERT_NE(meshBuild.request, nullptr);
+    const auto meshPayload =
+        std::get<MeshUploadPayload>(meshBuild.request->GetPayload());
+    ASSERT_FALSE(meshPayload.bytes.empty());
+    const std::vector<uint8> ownedMeshBytes = meshPayload.bytes;
+
+    mesh->SetPositions(std::vector<Vec3>(3, Vec3{42.0f}));
+    EXPECT_EQ(std::get<MeshUploadPayload>(meshBuild.request->GetPayload()).bytes,
+              ownedMeshBytes);
+
+    TextureResource texture;
+    texture.SetId(102);
+    TextureMetadata metadata;
+    metadata.width = 2;
+    metadata.height = 2;
+    metadata.mipLevels = 1;
+    metadata.format = TextureFormat::RGBA8;
+    texture.SetData(std::vector<uint8>(16, 7), metadata);
+    const RenderUploadRequestBuildResult textureBuild =
+        RenderUploadRequestBuilder::Build(texture, {2, 1}, 2, {});
+    ASSERT_EQ(textureBuild.code, RenderUploadRequestBuildCode::Built);
+    const auto& texturePayload =
+        std::get<TextureUploadPayload>(textureBuild.request->GetPayload());
+    ASSERT_EQ(texturePayload.bytes.size(), 16U);
+    ASSERT_EQ(texturePayload.subresources.size(), 1U);
+    EXPECT_EQ(texturePayload.subresources.front().rowPitch, 8U);
+    EXPECT_EQ(texturePayload.subresources.front().slicePitch, 16U);
+    texture.SetData(std::vector<uint8>(16, 99), metadata);
+    EXPECT_EQ(std::get<TextureUploadPayload>(textureBuild.request->GetPayload())
+                  .bytes.front(),
+              7U);
+}
+
+TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderResolvesMaterialTextureHandles)
+{
+    auto* texture = new TextureResource();
+    texture->SetId(201);
+    TextureMetadata metadata;
+    metadata.width = 1;
+    metadata.height = 1;
+    texture->SetData(std::vector<uint8>(4, 255), metadata);
+
+    MaterialResource material;
+    material.SetId(202);
+    auto source = std::make_shared<Material>("owned-material");
+    source->SetBaseColorTexture(TextureInfo("albedo.png"));
+    material.SetMaterialData(source);
+    material.SetTexture("albedo", ResourceHandle<TextureResource>(texture));
+
+    const RenderResourceHandle textureHandle{7, 3};
+    RenderUploadRequestBuildResult build =
+        RenderUploadRequestBuilder::Build(
+            material,
+            {8, 2},
+            3,
+            [textureHandle](AssetId assetId, RenderResourceKind kind)
+            {
+                EXPECT_EQ(assetId, (AssetId{201}));
+                EXPECT_EQ(kind, RenderResourceKind::Texture);
+                return textureHandle;
+            });
+
+    material.SetTexture("albedo", {});
+    material.SetMaterialData({});
+    source.reset();
+
+    ASSERT_EQ(build.code, RenderUploadRequestBuildCode::Built);
+    ASSERT_NE(build.request, nullptr);
+    const auto& payload =
+        std::get<MaterialUploadPayload>(build.request->GetPayload());
+    ASSERT_EQ(payload.textureBindings.size(), 1U);
+    EXPECT_EQ(payload.textureBindings.front().texture, textureHandle);
+    EXPECT_EQ(build.request->GetDependencies(),
+              std::vector<RenderResourceHandle>{textureHandle});
+    EXPECT_NE(payload.sourceData.textureFlags, 0U);
+}
+
+TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderDescribesCubemapMipStorageExactly)
+{
+    TextureResource texture;
+    texture.SetId(203);
+    TextureMetadata metadata;
+    metadata.width = 2;
+    metadata.height = 2;
+    metadata.mipLevels = 2;
+    metadata.arrayLayers = 6;
+    metadata.format = TextureFormat::RGBA8;
+    metadata.isCubemap = true;
+    texture.SetData(std::vector<uint8>(120, 11), metadata);
+
+    const RenderUploadRequestBuildResult build =
+        RenderUploadRequestBuilder::Build(texture, {9, 1}, 4, {});
+    ASSERT_EQ(build.code, RenderUploadRequestBuildCode::Built);
+    const auto& payload =
+        std::get<TextureUploadPayload>(build.request->GetPayload());
+    ASSERT_EQ(payload.subresources.size(), 12U);
+    EXPECT_EQ(payload.subresources[0].mipLevel, 0U);
+    EXPECT_EQ(payload.subresources[0].arrayLayer, 0U);
+    EXPECT_EQ(payload.subresources[5].bytes.offset, 80U);
+    EXPECT_EQ(payload.subresources[6].mipLevel, 1U);
+    EXPECT_EQ(payload.subresources[6].arrayLayer, 0U);
+    EXPECT_EQ(payload.subresources[6].bytes.offset, 96U);
+    EXPECT_EQ(payload.subresources[11].bytes.offset, 116U);
+    EXPECT_EQ(payload.subresources[11].rowPitch, 4U);
+    EXPECT_EQ(payload.subresources[11].slicePitch, 4U);
+}
+
+TEST(ResourceRuntimePolicyValidation, ResourceLifecycleEventsDrainOnlyFromUpdatePump)
+{
+    const fs::path root = MakeTempDirectory("LifecyclePump");
+    WriteTextFile(root / "textures" / "event.png", "placeholder");
+    ResourceManagerTestGuard guard(MakeRenderResourceTestConfig(root));
+    auto& manager = ResourceManager::Get();
+    manager.RegisterLoader(ResourceType::Texture,
+                           std::make_unique<RenderTextureLoader>());
+
+    const std::thread::id pumpThread = std::this_thread::get_id();
+    std::vector<ResourceLifecycleEventType> events;
+    manager.SetLifecycleEventCallback(
+        [&](const ResourceLifecycleEvent& event)
+        {
+            EXPECT_EQ(std::this_thread::get_id(), pumpThread);
+            events.push_back(event.type);
+        });
+
+    ResourceHandle<TextureResource> handle =
+        manager.Load<TextureResource>("source://textures/event.png");
+    ASSERT_TRUE(handle.IsValid());
+    EXPECT_TRUE(events.empty());
+    manager.ProcessCompletedLoads();
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(events.front(), ResourceLifecycleEventType::Ready);
+
+    manager.Unload(handle.GetId());
+    ASSERT_EQ(events.size(), 1U);
+    manager.ProcessCompletedLoads();
+    ASSERT_EQ(events.size(), 2U);
+    EXPECT_EQ(events.back(), ResourceLifecycleEventType::BeforeUnload);
+
+    manager.SetLifecycleEventCallback({});
+    std::error_code removeError;
+    fs::remove_all(root, removeError);
+}
+
+TEST(ResourceRuntimePolicyValidation, ResourceSubsystemRetriesPressureAndEnqueuesGenerationOnce)
+{
+    const fs::path root = MakeTempDirectory("UploadRetry");
+    WriteTextFile(root / "textures" / "retry.png", "placeholder");
+
+    FakeResourceGateway gateway;
+    gateway.pressureCount = 1;
+    gateway.pressureCode = RenderUploadEnqueueCode::QueueFullByCount;
+    ResourceSubsystem subsystem;
+    subsystem.SetRenderResourceGateway(&gateway);
+    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.RegisterLoader(ResourceType::Texture,
+                             std::make_unique<RenderTextureLoader>());
+
+    ResourceHandle<TextureResource> resource =
+        subsystem.Load<TextureResource>("source://textures/retry.png");
+    ASSERT_TRUE(resource.IsValid());
+    subsystem.Tick(0.0f);
+    EXPECT_EQ(gateway.enqueueAttempts, 1U);
+    EXPECT_EQ(gateway.acceptedCount, 0U);
+    EXPECT_EQ(subsystem.GetRenderResourceStats().pendingUploadCount, 1U);
+
+    gateway.pressureCount = 1;
+    gateway.pressureCode = RenderUploadEnqueueCode::QueueFullByBytes;
+    subsystem.Tick(0.0f);
+    EXPECT_EQ(gateway.enqueueAttempts, 2U);
+    EXPECT_EQ(gateway.acceptedCount, 0U);
+    EXPECT_EQ(subsystem.GetRenderResourceStats().pendingUploadCount, 1U);
+
+    subsystem.Tick(0.0f);
+    EXPECT_EQ(gateway.enqueueAttempts, 3U);
+    EXPECT_EQ(gateway.acceptedCount, 1U);
+    const RenderResourceResolveResult resolved = subsystem.ResolveRenderResource(
+        AssetId{resource.GetId()}, RenderResourceKind::Texture);
+    ASSERT_EQ(resolved.code, RenderResourceResolveCode::Resolved);
+    ASSERT_TRUE(resolved.handle.IsValid());
+    std::weak_ptr<const ResourceUploadRequest> weak =
+        gateway.GetAcceptedRequest(resolved.handle);
+    ASSERT_FALSE(weak.expired());
+
+    subsystem.Tick(0.0f);
+    EXPECT_EQ(gateway.enqueueAttempts, 3U);
+    gateway.PublishTerminal(resolved.handle,
+                            RenderResourcePublicState::GPUReady);
+    EXPECT_FALSE(weak.expired());
+    subsystem.DrainTerminalRenderRequests();
+    EXPECT_TRUE(weak.expired());
+
+    subsystem.BeginRenderShutdown();
+    subsystem.Deinitialize();
+    std::error_code removeError;
+    fs::remove_all(root, removeError);
+}
+
+TEST(ResourceRuntimePolicyValidation, AsyncWorkersNeverPublishRenderGatewayOperations)
+{
+    JobSystem::Get().Shutdown();
+    const fs::path root = MakeTempDirectory("WorkerMarshal");
+    WriteTextFile(root / "textures" / "worker.png", "placeholder");
+
+    ResourceManagerConfig config = MakeRenderResourceTestConfig(root);
+    config.asyncThreadCount = 1;
+    FakeResourceGateway gateway;
+    ResourceSubsystem subsystem;
+    subsystem.SetRenderResourceGateway(&gateway);
+    subsystem.Initialize(config);
+    subsystem.RegisterLoader(ResourceType::Texture,
+                             std::make_unique<RenderTextureLoader>());
+
+    std::future<ResourceHandle<TextureResource>> future =
+        subsystem.LoadAsync<TextureResource>("source://textures/worker.png");
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    ResourceHandle<TextureResource> resource = future.get();
+    ASSERT_TRUE(resource.IsValid());
+    EXPECT_EQ(gateway.reserveAttempts, 0U);
+    EXPECT_EQ(gateway.enqueueAttempts, 0U);
+
+    subsystem.Tick(0.0f);
+    EXPECT_EQ(gateway.reserveAttempts, 1U);
+    EXPECT_EQ(gateway.enqueueAttempts, 1U);
+    const RenderResourceResolveResult resolved = subsystem.ResolveRenderResource(
+        AssetId{resource.GetId()}, RenderResourceKind::Texture);
+    ASSERT_EQ(resolved.code, RenderResourceResolveCode::Resolved);
+    gateway.PublishTerminal(resolved.handle,
+                            RenderResourcePublicState::GPUReady);
+    subsystem.DrainTerminalRenderRequests();
+    subsystem.BeginRenderShutdown();
+    subsystem.Deinitialize();
+    JobSystem::Get().Shutdown();
+
+    std::error_code removeError;
+    fs::remove_all(root, removeError);
+}
+
+TEST(ResourceRuntimePolicyValidation, ResourceSubsystemRejectsWorkerGatewayMutation)
+{
+    const fs::path root = MakeTempDirectory("GatewayThreadIdentity");
+    FakeResourceGateway updateGateway;
+    FakeResourceGateway workerGateway;
+    ResourceSubsystem subsystem;
+    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.SetRenderResourceGateway(&updateGateway);
+
+    std::thread worker(
+        [&]
+        {
+            subsystem.SetRenderResourceGateway(&workerGateway);
+        });
+    worker.join();
+
+    EXPECT_EQ(subsystem.GetRenderResourceStats().wrongThreadMutations, 1U);
+    WriteTextFile(root / "textures" / "owner.png", "placeholder");
+    subsystem.RegisterLoader(ResourceType::Texture,
+                             std::make_unique<RenderTextureLoader>());
+    ResourceHandle<TextureResource> resource =
+        subsystem.Load<TextureResource>("source://textures/owner.png");
+    ASSERT_TRUE(resource.IsValid());
+    subsystem.Tick(0.0f);
+    EXPECT_EQ(updateGateway.reserveAttempts, 1U);
+    EXPECT_EQ(workerGateway.reserveAttempts, 0U);
+
+    const RenderResourceResolveResult resolved = subsystem.ResolveRenderResource(
+        AssetId{resource.GetId()}, RenderResourceKind::Texture);
+    ASSERT_EQ(resolved.code, RenderResourceResolveCode::Resolved);
+    updateGateway.PublishTerminal(resolved.handle,
+                                  RenderResourcePublicState::GPUReady);
+    subsystem.DrainTerminalRenderRequests();
+    subsystem.BeginRenderShutdown();
+    subsystem.Deinitialize();
+
+    std::error_code removeError;
+    fs::remove_all(root, removeError);
+}
+
+TEST(ResourceRuntimePolicyValidation, ResourceSubsystemReclaimsEveryTerminalRequestOnDrain)
+{
+    const fs::path root = MakeTempDirectory("TerminalReclaim");
+    FakeResourceGateway gateway;
+    ResourceSubsystem subsystem;
+    subsystem.SetRenderResourceGateway(&gateway);
+    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.RegisterLoader(ResourceType::Texture,
+                             std::make_unique<RenderTextureLoader>());
+
+    const RenderResourcePublicState terminalStates[] = {
+        RenderResourcePublicState::GPUReady,
+        RenderResourcePublicState::Failed,
+        RenderResourcePublicState::Released,
+        RenderResourcePublicState::Released};
+    std::vector<ResourceHandle<TextureResource>> resources;
+    for (uint32 index = 0; index < 4; ++index)
+    {
+        const std::string name = "terminal-" + std::to_string(index) + ".png";
+        WriteTextFile(root / "textures" / name, "placeholder");
+        ResourceHandle<TextureResource> resource =
+            subsystem.Load<TextureResource>("source://textures/" + name);
+        ASSERT_TRUE(resource.IsValid());
+        subsystem.Tick(0.0f);
+        const RenderResourceResolveResult resolved =
+            subsystem.ResolveRenderResource(AssetId{resource.GetId()},
+                                            RenderResourceKind::Texture);
+        ASSERT_EQ(resolved.code, RenderResourceResolveCode::Resolved);
+        std::weak_ptr<const ResourceUploadRequest> weak =
+            gateway.GetAcceptedRequest(resolved.handle);
+        ASSERT_FALSE(weak.expired());
+
+        if (index >= 2)
+        {
+            subsystem.Unload(resource.GetId());
+            subsystem.Tick(0.0f);
+        }
+        gateway.PublishTerminal(
+            resolved.handle,
+            terminalStates[index],
+            index == 1 ? RenderResourceFailureCode::ResourceCreationFailed
+                       : RenderResourceFailureCode::None);
+        EXPECT_FALSE(weak.expired());
+        subsystem.DrainTerminalRenderRequests();
+        EXPECT_TRUE(weak.expired());
+        resources.push_back(std::move(resource));
+    }
+
+    EXPECT_EQ(subsystem.GetRenderResourceStats().terminalRequestsReclaimed,
+              4U);
+    subsystem.BeginRenderShutdown();
+    subsystem.Deinitialize();
+
+    std::error_code removeError;
+    fs::remove_all(root, removeError);
+}
+
+TEST(ResourceRuntimePolicyValidation, ResourceSubsystemReplacesAfterUnloadAndSealsShutdown)
+{
+    const fs::path root = MakeTempDirectory("UploadReplacement");
+    WriteTextFile(root / "textures" / "replace.png", "placeholder");
+    WriteTextFile(root / "textures" / "sealed.png", "placeholder");
+
+    FakeResourceGateway gateway;
+    ResourceSubsystem subsystem;
+    subsystem.SetRenderResourceGateway(&gateway);
+    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.RegisterLoader(ResourceType::Texture,
+                             std::make_unique<RenderTextureLoader>());
+
+    ResourceHandle<TextureResource> first =
+        subsystem.Load<TextureResource>("source://textures/replace.png");
+    subsystem.Tick(0.0f);
+    const RenderResourceResolveResult firstResolved =
+        subsystem.ResolveRenderResource(AssetId{first.GetId()},
+                                        RenderResourceKind::Texture);
+    ASSERT_EQ(firstResolved.code, RenderResourceResolveCode::Resolved);
+
+    subsystem.Unload(first.GetId());
+    subsystem.Tick(0.0f);
+    EXPECT_EQ(gateway.releaseAttempts, 1U);
+    EXPECT_EQ(subsystem.ResolveRenderResource(AssetId{first.GetId()},
+                                              RenderResourceKind::Texture)
+                  .code,
+              RenderResourceResolveCode::NotFound);
+
+    ResourceHandle<TextureResource> replacement =
+        subsystem.Load<TextureResource>("source://textures/replace.png");
+    subsystem.Tick(0.0f);
+    const RenderResourceResolveResult secondResolved =
+        subsystem.ResolveRenderResource(AssetId{replacement.GetId()},
+                                        RenderResourceKind::Texture);
+    ASSERT_EQ(secondResolved.code, RenderResourceResolveCode::Resolved);
+    EXPECT_NE(secondResolved.handle, firstResolved.handle);
+
+    gateway.PublishTerminal(firstResolved.handle,
+                            RenderResourcePublicState::Released);
+    subsystem.DrainTerminalRenderRequests();
+    subsystem.BeginRenderShutdown();
+    const uint32 reservesBeforeSeal = gateway.reserveAttempts;
+    ResourceHandle<TextureResource> sealed =
+        subsystem.Load<TextureResource>("source://textures/sealed.png");
+    ASSERT_TRUE(sealed.IsValid());
+    subsystem.Tick(0.0f);
+    EXPECT_EQ(gateway.reserveAttempts, reservesBeforeSeal);
+
+    gateway.PublishTerminal(secondResolved.handle,
+                            RenderResourcePublicState::Released);
+    subsystem.DrainTerminalRenderRequests();
+    subsystem.Deinitialize();
     std::error_code removeError;
     fs::remove_all(root, removeError);
 }

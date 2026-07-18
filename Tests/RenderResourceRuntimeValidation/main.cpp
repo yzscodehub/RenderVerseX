@@ -1023,6 +1023,27 @@ namespace
         EXPECT_TRUE(weak.expired());
     }
 
+    TEST_F(RenderResourceRuntimeFixture, RenderDropsFailedRequestBeforeTerminalPublication)
+    {
+        const AssetId asset{16};
+        const RenderResourceHandle handle =
+            Reserve(asset, RenderResourceKind::Mesh);
+        ResourceUploadRequestRef updateOwner =
+            CreateAndQueue(MakeMeshInfo(asset, handle));
+        std::weak_ptr<const ResourceUploadRequest> weak = updateOwner;
+        device.failContextCreation = true;
+
+        EXPECT_EQ(DequeueAndProcess(),
+                  RenderUploadProcessCode::ResourceCreationFailed);
+        const RenderResourceStatus status =
+            gateway->QueryResourceStatus(handle);
+        EXPECT_EQ(status.state, RenderResourcePublicState::Failed);
+        EXPECT_EQ(updateOwner.use_count(), 1L);
+        EXPECT_FALSE(weak.expired());
+        updateOwner.reset();
+        EXPECT_TRUE(weak.expired());
+    }
+
     TEST(RenderResourceRuntimeValidation, CompatibilityUploadWaitsIdleAndRecordsMode)
     {
         RenderTransportConfig config;

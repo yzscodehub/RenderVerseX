@@ -7,9 +7,10 @@
 
 #include "Resource/IResource.h"
 #include "Resource/ResourceHandle.h"
-#include <unordered_map>
+#include <functional>
 #include <list>
 #include <mutex>
+#include <unordered_map>
 
 namespace RVX::Resource
 {
@@ -96,6 +97,9 @@ namespace RVX::Resource
         Stats GetStats() const;
         void ResetStats();
 
+        /** @brief Observe every cache-owned resource before its retain is released. */
+        void SetBeforeRemoveCallback(std::function<void(IResource*)> callback);
+
     private:
         CacheConfig m_config;
         mutable std::mutex m_mutex;
@@ -110,9 +114,11 @@ namespace RVX::Resource
         // Statistics
         mutable size_t m_hitCount = 0;
         mutable size_t m_missCount = 0;
+        std::function<void(IResource*)> m_beforeRemoveCallback;
 
         void TouchLRU(ResourceId id);
         void RemoveLRU(ResourceId id);
+        void NotifyBeforeRemove(IResource* resource);
     };
 
 } // namespace RVX::Resource

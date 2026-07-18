@@ -13,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 
 // Logging macros
 #ifndef RVX_RESOURCE_INFO
@@ -206,6 +207,12 @@ void ResourceManager::Initialize(const ResourceManagerConfig& config)
     m_config = config;
     m_registry = std::make_unique<ResourceRegistry>();
     m_cache = std::make_unique<ResourceCache>(config.cacheConfig);
+    m_cache->SetBeforeRemoveCallback(
+        [this](IResource* resource)
+        {
+            QueueLifecycleEvent(ResourceLifecycleEventType::BeforeUnload,
+                                resource);
+        });
     m_dependencyGraph = std::make_unique<DependencyGraph>();
 
     // Register default loaders
@@ -242,6 +249,12 @@ void ResourceManager::Shutdown()
 {
     if (!m_initialized) return;
 
+    if (m_hotReloadCallbackId != 0 &&
+        HotReloadManager::Get().IsInitialized())
+    {
+        HotReloadManager::Get().RemoveReloadCallback(m_hotReloadCallbackId);
+        m_hotReloadCallbackId = 0;
+    }
     if (m_hotReloadInitializedByManager && HotReloadManager::Get().IsInitialized())
     {
         HotReloadManager::Get().Shutdown();
@@ -266,6 +279,9 @@ void ResourceManager::Shutdown()
     m_dependencyGraph->Clear();
 
     m_initialized = false;
+    DrainLifecycleEvents();
+    SetLifecycleEventCallback({});
+    m_reloadCallback = {};
     RVX_RESOURCE_INFO("ResourceManager shutdown");
 }
 
@@ -434,6 +450,7 @@ IResource* ResourceManager::LoadInternal(const std::string& path,
 
     // Mark as loaded
     resource->NotifyLoaded();
+    QueueLifecycleEvent(ResourceLifecycleEventType::Ready, resource);
 
     SetLastLoadDiagnostic(
         MakeLoadDiagnostic(resolution,
@@ -552,6 +569,19 @@ void ResourceManager::ConfigureHotReload(bool enable)
     else
     {
         HotReloadManager::Get().SetEnabled(true);
+    }
+
+    if (m_hotReloadCallbackId == 0)
+    {
+        m_hotReloadCallbackId = HotReloadManager::Get().OnReload(
+            [this](const ReloadEvent& event)
+            {
+                if (event.success && event.newResource != nullptr)
+                {
+                    QueueLifecycleEvent(ResourceLifecycleEventType::Reloaded,
+                                        event.newResource);
+                }
+            });
     }
 
     SetHotReloadDiagnostic(ResourceHotReloadStatus::Active,
@@ -735,17 +765,6 @@ void ResourceManager::CheckForChanges()
 void ResourceManager::OnResourceReloaded(std::function<void(ResourceId, IResource*)> callback)
 {
     m_reloadCallback = std::move(callback);
-    if (m_reloadCallback && HotReloadManager::Get().IsInitialized())
-    {
-        HotReloadManager::Get().OnReload(
-            [this](const ReloadEvent& event)
-            {
-                if (event.success && m_reloadCallback)
-                {
-                    m_reloadCallback(event.resourceId, event.newResource);
-                }
-            });
-    }
 }
 
 void ResourceManager::SetCacheLimit(size_t bytes)
@@ -780,6 +799,67 @@ IResourceLoader* ResourceManager::GetLoader(ResourceType type)
 void ResourceManager::ProcessCompletedLoads()
 {
     JobSystem::Get().ProcessMainThreadCompletions();
+    DrainLifecycleEvents();
+}
+
+void ResourceManager::SetLifecycleEventCallback(
+    ResourceLifecycleEventCallback callback)
+{
+    std::lock_guard<std::mutex> lock(m_lifecycleMutex);
+    m_lifecycleEventCallback = std::move(callback);
+}
+
+void ResourceManager::QueueLifecycleEvent(ResourceLifecycleEventType type,
+                                          IResource* resource)
+{
+    if (resource == nullptr || resource->GetId() == InvalidResourceId)
+        return;
+
+    ResourceLifecycleEvent event;
+    event.type = type;
+    event.resourceId = resource->GetId();
+    event.resource = ResourceHandle<IResource>(resource);
+    std::lock_guard<std::mutex> lock(m_lifecycleMutex);
+    m_lifecycleEvents.push_back(std::move(event));
+}
+
+void ResourceManager::DrainLifecycleEvents()
+{
+    std::vector<ResourceLifecycleEvent> events;
+    ResourceLifecycleEventCallback callback;
+    {
+        std::lock_guard<std::mutex> lock(m_lifecycleMutex);
+        events.swap(m_lifecycleEvents);
+        callback = m_lifecycleEventCallback;
+    }
+
+    std::unordered_set<IResource*> reloadedResources;
+    reloadedResources.reserve(events.size());
+    for (const ResourceLifecycleEvent& event : events)
+    {
+        if (event.type == ResourceLifecycleEventType::Reloaded)
+        {
+            reloadedResources.insert(event.resource.Get());
+        }
+    }
+
+    for (const ResourceLifecycleEvent& event : events)
+    {
+        if (event.type == ResourceLifecycleEventType::Ready &&
+            reloadedResources.contains(event.resource.Get()))
+        {
+            continue;
+        }
+        if (callback)
+        {
+            callback(event);
+        }
+        if (event.type == ResourceLifecycleEventType::Reloaded &&
+            m_reloadCallback)
+        {
+            m_reloadCallback(event.resourceId, event.resource.Get());
+        }
+    }
 }
 
 ResourceManager::Stats ResourceManager::GetStats() const

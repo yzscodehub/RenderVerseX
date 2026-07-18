@@ -57,6 +57,24 @@ namespace RVX::Resource
         return config;
     }
 
+    /** @brief Update-side lifecycle values produced by resource loading/cache work. */
+    enum class ResourceLifecycleEventType : uint8
+    {
+        Ready = 0,
+        Reloaded = 1,
+        BeforeUnload = 2
+    };
+
+    struct ResourceLifecycleEvent
+    {
+        ResourceLifecycleEventType type = ResourceLifecycleEventType::Ready;
+        ResourceId resourceId = InvalidResourceId;
+        ResourceHandle<IResource> resource;
+    };
+
+    using ResourceLifecycleEventCallback =
+        std::function<void(const ResourceLifecycleEvent&)>;
+
     enum class ResourceHotReloadStatus : uint8
     {
         Disabled = 0,
@@ -243,6 +261,9 @@ namespace RVX::Resource
         /// Process completed async loads (call once per frame)
         void ProcessCompletedLoads();
 
+        /** @brief Register the callback drained only by ProcessCompletedLoads. */
+        void SetLifecycleEventCallback(ResourceLifecycleEventCallback callback);
+
         // =====================================================================
         // Statistics
         // =====================================================================
@@ -289,6 +310,10 @@ namespace RVX::Resource
 
         std::function<void(ResourceId, IResource*)> m_reloadCallback;
 
+        mutable std::mutex m_lifecycleMutex;
+        std::vector<ResourceLifecycleEvent> m_lifecycleEvents;
+        ResourceLifecycleEventCallback m_lifecycleEventCallback;
+
         mutable std::recursive_mutex m_loadMutex;
 
         bool m_jobSystemInitializedByManager = false;
@@ -301,6 +326,7 @@ namespace RVX::Resource
         mutable std::mutex m_hotReloadMutex;
         ResourceHotReloadDiagnostic m_hotReloadDiagnostic;
         bool m_hotReloadInitializedByManager = false;
+        uint32_t m_hotReloadCallbackId = 0;
         std::unordered_map<ResourceId, uint32_t> m_hotReloadWatchIds;
 
         // Internal loading
@@ -312,6 +338,9 @@ namespace RVX::Resource
         bool IsHotReloadSupportedByPolicy() const;
         void ConfigureHotReload(bool enable);
         void RegisterHotReloadResource(IResource* resource, const ResourcePathResolution& resolution);
+        void QueueLifecycleEvent(ResourceLifecycleEventType type,
+                                 IResource* resource);
+        void DrainLifecycleEvents();
         void SetHotReloadDiagnostic(ResourceHotReloadStatus status,
                                     bool requested,
                                     bool enabled,
@@ -441,6 +470,9 @@ namespace RVX
     using Resource::RVX_RESOURCE_HOT_RELOAD_DIAGNOSTIC_SCHEMA_VERSION;
     using Resource::ResourceHotReloadDiagnostic;
     using Resource::ResourceHotReloadStatus;
+    using Resource::ResourceLifecycleEvent;
+    using Resource::ResourceLifecycleEventCallback;
+    using Resource::ResourceLifecycleEventType;
     using Resource::ResourceManager;
     using Resource::ResourceManagerConfig;
     using Resource::MakeResourceManagerConfigForAppMode;
