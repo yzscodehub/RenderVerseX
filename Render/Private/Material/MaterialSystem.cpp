@@ -9,6 +9,7 @@
 #include "Render/GPUUploadService.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialBinder.h"
+#include "Resources/RenderResourceRegistry.h"
 #include "RHI/RHICommandContext.h"
 
 #include <algorithm>
@@ -37,7 +38,8 @@ MaterialSystem::~MaterialSystem()
 }
 
 bool MaterialSystem::Initialize(IRHIDevice* device, GPUResourceManager* gpuResources,
-                                RHIDescriptorSetLayout* materialSetLayout)
+                                RHIDescriptorSetLayout* materialSetLayout,
+                                const RenderResourceRegistry* resourceRegistry)
 {
     if (m_initialized)
     {
@@ -45,7 +47,8 @@ bool MaterialSystem::Initialize(IRHIDevice* device, GPUResourceManager* gpuResou
         return true;
     }
 
-    if (!device || !gpuResources || !materialSetLayout)
+    if (!device || (!gpuResources && !resourceRegistry) ||
+        !materialSetLayout)
     {
         RVX_CORE_ERROR("MaterialSystem: Invalid initialization parameters");
         return false;
@@ -53,6 +56,7 @@ bool MaterialSystem::Initialize(IRHIDevice* device, GPUResourceManager* gpuResou
 
     m_device = device;
     m_gpuResources = gpuResources;
+    m_resourceRegistry = resourceRegistry;
     m_materialSetLayout = materialSetLayout;
 
     if (!CreateConstantBuffer())
@@ -109,6 +113,7 @@ void MaterialSystem::Shutdown()
     m_environmentIBL = {};
     m_materialSetLayout = nullptr;
     m_gpuResources = nullptr;
+    m_resourceRegistry = nullptr;
     m_device = nullptr;
     m_initialized = false;
 
@@ -142,10 +147,67 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const IRenderMateri
         return SetLastBindingResult(std::move(result));
     }
 
-    const ResolvedMaterialTextures textures = ResolveMaterialTextures(materialResource, viewCache, options);
-    const MaterialGPUConstants constants = BuildConstants(materialResource, textures);
+    const ResolvedMaterialTextures textures =
+        ResolveMaterialTextures(materialResource, viewCache, options);
+    MaterialSourceData source;
+    if (materialResource)
+    {
+        source = materialResource->GetRenderMaterialSourceData();
+    }
     const std::string materialName =
         materialResource ? std::string(materialResource->GetRenderResourceName()) : std::string();
+    return PrepareResolvedMaterialBinding(std::move(source),
+                                          textures,
+                                          materialName);
+}
+
+MaterialBindingResult MaterialSystem::PrepareMaterialBinding(
+    RenderResourceHandle material,
+    ResourceViewCache* viewCache,
+    MaterialBindingOptions options)
+{
+    if (!m_initialized)
+    {
+        MaterialBindingResult result;
+        result.status = MaterialBindingStatus::NotInitialized;
+        result.message = "MaterialSystem is not initialized";
+        return SetLastBindingResult(std::move(result));
+    }
+
+    if (!m_materialConstantBuffer)
+    {
+        MaterialBindingResult result;
+        result.status = MaterialBindingStatus::Unavailable;
+        result.message = "Material constant buffer is unavailable";
+        return SetLastBindingResult(std::move(result));
+    }
+
+    const RenderMaterialResourceData* materialData =
+        m_resourceRegistry ? m_resourceRegistry->ResolveMaterial(material)
+                           : nullptr;
+    MaterialSourceData source;
+    if (materialData && materialData->metadataValid)
+    {
+        source = materialData->sourceData;
+    }
+    const ResolvedMaterialTextures textures =
+        ResolveMaterialTextures(material, viewCache, options);
+    const std::string materialName = material.IsValid()
+        ? "render-material[" + std::to_string(material.slot) + ":" +
+              std::to_string(material.generation) + "]"
+        : std::string();
+    return PrepareResolvedMaterialBinding(std::move(source),
+                                          textures,
+                                          materialName);
+}
+
+MaterialBindingResult MaterialSystem::PrepareResolvedMaterialBinding(
+    MaterialSourceData source,
+    const ResolvedMaterialTextures& textures,
+    std::string materialName)
+{
+    source.textureFlags = textures.textureFlags;
+    const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(source);
 
     void* mapped = m_materialConstantBuffer->Map();
     if (!mapped)
@@ -323,6 +385,9 @@ void MaterialSystem::SetEnvironmentIBLResources(const EnvironmentIBLResources& r
         m_environmentIBL.irradianceMap != resources.irradianceMap ||
         m_environmentIBL.prefilteredMap != resources.prefilteredMap ||
         m_environmentIBL.brdfLUT != resources.brdfLUT ||
+        m_environmentIBL.irradianceHandle != resources.irradianceHandle ||
+        m_environmentIBL.prefilteredHandle != resources.prefilteredHandle ||
+        m_environmentIBL.brdfLUTHandle != resources.brdfLUTHandle ||
         m_environmentIBL.textureIBLEnabled != resources.textureIBLEnabled;
 
     m_environmentIBL = resources;
@@ -332,6 +397,23 @@ void MaterialSystem::SetEnvironmentIBLResources(const EnvironmentIBLResources& r
     {
         m_materialDescriptorCache.clear();
     }
+}
+
+void MaterialSystem::SetEnvironmentIBLResources(
+    RenderResourceHandle irradiance,
+    RenderResourceHandle prefiltered,
+    RenderResourceHandle brdfLUT,
+    float intensity)
+{
+    EnvironmentIBLResources resources;
+    resources.irradianceHandle = irradiance;
+    resources.prefilteredHandle = prefiltered;
+    resources.brdfLUTHandle = brdfLUT;
+    resources.intensity = intensity;
+    resources.textureIBLEnabled = irradiance.IsValid() &&
+                                  prefiltered.IsValid() &&
+                                  brdfLUT.IsValid();
+    SetEnvironmentIBLResources(resources);
 }
 
 void MaterialSystem::ClearEnvironmentIBLResources()
@@ -657,6 +739,123 @@ MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures
         else
         {
             textures.textureIBLEnabled = true;
+        }
+    }
+
+    return textures;
+}
+
+MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures(
+    RenderResourceHandle material,
+    ResourceViewCache* viewCache,
+    MaterialBindingOptions options) const
+{
+    ResolvedMaterialTextures textures;
+    textures.baseColor = m_defaultWhiteTextureView.Get();
+    textures.normal = m_defaultNormalTextureView.Get();
+    textures.metallicRoughness = m_defaultWhiteTextureView.Get();
+    textures.occlusion = m_defaultWhiteTextureView.Get();
+    textures.emissive = m_defaultBlackTextureView.Get();
+    textures.irradiance = m_defaultBlackCubemapView.Get();
+    textures.prefilteredEnvironment = m_defaultBlackCubemapView.Get();
+    textures.brdfLUT = m_defaultBlackTextureView.Get();
+    textures.viewGeneration = viewCache ? viewCache->GetGeneration() : 0;
+
+    const RenderMaterialResourceData* materialData =
+        m_resourceRegistry ? m_resourceRegistry->ResolveMaterial(material)
+                           : nullptr;
+    if (materialData == nullptr || !materialData->metadataValid)
+    {
+        textures.usedFallback = true;
+    }
+    else
+    {
+        for (const MaterialUploadTextureBinding& binding :
+             materialData->textureBindings)
+        {
+            uint32 textureFlag = 0;
+            RHITextureView** destination = nullptr;
+            switch (binding.slot)
+            {
+                case MaterialUploadTextureSlot::BaseColor:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasBaseColor);
+                    destination = &textures.baseColor;
+                    break;
+                case MaterialUploadTextureSlot::Normal:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasNormal);
+                    destination = &textures.normal;
+                    if (!options.allowNormalMap)
+                    {
+                        textures.usedFallback = true;
+                        textures.normalMapDisabled = true;
+                        textures.fallbackTextureFlags |= textureFlag;
+                        continue;
+                    }
+                    break;
+                case MaterialUploadTextureSlot::MetallicRoughness:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasMetallicRoughness);
+                    destination = &textures.metallicRoughness;
+                    break;
+                case MaterialUploadTextureSlot::Occlusion:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasOcclusion);
+                    destination = &textures.occlusion;
+                    break;
+                case MaterialUploadTextureSlot::Emissive:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasEmissive);
+                    destination = &textures.emissive;
+                    break;
+                default:
+                    continue;
+            }
+
+            RHITexture* texture =
+                m_resourceRegistry->ResolveTextureObject(binding.texture);
+            RHITextureView* textureView =
+                texture && viewCache ? viewCache->GetDefaultSRV(texture)
+                                     : nullptr;
+            if (textureView == nullptr)
+            {
+                textures.usedFallback = true;
+                textures.fallbackTextureFlags |= textureFlag;
+                continue;
+            }
+            *destination = textureView;
+            textures.textureFlags |= textureFlag;
+        }
+    }
+
+    if (m_environmentIBL.textureIBLEnabled && m_resourceRegistry)
+    {
+        RHITexture* irradiance = m_resourceRegistry->ResolveTextureObject(
+            m_environmentIBL.irradianceHandle);
+        RHITexture* prefiltered = m_resourceRegistry->ResolveTextureObject(
+            m_environmentIBL.prefilteredHandle);
+        RHITexture* brdfLUT = m_resourceRegistry->ResolveTextureObject(
+            m_environmentIBL.brdfLUTHandle);
+        RHITextureView* irradianceView =
+            irradiance && viewCache ? viewCache->GetDefaultSRV(irradiance)
+                                    : nullptr;
+        RHITextureView* prefilteredView =
+            prefiltered && viewCache ? viewCache->GetDefaultSRV(prefiltered)
+                                     : nullptr;
+        RHITextureView* brdfLUTView =
+            brdfLUT && viewCache ? viewCache->GetDefaultSRV(brdfLUT)
+                                 : nullptr;
+        if (irradianceView && prefilteredView && brdfLUTView)
+        {
+            textures.irradiance = irradianceView;
+            textures.prefilteredEnvironment = prefilteredView;
+            textures.brdfLUT = brdfLUTView;
+            textures.textureIBLEnabled = true;
+        }
+        else
+        {
+            textures.usedFallback = true;
         }
     }
 

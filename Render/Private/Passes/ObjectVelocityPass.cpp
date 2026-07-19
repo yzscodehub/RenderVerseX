@@ -2,6 +2,7 @@
 
 #include "Core/Log.h"
 #include "Render/GPUResourceManager.h"
+#include "Resources/RenderResourceResolver.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
@@ -84,7 +85,7 @@ namespace RVX
             return false;
         }
 
-        if (!m_gpuResources)
+        if (m_resourceRegistry == nullptr && !m_gpuResources)
         {
             m_unsupportedReason = "Object velocity pass requires a GPUResourceManager";
             return false;
@@ -161,7 +162,7 @@ namespace RVX
         if (!m_stats.outputDeclared ||
             !view.renderGraph ||
             !m_pipelineCache ||
-            !m_gpuResources ||
+            (m_resourceRegistry == nullptr && !m_gpuResources) ||
             !m_viewCache ||
             !m_materialSystem ||
             !m_renderScene ||
@@ -267,7 +268,11 @@ namespace RVX
                     continue;
                 }
 
-                MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(object.meshId);
+                MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+                    m_resourceRegistry,
+                    m_gpuResources,
+                    object.mesh,
+                    object.meshId);
                 if (!buffers.IsValid() || item.submeshIndex >= buffers.submeshes.size())
                 {
                     ++m_stats.skippedMissingResourceCount;
@@ -313,7 +318,11 @@ namespace RVX
                     continue;
                 }
 
-                MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(object.meshId);
+                MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+                    m_resourceRegistry,
+                    m_gpuResources,
+                    object.mesh,
+                    object.meshId);
                 if (!buffers.IsValid() || item.submeshIndex >= buffers.submeshes.size())
                 {
                     ++m_stats.skippedMissingResourceCount;
@@ -331,7 +340,11 @@ namespace RVX
                 MaterialBindingOptions materialOptions;
                 materialOptions.allowNormalMap = false;
                 const MaterialBindingResult materialBinding =
-                    m_materialSystem->PrepareMaterialBinding(materialResource, view.viewCache, materialOptions);
+                    m_resourceRegistry
+                        ? m_materialSystem->PrepareMaterialBinding(
+                              item.material, view.viewCache, materialOptions)
+                        : m_materialSystem->PrepareMaterialBinding(
+                              materialResource, view.viewCache, materialOptions);
                 if (!materialBinding.IsDrawable())
                 {
                     ++m_stats.skippedMaterialBindingCount;

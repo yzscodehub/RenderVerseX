@@ -36,6 +36,8 @@
 #include "RenderExtraction/SceneSkyboxPassBridge.h"
 #include "Renderer/RenderFrameResourceBinder.h"
 #include "Renderer/RenderPassRegistry.h"
+#include "Resources/RenderResourceRegistry.h"
+#include "Resources/RenderResourceResolver.h"
 
 #include <algorithm>
 #include <cmath>
@@ -314,7 +316,9 @@ SceneColorFormatPolicy SceneRenderer::ResolveSceneColorFormatPolicy(RHIFormat ba
     return policy;
 }
 
-void SceneRenderer::Initialize(RenderContext* renderContext)
+void SceneRenderer::Initialize(
+    RenderContext* renderContext,
+    const RenderResourceRegistry* resourceRegistry)
 {
     if (m_initialized)
     {
@@ -329,6 +333,7 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
     }
 
     m_renderContext = renderContext;
+    m_renderResourceRegistry = resourceRegistry;
     m_passRegistry = std::make_unique<RenderPassRegistry>();
     m_featureBridge = std::make_unique<RenderFeatureSceneBridge>();
     m_proxyBridge = std::make_unique<RenderProxySceneBridge>();
@@ -342,9 +347,13 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
     m_renderGraph = std::make_unique<RenderGraph>();
     m_renderGraph->SetDevice(m_renderContext->GetDevice());
 
-    // Create GPU resource manager
-    m_gpuResourceManager = std::make_unique<GPUResourceManager>();
-    m_gpuResourceManager->Initialize(m_renderContext->GetDevice());
+    // The packet path receives the Render-owned exact registry. Only the
+    // dormant synchronous compatibility path constructs the legacy facade.
+    if (m_renderResourceRegistry == nullptr)
+    {
+        m_gpuResourceManager = std::make_unique<GPUResourceManager>();
+        m_gpuResourceManager->Initialize(m_renderContext->GetDevice());
+    }
 
     // Create GPU-driven culling data path. CPU culling remains as a prediction
     // and fallback data source; the graph path receives the full draw stream.
@@ -377,14 +386,17 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
     // Create resource view cache for automatic view management
     m_resourceViewCache = std::make_unique<ResourceViewCache>();
     m_resourceViewCache->Initialize(m_renderContext->GetDevice());
-    m_gpuResourceManager->SetTextureInvalidatedCallback(
-        [this](RHITexture* texture)
-        {
-            if (m_resourceViewCache)
+    if (m_gpuResourceManager)
+    {
+        m_gpuResourceManager->SetTextureInvalidatedCallback(
+            [this](RHITexture* texture)
             {
-                m_resourceViewCache->InvalidateTexture(texture);
-            }
-        });
+                if (m_resourceViewCache)
+                {
+                    m_resourceViewCache->InvalidateTexture(texture);
+                }
+            });
+    }
 
     RVX_CORE_INFO("SceneRenderer: Searching for shader directory...");
     RVX_CORE_INFO("  Current working directory: {}", std::filesystem::current_path().string());
@@ -474,8 +486,11 @@ void SceneRenderer::Initialize(RenderContext* renderContext)
 
     if (m_pipelineCache && m_pipelineCache->IsInitialized() && m_materialSystem)
     {
-        if (!m_materialSystem->Initialize(m_renderContext->GetDevice(), m_gpuResourceManager.get(),
-                                          m_pipelineCache->GetMaterialSetLayout()))
+        if (!m_materialSystem->Initialize(
+                m_renderContext->GetDevice(),
+                m_gpuResourceManager.get(),
+                m_pipelineCache->GetMaterialSetLayout(),
+                m_renderResourceRegistry))
         {
             RVX_CORE_ERROR("SceneRenderer: MaterialSystem failed to initialize");
         }
@@ -584,6 +599,7 @@ void SceneRenderer::Shutdown()
     m_pendingTemporalHistoryReset = false;
     m_previousObjectWorldMatrices.clear();
     m_preGraphPrepareCallbacks.clear();
+    m_renderResourceRegistry = nullptr;
     m_renderContext = nullptr;
     m_initialized = false;
 
@@ -614,7 +630,7 @@ void SceneRenderer::UpdateEnvironmentIBL(World* world)
         }
     };
 
-    if (!m_gpuResourceManager || !m_materialSystem || !m_resourceViewCache)
+    if (!m_materialSystem)
     {
         disableTextureIBL("RendererIBLDependenciesMissing");
         return;
@@ -631,69 +647,13 @@ void SceneRenderer::UpdateEnvironmentIBL(World* world)
 
     m_environmentIBLStats.skyboxFound = iblResult.skyboxFound;
     m_environmentIBLStats.intensity = iblSnapshot.intensity;
-    m_environmentIBLStats.prefilteredMipLevels = iblSnapshot.prefilteredMipLevels;
+    m_environmentIBLStats.prefilteredMipLevels =
+        iblSnapshot.prefilteredMipLevels;
 
-    auto requestAndResolveView = [this](IRenderTextureUploadSource* texture,
-                                        const char* reason) -> bool
-    {
-        if (!texture)
-        {
-            m_environmentIBLStats.fallbackReason = reason;
-            return false;
-        }
-
-        if (!m_gpuResourceManager->IsResident(texture))
-        {
-            m_gpuResourceManager->RequestUpload(texture, UploadPriority::High);
-            m_environmentIBLStats.uploadRequested = true;
-        }
-
-        m_gpuResourceManager->MarkUsed(texture);
-        if (!m_gpuResourceManager->IsGPUReady(texture))
-        {
-            m_environmentIBLStats.fallbackReason = reason;
-            return false;
-        }
-
-        RHITexture* rhiTexture = m_gpuResourceManager->GetTexture(texture);
-        if (!rhiTexture || !m_resourceViewCache->GetDefaultSRV(rhiTexture))
-        {
-            m_environmentIBLStats.fallbackReason = reason;
-            return false;
-        }
-
-        return true;
-    };
-
-    bool ready = true;
-    ready = requestAndResolveView(iblSnapshot.irradiance, "IrradianceNotReady") && ready;
-    ready = requestAndResolveView(iblSnapshot.prefiltered, "PrefilteredEnvironmentNotReady") && ready;
-    ready = requestAndResolveView(iblSnapshot.brdfLUT, "BRDFLUTNotReady") && ready;
-
-    if (!ready)
-    {
-        if (m_environmentIBLStats.fallbackReason.empty())
-        {
-            m_environmentIBLStats.fallbackReason = "IBLResourcesNotReady";
-        }
-        m_materialSystem->ClearEnvironmentIBLResources();
-        return;
-    }
-
-    MaterialSystem::EnvironmentIBLResources resources;
-    resources.irradianceMap = iblSnapshot.irradiance;
-    resources.prefilteredMap = iblSnapshot.prefiltered;
-    resources.brdfLUT = iblSnapshot.brdfLUT;
-    resources.prefilteredMipLevels = m_environmentIBLStats.prefilteredMipLevels;
-    resources.intensity = m_environmentIBLStats.intensity;
-    resources.textureIBLEnabled = true;
-    m_materialSystem->SetEnvironmentIBLResources(resources);
-
-    m_viewData.textureIBLEnabled = 1;
-    m_viewData.textureIBLPrefilteredMipLevels = resources.prefilteredMipLevels;
-    m_viewData.textureIBLIntensity = resources.intensity;
-    m_viewData.ambientFloorIntensity = 0.0f;
-    m_environmentIBLStats.textureIBLEnabled = true;
+    // Update-side extraction is now value-only. The synchronous compatibility
+    // renderer cannot turn AssetIds into exact registry generations, so it must
+    // use the deterministic ambient fallback instead of requesting uploads.
+    disableTextureIBL("PacketOnlyIBLRequiresRenderResourceHandles");
 }
 
 void SceneRenderer::UpdateSkyboxPass(World* world)
@@ -701,61 +661,54 @@ void SceneRenderer::UpdateSkyboxPass(World* world)
     if (!m_skyboxPass || !m_skyboxBridge)
         return;
 
-    SceneSkyboxPassActions passActions;
-    passActions.setProcedural =
-        [this](const Vec3& sunDirection,
-               const Vec3& skyColor,
-               const Vec3& horizonColor,
-               const Vec3& groundColor,
-               const Vec3& sunColor,
-               float exposure,
-               float scatteringIntensity)
-        {
-            m_skyboxPass->SetProceduralSkyParams(sunDirection,
-                                                 skyColor,
-                                                 horizonColor,
-                                                 groundColor,
-                                                 sunColor,
-                                                 exposure,
-                                                 scatteringIntensity);
-        };
-    passActions.setSolidColor =
-        [this](const Vec3& color, float exposure)
-        {
-            m_skyboxPass->SetSolidColor(color, exposure);
-        };
-    passActions.setCubemap =
-        [this](RHITexture* cubemap, float exposure, float rotation, float blurLevel)
-        {
-            m_skyboxPass->SetCubemap(cubemap, exposure, rotation, blurLevel);
-        };
-    passActions.clear =
-        [this](const char* reason)
-        {
-            m_skyboxPass->ClearSkybox(reason);
-        };
+    SceneSkyboxSnapshot snapshot;
+    SceneSkyboxPassBridgeResult result;
+    if (!m_skyboxBridge->Extract(world, snapshot, &result))
+    {
+        m_skyboxPass->ClearSkybox(ToString(result.fallbackReason));
+        return;
+    }
 
-    SceneSkyboxTextureAccess textureAccess;
-    textureAccess.requestUpload =
-        [this](IRenderTextureUploadSource* texture)
+    switch (snapshot.mode)
+    {
+        case SceneSkyboxSnapshotMode::Procedural:
+            m_skyboxPass->SetProceduralSkyParams(snapshot.sunDirection,
+                                                 snapshot.zenithColor,
+                                                 snapshot.horizonColor,
+                                                 snapshot.groundColor,
+                                                 snapshot.sunColor,
+                                                 snapshot.intensity,
+                                                 snapshot.scatteringIntensity);
+            break;
+        case SceneSkyboxSnapshotMode::SolidColor:
+            m_skyboxPass->SetSolidColor(snapshot.tint, snapshot.intensity);
+            break;
+        case SceneSkyboxSnapshotMode::Cubemap:
+        case SceneSkyboxSnapshotMode::Equirectangular:
         {
-            if (m_gpuResourceManager)
+            RHITexture* texture =
+                m_gpuResourceManager && snapshot.textureAssetId.IsValid()
+                    ? m_gpuResourceManager->GetTexture(
+                          snapshot.textureAssetId.value)
+                    : nullptr;
+            if (texture != nullptr)
             {
-                m_gpuResourceManager->RequestUpload(texture, UploadPriority::High);
+                m_skyboxPass->SetCubemap(texture,
+                                         snapshot.intensity,
+                                         snapshot.rotationRadians,
+                                         snapshot.blurLevel);
             }
-        };
-    textureAccess.isGPUReady =
-        [this](uint64 id) -> bool
-        {
-            return m_gpuResourceManager && m_gpuResourceManager->IsGPUReady(id);
-        };
-    textureAccess.getTexture =
-        [this](uint64 id) -> RHITexture*
-        {
-            return m_gpuResourceManager ? m_gpuResourceManager->GetTexture(id) : nullptr;
-        };
-
-    m_skyboxBridge->Update(world, passActions, textureAccess);
+            else
+            {
+                m_skyboxPass->ClearSkybox(
+                    "PacketOnlySkyTextureRequiresReadyHandle");
+            }
+            break;
+        }
+        default:
+            m_skyboxPass->ClearSkybox("SkyboxDisabled");
+            break;
+    }
 }
 
 void SceneRenderer::RequestTemporalHistoryReset()
@@ -1106,6 +1059,169 @@ void SceneRenderer::SetupView(const Camera& camera, SceneManager* sceneManager)
     FinalizeViewScene(camera);
 }
 
+RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
+    const RenderFramePacket& packet,
+    const RenderResourceRegistry& registry)
+{
+    m_renderResourceRegistry = &registry;
+    if (m_depthPrepass)
+    {
+        m_depthPrepass->SetResourceRegistry(&registry);
+    }
+    if (m_shadowPass)
+    {
+        m_shadowPass->SetResourceRegistry(&registry);
+    }
+    if (m_objectVelocityPass)
+    {
+        m_objectVelocityPass->SetResourceRegistry(&registry);
+    }
+    if (m_opaquePass)
+    {
+        m_opaquePass->SetResourceRegistry(&registry);
+    }
+    if (m_transparentPass)
+    {
+        m_transparentPass->SetResourceRegistry(&registry);
+    }
+    if (m_rayTracedShadowPass)
+    {
+        m_rayTracedShadowPass->SetResourceRegistry(&registry);
+    }
+    if (m_rayTracedReflectionPass)
+    {
+        m_rayTracedReflectionPass->SetResourceRegistry(&registry);
+    }
+    RenderFrameApplyResult result =
+        m_renderScene.ApplyFramePacket(packet, registry);
+    if (!result.IsApplied())
+    {
+        return result;
+    }
+
+    const bool previousViewValid =
+        m_renderScene.GetLastRenderedFrameSequence() != 0;
+    const Mat4& previousViewProjection = previousViewValid
+                                             ? m_renderScene.GetLastRenderedView()
+                                                   .viewProjectionMatrix
+                                             : m_renderScene.GetView()
+                                                   .viewProjectionMatrix;
+    m_viewData.SetupFromSnapshot(m_renderScene.GetView(),
+                                 previousViewProjection,
+                                 previousViewValid,
+                                 result.temporalHistoryReset);
+
+    const RenderFrameSettings& frameSettings = m_renderScene.GetSettings();
+    m_gpuDrivenCullingEnabled = frameSettings.gpuCulling.enabled;
+    m_postProcessSettings.enableBloom =
+        frameSettings.postProcess.enabled &&
+        frameSettings.postProcess.enableBloom;
+    m_postProcessSettings.enableSSAO =
+        frameSettings.postProcess.enabled &&
+        frameSettings.postProcess.enableSSAO;
+    m_postProcessSettings.enableSSR =
+        frameSettings.postProcess.enabled &&
+        frameSettings.postProcess.enableSSR;
+    m_postProcessSettings.enableTAA =
+        frameSettings.postProcess.enabled &&
+        frameSettings.postProcess.enableTAA;
+    m_postProcessSettings.bloomThreshold =
+        frameSettings.postProcess.bloomThreshold;
+    m_postProcessSettings.bloomIntensity =
+        frameSettings.postProcess.bloomIntensity;
+    m_postProcessSettings.exposure = m_renderScene.GetView().exposure;
+    m_postProcessSettings.enableRayTracedReflections =
+        frameSettings.rayTracing.enabled &&
+        frameSettings.rayTracing.enableReflections;
+    ApplyPostProcessSettings(m_postProcessSettings);
+
+    m_shadowPassConfig.shadowMapSize =
+        frameSettings.shadows.atlasResolution;
+    m_shadowPassConfig.numCascades = frameSettings.shadows.cascadeCount;
+    ApplyShadowPassConfig(m_shadowPassConfig);
+
+    m_featureSnapshot = m_renderScene.GetFeatures();
+    if (m_particleFeaturePass)
+    {
+        m_particleFeaturePass->SetSnapshot(&m_featureSnapshot.particles);
+    }
+
+    if (m_skyboxPass)
+    {
+        const RenderSkySnapshot& sky = m_renderScene.GetSky();
+        RHITexture* texture = sky.skyTexture.IsValid()
+                                  ? registry.ResolveTextureObject(
+                                        sky.skyTexture)
+                                  : nullptr;
+        if (texture != nullptr)
+        {
+            m_skyboxPass->SetCubemap(texture,
+                                     sky.intensity,
+                                     sky.rotationRadians,
+                                     0.0f);
+        }
+        else
+        {
+            m_skyboxPass->SetSolidColor(sky.tint, sky.intensity);
+        }
+    }
+
+    const RenderEnvironmentSnapshot& environment =
+        m_renderScene.GetEnvironment();
+    const bool textureIBLReady =
+        environment.irradianceTexture.IsValid() &&
+        environment.prefilteredTexture.IsValid() &&
+        environment.brdfLutTexture.IsValid();
+    if (m_materialSystem)
+    {
+        m_materialSystem->SetEnvironmentIBLResources(
+            environment.irradianceTexture,
+            environment.prefilteredTexture,
+            environment.brdfLutTexture,
+            environment.intensity);
+    }
+    m_viewData.textureIBLEnabled = textureIBLReady ? 1 : 0;
+    m_viewData.textureIBLIntensity = environment.intensity;
+    m_viewData.ambientFloorIntensity = textureIBLReady ? 0.0f : 0.08f;
+
+    m_renderScene.CullAgainstView(m_renderScene.GetView(),
+                                  m_visibleObjectIndices);
+    m_renderScene.SortVisibleObjects(m_visibleObjectIndices,
+                                     m_renderScene.GetView().cameraPosition);
+    BuildMaterialDrawLists();
+    return result;
+}
+
+RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
+{
+    RenderFrameExecutionResult result;
+    if (!m_renderScene.HasAcceptedFrame())
+    {
+        return result;
+    }
+    result.frameSequence = m_renderScene.GetAcceptedHeader().sequence;
+    result.referencedResources = m_renderScene.GetReferencedResources();
+    Render();
+    if (!m_frameDiagnostics.rendered ||
+        !m_frameDiagnostics.graphCompileValid)
+    {
+        result.code = RenderFrameExecutionCode::SubmissionFailed;
+        return result;
+    }
+    result.code = RenderFrameExecutionCode::Rendered;
+    return result;
+}
+
+void SceneRenderer::MarkAcceptedFramePresented()
+{
+    m_renderScene.MarkAcceptedFrameRendered();
+}
+
+void SceneRenderer::SetSurfaceCompatibilityKey(uint64 key) noexcept
+{
+    m_renderScene.SetSurfaceCompatibilityKey(key);
+}
+
 void SceneRenderer::ResolveRenderTargetExtent(uint32& width, uint32& height) const
 {
     width = 1280;
@@ -1204,7 +1320,8 @@ void SceneRenderer::ApplyGPUDrivenCullingToDrawLists()
         m_gpuDrivenCullingStats.executionDecision = m_gpuCulling->GetExecutionDecision();
     }
 
-    if (!m_gpuDrivenCullingEnabled || !m_gpuCulling || !m_gpuResourceManager)
+    if (!m_gpuDrivenCullingEnabled || !m_gpuCulling ||
+        (m_renderResourceRegistry == nullptr && !m_gpuResourceManager))
     {
         m_gpuDrivenCullingStats.outputOpaqueDrawItemCount = static_cast<uint32>(m_opaqueDrawItems.size());
         m_gpuDrivenCullingStats.outputMaskedDrawItemCount = static_cast<uint32>(m_maskedDrawItems.size());
@@ -1223,7 +1340,8 @@ void SceneRenderer::ApplyGPUDrivenCullingToDrawList(std::vector<RenderDrawItem>&
                                                     uint32& cullableDrawItemCount)
 {
     cullableDrawItemCount = 0;
-    if (drawItems.empty() || !m_gpuCulling || !m_gpuResourceManager)
+    if (drawItems.empty() || !m_gpuCulling ||
+        (m_renderResourceRegistry == nullptr && !m_gpuResourceManager))
     {
         return;
     }
@@ -1239,7 +1357,11 @@ void SceneRenderer::ApplyGPUDrivenCullingToDrawList(std::vector<RenderDrawItem>&
         }
 
         const RenderObject& object = m_renderScene.GetObject(item.objectIndex);
-        const MeshGPUBuffers buffers = m_gpuResourceManager->GetMeshBuffers(object.meshId);
+        const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+            m_renderResourceRegistry,
+            m_gpuResourceManager.get(),
+            object.mesh,
+            object.meshId);
         if (!buffers.IsValid() || item.submeshIndex >= buffers.submeshes.size())
         {
             ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
@@ -1284,7 +1406,8 @@ void SceneRenderer::ApplyGPUDrivenCullingToDrawList(std::vector<RenderDrawItem>&
 
 void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
 {
-    if (!m_gpuDrivenCullingEnabled || !m_gpuCulling || !m_gpuResourceManager)
+    if (!m_gpuDrivenCullingEnabled || !m_gpuCulling ||
+        (m_renderResourceRegistry == nullptr && !m_gpuResourceManager))
     {
         return;
     }
@@ -1301,6 +1424,8 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
 
     struct GPUDrivenDrawGroup
     {
+        RenderResourceHandle mesh;
+        RenderResourceHandle material;
         uint64 meshId = 0;
         uint64 materialId = 0;
         IRenderMaterialSource* materialResource = nullptr;
@@ -1321,7 +1446,11 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
             }
 
             const RenderObject& object = m_renderScene.GetObject(item.objectIndex);
-            const MeshGPUBuffers buffers = m_gpuResourceManager->GetMeshBuffers(object.meshId);
+            const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+                m_renderResourceRegistry,
+                m_gpuResourceManager.get(),
+                object.mesh,
+                object.meshId);
             if (!buffers.IsValid() || item.submeshIndex >= buffers.submeshes.size())
             {
                 continue;
@@ -1336,7 +1465,9 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
             auto groupIt = std::find_if(drawGroups.begin(), drawGroups.end(),
                 [&object, &item](const GPUDrivenDrawGroup& group)
                 {
-                    return group.meshId == object.meshId &&
+                    return group.mesh == item.mesh &&
+                           group.material == item.material &&
+                           group.meshId == object.meshId &&
                            group.materialId == item.materialId &&
                            group.materialResource == item.materialResource &&
                            group.pipelineVariant == GetPipelineVariantForRenderMode(item.renderMode);
@@ -1344,6 +1475,8 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
             if (groupIt == drawGroups.end())
             {
                 GPUDrivenDrawGroup group;
+                group.mesh = item.mesh;
+                group.material = item.material;
                 group.meshId = object.meshId;
                 group.materialId = item.materialId;
                 group.materialResource = item.materialResource;
@@ -1369,7 +1502,9 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
             group.meshId,
             group.materialId,
             group.pipelineVariant,
-            group.materialResource);
+            group.materialResource,
+            group.mesh,
+            group.material);
         if (groupIndex == RVX_INVALID_INDEX)
         {
             continue;
@@ -1754,7 +1889,7 @@ void SceneRenderer::Render()
     }
 
     // Process pending GPU uploads with time budget
-    if (m_gpuResourceManager)
+    if (m_gpuResourceManager && m_renderResourceRegistry == nullptr)
     {
         m_gpuResourceManager->ProcessPendingUploads(2.0f);  // 2ms budget
     }
@@ -1904,7 +2039,7 @@ void SceneRenderer::Render()
     RHICommandContext* ctx = m_renderContext->GetGraphicsContext();
     bool graphExecuted = false;
     const char* executionSkippedReason = nullptr;
-    if (ctx)
+    if (ctx && graphCompileValid)
     {
         m_renderGraph->Execute(*ctx);
         graphExecuted = true;
@@ -1921,12 +2056,9 @@ void SceneRenderer::Render()
     }
     else
     {
-        executionSkippedReason = "Graphics command context is unavailable";
-    }
-
-    if (!graphCompileValid && !executionSkippedReason)
-    {
-        executionSkippedReason = "RenderGraph compile reported validation errors";
+        executionSkippedReason = graphCompileValid
+                                     ? "Graphics command context is unavailable"
+                                     : "RenderGraph compile reported validation errors";
     }
 
     RefreshFrameDiagnostics(true,
@@ -2765,7 +2897,8 @@ void SceneRenderer::PrepareRayTracingScene()
 {
     m_rayTracingSceneStats = {};
 
-    if (!m_rayTracingSceneManager || !m_gpuResourceManager)
+    if (!m_rayTracingSceneManager ||
+        (!m_renderResourceRegistry && !m_gpuResourceManager))
     {
         m_rayTracingSceneStats.fallbackReason = "ray tracing scene dependencies are unavailable";
         return;
@@ -2784,11 +2917,15 @@ void SceneRenderer::PrepareRayTracingScene()
         m_rayTracingBudgetSettings.enabled ? m_rayTracingBudgetSettings.maxTrackedResourceBytes : 0u);
 
     RayTracingSceneOptions options;
-    RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(
-        m_renderScene,
-        m_visibleObjectIndices,
-        *m_gpuResourceManager,
-        options);
+    RayTracingSceneBuildPlan plan = m_renderResourceRegistry
+        ? BuildRayTracingSceneBuildPlan(m_renderScene,
+                                        m_visibleObjectIndices,
+                                        *m_renderResourceRegistry,
+                                        options)
+        : BuildRayTracingSceneBuildPlan(m_renderScene,
+                                        m_visibleObjectIndices,
+                                        *m_gpuResourceManager,
+                                        options);
 
     m_rayTracingSceneManager->Prepare(plan);
     m_rayTracingSceneStats = m_rayTracingSceneManager->GetStats();
@@ -3429,12 +3566,14 @@ void SceneRenderer::SetupDefaultPasses()
 {
     auto depthPrepass = std::make_unique<DepthPrepass>();
     depthPrepass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get());
+    depthPrepass->SetResourceRegistry(m_renderResourceRegistry);
     depthPrepass->SetGPUDrivenCullingSource(m_gpuCulling.get());
     m_depthPrepass = depthPrepass.get();
     AddPass(std::move(depthPrepass));
 
     auto shadowPass = std::make_unique<ShadowPass>();
     shadowPass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get());
+    shadowPass->SetResourceRegistry(m_renderResourceRegistry);
     shadowPass->SetConfig(m_shadowPassConfig);
     m_shadowPass = shadowPass.get();
     AddPass(std::move(shadowPass));
@@ -3444,6 +3583,7 @@ void SceneRenderer::SetupDefaultPasses()
         m_gpuResourceManager.get(),
         m_pipelineCache.get(),
         m_resourceViewCache.get());
+    rayTracedShadowPass->SetResourceRegistry(m_renderResourceRegistry);
     rayTracedShadowPass->SetRayTracingScene(m_rayTracingSceneManager.get());
     rayTracedShadowPass->SetConfig(m_shadowPassConfig);
     m_rayTracedShadowPass = rayTracedShadowPass.get();
@@ -3459,6 +3599,7 @@ void SceneRenderer::SetupDefaultPasses()
         m_pipelineCache.get(),
         m_resourceViewCache.get(),
         m_materialSystem.get());
+    objectVelocityPass->SetResourceRegistry(m_renderResourceRegistry);
     m_objectVelocityPass = objectVelocityPass.get();
     AddPass(std::move(objectVelocityPass));
 
@@ -3467,6 +3608,7 @@ void SceneRenderer::SetupDefaultPasses()
         m_gpuResourceManager.get(),
         m_pipelineCache.get(),
         m_resourceViewCache.get());
+    rayTracedReflectionPass->SetResourceRegistry(m_renderResourceRegistry);
     rayTracedReflectionPass->SetRayTracingScene(m_rayTracingSceneManager.get());
     m_rayTracedReflectionPass = rayTracedReflectionPass.get();
     AddPass(std::move(rayTracedReflectionPass));
@@ -3494,6 +3636,7 @@ void SceneRenderer::SetupDefaultPasses()
                              m_materialSystem.get(),
                              m_lightManager.get(),
                              m_clusteredLighting.get());
+    opaquePass->SetResourceRegistry(m_renderResourceRegistry);
     opaquePass->SetGPUDrivenCullingSource(m_gpuCulling.get());
     m_opaquePass = opaquePass.get();
     AddPass(std::move(opaquePass));
@@ -3509,6 +3652,7 @@ void SceneRenderer::SetupDefaultPasses()
                                   m_materialSystem.get(),
                                   m_lightManager.get(),
                                   m_clusteredLighting.get());
+    transparentPass->SetResourceRegistry(m_renderResourceRegistry);
     m_transparentPass = transparentPass.get();
     AddPass(std::move(transparentPass));
 

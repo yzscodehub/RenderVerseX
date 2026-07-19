@@ -8,6 +8,7 @@
 #include "Core/Assert.h"
 #include "Core/Types.h"
 #include "Render/Material/MaterialGPUData.h"
+#include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderResource.h"
 #include "RHI/RHI.h"
 
@@ -19,6 +20,7 @@
 namespace RVX
 {
     class GPUResourceManager;
+    class RenderResourceRegistry;
     class ResourceViewCache;
     class RHICommandContext;
 
@@ -82,7 +84,8 @@ namespace RVX
         // =====================================================================
 
         bool Initialize(IRHIDevice* device, GPUResourceManager* gpuResources,
-                        RHIDescriptorSetLayout* materialSetLayout);
+                        RHIDescriptorSetLayout* materialSetLayout,
+                        const RenderResourceRegistry* resourceRegistry = nullptr);
         void Shutdown();
         bool IsInitialized() const { return m_initialized; }
 
@@ -97,6 +100,9 @@ namespace RVX
         // =====================================================================
 
         MaterialBindingResult PrepareMaterialBinding(const IRenderMaterialSource* materialResource,
+                                                     ResourceViewCache* viewCache,
+                                                     MaterialBindingOptions options = {});
+        MaterialBindingResult PrepareMaterialBinding(RenderResourceHandle material,
                                                      ResourceViewCache* viewCache,
                                                      MaterialBindingOptions options = {});
         void RequestMaterialTextures(const IRenderMaterialSource* materialResource) const;
@@ -120,12 +126,19 @@ namespace RVX
             IRenderTextureUploadSource* irradianceMap = nullptr;
             IRenderTextureUploadSource* prefilteredMap = nullptr;
             IRenderTextureUploadSource* brdfLUT = nullptr;
+            RenderResourceHandle irradianceHandle;
+            RenderResourceHandle prefilteredHandle;
+            RenderResourceHandle brdfLUTHandle;
             uint32 prefilteredMipLevels = 1;
             float intensity = 1.0f;
             bool textureIBLEnabled = false;
         };
 
         void SetEnvironmentIBLResources(const EnvironmentIBLResources& resources);
+        void SetEnvironmentIBLResources(RenderResourceHandle irradiance,
+                                        RenderResourceHandle prefiltered,
+                                        RenderResourceHandle brdfLUT,
+                                        float intensity);
         void ClearEnvironmentIBLResources();
         const EnvironmentIBLResources& GetEnvironmentIBLResources() const { return m_environmentIBL; }
 
@@ -215,8 +228,15 @@ namespace RVX
         ResolvedMaterialTextures ResolveMaterialTextures(const IRenderMaterialSource* materialResource,
                                                         ResourceViewCache* viewCache,
                                                         MaterialBindingOptions options) const;
+        ResolvedMaterialTextures ResolveMaterialTextures(RenderResourceHandle material,
+                                                        ResourceViewCache* viewCache,
+                                                        MaterialBindingOptions options) const;
         MaterialGPUConstants BuildConstants(const IRenderMaterialSource* materialResource,
                                             const ResolvedMaterialTextures& textures) const;
+        MaterialBindingResult PrepareResolvedMaterialBinding(
+            MaterialSourceData source,
+            const ResolvedMaterialTextures& textures,
+            std::string materialName);
         MaterialSetResolveResult GetOrCreateMaterialSetForResolved(const ResolvedMaterialTextures& textures);
         RHIDescriptorSetRef CreateMaterialDescriptorSet(const ResolvedMaterialTextures& textures);
         const MaterialBindingResult& SetLastBindingResult(MaterialBindingResult result);
@@ -224,6 +244,7 @@ namespace RVX
 
         IRHIDevice* m_device = nullptr;
         GPUResourceManager* m_gpuResources = nullptr;
+        const RenderResourceRegistry* m_resourceRegistry = nullptr;
         RHIDescriptorSetLayout* m_materialSetLayout = nullptr;
         bool m_initialized = false;
 

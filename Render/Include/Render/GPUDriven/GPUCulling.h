@@ -10,6 +10,7 @@
 #include "Core/Types.h"
 #include "Core/MathTypes.h"
 #include "Render/Material/MaterialClassification.h"
+#include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderResource.h"
 #include "RHI/RHI.h"
 #include <vector>
@@ -56,6 +57,8 @@ namespace RVX
      */
     struct GPUCullingDrawGroup
     {
+        RenderResourceHandle mesh;
+        RenderResourceHandle material;
         uint64 meshId = 0;
         uint64 materialId = 0;
         const IRenderMaterialSource* materialResource = nullptr;
@@ -166,7 +169,9 @@ namespace RVX
         uint32 BeginDrawGroup(uint64 meshId,
                               uint64 materialId = 0,
                               MaterialPipelineVariant pipelineVariant = MaterialPipelineVariant::Opaque,
-                              const IRenderMaterialSource* materialResource = nullptr);
+                              const IRenderMaterialSource* materialResource = nullptr,
+                              RenderResourceHandle mesh = {},
+                              RenderResourceHandle material = {});
 
         /**
          * @brief End the current draw group

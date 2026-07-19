@@ -144,6 +144,9 @@ namespace RVX
          */
         GPUCompletionPoint EndFrame();
 
+        /** @brief End recording without submitting or enabling presentation. */
+        void AbortFrame();
+
         /**
          * @brief Present the frame to the screen
          */

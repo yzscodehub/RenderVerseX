@@ -400,6 +400,17 @@ namespace
     class RecordingCommandContext final : public RHICommandContext
     {
     public:
+        explicit RecordingCommandContext(
+            RHICommandQueueType queueType = RHICommandQueueType::Graphics)
+            : m_queueType(queueType)
+        {
+        }
+
+        RHICommandQueueType GetQueueType() const override
+        {
+            return m_queueType;
+        }
+
         void Begin() override { ++beginCount; }
         void End() override { ++endCount; }
         void Reset() override {}
@@ -561,6 +572,9 @@ namespace
         std::vector<RHIViewport> viewports;
         std::vector<RHIRect> scissors;
         std::vector<std::string> callSequence;
+
+    private:
+        RHICommandQueueType m_queueType = RHICommandQueueType::Graphics;
     };
 
     class FakeFence final : public RHIFence
@@ -711,9 +725,11 @@ namespace
 
         RHIQueryPoolRef CreateQueryPool(const RHIQueryPoolDesc&) override { return nullptr; }
 
-        RHICommandContextRef CreateCommandContext(RHICommandQueueType) override
+        RHICommandContextRef CreateCommandContext(
+            RHICommandQueueType queueType) override
         {
-            return RHICommandContextRef(new RecordingCommandContext());
+            return RHICommandContextRef(
+                new RecordingCommandContext(queueType));
         }
 
         uint64 SubmitCommandContext(RHICommandContext*, RHIFence* signalFence = nullptr) override
@@ -1161,6 +1177,10 @@ namespace
             if (rayTracingSupported)
             {
                 device.EnableRayTracing();
+            }
+            else
+            {
+                device.EnableBasicCapabilities();
             }
 
             ASSERT_TRUE(pipelineCache.Initialize(&device, shaderDir.string())) << pipelineCache.GetLastError();
@@ -8024,13 +8044,19 @@ TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassGateNormalMapsOnTang
     EXPECT_NE(opaquePass.find("MaterialBindingOptions materialOptions;"), std::string::npos);
     EXPECT_NE(opaquePass.find("materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis()"),
               std::string::npos);
-    EXPECT_NE(opaquePass.find("PrepareMaterialBinding(materialResource, view.viewCache, materialOptions)"),
+    EXPECT_NE(opaquePass.find("PrepareMaterialBinding("), std::string::npos);
+    EXPECT_NE(opaquePass.find("item.material, view.viewCache, materialOptions"),
+              std::string::npos);
+    EXPECT_NE(opaquePass.find("materialResource, view.viewCache, materialOptions"),
               std::string::npos);
 
     EXPECT_NE(transparentPass.find("MaterialBindingOptions materialOptions;"), std::string::npos);
     EXPECT_NE(transparentPass.find("materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis()"),
               std::string::npos);
-    EXPECT_NE(transparentPass.find("PrepareMaterialBinding(materialResource, view.viewCache, materialOptions)"),
+    EXPECT_NE(transparentPass.find("PrepareMaterialBinding("), std::string::npos);
+    EXPECT_NE(transparentPass.find("item.material, view.viewCache, materialOptions"),
+              std::string::npos);
+    EXPECT_NE(transparentPass.find("materialResource, view.viewCache, materialOptions"),
               std::string::npos);
 }
 

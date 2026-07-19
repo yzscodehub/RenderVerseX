@@ -1086,6 +1086,12 @@ namespace
         {
             return false;
         }
+        if (!m_registry->SetPendingMeshMetadata(handle,
+                                                payload.createInfo,
+                                                payload.submeshes))
+        {
+            return false;
+        }
         const struct BufferSpec
         {
             RenderMeshBufferSemantic semantic;
@@ -1353,7 +1359,8 @@ namespace
         RHICommandContext& context,
         std::vector<RHIStagingBufferRef>& stagingBuffers)
     {
-        if (!RecordMaterialConstants(handle,
+        if (!m_registry->SetPendingMaterialMetadata(handle, payload) ||
+            !RecordMaterialConstants(handle,
                                      payload.sourceData,
                                      context,
                                      stagingBuffers))

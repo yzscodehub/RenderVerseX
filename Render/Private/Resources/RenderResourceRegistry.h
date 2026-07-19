@@ -3,6 +3,7 @@
 /** @file RenderResourceRegistry.h @brief Exact-generation Render-owned RHI resources */
 
 #include "RenderContracts/IRenderResourceGateway.h"
+#include "RenderContracts/ResourceUploadRequest.h"
 #include "Resources/RenderSubmissionTracker.h"
 #include "RHI/RHIBuffer.h"
 #include "RHI/RHISampler.h"
@@ -12,6 +13,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -60,6 +62,8 @@ namespace RVX
     struct RenderMeshResourceData
     {
         std::vector<RenderOwnedBuffer> buffers;
+        MeshUploadCreateInfo createInfo;
+        std::vector<MeshUploadSubmesh> submeshes;
     };
 
     struct RenderTextureResourceData
@@ -72,7 +76,10 @@ namespace RVX
     {
         RHIBufferRef constants;
         uint64 constantBytes = 0;
+        MaterialSourceData sourceData;
+        std::vector<MaterialUploadTextureBinding> textureBindings;
         std::vector<RHISamplerRef> samplers;
+        bool metadataValid = false;
     };
 
     using RenderResourceGPUData = std::variant<
@@ -103,6 +110,10 @@ namespace RVX
             RenderMeshBufferSemantic semantic,
             RHIBufferRef buffer,
             uint64 estimatedBytes);
+        [[nodiscard]] bool SetPendingMeshMetadata(
+            RenderResourceHandle handle,
+            const MeshUploadCreateInfo& createInfo,
+            const std::vector<MeshUploadSubmesh>& submeshes);
         [[nodiscard]] bool SetPendingTexture(
             RenderResourceHandle handle,
             RHITextureRef texture,
@@ -111,6 +122,9 @@ namespace RVX
             RenderResourceHandle handle,
             RHIBufferRef constants,
             uint64 estimatedBytes);
+        [[nodiscard]] bool SetPendingMaterialMetadata(
+            RenderResourceHandle handle,
+            const MaterialUploadPayload& payload);
         [[nodiscard]] bool AddPendingMaterialSampler(
             RenderResourceHandle handle,
             RHISamplerRef sampler);
@@ -123,12 +137,19 @@ namespace RVX
         [[nodiscard]] bool MergeLastUse(
             RenderResourceHandle handle,
             const GPUCompletionToken& completion);
+        [[nodiscard]] bool MergeLastUseClosure(
+            std::span<const RenderResourceHandle> roots,
+            const GPUCompletionToken& completion);
 
         [[nodiscard]] const RenderMeshResourceData* ResolveMesh(
             RenderResourceHandle handle) const;
         [[nodiscard]] const RenderTextureResourceData* ResolveTexture(
             RenderResourceHandle handle) const;
         [[nodiscard]] const RenderMaterialResourceData* ResolveMaterial(
+            RenderResourceHandle handle) const;
+        [[nodiscard]] MeshGPUBuffers ResolveMeshBuffers(
+            RenderResourceHandle handle) const;
+        [[nodiscard]] RHITexture* ResolveTextureObject(
             RenderResourceHandle handle) const;
         [[nodiscard]] const std::vector<RenderResourceHandle>*
             GetDependencies(RenderResourceHandle handle) const;

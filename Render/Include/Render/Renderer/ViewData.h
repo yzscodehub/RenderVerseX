@@ -10,6 +10,7 @@
 #include "RHI/RHI.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Renderer/ShadowConstants.h"
+#include "RenderContracts/RenderFramePacket.h"
 
 #include <array>
 
@@ -219,6 +220,13 @@ namespace RVX
          * @param height Viewport height
          */
         void SetupFromCamera(const Camera& camera, uint32_t width, uint32_t height);
+
+        /** @brief Setup numeric view state without retaining a Camera. */
+        void SetupFromSnapshot(
+            const RenderViewSnapshot& snapshot,
+            const Mat4& previousRenderedViewProjection,
+            bool previousRenderedViewValid,
+            bool resetHistory);
 
         /**
          * @brief Create RHI viewport struct

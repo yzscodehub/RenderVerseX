@@ -54,7 +54,9 @@ namespace RVX
                 continue;
 
             const RenderObject& obj = scene.GetObject(objectIndex);
-            const size_t submeshCount = std::max({
+            const size_t submeshCount = obj.mesh.IsValid()
+                                            ? 1
+                                            : std::max({
                 size_t{1},
                 obj.materialIds.size(),
                 obj.materialModes.size(),
@@ -70,6 +72,8 @@ namespace RVX
                 RenderDrawItem item;
                 item.objectIndex = objectIndex;
                 item.submeshIndex = static_cast<uint32>(submeshIndex);
+                item.mesh = obj.mesh;
+                item.material = obj.material;
                 item.meshId = obj.meshId;
                 item.materialId = submeshIndex < obj.materialIds.size() ? obj.materialIds[submeshIndex] : 0;
                 item.materialResource = materialResource;
@@ -110,8 +114,17 @@ namespace RVX
 
     uint64 BuildOpaqueDrawSortKey(const RenderDrawItem& item)
     {
-        const uint64 materialBits = MixSortBits(item.materialId) & 0xFFFF'FFFFULL;
-        const uint64 meshBits = MixSortBits(item.meshId) & 0xFFFF'0000ULL;
+        const uint64 materialIdentity = item.material.IsValid()
+                                            ? (static_cast<uint64>(item.material.slot) << 32U) |
+                                                  item.material.generation
+                                            : item.materialId;
+        const uint64 meshIdentity = item.mesh.IsValid()
+                                        ? (static_cast<uint64>(item.mesh.slot) << 32U) |
+                                              item.mesh.generation
+                                        : item.meshId;
+        const uint64 materialBits =
+            MixSortBits(materialIdentity) & 0xFFFF'FFFFULL;
+        const uint64 meshBits = MixSortBits(meshIdentity) & 0xFFFF'0000ULL;
         return (materialBits << 32) | meshBits | static_cast<uint64>(item.submeshIndex);
     }
 
@@ -120,7 +133,12 @@ namespace RVX
         const float safeDepth = std::isfinite(item.depthFromCamera) ? item.depthFromCamera : 0.0f;
         const float clampedDepth = std::clamp(safeDepth, 0.0f, 1000000.0f);
         const uint64 depthBits = static_cast<uint64>(clampedDepth * 1000.0f);
-        return (depthBits << 24) | (MixSortBits(item.materialId) & 0x00FF'FFFFULL);
+        const uint64 materialIdentity = item.material.IsValid()
+                                            ? (static_cast<uint64>(item.material.slot) << 32U) |
+                                                  item.material.generation
+                                            : item.materialId;
+        return (depthBits << 24) |
+               (MixSortBits(materialIdentity) & 0x00FF'FFFFULL);
     }
 
 } // namespace RVX

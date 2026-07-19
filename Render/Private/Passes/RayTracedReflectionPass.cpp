@@ -7,6 +7,7 @@
 #include "Render/RayTracing/RayTracingResourceBindings.h"
 #include "Render/RayTracing/RayTracingSceneManager.h"
 #include "Render/Renderer/ViewData.h"
+#include "Resources/RenderResourceRegistry.h"
 
 #include <algorithm>
 #include <cmath>
@@ -23,6 +24,13 @@ namespace RVX
         constexpr uint32 RVX_RAY_TRACED_REFLECTION_TIMING_START_QUERY_OFFSET = 0;
         constexpr uint32 RVX_RAY_TRACED_REFLECTION_TIMING_END_QUERY_OFFSET = 1;
         constexpr uint64 RVX_RAY_TRACED_REFLECTION_TIMING_READBACK_BYTES = sizeof(uint64) * 2;
+
+        RenderResourceHandle UnpackRenderResourceHandle(uint64 value)
+        {
+            return RenderResourceHandle{
+                static_cast<uint32>(value >> 32U),
+                static_cast<uint32>(value)};
+        }
 
         uint32 GetRayTracedReflectionTimingStartQuery(uint32 frameIndex)
         {
@@ -157,6 +165,7 @@ namespace RVX
         ResetHistoryTextures();
         m_device = nullptr;
         m_gpuResources = nullptr;
+        m_resourceRegistry = nullptr;
         m_pipelineCache = nullptr;
         m_viewCache = nullptr;
         m_sceneManager = nullptr;
@@ -250,9 +259,10 @@ namespace RVX
             return false;
         }
 
-        if (materialTextureCount > 0 && !m_gpuResources)
+        if (materialTextureCount > 0 &&
+            !m_gpuResources && !m_resourceRegistry)
         {
-            m_unsupportedReason = "Ray tracing material textures require a GPUResourceManager";
+            m_unsupportedReason = "Ray tracing material textures require an exact or legacy resource resolver";
             return false;
         }
 
@@ -306,7 +316,8 @@ namespace RVX
             std::min<size_t>(sceneMaterialTextureCount, RTReflectionBindings::RVX_RT_REFLECTION_MAX_MATERIAL_TEXTURES));
         m_stats.materialTextureTableAvailable =
             m_stats.materialTextureCount == sceneMaterialTextureCount &&
-            (m_stats.materialTextureCount == 0u || m_gpuResources != nullptr);
+            (m_stats.materialTextureCount == 0u || m_gpuResources != nullptr ||
+             m_resourceRegistry != nullptr);
         m_stats.geometryMetadataAvailable = m_sceneManager && m_sceneManager->GetInstanceAlphaMetadataBuffer();
         m_stats.geometryIndexBufferCount =
             m_sceneManager
@@ -1000,7 +1011,7 @@ namespace RVX
         if (textureIds.empty())
             return true;
 
-        if (!m_gpuResources || !m_viewCache)
+        if ((!m_gpuResources && !m_resourceRegistry) || !m_viewCache)
             return false;
 
         if (textureIds.size() > RTReflectionBindings::RVX_RT_REFLECTION_MAX_MATERIAL_TEXTURES)
@@ -1009,7 +1020,10 @@ namespace RVX
         outViews.reserve(textureIds.size());
         for (uint64 textureId : textureIds)
         {
-            RHITexture* texture = m_gpuResources->GetTexture(textureId);
+            RHITexture* texture = m_resourceRegistry
+                ? m_resourceRegistry->ResolveTextureObject(
+                      UnpackRenderResourceHandle(textureId))
+                : m_gpuResources->GetTexture(textureId);
             if (!texture)
                 return false;
 

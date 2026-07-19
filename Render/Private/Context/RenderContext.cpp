@@ -281,6 +281,24 @@ GPUCompletionPoint RenderContext::EndFrame()
     return submittedPoint;
 }
 
+void RenderContext::AbortFrame()
+{
+    if (!m_frameActive)
+    {
+        return;
+    }
+    if (RHICommandContext* context = GetGraphicsContext())
+    {
+        context->End();
+    }
+    if (m_device)
+    {
+        m_device->EndFrame();
+    }
+    m_frameActive = false;
+    m_frameReadyToPresent = false;
+}
+
 void RenderContext::Present()
 {
     if (!m_frameReadyToPresent)

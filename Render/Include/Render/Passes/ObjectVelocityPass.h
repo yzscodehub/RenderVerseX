@@ -12,6 +12,7 @@
 
 namespace RVX
 {
+    class RenderResourceRegistry;
     class GPUResourceManager;
     class MaterialSystem;
     class PipelineCache;
@@ -61,6 +62,10 @@ namespace RVX
                           PipelineCache* pipelineCache,
                           ResourceViewCache* viewCache,
                           MaterialSystem* materialSystem);
+        void SetResourceRegistry(const RenderResourceRegistry* registry)
+        {
+            m_resourceRegistry = registry;
+        }
         void SetRenderScene(const RenderScene* scene,
                             const std::vector<RenderDrawItem>* opaqueDrawItems,
                             const std::vector<RenderDrawItem>* maskedDrawItems);
@@ -74,6 +79,7 @@ namespace RVX
     private:
         IRHIDevice* m_device = nullptr;
         GPUResourceManager* m_gpuResources = nullptr;
+        const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         ResourceViewCache* m_viewCache = nullptr;
         MaterialSystem* m_materialSystem = nullptr;

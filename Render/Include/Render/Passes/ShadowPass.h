@@ -17,6 +17,7 @@
 
 namespace RVX
 {
+    class RenderResourceRegistry;
     class RenderScene;
     class GPUResourceManager;
     class PipelineCache;
@@ -103,6 +104,10 @@ namespace RVX
         // =========================================================================
 
         void SetResources(GPUResourceManager* gpuResources, PipelineCache* pipelineCache);
+        void SetResourceRegistry(const RenderResourceRegistry* registry)
+        {
+            m_resourceRegistry = registry;
+        }
         void SetRenderScene(const RenderScene* scene);
         void SetConfig(const ShadowPassConfig& config);
 
@@ -145,6 +150,7 @@ namespace RVX
         bool m_enabled = false;  // Disabled by default until light is configured
         mutable std::string m_unsupportedReason = "ShadowPass has not been configured";
         GPUResourceManager* m_gpuResources = nullptr;
+        const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         const RenderScene* m_renderScene = nullptr;
 

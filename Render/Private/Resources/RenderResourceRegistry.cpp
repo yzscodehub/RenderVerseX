@@ -1,8 +1,11 @@
 #include "Resources/RenderResourceRegistry.h"
 
 #include "Core/Assert.h"
+#include "Render/GPUResourceManager.h"
 #include "Resources/RenderRetirementQueue.h"
 #include "Runtime/RenderResourceStatusTable.h"
+
+#include <algorithm>
 
 namespace RVX
 {
@@ -115,6 +118,26 @@ namespace RVX
         return true;
     }
 
+    bool RenderResourceRegistry::SetPendingMeshMetadata(
+        RenderResourceHandle handle,
+        const MeshUploadCreateInfo& createInfo,
+        const std::vector<MeshUploadSubmesh>& submeshes)
+    {
+        Entry* entry = FindExact(handle);
+        if (entry == nullptr || !entry->pending)
+        {
+            return false;
+        }
+        auto* mesh = std::get_if<RenderMeshResourceData>(&*entry->pending);
+        if (mesh == nullptr)
+        {
+            return false;
+        }
+        mesh->createInfo = createInfo;
+        mesh->submeshes = submeshes;
+        return true;
+    }
+
     bool RenderResourceRegistry::SetPendingTexture(
         RenderResourceHandle handle,
         RHITextureRef texture,
@@ -152,6 +175,26 @@ namespace RVX
         }
         data->constants = std::move(constants);
         data->constantBytes = estimatedBytes;
+        return true;
+    }
+
+    bool RenderResourceRegistry::SetPendingMaterialMetadata(
+        RenderResourceHandle handle,
+        const MaterialUploadPayload& payload)
+    {
+        Entry* entry = FindExact(handle);
+        if (entry == nullptr || !entry->pending)
+        {
+            return false;
+        }
+        auto* data = std::get_if<RenderMaterialResourceData>(&*entry->pending);
+        if (data == nullptr || data->metadataValid)
+        {
+            return false;
+        }
+        data->sourceData = payload.sourceData;
+        data->textureBindings = payload.textureBindings;
+        data->metadataValid = true;
         return true;
     }
 
@@ -244,6 +287,63 @@ namespace RVX
                MergeGPUCompletionToken(entry->lastUse, completion);
     }
 
+    bool RenderResourceRegistry::MergeLastUseClosure(
+        std::span<const RenderResourceHandle> roots,
+        const GPUCompletionToken& completion)
+    {
+        std::vector<RenderResourceHandle> closure;
+        const auto collect = [this, &closure](auto&& self,
+                                               RenderResourceHandle handle)
+            -> bool
+        {
+            if (!handle.IsValid() ||
+                std::find(closure.begin(), closure.end(), handle) !=
+                    closure.end())
+            {
+                return true;
+            }
+            const Entry* entry = FindExact(handle);
+            if (entry == nullptr)
+            {
+                return false;
+            }
+            closure.push_back(handle);
+            for (RenderResourceHandle dependency : entry->dependencies)
+            {
+                if (!self(self, dependency))
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+        for (RenderResourceHandle root : roots)
+        {
+            if (!collect(collect, root))
+            {
+                return false;
+            }
+        }
+
+        std::vector<GPUCompletionToken> merged;
+        merged.reserve(closure.size());
+        for (RenderResourceHandle handle : closure)
+        {
+            const Entry* entry = FindExact(handle);
+            GPUCompletionToken candidate = entry->lastUse;
+            if (!MergeGPUCompletionToken(candidate, completion))
+            {
+                return false;
+            }
+            merged.push_back(candidate);
+        }
+        for (size_t index = 0; index < closure.size(); ++index)
+        {
+            FindExact(closure[index])->lastUse = merged[index];
+        }
+        return true;
+    }
+
     const RenderMeshResourceData* RenderResourceRegistry::ResolveMesh(
         RenderResourceHandle handle) const
     {
@@ -278,6 +378,75 @@ namespace RVX
             return nullptr;
         }
         return std::get_if<RenderMaterialResourceData>(&*entry->committed);
+    }
+
+    MeshGPUBuffers RenderResourceRegistry::ResolveMeshBuffers(
+        RenderResourceHandle handle) const
+    {
+        MeshGPUBuffers buffers;
+        const RenderMeshResourceData* mesh = ResolveMesh(handle);
+        if (mesh == nullptr)
+        {
+            return buffers;
+        }
+        for (const RenderOwnedBuffer& owned : mesh->buffers)
+        {
+            RHIBuffer* buffer = owned.buffer.Get();
+            switch (owned.semantic)
+            {
+                case RenderMeshBufferSemantic::Position:
+                    buffers.positionBuffer = buffer;
+                    break;
+                case RenderMeshBufferSemantic::Normal:
+                    buffers.normalBuffer = buffer;
+                    buffers.hasNormals = true;
+                    break;
+                case RenderMeshBufferSemantic::UV:
+                    buffers.uvBuffer = buffer;
+                    buffers.hasUVs = true;
+                    break;
+                case RenderMeshBufferSemantic::Tangent:
+                    buffers.tangentBuffer = buffer;
+                    buffers.hasTangents = true;
+                    break;
+                case RenderMeshBufferSemantic::BoneIndices:
+                    buffers.boneIndicesBuffer = buffer;
+                    buffers.hasBoneIndices = true;
+                    break;
+                case RenderMeshBufferSemantic::BoneWeights:
+                    buffers.boneWeightsBuffer = buffer;
+                    buffers.hasBoneWeights = true;
+                    break;
+                case RenderMeshBufferSemantic::Index:
+                    buffers.indexBuffer = buffer;
+                    break;
+            }
+        }
+        buffers.submeshes.reserve(mesh->submeshes.size());
+        for (const MeshUploadSubmesh& submesh : mesh->submeshes)
+        {
+            buffers.submeshes.push_back(SubmeshGPUInfo{
+                submesh.indexOffset,
+                submesh.indexCount,
+                submesh.baseVertex});
+        }
+        if (buffers.submeshes.empty() && mesh->createInfo.indexCount != 0)
+        {
+            buffers.submeshes.push_back(SubmeshGPUInfo{
+                0,
+                static_cast<uint32>(mesh->createInfo.indexCount),
+                0});
+        }
+        buffers.isResident = buffers.positionBuffer != nullptr &&
+                             buffers.indexBuffer != nullptr;
+        return buffers;
+    }
+
+    RHITexture* RenderResourceRegistry::ResolveTextureObject(
+        RenderResourceHandle handle) const
+    {
+        const RenderTextureResourceData* texture = ResolveTexture(handle);
+        return texture == nullptr ? nullptr : texture->texture.Get();
     }
 
     const std::vector<RenderResourceHandle>*

@@ -435,7 +435,9 @@ void GPUCulling::BeginFrame()
 uint32 GPUCulling::BeginDrawGroup(uint64 meshId,
                                   uint64 materialId,
                                   MaterialPipelineVariant pipelineVariant,
-                                  const IRenderMaterialSource* materialResource)
+                                  const IRenderMaterialSource* materialResource,
+                                  RenderResourceHandle mesh,
+                                  RenderResourceHandle material)
 {
     if (m_drawGroups.size() >= m_config.maxInstances)
     {
@@ -443,6 +445,8 @@ uint32 GPUCulling::BeginDrawGroup(uint64 meshId,
     }
 
     GPUCullingDrawGroup group;
+    group.mesh = mesh;
+    group.material = material;
     group.meshId = meshId;
     group.materialId = materialId;
     group.materialResource = materialResource;
@@ -545,11 +549,15 @@ uint32 GPUCulling::AddDrawItemInstance(const RenderScene& scene,
         BeginDrawGroup(drawItem.meshId,
                        drawItem.materialId,
                        GetGPUCullingPipelineVariant(drawItem.renderMode),
-                       drawItem.materialResource);
+                       drawItem.materialResource,
+                       drawItem.mesh,
+                       drawItem.material);
     }
     else if (m_activeDrawGroupIndex != RVX_INVALID_INDEX && m_activeDrawGroupIndex < m_drawGroups.size())
     {
         GPUCullingDrawGroup& group = m_drawGroups[m_activeDrawGroupIndex];
+        group.mesh = drawItem.mesh;
+        group.material = drawItem.material;
         group.meshId = drawItem.meshId;
         group.materialId = drawItem.materialId;
         group.materialResource = drawItem.materialResource;

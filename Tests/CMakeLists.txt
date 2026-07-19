@@ -649,7 +649,9 @@ rvx_add_gtest(
         RVX::Scene
         RVX::Animation
         RVX::RHI
+        RVX_RenderRuntimeCore
     INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Private
         ${CMAKE_SOURCE_DIR}/RenderExtraction/Include
         ${CMAKE_SOURCE_DIR}/RHI/Include
         ${CMAKE_SOURCE_DIR}/Render/Include

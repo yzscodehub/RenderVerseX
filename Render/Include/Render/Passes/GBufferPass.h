@@ -11,6 +11,7 @@
 
 namespace RVX
 {
+    class RenderResourceRegistry;
     // Forward declarations
     class GPUResourceManager;
     class PipelineCache;
@@ -70,6 +71,10 @@ namespace RVX
          * @param pipelines Pipeline cache for shaders and pipelines
          */
         void SetResources(GPUResourceManager* gpuMgr, PipelineCache* pipelines);
+        void SetResourceRegistry(const RenderResourceRegistry* registry)
+        {
+            m_resourceRegistry = registry;
+        }
 
         /**
          * @brief Set render scene data for this frame
@@ -106,6 +111,7 @@ namespace RVX
 
         // Resource dependencies
         GPUResourceManager* m_gpuResources = nullptr;
+        const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         const RenderScene* m_renderScene = nullptr;
         const std::vector<uint32_t>* m_visibleIndices = nullptr;

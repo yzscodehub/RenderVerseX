@@ -44,6 +44,39 @@ void ViewData::SetupFromCamera(const Camera& camera, uint32_t width, uint32_t he
     aspectRatio = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
 }
 
+void ViewData::SetupFromSnapshot(
+    const RenderViewSnapshot& snapshot,
+    const Mat4& previousRenderedViewProjection,
+    bool previousRenderedViewValid,
+    bool resetHistory)
+{
+    viewMatrix = snapshot.viewMatrix;
+    projectionMatrix = snapshot.projectionMatrix;
+    viewProjectionMatrix = snapshot.viewProjectionMatrix;
+    inverseViewMatrix = inverse(viewMatrix);
+    inverseProjectionMatrix = inverse(projectionMatrix);
+    cameraPosition = snapshot.cameraPosition;
+    cameraForward = snapshot.cameraDirection;
+    nearPlane = snapshot.nearPlane;
+    farPlane = snapshot.farPlane;
+    viewportX = static_cast<int32>(snapshot.viewportX);
+    viewportY = static_cast<int32>(snapshot.viewportY);
+    viewportWidth = snapshot.viewportWidth;
+    viewportHeight = snapshot.viewportHeight;
+    aspectRatio = viewportHeight == 0
+                      ? 1.0f
+                      : static_cast<float>(viewportWidth) /
+                            static_cast<float>(viewportHeight);
+    previousViewProjectionMatrix = resetHistory
+                                       ? snapshot.viewProjectionMatrix
+                                       : previousRenderedViewProjection;
+    previousViewProjectionValid =
+        static_cast<uint8>(previousRenderedViewValid && !resetHistory);
+    resetTemporalHistory = resetHistory;
+    time = snapshot.absoluteTime;
+    deltaTime = snapshot.deltaTime;
+}
+
 bool ViewData::HasTextureShaderResourceView(RGTextureHandle handle) const
 {
     RHITexture* texture = ResolveViewTexture(*this, handle);

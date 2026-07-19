@@ -18,6 +18,7 @@ namespace RVX
     class RayTracingSceneManager;
     class ResourceViewCache;
     class GPUResourceManager;
+    class RenderResourceRegistry;
 
     struct RayTracedShadowPassStats
     {
@@ -105,6 +106,10 @@ namespace RVX
         void SetResources(GPUResourceManager* gpuResources,
                           PipelineCache* pipelineCache,
                           ResourceViewCache* viewCache);
+        void SetResourceRegistry(const RenderResourceRegistry* registry)
+        {
+            m_resourceRegistry = registry;
+        }
         void SetRayTracingScene(RayTracingSceneManager* sceneManager) { m_sceneManager = sceneManager; }
         void SetConfig(const ShadowPassConfig& config) { m_config = config; }
         const ShadowPassConfig& GetConfig() const { return m_config; }
@@ -117,6 +122,7 @@ namespace RVX
     private:
         IRHIDevice* m_device = nullptr;
         GPUResourceManager* m_gpuResources = nullptr;
+        const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         ResourceViewCache* m_viewCache = nullptr;
         RayTracingSceneManager* m_sceneManager = nullptr;

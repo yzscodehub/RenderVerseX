@@ -15,6 +15,7 @@
 
 namespace RVX
 {
+    class RenderResourceRegistry;
     class GPUCulling;
     class RenderScene;
 
@@ -71,6 +72,10 @@ namespace RVX
          * @param pipelineCache Pipeline cache for depth-only pipeline
          */
         void SetResources(GPUResourceManager* gpuResources, PipelineCache* pipelineCache);
+        void SetResourceRegistry(const RenderResourceRegistry* registry)
+        {
+            m_resourceRegistry = registry;
+        }
 
         /**
          * @brief Set render scene and visible objects
@@ -121,6 +126,7 @@ namespace RVX
         bool m_enabled = false;  // Disabled by default until depth-only pipeline is ready
         std::string m_unsupportedReason = "Depth-only pipeline is not available";
         GPUResourceManager* m_gpuResources = nullptr;
+        const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         const RenderScene* m_renderScene = nullptr;
         const GPUCulling* m_gpuCulling = nullptr;

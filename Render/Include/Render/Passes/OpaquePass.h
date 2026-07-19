@@ -14,6 +14,7 @@
 
 namespace RVX
 {
+    class RenderResourceRegistry;
     // Forward declarations
     class ClusteredLighting;
     class GPUCulling;
@@ -94,6 +95,10 @@ namespace RVX
                           MaterialSystem* materialSystem,
                           LightManager* lightManager = nullptr,
                           ClusteredLighting* clusteredLighting = nullptr);
+        void SetResourceRegistry(const RenderResourceRegistry* registry)
+        {
+            m_resourceRegistry = registry;
+        }
 
         /**
          * @brief Set render scene data for this frame
@@ -138,6 +143,7 @@ namespace RVX
 
         // Resource dependencies
         GPUResourceManager* m_gpuResources = nullptr;
+        const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         MaterialSystem* m_materialSystem = nullptr;
         LightManager* m_lightManager = nullptr;

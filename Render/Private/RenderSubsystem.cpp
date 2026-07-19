@@ -18,12 +18,14 @@
 #include "Resources/RenderResourceRegistry.h"
 #include "Resources/RenderRetirementQueue.h"
 #include "Resources/RenderUploadProcessor.h"
+#include "Resources/RenderSubmissionTracker.h"
 #include "Runtime/DedicatedRenderExecutor.h"
 #include "Runtime/RenderThreadRuntime.h"
 #include "Runtime/Window/WindowSubsystem.h"
 
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace RVX
 {
@@ -137,6 +139,21 @@ namespace
                 return result;
             }
 
+            m_sceneRenderer = std::make_unique<SceneRenderer>();
+            m_sceneRenderer->Initialize(m_context.get(), &m_resourceRegistry);
+            if (!m_sceneRenderer->IsInitialized())
+            {
+                m_sceneRenderer.reset();
+                m_uploadProcessor.Shutdown();
+                m_resourceRegistry.Shutdown();
+                m_context->Shutdown();
+                m_context.reset();
+                result.code = RenderRuntimeCode::DeviceCreationFailed;
+                result.message = "Packet renderer initialization failed";
+                return result;
+            }
+            m_sceneRenderer->SetSurfaceCompatibilityKey(surface.generation);
+
             result.code = RenderRuntimeCode::Running;
             return result;
         }
@@ -164,6 +181,10 @@ namespace
             if (updateKind == NativeSurfaceUpdateKind::Resize)
             {
                 m_context->WaitIdle();
+                if (m_sceneRenderer != nullptr)
+                {
+                    m_sceneRenderer->PrepareForSwapChainResize();
+                }
                 applied = m_context->ResizeSwapChain(surface);
             }
             else if (updateKind == NativeSurfaceUpdateKind::Replace &&
@@ -171,14 +192,26 @@ namespace
                          m_context->GetSurface(), surface))
             {
                 m_context->WaitIdle();
+                if (m_sceneRenderer != nullptr)
+                {
+                    m_sceneRenderer->PrepareForSwapChainResize();
+                }
                 applied = m_context->CreateSwapChain(surface);
             }
             if (!applied)
             {
                 result.code = RenderRuntimeCode::SurfaceCreationFailed;
                 result.message = "Surface update could not be applied";
+                return result;
             }
-            return result;
+            m_sceneRenderer->SetSurfaceCompatibilityKey(surface.generation);
+            if (m_sceneRenderer->GetLastPresentedFrameSequence() != 0)
+            {
+                return PresentAcceptedFrame(
+                    m_sceneRenderer->GetLastPresentedFrameSequence(),
+                    surface.generation);
+            }
+            return PresentDeterministicClear(surface.generation);
         }
 
         void ProcessRelease(RenderResourceHandle handle) override
@@ -205,57 +238,28 @@ namespace
                 return result;
             }
 
-            if (!m_context->BeginFrame())
+            if (m_sceneRenderer == nullptr)
             {
-                result.code = RenderRuntimeCode::DeviceLost;
-                result.message = "Frame slot completion was lost";
-                return result;
-            }
-            RHICommandContext* commandContext =
-                m_context->GetGraphicsContext();
-            RHITexture* backBuffer = m_context->GetCurrentBackBuffer();
-            RHITextureView* backBufferView =
-                m_context->GetCurrentBackBufferView();
-            if (commandContext == nullptr || backBuffer == nullptr ||
-                backBufferView == nullptr)
-            {
-                const GPUCompletionPoint submittedPoint = m_context->EndFrame();
-                if (submittedPoint.value == 0)
-                {
-                    result.code = RenderRuntimeCode::DeviceLost;
-                    result.message = "Graphics submission did not produce a completion point";
-                }
-                else
-                {
-                    result.code = RenderRuntimeCode::SurfaceCreationFailed;
-                    result.message = "Surface did not provide a renderable back buffer";
-                }
+                result.code = RenderRuntimeCode::OwnershipViolation;
+                result.message = "Packet renderer is unavailable";
                 return result;
             }
 
-            commandContext->TextureBarrier(backBuffer,
-                                           RHIResourceState::Present,
-                                           RHIResourceState::RenderTarget);
-            RHIRenderPassDesc clearPass;
-            clearPass.AddColorAttachment(
-                backBufferView,
-                RHILoadOp::Clear,
-                RHIStoreOp::Store,
-                RHIClearColor{0.015625f, 0.0234375f, 0.03125f, 1.0f});
-            commandContext->BeginRenderPass(clearPass);
-            commandContext->EndRenderPass();
-            commandContext->TextureBarrier(backBuffer,
-                                           RHIResourceState::RenderTarget,
-                                           RHIResourceState::Present);
-            const GPUCompletionPoint submittedPoint = m_context->EndFrame();
-            if (submittedPoint.value == 0)
+            const RenderFrameApplyResult applyResult =
+                m_sceneRenderer->ApplyFramePacket(packet,
+                                                  m_resourceRegistry);
+            if (!applyResult.IsApplied())
             {
-                result.code = RenderRuntimeCode::DeviceLost;
-                result.message = "Graphics submission did not produce a completion point";
+                result.code = RenderRuntimeCode::RenderGraphValidationFailed;
+                result.message =
+                    "Immutable frame packet was rejected before recording, code=" +
+                    std::to_string(static_cast<uint32>(applyResult.code));
                 return result;
             }
-            m_context->Present();
-            return result;
+
+            return PresentAcceptedFrame(
+                packet.GetHeader().sequence,
+                m_context->GetSurface().generation);
         }
 
         void PollCompletion() override
@@ -285,6 +289,11 @@ namespace
                     result.surfaceGeneration =
                         m_context->GetSurface().generation;
                     m_context->WaitIdle();
+                    if (m_sceneRenderer != nullptr)
+                    {
+                        m_sceneRenderer->Shutdown();
+                        m_sceneRenderer.reset();
+                    }
                     static_cast<void>(m_uploadProcessor.PollCompletion());
                     m_uploadProcessor.Shutdown();
                     static_cast<void>(m_retirementQueue.Poll());
@@ -314,7 +323,124 @@ namespace
         }
 
     private:
+        RenderRuntimeResult PresentAcceptedFrame(
+            uint64 frameSequence,
+            uint64 surfaceGeneration)
+        {
+            RenderRuntimeResult result;
+            result.code = RenderRuntimeCode::Running;
+            result.backend = m_context != nullptr &&
+                                     m_context->GetDevice() != nullptr
+                                 ? m_context->GetDevice()->GetBackendType()
+                                 : RHIBackendType::None;
+            result.frameSequence = frameSequence;
+            result.surfaceGeneration = surfaceGeneration;
+            if (m_context == nullptr || m_sceneRenderer == nullptr ||
+                !m_context->BeginFrame())
+            {
+                result.code = RenderRuntimeCode::DeviceLost;
+                result.message = "Frame slot completion was lost";
+                return result;
+            }
+
+            RenderFrameExecutionResult executionResult =
+                m_sceneRenderer->RenderAcceptedFrame();
+            if (executionResult.code != RenderFrameExecutionCode::Rendered)
+            {
+                m_context->AbortFrame();
+                result.code = RenderRuntimeCode::RenderGraphValidationFailed;
+                result.message =
+                    "Accepted frame failed RenderGraph validation or recording";
+                return result;
+            }
+            const GPUCompletionPoint submittedPoint = m_context->EndFrame();
+            if (submittedPoint.value == 0)
+            {
+                result.code = RenderRuntimeCode::DeviceLost;
+                result.message =
+                    "Graphics submission did not produce a completion point";
+                return result;
+            }
+
+            GPUCompletionToken completion;
+            if (!InsertGPUCompletionPoint(completion, submittedPoint) ||
+                !StampReferencedResources(executionResult.referencedResources,
+                                          completion))
+            {
+                result.code = RenderRuntimeCode::OwnershipViolation;
+                result.message =
+                    "Submitted frame resources could not be stamped by exact generation";
+                return result;
+            }
+            m_context->Present();
+            m_sceneRenderer->MarkAcceptedFramePresented();
+            return result;
+        }
+
+        RenderRuntimeResult PresentDeterministicClear(
+            uint64 surfaceGeneration)
+        {
+            RenderRuntimeResult result;
+            result.code = RenderRuntimeCode::Running;
+            result.backend = m_context != nullptr &&
+                                     m_context->GetDevice() != nullptr
+                                 ? m_context->GetDevice()->GetBackendType()
+                                 : RHIBackendType::None;
+            result.surfaceGeneration = surfaceGeneration;
+            if (m_context == nullptr || !m_context->BeginFrame())
+            {
+                result.code = RenderRuntimeCode::DeviceLost;
+                result.message = "Resize redraw could not begin a frame";
+                return result;
+            }
+            RHICommandContext* commandContext =
+                m_context->GetGraphicsContext();
+            RHITexture* backBuffer = m_context->GetCurrentBackBuffer();
+            RHITextureView* backBufferView =
+                m_context->GetCurrentBackBufferView();
+            if (commandContext == nullptr || backBuffer == nullptr ||
+                backBufferView == nullptr)
+            {
+                m_context->AbortFrame();
+                result.code = RenderRuntimeCode::SurfaceCreationFailed;
+                result.message = "Resize redraw has no renderable back buffer";
+                return result;
+            }
+            commandContext->TextureBarrier(backBuffer,
+                                           RHIResourceState::Present,
+                                           RHIResourceState::RenderTarget);
+            RHIRenderPassDesc clearPass;
+            clearPass.AddColorAttachment(
+                backBufferView,
+                RHILoadOp::Clear,
+                RHIStoreOp::Store,
+                RHIClearColor{0.015625f, 0.0234375f, 0.03125f, 1.0f});
+            commandContext->BeginRenderPass(clearPass);
+            commandContext->EndRenderPass();
+            commandContext->TextureBarrier(backBuffer,
+                                           RHIResourceState::RenderTarget,
+                                           RHIResourceState::Present);
+            const GPUCompletionPoint submittedPoint = m_context->EndFrame();
+            if (submittedPoint.value == 0)
+            {
+                result.code = RenderRuntimeCode::DeviceLost;
+                result.message = "Resize redraw submission failed";
+                return result;
+            }
+            m_context->Present();
+            return result;
+        }
+
+        bool StampReferencedResources(
+            const std::vector<RenderResourceHandle>& resources,
+            const GPUCompletionToken& completion)
+        {
+            return m_resourceRegistry.MergeLastUseClosure(resources,
+                                                          completion);
+        }
+
         std::unique_ptr<RenderContext> m_context;
+        std::unique_ptr<SceneRenderer> m_sceneRenderer;
         RenderRetirementQueue m_retirementQueue;
         RenderResourceRegistry m_resourceRegistry;
         RenderUploadProcessor m_uploadProcessor;

@@ -60,6 +60,7 @@ namespace RVX
     class OpaquePass;
     class ParticleFeaturePass;
     class RenderPassRegistry;
+    class RenderResourceRegistry;
     class RenderFeatureSceneBridge;
     class RenderProxySceneBridge;
     class RayTracedReflectionCompositePass;
@@ -820,7 +821,8 @@ namespace RVX
          * @brief Initialize the scene renderer
          * @param renderContext The render context to use
          */
-        void Initialize(RenderContext* renderContext);
+        void Initialize(RenderContext* renderContext,
+                        const RenderResourceRegistry* resourceRegistry = nullptr);
 
         /**
          * @brief Shutdown and release resources
@@ -849,6 +851,26 @@ namespace RVX
          * @param sceneManager The scene manager to render (can be null for just camera setup)
          */
         void SetupView(const Camera& camera, SceneManager* sceneManager);
+
+        /** @brief Transactionally apply one immutable render-frame packet. */
+        [[nodiscard]] RenderFrameApplyResult ApplyFramePacket(
+            const RenderFramePacket& packet,
+            const RenderResourceRegistry& registry);
+
+        /** @brief Record the currently accepted packet into the active frame. */
+        [[nodiscard]] RenderFrameExecutionResult RenderAcceptedFrame();
+
+        /** @brief Commit temporal history only after successful presentation. */
+        void MarkAcceptedFramePresented();
+
+        /** @brief Sequence of the packet most recently presented. */
+        uint64 GetLastPresentedFrameSequence() const
+        {
+            return m_renderScene.GetLastRenderedFrameSequence();
+        }
+
+        /** @brief Update the surface key used by temporal compatibility checks. */
+        void SetSurfaceCompatibilityKey(uint64 key) noexcept;
 
         /**
          * @brief Reset temporal histories on the next rendered view.
@@ -1265,6 +1287,7 @@ namespace RVX
         };
 
         RenderContext* m_renderContext = nullptr;
+        const RenderResourceRegistry* m_renderResourceRegistry = nullptr;
         std::unique_ptr<RenderGraph> m_renderGraph;
         std::unique_ptr<GPUResourceManager> m_gpuResourceManager;
         std::unique_ptr<PipelineCache> m_pipelineCache;

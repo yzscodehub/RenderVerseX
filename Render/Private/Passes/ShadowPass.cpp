@@ -8,6 +8,7 @@
 #include "Render/Renderer/ViewData.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/GPUResourceManager.h"
+#include "Resources/RenderResourceResolver.h"
 #include "Render/PipelineCache.h"
 #include "RHI/RHIRenderPass.h"
 #include "Core/Log.h"
@@ -178,7 +179,7 @@ bool ShadowPass::IsSupported() const
         return false;
     }
 
-    if (!m_gpuResources)
+    if (m_resourceRegistry == nullptr && !m_gpuResources)
     {
         m_unsupportedReason = "GPUResourceManager is not available";
         return false;
@@ -340,7 +341,8 @@ void ShadowPass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    if (!m_pipelineCache || !m_renderScene || !m_gpuResources)
+    if (!m_pipelineCache || !m_renderScene ||
+        (m_resourceRegistry == nullptr && !m_gpuResources))
     {
         return;
     }
@@ -455,7 +457,11 @@ void ShadowPass::RenderCascade(RHICommandContext& ctx, const ViewData& view, uin
         if (!obj.castsShadow)
             continue;
 
-        MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(obj.meshId);
+        MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+            m_resourceRegistry,
+            m_gpuResources,
+            obj.mesh,
+            obj.meshId);
         if (!buffers.IsValid())
             continue;
 

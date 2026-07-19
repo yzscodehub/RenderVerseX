@@ -6,6 +6,7 @@
 #include "Render/Passes/TransparentPass.h"
 #include "Core/Log.h"
 #include "Render/GPUResourceManager.h"
+#include "Resources/RenderResourceResolver.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
@@ -190,7 +191,8 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
     }
 
     // Draw transparent submeshes in back-to-front order.
-    if (m_renderScene && m_gpuResources)
+    if (m_renderScene &&
+        (m_resourceRegistry != nullptr || m_gpuResources != nullptr))
     {
         for (const RenderDrawItem& item : *m_transparentDrawItems)
         {
@@ -200,7 +202,11 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
             const RenderObject& obj = m_renderScene->GetObject(item.objectIndex);
 
             // Get GPU buffers for this mesh
-            MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(obj.meshId);
+            MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+                m_resourceRegistry,
+                m_gpuResources,
+                obj.mesh,
+                obj.meshId);
             if (!buffers.IsValid())
             {
                 continue;  // Mesh not uploaded yet
@@ -265,7 +271,11 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
             MaterialBindingOptions materialOptions;
             materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();
             const MaterialBindingResult materialBinding =
-                m_materialSystem->PrepareMaterialBinding(materialResource, view.viewCache, materialOptions);
+                m_resourceRegistry
+                    ? m_materialSystem->PrepareMaterialBinding(
+                          item.material, view.viewCache, materialOptions)
+                    : m_materialSystem->PrepareMaterialBinding(
+                          materialResource, view.viewCache, materialOptions);
             if (!materialBinding.IsDrawable())
             {
                 RVX_CORE_WARN("TransparentPass: Skipping draw item because material binding failed: {}",

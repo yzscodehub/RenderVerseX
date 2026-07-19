@@ -2151,6 +2151,11 @@ namespace
         ASSERT_EQ(frameResult.lifecycle,
                   RenderLifecycleState::Running);
         EXPECT_TRUE(runtime.IsReady());
+        const RenderDiagnosticsSnapshot rejectedDiagnostics =
+            runtime.GetDiagnosticsSnapshot();
+        EXPECT_EQ(rejectedDiagnostics.lastAppliedFrameSequence, 0U);
+        EXPECT_EQ(rejectedDiagnostics.lastSubmittedFrameSequence, 0U);
+        EXPECT_EQ(rejectedDiagnostics.lastPresentedFrameSequence, 0U);
 
         EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
         EXPECT_FALSE(runtime.IsReady());
@@ -2367,6 +2372,35 @@ namespace
         EXPECT_EQ(releaseDiagnostics.completedCount, 0U);
         EXPECT_EQ(releaseDiagnostics.currentUsage, 0U);
         EXPECT_EQ(releaseDiagnostics.oldestPendingGeneration, 0U);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation, UploadOnlyPumpNeverConsumesOrPresentsFrame)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateInlineRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        const PendingGatewayWork upload = PrepareGatewayWork(runtime, 5101);
+        ASSERT_EQ(runtime.TryEnqueueUpload(upload.request).code,
+                  RenderUploadEnqueueCode::Accepted);
+        ASSERT_TRUE(probe->WaitForEventCount(RenderRuntimeTestEvent::Upload,
+                                             1U,
+                                             RVX_TEST_TIMEOUT));
+
+        const RenderDiagnosticsSnapshot diagnostics =
+            runtime.GetDiagnosticsSnapshot();
+        EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Frame), 0U);
+        EXPECT_EQ(diagnostics.lastAppliedFrameSequence, 0U);
+        EXPECT_EQ(diagnostics.lastSubmittedFrameSequence, 0U);
+        EXPECT_EQ(diagnostics.lastPresentedFrameSequence, 0U);
         EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
     }
 

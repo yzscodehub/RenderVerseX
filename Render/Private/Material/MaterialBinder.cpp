@@ -6,6 +6,7 @@
 #include "Render/Material/MaterialBinder.h"
 #include "Render/GPUResourceManager.h"
 #include "Core/Log.h"
+#include "Resources/RenderResourceRegistry.h"
 
 #include <cstring>
 #include <utility>
@@ -18,7 +19,10 @@ MaterialBinder::~MaterialBinder()
     Shutdown();
 }
 
-void MaterialBinder::Initialize(IRHIDevice* device, GPUResourceManager* gpuResources)
+void MaterialBinder::Initialize(
+    IRHIDevice* device,
+    GPUResourceManager* gpuResources,
+    const RenderResourceRegistry* resourceRegistry)
 {
     if (m_device)
     {
@@ -35,12 +39,14 @@ void MaterialBinder::Initialize(IRHIDevice* device, GPUResourceManager* gpuResou
 
     m_device = device;
     m_gpuResources = gpuResources;
+    m_resourceRegistry = resourceRegistry;
     m_defaultConstants = GetDefaultConstants();
 
     if (!EnsureConstantBuffer())
     {
         m_device = nullptr;
         m_gpuResources = nullptr;
+        m_resourceRegistry = nullptr;
         return;
     }
 
@@ -56,6 +62,7 @@ void MaterialBinder::Shutdown()
     m_constantBuffer.Reset();
     m_device = nullptr;
     m_gpuResources = nullptr;
+    m_resourceRegistry = nullptr;
     m_currentMaterialId = 0;
     m_lastBindStatus = MaterialBindStatus::None;
     m_lastBindMessage.clear();
@@ -150,6 +157,21 @@ void MaterialBinder::Bind(RHICommandContext& ctx, uint64 materialId, uint32 setI
 
     RVX_CORE_WARN("MaterialBinder: Binding material by ID is not implemented; using explicit default fallback");
     BindDefault(ctx, setIndex);
+}
+
+void MaterialBinder::Bind(RHICommandContext& ctx,
+                          RenderResourceHandle material,
+                          uint32 setIndex)
+{
+    const RenderMaterialResourceData* materialData =
+        m_resourceRegistry ? m_resourceRegistry->ResolveMaterial(material)
+                           : nullptr;
+    if (materialData == nullptr || !materialData->metadataValid)
+    {
+        BindDefault(ctx, setIndex);
+        return;
+    }
+    Bind(ctx, materialData->sourceData, setIndex);
 }
 
 void MaterialBinder::BindDefault(RHICommandContext& ctx, uint32 setIndex)

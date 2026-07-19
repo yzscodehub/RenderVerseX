@@ -7,6 +7,7 @@
 
 #include "Render/Material/MaterialGPUData.h"
 #include "Render/Material/MaterialSourceData.h"
+#include "RenderContracts/RenderIdentity.h"
 #include "RHI/RHI.h"
 #include <string>
 #include <unordered_map>
@@ -15,6 +16,7 @@ namespace RVX
 {
     // Forward declarations
     class GPUResourceManager;
+    class RenderResourceRegistry;
 
     enum class MaterialBindStatus : uint8
     {
@@ -52,7 +54,9 @@ namespace RVX
          * @param device RHI device for resource creation
          * @param gpuResources GPU resource manager for texture access
          */
-        void Initialize(IRHIDevice* device, GPUResourceManager* gpuResources);
+        void Initialize(IRHIDevice* device,
+                        GPUResourceManager* gpuResources,
+                        const RenderResourceRegistry* resourceRegistry = nullptr);
 
         /**
          * @brief Shutdown and release resources
@@ -87,6 +91,9 @@ namespace RVX
          * @param setIndex Descriptor set index
          */
         void Bind(RHICommandContext& ctx, uint64 materialId, uint32 setIndex = 2);
+        void Bind(RHICommandContext& ctx,
+                  RenderResourceHandle material,
+                  uint32 setIndex = 2);
 
         /**
          * @brief Convert render-facing material data to GPU constants
@@ -118,6 +125,7 @@ namespace RVX
 
         IRHIDevice* m_device = nullptr;
         GPUResourceManager* m_gpuResources = nullptr;
+        const RenderResourceRegistry* m_resourceRegistry = nullptr;
 
         // Shared constant buffer for material data
         RHIBufferRef m_constantBuffer;

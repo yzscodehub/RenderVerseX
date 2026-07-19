@@ -8,6 +8,7 @@
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
 #include "Render/Material/MaterialClassification.h"
+#include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderResource.h"
 
 #include <vector>
@@ -20,6 +21,8 @@ namespace RVX
     {
         uint32 objectIndex = 0;
         uint32 submeshIndex = 0;
+        RenderResourceHandle mesh;
+        RenderResourceHandle material;
         uint64 meshId = 0;
         uint64 materialId = 0;
         IRenderMaterialSource* materialResource = nullptr;

@@ -8,6 +8,7 @@
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
 #include "Render/Material/MaterialClassification.h"
+#include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderResource.h"
 #include "RHI/RHIRayTracing.h"
 
@@ -18,6 +19,7 @@
 namespace RVX
 {
     class GPUResourceManager;
+    class RenderResourceRegistry;
     class RenderScene;
 
     enum class RayTracingSceneSkipReason : uint8
@@ -51,13 +53,15 @@ namespace RVX
 
     struct RayTracingBLASKey
     {
+        RenderResourceHandle mesh;
         uint64 meshId = 0;
         uint32 submeshIndex = 0;
         MaterialRenderMode renderMode = MaterialRenderMode::Opaque;
 
         bool operator==(const RayTracingBLASKey& other) const
         {
-            return meshId == other.meshId &&
+            return mesh == other.mesh &&
+                   meshId == other.meshId &&
                    submeshIndex == other.submeshIndex &&
                    renderMode == other.renderMode;
         }
@@ -225,6 +229,12 @@ namespace RVX
         const RenderScene& scene,
         std::span<const uint32_t> visibleObjectIndices,
         const GPUResourceManager& gpuResources,
+        const RayTracingSceneOptions& options = {});
+
+    RayTracingSceneBuildPlan BuildRayTracingSceneBuildPlan(
+        const RenderScene& scene,
+        std::span<const uint32_t> visibleObjectIndices,
+        const RenderResourceRegistry& registry,
         const RayTracingSceneOptions& options = {});
 
     RHITopLevelASDesc BuildRayTracingTopLevelDesc(

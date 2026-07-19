@@ -7,6 +7,7 @@
 #include "Core/Log.h"
 #include "Render/GPUDriven/GPUCulling.h"
 #include "Render/GPUResourceManager.h"
+#include "Resources/RenderResourceResolver.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
@@ -352,7 +353,9 @@ const RenderDrawItem* OpaquePass::FindGPUDrivenGroupRepresentative(const GPUCull
 bool OpaquePass::AreGPUDrivenOpaqueGroupsDrawable(uint32& outDrawItemCount) const
 {
     outDrawItemCount = 0;
-    if (!m_renderScene || !m_gpuResources || !m_gpuCulling)
+    if (!m_renderScene ||
+        (m_resourceRegistry == nullptr && !m_gpuResources) ||
+        !m_gpuCulling)
     {
         return false;
     }
@@ -380,7 +383,8 @@ bool OpaquePass::AreGPUDrivenOpaqueGroupsDrawable(uint32& outDrawItemCount) cons
         }
 
         outDrawItemCount += group.maxDrawCount;
-        MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(group.meshId);
+        MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+            m_resourceRegistry, m_gpuResources, group.mesh, group.meshId);
         if (!buffers.IsValid() || group.maxDrawCount == 0)
         {
             return false;
@@ -446,7 +450,8 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         }
 
         const RenderObject& obj = m_renderScene->GetObject(representativeItem->objectIndex);
-        MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(group.meshId);
+        MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+            m_resourceRegistry, m_gpuResources, group.mesh, group.meshId);
         if (!buffers.IsValid())
         {
             return false;
@@ -470,7 +475,11 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         MaterialBindingOptions materialOptions;
         materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();
         MaterialBindingResult materialBinding =
-            m_materialSystem->PrepareMaterialBinding(materialResource, view.viewCache, materialOptions);
+            m_resourceRegistry
+                ? m_materialSystem->PrepareMaterialBinding(
+                      group.material, view.viewCache, materialOptions)
+                : m_materialSystem->PrepareMaterialBinding(
+                      materialResource, view.viewCache, materialOptions);
         if (!materialBinding.IsDrawable())
         {
             return false;
@@ -741,7 +750,8 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     RHIDescriptorSet* frameSet = m_pipelineCache->GetFrameDescriptorSet();
 
     // 4. Draw each visible object group with its material variant pipeline.
-    if (m_renderScene && m_gpuResources)
+    if (m_renderScene &&
+        (m_resourceRegistry != nullptr || m_gpuResources != nullptr))
     {
         if (TryDrawGPUDrivenIndirect(ctx, view, colorTargetFormat, frameSet))
         {
@@ -781,7 +791,11 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                 const RenderObject& obj = m_renderScene->GetObject(item.objectIndex);
 
                 // Get GPU buffers for this mesh
-                MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(obj.meshId);
+                MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+                    m_resourceRegistry,
+                    m_gpuResources,
+                    obj.mesh,
+                    obj.meshId);
                 if (!buffers.IsValid())
                 {
                     ++m_drawStats.skippedMissingMeshCount;
@@ -846,7 +860,11 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                 MaterialBindingOptions materialOptions;
                 materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();
                 const MaterialBindingResult materialBinding =
-                    m_materialSystem->PrepareMaterialBinding(materialResource, view.viewCache, materialOptions);
+                    m_resourceRegistry
+                        ? m_materialSystem->PrepareMaterialBinding(
+                              item.material, view.viewCache, materialOptions)
+                        : m_materialSystem->PrepareMaterialBinding(
+                              materialResource, view.viewCache, materialOptions);
                 if (!materialBinding.IsDrawable())
                 {
                     ++m_drawStats.skippedMaterialBindingCount;
@@ -877,7 +895,11 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                 }
 
                 const RenderObject& obj = m_renderScene->GetObject(firstItem.objectIndex);
-                MeshGPUBuffers buffers = m_gpuResources->GetMeshBuffers(obj.meshId);
+                MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+                    m_resourceRegistry,
+                    m_gpuResources,
+                    obj.mesh,
+                    obj.meshId);
                 if (!buffers.IsValid())
                 {
                     return false;
@@ -886,6 +908,7 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                 m_indirectDrawCommands.clear();
                 m_indirectDrawCommands.reserve(batchLength);
                 const IRenderMaterialSource* batchMaterialResource = nullptr;
+                RenderResourceHandle batchMaterial;
                 for (uint32 i = 0; i < batchLength; ++i)
                 {
                     const RenderDrawItem& item = (*drawItems)[startIndex + i];
@@ -900,8 +923,10 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                     if (i == 0)
                     {
                         batchMaterialResource = materialResource;
+                        batchMaterial = item.material;
                     }
-                    else if (materialResource != batchMaterialResource)
+                    else if (materialResource != batchMaterialResource ||
+                             item.material != batchMaterial)
                     {
                         return false;
                     }
@@ -919,7 +944,11 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                 MaterialBindingOptions materialOptions;
                 materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();
                 const MaterialBindingResult materialBinding =
-                    m_materialSystem->PrepareMaterialBinding(batchMaterialResource, view.viewCache, materialOptions);
+                    m_resourceRegistry
+                        ? m_materialSystem->PrepareMaterialBinding(
+                              batchMaterial, view.viewCache, materialOptions)
+                        : m_materialSystem->PrepareMaterialBinding(
+                              batchMaterialResource, view.viewCache, materialOptions);
                 if (!materialBinding.IsDrawable())
                 {
                     return false;
@@ -998,7 +1027,8 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         // Log why we're not drawing
         if (!m_renderScene) RVX_CORE_DEBUG("OpaquePass: No render scene");
         if (!m_opaqueDrawItems && !m_maskedDrawItems) RVX_CORE_DEBUG("OpaquePass: No draw items");
-        if (!m_gpuResources) RVX_CORE_DEBUG("OpaquePass: No GPU resources");
+        if (m_resourceRegistry == nullptr && !m_gpuResources)
+            RVX_CORE_DEBUG("OpaquePass: No GPU resources");
     }
 
     // 6. End render pass
