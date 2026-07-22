@@ -140,7 +140,9 @@ namespace
             }
 
             m_sceneRenderer = std::make_unique<SceneRenderer>();
-            m_sceneRenderer->Initialize(m_context.get(), &m_resourceRegistry);
+            m_sceneRenderer->Initialize(m_context.get(),
+                                        &m_resourceRegistry,
+                                        &m_retirementQueue);
             if (!m_sceneRenderer->IsInitialized())
             {
                 m_sceneRenderer.reset();
@@ -180,7 +182,12 @@ namespace
             bool applied = false;
             if (updateKind == NativeSurfaceUpdateKind::Resize)
             {
-                m_context->WaitIdle();
+                if (!m_context->WaitForSurfaceGeneration())
+                {
+                    result.code = RenderRuntimeCode::DeviceLost;
+                    result.message = "Surface generation completion was lost";
+                    return result;
+                }
                 if (m_sceneRenderer != nullptr)
                 {
                     m_sceneRenderer->PrepareForSwapChainResize();
@@ -191,7 +198,12 @@ namespace
                      m_context->GetDevice()->SupportsSurfaceRebind(
                          m_context->GetSurface(), surface))
             {
-                m_context->WaitIdle();
+                if (!m_context->WaitForSurfaceGeneration())
+                {
+                    result.code = RenderRuntimeCode::DeviceLost;
+                    result.message = "Surface generation completion was lost";
+                    return result;
+                }
                 if (m_sceneRenderer != nullptr)
                 {
                     m_sceneRenderer->PrepareForSwapChainResize();
@@ -347,6 +359,7 @@ namespace
                 m_sceneRenderer->RenderAcceptedFrame();
             if (executionResult.code != RenderFrameExecutionCode::Rendered)
             {
+                m_sceneRenderer->ReleaseUnsubmittedFrame();
                 m_context->AbortFrame();
                 result.code = RenderRuntimeCode::RenderGraphValidationFailed;
                 result.message =
@@ -356,6 +369,7 @@ namespace
             const GPUCompletionPoint submittedPoint = m_context->EndFrame();
             if (submittedPoint.value == 0)
             {
+                m_sceneRenderer->ReleaseUnsubmittedFrame();
                 result.code = RenderRuntimeCode::DeviceLost;
                 result.message =
                     "Graphics submission did not produce a completion point";
@@ -363,8 +377,18 @@ namespace
             }
 
             GPUCompletionToken completion;
-            if (!InsertGPUCompletionPoint(completion, submittedPoint) ||
-                !StampReferencedResources(executionResult.referencedResources,
+            if (!InsertGPUCompletionPoint(completion, submittedPoint))
+            {
+                result.code = RenderRuntimeCode::OwnershipViolation;
+                result.message =
+                    "Graphics submission point could not be represented by an exact token";
+                return result;
+            }
+
+            // Submission ownership must be transferred as soon as exact completion
+            // evidence exists, even if later registry stamping rejects the frame.
+            m_sceneRenderer->NotifySubmission(completion);
+            if (!StampReferencedResources(executionResult.referencedResources,
                                           completion))
             {
                 result.code = RenderRuntimeCode::OwnershipViolation;
@@ -912,7 +936,10 @@ bool RenderSubsystem::SetWindow(const NativeSurfaceDesc& surface)
             return false;
 
         case NativeSurfaceUpdateKind::Resize:
-            m_renderContext->WaitIdle();
+            if (!m_renderContext->WaitForSurfaceGeneration())
+            {
+                return false;
+            }
             if (m_sceneRenderer)
             {
                 m_sceneRenderer->PrepareForSwapChainResize();
@@ -927,7 +954,10 @@ bool RenderSubsystem::SetWindow(const NativeSurfaceDesc& surface)
                     "RenderSubsystem: Surface replacement requires device recreation");
                 return false;
             }
-            m_renderContext->WaitIdle();
+            if (!m_renderContext->WaitForSurfaceGeneration())
+            {
+                return false;
+            }
             if (m_sceneRenderer)
             {
                 m_sceneRenderer->PrepareForSwapChainResize();
@@ -972,7 +1002,10 @@ void RenderSubsystem::OnResize(uint32_t width, uint32_t height)
     if (m_legacyBridge->renderContext)
     {
         // Ensure no submitted frame still references views/resources before releasing them.
-        m_legacyBridge->renderContext->WaitIdle();
+        if (!m_legacyBridge->renderContext->WaitForSurfaceGeneration())
+        {
+            return;
+        }
         if (m_legacyBridge->sceneRenderer)
         {
             m_legacyBridge->sceneRenderer->PrepareForSwapChainResize();

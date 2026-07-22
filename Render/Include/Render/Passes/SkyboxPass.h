@@ -10,7 +10,6 @@
 
 #include "Render/Passes/IRenderPass.h"
 #include "Core/MathTypes.h"
-#include <deque>
 #include <string>
 
 namespace RVX
@@ -130,8 +129,6 @@ namespace RVX
         RHITextureRef m_fallbackCubemap;
         RHITextureViewRef m_fallbackCubemapView;
         RHISamplerRef m_sampler;
-        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
-        std::deque<RHITextureViewRef> m_retainedCubemapViews;
 
         // Procedural sky parameters
         Vec3 m_sunDirection{0.5f, 0.5f, 0.5f};

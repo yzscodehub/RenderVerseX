@@ -2864,6 +2864,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)
     cubemapDesc.arraySize = 1;
     auto cubemap = device.CreateTexture(cubemapDesc);
     ASSERT_NE(cubemap, nullptr);
+    view.viewCache = &viewCache;
 
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);

@@ -130,7 +130,11 @@ bool RenderContext::CreateSwapChain(const NativeSurfaceDesc& surface)
     // Destroy existing swap chain
     if (m_swapChain)
     {
-        WaitIdle();
+        if (!WaitForSurfaceGeneration())
+        {
+            RVX_CORE_ERROR("RenderContext: Surface generation completion was lost");
+            return false;
+        }
         m_swapChain.Reset();
         m_surface = {};
     }
@@ -194,8 +198,12 @@ void RenderContext::ResizeSwapChain(uint32_t width, uint32_t height)
 
     RVX_CORE_INFO("RenderContext: Resizing swap chain to {}x{}", width, height);
 
-    // Wait for all frames to complete before resizing
-    WaitIdle();
+    // Retire the old surface generation from exact Graphics completion evidence.
+    if (!WaitForSurfaceGeneration())
+    {
+        RVX_CORE_ERROR("RenderContext: Swap-chain resize completion was lost");
+        return;
+    }
 
     m_swapChain->Resize(width, height);
     m_surface.width = width;
@@ -391,6 +399,19 @@ void RenderContext::DestroyCommandContexts()
         m_graphicsContexts[i].Reset();
         m_computeContexts[i].Reset();
     }
+}
+
+bool RenderContext::WaitForSurfaceGeneration()
+{
+    if (!m_frameSynchronizer.WaitForAllFrames())
+    {
+        return false;
+    }
+
+    // Compatibility trackers perform at most one bounded WaitIdle while
+    // resolving the first pending Graphics point. Native timelines never
+    // require a device-wide idle for surface-generation replacement.
+    return true;
 }
 
 } // namespace RVX

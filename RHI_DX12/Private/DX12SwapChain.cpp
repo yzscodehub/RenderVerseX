@@ -184,10 +184,7 @@ namespace RVX
 
         RVX_RHI_DEBUG("Resizing swap chain: {}x{} -> {}x{}", m_width, m_height, width, height);
 
-        // Wait for GPU to finish using the buffers
-        m_device->WaitIdle();
-
-        // Release old resources
+        // RenderContext has already resolved the old surface-generation token.
         ReleaseBackBufferResources();
 
         // Resize buffers

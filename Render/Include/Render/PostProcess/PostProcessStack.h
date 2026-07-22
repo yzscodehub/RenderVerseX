@@ -17,6 +17,7 @@
 namespace RVX
 {
     class RenderGraph;
+    class RenderSubmissionResourceBatch;
     class IRHIDevice;
     class RHICommandContext;
 
@@ -34,6 +35,7 @@ namespace RVX
         bool currentViewProjectionValid = false;
         bool previousViewProjectionValid = false;
         bool resetTemporalHistory = false;
+        RenderSubmissionResourceBatch* submissionResourceBatch = nullptr;
 
         bool HasDepth() const { return depth.IsValid(); }
         bool HasNormal() const { return normal.IsValid(); }
@@ -275,7 +277,17 @@ namespace RVX
             AddToGraph(graph, frameInputs.sceneColor, output);
         }
 
+        /** @brief Bind the batch that owns ephemeral objects recorded by this pass. */
+        void SetSubmissionResourceBatch(RenderSubmissionResourceBatch* batch)
+        {
+            m_submissionResourceBatch = batch;
+        }
+
     protected:
+        [[nodiscard]] bool RetainSubmissionResource(
+            const Ref<RefCounted>& object,
+            uint64 estimatedBytes = 0) const;
+
         void MarkUnsupported(const char* reason)
         {
             m_supported = false;
@@ -285,6 +297,7 @@ namespace RVX
         bool m_enabled = true;
         bool m_supported = true;
         std::string m_unsupportedReason;
+        RenderSubmissionResourceBatch* m_submissionResourceBatch = nullptr;
     };
 
     enum class PostProcessColorDomain : uint8

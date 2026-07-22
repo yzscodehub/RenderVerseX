@@ -2244,10 +2244,11 @@ TEST(GPUResourceManagerValidation, RayTracingSceneManagerCreatesAndReusesAcceler
     EXPECT_EQ(rtScene.GetStats().reusedBLASCount, 2u);
     EXPECT_EQ(rtScene.GetStats().pendingBLASBuildCount, 0u);
     EXPECT_EQ(rtScene.GetStats().cachedBLASAccelerationStructureBytes, 8192u);
-    EXPECT_EQ(rtScene.GetStats().cachedBLASScratchBytes, 2048u);
+    EXPECT_EQ(rtScene.GetStats().cachedBLASScratchBytes, 0u);
     EXPECT_EQ(rtScene.GetStats().topLevelAccelerationStructureBytes, 5120u);
     EXPECT_EQ(rtScene.GetStats().topLevelScratchBytes, 2048u);
-    EXPECT_EQ(rtScene.GetStats().totalTrackedResourceBytes, firstPrepareTrackedBytes);
+    EXPECT_EQ(rtScene.GetStats().totalTrackedResourceBytes,
+              firstPrepareTrackedBytes - 2048u);
     EXPECT_EQ(device.createdAccelerationStructureCount, 3u);
 
     FakeCommandContext reuseCtx;
@@ -2260,7 +2261,7 @@ TEST(GPUResourceManagerValidation, RayTracingSceneManagerCreatesAndReusesAcceler
     gpuResources.Shutdown();
 }
 
-TEST(GPUResourceManagerValidation, RayTracingSceneManagerReleasesRetiredBLASScratchWithoutRebuildingCachedAS)
+TEST(GPUResourceManagerValidation, RayTracingSceneManagerQueuesRetiredBLASScratchWithoutRebuildingCachedAS)
 {
     FakeDevice device;
     device.capabilities.supportsRaytracing = true;
@@ -2286,9 +2287,6 @@ TEST(GPUResourceManagerValidation, RayTracingSceneManagerReleasesRetiredBLASScra
 
     RayTracingSceneManager rtScene;
     rtScene.Initialize(&device);
-    EXPECT_EQ(rtScene.GetBLASScratchReleaseFrameDelay(), 2u);
-    rtScene.SetBLASScratchReleaseFrameDelay(1u);
-    EXPECT_EQ(rtScene.GetBLASScratchReleaseFrameDelay(), 1u);
 
     ASSERT_TRUE(rtScene.Prepare(plan));
     EXPECT_EQ(rtScene.GetStats().createdBLASCount, 1u);
@@ -2588,7 +2586,7 @@ TEST(GPUResourceManagerValidation, RayTracingSceneManagerEvictsUnusedBLASCacheEn
     EXPECT_EQ(rtScene.GetStats().evictedBLASCount, 0u);
     EXPECT_EQ(rtScene.GetStats().cachedBLASCount, 1u);
     EXPECT_EQ(rtScene.GetStats().cachedBLASAccelerationStructureBytes, 4096u);
-    EXPECT_EQ(rtScene.GetStats().cachedBLASScratchBytes, 1024u);
+    EXPECT_EQ(rtScene.GetStats().cachedBLASScratchBytes, 0u);
     EXPECT_EQ(rtScene.GetCachedBLASCount(), 1u);
 
     ASSERT_TRUE(rtScene.Prepare(planB));
@@ -2816,7 +2814,6 @@ TEST(GPUResourceManagerValidation, RayTracingSceneManagerPrunesCacheAfterTLASGro
 
     RayTracingSceneManager rtScene;
     rtScene.Initialize(&device);
-    rtScene.SetBLASScratchReleaseFrameDelay(1u);
 
     ASSERT_TRUE(rtScene.Prepare(planA));
     FakeCommandContext buildA;

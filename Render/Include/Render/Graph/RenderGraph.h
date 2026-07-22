@@ -18,6 +18,7 @@ namespace RVX
     inline constexpr const char* RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID = "RVX.RenderGraph.Diagnostics";
     inline constexpr uint32 RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 3;
 
+    class RenderSubmissionResourceBatch;
     class TransientResourcePool;
 
     // =============================================================================
@@ -422,6 +423,10 @@ namespace RVX
         // Memory aliasing control
         void SetMemoryAliasingEnabled(bool enabled);
         bool IsMemoryAliasingEnabled() const;
+
+        /** @brief Retain graph-owned objects in the current submission batch. */
+        [[nodiscard]] bool RetainSubmissionResources(
+            RenderSubmissionResourceBatch& batch) const;
 
         // Debug/Visualization
         std::string ExportGraphviz() const;

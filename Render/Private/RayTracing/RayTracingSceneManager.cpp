@@ -1,6 +1,7 @@
 #include "Render/RayTracing/RayTracingSceneManager.h"
 
 #include "RHI/RHICommandContext.h"
+#include "Resources/RenderOwnerSnapshotRetirement.h"
 
 #include <algorithm>
 #include <cstring>
@@ -307,11 +308,19 @@ void RayTracingSceneManager::Shutdown()
     m_topLevelSizes = {};
     m_topLevelScratchBuffer.Reset();
     m_topLevelBuildDesc = {};
+    m_pendingOwnerRetirements.clear();
     m_stats = {};
     m_frameCounter = 0;
     m_trackedResourceBudget = 0;
-    m_blasScratchReleaseFrameDelay = 2;
     m_device = nullptr;
+}
+
+void RayTracingSceneManager::RetireOwnerSnapshots(
+    const GPUCompletionToken& completion,
+    RenderRetirementQueue& retirement)
+{
+    FlushRenderOwnerRetirements(
+        m_pendingOwnerRetirements, completion, retirement);
 }
 
 bool RayTracingSceneManager::IsSupported() const
@@ -710,9 +719,14 @@ RayTracingSceneManager::BLASCacheEntry* RayTracingSceneManager::GetOrCreateBLAS(
             asDesc.type = RHIAccelerationStructureType::BottomLevel;
             asDesc.size = sizes.accelerationStructureSize;
             asDesc.debugName = "RayTracingSceneBLAS";
-            entry->accelerationStructure = m_device->CreateAccelerationStructure(asDesc);
-            if (!entry->accelerationStructure)
+            RHIAccelerationStructureRef replacement =
+                m_device->CreateAccelerationStructure(asDesc);
+            if (!replacement)
                 return nullptr;
+
+            QueueRenderOwnerRetirement(
+                entry->accelerationStructure, m_pendingOwnerRetirements);
+            entry->accelerationStructure = std::move(replacement);
 
             ++m_stats.createdBLASCount;
         }
@@ -735,17 +749,12 @@ void RayTracingSceneManager::ReleaseRetiredBLASScratchBuffers()
         if (!entry.scratchBuffer || !entry.scratchReleasePending || entry.needsBuild)
             continue;
 
-        if (m_frameCounter < entry.scratchLastUsedFrame ||
-            (m_frameCounter - entry.scratchLastUsedFrame) < m_blasScratchReleaseFrameDelay)
-        {
-            continue;
-        }
-
         m_stats.releasedBLASScratchBytes = AddSaturatingUint64(
             m_stats.releasedBLASScratchBytes,
             entry.scratchBuffer->GetSize(),
             m_stats.resourceByteAccountingOverflowed);
-        entry.scratchBuffer.Reset();
+        QueueRenderOwnerRetirement(
+            entry.scratchBuffer, m_pendingOwnerRetirements);
         entry.scratchReleasePending = false;
         entry.scratchLastUsedFrame = 0;
         ++m_stats.releasedBLASScratchCount;
@@ -776,6 +785,10 @@ void RayTracingSceneManager::EvictUnusedBLAS(const std::vector<RayTracingBLASBui
 
         if (!requestedThisFrame && unusedLongEnough)
         {
+            QueueRenderOwnerRetirement(
+                it->accelerationStructure, m_pendingOwnerRetirements);
+            QueueRenderOwnerRetirement(
+                it->scratchBuffer, m_pendingOwnerRetirements);
             it = m_blasCache.erase(it);
             ++m_stats.evictedBLASCount;
             continue;
@@ -839,6 +852,12 @@ void RayTracingSceneManager::EvictUnusedBLASForResourceBudget(
             break;
 
         m_stats.resourceBudgetEvictionAttempted = true;
+        QueueRenderOwnerRetirement(
+            evictionCandidate->accelerationStructure,
+            m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
+            evictionCandidate->scratchBuffer,
+            m_pendingOwnerRetirements);
         m_blasCache.erase(evictionCandidate);
         ++m_stats.evictedBLASCount;
         ++m_stats.resourceBudgetEvictedBLASCount;
@@ -859,8 +878,13 @@ bool RayTracingSceneManager::EnsureScratchBuffer(RHIBufferRef& buffer, uint64 si
     desc.usage = RHIBufferUsage::UnorderedAccess | RHIBufferUsage::DeviceAddress;
     desc.memoryType = RHIMemoryType::Default;
     desc.debugName = debugName;
-    buffer = m_device->CreateBuffer(desc);
-    return buffer != nullptr;
+    RHIBufferRef replacement = m_device->CreateBuffer(desc);
+    if (!replacement)
+        return false;
+
+    QueueRenderOwnerRetirement(buffer, m_pendingOwnerRetirements);
+    buffer = std::move(replacement);
+    return true;
 }
 
 bool RayTracingSceneManager::EnsureInstanceBuffer(const std::vector<RHIRayTracingInstanceRecord>& records)
@@ -885,8 +909,13 @@ bool RayTracingSceneManager::EnsureInstanceBuffer(const std::vector<RHIRayTracin
         desc.memoryType = RHIMemoryType::Upload;
         desc.stride = sizeof(RHIRayTracingInstanceRecord);
         desc.debugName = "RayTracingTLASInstances";
-        m_instanceBuffer = m_device->CreateBuffer(desc);
-        m_instanceBufferSize = m_instanceBuffer ? requiredSize : 0;
+        RHIBufferRef replacement = m_device->CreateBuffer(desc);
+        if (!replacement)
+            return false;
+        QueueRenderOwnerRetirement(
+            m_instanceBuffer, m_pendingOwnerRetirements);
+        m_instanceBuffer = std::move(replacement);
+        m_instanceBufferSize = requiredSize;
     }
 
     if (!m_instanceBuffer)
@@ -918,8 +947,13 @@ bool RayTracingSceneManager::EnsureInstanceMaterialMetadataBuffer(
         desc.memoryType = RHIMemoryType::Upload;
         desc.stride = sizeof(RayTracingInstanceMaterialMetadata);
         desc.debugName = "RayTracingInstanceMaterialMetadata";
-        m_instanceMaterialMetadataBuffer = m_device->CreateBuffer(desc);
-        m_instanceMaterialMetadataBufferSize = m_instanceMaterialMetadataBuffer ? dataSize : 0;
+        RHIBufferRef replacement = m_device->CreateBuffer(desc);
+        if (!replacement)
+            return false;
+        QueueRenderOwnerRetirement(
+            m_instanceMaterialMetadataBuffer, m_pendingOwnerRetirements);
+        m_instanceMaterialMetadataBuffer = std::move(replacement);
+        m_instanceMaterialMetadataBufferSize = dataSize;
     }
 
     if (!m_instanceMaterialMetadataBuffer)
@@ -951,8 +985,13 @@ bool RayTracingSceneManager::EnsureInstanceAlphaMetadataBuffer(
         desc.memoryType = RHIMemoryType::Upload;
         desc.stride = sizeof(RayTracingInstanceAlphaMetadata);
         desc.debugName = "RayTracingInstanceAlphaMetadata";
-        m_instanceAlphaMetadataBuffer = m_device->CreateBuffer(desc);
-        m_instanceAlphaMetadataBufferSize = m_instanceAlphaMetadataBuffer ? dataSize : 0;
+        RHIBufferRef replacement = m_device->CreateBuffer(desc);
+        if (!replacement)
+            return false;
+        QueueRenderOwnerRetirement(
+            m_instanceAlphaMetadataBuffer, m_pendingOwnerRetirements);
+        m_instanceAlphaMetadataBuffer = std::move(replacement);
+        m_instanceAlphaMetadataBufferSize = dataSize;
     }
 
     if (!m_instanceAlphaMetadataBuffer)
@@ -982,9 +1021,13 @@ bool RayTracingSceneManager::EnsureTopLevelAS(const RHITopLevelASDesc& desc)
         asDesc.type = RHIAccelerationStructureType::TopLevel;
         asDesc.size = sizes.accelerationStructureSize;
         asDesc.debugName = "RayTracingSceneTLAS";
-        m_topLevelAS = m_device->CreateAccelerationStructure(asDesc);
-        if (!m_topLevelAS)
+        RHIAccelerationStructureRef replacement =
+            m_device->CreateAccelerationStructure(asDesc);
+        if (!replacement)
             return false;
+        QueueRenderOwnerRetirement(
+            m_topLevelAS, m_pendingOwnerRetirements);
+        m_topLevelAS = std::move(replacement);
     }
 
     m_topLevelSizes = sizes;
@@ -1116,15 +1159,20 @@ void RayTracingSceneManager::InvalidateFrameOutputs()
     m_instanceAlphaUVBuffers.clear();
     m_instanceAlphaNormalBuffers.clear();
     m_instanceAlphaTangentBuffers.clear();
-    m_instanceBuffer.Reset();
+    QueueRenderOwnerRetirement(
+        m_instanceBuffer, m_pendingOwnerRetirements);
     m_instanceBufferSize = 0;
-    m_instanceMaterialMetadataBuffer.Reset();
+    QueueRenderOwnerRetirement(
+        m_instanceMaterialMetadataBuffer, m_pendingOwnerRetirements);
     m_instanceMaterialMetadataBufferSize = 0;
-    m_instanceAlphaMetadataBuffer.Reset();
+    QueueRenderOwnerRetirement(
+        m_instanceAlphaMetadataBuffer, m_pendingOwnerRetirements);
     m_instanceAlphaMetadataBufferSize = 0;
-    m_topLevelAS.Reset();
+    QueueRenderOwnerRetirement(
+        m_topLevelAS, m_pendingOwnerRetirements);
     m_topLevelSizes = {};
-    m_topLevelScratchBuffer.Reset();
+    QueueRenderOwnerRetirement(
+        m_topLevelScratchBuffer, m_pendingOwnerRetirements);
     m_topLevelBuildDesc = {};
 }
 

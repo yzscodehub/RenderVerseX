@@ -7,7 +7,6 @@
 
 #include "Render/Passes/IRenderPass.h"
 
-#include <deque>
 
 namespace RVX
 {
@@ -62,7 +61,6 @@ namespace RVX
         RGTextureHandle m_velocityWriteHandle;
         RHIBufferRef m_constantBuffer;
         RHISamplerRef m_sampler;
-        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
         CameraVelocityPassStats m_stats;
 
         bool EnsureRuntimeResources();

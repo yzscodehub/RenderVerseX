@@ -3,12 +3,9 @@
 
 #include <gtest/gtest.h>
 
-#include <unordered_map>
 #include <vector>
 
-#define private public
 #include "Render/Graph/ResourceViewCache.h"
-#undef private
 
 using namespace RVX;
 
@@ -124,18 +121,13 @@ namespace
 
     TEST(ResourceViewCacheValidation, TextureViewKeyUsesFullDescriptorIdentity)
     {
-        auto* textureA = reinterpret_cast<RHITexture*>(0x1000);
-        auto* textureB = reinterpret_cast<RHITexture*>(0x2000);
-        auto makeKey = [](RHITexture* texture, const RHITextureViewDesc& desc)
-        {
-            ResourceViewCache::TextureViewKey key;
-            key.texture = texture;
-            key.format = desc.format;
-            key.dimension = desc.dimension;
-            key.subresourceRange = desc.subresourceRange;
-            key.type = desc.type;
-            return key;
-        };
+        FakeDevice device;
+        ResourceViewCache cache;
+        cache.Initialize(&device);
+        const RHITextureDesc textureDesc = RHITextureDesc::Texture2D(
+            4, 4, RHIFormat::RGBA8_UNORM);
+        FakeTexture textureA(textureDesc);
+        FakeTexture textureB(textureDesc);
 
         RHITextureViewDesc descA;
         descA.format = RHIFormat::RGBA8_UNORM;
@@ -154,30 +146,18 @@ namespace
         RHITextureViewDesc descRenderTarget = descA;
         descRenderTarget.type = RHITextureViewType::RenderTarget;
 
-        const auto keyA = makeKey(textureA, descA);
-        const auto keyA2 = makeKey(textureA, descA);
-        const auto keyRenamed = makeKey(textureA, descRenamed);
-        const auto keyTextureB = makeKey(textureB, descA);
-        const auto keyMip = makeKey(textureA, descMip);
-        const auto keyLayer = makeKey(textureA, descLayer);
-        const auto keyRenderTarget = makeKey(textureA, descRenderTarget);
+        RHITextureView* viewA = cache.GetTextureView(&textureA, descA);
+        ASSERT_NE(viewA, nullptr);
+        EXPECT_EQ(cache.GetTextureView(&textureA, descA), viewA);
+        EXPECT_EQ(cache.GetTextureView(&textureA, descRenamed), viewA);
+        EXPECT_NE(cache.GetTextureView(&textureB, descA), viewA);
+        EXPECT_NE(cache.GetTextureView(&textureA, descMip), viewA);
+        EXPECT_NE(cache.GetTextureView(&textureA, descLayer), viewA);
+        EXPECT_NE(cache.GetTextureView(&textureA, descRenderTarget), viewA);
+        EXPECT_EQ(device.createdTextureViewCount, 5u);
+        EXPECT_EQ(cache.GetStats().textureViewCount, 5u);
 
-        EXPECT_TRUE(keyA == keyA2);
-        EXPECT_TRUE(keyA == keyRenamed);
-        EXPECT_FALSE(keyA == keyTextureB);
-        EXPECT_FALSE(keyA == keyMip);
-        EXPECT_FALSE(keyA == keyLayer);
-        EXPECT_FALSE(keyA == keyRenderTarget);
-
-        std::unordered_map<ResourceViewCache::TextureViewKey, int, ResourceViewCache::TextureViewKeyHash> keys;
-        keys[keyA] = 1;
-        keys[keyMip] = 2;
-        keys[keyLayer] = 3;
-        keys[keyTextureB] = 4;
-        keys[keyRenderTarget] = 5;
-
-        EXPECT_EQ(static_cast<size_t>(5), keys.size());
-        EXPECT_EQ(1, keys[keyA2]);
+        cache.Shutdown();
     }
 
     TEST(ResourceViewCacheValidation, TextureViewCacheSeparatesViewsByTypeEvenWhenDescriptorRangeMatches)
@@ -288,7 +268,7 @@ namespace
         cache.Shutdown();
     }
 
-    TEST(ResourceViewCacheValidation, TextureViewsExpireAfterSafeFrameLag)
+    TEST(ResourceViewCacheValidation, TextureViewsRemainCachedUntilExplicitInvalidation)
     {
         FakeDevice device;
         ResourceViewCache cache;
@@ -308,22 +288,19 @@ namespace
         EXPECT_EQ(1u, cache.GetStats().textureViewCount);
 
         const uint64 initialGeneration = cache.GetGeneration();
-        for (uint32 i = 0; i < RVX_MAX_FRAME_COUNT + 1; ++i)
+        for (uint32 i = 0; i < 16; ++i)
         {
             cache.BeginFrame();
         }
 
         EXPECT_EQ(initialGeneration, cache.GetGeneration());
         EXPECT_EQ(1u, cache.GetStats().textureViewCount);
+        EXPECT_EQ(view, cache.GetTextureView(&texture, viewDesc));
+        EXPECT_EQ(1u, device.createdTextureViewCount);
 
-        cache.BeginFrame();
-
+        cache.InvalidateTexture(&texture);
         EXPECT_EQ(initialGeneration + 1, cache.GetGeneration());
         EXPECT_EQ(0u, cache.GetStats().textureViewCount);
-
-        RHITextureView* recreatedView = cache.GetTextureView(&texture, viewDesc);
-        ASSERT_NE(nullptr, recreatedView);
-        EXPECT_EQ(2u, device.createdTextureViewCount);
 
         cache.Shutdown();
     }

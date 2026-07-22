@@ -192,6 +192,13 @@ namespace
     class FakeCommandContext final : public RHICommandContext
     {
     public:
+        explicit FakeCommandContext(
+            RHICommandQueueType queueType = RHICommandQueueType::Graphics)
+            : m_queueType(queueType)
+        {
+        }
+
+        RHICommandQueueType GetQueueType() const override { return m_queueType; }
         void Begin() override { ++beginCount; }
         void End() override { ++endCount; }
         void Reset() override {}
@@ -248,6 +255,9 @@ namespace
         uint32 endCount = 0;
         uint32 textureBarrierCount = 0;
         uint32 copyBufferToTextureCount = 0;
+
+    private:
+        RHICommandQueueType m_queueType = RHICommandQueueType::Graphics;
     };
 
     class FakeFence final : public RHIFence
@@ -270,6 +280,30 @@ namespace
     class FakeDevice final : public IRHIDevice
     {
     public:
+        FakeDevice()
+        {
+            capabilities.backendType = RHIBackendType::DX12;
+            capabilities.adapterName = "MaterialSystemFake";
+            capabilities.driverVersion = "1";
+            capabilities.supportsComputePipeline = true;
+            capabilities.supportsDescriptorSets = true;
+            capabilities.supportsDynamicDescriptorOffsets = true;
+            capabilities.maxDescriptorSets = 4;
+            capabilities.supportsExplicitResourceBarriers = true;
+            capabilities.supportsDefaultQueueFenceSignal = true;
+            capabilities.supportsExplicitQueueFenceSignal = true;
+            capabilities.supportsAsyncCompute = true;
+            capabilities.dx12.resourceBindingTier = 2;
+            capabilities.queueTopology.completionMode =
+                RHIQueueCompletionMode::NativeTimeline;
+            capabilities.queueTopology.logicalQueueDomains = {
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Compute,
+                GPUQueueDomain::Copy,
+            };
+            capabilities.queueTopology.activeDomainCount = 3;
+        }
+
         RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
         {
             ++createdBufferCount;
@@ -326,7 +360,7 @@ namespace
         {
             ++createdCommandContextCount;
             lastCommandQueueType = type;
-            auto context = RHICommandContextRef(new FakeCommandContext());
+            auto context = RHICommandContextRef(new FakeCommandContext(type));
             lastCommandContext = static_cast<FakeCommandContext*>(context.Get());
             return context;
         }
@@ -387,7 +421,10 @@ namespace
         void BeginResourceGroup(const char*) override {}
         void EndResourceGroup() override {}
         const RHICapabilities& GetCapabilities() const override { return capabilities; }
-        RHIBackendType GetBackendType() const override { return RHIBackendType::None; }
+        RHIBackendType GetBackendType() const override
+        {
+            return capabilities.backendType;
+        }
 
         uint32 createdBufferCount = 0;
         uint32 createdTextureCount = 0;

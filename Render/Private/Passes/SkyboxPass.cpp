@@ -8,6 +8,7 @@
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/ViewData.h"
+#include "Resources/RenderSubmissionResourceBatch.h"
 #include "RHI/RHIRenderPass.h"
 
 #include <algorithm>
@@ -51,8 +52,6 @@ void SkyboxPass::SetResources(PipelineCache* pipelineCache)
     IRHIDevice* device = m_pipelineCache ? m_pipelineCache->GetDevice() : nullptr;
     if (device != m_resourceDevice)
     {
-        m_retainedDescriptorSets.clear();
-        m_retainedCubemapViews.clear();
         m_constantBuffer.Reset();
         m_fallbackCubemap.Reset();
         m_fallbackCubemapView.Reset();
@@ -273,10 +272,11 @@ void SkyboxPass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    m_retainedDescriptorSets.push_back(descriptorSet);
-    while (m_retainedDescriptorSets.size() > RVX_MAX_FRAME_COUNT + 1)
+    if (!RetainRenderSubmissionResource(
+            view.submissionResourceBatch, descriptorSet))
     {
-        m_retainedDescriptorSets.pop_front();
+        RVX_CORE_WARN("SkyboxPass: submission ownership rejected descriptor set");
+        return;
     }
 
     // Begin render pass (load existing color, use existing depth)
@@ -404,13 +404,14 @@ RHITextureView* SkyboxPass::ResolveCubemapView(const ViewData& view)
     if (!viewRef)
         return nullptr;
 
-    RHITextureView* result = viewRef.Get();
-    m_retainedCubemapViews.push_back(std::move(viewRef));
-    while (m_retainedCubemapViews.size() > RVX_MAX_FRAME_COUNT + 1)
+    if (!view.submissionResourceBatch ||
+        !RetainRenderSubmissionResource(
+            view.submissionResourceBatch, viewRef))
     {
-        m_retainedCubemapViews.pop_front();
+        RVX_CORE_WARN("SkyboxPass: direct cubemap view requires submission ownership");
+        return nullptr;
     }
-    return result;
+    return viewRef.Get();
 }
 
 bool SkyboxPass::UpdateConstants(const ViewData& view)

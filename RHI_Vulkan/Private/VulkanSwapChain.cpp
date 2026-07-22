@@ -60,8 +60,7 @@ namespace RVX
 
     VulkanSwapChain::~VulkanSwapChain()
     {
-        m_device->WaitIdle();
-
+        // The owning RenderContext resolves the surface generation first.
         CleanupSwapchain();
 
         if (m_surface)
@@ -367,7 +366,7 @@ namespace RVX
         m_width = width;
         m_height = height;
 
-        m_device->WaitIdle();
+        // RenderContext has already resolved the old surface-generation token.
         CleanupSwapchain();
         CreateSwapchain();
         CreateImageViews();

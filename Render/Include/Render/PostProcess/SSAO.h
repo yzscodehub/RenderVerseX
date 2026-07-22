@@ -12,7 +12,6 @@
 #include "Render/PostProcess/PostProcessStack.h"
 #include "RHI/RHI.h"
 
-#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
@@ -269,7 +268,6 @@ namespace RVX
         RHIBufferRef m_constantBuffer;
         RHISamplerRef m_sampler;
         SSAOComputeStats m_lastGraphStats;
-        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
     };
 
 } // namespace RVX

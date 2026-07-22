@@ -52,6 +52,8 @@ namespace RVX
 
         uint64 GetLastSubmittedValue(GPUQueueDomain domain) const;
         uint64 GetLastCompletedValue(GPUQueueDomain domain) const;
+        /** @brief Capture exact non-zero last-submitted points for every active domain. */
+        [[nodiscard]] GPUCompletionToken CaptureLastSubmittedToken() const;
         const RHIQueueTopology& GetTopology() const { return m_topology; }
 
     private:

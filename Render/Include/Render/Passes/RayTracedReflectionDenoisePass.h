@@ -7,7 +7,6 @@
 
 #include "Render/Passes/IRenderPass.h"
 
-#include <deque>
 
 namespace RVX
 {
@@ -93,7 +92,6 @@ namespace RVX
         RGTextureHandle m_normalGuideReadHandle;
         RGTextureHandle m_denoisedReflectionHandle;
         RHIBufferRef m_constantBuffer;
-        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
         RayTracedReflectionDenoisePassStats m_stats;
 
         bool EnsureRuntimeResources();

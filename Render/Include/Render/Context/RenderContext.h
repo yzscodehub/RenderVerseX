@@ -159,6 +159,9 @@ namespace RVX
          */
         void WaitIdle();
 
+        /** @brief Wait only for Graphics work referencing the current surface generation. */
+        bool WaitForSurfaceGeneration();
+
         // =====================================================================
         // Accessors
         // =====================================================================

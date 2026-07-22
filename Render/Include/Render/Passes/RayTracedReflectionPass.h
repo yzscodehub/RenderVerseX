@@ -9,7 +9,6 @@
 #include "Render/Passes/IRenderPass.h"
 
 #include <array>
-#include <deque>
 #include <vector>
 
 namespace RVX
@@ -17,8 +16,10 @@ namespace RVX
     class GPUResourceManager;
     class PipelineCache;
     class RayTracingSceneManager;
+    class RenderRetirementQueue;
     class ResourceViewCache;
     class RenderResourceRegistry;
+    struct GPUCompletionToken;
 
     struct RayTracedReflectionPassStats
     {
@@ -124,6 +125,8 @@ namespace RVX
         void OnRemove() override;
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void RetireOwnerSnapshots(const GPUCompletionToken& completion,
+                                  RenderRetirementQueue& retirement);
 
         void SetEnabled(bool enabled) { m_enabled = enabled; }
         bool IsRequestedEnabled() const override { return m_enabled; }
@@ -190,7 +193,7 @@ namespace RVX
             RHIResourceState::Common
         };
         RHIBufferRef m_constantBuffer;
-        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
+        std::vector<Ref<RefCounted>> m_pendingOwnerRetirements;
         RayTracedReflectionPassStats m_stats;
         uint32 m_outputWidth = 0;
         uint32 m_outputHeight = 0;

@@ -17,6 +17,8 @@
 namespace RVX
 {
     class RHICommandContext;
+    class RenderRetirementQueue;
+    struct GPUCompletionToken;
 
     enum class RayTracingInstanceAlphaMetadataFlags : uint32
     {
@@ -201,6 +203,10 @@ namespace RVX
         bool Prepare(const RayTracingSceneBuildPlan& plan);
         void RecordBuildCommands(RHICommandContext& ctx);
 
+        /** @brief Transfer replaced AS/buffer owners using prior-submit evidence. */
+        void RetireOwnerSnapshots(const GPUCompletionToken& completion,
+                                  RenderRetirementQueue& retirement);
+
         // =====================================================================
         // Accessors
         // =====================================================================
@@ -224,11 +230,6 @@ namespace RVX
             m_trackedResourceBudget = budgetBytes;
         }
         uint64 GetTrackedResourceBudget() const { return m_trackedResourceBudget; }
-        void SetBLASScratchReleaseFrameDelay(uint64 frameDelay)
-        {
-            m_blasScratchReleaseFrameDelay = std::max<uint64>(frameDelay, 1u);
-        }
-        uint64 GetBLASScratchReleaseFrameDelay() const { return m_blasScratchReleaseFrameDelay; }
         const std::vector<uint64>& GetInstanceMaterialTextureTable() const
         {
             return m_instanceMaterialTextureIds;
@@ -312,7 +313,7 @@ namespace RVX
         uint64 m_frameCounter = 0;
         uint64 m_blasCacheEvictionFrameThreshold = 300;
         uint64 m_trackedResourceBudget = 0;
-        uint64 m_blasScratchReleaseFrameDelay = 2;
+        std::vector<Ref<RefCounted>> m_pendingOwnerRetirements;
     };
 
 } // namespace RVX

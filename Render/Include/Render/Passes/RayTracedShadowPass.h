@@ -9,16 +9,17 @@
 #include "Render/Passes/ShadowPass.h"
 
 #include <array>
-#include <deque>
 #include <vector>
 
 namespace RVX
 {
     class PipelineCache;
     class RayTracingSceneManager;
+    class RenderRetirementQueue;
     class ResourceViewCache;
     class GPUResourceManager;
     class RenderResourceRegistry;
+    struct GPUCompletionToken;
 
     struct RayTracedShadowPassStats
     {
@@ -95,6 +96,8 @@ namespace RVX
         void OnRemove() override;
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void RetireOwnerSnapshots(const GPUCompletionToken& completion,
+                                  RenderRetirementQueue& retirement);
 
         void SetEnabled(bool enabled) { m_enabled = enabled; }
         bool IsRequestedEnabled() const override { return m_enabled; }
@@ -177,7 +180,7 @@ namespace RVX
         Mat4 m_pendingHistoryViewProjection = Mat4Identity();
         Vec3 m_lastHistoryRayDirection{0.0f, 1.0f, 0.0f};
         Vec3 m_pendingHistoryRayDirection{0.0f, 1.0f, 0.0f};
-        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
+        std::vector<Ref<RefCounted>> m_pendingOwnerRetirements;
         RayTracedShadowPassStats m_stats;
 
         uint32 GetTimingFrameIndex() const;

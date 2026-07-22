@@ -7,6 +7,8 @@
 #include "Render/RayTracing/RayTracingResourceBindings.h"
 #include "Render/RayTracing/RayTracingSceneManager.h"
 #include "Render/Renderer/ViewData.h"
+#include "Resources/RenderSubmissionResourceBatch.h"
+#include "Resources/RenderOwnerSnapshotRetirement.h"
 #include "Resources/RenderResourceRegistry.h"
 
 #include <algorithm>
@@ -15,6 +17,14 @@
 
 namespace RVX
 {
+    void RayTracedReflectionPass::RetireOwnerSnapshots(
+        const GPUCompletionToken& completion,
+        RenderRetirementQueue& retirement)
+    {
+        FlushRenderOwnerRetirements(
+            m_pendingOwnerRetirements, completion, retirement);
+    }
+
     namespace
     {
         namespace RTReflectionBindings = RayTracingResourceBindings::Reflection;
@@ -127,7 +137,6 @@ namespace RVX
         {
             ResetHistoryTextures();
             m_constantBuffer.Reset();
-            m_retainedDescriptorSets.clear();
             m_fallbackVelocityTexture.Reset();
             m_timingQueryPool.Reset();
             for (RHIBufferRef& readbackBuffer : m_timingReadbackBuffers)
@@ -187,7 +196,6 @@ namespace RVX
         }
         m_timingReadbackValid.fill(false);
         m_constantBuffer.Reset();
-        m_retainedDescriptorSets.clear();
         m_outputWidth = 0;
         m_outputHeight = 0;
         m_stats = {};
@@ -656,10 +664,12 @@ namespace RVX
 
         m_stats.descriptorSetAvailable = true;
 
-        m_retainedDescriptorSets.push_back(descriptorSet);
-        while (m_retainedDescriptorSets.size() > RVX_MAX_FRAME_COUNT + 1)
+        if (!RetainRenderSubmissionResource(
+                view.submissionResourceBatch, descriptorSet))
         {
-            m_retainedDescriptorSets.pop_front();
+            RVX_CORE_WARN("RayTracedReflectionPass: submission ownership rejected descriptor set");
+            m_stats.dispatchRecorded = false;
+            return;
         }
 
         ctx.SetPipeline(pipeline);
@@ -887,12 +897,18 @@ namespace RVX
         }
 
         m_reflectionTexture.Reset();
-        m_historyTextures[0].Reset();
-        m_historyTextures[1].Reset();
-        m_historyDepthTextures[0].Reset();
-        m_historyDepthTextures[1].Reset();
-        m_historyNormalTextures[0].Reset();
-        m_historyNormalTextures[1].Reset();
+        QueueRenderOwnerRetirement(
+            m_historyTextures[0], m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
+            m_historyTextures[1], m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
+            m_historyDepthTextures[0], m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
+            m_historyDepthTextures[1], m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
+            m_historyNormalTextures[0], m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
+            m_historyNormalTextures[1], m_pendingOwnerRetirements);
         m_historyTextureStates[0] = RHIResourceState::Common;
         m_historyTextureStates[1] = RHIResourceState::Common;
         m_historyDepthTextureStates[0] = RHIResourceState::Common;

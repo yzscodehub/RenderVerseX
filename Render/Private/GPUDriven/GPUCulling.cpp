@@ -4,9 +4,11 @@
  */
 
 #include "Render/GPUDriven/GPUCulling.h"
+#include "Core/Log.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderScene.h"
-#include "Core/Log.h"
+#include "Resources/RenderOwnerSnapshotRetirement.h"
+#include "Resources/RenderSubmissionResourceBatch.h"
 #include "ShaderCompiler/ShaderManager.h"
 #include <algorithm>
 #include <cmath>
@@ -98,9 +100,32 @@ void GPUCulling::Shutdown()
     m_compactPipeline.Reset();
     m_statsBuffer.Reset();
     m_transientUploadBuffers.clear();
+    m_pendingOwnerRetirements.clear();
     m_device = nullptr;
     m_lastFallbackReason = GPUCullingFallbackReason::None;
     m_pipelineFallbackReason = GPUCullingFallbackReason::None;
+}
+
+void GPUCulling::RetireOwnerSnapshots(
+    const GPUCompletionToken& completion,
+    RenderRetirementQueue& retirement)
+{
+    FlushRenderOwnerRetirements(
+        m_pendingOwnerRetirements, completion, retirement);
+}
+
+bool GPUCulling::RetainSubmissionResources(
+    RenderSubmissionResourceBatch& batch)
+{
+    for (const RHIBufferRef& buffer : m_transientUploadBuffers)
+    {
+        if (!batch.Retain(buffer, buffer ? buffer->GetSize() : 0))
+        {
+            return false;
+        }
+    }
+    m_transientUploadBuffers.clear();
+    return true;
 }
 
 void GPUCulling::SetConfig(const GPUCullingConfig& config)
@@ -119,13 +144,14 @@ void GPUCulling::CreateResources()
 {
     if (!m_device) return;
 
-    m_instanceBuffer.Reset();
-    m_visibilityBuffer.Reset();
-    m_visibleInstanceBuffer.Reset();
-    m_indirectBuffer.Reset();
-    m_drawCountBuffer.Reset();
-    m_cullingConstantsBuffer.Reset();
-    m_cullingDescriptorSet.Reset();
+    QueueRenderOwnerRetirement(m_instanceBuffer, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_visibilityBuffer, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_visibleInstanceBuffer, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_indirectBuffer, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_drawCountBuffer, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_cullingConstantsBuffer, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_cullingDescriptorSet, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_statsBuffer, m_pendingOwnerRetirements);
 
     const bool gpuWritableOutputs = SupportsGpuExecution();
     const RHIMemoryType cpuOutputMemoryType = RHIMemoryType::Upload;
@@ -205,14 +231,14 @@ void GPUCulling::CreateResources()
 void GPUCulling::CreatePipelineResources()
 {
     m_pipelineFallbackReason = GPUCullingFallbackReason::None;
-    m_frustumCullShader.Reset();
-    m_compactShader.Reset();
-    m_cullingDescriptorSetLayout.Reset();
-    m_cullingPipelineLayout.Reset();
-    m_cullingDescriptorSet.Reset();
-    m_frustumCullPipeline.Reset();
-    m_occlusionCullPipeline.Reset();
-    m_compactPipeline.Reset();
+    QueueRenderOwnerRetirement(m_frustumCullShader, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_compactShader, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_cullingDescriptorSetLayout, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_cullingPipelineLayout, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_cullingDescriptorSet, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_frustumCullPipeline, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_occlusionCullPipeline, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_compactPipeline, m_pendingOwnerRetirements);
 
     if (!SupportsGpuExecution())
     {
@@ -429,7 +455,6 @@ void GPUCulling::BeginFrame()
     m_usedGpuExecutionLastCull = false;
     m_lastFallbackReason = GPUCullingFallbackReason::None;
     m_stats = {};
-    m_transientUploadBuffers.clear();
 }
 
 uint32 GPUCulling::BeginDrawGroup(uint64 meshId,

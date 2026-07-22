@@ -3,7 +3,6 @@
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Graph/TransientResourcePool.h"
 #include "RHI/RHIHeap.h"
-#include <deque>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -178,14 +177,6 @@ namespace RVX
             uint32 targetPassIndex = RVX_INVALID_INDEX;
         };
 
-        struct RetiredFrameResources
-        {
-            // Keep heaps after placed resources so destruction releases resources first.
-            std::vector<RHIHeapRef> heaps;
-            std::vector<RHITextureRef> textures;
-            std::vector<RHIBufferRef> buffers;
-        };
-
         IRHIDevice* device = nullptr;
         TransientResourcePool* transientResourcePool = nullptr;
         std::vector<TextureResource> textures;
@@ -197,8 +188,6 @@ namespace RVX
         std::vector<QueueSyncPoint> lastQueueSyncs;
         RenderGraph::CompileStats stats;
         std::vector<std::string> compileDiagnostics;
-        std::deque<RetiredFrameResources> retiredFrameResources;
-
         // Memory aliasing
         std::vector<TransientHeap> transientHeaps;
         bool enableMemoryAliasing = false;

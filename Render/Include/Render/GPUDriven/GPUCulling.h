@@ -19,7 +19,10 @@ namespace RVX
 {
     class IRHIDevice;
     class RHICommandContext;
+    class RenderRetirementQueue;
     class RenderScene;
+    class RenderSubmissionResourceBatch;
+    struct GPUCompletionToken;
     struct RenderDrawItem;
 
     /**
@@ -145,6 +148,14 @@ namespace RVX
         void Initialize(IRHIDevice* device, const GPUCullingConfig& config = {});
         void Shutdown();
         bool IsInitialized() const { return m_device != nullptr; }
+
+        /** @brief Transfer replaced owner resources using the prior-submit snapshot. */
+        void RetireOwnerSnapshots(const GPUCompletionToken& completion,
+                                  RenderRetirementQueue& retirement);
+
+        /** @brief Move per-recording staging buffers into the current submission batch. */
+        [[nodiscard]] bool RetainSubmissionResources(
+            RenderSubmissionResourceBatch& batch);
 
         // =========================================================================
         // Configuration
@@ -385,6 +396,7 @@ namespace RVX
         GPUCullingFallbackReason m_lastFallbackReason = GPUCullingFallbackReason::None;
         GPUCullingFallbackReason m_pipelineFallbackReason = GPUCullingFallbackReason::None;
         std::vector<RHIBufferRef> m_transientUploadBuffers;
+        std::vector<Ref<RefCounted>> m_pendingOwnerRetirements;
 
         // GPU buffers
         RHIBufferRef m_instanceBuffer;           // All instance data

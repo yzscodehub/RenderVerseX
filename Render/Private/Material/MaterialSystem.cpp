@@ -10,6 +10,7 @@
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialBinder.h"
 #include "Resources/RenderResourceRegistry.h"
+#include "Resources/RenderOwnerSnapshotRetirement.h"
 #include "RHI/RHICommandContext.h"
 
 #include <algorithm>
@@ -99,6 +100,7 @@ void MaterialSystem::Shutdown()
         return;
 
     m_materialDescriptorCache.clear();
+    m_pendingOwnerRetirements.clear();
     m_defaultMaterialSet.Reset();
     m_defaultSampler.Reset();
     m_defaultWhiteTextureView.Reset();
@@ -159,6 +161,25 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const IRenderMateri
     return PrepareResolvedMaterialBinding(std::move(source),
                                           textures,
                                           materialName);
+}
+
+void MaterialSystem::RetireOwnerSnapshots(
+    const GPUCompletionToken& completion,
+    RenderRetirementQueue& retirement)
+{
+    FlushRenderOwnerRetirements(
+        m_pendingOwnerRetirements, completion, retirement);
+}
+
+void MaterialSystem::QueueMaterialDescriptorCacheRetirement()
+{
+    for (auto& [key, descriptorSet] : m_materialDescriptorCache)
+    {
+        static_cast<void>(key);
+        QueueRenderOwnerRetirement(
+            descriptorSet, m_pendingOwnerRetirements);
+    }
+    m_materialDescriptorCache.clear();
 }
 
 MaterialBindingResult MaterialSystem::PrepareMaterialBinding(
@@ -395,7 +416,7 @@ void MaterialSystem::SetEnvironmentIBLResources(const EnvironmentIBLResources& r
 
     if (changed)
     {
-        m_materialDescriptorCache.clear();
+        QueueMaterialDescriptorCacheRetirement();
     }
 }
 
@@ -904,7 +925,7 @@ MaterialSystem::MaterialSetResolveResult MaterialSystem::GetOrCreateMaterialSetF
     if (m_materialDescriptorCacheGeneration != textures.viewGeneration)
     {
         m_materialDescriptorCacheGeneration = textures.viewGeneration;
-        m_materialDescriptorCache.clear();
+        QueueMaterialDescriptorCacheRetirement();
     }
 
     auto it = m_materialDescriptorCache.find(key);

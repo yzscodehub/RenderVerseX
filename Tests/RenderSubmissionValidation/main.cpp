@@ -838,7 +838,6 @@ namespace RVX::Tests
 
     TEST(RenderSubmissionValidation, RetirementWaitsForEveryDomainAndPublishesDiagnostics)
     {
-        ASSERT_EQ(DeferredDeleterRegistry::Get(), nullptr);
         FakeDevice device(MakeCapabilities(
             RHIQueueCompletionMode::NativeTimeline,
             {GPUQueueDomain::Graphics, GPUQueueDomain::Compute, GPUQueueDomain::Copy}, 3));
@@ -883,7 +882,6 @@ namespace RVX::Tests
 
     TEST(RenderSubmissionValidation, RetirementHonorsSameDomainMaximum)
     {
-        ASSERT_EQ(DeferredDeleterRegistry::Get(), nullptr);
         RHICapabilities capabilities = MakeCapabilities(
             RHIQueueCompletionMode::NativeTimeline,
             {GPUQueueDomain::Graphics, GPUQueueDomain::Graphics, GPUQueueDomain::Graphics}, 1);
@@ -917,7 +915,6 @@ namespace RVX::Tests
 
     TEST(RenderSubmissionValidation, ZeroPointRetirementReleasesOnRenderThread)
     {
-        ASSERT_EQ(DeferredDeleterRegistry::Get(), nullptr);
         RenderSubmissionTracker uninitializedTracker;
         RenderRetirementQueue uninitializedQueue;
         EXPECT_FALSE(uninitializedQueue.Initialize(&uninitializedTracker));
@@ -939,7 +936,6 @@ namespace RVX::Tests
 
     TEST(RenderSubmissionValidation, CompatibilityRetirementPerformsOneBoundedWaitIdle)
     {
-        ASSERT_EQ(DeferredDeleterRegistry::Get(), nullptr);
         RHICapabilities capabilities = MakeCapabilities(
             RHIQueueCompletionMode::CompatibilityWaitIdle,
             {GPUQueueDomain::Graphics, GPUQueueDomain::Graphics, GPUQueueDomain::Graphics}, 1);
@@ -967,7 +963,6 @@ namespace RVX::Tests
 
     TEST(RenderSubmissionValidation, DeviceLostRetirementRequiresExplicitLostTeardown)
     {
-        ASSERT_EQ(DeferredDeleterRegistry::Get(), nullptr);
         RHICapabilities capabilities = MakeCapabilities(
             RHIQueueCompletionMode::NativeTimeline,
             {GPUQueueDomain::Graphics, GPUQueueDomain::Graphics, GPUQueueDomain::Graphics}, 1);
@@ -996,7 +991,6 @@ namespace RVX::Tests
 
     TEST(RenderSubmissionValidation, RetirementMutationIsRejectedOffRenderThread)
     {
-        ASSERT_EQ(DeferredDeleterRegistry::Get(), nullptr);
         RHICapabilities capabilities = MakeCapabilities(
             RHIQueueCompletionMode::NativeTimeline,
             {GPUQueueDomain::Graphics, GPUQueueDomain::Graphics, GPUQueueDomain::Graphics}, 1);

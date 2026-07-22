@@ -59,7 +59,6 @@ void ChromaticAberrationPass::SetResources(PipelineCache* pipelineCache, Resourc
     IRHIDevice* device = m_pipelineCache ? m_pipelineCache->GetDevice() : nullptr;
     if (device != m_resourceDevice)
     {
-        m_retainedDescriptorSets.clear();
         m_constantBuffer.Reset();
         m_sampler.Reset();
         m_resourceDevice = device;
@@ -168,10 +167,10 @@ void ChromaticAberrationPass::AddToGraph(RenderGraph& graph, RGTextureHandle inp
                 RVX_CORE_WARN("ChromaticAberration: failed to create descriptor set");
                 return;
             }
-            m_retainedDescriptorSets.push_back(descriptorSet);
-            while (m_retainedDescriptorSets.size() > RVX_MAX_FRAME_COUNT + 1)
+            if (!RetainSubmissionResource(descriptorSet))
             {
-                m_retainedDescriptorSets.pop_front();
+                RVX_CORE_WARN("ChromaticAberration: submission ownership rejected descriptor set");
+                return;
             }
 
             RHIRenderPassDesc renderPassDesc;

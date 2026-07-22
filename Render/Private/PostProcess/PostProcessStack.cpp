@@ -6,11 +6,20 @@
 #include "Render/PostProcess/PostProcessStack.h"
 #include "Core/Log.h"
 #include "RHI/RHICommandContext.h"
+#include "Resources/RenderSubmissionResourceBatch.h"
 #include <algorithm>
 #include <utility>
 
 namespace RVX
 {
+
+bool IPostProcessPass::RetainSubmissionResource(
+    const Ref<RefCounted>& object,
+    uint64 estimatedBytes) const
+{
+    return RetainRenderSubmissionResource(
+        m_submissionResourceBatch, object, estimatedBytes);
+}
 
 namespace
 {
@@ -605,6 +614,8 @@ void PostProcessStack::Execute(RenderGraph& graph,
 
         PostProcessFrameInputs passInputs = frameInputs;
         passInputs.sceneColor = currentInput;
+        enabledEffects[i]->SetSubmissionResourceBatch(
+            frameInputs.submissionResourceBatch);
         enabledEffects[i]->AddToGraph(graph, passInputs, currentOutput);
         m_lastExecuteStats.graphPassCount++;
         currentInput = currentOutput;

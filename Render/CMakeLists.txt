@@ -25,6 +25,7 @@ target_sources(RVX_RenderRuntimeCore PRIVATE
     Private/Runtime/RenderThreadGuard.cpp
     Private/Resources/RenderRetirementQueue.cpp
     Private/Resources/RenderResourceRegistry.cpp
+    Private/Resources/RenderSubmissionResourceBatch.cpp
     Private/Resources/RenderSubmissionTracker.cpp
     Private/Resources/RenderUploadProcessor.cpp
 )
@@ -115,7 +116,6 @@ target_sources(RVX_Render PRIVATE
     Private/Graph/RenderGraph.cpp
     Private/Graph/RenderGraphCompiler.cpp
     Private/Graph/RenderGraphExecutor.cpp
-    Private/Graph/FrameResourceManager.cpp
     Private/Graph/TransientResourcePool.cpp
     Private/Graph/ResourceViewCache.cpp
     # Material

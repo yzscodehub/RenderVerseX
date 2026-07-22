@@ -18,6 +18,7 @@ namespace RVX
 {
     class Camera;
     class ResourceViewCache;
+    class RenderSubmissionResourceBatch;
 
     /**
      * @brief View data collected for rendering a single view/camera
@@ -192,6 +193,9 @@ namespace RVX
         /// Pointer to the resource view cache (set during BuildRenderGraph)
         /// Allows passes to get cached texture/buffer views
         ResourceViewCache* viewCache = nullptr;
+
+        /// Current recording batch for ephemeral GPU objects; null means no-submit standalone use.
+        RenderSubmissionResourceBatch* submissionResourceBatch = nullptr;
 
         // =====================================================================
         // Frame Info

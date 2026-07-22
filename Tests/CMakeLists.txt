@@ -146,6 +146,31 @@ set_tests_properties(Architecture.ModuleBoundaryManifestChecker PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
 
+add_test(
+    NAME Architecture.RHIOwnershipInventoryChecker
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/test_rhi_ownership_inventory_checker.py
+        -v
+)
+set_tests_properties(Architecture.RHIOwnershipInventoryChecker PROPERTIES
+    LABELS "unit;architecture"
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+add_test(
+    NAME Architecture.RHIOwnershipInventory
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_rhi_ownership_inventory.py
+        --root ${CMAKE_SOURCE_DIR}
+        --phase final
+)
+set_tests_properties(Architecture.RHIOwnershipInventory PROPERTIES
+    LABELS "unit;architecture"
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
     add_test(
         NAME Architecture.ModuleBoundaries
         COMMAND ${Python3_EXECUTABLE}
@@ -360,6 +385,19 @@ rvx_add_gtest(
     TIMEOUT 30
 )
 
+rvx_add_gtest(
+    NAME RenderLifetimeCutoverValidation
+    SOURCES RenderLifetimeCutoverValidation/main.cpp
+    LIBS
+        RVX::Render
+        RVX::RHI
+        RVX_RenderRuntimeCore
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Private
+    LABELS "unit;architecture"
+    TIMEOUT 30
+)
+
 # Samples CLI/report contract validation tests
 if(TARGET RVX_SampleCommon)
     rvx_add_gtest(
@@ -443,8 +481,10 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::RHI
+        RVX_RenderRuntimeCore
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Render/Private
     LABELS unit
     TIMEOUT 120
 )
@@ -924,8 +964,10 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::RHI
+        RVX_RenderRuntimeCore
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Render/Private
         ${CMAKE_SOURCE_DIR}/RHI/Include
     LABELS unit
     TIMEOUT 120

@@ -4,8 +4,10 @@
  */
 
 #include "Render/Renderer/SceneRenderer.h"
+#include "Context/RenderContextInternal.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
+#include "Core/Assert.h"
 #include "Core/Camera/Camera.h"
 #include "Core/Log.h"
 #include "Core/PathUtils.h"
@@ -38,6 +40,9 @@
 #include "Renderer/RenderPassRegistry.h"
 #include "Resources/RenderResourceRegistry.h"
 #include "Resources/RenderResourceResolver.h"
+#include "Resources/RenderRetirementQueue.h"
+#include "Resources/RenderSubmissionResourceBatch.h"
+#include "Resources/RenderSubmissionTracker.h"
 
 #include <algorithm>
 #include <cmath>
@@ -318,7 +323,8 @@ SceneColorFormatPolicy SceneRenderer::ResolveSceneColorFormatPolicy(RHIFormat ba
 
 void SceneRenderer::Initialize(
     RenderContext* renderContext,
-    const RenderResourceRegistry* resourceRegistry)
+    const RenderResourceRegistry* resourceRegistry,
+    RenderRetirementQueue* retirementQueue)
 {
     if (m_initialized)
     {
@@ -334,6 +340,7 @@ void SceneRenderer::Initialize(
 
     m_renderContext = renderContext;
     m_renderResourceRegistry = resourceRegistry;
+    m_retirementQueue = retirementQueue;
     m_passRegistry = std::make_unique<RenderPassRegistry>();
     m_featureBridge = std::make_unique<RenderFeatureSceneBridge>();
     m_proxyBridge = std::make_unique<RenderProxySceneBridge>();
@@ -380,12 +387,18 @@ void SceneRenderer::Initialize(
 
     // Create transient resource pool for RenderGraph
     m_transientResourcePool = std::make_unique<TransientResourcePool>();
-    m_transientResourcePool->Initialize(m_renderContext->GetDevice());
+    RenderSubmissionTracker* submissionTracker =
+        RenderContextInternalAccess::GetSubmissionTracker(*m_renderContext);
+    m_transientResourcePool->Initialize(m_renderContext->GetDevice(),
+                                        submissionTracker,
+                                        m_retirementQueue);
     m_renderGraph->SetTransientResourcePool(m_transientResourcePool.get());
 
     // Create resource view cache for automatic view management
     m_resourceViewCache = std::make_unique<ResourceViewCache>();
-    m_resourceViewCache->Initialize(m_renderContext->GetDevice());
+    m_resourceViewCache->Initialize(m_renderContext->GetDevice(),
+                                    submissionTracker,
+                                    m_retirementQueue);
     if (m_gpuResourceManager)
     {
         m_gpuResourceManager->SetTextureInvalidatedCallback(
@@ -509,6 +522,15 @@ void SceneRenderer::Shutdown()
     if (!m_initialized)
         return;
 
+    if (m_submissionBatch)
+    {
+        RVX_ASSERT_MSG(m_retirementQueue != nullptr,
+                       "Pending submission ownership requires retirement queue");
+        m_submissionBatch->ReleaseUnsubmitted(*m_retirementQueue);
+        m_submissionBatch.reset();
+        m_viewData.submissionResourceBatch = nullptr;
+    }
+
     ClearPasses();
     m_depthPrepass = nullptr;
     m_opaquePass = nullptr;
@@ -600,6 +622,7 @@ void SceneRenderer::Shutdown()
     m_previousObjectWorldMatrices.clear();
     m_preGraphPrepareCallbacks.clear();
     m_renderResourceRegistry = nullptr;
+    m_retirementQueue = nullptr;
     m_renderContext = nullptr;
     m_initialized = false;
 
@@ -1199,17 +1222,121 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
     {
         return result;
     }
+    RVX_ASSERT_MSG(!m_submissionBatch,
+                   "Previous frame submission ownership was not resolved");
+    m_submissionBatch = std::make_unique<RenderSubmissionResourceBatch>();
+    m_viewData.submissionResourceBatch = m_submissionBatch.get();
     result.frameSequence = m_renderScene.GetAcceptedHeader().sequence;
     result.referencedResources = m_renderScene.GetReferencedResources();
     Render();
+    if (m_gpuCulling &&
+        !m_gpuCulling->RetainSubmissionResources(*m_submissionBatch))
+    {
+        result.code = RenderFrameExecutionCode::SubmissionFailed;
+        return result;
+    }
     if (!m_frameDiagnostics.rendered ||
         !m_frameDiagnostics.graphCompileValid)
     {
         result.code = RenderFrameExecutionCode::SubmissionFailed;
         return result;
     }
+    if (!m_renderGraph->RetainSubmissionResources(*m_submissionBatch))
+    {
+        result.code = RenderFrameExecutionCode::SubmissionFailed;
+        return result;
+    }
     result.code = RenderFrameExecutionCode::Rendered;
     return result;
+}
+
+void SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
+{
+    RetireOwnerSnapshots(completion);
+    if (m_transientResourcePool)
+    {
+        m_transientResourcePool->NotifySubmission(completion);
+    }
+    if (m_resourceViewCache)
+    {
+        m_resourceViewCache->NotifySubmission(completion);
+    }
+    if (m_submissionBatch)
+    {
+        RVX_ASSERT_MSG(m_retirementQueue != nullptr,
+                       "Submission ownership requires retirement queue");
+        m_submissionBatch->SealAndTransfer(completion, *m_retirementQueue);
+        m_submissionBatch.reset();
+        m_viewData.submissionResourceBatch = nullptr;
+    }
+}
+
+void SceneRenderer::ReleaseUnsubmittedFrame()
+{
+    if (m_renderContext)
+    {
+        if (RenderSubmissionTracker* tracker =
+                RenderContextInternalAccess::GetSubmissionTracker(
+                    *m_renderContext))
+        {
+            RetireOwnerSnapshots(tracker->CaptureLastSubmittedToken());
+        }
+    }
+    const GPUCompletionToken emptyCompletion;
+    if (m_transientResourcePool)
+    {
+        m_transientResourcePool->NotifySubmission(emptyCompletion);
+    }
+    if (m_resourceViewCache)
+    {
+        m_resourceViewCache->NotifySubmission(emptyCompletion);
+    }
+    if (m_submissionBatch)
+    {
+        RVX_ASSERT_MSG(m_retirementQueue != nullptr,
+                       "Unsubmitted ownership requires retirement queue");
+        m_submissionBatch->ReleaseUnsubmitted(*m_retirementQueue);
+        m_submissionBatch.reset();
+        m_viewData.submissionResourceBatch = nullptr;
+    }
+}
+
+void SceneRenderer::RetireOwnerSnapshots(
+    const GPUCompletionToken& completion)
+{
+    if (!m_retirementQueue)
+    {
+        return;
+    }
+    if (m_gpuCulling)
+    {
+        m_gpuCulling->RetireOwnerSnapshots(completion, *m_retirementQueue);
+    }
+    if (m_pipelineCache)
+    {
+        m_pipelineCache->RetireOwnerSnapshots(
+            completion, *m_retirementQueue);
+    }
+    if (m_materialSystem)
+    {
+        m_materialSystem->RetireOwnerSnapshots(
+            completion, *m_retirementQueue);
+    }
+    if (m_rayTracingSceneManager)
+    {
+        m_rayTracingSceneManager->RetireOwnerSnapshots(
+            completion, *m_retirementQueue);
+    }
+    if (m_rayTracedShadowPass)
+    {
+        m_rayTracedShadowPass->RetireOwnerSnapshots(
+            completion, *m_retirementQueue);
+    }
+    if (m_rayTracedReflectionPass)
+    {
+        m_rayTracedReflectionPass->RetireOwnerSnapshots(
+            completion, *m_retirementQueue);
+    }
 }
 
 void SceneRenderer::MarkAcceptedFramePresented()
@@ -2034,6 +2161,12 @@ void SceneRenderer::Render()
     // Compile the render graph (computes barriers, memory aliasing, pass culling)
     m_renderGraph->Compile();
     const bool graphCompileValid = m_renderGraph->GetCompileStats().compileValid;
+
+    if (RenderSubmissionTracker* tracker =
+            RenderContextInternalAccess::GetSubmissionTracker(*m_renderContext))
+    {
+        RetireOwnerSnapshots(tracker->CaptureLastSubmittedToken());
+    }
 
     // Execute through RenderGraph for automatic barrier management
     RHICommandContext* ctx = m_renderContext->GetGraphicsContext();
@@ -3362,6 +3495,8 @@ void SceneRenderer::BuildRenderGraph()
         frameInputs.currentViewProjectionValid = true;
         frameInputs.previousViewProjectionValid = m_viewData.previousViewProjectionValid != 0;
         frameInputs.resetTemporalHistory = m_viewData.resetTemporalHistory;
+        frameInputs.submissionResourceBatch =
+            m_viewData.submissionResourceBatch;
         m_postProcessStack->Execute(*m_renderGraph, frameInputs, backBufferTarget);
         m_postProcessStats.stackStats = m_postProcessStack->GetLastExecuteStats();
     }

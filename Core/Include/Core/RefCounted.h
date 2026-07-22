@@ -7,37 +7,6 @@
 namespace RVX
 {
     // =============================================================================
-    // Forward Declarations
-    // =============================================================================
-    class RefCounted;
-
-    // =============================================================================
-    // Deferred Deleter Interface
-    // Used to decouple Core layer from RenderLayer (avoids circular dependency)
-    // =============================================================================
-    class IDeferredDeleter
-    {
-    public:
-        virtual ~IDeferredDeleter() = default;
-        virtual void DeferredDelete(const RefCounted* object) = 0;
-    };
-
-    // =============================================================================
-    // Deferred Deleter Registry
-    // Global registration point for the deferred deletion system
-    // =============================================================================
-    class DeferredDeleterRegistry
-    {
-    public:
-        static void Register(IDeferredDeleter* deleter) { s_deleter = deleter; }
-        static void Unregister() { s_deleter = nullptr; }
-        static IDeferredDeleter* Get() { return s_deleter; }
-
-    private:
-        static inline IDeferredDeleter* s_deleter = nullptr;
-    };
-
-    // =============================================================================
     // Intrusive Reference Counted Base Class
     // =============================================================================
     class RefCounted
@@ -195,17 +164,7 @@ namespace RVX
         {
             if (m_ptr && m_ptr->Release())
             {
-                // Reference count reached zero, defer deletion
-                if (auto* deleter = DeferredDeleterRegistry::Get())
-                {
-                    deleter->DeferredDelete(m_ptr);
-                }
-                else
-                {
-                    // No deferred deleter registered, delete immediately
-                    // (useful for testing or tools)
-                    delete m_ptr;
-                }
+                delete m_ptr;
                 m_ptr = nullptr;
             }
         }

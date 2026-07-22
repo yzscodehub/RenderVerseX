@@ -1675,8 +1675,12 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
     const fs::path repoRoot = FindShaderDirectory().parent_path().parent_path();
     const std::string renderSubsystem =
         ReadTextFile(repoRoot / "Render" / "Private" / "RenderSubsystem.cpp");
-    EXPECT_NE(renderSubsystem.find("backendType == RHIBackendType::OpenGL"), std::string::npos);
-    EXPECT_NE(renderSubsystem.find("windowSubsystem->GetInternalHandle()"), std::string::npos);
+    const std::string windowSubsystem =
+        ReadTextFile(repoRoot / "Runtime" / "Private" / "Window" / "WindowSubsystem.cpp");
+    EXPECT_NE(renderSubsystem.find("m_windowSubsystem->CaptureRenderSurface()"), std::string::npos);
+    EXPECT_NE(renderSubsystem.find("ReleaseGraphicsContextFromCurrentThread()"), std::string::npos);
+    EXPECT_NE(windowSubsystem.find("m_window->CaptureRenderSurfaceHandles()"), std::string::npos);
+    EXPECT_NE(windowSubsystem.find("surface.backendWindow = handles.backendWindow"), std::string::npos);
 
     const std::string openGLCommandContext =
         ReadTextFile(repoRoot / "RHI_OpenGL" / "Private" / "OpenGLCommandContext.cpp");
@@ -2414,14 +2418,13 @@ TEST_F(PipelineCacheValidationFixture, FrameLightResourcesUseFallbacksAndSurvive
     RVX::PipelineCache cache;
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
-    ASSERT_FALSE(device.capturedDescriptorSets.empty());
-    FakeDescriptorSet* frameSet = device.capturedDescriptorSets.front();
-    ASSERT_NE(frameSet, nullptr);
-
     RVX::FrameLightBindingResult fallbackResult = cache.UpdateFrameLightResources({});
     EXPECT_TRUE(fallbackResult.lightResourcesBound);
     EXPECT_EQ(fallbackResult.fallbackReason, RVX::FrameLightFallbackReason::MissingLightConstants);
 
+    FakeDescriptorSet* frameSet =
+        static_cast<FakeDescriptorSet*>(cache.GetFrameDescriptorSet());
+    ASSERT_NE(frameSet, nullptr);
     const auto& fallbackBindings = frameSet->GetBindings();
     EXPECT_NE(FindDescriptorBinding({nullptr, fallbackBindings, nullptr}, 0), nullptr);
     EXPECT_NE(FindDescriptorBinding({nullptr, fallbackBindings, nullptr}, 1), nullptr);
@@ -2498,6 +2501,8 @@ TEST_F(PipelineCacheValidationFixture, FrameLightResourcesUseFallbacksAndSurvive
     EXPECT_EQ(realResult.fallbackReason, RVX::FrameLightFallbackReason::None);
     EXPECT_EQ(realResult.clusteredFallbackReason, RVX::FrameClusteredLightFallbackReason::None);
 
+    frameSet = static_cast<FakeDescriptorSet*>(cache.GetFrameDescriptorSet());
+    ASSERT_NE(frameSet, nullptr);
     auto bindingsDesc = RVX::RHIDescriptorSetDesc{nullptr, frameSet->GetBindings(), nullptr};
     ASSERT_EQ(FindDescriptorBinding(bindingsDesc, 3)->buffer, lightConstants.Get());
     ASSERT_EQ(FindDescriptorBinding(bindingsDesc, 4)->buffer, pointLights.Get());
@@ -2510,6 +2515,8 @@ TEST_F(PipelineCacheValidationFixture, FrameLightResourcesUseFallbacksAndSurvive
     EXPECT_FALSE(shadowFallback.shadowSamplingEnabled);
     EXPECT_EQ(shadowFallback.fallbackReason, RVX::DirectionalShadowFallbackReason::DisabledNoDirectionalLight);
 
+    frameSet = static_cast<FakeDescriptorSet*>(cache.GetFrameDescriptorSet());
+    ASSERT_NE(frameSet, nullptr);
     bindingsDesc = RVX::RHIDescriptorSetDesc{nullptr, frameSet->GetBindings(), nullptr};
     ASSERT_EQ(FindDescriptorBinding(bindingsDesc, 3)->buffer, lightConstants.Get());
     ASSERT_EQ(FindDescriptorBinding(bindingsDesc, 4)->buffer, pointLights.Get());
@@ -2870,7 +2877,7 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererClearsAmbientFloorWhenTextur
         "Private" / "Renderer" / "SceneRenderer.cpp";
     const std::string source = ReadTextFile(sceneRendererPath);
     EXPECT_NE(source.find("m_viewData.ambientFloorIntensity = 0.08f;"), std::string::npos);
-    EXPECT_NE(source.find("m_viewData.ambientFloorIntensity = 0.0f;"), std::string::npos);
+    EXPECT_NE(source.find("textureIBLReady ? 0.0f : 0.08f"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, SceneRendererUsesSamePrimaryDirectionalLightForDefaultLitAndShadowPass)
@@ -2937,7 +2944,7 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracingSceneBuildBef
 
     EXPECT_NE(source.find("m_rayTracingSceneManager = std::make_unique<RayTracingSceneManager>();"), std::string::npos);
     EXPECT_NE(source.find("m_rayTracingSceneManager->Initialize(m_renderContext->GetDevice());"), std::string::npos);
-    EXPECT_NE(source.find("RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan("), std::string::npos);
+    EXPECT_NE(source.find("RayTracingSceneBuildPlan plan = m_renderResourceRegistry"), std::string::npos);
     EXPECT_NE(source.find("m_rayTracingSceneManager->SetBLASCacheEvictionFrameThreshold("),
               std::string::npos);
     EXPECT_NE(source.find("m_rayTracingSceneManager->SetTrackedResourceBudget("), std::string::npos);
@@ -2978,7 +2985,9 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneManagerInvalidatesFrameOut
 
     EXPECT_NE(managerHeader.find("void InvalidateFrameOutputs();"), std::string::npos);
     EXPECT_NE(managerHeader.find("void SetTrackedResourceBudget(uint64 budgetBytes)"), std::string::npos);
-    EXPECT_NE(managerHeader.find("void SetBLASScratchReleaseFrameDelay(uint64 frameDelay)"), std::string::npos);
+    EXPECT_EQ(managerHeader.find("BLASScratchReleaseFrameDelay"), std::string::npos);
+    EXPECT_NE(managerHeader.find("void RetireOwnerSnapshots(const GPUCompletionToken& completion"),
+              std::string::npos);
     EXPECT_NE(managerHeader.find("size_t resourceBudgetEvictedBLASCount = 0;"), std::string::npos);
     EXPECT_NE(managerHeader.find("size_t releasedBLASScratchCount = 0;"), std::string::npos);
     EXPECT_NE(managerHeader.find("size_t pendingBLASScratchReleaseCount = 0;"), std::string::npos);
@@ -2992,6 +3001,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneManagerInvalidatesFrameOut
               std::string::npos);
     EXPECT_NE(managerSource.find("ReleaseRetiredBLASScratchBuffers();"), std::string::npos);
     EXPECT_NE(managerSource.find("entry->scratchReleasePending = true;"), std::string::npos);
+    EXPECT_NE(managerSource.find("QueueRenderOwnerRetirement("), std::string::npos);
     EXPECT_NE(managerSource.find("m_stats.releasedBLASScratchBytes = AddSaturatingUint64("),
               std::string::npos);
     EXPECT_EQ(managerSource.find("m_stats.releasedBLASScratchBytes +="), std::string::npos);
@@ -3103,15 +3113,15 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneManagerInvalidatesFrameOut
     EXPECT_NE(invalidateBody.find("m_instanceMaterialTextureIds.clear();"), std::string::npos);
     EXPECT_NE(invalidateBody.find("m_instanceAlphaMetadataRecords.clear();"), std::string::npos);
     EXPECT_NE(invalidateBody.find("m_instanceAlphaTextureIds.clear();"), std::string::npos);
-    EXPECT_NE(invalidateBody.find("m_instanceBuffer.Reset();"), std::string::npos);
+    EXPECT_NE(invalidateBody.find("m_instanceBuffer, m_pendingOwnerRetirements"), std::string::npos);
     EXPECT_NE(invalidateBody.find("m_instanceBufferSize = 0;"), std::string::npos);
-    EXPECT_NE(invalidateBody.find("m_instanceMaterialMetadataBuffer.Reset();"), std::string::npos);
+    EXPECT_NE(invalidateBody.find("m_instanceMaterialMetadataBuffer, m_pendingOwnerRetirements"), std::string::npos);
     EXPECT_NE(invalidateBody.find("m_instanceMaterialMetadataBufferSize = 0;"), std::string::npos);
-    EXPECT_NE(invalidateBody.find("m_instanceAlphaMetadataBuffer.Reset();"), std::string::npos);
+    EXPECT_NE(invalidateBody.find("m_instanceAlphaMetadataBuffer, m_pendingOwnerRetirements"), std::string::npos);
     EXPECT_NE(invalidateBody.find("m_instanceAlphaMetadataBufferSize = 0;"), std::string::npos);
-    EXPECT_NE(invalidateBody.find("m_topLevelAS.Reset();"), std::string::npos);
+    EXPECT_NE(invalidateBody.find("m_topLevelAS, m_pendingOwnerRetirements"), std::string::npos);
     EXPECT_NE(invalidateBody.find("m_topLevelSizes = {};"), std::string::npos);
-    EXPECT_NE(invalidateBody.find("m_topLevelScratchBuffer.Reset();"), std::string::npos);
+    EXPECT_NE(invalidateBody.find("m_topLevelScratchBuffer, m_pendingOwnerRetirements"), std::string::npos);
     EXPECT_NE(invalidateBody.find("m_topLevelBuildDesc = {};"), std::string::npos);
     EXPECT_EQ(invalidateBody.find("m_blasCache.clear();"), std::string::npos);
 
@@ -4144,18 +4154,16 @@ TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAn
     const auto shadowResetHistoryOnDeviceChange = passSource.find("ResetHistoryTextures();", shadowDeviceChange);
     const auto shadowMaskClearOnDeviceChange = passSource.find("m_shadowMaskTexture = nullptr;", shadowDeviceChange);
     const auto shadowConstantBufferResetOnDeviceChange = passSource.find("m_constantBuffer.Reset();", shadowDeviceChange);
-    const auto shadowRetainedDescriptorsClearOnDeviceChange =
-        passSource.find("m_retainedDescriptorSets.clear();", shadowDeviceChange);
     const auto shadowDeviceAssign = passSource.find("m_device = device;", shadowDeviceChange);
     ASSERT_NE(shadowResetHistoryOnDeviceChange, std::string::npos);
     ASSERT_NE(shadowMaskClearOnDeviceChange, std::string::npos);
     ASSERT_NE(shadowConstantBufferResetOnDeviceChange, std::string::npos);
-    ASSERT_NE(shadowRetainedDescriptorsClearOnDeviceChange, std::string::npos);
     ASSERT_NE(shadowDeviceAssign, std::string::npos);
     EXPECT_LT(shadowResetHistoryOnDeviceChange, shadowMaskClearOnDeviceChange);
     EXPECT_LT(shadowMaskClearOnDeviceChange, shadowConstantBufferResetOnDeviceChange);
-    EXPECT_LT(shadowConstantBufferResetOnDeviceChange, shadowRetainedDescriptorsClearOnDeviceChange);
-    EXPECT_LT(shadowRetainedDescriptorsClearOnDeviceChange, shadowDeviceAssign);
+    EXPECT_LT(shadowConstantBufferResetOnDeviceChange, shadowDeviceAssign);
+    EXPECT_EQ(passSource.find("m_retainedDescriptorSets"), std::string::npos);
+    EXPECT_NE(passSource.find("RetainRenderSubmissionResource("), std::string::npos);
     EXPECT_NE(passSource.find("if (view.resetTemporalHistory)"), std::string::npos);
     EXPECT_NE(passSource.find("m_historyValid = false;"), std::string::npos);
     EXPECT_NE(passSource.find("m_historyViewValid = false;"), std::string::npos);
@@ -4832,16 +4840,14 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
     ASSERT_NE(reflectionDeviceChange, std::string::npos);
     const auto reflectionResetHistoryOnDeviceChange = passSource.find("ResetHistoryTextures();", reflectionDeviceChange);
     const auto reflectionConstantBufferResetOnDeviceChange = passSource.find("m_constantBuffer.Reset();", reflectionDeviceChange);
-    const auto reflectionRetainedDescriptorsClearOnDeviceChange =
-        passSource.find("m_retainedDescriptorSets.clear();", reflectionDeviceChange);
     const auto reflectionDeviceAssign = passSource.find("m_device = device;", reflectionDeviceChange);
     ASSERT_NE(reflectionResetHistoryOnDeviceChange, std::string::npos);
     ASSERT_NE(reflectionConstantBufferResetOnDeviceChange, std::string::npos);
-    ASSERT_NE(reflectionRetainedDescriptorsClearOnDeviceChange, std::string::npos);
     ASSERT_NE(reflectionDeviceAssign, std::string::npos);
     EXPECT_LT(reflectionResetHistoryOnDeviceChange, reflectionConstantBufferResetOnDeviceChange);
-    EXPECT_LT(reflectionConstantBufferResetOnDeviceChange, reflectionRetainedDescriptorsClearOnDeviceChange);
-    EXPECT_LT(reflectionRetainedDescriptorsClearOnDeviceChange, reflectionDeviceAssign);
+    EXPECT_LT(reflectionConstantBufferResetOnDeviceChange, reflectionDeviceAssign);
+    EXPECT_EQ(passSource.find("m_retainedDescriptorSets"), std::string::npos);
+    EXPECT_NE(passSource.find("RetainRenderSubmissionResource("), std::string::npos);
 
     const auto reflectionOnRemove = passSource.find("void RayTracedReflectionPass::OnRemove()");
     ASSERT_NE(reflectionOnRemove, std::string::npos);
@@ -6191,9 +6197,9 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
     const std::string renderSubsystem = ReadTextFile(renderRoot / "Private" / "RenderSubsystem.cpp");
-    EXPECT_NE(renderSubsystem.find("m_renderContext->WaitIdle();\n            if (m_sceneRenderer)\n            {\n                m_sceneRenderer->PrepareForSwapChainResize();"),
+    EXPECT_NE(renderSubsystem.find("m_renderContext->WaitForSurfaceGeneration())\n            {\n                return false;\n            }\n            if (m_sceneRenderer)\n            {\n                m_sceneRenderer->PrepareForSwapChainResize();"),
               std::string::npos);
-    EXPECT_NE(renderSubsystem.find("m_renderContext->WaitIdle();\n        if (m_sceneRenderer)\n        {\n            m_sceneRenderer->PrepareForSwapChainResize();"),
+    EXPECT_NE(renderSubsystem.find("m_legacyBridge->renderContext->WaitForSurfaceGeneration())\n        {\n            return;\n        }\n        if (m_legacyBridge->sceneRenderer)\n        {\n            m_legacyBridge->sceneRenderer->PrepareForSwapChainResize();"),
               std::string::npos);
 }
 
@@ -6285,7 +6291,7 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
     EXPECT_NE(passSource.find("m_stats.maskedDrawItemCount"), std::string::npos);
     EXPECT_NE(passSource.find("MaterialBindingOptions materialOptions;"), std::string::npos);
     EXPECT_NE(passSource.find("materialOptions.allowNormalMap = false;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_materialSystem->PrepareMaterialBinding(materialResource, view.viewCache, materialOptions)"),
+    EXPECT_NE(passSource.find("materialResource, view.viewCache, materialOptions"),
               std::string::npos);
     EXPECT_NE(passSource.find("++m_stats.skippedMissingUVCount"), std::string::npos);
     EXPECT_NE(passSource.find("++m_stats.skippedMaterialBindingCount"), std::string::npos);

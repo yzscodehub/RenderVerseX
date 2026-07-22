@@ -16,13 +16,16 @@
 #include <limits>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace RVX
 {
     class GPUResourceManager;
+    class RenderRetirementQueue;
     class RenderResourceRegistry;
     class ResourceViewCache;
     class RHICommandContext;
+    struct GPUCompletionToken;
 
     enum class MaterialBindingStatus : uint8
     {
@@ -95,6 +98,10 @@ namespace RVX
 
         void BeginFrame();
 
+        /** @brief Transfer descriptor replacements using the prior-submit snapshot. */
+        void RetireOwnerSnapshots(const GPUCompletionToken& completion,
+                                  RenderRetirementQueue& retirement);
+
         // =====================================================================
         // Material Binding Data
         // =====================================================================
@@ -143,6 +150,7 @@ namespace RVX
         const EnvironmentIBLResources& GetEnvironmentIBLResources() const { return m_environmentIBL; }
 
     private:
+        void QueueMaterialDescriptorCacheRetirement();
         static uint64 AlignConstantBufferSize(uint64 size);
         static uint32 ToRHIConstantDynamicOffset(uint64 offset)
         {
@@ -264,6 +272,7 @@ namespace RVX
         RHITextureViewRef m_defaultBlackCubemapView;
         RHIDescriptorSetRef m_defaultMaterialSet;
         std::unordered_map<MaterialDescriptorKey, RHIDescriptorSetRef, MaterialDescriptorKeyHash> m_materialDescriptorCache;
+        std::vector<Ref<RefCounted>> m_pendingOwnerRetirements;
         uint64 m_materialDescriptorCacheGeneration = ~uint64{0};
         EnvironmentIBLResources m_environmentIBL;
         MaterialBindingResult m_lastBindingResult;

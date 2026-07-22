@@ -29,6 +29,8 @@
 namespace RVX
 {
     // Forward declarations
+    struct GPUCompletionToken;
+    class RenderRetirementQueue;
     class ShaderManager;
     struct ShaderCompileResult;
     struct ViewData;
@@ -223,6 +225,10 @@ namespace RVX
          * @brief Shutdown and release resources
          */
         void Shutdown();
+
+        /** @brief Transfer replaced descriptor snapshots using exact submission evidence. */
+        void RetireOwnerSnapshots(const GPUCompletionToken& completion,
+                                  RenderRetirementQueue& retirement);
 
         /**
          * @brief Check if initialized
@@ -890,6 +896,7 @@ namespace RVX
         RHIBufferRef m_objectInstanceFallbackBuffer;
         RHIDescriptorSetRef m_frameDescriptorSet;
         RHIDescriptorSetRef m_objectDescriptorSet;
+        std::vector<Ref<RefCounted>> m_pendingOwnerRetirements;
         RHITextureRef m_fallbackDirectionalShadowTexture;
         RHITextureViewRef m_fallbackDirectionalShadowView;
         RHITextureRef m_fallbackRayTracedShadowMaskTexture;

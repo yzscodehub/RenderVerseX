@@ -503,16 +503,17 @@ namespace RVX::Tests
             "SupportsSurfaceRebind(", replaceCase);
         const size_t subsystemRejection = renderSubsystem.find(
             "return false;", subsystemPolicy);
-        const size_t waitIdle = renderSubsystem.find(
-            "m_renderContext->WaitIdle()", replaceCase);
+        const size_t waitForSurfaceGeneration = renderSubsystem.find(
+            "m_renderContext->WaitForSurfaceGeneration()", replaceCase);
         const size_t prepare = renderSubsystem.find(
             "m_sceneRenderer->PrepareForSwapChainResize()", replaceCase);
         ASSERT_NE(replaceCase, std::string::npos);
         ASSERT_NE(subsystemPolicy, std::string::npos);
         ASSERT_NE(subsystemRejection, std::string::npos);
-        ASSERT_NE(waitIdle, std::string::npos);
+        ASSERT_NE(waitForSurfaceGeneration, std::string::npos);
         ASSERT_NE(prepare, std::string::npos);
-        EXPECT_LT(subsystemRejection, waitIdle);
+        EXPECT_LT(subsystemRejection, waitForSurfaceGeneration);
+        EXPECT_LT(waitForSurfaceGeneration, prepare);
         EXPECT_LT(subsystemRejection, prepare);
     }
 

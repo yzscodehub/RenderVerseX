@@ -60,7 +60,9 @@ namespace RVX
     class OpaquePass;
     class ParticleFeaturePass;
     class RenderPassRegistry;
+    class RenderRetirementQueue;
     class RenderResourceRegistry;
+    class RenderSubmissionResourceBatch;
     class RenderFeatureSceneBridge;
     class RenderProxySceneBridge;
     class RayTracedReflectionCompositePass;
@@ -74,6 +76,7 @@ namespace RVX
     class SkyboxPass;
     class ToneMappingPass;
     class TransparentPass;
+    struct GPUCompletionToken;
 
     enum class SceneRenderCollectionPath : uint8
     {
@@ -822,7 +825,8 @@ namespace RVX
          * @param renderContext The render context to use
          */
         void Initialize(RenderContext* renderContext,
-                        const RenderResourceRegistry* resourceRegistry = nullptr);
+                        const RenderResourceRegistry* resourceRegistry = nullptr,
+                        RenderRetirementQueue* retirementQueue = nullptr);
 
         /**
          * @brief Shutdown and release resources
@@ -859,6 +863,12 @@ namespace RVX
 
         /** @brief Record the currently accepted packet into the active frame. */
         [[nodiscard]] RenderFrameExecutionResult RenderAcceptedFrame();
+
+        /** @brief Seal current recording ownership with the actual submission token. */
+        void NotifySubmission(const GPUCompletionToken& completion);
+
+        /** @brief Release current recording ownership when no GPU work was submitted. */
+        void ReleaseUnsubmittedFrame();
 
         /** @brief Commit temporal history only after successful presentation. */
         void MarkAcceptedFramePresented();
@@ -1238,6 +1248,7 @@ namespace RVX
         bool IsLegacyCollectionFallbackEnabled() const { return m_legacyCollectionFallbackEnabled; }
 
     private:
+        void RetireOwnerSnapshots(const GPUCompletionToken& completion);
         void BuildRenderGraph();
         void PrepareRayTracingScene();
         void AddRayTracingSceneBuildPass();
@@ -1288,6 +1299,8 @@ namespace RVX
 
         RenderContext* m_renderContext = nullptr;
         const RenderResourceRegistry* m_renderResourceRegistry = nullptr;
+        RenderRetirementQueue* m_retirementQueue = nullptr;
+        std::unique_ptr<RenderSubmissionResourceBatch> m_submissionBatch;
         std::unique_ptr<RenderGraph> m_renderGraph;
         std::unique_ptr<GPUResourceManager> m_gpuResourceManager;
         std::unique_ptr<PipelineCache> m_pipelineCache;

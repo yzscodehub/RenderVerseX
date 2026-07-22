@@ -1,5 +1,6 @@
 #include "Resources/RenderSubmissionTracker.h"
 
+#include "Core/Assert.h"
 #include "RHI/RHICapabilities.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
@@ -389,6 +390,28 @@ namespace RVX
             state->lastCompletedValue = std::max(state->lastCompletedValue, completedValue);
         }
         return state->lastCompletedValue;
+    }
+
+    GPUCompletionToken RenderSubmissionTracker::CaptureLastSubmittedToken() const
+    {
+        GPUCompletionToken token;
+        for (uint8 index = 0; index < m_domains.size(); ++index)
+        {
+            const DomainState& state = m_domains[index];
+            if (!state.active || state.lastSubmittedValue == 0)
+            {
+                continue;
+            }
+            const bool inserted = InsertGPUCompletionPoint(
+                token,
+                GPUCompletionPoint{
+                    static_cast<GPUQueueDomain>(index),
+                    state.lastSubmittedValue,
+                });
+            RVX_ASSERT_MSG(inserted,
+                           "Active submission domain produced an invalid snapshot");
+        }
+        return token;
     }
 
     RenderSubmissionTracker::DomainState* RenderSubmissionTracker::GetDomainState(

@@ -1,6 +1,7 @@
 #include "RenderGraphInternal.h"
 #include "Core/Diagnostics/JsonWriter.h"
 #include "Core/Log.h"
+#include "Resources/RenderSubmissionResourceBatch.h"
 #include <algorithm>
 #include <fstream>
 #include <sstream>
@@ -1558,9 +1559,40 @@ namespace RVX
         return m_impl->enableMemoryAliasing;
     }
 
+    bool RenderGraph::RetainSubmissionResources(
+        RenderSubmissionResourceBatch& batch) const
+    {
+        for (const TextureResource& texture : m_impl->textures)
+        {
+            if (!texture.imported && texture.texture &&
+                !batch.Retain(Ref<RefCounted>(texture.texture),
+                              EstimateTextureMemorySize(texture.desc)))
+            {
+                return false;
+            }
+        }
+        for (const BufferResource& buffer : m_impl->buffers)
+        {
+            if (!buffer.imported && buffer.buffer &&
+                !batch.Retain(Ref<RefCounted>(buffer.buffer),
+                              buffer.desc.size))
+            {
+                return false;
+            }
+        }
+        for (const TransientHeap& heap : m_impl->transientHeaps)
+        {
+            if (heap.heap &&
+                !batch.Retain(Ref<RefCounted>(heap.heap), heap.size))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void RenderGraph::Clear()
     {
-        Impl::RetiredFrameResources retiredResources;
         for (auto& texture : m_impl->textures)
         {
             if (!texture.imported && texture.pooled && texture.pooledRaw)
@@ -1571,10 +1603,6 @@ namespace RVX
                 }
                 texture.pooledRaw = nullptr;
                 texture.pooled = false;
-            }
-            if (!texture.imported && texture.texture)
-            {
-                retiredResources.textures.push_back(std::move(texture.texture));
             }
         }
         for (auto& buffer : m_impl->buffers)
@@ -1587,27 +1615,6 @@ namespace RVX
                 }
                 buffer.pooledRaw = nullptr;
                 buffer.pooled = false;
-            }
-            if (!buffer.imported && buffer.buffer)
-            {
-                retiredResources.buffers.push_back(std::move(buffer.buffer));
-            }
-        }
-        for (auto& heap : m_impl->transientHeaps)
-        {
-            if (heap.heap)
-            {
-                retiredResources.heaps.push_back(std::move(heap.heap));
-            }
-        }
-        if (!retiredResources.textures.empty() ||
-            !retiredResources.buffers.empty() ||
-            !retiredResources.heaps.empty())
-        {
-            m_impl->retiredFrameResources.push_back(std::move(retiredResources));
-            while (m_impl->retiredFrameResources.size() > RVX_MAX_FRAME_COUNT + 1)
-            {
-                m_impl->retiredFrameResources.pop_front();
             }
         }
 

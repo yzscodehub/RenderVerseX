@@ -9,6 +9,7 @@
 #include "Render/Lighting/LightManager.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
 #include "Render/Renderer/ViewData.h"
+#include "Resources/RenderOwnerSnapshotRetirement.h"
 #include "ShaderCompiler/ShaderCompiler.h"
 #include "ShaderCompiler/ShaderLayout.h"
 #include "ShaderCompiler/ShaderManager.h"
@@ -808,6 +809,7 @@ void PipelineCache::Shutdown()
     m_pipelineCache.clear();
     m_frameDescriptorSet.Reset();
     m_objectDescriptorSet.Reset();
+    m_pendingOwnerRetirements.clear();
     m_viewConstantBuffer.Reset();
     m_objectConstantBuffer.Reset();
     m_objectInstanceFallbackBuffer.Reset();
@@ -946,6 +948,14 @@ void PipelineCache::Shutdown()
     m_initialized = false;
 
     RVX_CORE_DEBUG("PipelineCache shutdown");
+}
+
+void PipelineCache::RetireOwnerSnapshots(
+    const GPUCompletionToken& completion,
+    RenderRetirementQueue& retirement)
+{
+    FlushRenderOwnerRetirements(
+        m_pendingOwnerRetirements, completion, retirement);
 }
 
 bool PipelineCache::CompileShaders()
@@ -2927,6 +2937,8 @@ bool PipelineCache::UpdateObjectInstanceBuffer(RHIBuffer* instanceBuffer)
     }
 
     RHIDescriptorSetDesc desc;
+    desc.layout = objectLayout;
+    desc.debugName = "DefaultObjectDescriptorSet";
     desc.BindBuffer(0, m_objectConstantBuffer.Get(), 0, m_objectConstantStride);
     if (FindRHIBindingLayoutEntry(*objectLayout, 1))
     {
@@ -2937,7 +2949,16 @@ bool PipelineCache::UpdateObjectInstanceBuffer(RHIBuffer* instanceBuffer)
         desc.BindBuffer(1, instanceBinding);
     }
 
-    return m_objectDescriptorSet->Update(desc.bindings);
+    RHIDescriptorSetRef replacement = m_device->CreateDescriptorSet(desc);
+    if (!replacement)
+    {
+        return false;
+    }
+
+    QueueRenderOwnerRetirement(
+        m_objectDescriptorSet, m_pendingOwnerRetirements);
+    m_objectDescriptorSet = std::move(replacement);
+    return true;
 }
 
 RHIDescriptorSetLayout* PipelineCache::GetMaterialSetLayout() const
@@ -3589,7 +3610,7 @@ bool PipelineCache::EnsureFrameClusteredLightFallbackResources()
 
 bool PipelineCache::UpdateDefaultFrameDescriptorSet()
 {
-    if (!m_frameDescriptorSet || !m_viewConstantBuffer ||
+    if (!m_viewConstantBuffer || m_setLayouts.empty() || !m_setLayouts[0] ||
         !EnsureFrameShadowFallbackResources() || !EnsureFrameRayTracedShadowFallbackResources() ||
         !EnsureFrameLightFallbackResources() || !EnsureFrameClusteredLightFallbackResources())
     {
@@ -3643,12 +3664,21 @@ bool PipelineCache::UpdateDefaultFrameDescriptorSet()
     bindings.push_back({8, clusters, 0, RVX_WHOLE_SIZE, nullptr, nullptr});
     bindings.push_back({9, clusterLightIndices, 0, RVX_WHOLE_SIZE, nullptr, nullptr});
 
-    const bool updated = m_frameDescriptorSet->Update(bindings);
-    if (updated)
+    RHIDescriptorSetDesc desc;
+    desc.layout = m_setLayouts[0].Get();
+    desc.bindings = std::move(bindings);
+    desc.debugName = "DefaultFrameDescriptorSet";
+    RHIDescriptorSetRef replacement = m_device->CreateDescriptorSet(desc);
+    if (!replacement)
     {
-        m_frameResourceBindingsDirty = false;
+        return false;
     }
-    return updated;
+
+    QueueRenderOwnerRetirement(
+        m_frameDescriptorSet, m_pendingOwnerRetirements);
+    m_frameDescriptorSet = std::move(replacement);
+    m_frameResourceBindingsDirty = false;
+    return true;
 }
 
 RHIDescriptorSetRef PipelineCache::CreateFrameDescriptorSet()

@@ -4,6 +4,7 @@
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/ViewData.h"
+#include "Resources/RenderSubmissionResourceBatch.h"
 #include "RHI/RHIRenderPass.h"
 
 #include <algorithm>
@@ -36,7 +37,6 @@ namespace RVX
         {
             m_constantBuffer.Reset();
             m_sampler.Reset();
-            m_retainedDescriptorSets.clear();
         }
         m_device = device;
     }
@@ -50,7 +50,6 @@ namespace RVX
         m_velocityWriteHandle = {};
         m_constantBuffer.Reset();
         m_sampler.Reset();
-        m_retainedDescriptorSets.clear();
         m_stats = {};
         m_enabled = false;
     }
@@ -62,7 +61,6 @@ namespace RVX
         {
             m_constantBuffer.Reset();
             m_sampler.Reset();
-            m_retainedDescriptorSets.clear();
             m_device = newDevice;
         }
 
@@ -205,10 +203,12 @@ namespace RVX
             return;
         }
 
-        m_retainedDescriptorSets.push_back(descriptorSet);
-        while (m_retainedDescriptorSets.size() > RVX_MAX_FRAME_COUNT + 1)
+        if (!RetainRenderSubmissionResource(
+                view.submissionResourceBatch, descriptorSet))
         {
-            m_retainedDescriptorSets.pop_front();
+            RVX_CORE_WARN("CameraVelocityPass: submission ownership rejected descriptor set");
+            m_stats.velocityRecorded = false;
+            return;
         }
 
         RHIRenderPassDesc renderPassDesc;
