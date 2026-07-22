@@ -54,6 +54,8 @@ namespace RVX
             RenderResourceRegistry* registry,
             RenderSubmissionTracker* submissionTracker);
         void Shutdown();
+        /** @brief Classify all submitted work as lost without waiting for GPU progress. */
+        void ShutdownDeviceLost();
 
         /** @brief Task-18 compatibility path used only by GPUUploadService. */
         [[nodiscard]] bool InitializeLegacy(

@@ -80,6 +80,9 @@ namespace RVX
     // =============================================================================
     OpenGLDevice::OpenGLDevice(const RHIDeviceDesc& desc)
     {
+        m_runtimeStatus.store(RHIDeviceRuntimeStatus::Ready,
+                              std::memory_order_release);
+        m_faultClaimed.store(false, std::memory_order_release);
         RVX_RHI_INFO("Creating OpenGL Device...");
 
         if (!desc.initialSurface.IsValidFor(RHIBackendType::OpenGL))
@@ -131,7 +134,8 @@ namespace RVX
 
     OpenGLDevice::~OpenGLDevice()
     {
-        if (m_initialized)
+        if (m_initialized &&
+            QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready)
         {
             WaitIdle();
 
@@ -147,6 +151,61 @@ namespace RVX
 
             RVX_RHI_INFO("OpenGL Device destroyed");
         }
+    }
+
+    RHIDeviceRuntimeStatus OpenGLDevice::QueryRuntimeStatus() const noexcept
+    {
+        return m_runtimeStatus.load(std::memory_order_acquire);
+    }
+
+    RHIDeviceFault OpenGLDevice::GetLastDeviceFault() const
+    {
+        RHIDeviceFault fault;
+        fault.status = QueryRuntimeStatus();
+        fault.operation =
+            m_lastFaultOperation.load(std::memory_order_acquire);
+        fault.backend = RHIBackendType::OpenGL;
+        fault.nativeError =
+            m_lastFaultNativeError.load(std::memory_order_acquire);
+        fault.sequence = m_faultSequence.load(std::memory_order_acquire);
+        {
+            std::lock_guard lock(m_deviceFaultMutex);
+            fault.message = m_deviceFaultMessage;
+        }
+        return fault;
+    }
+
+    void OpenGLDevice::ReportRuntimeFailure(
+        uint32 nativeError,
+        RHIDeviceRuntimeStatus status,
+        RHIDeviceFaultOperation operation,
+        const char* message) noexcept
+    {
+        if (status == RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
+        bool expected = false;
+        if (!m_faultClaimed.compare_exchange_strong(
+                expected, true, std::memory_order_acq_rel))
+        {
+            return;
+        }
+        m_lastFaultNativeError.store(nativeError,
+                                     std::memory_order_release);
+        m_lastFaultOperation.store(operation, std::memory_order_release);
+        m_faultSequence.store(1, std::memory_order_release);
+        try
+        {
+            std::lock_guard lock(m_deviceFaultMutex);
+            m_deviceFaultMessage = message != nullptr
+                                       ? message
+                                       : "OpenGL context failed terminally";
+        }
+        catch (...)
+        {
+        }
+        m_runtimeStatus.store(status, std::memory_order_release);
     }
 
     bool OpenGLDevice::InitializeContext()
@@ -664,6 +723,10 @@ namespace RVX
     // =============================================================================
     void OpenGLDevice::BeginFrame()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         OpenGLDebug::Get().BeginFrame(m_frameIndex);
 
         // Process deletion queue - delete resources that are safe to delete
@@ -674,6 +737,10 @@ namespace RVX
 
     void OpenGLDevice::EndFrame()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         OpenGLDebug::Get().EndFrame();
 
         // Clean up unused cached resources

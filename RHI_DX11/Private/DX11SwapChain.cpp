@@ -299,12 +299,20 @@ namespace RVX
         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
         {
             DX11Debug::Get().DiagnoseDeviceRemoved(m_device->GetD3DDevice());
+            m_device->ReportRuntimeFailure(
+                hr,
+                RHIDeviceFaultOperation::Present,
+                "DX11 present reported a removed or reset device");
             return;
         }
 
         if (FAILED(hr))
         {
             RVX_RHI_ERROR("SwapChain present failed: {}", HRESULTToString(hr));
+            m_device->ReportRuntimeFailure(
+                hr,
+                RHIDeviceFaultOperation::Present,
+                "DX11 present failed terminally");
             return;
         }
 

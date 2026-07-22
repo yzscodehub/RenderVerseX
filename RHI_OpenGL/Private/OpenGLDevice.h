@@ -6,7 +6,9 @@
 #include "OpenGLDeletionQueue.h"
 #include "OpenGLCaches.h"
 #include "RHI/RHIDevice.h"
+#include <atomic>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <functional>
 #include <vector>
@@ -66,6 +68,8 @@ namespace RVX
 
         const RHICapabilities& GetCapabilities() const override { return m_capabilities; }
         RHIBackendType GetBackendType() const override { return RHIBackendType::OpenGL; }
+        RHIDeviceRuntimeStatus QueryRuntimeStatus() const noexcept override;
+        RHIDeviceFault GetLastDeviceFault() const override;
 
         // Upload Resources
         RHIStagingBufferRef CreateStagingBuffer(const RHIStagingBufferDesc& desc) override;
@@ -92,6 +96,11 @@ namespace RVX
         OpenGLFramebufferCache& GetFBOCache() { return m_fboCache; }
         OpenGLVAOCache& GetVAOCache() { return m_vaoCache; }
         uint64 GetTotalFrameIndex() const { return m_frameIndex; }
+        void ReportRuntimeFailure(
+            uint32 nativeError,
+            RHIDeviceRuntimeStatus status,
+            RHIDeviceFaultOperation operation,
+            const char* message) noexcept;
 
     private:
         bool InitializeContext();
@@ -108,6 +117,15 @@ namespace RVX
         std::thread::id m_glThreadId;
         GLFWwindow* m_contextWindow = nullptr;
         bool m_initialized = false;
+        std::atomic<RHIDeviceRuntimeStatus> m_runtimeStatus{
+            RHIDeviceRuntimeStatus::Ready};
+        std::atomic<bool> m_faultClaimed{false};
+        std::atomic<uint32> m_lastFaultNativeError{0};
+        std::atomic<RHIDeviceFaultOperation> m_lastFaultOperation{
+            RHIDeviceFaultOperation::None};
+        std::atomic<uint64> m_faultSequence{0};
+        mutable std::mutex m_deviceFaultMutex;
+        std::string m_deviceFaultMessage;
 
         // Subsystems
         OpenGLStateCache m_stateCache;

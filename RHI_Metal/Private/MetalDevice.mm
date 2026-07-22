@@ -23,6 +23,9 @@ namespace RVX
     // =============================================================================
     MetalDevice::MetalDevice(const RHIDeviceDesc& desc)
     {
+        m_faultState->status.store(RHIDeviceRuntimeStatus::Ready,
+                                   std::memory_order_release);
+        m_faultState->claimed.store(false, std::memory_order_release);
         // Get the default Metal device
         m_device = MTLCreateSystemDefaultDevice();
         if (!m_device)
@@ -168,6 +171,86 @@ namespace RVX
             return nullptr;
         }
         return view;
+    }
+
+    RHIDeviceRuntimeStatus MetalDevice::QueryRuntimeStatus() const noexcept
+    {
+        return m_faultState->status.load(std::memory_order_acquire);
+    }
+
+    RHIDeviceFault MetalDevice::GetLastDeviceFault() const
+    {
+        RHIDeviceFault fault;
+        fault.status = QueryRuntimeStatus();
+        fault.operation =
+            m_faultState->operation.load(std::memory_order_acquire);
+        fault.backend = RHIBackendType::Metal;
+        fault.nativeError =
+            m_faultState->nativeError.load(std::memory_order_acquire);
+        fault.sequence =
+            m_faultState->sequence.load(std::memory_order_acquire);
+        if (fault.IsFailure())
+        {
+            fault.message =
+                "Metal command buffer completed with a terminal GPU error";
+        }
+        return fault;
+    }
+
+    void MetalDevice::ObserveCommandBuffer(
+        id<MTLCommandBuffer> commandBuffer,
+        RHIDeviceFaultOperation operation) noexcept
+    {
+        if (commandBuffer == nil)
+        {
+            PublishRuntimeFault(m_faultState,
+                                RHIDeviceRuntimeStatus::FatalError,
+                                0,
+                                operation);
+            return;
+        }
+
+        std::shared_ptr<RuntimeFaultState> faultState = m_faultState;
+        [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
+            if (buffer.status != MTLCommandBufferStatusError)
+            {
+                return;
+            }
+            const NSInteger nativeCode =
+                buffer.error != nil ? buffer.error.code : 0;
+            PublishRuntimeFault(
+                faultState,
+                RHIDeviceRuntimeStatus::DeviceLost,
+                static_cast<uint32>(nativeCode),
+                operation);
+        }];
+    }
+
+    void MetalDevice::PublishRuntimeFault(
+        const std::shared_ptr<RuntimeFaultState>& faultState,
+        RHIDeviceRuntimeStatus status,
+        uint32 nativeError,
+        RHIDeviceFaultOperation operation) noexcept
+    {
+        if (faultState == nullptr)
+        {
+            return;
+        }
+        bool expected = false;
+        if (!faultState->claimed.compare_exchange_strong(
+                expected, true, std::memory_order_acq_rel))
+        {
+            return;
+        }
+
+        // Completion handlers publish only compact lock-free state. Rich
+        // diagnostics are materialized later by GetLastDeviceFault().
+        faultState->nativeError.store(nativeError,
+                                      std::memory_order_release);
+        faultState->operation.store(operation,
+                                    std::memory_order_release);
+        faultState->sequence.store(1, std::memory_order_release);
+        faultState->status.store(status, std::memory_order_release);
     }
 
     RHISamplerRef MetalDevice::CreateSampler(const RHISamplerDesc& desc)
@@ -390,15 +473,32 @@ namespace RVX
     {
         std::lock_guard<std::mutex> lock(m_submitMutex);
 
-        uint64 submittedValue = 0;
-        for (size_t i = 0; i < contexts.size(); ++i)
+        for (RHICommandContext* context : contexts)
         {
-            if (!contexts[i])
+            if (context == nullptr)
             {
                 RVX_RHI_ERROR("MetalDevice::SubmitCommandContexts: null command context");
                 return 0;
             }
+        }
+        if (m_frameInFlight && !contexts.empty())
+        {
+            auto* finalContext =
+                static_cast<MetalCommandContext*>(contexts.back());
+            id<MTLCommandBuffer> commandBuffer =
+                finalContext->GetCommandBuffer();
+            if (commandBuffer != nil)
+            {
+                __block dispatch_semaphore_t semaphore = m_frameSemaphore;
+                [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>) {
+                    dispatch_semaphore_signal(semaphore);
+                }];
+            }
+        }
 
+        uint64 submittedValue = 0;
+        for (size_t i = 0; i < contexts.size(); ++i)
+        {
             auto* metalContext = static_cast<MetalCommandContext*>(contexts[i]);
             // Only signal fence on last submission
             submittedValue = metalContext->Submit(i == contexts.size() - 1 ? signalFence : nullptr);
@@ -437,8 +537,14 @@ namespace RVX
 
     void MetalDevice::WaitIdle()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         // Create a command buffer and wait for it to complete
         id<MTLCommandBuffer> cmdBuffer = [m_commandQueue commandBuffer];
+        ObserveCommandBuffer(cmdBuffer,
+                             RHIDeviceFaultOperation::Shutdown);
         [cmdBuffer commit];
         [cmdBuffer waitUntilCompleted];
     }
@@ -448,6 +554,10 @@ namespace RVX
     // =============================================================================
     void MetalDevice::BeginFrame()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         // Wait for an available frame slot (blocks if all frames are in flight)
         // This prevents CPU from getting too far ahead of GPU
         dispatch_semaphore_wait(m_frameSemaphore, DISPATCH_TIME_FOREVER);
@@ -456,6 +566,10 @@ namespace RVX
 
     void MetalDevice::EndFrame()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         // Note: The frame semaphore is signaled when command buffer completes
         // This is done via addCompletedHandler in SubmitCommandContext
         m_currentFrameIndex = (m_currentFrameIndex + 1) % kMetalMaxFramesInFlight;

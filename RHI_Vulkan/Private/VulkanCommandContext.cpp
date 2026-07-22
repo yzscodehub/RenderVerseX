@@ -705,7 +705,16 @@ namespace RVX
         submitInfo.signalSemaphoreCount = static_cast<uint32>(signalSemaphores.size());
         submitInfo.pSignalSemaphores = signalSemaphores.empty() ? nullptr : signalSemaphores.data();
 
-        VK_CHECK(vkQueueSubmit(queue, 1, &submitInfo, fence));
+        const VkResult submitResult =
+            vkQueueSubmit(queue, 1, &submitInfo, fence);
+        if (submitResult != VK_SUCCESS)
+        {
+            device->ReportRuntimeFailure(
+                submitResult,
+                RHIDeviceFaultOperation::CommandSubmission,
+                "Vulkan command submission failed");
+            return 0;
+        }
         return signalFenceValue;
     }
 
@@ -762,18 +771,90 @@ namespace RVX
         VulkanFence* vkSignalFence = signalFence ? static_cast<VulkanFence*>(signalFence) : nullptr;
         const uint64 signalFenceValue = vkSignalFence ? vkSignalFence->AllocateSignalValue() : 0;
 
+        const auto createSemaphore =
+            [device, &semaphoreInfo](VkSemaphore& semaphore) -> bool
+        {
+            const VkResult result = vkCreateSemaphore(
+                device->GetDevice(), &semaphoreInfo, nullptr, &semaphore);
+            if (result == VK_SUCCESS)
+            {
+                return true;
+            }
+            device->ReportRuntimeFailure(
+                result,
+                RHIDeviceFaultOperation::CommandSubmission,
+                "Vulkan cross-queue semaphore creation failed");
+            return false;
+        };
+
+        const auto submit =
+            [device](VkQueue queue,
+                     const VkSubmitInfo& info,
+                     VkFence fence,
+                     const char* message) -> bool
+        {
+            const VkResult result = vkQueueSubmit(queue, 1, &info, fence);
+            if (result == VK_SUCCESS)
+            {
+                return true;
+            }
+            device->ReportRuntimeFailure(
+                result,
+                RHIDeviceFaultOperation::CommandSubmission,
+                message);
+            return false;
+        };
+
+        bool submittedAnyBatch = false;
+        VkQueue lastSubmittedQueue = VK_NULL_HANDLE;
+        const auto retireCrossQueueSemaphores = [&]()
+        {
+            std::vector<VkSemaphore> semaphores;
+            if (copyToComputeSemaphore != VK_NULL_HANDLE)
+                semaphores.push_back(copyToComputeSemaphore);
+            if (copyToGraphicsSemaphore != VK_NULL_HANDLE)
+                semaphores.push_back(copyToGraphicsSemaphore);
+            if (computeToGraphicsSemaphore != VK_NULL_HANDLE)
+                semaphores.push_back(computeToGraphicsSemaphore);
+            if (submittedAnyBatch)
+            {
+                device->EnqueueDeferredSemaphoreDestroy(
+                    std::move(semaphores), lastSubmittedQueue);
+            }
+            else
+            {
+                for (VkSemaphore semaphore : semaphores)
+                {
+                    vkDestroySemaphore(device->GetDevice(),
+                                       semaphore, nullptr);
+                }
+            }
+            copyToComputeSemaphore = VK_NULL_HANDLE;
+            copyToGraphicsSemaphore = VK_NULL_HANDLE;
+            computeToGraphicsSemaphore = VK_NULL_HANDLE;
+        };
+
         // Create synchronization semaphores as needed
         if (needCopyToComputeSync)
         {
-            vkCreateSemaphore(device->GetDevice(), &semaphoreInfo, nullptr, &copyToComputeSemaphore);
+            if (!createSemaphore(copyToComputeSemaphore))
+                return 0;
         }
         if (needCopyToGraphicsSync)
         {
-            vkCreateSemaphore(device->GetDevice(), &semaphoreInfo, nullptr, &copyToGraphicsSemaphore);
+            if (!createSemaphore(copyToGraphicsSemaphore))
+            {
+                retireCrossQueueSemaphores();
+                return 0;
+            }
         }
         if (needComputeToGraphicsSync)
         {
-            vkCreateSemaphore(device->GetDevice(), &semaphoreInfo, nullptr, &computeToGraphicsSemaphore);
+            if (!createSemaphore(computeToGraphicsSemaphore))
+            {
+                retireCrossQueueSemaphores();
+                return 0;
+            }
         }
 
         // Submit copy commands first
@@ -807,7 +888,15 @@ namespace RVX
             submitInfo.pCommandBuffers = copyCmdBuffers.data();
             submitInfo.signalSemaphoreCount = static_cast<uint32>(signalSemaphores.size());
             submitInfo.pSignalSemaphores = signalSemaphores.empty() ? nullptr : signalSemaphores.data();
-            VK_CHECK(vkQueueSubmit(device->GetTransferQueue(), 1, &submitInfo, VK_NULL_HANDLE));
+            if (!submit(device->GetTransferQueue(), submitInfo,
+                        VK_NULL_HANDLE,
+                        "Vulkan copy batch submission failed"))
+            {
+                retireCrossQueueSemaphores();
+                return 0;
+            }
+            submittedAnyBatch = true;
+            lastSubmittedQueue = device->GetTransferQueue();
         }
 
         // Submit compute commands (wait for copy if needed)
@@ -851,7 +940,15 @@ namespace RVX
             submitInfo.pCommandBuffers = computeCmdBuffers.data();
             submitInfo.signalSemaphoreCount = static_cast<uint32>(signalSemaphores.size());
             submitInfo.pSignalSemaphores = signalSemaphores.empty() ? nullptr : signalSemaphores.data();
-            VK_CHECK(vkQueueSubmit(device->GetComputeQueue(), 1, &submitInfo, VK_NULL_HANDLE));
+            if (!submit(device->GetComputeQueue(), submitInfo,
+                        VK_NULL_HANDLE,
+                        "Vulkan compute batch submission failed"))
+            {
+                retireCrossQueueSemaphores();
+                return 0;
+            }
+            submittedAnyBatch = true;
+            lastSubmittedQueue = device->GetComputeQueue();
         }
 
         // Submit graphics commands with swapchain sync
@@ -907,7 +1004,15 @@ namespace RVX
             submitInfo.signalSemaphoreCount = static_cast<uint32>(signalSemaphores.size());
             submitInfo.pSignalSemaphores = signalSemaphores.data();
 
-            VK_CHECK(vkQueueSubmit(device->GetGraphicsQueue(), 1, &submitInfo, device->GetCurrentFrameFence()));
+            if (!submit(device->GetGraphicsQueue(), submitInfo,
+                        device->GetCurrentFrameFence(),
+                        "Vulkan graphics batch submission failed"))
+            {
+                retireCrossQueueSemaphores();
+                return 0;
+            }
+            submittedAnyBatch = true;
+            lastSubmittedQueue = device->GetGraphicsQueue();
         }
         else if (vkSignalFence && copyCmdBuffers.empty() && computeCmdBuffers.empty())
         {
@@ -924,7 +1029,15 @@ namespace RVX
             submitInfo.signalSemaphoreCount = 1;
             submitInfo.pSignalSemaphores = &signalSemaphore;
 
-            VK_CHECK(vkQueueSubmit(device->GetGraphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE));
+            if (!submit(device->GetGraphicsQueue(), submitInfo,
+                        VK_NULL_HANDLE,
+                        "Vulkan empty timeline submission failed"))
+            {
+                retireCrossQueueSemaphores();
+                return 0;
+            }
+            submittedAnyBatch = true;
+            lastSubmittedQueue = device->GetGraphicsQueue();
         }
 
         if (copyToComputeSemaphore != VK_NULL_HANDLE ||

@@ -331,6 +331,209 @@ namespace
     private:
         std::shared_ptr<RenderFrameConsumerTestProbe> m_probe;
     };
+
+    class FaultPlanFrameConsumer final : public IRenderFrameConsumer,
+                                         public NonMovable
+    {
+    public:
+        FaultPlanFrameConsumer(
+            RenderRuntimeFaultPlan plan,
+            std::shared_ptr<RenderRuntimeFaultProbe> probe)
+            : m_plan(plan), m_probe(std::move(probe))
+        {
+            m_probe->RecordConstruction();
+        }
+
+        ~FaultPlanFrameConsumer() override
+        {
+            m_probe->RecordDestruction();
+        }
+
+        RenderRuntimeResult Initialize(
+            const RenderRuntimeConfig& config,
+            const NativeSurfaceDesc& surface,
+            RenderResourceStatusTable&) override
+        {
+            m_surfaceGeneration = surface.generation;
+            RenderRuntimeResult result = MakeRunning(config.backendType,
+                                                     surface.generation);
+            if (ShouldFail(RenderRuntimeFaultPoint::DeviceCreation) ||
+                ShouldFail(RenderRuntimeFaultPoint::ContextCreation) ||
+                ShouldFail(RenderRuntimeFaultPoint::RendererCreation) ||
+                ShouldFail(RenderRuntimeFaultPoint::ResourceCreation))
+            {
+                result.code = RenderRuntimeCode::DeviceCreationFailed;
+                result.nativeError = m_plan.nativeError;
+                result.message = "Injected render startup construction failure";
+            }
+            else if (ShouldFail(RenderRuntimeFaultPoint::SurfaceCreation))
+            {
+                result.code = RenderRuntimeCode::SurfaceCreationFailed;
+                result.nativeError = m_plan.nativeError;
+                result.message = "Injected render surface creation failure";
+            }
+            return result;
+        }
+
+        RenderRuntimeResult ApplySurface(
+            const NativeSurfaceDesc& surface) override
+        {
+            m_surfaceGeneration = surface.generation;
+            RenderRuntimeResult result = MakeRunning(RHIBackendType::DX11,
+                                                     surface.generation);
+            if (ShouldFail(RenderRuntimeFaultPoint::Resize))
+            {
+                return MakeDeviceLost(surface.generation,
+                                      "Injected resize device loss");
+            }
+            return result;
+        }
+
+        void ProcessRelease(RenderResourceHandle) override
+        {
+        }
+
+        void ProcessUpload(ResourceUploadRequestRef) override
+        {
+            if (ShouldFail(RenderRuntimeFaultPoint::UploadSubmission))
+            {
+                m_deviceLost.store(true, std::memory_order_release);
+            }
+        }
+
+        RenderRuntimeResult ConsumeFrame(
+            const RenderFramePacket& packet) override
+        {
+            if (ShouldFail(RenderRuntimeFaultPoint::FrameException))
+            {
+                throw std::runtime_error("Injected frame exception");
+            }
+            if (ShouldFail(RenderRuntimeFaultPoint::Present) ||
+                ShouldFail(
+                    RenderRuntimeFaultPoint::DeviceLossBeforeSubmission))
+            {
+                return MakeDeviceLost(m_surfaceGeneration,
+                                      "Injected frame device loss");
+            }
+            if (ShouldFail(RenderRuntimeFaultPoint::DeviceLossInFlight))
+            {
+                m_deviceLost.store(true, std::memory_order_release);
+            }
+            RenderRuntimeResult result = MakeRunning(
+                RHIBackendType::DX11,
+                m_surfaceGeneration);
+            result.frameSequence = packet.GetHeader().sequence;
+            return result;
+        }
+
+        void PollCompletion() override
+        {
+            if (ShouldFail(RenderRuntimeFaultPoint::FencePoll))
+            {
+                m_deviceLost.store(true, std::memory_order_release);
+            }
+        }
+
+        void RetireCompleted() override
+        {
+            if (ShouldFail(RenderRuntimeFaultPoint::FenceWait))
+            {
+                m_deviceLost.store(true, std::memory_order_release);
+            }
+        }
+
+        RenderRuntimeResult QueryRuntimeStatus() const override
+        {
+            return m_deviceLost.load(std::memory_order_acquire)
+                       ? MakeDeviceLost(0, "Injected asynchronous device loss")
+                       : MakeRunning(RHIBackendType::DX11, 0);
+        }
+
+        RenderShutdownResult Shutdown(
+            RenderTeardownMode mode) noexcept override
+        {
+            m_probe->RecordShutdown(mode);
+            RenderShutdownResult result;
+            result.code = RenderShutdownCode::Completed;
+            result.backend = RHIBackendType::DX11;
+            if (m_plan.point ==
+                RenderRuntimeFaultPoint::DeviceLossDuringShutdown)
+            {
+                result.code = RenderShutdownCode::DeviceLost;
+                result.nativeError = m_plan.nativeError;
+                result.message = "Injected shutdown device loss";
+            }
+            return result;
+        }
+
+    private:
+        [[nodiscard]] bool ShouldFail(RenderRuntimeFaultPoint point)
+        {
+            if (m_plan.point != point)
+            {
+                return false;
+            }
+            ++m_observationCount;
+            return m_observationCount == m_plan.occurrence;
+        }
+
+        [[nodiscard]] static RenderRuntimeResult MakeRunning(
+            RHIBackendType backend,
+            uint64 surfaceGeneration)
+        {
+            RenderRuntimeResult result;
+            result.code = RenderRuntimeCode::Running;
+            result.lifecycle = RenderLifecycleState::Running;
+            result.backend = backend;
+            result.surfaceGeneration = surfaceGeneration;
+            return result;
+        }
+
+        [[nodiscard]] RenderRuntimeResult MakeDeviceLost(
+            uint64 surfaceGeneration,
+            const char* message) const
+        {
+            RenderRuntimeResult result;
+            result.code = RenderRuntimeCode::DeviceLost;
+            result.backend = RHIBackendType::DX11;
+            result.surfaceGeneration = surfaceGeneration;
+            result.nativeError = m_plan.nativeError;
+            result.message = message;
+            return result;
+        }
+
+        RenderRuntimeFaultPlan m_plan;
+        std::shared_ptr<RenderRuntimeFaultProbe> m_probe;
+        std::atomic<bool> m_deviceLost = false;
+        uint32 m_observationCount = 0;
+        uint64 m_surfaceGeneration = 0;
+    };
+
+    class FaultPlanRuntimeFactory final : public IRenderRuntimeFactory,
+                                          public NonMovable
+    {
+    public:
+        FaultPlanRuntimeFactory(
+            RenderRuntimeFaultPlan plan,
+            std::shared_ptr<RenderRuntimeFaultProbe> probe)
+            : m_plan(plan), m_probe(std::move(probe))
+        {
+        }
+
+        [[nodiscard]] std::unique_ptr<IRenderFrameConsumer>
+            CreateFrameConsumer() override
+        {
+            if (m_plan.point == RenderRuntimeFaultPoint::FactoryCreation)
+            {
+                return nullptr;
+            }
+            return std::make_unique<FaultPlanFrameConsumer>(m_plan, m_probe);
+        }
+
+    private:
+        RenderRuntimeFaultPlan m_plan;
+        std::shared_ptr<RenderRuntimeFaultProbe> m_probe;
+    };
 } // namespace
 
     std::unique_ptr<IRenderExecutor> CreateInlineRenderExecutor()
@@ -591,5 +794,80 @@ namespace
     {
         return std::make_unique<RecordingRenderFrameConsumer>(
             std::move(probe));
+    }
+
+    void RenderRuntimeFaultProbe::RecordConstruction()
+    {
+        {
+            std::lock_guard lock(m_mutex);
+            m_constructionThread = std::this_thread::get_id();
+        }
+        m_liveObjectCount.fetch_add(1, std::memory_order_release);
+    }
+
+    void RenderRuntimeFaultProbe::RecordDestruction()
+    {
+        {
+            std::lock_guard lock(m_mutex);
+            m_destructionThread = std::this_thread::get_id();
+        }
+        m_liveObjectCount.fetch_sub(1, std::memory_order_release);
+    }
+
+    void RenderRuntimeFaultProbe::RecordShutdown(RenderTeardownMode mode)
+    {
+        m_shutdownMode.store(mode, std::memory_order_release);
+    }
+
+    uint32 RenderRuntimeFaultProbe::GetLiveObjectCount() const noexcept
+    {
+        return m_liveObjectCount.load(std::memory_order_acquire);
+    }
+
+    std::thread::id RenderRuntimeFaultProbe::GetConstructionThread() const
+    {
+        std::lock_guard lock(m_mutex);
+        return m_constructionThread;
+    }
+
+    std::thread::id RenderRuntimeFaultProbe::GetDestructionThread() const
+    {
+        std::lock_guard lock(m_mutex);
+        return m_destructionThread;
+    }
+
+    RenderTeardownMode RenderRuntimeFaultProbe::GetShutdownMode() const noexcept
+    {
+        return m_shutdownMode.load(std::memory_order_acquire);
+    }
+
+    std::unique_ptr<IRenderRuntimeFactory> CreateFaultPlanRuntimeFactory(
+        RenderRuntimeFaultPlan plan,
+        std::shared_ptr<RenderRuntimeFaultProbe> probe)
+    {
+        return std::make_unique<FaultPlanRuntimeFactory>(
+            plan, std::move(probe));
+    }
+
+    FakeRenderMonotonicClock::FakeRenderMonotonicClock()
+        : m_ticks(std::chrono::steady_clock::now()
+                      .time_since_epoch()
+                      .count())
+    {
+    }
+
+    IRenderMonotonicClock::TimePoint
+        FakeRenderMonotonicClock::Now() const noexcept
+    {
+        return TimePoint(TimePoint::duration(
+            m_ticks.load(std::memory_order_acquire)));
+    }
+
+    void FakeRenderMonotonicClock::Advance(
+        std::chrono::milliseconds duration) noexcept
+    {
+        m_ticks.fetch_add(
+            std::chrono::duration_cast<TimePoint::duration>(duration).count(),
+            std::memory_order_acq_rel);
     }
 } // namespace RVX

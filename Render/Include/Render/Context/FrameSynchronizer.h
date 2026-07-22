@@ -56,7 +56,7 @@ namespace RVX
         /**
          * @brief Drain frame slots and release the shared tracker
          */
-        void Shutdown();
+        void Shutdown(bool waitForCompletion = true);
 
         /**
          * @brief Wait for a specific frame to complete

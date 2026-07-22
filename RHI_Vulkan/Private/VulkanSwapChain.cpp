@@ -287,6 +287,10 @@ namespace RVX
         else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
         {
             RVX_RHI_ERROR("Failed to acquire swapchain image: {}", VkResultToString(result));
+            m_device->ReportRuntimeFailure(
+                result,
+                RHIDeviceFaultOperation::SurfaceAcquire,
+                "Vulkan swap-chain image acquisition failed");
             return false;
         }
 
@@ -296,7 +300,17 @@ namespace RVX
             VkFence currentFrameFence = m_device->GetCurrentFrameFence();
             if (inFlightFence != VK_NULL_HANDLE && inFlightFence != currentFrameFence)
             {
-                VK_CHECK(vkWaitForFences(m_device->GetDevice(), 1, &inFlightFence, VK_TRUE, UINT64_MAX));
+                const VkResult waitResult = vkWaitForFences(
+                    m_device->GetDevice(), 1, &inFlightFence,
+                    VK_TRUE, UINT64_MAX);
+                if (waitResult != VK_SUCCESS)
+                {
+                    m_device->ReportRuntimeFailure(
+                        waitResult,
+                        RHIDeviceFaultOperation::FenceWait,
+                        "Vulkan swap-chain image fence wait failed");
+                    return false;
+                }
             }
             inFlightFence = currentFrameFence;
         }
@@ -330,6 +344,10 @@ namespace RVX
         else if (result != VK_SUCCESS)
         {
             RVX_RHI_ERROR("Failed to present: {}", VkResultToString(result));
+            m_device->ReportRuntimeFailure(
+                result,
+                RHIDeviceFaultOperation::Present,
+                "Vulkan queue present failed");
         }
 
         m_hasAcquiredImage = false;

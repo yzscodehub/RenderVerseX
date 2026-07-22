@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <memory>
+#include <string>
 
 namespace RVX
 {
@@ -21,6 +22,10 @@ namespace RVX
         [[nodiscard]] std::shared_ptr<const RenderDiagnosticsSnapshot>
             AcquireShared() const noexcept;
         [[nodiscard]] RenderDiagnosticsSnapshot GetSnapshot() const;
+        /** @brief Best-effort owned JSON artifact for fatal-process handoff. */
+        [[nodiscard]] static bool SaveArtifact(
+            const RenderDiagnosticsSnapshot& snapshot,
+            const std::string& path) noexcept;
 
     private:
         std::atomic<std::shared_ptr<const RenderDiagnosticsSnapshot>> m_snapshot;

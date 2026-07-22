@@ -116,8 +116,37 @@ namespace RVX
             return;
         }
 
-        // Swap buffers (this is where the actual present happens)
+        // Swap buffers (this is where the actual present happens).
+        static_cast<void>(glfwGetError(nullptr));
         glfwSwapBuffers(m_window);
+        const char* glfwDescription = nullptr;
+        const int glfwError = glfwGetError(&glfwDescription);
+        if (glfwError != GLFW_NO_ERROR)
+        {
+            m_device->ReportRuntimeFailure(
+                static_cast<uint32>(glfwError),
+                RHIDeviceRuntimeStatus::FatalError,
+                RHIDeviceFaultOperation::Present,
+                glfwDescription != nullptr
+                    ? glfwDescription
+                    : "GLFW buffer swap failed");
+            return;
+        }
+
+        const GLenum glError = glGetError();
+#if defined(GL_CONTEXT_LOST)
+        if (glError == GL_CONTEXT_LOST)
+        {
+            m_device->ReportRuntimeFailure(
+                static_cast<uint32>(glError),
+                RHIDeviceRuntimeStatus::DeviceLost,
+                RHIDeviceFaultOperation::Context,
+                "OpenGL context was lost during present");
+            return;
+        }
+#else
+        static_cast<void>(glError);
+#endif
 
         // Advance to next buffer (for tracking purposes)
         m_currentBufferIndex = (m_currentBufferIndex + 1) % m_bufferCount;

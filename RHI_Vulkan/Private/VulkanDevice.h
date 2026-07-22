@@ -2,7 +2,9 @@
 
 #include "VulkanCommon.h"
 #include "RHI/RHIDevice.h"
+#include <atomic>
 #include <mutex>
+#include <string>
 #include <vector>
 
 namespace RVX
@@ -59,6 +61,8 @@ namespace RVX
 
         const RHICapabilities& GetCapabilities() const override { return m_capabilities; }
         RHIBackendType GetBackendType() const override { return RHIBackendType::Vulkan; }
+        RHIDeviceRuntimeStatus QueryRuntimeStatus() const noexcept override;
+        RHIDeviceFault GetLastDeviceFault() const override;
 
         // Upload Resources
         RHIStagingBufferRef CreateStagingBuffer(const RHIStagingBufferDesc& desc) override;
@@ -96,6 +100,9 @@ namespace RVX
         VkFence GetCurrentFrameFence() const { return m_frameFences[m_currentFrameIndex]; }
         std::mutex& GetSubmitMutex() { return m_submitMutex; }
         void EnqueueDeferredSemaphoreDestroy(std::vector<VkSemaphore> semaphores, VkQueue signalQueue);
+        void ReportRuntimeFailure(VkResult result,
+                                  RHIDeviceFaultOperation operation,
+                                  const char* message) noexcept;
 
         void SetPrimarySwapChain(VulkanSwapChain* swapChain) { m_primarySwapChain = swapChain; }
         VulkanSwapChain* GetPrimarySwapChain() const { return m_primarySwapChain; }
@@ -136,6 +143,7 @@ namespace RVX
         QueueFamilyIndices FindQueueFamilies(VkPhysicalDevice device);
         bool CheckDeviceExtensionSupport(VkPhysicalDevice device);
         void QueryDeviceCapabilities();
+        [[nodiscard]] std::string CaptureDeviceFaultDescription() const;
 
         // Vulkan objects
         VkInstance m_instance = VK_NULL_HANDLE;
@@ -170,6 +178,16 @@ namespace RVX
         // State
         RHICapabilities m_capabilities;
         bool m_validationEnabled = false;
+        std::atomic<RHIDeviceRuntimeStatus> m_runtimeStatus{
+            RHIDeviceRuntimeStatus::Ready};
+        std::atomic<bool> m_faultClaimed{false};
+        std::atomic<uint32> m_lastFaultNativeError{0};
+        std::atomic<RHIDeviceFaultOperation> m_lastFaultOperation{
+            RHIDeviceFaultOperation::None};
+        std::atomic<uint64> m_faultSequence{0};
+        mutable std::mutex m_deviceFaultMutex;
+        std::string m_deviceFaultMessage;
+        bool m_deviceFaultEnabled = false;
 
         // Thread safety
         std::mutex m_submitMutex;

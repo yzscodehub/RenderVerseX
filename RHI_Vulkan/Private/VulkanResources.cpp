@@ -534,7 +534,16 @@ namespace RVX
     uint64 VulkanFence::GetCompletedValue() const
     {
         uint64 value = 0;
-        VK_CHECK(vkGetSemaphoreCounterValue(m_device->GetDevice(), m_semaphore, &value));
+        const VkResult result = vkGetSemaphoreCounterValue(
+            m_device->GetDevice(), m_semaphore, &value);
+        if (result != VK_SUCCESS)
+        {
+            m_device->ReportRuntimeFailure(
+                result,
+                RHIDeviceFaultOperation::FencePoll,
+                "Vulkan timeline semaphore poll failed");
+            return 0;
+        }
         return value;
     }
 
@@ -545,7 +554,15 @@ namespace RVX
         VkSemaphoreSignalInfo signalInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO};
         signalInfo.semaphore = m_semaphore;
         signalInfo.value = value;
-        VK_CHECK(vkSignalSemaphore(m_device->GetDevice(), &signalInfo));
+        const VkResult result =
+            vkSignalSemaphore(m_device->GetDevice(), &signalInfo);
+        if (result != VK_SUCCESS)
+        {
+            m_device->ReportRuntimeFailure(
+                result,
+                RHIDeviceFaultOperation::CommandSubmission,
+                "Vulkan host timeline signal failed");
+        }
     }
 
     void VulkanFence::SignalOnQueue(uint64 value, RHICommandQueueType queueType)
@@ -572,7 +589,15 @@ namespace RVX
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = &m_semaphore;
 
-        VK_CHECK(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
+        const VkResult result =
+            vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+        if (result != VK_SUCCESS)
+        {
+            m_device->ReportRuntimeFailure(
+                result,
+                RHIDeviceFaultOperation::CommandSubmission,
+                "Vulkan queue timeline signal failed");
+        }
     }
 
     uint64 VulkanFence::AllocateSignalValue()
@@ -597,7 +622,15 @@ namespace RVX
         waitInfo.semaphoreCount = 1;
         waitInfo.pSemaphores = &m_semaphore;
         waitInfo.pValues = &value;
-        VK_CHECK(vkWaitSemaphores(m_device->GetDevice(), &waitInfo, timeoutNs));
+        const VkResult result = vkWaitSemaphores(
+            m_device->GetDevice(), &waitInfo, timeoutNs);
+        if (result != VK_SUCCESS && result != VK_TIMEOUT)
+        {
+            m_device->ReportRuntimeFailure(
+                result,
+                RHIDeviceFaultOperation::FenceWait,
+                "Vulkan timeline semaphore wait failed");
+        }
     }
 
     // =============================================================================

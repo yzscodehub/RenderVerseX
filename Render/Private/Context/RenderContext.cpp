@@ -71,20 +71,24 @@ bool RenderContext::Initialize(const RenderContextConfig& config,
     return true;
 }
 
-void RenderContext::Shutdown()
+void RenderContext::Shutdown(bool waitForIdle)
 {
     if (!m_initialized)
         return;
 
     RVX_CORE_DEBUG("RenderContext shutting down...");
 
-    // Wait for all GPU work to complete
-    WaitIdle();
+    if (waitForIdle)
+    {
+        WaitIdle();
+    }
 
     // Destroy resources in reverse order
     DestroyCommandContexts();
     m_swapChain.Reset();
-    m_frameSynchronizer.Shutdown();
+    // RenderContext already performed the normal wait above. Device-loss and
+    // timeout teardown deliberately skip all completion waits.
+    m_frameSynchronizer.Shutdown(false);
     m_device.reset();
 
     m_initialized = false;

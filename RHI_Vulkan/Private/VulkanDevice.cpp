@@ -8,9 +8,10 @@
 
 #include <GLFW/glfw3.h>
 
-#include <set>
 #include <algorithm>
 #include <cstdio>
+#include <set>
+#include <sstream>
 
 namespace RVX
 {
@@ -98,6 +99,9 @@ namespace RVX
     // =============================================================================
     VulkanDevice::VulkanDevice(const RHIDeviceDesc& desc)
     {
+        m_runtimeStatus.store(RHIDeviceRuntimeStatus::Ready,
+                              std::memory_order_release);
+        m_faultClaimed.store(false, std::memory_order_release);
         RVX_RHI_INFO("Initializing Vulkan Device...");
 
         m_validationEnabled = desc.enableDebugLayer;
@@ -170,6 +174,22 @@ namespace RVX
     VulkanDevice::~VulkanDevice()
     {
         WaitIdle();
+
+        // Device-lost teardown cannot submit another cleanup fence. Vulkan
+        // permits child-object destruction after loss, so release retained
+        // deferred semaphore batches directly before destroying the device.
+        for (DeferredSemaphoreDestroy& pending :
+             m_deferredSemaphoreDestroys)
+        {
+            for (VkSemaphore semaphore : pending.semaphores)
+            {
+                if (semaphore != VK_NULL_HANDLE)
+                    vkDestroySemaphore(m_device, semaphore, nullptr);
+            }
+            if (pending.fence != VK_NULL_HANDLE)
+                vkDestroyFence(m_device, pending.fence, nullptr);
+        }
+        m_deferredSemaphoreDestroys.clear();
 
         // Destroy sync objects
         for (uint32 i = 0; i < RVX_MAX_FRAME_COUNT; ++i)
@@ -525,10 +545,53 @@ namespace RVX
         VkPhysicalDeviceVulkan12Features vulkan12Features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
         VkPhysicalDeviceVulkan13Features vulkan13Features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
 
+        std::vector<const char*> enabledExtensions = s_deviceExtensions;
+#ifdef VK_EXT_device_fault
+        uint32 extensionCount = 0;
+        vkEnumerateDeviceExtensionProperties(
+            m_physicalDevice, nullptr, &extensionCount, nullptr);
+        std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+        vkEnumerateDeviceExtensionProperties(
+            m_physicalDevice,
+            nullptr,
+            &extensionCount,
+            availableExtensions.data());
+        const bool deviceFaultExtensionAvailable =
+            std::any_of(availableExtensions.begin(),
+                        availableExtensions.end(),
+                        [](const VkExtensionProperties& extension) {
+                            return std::strcmp(
+                                       extension.extensionName,
+                                       VK_EXT_DEVICE_FAULT_EXTENSION_NAME) == 0;
+                        });
+        VkPhysicalDeviceFaultFeaturesEXT deviceFaultFeatures = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+#endif
+
         features2.pNext = &vulkan12Features;
         vulkan12Features.pNext = &vulkan13Features;
+#ifdef VK_EXT_device_fault
+        if (deviceFaultExtensionAvailable)
+        {
+            vulkan13Features.pNext = &deviceFaultFeatures;
+        }
+#endif
 
         vkGetPhysicalDeviceFeatures2(m_physicalDevice, &features2);
+
+#ifdef VK_EXT_device_fault
+        m_deviceFaultEnabled =
+            deviceFaultExtensionAvailable &&
+            deviceFaultFeatures.deviceFault == VK_TRUE;
+        if (m_deviceFaultEnabled)
+        {
+            enabledExtensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+        }
+        else
+        {
+            vulkan13Features.pNext = nullptr;
+        }
+#endif
 
         // Enable specific features
         features2.features.samplerAnisotropy = VK_TRUE;
@@ -548,8 +611,8 @@ namespace RVX
         createInfo.pNext = &features2;
         createInfo.queueCreateInfoCount = static_cast<uint32>(queueCreateInfos.size());
         createInfo.pQueueCreateInfos = queueCreateInfos.data();
-        createInfo.enabledExtensionCount = static_cast<uint32>(s_deviceExtensions.size());
-        createInfo.ppEnabledExtensionNames = s_deviceExtensions.data();
+        createInfo.enabledExtensionCount = static_cast<uint32>(enabledExtensions.size());
+        createInfo.ppEnabledExtensionNames = enabledExtensions.data();
 
         if (m_validationEnabled)
         {
@@ -999,14 +1062,39 @@ namespace RVX
     // =============================================================================
     void VulkanDevice::BeginFrame()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         // Wait for the frame's fence before reusing resources
-        VK_CHECK(vkWaitForFences(m_device, 1, &m_frameFences[m_currentFrameIndex], VK_TRUE, UINT64_MAX));
-        VK_CHECK(vkResetFences(m_device, 1, &m_frameFences[m_currentFrameIndex]));
+        VkResult result = vkWaitForFences(
+            m_device, 1, &m_frameFences[m_currentFrameIndex],
+            VK_TRUE, UINT64_MAX);
+        if (result != VK_SUCCESS)
+        {
+            ReportRuntimeFailure(result,
+                                 RHIDeviceFaultOperation::FenceWait,
+                                 "Vulkan frame fence wait failed");
+            return;
+        }
+        result = vkResetFences(
+            m_device, 1, &m_frameFences[m_currentFrameIndex]);
+        if (result != VK_SUCCESS)
+        {
+            ReportRuntimeFailure(result,
+                                 RHIDeviceFaultOperation::FenceWait,
+                                 "Vulkan frame fence reset failed");
+            return;
+        }
         ProcessDeferredSemaphoreDestroys(false);
     }
 
     void VulkanDevice::EndFrame()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         m_currentFrameIndex = (m_currentFrameIndex + 1) % RVX_MAX_FRAME_COUNT;
     }
 
@@ -1025,17 +1113,177 @@ namespace RVX
 
     void VulkanDevice::WaitIdle()
     {
-        if (m_device)
+        if (m_device &&
+            QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready)
         {
-            vkDeviceWaitIdle(m_device);
+            const VkResult result = vkDeviceWaitIdle(m_device);
+            if (result != VK_SUCCESS)
+            {
+                ReportRuntimeFailure(result,
+                                     RHIDeviceFaultOperation::Shutdown,
+                                     "Vulkan device idle wait failed");
+                return;
+            }
             ProcessDeferredSemaphoreDestroys(true);
         }
+    }
+
+    RHIDeviceRuntimeStatus VulkanDevice::QueryRuntimeStatus() const noexcept
+    {
+        return m_runtimeStatus.load(std::memory_order_acquire);
+    }
+
+    RHIDeviceFault VulkanDevice::GetLastDeviceFault() const
+    {
+        RHIDeviceFault fault;
+        fault.status = QueryRuntimeStatus();
+        fault.operation =
+            m_lastFaultOperation.load(std::memory_order_acquire);
+        fault.backend = RHIBackendType::Vulkan;
+        fault.nativeError =
+            m_lastFaultNativeError.load(std::memory_order_acquire);
+        fault.sequence = m_faultSequence.load(std::memory_order_acquire);
+        {
+            std::lock_guard lock(m_deviceFaultMutex);
+            fault.message = m_deviceFaultMessage;
+        }
+        return fault;
+    }
+
+    void VulkanDevice::ReportRuntimeFailure(
+        VkResult result,
+        RHIDeviceFaultOperation operation,
+        const char* message) noexcept
+    {
+        const RHIDeviceRuntimeStatus terminalStatus =
+            result == VK_ERROR_DEVICE_LOST
+                ? RHIDeviceRuntimeStatus::DeviceLost
+                : RHIDeviceRuntimeStatus::FatalError;
+        bool expected = false;
+        if (!m_faultClaimed.compare_exchange_strong(
+                expected, true, std::memory_order_acq_rel))
+        {
+            return;
+        }
+        m_lastFaultNativeError.store(static_cast<uint32>(result),
+                                     std::memory_order_release);
+        m_lastFaultOperation.store(operation, std::memory_order_release);
+        m_faultSequence.store(1, std::memory_order_release);
+        try
+        {
+            const std::string deviceFault =
+                terminalStatus == RHIDeviceRuntimeStatus::DeviceLost
+                    ? CaptureDeviceFaultDescription()
+                    : std::string{};
+            {
+                std::lock_guard lock(m_deviceFaultMutex);
+                m_deviceFaultMessage = message != nullptr
+                                           ? message
+                                           : "Vulkan device reported a terminal runtime failure";
+                m_deviceFaultMessage += ": ";
+                m_deviceFaultMessage += VkResultToString(result);
+                if (!deviceFault.empty())
+                {
+                    m_deviceFaultMessage += " | ";
+                    m_deviceFaultMessage += deviceFault;
+                }
+            }
+        }
+        catch (...)
+        {
+            // Failure publication must remain noexcept even if optional
+            // diagnostics cannot be captured or stored.
+        }
+        m_runtimeStatus.store(terminalStatus, std::memory_order_release);
+        try
+        {
+            RVX_RHI_ERROR("{}: {}",
+                          message != nullptr ? message : "Vulkan runtime failure",
+                          VkResultToString(result));
+        }
+        catch (...)
+        {
+            // Logging is best effort on a terminal device-failure path.
+        }
+    }
+
+    std::string VulkanDevice::CaptureDeviceFaultDescription() const
+    {
+#ifdef VK_EXT_device_fault
+        if (!m_deviceFaultEnabled || m_device == VK_NULL_HANDLE)
+        {
+            return {};
+        }
+        const auto getDeviceFaultInfo =
+            reinterpret_cast<PFN_vkGetDeviceFaultInfoEXT>(
+                vkGetDeviceProcAddr(m_device, "vkGetDeviceFaultInfoEXT"));
+        if (getDeviceFaultInfo == nullptr)
+        {
+            return {};
+        }
+
+        VkDeviceFaultCountsEXT counts = {
+            VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
+        if (getDeviceFaultInfo(m_device, &counts, nullptr) != VK_SUCCESS)
+        {
+            return {};
+        }
+
+        std::vector<VkDeviceFaultAddressInfoEXT> addresses(
+            counts.addressInfoCount);
+        std::vector<VkDeviceFaultVendorInfoEXT> vendorInfos(
+            counts.vendorInfoCount);
+        std::vector<uint8> vendorBinary(counts.vendorBinarySize);
+        VkDeviceFaultInfoEXT info = {
+            VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT};
+        info.pAddressInfos = addresses.data();
+        info.pVendorInfos = vendorInfos.data();
+        info.pVendorBinaryData = vendorBinary.data();
+        if (getDeviceFaultInfo(m_device, &counts, &info) != VK_SUCCESS)
+        {
+            return {};
+        }
+
+        std::ostringstream stream;
+        stream << "VK_EXT_device_fault description='" << info.description
+               << "', addresses=" << counts.addressInfoCount
+               << ", vendorRecords=" << counts.vendorInfoCount
+               << ", vendorBinaryBytes=" << counts.vendorBinarySize;
+        return stream.str();
+#else
+        return {};
+#endif
     }
 
     void VulkanDevice::EnqueueDeferredSemaphoreDestroy(std::vector<VkSemaphore> semaphores, VkQueue signalQueue)
     {
         if (semaphores.empty())
             return;
+
+        const RHIDeviceRuntimeStatus runtimeStatus = QueryRuntimeStatus();
+        if (runtimeStatus == RHIDeviceRuntimeStatus::DeviceLost)
+        {
+            for (VkSemaphore semaphore : semaphores)
+            {
+                if (semaphore != VK_NULL_HANDLE)
+                    vkDestroySemaphore(m_device, semaphore, nullptr);
+            }
+            return;
+        }
+
+        if (runtimeStatus == RHIDeviceRuntimeStatus::FatalError)
+        {
+            if (signalQueue != VK_NULL_HANDLE)
+            {
+                static_cast<void>(vkQueueWaitIdle(signalQueue));
+            }
+            for (VkSemaphore semaphore : semaphores)
+            {
+                if (semaphore != VK_NULL_HANDLE)
+                    vkDestroySemaphore(m_device, semaphore, nullptr);
+            }
+            return;
+        }
 
         if (!signalQueue)
         {
@@ -1054,6 +1302,19 @@ namespace RVX
         if (result != VK_SUCCESS)
         {
             RVX_RHI_ERROR("Failed to create deferred semaphore destroy fence: {}", static_cast<int>(result));
+            ReportRuntimeFailure(
+                result,
+                RHIDeviceFaultOperation::CommandSubmission,
+                "Vulkan deferred semaphore fence creation failed");
+            if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+            {
+                for (VkSemaphore semaphore : semaphores)
+                {
+                    if (semaphore != VK_NULL_HANDLE)
+                        vkDestroySemaphore(m_device, semaphore, nullptr);
+                }
+                return;
+            }
             vkQueueWaitIdle(signalQueue);
             for (VkSemaphore semaphore : semaphores)
             {
@@ -1068,8 +1329,13 @@ namespace RVX
         if (result != VK_SUCCESS)
         {
             RVX_RHI_ERROR("Failed to queue deferred semaphore destroy fence: {}", static_cast<int>(result));
+            ReportRuntimeFailure(
+                result,
+                RHIDeviceFaultOperation::CommandSubmission,
+                "Vulkan deferred semaphore submission failed");
             vkDestroyFence(m_device, fence, nullptr);
-            vkQueueWaitIdle(signalQueue);
+            if (QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready)
+                vkQueueWaitIdle(signalQueue);
             for (VkSemaphore semaphore : semaphores)
             {
                 if (semaphore != VK_NULL_HANDLE)
@@ -1099,6 +1365,10 @@ namespace RVX
             if (status != VK_SUCCESS)
             {
                 RVX_RHI_WARN("Deferred semaphore destroy fence returned status {}", static_cast<int>(status));
+                ReportRuntimeFailure(
+                    status,
+                    RHIDeviceFaultOperation::FencePoll,
+                    "Vulkan deferred semaphore fence poll failed");
             }
 
             for (VkSemaphore semaphore : it->semaphores)

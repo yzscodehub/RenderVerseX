@@ -88,7 +88,7 @@ namespace RVX
         /**
          * @brief Shutdown and release all resources
          */
-        void Shutdown();
+        void Shutdown(bool waitForIdle = true);
 
         /**
          * @brief Check if the context is initialized

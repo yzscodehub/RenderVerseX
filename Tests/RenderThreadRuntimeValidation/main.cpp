@@ -13,6 +13,8 @@
 #include <array>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <thread>
@@ -39,7 +41,7 @@ namespace RVX
         RenderReleaseQueue& queue =
             runtime.m_resourceGateway->m_releaseQueue;
         std::lock_guard lock(queue.m_mutex);
-        queue.m_count = queue.m_usableCapacity;
+        queue.m_forceNextPublicationFailureForTest = true;
     }
 
 namespace
@@ -970,6 +972,13 @@ namespace
 
         const bool waitWindowEntered =
             waitHook->WaitUntilEntered(RVX_TEST_TIMEOUT);
+        if (!waitWindowEntered)
+        {
+            waitHook->Release();
+            EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+            FAIL() << "Render thread did not enter the guarded wait window";
+            return;
+        }
         RenderFramePublishResult publishResult;
         CompletionSignal publicationComplete;
         std::thread publisher([&]() {
@@ -978,14 +987,21 @@ namespace
         });
         const bool mutationEntered =
             publicationHook->WaitUntilEntered(RVX_TEST_TIMEOUT);
+        if (!mutationEntered)
+        {
+            publicationHook->Release();
+            waitHook->Release();
+            publisher.join();
+            EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+            FAIL() << "Publisher did not enter the guarded mutation window";
+            return;
+        }
         publicationHook->Release();
         const bool completedBeforeWaitRelease =
             publicationComplete.Wait(100ms);
         waitHook->Release();
         publisher.join();
 
-        ASSERT_TRUE(waitWindowEntered);
-        ASSERT_TRUE(mutationEntered);
         EXPECT_FALSE(completedBeforeWaitRelease);
         EXPECT_EQ(publishResult.code, RenderFramePublishCode::Accepted);
         EXPECT_TRUE(probe->WaitForEventCount(RenderRuntimeTestEvent::Frame,
@@ -1124,7 +1140,7 @@ namespace
         EXPECT_EQ(runtime->TryEnqueueUpload(work.request).code,
                   RenderUploadEnqueueCode::ShuttingDown);
         work.request.reset();
-        EXPECT_FALSE(payload.expired());
+        EXPECT_TRUE(payload.expired());
         runtime.reset();
         EXPECT_TRUE(payload.expired());
     }
@@ -2504,13 +2520,13 @@ namespace
         stopper.join();
 
         EXPECT_EQ(shutdown.code, RenderShutdownCode::Completed);
-        EXPECT_TRUE(retainedAfterJoin);
+        EXPECT_FALSE(retainedAfterJoin);
         EXPECT_TRUE(queuedPayload.expired());
         EXPECT_EQ(joinProbe->GetCallCount(), 1U);
         EXPECT_EQ(joinProbe->GetLastCode(),
                   RenderExecutorJoinCode::Joined);
         EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Upload), 0U);
-        EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Release), 0U);
+        EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Release), 1U);
     }
 
     TEST(RenderThreadRuntimeValidation, StopPreemptsQueuedFrameAndSurfaceWork)
@@ -2547,6 +2563,313 @@ namespace
         EXPECT_EQ(shutdown.code, RenderShutdownCode::Completed);
         EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Frame), 1U);
         EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Surface), 0U);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         WatchdogDefaultsAndInjectedMonotonicClockAreStable)
+    {
+        const RenderRuntimeConfig defaults;
+        EXPECT_EQ(defaults.startupWatchdog, 60s);
+        EXPECT_EQ(defaults.shutdownWatchdog, 30s);
+
+        auto clock = std::make_shared<FakeRenderMonotonicClock>();
+        const IRenderMonotonicClock::TimePoint before = clock->Now();
+        clock->Advance(125ms);
+        EXPECT_EQ(clock->Now() - before, 125ms);
+
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->BlockStartup();
+        auto timeoutClock = std::make_shared<FakeRenderMonotonicClock>();
+        timeoutClock->Advance(-10ms);
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        config.startupWatchdog = 1ms;
+        config.shutdownWatchdog = 2s;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe),
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            timeoutClock);
+        std::thread startupRelease([probe]() {
+            if (probe->WaitForEventCount(RenderRuntimeTestEvent::Started,
+                                         1U,
+                                         500ms))
+            {
+                probe->ReleaseStartup();
+            }
+        });
+        EXPECT_EQ(runtime.Start().code, RenderRuntimeCode::StartupTimedOut);
+        startupRelease.join();
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         FatalDiagnosticsArtifactIsWrittenBeforeTerminationBoundary)
+    {
+        RenderDiagnosticsSnapshot snapshot;
+        snapshot.publicationSequence = 41U;
+        snapshot.lifecycle = RenderLifecycleState::Failed;
+        snapshot.backend = RHIBackendType::Vulkan;
+        snapshot.lastFailure.available = true;
+        snapshot.lastFailure.runtime.code = RenderRuntimeCode::DeviceLost;
+        snapshot.lastFailure.runtime.nativeError = 77U;
+        snapshot.lastFailure.context =
+            "device lost\nbefore \"join\"\\cleanup\t";
+
+        const std::filesystem::path path =
+            std::filesystem::temp_directory_path() /
+            "rvx_render_runtime_fatal_diagnostics_test.json";
+        ASSERT_TRUE(RenderDiagnosticsPublisher::SaveArtifact(
+            snapshot, path.string()));
+        std::ifstream file(path);
+        const std::string content((std::istreambuf_iterator<char>(file)),
+                                  std::istreambuf_iterator<char>());
+        EXPECT_NE(content.find("RenderRuntimeFatalDiagnostics"),
+                  std::string::npos);
+        EXPECT_NE(content.find(
+                      "device lost\\nbefore \\\"join\\\"\\\\cleanup\\t"),
+                  std::string::npos);
+        EXPECT_NE(content.find("\"runtimeNativeError\": 77"),
+                  std::string::npos);
+        std::error_code removeError;
+        std::filesystem::remove(path, removeError);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         RuntimeFactoryConstructsAndDestroysConsumerOnOwnerThread)
+    {
+        auto probe = std::make_shared<RenderRuntimeFaultProbe>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateFaultPlanRuntimeFactory({}, probe));
+
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+        EXPECT_EQ(probe->GetLiveObjectCount(), 0U);
+        EXPECT_EQ(probe->GetConstructionThread(),
+                  probe->GetDestructionThread());
+        EXPECT_NE(probe->GetConstructionThread(), std::this_thread::get_id());
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         StartupFaultMatrixIsTerminalSealedAndOwnerCleaned)
+    {
+        const std::array startupFaults = {
+            RenderRuntimeFaultPoint::FactoryCreation,
+            RenderRuntimeFaultPoint::DeviceCreation,
+            RenderRuntimeFaultPoint::SurfaceCreation,
+            RenderRuntimeFaultPoint::ContextCreation,
+            RenderRuntimeFaultPoint::RendererCreation,
+            RenderRuntimeFaultPoint::ResourceCreation,
+        };
+
+        for (RenderRuntimeFaultPoint point : startupFaults)
+        {
+            SCOPED_TRACE(static_cast<uint32>(point));
+            auto probe = std::make_shared<RenderRuntimeFaultProbe>();
+            RenderRuntimeConfig config;
+            config.backendType = RHIBackendType::DX11;
+            RenderThreadRuntime runtime(
+                config,
+                MakeSurface(),
+                RenderExecutorKind::Dedicated,
+                CreateDedicatedRenderExecutor(),
+                CreateFaultPlanRuntimeFactory(
+                    RenderRuntimeFaultPlan{point, 1U, 0x15000000U +
+                                                         static_cast<uint32>(point)},
+                    probe));
+
+            const RenderRuntimeResult start = runtime.Start();
+            EXPECT_EQ(start.lifecycle, RenderLifecycleState::Failed);
+            EXPECT_EQ(start.resultClass, RenderResultClass::RuntimeFatal);
+            EXPECT_EQ(runtime.TryPublishFrame(MakePacket(8800)).code,
+                      RenderFramePublishCode::ShuttingDown);
+            EXPECT_EQ(probe->GetLiveObjectCount(), 0U);
+            if (point != RenderRuntimeFaultPoint::FactoryCreation)
+            {
+                EXPECT_EQ(probe->GetConstructionThread(),
+                          probe->GetDestructionThread());
+            }
+        }
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         DeviceLossFaultMatrixUsesDistinctTeardownAndSealsPublication)
+    {
+        const std::array frameFaults = {
+            RenderRuntimeFaultPoint::Present,
+            RenderRuntimeFaultPoint::DeviceLossBeforeSubmission,
+            RenderRuntimeFaultPoint::DeviceLossInFlight,
+        };
+
+        for (RenderRuntimeFaultPoint point : frameFaults)
+        {
+            SCOPED_TRACE(static_cast<uint32>(point));
+            auto probe = std::make_shared<RenderRuntimeFaultProbe>();
+            RenderRuntimeConfig config;
+            config.backendType = RHIBackendType::DX11;
+            RenderThreadRuntime runtime(
+                config,
+                MakeSurface(),
+                RenderExecutorKind::Dedicated,
+                CreateDedicatedRenderExecutor(),
+                CreateFaultPlanRuntimeFactory(
+                    RenderRuntimeFaultPlan{point, 1U, 0xD1500000U +
+                                                         static_cast<uint32>(point)},
+                    probe));
+            ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+            ASSERT_EQ(runtime.TryPublishFrame(MakePacket(8900)).code,
+                      RenderFramePublishCode::Accepted);
+            ASSERT_TRUE(WaitForRuntimeLifecycle(
+                runtime, RenderLifecycleState::Failed));
+            EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                      RenderRuntimeCode::DeviceLost);
+            EXPECT_EQ(runtime.GetLastRuntimeResult().terminalCause,
+                      RenderTerminalCause::DeviceLost);
+            EXPECT_EQ(probe->GetShutdownMode(),
+                      RenderTeardownMode::DeviceLostTeardown);
+            EXPECT_EQ(runtime.TryPublishFrame(MakePacket(8901)).code,
+                      RenderFramePublishCode::ShuttingDown);
+            static_cast<void>(runtime.Stop());
+            EXPECT_EQ(probe->GetLiveObjectCount(), 0U);
+        }
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         FrameExceptionAndShutdownDeviceLossDoNotEscapeOwnerThread)
+    {
+        {
+            auto probe = std::make_shared<RenderRuntimeFaultProbe>();
+            RenderRuntimeConfig config;
+            config.backendType = RHIBackendType::DX11;
+            RenderThreadRuntime runtime(
+                config,
+                MakeSurface(),
+                RenderExecutorKind::Dedicated,
+                CreateDedicatedRenderExecutor(),
+                CreateFaultPlanRuntimeFactory(
+                    RenderRuntimeFaultPlan{
+                        RenderRuntimeFaultPoint::FrameException},
+                    probe));
+            ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+            ASSERT_EQ(runtime.TryPublishFrame(MakePacket(9000)).code,
+                      RenderFramePublishCode::Accepted);
+            ASSERT_TRUE(WaitForRuntimeLifecycle(
+                runtime, RenderLifecycleState::Failed));
+            EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                      RenderRuntimeCode::UnhandledException);
+            static_cast<void>(runtime.Stop());
+            EXPECT_EQ(probe->GetLiveObjectCount(), 0U);
+        }
+
+        {
+            auto probe = std::make_shared<RenderRuntimeFaultProbe>();
+            RenderRuntimeConfig config;
+            config.backendType = RHIBackendType::DX11;
+            RenderThreadRuntime runtime(
+                config,
+                MakeSurface(),
+                RenderExecutorKind::Dedicated,
+                CreateDedicatedRenderExecutor(),
+                CreateFaultPlanRuntimeFactory(
+                    RenderRuntimeFaultPlan{
+                        RenderRuntimeFaultPoint::DeviceLossDuringShutdown},
+                    probe));
+            ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+            EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::DeviceLost);
+            EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                      RenderRuntimeCode::DeviceLost);
+            EXPECT_EQ(probe->GetLiveObjectCount(), 0U);
+        }
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         ResizeUploadAndCompletionFaultsConvergeToDeviceLoss)
+    {
+        {
+            auto probe = std::make_shared<RenderRuntimeFaultProbe>();
+            RenderRuntimeConfig config;
+            config.backendType = RHIBackendType::DX11;
+            RenderThreadRuntime runtime(
+                config,
+                MakeSurface(),
+                RenderExecutorKind::Dedicated,
+                CreateDedicatedRenderExecutor(),
+                CreateFaultPlanRuntimeFactory(
+                    RenderRuntimeFaultPlan{RenderRuntimeFaultPoint::Resize},
+                    probe));
+            ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+            ASSERT_EQ(runtime.RequestResize(MakeSurface(2, 96, 96)).code,
+                      RenderResizeCode::Accepted);
+            ASSERT_TRUE(WaitForRuntimeLifecycle(
+                runtime, RenderLifecycleState::Failed));
+            EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                      RenderRuntimeCode::DeviceLost);
+            static_cast<void>(runtime.Stop());
+            EXPECT_EQ(probe->GetLiveObjectCount(), 0U);
+        }
+
+        {
+            auto probe = std::make_shared<RenderRuntimeFaultProbe>();
+            RenderRuntimeConfig config;
+            config.backendType = RHIBackendType::DX11;
+            RenderThreadRuntime runtime(
+                config,
+                MakeSurface(),
+                RenderExecutorKind::Dedicated,
+                CreateDedicatedRenderExecutor(),
+                CreateFaultPlanRuntimeFactory(
+                    RenderRuntimeFaultPlan{
+                        RenderRuntimeFaultPoint::UploadSubmission},
+                    probe));
+            ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+            PendingGatewayWork work = PrepareGatewayWork(runtime, 9100);
+            ASSERT_EQ(runtime.TryEnqueueUpload(work.request).code,
+                      RenderUploadEnqueueCode::Accepted);
+            work.request.reset();
+            ASSERT_TRUE(WaitForRuntimeLifecycle(
+                runtime, RenderLifecycleState::Failed));
+            EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                      RenderRuntimeCode::DeviceLost);
+            static_cast<void>(runtime.Stop());
+            EXPECT_EQ(probe->GetLiveObjectCount(), 0U);
+        }
+
+        for (RenderRuntimeFaultPoint point : {
+                 RenderRuntimeFaultPoint::FencePoll,
+                 RenderRuntimeFaultPoint::FenceWait})
+        {
+            SCOPED_TRACE(static_cast<uint32>(point));
+            auto probe = std::make_shared<RenderRuntimeFaultProbe>();
+            RenderRuntimeConfig config;
+            config.backendType = RHIBackendType::DX11;
+            RenderThreadRuntime runtime(
+                config,
+                MakeSurface(),
+                RenderExecutorKind::Dedicated,
+                CreateDedicatedRenderExecutor(),
+                CreateFaultPlanRuntimeFactory(
+                    RenderRuntimeFaultPlan{point}, probe));
+            const RenderRuntimeResult start = runtime.Start();
+            EXPECT_TRUE(start.code == RenderRuntimeCode::Running ||
+                        start.code == RenderRuntimeCode::DeviceLost);
+            ASSERT_TRUE(WaitForRuntimeLifecycle(
+                runtime, RenderLifecycleState::Failed));
+            EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                      RenderRuntimeCode::DeviceLost);
+            static_cast<void>(runtime.Stop());
+            EXPECT_EQ(probe->GetLiveObjectCount(), 0U);
+        }
     }
 
     INSTANTIATE_TEST_SUITE_P(

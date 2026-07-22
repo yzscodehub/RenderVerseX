@@ -70,6 +70,9 @@ namespace RVX
             RenderResourceHandle handle) const noexcept override;
 
         void BeginShutdown() noexcept;
+        /** @brief Drop queued request ownership, then publish terminal cancellation. */
+        [[nodiscard]] uint32 CancelPendingUploadsOnRenderThread(
+            RenderResourceFailureCode failure) noexcept;
         [[nodiscard]] ResourceUploadRequestRef TryDequeueUpload() noexcept;
         [[nodiscard]] RenderResourceHandle TryDequeueRelease() noexcept;
         [[nodiscard]] RenderGatewayUploadEnqueueResult

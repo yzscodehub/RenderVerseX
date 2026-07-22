@@ -55,8 +55,10 @@ namespace
         bool publicationFailed = false;
         {
             std::lock_guard lock(m_mutex);
-            if (m_count == m_usableCapacity)
+            if (m_forceNextPublicationFailureForTest ||
+                m_count == m_usableCapacity)
             {
+                m_forceNextPublicationFailureForTest = false;
                 publicationFailed = true;
             }
             else

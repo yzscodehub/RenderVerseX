@@ -42,6 +42,8 @@ namespace RVX
 
         bool Initialize(IRHIDevice* device);
         void Shutdown();
+        /** @brief Preserve timeline values while making every active domain terminally lost. */
+        void MarkDeviceLost() noexcept;
 
         GPUCompletionPoint Submit(RHICommandContext* context);
 

@@ -798,6 +798,25 @@ namespace
         m_device = nullptr;
     }
 
+    void RenderUploadProcessor::ShutdownDeviceLost()
+    {
+        while (!m_inFlight.empty())
+        {
+            CompleteInFlight(m_inFlight.size() - 1U,
+                             GPUCompletionStatus::Lost);
+        }
+        while (!m_pendingReleases.empty())
+        {
+            CompleteRelease(m_pendingReleases.size() - 1U,
+                            GPUCompletionStatus::Lost);
+        }
+        m_stats = {};
+        m_submissionTracker = nullptr;
+        m_registry = nullptr;
+        m_statusTable = nullptr;
+        m_device = nullptr;
+    }
+
     RenderUploadProcessCode RenderUploadProcessor::ProcessUpload(
         ResourceUploadRequestRef request)
     {

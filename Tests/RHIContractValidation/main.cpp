@@ -1,6 +1,7 @@
 #include "RHI/RHICapabilities.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
+#include "RHI/RHIDeviceStatus.h"
 #include "RHI/RHINativeSurface.h"
 
 #include <gtest/gtest.h>
@@ -14,6 +15,12 @@
 
 namespace RVX::Tests
 {
+    static_assert(static_cast<uint8>(RHIDeviceRuntimeStatus::Ready) == 0);
+    static_assert(static_cast<uint8>(RHIDeviceRuntimeStatus::DeviceLost) == 1);
+    static_assert(static_cast<uint8>(RHIDeviceRuntimeStatus::FatalError) == 2);
+    static_assert(static_cast<uint8>(RHIDeviceFaultOperation::None) == 0);
+    static_assert(static_cast<uint8>(RHIDeviceFaultOperation::Shutdown) == 10);
+
     namespace
     {
         class FakeRHIDevice final : public IRHIDevice
@@ -200,6 +207,26 @@ namespace RVX::Tests
         surface = MakeSurface(NativeSurfacePlatform::GLFW);
         surface.backendWindow = 0;
         EXPECT_FALSE(surface.IsValidFor(RHIBackendType::OpenGL));
+    }
+
+    TEST(RHIContractValidation, DeviceRuntimeFaultContractIsOwnedAndStable)
+    {
+        RHIDeviceFault fault;
+        EXPECT_EQ(fault.status, RHIDeviceRuntimeStatus::Ready);
+        EXPECT_EQ(fault.operation, RHIDeviceFaultOperation::None);
+        EXPECT_FALSE(fault.IsFailure());
+        EXPECT_FALSE(fault.IsDeviceLost());
+
+        fault.status = RHIDeviceRuntimeStatus::DeviceLost;
+        fault.operation = RHIDeviceFaultOperation::Present;
+        fault.backend = RHIBackendType::Vulkan;
+        fault.nativeError = 17U;
+        fault.sequence = 3U;
+        fault.message = "owned fault evidence";
+        EXPECT_TRUE(fault.IsFailure());
+        EXPECT_TRUE(fault.IsDeviceLost());
+        EXPECT_TRUE(IsDeclaredRHIDeviceRuntimeStatus(fault.status));
+        EXPECT_TRUE(IsDeclaredRHIDeviceFaultOperation(fault.operation));
     }
 
     TEST(RHIContractValidation, NativeSurfaceRejectsInvalidValueFields)

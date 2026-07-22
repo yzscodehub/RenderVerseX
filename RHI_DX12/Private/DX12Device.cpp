@@ -209,6 +209,17 @@ namespace RVX
     // =============================================================================
     bool DX12Device::Initialize(const RHIDeviceDesc& desc)
     {
+        m_deviceLost.store(false, std::memory_order_release);
+        m_runtimeStatus.store(RHIDeviceRuntimeStatus::Ready,
+                              std::memory_order_release);
+        m_lastFaultNativeError.store(0, std::memory_order_release);
+        m_lastFaultOperation.store(RHIDeviceFaultOperation::None,
+                                   std::memory_order_release);
+        m_faultSequence.store(0, std::memory_order_release);
+        {
+            std::lock_guard lock(m_deviceFaultMutex);
+            m_deviceFaultMessage.clear();
+        }
         RVX_RHI_INFO("Initializing DX12 Device...");
 
         if (desc.enableDebugLayer)
@@ -330,7 +341,53 @@ namespace RVX
         return S_OK;
     }
 
-    void DX12Device::HandleDeviceLost(HRESULT reason)
+    RHIDeviceRuntimeStatus DX12Device::QueryRuntimeStatus() const noexcept
+    {
+        const RHIDeviceRuntimeStatus published =
+            m_runtimeStatus.load(std::memory_order_acquire);
+        if (published != RHIDeviceRuntimeStatus::Ready)
+        {
+            return published;
+        }
+        if (m_device)
+        {
+            const HRESULT reason = m_device->GetDeviceRemovedReason();
+            if (FAILED(reason))
+            {
+                const_cast<DX12Device*>(this)->HandleDeviceLost(
+                    reason,
+                    RHIDeviceFaultOperation::Context);
+                return m_runtimeStatus.load(std::memory_order_acquire);
+            }
+        }
+        return RHIDeviceRuntimeStatus::Ready;
+    }
+
+    RHIDeviceFault DX12Device::GetLastDeviceFault() const
+    {
+        RHIDeviceFault fault;
+        fault.status = QueryRuntimeStatus();
+        fault.operation =
+            m_lastFaultOperation.load(std::memory_order_acquire);
+        fault.backend = RHIBackendType::DX12;
+        fault.nativeError =
+            m_lastFaultNativeError.load(std::memory_order_acquire);
+        fault.sequence = m_faultSequence.load(std::memory_order_acquire);
+        {
+            std::lock_guard lock(m_deviceFaultMutex);
+            fault.message = m_deviceFaultMessage;
+        }
+        if (fault.IsFailure() && fault.nativeError == 0 && m_device)
+        {
+            fault.nativeError = static_cast<uint32>(
+                m_device->GetDeviceRemovedReason());
+        }
+        return fault;
+    }
+
+    void DX12Device::HandleDeviceLost(
+        HRESULT reason,
+        RHIDeviceFaultOperation operation) noexcept
     {
         // Prevent multiple notifications
         bool expected = false;
@@ -339,48 +396,82 @@ namespace RVX
             return; // Already handled
         }
 
-        RVX_RHI_ERROR("=== Device Lost Detected ===");
-        RVX_RHI_ERROR("Reason HRESULT: 0x{:08X}", static_cast<uint32>(reason));
-
         // Get detailed reason if available
+        HRESULT effectiveReason = reason;
         if (m_device)
         {
-            HRESULT removedReason = m_device->GetDeviceRemovedReason();
-            RVX_RHI_ERROR("Device Removed Reason: 0x{:08X}", static_cast<uint32>(removedReason));
-
-            switch (removedReason)
+            const HRESULT removedReason = m_device->GetDeviceRemovedReason();
+            if (FAILED(removedReason))
             {
-                case DXGI_ERROR_DEVICE_HUNG:
-                    RVX_RHI_ERROR("  -> DXGI_ERROR_DEVICE_HUNG: GPU took too long to execute commands");
-                    break;
-                case DXGI_ERROR_DEVICE_REMOVED:
-                    RVX_RHI_ERROR("  -> DXGI_ERROR_DEVICE_REMOVED: GPU was physically removed or driver update");
-                    break;
-                case DXGI_ERROR_DEVICE_RESET:
-                    RVX_RHI_ERROR("  -> DXGI_ERROR_DEVICE_RESET: GPU reset due to bad commands");
-                    break;
-                case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
-                    RVX_RHI_ERROR("  -> DXGI_ERROR_DRIVER_INTERNAL_ERROR: Driver encountered internal error");
-                    break;
-                case DXGI_ERROR_INVALID_CALL:
-                    RVX_RHI_ERROR("  -> DXGI_ERROR_INVALID_CALL: Invalid API usage");
-                    break;
-                case S_OK:
-                    RVX_RHI_ERROR("  -> S_OK: Device is still valid (unexpected)");
-                    break;
-                default:
-                    RVX_RHI_ERROR("  -> Unknown reason code");
-                    break;
+                effectiveReason = removedReason;
             }
         }
 
-        // Log DRED info if available
-        LogDREDInfo();
+        m_lastFaultNativeError.store(static_cast<uint32>(effectiveReason),
+                                     std::memory_order_release);
+        m_lastFaultOperation.store(operation, std::memory_order_release);
+        m_faultSequence.store(1, std::memory_order_release);
+        try
+        {
+            std::lock_guard lock(m_deviceFaultMutex);
+            m_deviceFaultMessage =
+                "DX12 device removed; DRED breadcrumbs and page-fault data were captured in the RHI log";
+        }
+        catch (...)
+        {
+            // Numeric evidence remains authoritative if diagnostic allocation
+            // fails while publishing a terminal device state.
+        }
+        m_runtimeStatus.store(RHIDeviceRuntimeStatus::DeviceLost,
+                              std::memory_order_release);
+
+        try
+        {
+            RVX_RHI_ERROR("=== Device Lost Detected ===");
+            RVX_RHI_ERROR("Reason HRESULT: 0x{:08X}",
+                          static_cast<uint32>(reason));
+            RVX_RHI_ERROR("Device Removed Reason: 0x{:08X}",
+                          static_cast<uint32>(effectiveReason));
+            switch (effectiveReason)
+            {
+            case DXGI_ERROR_DEVICE_HUNG:
+                RVX_RHI_ERROR("  -> DXGI_ERROR_DEVICE_HUNG: GPU execution timed out");
+                break;
+            case DXGI_ERROR_DEVICE_REMOVED:
+                RVX_RHI_ERROR("  -> DXGI_ERROR_DEVICE_REMOVED: device or driver was removed");
+                break;
+            case DXGI_ERROR_DEVICE_RESET:
+                RVX_RHI_ERROR("  -> DXGI_ERROR_DEVICE_RESET: GPU reset after invalid work");
+                break;
+            case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
+                RVX_RHI_ERROR("  -> DXGI_ERROR_DRIVER_INTERNAL_ERROR: driver failure");
+                break;
+            case DXGI_ERROR_INVALID_CALL:
+                RVX_RHI_ERROR("  -> DXGI_ERROR_INVALID_CALL: invalid API usage");
+                break;
+            default:
+                RVX_RHI_ERROR("  -> Unclassified device-removal reason");
+                break;
+            }
+            LogDREDInfo();
+        }
+        catch (...)
+        {
+            // Logging and DRED capture are best effort after the owned fault
+            // value has been release-published.
+        }
 
         // Invoke user callback
         if (m_deviceLostCallback)
         {
-            m_deviceLostCallback(reason);
+            try
+            {
+                m_deviceLostCallback(effectiveReason);
+            }
+            catch (...)
+            {
+                // A diagnostic callback may not escape a backend failure path.
+            }
         }
     }
 
@@ -954,12 +1045,30 @@ namespace RVX
     // =============================================================================
     void DX12Device::BeginFrame()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         // Wait for the frame we're about to render to complete on GPU
         uint64 fenceValue = m_frameFenceValues[m_frameIndex];
         if (m_frameFence->GetCompletedValue() < fenceValue)
         {
-            m_frameFence->SetEventOnCompletion(fenceValue, m_fenceEvent);
-            WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE);
+            const HRESULT eventResult =
+                m_frameFence->SetEventOnCompletion(fenceValue, m_fenceEvent);
+            if (FAILED(eventResult))
+            {
+                HandleDeviceLost(eventResult,
+                                 RHIDeviceFaultOperation::FenceWait);
+                return;
+            }
+            const DWORD waitResult =
+                WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE);
+            if (waitResult == WAIT_FAILED)
+            {
+                HandleDeviceLost(HRESULT_FROM_WIN32(GetLastError()),
+                                 RHIDeviceFaultOperation::FenceWait);
+                return;
+            }
         }
 
         // Recycle completed command allocators
@@ -971,9 +1080,21 @@ namespace RVX
 
     void DX12Device::EndFrame()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         // Signal fence for this frame
         m_frameFenceValues[m_frameIndex] = m_frameFence->GetCompletedValue() + 1;
-        m_graphicsQueue->Signal(m_frameFence.Get(), m_frameFenceValues[m_frameIndex]);
+        const HRESULT signalResult =
+            m_graphicsQueue->Signal(m_frameFence.Get(),
+                                    m_frameFenceValues[m_frameIndex]);
+        if (FAILED(signalResult))
+        {
+            HandleDeviceLost(signalResult,
+                             RHIDeviceFaultOperation::CommandSubmission);
+            return;
+        }
 
         // Advance frame index
         m_frameIndex = (m_frameIndex + 1) % RVX_MAX_FRAME_COUNT;
@@ -981,20 +1102,48 @@ namespace RVX
 
     void DX12Device::WaitIdle()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         auto waitForQueue = [&](ID3D12CommandQueue* queue)
         {
-            if (!queue)
-                return;
+            if (!queue || QueryRuntimeStatus() !=
+                              RHIDeviceRuntimeStatus::Ready)
+                return false;
 
             uint64 fenceValue = m_frameFence->GetCompletedValue() + 1;
-            queue->Signal(m_frameFence.Get(), fenceValue);
-            m_frameFence->SetEventOnCompletion(fenceValue, m_fenceEvent);
-            WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE);
+            HRESULT result = queue->Signal(m_frameFence.Get(), fenceValue);
+            if (FAILED(result))
+            {
+                HandleDeviceLost(result,
+                                 RHIDeviceFaultOperation::Shutdown);
+                return false;
+            }
+            result = m_frameFence->SetEventOnCompletion(fenceValue,
+                                                        m_fenceEvent);
+            if (FAILED(result))
+            {
+                HandleDeviceLost(result,
+                                 RHIDeviceFaultOperation::FenceWait);
+                return false;
+            }
+            if (WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE) ==
+                WAIT_FAILED)
+            {
+                HandleDeviceLost(HRESULT_FROM_WIN32(GetLastError()),
+                                 RHIDeviceFaultOperation::FenceWait);
+                return false;
+            }
+            return true;
         };
 
-        waitForQueue(m_graphicsQueue.Get());
-        waitForQueue(m_computeQueue.Get());
-        waitForQueue(m_copyQueue.Get());
+        if (!waitForQueue(m_graphicsQueue.Get()) ||
+            !waitForQueue(m_computeQueue.Get()) ||
+            !waitForQueue(m_copyQueue.Get()))
+        {
+            return;
+        }
         m_allocatorPool.Tick();
     }
 

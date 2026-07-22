@@ -1005,6 +1005,11 @@ namespace RVX
     {
         EndCurrentEncoder();
 
+        const RHIDeviceFaultOperation operation =
+            m_presentationDrawable != nil
+                ? RHIDeviceFaultOperation::Present
+                : RHIDeviceFaultOperation::CommandSubmission;
+
         // Present drawable through command buffer for optimal scheduling
         // This allows Metal to schedule the present at the optimal time
         if (m_presentationDrawable)
@@ -1020,6 +1025,7 @@ namespace RVX
             submittedValue = metalFence->SignalFromCommandBuffer(m_commandBuffer);
         }
 
+        m_device->ObserveCommandBuffer(m_commandBuffer, operation);
         [m_commandBuffer commit];
         return submittedValue;
     }

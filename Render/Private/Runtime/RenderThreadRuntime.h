@@ -17,6 +17,7 @@
 #include "Runtime/RenderThreadGuard.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -64,8 +65,35 @@ namespace RenderRuntimeDetail
             const RenderFramePacket& packet) = 0;
         virtual void PollCompletion() = 0;
         virtual void RetireCompleted() = 0;
+        /** @brief Return the latest owned runtime-health snapshot. */
+        [[nodiscard]] virtual RenderRuntimeResult QueryRuntimeStatus() const
+        {
+            RenderRuntimeResult result;
+            result.code = RenderRuntimeCode::Running;
+            result.lifecycle = RenderLifecycleState::Running;
+            return result;
+        }
         virtual RenderShutdownResult Shutdown(
             RenderTeardownMode mode) noexcept = 0;
+    };
+
+    /** @brief Creates Render-owned runtime objects on the Render Thread. */
+    class IRenderRuntimeFactory
+    {
+    public:
+        virtual ~IRenderRuntimeFactory() = default;
+        [[nodiscard]] virtual std::unique_ptr<IRenderFrameConsumer>
+            CreateFrameConsumer() = 0;
+    };
+
+    /** @brief Injectable monotonic time source for watchdog decisions. */
+    class IRenderMonotonicClock
+    {
+    public:
+        using TimePoint = std::chrono::steady_clock::time_point;
+
+        virtual ~IRenderMonotonicClock() = default;
+        [[nodiscard]] virtual TimePoint Now() const noexcept = 0;
     };
 
     /** @brief Private lifecycle observation seam used around runtime publication. */
@@ -137,6 +165,23 @@ namespace RenderRuntimeDetail
                             std::shared_ptr<IRenderPublicationHook>
                                 publicationHook = nullptr,
                             std::shared_ptr<IRenderWaitHook> waitHook =
+                                nullptr,
+                            std::shared_ptr<IRenderMonotonicClock> clock =
+                                nullptr);
+        RenderThreadRuntime(RenderRuntimeConfig config,
+                            NativeSurfaceDesc surface,
+                            RenderExecutorKind executorKind,
+                            std::unique_ptr<IRenderExecutor> executor,
+                            std::unique_ptr<IRenderRuntimeFactory> factory,
+                            std::shared_ptr<IRenderRuntimeLifecycleHook>
+                                lifecycleHook = nullptr,
+                            std::shared_ptr<IRenderFatalPolicy> fatalPolicy =
+                                nullptr,
+                            std::shared_ptr<IRenderPublicationHook>
+                                publicationHook = nullptr,
+                            std::shared_ptr<IRenderWaitHook> waitHook =
+                                nullptr,
+                            std::shared_ptr<IRenderMonotonicClock> clock =
                                 nullptr);
         ~RenderThreadRuntime() override;
 
@@ -213,16 +258,22 @@ namespace RenderRuntimeDetail
         RenderPumpDecision FinishTimedOutStartupOnRenderThread();
         RenderPumpDecision StopOnRenderThread();
         RenderPumpDecision FailOnRenderThread(RenderRuntimeResult result);
+        [[nodiscard]] RenderRuntimeResult
+            QueryConsumerRuntimeStatusOnRenderThread() const;
+        void DiscardPendingWorkOnRenderThread(
+            RenderTeardownMode mode) noexcept;
 
         RenderRuntimeConfig m_config;
         NativeSurfaceDesc m_initialSurface;
         RenderExecutorKind m_executorKind = RenderExecutorKind::None;
         std::unique_ptr<IRenderExecutor> m_executor;
         std::unique_ptr<IRenderFrameConsumer> m_consumer;
+        std::unique_ptr<IRenderRuntimeFactory> m_factory;
         std::shared_ptr<IRenderRuntimeLifecycleHook> m_lifecycleHook;
         std::shared_ptr<IRenderFatalPolicy> m_fatalPolicy;
         std::shared_ptr<IRenderPublicationHook> m_publicationHook;
         std::shared_ptr<IRenderWaitHook> m_waitHook;
+        std::shared_ptr<IRenderMonotonicClock> m_clock;
         std::unique_ptr<RenderFrameMailbox> m_frameMailbox;
         std::unique_ptr<SurfaceControlMailbox> m_controlMailbox;
         std::unique_ptr<RenderResourceGateway> m_resourceGateway;

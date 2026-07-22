@@ -185,10 +185,26 @@ namespace RVX
         m_device = nullptr;
     }
 
+    void RenderSubmissionTracker::MarkDeviceLost() noexcept
+    {
+        for (DomainState& state : m_domains)
+        {
+            if (state.active)
+            {
+                state.lost = true;
+            }
+        }
+    }
+
     GPUCompletionPoint RenderSubmissionTracker::Submit(RHICommandContext* context)
     {
         if (!m_device || !context)
         {
+            return {};
+        }
+        if (m_device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            MarkDeviceLost();
             return {};
         }
 
@@ -239,6 +255,19 @@ namespace RVX
     {
         if (!IsDeclaredGPUQueueDomain(point.domain) || point.value == 0)
         {
+            return GPUCompletionStatus::Lost;
+        }
+
+        if (m_device == nullptr ||
+            m_device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            for (const DomainState& domainState : m_domains)
+            {
+                if (domainState.active)
+                {
+                    domainState.lost = true;
+                }
+            }
             return GPUCompletionStatus::Lost;
         }
 
@@ -318,6 +347,12 @@ namespace RVX
         if (m_topology.completionMode == RHIQueueCompletionMode::CompatibilityWaitIdle)
         {
             m_device->WaitIdle();
+            if (m_device->QueryRuntimeStatus() !=
+                RHIDeviceRuntimeStatus::Ready)
+            {
+                MarkDeviceLost();
+                return GPUCompletionStatus::Lost;
+            }
             for (DomainState& domainState : m_domains)
             {
                 if (domainState.active && !domainState.lost)
@@ -335,6 +370,11 @@ namespace RVX
         }
 
         state->fence->Wait(point.value);
+        if (m_device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            MarkDeviceLost();
+            return GPUCompletionStatus::Lost;
+        }
         return Query(point);
     }
 

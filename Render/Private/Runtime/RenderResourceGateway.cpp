@@ -142,6 +142,53 @@ namespace RVX
         m_shuttingDown.store(true, std::memory_order_release);
     }
 
+    uint32 RenderResourceGateway::CancelPendingUploadsOnRenderThread(
+        RenderResourceFailureCode failure) noexcept
+    {
+        uint32 cancelled = 0;
+        while (ResourceUploadRequestRef request = m_uploadQueue.TryDequeue())
+        {
+            const RenderResourceHandle handle = request->GetHandle();
+            request.reset();
+
+            const RenderResourceStatus queued = m_statusTable.Query(handle);
+            if (queued.code != RenderResourceStatusCode::Current ||
+                queued.state != RenderResourcePublicState::UploadQueued)
+            {
+                continue;
+            }
+            if (!m_statusTable.CompareExchange(
+                    handle,
+                    PackedRenderResourceStatus{
+                        handle.generation,
+                        RenderResourcePublicState::UploadQueued,
+                        queued.failure},
+                    PackedRenderResourceStatus{
+                        handle.generation,
+                        RenderResourcePublicState::Uploading,
+                        RenderResourceFailureCode::None},
+                    RenderStatusWriter::Render))
+            {
+                continue;
+            }
+            if (m_statusTable.CompareExchange(
+                    handle,
+                    PackedRenderResourceStatus{
+                        handle.generation,
+                        RenderResourcePublicState::Uploading,
+                        RenderResourceFailureCode::None},
+                    PackedRenderResourceStatus{
+                        handle.generation,
+                        RenderResourcePublicState::Failed,
+                        failure},
+                    RenderStatusWriter::Render))
+            {
+                ++cancelled;
+            }
+        }
+        return cancelled;
+    }
+
     ResourceUploadRequestRef RenderResourceGateway::TryDequeueUpload() noexcept
     {
         return m_uploadQueue.TryDequeue();

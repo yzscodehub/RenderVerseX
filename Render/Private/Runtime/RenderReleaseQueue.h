@@ -69,6 +69,7 @@ namespace RVX
         uint32 m_head = 0;
         uint32 m_count = 0;
         uint32 m_highWaterMark = 0;
+        bool m_forceNextPublicationFailureForTest = false;
         WakeFunction m_wakeFunction = nullptr;
         void* m_wakeContext = nullptr;
         RuntimeFatalFunction m_runtimeFatalFunction = nullptr;

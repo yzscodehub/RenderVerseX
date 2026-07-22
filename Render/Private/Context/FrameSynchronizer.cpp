@@ -47,9 +47,9 @@ bool FrameSynchronizer::Initialize(IRHIDevice* device, uint32_t frameCount)
     return true;
 }
 
-void FrameSynchronizer::Shutdown()
+void FrameSynchronizer::Shutdown(bool waitForCompletion)
 {
-    if (m_device)
+    if (m_device && waitForCompletion)
     {
         // Wait for all work to complete before destroying fences
         WaitForAllFrames();

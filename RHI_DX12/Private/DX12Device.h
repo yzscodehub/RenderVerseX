@@ -118,6 +118,8 @@ namespace RVX
         // Capabilities
         const RHICapabilities& GetCapabilities() const override { return m_capabilities; }
         RHIBackendType GetBackendType() const override { return RHIBackendType::DX12; }
+        RHIDeviceRuntimeStatus QueryRuntimeStatus() const noexcept override;
+        RHIDeviceFault GetLastDeviceFault() const override;
 
         // Upload Resources
         RHIStagingBufferRef CreateStagingBuffer(const RHIStagingBufferDesc& desc) override;
@@ -161,7 +163,10 @@ namespace RVX
         void SetDeviceLostCallback(DeviceLostCallback callback) { m_deviceLostCallback = std::move(callback); }
         bool IsDeviceLost() const { return m_deviceLost.load(std::memory_order_acquire); }
         HRESULT GetDeviceRemovedReason() const;
-        void HandleDeviceLost(HRESULT reason);
+        void HandleDeviceLost(
+            HRESULT reason,
+            RHIDeviceFaultOperation operation =
+                RHIDeviceFaultOperation::Present) noexcept;
 
         // =========================================================================
         // Root Signature Cache
@@ -223,6 +228,14 @@ namespace RVX
 
         // Device Lost Handling
         std::atomic<bool> m_deviceLost{false};
+        std::atomic<RHIDeviceRuntimeStatus> m_runtimeStatus{
+            RHIDeviceRuntimeStatus::Ready};
+        std::atomic<uint32> m_lastFaultNativeError{0};
+        std::atomic<RHIDeviceFaultOperation> m_lastFaultOperation{
+            RHIDeviceFaultOperation::None};
+        std::atomic<uint64> m_faultSequence{0};
+        mutable std::mutex m_deviceFaultMutex;
+        std::string m_deviceFaultMessage;
         DeviceLostCallback m_deviceLostCallback;
         void EnableDRED();  // Device Removed Extended Data
         void LogDREDInfo(); // Log DRED breadcrumbs and page fault info

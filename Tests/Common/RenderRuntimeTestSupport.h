@@ -188,4 +188,70 @@ namespace RVX
     std::unique_ptr<IRenderFrameConsumer>
         CreateRecordingRenderFrameConsumer(
             std::shared_ptr<RenderFrameConsumerTestProbe> probe);
+
+    enum class RenderRuntimeFaultPoint : uint8
+    {
+        None = 0,
+        FactoryCreation,
+        DeviceCreation,
+        SurfaceCreation,
+        ContextCreation,
+        RendererCreation,
+        ResourceCreation,
+        UploadSubmission,
+        FencePoll,
+        FenceWait,
+        Resize,
+        Present,
+        FrameException,
+        DeviceLossBeforeSubmission,
+        DeviceLossInFlight,
+        DeviceLossDuringShutdown,
+    };
+
+    struct RenderRuntimeFaultPlan
+    {
+        RenderRuntimeFaultPoint point = RenderRuntimeFaultPoint::None;
+        uint32 occurrence = 1;
+        uint32 nativeError = 0xD15EA5EDU;
+    };
+
+    /** @brief Lifetime and ownership observations for fault-matrix fixtures. */
+    class RenderRuntimeFaultProbe final : public NonMovable
+    {
+    public:
+        void RecordConstruction();
+        void RecordDestruction();
+        void RecordShutdown(RenderTeardownMode mode);
+        [[nodiscard]] uint32 GetLiveObjectCount() const noexcept;
+        [[nodiscard]] std::thread::id GetConstructionThread() const;
+        [[nodiscard]] std::thread::id GetDestructionThread() const;
+        [[nodiscard]] RenderTeardownMode GetShutdownMode() const noexcept;
+
+    private:
+        mutable std::mutex m_mutex;
+        std::atomic<uint32> m_liveObjectCount = 0;
+        std::atomic<RenderTeardownMode> m_shutdownMode =
+            RenderTeardownMode::None;
+        std::thread::id m_constructionThread{};
+        std::thread::id m_destructionThread{};
+    };
+
+    /** @brief Create a fault-injecting consumer on the executor owner thread. */
+    std::unique_ptr<IRenderRuntimeFactory> CreateFaultPlanRuntimeFactory(
+        RenderRuntimeFaultPlan plan,
+        std::shared_ptr<RenderRuntimeFaultProbe> probe);
+
+    /** @brief Manually advanced monotonic source used by watchdog tests. */
+    class FakeRenderMonotonicClock final : public IRenderMonotonicClock,
+                                           public NonMovable
+    {
+    public:
+        FakeRenderMonotonicClock();
+        [[nodiscard]] TimePoint Now() const noexcept override;
+        void Advance(std::chrono::milliseconds duration) noexcept;
+
+    private:
+        std::atomic<TimePoint::duration::rep> m_ticks = 0;
+    };
 } // namespace RVX

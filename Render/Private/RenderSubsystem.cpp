@@ -284,8 +284,13 @@ namespace
             static_cast<void>(m_retirementQueue.Poll());
         }
 
+        RenderRuntimeResult QueryRuntimeStatus() const override
+        {
+            return MakeDeviceRuntimeResult();
+        }
+
         RenderShutdownResult Shutdown(
-            RenderTeardownMode) noexcept override
+            RenderTeardownMode mode) noexcept override
         {
             RenderShutdownResult result;
             result.code = RenderShutdownCode::Completed;
@@ -300,23 +305,65 @@ namespace
                     }
                     result.surfaceGeneration =
                         m_context->GetSurface().generation;
-                    m_context->WaitIdle();
+                    const RHIDeviceFault fault =
+                        m_context->GetDevice() != nullptr
+                            ? m_context->GetDevice()->GetLastDeviceFault()
+                            : RHIDeviceFault{};
+                    const bool bypassCompletion =
+                        mode != RenderTeardownMode::NormalDrain;
+                    RenderSubmissionTracker* submissionTracker =
+                        RenderContextInternalAccess::GetSubmissionTracker(
+                            *m_context);
+                    if (bypassCompletion && submissionTracker != nullptr)
+                    {
+                        submissionTracker->MarkDeviceLost();
+                    }
+                    if (!bypassCompletion)
+                    {
+                        m_context->WaitIdle();
+                    }
                     if (m_sceneRenderer != nullptr)
                     {
                         m_sceneRenderer->Shutdown();
                         m_sceneRenderer.reset();
                     }
-                    static_cast<void>(m_uploadProcessor.PollCompletion());
-                    m_uploadProcessor.Shutdown();
-                    static_cast<void>(m_retirementQueue.Poll());
+                    if (bypassCompletion)
+                    {
+                        m_uploadProcessor.ShutdownDeviceLost();
+                    }
+                    else
+                    {
+                        static_cast<void>(m_uploadProcessor.PollCompletion());
+                        m_uploadProcessor.Shutdown();
+                    }
                     m_resourceRegistry.Shutdown();
-                    if (m_retirementQueue.GetDiagnostics().entryCount != 0)
+                    if (bypassCompletion)
                     {
                         static_cast<void>(
                             m_retirementQueue.ForceDeviceLostTeardown());
                     }
-                    m_context->Shutdown();
+                    else
+                    {
+                        static_cast<void>(m_retirementQueue.Poll());
+                        if (m_retirementQueue.GetDiagnostics().entryCount != 0)
+                        {
+                            static_cast<void>(
+                                m_retirementQueue.ForceDeviceLostTeardown());
+                        }
+                    }
+                    // The normal path already waited above; the failure path
+                    // must never issue a device-wide wait.
+                    m_context->Shutdown(false);
                     m_context.reset();
+
+                    if (mode == RenderTeardownMode::DeviceLostTeardown)
+                    {
+                        result.code = RenderShutdownCode::DeviceLost;
+                        result.nativeError = fault.nativeError;
+                        result.message = fault.message.empty()
+                                             ? "Device-lost teardown completed without waiting for GPU progress"
+                                             : fault.message;
+                    }
                 }
             }
             catch (const std::exception& exception)
@@ -397,6 +444,13 @@ namespace
                 return result;
             }
             m_context->Present();
+            RenderRuntimeResult health = MakeDeviceRuntimeResult();
+            health.frameSequence = frameSequence;
+            health.surfaceGeneration = surfaceGeneration;
+            if (health.code != RenderRuntimeCode::Running)
+            {
+                return health;
+            }
             m_sceneRenderer->MarkAcceptedFramePresented();
             return result;
         }
@@ -452,6 +506,40 @@ namespace
                 return result;
             }
             m_context->Present();
+            return MakeDeviceRuntimeResult();
+        }
+
+        RenderRuntimeResult MakeDeviceRuntimeResult() const
+        {
+            RenderRuntimeResult result;
+            result.code = RenderRuntimeCode::Running;
+            result.lifecycle = RenderLifecycleState::Running;
+            if (m_context == nullptr || m_context->GetDevice() == nullptr)
+            {
+                return result;
+            }
+
+            IRHIDevice* device = m_context->GetDevice();
+            result.backend = device->GetBackendType();
+            result.surfaceGeneration = m_context->GetSurface().generation;
+            const RHIDeviceRuntimeStatus status =
+                device->QueryRuntimeStatus();
+            if (status == RHIDeviceRuntimeStatus::Ready)
+            {
+                return result;
+            }
+
+            const RHIDeviceFault fault = device->GetLastDeviceFault();
+            result.code = RenderRuntimeCode::DeviceLost;
+            result.nativeError = fault.nativeError;
+            result.message = fault.message;
+            if (result.message.empty())
+            {
+                result.message =
+                    status == RHIDeviceRuntimeStatus::DeviceLost
+                        ? "RHI backend reported device loss"
+                        : "RHI backend reported a terminal runtime error";
+            }
             return result;
         }
 
@@ -468,6 +556,17 @@ namespace
         RenderRetirementQueue m_retirementQueue;
         RenderResourceRegistry m_resourceRegistry;
         RenderUploadProcessor m_uploadProcessor;
+    };
+
+    class ClearPresentRuntimeFactory final : public IRenderRuntimeFactory,
+                                             public NonMovable
+    {
+    public:
+        [[nodiscard]] std::unique_ptr<IRenderFrameConsumer>
+            CreateFrameConsumer() override
+        {
+            return std::make_unique<ClearPresentFrameConsumer>();
+        }
     };
 } // namespace
 
@@ -525,7 +624,7 @@ void RenderSubsystem::Configure(const RenderRuntimeConfig& config,
         surface,
         RenderExecutorKind::Dedicated,
         CreateDedicatedRenderExecutor(),
-        std::make_unique<ClearPresentFrameConsumer>());
+        std::make_unique<ClearPresentRuntimeFactory>());
     m_runtime = std::move(runtime);
     m_runtimeConfig = config;
     m_runtimeSurface = surface;

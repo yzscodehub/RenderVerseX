@@ -1661,11 +1661,34 @@ namespace RVX
         queue->ExecuteCommandLists(1, cmdLists);
 
         uint64 submittedValue = 0;
+        bool submissionFailed = false;
         if (signalFence)
         {
             auto* dx12Fence = static_cast<DX12Fence*>(signalFence);
             submittedValue = dx12Fence->AllocateSignalValue();
-            queue->Signal(dx12Fence->GetFence(), submittedValue);
+            const HRESULT signalResult =
+                queue->Signal(dx12Fence->GetFence(), submittedValue);
+            if (FAILED(signalResult))
+            {
+                device->HandleDeviceLost(
+                    signalResult,
+                    RHIDeviceFaultOperation::CommandSubmission);
+                submissionFailed = true;
+            }
+        }
+
+        const HRESULT deviceStatus = device->GetDeviceRemovedReason();
+        if (FAILED(deviceStatus))
+        {
+            device->HandleDeviceLost(
+                deviceStatus,
+                RHIDeviceFaultOperation::CommandSubmission);
+            submissionFailed = true;
+        }
+        if (submissionFailed)
+        {
+            static_cast<void>(dx12Context->DetachCommandAllocator());
+            return 0;
         }
 
         device->GetAllocatorPool().Release(dx12Context->DetachCommandAllocator(),
@@ -1718,11 +1741,40 @@ namespace RVX
         queue->ExecuteCommandLists(static_cast<UINT>(cmdLists.size()), cmdLists.data());
 
         uint64 submittedValue = 0;
+        bool submissionFailed = false;
         if (signalFence)
         {
             auto* dx12Fence = static_cast<DX12Fence*>(signalFence);
             submittedValue = dx12Fence->AllocateSignalValue();
-            queue->Signal(dx12Fence->GetFence(), submittedValue);
+            const HRESULT signalResult =
+                queue->Signal(dx12Fence->GetFence(), submittedValue);
+            if (FAILED(signalResult))
+            {
+                device->HandleDeviceLost(
+                    signalResult,
+                    RHIDeviceFaultOperation::CommandSubmission);
+                submissionFailed = true;
+            }
+        }
+
+        const HRESULT deviceStatus = device->GetDeviceRemovedReason();
+        if (FAILED(deviceStatus))
+        {
+            device->HandleDeviceLost(
+                deviceStatus,
+                RHIDeviceFaultOperation::CommandSubmission);
+            submissionFailed = true;
+        }
+        if (submissionFailed)
+        {
+            for (auto* context : contexts)
+            {
+                auto* dx12Context =
+                    static_cast<DX12CommandContext*>(context);
+                static_cast<void>(
+                    dx12Context->DetachCommandAllocator());
+            }
+            return 0;
         }
 
         for (auto* context : contexts)

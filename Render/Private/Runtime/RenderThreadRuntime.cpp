@@ -42,9 +42,22 @@ namespace
     class TerminatingRenderFatalPolicy final : public IRenderFatalPolicy
     {
     public:
-        void Terminate(const RenderDiagnosticsSnapshot&) override
+        void Terminate(
+            const RenderDiagnosticsSnapshot& diagnostics) override
         {
+            static_cast<void>(RenderDiagnosticsPublisher::SaveArtifact(
+                diagnostics,
+                "RenderRuntimeFatalDiagnostics.json"));
             std::terminate();
+        }
+    };
+
+    class SteadyRenderMonotonicClock final : public IRenderMonotonicClock
+    {
+    public:
+        [[nodiscard]] TimePoint Now() const noexcept override
+        {
+            return std::chrono::steady_clock::now();
         }
     };
 
@@ -289,7 +302,8 @@ namespace
         std::shared_ptr<IRenderRuntimeLifecycleHook> lifecycleHook,
         std::shared_ptr<IRenderFatalPolicy> fatalPolicy,
         std::shared_ptr<IRenderPublicationHook> publicationHook,
-        std::shared_ptr<IRenderWaitHook> waitHook)
+        std::shared_ptr<IRenderWaitHook> waitHook,
+        std::shared_ptr<IRenderMonotonicClock> clock)
         : m_config(std::move(config)),
           m_initialSurface(surface),
           m_executorKind(IsDeclaredExecutorKind(executorKind)
@@ -301,6 +315,7 @@ namespace
           m_fatalPolicy(std::move(fatalPolicy)),
           m_publicationHook(std::move(publicationHook)),
           m_waitHook(std::move(waitHook)),
+          m_clock(std::move(clock)),
           m_currentSurface(surface),
           m_latestResizeGeneration(surface.generation)
     {
@@ -328,6 +343,10 @@ namespace
             m_fatalPolicy =
                 std::make_shared<TerminatingRenderFatalPolicy>();
         }
+        if (m_clock == nullptr)
+        {
+            m_clock = std::make_shared<SteadyRenderMonotonicClock>();
+        }
 
         m_diagnosticsState.executor = m_executorKind;
         m_diagnosticsState.backend = m_config.backendType;
@@ -345,6 +364,31 @@ namespace
                 ? 0U
                 : m_config.transports.statusSlotCapacity - 1U;
         PublishDiagnostics();
+    }
+
+    RenderThreadRuntime::RenderThreadRuntime(
+        RenderRuntimeConfig config,
+        NativeSurfaceDesc surface,
+        RenderExecutorKind executorKind,
+        std::unique_ptr<IRenderExecutor> executor,
+        std::unique_ptr<IRenderRuntimeFactory> factory,
+        std::shared_ptr<IRenderRuntimeLifecycleHook> lifecycleHook,
+        std::shared_ptr<IRenderFatalPolicy> fatalPolicy,
+        std::shared_ptr<IRenderPublicationHook> publicationHook,
+        std::shared_ptr<IRenderWaitHook> waitHook,
+        std::shared_ptr<IRenderMonotonicClock> clock)
+        : RenderThreadRuntime(std::move(config),
+                              surface,
+                              executorKind,
+                              std::move(executor),
+                              std::unique_ptr<IRenderFrameConsumer>{},
+                              std::move(lifecycleHook),
+                              std::move(fatalPolicy),
+                              std::move(publicationHook),
+                              std::move(waitHook),
+                              std::move(clock))
+    {
+        m_factory = std::move(factory);
     }
 
     RenderThreadRuntime::~RenderThreadRuntime()
@@ -420,8 +464,7 @@ namespace
         m_started.store(true, std::memory_order_release);
         NotifyExecutor();
 
-        const auto deadline =
-            std::chrono::steady_clock::now() + m_config.startupWatchdog;
+        const auto deadline = m_clock->Now() + m_config.startupWatchdog;
         std::unique_lock lock(m_stateMutex);
         bool startupTimedOut = false;
         if (!m_startupCv.wait_until(lock,
@@ -432,7 +475,7 @@ namespace
             std::unique_lock arbitrationLock(
                 m_startupArbitrationMutex, std::defer_lock);
             if (!arbitrationLock.try_lock_until(
-                    std::chrono::steady_clock::now() +
+                    m_clock->Now() +
                     m_config.shutdownWatchdog))
             {
                 RenderRuntimeResult timeout = MakeRuntimeResult(
@@ -488,7 +531,7 @@ namespace
             NotifyExecutor();
 
             const RenderExecutorJoinResult join = m_executor->JoinUntil(
-                std::chrono::steady_clock::now() +
+                m_clock->Now() +
                 m_config.shutdownWatchdog);
             if (join.code == RenderExecutorJoinCode::Joined)
             {
@@ -516,7 +559,7 @@ namespace
         if (result.code != RenderRuntimeCode::Running)
         {
             const RenderExecutorJoinResult join = m_executor->JoinUntil(
-                std::chrono::steady_clock::now() + m_config.shutdownWatchdog);
+                m_clock->Now() + m_config.shutdownWatchdog);
             if (join.code == RenderExecutorJoinCode::Joined)
             {
                 m_joined.store(true, std::memory_order_release);
@@ -587,7 +630,7 @@ namespace
         const NativeSurfaceDesc currentSurface = GetCurrentSurfaceSnapshot();
 
         const RenderExecutorJoinResult join = m_executor->JoinUntil(
-            std::chrono::steady_clock::now() + m_config.shutdownWatchdog);
+            m_clock->Now() + m_config.shutdownWatchdog);
         if (join.code == RenderExecutorJoinCode::Joined)
         {
             m_joined.store(true, std::memory_order_release);
@@ -950,6 +993,13 @@ namespace
                 return FailOnRenderThread(std::move(result));
             }
 
+            RenderRuntimeResult health =
+                QueryConsumerRuntimeStatusOnRenderThread();
+            if (health.code != RenderRuntimeCode::Running)
+            {
+                return FailOnRenderThread(std::move(health));
+            }
+
             bool progressed = false;
             BasicRenderControlBatch<NativeSurfaceDesc, NativeSurfaceDesc>
                 controls;
@@ -977,6 +1027,11 @@ namespace
                 {
                     return FailOnRenderThread(std::move(surfaceResult));
                 }
+                health = QueryConsumerRuntimeStatusOnRenderThread();
+                if (health.code != RenderRuntimeCode::Running)
+                {
+                    return FailOnRenderThread(std::move(health));
+                }
                 {
                     std::lock_guard lock(m_publicationMutex);
                     m_currentSurface = surface;
@@ -996,11 +1051,11 @@ namespace
             }
 
             const auto releaseDeadline =
-                std::chrono::steady_clock::now() +
+                m_clock->Now() +
                 m_config.iterationBudgets.releaseTime;
             for (uint32 count = 0;
                  count < m_config.iterationBudgets.releaseCount &&
-                 std::chrono::steady_clock::now() < releaseDeadline;
+                 m_clock->Now() < releaseDeadline;
                  ++count)
             {
                 const RenderResourceHandle handle =
@@ -1016,13 +1071,13 @@ namespace
             }
 
             const auto uploadDeadline =
-                std::chrono::steady_clock::now() +
+                m_clock->Now() +
                 m_config.iterationBudgets.uploadTime;
             uint64 uploadBytes = 0;
             for (uint32 count = 0;
                  count < m_config.iterationBudgets.uploadRequestCount &&
                  uploadBytes < m_config.iterationBudgets.uploadBytes &&
-                 std::chrono::steady_clock::now() < uploadDeadline;
+                 m_clock->Now() < uploadDeadline;
                  ++count)
             {
                 ResourceUploadRequestRef request =
@@ -1034,6 +1089,12 @@ namespace
                 uploadBytes += request->GetDerivedPayloadBytes();
                 m_consumer->ProcessUpload(std::move(request));
                 progressed = true;
+            }
+
+            health = QueryConsumerRuntimeStatusOnRenderThread();
+            if (health.code != RenderRuntimeCode::Running)
+            {
+                return FailOnRenderThread(std::move(health));
             }
 
             if (frame.packet != nullptr)
@@ -1066,8 +1127,19 @@ namespace
                 }
             }
 
+            health = QueryConsumerRuntimeStatusOnRenderThread();
+            if (health.code != RenderRuntimeCode::Running)
+            {
+                return FailOnRenderThread(std::move(health));
+            }
+
             m_consumer->PollCompletion();
             m_consumer->RetireCompleted();
+            health = QueryConsumerRuntimeStatusOnRenderThread();
+            if (health.code != RenderRuntimeCode::Running)
+            {
+                return FailOnRenderThread(std::move(health));
+            }
             PublishDiagnostics();
             return progressed ? RenderPumpDecision::Progressed
                               : RenderPumpDecision::Idle;
@@ -1093,6 +1165,7 @@ namespace
         m_waitCv.wait(lock, [this]() {
             const bool shouldWake =
                 m_wakePending.load(std::memory_order_acquire) ||
+                m_ownerFatalPending.load(std::memory_order_acquire) ||
                 (m_controlMailbox != nullptr &&
                  m_controlMailbox->IsStopRequested());
             if (!shouldWake && m_waitHook != nullptr)
@@ -1132,6 +1205,7 @@ namespace
                 RenderThreadGuardCode::Owner;
             if (m_consumer != nullptr && onOwnerThread)
             {
+                DiscardPendingWorkOnRenderThread(terminal.teardownMode);
                 RenderShutdownResult shutdown = NormalizeShutdownResult(
                     m_consumer->Shutdown(terminal.teardownMode),
                     terminal.backend,
@@ -1199,6 +1273,9 @@ namespace
             runtime->SealPublicationLocked();
             runtime->m_ownerFatalPending.store(true,
                                                std::memory_order_release);
+            // Fatal transport publication is itself a wake source. Do not
+            // rely on the outer producer path reaching its normal wake site.
+            runtime->Wake();
         }
         catch (...)
         {
@@ -1218,7 +1295,9 @@ namespace
                m_config.shutdownWatchdog >
                    std::chrono::milliseconds::zero() &&
                m_executorKind != RenderExecutorKind::None &&
-               m_executor != nullptr && m_consumer != nullptr &&
+               m_executor != nullptr &&
+               (m_consumer != nullptr || m_factory != nullptr) &&
+               m_clock != nullptr &&
                m_frameMailbox != nullptr && m_controlMailbox != nullptr &&
                m_resourceGateway != nullptr;
     }
@@ -1582,6 +1661,22 @@ namespace
             return FinishTimedOutStartupOnRenderThread();
         }
 
+        if (m_consumer == nullptr && m_factory != nullptr)
+        {
+            m_consumer = m_factory->CreateFrameConsumer();
+            m_factory.reset();
+        }
+        if (m_consumer == nullptr)
+        {
+            RenderRuntimeResult result = MakeRuntimeResult(
+                RenderRuntimeCode::DeviceCreationFailed,
+                m_executorKind,
+                m_config.backendType,
+                m_initialSurface.generation);
+            result.message = "Render runtime factory did not create a frame consumer";
+            return FailOnRenderThread(std::move(result));
+        }
+
         RenderRuntimeResult result = NormalizeRuntimeResult(
             m_consumer->Initialize(m_config,
                                    m_initialSurface,
@@ -1589,6 +1684,15 @@ namespace
             m_executorKind,
             m_config.backendType,
             m_initialSurface.generation);
+        if (result.code == RenderRuntimeCode::Running)
+        {
+            RenderRuntimeResult health =
+                QueryConsumerRuntimeStatusOnRenderThread();
+            if (health.code != RenderRuntimeCode::Running)
+            {
+                result = std::move(health);
+            }
+        }
         if (m_lifecycleHook != nullptr)
         {
             m_lifecycleHook->BeforeStartupAcknowledgement();
@@ -1687,6 +1791,8 @@ namespace
             runtime.terminalCause == RenderTerminalCause::DeviceLost
                 ? RenderTeardownMode::DeviceLostTeardown
                 : RenderTeardownMode::NormalDrain;
+        SealPublication();
+        DiscardPendingWorkOnRenderThread(mode);
         RenderShutdownResult shutdown = m_consumer != nullptr
                                             ? NormalizeShutdownResult(
                                                   m_consumer->Shutdown(mode),
@@ -1754,6 +1860,7 @@ namespace
         TransitionTo(RenderLifecycleState::Failed, "runtime fatal failure");
         if (m_consumer != nullptr)
         {
+            DiscardPendingWorkOnRenderThread(result.teardownMode);
             RenderShutdownResult shutdown = NormalizeShutdownResult(
                 m_consumer->Shutdown(result.teardownMode),
                 result.backend,
@@ -1769,5 +1876,83 @@ namespace
         m_startupCv.notify_all();
         PublishDiagnostics();
         return RenderPumpDecision::Stop;
+    }
+
+    RenderRuntimeResult
+        RenderThreadRuntime::QueryConsumerRuntimeStatusOnRenderThread() const
+    {
+        if (m_consumer == nullptr)
+        {
+            RenderRuntimeResult result = MakeRuntimeResult(
+                RenderRuntimeCode::OwnershipViolation,
+                m_executorKind,
+                GetLastRuntimeResult().backend,
+                GetCurrentSurfaceSnapshot().generation);
+            result.message = "Render consumer is unavailable while running";
+            return result;
+        }
+        return NormalizeRuntimeResult(
+            m_consumer->QueryRuntimeStatus(),
+            m_executorKind,
+            GetLastRuntimeResult().backend,
+            GetCurrentSurfaceSnapshot().generation);
+    }
+
+    void RenderThreadRuntime::DiscardPendingWorkOnRenderThread(
+        RenderTeardownMode mode) noexcept
+    {
+        if (m_frameMailbox != nullptr)
+        {
+            RenderFrameAcquireResult discarded =
+                m_frameMailbox->AcquireLatest();
+            m_frameReplacementCount.fetch_add(
+                discarded.discardedCount +
+                    (discarded.packet != nullptr ? 1U : 0U),
+                std::memory_order_relaxed);
+        }
+        if (m_controlMailbox != nullptr)
+        {
+            static_cast<void>(m_controlMailbox->AcquireLatest());
+        }
+        if (m_resourceGateway == nullptr)
+        {
+            return;
+        }
+
+        const RenderResourceFailureCode failure =
+            mode == RenderTeardownMode::DeviceLostTeardown
+                ? RenderResourceFailureCode::DeviceLost
+                : RenderResourceFailureCode::Cancelled;
+        const uint32 cancelledUploads =
+            m_resourceGateway->CancelPendingUploadsOnRenderThread(failure);
+        m_uploadFailedCount.fetch_add(cancelledUploads,
+                                      std::memory_order_relaxed);
+
+        while (true)
+        {
+            if (m_resourceGateway->GetReleaseQueueSnapshot().pendingCount ==
+                0U)
+            {
+                break;
+            }
+            const RenderResourceHandle handle =
+                m_resourceGateway->TryDequeueRelease();
+            if (!handle.IsValid())
+            {
+                continue;
+            }
+            if (m_consumer != nullptr)
+            {
+                try
+                {
+                    m_consumer->ProcessRelease(handle);
+                }
+                catch (...)
+                {
+                }
+            }
+            m_releaseDequeuedCount.fetch_add(1,
+                                             std::memory_order_relaxed);
+        }
     }
 } // namespace RVX

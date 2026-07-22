@@ -15,6 +15,7 @@
 #include "RHI/RHIQuery.h"
 #include "RHI/RHIUpload.h"
 #include "RHI/RHINativeSurface.h"
+#include "RHI/RHIDeviceStatus.h"
 
 namespace RVX
 {
@@ -250,6 +251,24 @@ namespace RVX
             return ExportRHICapabilityReportJson(GetCapabilityReport());
         }
         virtual RHIBackendType GetBackendType() const = 0;
+
+        // =========================================================================
+        // Runtime Health
+        // =========================================================================
+        /** @brief Query compact backend health without mutating backend state. */
+        virtual RHIDeviceRuntimeStatus QueryRuntimeStatus() const noexcept
+        {
+            return RHIDeviceRuntimeStatus::Ready;
+        }
+
+        /** @brief Copy the first terminal backend fault into owned value storage. */
+        virtual RHIDeviceFault GetLastDeviceFault() const
+        {
+            RHIDeviceFault fault;
+            fault.status = QueryRuntimeStatus();
+            fault.backend = GetBackendType();
+            return fault;
+        }
     };
 
     // =============================================================================
