@@ -82,7 +82,13 @@ namespace RVX
 
         /// Capture and tag the current non-owning rendering surface value.
         NativeSurfaceDesc CaptureRenderSurface(
-            RHIFormat preferredFormat = RHIFormat::BGRA8_UNORM);
+            RHIFormat preferredFormat = RHIFormat::BGRA8_UNORM) const;
+
+        /** @brief Current monotonically increasing native-surface generation. */
+        [[nodiscard]] uint64 GetRenderSurfaceGeneration() const noexcept
+        {
+            return m_surfaceGeneration;
+        }
 
         /// Release an OpenGL context from the main/update thread before Render claims it.
         void ReleaseGraphicsContextFromCurrentThread();

@@ -5,6 +5,7 @@
 
 #include "RenderExtraction/RenderFrameExtractor.h"
 
+#include "RenderContracts/RenderFrameValidation.h"
 #include "RenderExtraction/RenderFeatureSceneBridge.h"
 #include "RenderExtraction/RenderProxySceneBridge.h"
 #include "RenderExtraction/SceneEnvironmentIBLBridge.h"
@@ -27,53 +28,6 @@ namespace
     bool IsFinite(float32 value)
     {
         return std::isfinite(value);
-    }
-
-    bool IsValid(const RenderFrameSettings& settings)
-    {
-        if (!IsFinite(settings.renderScale) || settings.renderScale <= 0.0f ||
-            !IsFinite(settings.postProcess.bloomThreshold) ||
-            settings.postProcess.bloomThreshold < 0.0f ||
-            !IsFinite(settings.postProcess.bloomIntensity) ||
-            settings.postProcess.bloomIntensity < 0.0f ||
-            !IsFinite(settings.shadows.maxDistance))
-        {
-            return false;
-        }
-        if (settings.shadows.enabled &&
-            (settings.shadows.atlasResolution == 0 ||
-             settings.shadows.cascadeCount == 0 ||
-             settings.shadows.maxDistance <= 0.0f))
-        {
-            return false;
-        }
-        if (settings.gpuCulling.enabled &&
-            settings.gpuCulling.maxVisibleObjects == 0)
-        {
-            return false;
-        }
-        if (settings.rayTracing.enabled)
-        {
-            return settings.rayTracing.maxInstances != 0 &&
-                   settings.rayTracing.maxRaysPerPixel != 0;
-        }
-        return !settings.rayTracing.enableShadows &&
-               !settings.rayTracing.enableReflections;
-    }
-
-    bool IsValid(const RenderFrameCaptureRequest& request)
-    {
-        if (request.kind == RenderFrameCaptureKind::None)
-        {
-            return request.requestId == 0 && request.width == 0 &&
-                   request.height == 0 && !request.includeAlpha;
-        }
-        const bool declared = request.kind == RenderFrameCaptureKind::Color ||
-                              request.kind == RenderFrameCaptureKind::Depth ||
-                              request.kind ==
-                                  RenderFrameCaptureKind::ObjectId;
-        return declared && request.requestId != 0 && request.width != 0 &&
-               request.height != 0;
     }
 
     RenderLightType ToRenderLightType(RenderLightProxy::Type type)
@@ -144,12 +98,12 @@ RenderFrameExtractionResult RenderFrameExtractor::Extract(
         return fail(
             RenderFrameExtractionResultCode::MissingResourceSubsystem);
     }
-    if (!IsValid(input.settings))
+    if (!IsValidRenderFrameSettings(input.settings))
     {
         result.diagnostics.code = RenderExtractionCode::InvalidNumericValue;
         return fail(RenderFrameExtractionResultCode::InvalidSettings);
     }
-    if (!IsValid(input.captureRequest))
+    if (!IsValidRenderFrameCaptureRequest(input.captureRequest))
     {
         return fail(
             RenderFrameExtractionResultCode::InvalidCaptureRequest);

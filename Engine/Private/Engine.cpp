@@ -4,12 +4,18 @@
  */
 
 #include "Engine/Engine.h"
-#include "World/World.h"
-#include "Render/RenderSubsystem.h"
-#include "Runtime/Window/WindowSubsystem.h"
-#include "Core/Log.h"
+#include "RenderRuntimeComposition.h"
+
 #include "Core/Job/JobSystem.h"
+#include "Core/Log.h"
+#include "Render/RenderSubsystem.h"
+#include "RenderContracts/RenderFrameValidation.h"
+#include "Resource/ResourceSubsystem.h"
 #include "Runtime/Time/Time.h"
+#include "Runtime/Window/WindowSubsystem.h"
+#include "World/World.h"
+
+#include <algorithm>
 
 namespace RVX
 {
@@ -98,22 +104,10 @@ void Engine::Tick(float deltaTime)
     // 3. Tick all worlds
     TickWorlds(deltaTime);
 
-    // 4. Process GPU resource uploads (with time budget)
-    if (auto* render = GetSubsystem<RenderSubsystem>())
-    {
-        render->ProcessGPUUploads(2.0f);  // 2ms budget per frame
-    }
+    // 4. Extract and publish one immutable frame after simulation.
+    RenderAfterWorlds(deltaTime);
 
-    // 5. Render active world (if auto-render is enabled)
-    if (auto* render = GetSubsystem<RenderSubsystem>())
-    {
-        if (render->GetConfig().autoRender && m_activeWorld)
-        {
-            render->RenderFrame(m_activeWorld);
-        }
-    }
-
-    // 6. Check for window close
+    // 5. Check for window close
     if (auto* window = GetSubsystem<WindowSubsystem>())
     {
         if (window->ShouldClose())
@@ -166,7 +160,12 @@ void Engine::Shutdown()
 
     RVX_CORE_INFO("=== RenderVerseX Engine Shutting Down ===");
 
-    // Shutdown worlds first
+    if (m_renderComposition != nullptr)
+    {
+        m_lastRenderShutdownResult = m_renderComposition->Shutdown();
+    }
+
+    // Render has acknowledged exit while Window and Worlds remain alive.
     ShutdownWorlds();
 
     // Shutdown subsystems
@@ -212,7 +211,7 @@ World* Engine::CreateWorld(const std::string& name)
     // If no active world, set this one
     if (m_activeWorld == nullptr)
     {
-        m_activeWorld = ptr;
+        SetActiveWorld(ptr);
     }
 
     return ptr;
@@ -240,7 +239,7 @@ void Engine::DestroyWorld(const std::string& name)
     // Clear active world if it's being destroyed
     if (m_activeWorld == it->second.get())
     {
-        m_activeWorld = nullptr;
+        SetActiveWorld(nullptr);
     }
 
     it->second->Shutdown();
@@ -251,7 +250,27 @@ void Engine::DestroyWorld(const std::string& name)
 
 void Engine::SetActiveWorld(World* world)
 {
+    if (world != nullptr)
+    {
+        const bool owned = std::any_of(
+            m_worlds.begin(),
+            m_worlds.end(),
+            [world](const auto& entry) { return entry.second.get() == world; });
+        if (!owned)
+        {
+            RVX_CORE_WARN("Cannot activate a World not owned by this Engine");
+            return;
+        }
+    }
+    if (m_activeWorld == world)
+    {
+        return;
+    }
     m_activeWorld = world;
+    if (m_renderComposition != nullptr)
+    {
+        m_renderComposition->OnActiveWorldChanged();
+    }
 }
 
 void Engine::TickWorlds(float deltaTime)
@@ -280,18 +299,50 @@ bool Engine::InitializeSubsystems()
         subsystem->SetEngine(this);
     }
 
-    // Resolve the standard window dependency before Render initialization so
-    // native handles and OpenGL ownership are transferred on the main thread.
-    if (auto* render = GetSubsystem<RenderSubsystem>())
+    auto* render = GetSubsystem<RenderSubsystem>();
+    if (render != nullptr)
     {
-        if (auto* window = GetSubsystem<WindowSubsystem>())
+        auto* resources = GetSubsystem<Resource::ResourceSubsystem>();
+        auto* window = GetSubsystem<WindowSubsystem>();
+        if (resources == nullptr || window == nullptr)
         {
-            render->SetWindowSubsystem(window);
+            RVX_CORE_ERROR(
+                "Dedicated Render composition requires ResourceSubsystem and WindowSubsystem");
+            return false;
+        }
+
+        auto services = CreateEngineRenderRuntimeCompositionServices(
+            *resources,
+            *render,
+            *window,
+            [this]() {
+                return m_subsystems.DeinitializeSubsystem<RenderSubsystem>();
+            });
+        m_renderComposition = std::make_unique<RenderRuntimeComposition>(
+            m_config.renderRuntime,
+            m_config.initialRenderFrameSettings,
+            std::move(services));
+        if (!m_renderComposition->PrepareBeforeSubsystemInitialization())
+        {
+            RVX_CORE_ERROR("Failed to prepare dedicated Render composition");
+            return false;
+        }
+        if (m_activeWorld != nullptr)
+        {
+            m_renderComposition->OnActiveWorldChanged();
         }
     }
 
-    // Initialize in dependency order
-    return m_subsystems.InitializeAll();
+    // Initialize in dependency order. The staged hook captures the native
+    // surface after Window initialization and before Render starts.
+    return m_subsystems.InitializeAll(
+        [this](EngineSubsystem& subsystem) {
+            if (m_renderComposition != nullptr &&
+                &subsystem == GetSubsystem<RenderSubsystem>())
+            {
+                m_renderComposition->BeforeRenderSubsystemInitialize();
+            }
+        });
 }
 
 void Engine::TickSubsystems(float deltaTime)
@@ -302,6 +353,54 @@ void Engine::TickSubsystems(float deltaTime)
 void Engine::ShutdownSubsystems()
 {
     m_subsystems.DeinitializeAll();
+}
+
+void Engine::RenderAfterWorlds(float deltaTime)
+{
+    if (m_renderComposition == nullptr)
+    {
+        return;
+    }
+    m_renderComposition->TickAfterWorlds(
+        m_activeWorld,
+        deltaTime,
+        static_cast<float32>(Time::ElapsedTime()));
+}
+
+bool Engine::SetRenderFrameSettings(
+    const RenderFrameSettings& settings) noexcept
+{
+    if (m_renderComposition != nullptr)
+    {
+        return m_renderComposition->SetFrameSettings(settings);
+    }
+    if (!IsValidRenderFrameSettings(settings))
+    {
+        return false;
+    }
+    m_config.initialRenderFrameSettings = settings;
+    return true;
+}
+
+const RenderFrameSettings& Engine::GetRenderFrameSettings() const noexcept
+{
+    return m_renderComposition != nullptr
+               ? m_renderComposition->GetFrameSettings()
+               : m_config.initialRenderFrameSettings;
+}
+
+uint64 Engine::RequestRenderTemporalReset() noexcept
+{
+    return m_renderComposition != nullptr
+               ? m_renderComposition->RequestTemporalReset()
+               : 0;
+}
+
+bool Engine::RequestRenderFrameCapture(
+    const RenderFrameCaptureRequest& request) noexcept
+{
+    return m_renderComposition != nullptr &&
+           m_renderComposition->QueueCapture(request);
 }
 
 } // namespace RVX

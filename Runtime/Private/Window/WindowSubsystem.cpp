@@ -35,6 +35,7 @@ void WindowSubsystem::Initialize()
     m_window->GetFramebufferSize(w, h);
     m_lastWidth = w;
     m_lastHeight = h;
+    m_surfaceGeneration = 1;
     
     RVX_CORE_INFO("WindowSubsystem initialized: {}x{}", m_lastWidth, m_lastHeight);
 }
@@ -63,6 +64,7 @@ void WindowSubsystem::Tick(float deltaTime)
     {
         m_lastWidth = currentWidth;
         m_lastHeight = currentHeight;
+        ++m_surfaceGeneration;
 
         // Publish resize event
         EventBus::Get().Publish(HAL::WindowResizedEvent(currentWidth, currentHeight));
@@ -105,7 +107,8 @@ void* WindowSubsystem::GetInternalHandle() const
     return m_window ? m_window->GetInternalHandle() : nullptr;
 }
 
-NativeSurfaceDesc WindowSubsystem::CaptureRenderSurface(RHIFormat preferredFormat)
+NativeSurfaceDesc WindowSubsystem::CaptureRenderSurface(
+    RHIFormat preferredFormat) const
 {
     NativeSurfaceDesc surface;
     if (!m_window)
@@ -131,7 +134,7 @@ NativeSurfaceDesc WindowSubsystem::CaptureRenderSurface(RHIFormat preferredForma
     surface.contentScale = handles.contentScale;
     surface.preferredFormat = preferredFormat;
     surface.vsync = m_config.vsync;
-    surface.generation = ++m_surfaceGeneration;
+    surface.generation = m_surfaceGeneration;
     return surface;
 }
 

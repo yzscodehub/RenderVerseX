@@ -5,9 +5,12 @@
  * @brief Main engine class - coordinates all subsystems
  */
 
-#include "Core/Subsystem/SubsystemCollection.h"
-#include "Core/Subsystem/EngineSubsystem.h"
 #include "Core/Event/EventBus.h"
+#include "Core/Subsystem/EngineSubsystem.h"
+#include "Core/Subsystem/SubsystemCollection.h"
+#include "Render/RenderRuntimeTypes.h"
+#include "RenderContracts/RenderFramePacket.h"
+
 #include <functional>
 #include <memory>
 #include <string>
@@ -16,6 +19,7 @@
 namespace RVX
 {
     // Forward declarations
+    class RenderRuntimeComposition;
     class World;
     /**
      * @brief Engine configuration
@@ -28,6 +32,8 @@ namespace RVX
         bool vsync = true;
         bool enableJobSystem = true;
         size_t jobWorkerCount = 0;  // 0 = auto (hardware concurrency)
+        RenderRuntimeConfig renderRuntime{};
+        RenderFrameSettings initialRenderFrameSettings{};
     };
 
     /**
@@ -195,6 +201,26 @@ namespace RVX
         bool IsInitialized() const { return m_initialized; }
 
         // =====================================================================
+        // Update-Owned Render Controls
+        // =====================================================================
+
+        /** @brief Replace settings copied into subsequently extracted frames. */
+        [[nodiscard]] bool SetRenderFrameSettings(
+            const RenderFrameSettings& settings) noexcept;
+        [[nodiscard]] const RenderFrameSettings&
+            GetRenderFrameSettings() const noexcept;
+        /** @brief Advance the temporal epoch and reset the next accepted frame. */
+        [[nodiscard]] uint64 RequestRenderTemporalReset() noexcept;
+        /** @brief Queue one owned capture request for the next accepted frame. */
+        [[nodiscard]] bool RequestRenderFrameCapture(
+            const RenderFrameCaptureRequest& request) noexcept;
+        [[nodiscard]] const RenderShutdownResult&
+            GetLastRenderShutdownResult() const noexcept
+        {
+            return m_lastRenderShutdownResult;
+        }
+
+        // =====================================================================
         // Accessors
         // =====================================================================
 
@@ -213,6 +239,7 @@ namespace RVX
         void ShutdownSubsystems();
         void TickWorlds(float deltaTime);
         void ShutdownWorlds();
+        void RenderAfterWorlds(float deltaTime);
 
         EngineConfig m_config;
         SubsystemCollection<EngineSubsystem> m_subsystems;
@@ -220,6 +247,8 @@ namespace RVX
         // World management
         std::unordered_map<std::string, std::unique_ptr<World>> m_worlds;
         World* m_activeWorld = nullptr;
+        std::unique_ptr<RenderRuntimeComposition> m_renderComposition;
+        RenderShutdownResult m_lastRenderShutdownResult{};
 
         bool m_initialized = false;
         bool m_shouldShutdown = false;

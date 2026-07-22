@@ -15,6 +15,7 @@ add_library(RVX_Engine STATIC)
 
 target_sources(RVX_Engine PRIVATE
     Private/Engine.cpp
+    Private/RenderRuntimeComposition.cpp
 )
 
 target_include_directories(RVX_Engine PUBLIC
@@ -38,6 +39,7 @@ target_link_libraries(RVX_Engine PUBLIC
     
     # Rendering
     RVX_Render
+    RVX_RenderExtraction
     
     # Resources
     RVX_Resource

@@ -313,6 +313,19 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME EngineRenderCompositionValidation
+    SOURCES EngineRenderCompositionValidation/main.cpp
+    LIBS
+        RVX::Engine
+        RVX::RenderExtraction
+        ${RVX_ALL_BACKENDS}
+    INCLUDES ${CMAKE_SOURCE_DIR}/Engine/Private
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    LABELS "unit;architecture"
+    TIMEOUT 60
+)
+
+rvx_add_gtest(
     NAME RenderConcurrencyValidation
     SOURCES RenderConcurrencyValidation/main.cpp
     LIBS

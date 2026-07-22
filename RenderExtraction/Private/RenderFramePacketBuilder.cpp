@@ -1,5 +1,7 @@
 #include "RenderExtraction/RenderFramePacketBuilder.h"
 
+#include "RenderContracts/RenderFrameValidation.h"
+
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -87,38 +89,6 @@ namespace
                IsFinite(light.outerConeRadians);
     }
 
-    bool HasValidSettingsNumerics(const RenderFrameSettings& settings)
-    {
-        if (!IsFinite(settings.renderScale) || settings.renderScale <= 0.0f ||
-            !IsFinite(settings.postProcess.bloomThreshold) ||
-            settings.postProcess.bloomThreshold < 0.0f ||
-            !IsFinite(settings.postProcess.bloomIntensity) ||
-            settings.postProcess.bloomIntensity < 0.0f ||
-            !IsFinite(settings.shadows.maxDistance))
-        {
-            return false;
-        }
-        if (settings.shadows.enabled &&
-            (settings.shadows.atlasResolution == 0 ||
-             settings.shadows.cascadeCount == 0 ||
-             settings.shadows.maxDistance <= 0.0f))
-        {
-            return false;
-        }
-        if (settings.gpuCulling.enabled &&
-            settings.gpuCulling.maxVisibleObjects == 0)
-        {
-            return false;
-        }
-        if (settings.rayTracing.enabled)
-        {
-            return settings.rayTracing.maxInstances != 0 &&
-                   settings.rayTracing.maxRaysPerPixel != 0;
-        }
-        return !settings.rayTracing.enableShadows &&
-               !settings.rayTracing.enableReflections;
-    }
-
     bool HasValidNumerics(
         const RenderViewSnapshot& view,
         const std::vector<RenderPrimitiveSnapshot>& primitives,
@@ -131,7 +101,7 @@ namespace
             !IsFinite(sky.tint) || !IsFinite(sky.intensity) ||
             !IsFinite(sky.rotationRadians) ||
             !IsFinite(environment.intensity) ||
-            !HasValidSettingsNumerics(settings))
+            !IsValidRenderFrameSettings(settings))
         {
             return false;
         }
@@ -264,19 +234,6 @@ namespace
                validEnvironmentHandleCount == 3;
     }
 
-    bool IsValid(const RenderFrameCaptureRequest& request)
-    {
-        if (request.kind == RenderFrameCaptureKind::None)
-        {
-            return request.requestId == 0 && request.width == 0 &&
-                   request.height == 0 && !request.includeAlpha;
-        }
-        const bool declared = request.kind == RenderFrameCaptureKind::Color ||
-                              request.kind == RenderFrameCaptureKind::Depth ||
-                              request.kind == RenderFrameCaptureKind::ObjectId;
-        return declared && request.requestId != 0 && request.width != 0 &&
-               request.height != 0;
-    }
 } // namespace
 
 bool RenderFramePacketBuilder::SetHeader(RenderFrameHeader header)
@@ -431,7 +388,7 @@ std::unique_ptr<const RenderFramePacket> RenderFramePacketBuilder::Seal()
     {
         return fail(RenderFrameSealCode::InvalidResourceReference);
     }
-    if (!IsValid(*m_captureRequest))
+    if (!IsValidRenderFrameCaptureRequest(*m_captureRequest))
     {
         return fail(RenderFrameSealCode::InvalidCaptureRequest);
     }
