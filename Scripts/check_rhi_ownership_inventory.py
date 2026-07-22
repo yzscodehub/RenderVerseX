@@ -184,8 +184,11 @@ def discover_holders(root: Path) -> list[Holder]:
                 continue
 
             type_match = type_matches[-1]
+            declaration_prefix = statement[:type_match.start()]
             declaration_fragment = statement[type_match.start():]
-            if "(" in declaration_fragment:
+            if "(" in declaration_fragment or (
+                "(" in declaration_prefix and ")" in declaration_fragment
+            ):
                 continue
 
             declaration = re.search(

@@ -3846,15 +3846,6 @@
     },
     {
       "path": "RHI_Vulkan/Private/VulkanResources.h",
-      "owner": "VulkanTexture",
-      "symbol": "ownsImage",
-      "policy": "OwnerSnapshot",
-      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
-      "normalRelease": "owner replacement retires after the captured snapshot completes",
-      "deviceLostRelease": "owner explicit device-lost teardown"
-    },
-    {
-      "path": "RHI_Vulkan/Private/VulkanResources.h",
       "owner": "VulkanTextureView",
       "symbol": "m_imageView",
       "policy": "OwnerSnapshot",

@@ -65,6 +65,19 @@ class RHIOwnershipInventoryCheckerTests(unittest.TestCase):
             self.assertNotEqual(output.returncode, 0)
             self.assertIn("unclassified RHI owner", output.stdout + output.stderr)
 
+    def test_rhi_parameter_in_noexcept_method_is_not_a_holder(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            write_fixture(
+                root,
+                "struct Holder {\n"
+                "    void Observe(id<MTLCommandBuffer> commandBuffer, int operation) noexcept;\n"
+                "};\n",
+                [],
+            )
+            result = run_checker(root)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_stale_manifest_entry_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
