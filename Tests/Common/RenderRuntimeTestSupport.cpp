@@ -315,6 +315,12 @@ namespace
             m_probe->Record(RenderRuntimeTestEvent::Retire);
         }
 
+        void PopulateDiagnostics(
+            RenderDiagnosticsSnapshot& outDiagnostics) const override
+        {
+            outDiagnostics.frameFeatures = m_probe->frameDiagnostics;
+        }
+
         RenderShutdownResult Shutdown(
             RenderTeardownMode) noexcept override
         {

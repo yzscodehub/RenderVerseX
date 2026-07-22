@@ -438,6 +438,9 @@ namespace
                 }
             }
             staging->Unmap();
+            context->TextureBarrier(texture.Get(),
+                                    RHIResourceState::Undefined,
+                                    RHIResourceState::CopyDest);
             for (const TextureSubresourceUploadLayout& layout : layouts)
             {
                 RHIBufferTextureCopyDesc copy;
@@ -1353,6 +1356,9 @@ namespace
         }
         staging->Unmap();
 
+        context.TextureBarrier(texture.Get(),
+                               RHIResourceState::Undefined,
+                               RHIResourceState::CopyDest);
         for (const PreparedTextureSlice& layout : layouts)
         {
             RHIBufferTextureCopyDesc copy;
@@ -1367,7 +1373,7 @@ namespace
         }
         context.TextureBarrier(texture.Get(),
                                RHIResourceState::CopyDest,
-                               RHIResourceState::ShaderResource);
+                               RHIResourceState::Common);
         stagingBuffers.push_back(std::move(staging));
         return true;
     }
@@ -1422,6 +1428,14 @@ namespace
         RHIBufferDesc bufferDesc;
         bufferDesc.size = range.size;
         bufferDesc.usage = usage | RHIBufferUsage::CopyDst;
+        if (m_device->GetCapabilities().supportsRaytracing)
+        {
+            bufferDesc.usage =
+                bufferDesc.usage |
+                RHIBufferUsage::AccelerationStructureInput |
+                RHIBufferUsage::DeviceAddress |
+                RHIBufferUsage::ShaderResource;
+        }
         bufferDesc.memoryType = RHIMemoryType::Default;
         bufferDesc.stride = range.stride;
         RHIBufferRef buffer = m_device->CreateBuffer(bufferDesc);
@@ -1458,9 +1472,7 @@ namespace
                            range.size);
         context.BufferBarrier(buffer.Get(),
                               RHIResourceState::CopyDest,
-                              usage == RHIBufferUsage::Index
-                                  ? RHIResourceState::IndexBuffer
-                                  : RHIResourceState::VertexBuffer);
+                              RHIResourceState::Common);
         stagingBuffers.push_back(std::move(staging));
         return true;
     }
@@ -1508,7 +1520,7 @@ namespace
                            sizeof(MaterialSourceData));
         context.BufferBarrier(buffer.Get(),
                               RHIResourceState::CopyDest,
-                              RHIResourceState::ConstantBuffer);
+                              RHIResourceState::Common);
         stagingBuffers.push_back(std::move(staging));
         return true;
     }

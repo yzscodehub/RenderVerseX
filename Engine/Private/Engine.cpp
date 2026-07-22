@@ -403,4 +403,10 @@ bool Engine::RequestRenderFrameCapture(
            m_renderComposition->QueueCapture(request);
 }
 
+bool Engine::RequestRenderSurfaceResize(uint32 width, uint32 height)
+{
+    return m_renderComposition != nullptr &&
+           m_renderComposition->RequestSurfaceResize(width, height);
+}
+
 } // namespace RVX

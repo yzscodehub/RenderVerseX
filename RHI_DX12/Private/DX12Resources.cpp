@@ -177,11 +177,11 @@ namespace RVX
         auto& heapManager = m_device->GetDescriptorHeapManager();
 
         if (m_cbvHandle.IsValid())
-            heapManager.FreeCbvSrvUav(m_cbvHandle);
+            heapManager.FreeCpuCbvSrvUav(m_cbvHandle);
         if (m_srvHandle.IsValid())
-            heapManager.FreeCbvSrvUav(m_srvHandle);
+            heapManager.FreeCpuCbvSrvUav(m_srvHandle);
         if (m_uavHandle.IsValid())
-            heapManager.FreeCbvSrvUav(m_uavHandle);
+            heapManager.FreeCpuCbvSrvUav(m_uavHandle);
 
         // IMPORTANT: Resource lifecycle for Placed Resources:
         // - m_resource (ID3D12Resource) is destroyed here via ComPtr::Release()
@@ -203,7 +203,7 @@ namespace RVX
             const uint64 cbvSize = AlignCBVSize(m_desc.size);
             if (m_desc.size <= RVX_DX12_MAX_CBV_SIZE && cbvSize <= RVX_DX12_MAX_CBV_SIZE)
             {
-                m_cbvHandle = heapManager.AllocateCbvSrvUav();
+                m_cbvHandle = heapManager.AllocateCpuCbvSrvUav();
 
                 D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
                 cbvDesc.BufferLocation = m_resource->GetGPUVirtualAddress();
@@ -225,7 +225,7 @@ namespace RVX
         if (HasFlag(m_desc.usage, RHIBufferUsage::ShaderResource) ||
             HasFlag(m_desc.usage, RHIBufferUsage::Structured))
         {
-            m_srvHandle = heapManager.AllocateCbvSrvUav();
+            m_srvHandle = heapManager.AllocateCpuCbvSrvUav();
 
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
             srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
@@ -253,7 +253,7 @@ namespace RVX
         // UAV
         if (HasFlag(m_desc.usage, RHIBufferUsage::UnorderedAccess))
         {
-            m_uavHandle = heapManager.AllocateCbvSrvUav();
+            m_uavHandle = heapManager.AllocateCpuCbvSrvUav();
 
             D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
             uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
@@ -514,9 +514,9 @@ namespace RVX
         auto& heapManager = m_device->GetDescriptorHeapManager();
 
         if (m_srvHandle.IsValid())
-            heapManager.FreeCbvSrvUav(m_srvHandle);
+            heapManager.FreeCpuCbvSrvUav(m_srvHandle);
         if (m_uavHandle.IsValid())
-            heapManager.FreeCbvSrvUav(m_uavHandle);
+            heapManager.FreeCpuCbvSrvUav(m_uavHandle);
         for (auto& rtvHandle : m_rtvHandles)
         {
             if (rtvHandle.IsValid())
@@ -534,7 +534,7 @@ namespace RVX
         // SRV
         if (HasFlag(m_desc.usage, RHITextureUsage::ShaderResource) || !m_ownsResource)
         {
-            m_srvHandle = heapManager.AllocateCbvSrvUav();
+            m_srvHandle = heapManager.AllocateCpuCbvSrvUav();
 
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
             srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -620,7 +620,7 @@ namespace RVX
         // UAV
         if (HasFlag(m_desc.usage, RHITextureUsage::UnorderedAccess))
         {
-            m_uavHandle = heapManager.AllocateCbvSrvUav();
+            m_uavHandle = heapManager.AllocateCpuCbvSrvUav();
 
             D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
             uavDesc.Format = m_dxgiFormat;
@@ -758,7 +758,7 @@ namespace RVX
                 srvFormat = GetDepthSRVFormat(dxgiFormat);
             }
 
-            m_srvHandle = heapManager.AllocateCbvSrvUav();
+            m_srvHandle = heapManager.AllocateCpuCbvSrvUav();
 
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
             srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -905,7 +905,7 @@ namespace RVX
 
         if (desc.type == RHITextureViewType::UnorderedAccess)
         {
-            m_uavHandle = heapManager.AllocateCbvSrvUav();
+            m_uavHandle = heapManager.AllocateCpuCbvSrvUav();
 
             D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
             uavDesc.Format = dxgiFormat;
@@ -932,9 +932,9 @@ namespace RVX
         auto& heapManager = m_device->GetDescriptorHeapManager();
 
         if (m_srvHandle.IsValid())
-            heapManager.FreeCbvSrvUav(m_srvHandle);
+            heapManager.FreeCpuCbvSrvUav(m_srvHandle);
         if (m_uavHandle.IsValid())
-            heapManager.FreeCbvSrvUav(m_uavHandle);
+            heapManager.FreeCpuCbvSrvUav(m_uavHandle);
         if (m_rtvHandle.IsValid())
             heapManager.FreeRTV(m_rtvHandle);
         if (m_dsvHandle.IsValid())
@@ -950,7 +950,7 @@ namespace RVX
         auto d3dDevice = device->GetD3DDevice();
         auto& heapManager = device->GetDescriptorHeapManager();
 
-        m_handle = heapManager.AllocateSampler();
+        m_handle = heapManager.AllocateCpuSampler();
 
         auto toD3D12Filter = [](RHIFilterMode min, RHIFilterMode mag, RHIFilterMode mip, bool anisotropic) -> D3D12_FILTER {
             if (anisotropic) return D3D12_FILTER_ANISOTROPIC;
@@ -991,7 +991,7 @@ namespace RVX
     {
         if (m_handle.IsValid())
         {
-            m_device->GetDescriptorHeapManager().FreeSampler(m_handle);
+            m_device->GetDescriptorHeapManager().FreeCpuSampler(m_handle);
         }
     }
 

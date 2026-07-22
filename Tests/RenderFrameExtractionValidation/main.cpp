@@ -377,6 +377,7 @@ TEST(RenderFrameExtractionValidation, ExtractsCompleteOwnedPacketValues)
     ASSERT_NE(light, nullptr);
     light->SetLightType(LightType::Point);
     light->SetIntensity(4.0f);
+    light->SetCastsShadow(true);
 
     SceneEntity* featureEntity = CreateEntity(world, "Features");
     ASSERT_NE(featureEntity, nullptr);
@@ -427,6 +428,8 @@ TEST(RenderFrameExtractionValidation, ExtractsCompleteOwnedPacketValues)
     ASSERT_EQ(packet->GetLights().size(), 1U);
     EXPECT_EQ(packet->GetLights()[0].type, RenderLightType::Point);
     EXPECT_FLOAT_EQ(packet->GetLights()[0].intensity, 4.0f);
+    EXPECT_TRUE(packet->GetLights()[0].castsShadows);
+    EXPECT_FALSE(packet->GetLights()[0].shadowResource.IsValid());
     EXPECT_FALSE(packet->GetSky().skyTexture.IsValid());
     EXPECT_FLOAT_EQ(packet->GetSky().intensity, 1.75f);
     EXPECT_FLOAT_EQ(packet->GetSky().rotationRadians, 0.5f);

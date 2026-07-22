@@ -129,8 +129,12 @@ namespace RVX
             RHIBufferDesc desc = {};
             desc.size = m_size;
             desc.usage = RHIBufferUsage::CopySrc;
-            desc.memoryType = RHIMemoryType::Upload;
-            m_wrapperBuffer = CreateVulkanBuffer(m_device, desc);
+            // The wrapper must reference this staging allocation. Creating a
+            // normal VulkanBuffer here would allocate a second, empty buffer
+            // and make every staging copy read from the wrong resource.
+            desc.memoryType = RHIMemoryType::Default;
+            m_wrapperBuffer = Ref<VulkanBuffer>(new VulkanBuffer(
+                m_device, m_buffer, m_memory, 0, desc, false));
         }
         return m_wrapperBuffer.Get();
     }

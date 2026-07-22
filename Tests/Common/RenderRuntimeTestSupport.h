@@ -169,6 +169,7 @@ namespace RVX
         RHIBackendType shutdownBackend = RHIBackendType::None;
         uint32 shutdownNativeError = 0;
         std::string shutdownMessage;
+        RenderFrameFeatureDiagnostics frameDiagnostics{};
         bool throwOnFrame = false;
 
     private:

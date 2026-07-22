@@ -1106,6 +1106,10 @@ namespace
                     GetLastRuntimeResult().backend,
                     GetCurrentSurfaceSnapshot().generation);
                 frameResult.frameSequence = sequence;
+                {
+                    std::lock_guard lock(m_stateMutex);
+                    m_consumer->PopulateDiagnostics(m_diagnosticsState);
+                }
                 if (frameResult.code == RenderRuntimeCode::Running)
                 {
                     m_lastAppliedFrameSequence.store(sequence,

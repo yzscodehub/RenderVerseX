@@ -3,10 +3,9 @@
 #include "Core/Assert.h"
 #include "Core/Log.h"
 #include "Resource/RenderUploadRequestBuilder.h"
-#include "Resource/Types/MaterialResource.h"
-#include "Resource/Types/TextureResource.h"
 
 #include <algorithm>
+#include <unordered_set>
 #include <utility>
 
 namespace RVX::Resource
@@ -143,6 +142,17 @@ namespace
         }
         result.code = RenderResourceResolveCode::Resolved;
         return result;
+    }
+
+    bool ResourceSubsystem::PublishRenderResource(
+        ResourceHandle<IResource> resource)
+    {
+        if (!m_initialized || m_renderShuttingDown ||
+            !RequireUpdateThread("PublishRenderResource"))
+        {
+            return false;
+        }
+        return QueueRenderResourceTree(std::move(resource));
     }
 
     void ResourceSubsystem::BeginRenderShutdown()
@@ -355,38 +365,81 @@ namespace
             return;
         }
 
-        const RenderResourceKind kind =
-            ToRenderResourceKind(event.resource->GetType());
-        if (kind == RenderResourceKind::Invalid)
-            return;
+        static_cast<void>(QueueRenderResourceTree(event.resource));
+    }
 
-        const AssetId assetId{event.resourceId};
-        const auto tracked = m_trackedResources.find(assetId);
-        if (tracked != m_trackedResources.end())
+    bool ResourceSubsystem::QueueRenderResourceTree(
+        ResourceHandle<IResource> rootResource)
+    {
+        if (!rootResource ||
+            rootResource.GetId() == InvalidResourceId)
         {
-            if (tracked->second.kind != kind)
-                ++m_renderStats.gatewayRejections;
-            return;
+            return false;
         }
-        const auto pending = std::find_if(
-            m_pendingResources.begin(),
-            m_pendingResources.end(),
-            [assetId](const PendingResource& value)
-            {
-                return value.assetId == assetId;
-            });
-        if (pending != m_pendingResources.end())
-            return;
 
         const uint64 sourceRevision = m_nextSourceRevision++;
-        QueueMaterialDependencies(*event.resource, sourceRevision);
-        m_pendingResources.push_back(PendingResource{
-            assetId,
-            kind,
-            event.resource,
-            GetUploadPriority(event.resource->GetType()),
-            m_nextFifoOrder++,
-            sourceRevision});
+        std::vector<ResourceHandle<IResource>> resourcesToQueue{
+            std::move(rootResource)};
+        std::unordered_set<ResourceId> visited;
+        size_t nextResource = 0;
+        bool renderResourceFound = false;
+        while (nextResource < resourcesToQueue.size())
+        {
+            ResourceHandle<IResource> resource =
+                resourcesToQueue[nextResource++];
+            if (!resource || resource.GetId() == InvalidResourceId ||
+                !visited.insert(resource.GetId()).second)
+            {
+                continue;
+            }
+
+            for (ResourceId dependencyId : resource->GetAllDependencies())
+            {
+                if (dependencyId == InvalidResourceId ||
+                    visited.contains(dependencyId))
+                {
+                    continue;
+                }
+                if (IResource* dependency =
+                        ResourceManager::Get().GetCache().Get(dependencyId))
+                {
+                    resourcesToQueue.emplace_back(dependency);
+                }
+            }
+
+            const RenderResourceKind kind =
+                ToRenderResourceKind(resource->GetType());
+            if (kind == RenderResourceKind::Invalid)
+                continue;
+            renderResourceFound = true;
+
+            const AssetId assetId{resource.GetId()};
+            const auto tracked = m_trackedResources.find(assetId);
+            if (tracked != m_trackedResources.end())
+            {
+                if (tracked->second.kind != kind)
+                    ++m_renderStats.gatewayRejections;
+                continue;
+            }
+            const auto pending = std::find_if(
+                m_pendingResources.begin(),
+                m_pendingResources.end(),
+                [assetId](const PendingResource& value)
+                {
+                    return value.assetId == assetId;
+                });
+            if (pending != m_pendingResources.end())
+                continue;
+
+            m_pendingResources.push_back(PendingResource{
+                assetId,
+                kind,
+                resource,
+                GetUploadPriority(resource->GetType()),
+                m_nextFifoOrder++,
+                sourceRevision});
+        }
+        return renderResourceFound;
     }
 
     void ResourceSubsystem::ProcessPendingResources()
@@ -602,51 +655,6 @@ namespace
         return true;
     }
 
-    void ResourceSubsystem::QueueMaterialDependencies(
-        const IResource& resource,
-        uint64 sourceRevision)
-    {
-        const auto* material = dynamic_cast<const MaterialResource*>(&resource);
-        if (material == nullptr)
-            return;
-
-        constexpr RenderMaterialTextureSlot slots[] = {
-            RenderMaterialTextureSlot::BaseColor,
-            RenderMaterialTextureSlot::Normal,
-            RenderMaterialTextureSlot::MetallicRoughness,
-            RenderMaterialTextureSlot::Occlusion,
-            RenderMaterialTextureSlot::Emissive};
-        for (RenderMaterialTextureSlot slot : slots)
-        {
-            auto* texture = dynamic_cast<TextureResource*>(
-                material->GetRenderMaterialTexture(slot));
-            if (texture == nullptr || texture->GetId() == InvalidResourceId)
-                continue;
-            const AssetId assetId{texture->GetId()};
-            if (m_trackedResources.find(assetId) !=
-                m_trackedResources.end())
-            {
-                continue;
-            }
-            const auto pending = std::find_if(
-                m_pendingResources.begin(),
-                m_pendingResources.end(),
-                [assetId](const PendingResource& value)
-                {
-                    return value.assetId == assetId;
-                });
-            if (pending != m_pendingResources.end())
-                continue;
-            m_pendingResources.push_back(PendingResource{
-                assetId,
-                RenderResourceKind::Texture,
-                ResourceHandle<IResource>(texture),
-                RenderUploadPriority::High,
-                m_nextFifoOrder++,
-                sourceRevision});
-        }
-    }
-
     RenderResourceHandle ResourceSubsystem::ResolveDependency(
         AssetId assetId,
         RenderResourceKind kind) const
@@ -659,10 +667,12 @@ namespace
         }
         const RenderResourceStatus status =
             m_gateway->QueryResourceStatus(tracked->second.handle);
+        // Composite uploads are submitted only after their dependencies are
+        // usable by Render. Enqueuing a material beside its texture uploads
+        // would otherwise turn ordinary asynchronous ordering into a terminal
+        // DependencyUnavailable failure on the Render Thread.
         return status.code == RenderResourceStatusCode::Current &&
-                       status.state != RenderResourcePublicState::Evicting &&
-                       status.state != RenderResourcePublicState::Released &&
-                       status.state != RenderResourcePublicState::Failed
+                       status.state == RenderResourcePublicState::GPUReady
                    ? tracked->second.handle
                    : RenderResourceHandle{};
     }

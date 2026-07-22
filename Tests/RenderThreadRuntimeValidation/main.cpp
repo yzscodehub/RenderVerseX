@@ -697,6 +697,39 @@ namespace
         EXPECT_TRUE(failure.context.empty());
     }
 
+    TEST(RenderThreadRuntimeValidation,
+         ConsumerValueDiagnosticsArePublishedAfterFrameConsumption)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->frameDiagnostics.available = true;
+        probe->frameDiagnostics.frameSequence = 7;
+        probe->frameDiagnostics.rendered = true;
+        probe->frameDiagnostics.renderGraphTotalPasses = 11;
+        probe->frameDiagnostics.visibleObjectCount = 3;
+
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateInlineRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        ASSERT_EQ(runtime.TryPublishFrame(MakePacket(7)).code,
+                  RenderFramePublishCode::Accepted);
+
+        const RenderDiagnosticsSnapshot diagnostics =
+            runtime.GetDiagnosticsSnapshot();
+        EXPECT_EQ(diagnostics.lastPresentedFrameSequence, 7U);
+        EXPECT_TRUE(diagnostics.frameFeatures.available);
+        EXPECT_EQ(diagnostics.frameFeatures.frameSequence, 7U);
+        EXPECT_TRUE(diagnostics.frameFeatures.rendered);
+        EXPECT_EQ(diagnostics.frameFeatures.renderGraphTotalPasses, 11U);
+        EXPECT_EQ(diagnostics.frameFeatures.visibleObjectCount, 3U);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
     TEST(RenderThreadRuntimeValidation, ExecutorStartFailurePreservesNativeError)
     {
         auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
@@ -2091,7 +2124,7 @@ namespace
         EXPECT_EQ(result.teardownMode, RenderTeardownMode::NormalDrain);
         EXPECT_THROW(subsystem.Configure(RenderRuntimeConfig{}, MakeSurface()),
                      std::logic_error);
-        EXPECT_EQ(subsystem.GetDevice(), nullptr);
+        EXPECT_FALSE(subsystem.IsReady());
     }
 
     TEST(RenderThreadRuntimeValidation,
@@ -2112,7 +2145,7 @@ namespace
             EXPECT_THROW(
                 subsystem.Configure(RenderRuntimeConfig{}, MakeSurface()),
                 std::logic_error);
-            EXPECT_EQ(subsystem.GetDevice(), nullptr);
+            EXPECT_FALSE(subsystem.IsReady());
         }
         {
             RenderSubsystem subsystem;
@@ -2120,7 +2153,7 @@ namespace
             EXPECT_THROW(
                 subsystem.Configure(RenderRuntimeConfig{}, MakeSurface()),
                 std::logic_error);
-            EXPECT_EQ(subsystem.GetDevice(), nullptr);
+            EXPECT_FALSE(subsystem.IsReady());
         }
     }
 

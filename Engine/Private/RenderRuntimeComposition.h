@@ -6,7 +6,7 @@
  */
 
 #include "Core/Types.h"
-#include "Render/RenderRuntimeTypes.h"
+#include "Render/RenderDiagnostics.h"
 #include "RenderContracts/RenderFramePacket.h"
 #include "RenderExtraction/RenderFrameExtractor.h"
 #include "RHI/RHINativeSurface.h"
@@ -72,6 +72,8 @@ namespace RVX
             const RenderRuntimeCompositionFrameInput& input) = 0;
         virtual RenderFramePublishResult PublishFrame(
             std::unique_ptr<const RenderFramePacket> packet) = 0;
+        [[nodiscard]] virtual RenderDiagnosticsSnapshot
+            GetRenderDiagnostics() const = 0;
         virtual RenderResizeResult RequestResize(
             const NativeSurfaceDesc& surface) = 0;
         virtual void BeginResourceShutdown() = 0;
@@ -107,6 +109,8 @@ namespace RVX
         }
         [[nodiscard]] bool QueueCapture(
             const RenderFrameCaptureRequest& request) noexcept;
+        [[nodiscard]] bool RequestSurfaceResize(uint32 width,
+                                                uint32 height);
         [[nodiscard]] RenderShutdownResult Shutdown();
         [[nodiscard]] const RenderRuntimeCompositionStats& GetStats() const noexcept
         {
@@ -117,6 +121,7 @@ namespace RVX
         [[nodiscard]] static bool IsCaptureRequestValid(
             const RenderFrameCaptureRequest& request) noexcept;
         [[nodiscard]] RHIBackendType ResolveBackend() const noexcept;
+        void AcknowledgePublishedOneShotValues();
         void RouteSurfaceUpdate();
 
         RenderRuntimeConfig m_config{};
@@ -128,6 +133,8 @@ namespace RVX
         uint64 m_nextFrameSequence = 1;
         uint64 m_worldRevision = 0;
         uint64 m_temporalEpoch = 1;
+        uint64 m_temporalResetPublishedSequence = 0;
+        uint64 m_lastAcknowledgedCaptureRequestId = 0;
         bool m_temporalResetPending = false;
         bool m_prepared = false;
         bool m_renderConfigured = false;

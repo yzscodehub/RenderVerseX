@@ -206,7 +206,10 @@ RenderFrameExtractionResult RenderFrameExtractor::Extract(
         light.range = proxy.range;
         light.innerConeRadians = proxy.innerConeAngle;
         light.outerConeRadians = proxy.outerConeAngle;
-        light.castsShadows = false;
+        // Shadow allocation is Render-owned. The frame packet carries the
+        // update-side intent while an optional shadowResource is reserved for
+        // externally prepared shadow data.
+        light.castsShadows = proxy.castsShadow;
         static_cast<void>(builder.AddLight(std::move(light)));
     }
 

@@ -8,11 +8,6 @@
 #include "Core/MathTypes.h"
 #include "Engine/Engine.h"
 #include "HAL/Input/KeyCodes.h"
-#include "Render/Context/RenderContext.h"
-#include "Render/Passes/ShadowPass.h"
-#include "Render/PostProcess/PostProcessStack.h"
-#include "Render/PostProcess/ToneMappingTypes.h"
-#include "Render/Renderer/SceneRenderer.h"
 #include "Render/RenderSubsystem.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/ResourceSubsystem.h"
@@ -21,6 +16,7 @@
 #include "Runtime/Camera/Camera.h"
 #include "Runtime/Input/InputSubsystem.h"
 #include "Runtime/Window/WindowSubsystem.h"
+#include "Samples/RuntimeFrameDriver.h"
 #include "Samples/SampleCLI.h"
 #include "Scene/Components/LightComponent.h"
 #include "Scene/Components/SkyboxComponent.h"
@@ -49,8 +45,6 @@ using namespace RVX;
 
 namespace
 {
-    constexpr uint32 kDX12TextureCopyPitchAlignment = 256;
-
     enum class ShowcaseMode : uint8
     {
         PostProcess = 0,
@@ -70,24 +64,6 @@ namespace
         Medium,
         High,
         Cinematic
-    };
-
-    enum class ScreenshotChannelOrder : uint8
-    {
-        RGBA = 0,
-        BGRA
-    };
-
-    struct PendingScreenshot
-    {
-        RHIBufferRef readbackBuffer;
-        uint32 width = 0;
-        uint32 height = 0;
-        uint32 rowPitch = 0;
-        uint32 bytesPerPixel = 0;
-        ScreenshotChannelOrder channelOrder = ScreenshotChannelOrder::BGRA;
-        bool originBottomLeft = false;
-        std::string failureReason;
     };
 
     struct ShowcaseOptions
@@ -126,9 +102,7 @@ namespace
         std::vector<std::string> fallbackReasons;
         std::vector<std::string> resourceDiagnostics;
         bool renderDiagnosticsAvailable = false;
-        SceneRendererFrameDiagnostics renderDiagnostics;
-        SceneEnvironmentIBLStats iblStats;
-        SceneClusteredLightingStats clusteredStats;
+        RenderFrameFeatureDiagnostics renderDiagnostics;
     };
 
     struct OrbitCamera
@@ -649,119 +623,10 @@ namespace
         return "Tests/Fixtures/ModelViewer/PBRMaterialSwatch.gltf";
     }
 
-    bool IsScreenshotBackendSupported(RHIBackendType backendType)
+    bool WriteScreenshotPPM(const RenderFrameCaptureResult& screenshot,
+                            const std::filesystem::path& path)
     {
-        return backendType == RHIBackendType::DX11 ||
-               backendType == RHIBackendType::DX12 ||
-               backendType == RHIBackendType::OpenGL;
-    }
-
-    bool TryGetScreenshotChannelOrder(RHIFormat format, ScreenshotChannelOrder& outChannelOrder)
-    {
-        switch (format)
-        {
-            case RHIFormat::RGBA8_UNORM:
-            case RHIFormat::RGBA8_UNORM_SRGB:
-                outChannelOrder = ScreenshotChannelOrder::RGBA;
-                return true;
-            case RHIFormat::BGRA8_UNORM:
-            case RHIFormat::BGRA8_UNORM_SRGB:
-                outChannelOrder = ScreenshotChannelOrder::BGRA;
-                return true;
-            default:
-                return false;
-        }
-    }
-
-    bool QueueBackBufferScreenshot(RenderSubsystem* renderSubsystem, PendingScreenshot& outScreenshot)
-    {
-        if (!renderSubsystem || !renderSubsystem->GetRenderContext())
-        {
-            outScreenshot.failureReason = "render subsystem is not ready";
-            return false;
-        }
-
-        RenderContext* renderContext = renderSubsystem->GetRenderContext();
-        IRHIDevice* device = renderSubsystem->GetDevice();
-        if (!device)
-        {
-            outScreenshot.failureReason = "RHI device is not ready";
-            return false;
-        }
-
-        const RHIBackendType backendType = device->GetBackendType();
-        if (!IsScreenshotBackendSupported(backendType))
-        {
-            outScreenshot.failureReason =
-                std::string("screenshot readback is not supported for backend ") + ToString(backendType);
-            return false;
-        }
-
-        RHITexture* backBuffer = renderContext->GetCurrentBackBuffer();
-        RHICommandContext* commandContext = renderContext->GetGraphicsContext();
-        if (!backBuffer || !commandContext)
-        {
-            outScreenshot.failureReason = "back buffer or command context is not ready";
-            return false;
-        }
-
-        ScreenshotChannelOrder channelOrder = ScreenshotChannelOrder::BGRA;
-        if (!TryGetScreenshotChannelOrder(backBuffer->GetFormat(), channelOrder))
-        {
-            outScreenshot.failureReason = "unsupported screenshot back buffer channel order";
-            return false;
-        }
-
-        const uint32 bytesPerPixel = GetFormatBytesPerPixel(backBuffer->GetFormat());
-        if (bytesPerPixel != 4)
-        {
-            outScreenshot.failureReason = "unsupported screenshot back buffer format";
-            return false;
-        }
-
-        const uint32 width = backBuffer->GetWidth();
-        const uint32 height = backBuffer->GetHeight();
-        uint32 rowPitch = width * bytesPerPixel;
-        if (backendType == RHIBackendType::DX12)
-        {
-            rowPitch = (rowPitch + kDX12TextureCopyPitchAlignment - 1u) &
-                       ~(kDX12TextureCopyPitchAlignment - 1u);
-        }
-
-        RHIBufferDesc readbackDesc;
-        readbackDesc.size = static_cast<uint64>(rowPitch) * height;
-        readbackDesc.usage = RHIBufferUsage::CopyDst;
-        readbackDesc.memoryType = RHIMemoryType::Readback;
-        readbackDesc.debugName = "ShowcaseSmokeReadback";
-
-        outScreenshot.readbackBuffer = device->CreateBuffer(readbackDesc);
-        if (!outScreenshot.readbackBuffer)
-        {
-            outScreenshot.failureReason = "failed to create screenshot readback buffer";
-            return false;
-        }
-
-        RHIBufferTextureCopyDesc copyDesc;
-        copyDesc.bufferRowPitch = rowPitch;
-        copyDesc.textureRegion = {0, 0, width, height};
-
-        commandContext->TextureBarrier(backBuffer, RHIResourceState::Present, RHIResourceState::CopySource);
-        commandContext->CopyTextureToBuffer(backBuffer, outScreenshot.readbackBuffer.Get(), copyDesc);
-        commandContext->TextureBarrier(backBuffer, RHIResourceState::CopySource, RHIResourceState::Present);
-
-        outScreenshot.width = width;
-        outScreenshot.height = height;
-        outScreenshot.rowPitch = rowPitch;
-        outScreenshot.bytesPerPixel = bytesPerPixel;
-        outScreenshot.channelOrder = channelOrder;
-        outScreenshot.originBottomLeft = backendType == RHIBackendType::OpenGL;
-        outScreenshot.failureReason.clear();
-        return true;
-    }
-
-    bool WriteScreenshotPPM(const PendingScreenshot& screenshot, const std::filesystem::path& path)
-    {
-        if (!screenshot.readbackBuffer || screenshot.width == 0 || screenshot.height == 0)
+        if (!screenshot.IsComplete() || screenshot.bytesPerPixel != 4)
         {
             return false;
         }
@@ -772,21 +637,16 @@ namespace
             std::filesystem::create_directories(parent);
         }
 
-        void* mapped = screenshot.readbackBuffer->Map();
-        if (!mapped)
-        {
-            return false;
-        }
-
         std::ofstream stream(path, std::ios::binary);
         if (!stream)
         {
-            screenshot.readbackBuffer->Unmap();
             return false;
         }
 
         stream << "P6\n" << screenshot.width << " " << screenshot.height << "\n255\n";
-        const uint8* data = static_cast<const uint8*>(mapped);
+        const uint8* data = screenshot.bytes.data();
+        const bool bgra = screenshot.format == RHIFormat::BGRA8_UNORM ||
+                          screenshot.format == RHIFormat::BGRA8_UNORM_SRGB;
         for (uint32 y = 0; y < screenshot.height; ++y)
         {
             const uint32 sourceY = screenshot.originBottomLeft ? (screenshot.height - 1u - y) : y;
@@ -795,7 +655,7 @@ namespace
             {
                 const uint8* pixel = row + static_cast<uint64>(x) * screenshot.bytesPerPixel;
                 uint8 rgb[3] = {};
-                if (screenshot.channelOrder == ScreenshotChannelOrder::BGRA)
+                if (bgra)
                 {
                     rgb[0] = pixel[2];
                     rgb[1] = pixel[1];
@@ -811,7 +671,6 @@ namespace
             }
         }
 
-        screenshot.readbackBuffer->Unmap();
         return static_cast<bool>(stream);
     }
 
@@ -880,56 +739,27 @@ namespace
         }
     }
 
-    void AppendRendererDiagnostics(SceneRenderer* sceneRenderer, ShowcaseReport& report)
+    void AppendRendererDiagnostics(
+        const RenderDiagnosticsSnapshot& runtimeDiagnostics,
+        ShowcaseReport& report)
     {
-        if (!sceneRenderer)
+        if (!runtimeDiagnostics.frameFeatures.available)
         {
-            report.fallbackReasons.push_back("SceneRenderer unavailable");
+            report.fallbackReasons.push_back(
+                "Render frame diagnostics unavailable");
             return;
         }
 
-        report.renderDiagnostics = sceneRenderer->GetFrameDiagnostics();
+        report.renderDiagnostics = runtimeDiagnostics.frameFeatures;
         report.renderDiagnosticsAvailable = true;
-        report.iblStats = sceneRenderer->GetEnvironmentIBLStats();
-        report.clusteredStats = sceneRenderer->GetClusteredLightingStats();
-
-        const SceneRendererFrameDiagnostics& diagnostics = report.renderDiagnostics;
-        if (!diagnostics.skippedReason.empty())
-        {
-            report.fallbackReasons.push_back(diagnostics.skippedReason);
-        }
-        if (!diagnostics.hdrFallbackReason.empty())
-        {
-            report.fallbackReasons.push_back(diagnostics.hdrFallbackReason);
-        }
-        if (!diagnostics.localShadowFallbackReason.empty())
-        {
-            report.fallbackReasons.push_back(diagnostics.localShadowFallbackReason);
-        }
-        if (!diagnostics.clusteredLightingFallbackReason.empty())
-        {
-            report.fallbackReasons.push_back(diagnostics.clusteredLightingFallbackReason);
-        }
-        if (!diagnostics.externalTargetFallbackReason.empty())
-        {
-            report.fallbackReasons.push_back(diagnostics.externalTargetFallbackReason);
-        }
-        if (!diagnostics.postProcessToneMappingBoundaryWarning.empty())
-        {
-            report.fallbackReasons.push_back(diagnostics.postProcessToneMappingBoundaryWarning);
-        }
-        if (!report.iblStats.fallbackReason.empty())
-        {
-            report.fallbackReasons.push_back(report.iblStats.fallbackReason);
-        }
-
-        for (const RenderPassStatus& status : diagnostics.passStatuses)
-        {
-            if (status.requestedEnabled && !status.supported && !status.unsupportedReason.empty())
-            {
-                report.unsupportedFeatures.push_back(status.name + ": " + status.unsupportedReason);
-            }
-        }
+        report.fallbackReasons.insert(
+            report.fallbackReasons.end(),
+            report.renderDiagnostics.fallbackReasons.begin(),
+            report.renderDiagnostics.fallbackReasons.end());
+        report.unsupportedFeatures.insert(
+            report.unsupportedFeatures.end(),
+            report.renderDiagnostics.unsupportedFeatures.begin(),
+            report.renderDiagnostics.unsupportedFeatures.end());
     }
 
     void AppendGPUResidencyDiagnostics(ShowcaseReport& report)
@@ -940,15 +770,15 @@ namespace
             return;
         }
 
-        const GPUResourceManager::Stats& stats = report.renderDiagnostics.gpuResourceStats;
-        report.resourceDiagnostics.push_back("gpu residency memory budget=" + std::to_string(stats.memoryBudget));
-        report.resourceDiagnostics.push_back("gpu residency used memory=" + std::to_string(stats.usedMemory));
+        const RenderFrameFeatureDiagnostics& stats = report.renderDiagnostics;
+        report.resourceDiagnostics.push_back("gpu residency memory budget=" + std::to_string(stats.gpuMemoryBudget));
+        report.resourceDiagnostics.push_back("gpu residency used memory=" + std::to_string(stats.gpuUsedMemory));
         report.resourceDiagnostics.push_back("gpu residency resident meshes=" + std::to_string(stats.residentMeshCount));
         report.resourceDiagnostics.push_back("gpu residency resident textures=" + std::to_string(stats.residentTextureCount));
         report.resourceDiagnostics.push_back("gpu residency pending uploads=" + std::to_string(stats.pendingUploadCount));
         report.resourceDiagnostics.push_back("gpu residency queued uploads=" + std::to_string(stats.queuedUploadCount));
         report.resourceDiagnostics.push_back("gpu residency failed uploads=" + std::to_string(stats.failedUploadCount));
-        report.resourceDiagnostics.push_back(stats.usedMemory > stats.memoryBudget
+        report.resourceDiagnostics.push_back(stats.gpuUsedMemory > stats.gpuMemoryBudget
                                                    ? "gpu residency eviction reason=over budget"
                                                    : "gpu residency eviction reason=none");
     }
@@ -1123,7 +953,7 @@ namespace
     bool WriteShowcaseReport(const ShowcaseReport& report, const std::filesystem::path& path)
     {
         SampleReport sampleReport;
-        const SceneRendererFrameDiagnostics& diagnostics = report.renderDiagnostics;
+        const RenderFrameFeatureDiagnostics& diagnostics = report.renderDiagnostics;
         sampleReport.sampleName = report.sampleName;
         sampleReport.backend = report.activeBackend;
         sampleReport.frameCount = report.frameCount;
@@ -1155,7 +985,7 @@ namespace
         sampleReport.renderDiagnostics.postProcessGraphPassCount = diagnostics.postProcessGraphPassCount;
         sampleReport.renderDiagnostics.clusteredLightingInitialized = diagnostics.clusteredLightingInitialized;
         sampleReport.renderDiagnostics.clusteredLightingActiveClusters = diagnostics.clusteredLightingActiveClusters;
-        sampleReport.renderDiagnostics.textureIBLEnabled = report.iblStats.textureIBLEnabled;
+        sampleReport.renderDiagnostics.textureIBLEnabled = diagnostics.textureIBLEnabled;
 
         std::string reportError;
         if (!WriteSampleReportJson(sampleReport, path, &reportError))
@@ -1331,70 +1161,34 @@ namespace
         }
     }
 
-    void ApplyPostProcessPreset(SceneRenderer* sceneRenderer,
+    void ApplyPostProcessPreset(RenderFrameSettings& frameSettings,
                                 int presetIndex,
                                 ShowcaseQuality quality,
                                 bool postProcessEnabled)
     {
-        if (!sceneRenderer)
-        {
-            return;
-        }
-
-        PostProcessSettings settings = sceneRenderer->GetPostProcessSettings();
-        settings.enableToneMapping = true;
-        settings.toneMappingOperator = ToneMappingOperator::ACES;
-        settings.exposureMode = ToneMappingExposureMode::ManualMultiplier;
-        settings.exposure = 1.0f;
-        settings.gamma = 2.2f;
+        RenderPostProcessSettings& settings = frameSettings.postProcess;
+        settings.enabled = postProcessEnabled;
+        settings.enableTAA = postProcessEnabled;
         settings.enableBloom = false;
+        settings.enableSSAO = postProcessEnabled;
+        settings.enableSSR = postProcessEnabled;
         settings.bloomIntensity = 0.0f;
         settings.bloomThreshold = 1.0f;
-        settings.bloomRadius = 0.5f;
-        settings.enableFXAA = true;
-        settings.enableColorGrading = true;
-        settings.contrast = 1.0f;
-        settings.saturation = 1.0f;
-        settings.brightness = 0.0f;
-        settings.enableVignette = false;
-        settings.vignetteIntensity = 0.25f;
-        settings.enableChromaticAberration = false;
-        settings.chromaticAberrationIntensity = 0.05f;
-        settings.enableFilmGrain = false;
-        settings.filmGrainIntensity = 0.0f;
-        settings.enableSSAO = true;
-        settings.ssaoRadius = 0.5f;
-        settings.ssaoIntensity = 0.45f;
-        settings.visualQualityPreset = RenderVisualQualityPreset::Medium;
 
         switch (quality)
         {
             case ShowcaseQuality::Low:
-                settings.enableFXAA = false;
                 settings.enableBloom = false;
-                settings.enableColorGrading = false;
                 settings.enableSSAO = false;
-                settings.visualQualityPreset = RenderVisualQualityPreset::Low;
+                settings.enableSSR = false;
                 break;
             case ShowcaseQuality::High:
-                settings.bloomRadius = 1.0f;
-                settings.contrast = 1.08f;
-                settings.saturation = 1.05f;
-                settings.ssaoRadius = 0.65f;
-                settings.ssaoIntensity = 0.55f;
-                settings.visualQualityPreset = RenderVisualQualityPreset::High;
+                settings.enableBloom = true;
+                settings.bloomIntensity = 1.15f;
                 break;
             case ShowcaseQuality::Cinematic:
-                settings.bloomRadius = 1.5f;
-                settings.contrast = 1.16f;
-                settings.saturation = 1.1f;
-                settings.enableVignette = true;
-                settings.vignetteIntensity = 0.28f;
-                settings.enableFilmGrain = true;
-                settings.filmGrainIntensity = 0.12f;
-                settings.ssaoRadius = 0.85f;
-                settings.ssaoIntensity = 0.7f;
-                settings.visualQualityPreset = RenderVisualQualityPreset::Cinematic;
+                settings.enableBloom = true;
+                settings.bloomIntensity = 1.35f;
                 break;
             case ShowcaseQuality::Medium:
             default:
@@ -1407,27 +1201,16 @@ namespace
                 settings.enableBloom = true;
                 settings.bloomIntensity = 1.5f;
                 settings.bloomThreshold = 0.75f;
-                settings.bloomRadius = 1.25f;
-                settings.exposure = 1.1f;
                 RVX_CORE_INFO("Post-process preset 2: bloom");
                 break;
             case 2:
-                settings.contrast = 1.18f;
-                settings.saturation = 1.12f;
-                settings.brightness = 0.02f;
-                settings.enableVignette = true;
-                settings.vignetteIntensity = 0.32f;
-                settings.enableChromaticAberration = true;
-                settings.chromaticAberrationIntensity = 0.035f;
-                settings.enableFilmGrain = true;
-                settings.filmGrainIntensity = 0.08f;
+                settings.enableBloom = true;
+                settings.bloomIntensity = 0.85f;
                 RVX_CORE_INFO("Post-process preset 3: filmic grade");
                 break;
             case 3:
-                settings.toneMappingOperator = ToneMappingOperator::Neutral;
-                settings.exposure = 0.75f;
-                settings.enableColorGrading = false;
-                settings.enableFXAA = false;
+                settings.enableTAA = false;
+                settings.enableSSR = false;
                 RVX_CORE_INFO("Post-process preset 4: neutral debug");
                 break;
             case 0:
@@ -1436,62 +1219,42 @@ namespace
                 break;
         }
 
-        if (!postProcessEnabled)
-        {
-            settings.enableToneMapping = false;
-            settings.enableBloom = false;
-            settings.enableFXAA = false;
-            settings.enableColorGrading = false;
-            settings.enableVignette = false;
-            settings.enableChromaticAberration = false;
-            settings.enableFilmGrain = false;
-            settings.enableSSAO = false;
-        }
-
-        sceneRenderer->ApplyPostProcessSettings(settings);
+        settings.enableBloom &= postProcessEnabled;
+        settings.enableTAA &= postProcessEnabled;
+        settings.enableSSAO &= postProcessEnabled;
+        settings.enableSSR &= postProcessEnabled;
     }
 
-    ShadowPassConfig MakeShowcaseShadowConfig(ShowcaseQuality quality, bool shadowsEnabled)
+    RenderShadowSettings MakeShowcaseShadowSettings(
+        ShowcaseQuality quality,
+        bool shadowsEnabled)
     {
-        ShadowPassConfig config;
-        config.shadowMapSize = 2048;
-        config.numCascades = 3;
-        config.cascadeSplitLambda = 0.90f;
-        config.filterRadiusTexels = 1.25f;
-        config.shadowBias = 0.0035f;
-        config.normalBias = 0.02f;
-        config.cascadeBlendRatio = 0.05f;
+        RenderShadowSettings settings;
+        settings.enabled = shadowsEnabled;
+        settings.atlasResolution = 2048;
+        settings.cascadeCount = 3;
+        settings.maxDistance = 200.0f;
 
         switch (quality)
         {
             case ShowcaseQuality::Low:
-                config.shadowMapSize = 1024;
-                config.numCascades = 1;
-                config.filterRadiusTexels = 0.75f;
+                settings.atlasResolution = 1024;
+                settings.cascadeCount = 1;
                 break;
             case ShowcaseQuality::High:
-                config.shadowMapSize = 2048;
-                config.numCascades = 4;
-                config.filterRadiusTexels = 1.5f;
+                settings.atlasResolution = 2048;
+                settings.cascadeCount = 4;
                 break;
             case ShowcaseQuality::Cinematic:
-                config.shadowMapSize = 4096;
-                config.numCascades = 4;
-                config.filterRadiusTexels = 2.0f;
+                settings.atlasResolution = 4096;
+                settings.cascadeCount = 4;
                 break;
             case ShowcaseQuality::Medium:
             default:
                 break;
         }
 
-        if (!shadowsEnabled)
-        {
-            config.shadowMapSize = 512;
-            config.numCascades = 1;
-            config.filterRadiusTexels = 0.0f;
-        }
-
-        return config;
+        return settings;
     }
 
     bool CreateSkybox(SceneManager* sceneManager)
@@ -1682,6 +1445,22 @@ int main(int argc, char* argv[])
     engineConfig.windowHeight = options.height;
     engineConfig.vsync = true;
     engineConfig.enableJobSystem = false;
+    engineConfig.renderRuntime.backendType = options.backend;
+    engineConfig.renderRuntime.enableValidation = options.enableValidation;
+    engineConfig.initialRenderFrameSettings.shadows =
+        MakeShowcaseShadowSettings(options.quality, options.shadowsEnabled);
+    const int startupPostPreset =
+        (options.mode == ShowcaseMode::Material ||
+         options.mode == ShowcaseMode::Rendering ||
+         options.mode == ShowcaseMode::TerrainWater ||
+         options.mode == ShowcaseMode::ParticleFX)
+            ? 2
+            : 0;
+    ApplyPostProcessPreset(
+        engineConfig.initialRenderFrameSettings,
+        startupPostPreset,
+        options.quality,
+        options.postProcessEnabled);
     engine.SetConfig(engineConfig);
 
     auto* windowSubsystem = engine.AddSubsystem<WindowSubsystem>();
@@ -1701,13 +1480,6 @@ int main(int argc, char* argv[])
     engine.AddSubsystem<InputSubsystem>();
 
     auto* renderSubsystem = engine.AddSubsystem<RenderSubsystem>();
-    RenderConfig renderConfig;
-    renderConfig.backendType = options.backend;
-    renderConfig.enableValidation = options.enableValidation;
-    renderConfig.vsync = options.frames == 0;
-    renderConfig.autoBindWindow = true;
-    renderConfig.autoRender = false;
-    renderSubsystem->SetConfig(renderConfig);
 
     engine.Initialize();
     if (!engine.IsInitialized())
@@ -1723,20 +1495,10 @@ int main(int argc, char* argv[])
         input->SetWindow(windowSubsystem->GetWindow());
     }
 
-    SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
-    if (sceneRenderer)
-    {
-        sceneRenderer->ApplyShadowPassConfig(MakeShowcaseShadowConfig(options.quality, options.shadowsEnabled));
-        const int startupPostPreset =
-            (options.mode == ShowcaseMode::Material ||
-             options.mode == ShowcaseMode::Rendering ||
-             options.mode == ShowcaseMode::TerrainWater ||
-             options.mode == ShowcaseMode::ParticleFX) ? 2 : 0;
-        ApplyPostProcessPreset(sceneRenderer,
-                               startupPostPreset,
-                               options.quality,
-                               options.postProcessEnabled);
-    }
+    RuntimeFrameDriver frameDriver(engine, *renderSubsystem);
+    RenderFrameSettings frameSettings = engine.GetRenderFrameSettings();
+    RenderDiagnosticsSnapshot lastDiagnostics =
+        renderSubsystem->GetDiagnosticsSnapshot();
 
     World* world = engine.CreateWorld("ShowcaseWorld");
     if (!world)
@@ -1810,12 +1572,9 @@ int main(int argc, char* argv[])
          options.mode == ShowcaseMode::ParticleFX) ? 2 : 0;
     ApplyLightPreset(lightRig, initialLightPreset, options.shadowsEnabled);
 
-    bool isVulkan = false;
-    if (auto* device = renderSubsystem->GetDevice())
-    {
-        isVulkan = device->GetBackendType() == RHIBackendType::Vulkan;
-        RVX_CORE_INFO("Adapter: {}", device->GetCapabilities().adapterName);
-    }
+    const bool isVulkan =
+        lastDiagnostics.backend == RHIBackendType::Vulkan;
+    RVX_CORE_INFO("Active backend: {}", ToString(lastDiagnostics.backend));
     const float pitchDirection = isVulkan ? -1.0f : 1.0f;
 
     float lastMouseX = 0.0f;
@@ -1848,22 +1607,26 @@ int main(int argc, char* argv[])
             if (input->IsKeyPressed(Key::Num1))
             {
                 postPreset = 0;
-                ApplyPostProcessPreset(sceneRenderer, postPreset, options.quality, options.postProcessEnabled);
+                ApplyPostProcessPreset(frameSettings, postPreset, options.quality, options.postProcessEnabled);
+                static_cast<void>(engine.SetRenderFrameSettings(frameSettings));
             }
             if (input->IsKeyPressed(Key::Num2))
             {
                 postPreset = 1;
-                ApplyPostProcessPreset(sceneRenderer, postPreset, options.quality, options.postProcessEnabled);
+                ApplyPostProcessPreset(frameSettings, postPreset, options.quality, options.postProcessEnabled);
+                static_cast<void>(engine.SetRenderFrameSettings(frameSettings));
             }
             if (input->IsKeyPressed(Key::Num3))
             {
                 postPreset = 2;
-                ApplyPostProcessPreset(sceneRenderer, postPreset, options.quality, options.postProcessEnabled);
+                ApplyPostProcessPreset(frameSettings, postPreset, options.quality, options.postProcessEnabled);
+                static_cast<void>(engine.SetRenderFrameSettings(frameSettings));
             }
             if (input->IsKeyPressed(Key::Num4))
             {
                 postPreset = 3;
-                ApplyPostProcessPreset(sceneRenderer, postPreset, options.quality, options.postProcessEnabled);
+                ApplyPostProcessPreset(frameSettings, postPreset, options.quality, options.postProcessEnabled);
+                static_cast<void>(engine.SetRenderFrameSettings(frameSettings));
             }
 
             if (input->IsKeyPressed(Key::F1))
@@ -1931,44 +1694,64 @@ int main(int argc, char* argv[])
             !options.screenshotPath.empty() &&
             options.frames > 0 &&
             (renderedFrames + 1u >= options.frames);
-        PendingScreenshot pendingScreenshot;
-
-        engine.TickWithoutRender();
-        renderSubsystem->BeginFrame();
-        renderSubsystem->Render(world, camera);
-
-        if (captureFrame && !QueueBackBufferScreenshot(renderSubsystem, pendingScreenshot))
+        constexpr uint64 captureRequestId = 1;
+        if (captureFrame)
         {
-            screenshotFailureReason = pendingScreenshot.failureReason.empty()
-                ? "failed to queue back buffer screenshot"
-                : pendingScreenshot.failureReason;
-            RVX_CORE_ERROR("Showcase screenshot capture failed: {}", screenshotFailureReason);
-            sampleSucceeded = false;
+            RenderFrameCaptureRequest captureRequest;
+            captureRequest.requestId = captureRequestId;
+            captureRequest.kind = RenderFrameCaptureKind::Color;
+            captureRequest.width = options.width;
+            captureRequest.height = options.height;
+            captureRequest.includeAlpha = false;
+            if (!engine.RequestRenderFrameCapture(captureRequest))
+            {
+                screenshotFailureReason =
+                    "failed to queue value-owned frame capture";
+                sampleSucceeded = false;
+            }
         }
 
-        renderSubsystem->EndFrame();
+        lastDiagnostics = frameDriver.TickOnce(1.0f / 60.0f);
 
         if (captureFrame && sampleSucceeded)
         {
-            if (RenderContext* renderContext = renderSubsystem->GetRenderContext())
-            {
-                renderContext->WaitIdle();
-            }
-
-            if (WriteScreenshotPPM(pendingScreenshot, options.screenshotPath))
+            RuntimeFrameWaitRequest waitRequest;
+            waitRequest.captureRequestId = captureRequestId;
+            waitRequest.maxTicks = 1000;
+            const RuntimeFrameWaitResult waitResult =
+                frameDriver.WaitFor(waitRequest);
+            lastDiagnostics = waitResult.diagnostics;
+            if (waitResult.Reached() &&
+                WriteScreenshotPPM(lastDiagnostics.lastCapture,
+                                   options.screenshotPath))
             {
                 screenshotWritten = true;
                 RVX_CORE_INFO("Showcase screenshot wrote {}", options.screenshotPath.string());
             }
             else
             {
-                screenshotFailureReason = "failed to write screenshot PPM";
-                RVX_CORE_ERROR("Showcase screenshot write failed: {}", options.screenshotPath.string());
+                screenshotFailureReason =
+                    lastDiagnostics.lastCapture.message.empty()
+                        ? "failed to complete or write screenshot PPM"
+                        : lastDiagnostics.lastCapture.message;
+                RVX_CORE_ERROR(
+                    "Showcase screenshot write failed: path={}, waitCode={}, "
+                    "ticks={}, lifecycle={}, failureClass={}, captureCode={}, "
+                    "captureRequest={}, captureFrame={}, captureBytes={}, reason={}",
+                    options.screenshotPath.string(),
+                    static_cast<uint32>(waitResult.code),
+                    waitResult.ticks,
+                    static_cast<uint32>(lastDiagnostics.lifecycle),
+                    static_cast<uint32>(
+                        lastDiagnostics.lastFailure.runtime.resultClass),
+                    static_cast<uint32>(lastDiagnostics.lastCapture.code),
+                    lastDiagnostics.lastCapture.requestId,
+                    lastDiagnostics.lastCapture.frameSequence,
+                    lastDiagnostics.lastCapture.bytes.size(),
+                    screenshotFailureReason);
                 sampleSucceeded = false;
             }
         }
-
-        renderSubsystem->Present();
 
         ++renderedFrames;
         if (options.frames > 0 && renderedFrames >= options.frames)
@@ -1980,9 +1763,9 @@ int main(int argc, char* argv[])
     ShowcaseReport report;
     report.sampleName = GetModeName(options.mode);
     report.description = GetModeDescription(options.mode);
-    report.activeBackend = renderSubsystem->GetDevice()
-        ? renderSubsystem->GetDevice()->GetBackendType()
-        : options.backend;
+    report.activeBackend = lastDiagnostics.backend == RHIBackendType::None
+                               ? options.backend
+                               : lastDiagnostics.backend;
     report.quality = GetQualityName(options.quality);
     report.width = options.width;
     report.height = options.height;
@@ -2019,7 +1802,7 @@ int main(int argc, char* argv[])
     {
         AppendResourceRuntimePolicyDiagnostics(report);
     }
-    AppendRendererDiagnostics(sceneRenderer, report);
+    AppendRendererDiagnostics(lastDiagnostics, report);
     if (options.mode == ShowcaseMode::ResourceRuntime)
     {
         AppendGPUResidencyDiagnostics(report);

@@ -18,6 +18,7 @@ target_link_libraries(ModelViewer PRIVATE
     RVX::RHI
     RVX::ShaderCompiler
     RVX::HAL
+    RVX::SampleCommon
     Particle
 )
 

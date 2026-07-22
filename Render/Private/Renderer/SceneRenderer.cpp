@@ -1148,10 +1148,26 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
     m_postProcessSettings.enableTAA =
         frameSettings.postProcess.enabled &&
         frameSettings.postProcess.enableTAA;
+    m_postProcessSettings.enableRayTracedReflectionDenoise =
+        frameSettings.postProcess.enableRayTracedReflectionDenoise;
+    m_postProcessSettings.toneMappingOperator =
+        static_cast<ToneMappingOperator>(
+            frameSettings.postProcess.toneMappingOperator);
+    m_postProcessSettings.exposureMode =
+        static_cast<ToneMappingExposureMode>(
+            frameSettings.postProcess.exposureMode);
+    m_postProcessSettings.exposure = frameSettings.postProcess.exposure;
+    m_postProcessSettings.cameraEV100 =
+        frameSettings.postProcess.cameraEV100;
+    m_postProcessSettings.exposureCompensationEV =
+        frameSettings.postProcess.exposureCompensationEV;
+    m_postProcessSettings.gamma = frameSettings.postProcess.gamma;
     m_postProcessSettings.bloomThreshold =
         frameSettings.postProcess.bloomThreshold;
     m_postProcessSettings.bloomIntensity =
         frameSettings.postProcess.bloomIntensity;
+    m_postProcessSettings.bloomRadius =
+        frameSettings.postProcess.bloomRadius;
     m_postProcessSettings.exposure = m_renderScene.GetView().exposure;
     m_postProcessSettings.enableRayTracedReflections =
         frameSettings.rayTracing.enabled &&
@@ -1161,7 +1177,43 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
     m_shadowPassConfig.shadowMapSize =
         frameSettings.shadows.atlasResolution;
     m_shadowPassConfig.numCascades = frameSettings.shadows.cascadeCount;
+    m_shadowPassConfig.cascadeSplitLambda =
+        frameSettings.shadows.cascadeSplitLambda;
+    m_shadowPassConfig.filterRadiusTexels =
+        frameSettings.shadows.filterRadiusTexels;
+    m_shadowPassConfig.shadowBias = frameSettings.shadows.shadowBias;
+    m_shadowPassConfig.normalBias = frameSettings.shadows.normalBias;
+    m_shadowPassConfig.cascadeBlendRatio =
+        frameSettings.shadows.cascadeBlendRatio;
     ApplyShadowPassConfig(m_shadowPassConfig);
+
+    GPUCullingConfig gpuCullingConfig = GetGPUDrivenCullingConfig();
+    gpuCullingConfig.maxInstances = frameSettings.gpuCulling.maxVisibleObjects;
+    gpuCullingConfig.enableOcclusionCulling =
+        frameSettings.gpuCulling.enableOcclusionCulling;
+    gpuCullingConfig.enableDistanceCulling =
+        frameSettings.gpuCulling.enableDistanceCulling;
+    gpuCullingConfig.maxDrawDistance =
+        frameSettings.gpuCulling.maxDrawDistance;
+    SetGPUDrivenCullingConfig(gpuCullingConfig);
+
+    SceneRayTracingBudgetSettings rayTracingBudget =
+        GetRayTracingBudgetSettings();
+    rayTracingBudget.enabled = frameSettings.rayTracing.budgetEnabled;
+    rayTracingBudget.maxRayCount = frameSettings.rayTracing.maxRayCount;
+    rayTracingBudget.maxDenoiseTapCount =
+        frameSettings.rayTracing.maxDenoiseTapCount;
+    rayTracingBudget.maxTrackedResourceBytes =
+        frameSettings.rayTracing.maxTrackedResourceBytes;
+    rayTracingBudget.maxMeasuredGpuMs =
+        frameSettings.rayTracing.maxMeasuredGpuMs;
+    rayTracingBudget.maxShadowMeasuredGpuMs =
+        frameSettings.rayTracing.maxShadowMeasuredGpuMs;
+    rayTracingBudget.maxReflectionMeasuredGpuMs =
+        frameSettings.rayTracing.maxReflectionMeasuredGpuMs;
+    rayTracingBudget.gpuTimingAdjustmentFrameCount =
+        frameSettings.rayTracing.gpuTimingAdjustmentFrameCount;
+    ApplyRayTracingBudgetSettings(rayTracingBudget);
 
     m_featureSnapshot = m_renderScene.GetFeatures();
     if (m_particleFeaturePass)
@@ -1195,6 +1247,25 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
         environment.irradianceTexture.IsValid() &&
         environment.prefilteredTexture.IsValid() &&
         environment.brdfLutTexture.IsValid();
+    ++m_environmentIBLStats.frameCount;
+    m_environmentIBLStats.skyboxFound =
+        m_renderScene.GetSky().skyTexture.IsValid();
+    m_environmentIBLStats.uploadRequested = false;
+    m_environmentIBLStats.textureIBLEnabled = textureIBLReady;
+    m_environmentIBLStats.prefilteredMipLevels = 1;
+    m_environmentIBLStats.intensity = environment.intensity;
+    m_environmentIBLStats.fallbackReason =
+        textureIBLReady ? std::string{}
+                        : "PacketEnvironmentResourcesUnavailable";
+    if (textureIBLReady)
+    {
+        if (RHITexture* prefiltered = registry.ResolveTextureObject(
+                environment.prefilteredTexture))
+        {
+            m_environmentIBLStats.prefilteredMipLevels =
+                std::max(1U, prefiltered->GetMipLevels());
+        }
+    }
     if (m_materialSystem)
     {
         m_materialSystem->SetEnvironmentIBLResources(

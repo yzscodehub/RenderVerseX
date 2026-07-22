@@ -40,6 +40,7 @@ namespace RVX
                    !m_backBuffers.empty();
         }
         bool AcquireNextImage();
+        bool HasAcquiredImage() const { return m_hasAcquiredImage; }
         VkSemaphore GetCurrentRenderFinishedSemaphore() const;
 
     private:

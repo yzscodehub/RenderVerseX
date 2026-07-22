@@ -46,6 +46,30 @@ namespace
     constexpr float RVX_MAX_SHADOW_CASTER_SLOPE_BIAS = 16.0f;
     constexpr const char* RVX_PIPELINE_MANIFEST_MAGIC = "RVX_PIPELINE_CACHE_MANIFEST";
 
+    bool PrepareVulkanSampledTexture(IRHIDevice* device, RHITexture* texture)
+    {
+        if (!device || !texture ||
+            device->GetBackendType() != RHIBackendType::Vulkan)
+        {
+            return device != nullptr && texture != nullptr;
+        }
+
+        RHICommandContextRef context =
+            device->CreateCommandContext(RHICommandQueueType::Graphics);
+        if (!context)
+        {
+            return !device->GetCapabilities().supportsExplicitResourceBarriers;
+        }
+        context->Begin();
+        context->TextureBarrier(texture,
+                                RHIResourceState::Undefined,
+                                RHIResourceState::ShaderResource);
+        context->End();
+        device->SubmitCommandContext(context.Get());
+        device->WaitIdle();
+        return device->QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready;
+    }
+
     struct PipelineCacheManifest
     {
         uint32 version = RVX_PIPELINE_MANIFEST_VERSION;
@@ -3395,7 +3419,9 @@ bool PipelineCache::EnsureFrameShadowFallbackResources()
         textureDesc.arraySize = RVX_MAX_DIRECTIONAL_SHADOW_CASCADES;
         textureDesc.debugName = "FallbackDirectionalShadowMap";
         m_fallbackDirectionalShadowTexture = m_device->CreateTexture(textureDesc);
-        if (!m_fallbackDirectionalShadowTexture)
+        if (!m_fallbackDirectionalShadowTexture ||
+            !PrepareVulkanSampledTexture(
+                m_device, m_fallbackDirectionalShadowTexture.Get()))
         {
             return false;
         }
@@ -3441,7 +3467,9 @@ bool PipelineCache::EnsureFrameRayTracedShadowFallbackResources()
         RHITextureDesc textureDesc = RHITextureDesc::Texture2D(1, 1, RHIFormat::R8_UNORM);
         textureDesc.debugName = "FallbackRayTracedShadowMask";
         m_fallbackRayTracedShadowMaskTexture = m_device->CreateTexture(textureDesc);
-        if (!m_fallbackRayTracedShadowMaskTexture)
+        if (!m_fallbackRayTracedShadowMaskTexture ||
+            !PrepareVulkanSampledTexture(
+                m_device, m_fallbackRayTracedShadowMaskTexture.Get()))
         {
             return false;
         }
@@ -5169,6 +5197,11 @@ RHIGraphicsPipelineDesc PipelineCache::BuildGPUDrivenDefaultLitPipelineDesc(
     RHIGraphicsPipelineDesc pipelineDesc =
         BuildDefaultLitPipelineDesc(debugName, depthStencilState, blendState, renderTargetFormat);
     pipelineDesc.vertexShader = m_gpuDrivenVertexShader.Get();
+    std::erase_if(pipelineDesc.inputLayout.elements,
+                  [](const RHIInputElement& element)
+                  {
+                      return element.inputSlot == 4 || element.inputSlot == 5;
+                  });
     return pipelineDesc;
 }
 
@@ -5207,6 +5240,11 @@ RHIGraphicsPipelineDesc PipelineCache::BuildGPUDrivenDepthOnlyPipelineDesc() con
     RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
     pipelineDesc.vertexShader = m_gpuDrivenDepthOnlyVertexShader.Get();
     pipelineDesc.debugName = "GPUDrivenDepthOnlyPipeline";
+    std::erase_if(pipelineDesc.inputLayout.elements,
+                  [](const RHIInputElement& element)
+                  {
+                      return element.inputSlot == 4 || element.inputSlot == 5;
+                  });
     return pipelineDesc;
 }
 

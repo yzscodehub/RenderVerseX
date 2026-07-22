@@ -87,6 +87,11 @@ namespace RVX
                 return m_render.TryPublishFrame(std::move(packet));
             }
 
+            RenderDiagnosticsSnapshot GetRenderDiagnostics() const override
+            {
+                return m_render.GetDiagnosticsSnapshot();
+            }
+
             RenderResizeResult RequestResize(
                 const NativeSurfaceDesc& surface) override
             {
@@ -188,6 +193,7 @@ namespace RVX
             return;
         }
 
+        AcknowledgePublishedOneShotValues();
         RouteSurfaceUpdate();
         if (activeWorld == nullptr || !m_services->IsRenderReady())
         {
@@ -227,9 +233,11 @@ namespace RVX
             publication.code == RenderFramePublishCode::ReplacedOlder)
         {
             ++m_stats.publicationAccepted;
-            m_pendingCapture = {};
-            m_temporalResetPending = false;
-            m_settings.temporal.resetHistory = false;
+            if (input.explicitDiscontinuity ||
+                input.settings.temporal.resetHistory)
+            {
+                m_temporalResetPublishedSequence = publication.sequence;
+            }
         }
         else
         {
@@ -267,11 +275,40 @@ namespace RVX
         const RenderFrameCaptureRequest& request) noexcept
     {
         if (!IsCaptureRequestValid(request) ||
-            m_pendingCapture.requestId != 0)
+            m_pendingCapture.requestId != 0 ||
+            request.requestId <= m_lastAcknowledgedCaptureRequestId)
         {
             return false;
         }
         m_pendingCapture = request;
+        return true;
+    }
+
+    bool RenderRuntimeComposition::RequestSurfaceResize(uint32 width,
+                                                        uint32 height)
+    {
+        if (m_shutdown || !m_renderConfigured || m_services == nullptr ||
+            width == 0 || height == 0)
+        {
+            return false;
+        }
+
+        NativeSurfaceDesc surface = m_surface;
+        surface.width = width;
+        surface.height = height;
+        ++surface.generation;
+        ++m_stats.resizeRequests;
+        const RenderResizeResult result =
+            m_services->RequestResize(surface);
+        m_stats.lastResizeResult = result;
+        if (result.code != RenderResizeCode::Accepted &&
+            result.code != RenderResizeCode::CoalescedOlder)
+        {
+            return false;
+        }
+        m_surface = surface;
+        m_stats.surfaceGeneration = surface.generation;
+        m_temporalResetPending = true;
         return true;
     }
 
@@ -305,6 +342,36 @@ namespace RVX
         return m_config.backendType == RHIBackendType::Auto
                    ? SelectBestBackend()
                    : m_config.backendType;
+    }
+
+    void RenderRuntimeComposition::AcknowledgePublishedOneShotValues()
+    {
+        if (m_pendingCapture.requestId == 0 &&
+            m_temporalResetPublishedSequence == 0)
+        {
+            return;
+        }
+
+        const RenderDiagnosticsSnapshot diagnostics =
+            m_services->GetRenderDiagnostics();
+        if (m_pendingCapture.requestId != 0 &&
+            diagnostics.lastCapture.requestId ==
+                m_pendingCapture.requestId &&
+            diagnostics.lastCapture.code !=
+                RenderFrameCaptureResultCode::None)
+        {
+            m_lastAcknowledgedCaptureRequestId =
+                m_pendingCapture.requestId;
+            m_pendingCapture = {};
+        }
+        if (m_temporalResetPublishedSequence != 0 &&
+            diagnostics.lastAppliedFrameSequence >=
+                m_temporalResetPublishedSequence)
+        {
+            m_temporalResetPending = false;
+            m_settings.temporal.resetHistory = false;
+            m_temporalResetPublishedSequence = 0;
+        }
     }
 
     void RenderRuntimeComposition::RouteSurfaceUpdate()

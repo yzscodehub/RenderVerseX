@@ -1665,11 +1665,13 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
     const fs::path modelViewerPath = FindModelViewerSourcePath();
     ASSERT_FALSE(modelViewerPath.empty());
     const std::string modelViewerSource = ReadTextFile(modelViewerPath);
-    EXPECT_NE(modelViewerSource.find("IsSmokeScreenshotBackendSupported"), std::string::npos);
+    EXPECT_NE(modelViewerSource.find("RenderFrameCaptureResult"), std::string::npos);
     EXPECT_NE(modelViewerSource.find("RHIBackendType::OpenGL"), std::string::npos);
     EXPECT_NE(modelViewerSource.find("windowConfig.graphicsApi = options.backend == RHIBackendType::OpenGL"),
               std::string::npos);
-    EXPECT_NE(modelViewerSource.find("outScreenshot.originBottomLeft = backendType == RHIBackendType::OpenGL"),
+    EXPECT_NE(modelViewerSource.find("screenshot.originBottomLeft ? (screenshot.height - 1u - y) : y"),
+              std::string::npos);
+    EXPECT_NE(modelViewerSource.find("engine.RequestRenderFrameCapture(capture)"),
               std::string::npos);
 
     const fs::path repoRoot = FindShaderDirectory().parent_path().parent_path();
@@ -5827,13 +5829,14 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesShadowQualityPresets)
     EXPECT_NE(source.find("value == \"medium\""), std::string::npos);
     EXPECT_NE(source.find("value == \"high\""), std::string::npos);
     EXPECT_NE(source.find("value == \"ultra\""), std::string::npos);
-    EXPECT_NE(source.find("ShadowPassConfig MakeShadowQualityConfig"), std::string::npos);
-    EXPECT_NE(source.find("return ShadowPassConfig{};"), std::string::npos);
-    EXPECT_NE(source.find("config.casterDepthBias = 0.0f;"), std::string::npos);
-    EXPECT_NE(source.find("config.casterSlopeScaledDepthBias = 0.0f;"), std::string::npos);
-    EXPECT_NE(source.find("config.casterDepthBiasClamp = 0.0f;"), std::string::npos);
+    EXPECT_NE(source.find("RenderShadowSettings MakeShadowQualityConfig"), std::string::npos);
+    EXPECT_NE(source.find("return RenderShadowSettings{};"), std::string::npos);
+    EXPECT_NE(source.find("config.atlasResolution = 4096;"), std::string::npos);
+    EXPECT_NE(source.find("config.shadowBias = 0.0025f;"), std::string::npos);
+    EXPECT_NE(source.find("config.normalBias = 0.0300f;"), std::string::npos);
     EXPECT_NE(source.find("MakeShadowQualityConfig(options.shadowQualityPreset)"), std::string::npos);
-    EXPECT_NE(source.find("sceneRenderer->ApplyShadowPassConfig(shadowConfig);"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.shadows ="), std::string::npos);
+    EXPECT_NE(source.find("engine.SetRenderFrameSettings(frameSettings)"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelection)
@@ -5847,7 +5850,7 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
     ASSERT_FALSE(modelViewerPath.empty());
     const std::string source = ReadTextFile(modelViewerPath);
 
-    EXPECT_NE(source.find("#include \"Render/PostProcess/ToneMappingTypes.h\""), std::string::npos);
+    EXPECT_NE(source.find("#include \"Engine/Engine.h\""), std::string::npos);
     EXPECT_NE(source.find("--tonemap <default|none|reinhard|reinhard-extended|aces|uncharted2|neutral>"),
               std::string::npos);
     EXPECT_NE(source.find("--post-exposure <linear>"), std::string::npos);
@@ -5894,15 +5897,15 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
 
     const auto operatorStart = source.find("bool TryGetToneMappingOperator");
     ASSERT_NE(operatorStart, std::string::npos);
-    const auto operatorEnd = source.find("ShadowPassConfig MakeShadowQualityConfig", operatorStart);
+    const auto operatorEnd = source.find("RenderShadowSettings MakeShadowQualityConfig", operatorStart);
     ASSERT_NE(operatorEnd, std::string::npos);
     const std::string operatorBody = source.substr(operatorStart, operatorEnd - operatorStart);
-    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::None;"), std::string::npos);
-    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::Reinhard;"), std::string::npos);
-    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::ReinhardExtended;"), std::string::npos);
-    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::ACES;"), std::string::npos);
-    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::Uncharted2;"), std::string::npos);
-    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::Neutral;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = RenderToneMappingOperator::None;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = RenderToneMappingOperator::Reinhard;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = RenderToneMappingOperator::ReinhardExtended;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = RenderToneMappingOperator::ACES;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = RenderToneMappingOperator::Uncharted2;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = RenderToneMappingOperator::Neutral;"), std::string::npos);
 
     const auto parseFloatStart = source.find("bool ParseFloat");
     ASSERT_NE(parseFloatStart, std::string::npos);
@@ -5936,58 +5939,29 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
     EXPECT_NE(source.find("Invalid --bloom-threshold value"), std::string::npos);
     EXPECT_NE(source.find("arg == \"--bloom-radius\""), std::string::npos);
     EXPECT_NE(source.find("Invalid --bloom-radius value"), std::string::npos);
-    EXPECT_NE(source.find("PostProcessSettings postProcessSettings = sceneRenderer->GetPostProcessSettings();"),
+    EXPECT_NE(source.find("RenderFrameSettings frameSettings = engine.GetRenderFrameSettings();"),
               std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.toneMappingOperator = tonemapOperator;"), std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.exposureMode = ToneMappingExposureMode::CameraEV100;"),
+    EXPECT_NE(source.find("frameSettings.postProcess.toneMappingOperator = toneMapping;"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.postProcess.exposureMode = RenderExposureMode::CameraEV100;"),
               std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.cameraEV100 = options.cameraEV100;"), std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.exposureCompensationEV ="), std::string::npos);
-    EXPECT_NE(source.find("options.exposureCompensationSet ? options.exposureCompensationEV : 0.0f"),
+    EXPECT_NE(source.find("frameSettings.postProcess.cameraEV100 = options.cameraEV100;"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.postProcess.exposureCompensationEV ="), std::string::npos);
+    EXPECT_NE(source.find("options.exposureCompensationSet ? options.exposureCompensationEV"),
               std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.exposureMode = ToneMappingExposureMode::ManualMultiplier;"),
+    EXPECT_NE(source.find("RenderExposureMode::ManualMultiplier;"),
               std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.exposure = options.postExposure;"), std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.gamma = options.displayGamma;"), std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.enableBloom = true;"), std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.bloomIntensity = options.bloomIntensity;"), std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.bloomThreshold = options.bloomThreshold;"), std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.bloomRadius = options.bloomRadius;"), std::string::npos);
-    EXPECT_NE(source.find("bloomIntensity={:.3f}"), std::string::npos);
-    EXPECT_NE(source.find("bloomThreshold={:.3f}"), std::string::npos);
-    EXPECT_NE(source.find("bloomRadius={:.3f}"), std::string::npos);
-    EXPECT_NE(source.find("sceneRenderer->ApplyPostProcessSettings(postProcessSettings);"), std::string::npos);
-    EXPECT_NE(source.find("TryGetToneMappingOperator(options.tonemapSelection, tonemapOperator)"),
+    EXPECT_NE(source.find("frameSettings.postProcess.exposure = options.postExposure;"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.postProcess.gamma = options.displayGamma;"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.postProcess.bloomIntensity = options.bloomIntensity;"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.postProcess.bloomThreshold = options.bloomThreshold;"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.postProcess.bloomRadius = options.bloomRadius;"), std::string::npos);
+    EXPECT_NE(source.find("engine.SetRenderFrameSettings(frameSettings)"), std::string::npos);
+    EXPECT_NE(source.find("TryGetToneMappingOperator(options.tonemapSelection, toneMapping)"),
               std::string::npos);
-    EXPECT_NE(source.find("bool applyPostProcessSettings ="), std::string::npos);
-    EXPECT_NE(source.find("tonemapSet || options.postExposureSet || options.cameraEV100Set ||"), std::string::npos);
-    EXPECT_NE(source.find("options.exposureCompensationSet || options.displayGammaSet ||"), std::string::npos);
-    EXPECT_NE(source.find("options.bloomIntensitySet || options.bloomThresholdSet || options.bloomRadiusSet ||"),
-              std::string::npos);
-    EXPECT_NE(source.find("options.enableRayTracedReflections;"), std::string::npos);
     EXPECT_NE(source.find("Invalid --tonemap value"), std::string::npos);
     EXPECT_EQ(source.find("options.tonemapSelection = ToneMapSelection::ACES"), std::string::npos);
-
-    const auto applyStart = source.find("if (applyPostProcessSettings)");
-    ASSERT_NE(applyStart, std::string::npos);
-    const auto applyEnd = source.find("const ShadowPassConfig shadowConfig", applyStart);
-    ASSERT_NE(applyEnd, std::string::npos);
-    const std::string applyBody = source.substr(applyStart, applyEnd - applyStart);
-    EXPECT_NE(applyBody.find("sceneRenderer->ApplyPostProcessSettings(postProcessSettings);"), std::string::npos);
-
-    auto countOccurrences = [](const std::string& text, const std::string& needle)
-    {
-        size_t count = 0;
-        size_t pos = text.find(needle);
-        while (pos != std::string::npos)
-        {
-            ++count;
-            pos = text.find(needle, pos + needle.size());
-        }
-        return count;
-    };
-    EXPECT_EQ(countOccurrences(source, "sceneRenderer->ApplyPostProcessSettings(postProcessSettings);"),
-              static_cast<size_t>(1));
+    EXPECT_EQ(source.find("GetPostProcessSettings()"), std::string::npos);
+    EXPECT_EQ(source.find("ApplyPostProcessSettings("), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObservable)
@@ -6061,26 +6035,20 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
               std::string::npos);
     EXPECT_NE(source.find("options.backend = dx12SmokeRequested ? RHIBackendType::DX12 : RHIBackendType::DX11;"),
               std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.enableRayTracedReflections = true;"), std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.enableRayTracedReflectionDenoise = options.enableRayTracedReflectionDenoise;"),
+    EXPECT_NE(source.find("frameSettings.rayTracing.enableReflections ="), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.postProcess.enableRayTracedReflectionDenoise ="),
               std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.enableTAA = true;"), std::string::npos);
-    EXPECT_NE(source.find("bool IsRayTracedShadowReady(SceneRenderer* sceneRenderer"), std::string::npos);
-    EXPECT_NE(source.find("bool IsRayTracedShadowHistoryReady(SceneRenderer* sceneRenderer"), std::string::npos);
-    EXPECT_NE(source.find("bool IsRayTracedShadowHistoryResetReady(SceneRenderer* sceneRenderer"), std::string::npos);
-    EXPECT_NE(source.find("bool IsRayTracedShadowHistoryResizeReady(SceneRenderer* sceneRenderer"), std::string::npos);
-    EXPECT_NE(source.find("bool IsRayTracedReflectionReady(SceneRenderer* sceneRenderer,"), std::string::npos);
-    EXPECT_NE(source.find("bool IsRayTracedReflectionHistoryReady(SceneRenderer* sceneRenderer"), std::string::npos);
-    EXPECT_NE(source.find("bool IsRayTracedReflectionHistoryResetReady(SceneRenderer* sceneRenderer"), std::string::npos);
-    EXPECT_NE(source.find("bool IsRayTracedReflectionHistoryResizeReady(SceneRenderer* sceneRenderer"), std::string::npos);
-    EXPECT_NE(source.find("const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();"),
+    EXPECT_NE(source.find("bool IsRayTracedShadowReady(\n        const RenderFrameFeatureDiagnostics*"), std::string::npos);
+    EXPECT_NE(source.find("bool IsRayTracedShadowHistoryReady(\n        const RenderFrameFeatureDiagnostics*"), std::string::npos);
+    EXPECT_NE(source.find("bool IsRayTracedReflectionReady(const RenderFrameFeatureDiagnostics*"), std::string::npos);
+    EXPECT_NE(source.find("const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;"),
               std::string::npos);
-    EXPECT_NE(source.find("sceneRenderer->ApplyRayTracingBudgetSettings(budgetSettings);"), std::string::npos);
-    EXPECT_NE(source.find("budgetSettings.maxTrackedResourceBytes = options.rayTracingMaxResourceBytes;"),
+    EXPECT_NE(source.find("engine.SetRenderFrameSettings(frameSettings)"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.rayTracing.maxTrackedResourceBytes ="),
               std::string::npos);
-    EXPECT_NE(source.find("budgetSettings.maxMeasuredGpuMs = options.rayTracingMaxGpuMs;"), std::string::npos);
-    EXPECT_NE(source.find("budgetSettings.maxReflectionMeasuredGpuMs = options.rayTracingMaxReflectionGpuMs;"), std::string::npos);
-    EXPECT_NE(source.find("budgetSettings.gpuTimingAdjustmentFrameCount = options.rayTracingGpuAdjustmentFrameCount;"),
+    EXPECT_NE(source.find("frameSettings.rayTracing.maxMeasuredGpuMs = options.rayTracingMaxGpuMs;"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.rayTracing.maxReflectionMeasuredGpuMs ="), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.rayTracing.gpuTimingAdjustmentFrameCount ="),
               std::string::npos);
     EXPECT_NE(source.find("DescribeRayTracingShadowHistoryReadiness"), std::string::npos);
     EXPECT_NE(source.find("DescribeRayTracingReflectionHistoryReadiness"), std::string::npos);

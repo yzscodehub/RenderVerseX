@@ -23,6 +23,7 @@
 #include "Runtime/RenderThreadRuntime.h"
 #include "Runtime/Window/WindowSubsystem.h"
 
+#include <limits>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -192,6 +193,7 @@ namespace
                 {
                     m_sceneRenderer->PrepareForSwapChainResize();
                 }
+                static_cast<void>(m_retirementQueue.Poll());
                 applied = m_context->ResizeSwapChain(surface);
             }
             else if (updateKind == NativeSurfaceUpdateKind::Replace &&
@@ -208,6 +210,7 @@ namespace
                 {
                     m_sceneRenderer->PrepareForSwapChainResize();
                 }
+                static_cast<void>(m_retirementQueue.Poll());
                 applied = m_context->CreateSwapChain(surface);
             }
             if (!applied)
@@ -221,7 +224,8 @@ namespace
             {
                 return PresentAcceptedFrame(
                     m_sceneRenderer->GetLastPresentedFrameSequence(),
-                    surface.generation);
+                    surface.generation,
+                    {});
             }
             return PresentDeterministicClear(surface.generation);
         }
@@ -271,7 +275,8 @@ namespace
 
             return PresentAcceptedFrame(
                 packet.GetHeader().sequence,
-                m_context->GetSurface().generation);
+                m_context->GetSurface().generation,
+                packet.GetCaptureRequest());
         }
 
         void PollCompletion() override
@@ -282,6 +287,301 @@ namespace
         void RetireCompleted() override
         {
             static_cast<void>(m_retirementQueue.Poll());
+        }
+
+        void PopulateDiagnostics(
+            RenderDiagnosticsSnapshot& outDiagnostics) const override
+        {
+            outDiagnostics.lastCapture = m_lastCaptureResult;
+            if (m_sceneRenderer == nullptr)
+            {
+                return;
+            }
+
+            const SceneRendererFrameDiagnostics frame =
+                m_sceneRenderer->GetFrameDiagnostics();
+            const SceneEnvironmentIBLStats ibl =
+                m_sceneRenderer->GetEnvironmentIBLStats();
+            const SceneRayTracingFrameStats rayTracing =
+                m_sceneRenderer->GetRayTracingFrameStats();
+            RenderFrameFeatureDiagnostics features;
+            features.available = true;
+            features.frameSequence =
+                m_sceneRenderer->GetLastPresentedFrameSequence();
+            features.renderAttempted = frame.renderAttempted;
+            features.rendered = frame.rendered;
+            features.graphBuilt = frame.graphBuilt;
+            features.graphCompiled = frame.graphCompiled;
+            features.renderGraphTotalPasses = frame.renderGraphTotalPasses;
+            features.visibleObjectCount =
+                static_cast<uint32>(frame.visibleObjectCount);
+            features.renderSceneLightCount =
+                static_cast<uint32>(frame.renderSceneLightCount);
+            features.requestedPostProcessEffectCount =
+                frame.requestedPostProcessEffectCount;
+            features.enabledPostProcessEffectCount =
+                frame.enabledPostProcessEffectCount;
+            features.unsupportedPostProcessSkippedCount =
+                frame.unsupportedPostProcessSkippedCount;
+            features.postProcessGraphPassCount =
+                frame.postProcessGraphPassCount;
+            features.clusteredLightingInitialized =
+                frame.clusteredLightingInitialized;
+            features.clusteredLightingActiveClusters =
+                frame.clusteredLightingActiveClusters;
+            features.textureIBLEnabled = ibl.textureIBLEnabled;
+
+            for (const RenderPassStatus& status : frame.passStatuses)
+            {
+                if (status.name == "SkyboxPass")
+                {
+                    features.skybox.requested = status.requestedEnabled;
+                    features.skybox.supported = status.supported;
+                    features.skybox.enabled = status.enabled;
+                    features.skybox.reason = status.unsupportedReason;
+                }
+            }
+            if (PipelineCache* pipelineCache =
+                    m_sceneRenderer->GetPipelineCache())
+            {
+                const DirectionalShadowFrameBindingResult& shadow =
+                    pipelineCache->GetLastDirectionalShadowFrameBindingResult();
+                features.directionalShadow.samplingEnabled =
+                    shadow.shadowSamplingEnabled &&
+                    shadow.fallbackReason ==
+                        DirectionalShadowFallbackReason::None;
+                features.directionalShadow.reason =
+                    PipelineCache::GetDirectionalShadowFallbackReasonName(
+                        shadow.fallbackReason);
+            }
+
+            const SceneGPUDrivenCullingStats& gpuCulling =
+                frame.gpuDrivenCullingStats;
+#define RVX_COPY_GPU_CULLING_FIELD(name) \
+            features.gpuDrivenCulling.name = gpuCulling.name
+            RVX_COPY_GPU_CULLING_FIELD(enabled);
+            RVX_COPY_GPU_CULLING_FIELD(graphPassAdded);
+            RVX_COPY_GPU_CULLING_FIELD(graphPassRecorded);
+            RVX_COPY_GPU_CULLING_FIELD(gpuExecutionRecorded);
+            RVX_COPY_GPU_CULLING_FIELD(graphInputDrawItemCount);
+            RVX_COPY_GPU_CULLING_FIELD(visibleCullableDrawItemCount);
+            RVX_COPY_GPU_CULLING_FIELD(frustumCulledDrawItemCount);
+            RVX_COPY_GPU_CULLING_FIELD(distanceCulledDrawItemCount);
+            RVX_COPY_GPU_CULLING_FIELD(skippedMissingGpuDataCount);
+            RVX_COPY_GPU_CULLING_FIELD(opaqueIndirectRequested);
+            RVX_COPY_GPU_CULLING_FIELD(opaqueIndirectEligible);
+            RVX_COPY_GPU_CULLING_FIELD(opaqueGpuDrivenIndirectBatchCount);
+            RVX_COPY_GPU_CULLING_FIELD(opaqueGpuDrivenIndirectDrawCount);
+#undef RVX_COPY_GPU_CULLING_FIELD
+
+            const ParticleFeaturePassStats& particles =
+                m_sceneRenderer->GetParticleFeaturePassStats();
+            features.particles.requested = particles.requested;
+            features.particles.supported = particles.supported;
+            features.particles.enabled = particles.enabled;
+            features.particles.graphPassScheduled =
+                particles.graphPassScheduled;
+            features.particles.drawSubmitted = particles.drawSubmitted;
+            features.particles.itemCount = particles.itemCount;
+            features.particles.renderPayloadReadyItemCount =
+                particles.renderPayloadReadyItemCount;
+            features.particles.totalAliveParticles =
+                particles.totalAliveParticles;
+            features.particles.reason = particles.unsupportedReason;
+
+            if (MaterialSystem* materials =
+                    m_sceneRenderer->GetMaterialSystem())
+            {
+                const MaterialBindingResult& binding =
+                    materials->GetLastBindingResult();
+                features.material.ready =
+                    binding.status == MaterialBindingStatus::Ready;
+                features.material.usedFallback = binding.usedFallback;
+                features.material.constantsUpdated =
+                    binding.constantsUpdated;
+                features.material.descriptorSetAvailable =
+                    binding.descriptorSet != nullptr;
+                features.material.textureFlags = binding.textureFlags;
+                features.material.requiredTextureFlags =
+                    static_cast<uint32>(MaterialTextureFlags::HasBaseColor) |
+                    static_cast<uint32>(MaterialTextureFlags::HasNormal) |
+                    static_cast<uint32>(
+                        MaterialTextureFlags::HasMetallicRoughness) |
+                    static_cast<uint32>(MaterialTextureFlags::HasOcclusion) |
+                    static_cast<uint32>(MaterialTextureFlags::HasEmissive);
+                features.material.materialName = binding.materialName;
+                features.material.message = binding.message;
+            }
+
+#define RVX_COPY_RAY_TRACING_FIELD(name) \
+            features.rayTracing.name = rayTracing.name
+            RVX_COPY_RAY_TRACING_FIELD(scenePrepared);
+            RVX_COPY_RAY_TRACING_FIELD(tlasAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(shadowRequested);
+            RVX_COPY_RAY_TRACING_FIELD(shadowSupported);
+            RVX_COPY_RAY_TRACING_FIELD(shadowRecorded);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionRequested);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionSupported);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionRecorded);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionDenoiseRequested);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionDenoiseSupported);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionDenoiseRecorded);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionCompositeRequested);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionCompositeSupported);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionCompositeRecorded);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionMaterialTextureTableAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGeometryMetadataAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGeometryTableAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(shadowHistoryAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(shadowDepthHistoryAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(shadowNormalHistoryAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(shadowHistoryReset);
+            RVX_COPY_RAY_TRACING_FIELD(shadowHistoryRecreated);
+            RVX_COPY_RAY_TRACING_FIELD(shadowHistoryResolutionChanged);
+            RVX_COPY_RAY_TRACING_FIELD(shadowHistoryConfigChanged);
+            RVX_COPY_RAY_TRACING_FIELD(shadowTemporalAccumulated);
+            RVX_COPY_RAY_TRACING_FIELD(shadowMaterialTextureTableAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(shadowAlphaMetadataAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(shadowAlphaTextureTableAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(shadowAlphaGeometryTableAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionHistoryAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionDepthHistoryAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionNormalHistoryAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionHistoryReset);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionHistoryRecreated);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionHistoryResolutionChanged);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionHistoryConfigChanged);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionTemporalAccumulated);
+            RVX_COPY_RAY_TRACING_FIELD(denoiseFallbackToRaw);
+            RVX_COPY_RAY_TRACING_FIELD(shadowGpuTimingSupported);
+            RVX_COPY_RAY_TRACING_FIELD(shadowGpuTimingQueriesRecorded);
+            RVX_COPY_RAY_TRACING_FIELD(shadowGpuTimingResolveRecorded);
+            RVX_COPY_RAY_TRACING_FIELD(shadowGpuTimingReadbackBufferAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(shadowGpuTimingResultAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGpuTimingSupported);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGpuTimingQueriesRecorded);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGpuTimingResolveRecorded);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGpuTimingReadbackBufferAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGpuTimingResultAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(budgetEnabled);
+            RVX_COPY_RAY_TRACING_FIELD(budgetApplied);
+            RVX_COPY_RAY_TRACING_FIELD(rayBudgetExceeded);
+            RVX_COPY_RAY_TRACING_FIELD(denoiseTapBudgetExceeded);
+            RVX_COPY_RAY_TRACING_FIELD(resourceBudgetExceeded);
+            RVX_COPY_RAY_TRACING_FIELD(resourceBudgetEvictionAttempted);
+            RVX_COPY_RAY_TRACING_FIELD(resourceByteAccountingOverflowed);
+            RVX_COPY_RAY_TRACING_FIELD(gpuTimeBudgetExceeded);
+            RVX_COPY_RAY_TRACING_FIELD(gpuTimeBudgetApplied);
+            RVX_COPY_RAY_TRACING_FIELD(shadowGpuTimeBudgetExceeded);
+            RVX_COPY_RAY_TRACING_FIELD(shadowGpuTimeBudgetApplied);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGpuTimeBudgetExceeded);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGpuTimeBudgetApplied);
+            RVX_COPY_RAY_TRACING_FIELD(measuredGpuTimeAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(rayBudget);
+            RVX_COPY_RAY_TRACING_FIELD(denoiseTapBudget);
+            RVX_COPY_RAY_TRACING_FIELD(trackedResourceBudget);
+            RVX_COPY_RAY_TRACING_FIELD(estimatedShadowRayCount);
+            RVX_COPY_RAY_TRACING_FIELD(estimatedReflectionRayCount);
+            RVX_COPY_RAY_TRACING_FIELD(estimatedTotalRayCount);
+            RVX_COPY_RAY_TRACING_FIELD(estimatedReflectionDenoiseTapCount);
+            RVX_COPY_RAY_TRACING_FIELD(shadowGpuTimestampFrequency);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGpuTimestampFrequency);
+            RVX_COPY_RAY_TRACING_FIELD(shadowGpuTimingElapsedMs);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGpuTimingElapsedMs);
+            RVX_COPY_RAY_TRACING_FIELD(gpuTimeBudget);
+            RVX_COPY_RAY_TRACING_FIELD(shadowGpuTimeBudget);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGpuTimeBudget);
+            RVX_COPY_RAY_TRACING_FIELD(measuredGpuTimeForBudgetMs);
+            RVX_COPY_RAY_TRACING_FIELD(measuredShadowGpuTimeForBudgetMs);
+            RVX_COPY_RAY_TRACING_FIELD(measuredReflectionGpuTimeForBudgetMs);
+            RVX_COPY_RAY_TRACING_FIELD(gpuTimeBudgetQualityScale);
+            RVX_COPY_RAY_TRACING_FIELD(shadowGpuTimeBudgetQualityScale);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGpuTimeBudgetQualityScale);
+            RVX_COPY_RAY_TRACING_FIELD(gpuTimeBudgetOverBudgetFrameCount);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGpuTimeBudgetOverBudgetFrameCount);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGpuTimeBudgetUnderBudgetFrameCount);
+            RVX_COPY_RAY_TRACING_FIELD(blasCacheEvictionFrameThreshold);
+            features.rayTracing.cachedBLASCount =
+                static_cast<uint32>(rayTracing.cachedBLASCount);
+            features.rayTracing.evictedBLASCount =
+                static_cast<uint32>(rayTracing.evictedBLASCount);
+            features.rayTracing.resourceBudgetEvictedBLASCount =
+                static_cast<uint32>(rayTracing.resourceBudgetEvictedBLASCount);
+            features.rayTracing.releasedBLASScratchCount =
+                static_cast<uint32>(rayTracing.releasedBLASScratchCount);
+            features.rayTracing.pendingBLASScratchReleaseCount =
+                static_cast<uint32>(rayTracing.pendingBLASScratchReleaseCount);
+            RVX_COPY_RAY_TRACING_FIELD(cachedBLASAccelerationStructureBytes);
+            RVX_COPY_RAY_TRACING_FIELD(cachedBLASScratchBytes);
+            RVX_COPY_RAY_TRACING_FIELD(releasedBLASScratchBytes);
+            RVX_COPY_RAY_TRACING_FIELD(topLevelAccelerationStructureBytes);
+            RVX_COPY_RAY_TRACING_FIELD(topLevelScratchBytes);
+            RVX_COPY_RAY_TRACING_FIELD(instanceBufferBytes);
+            RVX_COPY_RAY_TRACING_FIELD(materialMetadataBufferBytes);
+            RVX_COPY_RAY_TRACING_FIELD(alphaMetadataBufferBytes);
+            RVX_COPY_RAY_TRACING_FIELD(totalTrackedResourceBytes);
+            RVX_COPY_RAY_TRACING_FIELD(shadowMaterialTextureCount);
+            RVX_COPY_RAY_TRACING_FIELD(shadowMaterialTexturesBound);
+            RVX_COPY_RAY_TRACING_FIELD(shadowAlphaTextureCount);
+            RVX_COPY_RAY_TRACING_FIELD(shadowAlphaTexturesBound);
+            RVX_COPY_RAY_TRACING_FIELD(shadowAlphaIndexBufferCount);
+            RVX_COPY_RAY_TRACING_FIELD(shadowAlphaUVBufferCount);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionMaterialTextureCount);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionMaterialTexturesBound);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGeometryIndexBufferCount);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGeometryUVBufferCount);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGeometryNormalBufferCount);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionGeometryTangentBufferCount);
+            RVX_COPY_RAY_TRACING_FIELD(requestedReflectionResolutionScale);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionResolutionScale);
+            RVX_COPY_RAY_TRACING_FIELD(requestedShadowSamplesPerPixel);
+            RVX_COPY_RAY_TRACING_FIELD(requestedReflectionSamplesPerPixel);
+            RVX_COPY_RAY_TRACING_FIELD(requestedReflectionDenoiseRadius);
+            RVX_COPY_RAY_TRACING_FIELD(shadowSamplesPerPixel);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionSamplesPerPixel);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionDenoiseRadius);
+            RVX_COPY_RAY_TRACING_FIELD(shadowWidth);
+            RVX_COPY_RAY_TRACING_FIELD(shadowHeight);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionWidth);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionHeight);
+#undef RVX_COPY_RAY_TRACING_FIELD
+            features.gpuMemoryBudget = frame.gpuResourceStats.memoryBudget;
+            features.gpuUsedMemory = frame.gpuResourceStats.usedMemory;
+            features.residentMeshCount = static_cast<uint32>(
+                frame.gpuResourceStats.residentMeshCount);
+            features.residentTextureCount = static_cast<uint32>(
+                frame.gpuResourceStats.residentTextureCount);
+            features.pendingUploadCount = static_cast<uint32>(
+                frame.gpuResourceStats.pendingUploadCount);
+            features.queuedUploadCount = static_cast<uint32>(
+                frame.gpuResourceStats.queuedUploadCount);
+            features.failedUploadCount = static_cast<uint32>(
+                frame.gpuResourceStats.failedUploadCount);
+
+            const auto appendReason = [&features](const std::string& reason)
+            {
+                if (!reason.empty())
+                {
+                    features.fallbackReasons.push_back(reason);
+                }
+            };
+            appendReason(frame.skippedReason);
+            appendReason(frame.hdrFallbackReason);
+            appendReason(frame.localShadowFallbackReason);
+            appendReason(frame.clusteredLightingFallbackReason);
+            appendReason(frame.externalTargetFallbackReason);
+            appendReason(frame.postProcessToneMappingBoundaryWarning);
+            appendReason(ibl.fallbackReason);
+            for (const RenderPassStatus& status : frame.passStatuses)
+            {
+                if (status.requestedEnabled && !status.supported &&
+                    !status.unsupportedReason.empty())
+                {
+                    features.unsupportedFeatures.push_back(
+                        status.name + ": " + status.unsupportedReason);
+                }
+            }
+            outDiagnostics.frameFeatures = std::move(features);
         }
 
         RenderRuntimeResult QueryRuntimeStatus() const override
@@ -382,9 +682,17 @@ namespace
         }
 
     private:
+        struct CaptureReadback
+        {
+            RHIBufferRef buffer{};
+            uint64 byteSize = 0;
+            bool recorded = false;
+        };
+
         RenderRuntimeResult PresentAcceptedFrame(
             uint64 frameSequence,
-            uint64 surfaceGeneration)
+            uint64 surfaceGeneration,
+            const RenderFrameCaptureRequest& captureRequest)
         {
             RenderRuntimeResult result;
             result.code = RenderRuntimeCode::Running;
@@ -413,6 +721,10 @@ namespace
                     "Accepted frame failed RenderGraph validation or recording";
                 return result;
             }
+
+            CaptureReadback capture = PrepareCapture(
+                captureRequest,
+                frameSequence);
             const GPUCompletionPoint submittedPoint = m_context->EndFrame();
             if (submittedPoint.value == 0)
             {
@@ -444,6 +756,7 @@ namespace
                 return result;
             }
             m_context->Present();
+            CompleteCapture(capture);
             RenderRuntimeResult health = MakeDeviceRuntimeResult();
             health.frameSequence = frameSequence;
             health.surfaceGeneration = surfaceGeneration;
@@ -551,11 +864,168 @@ namespace
                                                           completion);
         }
 
+        CaptureReadback PrepareCapture(
+            const RenderFrameCaptureRequest& request,
+            uint64 frameSequence)
+        {
+            CaptureReadback readback;
+            if (request.kind == RenderFrameCaptureKind::None)
+            {
+                return readback;
+            }
+            if (request.requestId == m_lastCaptureResult.requestId &&
+                m_lastCaptureResult.code !=
+                    RenderFrameCaptureResultCode::None)
+            {
+                return readback;
+            }
+
+            RenderFrameCaptureResult capture;
+            capture.requestId = request.requestId;
+            capture.frameSequence = frameSequence;
+            capture.kind = request.kind;
+            capture.width = request.width;
+            capture.height = request.height;
+            if (request.kind != RenderFrameCaptureKind::Color)
+            {
+                capture.code =
+                    RenderFrameCaptureResultCode::UnsupportedKind;
+                capture.message =
+                    "Only color capture is implemented by the M1 runtime";
+                m_lastCaptureResult = std::move(capture);
+                return readback;
+            }
+
+            RHITexture* backBuffer = m_context->GetCurrentBackBuffer();
+            RHICommandContext* commandContext =
+                m_context->GetGraphicsContext();
+            if (backBuffer == nullptr || commandContext == nullptr ||
+                request.width != backBuffer->GetWidth() ||
+                request.height != backBuffer->GetHeight())
+            {
+                capture.code =
+                    RenderFrameCaptureResultCode::UnsupportedExtent;
+                capture.message =
+                    "Capture extent must match the current render surface";
+                m_lastCaptureResult = std::move(capture);
+                return readback;
+            }
+
+            capture.format = backBuffer->GetFormat();
+            capture.bytesPerPixel =
+                GetFormatBytesPerPixel(capture.format);
+            const bool rgba8 = capture.format == RHIFormat::RGBA8_UNORM ||
+                               capture.format == RHIFormat::RGBA8_UNORM_SRGB ||
+                               capture.format == RHIFormat::BGRA8_UNORM ||
+                               capture.format == RHIFormat::BGRA8_UNORM_SRGB;
+            if (!rgba8 || capture.bytesPerPixel != 4)
+            {
+                capture.code =
+                    RenderFrameCaptureResultCode::UnsupportedFormat;
+                capture.message =
+                    "Color capture requires an RGBA8 or BGRA8 surface";
+                m_lastCaptureResult = std::move(capture);
+                return readback;
+            }
+
+            const RHIBackendType backend =
+                m_context->GetDevice()->GetBackendType();
+            const uint64 tightPitch =
+                static_cast<uint64>(request.width) *
+                capture.bytesPerPixel;
+            const uint64 alignment =
+                backend == RHIBackendType::DX12 ||
+                        backend == RHIBackendType::Metal
+                    ? 256U
+                    : 1U;
+            const uint64 rowPitch =
+                (tightPitch + alignment - 1U) & ~(alignment - 1U);
+            if (rowPitch > std::numeric_limits<uint32>::max() ||
+                request.height >
+                    std::numeric_limits<uint64>::max() / rowPitch)
+            {
+                capture.code =
+                    RenderFrameCaptureResultCode::UnsupportedExtent;
+                capture.message = "Capture byte size overflow";
+                m_lastCaptureResult = std::move(capture);
+                return readback;
+            }
+
+            capture.rowPitch = static_cast<uint32>(rowPitch);
+            capture.originBottomLeft =
+                backend == RHIBackendType::OpenGL;
+            readback.byteSize = rowPitch * request.height;
+
+            RHIBufferDesc bufferDesc;
+            bufferDesc.size = readback.byteSize;
+            bufferDesc.usage = RHIBufferUsage::CopyDst;
+            bufferDesc.memoryType = RHIMemoryType::Readback;
+            bufferDesc.debugName = "RenderFrameCaptureReadback";
+            readback.buffer =
+                m_context->GetDevice()->CreateBuffer(bufferDesc);
+            if (!readback.buffer)
+            {
+                capture.code =
+                    RenderFrameCaptureResultCode::ResourceCreationFailed;
+                capture.message = "Capture readback allocation failed";
+                m_lastCaptureResult = std::move(capture);
+                return readback;
+            }
+
+            RHIBufferTextureCopyDesc copyDesc;
+            copyDesc.bufferRowPitch = capture.rowPitch;
+            copyDesc.textureRegion =
+                {0, 0, request.width, request.height};
+            commandContext->TextureBarrier(
+                backBuffer,
+                RHIResourceState::Present,
+                RHIResourceState::CopySource);
+            commandContext->CopyTextureToBuffer(
+                backBuffer,
+                readback.buffer.Get(),
+                copyDesc);
+            commandContext->TextureBarrier(
+                backBuffer,
+                RHIResourceState::CopySource,
+                RHIResourceState::Present);
+            readback.recorded = true;
+            m_lastCaptureResult = std::move(capture);
+            return readback;
+        }
+
+        void CompleteCapture(CaptureReadback& readback)
+        {
+            if (!readback.recorded || !readback.buffer)
+            {
+                return;
+            }
+
+            m_context->WaitIdle();
+            const void* mapped = readback.buffer->Map();
+            if (mapped == nullptr)
+            {
+                m_lastCaptureResult.code =
+                    RenderFrameCaptureResultCode::MapFailed;
+                m_lastCaptureResult.message =
+                    "Capture readback mapping failed";
+                return;
+            }
+            const auto* first = static_cast<const uint8*>(mapped);
+            m_lastCaptureResult.bytes.assign(
+                first,
+                first + readback.byteSize);
+            readback.buffer->Unmap();
+            m_lastCaptureResult.code =
+                RenderFrameCaptureResultCode::Completed;
+            m_lastCaptureResult.message.clear();
+        }
+
         std::unique_ptr<RenderContext> m_context;
         std::unique_ptr<SceneRenderer> m_sceneRenderer;
         RenderRetirementQueue m_retirementQueue;
         RenderResourceRegistry m_resourceRegistry;
         RenderUploadProcessor m_uploadProcessor;
+        RenderFrameCaptureResult m_lastCaptureResult{};
     };
 
     class ClearPresentRuntimeFactory final : public IRenderRuntimeFactory,

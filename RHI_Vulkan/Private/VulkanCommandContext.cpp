@@ -665,17 +665,27 @@ namespace RVX
 
         VkFence fence = VK_NULL_HANDLE;
 
-        // Graphics queue needs swapchain synchronization
+        // Swapchain semaphores and the per-frame fence are valid only after an
+        // image has been acquired. Graphics setup work submitted before the
+        // first frame must not wait on an unsignaled acquire semaphore.
         if (vkContext->GetQueueType() == RHICommandQueueType::Graphics)
         {
-            waitSemaphores.push_back(device->GetImageAvailableSemaphore());
-            waitStages.push_back(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-            waitValues.push_back(0);  // Binary semaphore
+            VulkanSwapChain* swapChain = device->GetPrimarySwapChain();
+            if (swapChain && swapChain->HasAcquiredImage())
+            {
+                waitSemaphores.push_back(device->GetImageAvailableSemaphore());
+                waitStages.push_back(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+                waitValues.push_back(0);  // Binary semaphore
 
-            signalSemaphores.push_back(device->GetRenderFinishedSemaphore());
-            signalValues.push_back(0);  // Binary semaphore
+                signalSemaphores.push_back(device->GetRenderFinishedSemaphore());
+                signalValues.push_back(0);  // Binary semaphore
 
-            fence = device->GetCurrentFrameFence();
+                fence = device->GetCurrentFrameFence();
+            }
+            else if (!swapChain)
+            {
+                fence = device->GetCurrentFrameFence();
+            }
         }
 
         // Handle timeline semaphore for signalFence
@@ -951,17 +961,23 @@ namespace RVX
             lastSubmittedQueue = device->GetComputeQueue();
         }
 
-        // Submit graphics commands with swapchain sync
+        // Submit graphics commands. Swapchain synchronization is attached only
+        // when the caller acquired an image for this frame.
         if (!graphicsCmdBuffers.empty())
         {
             std::vector<VkSemaphore> waitSemaphores;
             std::vector<VkPipelineStageFlags> waitStages;
             std::vector<uint64> waitValues;
+            VulkanSwapChain* swapChain = device->GetPrimarySwapChain();
+            const bool hasAcquiredImage =
+                swapChain && swapChain->HasAcquiredImage();
 
-            // Wait for swapchain image
-            waitSemaphores.push_back(device->GetImageAvailableSemaphore());
-            waitStages.push_back(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-            waitValues.push_back(0);  // Binary semaphore
+            if (hasAcquiredImage)
+            {
+                waitSemaphores.push_back(device->GetImageAvailableSemaphore());
+                waitStages.push_back(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+                waitValues.push_back(0);  // Binary semaphore
+            }
 
             // Wait for compute if needed
             if (computeToGraphicsSemaphore != VK_NULL_HANDLE)
@@ -979,8 +995,13 @@ namespace RVX
                 waitValues.push_back(0);  // Binary semaphore
             }
 
-            std::vector<VkSemaphore> signalSemaphores = {device->GetRenderFinishedSemaphore()};
-            std::vector<uint64> signalValues = {0};  // Binary semaphore
+            std::vector<VkSemaphore> signalSemaphores;
+            std::vector<uint64> signalValues;
+            if (hasAcquiredImage)
+            {
+                signalSemaphores.push_back(device->GetRenderFinishedSemaphore());
+                signalValues.push_back(0);  // Binary semaphore
+            }
 
             if (vkSignalFence)
             {
@@ -997,15 +1018,17 @@ namespace RVX
             VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
             submitInfo.pNext = vkSignalFence ? &timelineInfo : nullptr;
             submitInfo.waitSemaphoreCount = static_cast<uint32>(waitSemaphores.size());
-            submitInfo.pWaitSemaphores = waitSemaphores.data();
-            submitInfo.pWaitDstStageMask = waitStages.data();
+            submitInfo.pWaitSemaphores = waitSemaphores.empty() ? nullptr : waitSemaphores.data();
+            submitInfo.pWaitDstStageMask = waitStages.empty() ? nullptr : waitStages.data();
             submitInfo.commandBufferCount = static_cast<uint32>(graphicsCmdBuffers.size());
             submitInfo.pCommandBuffers = graphicsCmdBuffers.data();
             submitInfo.signalSemaphoreCount = static_cast<uint32>(signalSemaphores.size());
-            submitInfo.pSignalSemaphores = signalSemaphores.data();
+            submitInfo.pSignalSemaphores = signalSemaphores.empty() ? nullptr : signalSemaphores.data();
 
             if (!submit(device->GetGraphicsQueue(), submitInfo,
-                        device->GetCurrentFrameFence(),
+                        hasAcquiredImage || !swapChain
+                            ? device->GetCurrentFrameFence()
+                            : VK_NULL_HANDLE,
                         "Vulkan graphics batch submission failed"))
             {
                 retireCrossQueueSemaphores();

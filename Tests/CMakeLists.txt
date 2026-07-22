@@ -422,6 +422,17 @@ if(TARGET RVX_SampleCommon)
     )
 endif()
 
+# Production callers must remain on immutable frame/control/diagnostic values.
+rvx_add_gtest(
+    NAME RenderCallerBoundaryValidation
+    SOURCES RenderCallerBoundaryValidation/main.cpp
+    LABELS "unit;architecture"
+    TIMEOUT 30
+)
+target_compile_definitions(RenderCallerBoundaryValidation PRIVATE
+    RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
 # DX12 Validation Tests
 if(RVX_ENABLE_DX12)
     rvx_add_gtest(

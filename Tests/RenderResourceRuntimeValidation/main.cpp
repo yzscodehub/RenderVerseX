@@ -312,6 +312,7 @@ namespace
             {
                 return {};
             }
+            createdBufferDescs.push_back(desc);
             auto state = std::make_shared<DestructionState>();
             resourceBufferStates.push_back(state);
             return RHIBufferRef(new FakeBuffer(desc, std::move(state)));
@@ -484,6 +485,7 @@ namespace
         RHICapabilities capabilities;
         std::vector<RHIFenceRef> fences;
         std::vector<RHICommandContextRef> commandContexts;
+        std::vector<RHIBufferDesc> createdBufferDescs;
         std::vector<std::shared_ptr<DestructionState>> resourceBufferStates;
         FakeFence* lastFence = nullptr;
         uint64 lastSubmittedValue = 0;
@@ -678,6 +680,33 @@ namespace
         ASSERT_NE(mesh, nullptr);
         EXPECT_EQ(mesh->buffers.size(), 2U);
         EXPECT_EQ(processor.GetInFlightCount(), 0U);
+    }
+
+    TEST_F(RenderResourceRuntimeFixture,
+           RayTracingMeshUploadsDeclareImmutableGeometryUsage)
+    {
+        device.capabilities.supportsRaytracing = true;
+        const AssetId asset{31};
+        const RenderResourceHandle handle =
+            Reserve(asset, RenderResourceKind::Mesh);
+        ResourceUploadRequestRef owner =
+            CreateAndQueue(MakeMeshInfo(asset, handle, true));
+
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+        ASSERT_EQ(device.createdBufferDescs.size(), 2U);
+        for (const RHIBufferDesc& desc : device.createdBufferDescs)
+        {
+            EXPECT_TRUE(HasFlag(
+                desc.usage, RHIBufferUsage::AccelerationStructureInput));
+            EXPECT_TRUE(HasFlag(desc.usage,
+                                RHIBufferUsage::DeviceAddress));
+            EXPECT_TRUE(HasFlag(desc.usage,
+                                RHIBufferUsage::ShaderResource));
+            EXPECT_TRUE(HasFlag(desc.usage, RHIBufferUsage::CopyDst));
+        }
+
+        CompleteAndPoll();
+        EXPECT_NE(registry.ResolveMesh(handle), nullptr);
     }
 
     TEST_F(RenderResourceRuntimeFixture, TextureAndMaterialCommitWithExactDependencies)

@@ -220,7 +220,7 @@ namespace
         for (const RenderLightSnapshot& light : lights)
         {
             if (light.lightId == 0 || !IsDeclared(light.type) ||
-                light.shadowResource.IsValid() != light.castsShadows)
+                (light.shadowResource.IsValid() && !light.castsShadows))
             {
                 return false;
             }

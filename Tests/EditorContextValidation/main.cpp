@@ -31,6 +31,7 @@
 #include "Editor/EditorPendingAction.h"
 #include "Editor/EditorRenderBootstrapService.h"
 #include "Editor/EditorRenderFrameService.h"
+#include "Editor/EditorRenderRuntimeAdapter.h"
 #include "Editor/EditorRenderShutdownService.h"
 #include "Editor/EditorRunLoopService.h"
 #include "Editor/EditorScreenshotRequestService.h"
@@ -2159,6 +2160,34 @@ namespace
         EXPECT_FALSE(sceneRenderer);
         EXPECT_FALSE(runtimeUIRenderer);
         EXPECT_FALSE(editorUIRenderer);
+    }
+
+    TEST_F(EditorContextValidation,
+           EditorRenderRuntimeAdapterPublishesExplicitM1FeatureAvailability)
+    {
+        EditorRenderRuntimeAdapter adapter;
+
+        EXPECT_FALSE(adapter.IsRunning());
+        EXPECT_EQ(adapter.GetFeatureStatus(
+                      EditorRenderFeature::FramePublication),
+                  EditorRenderFeatureStatus::Available);
+        EXPECT_EQ(adapter.GetFeatureStatus(
+                      EditorRenderFeature::ValueDiagnostics),
+                  EditorRenderFeatureStatus::Available);
+        EXPECT_EQ(adapter.GetFeatureStatus(
+                      EditorRenderFeature::ViewportRendering),
+                  EditorRenderFeatureStatus::
+                      UnavailableDuringM1ArchitectureCut);
+        EXPECT_EQ(adapter.GetFeatureStatus(
+                      EditorRenderFeature::NativeUISubmission),
+                  EditorRenderFeatureStatus::
+                      UnavailableDuringM1ArchitectureCut);
+        EXPECT_EQ(adapter.GetFeatureStatus(
+                      EditorRenderFeature::ScreenshotService),
+                  EditorRenderFeatureStatus::
+                      UnavailableDuringM1ArchitectureCut);
+        EXPECT_EQ(adapter.GetDiagnostics().lifecycle,
+                  RenderLifecycleState::Stopped);
     }
 
     TEST_F(EditorContextValidation,
@@ -9512,7 +9541,7 @@ namespace
         EXPECT_NE(windowBody.find("desc.title = m_windowTitle.c_str();"),
                   std::string::npos);
         EXPECT_NE(windowBody.find("desc.backendType = "
-                                  "m_renderBootstrapService."
+                                  "m_renderRuntimeAdapter."
                                   "ResolveDefaultBackend();"),
                   std::string::npos);
         EXPECT_NE(windowBody.find("m_windowLifecycleService.CreateWindow(desc)"),
@@ -9612,28 +9641,13 @@ namespace
             source.find("bool EditorApplication::InitializeEditorUI()", initializeRhi);
         ASSERT_NE(std::string::npos, initializeEditorUI);
         const std::string rhiBody = source.substr(initializeRhi, initializeEditorUI - initializeRhi);
-        EXPECT_NE(rhiBody.find("EditorRenderBootstrapDesc desc;"),
+        EXPECT_NE(rhiBody.find("EditorRenderRuntimeAdapterConfig config;"),
                   std::string::npos);
-        EXPECT_NE(rhiBody.find("desc.window = m_window;"),
+        EXPECT_NE(rhiBody.find("m_renderRuntimeAdapter.Start(m_window, config)"),
                   std::string::npos);
-        EXPECT_NE(rhiBody.find("desc.renderContext = &m_renderContext;"),
-                  std::string::npos);
-        EXPECT_NE(rhiBody.find("desc.sceneRenderer = &m_sceneRenderer;"),
-                  std::string::npos);
-        EXPECT_NE(rhiBody.find("desc.runtimeUIRenderer = &m_runtimeUIRenderer;"),
-                  std::string::npos);
-        EXPECT_NE(rhiBody.find("desc.editorUIRenderer = &m_editorUIRenderer;"),
-                  std::string::npos);
-        EXPECT_NE(rhiBody.find("desc.mainSwapChainService = "
-                               "&m_mainSwapChainService;"),
-                  std::string::npos);
-        EXPECT_NE(rhiBody.find("desc.nativeUIRenderStatsService = "
-                               "&m_nativeUIRenderStatsService;"),
-                  std::string::npos);
-        EXPECT_NE(rhiBody.find("desc.nativeUIRenderStats = "
-                               "&m_nativeUIRenderStats;"),
-                  std::string::npos);
-        EXPECT_NE(rhiBody.find("m_renderBootstrapService.Bootstrap(desc)"),
+        EXPECT_EQ(rhiBody.find("desc.renderContext"), std::string::npos);
+        EXPECT_EQ(rhiBody.find("desc.sceneRenderer"), std::string::npos);
+        EXPECT_EQ(rhiBody.find("m_renderBootstrapService.Bootstrap"),
                   std::string::npos);
         EXPECT_EQ(rhiBody.find("RenderContextConfig"),
                   std::string::npos);
@@ -10092,7 +10106,7 @@ namespace
         EXPECT_NE(initializeBody.find("desc.title = m_windowTitle.c_str();"),
                   std::string::npos);
         EXPECT_NE(initializeBody.find("desc.backendType = "
-                                      "m_renderBootstrapService."
+                                      "m_renderRuntimeAdapter."
                                       "ResolveDefaultBackend();"),
                   std::string::npos);
         EXPECT_NE(initializeBody.find("m_windowLifecycleService.CreateWindow(desc)"),
@@ -10411,43 +10425,21 @@ namespace
         const std::string shutdownBody =
             source.substr(shutdown, beginFrame - shutdown);
 
-        EXPECT_NE(shutdownBody.find("EditorRenderShutdownDesc "
-                                    "renderShutdownDesc;"),
-                  std::string::npos);
-        EXPECT_NE(shutdownBody.find("renderShutdownDesc.renderContext = "
-                                    "&m_renderContext;"),
-                  std::string::npos);
-        EXPECT_NE(shutdownBody.find("renderShutdownDesc.sceneRenderer = "
-                                    "&m_sceneRenderer;"),
-                  std::string::npos);
-        EXPECT_NE(shutdownBody.find("renderShutdownDesc.runtimeUIRenderer = "
-                                    "&m_runtimeUIRenderer;"),
-                  std::string::npos);
-        EXPECT_NE(shutdownBody.find("renderShutdownDesc.editorUIRenderer = "
-                                    "&m_editorUIRenderer;"),
-                  std::string::npos);
-        EXPECT_NE(shutdownBody.find("m_renderShutdownService."
-                                    "PrepareForPanelShutdown("),
-                  std::string::npos);
-        EXPECT_NE(shutdownBody.find("m_renderShutdownService."
-                                    "ShutdownResources("),
-                  std::string::npos);
-
-        const size_t prepareCall =
-            shutdownBody.find("m_renderShutdownService."
-                              "PrepareForPanelShutdown(");
         const size_t unbindPanels =
             shutdownBody.find("BindRenderDeviceToViewportPanels(nullptr);");
         const size_t panelsClear = shutdownBody.find("m_panels.clear();");
         const size_t shutdownCall =
-            shutdownBody.find("m_renderShutdownService.ShutdownResources(");
-        ASSERT_NE(std::string::npos, prepareCall);
+            shutdownBody.find("m_renderRuntimeAdapter.Shutdown()");
         ASSERT_NE(std::string::npos, unbindPanels);
         ASSERT_NE(std::string::npos, panelsClear);
         ASSERT_NE(std::string::npos, shutdownCall);
-        EXPECT_LT(prepareCall, unbindPanels);
         EXPECT_LT(unbindPanels, panelsClear);
         EXPECT_LT(panelsClear, shutdownCall);
+
+        EXPECT_EQ(shutdownBody.find("EditorRenderShutdownDesc"),
+                  std::string::npos);
+        EXPECT_EQ(shutdownBody.find("m_renderShutdownService."),
+                  std::string::npos);
 
         EXPECT_EQ(shutdownBody.find("m_renderContext->WaitIdle()"),
                   std::string::npos);

@@ -37,6 +37,7 @@ target_sources(RVX_Editor PRIVATE
     Private/EditorPendingAction.cpp
     Private/EditorRenderBootstrapService.cpp
     Private/EditorRenderFrameService.cpp
+    Private/EditorRenderRuntimeAdapter.cpp
     Private/EditorRenderShutdownService.cpp
     Private/EditorScreenshotService.cpp
     Private/EditorSelectionService.cpp
@@ -178,6 +179,7 @@ endif()
 
 target_compile_definitions(RVX_Editor PUBLIC
     RVX_EDITOR_ENABLE_LEGACY_IMGUI=$<BOOL:${RVX_EDITOR_ENABLE_LEGACY_IMGUI}>
+    RVX_EDITOR_M1_RENDER_ADAPTER=1
 )
 
 if(RVX_EDITOR_ENABLE_LEGACY_IMGUI)

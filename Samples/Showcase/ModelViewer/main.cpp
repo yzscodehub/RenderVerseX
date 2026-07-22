@@ -22,11 +22,6 @@
 #include "Engine/Engine.h"
 #include "Particle/ParticleComponent.h"
 #include "Particle/ParticleSubsystem.h"
-#include "Render/Context/RenderContext.h"
-#include "Render/Material/MaterialSystem.h"
-#include "Render/PipelineCache.h"
-#include "Render/PostProcess/ToneMappingTypes.h"
-#include "Render/Renderer/SceneRenderer.h"
 #include "Render/RenderSubsystem.h"
 #include "Runtime/Window/WindowSubsystem.h"
 #include "Runtime/Input/InputSubsystem.h"
@@ -44,6 +39,7 @@
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/TextureResource.h"
 #include "ResourceSceneAdapters/ResourceSceneAdapters.h"
+#include "Samples/RuntimeFrameDriver.h"
 #include "Core/Log.h"
 #include "Core/MathTypes.h"
 #include "HAL/Input/KeyCodes.h"
@@ -221,52 +217,6 @@ namespace
     constexpr uint32 kSmokeDefaultHeight = 180;
     constexpr uint32 kSmokeDefaultFrames = 8;
     constexpr float kSmokeDeltaSeconds = 1.0f / 60.0f;
-    constexpr uint32 kDX12TextureCopyPitchAlignment = 256;
-    constexpr const char* kPBRMaterialTestMaterialName = "RQ4PBRMaterial";
-
-    enum class ScreenshotChannelOrder : uint8
-    {
-        RGBA = 0,
-        BGRA
-    };
-
-    struct PendingScreenshot
-    {
-        RHIBufferRef readbackBuffer;
-        uint32 width = 0;
-        uint32 height = 0;
-        uint32 rowPitch = 0;
-        uint32 bytesPerPixel = 0;
-        ScreenshotChannelOrder channelOrder = ScreenshotChannelOrder::BGRA;
-        bool originBottomLeft = false;
-    };
-
-    bool IsSmokeScreenshotBackendSupported(RHIBackendType backendType)
-    {
-        return backendType == RHIBackendType::DX11 ||
-               backendType == RHIBackendType::DX12 ||
-               backendType == RHIBackendType::OpenGL;
-    }
-
-    bool TryGetScreenshotChannelOrder(RHIFormat format, ScreenshotChannelOrder& outChannelOrder)
-    {
-        switch (format)
-        {
-            case RHIFormat::RGBA8_UNORM:
-            case RHIFormat::RGBA8_UNORM_SRGB:
-                outChannelOrder = ScreenshotChannelOrder::RGBA;
-                return true;
-
-            case RHIFormat::BGRA8_UNORM:
-            case RHIFormat::BGRA8_UNORM_SRGB:
-                outChannelOrder = ScreenshotChannelOrder::BGRA;
-                return true;
-
-            default:
-                return false;
-        }
-    }
-
     void PrintUsage()
     {
         std::cout
@@ -515,27 +465,29 @@ namespace
         return true;
     }
 
-    bool TryGetToneMappingOperator(ToneMapSelection selection, ToneMappingOperator& outOperator)
+    bool TryGetToneMappingOperator(
+        ToneMapSelection selection,
+        RenderToneMappingOperator& outOperator)
     {
         switch (selection)
         {
             case ToneMapSelection::None:
-                outOperator = ToneMappingOperator::None;
+                outOperator = RenderToneMappingOperator::None;
                 return true;
             case ToneMapSelection::Reinhard:
-                outOperator = ToneMappingOperator::Reinhard;
+                outOperator = RenderToneMappingOperator::Reinhard;
                 return true;
             case ToneMapSelection::ReinhardExtended:
-                outOperator = ToneMappingOperator::ReinhardExtended;
+                outOperator = RenderToneMappingOperator::ReinhardExtended;
                 return true;
             case ToneMapSelection::ACES:
-                outOperator = ToneMappingOperator::ACES;
+                outOperator = RenderToneMappingOperator::ACES;
                 return true;
             case ToneMapSelection::Uncharted2:
-                outOperator = ToneMappingOperator::Uncharted2;
+                outOperator = RenderToneMappingOperator::Uncharted2;
                 return true;
             case ToneMapSelection::Neutral:
-                outOperator = ToneMappingOperator::Neutral;
+                outOperator = RenderToneMappingOperator::Neutral;
                 return true;
             case ToneMapSelection::Default:
                 break;
@@ -544,19 +496,19 @@ namespace
         return false;
     }
 
-    ShadowPassConfig MakeShadowQualityConfig(ShadowQualityPreset preset)
+    RenderShadowSettings MakeShadowQualityConfig(ShadowQualityPreset preset)
     {
         if (preset == ShadowQualityPreset::Default)
         {
-            return ShadowPassConfig{};
+            return RenderShadowSettings{};
         }
 
-        ShadowPassConfig config{};
+        RenderShadowSettings config{};
         switch (preset)
         {
             case ShadowQualityPreset::Low:
-                config.shadowMapSize = 1024;
-                config.numCascades = 2;
+                config.atlasResolution = 1024;
+                config.cascadeCount = 2;
                 config.cascadeSplitLambda = 0.85f;
                 config.filterRadiusTexels = 0.75f;
                 config.shadowBias = 0.0050f;
@@ -564,8 +516,8 @@ namespace
                 config.cascadeBlendRatio = 0.04f;
                 break;
             case ShadowQualityPreset::Medium:
-                config.shadowMapSize = 2048;
-                config.numCascades = 3;
+                config.atlasResolution = 2048;
+                config.cascadeCount = 3;
                 config.cascadeSplitLambda = 0.90f;
                 config.filterRadiusTexels = 1.00f;
                 config.shadowBias = 0.0040f;
@@ -573,8 +525,8 @@ namespace
                 config.cascadeBlendRatio = 0.05f;
                 break;
             case ShadowQualityPreset::High:
-                config.shadowMapSize = 4096;
-                config.numCascades = 4;
+                config.atlasResolution = 4096;
+                config.cascadeCount = 4;
                 config.cascadeSplitLambda = 0.95f;
                 config.filterRadiusTexels = 1.50f;
                 config.shadowBias = 0.0030f;
@@ -582,8 +534,8 @@ namespace
                 config.cascadeBlendRatio = 0.06f;
                 break;
             case ShadowQualityPreset::Ultra:
-                config.shadowMapSize = 4096;
-                config.numCascades = 4;
+                config.atlasResolution = 4096;
+                config.cascadeCount = 4;
                 config.cascadeSplitLambda = 0.98f;
                 config.filterRadiusTexels = 2.00f;
                 config.shadowBias = 0.0025f;
@@ -594,9 +546,6 @@ namespace
                 break;
         }
 
-        config.casterDepthBias = 0.0f;
-        config.casterSlopeScaledDepthBias = 0.0f;
-        config.casterDepthBiasClamp = 0.0f;
         return config;
     }
 
@@ -1925,56 +1874,30 @@ namespace
         return resources;
     }
 
-    bool UploadProceduralIBL(RenderSubsystem* renderSubsystem, const ProceduralIBLResources& resources)
+    bool PublishProceduralIBL(Resource::ResourceSubsystem* resourceSubsystem,
+                              const ProceduralIBLResources& resources)
     {
-        if (!renderSubsystem || !renderSubsystem->GetGPUResourceManager())
+        if (!resourceSubsystem)
             return false;
 
-        auto* gpuResources = renderSubsystem->GetGPUResourceManager();
-        auto upload = [gpuResources](const Resource::ResourceHandle<Resource::TextureResource>& texture) -> bool
+        auto publish = [resourceSubsystem](
+                           const Resource::ResourceHandle<
+                               Resource::TextureResource>& texture) -> bool
         {
             if (!texture)
                 return false;
-
-            gpuResources->UploadImmediate(texture.Get());
-            return true;
+            return resourceSubsystem->PublishRenderResource(
+                Resource::ResourceHandle<Resource::IResource>(texture));
         };
 
-        const bool irradianceSubmitted = upload(resources.irradiance);
-        const bool prefilteredSubmitted = upload(resources.prefiltered);
-        const bool brdfLUTSubmitted = upload(resources.brdfLUT);
-
-        auto isReady = [gpuResources](const Resource::ResourceHandle<Resource::TextureResource>& texture,
-                                      const char* label) -> bool
-        {
-            if (!texture)
-            {
-                RVX_CORE_WARN("ModelViewer procedural IBL {} resource is missing", label);
-                return false;
-            }
-
-            const bool ready = gpuResources->IsGPUReady(texture.GetId());
-            if (!ready)
-            {
-                RVX_CORE_WARN("ModelViewer procedural IBL {} resource '{}' ({}) is not GPU-ready",
-                              label,
-                              texture->GetName(),
-                              texture.GetId());
-            }
-            return ready;
-        };
-
-        const bool irradianceReady = isReady(resources.irradiance, "irradiance");
-        const bool prefilteredReady = isReady(resources.prefiltered, "prefiltered");
-        const bool brdfLUTReady = isReady(resources.brdfLUT, "BRDF LUT");
-
-        return irradianceSubmitted && prefilteredSubmitted && brdfLUTSubmitted &&
-               irradianceReady && prefilteredReady && brdfLUTReady;
+        return publish(resources.irradiance) &&
+               publish(resources.prefiltered) &&
+               publish(resources.brdfLUT);
     }
 
     bool ValidateProceduralIBLQuality(const ProceduralIBLResources& resources,
                                       bool smoke,
-                                      GPUResourceManager* gpuResources)
+                                      Resource::ResourceSubsystem* resourceSubsystem)
     {
         const ProceduralIBLQualityPreset expected = GetProceduralIBLPreset(smoke);
         bool valid = true;
@@ -1991,7 +1914,7 @@ namespace
             return texture.Get();
         };
 
-        auto checkCubemap = [&valid, gpuResources](const Resource::TextureHandle& texture,
+        auto checkCubemap = [&valid, resourceSubsystem](const Resource::TextureHandle& texture,
                                                    const char* label,
                                                    Resource::ResourceId expectedId,
                                                    const char* expectedName,
@@ -2042,7 +1965,13 @@ namespace
                 valid = false;
             }
 
-            if (!gpuResources || !gpuResources->IsGPUReady(resource->GetId()))
+            const RenderResourceResolveResult resolved = resourceSubsystem
+                ? resourceSubsystem->ResolveRenderResource(
+                      AssetId{resource->GetId()},
+                      RenderResourceKind::Texture)
+                : RenderResourceResolveResult{};
+            if (resolved.code != RenderResourceResolveCode::Resolved ||
+                resolved.status.state != RenderResourcePublicState::GPUReady)
             {
                 RVX_CORE_ERROR("ModelViewer procedural IBL quality check failed: {} texture is not GPU-ready", label);
                 valid = false;
@@ -2101,7 +2030,13 @@ namespace
                 valid = false;
             }
 
-            if (!gpuResources || !gpuResources->IsGPUReady(brdf->GetId()))
+            const RenderResourceResolveResult resolved = resourceSubsystem
+                ? resourceSubsystem->ResolveRenderResource(
+                      AssetId{brdf->GetId()},
+                      RenderResourceKind::Texture)
+                : RenderResourceResolveResult{};
+            if (resolved.code != RenderResourceResolveCode::Resolved ||
+                resolved.status.state != RenderResourcePublicState::GPUReady)
             {
                 RVX_CORE_ERROR("ModelViewer procedural IBL quality check failed: BRDF LUT texture is not GPU-ready");
                 valid = false;
@@ -2209,13 +2144,14 @@ namespace
         return resources;
     }
 
-    bool UploadHDRIEnvironment(RenderSubsystem* renderSubsystem, const HDRIEnvironmentResources& resources)
+    bool PublishHDRIEnvironment(Resource::ResourceSubsystem* resourceSubsystem,
+                                const HDRIEnvironmentResources& resources)
     {
-        if (!renderSubsystem || !renderSubsystem->GetGPUResourceManager() || !resources.IsValid())
+        if (!resourceSubsystem || !resources.IsValid())
             return false;
 
-        auto* gpuResources = renderSubsystem->GetGPUResourceManager();
-        auto upload = [gpuResources](const Resource::TextureHandle& texture, const char* label) -> bool
+        auto publish = [resourceSubsystem](const Resource::TextureHandle& texture,
+                                           const char* label) -> bool
         {
             if (!texture)
             {
@@ -2223,46 +2159,23 @@ namespace
                 return false;
             }
 
-            gpuResources->UploadImmediate(texture.Get());
+            if (!resourceSubsystem->PublishRenderResource(
+                    Resource::ResourceHandle<Resource::IResource>(texture)))
+            {
+                RVX_CORE_ERROR("ModelViewer HDRI {} publication was rejected", label);
+                return false;
+            }
             return true;
         };
 
-        const bool envSubmitted = upload(resources.environment, "environment");
-        const bool irradianceSubmitted = upload(resources.irradiance, "irradiance");
-        const bool prefilteredSubmitted = upload(resources.prefiltered, "prefiltered");
-        const bool brdfLUTSubmitted = upload(resources.brdfLUT, "BRDF LUT");
-
-        for (uint32 attempt = 0; attempt < 4; ++attempt)
-        {
-            gpuResources->ProcessPendingUploads(0.0f);
-        }
-
-        auto isReady = [gpuResources](const Resource::TextureHandle& texture, const char* label) -> bool
-        {
-            if (!texture)
-                return false;
-
-            const bool ready = gpuResources->IsGPUReady(texture.GetId());
-            if (!ready)
-            {
-                RVX_CORE_ERROR("ModelViewer HDRI {} resource '{}' ({}) is not GPU-ready",
-                               label,
-                               texture->GetName(),
-                               texture.GetId());
-            }
-            return ready;
-        };
-
-        const bool envReady = isReady(resources.environment, "environment");
-        const bool irradianceReady = isReady(resources.irradiance, "irradiance");
-        const bool prefilteredReady = isReady(resources.prefiltered, "prefiltered");
-        const bool brdfLUTReady = isReady(resources.brdfLUT, "BRDF LUT");
-
-        return envSubmitted && irradianceSubmitted && prefilteredSubmitted && brdfLUTSubmitted &&
-               envReady && irradianceReady && prefilteredReady && brdfLUTReady;
+        return publish(resources.environment, "environment") &&
+               publish(resources.irradiance, "irradiance") &&
+               publish(resources.prefiltered, "prefiltered") &&
+               publish(resources.brdfLUT, "BRDF LUT");
     }
 
-    bool IsSkyboxPassReady(SceneRenderer* sceneRenderer, std::string& outReason)
+    bool IsSkyboxPassReady(const RenderFrameFeatureDiagnostics* sceneRenderer,
+                           std::string& outReason)
     {
         if (!sceneRenderer)
         {
@@ -2270,54 +2183,35 @@ namespace
             return false;
         }
 
-        const SceneRenderPassChainStats& stats = sceneRenderer->GetPassChainStats();
-        for (const RenderPassStatus& status : stats.passStatuses)
-        {
-            if (status.name == "SkyboxPass")
-            {
-                if (status.supported && status.enabled)
-                {
-                    outReason.clear();
-                    return true;
-                }
-
-                outReason = status.unsupportedReason.empty() ? "SkyboxPassNotReady" : status.unsupportedReason;
-                return false;
-            }
-        }
-
-        outReason = "SkyboxPassStatusMissing";
-        return false;
-    }
-
-    bool IsDirectionalShadowReady(SceneRenderer* sceneRenderer, std::string& outReason)
-    {
-        if (!sceneRenderer)
-        {
-            outReason = "NoSceneRenderer";
-            return false;
-        }
-
-        PipelineCache* pipelineCache = sceneRenderer->GetPipelineCache();
-        if (!pipelineCache)
-        {
-            outReason = "NoPipelineCache";
-            return false;
-        }
-
-        const DirectionalShadowFrameBindingResult& result =
-            pipelineCache->GetLastDirectionalShadowFrameBindingResult();
-        if (result.shadowSamplingEnabled && result.fallbackReason == DirectionalShadowFallbackReason::None)
+        const RenderPassFeatureDiagnostics& status = sceneRenderer->skybox;
+        if (status.supported && status.enabled)
         {
             outReason.clear();
             return true;
         }
+        outReason = status.reason.empty() ? "SkyboxPassNotReady"
+                                          : status.reason;
+        return false;
+    }
 
-        outReason = PipelineCache::GetDirectionalShadowFallbackReasonName(result.fallbackReason);
-        if (outReason.empty())
+    bool IsDirectionalShadowReady(
+        const RenderFrameFeatureDiagnostics* sceneRenderer,
+        std::string& outReason)
+    {
+        if (!sceneRenderer)
         {
-            outReason = result.shadowSamplingEnabled ? "UnexpectedDirectionalShadowState" : "ShadowSamplingDisabled";
+            outReason = "NoSceneRenderer";
+            return false;
         }
+
+        if (sceneRenderer->directionalShadow.samplingEnabled)
+        {
+            outReason.clear();
+            return true;
+        }
+        outReason = sceneRenderer->directionalShadow.reason.empty()
+                        ? "ShadowSamplingDisabled"
+                        : sceneRenderer->directionalShadow.reason;
         return false;
     }
 
@@ -2326,7 +2220,7 @@ namespace
         return value ? "true" : "false";
     }
 
-    std::string DescribeGPUDrivenCullingReadiness(const SceneGPUDrivenCullingStats& stats)
+    std::string DescribeGPUDrivenCullingReadiness(const RenderGPUDrivenCullingDiagnostics& stats)
     {
         return std::string("enabled=") + BoolText(stats.enabled) +
                ", graphPassAdded=" + BoolText(stats.graphPassAdded) +
@@ -2343,7 +2237,7 @@ namespace
                ", skippedMissingGpuDataCount=" + std::to_string(stats.skippedMissingGpuDataCount);
     }
 
-    bool IsGPUDrivenCullingReady(SceneRenderer* sceneRenderer,
+    bool IsGPUDrivenCullingReady(const RenderFrameFeatureDiagnostics* sceneRenderer,
                                  bool requireCullAffectsDrawCount,
                                  std::string& outReason)
     {
@@ -2353,7 +2247,8 @@ namespace
             return false;
         }
 
-        const SceneGPUDrivenCullingStats& stats = sceneRenderer->GetGPUDrivenCullingStats();
+        const RenderGPUDrivenCullingDiagnostics& stats =
+            sceneRenderer->gpuDrivenCulling;
         const bool cullAffectsDrawCount =
             stats.graphInputDrawItemCount > stats.visibleCullableDrawItemCount &&
             (stats.frustumCulledDrawItemCount > 0 || stats.distanceCulledDrawItemCount > 0);
@@ -2377,68 +2272,58 @@ namespace
         return false;
     }
 
-    std::string DescribeParticleReadiness(const Particle::ParticleSubsystem* particleSubsystem)
+    std::string DescribeParticleReadiness(
+        const RenderFrameFeatureDiagnostics* renderFeatures)
     {
-        if (!particleSubsystem)
+        if (!renderFeatures)
         {
-            return "NoParticleSubsystem";
+            return "NoRenderFeatureDiagnostics";
         }
 
-        const Particle::ParticleSubsystem::Statistics& stats = particleSubsystem->GetStatistics();
-        const Particle::ParticleRenderDrawStats& drawStats = particleSubsystem->GetLastRenderDrawStats();
-        return std::string("renderReady=") + BoolText(particleSubsystem->IsRenderIntegrationReady()) +
-               ", reason=" + particleSubsystem->GetRenderIntegrationUnsupportedReason() +
-               ", renderPassRegistered=" + BoolText(stats.renderPassRegistered) +
-               ", preGraphCallbackRegistered=" + BoolText(stats.preGraphCallbackRegistered) +
-               ", activeInstances=" + std::to_string(stats.activeInstances) +
-               ", visibleInstances=" + std::to_string(stats.visibleInstances) +
-               ", totalParticles=" + std::to_string(stats.totalParticles) +
-               ", cpuSimulatedParticles=" + std::to_string(stats.cpuSimulatedParticles) +
-               ", gpuSimulatedParticles=" + std::to_string(stats.gpuSimulatedParticles) +
-               ", prepareFrames=" + std::to_string(stats.prepareFrameCount) +
-               ", skippedPrepareFrames=" + std::to_string(stats.skippedPrepareFrameCount) +
-               ", drawSubmitted=" + BoolText(drawStats.drawSubmitted) +
-               ", drawVertices=" +
-               std::to_string(drawStats.submittedVertexCount) +
-               ", drawIndices=" +
-               std::to_string(drawStats.submittedIndexCount) +
-               ", drawInstances=" +
-               std::to_string(drawStats.submittedInstanceCount);
+        const RenderParticleFeatureDiagnostics& stats =
+            renderFeatures->particles;
+        return std::string("requested=") + BoolText(stats.requested) +
+               ", supported=" + BoolText(stats.supported) +
+               ", enabled=" + BoolText(stats.enabled) +
+               ", graphPassScheduled=" +
+               BoolText(stats.graphPassScheduled) +
+               ", drawSubmitted=" + BoolText(stats.drawSubmitted) +
+               ", itemCount=" + std::to_string(stats.itemCount) +
+               ", payloadReadyItems=" +
+               std::to_string(stats.renderPayloadReadyItemCount) +
+               ", totalAliveParticles=" +
+               std::to_string(stats.totalAliveParticles) +
+               ", reason=" + stats.reason;
     }
 
-    bool IsParticleRuntimeReady(const Particle::ParticleSubsystem* particleSubsystem, std::string& outReason)
+    bool IsParticleRuntimeReady(
+        const RenderFrameFeatureDiagnostics* renderFeatures,
+        std::string& outReason)
     {
-        if (!particleSubsystem)
+        if (!renderFeatures)
         {
-            outReason = "NoParticleSubsystem";
+            outReason = "NoRenderFeatureDiagnostics";
             return false;
         }
 
-        const Particle::ParticleSubsystem::Statistics& stats = particleSubsystem->GetStatistics();
-        const Particle::ParticleRenderDrawStats& drawStats = particleSubsystem->GetLastRenderDrawStats();
-        const bool ready = particleSubsystem->IsRenderIntegrationReady() &&
-                           stats.renderPassRegistered &&
-                           stats.preGraphCallbackRegistered &&
-                           stats.activeInstances > 0 &&
-                           stats.visibleInstances > 0 &&
-                           stats.totalParticles > 0 &&
-                           stats.cpuSimulatedParticles > 0 &&
-                           stats.prepareFrameCount > 0 &&
-                           stats.skippedPrepareFrameCount == 0 &&
-                           drawStats.drawSubmitted &&
-                           (drawStats.submittedVertexCount == 6 || drawStats.submittedIndexCount == 6) &&
-                           drawStats.submittedInstanceCount > 0;
+        const RenderParticleFeatureDiagnostics& stats =
+            renderFeatures->particles;
+        const bool ready = stats.requested && stats.supported &&
+                           stats.enabled && stats.graphPassScheduled &&
+                           stats.drawSubmitted && stats.itemCount > 0 &&
+                           stats.renderPayloadReadyItemCount > 0 &&
+                           stats.totalAliveParticles > 0;
         if (ready)
         {
             outReason.clear();
             return true;
         }
 
-        outReason = DescribeParticleReadiness(particleSubsystem);
+        outReason = DescribeParticleReadiness(renderFeatures);
         return false;
     }
 
-    std::string DescribeRayTracingShadowReadiness(const SceneRayTracingFrameStats& stats)
+    std::string DescribeRayTracingShadowReadiness(const RenderRayTracingDiagnostics& stats)
     {
         return std::string("scenePrepared=") + BoolText(stats.scenePrepared) +
                ", tlasAvailable=" + BoolText(stats.tlasAvailable) +
@@ -2448,7 +2333,7 @@ namespace
                ", size=" + std::to_string(stats.shadowWidth) + "x" + std::to_string(stats.shadowHeight);
     }
 
-    std::string DescribeRayTracingShadowAlphaReadiness(const SceneRayTracingFrameStats& stats)
+    std::string DescribeRayTracingShadowAlphaReadiness(const RenderRayTracingDiagnostics& stats)
     {
         return DescribeRayTracingShadowReadiness(stats) +
                ", materialTextureTableAvailable=" + BoolText(stats.shadowMaterialTextureTableAvailable) +
@@ -2463,7 +2348,7 @@ namespace
                ", alphaUVBuffers=" + std::to_string(stats.shadowAlphaUVBufferCount);
     }
 
-    std::string DescribeRayTracingReflectionReadiness(const SceneRayTracingFrameStats& stats)
+    std::string DescribeRayTracingReflectionReadiness(const RenderRayTracingDiagnostics& stats)
     {
         return std::string("scenePrepared=") + BoolText(stats.scenePrepared) +
                ", tlasAvailable=" + BoolText(stats.tlasAvailable) +
@@ -2480,7 +2365,7 @@ namespace
                ", size=" + std::to_string(stats.reflectionWidth) + "x" + std::to_string(stats.reflectionHeight);
     }
 
-    std::string DescribeRayTracingReflectionAssetReadiness(const SceneRayTracingFrameStats& stats)
+    std::string DescribeRayTracingReflectionAssetReadiness(const RenderRayTracingDiagnostics& stats)
     {
         return DescribeRayTracingReflectionReadiness(stats) +
                ", materialTextureTableAvailable=" + BoolText(stats.reflectionMaterialTextureTableAvailable) +
@@ -2494,7 +2379,7 @@ namespace
                ", geometryTangentBuffers=" + std::to_string(stats.reflectionGeometryTangentBufferCount);
     }
 
-    std::string DescribeRayTracingShadowHistoryReadiness(const SceneRayTracingFrameStats& stats)
+    std::string DescribeRayTracingShadowHistoryReadiness(const RenderRayTracingDiagnostics& stats)
     {
         return DescribeRayTracingShadowReadiness(stats) +
                ", historyAvailable=" + BoolText(stats.shadowHistoryAvailable) +
@@ -2507,7 +2392,7 @@ namespace
                ", temporalAccumulated=" + BoolText(stats.shadowTemporalAccumulated);
     }
 
-    std::string DescribeRayTracingReflectionHistoryReadiness(const SceneRayTracingFrameStats& stats)
+    std::string DescribeRayTracingReflectionHistoryReadiness(const RenderRayTracingDiagnostics& stats)
     {
         return DescribeRayTracingReflectionReadiness(stats) +
                ", historyAvailable=" + BoolText(stats.reflectionHistoryAvailable) +
@@ -2520,7 +2405,9 @@ namespace
                ", temporalAccumulated=" + BoolText(stats.reflectionTemporalAccumulated);
     }
 
-    bool IsRayTracedShadowHistoryReady(SceneRenderer* sceneRenderer, std::string& outReason)
+    bool IsRayTracedShadowHistoryReady(
+        const RenderFrameFeatureDiagnostics* sceneRenderer,
+        std::string& outReason)
     {
         if (!sceneRenderer)
         {
@@ -2528,7 +2415,7 @@ namespace
             return false;
         }
 
-        const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
         const bool ready = stats.scenePrepared && stats.tlasAvailable &&
                            stats.shadowRequested && stats.shadowSupported && stats.shadowRecorded &&
                            stats.shadowHistoryAvailable &&
@@ -2546,7 +2433,9 @@ namespace
         return false;
     }
 
-    bool IsRayTracedReflectionHistoryReady(SceneRenderer* sceneRenderer, std::string& outReason)
+    bool IsRayTracedReflectionHistoryReady(
+        const RenderFrameFeatureDiagnostics* sceneRenderer,
+        std::string& outReason)
     {
         if (!sceneRenderer)
         {
@@ -2554,7 +2443,7 @@ namespace
             return false;
         }
 
-        const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
         const bool ready = stats.scenePrepared && stats.tlasAvailable &&
                            stats.reflectionRequested && stats.reflectionSupported && stats.reflectionRecorded &&
                            stats.reflectionHistoryAvailable &&
@@ -2572,7 +2461,9 @@ namespace
         return false;
     }
 
-    bool IsRayTracedShadowHistoryResetReady(SceneRenderer* sceneRenderer, std::string& outReason)
+    bool IsRayTracedShadowHistoryResetReady(
+        const RenderFrameFeatureDiagnostics* sceneRenderer,
+        std::string& outReason)
     {
         if (!sceneRenderer)
         {
@@ -2580,7 +2471,7 @@ namespace
             return false;
         }
 
-        const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
         const bool ready = stats.scenePrepared && stats.tlasAvailable &&
                            stats.shadowRequested && stats.shadowSupported && stats.shadowRecorded &&
                            stats.shadowHistoryReset &&
@@ -2597,7 +2488,9 @@ namespace
         return false;
     }
 
-    bool IsRayTracedReflectionHistoryResetReady(SceneRenderer* sceneRenderer, std::string& outReason)
+    bool IsRayTracedReflectionHistoryResetReady(
+        const RenderFrameFeatureDiagnostics* sceneRenderer,
+        std::string& outReason)
     {
         if (!sceneRenderer)
         {
@@ -2605,7 +2498,7 @@ namespace
             return false;
         }
 
-        const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
         const bool ready = stats.scenePrepared && stats.tlasAvailable &&
                            stats.reflectionRequested && stats.reflectionSupported && stats.reflectionRecorded &&
                            stats.reflectionHistoryReset &&
@@ -2622,7 +2515,8 @@ namespace
         return false;
     }
 
-    bool IsRayTracedShadowHistoryResizeReady(SceneRenderer* sceneRenderer,
+    bool IsRayTracedShadowHistoryResizeReady(
+                                             const RenderFrameFeatureDiagnostics* sceneRenderer,
                                              uint32 expectedWidth,
                                              uint32 expectedHeight,
                                              std::string& outReason)
@@ -2633,7 +2527,7 @@ namespace
             return false;
         }
 
-        const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
         const bool sizeMatches = stats.shadowWidth == expectedWidth && stats.shadowHeight == expectedHeight;
         const bool ready = stats.scenePrepared && stats.tlasAvailable &&
                            stats.shadowRequested && stats.shadowSupported && stats.shadowRecorded &&
@@ -2654,7 +2548,8 @@ namespace
         return false;
     }
 
-    bool IsRayTracedReflectionHistoryResizeReady(SceneRenderer* sceneRenderer,
+    bool IsRayTracedReflectionHistoryResizeReady(
+                                                 const RenderFrameFeatureDiagnostics* sceneRenderer,
                                                  uint32 expectedWidth,
                                                  uint32 expectedHeight,
                                                  std::string& outReason)
@@ -2665,7 +2560,7 @@ namespace
             return false;
         }
 
-        const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
         const bool sizeMatches = stats.reflectionWidth == expectedWidth && stats.reflectionHeight == expectedHeight;
         const bool ready = stats.scenePrepared && stats.tlasAvailable &&
                            stats.reflectionRequested && stats.reflectionSupported && stats.reflectionRecorded &&
@@ -2686,7 +2581,7 @@ namespace
         return false;
     }
 
-    std::string DescribeRayTracingBudgetReadiness(const SceneRayTracingFrameStats& stats)
+    std::string DescribeRayTracingBudgetReadiness(const RenderRayTracingDiagnostics& stats)
     {
         return std::string("budgetEnabled=") + BoolText(stats.budgetEnabled) +
                ", budgetApplied=" + BoolText(stats.budgetApplied) +
@@ -2739,7 +2634,7 @@ namespace
                ", reflectionGpuQualityScale=" + std::to_string(stats.reflectionGpuTimeBudgetQualityScale);
     }
 
-    std::string DescribeRayTracingGpuTimingReadiness(const SceneRayTracingFrameStats& stats)
+    std::string DescribeRayTracingGpuTimingReadiness(const RenderRayTracingDiagnostics& stats)
     {
         return std::string("shadowRequested=") + BoolText(stats.shadowRequested) +
                ", shadowSupported=" + BoolText(stats.shadowGpuTimingSupported) +
@@ -2757,7 +2652,9 @@ namespace
                ", reflectionFrequency=" + std::to_string(stats.reflectionGpuTimestampFrequency);
     }
 
-    bool IsRayTracingGpuTimingReady(SceneRenderer* sceneRenderer, std::string& outReason)
+    bool IsRayTracingGpuTimingReady(
+        const RenderFrameFeatureDiagnostics* sceneRenderer,
+        std::string& outReason)
     {
         if (!sceneRenderer)
         {
@@ -2765,7 +2662,7 @@ namespace
             return false;
         }
 
-        const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
         const bool shadowRequired = stats.shadowRequested;
         const bool reflectionRequired = stats.reflectionRequested;
         if (!shadowRequired && !reflectionRequired)
@@ -2796,7 +2693,7 @@ namespace
         return false;
     }
 
-    std::string DescribeRayTracingGpuBudgetReadiness(const SceneRayTracingFrameStats& stats)
+    std::string DescribeRayTracingGpuBudgetReadiness(const RenderRayTracingDiagnostics& stats)
     {
         return DescribeRayTracingBudgetReadiness(stats) +
                ", gpuTimeBudgetExceeded=" + BoolText(stats.gpuTimeBudgetExceeded) +
@@ -2813,7 +2710,9 @@ namespace
                ", reflectionOverBudgetFrames=" + std::to_string(stats.reflectionGpuTimeBudgetOverBudgetFrameCount);
     }
 
-    bool IsRayTracingResourceBudgetExceeded(SceneRenderer* sceneRenderer, std::string& outReason)
+    bool IsRayTracingResourceBudgetExceeded(
+        const RenderFrameFeatureDiagnostics* sceneRenderer,
+        std::string& outReason)
     {
         if (!sceneRenderer)
         {
@@ -2821,7 +2720,7 @@ namespace
             return false;
         }
 
-        const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
         if (stats.budgetEnabled && stats.trackedResourceBudget > 0 && stats.resourceBudgetExceeded)
         {
             outReason.clear();
@@ -2832,7 +2731,9 @@ namespace
         return false;
     }
 
-    bool IsRayTracingGpuBudgetApplied(SceneRenderer* sceneRenderer, std::string& outReason)
+    bool IsRayTracingGpuBudgetApplied(
+        const RenderFrameFeatureDiagnostics* sceneRenderer,
+        std::string& outReason)
     {
         if (!sceneRenderer)
         {
@@ -2840,7 +2741,7 @@ namespace
             return false;
         }
 
-        const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
         const bool gpuBudgetConfigured = stats.gpuTimeBudget > 0.0f ||
                                          stats.shadowGpuTimeBudget > 0.0f ||
                                          stats.reflectionGpuTimeBudget > 0.0f;
@@ -2874,7 +2775,7 @@ namespace
         return false;
     }
 
-    std::string DescribeRayTracingGpuBudgetRecoveryReadiness(const SceneRayTracingFrameStats& stats,
+    std::string DescribeRayTracingGpuBudgetRecoveryReadiness(const RenderRayTracingDiagnostics& stats,
                                                             float baselineReflectionScale,
                                                             float baselineReflectionQualityScale)
     {
@@ -2885,7 +2786,8 @@ namespace
                std::to_string(stats.reflectionGpuTimeBudgetUnderBudgetFrameCount);
     }
 
-    bool IsRayTracingGpuBudgetRecovered(SceneRenderer* sceneRenderer,
+    bool IsRayTracingGpuBudgetRecovered(
+                                        const RenderFrameFeatureDiagnostics* sceneRenderer,
                                         float baselineReflectionScale,
                                         float baselineReflectionQualityScale,
                                         std::string& outReason)
@@ -2896,7 +2798,7 @@ namespace
             return false;
         }
 
-        const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
         const bool validBaseline = baselineReflectionScale > 0.0f &&
                                    baselineReflectionScale < 0.999f &&
                                    baselineReflectionQualityScale > 0.0f &&
@@ -2928,41 +2830,44 @@ namespace
         return false;
     }
 
-    void ApplyRayTracingGpuRecoveryBudgetSettings(SceneRenderer* sceneRenderer, const ModelViewerOptions& options)
+    void ApplyRayTracingGpuRecoveryBudgetSettings(
+        Engine& engine,
+        RenderFrameSettings& frameSettings,
+        const ModelViewerOptions& options)
     {
-        if (!sceneRenderer)
-            return;
-
-        SceneRayTracingBudgetSettings budgetSettings = sceneRenderer->GetRayTracingBudgetSettings();
-        budgetSettings.enabled = true;
+        frameSettings.rayTracing.budgetEnabled = true;
         if (options.rayTracingRecoveryMaxGpuMs > 0.0f)
         {
-            budgetSettings.maxMeasuredGpuMs = options.rayTracingRecoveryMaxGpuMs;
+            frameSettings.rayTracing.maxMeasuredGpuMs =
+                options.rayTracingRecoveryMaxGpuMs;
         }
         if (options.rayTracingRecoveryMaxShadowGpuMs > 0.0f)
         {
-            budgetSettings.maxShadowMeasuredGpuMs = options.rayTracingRecoveryMaxShadowGpuMs;
+            frameSettings.rayTracing.maxShadowMeasuredGpuMs =
+                options.rayTracingRecoveryMaxShadowGpuMs;
         }
         if (options.rayTracingRecoveryMaxReflectionGpuMs > 0.0f)
         {
-            budgetSettings.maxReflectionMeasuredGpuMs = options.rayTracingRecoveryMaxReflectionGpuMs;
+            frameSettings.rayTracing.maxReflectionMeasuredGpuMs =
+                options.rayTracingRecoveryMaxReflectionGpuMs;
         }
         if (options.rayTracingGpuAdjustmentFrameCount > 0)
         {
-            budgetSettings.gpuTimingAdjustmentFrameCount = options.rayTracingGpuAdjustmentFrameCount;
+            frameSettings.rayTracing.gpuTimingAdjustmentFrameCount =
+                options.rayTracingGpuAdjustmentFrameCount;
         }
-
-        sceneRenderer->ApplyRayTracingBudgetSettings(budgetSettings);
-        const SceneRayTracingBudgetSettings& appliedBudget = sceneRenderer->GetRayTracingBudgetSettings();
+        static_cast<void>(engine.SetRenderFrameSettings(frameSettings));
         RVX_CORE_INFO("ModelViewer ray tracing recovery GPU budget: maxGpuMs={:.6f}, "
                       "maxShadowGpuMs={:.6f}, maxReflectionGpuMs={:.6f}, adjustFrames={}",
-                      appliedBudget.maxMeasuredGpuMs,
-                      appliedBudget.maxShadowMeasuredGpuMs,
-                      appliedBudget.maxReflectionMeasuredGpuMs,
-                      appliedBudget.gpuTimingAdjustmentFrameCount);
+                      frameSettings.rayTracing.maxMeasuredGpuMs,
+                      frameSettings.rayTracing.maxShadowMeasuredGpuMs,
+                      frameSettings.rayTracing.maxReflectionMeasuredGpuMs,
+                      frameSettings.rayTracing.gpuTimingAdjustmentFrameCount);
     }
 
-    bool IsRayTracedShadowReady(SceneRenderer* sceneRenderer, std::string& outReason)
+    bool IsRayTracedShadowReady(
+        const RenderFrameFeatureDiagnostics* sceneRenderer,
+        std::string& outReason)
     {
         if (!sceneRenderer)
         {
@@ -2970,7 +2875,7 @@ namespace
             return false;
         }
 
-        const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
         const bool ready = stats.scenePrepared && stats.tlasAvailable &&
                            stats.shadowRequested && stats.shadowSupported && stats.shadowRecorded &&
                            stats.shadowWidth > 0 && stats.shadowHeight > 0;
@@ -2984,7 +2889,9 @@ namespace
         return false;
     }
 
-    bool IsRayTracedShadowAlphaReady(SceneRenderer* sceneRenderer, std::string& outReason)
+    bool IsRayTracedShadowAlphaReady(
+        const RenderFrameFeatureDiagnostics* sceneRenderer,
+        std::string& outReason)
     {
         if (!sceneRenderer)
         {
@@ -2992,7 +2899,7 @@ namespace
             return false;
         }
 
-        const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
         const bool materialTexturesBound = stats.shadowMaterialTextureCount > 0 &&
                                            stats.shadowMaterialTexturesBound == stats.shadowMaterialTextureCount;
         const bool alphaTexturesBound = stats.shadowAlphaTextureCount > 0 &&
@@ -3016,7 +2923,7 @@ namespace
         return false;
     }
 
-    bool IsRayTracedReflectionReady(SceneRenderer* sceneRenderer,
+    bool IsRayTracedReflectionReady(const RenderFrameFeatureDiagnostics* sceneRenderer,
                                     bool requireDenoise,
                                     std::string& outReason)
     {
@@ -3026,7 +2933,7 @@ namespace
             return false;
         }
 
-        const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
         const bool denoiseReady = !requireDenoise ||
                                   (stats.reflectionDenoiseRequested &&
                                    stats.reflectionDenoiseSupported &&
@@ -3049,7 +2956,9 @@ namespace
         return false;
     }
 
-    bool IsRayTracedReflectionAssetReady(SceneRenderer* sceneRenderer, std::string& outReason)
+    bool IsRayTracedReflectionAssetReady(
+        const RenderFrameFeatureDiagnostics* sceneRenderer,
+        std::string& outReason)
     {
         if (!sceneRenderer)
         {
@@ -3057,7 +2966,7 @@ namespace
             return false;
         }
 
-        const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
         const bool materialTexturesBound = stats.reflectionMaterialTextureCount > 0 &&
                                            stats.reflectionMaterialTexturesBound == stats.reflectionMaterialTextureCount;
         const bool geometryBuffersBound = stats.reflectionGeometryIndexBufferCount > 0 &&
@@ -3080,37 +2989,8 @@ namespace
         return false;
     }
 
-    const char* MaterialBindingStatusName(MaterialBindingStatus status)
-    {
-        switch (status)
-        {
-            case MaterialBindingStatus::None:
-                return "None";
-            case MaterialBindingStatus::Ready:
-                return "Ready";
-            case MaterialBindingStatus::Fallback:
-                return "Fallback";
-            case MaterialBindingStatus::NotInitialized:
-                return "NotInitialized";
-            case MaterialBindingStatus::Unavailable:
-                return "Unavailable";
-            case MaterialBindingStatus::Error:
-                return "Error";
-        }
-
-        return "Unknown";
-    }
-
-    uint32 GetRequiredPBRMaterialTextureFlags()
-    {
-        return static_cast<uint32>(MaterialTextureFlags::HasBaseColor) |
-               static_cast<uint32>(MaterialTextureFlags::HasNormal) |
-               static_cast<uint32>(MaterialTextureFlags::HasMetallicRoughness) |
-               static_cast<uint32>(MaterialTextureFlags::HasOcclusion) |
-               static_cast<uint32>(MaterialTextureFlags::HasEmissive);
-    }
-
-    bool IsPBRMaterialReady(SceneRenderer* sceneRenderer, std::string& outReason)
+    bool IsPBRMaterialReady(const RenderFrameFeatureDiagnostics* sceneRenderer,
+                            std::string& outReason)
     {
         if (!sceneRenderer)
         {
@@ -3118,34 +2998,28 @@ namespace
             return false;
         }
 
-        MaterialSystem* materialSystem = sceneRenderer->GetMaterialSystem();
-        if (!materialSystem)
-        {
-            outReason = "NoMaterialSystem";
-            return false;
-        }
-
-        const MaterialBindingResult& result = materialSystem->GetLastBindingResult();
-        const uint32 requiredFlags = GetRequiredPBRMaterialTextureFlags();
+        const RenderMaterialFeatureDiagnostics& result =
+            sceneRenderer->material;
+        const uint32 requiredFlags = result.requiredTextureFlags;
         const bool hasAllTextureFlags = (result.textureFlags & requiredFlags) == requiredFlags;
-        if (result.status == MaterialBindingStatus::Ready &&
+        if (result.ready &&
             !result.usedFallback &&
             result.constantsUpdated &&
-            result.descriptorSet &&
+            result.descriptorSetAvailable &&
             hasAllTextureFlags)
         {
             outReason.clear();
             return true;
         }
 
-        outReason = "status=";
-        outReason += MaterialBindingStatusName(result.status);
+        outReason = "ready=";
+        outReason += result.ready ? "true" : "false";
         outReason += ", usedFallback=";
         outReason += result.usedFallback ? "true" : "false";
         outReason += ", constantsUpdated=";
         outReason += result.constantsUpdated ? "true" : "false";
         outReason += ", descriptorSet=";
-        outReason += result.descriptorSet ? "true" : "false";
+        outReason += result.descriptorSetAvailable ? "true" : "false";
         outReason += ", textureFlags=" + std::to_string(result.textureFlags);
         outReason += ", requiredTextureFlags=" + std::to_string(requiredFlags);
         outReason += ", materialName='" + result.materialName + "'";
@@ -3247,95 +3121,10 @@ namespace
         return true;
     }
 
-    bool QueueBackBufferScreenshot(RenderSubsystem* renderSubsystem, PendingScreenshot& outScreenshot)
+    bool WriteScreenshotPPM(const RenderFrameCaptureResult& screenshot,
+                            const std::filesystem::path& path)
     {
-        if (!renderSubsystem || !renderSubsystem->GetRenderContext())
-        {
-            RVX_CORE_ERROR("ModelViewer smoke capture: render subsystem is not ready");
-            return false;
-        }
-
-        RenderContext* renderContext = renderSubsystem->GetRenderContext();
-        IRHIDevice* device = renderSubsystem->GetDevice();
-        if (!device)
-        {
-            RVX_CORE_ERROR("ModelViewer smoke capture: RHI device is not ready");
-            return false;
-        }
-
-        const RHIBackendType backendType = device->GetBackendType();
-        if (!IsSmokeScreenshotBackendSupported(backendType))
-        {
-            RVX_CORE_ERROR("ModelViewer smoke capture currently supports DX11/DX12/OpenGL; active backend is {}",
-                           ToString(backendType));
-            return false;
-        }
-
-        RHITexture* backBuffer = renderContext->GetCurrentBackBuffer();
-        RHICommandContext* commandContext = renderContext->GetGraphicsContext();
-        if (!backBuffer || !commandContext)
-        {
-            RVX_CORE_ERROR("ModelViewer smoke capture: back buffer or command context is not ready");
-            return false;
-        }
-
-        ScreenshotChannelOrder channelOrder = ScreenshotChannelOrder::BGRA;
-        if (!TryGetScreenshotChannelOrder(backBuffer->GetFormat(), channelOrder))
-        {
-            RVX_CORE_ERROR("ModelViewer smoke capture: unsupported back buffer channel order for format {}",
-                           static_cast<int>(backBuffer->GetFormat()));
-            return false;
-        }
-
-        const uint32 bytesPerPixel = GetFormatBytesPerPixel(backBuffer->GetFormat());
-        if (bytesPerPixel != 4)
-        {
-            RVX_CORE_ERROR("ModelViewer smoke capture: unsupported back buffer format {}", static_cast<int>(backBuffer->GetFormat()));
-            return false;
-        }
-
-        const uint32 width = backBuffer->GetWidth();
-        const uint32 height = backBuffer->GetHeight();
-        uint32 rowPitch = width * bytesPerPixel;
-        if (backendType == RHIBackendType::DX12)
-        {
-            rowPitch = (rowPitch + kDX12TextureCopyPitchAlignment - 1u) &
-                       ~(kDX12TextureCopyPitchAlignment - 1u);
-        }
-
-        RHIBufferDesc readbackDesc;
-        readbackDesc.size = static_cast<uint64>(rowPitch) * height;
-        readbackDesc.usage = RHIBufferUsage::CopyDst;
-        readbackDesc.memoryType = RHIMemoryType::Readback;
-        readbackDesc.debugName = "ModelViewerSmokeReadback";
-
-        outScreenshot.readbackBuffer = device->CreateBuffer(readbackDesc);
-        if (!outScreenshot.readbackBuffer)
-        {
-            RVX_CORE_ERROR("ModelViewer smoke capture: failed to create readback buffer");
-            return false;
-        }
-
-        RHIBufferTextureCopyDesc copyDesc;
-        copyDesc.bufferRowPitch = rowPitch;
-        copyDesc.textureRegion = {0, 0, width, height};
-
-        commandContext->TextureBarrier(backBuffer, RHIResourceState::Present, RHIResourceState::CopySource);
-        commandContext->CopyTextureToBuffer(backBuffer, outScreenshot.readbackBuffer.Get(), copyDesc);
-        commandContext->TextureBarrier(backBuffer, RHIResourceState::CopySource, RHIResourceState::Present);
-
-        outScreenshot.width = width;
-        outScreenshot.height = height;
-        outScreenshot.rowPitch = rowPitch;
-        outScreenshot.bytesPerPixel = bytesPerPixel;
-        outScreenshot.channelOrder = channelOrder;
-        outScreenshot.originBottomLeft = backendType == RHIBackendType::OpenGL;
-        return true;
-    }
-
-    bool WriteScreenshotPPM(const PendingScreenshot& screenshot, const std::filesystem::path& path)
-    {
-        if (!screenshot.readbackBuffer || screenshot.width == 0 || screenshot.height == 0)
+        if (!screenshot.IsComplete() || screenshot.bytesPerPixel != 4)
         {
             RVX_CORE_ERROR("ModelViewer smoke capture: invalid screenshot data");
             return false;
@@ -3347,24 +3136,18 @@ namespace
             std::filesystem::create_directories(parent);
         }
 
-        void* mapped = screenshot.readbackBuffer->Map();
-        if (!mapped)
-        {
-            RVX_CORE_ERROR("ModelViewer smoke capture: failed to map readback buffer");
-            return false;
-        }
-
         std::ofstream stream(path, std::ios::binary);
         if (!stream)
         {
-            screenshot.readbackBuffer->Unmap();
             RVX_CORE_ERROR("ModelViewer smoke capture: failed to create screenshot {}", path.string());
             return false;
         }
 
         stream << "P6\n" << screenshot.width << " " << screenshot.height << "\n255\n";
 
-        const uint8* data = static_cast<const uint8*>(mapped);
+        const uint8* data = screenshot.bytes.data();
+        const bool bgra = screenshot.format == RHIFormat::BGRA8_UNORM ||
+                          screenshot.format == RHIFormat::BGRA8_UNORM_SRGB;
         for (uint32 y = 0; y < screenshot.height; ++y)
         {
             const uint32 sourceY = screenshot.originBottomLeft ? (screenshot.height - 1u - y) : y;
@@ -3373,7 +3156,7 @@ namespace
             {
                 const uint8* pixel = row + static_cast<uint64>(x) * screenshot.bytesPerPixel;
                 uint8 rgb[3] = {};
-                if (screenshot.channelOrder == ScreenshotChannelOrder::BGRA)
+                if (bgra)
                 {
                     rgb[0] = pixel[2];
                     rgb[1] = pixel[1];
@@ -3389,8 +3172,6 @@ namespace
                 stream.write(reinterpret_cast<const char*>(rgb), sizeof(rgb));
             }
         }
-
-        screenshot.readbackBuffer->Unmap();
 
         if (!stream)
         {
@@ -3452,6 +3233,8 @@ int main(int argc, char* argv[])
     Engine engine;
     EngineConfig engineConfig;
     engineConfig.enableJobSystem = false;
+    engineConfig.renderRuntime.backendType = options.backend;
+    engineConfig.renderRuntime.enableValidation = options.enableValidation;
     engine.SetConfig(engineConfig);
 
     // Add window subsystem
@@ -3481,15 +3264,6 @@ int main(int argc, char* argv[])
     // Add render subsystem
     auto* renderSubsystem = engine.AddSubsystem<RenderSubsystem>();
     
-    // Configure render
-    RenderConfig renderConfig;
-    renderConfig.backendType = options.backend;
-    renderConfig.enableValidation = options.enableValidation;
-    renderConfig.vsync = !options.smoke;
-    renderConfig.autoBindWindow = true;
-    renderConfig.autoRender = !options.smoke;  // Smoke mode renders manually for capture timing.
-    renderSubsystem->SetConfig(renderConfig);
-
     // Add particle subsystem after its render/resource dependencies are registered.
     auto* particleSubsystem = engine.AddSubsystem<Particle::ParticleSubsystem>();
     if (options.particleTestScene)
@@ -3511,173 +3285,82 @@ int main(int argc, char* argv[])
         return -1;
     }
 
-    if (SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer())
+    RenderFrameSettings frameSettings = engine.GetRenderFrameSettings();
+    RenderToneMappingOperator toneMapping =
+        RenderToneMappingOperator::None;
+    if (TryGetToneMappingOperator(options.tonemapSelection, toneMapping))
+        frameSettings.postProcess.toneMappingOperator = toneMapping;
+    if (options.cameraEV100Set)
     {
-        ToneMappingOperator tonemapOperator = ToneMappingOperator::None;
-        const bool tonemapSet = TryGetToneMappingOperator(options.tonemapSelection, tonemapOperator);
-        bool applyPostProcessSettings =
-            tonemapSet || options.postExposureSet || options.cameraEV100Set ||
-            options.exposureCompensationSet || options.displayGammaSet ||
-            options.bloomIntensitySet || options.bloomThresholdSet || options.bloomRadiusSet ||
-            options.enableRayTracedReflections;
-        if (applyPostProcessSettings)
-        {
-            PostProcessSettings postProcessSettings = sceneRenderer->GetPostProcessSettings();
-            if (tonemapSet)
-            {
-                postProcessSettings.toneMappingOperator = tonemapOperator;
-            }
-            if (options.cameraEV100Set)
-            {
-                postProcessSettings.exposureMode = ToneMappingExposureMode::CameraEV100;
-                postProcessSettings.cameraEV100 = options.cameraEV100;
-                postProcessSettings.exposureCompensationEV =
-                    options.exposureCompensationSet ? options.exposureCompensationEV : 0.0f;
-            }
-            else if (options.postExposureSet)
-            {
-                postProcessSettings.exposureMode = ToneMappingExposureMode::ManualMultiplier;
-                postProcessSettings.exposure = options.postExposure;
-            }
-            if (options.displayGammaSet)
-            {
-                postProcessSettings.gamma = options.displayGamma;
-            }
-            if (options.bloomIntensitySet || options.bloomThresholdSet || options.bloomRadiusSet)
-            {
-                postProcessSettings.enableBloom = true;
-                if (options.bloomIntensitySet)
-                {
-                    postProcessSettings.bloomIntensity = options.bloomIntensity;
-                }
-                if (options.bloomThresholdSet)
-                {
-                    postProcessSettings.bloomThreshold = options.bloomThreshold;
-                }
-                if (options.bloomRadiusSet)
-                {
-                    postProcessSettings.bloomRadius = options.bloomRadius;
-                }
-            }
-            if (options.enableRayTracedReflections)
-            {
-                postProcessSettings.enableRayTracedReflections = true;
-                postProcessSettings.enableRayTracedReflectionDenoise = options.enableRayTracedReflectionDenoise;
-                if (options.expectRayTracedReflectionHistoryReady)
-                {
-                    postProcessSettings.enableTAA = true;
-                }
-            }
-            sceneRenderer->ApplyPostProcessSettings(postProcessSettings);
-            const char* exposureModeName =
-                postProcessSettings.exposureMode == ToneMappingExposureMode::CameraEV100 ? "camera-ev100" : "manual";
-            RVX_CORE_INFO("ModelViewer post-process toneMapping='{}', exposureMode='{}', manualExposure={:.3f}, "
-                          "cameraEV100={:.3f}, compensationEV={:.3f}, gamma={:.3f}, bloomIntensity={:.3f}, "
-                          "bloomThreshold={:.3f}, bloomRadius={:.3f}, rayTracedReflections={}, rtReflectionDenoise={}, taa={}",
-                          GetToneMapSelectionName(options.tonemapSelection),
-                          exposureModeName,
-                          postProcessSettings.exposure,
-                          postProcessSettings.cameraEV100,
-                          postProcessSettings.exposureCompensationEV,
-                          postProcessSettings.gamma,
-                          postProcessSettings.bloomIntensity,
-                          postProcessSettings.bloomThreshold,
-                          postProcessSettings.bloomRadius,
-                          postProcessSettings.enableRayTracedReflections,
-                          postProcessSettings.enableRayTracedReflectionDenoise,
-                          postProcessSettings.enableTAA);
-        }
-
-        const bool rayTracingGpuBudgetConfigured = options.rayTracingMaxGpuMs > 0.0f ||
-                                                   options.rayTracingMaxShadowGpuMs > 0.0f ||
-                                                   options.rayTracingMaxReflectionGpuMs > 0.0f;
-        const bool rayTracingBudgetConfigured = options.rayTracingMaxRayCount > 0 ||
-                                                options.rayTracingMaxDenoiseTapCount > 0 ||
-                                                options.rayTracingMaxResourceBytes > 0 ||
-                                                rayTracingGpuBudgetConfigured;
-        if (rayTracingBudgetConfigured)
-        {
-            SceneRayTracingBudgetSettings budgetSettings = sceneRenderer->GetRayTracingBudgetSettings();
-            budgetSettings.enabled = true;
-            budgetSettings.maxRayCount = options.rayTracingMaxRayCount;
-            budgetSettings.maxDenoiseTapCount = options.rayTracingMaxDenoiseTapCount;
-            budgetSettings.maxTrackedResourceBytes = options.rayTracingMaxResourceBytes;
-            budgetSettings.maxMeasuredGpuMs = options.rayTracingMaxGpuMs;
-            budgetSettings.maxShadowMeasuredGpuMs = options.rayTracingMaxShadowGpuMs;
-            budgetSettings.maxReflectionMeasuredGpuMs = options.rayTracingMaxReflectionGpuMs;
-            if (options.rayTracingGpuAdjustmentFrameCount > 0)
-            {
-                budgetSettings.gpuTimingAdjustmentFrameCount = options.rayTracingGpuAdjustmentFrameCount;
-            }
-            sceneRenderer->ApplyRayTracingBudgetSettings(budgetSettings);
-            const SceneRayTracingBudgetSettings& appliedBudget = sceneRenderer->GetRayTracingBudgetSettings();
-            RVX_CORE_INFO("ModelViewer ray tracing budget: enabled=true, maxRays={}, maxDenoiseTaps={}, "
-                          "maxResourceBytes={}, maxGpuMs={:.6f}, maxShadowGpuMs={:.6f}, "
-                          "maxReflectionGpuMs={:.6f}, adjustFrames={}, minReflectionScale={:.3f}",
-                          appliedBudget.maxRayCount,
-                          appliedBudget.maxDenoiseTapCount,
-                          appliedBudget.maxTrackedResourceBytes,
-                          appliedBudget.maxMeasuredGpuMs,
-                          appliedBudget.maxShadowMeasuredGpuMs,
-                          appliedBudget.maxReflectionMeasuredGpuMs,
-                          appliedBudget.gpuTimingAdjustmentFrameCount,
-                          appliedBudget.minReflectionResolutionScale);
-        }
-
-        const ShadowPassConfig shadowConfig = MakeShadowQualityConfig(options.shadowQualityPreset);
-        sceneRenderer->ApplyShadowPassConfig(shadowConfig);
-        RVX_CORE_INFO("ModelViewer shadow quality preset '{}': mapSize={}, cascades={}, lambda={:.2f}, "
-                      "filterRadius={:.2f}, shadowBias={:.4f}, normalBias={:.4f}, blend={:.2f}",
-                      GetShadowQualityPresetName(options.shadowQualityPreset),
-                      shadowConfig.shadowMapSize,
-                      shadowConfig.numCascades,
-                      shadowConfig.cascadeSplitLambda,
-                      shadowConfig.filterRadiusTexels,
-                      shadowConfig.shadowBias,
-                      shadowConfig.normalBias,
-                      shadowConfig.cascadeBlendRatio);
-
-        if (options.disableGPUDrivenCulling)
-        {
-            sceneRenderer->SetGPUDrivenCullingEnabled(false);
-            RVX_CORE_INFO("ModelViewer GPU-driven culling disabled for comparison");
-        }
-
-        if (options.gpuDrivenCullingTestScene)
-        {
-            GPUCullingConfig cullingConfig = sceneRenderer->GetGPUDrivenCullingConfig();
-            cullingConfig.enableDistanceCulling = true;
-            cullingConfig.enableOcclusionCulling = false;
-            cullingConfig.maxDrawDistance = 5.0f;
-            sceneRenderer->SetGPUDrivenCullingConfig(cullingConfig);
-            RVX_CORE_INFO("ModelViewer GPU-driven culling test: distance culling enabled, maxDrawDistance={:.2f}",
-                          cullingConfig.maxDrawDistance);
-        }
+        frameSettings.postProcess.exposureMode = RenderExposureMode::CameraEV100;
+        frameSettings.postProcess.cameraEV100 = options.cameraEV100;
+        frameSettings.postProcess.exposureCompensationEV =
+            options.exposureCompensationSet ? options.exposureCompensationEV
+                                            : 0.0f;
     }
-    else
+    else if (options.postExposureSet)
     {
-        if (options.tonemapSelection != ToneMapSelection::Default ||
-            options.postExposureSet ||
-            options.cameraEV100Set ||
-            options.exposureCompensationSet ||
-            options.displayGammaSet ||
-            options.bloomIntensitySet ||
-            options.bloomThresholdSet ||
-            options.bloomRadiusSet ||
-            options.enableRayTracedReflections ||
-            options.rayTracingMaxRayCount > 0 ||
-            options.rayTracingMaxDenoiseTapCount > 0 ||
-            options.rayTracingMaxResourceBytes > 0 ||
-            options.rayTracingMaxGpuMs > 0.0f ||
-            options.rayTracingMaxShadowGpuMs > 0.0f ||
-            options.rayTracingMaxReflectionGpuMs > 0.0f ||
-            options.gpuDrivenCullingTestScene)
-        {
-            RVX_CORE_WARN("ModelViewer post-process settings could not be applied: SceneRenderer unavailable");
-        }
+        frameSettings.postProcess.exposureMode =
+            RenderExposureMode::ManualMultiplier;
+        frameSettings.postProcess.exposure = options.postExposure;
+    }
+    if (options.displayGammaSet)
+        frameSettings.postProcess.gamma = options.displayGamma;
+    if (options.bloomIntensitySet)
+        frameSettings.postProcess.bloomIntensity = options.bloomIntensity;
+    if (options.bloomThresholdSet)
+        frameSettings.postProcess.bloomThreshold = options.bloomThreshold;
+    if (options.bloomRadiusSet)
+        frameSettings.postProcess.bloomRadius = options.bloomRadius;
+    frameSettings.postProcess.enableRayTracedReflectionDenoise =
+        options.enableRayTracedReflectionDenoise;
 
-        RVX_CORE_WARN("ModelViewer shadow quality preset '{}' could not be applied: SceneRenderer unavailable",
-                      GetShadowQualityPresetName(options.shadowQualityPreset));
+    const bool rayTracedShadowRequested =
+        options.expectRayTracedShadowReady ||
+        options.expectRayTracedShadowAlphaReady ||
+        options.expectRayTracedShadowHistoryReady ||
+        options.expectRayTracedShadowHistoryResetReady ||
+        options.expectRayTracedShadowHistoryResizeReady;
+    frameSettings.rayTracing.enabled =
+        options.enableRayTracedReflections || rayTracedShadowRequested;
+    frameSettings.rayTracing.enableReflections =
+        options.enableRayTracedReflections;
+    frameSettings.rayTracing.enableShadows = rayTracedShadowRequested;
+    frameSettings.rayTracing.budgetEnabled =
+        options.rayTracingMaxRayCount > 0 ||
+        options.rayTracingMaxDenoiseTapCount > 0 ||
+        options.rayTracingMaxResourceBytes > 0 ||
+        options.rayTracingMaxGpuMs > 0.0f ||
+        options.rayTracingMaxShadowGpuMs > 0.0f ||
+        options.rayTracingMaxReflectionGpuMs > 0.0f;
+    frameSettings.rayTracing.maxRayCount = options.rayTracingMaxRayCount;
+    frameSettings.rayTracing.maxDenoiseTapCount =
+        options.rayTracingMaxDenoiseTapCount;
+    frameSettings.rayTracing.maxTrackedResourceBytes =
+        options.rayTracingMaxResourceBytes;
+    frameSettings.rayTracing.maxMeasuredGpuMs = options.rayTracingMaxGpuMs;
+    frameSettings.rayTracing.maxShadowMeasuredGpuMs =
+        options.rayTracingMaxShadowGpuMs;
+    frameSettings.rayTracing.maxReflectionMeasuredGpuMs =
+        options.rayTracingMaxReflectionGpuMs;
+    if (options.rayTracingGpuAdjustmentFrameCount > 0)
+        frameSettings.rayTracing.gpuTimingAdjustmentFrameCount =
+            options.rayTracingGpuAdjustmentFrameCount;
+
+    frameSettings.shadows =
+        MakeShadowQualityConfig(options.shadowQualityPreset);
+    frameSettings.gpuCulling.enabled = !options.disableGPUDrivenCulling;
+    if (options.gpuDrivenCullingTestScene)
+    {
+        frameSettings.gpuCulling.enableDistanceCulling = true;
+        frameSettings.gpuCulling.enableOcclusionCulling = false;
+        frameSettings.gpuCulling.maxDrawDistance = 5.0f;
+    }
+    if (!engine.SetRenderFrameSettings(frameSettings))
+    {
+        RVX_CORE_ERROR("ModelViewer render frame settings were rejected");
+        engine.Shutdown();
+        return -1;
     }
 
     if (options.smoke)
@@ -3689,17 +3372,6 @@ int main(int argc, char* argv[])
             return -1;
         }
 
-        if (!options.screenshotPath.empty())
-        {
-            IRHIDevice* device = renderSubsystem->GetDevice();
-            const RHIBackendType backendType = device ? device->GetBackendType() : RHIBackendType::None;
-            if (!device || !IsSmokeScreenshotBackendSupported(backendType))
-            {
-                RVX_CORE_ERROR("Smoke screenshot gate currently supports DX11/DX12/OpenGL");
-                engine.Shutdown();
-                return -1;
-            }
-        }
     }
 
     // Connect InputSubsystem to window (must be done after engine init)
@@ -3781,13 +3453,13 @@ int main(int argc, char* argv[])
         skyboxComponent->SetExposure(1.0f);
         skyboxComponent->SetContributesToLighting(true);
 
-        if (UploadHDRIEnvironment(renderSubsystem, hdriEnvironmentResources))
+        if (PublishHDRIEnvironment(resourceSubsystem, hdriEnvironmentResources))
         {
-            RVX_CORE_INFO("ModelViewer HDRI environment resources uploaded");
+            RVX_CORE_INFO("ModelViewer HDRI environment resources published");
         }
         else
         {
-            RVX_CORE_ERROR("ModelViewer HDRI environment resources were created but not GPU-ready");
+            RVX_CORE_ERROR("ModelViewer HDRI environment resource publication failed");
             engine.Shutdown();
             return -1;
         }
@@ -3814,13 +3486,13 @@ int main(int argc, char* argv[])
             skyboxComponent->SetExposure(1.0f);
             skyboxComponent->SetContributesToLighting(true);
 
-            if (UploadProceduralIBL(renderSubsystem, proceduralIBLResources))
+            if (PublishProceduralIBL(resourceSubsystem, proceduralIBLResources))
             {
-                RVX_CORE_INFO("ModelViewer procedural IBL resources uploaded");
+                RVX_CORE_INFO("ModelViewer procedural IBL resources published");
             }
             else
             {
-                RVX_CORE_WARN("ModelViewer procedural IBL resources were created but not GPU-ready");
+                RVX_CORE_WARN("ModelViewer procedural IBL resource publication failed");
             }
         }
         else
@@ -3976,38 +3648,37 @@ int main(int argc, char* argv[])
         float gpuBudgetRecoveryBaselineReflectionScale = 0.0f;
         float gpuBudgetRecoveryBaselineReflectionQualityScale = 1.0f;
         uint32 gpuBudgetRecoveryTriggerFrame = 0;
+        RuntimeFrameDriver frameDriver(engine, *renderSubsystem);
+        RenderDiagnosticsSnapshot lastDiagnostics =
+            renderSubsystem->GetDiagnosticsSnapshot();
+        constexpr uint64 captureRequestId = 1;
 
         for (uint32 frameIndex = 0; frameIndex < options.frames; ++frameIndex)
         {
-            engine.TickWithoutRender(kSmokeDeltaSeconds);
-
             cameraPos = options.materialTestScene ? Vec3(0.0f, 0.45f, 2.4f) :
                         (options.shadowTestScene ? Vec3(0.0f, 1.35f, 4.0f) : Vec3(0.0f, 1.5f, 4.0f));
             camera->SetPosition(cameraPos);
             camera->LookAt(target);
 
-            PendingScreenshot pendingScreenshot;
             const uint32 smokeFrameNumber = frameIndex + 1;
             const bool captureFrame = !options.screenshotPath.empty() && (smokeFrameNumber == options.frames);
 
             if (options.rayTracingHistoryResetFrame > 0u &&
                 smokeFrameNumber == options.rayTracingHistoryResetFrame)
             {
-                if (SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer())
-                {
-                    sceneRenderer->RequestTemporalHistoryReset();
-                    RVX_CORE_INFO("ModelViewer smoke requested temporal history reset on frame {}", smokeFrameNumber);
-                }
-                else
-                {
-                    RVX_CORE_ERROR("ModelViewer smoke could not request temporal history reset: NoSceneRenderer");
-                    smokeSucceeded = false;
-                }
+                static_cast<void>(engine.RequestRenderTemporalReset());
+                RVX_CORE_INFO("ModelViewer smoke requested temporal history reset on frame {}", smokeFrameNumber);
             }
 
             if (options.rayTracingResizeFrame > 0u && smokeFrameNumber == options.rayTracingResizeFrame)
             {
-                renderSubsystem->OnResize(options.rayTracingResizeWidth, options.rayTracingResizeHeight);
+                if (!engine.RequestRenderSurfaceResize(
+                        options.rayTracingResizeWidth,
+                        options.rayTracingResizeHeight))
+                {
+                    RVX_CORE_ERROR("ModelViewer smoke render resize request was rejected");
+                    smokeSucceeded = false;
+                }
                 camera->SetPerspective(glm::radians(45.0f),
                                        static_cast<float>(options.rayTracingResizeWidth) /
                                            static_cast<float>(options.rayTracingResizeHeight),
@@ -4019,18 +3690,59 @@ int main(int argc, char* argv[])
                               options.rayTracingResizeHeight);
             }
 
-            renderSubsystem->BeginFrame();
-            renderSubsystem->Render(world, camera);
+            if (captureFrame)
+            {
+                RenderFrameCaptureRequest capture;
+                capture.requestId = captureRequestId;
+                capture.kind = RenderFrameCaptureKind::Color;
+                capture.width = options.rayTracingResizeFrame > 0
+                                    ? options.rayTracingResizeWidth
+                                    : options.width;
+                capture.height = options.rayTracingResizeFrame > 0
+                                     ? options.rayTracingResizeHeight
+                                     : options.height;
+                if (!engine.RequestRenderFrameCapture(capture))
+                {
+                    RVX_CORE_ERROR("ModelViewer smoke frame capture request was rejected");
+                    smokeSucceeded = false;
+                }
+            }
+
+            const uint64 nextPresentedSequence =
+                lastDiagnostics.lastPresentedFrameSequence + 1;
+            lastDiagnostics = frameDriver.TickOnce(kSmokeDeltaSeconds);
+            RuntimeFrameWaitRequest waitRequest;
+            waitRequest.minimumPresentedSequence = nextPresentedSequence;
+            waitRequest.captureRequestId = captureFrame ? captureRequestId : 0;
+            waitRequest.maxTicks = 5000;
+            waitRequest.advanceEngine = false;
+            const RuntimeFrameWaitResult waitResult =
+                frameDriver.WaitFor(waitRequest);
+            lastDiagnostics = waitResult.diagnostics;
+            if (!waitResult.Reached())
+            {
+                RVX_CORE_ERROR(
+                    "ModelViewer smoke frame {} did not reach Render: waitCode={}, "
+                    "lifecycle={}, lastPresented={}, failure={}",
+                    smokeFrameNumber,
+                    static_cast<uint32>(waitResult.code),
+                    static_cast<uint32>(lastDiagnostics.lifecycle),
+                    lastDiagnostics.lastPresentedFrameSequence,
+                    lastDiagnostics.lastFailure.context);
+                smokeSucceeded = false;
+                break;
+            }
+            const RenderFrameFeatureDiagnostics* sceneRenderer =
+                &lastDiagnostics.frameFeatures;
 
             if (options.expectRayTracingGpuBudgetRecovered &&
                 !gpuBudgetRecoveryTriggered &&
                 (frameIndex + 1 < options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string gpuBudgetFallbackReason;
                 if (IsRayTracingGpuBudgetApplied(sceneRenderer, gpuBudgetFallbackReason))
                 {
-                    const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
                     const bool validReflectionBaseline =
                         stats.reflectionRequested &&
                         stats.reflectionGpuTimeBudgetApplied &&
@@ -4044,7 +3756,10 @@ int main(int argc, char* argv[])
                         gpuBudgetRecoveryBaselineReflectionQualityScale =
                             stats.reflectionGpuTimeBudgetQualityScale;
                         gpuBudgetRecoveryTriggerFrame = frameIndex + 1;
-                        ApplyRayTracingGpuRecoveryBudgetSettings(sceneRenderer, options);
+                        ApplyRayTracingGpuRecoveryBudgetSettings(
+                            engine,
+                            frameSettings,
+                            options);
                         gpuBudgetRecoveryTriggered = true;
                         RVX_CORE_INFO("ModelViewer smoke ray tracing GPU budget recovery armed: frame={}, "
                                       "baselineReflectionScale={:.3f}, baselineReflectionGpuScale={:.3f}, "
@@ -4060,20 +3775,20 @@ int main(int argc, char* argv[])
 
             if (options.expectIBLReady && (frameIndex + 1 == options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
-                const SceneEnvironmentIBLStats* iblStats =
-                    sceneRenderer ? &sceneRenderer->GetEnvironmentIBLStats() : nullptr;
-                if (!iblStats || !iblStats->textureIBLEnabled)
+                if (!sceneRenderer || !sceneRenderer->textureIBLEnabled)
                 {
+                    const std::string fallbackReason =
+                        sceneRenderer && !sceneRenderer->fallbackReasons.empty()
+                            ? sceneRenderer->fallbackReasons.front()
+                            : "TextureIBLDisabled";
                     RVX_CORE_ERROR("ModelViewer smoke expected texture IBL ready; fallback reason: {}",
-                                   iblStats ? iblStats->fallbackReason : "NoSceneRenderer");
+                                   fallbackReason);
                     smokeSucceeded = false;
                 }
             }
 
             if (options.expectSkyboxReady && (frameIndex + 1 == options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string skyboxFallbackReason;
                 if (!IsSkyboxPassReady(sceneRenderer, skyboxFallbackReason))
                 {
@@ -4085,7 +3800,6 @@ int main(int argc, char* argv[])
 
             if (options.expectShadowReady && (frameIndex + 1 == options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string shadowFallbackReason;
                 if (!IsDirectionalShadowReady(sceneRenderer, shadowFallbackReason))
                 {
@@ -4102,7 +3816,6 @@ int main(int argc, char* argv[])
 
             if (options.expectGPUDrivenCullingReady && (frameIndex + 1 == options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string gpuDrivenFallbackReason;
                 if (!IsGPUDrivenCullingReady(sceneRenderer,
                                              options.gpuDrivenCullingTestScene,
@@ -4114,7 +3827,8 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const SceneGPUDrivenCullingStats& stats = sceneRenderer->GetGPUDrivenCullingStats();
+                    const RenderGPUDrivenCullingDiagnostics& stats =
+                        sceneRenderer->gpuDrivenCulling;
                     RVX_CORE_INFO("ModelViewer smoke GPU-driven culling ready: graphInput={}, "
                                   "visibleCullable={}, opaqueIndirectBatches={}, opaqueIndirectDraws={}",
                                   stats.graphInputDrawItemCount,
@@ -4127,7 +3841,7 @@ int main(int argc, char* argv[])
             if (options.expectParticlesReady && (frameIndex + 1 == options.frames))
             {
                 std::string particleFallbackReason;
-                if (!IsParticleRuntimeReady(particleSubsystem, particleFallbackReason))
+                if (!IsParticleRuntimeReady(sceneRenderer, particleFallbackReason))
                 {
                     RVX_CORE_ERROR("ModelViewer smoke expected particles ready; stats: {}",
                                    particleFallbackReason);
@@ -4135,19 +3849,17 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const Particle::ParticleSubsystem::Statistics& stats = particleSubsystem->GetStatistics();
-                    RVX_CORE_INFO("ModelViewer smoke particles ready: active={}, visible={}, total={}, cpu={}, prepareFrames={}",
-                                  stats.activeInstances,
-                                  stats.visibleInstances,
-                                  stats.totalParticles,
-                                  stats.cpuSimulatedParticles,
-                                  stats.prepareFrameCount);
+                    const RenderParticleFeatureDiagnostics& stats =
+                        sceneRenderer->particles;
+                    RVX_CORE_INFO("ModelViewer smoke particles ready: items={}, payloadReady={}, totalAlive={}",
+                                  stats.itemCount,
+                                  stats.renderPayloadReadyItemCount,
+                                  stats.totalAliveParticles);
                 }
             }
 
             if (options.expectRayTracedShadowReady && (frameIndex + 1 == options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string rayTracingFallbackReason;
                 if (!IsRayTracedShadowReady(sceneRenderer, rayTracingFallbackReason))
                 {
@@ -4157,7 +3869,7 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
                     RVX_CORE_INFO("ModelViewer smoke ray-traced shadow ready: size={}x{}, estimatedRays={}",
                                   stats.shadowWidth,
                                   stats.shadowHeight,
@@ -4168,7 +3880,6 @@ int main(int argc, char* argv[])
 
             if (options.expectRayTracedShadowAlphaReady && (frameIndex + 1 == options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string rayTracingAlphaFallbackReason;
                 if (!IsRayTracedShadowAlphaReady(sceneRenderer, rayTracingAlphaFallbackReason))
                 {
@@ -4178,7 +3889,7 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
                     RVX_CORE_INFO("ModelViewer smoke ray-traced shadow alpha ready: alphaTextures={}/{}, "
                                   "materialTextures={}/{}, alphaIndexBuffers={}, alphaUVBuffers={}",
                                   stats.shadowAlphaTexturesBound,
@@ -4193,7 +3904,6 @@ int main(int argc, char* argv[])
             if (options.expectRayTracedShadowHistoryResetReady &&
                 smokeFrameNumber == options.rayTracingHistoryResetFrame)
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string rayTracingHistoryResetFallbackReason;
                 if (!IsRayTracedShadowHistoryResetReady(sceneRenderer, rayTracingHistoryResetFallbackReason))
                 {
@@ -4203,7 +3913,7 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
                     rayTracedShadowHistoryResetObserved = true;
                     RVX_CORE_INFO("ModelViewer smoke ray-traced shadow history reset ready: frame={}, "
                                   "historyReset={}, temporalAccumulated={}",
@@ -4216,7 +3926,6 @@ int main(int argc, char* argv[])
             if (options.expectRayTracedShadowHistoryResizeReady &&
                 smokeFrameNumber == options.rayTracingResizeFrame)
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string rayTracingHistoryResizeFallbackReason;
                 if (!IsRayTracedShadowHistoryResizeReady(sceneRenderer,
                                                          options.rayTracingResizeWidth,
@@ -4229,7 +3938,7 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
                     rayTracedShadowHistoryResizeObserved = true;
                     RVX_CORE_INFO("ModelViewer smoke ray-traced shadow history resize ready: frame={}, "
                                   "size={}x{}, historyRecreated={}, historyResolutionChanged={}, "
@@ -4245,7 +3954,6 @@ int main(int argc, char* argv[])
 
             if (options.expectRayTracedShadowHistoryReady && (frameIndex + 1 == options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string rayTracingHistoryFallbackReason;
                 if (!IsRayTracedShadowHistoryReady(sceneRenderer, rayTracingHistoryFallbackReason))
                 {
@@ -4255,7 +3963,7 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
                     RVX_CORE_INFO("ModelViewer smoke ray-traced shadow history ready: historyAvailable={}, "
                                   "depthHistory={}, normalHistory={}, temporalAccumulated={}",
                                   stats.shadowHistoryAvailable,
@@ -4267,7 +3975,6 @@ int main(int argc, char* argv[])
 
             if (options.expectRayTracedReflectionReady && (frameIndex + 1 == options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string rayTracingFallbackReason;
                 if (!IsRayTracedReflectionReady(sceneRenderer,
                                                    options.enableRayTracedReflectionDenoise,
@@ -4279,7 +3986,7 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
                     RVX_CORE_INFO("ModelViewer smoke ray-traced reflection ready: size={}x{}, denoiseRadius={}, "
                                   "estimatedRays={}, estimatedDenoiseTaps={}",
                                   stats.reflectionWidth,
@@ -4293,7 +4000,6 @@ int main(int argc, char* argv[])
 
             if (options.expectRayTracedReflectionAssetReady && (frameIndex + 1 == options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string rayTracingAssetFallbackReason;
                 if (!IsRayTracedReflectionAssetReady(sceneRenderer, rayTracingAssetFallbackReason))
                 {
@@ -4303,7 +4009,7 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
                     RVX_CORE_INFO("ModelViewer smoke ray-traced reflection asset ready: materialTextures={}/{}, "
                                   "geometryBuffers=index:{}, uv:{}, normal:{}, tangent:{}",
                                   stats.reflectionMaterialTexturesBound,
@@ -4317,7 +4023,6 @@ int main(int argc, char* argv[])
             if (options.expectRayTracedReflectionHistoryResetReady &&
                 smokeFrameNumber == options.rayTracingHistoryResetFrame)
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string rayTracingHistoryResetFallbackReason;
                 if (!IsRayTracedReflectionHistoryResetReady(sceneRenderer, rayTracingHistoryResetFallbackReason))
                 {
@@ -4327,7 +4032,7 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
                     rayTracedReflectionHistoryResetObserved = true;
                     RVX_CORE_INFO("ModelViewer smoke ray-traced reflection history reset ready: frame={}, "
                                   "historyReset={}, temporalAccumulated={}",
@@ -4340,7 +4045,6 @@ int main(int argc, char* argv[])
             if (options.expectRayTracedReflectionHistoryResizeReady &&
                 smokeFrameNumber == options.rayTracingResizeFrame)
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string rayTracingHistoryResizeFallbackReason;
                 if (!IsRayTracedReflectionHistoryResizeReady(sceneRenderer,
                                                              options.rayTracingResizeWidth,
@@ -4353,7 +4057,7 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
                     rayTracedReflectionHistoryResizeObserved = true;
                     RVX_CORE_INFO("ModelViewer smoke ray-traced reflection history resize ready: frame={}, "
                                   "size={}x{}, historyRecreated={}, historyResolutionChanged={}, "
@@ -4369,7 +4073,6 @@ int main(int argc, char* argv[])
 
             if (options.expectRayTracedReflectionHistoryReady && (frameIndex + 1 == options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string rayTracingHistoryFallbackReason;
                 if (!IsRayTracedReflectionHistoryReady(sceneRenderer, rayTracingHistoryFallbackReason))
                 {
@@ -4379,7 +4082,7 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
                     RVX_CORE_INFO("ModelViewer smoke ray-traced reflection history ready: historyAvailable={}, "
                                   "depthHistory={}, normalHistory={}, temporalAccumulated={}, size={}x{}",
                                   stats.reflectionHistoryAvailable,
@@ -4432,7 +4135,6 @@ int main(int argc, char* argv[])
 
             if (options.expectRayTracingGpuTimingReady && (frameIndex + 1 == options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string timingFallbackReason;
                 if (!IsRayTracingGpuTimingReady(sceneRenderer, timingFallbackReason))
                 {
@@ -4442,7 +4144,7 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
                     RVX_CORE_INFO("ModelViewer smoke ray tracing GPU timing ready: shadowResult={}, "
                                   "shadowMs={:.4f}, reflectionResult={}, reflectionMs={:.4f}",
                                   stats.shadowGpuTimingResultAvailable,
@@ -4454,7 +4156,6 @@ int main(int argc, char* argv[])
 
             if (options.expectRayTracingGpuBudgetApplied && (frameIndex + 1 == options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string gpuBudgetFallbackReason;
                 if (!IsRayTracingGpuBudgetApplied(sceneRenderer, gpuBudgetFallbackReason))
                 {
@@ -4464,7 +4165,7 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
                     RVX_CORE_INFO("ModelViewer smoke ray tracing GPU budget applied: measuredGpuMs={:.6f}, "
                                   "measuredReflectionMs={:.6f}, maxGpuMs={:.6f}, maxReflectionGpuMs={:.6f}, "
                                   "gpuScale={:.3f}, reflectionGpuScale={:.3f}, reflectionScale={:.3f}",
@@ -4480,12 +4181,12 @@ int main(int argc, char* argv[])
 
             if (options.expectRayTracingGpuBudgetRecovered && (frameIndex + 1 == options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string recoveryFallbackReason;
                 if (!gpuBudgetRecoveryTriggered)
                 {
-                    const SceneRayTracingFrameStats stats = sceneRenderer ? sceneRenderer->GetRayTracingFrameStats()
-                                                                          : SceneRayTracingFrameStats{};
+                    const RenderRayTracingDiagnostics stats =
+                        sceneRenderer ? sceneRenderer->rayTracing
+                                      : RenderRayTracingDiagnostics{};
                     RVX_CORE_ERROR("ModelViewer smoke expected ray tracing GPU budget recovery, but no "
                                    "degraded reflection baseline was observed; stats: {}",
                                    DescribeRayTracingGpuBudgetReadiness(stats));
@@ -4502,7 +4203,7 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
                     RVX_CORE_INFO("ModelViewer smoke ray tracing GPU budget recovered: triggerFrame={}, "
                                   "baselineReflectionScale={:.3f}, reflectionScale={:.3f}, "
                                   "baselineReflectionGpuScale={:.3f}, reflectionGpuScale={:.3f}, "
@@ -4519,7 +4220,6 @@ int main(int argc, char* argv[])
 
             if (options.expectRayTracingResourceBudgetExceeded && (frameIndex + 1 == options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string resourceBudgetFallbackReason;
                 if (!IsRayTracingResourceBudgetExceeded(sceneRenderer, resourceBudgetFallbackReason))
                 {
@@ -4529,7 +4229,7 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();
+        const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;
                     RVX_CORE_INFO("ModelViewer smoke ray tracing resource budget exceeded: trackedBytes={} > maxBytes={}",
                                   stats.totalTrackedResourceBytes,
                                   stats.trackedResourceBudget);
@@ -4539,9 +4239,9 @@ int main(int argc, char* argv[])
             if ((options.expectRayTracingBudgetApplied || options.expectRayTracingRayBudgetRespected) &&
                 (frameIndex + 1 == options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
-                const SceneRayTracingFrameStats stats = sceneRenderer ? sceneRenderer->GetRayTracingFrameStats()
-                                                                      : SceneRayTracingFrameStats{};
+                const RenderRayTracingDiagnostics stats =
+                    sceneRenderer ? sceneRenderer->rayTracing
+                                  : RenderRayTracingDiagnostics{};
                 if (options.expectRayTracingBudgetApplied && (!stats.budgetEnabled || !stats.budgetApplied))
                 {
                     RVX_CORE_ERROR("ModelViewer smoke expected ray tracing budget applied; stats: {}",
@@ -4579,7 +4279,6 @@ int main(int argc, char* argv[])
 
             if (options.expectMaterialReady && (frameIndex + 1 == options.frames))
             {
-                SceneRenderer* sceneRenderer = renderSubsystem->GetSceneRenderer();
                 std::string materialFallbackReason;
                 if (!IsPBRMaterialReady(sceneRenderer, materialFallbackReason))
                 {
@@ -4589,15 +4288,11 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const MaterialSystem* materialSystem = sceneRenderer
-                        ? sceneRenderer->GetMaterialSystem()
-                        : nullptr;
-                    const MaterialBindingResult* result = materialSystem
-                        ? &materialSystem->GetLastBindingResult()
-                        : nullptr;
+                    const RenderMaterialFeatureDiagnostics& result =
+                        sceneRenderer->material;
                     RVX_CORE_INFO("ModelViewer smoke PBR material ready: material='{}', textureFlags={}",
-                                  result ? result->materialName : kPBRMaterialTestMaterialName,
-                                  result ? result->textureFlags : GetRequiredPBRMaterialTextureFlags());
+                                  result.materialName,
+                                  result.textureFlags);
                 }
             }
 
@@ -4605,29 +4300,20 @@ int main(int argc, char* argv[])
             {
                 if (!ValidateProceduralIBLQuality(proceduralIBLResources,
                                                   options.smoke,
-                                                  renderSubsystem->GetGPUResourceManager()))
+                                                  resourceSubsystem))
                 {
                     smokeSucceeded = false;
                 }
             }
-
-            if (captureFrame && !QueueBackBufferScreenshot(renderSubsystem, pendingScreenshot))
-            {
-                smokeSucceeded = false;
-            }
-
-            renderSubsystem->EndFrame();
 
             if (captureFrame && smokeSucceeded)
             {
-                renderSubsystem->GetRenderContext()->WaitIdle();
-                if (!WriteScreenshotPPM(pendingScreenshot, options.screenshotPath))
+                if (!WriteScreenshotPPM(lastDiagnostics.lastCapture,
+                                        options.screenshotPath))
                 {
                     smokeSucceeded = false;
                 }
             }
-
-            renderSubsystem->Present();
 
             if (engine.ShouldShutdown())
             {
@@ -4656,11 +4342,9 @@ int main(int argc, char* argv[])
     }
     
     // Detect if using Vulkan (need to invert pitch direction due to Y-flip)
-    bool isVulkan = false;
-    if (auto* device = renderSubsystem->GetDevice())
-    {
-        isVulkan = (device->GetBackendType() == RHIBackendType::Vulkan);
-    }
+    const bool isVulkan =
+        renderSubsystem->GetDiagnosticsSnapshot().backend ==
+        RHIBackendType::Vulkan;
     float pitchDirection = isVulkan ? -1.0f : 1.0f;
     
     // Mouse state tracking (input subsystem already retrieved above)

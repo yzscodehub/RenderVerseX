@@ -55,7 +55,6 @@ namespace RVX
                 break;
             case RHIMemoryType::Readback:
                 allocInfo.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
-                allocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
                 break;
         }
 
@@ -63,16 +62,22 @@ namespace RVX
         VK_CHECK(vmaCreateBuffer(device->GetAllocator(), &bufferInfo, &allocInfo, 
             &m_buffer, &m_allocation, &allocationInfo));
 
-        // Get persistent mapping for upload/readback buffers
-        if (desc.memoryType == RHIMemoryType::Upload || desc.memoryType == RHIMemoryType::Readback)
+        // Upload buffers stay persistently mapped. Readback buffers are mapped
+        // on demand so every vmaMapMemory call has a matching vmaUnmapMemory.
+        if (desc.memoryType == RHIMemoryType::Upload)
         {
             m_mappedData = allocationInfo.pMappedData;
         }
 
-        // Get device address
-        VkBufferDeviceAddressInfo addressInfo = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
-        addressInfo.buffer = m_buffer;
-        m_deviceAddress = vkGetBufferDeviceAddress(device->GetDevice(), &addressInfo);
+        if (HasFlag(desc.usage, RHIBufferUsage::DeviceAddress) ||
+            HasFlag(desc.usage, RHIBufferUsage::AccelerationStructureInput))
+        {
+            VkBufferDeviceAddressInfo addressInfo = {
+                VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+            addressInfo.buffer = m_buffer;
+            m_deviceAddress =
+                vkGetBufferDeviceAddress(device->GetDevice(), &addressInfo);
+        }
 
         // Set debug name for RenderDoc/validation layers
         if (desc.debugName)
@@ -109,10 +114,15 @@ namespace RVX
         }
         // Note: Readback buffers are mapped on-demand in Map() method
 
-        // Get device address
-        VkBufferDeviceAddressInfo addressInfo = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
-        addressInfo.buffer = m_buffer;
-        m_deviceAddress = vkGetBufferDeviceAddress(device->GetDevice(), &addressInfo);
+        if (HasFlag(desc.usage, RHIBufferUsage::DeviceAddress) ||
+            HasFlag(desc.usage, RHIBufferUsage::AccelerationStructureInput))
+        {
+            VkBufferDeviceAddressInfo addressInfo = {
+                VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+            addressInfo.buffer = m_buffer;
+            m_deviceAddress =
+                vkGetBufferDeviceAddress(device->GetDevice(), &addressInfo);
+        }
     }
 
     VulkanBuffer::~VulkanBuffer()
@@ -322,11 +332,13 @@ namespace RVX
         switch (texture->GetDimension())
         {
             case RHITextureDimension::Texture1D:
-                viewInfo.viewType = (desc.subresourceRange.arrayLayerCount > 1) ? 
+                viewInfo.viewType = (ResolveTextureArrayLayerCount(
+                                         *texture, desc.subresourceRange) > 1) ?
                     VK_IMAGE_VIEW_TYPE_1D_ARRAY : VK_IMAGE_VIEW_TYPE_1D;
                 break;
             case RHITextureDimension::Texture2D:
-                viewInfo.viewType = (desc.subresourceRange.arrayLayerCount > 1) ?
+                viewInfo.viewType = (ResolveTextureArrayLayerCount(
+                                         *texture, desc.subresourceRange) > 1) ?
                     VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
                 break;
             case RHITextureDimension::Texture3D:

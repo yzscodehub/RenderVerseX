@@ -227,7 +227,13 @@ namespace RVX
     {
         m_device = device;
 
-        // Initialize static heaps
+        // Persistent resource views are descriptor-copy sources and therefore
+        // must live in CPU-only heaps. Descriptor-set tables remain resident in
+        // separate shader-visible heaps used by command lists.
+        m_cpuCbvSrvUavHeap.Initialize(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+            MAX_CBV_SRV_UAV_DESCRIPTORS, false);
+        m_cpuSamplerHeap.Initialize(device, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+            MAX_SAMPLER_DESCRIPTORS, false);
         m_cbvSrvUavHeap.Initialize(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
             MAX_CBV_SRV_UAV_DESCRIPTORS, true);
         m_samplerHeap.Initialize(device, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,

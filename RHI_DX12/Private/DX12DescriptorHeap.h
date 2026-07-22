@@ -115,26 +115,27 @@ namespace RVX
         void Initialize(ID3D12Device* device);
         void Shutdown();
 
-        // Get heaps for binding
+        // Get shader-visible heaps for command-list binding.
         ID3D12DescriptorHeap* GetCbvSrvUavHeap() const { return m_cbvSrvUavHeap.GetHeap(); }
         ID3D12DescriptorHeap* GetSamplerHeap() const { return m_samplerHeap.GetHeap(); }
 
-        // Static allocations (persistent resources)
-        DX12DescriptorHandle AllocateCbvSrvUav() { return m_cbvSrvUavHeap.Allocate(); }
-        DX12DescriptorHandle AllocateSampler() { return m_samplerHeap.Allocate(); }
+        // CPU-only source descriptors owned by persistent resources. D3D12 does
+        // not permit CopyDescriptors to read from a shader-visible heap.
+        DX12DescriptorHandle AllocateCpuCbvSrvUav() { return m_cpuCbvSrvUavHeap.Allocate(); }
+        DX12DescriptorHandle AllocateCpuSampler() { return m_cpuSamplerHeap.Allocate(); }
         DX12DescriptorHandle AllocateRTV() { return m_rtvHeap.Allocate(); }
         DX12DescriptorHandle AllocateDSV() { return m_dsvHeap.Allocate(); }
 
-        void FreeCbvSrvUav(DX12DescriptorHandle handle) { m_cbvSrvUavHeap.Free(handle); }
-        void FreeSampler(DX12DescriptorHandle handle) { m_samplerHeap.Free(handle); }
+        void FreeCpuCbvSrvUav(DX12DescriptorHandle handle) { m_cpuCbvSrvUavHeap.Free(handle); }
+        void FreeCpuSampler(DX12DescriptorHandle handle) { m_cpuSamplerHeap.Free(handle); }
         void FreeRTV(DX12DescriptorHandle handle) { m_rtvHeap.Free(handle); }
         void FreeDSV(DX12DescriptorHandle handle) { m_dsvHeap.Free(handle); }
 
-        // Static range allocations (contiguous descriptors for descriptor tables)
-        DX12DescriptorHandle AllocateCbvSrvUavRange(uint32 count) { return m_cbvSrvUavHeap.AllocateRange(count); }
-        DX12DescriptorHandle AllocateSamplerRange(uint32 count) { return m_samplerHeap.AllocateRange(count); }
-        void FreeCbvSrvUavRange(DX12DescriptorHandle handle, uint32 count) { m_cbvSrvUavHeap.FreeRange(handle, count); }
-        void FreeSamplerRange(DX12DescriptorHandle handle, uint32 count) { m_samplerHeap.FreeRange(handle, count); }
+        // Shader-visible contiguous descriptor tables bound by command lists.
+        DX12DescriptorHandle AllocateGpuCbvSrvUavRange(uint32 count) { return m_cbvSrvUavHeap.AllocateRange(count); }
+        DX12DescriptorHandle AllocateGpuSamplerRange(uint32 count) { return m_samplerHeap.AllocateRange(count); }
+        void FreeGpuCbvSrvUavRange(DX12DescriptorHandle handle, uint32 count) { m_cbvSrvUavHeap.FreeRange(handle, count); }
+        void FreeGpuSamplerRange(DX12DescriptorHandle handle, uint32 count) { m_samplerHeap.FreeRange(handle, count); }
 
         // Transient allocations (per-frame, auto-reset)
         DX12DescriptorHandle AllocateTransientCbvSrvUav(uint32 count = 1);
@@ -149,11 +150,14 @@ namespace RVX
     private:
         ID3D12Device* m_device = nullptr;
 
-        // Static heaps (persistent descriptors)
-        DX12StaticDescriptorHeap m_cbvSrvUavHeap;  // Shader visible
-        DX12StaticDescriptorHeap m_samplerHeap;     // Shader visible
-        DX12StaticDescriptorHeap m_rtvHeap;         // CPU only
-        DX12StaticDescriptorHeap m_dsvHeap;         // CPU only
+        // Persistent source descriptors are CPU-only; descriptor-set tables are
+        // copied into the shader-visible heaps before command submission.
+        DX12StaticDescriptorHeap m_cpuCbvSrvUavHeap;
+        DX12StaticDescriptorHeap m_cpuSamplerHeap;
+        DX12StaticDescriptorHeap m_cbvSrvUavHeap;
+        DX12StaticDescriptorHeap m_samplerHeap;
+        DX12StaticDescriptorHeap m_rtvHeap;
+        DX12StaticDescriptorHeap m_dsvHeap;
 
         // Ring buffer for transient descriptors
         std::array<DX12RingDescriptorHeap, RVX_MAX_FRAME_COUNT> m_transientHeaps;

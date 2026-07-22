@@ -65,6 +65,11 @@ namespace RenderRuntimeDetail
             const RenderFramePacket& packet) = 0;
         virtual void PollCompletion() = 0;
         virtual void RetireCompleted() = 0;
+        /** @brief Copy Render-owned value diagnostics on the owner thread. */
+        virtual void PopulateDiagnostics(
+            RenderDiagnosticsSnapshot&) const
+        {
+        }
         /** @brief Return the latest owned runtime-health snapshot. */
         [[nodiscard]] virtual RenderRuntimeResult QueryRuntimeStatus() const
         {

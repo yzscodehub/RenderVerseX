@@ -8,6 +8,7 @@
 #include "Resource/RuntimeResourcePolicy.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MeshResource.h"
+#include "Resource/Types/ModelResource.h"
 #include "Resource/Types/ShaderResource.h"
 #include "Resource/Types/TextureResource.h"
 
@@ -1630,6 +1631,139 @@ TEST(ResourceRuntimePolicyValidation, ResourceLifecycleEventsDrainOnlyFromUpdate
     EXPECT_EQ(events.back(), ResourceLifecycleEventType::BeforeUnload);
 
     manager.SetLifecycleEventCallback({});
+    std::error_code removeError;
+    fs::remove_all(root, removeError);
+}
+
+TEST(ResourceRuntimePolicyValidation,
+     ResourceSubsystemPublishesRuntimeCreatedTextureThroughGateway)
+{
+    const fs::path root = MakeTempDirectory("RuntimeCreatedPublication");
+    FakeResourceGateway gateway;
+    ResourceSubsystem subsystem;
+    subsystem.SetRenderResourceGateway(&gateway);
+    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+
+    auto* texture = new TextureResource();
+    texture->SetId(301);
+    TextureMetadata metadata;
+    metadata.width = 1;
+    metadata.height = 1;
+    metadata.format = TextureFormat::RGBA8;
+    texture->SetData(std::vector<uint8>{10, 20, 30, 255}, metadata);
+    ResourceHandle<TextureResource> textureHandle(texture);
+
+    EXPECT_TRUE(subsystem.PublishRenderResource(textureHandle));
+    subsystem.Tick(0.0f);
+    EXPECT_EQ(gateway.reserveAttempts, 1U);
+    EXPECT_EQ(gateway.enqueueAttempts, 1U);
+    EXPECT_EQ(gateway.acceptedCount, 1U);
+
+    const RenderResourceResolveResult resolved =
+        subsystem.ResolveRenderResource(AssetId{textureHandle.GetId()},
+                                        RenderResourceKind::Texture);
+    ASSERT_EQ(resolved.code, RenderResourceResolveCode::Resolved);
+    gateway.PublishTerminal(resolved.handle,
+                            RenderResourcePublicState::GPUReady);
+    subsystem.DrainTerminalRenderRequests();
+    subsystem.BeginRenderShutdown();
+    subsystem.Deinitialize();
+
+    std::error_code removeError;
+    fs::remove_all(root, removeError);
+}
+
+TEST(ResourceRuntimePolicyValidation,
+     ResourceSubsystemPublishesCompositeModelDependenciesRecursively)
+{
+    const fs::path root = MakeTempDirectory("CompositePublication");
+    FakeResourceGateway gateway;
+    ResourceSubsystem subsystem;
+    subsystem.SetRenderResourceGateway(&gateway);
+    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+
+    auto* texture = new TextureResource();
+    texture->SetId(311);
+    TextureMetadata textureMetadata;
+    textureMetadata.width = 1;
+    textureMetadata.height = 1;
+    textureMetadata.format = TextureFormat::RGBA8;
+    texture->SetData(std::vector<uint8>{255, 255, 255, 255},
+                     textureMetadata);
+    ResourceHandle<TextureResource> textureHandle(texture);
+
+    auto* material = new MaterialResource();
+    material->SetId(312);
+    material->SetMaterialData(
+        std::make_shared<Material>("CompositeMaterial"));
+    material->SetTexture("albedo", textureHandle);
+    ResourceHandle<MaterialResource> materialHandle(material);
+
+    auto* mesh = new MeshResource();
+    mesh->SetId(313);
+    auto meshData = std::make_shared<Mesh>();
+    meshData->SetPositions({{-1.0f, 0.0f, 0.0f},
+                            {1.0f, 0.0f, 0.0f},
+                            {0.0f, 1.0f, 0.0f}});
+    meshData->SetNormals(std::vector<Vec3>(3, Vec3{0.0f, 0.0f, 1.0f}));
+    meshData->SetUVs({{0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 1.0f}});
+    meshData->SetIndices(std::vector<uint16>{0, 1, 2});
+    meshData->SetBoundingBox({-1.0f, 0.0f, 0.0f},
+                             {1.0f, 1.0f, 0.0f});
+    mesh->SetMesh(meshData);
+    ResourceHandle<MeshResource> meshHandle(mesh);
+
+    auto* model = new ModelResource();
+    model->SetId(314);
+    model->AddMesh(meshHandle);
+    model->AddMaterial(materialHandle);
+    ResourceHandle<ModelResource> modelHandle(model);
+
+    ResourceManager& manager = subsystem.GetManager();
+    manager.GetCache().Store(texture);
+    manager.GetCache().Store(material);
+    manager.GetCache().Store(mesh);
+
+    EXPECT_TRUE(subsystem.PublishRenderResource(modelHandle));
+    subsystem.Tick(0.0f);
+    EXPECT_EQ(gateway.reserveAttempts, 3U);
+    EXPECT_EQ(gateway.enqueueAttempts, 2U);
+    EXPECT_EQ(gateway.acceptedCount, 2U);
+
+    const RenderResourceResolveResult textureResolved =
+        subsystem.ResolveRenderResource(AssetId{textureHandle.GetId()},
+                                        RenderResourceKind::Texture);
+    const RenderResourceResolveResult materialResolved =
+        subsystem.ResolveRenderResource(AssetId{materialHandle.GetId()},
+                                        RenderResourceKind::Material);
+    const RenderResourceResolveResult meshResolved =
+        subsystem.ResolveRenderResource(AssetId{meshHandle.GetId()},
+                                        RenderResourceKind::Mesh);
+    ASSERT_EQ(textureResolved.code, RenderResourceResolveCode::Resolved);
+    ASSERT_EQ(materialResolved.code, RenderResourceResolveCode::Resolved);
+    ASSERT_EQ(meshResolved.code, RenderResourceResolveCode::Resolved);
+
+    EXPECT_TRUE(gateway.GetAcceptedRequest(materialResolved.handle).expired());
+    gateway.PublishTerminal(textureResolved.handle,
+                            RenderResourcePublicState::GPUReady);
+    subsystem.Tick(0.0f);
+    EXPECT_EQ(gateway.enqueueAttempts, 3U);
+    EXPECT_EQ(gateway.acceptedCount, 3U);
+
+    const auto materialRequest =
+        gateway.GetAcceptedRequest(materialResolved.handle).lock();
+    ASSERT_NE(materialRequest, nullptr);
+    EXPECT_EQ(materialRequest->GetDependencies(),
+              std::vector<RenderResourceHandle>{textureResolved.handle});
+
+    gateway.PublishTerminal(materialResolved.handle,
+                            RenderResourcePublicState::GPUReady);
+    gateway.PublishTerminal(meshResolved.handle,
+                            RenderResourcePublicState::GPUReady);
+    subsystem.DrainTerminalRenderRequests();
+    subsystem.BeginRenderShutdown();
+    subsystem.Deinitialize();
+
     std::error_code removeError;
     fs::remove_all(root, removeError);
 }

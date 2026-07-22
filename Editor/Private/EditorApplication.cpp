@@ -28,7 +28,6 @@
 #include "Core/Log.h"
 #include "Render/Context/RenderContext.h"
 #include "Render/Renderer/SceneRenderer.h"
-#include "RHI/RHIDevice.h"
 #include "Scene/ComponentFactory.h"
 #include "UI/UIContext.h"
 #include "UI/UIRenderer.h"
@@ -182,7 +181,7 @@ bool EditorApplication::InitializeWindow()
     desc.width = m_windowWidth;
     desc.height = m_windowHeight;
     desc.title = m_windowTitle.c_str();
-    desc.backendType = m_renderBootstrapService.ResolveDefaultBackend();
+    desc.backendType = m_renderRuntimeAdapter.ResolveDefaultBackend();
     desc.maximized = m_runConfig.startMaximized;
 
     const EditorWindowCreateResult result =
@@ -201,19 +200,21 @@ bool EditorApplication::InitializeWindow()
 
 bool EditorApplication::InitializeRHI()
 {
-    EditorRenderBootstrapDesc desc;
-    desc.window = m_window;
-    desc.renderContext = &m_renderContext;
-    desc.sceneRenderer = &m_sceneRenderer;
-    desc.runtimeUIRenderer = &m_runtimeUIRenderer;
-    desc.editorUIRenderer = &m_editorUIRenderer;
-    desc.mainSwapChainService = &m_mainSwapChainService;
-    desc.nativeUIRenderStatsService = &m_nativeUIRenderStatsService;
-    desc.nativeUIRenderStats = &m_nativeUIRenderStats;
+    EditorRenderRuntimeAdapterConfig config;
+    config.backendType = m_renderRuntimeAdapter.ResolveDefaultBackend();
+    const EditorRenderRuntimeAdapterStartResult result =
+        m_renderRuntimeAdapter.Start(m_window, config);
+    if (!result)
+    {
+        RVX_CORE_ERROR("Editor render runtime adapter failed: {}",
+                       result.runtime.message);
+        return false;
+    }
 
-    const EditorRenderBootstrapResult result =
-        m_renderBootstrapService.Bootstrap(desc);
-    return result.initialized;
+    RVX_CORE_WARN(
+        "Editor viewport/native UI rendering is unavailable during the M1 "
+        "architecture cut; render runtime diagnostics remain available");
+    return true;
 }
 #if RVX_EDITOR_ENABLE_LEGACY_IMGUI
 bool EditorApplication::InitializeImGui()
@@ -229,6 +230,12 @@ bool EditorApplication::InitializeImGui()
 
 bool EditorApplication::InitializeEditorUI()
 {
+#if RVX_EDITOR_M1_RENDER_ADAPTER
+    RVX_CORE_WARN(
+        "Editor native UI bootstrap is unavailable during the M1 "
+        "architecture cut");
+    return false;
+#else
     EditorCommandBindingCallbacks commandCallbacks;
     commandCallbacks.newScene = [this]() {
         return HandleFileNewScene();
@@ -344,6 +351,7 @@ bool EditorApplication::InitializeEditorUI()
 
     RegisterCoreEditorServices();
     return true;
+#endif
 }
 
 void EditorApplication::RegisterCoreEditorServices()
@@ -503,19 +511,6 @@ void EditorApplication::Shutdown()
         m_editorContextChangeCallbackId = 0;
     }
 
-    EditorRenderShutdownDesc renderShutdownDesc;
-    renderShutdownDesc.renderContext = &m_renderContext;
-    renderShutdownDesc.sceneRenderer = &m_sceneRenderer;
-    renderShutdownDesc.runtimeUIRenderer = &m_runtimeUIRenderer;
-    renderShutdownDesc.editorUIRenderer = &m_editorUIRenderer;
-    const EditorRenderShutdownResult prepareRenderShutdownResult =
-        m_renderShutdownService.PrepareForPanelShutdown(renderShutdownDesc);
-    if (!prepareRenderShutdownResult)
-    {
-        RVX_CORE_WARN("Editor render shutdown preparation failed: {}",
-                      prepareRenderShutdownResult.error);
-    }
-
     BindRenderDeviceToViewportPanels(nullptr);
 
     // Shutdown panels
@@ -525,12 +520,13 @@ void EditorApplication::Shutdown()
     }
     m_panels.clear();
 
-    const EditorRenderShutdownResult renderShutdownResult =
-        m_renderShutdownService.ShutdownResources(renderShutdownDesc);
-    if (!renderShutdownResult)
+    const RenderShutdownResult renderShutdownResult =
+        m_renderRuntimeAdapter.Shutdown();
+    if (renderShutdownResult.code != RenderShutdownCode::Completed &&
+        renderShutdownResult.code != RenderShutdownCode::AlreadyStopped)
     {
-        RVX_CORE_WARN("Editor render resource shutdown failed: {}",
-                      renderShutdownResult.error);
+        RVX_CORE_WARN("Editor render runtime shutdown failed: {}",
+                      renderShutdownResult.message);
     }
     const EditorUIShutdownResult uiShutdownResult =
         m_uiShutdownService.Shutdown(uiShutdownDesc);
@@ -652,6 +648,12 @@ void EditorApplication::Update(float deltaTime)
 
 void EditorApplication::Render()
 {
+#if RVX_EDITOR_M1_RENDER_ADAPTER
+    RVX_CORE_ERROR(
+        "Editor frame rendering is unavailable during the M1 architecture cut");
+    m_running = false;
+    return;
+#else
     EditorRenderFrameDesc renderFrameDesc;
     renderFrameDesc.editorUIBackend = m_editorUIBackend.get();
     renderFrameDesc.editorUIRenderer = m_editorUIRenderer.get();
@@ -723,10 +725,14 @@ void EditorApplication::Render()
                           cursorResult.error);
         }
     }
+#endif
 }
 
 void EditorApplication::EndFrame()
 {
+#if RVX_EDITOR_M1_RENDER_ADAPTER
+    return;
+#else
     EditorEndFrameDesc endFrameDesc;
     endFrameDesc.window = m_window;
     endFrameDesc.renderContext = m_renderContext.get();
@@ -763,6 +769,7 @@ void EditorApplication::EndFrame()
 
     const EditorEndFrameResult result = m_endFrameService.EndFrame(endFrameDesc);
     m_debugImGuiFrameActive = result.debugFrameActiveAfterEnd;
+#endif
 }
 
 EditorShellPolicyState EditorApplication::BuildShellPolicyState() const
@@ -1144,7 +1151,7 @@ void EditorApplication::GetWindowSize(int& width, int& height) const
 
 IRHIDevice* EditorApplication::GetRenderDevice() const
 {
-    return m_renderContext ? m_renderContext->GetDevice() : nullptr;
+    return nullptr;
 }
 
 void EditorApplication::RegisterPanel(std::shared_ptr<IEditorPanel> panel)

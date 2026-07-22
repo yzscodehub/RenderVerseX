@@ -190,9 +190,8 @@ RenderFrameApplyResult RenderScene::ApplyFramePacket(
     for (const RenderLightSnapshot& snapshot : packet.GetLights())
     {
         if (snapshot.lightId == 0 ||
-            (snapshot.castsShadows &&
-             (!snapshot.shadowResource.IsValid() ||
-              !registry.HasExactEntry(snapshot.shadowResource))))
+            (snapshot.shadowResource.IsValid() &&
+             !registry.HasExactEntry(snapshot.shadowResource)))
         {
             result.code = RenderFrameApplyCode::InvalidPacket;
             return result;
@@ -207,12 +206,12 @@ RenderFrameApplyResult RenderScene::ApplyFramePacket(
         light.range = snapshot.range;
         light.innerConeAngle = snapshot.innerConeRadians;
         light.outerConeAngle = snapshot.outerConeRadians;
-        light.castsShadow =
-            snapshot.castsShadows &&
-            registry.IsGPUReadyExact(snapshot.shadowResource);
-        light.shadowResource = light.castsShadow
-            ? snapshot.shadowResource
-            : RenderResourceHandle{};
+        light.castsShadow = snapshot.castsShadows;
+        light.shadowResource =
+            snapshot.shadowResource.IsValid() &&
+                    registry.IsGPUReadyExact(snapshot.shadowResource)
+                ? snapshot.shadowResource
+                : RenderResourceHandle{};
         AddUniqueHandle(candidateReferences, light.shadowResource);
         candidateLights.push_back(std::move(light));
     }

@@ -21,6 +21,30 @@ namespace
 {
     constexpr uint64 RVX_SKYBOX_CONSTANT_BUFFER_ALIGNMENT = 256;
 
+    bool PrepareVulkanSampledTexture(IRHIDevice* device, RHITexture* texture)
+    {
+        if (!device || !texture ||
+            device->GetBackendType() != RHIBackendType::Vulkan)
+        {
+            return device != nullptr && texture != nullptr;
+        }
+
+        RHICommandContextRef context =
+            device->CreateCommandContext(RHICommandQueueType::Graphics);
+        if (!context)
+        {
+            return !device->GetCapabilities().supportsExplicitResourceBarriers;
+        }
+        context->Begin();
+        context->TextureBarrier(texture,
+                                RHIResourceState::Undefined,
+                                RHIResourceState::ShaderResource);
+        context->End();
+        device->SubmitCommandContext(context.Get());
+        device->WaitIdle();
+        return device->QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready;
+    }
+
     uint64 AlignSkyboxConstantBufferSize(uint64 size)
     {
         return (size + RVX_SKYBOX_CONSTANT_BUFFER_ALIGNMENT - 1) &
@@ -349,7 +373,8 @@ bool SkyboxPass::EnsureRuntimeResources()
         fallbackDesc.usage = RHITextureUsage::ShaderResource;
         fallbackDesc.debugName = "SkyboxFallbackCubemap";
         m_fallbackCubemap = device->CreateTexture(fallbackDesc);
-        if (!m_fallbackCubemap)
+        if (!m_fallbackCubemap ||
+            !PrepareVulkanSampledTexture(device, m_fallbackCubemap.Get()))
         {
             m_unsupportedReason = "Skybox fallback cubemap creation failed";
             return false;

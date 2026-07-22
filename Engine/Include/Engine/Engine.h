@@ -214,6 +214,9 @@ namespace RVX
         /** @brief Queue one owned capture request for the next accepted frame. */
         [[nodiscard]] bool RequestRenderFrameCapture(
             const RenderFrameCaptureRequest& request) noexcept;
+        /** @brief Queue an explicit render-surface extent generation. */
+        [[nodiscard]] bool RequestRenderSurfaceResize(uint32 width,
+                                                      uint32 height);
         [[nodiscard]] const RenderShutdownResult&
             GetLastRenderShutdownResult() const noexcept
         {

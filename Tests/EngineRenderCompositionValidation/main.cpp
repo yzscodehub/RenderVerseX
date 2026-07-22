@@ -171,6 +171,11 @@ namespace
             return result;
         }
 
+        RenderDiagnosticsSnapshot GetRenderDiagnostics() const override
+        {
+            return diagnostics;
+        }
+
         RenderResizeResult RequestResize(
             const NativeSurfaceDesc& requestedSurface) override
         {
@@ -209,6 +214,7 @@ namespace
         NativeSurfaceDesc lastConfiguredSurface{};
         RenderResizeCode resizeCode = RenderResizeCode::Accepted;
         RenderShutdownResult shutdownResult{};
+        RenderDiagnosticsSnapshot diagnostics{};
         std::deque<RenderFrameExtractionResultCode> extractionCodes;
         std::deque<RenderFramePublishCode> publishCodes;
         std::vector<RenderRuntimeCompositionFrameInput> extractionInputs;
@@ -340,12 +346,14 @@ TEST(EngineRenderCompositionValidation,
 }
 
 TEST(EngineRenderCompositionValidation,
-     PublishPressurePreservesOneShotValuesUntilAFrameIsAccepted)
+     PublishPressurePreservesOneShotValuesUntilRenderAcknowledgesThem)
 {
     CompositionFixture fixture;
     fixture.PrepareAndConfigure();
     fixture.services->publishCodes.push_back(
         RenderFramePublishCode::NotRunning);
+    fixture.services->publishCodes.push_back(
+        RenderFramePublishCode::ReplacedOlder);
     fixture.services->publishCodes.push_back(
         RenderFramePublishCode::Accepted);
 
@@ -364,23 +372,40 @@ TEST(EngineRenderCompositionValidation,
     fixture.composition->TickAfterWorlds(&world, 0.01f, 2.0f);
     fixture.composition->TickAfterWorlds(&world, 0.01f, 3.0f);
 
-    ASSERT_EQ(fixture.services->publishedFrames.size(), 3U);
+    fixture.services->diagnostics.lastAppliedFrameSequence = 3;
+    fixture.services->diagnostics.lastCapture.requestId = 41;
+    fixture.services->diagnostics.lastCapture.frameSequence = 3;
+    fixture.services->diagnostics.lastCapture.code =
+        RenderFrameCaptureResultCode::Completed;
+    fixture.services->diagnostics.lastCapture.kind =
+        RenderFrameCaptureKind::Color;
+    fixture.services->diagnostics.lastCapture.width = 320;
+    fixture.services->diagnostics.lastCapture.height = 180;
+    fixture.services->diagnostics.lastCapture.rowPitch = 1280;
+    fixture.services->diagnostics.lastCapture.bytesPerPixel = 4;
+    fixture.services->diagnostics.lastCapture.bytes.resize(1280U * 180U);
+    fixture.composition->TickAfterWorlds(&world, 0.01f, 4.0f);
+
+    ASSERT_EQ(fixture.services->publishedFrames.size(), 4U);
     EXPECT_EQ(fixture.services->publishedFrames[0].header.sequence, 1U);
     EXPECT_EQ(fixture.services->publishedFrames[1].header.sequence, 2U);
     EXPECT_EQ(fixture.services->publishedFrames[2].header.sequence, 3U);
     EXPECT_EQ(fixture.services->publishedFrames[0].capture.requestId, 41U);
     EXPECT_EQ(fixture.services->publishedFrames[1].capture.requestId, 41U);
-    EXPECT_EQ(fixture.services->publishedFrames[2].capture.requestId, 0U);
+    EXPECT_EQ(fixture.services->publishedFrames[2].capture.requestId, 41U);
+    EXPECT_EQ(fixture.services->publishedFrames[3].capture.requestId, 0U);
     EXPECT_TRUE(fixture.services->publishedFrames[0]
                     .header.explicitDiscontinuity);
     EXPECT_TRUE(fixture.services->publishedFrames[1]
                     .header.explicitDiscontinuity);
-    EXPECT_FALSE(fixture.services->publishedFrames[2]
+    EXPECT_TRUE(fixture.services->publishedFrames[2]
+                     .header.explicitDiscontinuity);
+    EXPECT_FALSE(fixture.services->publishedFrames[3]
                      .header.explicitDiscontinuity);
     EXPECT_EQ(fixture.services->publishedFrames[0].header.temporalEpoch,
               temporalEpoch);
     EXPECT_EQ(fixture.composition->GetStats().publicationRejected, 1U);
-    EXPECT_EQ(fixture.composition->GetStats().publicationAccepted, 2U);
+    EXPECT_EQ(fixture.composition->GetStats().publicationAccepted, 3U);
 }
 
 TEST(EngineRenderCompositionValidation,
@@ -400,6 +425,39 @@ TEST(EngineRenderCompositionValidation,
     EXPECT_EQ(fixture.services->resizedSurfaces.front().generation, 2U);
     EXPECT_EQ(fixture.composition->GetStats().surfaceGeneration, 2U);
     EXPECT_EQ(fixture.composition->GetStats().resizeRequests, 1U);
+}
+
+TEST(EngineRenderCompositionValidation,
+     ExplicitResizePublishesNextGenerationAndTemporalDiscontinuity)
+{
+    CompositionFixture fixture;
+    fixture.PrepareAndConfigure();
+
+    EXPECT_FALSE(fixture.composition->RequestSurfaceResize(0, 720));
+    EXPECT_TRUE(fixture.services->resizedSurfaces.empty());
+
+    fixture.services->resizeCode = RenderResizeCode::StaleGeneration;
+    EXPECT_FALSE(fixture.composition->RequestSurfaceResize(800, 600));
+    ASSERT_EQ(fixture.services->resizedSurfaces.size(), 1U);
+    EXPECT_EQ(fixture.composition->GetStats().surfaceGeneration, 1U);
+
+    fixture.services->resizeCode = RenderResizeCode::Accepted;
+    ASSERT_TRUE(fixture.composition->RequestSurfaceResize(800, 600));
+    ASSERT_EQ(fixture.services->resizedSurfaces.size(), 2U);
+    EXPECT_EQ(fixture.services->resizedSurfaces.back().generation, 2U);
+    EXPECT_EQ(fixture.services->resizedSurfaces.back().width, 800U);
+    EXPECT_EQ(fixture.services->resizedSurfaces.back().height, 600U);
+    EXPECT_EQ(fixture.composition->GetStats().surfaceGeneration, 2U);
+
+    World world;
+    fixture.composition->TickAfterWorlds(&world, 0.01f, 1.0f);
+    ASSERT_EQ(fixture.services->publishedFrames.size(), 1U);
+    EXPECT_TRUE(
+        fixture.services->publishedFrames.front().header.explicitDiscontinuity);
+    EXPECT_EQ(fixture.services->extractionInputs.front().view.viewportWidth,
+              800U);
+    EXPECT_EQ(fixture.services->extractionInputs.front().view.viewportHeight,
+              600U);
 }
 
 TEST(EngineRenderCompositionValidation,

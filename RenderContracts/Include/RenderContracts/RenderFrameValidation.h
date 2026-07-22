@@ -21,6 +21,14 @@ namespace RVX
             settings.postProcess.bloomThreshold < 0.0f ||
             !std::isfinite(settings.postProcess.bloomIntensity) ||
             settings.postProcess.bloomIntensity < 0.0f ||
+            !std::isfinite(settings.postProcess.bloomRadius) ||
+            settings.postProcess.bloomRadius < 0.0f ||
+            !std::isfinite(settings.postProcess.exposure) ||
+            settings.postProcess.exposure < 0.0f ||
+            !std::isfinite(settings.postProcess.cameraEV100) ||
+            !std::isfinite(settings.postProcess.exposureCompensationEV) ||
+            !std::isfinite(settings.postProcess.gamma) ||
+            settings.postProcess.gamma <= 0.0f ||
             !std::isfinite(settings.shadows.maxDistance))
         {
             return false;
@@ -28,19 +36,40 @@ namespace RVX
         if (settings.shadows.enabled &&
             (settings.shadows.atlasResolution == 0 ||
              settings.shadows.cascadeCount == 0 ||
-             settings.shadows.maxDistance <= 0.0f))
+             settings.shadows.maxDistance <= 0.0f ||
+             !std::isfinite(settings.shadows.cascadeSplitLambda) ||
+             settings.shadows.cascadeSplitLambda < 0.0f ||
+             settings.shadows.cascadeSplitLambda > 1.0f ||
+             !std::isfinite(settings.shadows.filterRadiusTexels) ||
+             settings.shadows.filterRadiusTexels < 0.0f ||
+             !std::isfinite(settings.shadows.shadowBias) ||
+             !std::isfinite(settings.shadows.normalBias) ||
+             !std::isfinite(settings.shadows.cascadeBlendRatio) ||
+             settings.shadows.cascadeBlendRatio < 0.0f ||
+             settings.shadows.cascadeBlendRatio > 1.0f))
         {
             return false;
         }
         if (settings.gpuCulling.enabled &&
-            settings.gpuCulling.maxVisibleObjects == 0)
+            (settings.gpuCulling.maxVisibleObjects == 0 ||
+             !std::isfinite(settings.gpuCulling.maxDrawDistance) ||
+             settings.gpuCulling.maxDrawDistance <= 0.0f))
         {
             return false;
         }
         if (settings.rayTracing.enabled)
         {
             return settings.rayTracing.maxInstances != 0 &&
-                   settings.rayTracing.maxRaysPerPixel != 0;
+                   settings.rayTracing.maxRaysPerPixel != 0 &&
+                   std::isfinite(settings.rayTracing.maxMeasuredGpuMs) &&
+                   settings.rayTracing.maxMeasuredGpuMs >= 0.0f &&
+                   std::isfinite(
+                       settings.rayTracing.maxShadowMeasuredGpuMs) &&
+                   settings.rayTracing.maxShadowMeasuredGpuMs >= 0.0f &&
+                   std::isfinite(
+                       settings.rayTracing.maxReflectionMeasuredGpuMs) &&
+                   settings.rayTracing.maxReflectionMeasuredGpuMs >= 0.0f &&
+                   settings.rayTracing.gpuTimingAdjustmentFrameCount != 0;
         }
         return !settings.rayTracing.enableShadows &&
                !settings.rayTracing.enableReflections;

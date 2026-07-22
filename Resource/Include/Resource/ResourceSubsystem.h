@@ -83,6 +83,10 @@ namespace RVX::Resource
             AssetId assetId,
             RenderResourceKind kind) const;
 
+        /** @brief Publish a runtime-created CPU resource through the normal gateway. */
+        [[nodiscard]] bool PublishRenderResource(
+            ResourceHandle<IResource> resource);
+
         /** @brief Seal new upload production and release all current mappings. */
         void BeginRenderShutdown();
 
@@ -187,11 +191,11 @@ namespace RVX::Resource
         bool RequireUpdateThread(const char* operation);
         void HandleLifecycleEvent(const ResourceLifecycleEvent& event);
         void QueueReadyResource(const ResourceLifecycleEvent& event);
+        [[nodiscard]] bool QueueRenderResourceTree(
+            ResourceHandle<IResource> resource);
         void ProcessPendingResources();
         void ProcessPendingUploads();
         bool TryBuildPendingResource(PendingResource& pending);
-        void QueueMaterialDependencies(const IResource& resource,
-                                       uint64 sourceRevision);
         RenderResourceHandle ResolveDependency(AssetId assetId,
                                                RenderResourceKind kind) const;
         void ReleaseAsset(AssetId assetId);

@@ -1594,7 +1594,6 @@ namespace
         InvalidPrimitiveMesh,
         ZeroLightId,
         InvalidLightType,
-        ShadowMissingHandle,
         ShadowUnexpectedHandle,
         PartialEnvironmentOne,
         PartialEnvironmentTwo
@@ -1629,7 +1628,6 @@ namespace
             }
             case ResourceReferenceCase::ZeroLightId:
             case ResourceReferenceCase::InvalidLightType:
-            case ResourceReferenceCase::ShadowMissingHandle:
             case ResourceReferenceCase::ShadowUnexpectedHandle:
             {
                 RenderLightSnapshot light;
@@ -1637,10 +1635,6 @@ namespace
                 if (GetParam() == ResourceReferenceCase::InvalidLightType)
                 {
                     light.type = static_cast<RenderLightType>(255);
-                }
-                if (GetParam() == ResourceReferenceCase::ShadowMissingHandle)
-                {
-                    light.castsShadows = true;
                 }
                 if (GetParam() == ResourceReferenceCase::ShadowUnexpectedHandle)
                 {
@@ -1679,10 +1673,26 @@ namespace
             ResourceReferenceCase::InvalidPrimitiveMesh,
             ResourceReferenceCase::ZeroLightId,
             ResourceReferenceCase::InvalidLightType,
-            ResourceReferenceCase::ShadowMissingHandle,
             ResourceReferenceCase::ShadowUnexpectedHandle,
             ResourceReferenceCase::PartialEnvironmentOne,
             ResourceReferenceCase::PartialEnvironmentTwo));
+
+    TEST(RenderContractsValidation,
+         AcceptsRenderOwnedShadowIntentWithoutExternalResource)
+    {
+        RenderFramePacketBuilder builder;
+        PopulateCompletePacketBuilder(builder);
+        RenderLightSnapshot light;
+        light.lightId = 1;
+        light.castsShadows = true;
+        ASSERT_TRUE(builder.AddLight(light));
+
+        auto header = MakeValidHeader();
+        header.expectedLightCount = 1;
+        header.extractedLightCount = 1;
+        ASSERT_TRUE(builder.SetHeader(header));
+        EXPECT_TRUE(builder.Seal());
+    }
 
     TEST(RenderContractsValidation, AcceptsOptionalBindingsAndCompleteResourceTriples)
     {
@@ -1699,7 +1709,6 @@ namespace
         RenderLightSnapshot light;
         light.lightId = 1;
         light.castsShadows = true;
-        light.shadowResource = RenderResourceHandle{2, 1};
         ASSERT_TRUE(builder.AddLight(light));
 
         RenderEnvironmentSnapshot environment;

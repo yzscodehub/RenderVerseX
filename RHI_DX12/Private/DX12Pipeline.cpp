@@ -1397,11 +1397,11 @@ namespace RVX
             auto& heapManager = m_device->GetDescriptorHeapManager();
             if (m_cbvSrvUavCount > 0)
             {
-                m_cbvSrvUavHandle = heapManager.AllocateCbvSrvUavRange(m_cbvSrvUavCount);
+                m_cbvSrvUavHandle = heapManager.AllocateGpuCbvSrvUavRange(m_cbvSrvUavCount);
             }
             if (m_samplerCount > 0)
             {
-                m_samplerHandle = heapManager.AllocateSamplerRange(m_samplerCount);
+                m_samplerHandle = heapManager.AllocateGpuSamplerRange(m_samplerCount);
             }
         }
 
@@ -1417,12 +1417,12 @@ namespace RVX
 
         if (m_cbvSrvUavHandle.IsValid() && m_cbvSrvUavCount > 0)
         {
-            heapManager.FreeCbvSrvUavRange(m_cbvSrvUavHandle, m_cbvSrvUavCount);
+            heapManager.FreeGpuCbvSrvUavRange(m_cbvSrvUavHandle, m_cbvSrvUavCount);
         }
 
         if (m_samplerHandle.IsValid() && m_samplerCount > 0)
         {
-            heapManager.FreeSamplerRange(m_samplerHandle, m_samplerCount);
+            heapManager.FreeGpuSamplerRange(m_samplerHandle, m_samplerCount);
         }
     }
 
