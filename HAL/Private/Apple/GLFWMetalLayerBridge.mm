@@ -57,7 +57,8 @@ namespace RVX::HAL
             return;
         }
 
-        NSView* view = glfwGetCocoaWindow(window).contentView;
+        NSWindow* cocoaWindow = glfwGetCocoaWindow(window);
+        NSView* view = cocoaWindow.contentView;
         if (view && [view.layer isKindOfClass:[CAMetalLayer class]])
         {
             view.layer = nil;
