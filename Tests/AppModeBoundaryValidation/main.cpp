@@ -179,6 +179,87 @@ namespace
         std::vector<std::string>* m_events = nullptr;
     };
 
+    template<uint32 Identifier>
+    class CompositionRecordingSubsystem final : public EngineSubsystem
+    {
+    public:
+        CompositionRecordingSubsystem(
+            const char* name,
+            const char* eventPrefix,
+            std::vector<std::string>* events)
+            : m_name(name)
+            , m_eventPrefix(eventPrefix)
+            , m_events(events)
+        {
+        }
+
+        const char* GetName() const override { return m_name; }
+
+        void Initialize() override
+        {
+            if (m_events)
+            {
+                m_events->push_back(std::string(m_eventPrefix) + ":init");
+            }
+        }
+
+        void Deinitialize() override
+        {
+            if (m_events)
+            {
+                m_events->push_back(std::string(m_eventPrefix) + ":shutdown");
+            }
+        }
+
+    private:
+        const char* m_name = "";
+        const char* m_eventPrefix = "";
+        std::vector<std::string>* m_events = nullptr;
+    };
+
+    using CompositionDependentSubsystem = CompositionRecordingSubsystem<0>;
+    using CompositionPrerequisiteSubsystem = CompositionRecordingSubsystem<1>;
+    using CompositionAdditionalPrerequisiteSubsystem =
+        CompositionRecordingSubsystem<2>;
+    using CompositionMissingDependentSubsystem =
+        CompositionRecordingSubsystem<3>;
+    using CompositionMissingPrerequisiteSubsystem =
+        CompositionRecordingSubsystem<4>;
+    using DeterministicFirstSubsystem = CompositionRecordingSubsystem<5>;
+    using DeterministicSecondSubsystem = CompositionRecordingSubsystem<6>;
+    using DeterministicThirdSubsystem = CompositionRecordingSubsystem<7>;
+
+    class CompositionIntrinsicDependentSubsystem final
+        : public EngineSubsystem
+    {
+    public:
+        explicit CompositionIntrinsicDependentSubsystem(
+            std::vector<std::string>* events)
+            : m_events(events)
+        {
+        }
+
+        const char* GetName() const override
+        {
+            return "CompositionIntrinsicDependentSubsystem";
+        }
+
+        RVX_SUBSYSTEM_DEPENDENCIES(CompositionPrerequisiteSubsystem)
+
+        void Initialize() override
+        {
+            m_events->push_back("intrinsic-dependent:init");
+        }
+
+        void Deinitialize() override
+        {
+            m_events->push_back("intrinsic-dependent:shutdown");
+        }
+
+    private:
+        std::vector<std::string>* m_events = nullptr;
+    };
+
     TEST(AppModeBoundaryValidation, RuntimeModeUsesCookedRuntimeContracts)
     {
         constexpr AppModeTraits traits = GetAppModeTraits(AppMode::Runtime);
@@ -466,6 +547,239 @@ namespace
         collection.DeinitializeAll();
 
         EXPECT_EQ((std::vector<std::string>{"throwing:shutdown"}), events);
+    }
+
+    TEST(
+        AppModeBoundaryValidation,
+        CompositionDependenciesOverrideRegistrationOrderAndReverseShutdown)
+    {
+        ScopedCoreLog log;
+        std::vector<std::string> events;
+        SubsystemCollection<EngineSubsystem> collection;
+
+        collection.AddSubsystem<CompositionDependentSubsystem>(
+            "CompositionDependentSubsystem",
+            "dependent",
+            &events);
+        collection.AddSubsystem<CompositionPrerequisiteSubsystem>(
+            "CompositionPrerequisiteSubsystem",
+            "prerequisite",
+            &events);
+
+        const auto result = collection.AddInitializationDependency<
+            CompositionDependentSubsystem,
+            CompositionPrerequisiteSubsystem>();
+        ASSERT_EQ(
+            result.code,
+            SubsystemDependencyRegistrationCode::Added);
+        ASSERT_TRUE(collection.InitializeAll());
+        collection.DeinitializeAll();
+
+        EXPECT_EQ((std::vector<std::string>{
+                      "prerequisite:init",
+                      "dependent:init",
+                      "dependent:shutdown",
+                      "prerequisite:shutdown",
+                  }),
+                  events);
+    }
+
+    TEST(
+        AppModeBoundaryValidation,
+        CompositionDependencyRegistrationIsTypedIdempotentAndFailClosed)
+    {
+        ScopedCoreLog log;
+        std::vector<std::string> events;
+
+        SubsystemCollection<EngineSubsystem> missingPrerequisite;
+        missingPrerequisite.AddSubsystem<CompositionDependentSubsystem>(
+            "CompositionDependentSubsystem",
+            "dependent",
+            &events);
+        const auto missingPrerequisiteResult =
+            missingPrerequisite.AddInitializationDependency<
+                CompositionDependentSubsystem,
+                CompositionMissingPrerequisiteSubsystem>();
+        EXPECT_EQ(
+            missingPrerequisiteResult.code,
+            SubsystemDependencyRegistrationCode::MissingPrerequisite);
+
+        SubsystemCollection<EngineSubsystem> missingDependent;
+        missingDependent.AddSubsystem<CompositionPrerequisiteSubsystem>(
+            "CompositionPrerequisiteSubsystem",
+            "prerequisite",
+            &events);
+        const auto missingDependentResult =
+            missingDependent.AddInitializationDependency<
+                CompositionMissingDependentSubsystem,
+                CompositionPrerequisiteSubsystem>();
+        EXPECT_EQ(
+            missingDependentResult.code,
+            SubsystemDependencyRegistrationCode::MissingDependent);
+
+        SubsystemCollection<EngineSubsystem> collection;
+        collection.AddSubsystem<CompositionDependentSubsystem>(
+            "CompositionDependentSubsystem",
+            "dependent",
+            &events);
+        collection.AddSubsystem<CompositionPrerequisiteSubsystem>(
+            "CompositionPrerequisiteSubsystem",
+            "prerequisite",
+            &events);
+        collection.AddSubsystem<CompositionAdditionalPrerequisiteSubsystem>(
+            "CompositionAdditionalPrerequisiteSubsystem",
+            "additional",
+            &events);
+
+        const auto selfDependency =
+            collection.AddInitializationDependency<
+                CompositionDependentSubsystem,
+                CompositionDependentSubsystem>();
+        EXPECT_EQ(
+            selfDependency.code,
+            SubsystemDependencyRegistrationCode::SelfDependency);
+
+        const auto added = collection.AddInitializationDependency<
+            CompositionDependentSubsystem,
+            CompositionPrerequisiteSubsystem>();
+        EXPECT_EQ(
+            added.code,
+            SubsystemDependencyRegistrationCode::Added);
+        EXPECT_TRUE(added.IsAccepted());
+
+        const auto duplicate = collection.AddInitializationDependency<
+            CompositionDependentSubsystem,
+            CompositionPrerequisiteSubsystem>();
+        EXPECT_EQ(
+            duplicate.code,
+            SubsystemDependencyRegistrationCode::AlreadyRegistered);
+        EXPECT_TRUE(duplicate.IsAccepted());
+
+        ASSERT_TRUE(collection.InitializeAll());
+        const auto activeMutation =
+            collection.AddInitializationDependency<
+                CompositionDependentSubsystem,
+                CompositionAdditionalPrerequisiteSubsystem>();
+        EXPECT_EQ(
+            activeMutation.code,
+            SubsystemDependencyRegistrationCode::LifecycleActive);
+
+        collection.DeinitializeAll();
+        collection.Clear();
+        events.clear();
+        collection.AddSubsystem<CompositionDependentSubsystem>(
+            "CompositionDependentSubsystem",
+            "dependent",
+            &events);
+        collection.AddSubsystem<CompositionPrerequisiteSubsystem>(
+            "CompositionPrerequisiteSubsystem",
+            "prerequisite",
+            &events);
+        const auto afterClear = collection.AddInitializationDependency<
+            CompositionDependentSubsystem,
+            CompositionPrerequisiteSubsystem>();
+        EXPECT_EQ(
+            afterClear.code,
+            SubsystemDependencyRegistrationCode::Added);
+    }
+
+    TEST(
+        AppModeBoundaryValidation,
+        CompositionAndIntrinsicDependenciesShareOneDeduplicatedGraph)
+    {
+        ScopedCoreLog log;
+        std::vector<std::string> events;
+        SubsystemCollection<EngineSubsystem> collection;
+
+        collection.AddSubsystem<CompositionIntrinsicDependentSubsystem>(
+            &events);
+        collection.AddSubsystem<CompositionPrerequisiteSubsystem>(
+            "CompositionPrerequisiteSubsystem",
+            "prerequisite",
+            &events);
+        ASSERT_TRUE(
+            (collection.AddInitializationDependency<
+                 CompositionIntrinsicDependentSubsystem,
+                 CompositionPrerequisiteSubsystem>()
+                 .IsAccepted()));
+
+        ASSERT_TRUE(collection.InitializeAll());
+        collection.DeinitializeAll();
+        EXPECT_EQ((std::vector<std::string>{
+                      "prerequisite:init",
+                      "intrinsic-dependent:init",
+                      "intrinsic-dependent:shutdown",
+                      "prerequisite:shutdown",
+                  }),
+                  events);
+    }
+
+    TEST(
+        AppModeBoundaryValidation,
+        CompositionDependencyCyclesFailBeforeInitialization)
+    {
+        ScopedCoreLog log;
+        std::vector<std::string> events;
+        SubsystemCollection<EngineSubsystem> collection;
+
+        collection.AddSubsystem<CompositionDependentSubsystem>(
+            "CompositionDependentSubsystem",
+            "dependent",
+            &events);
+        collection.AddSubsystem<CompositionPrerequisiteSubsystem>(
+            "CompositionPrerequisiteSubsystem",
+            "prerequisite",
+            &events);
+        ASSERT_TRUE(
+            (collection.AddInitializationDependency<
+                 CompositionDependentSubsystem,
+                 CompositionPrerequisiteSubsystem>()
+                 .IsAccepted()));
+        ASSERT_TRUE(
+            (collection.AddInitializationDependency<
+                 CompositionPrerequisiteSubsystem,
+                 CompositionDependentSubsystem>()
+                 .IsAccepted()));
+
+        EXPECT_FALSE(collection.InitializeAll());
+        EXPECT_TRUE(events.empty());
+    }
+
+    TEST(
+        AppModeBoundaryValidation,
+        UnrelatedSubsystemInitializationOrderIsDeterministic)
+    {
+        ScopedCoreLog log;
+        const std::vector<std::string> expected{
+            "first:init",
+            "second:init",
+            "third:init",
+            "third:shutdown",
+            "second:shutdown",
+            "first:shutdown",
+        };
+
+        for (uint32 iteration = 0; iteration < 32; ++iteration)
+        {
+            std::vector<std::string> events;
+            SubsystemCollection<EngineSubsystem> collection;
+            collection.AddSubsystem<DeterministicFirstSubsystem>(
+                "DeterministicFirstSubsystem",
+                "first",
+                &events);
+            collection.AddSubsystem<DeterministicSecondSubsystem>(
+                "DeterministicSecondSubsystem",
+                "second",
+                &events);
+            collection.AddSubsystem<DeterministicThirdSubsystem>(
+                "DeterministicThirdSubsystem",
+                "third",
+                &events);
+
+            ASSERT_TRUE(collection.InitializeAll()) << "iteration " << iteration;
+            collection.DeinitializeAll();
+            EXPECT_EQ(events, expected) << "iteration " << iteration;
+        }
     }
 
     TEST(AppModeBoundaryValidation, CameraContractLivesInCoreForSharedEditorRuntimeUse)

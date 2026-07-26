@@ -39,6 +39,7 @@ $baselinePatterns = @(
     "JobGraphValidation\.",
     "PhysicsWorldIntegrationValidation\.(BackendQueryAndShapeStubsReportExplicitMisses|UnsupportedColliderTypesDoNotCreateFallbackShapesOrQueryHits)",
     "RHIContractValidation\.",
+    "EngineRenderCompositionValidation\.",
     "SampleCLIValidation\.",
     "RenderPassValidationFixture\.(PostProcessStackEvaluateEffectsCountsRuntimeSupportedEffects|PostProcessFrameInputContractReportsMissingVelocityDepthAndHistory)",
     "RenderPostProcessStackValidation\.(RenderVisualQualityPresetAppliesExplicitEffectPolicy|SceneRendererFrameDiagnosticsExposePostProcessEffectPlans|SceneRendererFrameDiagnosticsExposeFeatureExtractionStats|EvaluateEffectsReportsRequestedButUnsupportedResources|PostProcessStackReportsEffectExecutionPlanDomainsAndTargets)",

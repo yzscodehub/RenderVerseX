@@ -311,6 +311,25 @@ bool Engine::InitializeSubsystems()
             return false;
         }
 
+        const auto windowDependency =
+            m_subsystems.AddInitializationDependency<
+                RenderSubsystem,
+                WindowSubsystem>();
+        const auto resourceDependency =
+            m_subsystems.AddInitializationDependency<
+                RenderSubsystem,
+                Resource::ResourceSubsystem>();
+        if (!windowDependency.IsAccepted() ||
+            !resourceDependency.IsAccepted())
+        {
+            RVX_CORE_ERROR(
+                "Failed to register dedicated Render composition dependencies "
+                "(Window code {}, Resource code {})",
+                static_cast<uint32>(windowDependency.code),
+                static_cast<uint32>(resourceDependency.code));
+            return false;
+        }
+
         auto services = CreateEngineRenderRuntimeCompositionServices(
             *resources,
             *render,

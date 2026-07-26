@@ -511,6 +511,66 @@ TEST(EngineRenderCompositionValidation,
 }
 
 TEST(EngineRenderCompositionValidation,
+     EngineRegistersTypedRenderCompositionDependenciesBeforeInitialization)
+{
+    const std::filesystem::path sourceRoot{RVX_SOURCE_DIR};
+    const std::string engine =
+        ReadSource(sourceRoot / "Engine" / "Private" / "Engine.cpp");
+    const std::string renderHeader =
+        ReadSource(
+            sourceRoot / "Render" / "Include" / "Render" /
+            "RenderSubsystem.h");
+    ASSERT_FALSE(engine.empty());
+    ASSERT_FALSE(renderHeader.empty());
+
+    const size_t windowResult =
+        engine.find("const auto windowDependency");
+    const size_t windowDependency = engine.find(
+        "m_subsystems.AddInitializationDependency<",
+        windowResult);
+    const size_t windowPrerequisite =
+        engine.find("WindowSubsystem>()", windowDependency);
+    const size_t resourceResult =
+        engine.find("const auto resourceDependency", windowPrerequisite);
+    const size_t resourceDependency = engine.find(
+        "m_subsystems.AddInitializationDependency<",
+        resourceResult);
+    const size_t resourcePrerequisite =
+        engine.find(
+            "Resource::ResourceSubsystem>()",
+            resourceDependency);
+    const size_t prepareComposition =
+        engine.find("CreateEngineRenderRuntimeCompositionServices(");
+    const size_t initialize =
+        engine.find("return m_subsystems.InitializeAll(");
+
+    ASSERT_NE(windowResult, std::string::npos);
+    ASSERT_NE(windowDependency, std::string::npos);
+    ASSERT_NE(windowPrerequisite, std::string::npos);
+    ASSERT_NE(resourceResult, std::string::npos);
+    ASSERT_NE(resourceDependency, std::string::npos);
+    ASSERT_NE(resourcePrerequisite, std::string::npos);
+    ASSERT_NE(prepareComposition, std::string::npos);
+    ASSERT_NE(initialize, std::string::npos);
+    EXPECT_LT(windowPrerequisite, prepareComposition);
+    EXPECT_LT(resourcePrerequisite, prepareComposition);
+    EXPECT_LT(prepareComposition, initialize);
+
+    EXPECT_EQ(
+        renderHeader.find("Runtime/Window/WindowSubsystem.h"),
+        std::string::npos);
+    EXPECT_EQ(
+        renderHeader.find("WindowSubsystem*"),
+        std::string::npos);
+    EXPECT_EQ(
+        renderHeader.find("RVX_SUBSYSTEM_DEPENDENCIES(WindowSubsystem"),
+        std::string::npos);
+    EXPECT_EQ(
+        renderHeader.find("MakeDependencies<WindowSubsystem"),
+        std::string::npos);
+}
+
+TEST(EngineRenderCompositionValidation,
      WindowSurfaceGenerationChangesOnResizeRatherThanCapture)
 {
     const std::filesystem::path sourceRoot{RVX_SOURCE_DIR};

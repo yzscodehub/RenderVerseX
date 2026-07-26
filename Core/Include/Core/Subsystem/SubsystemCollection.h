@@ -11,18 +11,23 @@
  * - Service auto-registration
  */
 
-#include "Core/Subsystem/ISubsystem.h"
 #include "Core/Log.h"
+#include "Core/Subsystem/ISubsystem.h"
+#include "Core/Types.h"
+
 #include <algorithm>
+#include <cstddef>
 #include <exception>
 #include <functional>
 #include <memory>
 #include <queue>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <typeindex>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace RVX
@@ -59,6 +64,31 @@ namespace RVX
                 }
             }
             return ss.str();
+        }
+    };
+
+    /** @brief Result code for registering a composition-owned dependency edge */
+    enum class SubsystemDependencyRegistrationCode : uint8
+    {
+        Added = 0,
+        AlreadyRegistered,
+        MissingDependent,
+        MissingPrerequisite,
+        SelfDependency,
+        LifecycleActive
+    };
+
+    /** @brief Diagnostic result for composition dependency registration */
+    struct SubsystemDependencyRegistrationResult
+    {
+        SubsystemDependencyRegistrationCode code =
+            SubsystemDependencyRegistrationCode::MissingDependent;
+
+        [[nodiscard]] bool IsAccepted() const noexcept
+        {
+            return code == SubsystemDependencyRegistrationCode::Added ||
+                   code ==
+                       SubsystemDependencyRegistrationCode::AlreadyRegistered;
         }
     };
 
@@ -161,52 +191,76 @@ namespace RVX
         }
 
         /**
+         * @brief Add a dependency owned by the current subsystem composition
+         *
+         * The dependent and prerequisite must already be registered. The
+         * edge affects initialization order only for this collection and does
+         * not change either subsystem's intrinsic dependency declaration.
+         */
+        template<typename TDependent, typename TPrerequisite>
+        [[nodiscard]] SubsystemDependencyRegistrationResult
+        AddInitializationDependency()
+        {
+            static_assert(
+                std::is_base_of_v<TBase, TDependent>,
+                "TDependent must derive from the base subsystem type");
+            static_assert(
+                std::is_base_of_v<TBase, TPrerequisite>,
+                "TPrerequisite must derive from the base subsystem type");
+
+            const bool lifecycleActive =
+                m_initialized ||
+                std::any_of(
+                    m_subsystems.begin(),
+                    m_subsystems.end(),
+                    [](const std::unique_ptr<TBase>& subsystem) {
+                        return subsystem->IsInitialized();
+                    });
+            if (lifecycleActive)
+            {
+                return {
+                    SubsystemDependencyRegistrationCode::LifecycleActive};
+            }
+
+            const std::type_index dependentType(typeid(TDependent));
+            const std::type_index prerequisiteType(typeid(TPrerequisite));
+            if (dependentType == prerequisiteType)
+            {
+                return {
+                    SubsystemDependencyRegistrationCode::SelfDependency};
+            }
+            if (m_lookup.find(dependentType) == m_lookup.end())
+            {
+                return {
+                    SubsystemDependencyRegistrationCode::MissingDependent};
+            }
+            if (m_lookup.find(prerequisiteType) == m_lookup.end())
+            {
+                return {
+                    SubsystemDependencyRegistrationCode::MissingPrerequisite};
+            }
+
+            auto& prerequisites =
+                m_compositionDependencies[dependentType];
+            const auto [iterator, inserted] =
+                prerequisites.insert(prerequisiteType);
+            (void)iterator;
+            if (!inserted)
+            {
+                return {
+                    SubsystemDependencyRegistrationCode::AlreadyRegistered};
+            }
+
+            m_orderDirty = true;
+            return {SubsystemDependencyRegistrationCode::Added};
+        }
+
+        /**
          * @brief Validate dependencies before initialization
          */
         DependencyValidationResult ValidateDependencies() const
         {
-            DependencyValidationResult result;
-            
-            for (const auto& subsystem : m_subsystems)
-            {
-                // Check typed dependencies
-                auto deps = subsystem->GetTypedDependencies();
-                for (const auto& dep : deps)
-                {
-                    if (m_lookup.find(dep.typeIndex) == m_lookup.end())
-                    {
-                        if (!dep.optional)
-                        {
-                            result.valid = false;
-                            result.missingDependencies.push_back(
-                                std::string(subsystem->GetName()) + " requires " + dep.name);
-                        }
-                    }
-                }
-
-                // Check legacy string dependencies
-                int depCount = 0;
-                const char** deps2 = subsystem->GetDependencies(depCount);
-                for (int i = 0; i < depCount; ++i)
-                {
-                    if (deps2[i] && m_nameLookup.find(deps2[i]) == m_nameLookup.end())
-                    {
-                        result.valid = false;
-                        result.missingDependencies.push_back(
-                            std::string(subsystem->GetName()) + " requires " + deps2[i]);
-                    }
-                }
-            }
-
-            // Check for cycles
-            auto cycleResult = DetectCycles();
-            if (!cycleResult.empty())
-            {
-                result.valid = false;
-                result.cyclePath = cycleResult;
-            }
-
-            return result;
+            return ValidateDependencyGraph(BuildDependencyGraph());
         }
 
         /**
@@ -220,8 +274,9 @@ namespace RVX
                 return true;
             }
 
-            // Validate first
-            auto validation = ValidateDependencies();
+            // Build and validate one graph snapshot before any lifecycle work.
+            const DependencyGraph graph = BuildDependencyGraph();
+            auto validation = ValidateDependencyGraph(graph);
             if (!validation.valid)
             {
                 RVX_CORE_ERROR("Subsystem dependency validation failed: {}", 
@@ -229,7 +284,10 @@ namespace RVX
                 return false;
             }
 
-            BuildOrder();
+            if (!BuildOrder(graph))
+            {
+                return false;
+            }
 
             std::vector<TBase*> initializedThisCall;
             initializedThisCall.reserve(m_ordered.size());
@@ -419,7 +477,9 @@ namespace RVX
             m_lookup.clear();
             m_typeLookup.clear();
             m_nameLookup.clear();
+            m_compositionDependencies.clear();
             m_subsystems.clear();
+            m_orderDirty = true;
         }
 
         /**
@@ -428,184 +488,296 @@ namespace RVX
         bool IsInitialized() const { return m_initialized; }
 
     private:
-        std::vector<std::string> DetectCycles() const
+        struct DependencyGraph
         {
-            std::unordered_map<std::string, int> color; // 0=white, 1=gray, 2=black
-            std::vector<std::string> cyclePath;
-            
-            for (const auto& subsystem : m_subsystems)
+            std::vector<TBase*> nodes;
+            std::vector<std::vector<size_t>> prerequisites;
+            std::vector<std::vector<size_t>> dependents;
+            std::vector<size_t> indegree;
+            std::vector<std::string> missingDependencies;
+        };
+
+        DependencyGraph BuildDependencyGraph() const
+        {
+            DependencyGraph graph;
+            graph.nodes.reserve(m_subsystems.size());
+            graph.prerequisites.resize(m_subsystems.size());
+            graph.dependents.resize(m_subsystems.size());
+            graph.indegree.resize(m_subsystems.size(), 0);
+
+            std::unordered_map<TBase*, size_t> nodeIndices;
+            nodeIndices.reserve(m_subsystems.size());
+            for (size_t index = 0; index < m_subsystems.size(); ++index)
             {
-                color[subsystem->GetName()] = 0;
+                TBase* subsystem = m_subsystems[index].get();
+                graph.nodes.push_back(subsystem);
+                nodeIndices.insert_or_assign(subsystem, index);
             }
 
-            std::function<bool(const std::string&, std::vector<std::string>&)> dfs;
-            dfs = [&](const std::string& name, std::vector<std::string>& path) -> bool {
-                color[name] = 1; // Gray
-                path.push_back(name);
-
-                auto subsystem = GetSubsystem(name);
-                if (subsystem)
-                {
-                    // Check typed dependencies
-                    auto deps = subsystem->GetTypedDependencies();
-                    for (const auto& dep : deps)
+            std::vector<std::unordered_set<size_t>> prerequisiteSets(
+                m_subsystems.size());
+            auto addEdge =
+                [&](size_t dependentIndex, size_t prerequisiteIndex) {
+                    if (prerequisiteSets[dependentIndex]
+                            .insert(prerequisiteIndex)
+                            .second)
                     {
-                        auto it = m_lookup.find(dep.typeIndex);
-                        if (it != m_lookup.end())
+                        graph.dependents[prerequisiteIndex].push_back(
+                            dependentIndex);
+                    }
+                };
+
+            std::unordered_set<std::string> missingSet;
+            auto addMissing = [&](std::string diagnostic) {
+                if (missingSet.insert(diagnostic).second)
+                {
+                    graph.missingDependencies.push_back(
+                        std::move(diagnostic));
+                }
+            };
+
+            for (size_t dependentIndex = 0;
+                 dependentIndex < m_subsystems.size();
+                 ++dependentIndex)
+            {
+                TBase* subsystem = graph.nodes[dependentIndex];
+
+                const auto typedDependencies =
+                    subsystem->GetTypedDependencies();
+                for (const auto& dependency : typedDependencies)
+                {
+                    const auto dependencyIt =
+                        m_lookup.find(dependency.typeIndex);
+                    if (dependencyIt == m_lookup.end())
+                    {
+                        if (!dependency.optional)
                         {
-                            const std::string& depName = it->second->GetName();
-                            if (color[depName] == 1) // Gray = cycle
-                            {
-                                path.push_back(depName);
-                                return true;
-                            }
-                            if (color[depName] == 0 && dfs(depName, path))
-                            {
-                                return true;
-                            }
+                            addMissing(
+                                std::string(subsystem->GetName()) +
+                                " requires " +
+                                (dependency.name
+                                     ? dependency.name
+                                     : dependency.typeIndex.name()));
                         }
+                        continue;
                     }
 
-                    // Check legacy dependencies
-                    int depCount = 0;
-                    const char** deps2 = subsystem->GetDependencies(depCount);
-                    for (int i = 0; i < depCount; ++i)
+                    addEdge(
+                        dependentIndex,
+                        nodeIndices.at(dependencyIt->second));
+                }
+
+                int dependencyCount = 0;
+                const char** legacyDependencies =
+                    subsystem->GetDependencies(dependencyCount);
+                for (int index = 0; index < dependencyCount; ++index)
+                {
+                    const char* dependencyName =
+                        legacyDependencies[index];
+                    if (!dependencyName)
                     {
-                        if (deps2[i])
+                        continue;
+                    }
+
+                    const auto dependencyIt =
+                        m_nameLookup.find(dependencyName);
+                    if (dependencyIt == m_nameLookup.end())
+                    {
+                        addMissing(
+                            std::string(subsystem->GetName()) +
+                            " requires " + dependencyName);
+                        continue;
+                    }
+
+                    addEdge(
+                        dependentIndex,
+                        nodeIndices.at(dependencyIt->second));
+                }
+            }
+
+            for (const auto& [dependentType, prerequisiteTypes] :
+                 m_compositionDependencies)
+            {
+                const auto dependentIt = m_lookup.find(dependentType);
+                if (dependentIt == m_lookup.end())
+                {
+                    addMissing(
+                        std::string(dependentType.name()) +
+                        " composition dependent is not registered");
+                    continue;
+                }
+
+                const size_t dependentIndex =
+                    nodeIndices.at(dependentIt->second);
+                for (const std::type_index prerequisiteType :
+                     prerequisiteTypes)
+                {
+                    const auto prerequisiteIt =
+                        m_lookup.find(prerequisiteType);
+                    if (prerequisiteIt == m_lookup.end())
+                    {
+                        addMissing(
+                            std::string(dependentIt->second->GetName()) +
+                            " requires composition prerequisite " +
+                            prerequisiteType.name());
+                        continue;
+                    }
+
+                    addEdge(
+                        dependentIndex,
+                        nodeIndices.at(prerequisiteIt->second));
+                }
+            }
+
+            for (size_t index = 0; index < m_subsystems.size(); ++index)
+            {
+                graph.prerequisites[index].assign(
+                    prerequisiteSets[index].begin(),
+                    prerequisiteSets[index].end());
+                std::sort(
+                    graph.prerequisites[index].begin(),
+                    graph.prerequisites[index].end());
+                std::sort(
+                    graph.dependents[index].begin(),
+                    graph.dependents[index].end());
+                graph.indegree[index] =
+                    graph.prerequisites[index].size();
+            }
+
+            return graph;
+        }
+
+        DependencyValidationResult ValidateDependencyGraph(
+            const DependencyGraph& graph) const
+        {
+            DependencyValidationResult result;
+            result.missingDependencies = graph.missingDependencies;
+            if (!result.missingDependencies.empty())
+            {
+                result.valid = false;
+            }
+
+            result.cyclePath = DetectCycles(graph);
+            if (!result.cyclePath.empty())
+            {
+                result.valid = false;
+            }
+            return result;
+        }
+
+        std::vector<std::string> DetectCycles(
+            const DependencyGraph& graph) const
+        {
+            // 0 = white, 1 = gray, 2 = black.
+            std::vector<uint8> color(graph.nodes.size(), 0);
+            std::vector<size_t> path;
+            std::vector<std::string> cyclePath;
+
+            std::function<bool(size_t)> visit;
+            visit = [&](size_t nodeIndex) {
+                color[nodeIndex] = 1;
+                path.push_back(nodeIndex);
+
+                for (const size_t prerequisiteIndex :
+                     graph.prerequisites[nodeIndex])
+                {
+                    if (color[prerequisiteIndex] == 1)
+                    {
+                        const auto cycleStart = std::find(
+                            path.begin(),
+                            path.end(),
+                            prerequisiteIndex);
+                        for (auto iterator = cycleStart;
+                             iterator != path.end();
+                             ++iterator)
                         {
-                            if (color[deps2[i]] == 1)
-                            {
-                                path.push_back(deps2[i]);
-                                return true;
-                            }
-                            if (color[deps2[i]] == 0 && dfs(deps2[i], path))
-                            {
-                                return true;
-                            }
+                            cyclePath.emplace_back(
+                                graph.nodes[*iterator]->GetName());
                         }
+                        cyclePath.emplace_back(
+                            graph.nodes[prerequisiteIndex]->GetName());
+                        return true;
+                    }
+                    if (color[prerequisiteIndex] == 0 &&
+                        visit(prerequisiteIndex))
+                    {
+                        return true;
                     }
                 }
 
                 path.pop_back();
-                color[name] = 2; // Black
+                color[nodeIndex] = 2;
                 return false;
             };
 
-            for (const auto& subsystem : m_subsystems)
+            for (size_t index = 0; index < graph.nodes.size(); ++index)
             {
-                if (color[subsystem->GetName()] == 0)
+                if (color[index] == 0 && visit(index))
                 {
-                    std::vector<std::string> path;
-                    if (dfs(subsystem->GetName(), path))
-                    {
-                        return path;
-                    }
+                    return cyclePath;
                 }
             }
-
             return {};
         }
 
-        void BuildOrder()
+        bool BuildOrder(const DependencyGraph& graph)
         {
             if (!m_orderDirty)
-                return;
-
-            m_ordered.clear();
-
-            // Build dependency graph using both typed and string dependencies
-            std::unordered_map<std::string, int> indegree;
-            std::unordered_map<std::string, std::vector<std::string>> dependents;
-
-            for (const auto& subsystem : m_subsystems)
             {
-                indegree[subsystem->GetName()] = 0;
+                return true;
             }
 
-            for (const auto& subsystem : m_subsystems)
+            std::vector<size_t> indegree = graph.indegree;
+            std::priority_queue<
+                size_t,
+                std::vector<size_t>,
+                std::greater<size_t>>
+                ready;
+            for (size_t index = 0; index < indegree.size(); ++index)
             {
-                // Process typed dependencies
-                auto deps = subsystem->GetTypedDependencies();
-                for (const auto& dep : deps)
+                if (indegree[index] == 0)
                 {
-                    auto it = m_lookup.find(dep.typeIndex);
-                    if (it != m_lookup.end())
-                    {
-                        dependents[it->second->GetName()].push_back(subsystem->GetName());
-                        indegree[subsystem->GetName()]++;
-                    }
+                    ready.push(index);
                 }
+            }
 
-                // Process legacy string dependencies
-                int depCount = 0;
-                const char** deps2 = subsystem->GetDependencies(depCount);
-                for (int i = 0; i < depCount; ++i)
+            std::vector<TBase*> ordered;
+            ordered.reserve(graph.nodes.size());
+            while (!ready.empty())
+            {
+                const size_t nodeIndex = ready.top();
+                ready.pop();
+                ordered.push_back(graph.nodes[nodeIndex]);
+
+                for (const size_t dependentIndex :
+                     graph.dependents[nodeIndex])
                 {
-                    if (deps2[i] && m_nameLookup.find(deps2[i]) != m_nameLookup.end())
+                    if (--indegree[dependentIndex] == 0)
                     {
-                        dependents[deps2[i]].push_back(subsystem->GetName());
-                        indegree[subsystem->GetName()]++;
+                        ready.push(dependentIndex);
                     }
                 }
             }
 
-            // Topological sort (Kahn's algorithm)
-            std::queue<std::string> queue;
-            for (const auto& [name, degree] : indegree)
+            if (ordered.size() != graph.nodes.size())
             {
-                if (degree == 0)
-                {
-                    queue.push(name);
-                }
-            }
-
-            std::vector<std::string> sortedNames;
-            while (!queue.empty())
-            {
-                auto name = queue.front();
-                queue.pop();
-                sortedNames.push_back(name);
-
-                for (const auto& dependent : dependents[name])
-                {
-                    if (--indegree[dependent] == 0)
-                    {
-                        queue.push(dependent);
-                    }
-                }
-            }
-
-            // Check for cycles
-            if (sortedNames.size() != m_subsystems.size())
-            {
-                auto cyclePath = DetectCycles();
+                const auto cyclePath = DetectCycles(graph);
                 std::stringstream cycleStr;
                 for (size_t i = 0; i < cyclePath.size(); ++i)
                 {
-                    if (i > 0) cycleStr << " -> ";
+                    if (i > 0)
+                    {
+                        cycleStr << " -> ";
+                    }
                     cycleStr << cyclePath[i];
                 }
                 RVX_CORE_ERROR("Subsystem dependency cycle detected: {}", cycleStr.str());
-                RVX_CORE_WARN("Falling back to registration order");
-                
-                for (const auto& subsystem : m_subsystems)
-                {
-                    m_ordered.push_back(subsystem.get());
-                }
-            }
-            else
-            {
-                for (const auto& name : sortedNames)
-                {
-                    auto it = m_nameLookup.find(name);
-                    if (it != m_nameLookup.end())
-                    {
-                        m_ordered.push_back(it->second);
-                    }
-                }
+                return false;
             }
 
+            m_ordered = std::move(ordered);
             m_orderDirty = false;
+            return true;
         }
 
         void UnwindInitialized(std::vector<TBase*>& initialized)
@@ -645,6 +817,10 @@ namespace RVX
         std::unordered_map<std::type_index, TBase*> m_lookup;
         std::unordered_map<TBase*, std::type_index> m_typeLookup;
         std::unordered_map<std::string, TBase*> m_nameLookup;
+        std::unordered_map<
+            std::type_index,
+            std::unordered_set<std::type_index>>
+            m_compositionDependencies;
         std::vector<TBase*> m_ordered;
         bool m_orderDirty = true;
         bool m_initialized = false;

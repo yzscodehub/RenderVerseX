@@ -467,12 +467,28 @@ namespace RVX::Tests
 
         EXPECT_NE(renderHeader.find("void Configure(const RenderRuntimeConfig& config,"),
                   std::string::npos);
+        const size_t windowDependency = engine.find(
+            "const auto windowDependency");
+        const size_t windowPrerequisite =
+            engine.find("WindowSubsystem>()", windowDependency);
+        const size_t resourceDependency = engine.find(
+            "const auto resourceDependency",
+            windowPrerequisite);
+        const size_t resourcePrerequisite = engine.find(
+            "Resource::ResourceSubsystem>()",
+            resourceDependency);
         const size_t inject =
             engine.find("CreateEngineRenderRuntimeCompositionServices(");
         const size_t initialize =
             engine.find("return m_subsystems.InitializeAll(");
+        ASSERT_NE(windowDependency, std::string::npos);
+        ASSERT_NE(windowPrerequisite, std::string::npos);
+        ASSERT_NE(resourceDependency, std::string::npos);
+        ASSERT_NE(resourcePrerequisite, std::string::npos);
         ASSERT_NE(inject, std::string::npos);
         ASSERT_NE(initialize, std::string::npos);
+        EXPECT_LT(windowPrerequisite, inject);
+        EXPECT_LT(resourcePrerequisite, inject);
         EXPECT_LT(inject, initialize);
 
         const size_t capture = renderComposition.find(
@@ -489,8 +505,15 @@ namespace RVX::Tests
         EXPECT_LT(capture, release);
         EXPECT_LT(release, rhiStartup);
 
-        EXPECT_EQ(showcase.find(
-                      "renderSubsystem->SetWindowSubsystem(windowSubsystem);"),
+        EXPECT_EQ(renderHeader.find("SetWindowSubsystem"),
+                  std::string::npos);
+        EXPECT_EQ(engine.find("SetWindowSubsystem"),
+                  std::string::npos);
+        EXPECT_EQ(showcase.find("SetWindowSubsystem"),
+                  std::string::npos);
+        EXPECT_EQ(renderHeader.find("Runtime/Window/WindowSubsystem.h"),
+                  std::string::npos);
+        EXPECT_EQ(renderHeader.find("WindowSubsystem*"),
                   std::string::npos);
     }
 
