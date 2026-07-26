@@ -55,6 +55,8 @@ namespace
             contextConfig.backendType = backend;
             contextConfig.enableValidation = config.enableValidation;
             contextConfig.enableGPUValidation = config.enableGPUValidation;
+            contextConfig.allowSoftwareAdapter =
+                config.allowSoftwareAdapter;
             contextConfig.vsync = surface.vsync;
             contextConfig.frameBuffering = config.frameBuffering;
             contextConfig.appName = "RenderVerseX";
@@ -246,6 +248,13 @@ namespace
             RenderDiagnosticsSnapshot& outDiagnostics) const override
         {
             outDiagnostics.lastCapture = m_lastCaptureResult;
+            if (m_context != nullptr && m_context->GetDevice() != nullptr)
+            {
+                const RHICapabilities& capabilities =
+                    m_context->GetDevice()->GetCapabilities();
+                outDiagnostics.adapterName = capabilities.adapterName;
+                outDiagnostics.driverVersion = capabilities.driverVersion;
+            }
             if (m_sceneRenderer == nullptr)
             {
                 return;

@@ -2860,7 +2860,19 @@ git commit -m "refactor: enforce m1 render ownership boundary"
 
 **Required native scenario:**
 
-Create a real hidden native window on Main/Update Thread; on Apple also create/attach `CAMetalLayer` there and record its owner thread. Start Render; prove device/surface wrappers/children are created on Render Thread and Metal never touches the view hierarchy; publish/present one deterministic frame; request one newer-generation resize; prove old surface resources survive until their Graphics completion point; wait idle and prove no drawable acquisition/re-present; stop; prove every RHI child/device destructor ran on Render Thread, then detach/destroy the Apple layer/window on Main Thread after shutdown acknowledgement.
+Create a real hidden native window on Main/Update Thread; on Apple also
+attach/detach `CAMetalLayer` there. Start the dedicated Render runtime on the
+platform-primary backend, publish and present one immutable frame, apply one
+newer-generation resize, present once after resize, and stop cleanly before
+destroying the native surface. Record backend, adapter, render-thread identity,
+surface generation, present sequence, resize count, and startup/shutdown
+duration as owned evidence values.
+
+This is deliberately a thin real-driver smoke. Exact resource retirement,
+destructor-thread ownership, stale generations, failure matrices, and shutdown
+ordering remain proven by the existing deterministic fake-RHI, ownership
+inventory, and runtime suites; the native smoke must not duplicate those tests
+or add production backend instrumentation solely for observation.
 
 - [ ] **Step 1: Extend the M1 gate with failing TSAN/native registration requirements**
 
@@ -2876,19 +2888,40 @@ Expected: exit code 1 with missing `NativeRenderLifecycleValidation` and `Render
 
 - [ ] **Step 3: Implement the small TSAN stress suite**
 
-Stress frame replacement, upload count/bytes, release/status CAS, diagnostics shared publication, dedicated wake/stop, stale generations, registry transitions, and fake-RHI lifetime for many deterministic barrier-synchronized iterations. Treat every TSAN report as failure. Do not suppress project races; only documented third-party runtime suppressions are allowed, and this target should not link those libraries.
+Add only the high-iteration concurrent cases missing from
+`RenderConcurrencyValidation`: frame replacement/acquisition, shared diagnostic
+publication, update-producer/render-consumer release/status transitions, and
+control wake/stop. Reuse Runtime Core types and keep the target free of full
+Render, native drivers, Samples, Editor, and unrelated third-party modules.
+Every TSAN report is a failure; do not suppress project races.
 
 - [ ] **Step 4: Implement native lifecycle smoke**
 
-Use DX12 on Windows, Vulkan on Linux, and Metal on macOS as required non-fake cases. The Metal case asserts Main Thread layer attachment/detachment, Render Thread device/`nextDrawable`/command-buffer `presentDrawable:`/RHI destruction, and zero `NSWindow`/`NSView` access from Render Thread. Permit WARP/software Vulkan for M1 and record adapter identity. Windows Vulkan and DX11/OpenGL execute when capability exists; capability absence records an environment skip, not pass. Assertions consume Render diagnostics and test ownership records, not live Render objects.
+Use DX12 on Windows, Vulkan on Linux, and Metal on macOS. Permit an explicitly
+requested software adapter for hosted CI while leaving the production default
+hardware-only. Do not add Task 19 tests for optional Windows Vulkan, DX11, or
+OpenGL; their existing backend suites remain authoritative. A required backend
+skip or missing evidence artifact is not a pass.
 
 - [ ] **Step 5: Add presets and CI environment support**
 
-Add `linux_x64_tsan` configure/build/test presets with Clang and `-fsanitize=thread`. Linux CI installs Xvfb and Mesa Vulkan, runs native smoke under Xvfb, then TSAN separately. Windows runs DX12 required plus optional Vulkan/DX11/OpenGL. macOS runs Metal required. Add a separate Editor-on compile-only job/target; do not add Editor tests to Runtime Build Truth.
+Add `linux_x64_tsan` configure/build/test presets with Clang and
+`-fsanitize=thread`. Extend the existing Windows/Linux/macOS jobs rather than
+duplicating the matrix: Windows runs required DX12, Linux installs Xvfb and
+Mesa Vulkan and runs required Vulkan plus TSAN, and macOS runs required Metal.
+Add `workflow_dispatch` so a candidate branch can collect evidence before
+merge. Compile Editor once on Windows in a separate Editor-on build directory;
+do not add Editor tests to Runtime Build Truth.
 
 - [ ] **Step 6: Extend Build Truth evidence**
 
-`run_build_truth.ps1` records M1 architecture gate, executor suites, native lifecycle result/adapter, TSAN artifact path where applicable, source commit, and Editor compile-only result. Fresh Build Truth still fails closed on missing executables, zero tests, unavailable required native backend, or missing artifact.
+Add `Architecture.M1ArchitectureCut` to the existing architecture baseline
+instead of invoking it twice. `run_build_truth.ps1` accepts one required native
+test/backend, runs it once after unit/lint, and records its owned JSON artifact
+with the existing source commit and inventory count. Linux TSAN and the single
+Windows Editor compile produce separate CI artifacts. Fresh Build Truth still
+fails closed on missing executables, zero tests, a skipped/failed required
+native backend, or a missing/mismatched native artifact.
 
 - [ ] **Step 7: Review and commit the evidence plumbing**
 
@@ -2909,7 +2942,7 @@ ctest --test-dir build\win_x64_debug -C Debug -R "NativeRenderLifecycleValidatio
 
 Expected: Fresh Build Truth passes, required DX12 native lifecycle passes, and the report records the exact HEAD commit.
 
-- [ ] **Step 9: Push the candidate and observe Linux/macOS gates**
+- [ ] **Step 9: Push the candidate or open a PR and observe Linux/macOS gates**
 
 Linux:
 
@@ -2930,7 +2963,9 @@ cmake --build --preset mac_arm64_debug --target RVXValidationInventory
 ctest --test-dir build/mac_arm64_debug -R 'NativeRenderLifecycleValidation.*Metal' --output-on-failure
 ```
 
-Expected: Vulkan lifecycle plus TSAN pass on Linux; Metal lifecycle passes on macOS. CI retains all artifacts.
+Expected: Vulkan lifecycle plus TSAN pass on Linux; Metal lifecycle passes on
+macOS. CI retains all artifacts. A plain candidate-branch push is valid only
+when manually dispatched; otherwise use a PR targeting `master`.
 
 - [ ] **Step 10: Execute and record the M1 exit checklist**
 

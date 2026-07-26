@@ -88,6 +88,8 @@ REQUIRED_VALIDATION_TARGETS = (
     "RenderThreadRuntimeValidation",
     "RenderLifetimeCutoverValidation",
     "RenderCallerBoundaryValidation",
+    "NativeRenderLifecycleValidation",
+    "RenderConcurrencyTSAN",
 )
 
 

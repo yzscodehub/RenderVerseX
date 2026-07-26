@@ -234,7 +234,8 @@ namespace RVX
             return false;
         }
 
-        if (!SelectAdapter(desc.preferredAdapterIndex))
+        if (!SelectAdapter(desc.preferredAdapterIndex,
+                           desc.allowSoftwareAdapter))
         {
             return false;
         }
@@ -710,7 +711,8 @@ namespace RVX
     // =============================================================================
     // Adapter Selection
     // =============================================================================
-    bool DX12Device::SelectAdapter(uint32 preferredIndex)
+    bool DX12Device::SelectAdapter(uint32 preferredIndex,
+                                   bool allowSoftwareAdapter)
     {
         ComPtr<IDXGIAdapter1> adapter;
 
@@ -724,8 +726,10 @@ namespace RVX
             DXGI_ADAPTER_DESC1 desc;
             adapter->GetDesc1(&desc);
 
-            // Skip software adapters
-            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+            // Production defaults to hardware-only. Hosted validation may
+            // explicitly permit a software adapter such as WARP.
+            if ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) &&
+                !allowSoftwareAdapter)
             {
                 continue;
             }
@@ -744,6 +748,23 @@ namespace RVX
                     RVX_RHI_DEBUG("Found GPU {}: {} (VRAM: {} MB)",
                         adapters.size() - 1, name, desc.DedicatedVideoMemory / (1024 * 1024));
                 }
+            }
+        }
+
+        if (adapters.empty() && allowSoftwareAdapter)
+        {
+            ComPtr<IDXGIAdapter4> warpAdapter;
+            if (SUCCEEDED(m_factory->EnumWarpAdapter(
+                    IID_PPV_ARGS(&warpAdapter))) &&
+                SUCCEEDED(D3D12CreateDevice(
+                    warpAdapter.Get(),
+                    D3D_FEATURE_LEVEL_12_0,
+                    __uuidof(ID3D12Device),
+                    nullptr)))
+            {
+                adapters.push_back(std::move(warpAdapter));
+                RVX_RHI_INFO(
+                    "Using explicitly permitted WARP software adapter");
             }
         }
 

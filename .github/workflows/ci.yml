@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [master]
   pull_request:
@@ -35,6 +36,8 @@ jobs:
 
       - name: Build truth (Windows Debug)
         shell: pwsh
+        env:
+          RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
         run: >-
           ./Scripts/run_build_truth.ps1
           -ConfigurePreset win_x64_debug
@@ -43,7 +46,31 @@ jobs:
           -BuildDir build/win_x64_debug
           -Configuration Debug
           -BaseRef origin/master
+          -NativeTestRegex "^NativeRenderLifecycleValidation\.RequiredBackendPresentsResizesAndStops$"
+          -RequiredNativeBackend DX12
           -Fresh
+
+      - name: Configure Editor compile-only
+        shell: pwsh
+        run: cmake --preset win_x64_debug_editor_compile
+
+      - name: Build Editor compile-only
+        shell: pwsh
+        run: cmake --build --preset win_x64_debug_editor_compile --target RVXEditor
+
+      - name: Record Editor compile evidence
+        shell: pwsh
+        run: |
+          $reportDir = "build/win_x64_debug/BuildTruth"
+          New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
+          [ordered]@{
+            schema = "RVX.M1.EditorCompile"
+            schemaVersion = 1
+            sourceCommit = (git rev-parse HEAD).Trim()
+            configurePreset = "win_x64_debug_editor_compile"
+            target = "RVXEditor"
+            status = "passed"
+          } | ConvertTo-Json | Set-Content "$reportDir/EditorCompile.json" -Encoding utf8
 
       - name: Upload build-truth evidence
         if: always()
@@ -66,8 +93,9 @@ jobs:
       - name: Install system deps for vcpkg ports
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build pkg-config libx11-dev libxrandr-dev \
-            libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev autoconf libtool
+          sudo apt-get install -y ninja-build clang pkg-config xvfb mesa-vulkan-drivers \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libgl1-mesa-dev autoconf libtool
 
       - name: Prepare vcpkg binary cache dir
         run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
@@ -80,23 +108,43 @@ jobs:
           restore-keys: vcpkg-linux-
 
       - name: Build truth (Linux Debug)
-        shell: pwsh
-        run: >-
-          ./Scripts/run_build_truth.ps1
-          -ConfigurePreset linux_x64_debug
-          -BuildPreset linux_x64_debug
-          -TestPreset linux_x64_debug_unit_lint
-          -BuildDir build/linux_x64_debug
-          -Configuration Debug
-          -BaseRef origin/master
-          -Fresh
+        shell: bash
+        env:
+          RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
+        run: |
+          xvfb-run -a pwsh -NoProfile -File ./Scripts/run_build_truth.ps1 \
+            -ConfigurePreset linux_x64_debug \
+            -BuildPreset linux_x64_debug \
+            -TestPreset linux_x64_debug_unit_lint \
+            -BuildDir build/linux_x64_debug \
+            -Configuration Debug \
+            -BaseRef origin/master \
+            -NativeTestRegex '^NativeRenderLifecycleValidation\.RequiredBackendPresentsResizesAndStops$' \
+            -RequiredNativeBackend Vulkan \
+            -Fresh
+
+      - name: Configure ThreadSanitizer
+        run: cmake --preset linux_x64_tsan
+
+      - name: Build ThreadSanitizer stress target
+        run: cmake --build --preset linux_x64_tsan --target RenderConcurrencyTSAN
+
+      - name: Run ThreadSanitizer stress
+        env:
+          TSAN_OPTIONS: halt_on_error=1:abort_on_error=1
+        run: |
+          mkdir -p build/linux_x64_tsan/BuildTruth
+          ctest --preset linux_x64_tsan \
+            --output-junit build/linux_x64_tsan/BuildTruth/RenderConcurrencyTSAN.junit.xml
 
       - name: Upload build-truth evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-truth-linux-debug
-          path: build/linux_x64_debug/BuildTruth
+          path: |
+            build/linux_x64_debug/BuildTruth
+            build/linux_x64_tsan/BuildTruth
 
   macos:
     name: macOS ARM64 (Metal)
@@ -131,6 +179,8 @@ jobs:
           -BuildDir build/mac_arm64_debug
           -Configuration Debug
           -BaseRef origin/master
+          -NativeTestRegex "^NativeRenderLifecycleValidation\.RequiredBackendPresentsResizesAndStops$"
+          -RequiredNativeBackend Metal
           -Fresh
 
       - name: Upload build-truth evidence

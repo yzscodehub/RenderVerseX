@@ -32,6 +32,7 @@ bool RenderContext::Initialize(const RenderContextConfig& config,
     deviceDesc.initialSurface = initialSurface;
     deviceDesc.enableDebugLayer = config.enableValidation;
     deviceDesc.enableGPUValidation = config.enableGPUValidation;
+    deviceDesc.allowSoftwareAdapter = config.allowSoftwareAdapter;
     deviceDesc.applicationName = config.appName;
 
     m_device = CreateRHIDevice(config.backendType, deviceDesc);

@@ -56,7 +56,7 @@ target_link_libraries(RVX_RenderTestSupport PUBLIC
 
 function(rvx_add_gtest)
     set(options "")
-    set(oneValueArgs NAME TIMEOUT LABELS)
+    set(oneValueArgs NAME TIMEOUT LABELS WORKING_DIRECTORY)
     set(multiValueArgs SOURCES LIBS INCLUDES DEFINES)
     cmake_parse_arguments(RVX_GTEST
         "${options}"
@@ -101,11 +101,20 @@ function(rvx_add_gtest)
         )
     endif()
 
-    gtest_discover_tests(${RVX_GTEST_NAME}
-        PROPERTIES
-            LABELS "${RVX_GTEST_LABELS}"
-            TIMEOUT ${RVX_GTEST_TIMEOUT}
-    )
+    if(RVX_GTEST_WORKING_DIRECTORY)
+        gtest_discover_tests(${RVX_GTEST_NAME}
+            WORKING_DIRECTORY "${RVX_GTEST_WORKING_DIRECTORY}"
+            PROPERTIES
+                LABELS "${RVX_GTEST_LABELS}"
+                TIMEOUT ${RVX_GTEST_TIMEOUT}
+        )
+    else()
+        gtest_discover_tests(${RVX_GTEST_NAME}
+            PROPERTIES
+                LABELS "${RVX_GTEST_LABELS}"
+                TIMEOUT ${RVX_GTEST_TIMEOUT}
+        )
+    endif()
 endfunction()
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
@@ -349,6 +358,20 @@ rvx_add_gtest(
     TIMEOUT 60
 )
 
+if(RVX_ENABLE_TSAN)
+    rvx_add_gtest(
+        NAME RenderConcurrencyTSAN
+        SOURCES RenderConcurrencyTSAN/main.cpp
+        LIBS
+            RVX::Core
+            RVX::RenderContracts
+            RVX_RenderRuntimeCore
+        INCLUDES ${CMAKE_SOURCE_DIR}/Render/Private
+        LABELS "tsan;architecture"
+        TIMEOUT 180
+    )
+endif()
+
 rvx_add_gtest(
     NAME RenderExecutorValidation
     SOURCES RenderExecutorValidation/main.cpp
@@ -444,6 +467,40 @@ rvx_add_gtest(
 target_compile_definitions(RenderCallerBoundaryValidation PRIVATE
     RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+
+set(RVX_NATIVE_LIFECYCLE_BACKEND "")
+set(RVX_NATIVE_LIFECYCLE_DEFINE "")
+if(WIN32 AND RVX_ENABLE_DX12)
+    set(RVX_NATIVE_LIFECYCLE_BACKEND "DX12")
+    set(RVX_NATIVE_LIFECYCLE_DEFINE RVX_NATIVE_BACKEND_DX12=1)
+elseif(APPLE AND RVX_ENABLE_METAL)
+    set(RVX_NATIVE_LIFECYCLE_BACKEND "Metal")
+    set(RVX_NATIVE_LIFECYCLE_DEFINE RVX_NATIVE_BACKEND_METAL=1)
+elseif(UNIX AND RVX_ENABLE_VULKAN)
+    set(RVX_NATIVE_LIFECYCLE_BACKEND "Vulkan")
+    set(RVX_NATIVE_LIFECYCLE_DEFINE RVX_NATIVE_BACKEND_VULKAN=1)
+endif()
+
+if(RVX_NATIVE_LIFECYCLE_BACKEND)
+    rvx_add_gtest(
+        NAME NativeRenderLifecycleValidation
+        SOURCES NativeRenderLifecycleValidation/main.cpp
+        LIBS
+            RVX::HAL
+            RVX::Render
+            RVX::RenderExtraction
+            ${RVX_ALL_BACKENDS}
+        INCLUDES
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/HAL/Private
+        DEFINES
+            ${RVX_NATIVE_LIFECYCLE_DEFINE}
+            RVX_NATIVE_REQUIRED_BACKEND="${RVX_NATIVE_LIFECYCLE_BACKEND}"
+        LABELS "native;gpu;m1"
+        TIMEOUT 180
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+endif()
 
 # DX12 Validation Tests
 if(RVX_ENABLE_DX12)

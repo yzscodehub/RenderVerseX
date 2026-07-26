@@ -27,6 +27,7 @@ option(RVX_ENABLE_OPENGL "Enable OpenGL backend" OFF)
 option(RVX_BUILD_EDITOR "Build the Editor application and Editor-only validation" ON)
 option(RVX_BUILD_SAMPLES "Build sample applications" ON)
 option(RVX_BUILD_TESTS "Build validation tests" ON)
+option(RVX_ENABLE_TSAN "Enable ThreadSanitizer instrumentation" OFF)
 
 # =============================================================================
 # Platform Detection
@@ -153,6 +154,22 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+if(RVX_ENABLE_TSAN)
+    if(MSVC)
+        message(FATAL_ERROR "RVX_ENABLE_TSAN requires Clang or GCC on a supported Unix platform")
+    endif()
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        message(FATAL_ERROR "RVX_ENABLE_TSAN requires Clang or GCC")
+    endif()
+    target_compile_options(RVX_Options INTERFACE
+        -fsanitize=thread
+        -fno-omit-frame-pointer
+    )
+    target_link_options(RVX_Options INTERFACE
+        -fsanitize=thread
+    )
+endif()
+
 # =============================================================================
 # Subdirectories
 # =============================================================================
@@ -236,4 +253,5 @@ message(STATUS "  OpenGL:       ${RVX_ENABLE_OPENGL}")
 message(STATUS "  Editor:       ${RVX_BUILD_EDITOR}")
 message(STATUS "  Samples:      ${RVX_BUILD_SAMPLES}")
 message(STATUS "  Tests:        ${RVX_BUILD_TESTS}")
+message(STATUS "  TSAN:         ${RVX_ENABLE_TSAN}")
 message(STATUS "")

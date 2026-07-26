@@ -102,12 +102,37 @@
       }
     },
     {
+      "name": "win_x64_debug_editor_compile",
+      "displayName": "Windows x64 Debug Editor Compile",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_debug_editor_compile",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_BUILD_EDITOR": "ON",
+        "RVX_BUILD_SAMPLES": "OFF",
+        "RVX_BUILD_TESTS": "OFF"
+      }
+    },
+    {
       "name": "linux_x64_debug",
       "displayName": "Linux x64 Debug",
       "inherits": "linux_x64_base",
       "binaryDir": "${sourceDir}/build/linux_x64_debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "linux_x64_tsan",
+      "displayName": "Linux x64 ThreadSanitizer",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "RVX_ENABLE_TSAN": "ON",
+        "RVX_BUILD_EDITOR": "OFF",
+        "RVX_BUILD_SAMPLES": "OFF"
       }
     },
     {
@@ -150,12 +175,21 @@
       "configuration": "Release"
     },
     {
+      "name": "win_x64_debug_editor_compile",
+      "configurePreset": "win_x64_debug_editor_compile",
+      "configuration": "Debug"
+    },
+    {
       "name": "linux_x64_debug",
       "configurePreset": "linux_x64_debug"
     },
     {
       "name": "linux_x64_release",
       "configurePreset": "linux_x64_release"
+    },
+    {
+      "name": "linux_x64_tsan",
+      "configurePreset": "linux_x64_tsan"
     },
     {
       "name": "mac_arm64_debug",
@@ -214,6 +248,18 @@
       "filter": {
         "include": {
           "label": "unit|lint"
+        }
+      }
+    },
+    {
+      "name": "linux_x64_tsan",
+      "configurePreset": "linux_x64_tsan",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "tsan"
         }
       }
     },

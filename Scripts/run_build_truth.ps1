@@ -5,6 +5,8 @@ param(
     [string]$BuildDir = "build\win_x64_debug",
     [string]$Configuration = "Debug",
     [string]$BaseRef = "master",
+    [string]$NativeTestRegex = "",
+    [string]$RequiredNativeBackend = "",
     [switch]$Fresh
 )
 
@@ -19,11 +21,13 @@ $buildRootPrefix = $buildRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.P
 $reportDir = Join-Path $buildPath "BuildTruth"
 $reportPath = Join-Path $reportDir "BuildTruth.json"
 $baselineReport = Join-Path $reportDir "ArchitectureBaseline.json"
+$nativeReport = Join-Path $reportDir "NativeRenderLifecycle.json"
 $commands = [Collections.Generic.List[object]]::new()
 $status = "failed"
 $failure = ""
 $testCount = 0
 $sourceCommit = ""
+$nativeEvidence = $null
 
 function Invoke-Checked([string]$Name, [scriptblock]$Command) {
     $started = Get-Date
@@ -121,6 +125,65 @@ try {
         }
     }
 
+    $hasNativeRegex = -not [string]::IsNullOrWhiteSpace($NativeTestRegex)
+    $hasRequiredNativeBackend =
+        -not [string]::IsNullOrWhiteSpace($RequiredNativeBackend)
+    if ($hasNativeRegex -ne $hasRequiredNativeBackend) {
+        throw "NativeTestRegex and RequiredNativeBackend must be supplied together"
+    }
+    if ($hasNativeRegex) {
+        if (Test-Path -LiteralPath $nativeReport) {
+            Remove-Item -LiteralPath $nativeReport -Force
+        }
+        $previousNativeReport = $env:RVX_NATIVE_LIFECYCLE_REPORT
+        $env:RVX_NATIVE_LIFECYCLE_REPORT = $nativeReport
+        try {
+            Invoke-Checked "native-render-lifecycle" {
+                ctest --test-dir $buildPath -C $Configuration `
+                    -R $NativeTestRegex --output-on-failure
+            }
+        }
+        finally {
+            if ($null -eq $previousNativeReport) {
+                Remove-Item Env:RVX_NATIVE_LIFECYCLE_REPORT `
+                    -ErrorAction SilentlyContinue
+            }
+            else {
+                $env:RVX_NATIVE_LIFECYCLE_REPORT = $previousNativeReport
+            }
+        }
+        if (-not (Test-Path -LiteralPath $nativeReport)) {
+            throw "Required native lifecycle evidence is missing: $nativeReport"
+        }
+        try {
+            $nativeEvidence =
+                Get-Content -LiteralPath $nativeReport -Raw |
+                    ConvertFrom-Json
+        }
+        catch {
+            throw "Required native lifecycle evidence is invalid JSON: $($_.Exception.Message)"
+        }
+        if ($nativeEvidence.schema -ne "RVX.M1.NativeRenderLifecycle" -or
+            $nativeEvidence.schemaVersion -ne 1 -or
+            $nativeEvidence.status -ne "passed") {
+            throw "Required native lifecycle evidence has an invalid schema or verdict"
+        }
+        if ($nativeEvidence.requiredBackend -ne $RequiredNativeBackend) {
+            throw "Required native lifecycle backend mismatch: expected '$RequiredNativeBackend', got '$($nativeEvidence.requiredBackend)'"
+        }
+        if ([string]::IsNullOrWhiteSpace($nativeEvidence.adapterName) -or
+            $nativeEvidence.mainThreadIdentityHash -eq 0 -or
+            $nativeEvidence.renderThreadIdentityHash -eq 0 -or
+            $nativeEvidence.mainThreadIdentityHash -eq
+                $nativeEvidence.renderThreadIdentityHash -or
+            $nativeEvidence.surfaceGeneration -lt 2 -or
+            $nativeEvidence.lastPresentedFrameSequence -lt 2 -or
+            $nativeEvidence.resizeAcceptedCount -lt 1 -or
+            $nativeEvidence.shutdownCode -ne 1) {
+            throw "Required native lifecycle evidence is incomplete"
+        }
+    }
+
     Invoke-Checked "branch-diff-hygiene" {
         git -c "safe.directory=$gitSafeDirectory" -C $repoRoot diff --check "$BaseRef...HEAD"
     }
@@ -140,7 +203,7 @@ finally {
     New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
     $report = [ordered]@{
         schema = "RVX.BuildTruth.Report"
-        schemaVersion = 1
+        schemaVersion = 2
         sourceCommit = $sourceCommit
         baseRef = $BaseRef
         configurePreset = $ConfigurePreset
@@ -151,6 +214,17 @@ finally {
         fresh = [bool]$Fresh
         ctestInventoryCount = $testCount
         architectureBaselineReport = $baselineReport
+        m1ArchitectureGate = "Architecture.M1ArchitectureCut"
+        nativeLifecycle = if ($null -eq $nativeEvidence) {
+            $null
+        } else {
+            [ordered]@{
+                testRegex = $NativeTestRegex
+                requiredBackend = $RequiredNativeBackend
+                reportPath = $nativeReport
+                evidence = $nativeEvidence
+            }
+        }
         status = $status
         failure = $failure
         commands = $commands

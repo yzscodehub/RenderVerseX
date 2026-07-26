@@ -112,7 +112,7 @@ namespace RVX
             return;
         }
 
-        if (!SelectPhysicalDevice())
+        if (!SelectPhysicalDevice(desc.allowSoftwareAdapter))
         {
             RVX_RHI_ERROR("Failed to find suitable GPU");
             return;
@@ -364,7 +364,7 @@ namespace RVX
     // =============================================================================
     // Physical Device Selection
     // =============================================================================
-    bool VulkanDevice::SelectPhysicalDevice()
+    bool VulkanDevice::SelectPhysicalDevice(bool allowSoftwareAdapter)
     {
         uint32 deviceCount = 0;
         vkEnumeratePhysicalDevices(m_instance, &deviceCount, nullptr);
@@ -386,6 +386,14 @@ namespace RVX
         {
             VkPhysicalDeviceProperties props;
             vkGetPhysicalDeviceProperties(device, &props);
+            if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU &&
+                !allowSoftwareAdapter)
+            {
+                RVX_RHI_DEBUG(
+                    "Skipping software Vulkan device {}",
+                    props.deviceName);
+                continue;
+            }
 
             VkPhysicalDeviceMemoryProperties memProps;
             vkGetPhysicalDeviceMemoryProperties(device, &memProps);
@@ -442,6 +450,11 @@ namespace RVX
 
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(m_physicalDevice, &props);
+        if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU)
+        {
+            RVX_RHI_INFO(
+                "Using explicitly permitted software Vulkan device");
+        }
         RVX_RHI_INFO("Selected GPU: {}", props.deviceName);
 
         return true;

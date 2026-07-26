@@ -131,7 +131,7 @@ namespace RVX
     private:
         void LoadDebugUtilsFunctions();
         bool CreateInstance(const RHIDeviceDesc& desc);
-        bool SelectPhysicalDevice();
+        bool SelectPhysicalDevice(bool allowSoftwareAdapter);
         bool CreateLogicalDevice();
         bool CreateAllocator();
         bool CreateCommandPools();

@@ -101,7 +101,6 @@ namespace RVX
             RHIDeviceRuntimeStatus status,
             RHIDeviceFaultOperation operation,
             const char* message) noexcept;
-
     private:
         bool InitializeContext();
         bool IsSurfaceContextCurrent(

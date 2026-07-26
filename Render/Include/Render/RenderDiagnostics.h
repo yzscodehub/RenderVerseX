@@ -365,6 +365,8 @@ namespace RVX
             transitions{};
 
         RHIBackendType backend = RHIBackendType::None;
+        std::string adapterName{};
+        std::string driverVersion{};
         uint64 surfaceGeneration = 0;
         uint32 surfaceWidth = 0;
         uint32 surfaceHeight = 0;

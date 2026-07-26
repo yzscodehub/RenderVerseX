@@ -22,6 +22,7 @@ namespace RVX
         RHIBackendType backendType = RHIBackendType::None;
         bool enableValidation = true;
         bool enableGPUValidation = false;
+        bool allowSoftwareAdapter = false;
         bool vsync = true;
         uint32_t frameBuffering = 2;  // Number of frames in flight
         const char* appName = "RenderVerseX";

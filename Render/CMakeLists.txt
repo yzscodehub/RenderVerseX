@@ -16,6 +16,7 @@ find_package(Threads REQUIRED)
 target_sources(RVX_RenderRuntimeCore PRIVATE
     Private/Runtime/DedicatedRenderExecutor.cpp
     Private/Runtime/RenderControlMailbox.cpp
+    Private/Runtime/RenderDiagnosticsPublisher.cpp
     Private/Runtime/RenderFrameMailbox.cpp
     Private/Runtime/RenderReleaseQueue.cpp
     Private/Runtime/RenderResourceGateway.cpp
@@ -73,7 +74,6 @@ target_sources(RVX_Render PRIVATE
     Private/SwapChainManager.cpp
     Private/RenderSubsystem.cpp
     # Runtime shell
-    Private/Runtime/RenderDiagnosticsPublisher.cpp
     Private/Runtime/RenderThreadRuntime.cpp
     Private/GPUUploadService.cpp
     Private/PipelineCache.cpp

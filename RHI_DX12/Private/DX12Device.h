@@ -179,7 +179,7 @@ namespace RVX
 
     private:
         bool CreateFactory(bool enableDebugLayer);
-        bool SelectAdapter(uint32 preferredIndex);
+        bool SelectAdapter(uint32 preferredIndex, bool allowSoftwareAdapter);
         bool CreateDevice(bool enableGPUValidation);
         bool CreateCommandQueues();
         bool InitializeCapabilities();

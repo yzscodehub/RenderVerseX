@@ -229,6 +229,46 @@ namespace RVX::Tests
         EXPECT_TRUE(IsDeclaredRHIDeviceFaultOperation(fault.operation));
     }
 
+    TEST(RHIContractValidation,
+         SoftwareAdapterFallbackIsExplicitAndDefaultsOff)
+    {
+        const RHIDeviceDesc defaults;
+        EXPECT_FALSE(defaults.allowSoftwareAdapter);
+
+        const std::string runtimeTypes =
+            ReadSource("Render/Include/Render/RenderRuntimeTypes.h");
+        const std::string renderContext =
+            ReadSource("Render/Private/Context/RenderContext.cpp");
+        const std::string renderSubsystem =
+            ReadSource("Render/Private/RenderSubsystem.cpp");
+        const std::string dx12Device =
+            ReadSource("RHI_DX12/Private/DX12Device.cpp");
+        const std::string vulkanDevice =
+            ReadSource("RHI_Vulkan/Private/VulkanDevice.cpp");
+
+        EXPECT_NE(runtimeTypes.find(
+                      "bool allowSoftwareAdapter = false;"),
+                  std::string::npos);
+        EXPECT_NE(renderContext.find(
+                      "deviceDesc.allowSoftwareAdapter = "
+                      "config.allowSoftwareAdapter;"),
+                  std::string::npos);
+        EXPECT_NE(renderSubsystem.find(
+                      "contextConfig.allowSoftwareAdapter"),
+                  std::string::npos);
+        EXPECT_NE(dx12Device.find("EnumWarpAdapter"),
+                  std::string::npos);
+        EXPECT_NE(dx12Device.find(
+                      "adapters.empty() && allowSoftwareAdapter"),
+                  std::string::npos);
+        EXPECT_NE(vulkanDevice.find(
+                      "VK_PHYSICAL_DEVICE_TYPE_CPU &&"),
+                  std::string::npos);
+        EXPECT_NE(vulkanDevice.find(
+                      "!allowSoftwareAdapter"),
+                  std::string::npos);
+    }
+
     TEST(RHIContractValidation, NativeSurfaceRejectsInvalidValueFields)
     {
         NativeSurfaceDesc surface = MakeSurface(NativeSurfacePlatform::Win32);

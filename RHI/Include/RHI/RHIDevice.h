@@ -47,6 +47,7 @@ namespace RVX
         NativeSurfaceDesc initialSurface;
         bool enableDebugLayer = true;
         bool enableGPUValidation = false;
+        bool allowSoftwareAdapter = false;
         uint32 preferredAdapterIndex = 0;  // 0 = auto-select
         const char* applicationName = "RenderVerseX";
     };

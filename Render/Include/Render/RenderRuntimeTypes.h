@@ -164,6 +164,7 @@ namespace RVX
         RHIBackendType backendType = RHIBackendType::Auto;
         bool enableValidation = true;
         bool enableGPUValidation = false;
+        bool allowSoftwareAdapter = false;
         uint32 frameBuffering = 2;
         RenderTransportConfig transports{};
         RenderIterationBudgets iterationBudgets{};
