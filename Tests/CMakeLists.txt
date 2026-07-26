@@ -271,6 +271,18 @@ set_tests_properties(Architecture.RHIOwnershipInventory PROPERTIES
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
+
+    add_test(
+        NAME Architecture.M1ArchitectureCut
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/Scripts/check_m1_architecture.py
+            --root ${CMAKE_SOURCE_DIR}
+    )
+    set_tests_properties(Architecture.M1ArchitectureCut PROPERTIES
+        LABELS "unit;architecture"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
 # Core debug configuration validation tests
 rvx_add_gtest(
     NAME CoreDebugConfigValidation
@@ -615,33 +627,6 @@ rvx_add_gtest(
     TIMEOUT 120
 )
 
-# GPU Resource Manager Validation Tests
-rvx_add_gtest(
-    NAME GPUResourceManagerValidation
-    SOURCES
-        GPUResourceManagerValidation/main.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/GPUResourceManager.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/GPUUploadService.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Resources/RenderResourceRegistryLegacy.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Material/MaterialClassification.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/RayTracing/RayTracingScene.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/RayTracing/RayTracingSceneManager.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderDrawItem.cpp
-    LIBS
-        RVX::Core
-        RVX::RHI
-        RVX::RenderContracts
-        RVX_RenderRuntimeCore
-        RVX::Resource
-        RVX::Scene
-    INCLUDES
-        ${CMAKE_SOURCE_DIR}/Render/Include
-        ${CMAKE_SOURCE_DIR}/Render/Private
-        ${CMAKE_SOURCE_DIR}/RenderContracts/Include
-    LABELS unit
-    TIMEOUT 120
-)
-
 # GPU Upload Service Validation Tests
 rvx_add_gtest(
     NAME GPUUploadServiceValidation
@@ -732,7 +717,9 @@ rvx_add_gtest(
 # Material system validation tests
 rvx_add_gtest(
     NAME MaterialSystemValidation
-    SOURCES MaterialSystemValidation/main.cpp
+    SOURCES
+        MaterialSystemValidation/main.cpp
+        Common/RenderRuntimeTestHarness.cpp
     LIBS
         RVX::Core
         RVX::Render
@@ -740,7 +727,9 @@ rvx_add_gtest(
         RVX::RHI
         RVX::Scene
     INCLUDES
+        ${CMAKE_SOURCE_DIR}/Tests
         ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Render/Private
         ${CMAKE_SOURCE_DIR}/Resource/Include
         ${CMAKE_SOURCE_DIR}/RHI/Include
     LABELS unit
@@ -765,7 +754,9 @@ rvx_add_gtest(
 # Render pass validation tests
 rvx_add_gtest(
     NAME RenderPassValidation
-    SOURCES RenderPassValidation/main.cpp
+    SOURCES
+        RenderPassValidation/main.cpp
+        Common/RenderRuntimeTestHarness.cpp
     LIBS
         RVX::Core
         RVX::Render
@@ -774,6 +765,7 @@ rvx_add_gtest(
         ${RVX_ALL_BACKENDS}
         RVX::Scene
     INCLUDES
+        ${CMAKE_SOURCE_DIR}/Tests
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Render/Private
         ${CMAKE_SOURCE_DIR}/Resource/Include
@@ -873,6 +865,7 @@ if(TARGET RVX::Editor)
         LIBS
             RVX::Core
             RVX::Editor
+            RVX::ResourceSceneAdapters
             RVX::Scene
             ${RVX_ALL_BACKENDS}
         INCLUDES
@@ -1232,8 +1225,8 @@ rvx_add_sample_smoke_test(LightingShadowSample basic
     --require-enabled-feature ProceduralSkyboxPass
 )
 rvx_add_sample_smoke_test(GpuResidencySample basic
-    --require-enabled-feature GPUResourceManager
-    --require-resource-diagnostic "gpu memory budget"
+    --require-enabled-feature RenderResourceRegistry
+    --require-resource-diagnostic "render resource registry"
     --require-resource-diagnostic "eviction reason"
 )
 rvx_add_sample_smoke_test(InputCameraSample basic

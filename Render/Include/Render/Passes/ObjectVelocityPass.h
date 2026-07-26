@@ -13,7 +13,6 @@
 namespace RVX
 {
     class RenderResourceRegistry;
-    class GPUResourceManager;
     class MaterialSystem;
     class PipelineCache;
     class RenderScene;
@@ -58,8 +57,7 @@ namespace RVX
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
 
-        void SetResources(GPUResourceManager* gpuResources,
-                          PipelineCache* pipelineCache,
+        void SetResources(PipelineCache* pipelineCache,
                           ResourceViewCache* viewCache,
                           MaterialSystem* materialSystem);
         void SetResourceRegistry(const RenderResourceRegistry* registry)
@@ -78,7 +76,6 @@ namespace RVX
 
     private:
         IRHIDevice* m_device = nullptr;
-        GPUResourceManager* m_gpuResources = nullptr;
         const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         ResourceViewCache* m_viewCache = nullptr;

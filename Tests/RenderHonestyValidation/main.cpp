@@ -3047,14 +3047,14 @@ TEST_F(RenderHonestyValidationFixture, SceneRendererLegacyCollectionFallbackIsRe
     const std::string source =
         ReadTextFile(repoRoot / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
 
-    EXPECT_NE(std::string::npos, header.find("void SetLegacyCollectionFallbackEnabled(bool enabled)"));
-    EXPECT_NE(std::string::npos, header.find("bool IsLegacyCollectionFallbackEnabled() const"));
-    EXPECT_NE(std::string::npos, header.find("bool m_legacyCollectionFallbackEnabled = false"));
+    EXPECT_EQ(std::string::npos, header.find("SetLegacyCollectionFallbackEnabled"));
+    EXPECT_EQ(std::string::npos, header.find("IsLegacyCollectionFallbackEnabled"));
+    EXPECT_EQ(std::string::npos, header.find("m_legacyCollectionFallbackEnabled"));
     EXPECT_EQ(std::string::npos, source.find("m_renderScene.CollectFromWorld(world)"));
     EXPECT_EQ(std::string::npos, source.find("SceneRenderCollectionPath::LegacyFallback"));
-    EXPECT_NE(std::string::npos,
-              source.find("legacy RenderSceneCollector fallback has been removed"));
-    EXPECT_NE(std::string::npos, source.find("SceneRenderCollectionPath::ProxyRejected"));
+    EXPECT_EQ(std::string::npos, source.find("RenderFeatureSceneBridge"));
+    EXPECT_NE(std::string::npos, source.find("m_renderScene.ApplyFramePacket(packet, registry)"));
+    EXPECT_NE(std::string::npos, source.find("m_viewData.SetupFromSnapshot("));
 }
 
 TEST_F(RenderHonestyValidationFixture, ColorGradingRequiresResourcesBeforeSupported)

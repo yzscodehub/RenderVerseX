@@ -1,7 +1,6 @@
 #include "Render/Passes/RayTracedReflectionPass.h"
 
 #include "RHI/RHIRayTracing.h"
-#include "Render/GPUResourceManager.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/PipelineCache.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
@@ -173,7 +172,6 @@ namespace RVX
     {
         ResetHistoryTextures();
         m_device = nullptr;
-        m_gpuResources = nullptr;
         m_resourceRegistry = nullptr;
         m_pipelineCache = nullptr;
         m_viewCache = nullptr;
@@ -202,15 +200,13 @@ namespace RVX
         m_enabled = false;
     }
 
-    void RayTracedReflectionPass::SetResources(GPUResourceManager* gpuResources,
-                                               PipelineCache* pipelineCache,
+    void RayTracedReflectionPass::SetResources(PipelineCache* pipelineCache,
                                                ResourceViewCache* viewCache)
     {
         if (m_pipelineCache != pipelineCache)
         {
             m_fallbackVelocityTexture.Reset();
         }
-        m_gpuResources = gpuResources;
         m_pipelineCache = pipelineCache;
         m_viewCache = viewCache;
     }
@@ -267,10 +263,9 @@ namespace RVX
             return false;
         }
 
-        if (materialTextureCount > 0 &&
-            !m_gpuResources && !m_resourceRegistry)
+        if (materialTextureCount > 0 && !m_resourceRegistry)
         {
-            m_unsupportedReason = "Ray tracing material textures require an exact or legacy resource resolver";
+            m_unsupportedReason = "Ray tracing material textures require an exact resource registry";
             return false;
         }
 
@@ -324,8 +319,7 @@ namespace RVX
             std::min<size_t>(sceneMaterialTextureCount, RTReflectionBindings::RVX_RT_REFLECTION_MAX_MATERIAL_TEXTURES));
         m_stats.materialTextureTableAvailable =
             m_stats.materialTextureCount == sceneMaterialTextureCount &&
-            (m_stats.materialTextureCount == 0u || m_gpuResources != nullptr ||
-             m_resourceRegistry != nullptr);
+            (m_stats.materialTextureCount == 0u || m_resourceRegistry != nullptr);
         m_stats.geometryMetadataAvailable = m_sceneManager && m_sceneManager->GetInstanceAlphaMetadataBuffer();
         m_stats.geometryIndexBufferCount =
             m_sceneManager
@@ -1027,7 +1021,7 @@ namespace RVX
         if (textureIds.empty())
             return true;
 
-        if ((!m_gpuResources && !m_resourceRegistry) || !m_viewCache)
+        if (!m_resourceRegistry || !m_viewCache)
             return false;
 
         if (textureIds.size() > RTReflectionBindings::RVX_RT_REFLECTION_MAX_MATERIAL_TEXTURES)
@@ -1036,10 +1030,8 @@ namespace RVX
         outViews.reserve(textureIds.size());
         for (uint64 textureId : textureIds)
         {
-            RHITexture* texture = m_resourceRegistry
-                ? m_resourceRegistry->ResolveTextureObject(
-                      UnpackRenderResourceHandle(textureId))
-                : m_gpuResources->GetTexture(textureId);
+            RHITexture* texture = m_resourceRegistry->ResolveTextureObject(
+                UnpackRenderResourceHandle(textureId));
             if (!texture)
                 return false;
 

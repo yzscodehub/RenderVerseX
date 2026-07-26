@@ -12,7 +12,7 @@
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Context/RenderContext.h"
 #include "Render/GPUDriven/GPUCulling.h"
-#include "Render/GPUResourceManager.h"
+#include "Render/Resources/RenderResourceTypes.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Passes/CameraVelocityPass.h"
@@ -42,8 +42,6 @@ namespace RVX
 {
     inline constexpr RHIFormat RVX_SCENE_COLOR_HDR_FORMAT = RHIFormat::RGBA16_FLOAT;
 
-    class World;
-    class Camera;
     class BloomPass;
     class CameraVelocityPass;
     class ClusteredLighting;
@@ -63,15 +61,10 @@ namespace RVX
     class RenderRetirementQueue;
     class RenderResourceRegistry;
     class RenderSubmissionResourceBatch;
-    class RenderFeatureSceneBridge;
-    class RenderProxySceneBridge;
     class RayTracedReflectionCompositePass;
     class RayTracedReflectionDenoisePass;
     class RayTracedReflectionPass;
     class RayTracedShadowPass;
-    class SceneManager;
-    class SceneEnvironmentIBLBridge;
-    class SceneSkyboxPassBridge;
     class ShadowPass;
     class SkyboxPass;
     class ToneMappingPass;
@@ -335,7 +328,7 @@ namespace RVX
         size_t skippedUnsupportedPassCount = 0;
         std::vector<RenderPassStatus> passStatuses;
 
-        GPUResourceManager::Stats gpuResourceStats;
+        RenderResourceRegistryStats gpuResourceStats;
         SceneGPUDrivenCullingStats gpuDrivenCullingStats;
         RayTracingSceneManagerStats rayTracingSceneStats;
 
@@ -825,7 +818,7 @@ namespace RVX
          * @param renderContext The render context to use
          */
         void Initialize(RenderContext* renderContext,
-                        const RenderResourceRegistry* resourceRegistry = nullptr,
+                        RenderResourceRegistry* resourceRegistry,
                         RenderRetirementQueue* retirementQueue = nullptr);
 
         /**
@@ -842,24 +835,10 @@ namespace RVX
         // Frame Setup
         // =====================================================================
 
-        /**
-         * @brief Setup view data from camera and collect scene data
-         * @param camera The camera to render from
-         * @param world The world to render (can be null for just camera setup)
-         */
-        void SetupView(const Camera& camera, World* world);
-
-        /**
-         * @brief Setup view data from camera and collect scene data from a SceneManager.
-         * @param camera The camera to render from
-         * @param sceneManager The scene manager to render (can be null for just camera setup)
-         */
-        void SetupView(const Camera& camera, SceneManager* sceneManager);
-
         /** @brief Transactionally apply one immutable render-frame packet. */
         [[nodiscard]] RenderFrameApplyResult ApplyFramePacket(
             const RenderFramePacket& packet,
-            const RenderResourceRegistry& registry);
+            RenderResourceRegistry& registry);
 
         /** @brief Record the currently accepted packet into the active frame. */
         [[nodiscard]] RenderFrameExecutionResult RenderAcceptedFrame();
@@ -1028,10 +1007,6 @@ namespace RVX
         const RenderScene& GetRenderScene() const { return m_renderScene; }
 
         /// Get the render context
-        RenderContext* GetRenderContext() { return m_renderContext; }
-
-        /// Get the GPU resource manager
-        GPUResourceManager* GetGPUResourceManager() { return m_gpuResourceManager.get(); }
 
         /// Get the pipeline cache
         PipelineCache* GetPipelineCache() { return m_pipelineCache.get(); }
@@ -1243,10 +1218,6 @@ namespace RVX
         /// Set shader directory (must be set before Initialize)
         void SetShaderDirectory(const std::string& dir) { m_shaderDir = dir; }
 
-        /// Enable compatibility fallback to the legacy scene collector when proxy extraction fails.
-        void SetLegacyCollectionFallbackEnabled(bool enabled) { m_legacyCollectionFallbackEnabled = enabled; }
-        bool IsLegacyCollectionFallbackEnabled() const { return m_legacyCollectionFallbackEnabled; }
-
     private:
         void RetireOwnerSnapshots(const GPUCompletionToken& completion);
         void BuildRenderGraph();
@@ -1269,15 +1240,11 @@ namespace RVX
                                    bool denoiseRequested);
         void SetupDefaultPostProcess();
         void SetupDefaultPasses();
-        void UpdateEnvironmentIBL(World* world);
-        void UpdateSkyboxPass(World* world);
         SceneColorFormatPolicy ResolveSceneColorFormatPolicy(RHIFormat backBufferFormat,
                                                              bool postProcessActive) const;
         ToneMappingOutputColorSpace ResolveToneMappingOutputColorSpace(RHIFormat outputFormat) const;
         bool SupportsHDRSceneColor() const;
         void ResolveRenderTargetExtent(uint32& width, uint32& height) const;
-        void SetupCameraViewData(const Camera& camera, uint32 width, uint32 height);
-        void FinalizeViewScene(const Camera& camera);
         void UpdatePassResources();
         void RunPreGraphPrepareCallbacks();
         void ExecutePasses(RHICommandContext& ctx);
@@ -1287,8 +1254,6 @@ namespace RVX
                                      bool graphBuilt,
                                      bool graphCompiled,
                                      const char* skippedReason);
-        void UpdateFeatureExtraction(World* world);
-        void UpdateFeatureExtraction(SceneManager* sceneManager);
         SceneRenderFeatureReport BuildRenderFeatureReport(const SceneRendererFrameDiagnostics& diagnostics) const;
 
         struct PreGraphPrepareCallbackEntry
@@ -1298,11 +1263,10 @@ namespace RVX
         };
 
         RenderContext* m_renderContext = nullptr;
-        const RenderResourceRegistry* m_renderResourceRegistry = nullptr;
+        RenderResourceRegistry* m_renderResourceRegistry = nullptr;
         RenderRetirementQueue* m_retirementQueue = nullptr;
         std::unique_ptr<RenderSubmissionResourceBatch> m_submissionBatch;
         std::unique_ptr<RenderGraph> m_renderGraph;
-        std::unique_ptr<GPUResourceManager> m_gpuResourceManager;
         std::unique_ptr<PipelineCache> m_pipelineCache;
         std::unique_ptr<MaterialSystem> m_materialSystem;
         std::unique_ptr<LightManager> m_lightManager;
@@ -1310,10 +1274,6 @@ namespace RVX
         std::unique_ptr<TransientResourcePool> m_transientResourcePool;
         std::unique_ptr<ResourceViewCache> m_resourceViewCache;
         std::unique_ptr<RenderPassRegistry> m_passRegistry;
-        std::unique_ptr<RenderFeatureSceneBridge> m_featureBridge;
-        std::unique_ptr<RenderProxySceneBridge> m_proxyBridge;
-        std::unique_ptr<SceneEnvironmentIBLBridge> m_environmentIBLBridge;
-        std::unique_ptr<SceneSkyboxPassBridge> m_skyboxBridge;
         std::unique_ptr<GPUCulling> m_gpuCulling;
         std::unique_ptr<PostProcessStack> m_postProcessStack;
         std::unique_ptr<RayTracingSceneManager> m_rayTracingSceneManager;
@@ -1409,7 +1369,6 @@ namespace RVX
         uint32_t m_lastSwapChainHeight = 0;
 
         bool m_initialized = false;
-        bool m_legacyCollectionFallbackEnabled = false;
     };
 
 } // namespace RVX

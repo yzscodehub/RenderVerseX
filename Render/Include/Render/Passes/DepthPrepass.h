@@ -9,7 +9,6 @@
  */
 
 #include "Render/Passes/IRenderPass.h"
-#include "Render/GPUResourceManager.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderDrawItem.h"
 
@@ -66,12 +65,8 @@ namespace RVX
         // Configuration
         // =========================================================================
 
-        /**
-         * @brief Set resources needed for rendering
-         * @param gpuResources GPU resource manager for mesh data
-         * @param pipelineCache Pipeline cache for depth-only pipeline
-         */
-        void SetResources(GPUResourceManager* gpuResources, PipelineCache* pipelineCache);
+        /** @brief Set the pipeline dependency before rendering. */
+        void SetResources(PipelineCache* pipelineCache);
         void SetResourceRegistry(const RenderResourceRegistry* registry)
         {
             m_resourceRegistry = registry;
@@ -125,7 +120,6 @@ namespace RVX
 
         bool m_enabled = false;  // Disabled by default until depth-only pipeline is ready
         std::string m_unsupportedReason = "Depth-only pipeline is not available";
-        GPUResourceManager* m_gpuResources = nullptr;
         const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         const RenderScene* m_renderScene = nullptr;

@@ -1,7 +1,6 @@
 #include "Render/Passes/RayTracedShadowPass.h"
 
 #include "RHI/RHIRayTracing.h"
-#include "Render/GPUResourceManager.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/PipelineCache.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
@@ -153,7 +152,6 @@ namespace RVX
         m_device = nullptr;
         m_pipelineCache = nullptr;
         m_viewCache = nullptr;
-        m_gpuResources = nullptr;
         m_resourceRegistry = nullptr;
         m_sceneManager = nullptr;
         m_shadowMaskHandle = {};
@@ -183,20 +181,6 @@ namespace RVX
         {
             m_fallbackVelocityTexture.Reset();
         }
-        m_gpuResources = nullptr;
-        m_pipelineCache = pipelineCache;
-        m_viewCache = viewCache;
-    }
-
-    void RayTracedShadowPass::SetResources(GPUResourceManager* gpuResources,
-                                           PipelineCache* pipelineCache,
-                                           ResourceViewCache* viewCache)
-    {
-        if (m_pipelineCache != pipelineCache)
-        {
-            m_fallbackVelocityTexture.Reset();
-        }
-        m_gpuResources = gpuResources;
         m_pipelineCache = pipelineCache;
         m_viewCache = viewCache;
     }
@@ -253,10 +237,9 @@ namespace RVX
             return false;
         }
 
-        if (materialTextureCount > 0 &&
-            !m_gpuResources && !m_resourceRegistry)
+        if (materialTextureCount > 0 && !m_resourceRegistry)
         {
-            m_unsupportedReason = "Ray tracing material textures require an exact or legacy resource resolver";
+            m_unsupportedReason = "Ray tracing material textures require an exact resource registry";
             return false;
         }
 
@@ -276,10 +259,9 @@ namespace RVX
             return false;
         }
 
-        if (alphaTextureCount > 0 &&
-            !m_gpuResources && !m_resourceRegistry)
+        if (alphaTextureCount > 0 && !m_resourceRegistry)
         {
-            m_unsupportedReason = "Ray tracing alpha textures require an exact or legacy resource resolver";
+            m_unsupportedReason = "Ray tracing alpha textures require an exact resource registry";
             return false;
         }
 
@@ -327,8 +309,7 @@ namespace RVX
             std::min<size_t>(sceneMaterialTextureCount, RTShadowBindings::RVX_RT_SHADOW_MAX_MATERIAL_TEXTURES));
         m_stats.materialTextureTableAvailable =
             m_stats.materialTextureCount == sceneMaterialTextureCount &&
-            (m_stats.materialTextureCount == 0u || m_gpuResources != nullptr ||
-             m_resourceRegistry != nullptr);
+            (m_stats.materialTextureCount == 0u || m_resourceRegistry != nullptr);
         m_stats.alphaMetadataAvailable = m_sceneManager && m_sceneManager->GetInstanceAlphaMetadataBuffer();
         const size_t sceneAlphaTextureCount =
             m_sceneManager ? m_sceneManager->GetInstanceAlphaTextureTable().size() : 0u;
@@ -336,8 +317,7 @@ namespace RVX
             std::min<size_t>(sceneAlphaTextureCount, RTShadowBindings::RVX_RT_SHADOW_MAX_ALPHA_TEXTURES));
         m_stats.alphaTextureTableAvailable =
             m_stats.alphaTextureCount == sceneAlphaTextureCount &&
-            (m_stats.alphaTextureCount == 0u || m_gpuResources != nullptr ||
-             m_resourceRegistry != nullptr);
+            (m_stats.alphaTextureCount == 0u || m_resourceRegistry != nullptr);
         m_stats.alphaIndexBufferCount =
             m_sceneManager
                 ? static_cast<uint32>(std::min<size_t>(
@@ -1020,7 +1000,7 @@ namespace RVX
         if (textureIds.empty())
             return true;
 
-        if ((!m_gpuResources && !m_resourceRegistry) || !m_viewCache)
+        if (!m_resourceRegistry || !m_viewCache)
             return false;
 
         if (textureIds.size() > RTShadowBindings::RVX_RT_SHADOW_MAX_MATERIAL_TEXTURES)
@@ -1029,10 +1009,8 @@ namespace RVX
         outViews.reserve(textureIds.size());
         for (uint64 textureId : textureIds)
         {
-            RHITexture* texture = m_resourceRegistry
-                ? m_resourceRegistry->ResolveTextureObject(
-                      UnpackRenderResourceHandle(textureId))
-                : m_gpuResources->GetTexture(textureId);
+            RHITexture* texture = m_resourceRegistry->ResolveTextureObject(
+                UnpackRenderResourceHandle(textureId));
             if (!texture)
                 return false;
 
@@ -1057,7 +1035,7 @@ namespace RVX
         if (textureIds.empty())
             return true;
 
-        if ((!m_gpuResources && !m_resourceRegistry) || !m_viewCache)
+        if (!m_resourceRegistry || !m_viewCache)
             return false;
 
         if (textureIds.size() > RTShadowBindings::RVX_RT_SHADOW_MAX_ALPHA_TEXTURES)
@@ -1066,10 +1044,8 @@ namespace RVX
         outViews.reserve(textureIds.size());
         for (uint64 textureId : textureIds)
         {
-            RHITexture* texture = m_resourceRegistry
-                ? m_resourceRegistry->ResolveTextureObject(
-                      UnpackRenderResourceHandle(textureId))
-                : m_gpuResources->GetTexture(textureId);
+            RHITexture* texture = m_resourceRegistry->ResolveTextureObject(
+                UnpackRenderResourceHandle(textureId));
             if (!texture)
                 return false;
 

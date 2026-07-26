@@ -2297,76 +2297,13 @@
       "deviceLostRelease": "registry explicit device-lost teardown without reporting completion"
     },
     {
-      "path": "Render/Private/Resources/RenderResourceRegistryLegacy.cpp",
-      "owner": "MeshGPUData",
-      "symbol": "boneIndicesBuffer",
-      "policy": "RegistryExactGeneration",
-      "completionSource": "RenderResourceRegistry exact-generation last-use token",
-      "normalRelease": "registry retirement after the exact generation token completes",
-      "deviceLostRelease": "registry explicit device-lost teardown without reporting completion"
-    },
-    {
-      "path": "Render/Private/Resources/RenderResourceRegistryLegacy.cpp",
-      "owner": "MeshGPUData",
-      "symbol": "boneWeightsBuffer",
-      "policy": "RegistryExactGeneration",
-      "completionSource": "RenderResourceRegistry exact-generation last-use token",
-      "normalRelease": "registry retirement after the exact generation token completes",
-      "deviceLostRelease": "registry explicit device-lost teardown without reporting completion"
-    },
-    {
-      "path": "Render/Private/Resources/RenderResourceRegistryLegacy.cpp",
-      "owner": "MeshGPUData",
-      "symbol": "indexBuffer",
-      "policy": "RegistryExactGeneration",
-      "completionSource": "RenderResourceRegistry exact-generation last-use token",
-      "normalRelease": "registry retirement after the exact generation token completes",
-      "deviceLostRelease": "registry explicit device-lost teardown without reporting completion"
-    },
-    {
-      "path": "Render/Private/Resources/RenderResourceRegistryLegacy.cpp",
-      "owner": "MeshGPUData",
-      "symbol": "normalBuffer",
-      "policy": "RegistryExactGeneration",
-      "completionSource": "RenderResourceRegistry exact-generation last-use token",
-      "normalRelease": "registry retirement after the exact generation token completes",
-      "deviceLostRelease": "registry explicit device-lost teardown without reporting completion"
-    },
-    {
-      "path": "Render/Private/Resources/RenderResourceRegistryLegacy.cpp",
-      "owner": "MeshGPUData",
-      "symbol": "positionBuffer",
-      "policy": "RegistryExactGeneration",
-      "completionSource": "RenderResourceRegistry exact-generation last-use token",
-      "normalRelease": "registry retirement after the exact generation token completes",
-      "deviceLostRelease": "registry explicit device-lost teardown without reporting completion"
-    },
-    {
-      "path": "Render/Private/Resources/RenderResourceRegistryLegacy.cpp",
-      "owner": "MeshGPUData",
-      "symbol": "tangentBuffer",
-      "policy": "RegistryExactGeneration",
-      "completionSource": "RenderResourceRegistry exact-generation last-use token",
-      "normalRelease": "registry retirement after the exact generation token completes",
-      "deviceLostRelease": "registry explicit device-lost teardown without reporting completion"
-    },
-    {
-      "path": "Render/Private/Resources/RenderResourceRegistryLegacy.cpp",
-      "owner": "MeshGPUData",
-      "symbol": "uvBuffer",
-      "policy": "RegistryExactGeneration",
-      "completionSource": "RenderResourceRegistry exact-generation last-use token",
-      "normalRelease": "registry retirement after the exact generation token completes",
-      "deviceLostRelease": "registry explicit device-lost teardown without reporting completion"
-    },
-    {
-      "path": "Render/Private/Resources/RenderResourceRegistryLegacy.cpp",
-      "owner": "TextureGPUData",
-      "symbol": "texture",
-      "policy": "RegistryExactGeneration",
-      "completionSource": "RenderResourceRegistry exact-generation last-use token",
-      "normalRelease": "registry retirement after the exact generation token completes",
-      "deviceLostRelease": "registry explicit device-lost teardown without reporting completion"
+      "path": "Render/Private/RenderSubsystem.cpp",
+      "owner": "CaptureReadback",
+      "symbol": "buffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "graphics submission completion followed by RenderContext::WaitIdle before mapping",
+      "normalRelease": "capture readback releases after the submitted copy completes and bytes are consumed",
+      "deviceLostRelease": "local capture ownership releases without mapping when the runtime loses completion"
     },
     {
       "path": "Render/Private/Resources/RenderSubmissionTracker.h",

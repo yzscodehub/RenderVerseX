@@ -15,7 +15,6 @@
 namespace RVX
 {
     // Forward declarations
-    class GPUResourceManager;
     class RenderResourceRegistry;
 
     enum class MaterialBindStatus : uint8
@@ -52,10 +51,8 @@ namespace RVX
         /**
          * @brief Initialize the material binder
          * @param device RHI device for resource creation
-         * @param gpuResources GPU resource manager for texture access
          */
         void Initialize(IRHIDevice* device,
-                        GPUResourceManager* gpuResources,
                         const RenderResourceRegistry* resourceRegistry = nullptr);
 
         /**
@@ -124,7 +121,6 @@ namespace RVX
         void SetBindResult(MaterialBindStatus status, std::string message);
 
         IRHIDevice* m_device = nullptr;
-        GPUResourceManager* m_gpuResources = nullptr;
         const RenderResourceRegistry* m_resourceRegistry = nullptr;
 
         // Shared constant buffer for material data

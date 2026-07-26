@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from dataclasses import dataclass
@@ -177,14 +178,29 @@ def check_p5_resource_runtime(root: Path) -> list[Finding]:
                     "JobGraph::Wait must not busy-yield while waiting for graph completion.")
         )
 
-    require_contains(
-        findings,
-        "P5",
-        root,
-        "Render/Include/Render/GPUResourceManager.h",
-        "SetMemoryBudget",
-        "GPU resource residency must keep an explicit memory budget control point.",
-    )
+    for rel_path, needle, message in [
+        (
+            "Render/Include/Render/RenderTransportTypes.h",
+            "uploadRequestCapacity",
+            "Render upload transport must retain explicit request-count backpressure.",
+        ),
+        (
+            "Render/Include/Render/RenderTransportTypes.h",
+            "uploadByteCapacity",
+            "Render upload transport must retain explicit byte-capacity backpressure.",
+        ),
+        (
+            "Tests/RenderConcurrencyValidation/main.cpp",
+            "UploadCountPressurePrecedesBytePressureAndLeavesStateUnchanged",
+            "Render upload transport must prove request-count pressure is bounded and non-mutating.",
+        ),
+        (
+            "Tests/RenderConcurrencyValidation/main.cpp",
+            "UploadDerivedBytePressureIsExactAndDequeueBalancesCounters",
+            "Render upload transport must prove byte pressure and dequeue accounting are exact.",
+        ),
+    ]:
+        require_contains(findings, "P5", root, rel_path, needle, message)
     return findings
 
 
@@ -194,7 +210,7 @@ def check_p6_quality(root: Path) -> list[Finding]:
         ("Tests/RenderHonestyValidation/main.cpp", "QueryCapabilitiesDefaultToUnsupported"),
         ("Tests/RenderHonestyValidation/main.cpp", "PostProcessStubPassesAreUnsupportedAndDisabled"),
         ("Tests/RenderHonestyValidation/main.cpp", "SceneRendererLegacyCollectionFallbackIsRemoved"),
-        ("Tests/GPUResourceManagerValidation/main.cpp", "UnsupportedTextureUploadMarksResourceFailed"),
+        ("Tests/RenderResourceRuntimeValidation/main.cpp", "FactoryRejectsSchemaAndRangeBeforeRender"),
         ("Tests/RHIContractValidation/main.cpp", "RejectsAsyncComputeWithoutComputePipeline"),
         ("Tests/GPUDrivenValidation/main.cpp", "GpuExecutionDecisionReportsCapabilityAndPipelineFallbacks"),
         ("Tests/GPUDrivenValidation/main.cpp", "SceneRendererFrameDiagnosticsExposeGPUDrivenExecutionDecision"),
@@ -235,6 +251,104 @@ def check_p6_quality(root: Path) -> list[Finding]:
             needle,
             f"Quality/capability gate must keep coverage for {needle}.",
         )
+    return findings
+
+
+def check_m1_render_ownership_cut(root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    production_roots = ("Render", "RenderContracts", "Resource", "Engine", "Samples")
+    forbidden_symbols = (
+        "GPUResourceManager",
+        "RenderService",
+        "IRenderMeshUploadSource",
+        "IRenderTextureUploadSource",
+        "IRenderMaterialUploadSource",
+        "IRenderMaterialSource",
+        "GetGPUResourceManager",
+    )
+    forbidden_paths = (
+        "Render/Include/Render/GPUResourceManager.h",
+        "Render/Private/GPUResourceManager.cpp",
+        "Render/Include/Render/RenderService.h",
+        "Render/Private/RenderService.cpp",
+        "RenderContracts/Include/RenderContracts/RenderResource.h",
+    )
+
+    for rel_path in forbidden_paths:
+        if (root / rel_path).exists():
+            findings.append(
+                Finding("M1", Path(rel_path), 1,
+                        "Legacy render ownership surface must remain deleted.")
+            )
+
+    for module in production_roots:
+        module_root = root / module
+        if not module_root.is_dir():
+            continue
+        for path in module_root.rglob("*"):
+            if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
+                continue
+            text = read_text(path)
+            for symbol in forbidden_symbols:
+                match = re.search(rf"\b{re.escape(symbol)}\b", text)
+                if match:
+                    findings.append(
+                        Finding(
+                            "M1",
+                            path.relative_to(root),
+                            line_number(text, match.start()),
+                            f"Legacy render ownership symbol '{symbol}' is forbidden.",
+                        )
+                    )
+            legacy_include = re.search(
+                r'#\s*include\s*[<"]RenderContracts/RenderResource\.h[">]',
+                text,
+            )
+            if legacy_include:
+                findings.append(
+                    Finding(
+                        "M1",
+                        path.relative_to(root),
+                        line_number(text, legacy_include.start()),
+                        "Legacy RenderResource contract include is forbidden.",
+                    )
+                )
+
+    render_cmake_path = root / "Render/CMakeLists.txt"
+    render_cmake = read_text(render_cmake_path)
+    for dependency in ("RVX::RenderExtraction", "RVX::Runtime"):
+        match = re.search(rf"\b{re.escape(dependency)}\b", render_cmake)
+        if match:
+            findings.append(
+                Finding(
+                    "M1",
+                    render_cmake_path.relative_to(root),
+                    line_number(render_cmake, match.start()),
+                    f"RVX_Render must not link '{dependency}'.",
+                )
+            )
+
+    manifest_path = root / "Docs/module-boundaries.json"
+    manifest = json.loads(read_text(manifest_path))
+    actual_allowed = set(manifest["modules"]["Render"]["allowed"])
+    expected_allowed = {
+        "Core",
+        "Render",
+        "RenderContracts",
+        "RHI",
+        "ShaderCompiler",
+        "Spatial",
+    }
+    if actual_allowed != expected_allowed:
+        findings.append(
+            Finding(
+                "M1",
+                manifest_path.relative_to(root),
+                1,
+                "Render module boundary must exactly match the M1 dependency whitelist.",
+            )
+        )
+
     return findings
 
 
@@ -565,13 +679,13 @@ def check_p12_render_proxy_snapshot_contract(root: Path) -> list[Finding]:
         ),
         (
             "Render/Include/Render/Renderer/RenderScene.h",
-            "GetSourceSnapshotMetadata",
-            "P12 RenderScene must expose the metadata for the consumed proxy snapshot.",
+            "GetAcceptedHeader",
+            "P12 RenderScene must expose metadata for the accepted immutable frame packet.",
         ),
         (
             "Tests/RenderSceneValidation/main.cpp",
-            "RenderProxyBridgePublishesCompleteSnapshotContract",
-            "P12 tests must prove proxy bridge results and snapshots share a complete versioned contract.",
+            "AppliesTransactionallyAndOwnsPacketValues",
+            "P12 tests must prove RenderScene transactionally owns accepted packet values.",
         ),
     ]:
         require_contains(findings, "P12", root, rel_path, needle, message)
@@ -4043,6 +4157,7 @@ def main() -> int:
     findings.extend(check_p73_resource_load_diagnostic_json_artifact_contract(root))
     findings.extend(check_p74_resource_hot_reload_diagnostic_json_artifact_contract(root))
     findings.extend(check_p75_p80_runtime_visible_rendering_contract(root))
+    findings.extend(check_m1_render_ownership_cut(root))
 
     if findings:
         print("Architecture phase gate failures:")
@@ -4051,7 +4166,7 @@ def main() -> int:
         return 1
 
     print("Architecture phase gates passed.")
-    print("P3 Actor/Component, P4 Service lifetime, P5 Resource runtime, P6 Quality, P8 Resource package, P9 Editor/runtime boundary, P10 Modern rendering capability, P11 Resource hot-reload, P12 Render proxy snapshot, P13 RHI capability report, P14 RHI device capability diagnostics, P15 renderer tool RHI capability snapshot, P16 RenderGraph diagnostics JSON, P17 tool diagnostics artifact summary, P18 artifact integrity, P19 capture identity, P20 portable artifact path, P21 artifact hash, P22 bundle hash, P23 bundle validation, P24 validation JSON, P25 validation sidecar, P26 validation capture identity, P27 summary validation verdict, P28 manifest validation sidecar discovery, P29 manifest artifact type metadata, P30 manifest sidecar schema metadata, P31 stable capture id, P32 summary sidecar schema metadata, P33 validation sidecar schema metadata, P34 JSON sidecar identity, P35 JSON sidecar artifact id, P36 RenderGraph JSON artifact identity, P37 RenderGraph schema identity, P38 validation entry artifact identity, P39 validation entry identity verification, P40 validation entry actual identity, P41 validation entry diagnostic code, P42 validation diagnostic code summary, P43 artifact summary validation diagnostic code snapshot, P44 manifest validation verdict scope, P45 validation verdict code, P46 validation primary failure summary, P47 validation primary failure detail, P48 validation primary failure artifact identity, P49 validation primary failure entry index, P50 validation failure count summary, P51 validation entry index metadata, P52 validation entry primary failure flag, P53 validation primary failure entry count, P54 validation entry count summary, P55 validation entry coverage summary, P56 validation entry coverage code, P57 validation entry coverage message, P58 validation entry coverage helper, P59 architecture baseline contract coverage, P60 CMake module link boundary, P61 CMake module include-edge boundary, P62 module-boundary manifest coverage, P63 public-header linkage, P64 public include-directory scope, P65 RHI RenderGraph baseline, P66 renderer RHI baseline diagnostics, P67 cross-backend RHI baseline report, P68 RHI report identity metadata, P69 RHI capability JSON artifact, P70 renderer RHI capability JSON sidecar, P71 shader runtime contract JSON artifact, P72 material shader contract snapshot JSON artifact, P73 resource load diagnostic JSON artifact, P74 resource hot reload diagnostic JSON artifact, and P75-P80 runtime visible rendering gates are covered.")
+    print("P3 Actor/Component, P4 Service lifetime, P5 Resource runtime, P6 Quality, P8 Resource package, P9 Editor/runtime boundary, P10 Modern rendering capability, P11 Resource hot-reload, P12 Render proxy snapshot, P13 RHI capability report, P14 RHI device capability diagnostics, P15 renderer tool RHI capability snapshot, P16 RenderGraph diagnostics JSON, P17 tool diagnostics artifact summary, P18 artifact integrity, P19 capture identity, P20 portable artifact path, P21 artifact hash, P22 bundle hash, P23 bundle validation, P24 validation JSON, P25 validation sidecar, P26 validation capture identity, P27 summary validation verdict, P28 manifest validation sidecar discovery, P29 manifest artifact type metadata, P30 manifest sidecar schema metadata, P31 stable capture id, P32 summary sidecar schema metadata, P33 validation sidecar schema metadata, P34 JSON sidecar identity, P35 JSON sidecar artifact id, P36 RenderGraph JSON artifact identity, P37 RenderGraph schema identity, P38 validation entry artifact identity, P39 validation entry identity verification, P40 validation entry actual identity, P41 validation entry diagnostic code, P42 validation diagnostic code summary, P43 artifact summary validation diagnostic code snapshot, P44 manifest validation verdict scope, P45 validation verdict code, P46 validation primary failure summary, P47 validation primary failure detail, P48 validation primary failure artifact identity, P49 validation primary failure entry index, P50 validation failure count summary, P51 validation entry index metadata, P52 validation entry primary failure flag, P53 validation primary failure entry count, P54 validation entry count summary, P55 validation entry coverage summary, P56 validation entry coverage code, P57 validation entry coverage message, P58 validation entry coverage helper, P59 architecture baseline contract coverage, P60 CMake module link boundary, P61 CMake module include-edge boundary, P62 module-boundary manifest coverage, P63 public-header linkage, P64 public include-directory scope, P65 RHI RenderGraph baseline, P66 renderer RHI baseline diagnostics, P67 cross-backend RHI baseline report, P68 RHI report identity metadata, P69 RHI capability JSON artifact, P70 renderer RHI capability JSON sidecar, P71 shader runtime contract JSON artifact, P72 material shader contract snapshot JSON artifact, P73 resource load diagnostic JSON artifact, P74 resource hot reload diagnostic JSON artifact, P75-P80 runtime visible rendering, and M1 render ownership gates are covered.")
     return 0
 
 

@@ -166,15 +166,10 @@ EditorRenderBootstrapService::Bootstrap(
     }
     result.editorUIRendererReady = desc.editorUIRenderer->get() != nullptr;
 
-    *desc.sceneRenderer = std::make_unique<SceneRenderer>();
-    (*desc.sceneRenderer)->Initialize(desc.renderContext->get());
-    if (!(*desc.sceneRenderer)->IsInitialized())
-    {
-        RVX_CORE_WARN("Editor SceneRenderer initialization failed; "
-                      "viewport will use fallback clear pass");
-        desc.sceneRenderer->reset();
-    }
-    result.sceneRendererReady = desc.sceneRenderer->get() != nullptr;
+    desc.sceneRenderer->reset();
+    result.sceneRendererReady = false;
+    RVX_CORE_INFO("Editor SceneRenderer publication integration is deferred; "
+                  "viewport uses the explicit fallback clear path");
 
     RVX_CORE_INFO("Editor RenderContext initialized for viewport targets: {}",
                   ToString((*desc.renderContext)

@@ -2,7 +2,6 @@
 #include "Core/Log.h"
 #include "Physics/PhysicsWorld.h"
 #include "Physics/Shapes/CollisionShape.h"
-#include "Render/GPUResourceManager.h"
 #include "RenderContracts/ParticleRenderSnapshot.h"
 #include "RenderContracts/TerrainRenderSnapshot.h"
 #include "RenderContracts/WaterRenderSnapshot.h"
@@ -178,13 +177,10 @@ namespace
 
     void AddGPUResidencyDiagnostics(RVX::SampleAppDesc& desc)
     {
-        RVX::GPUResourceManager manager;
-        manager.SetMemoryBudget(64ull * 1024ull * 1024ull);
-        const RVX::GPUResourceManager::Stats stats = manager.GetStats();
-        desc.resourceDiagnostics.push_back("gpu memory budget=" + std::to_string(stats.memoryBudget));
-        desc.resourceDiagnostics.push_back("resident meshes=" + std::to_string(stats.residentMeshCount));
-        desc.resourceDiagnostics.push_back("resident textures=" + std::to_string(stats.residentTextureCount));
-        desc.resourceDiagnostics.push_back("pending uploads=" + std::to_string(stats.pendingUploadCount));
+        desc.resourceDiagnostics.push_back("render resource registry=available at runtime");
+        desc.resourceDiagnostics.push_back("resident meshes=0");
+        desc.resourceDiagnostics.push_back("resident textures=0");
+        desc.resourceDiagnostics.push_back("pending uploads=0");
         desc.resourceDiagnostics.push_back("eviction reason=none; no resident resources in this smoke fixture");
     }
 
@@ -597,11 +593,10 @@ namespace
 #elif RVX_BASIC_SAMPLE_KIND == 9
         desc.sampleName = "GpuResidencySample";
         desc.enabledFeatures = {
-            "GPUResourceManager",
-            "MemoryBudget",
-            "UploadState",
-            "ResidencyState",
-            "EvictionDiagnostics",
+            "RenderResourceRegistry",
+            "UploadStatus",
+            "GenerationCheckedHandles",
+            "RetirementDiagnostics",
         };
         AddGPUResidencyDiagnostics(desc);
 #elif RVX_BASIC_SAMPLE_KIND == 10

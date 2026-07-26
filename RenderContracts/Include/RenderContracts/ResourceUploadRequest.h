@@ -153,6 +153,7 @@ namespace RVX
     {
         MaterialUploadTextureSlot slot = MaterialUploadTextureSlot::BaseColor;
         RenderResourceHandle texture;
+        bool isDefaultFallback = false;
         int32 uvSet = 0;
         Vec2 offset{0.0f, 0.0f};
         Vec2 scale{1.0f, 1.0f};

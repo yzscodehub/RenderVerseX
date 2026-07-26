@@ -4,7 +4,6 @@
  */
 
 #include "Render/Material/MaterialBinder.h"
-#include "Render/GPUResourceManager.h"
 #include "Core/Log.h"
 #include "Resources/RenderResourceRegistry.h"
 
@@ -21,7 +20,6 @@ MaterialBinder::~MaterialBinder()
 
 void MaterialBinder::Initialize(
     IRHIDevice* device,
-    GPUResourceManager* gpuResources,
     const RenderResourceRegistry* resourceRegistry)
 {
     if (m_device)
@@ -38,14 +36,12 @@ void MaterialBinder::Initialize(
     }
 
     m_device = device;
-    m_gpuResources = gpuResources;
     m_resourceRegistry = resourceRegistry;
     m_defaultConstants = GetDefaultConstants();
 
     if (!EnsureConstantBuffer())
     {
         m_device = nullptr;
-        m_gpuResources = nullptr;
         m_resourceRegistry = nullptr;
         return;
     }
@@ -61,7 +57,6 @@ void MaterialBinder::Shutdown()
 
     m_constantBuffer.Reset();
     m_device = nullptr;
-    m_gpuResources = nullptr;
     m_resourceRegistry = nullptr;
     m_currentMaterialId = 0;
     m_lastBindStatus = MaterialBindStatus::None;
@@ -144,9 +139,7 @@ void MaterialBinder::Bind(RHICommandContext& ctx, const MaterialSourceData& mate
     // Note: Actual binding depends on pipeline layout
     // ctx.SetConstantBuffer(setIndex, 0, m_constantBuffer.Get());
 
-    // Bind textures based on material
-    // This would use GPUResourceManager to get texture views
-    // and bind them to appropriate slots
+    // Texture descriptors are owned by MaterialSystem and the exact registry.
 }
 
 void MaterialBinder::Bind(RHICommandContext& ctx, uint64 materialId, uint32 setIndex)

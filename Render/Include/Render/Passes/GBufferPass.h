@@ -13,7 +13,6 @@ namespace RVX
 {
     class RenderResourceRegistry;
     // Forward declarations
-    class GPUResourceManager;
     class PipelineCache;
     class RenderScene;
 
@@ -65,12 +64,8 @@ namespace RVX
         // Resource Dependencies
         // =====================================================================
 
-        /**
-         * @brief Set resource dependencies before rendering
-         * @param gpuMgr GPU resource manager for mesh buffers
-         * @param pipelines Pipeline cache for shaders and pipelines
-         */
-        void SetResources(GPUResourceManager* gpuMgr, PipelineCache* pipelines);
+        /** @brief Set the pipeline dependency before rendering. */
+        void SetResources(PipelineCache* pipelines);
         void SetResourceRegistry(const RenderResourceRegistry* registry)
         {
             m_resourceRegistry = registry;
@@ -110,7 +105,6 @@ namespace RVX
         RGTextureHandle m_depthHandle;
 
         // Resource dependencies
-        GPUResourceManager* m_gpuResources = nullptr;
         const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         const RenderScene* m_renderScene = nullptr;

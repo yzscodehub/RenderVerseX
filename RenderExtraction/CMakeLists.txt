@@ -29,5 +29,8 @@ target_link_libraries(RVX_RenderExtraction PUBLIC
     RVX::Scene
     RVX::World
 )
+target_link_libraries(RVX_RenderExtraction PRIVATE
+    RVX::Geometry
+)
 
 add_library(RVX::RenderExtraction ALIAS RVX_RenderExtraction)

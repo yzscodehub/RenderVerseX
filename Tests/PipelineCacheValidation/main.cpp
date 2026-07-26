@@ -1675,12 +1675,13 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
               std::string::npos);
 
     const fs::path repoRoot = FindShaderDirectory().parent_path().parent_path();
-    const std::string renderSubsystem =
-        ReadTextFile(repoRoot / "Render" / "Private" / "RenderSubsystem.cpp");
+    const std::string renderRuntimeComposition =
+        ReadTextFile(repoRoot / "Engine" / "Private" / "RenderRuntimeComposition.cpp");
     const std::string windowSubsystem =
         ReadTextFile(repoRoot / "Runtime" / "Private" / "Window" / "WindowSubsystem.cpp");
-    EXPECT_NE(renderSubsystem.find("m_windowSubsystem->CaptureRenderSurface()"), std::string::npos);
-    EXPECT_NE(renderSubsystem.find("ReleaseGraphicsContextFromCurrentThread()"), std::string::npos);
+    EXPECT_NE(renderRuntimeComposition.find("m_services->CaptureRenderSurface()"), std::string::npos);
+    EXPECT_NE(renderRuntimeComposition.find("m_services->ReleaseGraphicsContextFromUpdateThread()"),
+              std::string::npos);
     EXPECT_NE(windowSubsystem.find("m_window->CaptureRenderSurfaceHandles()"), std::string::npos);
     EXPECT_NE(windowSubsystem.find("surface.backendWindow = handles.backendWindow"), std::string::npos);
 
@@ -2878,7 +2879,8 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererClearsAmbientFloorWhenTextur
     const fs::path sceneRendererPath = FindShaderDirectory().parent_path() /
         "Private" / "Renderer" / "SceneRenderer.cpp";
     const std::string source = ReadTextFile(sceneRendererPath);
-    EXPECT_NE(source.find("m_viewData.ambientFloorIntensity = 0.08f;"), std::string::npos);
+    EXPECT_NE(source.find("m_viewData.textureIBLEnabled = textureIBLReady ? 1 : 0;"),
+              std::string::npos);
     EXPECT_NE(source.find("textureIBLReady ? 0.0f : 0.08f"), std::string::npos);
 }
 
@@ -2946,7 +2948,9 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracingSceneBuildBef
 
     EXPECT_NE(source.find("m_rayTracingSceneManager = std::make_unique<RayTracingSceneManager>();"), std::string::npos);
     EXPECT_NE(source.find("m_rayTracingSceneManager->Initialize(m_renderContext->GetDevice());"), std::string::npos);
-    EXPECT_NE(source.find("RayTracingSceneBuildPlan plan = m_renderResourceRegistry"), std::string::npos);
+    EXPECT_NE(source.find("RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan("),
+              std::string::npos);
+    EXPECT_NE(source.find("*m_renderResourceRegistry"), std::string::npos);
     EXPECT_NE(source.find("m_rayTracingSceneManager->SetBLASCacheEvictionFrameThreshold("),
               std::string::npos);
     EXPECT_NE(source.find("m_rayTracingSceneManager->SetTrackedResourceBudget("), std::string::npos);
@@ -3305,19 +3309,19 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneBuildPlanSkipsZeroInstance
         ReadTextFile(renderRoot / "Private" / "RayTracing" / "RayTracingScene.cpp");
 
     EXPECT_NE(sceneHeader.find("InstanceMaskZero"), std::string::npos);
-    EXPECT_NE(sceneSource.find("const uint32 resolvedInstanceMask = ResolveRayTracingInstanceMask"),
+    EXPECT_NE(sceneSource.find("const uint32 instanceMask = ResolveRayTracingInstanceMask"),
               std::string::npos);
-    EXPECT_NE(sceneSource.find("if (resolvedInstanceMask == 0)"), std::string::npos);
+    EXPECT_NE(sceneSource.find("if (instanceMask == 0)"), std::string::npos);
     EXPECT_NE(sceneSource.find("RayTracingSceneSkipReason::InstanceMaskZero"), std::string::npos);
     EXPECT_NE(sceneHeader.find("InvalidTransform"), std::string::npos);
     EXPECT_NE(sceneSource.find("bool IsFiniteTransform(const Mat4& matrix)"), std::string::npos);
     EXPECT_NE(sceneSource.find("if (!IsFiniteTransform(object.worldMatrix))"), std::string::npos);
     EXPECT_NE(sceneSource.find("RayTracingSceneSkipReason::InvalidTransform"), std::string::npos);
-    EXPECT_NE(sceneSource.find("instance.desc.instanceMask = resolvedInstanceMask;"), std::string::npos);
+    EXPECT_NE(sceneSource.find("instance.desc.instanceMask = instanceMask;"), std::string::npos);
     EXPECT_EQ(sceneSource.find("instance.desc.instanceMask = ResolveRayTracingInstanceMask"),
               std::string::npos);
 
-    const auto maskFilter = sceneSource.find("if (resolvedInstanceMask == 0)");
+    const auto maskFilter = sceneSource.find("if (instanceMask == 0)");
     const auto transformFilter = sceneSource.find("if (!IsFiniteTransform(object.worldMatrix))", maskFilter);
     const auto blasKey = sceneSource.find("RayTracingBLASKey key;", maskFilter);
     ASSERT_NE(maskFilter, std::string::npos);
@@ -3760,7 +3764,10 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
     EXPECT_NE(source.find("rayTracedReflectionPass->SetResources("), std::string::npos);
     EXPECT_NE(source.find("rayTracedReflectionDenoisePass->SetResources("), std::string::npos);
     EXPECT_NE(source.find("rayTracedReflectionCompositePass->SetResources("), std::string::npos);
-    EXPECT_NE(source.find("m_gpuResourceManager.get(),"), std::string::npos);
+    EXPECT_NE(source.find("rayTracedShadowPass->SetResourceRegistry(m_renderResourceRegistry);"),
+              std::string::npos);
+    EXPECT_NE(source.find("rayTracedReflectionPass->SetResourceRegistry(m_renderResourceRegistry);"),
+              std::string::npos);
     EXPECT_NE(source.find("m_pipelineCache.get(),"), std::string::npos);
     EXPECT_NE(source.find("m_resourceViewCache.get());"),
               std::string::npos);
@@ -3792,8 +3799,9 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
               std::string::npos);
     EXPECT_NE(source.find("void SceneRenderer::RequestTemporalHistoryReset()"), std::string::npos);
     EXPECT_NE(source.find("m_pendingTemporalHistoryReset = true;"), std::string::npos);
-    EXPECT_NE(source.find("m_viewData.resetTemporalHistory = resetTemporalHistory;"), std::string::npos);
-    EXPECT_NE(source.find("m_viewData.previousViewProjectionMatrix = (!resetTemporalHistory && m_previousViewProjectionValid)"),
+    EXPECT_NE(source.find("m_viewData.SetupFromSnapshot(m_renderScene.GetView(),"),
+              std::string::npos);
+    EXPECT_NE(source.find("result.temporalHistoryReset);"),
               std::string::npos);
     EXPECT_NE(source.find("m_previousViewProjectionValid = false;"), std::string::npos);
     EXPECT_NE(source.find("m_previousViewProjectionMatrix = m_viewData.viewProjectionMatrix;"),
@@ -4081,7 +4089,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAn
 
     EXPECT_NE(passHeader.find("void SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache);"),
               std::string::npos);
-    EXPECT_NE(passHeader.find("void SetResources(GPUResourceManager* gpuResources,"),
+    EXPECT_NE(passHeader.find("void SetResourceRegistry(const RenderResourceRegistry* registry)"),
               std::string::npos);
     EXPECT_NE(passHeader.find("bool EnsureHistoryTextures(uint32 width, uint32 height);"), std::string::npos);
     EXPECT_NE(passHeader.find("void ResetHistoryTextures();"), std::string::npos);
@@ -6165,10 +6173,11 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
     const std::string renderSubsystem = ReadTextFile(renderRoot / "Private" / "RenderSubsystem.cpp");
-    EXPECT_NE(renderSubsystem.find("m_renderContext->WaitForSurfaceGeneration())\n            {\n                return false;\n            }\n            if (m_sceneRenderer)\n            {\n                m_sceneRenderer->PrepareForSwapChainResize();"),
+    EXPECT_NE(renderSubsystem.find("if (!m_context->WaitForSurfaceGeneration())"),
               std::string::npos);
-    EXPECT_NE(renderSubsystem.find("m_legacyBridge->renderContext->WaitForSurfaceGeneration())\n        {\n            return;\n        }\n        if (m_legacyBridge->sceneRenderer)\n        {\n            m_legacyBridge->sceneRenderer->PrepareForSwapChainResize();"),
+    EXPECT_NE(renderSubsystem.find("m_sceneRenderer->PrepareForSwapChainResize();"),
               std::string::npos);
+    EXPECT_EQ(renderSubsystem.find("m_legacyBridge"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAware)
@@ -6259,7 +6268,7 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
     EXPECT_NE(passSource.find("m_stats.maskedDrawItemCount"), std::string::npos);
     EXPECT_NE(passSource.find("MaterialBindingOptions materialOptions;"), std::string::npos);
     EXPECT_NE(passSource.find("materialOptions.allowNormalMap = false;"), std::string::npos);
-    EXPECT_NE(passSource.find("materialResource, view.viewCache, materialOptions"),
+    EXPECT_NE(passSource.find("item.material, view.viewCache, materialOptions"),
               std::string::npos);
     EXPECT_NE(passSource.find("++m_stats.skippedMissingUVCount"), std::string::npos);
     EXPECT_NE(passSource.find("++m_stats.skippedMaterialBindingCount"), std::string::npos);

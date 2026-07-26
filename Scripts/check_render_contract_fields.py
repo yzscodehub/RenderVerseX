@@ -10,7 +10,32 @@ from typing import Iterable, Sequence
 
 
 DEFAULT_ENTRIES = (
+    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderFrameHeader",
+    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderViewSnapshot",
+    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderPrimitiveSnapshot",
+    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderLightSnapshot",
+    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderSkySnapshot",
+    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderEnvironmentSnapshot",
+    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderPostProcessSettings",
+    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderShadowSettings",
+    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderGPUCullingSettings",
+    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderRayTracingSettings",
+    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderTemporalSettings",
+    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderFrameSettings",
+    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderFrameCaptureRequest",
+    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderExtractionDiagnostics",
     "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderFramePacket",
+    "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:UploadByteRange",
+    "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:MeshUploadCreateInfo",
+    "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:MeshUploadSubmesh",
+    "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:MeshUploadPayload",
+    "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:TextureUploadCreateInfo",
+    "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:TextureUploadSubresource",
+    "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:TextureUploadPayload",
+    "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:MaterialUploadTextureBinding",
+    "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:MaterialUploadPayload",
+    "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:ResourceUploadDiagnosticProvenance",
+    "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:ResourceUploadRequestCreateInfo",
     "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:ResourceUploadRequest",
 )
 

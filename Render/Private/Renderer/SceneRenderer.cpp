@@ -8,7 +8,6 @@
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
 #include "Core/Assert.h"
-#include "Core/Camera/Camera.h"
 #include "Core/Log.h"
 #include "Core/PathUtils.h"
 #include "Render/Passes/CameraVelocityPass.h"
@@ -32,10 +31,6 @@
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
 #include "Render/RayTracing/RayTracingScene.h"
-#include "RenderExtraction/RenderFeatureSceneBridge.h"
-#include "RenderExtraction/RenderProxySceneBridge.h"
-#include "RenderExtraction/SceneEnvironmentIBLBridge.h"
-#include "RenderExtraction/SceneSkyboxPassBridge.h"
 #include "Renderer/RenderFrameResourceBinder.h"
 #include "Renderer/RenderPassRegistry.h"
 #include "Resources/RenderResourceRegistry.h"
@@ -186,44 +181,6 @@ namespace
         return settings;
     }
 
-    void PopulateFeatureExtractionStats(const RenderFeatureSnapshot& snapshot,
-                                        const RenderFeatureSceneBridgeResult& result,
-                                        bool complete,
-                                        SceneFeatureExtractionStats& stats)
-    {
-        stats.usedProviderPath = result.usedProviderPath;
-        stats.requiresLegacyFallback = result.requiresLegacyFallback || !complete;
-        stats.snapshotSchemaVersion = result.snapshotSchemaVersion;
-        stats.snapshotSequence = result.snapshotSequence;
-        stats.snapshotComplete = result.snapshotComplete;
-        stats.providerCount = result.providerCount;
-        stats.skippedProviderCount = result.skippedProviderCount;
-        stats.particleItemCount = result.particleItemCount;
-        stats.waterItemCount = result.waterItemCount;
-        stats.terrainItemCount = result.terrainItemCount;
-        stats.fallbackOwnerId = result.fallbackOwnerId;
-        stats.fallbackReason =
-            result.fallbackReason == RenderFeatureSceneBridgeFallbackReason::None
-                ? ""
-                : ToString(result.fallbackReason);
-
-        for (const ParticleRenderSnapshotItem& item : snapshot.particles.items)
-        {
-            if (item.payloadStatus == ParticleRenderSnapshotPayloadStatus::MetadataOnly)
-            {
-                ++stats.particleMetadataOnlyCount;
-            }
-            if (item.renderPayloadAvailable ||
-                item.payloadStatus == ParticleRenderSnapshotPayloadStatus::RenderOwnedPayloadReady)
-            {
-                ++stats.particleRenderPayloadReadyCount;
-            }
-            if (item.sortingSupported)
-            {
-                ++stats.particleSortingSupportedCount;
-            }
-        }
-    }
 }
 
 bool SceneRendererExternalTargetDesc::IsValid() const
@@ -323,7 +280,7 @@ SceneColorFormatPolicy SceneRenderer::ResolveSceneColorFormatPolicy(RHIFormat ba
 
 void SceneRenderer::Initialize(
     RenderContext* renderContext,
-    const RenderResourceRegistry* resourceRegistry,
+    RenderResourceRegistry* resourceRegistry,
     RenderRetirementQueue* retirementQueue)
 {
     if (m_initialized)
@@ -332,9 +289,9 @@ void SceneRenderer::Initialize(
         return;
     }
 
-    if (!renderContext)
+    if (!renderContext || !resourceRegistry || !retirementQueue)
     {
-        RVX_CORE_ERROR("SceneRenderer: Invalid render context");
+        RVX_CORE_ERROR("SceneRenderer: Invalid render-owned dependencies");
         return;
     }
 
@@ -342,10 +299,6 @@ void SceneRenderer::Initialize(
     m_renderResourceRegistry = resourceRegistry;
     m_retirementQueue = retirementQueue;
     m_passRegistry = std::make_unique<RenderPassRegistry>();
-    m_featureBridge = std::make_unique<RenderFeatureSceneBridge>();
-    m_proxyBridge = std::make_unique<RenderProxySceneBridge>();
-    m_environmentIBLBridge = std::make_unique<SceneEnvironmentIBLBridge>();
-    m_skyboxBridge = std::make_unique<SceneSkyboxPassBridge>();
     m_rayTracingSceneManager = std::make_unique<RayTracingSceneManager>();
     m_rayTracingSceneManager->Initialize(m_renderContext->GetDevice());
     m_rayTracingSceneStats = m_rayTracingSceneManager->GetStats();
@@ -353,14 +306,6 @@ void SceneRenderer::Initialize(
     // Create render graph
     m_renderGraph = std::make_unique<RenderGraph>();
     m_renderGraph->SetDevice(m_renderContext->GetDevice());
-
-    // The packet path receives the Render-owned exact registry. Only the
-    // dormant synchronous compatibility path constructs the legacy facade.
-    if (m_renderResourceRegistry == nullptr)
-    {
-        m_gpuResourceManager = std::make_unique<GPUResourceManager>();
-        m_gpuResourceManager->Initialize(m_renderContext->GetDevice());
-    }
 
     // Create GPU-driven culling data path. CPU culling remains as a prediction
     // and fallback data source; the graph path receives the full draw stream.
@@ -399,17 +344,6 @@ void SceneRenderer::Initialize(
     m_resourceViewCache->Initialize(m_renderContext->GetDevice(),
                                     submissionTracker,
                                     m_retirementQueue);
-    if (m_gpuResourceManager)
-    {
-        m_gpuResourceManager->SetTextureInvalidatedCallback(
-            [this](RHITexture* texture)
-            {
-                if (m_resourceViewCache)
-                {
-                    m_resourceViewCache->InvalidateTexture(texture);
-                }
-            });
-    }
 
     RVX_CORE_INFO("SceneRenderer: Searching for shader directory...");
     RVX_CORE_INFO("  Current working directory: {}", std::filesystem::current_path().string());
@@ -501,7 +435,6 @@ void SceneRenderer::Initialize(
     {
         if (!m_materialSystem->Initialize(
                 m_renderContext->GetDevice(),
-                m_gpuResourceManager.get(),
                 m_pipelineCache->GetMaterialSetLayout(),
                 m_renderResourceRegistry))
         {
@@ -597,11 +530,6 @@ void SceneRenderer::Shutdown()
         m_rayTracingSceneManager.reset();
     }
 
-    if (m_gpuResourceManager)
-    {
-        m_gpuResourceManager->Shutdown();
-        m_gpuResourceManager.reset();
-    }
     if (m_gpuCulling)
     {
         m_gpuCulling->Shutdown();
@@ -610,10 +538,6 @@ void SceneRenderer::Shutdown()
 
     m_renderGraph.reset();
     m_passRegistry.reset();
-    m_featureBridge.reset();
-    m_proxyBridge.reset();
-    m_environmentIBLBridge.reset();
-    m_skyboxBridge.reset();
     m_rayTracingSceneStats = {};
     m_rayTracingFrameBudgetStats = {};
     m_previousViewProjectionMatrix = Mat4Identity();
@@ -627,111 +551,6 @@ void SceneRenderer::Shutdown()
     m_initialized = false;
 
     RVX_CORE_DEBUG("SceneRenderer shutdown");
-}
-
-void SceneRenderer::UpdateEnvironmentIBL(World* world)
-{
-    ++m_environmentIBLStats.frameCount;
-    m_environmentIBLStats.skyboxFound = false;
-    m_environmentIBLStats.uploadRequested = false;
-    m_environmentIBLStats.textureIBLEnabled = false;
-    m_environmentIBLStats.prefilteredMipLevels = 1;
-    m_environmentIBLStats.intensity = 1.0f;
-    m_environmentIBLStats.fallbackReason.clear();
-
-    m_viewData.textureIBLEnabled = 0;
-    m_viewData.textureIBLPrefilteredMipLevels = 1;
-    m_viewData.textureIBLIntensity = 1.0f;
-    m_viewData.ambientFloorIntensity = 0.08f;
-
-    auto disableTextureIBL = [this](const char* reason)
-    {
-        m_environmentIBLStats.fallbackReason = reason ? reason : "Unknown";
-        if (m_materialSystem)
-        {
-            m_materialSystem->ClearEnvironmentIBLResources();
-        }
-    };
-
-    if (!m_materialSystem)
-    {
-        disableTextureIBL("RendererIBLDependenciesMissing");
-        return;
-    }
-
-    SceneEnvironmentIBLSnapshot iblSnapshot;
-    SceneEnvironmentIBLBridgeResult iblResult;
-    if (!m_environmentIBLBridge || !m_environmentIBLBridge->Extract(world, iblSnapshot, &iblResult))
-    {
-        m_environmentIBLStats.skyboxFound = iblResult.skyboxFound;
-        disableTextureIBL(ToString(iblResult.fallbackReason));
-        return;
-    }
-
-    m_environmentIBLStats.skyboxFound = iblResult.skyboxFound;
-    m_environmentIBLStats.intensity = iblSnapshot.intensity;
-    m_environmentIBLStats.prefilteredMipLevels =
-        iblSnapshot.prefilteredMipLevels;
-
-    // Update-side extraction is now value-only. The synchronous compatibility
-    // renderer cannot turn AssetIds into exact registry generations, so it must
-    // use the deterministic ambient fallback instead of requesting uploads.
-    disableTextureIBL("PacketOnlyIBLRequiresRenderResourceHandles");
-}
-
-void SceneRenderer::UpdateSkyboxPass(World* world)
-{
-    if (!m_skyboxPass || !m_skyboxBridge)
-        return;
-
-    SceneSkyboxSnapshot snapshot;
-    SceneSkyboxPassBridgeResult result;
-    if (!m_skyboxBridge->Extract(world, snapshot, &result))
-    {
-        m_skyboxPass->ClearSkybox(ToString(result.fallbackReason));
-        return;
-    }
-
-    switch (snapshot.mode)
-    {
-        case SceneSkyboxSnapshotMode::Procedural:
-            m_skyboxPass->SetProceduralSkyParams(snapshot.sunDirection,
-                                                 snapshot.zenithColor,
-                                                 snapshot.horizonColor,
-                                                 snapshot.groundColor,
-                                                 snapshot.sunColor,
-                                                 snapshot.intensity,
-                                                 snapshot.scatteringIntensity);
-            break;
-        case SceneSkyboxSnapshotMode::SolidColor:
-            m_skyboxPass->SetSolidColor(snapshot.tint, snapshot.intensity);
-            break;
-        case SceneSkyboxSnapshotMode::Cubemap:
-        case SceneSkyboxSnapshotMode::Equirectangular:
-        {
-            RHITexture* texture =
-                m_gpuResourceManager && snapshot.textureAssetId.IsValid()
-                    ? m_gpuResourceManager->GetTexture(
-                          snapshot.textureAssetId.value)
-                    : nullptr;
-            if (texture != nullptr)
-            {
-                m_skyboxPass->SetCubemap(texture,
-                                         snapshot.intensity,
-                                         snapshot.rotationRadians,
-                                         snapshot.blurLevel);
-            }
-            else
-            {
-                m_skyboxPass->ClearSkybox(
-                    "PacketOnlySkyTextureRequiresReadyHandle");
-            }
-            break;
-        }
-        default:
-            m_skyboxPass->ClearSkybox("SkyboxDisabled");
-            break;
-    }
 }
 
 void SceneRenderer::RequestTemporalHistoryReset()
@@ -869,9 +688,9 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
     diagnostics.skippedDisabledPassCount = m_passChainStats.skippedDisabledPassCount;
     diagnostics.skippedUnsupportedPassCount = m_passChainStats.skippedUnsupportedPassCount;
     diagnostics.passStatuses = m_passChainStats.passStatuses;
-    if (m_gpuResourceManager)
+    if (m_renderResourceRegistry)
     {
-        diagnostics.gpuResourceStats = m_gpuResourceManager->GetStats();
+        diagnostics.gpuResourceStats = m_renderResourceRegistry->GetStats();
     }
     diagnostics.gpuDrivenCullingStats = m_gpuDrivenCullingStats;
     diagnostics.rayTracingSceneStats = m_rayTracingSceneStats;
@@ -950,141 +769,9 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
     }
 }
 
-void SceneRenderer::UpdateFeatureExtraction(World* world)
-{
-    m_featureExtractionStats = {};
-    m_featureExtractionStats.attempted = true;
-
-    if (!m_featureBridge)
-    {
-        m_featureSnapshot.Clear();
-        if (m_particleFeaturePass)
-        {
-            m_particleFeaturePass->SetSnapshot(nullptr);
-        }
-        m_featureExtractionStats.requiresLegacyFallback = true;
-        m_featureExtractionStats.fallbackReason = "Feature bridge unavailable";
-        return;
-    }
-
-    RenderFeatureSceneBridgeResult result;
-    const bool complete = m_featureBridge->BuildSnapshot(world, m_featureSnapshot, &result);
-    PopulateFeatureExtractionStats(m_featureSnapshot, result, complete, m_featureExtractionStats);
-    if (m_particleFeaturePass)
-    {
-        m_particleFeaturePass->SetSnapshot(&m_featureSnapshot.particles);
-    }
-}
-
-void SceneRenderer::UpdateFeatureExtraction(SceneManager* sceneManager)
-{
-    m_featureExtractionStats = {};
-    m_featureExtractionStats.attempted = true;
-
-    if (!m_featureBridge)
-    {
-        m_featureSnapshot.Clear();
-        if (m_particleFeaturePass)
-        {
-            m_particleFeaturePass->SetSnapshot(nullptr);
-        }
-        m_featureExtractionStats.requiresLegacyFallback = true;
-        m_featureExtractionStats.fallbackReason = "Feature bridge unavailable";
-        return;
-    }
-
-    RenderFeatureSceneBridgeResult result;
-    const bool complete = m_featureBridge->BuildSnapshot(sceneManager, m_featureSnapshot, &result);
-    PopulateFeatureExtractionStats(m_featureSnapshot, result, complete, m_featureExtractionStats);
-    if (m_particleFeaturePass)
-    {
-        m_particleFeaturePass->SetSnapshot(&m_featureSnapshot.particles);
-    }
-}
-
-void SceneRenderer::SetupView(const Camera& camera, World* world)
-{
-    if (!m_initialized)
-        return;
-
-    uint32 width = 1280;
-    uint32 height = 720;
-    ResolveRenderTargetExtent(width, height);
-    SetupCameraViewData(camera, width, height);
-    UpdateEnvironmentIBL(world);
-    UpdateSkyboxPass(world);
-    UpdateFeatureExtraction(world);
-
-    // Collect scene data through the proxy bridge first; legacy collection is audited fallback only.
-    RenderProxySceneBridgeResult proxyResult;
-    if (m_proxyBridge && m_proxyBridge->BuildSnapshot(world, m_proxySnapshot, &proxyResult))
-    {
-        m_renderScene.ApplyProxySnapshot(m_proxySnapshot);
-        m_collectionStats.lastPath = SceneRenderCollectionPath::Proxy;
-        ++m_collectionStats.proxyFrameCount;
-        m_collectionStats.lastProxyPrimitiveCount = proxyResult.primitiveCount;
-        m_collectionStats.lastProxyLightCount = proxyResult.lightCount;
-        m_collectionStats.lastFallbackOwnerId = 0;
-        m_collectionStats.lastFallbackReason.clear();
-        m_collectionStats.lastFallbackSuppressed = false;
-    }
-    else
-    {
-        m_renderScene.Clear();
-        m_collectionStats.lastPath = SceneRenderCollectionPath::ProxyRejected;
-        ++m_collectionStats.rejectedProxyFrameCount;
-        m_collectionStats.lastProxyPrimitiveCount = 0;
-        m_collectionStats.lastProxyLightCount = 0;
-        m_collectionStats.lastFallbackOwnerId = proxyResult.fallbackOwnerId;
-        m_collectionStats.lastFallbackReason = ToString(proxyResult.fallbackReason);
-        m_collectionStats.lastFallbackSuppressed = true;
-
-        if (m_legacyCollectionFallbackEnabled && proxyResult.requiresLegacyFallback)
-        {
-            RVX_CORE_WARN("SceneRenderer: proxy extraction failed and legacy RenderSceneCollector fallback has been removed, reason={}, ownerId={}",
-                          m_collectionStats.lastFallbackReason,
-                          m_collectionStats.lastFallbackOwnerId);
-        }
-        else
-        {
-            RVX_CORE_WARN("SceneRenderer: proxy extraction failed, reason={}, ownerId={}",
-                          m_collectionStats.lastFallbackReason,
-                          m_collectionStats.lastFallbackOwnerId);
-        }
-    }
-
-    FinalizeViewScene(camera);
-}
-
-void SceneRenderer::SetupView(const Camera& camera, SceneManager* sceneManager)
-{
-    if (!m_initialized)
-        return;
-
-    uint32 width = 1280;
-    uint32 height = 720;
-    ResolveRenderTargetExtent(width, height);
-    SetupCameraViewData(camera, width, height);
-    UpdateEnvironmentIBL(nullptr);
-    UpdateSkyboxPass(nullptr);
-    UpdateFeatureExtraction(sceneManager);
-
-    m_renderScene.CollectFromSceneManager(sceneManager);
-    m_collectionStats.lastPath = SceneRenderCollectionPath::SceneManagerDirect;
-    ++m_collectionStats.sceneManagerDirectFrameCount;
-    m_collectionStats.lastProxyPrimitiveCount = 0;
-    m_collectionStats.lastProxyLightCount = 0;
-    m_collectionStats.lastFallbackOwnerId = 0;
-    m_collectionStats.lastFallbackReason = sceneManager
-                                               ? "SceneManager direct editor collection"
-                                               : "SceneManager unavailable";
-
-    FinalizeViewScene(camera);
-}
-
 RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
     const RenderFramePacket& packet,
-    const RenderResourceRegistry& registry)
+    RenderResourceRegistry& registry)
 {
     m_renderResourceRegistry = &registry;
     if (m_depthPrepass)
@@ -1216,6 +903,44 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
     ApplyRayTracingBudgetSettings(rayTracingBudget);
 
     m_featureSnapshot = m_renderScene.GetFeatures();
+    const RenderFeatureSnapshotMetadata featureMetadata =
+        m_featureSnapshot.GetMetadata();
+    m_featureExtractionStats = {};
+    m_featureExtractionStats.attempted = true;
+    m_featureExtractionStats.usedProviderPath = true;
+    m_featureExtractionStats.requiresLegacyFallback = false;
+    m_featureExtractionStats.snapshotSchemaVersion =
+        featureMetadata.schemaVersion;
+    m_featureExtractionStats.snapshotSequence = featureMetadata.sequence;
+    m_featureExtractionStats.snapshotComplete = featureMetadata.complete;
+    m_featureExtractionStats.providerCount = featureMetadata.providerCount;
+    m_featureExtractionStats.skippedProviderCount =
+        featureMetadata.skippedProviderCount;
+    m_featureExtractionStats.particleItemCount =
+        featureMetadata.particleItemCount;
+    m_featureExtractionStats.waterItemCount =
+        featureMetadata.waterItemCount;
+    m_featureExtractionStats.terrainItemCount =
+        featureMetadata.terrainItemCount;
+    for (const ParticleRenderSnapshotItem& item :
+         m_featureSnapshot.particles.items)
+    {
+        if (item.payloadStatus ==
+            ParticleRenderSnapshotPayloadStatus::MetadataOnly)
+        {
+            ++m_featureExtractionStats.particleMetadataOnlyCount;
+        }
+        if (item.renderPayloadAvailable ||
+            item.payloadStatus ==
+                ParticleRenderSnapshotPayloadStatus::RenderOwnedPayloadReady)
+        {
+            ++m_featureExtractionStats.particleRenderPayloadReadyCount;
+        }
+        if (item.sortingSupported)
+        {
+            ++m_featureExtractionStats.particleSortingSupportedCount;
+        }
+    }
     if (m_particleFeaturePass)
     {
         m_particleFeaturePass->SetSnapshot(&m_featureSnapshot.particles);
@@ -1437,59 +1162,6 @@ void SceneRenderer::ResolveRenderTargetExtent(uint32& width, uint32& height) con
     }
 }
 
-void SceneRenderer::SetupCameraViewData(const Camera& camera, uint32 width, uint32 height)
-{
-    m_viewData.SetupFromCamera(camera, width, height);
-    const bool resetTemporalHistory = m_pendingTemporalHistoryReset;
-    m_pendingTemporalHistoryReset = false;
-    m_viewData.resetTemporalHistory = resetTemporalHistory;
-    m_viewData.previousViewProjectionMatrix = (!resetTemporalHistory && m_previousViewProjectionValid)
-                                                  ? m_previousViewProjectionMatrix
-                                                  : m_viewData.viewProjectionMatrix;
-    m_viewData.previousViewProjectionValid = (!resetTemporalHistory && m_previousViewProjectionValid) ? 1 : 0;
-    if (resetTemporalHistory)
-    {
-        m_previousViewProjectionValid = false;
-    }
-}
-
-void SceneRenderer::FinalizeViewScene(const Camera& camera)
-{
-    ApplyObjectMotionHistory();
-
-    // Perform visibility culling
-    m_renderScene.CullAgainstCamera(camera, m_visibleObjectIndices);
-
-    // Sort visible objects for optimal rendering
-    m_renderScene.SortVisibleObjects(m_visibleObjectIndices, m_viewData.cameraPosition);
-    BuildMaterialDrawLists();
-
-    // Mark visible meshes as used for GPU resource management
-    if (m_gpuResourceManager)
-    {
-        for (uint32_t idx : m_visibleObjectIndices)
-        {
-            const auto& obj = m_renderScene.GetObject(idx);
-            if (!m_gpuResourceManager->IsResident(obj.meshId) && obj.meshResource)
-            {
-                m_gpuResourceManager->RequestUpload(obj.meshResource, UploadPriority::High);
-            }
-            m_gpuResourceManager->MarkUsed(obj.meshId);
-
-            if (m_materialSystem)
-            {
-                for (auto* material : obj.materialResources)
-                {
-                    if (!material)
-                        continue;
-
-                    m_materialSystem->RequestMaterialTextures(material);
-                }
-            }
-        }
-    }
-}
-
 void SceneRenderer::BuildMaterialDrawLists()
 {
     RVX::BuildMaterialDrawLists(m_renderScene,
@@ -1519,7 +1191,7 @@ void SceneRenderer::ApplyGPUDrivenCullingToDrawLists()
     }
 
     if (!m_gpuDrivenCullingEnabled || !m_gpuCulling ||
-        (m_renderResourceRegistry == nullptr && !m_gpuResourceManager))
+        m_renderResourceRegistry == nullptr)
     {
         m_gpuDrivenCullingStats.outputOpaqueDrawItemCount = static_cast<uint32>(m_opaqueDrawItems.size());
         m_gpuDrivenCullingStats.outputMaskedDrawItemCount = static_cast<uint32>(m_maskedDrawItems.size());
@@ -1539,7 +1211,7 @@ void SceneRenderer::ApplyGPUDrivenCullingToDrawList(std::vector<RenderDrawItem>&
 {
     cullableDrawItemCount = 0;
     if (drawItems.empty() || !m_gpuCulling ||
-        (m_renderResourceRegistry == nullptr && !m_gpuResourceManager))
+        m_renderResourceRegistry == nullptr)
     {
         return;
     }
@@ -1557,9 +1229,7 @@ void SceneRenderer::ApplyGPUDrivenCullingToDrawList(std::vector<RenderDrawItem>&
         const RenderObject& object = m_renderScene.GetObject(item.objectIndex);
         const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
             m_renderResourceRegistry,
-            m_gpuResourceManager.get(),
-            object.mesh,
-            object.meshId);
+            object.mesh);
         if (!buffers.IsValid() || item.submeshIndex >= buffers.submeshes.size())
         {
             ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
@@ -1605,7 +1275,7 @@ void SceneRenderer::ApplyGPUDrivenCullingToDrawList(std::vector<RenderDrawItem>&
 void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
 {
     if (!m_gpuDrivenCullingEnabled || !m_gpuCulling ||
-        (m_renderResourceRegistry == nullptr && !m_gpuResourceManager))
+        m_renderResourceRegistry == nullptr)
     {
         return;
     }
@@ -1626,7 +1296,6 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
         RenderResourceHandle material;
         uint64 meshId = 0;
         uint64 materialId = 0;
-        IRenderMaterialSource* materialResource = nullptr;
         MaterialPipelineVariant pipelineVariant = MaterialPipelineVariant::Opaque;
         std::vector<GPUDrivenGroupedDrawItem> items;
     };
@@ -1646,9 +1315,7 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
             const RenderObject& object = m_renderScene.GetObject(item.objectIndex);
             const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
                 m_renderResourceRegistry,
-                m_gpuResourceManager.get(),
-                object.mesh,
-                object.meshId);
+                object.mesh);
             if (!buffers.IsValid() || item.submeshIndex >= buffers.submeshes.size())
             {
                 continue;
@@ -1665,9 +1332,6 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
                 {
                     return group.mesh == item.mesh &&
                            group.material == item.material &&
-                           group.meshId == object.meshId &&
-                           group.materialId == item.materialId &&
-                           group.materialResource == item.materialResource &&
                            group.pipelineVariant == GetPipelineVariantForRenderMode(item.renderMode);
                 });
             if (groupIt == drawGroups.end())
@@ -1675,9 +1339,11 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
                 GPUDrivenDrawGroup group;
                 group.mesh = item.mesh;
                 group.material = item.material;
-                group.meshId = object.meshId;
-                group.materialId = item.materialId;
-                group.materialResource = item.materialResource;
+                group.meshId = (static_cast<uint64>(item.mesh.slot) << 32U) |
+                               item.mesh.generation;
+                group.materialId =
+                    (static_cast<uint64>(item.material.slot) << 32U) |
+                    item.material.generation;
                 group.pipelineVariant = GetPipelineVariantForRenderMode(item.renderMode);
                 drawGroups.push_back(std::move(group));
                 groupIt = drawGroups.end() - 1;
@@ -1700,7 +1366,6 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
             group.meshId,
             group.materialId,
             group.pipelineVariant,
-            group.materialResource,
             group.mesh,
             group.material);
         if (groupIndex == RVX_INVALID_INDEX)
@@ -2084,12 +1749,6 @@ void SceneRenderer::Render()
     if (m_materialSystem && m_materialSystem->IsInitialized())
     {
         m_materialSystem->BeginFrame();
-    }
-
-    // Process pending GPU uploads with time budget
-    if (m_gpuResourceManager && m_renderResourceRegistry == nullptr)
-    {
-        m_gpuResourceManager->ProcessPendingUploads(2.0f);  // 2ms budget
     }
 
     // Update view constants in pipeline cache
@@ -3101,8 +2760,7 @@ void SceneRenderer::PrepareRayTracingScene()
 {
     m_rayTracingSceneStats = {};
 
-    if (!m_rayTracingSceneManager ||
-        (!m_renderResourceRegistry && !m_gpuResourceManager))
+    if (!m_rayTracingSceneManager || !m_renderResourceRegistry)
     {
         m_rayTracingSceneStats.fallbackReason = "ray tracing scene dependencies are unavailable";
         return;
@@ -3121,15 +2779,11 @@ void SceneRenderer::PrepareRayTracingScene()
         m_rayTracingBudgetSettings.enabled ? m_rayTracingBudgetSettings.maxTrackedResourceBytes : 0u);
 
     RayTracingSceneOptions options;
-    RayTracingSceneBuildPlan plan = m_renderResourceRegistry
-        ? BuildRayTracingSceneBuildPlan(m_renderScene,
-                                        m_visibleObjectIndices,
-                                        *m_renderResourceRegistry,
-                                        options)
-        : BuildRayTracingSceneBuildPlan(m_renderScene,
-                                        m_visibleObjectIndices,
-                                        *m_gpuResourceManager,
-                                        options);
+    RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(
+        m_renderScene,
+        m_visibleObjectIndices,
+        *m_renderResourceRegistry,
+        options);
 
     m_rayTracingSceneManager->Prepare(plan);
     m_rayTracingSceneStats = m_rayTracingSceneManager->GetStats();
@@ -3771,14 +3425,14 @@ void SceneRenderer::SetupDefaultPostProcess()
 void SceneRenderer::SetupDefaultPasses()
 {
     auto depthPrepass = std::make_unique<DepthPrepass>();
-    depthPrepass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get());
+    depthPrepass->SetResources(m_pipelineCache.get());
     depthPrepass->SetResourceRegistry(m_renderResourceRegistry);
     depthPrepass->SetGPUDrivenCullingSource(m_gpuCulling.get());
     m_depthPrepass = depthPrepass.get();
     AddPass(std::move(depthPrepass));
 
     auto shadowPass = std::make_unique<ShadowPass>();
-    shadowPass->SetResources(m_gpuResourceManager.get(), m_pipelineCache.get());
+    shadowPass->SetResources(m_pipelineCache.get());
     shadowPass->SetResourceRegistry(m_renderResourceRegistry);
     shadowPass->SetConfig(m_shadowPassConfig);
     m_shadowPass = shadowPass.get();
@@ -3786,7 +3440,6 @@ void SceneRenderer::SetupDefaultPasses()
 
     auto rayTracedShadowPass = std::make_unique<RayTracedShadowPass>();
     rayTracedShadowPass->SetResources(
-        m_gpuResourceManager.get(),
         m_pipelineCache.get(),
         m_resourceViewCache.get());
     rayTracedShadowPass->SetResourceRegistry(m_renderResourceRegistry);
@@ -3801,7 +3454,6 @@ void SceneRenderer::SetupDefaultPasses()
     AddPass(std::move(cameraVelocityPass));
     auto objectVelocityPass = std::make_unique<ObjectVelocityPass>();
     objectVelocityPass->SetResources(
-        m_gpuResourceManager.get(),
         m_pipelineCache.get(),
         m_resourceViewCache.get(),
         m_materialSystem.get());
@@ -3811,7 +3463,6 @@ void SceneRenderer::SetupDefaultPasses()
 
     auto rayTracedReflectionPass = std::make_unique<RayTracedReflectionPass>();
     rayTracedReflectionPass->SetResources(
-        m_gpuResourceManager.get(),
         m_pipelineCache.get(),
         m_resourceViewCache.get());
     rayTracedReflectionPass->SetResourceRegistry(m_renderResourceRegistry);
@@ -3837,8 +3488,7 @@ void SceneRenderer::SetupDefaultPasses()
     AddPass(std::move(rayTracedReflectionCompositePass));
 
     auto opaquePass = std::make_unique<OpaquePass>();
-    opaquePass->SetResources(m_gpuResourceManager.get(),
-                             m_pipelineCache.get(),
+    opaquePass->SetResources(m_pipelineCache.get(),
                              m_materialSystem.get(),
                              m_lightManager.get(),
                              m_clusteredLighting.get());
@@ -3853,8 +3503,7 @@ void SceneRenderer::SetupDefaultPasses()
     AddPass(std::move(skyboxPass));
 
     auto transparentPass = std::make_unique<TransparentPass>();
-    transparentPass->SetResources(m_gpuResourceManager.get(),
-                                  m_pipelineCache.get(),
+    transparentPass->SetResources(m_pipelineCache.get(),
                                   m_materialSystem.get(),
                                   m_lightManager.get(),
                                   m_clusteredLighting.get());

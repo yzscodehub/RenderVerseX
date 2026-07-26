@@ -63,13 +63,13 @@ namespace
         return true;
     }
 
-    MeshUploadIndexType ConvertIndexType(RenderMeshIndexType type)
+    MeshUploadIndexType ConvertIndexType(IndexType type)
     {
         switch (type)
         {
-            case RenderMeshIndexType::UInt8: return MeshUploadIndexType::UInt8;
-            case RenderMeshIndexType::UInt16: return MeshUploadIndexType::UInt16;
-            case RenderMeshIndexType::UInt32: return MeshUploadIndexType::UInt32;
+            case IndexType::UInt8: return MeshUploadIndexType::UInt8;
+            case IndexType::UInt16: return MeshUploadIndexType::UInt16;
+            case IndexType::UInt32: return MeshUploadIndexType::UInt32;
         }
         return MeshUploadIndexType::UInt32;
     }
@@ -85,23 +85,23 @@ namespace
         return 0;
     }
 
-    MeshUploadPrimitiveTopology ConvertTopology(RenderPrimitiveTopology topology)
+    MeshUploadPrimitiveTopology ConvertTopology(PrimitiveType topology)
     {
         switch (topology)
         {
-            case RenderPrimitiveTopology::TriangleStrip:
+            case PrimitiveType::TriangleStrip:
                 return MeshUploadPrimitiveTopology::TriangleStrip;
-            case RenderPrimitiveTopology::TriangleFan:
+            case PrimitiveType::TriangleFan:
                 return MeshUploadPrimitiveTopology::TriangleFan;
-            case RenderPrimitiveTopology::Lines:
+            case PrimitiveType::Lines:
                 return MeshUploadPrimitiveTopology::Lines;
-            case RenderPrimitiveTopology::LineStrip:
+            case PrimitiveType::LineStrip:
                 return MeshUploadPrimitiveTopology::LineStrip;
-            case RenderPrimitiveTopology::LineLoop:
+            case PrimitiveType::LineLoop:
                 return MeshUploadPrimitiveTopology::LineLoop;
-            case RenderPrimitiveTopology::Points:
+            case PrimitiveType::Points:
                 return MeshUploadPrimitiveTopology::Points;
-            case RenderPrimitiveTopology::Triangles:
+            case PrimitiveType::Triangles:
             default:
                 return MeshUploadPrimitiveTopology::Triangles;
         }
@@ -145,37 +145,37 @@ namespace
         return {};
     }
 
-    MaterialUploadWrapMode ConvertWrap(RenderTextureWrapMode mode)
+    MaterialUploadWrapMode ConvertWrap(TextureInfo::WrapMode mode)
     {
         switch (mode)
         {
-            case RenderTextureWrapMode::MirrorRepeat:
+            case TextureInfo::WrapMode::MirrorRepeat:
                 return MaterialUploadWrapMode::MirrorRepeat;
-            case RenderTextureWrapMode::ClampToEdge:
+            case TextureInfo::WrapMode::ClampToEdge:
                 return MaterialUploadWrapMode::ClampToEdge;
-            case RenderTextureWrapMode::ClampToBorder:
+            case TextureInfo::WrapMode::ClampToBorder:
                 return MaterialUploadWrapMode::ClampToBorder;
-            case RenderTextureWrapMode::Repeat:
+            case TextureInfo::WrapMode::Repeat:
             default:
                 return MaterialUploadWrapMode::Repeat;
         }
     }
 
-    MaterialUploadFilterMode ConvertFilter(RenderTextureFilterMode mode)
+    MaterialUploadFilterMode ConvertFilter(TextureInfo::FilterMode mode)
     {
         switch (mode)
         {
-            case RenderTextureFilterMode::Nearest:
+            case TextureInfo::FilterMode::Nearest:
                 return MaterialUploadFilterMode::Nearest;
-            case RenderTextureFilterMode::NearestMipmapNearest:
+            case TextureInfo::FilterMode::NearestMipmapNearest:
                 return MaterialUploadFilterMode::NearestMipmapNearest;
-            case RenderTextureFilterMode::LinearMipmapNearest:
+            case TextureInfo::FilterMode::LinearMipmapNearest:
                 return MaterialUploadFilterMode::LinearMipmapNearest;
-            case RenderTextureFilterMode::NearestMipmapLinear:
+            case TextureInfo::FilterMode::NearestMipmapLinear:
                 return MaterialUploadFilterMode::NearestMipmapLinear;
-            case RenderTextureFilterMode::LinearMipmapLinear:
+            case TextureInfo::FilterMode::LinearMipmapLinear:
                 return MaterialUploadFilterMode::LinearMipmapLinear;
-            case RenderTextureFilterMode::Linear:
+            case TextureInfo::FilterMode::Linear:
             default:
                 return MaterialUploadFilterMode::Linear;
         }
@@ -204,72 +204,94 @@ namespace
         RenderUploadPriority priority,
         uint64 sourceRevision)
     {
-        const RenderMeshUploadData source = resource.GetUploadData();
+        const std::shared_ptr<Mesh> mesh = resource.GetMesh();
         const AABB bounds = resource.GetBounds();
-        if (source.vertexCount == 0 || !source.position.IsValid() ||
-            !bounds.IsValid())
+        const VertexAttribute* position =
+            mesh ? mesh->GetAttribute(VertexBufferNames::Position) : nullptr;
+        if (!mesh || mesh->GetVertexCount() == 0 || position == nullptr ||
+            position->GetData() == nullptr || position->GetTotalSize() == 0 ||
+            position->GetStride() == 0 || !bounds.IsValid())
         {
             return {RenderUploadRequestBuildCode::InvalidResource};
         }
 
         MeshUploadPayload payload;
-        payload.createInfo.vertexCount = static_cast<uint64>(source.vertexCount);
-        payload.createInfo.indexCount = static_cast<uint64>(source.indexCount);
-        payload.createInfo.indexType = ConvertIndexType(source.indexType);
-        payload.createInfo.topology = ConvertTopology(source.primitive);
+        payload.createInfo.vertexCount = static_cast<uint64>(mesh->GetVertexCount());
+        payload.createInfo.indexCount = static_cast<uint64>(mesh->GetIndexCount());
+        payload.createInfo.indexType = ConvertIndexType(mesh->GetIndexType());
+        payload.createInfo.topology = ConvertTopology(mesh->GetPrimitiveType());
         payload.createInfo.boundsMin = bounds.GetMin();
         payload.createInfo.boundsMax = bounds.GetMax();
 
-        if ((source.indexCount != 0 &&
+        const auto appendAttribute = [&payload](const VertexAttribute* attribute,
+                                                UploadByteRange& range)
+        {
+            return attribute == nullptr
+                       ? AppendRange(payload.bytes, nullptr, 0, 0, range)
+                       : AppendRange(payload.bytes,
+                                     attribute->GetData(),
+                                     attribute->GetTotalSize(),
+                                     attribute->GetStride(),
+                                     range);
+        };
+
+        const auto& indexData = mesh->GetIndexData();
+        const char* uvNames[] = {
+            VertexBufferNames::UV, "uv", "texcoord0", "texcoord"};
+        const VertexAttribute* uv = nullptr;
+        for (const char* uvName : uvNames)
+        {
+            uv = mesh->GetAttribute(uvName);
+            if (uv != nullptr && uv->GetData() != nullptr &&
+                uv->GetTotalSize() > 0)
+            {
+                break;
+            }
+            uv = nullptr;
+        }
+
+        if ((mesh->GetIndexCount() != 0 &&
              !AppendRange(payload.bytes,
-                          source.indexData,
-                          source.indexDataSize,
+                          indexData.empty() ? nullptr : indexData.data(),
+                          indexData.size(),
                           GetIndexStride(payload.createInfo.indexType),
                           payload.indexRange)) ||
-            !AppendRange(payload.bytes,
-                         source.position.data,
-                         source.position.size,
-                         source.position.stride,
-                         payload.positionRange) ||
-            !AppendRange(payload.bytes,
-                         source.normal.data,
-                         source.normal.size,
-                         source.normal.stride,
-                         payload.normalRange) ||
-            !AppendRange(payload.bytes,
-                         source.uv.data,
-                         source.uv.size,
-                         source.uv.stride,
-                         payload.uvRange) ||
-            !AppendRange(payload.bytes,
-                         source.tangent.data,
-                         source.tangent.size,
-                         source.tangent.stride,
-                         payload.tangentRange) ||
-            !AppendRange(payload.bytes,
-                         source.boneIndices.data,
-                         source.boneIndices.size,
-                         source.boneIndices.stride,
-                         payload.boneIndexRange) ||
-            !AppendRange(payload.bytes,
-                         source.boneWeights.data,
-                         source.boneWeights.size,
-                         source.boneWeights.stride,
-                         payload.boneWeightRange))
+            !appendAttribute(position, payload.positionRange) ||
+            !appendAttribute(mesh->GetAttribute(VertexBufferNames::Normal),
+                             payload.normalRange) ||
+            !appendAttribute(uv, payload.uvRange) ||
+            !appendAttribute(mesh->GetAttribute(VertexBufferNames::Tangent),
+                             payload.tangentRange) ||
+            !appendAttribute(mesh->GetAttribute(VertexBufferNames::BoneIndices),
+                             payload.boneIndexRange) ||
+            !appendAttribute(mesh->GetAttribute(VertexBufferNames::BoneWeights),
+                             payload.boneWeightRange))
         {
             return {RenderUploadRequestBuildCode::PayloadOverflow};
         }
 
-        if (source.indexCount != 0)
+        if (mesh->GetIndexCount() != 0)
         {
-            payload.submeshes.reserve(source.submeshes.size());
-            for (const RenderMeshSubmeshUploadInfo& submesh : source.submeshes)
+            if (mesh->HasSubMeshes())
+            {
+                payload.submeshes.reserve(mesh->GetSubMeshes().size());
+                for (const auto& submesh : mesh->GetSubMeshes())
+                {
+                    payload.submeshes.push_back(MeshUploadSubmesh{
+                        submesh.indexOffset,
+                        submesh.indexCount,
+                        submesh.baseVertex,
+                        ConvertTopology(submesh.primitive.value_or(
+                            mesh->GetPrimitiveType()))});
+                }
+            }
+            else
             {
                 payload.submeshes.push_back(MeshUploadSubmesh{
-                    submesh.indexOffset,
-                    submesh.indexCount,
-                    submesh.baseVertex,
-                    ConvertTopology(submesh.primitive)});
+                    0,
+                    static_cast<uint32>(mesh->GetIndexCount()),
+                    0,
+                    payload.createInfo.topology});
             }
         }
 
@@ -411,61 +433,82 @@ namespace
         uint64 sourceRevision)
     {
         MaterialUploadPayload payload;
-        payload.sourceData = resource.GetRenderMaterialSourceData();
+        payload.sourceData = resource.GetMaterialSourceData();
 
-        struct SlotPair
-        {
-            RenderMaterialTextureSlot source;
-            MaterialUploadTextureSlot destination;
-        };
-        constexpr SlotPair slots[] = {
-            {RenderMaterialTextureSlot::BaseColor,
-             MaterialUploadTextureSlot::BaseColor},
-            {RenderMaterialTextureSlot::Normal,
-             MaterialUploadTextureSlot::Normal},
-            {RenderMaterialTextureSlot::MetallicRoughness,
-             MaterialUploadTextureSlot::MetallicRoughness},
-            {RenderMaterialTextureSlot::Occlusion,
-             MaterialUploadTextureSlot::Occlusion},
-            {RenderMaterialTextureSlot::Emissive,
-             MaterialUploadTextureSlot::Emissive}};
+        constexpr MaterialUploadTextureSlot slots[] = {
+            MaterialUploadTextureSlot::BaseColor,
+            MaterialUploadTextureSlot::Normal,
+            MaterialUploadTextureSlot::MetallicRoughness,
+            MaterialUploadTextureSlot::Occlusion,
+            MaterialUploadTextureSlot::Emissive};
+        const std::shared_ptr<Material> material = resource.GetMaterial();
 
         std::vector<RenderResourceHandle> dependencies;
-        for (const SlotPair& slot : slots)
+        for (MaterialUploadTextureSlot slot : slots)
         {
-            const RenderMaterialTextureBinding source =
-                resource.GetRenderMaterialTextureBinding(slot.source);
-            if (!source.IsValid())
+            ResourceHandle<TextureResource> sourceTexture;
+            const std::optional<TextureInfo>* textureInfo = nullptr;
+            switch (slot)
+            {
+                case MaterialUploadTextureSlot::BaseColor:
+                    sourceTexture = resource.GetAlbedoTexture();
+                    textureInfo = material ? &material->GetBaseColorTexture()
+                                           : nullptr;
+                    break;
+                case MaterialUploadTextureSlot::Normal:
+                    sourceTexture = resource.GetNormalTexture();
+                    textureInfo = material ? &material->GetNormalTexture()
+                                           : nullptr;
+                    break;
+                case MaterialUploadTextureSlot::MetallicRoughness:
+                    sourceTexture = resource.GetMetallicRoughnessTexture();
+                    textureInfo = material
+                                      ? &material->GetMetallicRoughnessTexture()
+                                      : nullptr;
+                    break;
+                case MaterialUploadTextureSlot::Occlusion:
+                    sourceTexture = resource.GetAOTexture();
+                    textureInfo = material ? &material->GetOcclusionTexture()
+                                           : nullptr;
+                    break;
+                case MaterialUploadTextureSlot::Emissive:
+                    sourceTexture = resource.GetEmissiveTexture();
+                    textureInfo = material ? &material->GetEmissiveTexture()
+                                           : nullptr;
+                    break;
+            }
+            if (!sourceTexture)
                 continue;
             if (!dependencyResolver)
             {
                 return {RenderUploadRequestBuildCode::DependencyUnavailable};
             }
-            const uint64 textureId =
-                source.textureId != 0
-                    ? source.textureId
-                    : source.texture->GetRenderResourceId();
             const RenderResourceHandle texture = dependencyResolver(
-                AssetId{textureId}, RenderResourceKind::Texture);
+                AssetId{sourceTexture.GetId()}, RenderResourceKind::Texture);
             if (!texture.IsValid())
             {
                 return {RenderUploadRequestBuildCode::DependencyUnavailable};
             }
 
             MaterialUploadTextureBinding binding;
-            binding.slot = slot.destination;
+            binding.slot = slot;
             binding.texture = texture;
-            binding.uvSet = source.uvSet;
-            binding.offset = source.offset;
-            binding.scale = source.scale;
-            binding.rotation = source.rotation;
-            binding.wrapS = ConvertWrap(source.wrapS);
-            binding.wrapT = ConvertWrap(source.wrapT);
-            binding.minFilter = ConvertFilter(source.minFilter);
-            binding.magFilter = ConvertFilter(source.magFilter);
+            binding.isDefaultFallback = sourceTexture->IsDefaultFallback();
+            if (textureInfo != nullptr && textureInfo->has_value())
+            {
+                const TextureInfo& source = textureInfo->value();
+                binding.uvSet = source.uvSet;
+                binding.offset = source.offset;
+                binding.scale = source.scale;
+                binding.rotation = source.rotation;
+                binding.wrapS = ConvertWrap(source.wrapS);
+                binding.wrapT = ConvertWrap(source.wrapT);
+                binding.minFilter = ConvertFilter(source.minFilter);
+                binding.magFilter = ConvertFilter(source.magFilter);
+            }
             payload.textureBindings.push_back(binding);
             payload.sourceData.textureFlags |=
-                1U << static_cast<uint32>(slot.destination);
+                1U << static_cast<uint32>(slot);
             if (std::find(dependencies.begin(), dependencies.end(), texture) ==
                 dependencies.end())
             {

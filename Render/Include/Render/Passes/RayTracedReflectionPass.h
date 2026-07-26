@@ -13,7 +13,6 @@
 
 namespace RVX
 {
-    class GPUResourceManager;
     class PipelineCache;
     class RayTracingSceneManager;
     class RenderRetirementQueue;
@@ -134,8 +133,7 @@ namespace RVX
         const std::string& GetUnsupportedReason() const override { return m_unsupportedReason; }
         bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
 
-        void SetResources(GPUResourceManager* gpuResources,
-                          PipelineCache* pipelineCache,
+        void SetResources(PipelineCache* pipelineCache,
                           ResourceViewCache* viewCache);
         void SetResourceRegistry(const RenderResourceRegistry* registry)
         {
@@ -152,7 +150,6 @@ namespace RVX
 
     private:
         IRHIDevice* m_device = nullptr;
-        GPUResourceManager* m_gpuResources = nullptr;
         const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         ResourceViewCache* m_viewCache = nullptr;

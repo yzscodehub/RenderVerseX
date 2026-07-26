@@ -7,7 +7,7 @@
 
 #include "Geometry/Asset/AssetMetadata.h"
 #include "Geometry/Asset/Material.h"
-#include "RenderContracts/RenderResource.h"
+#include "RenderContracts/RenderMaterial.h"
 #include "Resource/IResource.h"
 #include "Resource/ResourceHandle.h"
 #include "Resource/Types/ShaderResource.h"
@@ -52,8 +52,7 @@ namespace RVX::Resource
      * @brief Material resource - encapsulates Scene::Material with texture references
      */
     class MaterialResource : public IResource,
-                             public IMaterialAssetMetadata,
-                             public IRenderMaterialSource
+                             public IMaterialAssetMetadata
     {
     public:
         MaterialResource();
@@ -70,14 +69,6 @@ namespace RVX::Resource
         AssetMaterialMode GetAssetMaterialMode() const override;
 
         std::vector<ResourceId> GetRequiredDependencies() const override;
-
-        uint64 GetRenderResourceId() const override { return GetId(); }
-        std::string_view GetRenderResourceName() const override { return GetName(); }
-        uint32 GetRenderResourceRefCount() const override { return GetRefCount(); }
-        RefCounted* GetRenderResourceRefCounted() override { return this; }
-        MaterialSourceData GetRenderMaterialSourceData() const override;
-        IRenderTextureUploadSource* GetRenderMaterialTexture(RenderMaterialTextureSlot slot) const override;
-        RenderMaterialTextureBinding GetRenderMaterialTextureBinding(RenderMaterialTextureSlot slot) const override;
 
         // =====================================================================
         // Material Data
@@ -99,6 +90,7 @@ namespace RVX::Resource
         float GetEmissiveStrength() const;
         float GetAlphaCutoff() const;
         bool IsDoubleSided() const;
+        MaterialSourceData GetMaterialSourceData() const;
 
         // =====================================================================
         // Textures

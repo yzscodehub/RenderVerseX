@@ -460,7 +460,6 @@ void GPUCulling::BeginFrame()
 uint32 GPUCulling::BeginDrawGroup(uint64 meshId,
                                   uint64 materialId,
                                   MaterialPipelineVariant pipelineVariant,
-                                  const IRenderMaterialSource* materialResource,
                                   RenderResourceHandle mesh,
                                   RenderResourceHandle material)
 {
@@ -474,7 +473,6 @@ uint32 GPUCulling::BeginDrawGroup(uint64 meshId,
     group.material = material;
     group.meshId = meshId;
     group.materialId = materialId;
-    group.materialResource = materialResource;
     group.pipelineVariant = pipelineVariant;
     group.commandOffset = m_instanceCount;
     const uint32 groupIndex = static_cast<uint32>(m_drawGroups.size());
@@ -563,18 +561,19 @@ uint32 GPUCulling::AddDrawItemInstance(const RenderScene& scene,
     instance.boundingSphere = Vec4(center, radius);
     instance.aabbMin = Vec4(object.bounds.GetMin(), 0.0f);
     instance.aabbMax = Vec4(object.bounds.GetMax(), 0.0f);
-    instance.meshId = static_cast<uint32>(drawItem.meshId);
-    instance.materialId = static_cast<uint32>(drawItem.materialId);
+    instance.meshId = drawItem.mesh.slot;
+    instance.materialId = drawItem.material.slot;
     instance.indexCount = drawDesc.indexCount;
     instance.firstIndex = drawDesc.firstIndex;
     instance.vertexOffset = drawDesc.vertexOffset;
     instance.sourceIndex = sourceIndex;
     if (m_activeDrawGroupIndex == RVX_INVALID_INDEX && m_drawGroups.empty())
     {
-        BeginDrawGroup(drawItem.meshId,
-                       drawItem.materialId,
+        BeginDrawGroup((static_cast<uint64>(drawItem.mesh.slot) << 32U) |
+                           drawItem.mesh.generation,
+                       (static_cast<uint64>(drawItem.material.slot) << 32U) |
+                           drawItem.material.generation,
                        GetGPUCullingPipelineVariant(drawItem.renderMode),
-                       drawItem.materialResource,
                        drawItem.mesh,
                        drawItem.material);
     }
@@ -583,9 +582,11 @@ uint32 GPUCulling::AddDrawItemInstance(const RenderScene& scene,
         GPUCullingDrawGroup& group = m_drawGroups[m_activeDrawGroupIndex];
         group.mesh = drawItem.mesh;
         group.material = drawItem.material;
-        group.meshId = drawItem.meshId;
-        group.materialId = drawItem.materialId;
-        group.materialResource = drawItem.materialResource;
+        group.meshId = (static_cast<uint64>(drawItem.mesh.slot) << 32U) |
+                       drawItem.mesh.generation;
+        group.materialId =
+            (static_cast<uint64>(drawItem.material.slot) << 32U) |
+            drawItem.material.generation;
         group.pipelineVariant = GetGPUCullingPipelineVariant(drawItem.renderMode);
     }
     return AddInstance(instance);

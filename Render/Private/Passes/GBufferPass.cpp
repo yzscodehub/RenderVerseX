@@ -1,7 +1,6 @@
 #include "Render/Passes/GBufferPass.h"
 #include "Render/Renderer/ViewData.h"
 #include "Render/Renderer/RenderScene.h"
-#include "Render/GPUResourceManager.h"
 #include "Render/PipelineCache.h"
 #include "RHI/RHIRenderPass.h"
 #include "Core/Log.h"
@@ -19,9 +18,8 @@ namespace RVX
         m_device = nullptr;
     }
 
-    void GBufferPass::SetResources(GPUResourceManager* gpuMgr, PipelineCache* pipelines)
+    void GBufferPass::SetResources(PipelineCache* pipelines)
     {
-        m_gpuResources = gpuMgr;
         m_pipelineCache = pipelines;
     }
 

@@ -17,7 +17,6 @@ namespace RVX
     class RayTracingSceneManager;
     class RenderRetirementQueue;
     class ResourceViewCache;
-    class GPUResourceManager;
     class RenderResourceRegistry;
     struct GPUCompletionToken;
 
@@ -106,9 +105,6 @@ namespace RVX
         bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
 
         void SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache);
-        void SetResources(GPUResourceManager* gpuResources,
-                          PipelineCache* pipelineCache,
-                          ResourceViewCache* viewCache);
         void SetResourceRegistry(const RenderResourceRegistry* registry)
         {
             m_resourceRegistry = registry;
@@ -124,7 +120,6 @@ namespace RVX
 
     private:
         IRHIDevice* m_device = nullptr;
-        GPUResourceManager* m_gpuResources = nullptr;
         const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         ResourceViewCache* m_viewCache = nullptr;

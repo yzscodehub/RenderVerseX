@@ -5,7 +5,6 @@
 
 #include "Render/Passes/TransparentPass.h"
 #include "Core/Log.h"
-#include "Render/GPUResourceManager.h"
 #include "Resources/RenderResourceResolver.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Lighting/ClusteredLighting.h"
@@ -38,24 +37,11 @@ TransparentPass::TransparentPass()
     // Transparent pass is enabled by default but requires transparent objects to render
 }
 
-namespace
-{
-    const IRenderMaterialSource* ResolveMaterialResource(const RenderObject& obj, size_t submeshIndex)
-    {
-        if (submeshIndex >= obj.materialResources.size())
-            return nullptr;
-
-        return obj.materialResources[submeshIndex];
-    }
-} // namespace
-
-void TransparentPass::SetResources(GPUResourceManager* gpuResources,
-                                   PipelineCache* pipelineCache,
+void TransparentPass::SetResources(PipelineCache* pipelineCache,
                                    MaterialSystem* materialSystem,
                                    LightManager* lightManager,
                                    ClusteredLighting* clusteredLighting)
 {
-    m_gpuResources = gpuResources;
     m_pipelineCache = pipelineCache;
     m_materialSystem = materialSystem;
     m_lightManager = lightManager;
@@ -191,8 +177,7 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
     }
 
     // Draw transparent submeshes in back-to-front order.
-    if (m_renderScene &&
-        (m_resourceRegistry != nullptr || m_gpuResources != nullptr))
+    if (m_renderScene && m_resourceRegistry != nullptr)
     {
         for (const RenderDrawItem& item : *m_transparentDrawItems)
         {
@@ -204,9 +189,7 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
             // Get GPU buffers for this mesh
             MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
                 m_resourceRegistry,
-                m_gpuResources,
-                obj.mesh,
-                obj.meshId);
+                obj.mesh);
             if (!buffers.IsValid())
             {
                 continue;  // Mesh not uploaded yet
@@ -266,16 +249,11 @@ void TransparentPass::Execute(RHICommandContext& ctx, const ViewData& view)
             }
 
             const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
-            const IRenderMaterialSource* materialResource =
-                item.materialResource ? item.materialResource : ResolveMaterialResource(obj, item.submeshIndex);
             MaterialBindingOptions materialOptions;
             materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();
             const MaterialBindingResult materialBinding =
-                m_resourceRegistry
-                    ? m_materialSystem->PrepareMaterialBinding(
-                          item.material, view.viewCache, materialOptions)
-                    : m_materialSystem->PrepareMaterialBinding(
-                          materialResource, view.viewCache, materialOptions);
+                m_materialSystem->PrepareMaterialBinding(
+                    item.material, view.viewCache, materialOptions);
             if (!materialBinding.IsDrawable())
             {
                 RVX_CORE_WARN("TransparentPass: Skipping draw item because material binding failed: {}",

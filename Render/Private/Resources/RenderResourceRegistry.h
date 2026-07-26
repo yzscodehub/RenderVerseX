@@ -4,6 +4,7 @@
 
 #include "RenderContracts/IRenderResourceGateway.h"
 #include "RenderContracts/ResourceUploadRequest.h"
+#include "Render/Resources/RenderResourceTypes.h"
 #include "Resources/RenderSubmissionTracker.h"
 #include "RHI/RHIBuffer.h"
 #include "RHI/RHISampler.h"
@@ -11,7 +12,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <optional>
 #include <span>
 #include <unordered_map>
@@ -22,25 +22,7 @@ namespace RVX
 {
     class RenderResourceStatusTable;
     class RenderRetirementQueue;
-    class IRenderMeshUploadSource;
-    class IRenderTextureUploadSource;
     class RHICommandContext;
-    struct MeshGPUBuffers;
-    enum class UploadPriority : uint8_t;
-    enum class GPUResourceState : uint8_t;
-
-    struct LegacyGPUResourceStats
-    {
-        size_t residentMeshCount = 0;
-        size_t residentTextureCount = 0;
-        size_t pendingUploadCount = 0;
-        size_t queuedUploadCount = 0;
-        size_t uploadingCount = 0;
-        size_t failedUploadCount = 0;
-        size_t usedMemory = 0;
-        size_t memoryBudget = 0;
-    };
-
     enum class RenderMeshBufferSemantic : uint8
     {
         Position = 0,
@@ -70,6 +52,7 @@ namespace RVX
     {
         RHITextureRef texture;
         uint64 estimatedBytes = 0;
+        RHIResourceState state = RHIResourceState::Common;
     };
 
     struct RenderMaterialResourceData
@@ -151,6 +134,10 @@ namespace RVX
             RenderResourceHandle handle) const;
         [[nodiscard]] RHITexture* ResolveTextureObject(
             RenderResourceHandle handle) const;
+        [[nodiscard]] bool TransitionTexture(
+            RenderResourceHandle handle,
+            RHICommandContext& context,
+            RHIResourceState desiredState);
         [[nodiscard]] const std::vector<RenderResourceHandle>*
             GetDependencies(RenderResourceHandle handle) const;
         [[nodiscard]] GPUCompletionToken GetLastUse(
@@ -159,46 +146,9 @@ namespace RVX
         [[nodiscard]] bool IsGPUReadyExact(RenderResourceHandle handle) const;
         [[nodiscard]] bool HasPending(RenderResourceHandle handle) const;
         [[nodiscard]] uint32 GetEntryCount() const;
-
-        // Task-18 compatibility API. New code must use exact handles above.
-        void InitializeLegacy(IRHIDevice* device);
-        void ShutdownLegacy();
-        [[nodiscard]] bool IsLegacyInitialized() const;
-        void RequestLegacyUpload(
-            IRenderMeshUploadSource* mesh,
-            UploadPriority priority);
-        void RequestLegacyUpload(
-            IRenderTextureUploadSource* texture,
-            UploadPriority priority);
-        void UploadLegacyImmediate(IRenderMeshUploadSource* mesh);
-        void UploadLegacyImmediate(IRenderTextureUploadSource* texture);
-        void SetLegacyTextureInvalidatedCallback(
-            std::function<void(RHITexture*)> callback);
-        [[nodiscard]] MeshGPUBuffers GetLegacyMeshBuffers(uint64 meshId) const;
-        [[nodiscard]] RHITexture* GetLegacyTexture(uint64 textureId) const;
-        [[nodiscard]] RHITexture* GetLegacyTexture(
-            IRenderTextureUploadSource* texture) const;
-        [[nodiscard]] bool TransitionLegacyTexture(
-            uint64 textureId,
-            RHICommandContext& context,
-            RHIResourceState desiredState);
-        [[nodiscard]] bool IsLegacyResident(uint64 id) const;
-        [[nodiscard]] bool IsLegacyResident(
-            IRenderTextureUploadSource* texture) const;
-        [[nodiscard]] GPUResourceState GetLegacyResourceState(uint64 id) const;
-        [[nodiscard]] bool IsLegacyGPUReady(
-            IRenderTextureUploadSource* texture) const;
-        void ProcessLegacyPendingUploads(float timeBudgetMs);
-        void MarkLegacyUsed(uint64 id);
-        void MarkLegacyUsed(IRenderTextureUploadSource* texture);
-        void EvictLegacyUnused(uint64 currentFrame, uint64 frameThreshold);
-        void SetLegacyMemoryBudget(size_t bytes);
-        [[nodiscard]] size_t GetLegacyUsedMemory() const;
-        [[nodiscard]] size_t GetLegacyMemoryBudget() const;
-        [[nodiscard]] LegacyGPUResourceStats GetLegacyStats() const;
+        [[nodiscard]] RenderResourceRegistryStats GetStats() const;
 
     private:
-        struct LegacyResourceState;
         struct Entry
         {
             uint32 generation = 0;
@@ -219,6 +169,5 @@ namespace RVX
         RenderResourceStatusTable* m_statusTable = nullptr;
         RenderRetirementQueue* m_retirementQueue = nullptr;
         std::unordered_map<uint32, Entry> m_entries;
-        LegacyResourceState* m_legacy = nullptr;
     };
 } // namespace RVX

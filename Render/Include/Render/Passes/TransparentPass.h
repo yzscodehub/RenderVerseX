@@ -9,7 +9,6 @@
  */
 
 #include "Render/Passes/IRenderPass.h"
-#include "Render/GPUResourceManager.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderDrawItem.h"
 
@@ -58,8 +57,7 @@ namespace RVX
         /**
          * @brief Set resources needed for rendering
          */
-        void SetResources(GPUResourceManager* gpuResources,
-                          PipelineCache* pipelineCache,
+        void SetResources(PipelineCache* pipelineCache,
                           MaterialSystem* materialSystem,
                           LightManager* lightManager = nullptr,
                           ClusteredLighting* clusteredLighting = nullptr);
@@ -92,7 +90,6 @@ namespace RVX
 
     private:
         bool m_enabled = true;
-        GPUResourceManager* m_gpuResources = nullptr;
         const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         MaterialSystem* m_materialSystem = nullptr;

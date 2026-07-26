@@ -70,15 +70,12 @@ add_library(RVX_Render STATIC)
 
 target_sources(RVX_Render PRIVATE
     # Core
-    Private/RenderService.cpp
     Private/SwapChainManager.cpp
     Private/RenderSubsystem.cpp
     # Runtime shell
     Private/Runtime/RenderDiagnosticsPublisher.cpp
     Private/Runtime/RenderThreadRuntime.cpp
     Private/GPUUploadService.cpp
-    Private/GPUResourceManager.cpp
-    Private/Resources/RenderResourceRegistryLegacy.cpp
     Private/PipelineCache.cpp
     # Context
     Private/Context/RenderContext.cpp
@@ -164,10 +161,8 @@ target_include_directories(RVX_Render PRIVATE
 
 target_link_libraries(RVX_Render PUBLIC
     RVX_Core
-    RVX::RenderExtraction
     RVX::RenderContracts
     RVX_RHI
-    RVX_Runtime
     Spatial
     RVX::ShaderCompiler
 )

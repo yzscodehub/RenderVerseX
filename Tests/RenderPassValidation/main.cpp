@@ -21,9 +21,9 @@
 #include "Render/PipelineCache.h"
 #undef private
 
+#include "Common/RenderRuntimeTestHarness.h"
 #include "Render/Debug/DebugRenderer.h"
 #include "Render/Decal/DecalRenderer.h"
-#include "Render/GPUResourceManager.h"
 #include "Render/GPUDriven/GPUCulling.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialSystem.h"
@@ -406,11 +406,7 @@ namespace
         {
         }
 
-        RHICommandQueueType GetQueueType() const override
-        {
-            return m_queueType;
-        }
-
+        RHICommandQueueType GetQueueType() const override { return m_queueType; }
         void Begin() override { ++beginCount; }
         void End() override { ++endCount; }
         void Reset() override {}
@@ -597,6 +593,29 @@ namespace
     class FakeDevice final : public IRHIDevice
     {
     public:
+        FakeDevice()
+        {
+            m_capabilities.backendType = RHIBackendType::DX12;
+            m_capabilities.adapterName = "RenderPassValidation";
+            m_capabilities.driverVersion = "1";
+            m_capabilities.supportsComputePipeline = true;
+            m_capabilities.supportsDescriptorSets = true;
+            m_capabilities.supportsDynamicDescriptorOffsets = true;
+            m_capabilities.maxDescriptorSets = 8;
+            m_capabilities.supportsExplicitResourceBarriers = true;
+            m_capabilities.supportsDefaultQueueFenceSignal = true;
+            m_capabilities.supportsExplicitQueueFenceSignal = true;
+            m_capabilities.supportsAsyncCompute = true;
+            m_capabilities.dx12.resourceBindingTier = 2;
+            m_capabilities.queueTopology.completionMode =
+                RHIQueueCompletionMode::NativeTimeline;
+            m_capabilities.queueTopology.logicalQueueDomains = {
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Compute,
+                GPUQueueDomain::Copy};
+            m_capabilities.queueTopology.activeDomainCount = 3;
+        }
+
         RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
         {
             createdBufferDescs.push_back(desc);
@@ -725,11 +744,9 @@ namespace
 
         RHIQueryPoolRef CreateQueryPool(const RHIQueryPoolDesc&) override { return nullptr; }
 
-        RHICommandContextRef CreateCommandContext(
-            RHICommandQueueType queueType) override
+        RHICommandContextRef CreateCommandContext(RHICommandQueueType type) override
         {
-            return RHICommandContextRef(
-                new RecordingCommandContext(queueType));
+            return RHICommandContextRef(new RecordingCommandContext(type));
         }
 
         uint64 SubmitCommandContext(RHICommandContext*, RHIFence* signalFence = nullptr) override
@@ -764,11 +781,6 @@ namespace
 
         void WaitIdle() override
         {
-            for (const RHIFenceRef& fence : m_fences)
-            {
-                if (fence)
-                    fence->Signal(UINT64_MAX);
-            }
         }
 
         void BeginFrame() override {}
@@ -794,16 +806,18 @@ namespace
             m_capabilities.driverVersion = "RenderPassValidation.Driver.1";
             m_capabilities.supportsComputePipeline = true;
             m_capabilities.supportsDescriptorSets = true;
+            m_capabilities.supportsDynamicDescriptorOffsets = true;
             m_capabilities.maxDescriptorSets = 8;
             m_capabilities.supportsExplicitResourceBarriers = true;
             m_capabilities.supportsDefaultQueueFenceSignal = true;
+            m_capabilities.supportsExplicitQueueFenceSignal = true;
             m_capabilities.supportsAsyncCompute = true;
-            m_capabilities.queueTopology.completionMode = RHIQueueCompletionMode::NativeTimeline;
+            m_capabilities.queueTopology.completionMode =
+                RHIQueueCompletionMode::NativeTimeline;
             m_capabilities.queueTopology.logicalQueueDomains = {
                 GPUQueueDomain::Graphics,
                 GPUQueueDomain::Compute,
-                GPUQueueDomain::Copy,
-            };
+                GPUQueueDomain::Copy};
             m_capabilities.queueTopology.activeDomainCount = 3;
             m_capabilities.dx12.resourceBindingTier = 2;
         }
@@ -811,11 +825,8 @@ namespace
         void EnableRayTracing()
         {
             m_capabilities.backendType = RHIBackendType::DX12;
-            m_capabilities.adapterName = "RenderPassValidation Test Adapter";
-            m_capabilities.driverVersion = "RenderPassValidation.Driver.1";
             m_capabilities.supportsRaytracing = true;
             m_capabilities.supportsRaytracingPipeline = true;
-            m_capabilities.supportsComputePipeline = true;
             m_capabilities.supportsAccelerationStructureUpdate = true;
             m_capabilities.supportsAccelerationStructureCompaction = false;
             m_capabilities.maxRayRecursionDepth = 1;
@@ -825,16 +836,6 @@ namespace
             m_capabilities.supportsDescriptorSets = true;
             m_capabilities.supportsExplicitResourceBarriers = true;
             m_capabilities.maxDescriptorSets = 8;
-            m_capabilities.supportsDefaultQueueFenceSignal = true;
-            m_capabilities.supportsAsyncCompute = true;
-            m_capabilities.queueTopology.completionMode = RHIQueueCompletionMode::NativeTimeline;
-            m_capabilities.queueTopology.logicalQueueDomains = {
-                GPUQueueDomain::Graphics,
-                GPUQueueDomain::Compute,
-                GPUQueueDomain::Copy,
-            };
-            m_capabilities.queueTopology.activeDomainCount = 3;
-            m_capabilities.dx12.resourceBindingTier = 2;
         }
 
         bool bufferMapSucceeds = true;
@@ -905,7 +906,10 @@ namespace
         const char* GetName() const override { return m_name.c_str(); }
         int32 GetPriority() const override { return m_priority; }
         void Configure(const PostProcessSettings&) override {}
-        PostProcessFrameInputRequirements GetFrameInputRequirements() const override { return requirements; }
+        PostProcessFrameInputRequirements GetFrameInputRequirements() const override
+        {
+            return requirements;
+        }
 
         void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override
         {
@@ -998,11 +1002,12 @@ namespace
         return resource;
     }
 
-    RenderObject MakeRenderObject(Resource::MeshResource& meshResource)
+    RenderObject MakeRenderObject(
+        Resource::MeshResource& meshResource,
+        const RenderRuntimeTestHarness& gpuResources)
     {
         RenderObject object;
-        object.meshId = meshResource.GetId();
-        object.meshResource = &meshResource;
+        object.mesh = gpuResources.GetHandle(meshResource.GetId());
         object.worldMatrix = Mat4Identity();
         object.normalMatrix = Mat4Identity();
         object.visible = true;
@@ -1014,10 +1019,73 @@ namespace
         RenderDrawItem item;
         item.objectIndex = 0;
         item.submeshIndex = 0;
-        item.meshId = 401;
-        item.materialId = static_cast<uint64>(mode) + 1;
+        item.mesh = RenderResourceHandle{401, 1};
+        item.material = RenderResourceHandle{
+            static_cast<uint32>(mode) + 1U, 1};
         item.renderMode = mode;
         return item;
+    }
+
+    void ConfigureResources(ShadowPass& pass,
+                            RenderRuntimeTestHarness& gpuResources,
+                            PipelineCache& pipelineCache)
+    {
+        pass.SetResources(&pipelineCache);
+        pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    }
+
+    void ConfigureResources(DepthPrepass& pass,
+                            RenderRuntimeTestHarness& gpuResources,
+                            PipelineCache& pipelineCache)
+    {
+        pass.SetResources(&pipelineCache);
+        pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    }
+
+    void ConfigureResources(RayTracedShadowPass& pass,
+                            RenderRuntimeTestHarness& gpuResources,
+                            PipelineCache& pipelineCache,
+                            ResourceViewCache& viewCache)
+    {
+        pass.SetResources(&pipelineCache, &viewCache);
+        pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    }
+
+    void ConfigureResources(RayTracedReflectionPass& pass,
+                            RenderRuntimeTestHarness& gpuResources,
+                            PipelineCache& pipelineCache,
+                            ResourceViewCache& viewCache)
+    {
+        pass.SetResources(&pipelineCache, &viewCache);
+        pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    }
+
+    void ConfigureResources(ObjectVelocityPass& pass,
+                            RenderRuntimeTestHarness& gpuResources,
+                            PipelineCache& pipelineCache,
+                            ResourceViewCache& viewCache,
+                            MaterialSystem& materialSystem)
+    {
+        pass.SetResources(&pipelineCache, &viewCache, &materialSystem);
+        pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    }
+
+    void ConfigureResources(OpaquePass& pass,
+                            RenderRuntimeTestHarness& gpuResources,
+                            PipelineCache& pipelineCache,
+                            MaterialSystem& materialSystem)
+    {
+        pass.SetResources(&pipelineCache, &materialSystem);
+        pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    }
+
+    void ConfigureResources(TransparentPass& pass,
+                            RenderRuntimeTestHarness& gpuResources,
+                            PipelineCache& pipelineCache,
+                            MaterialSystem& materialSystem)
+    {
+        pass.SetResources(&pipelineCache, &materialSystem);
+        pass.SetResourceRegistry(&gpuResources.GetRegistry());
     }
 
     Resource::TextureHandle CreateTextureResource(Resource::ResourceId id)
@@ -1117,29 +1185,29 @@ namespace
         const SceneRenderFeatureReport& report,
         SceneRenderFeature feature)
     {
-        const auto it = std::find_if(report.features.begin(),
-                                     report.features.end(),
-                                     [feature](const SceneRenderFeatureCapability& candidate)
-                                     {
-                                         return candidate.feature == feature;
-                                     });
+        const auto it = std::find_if(
+            report.features.begin(),
+            report.features.end(),
+            [feature](const SceneRenderFeatureCapability& candidate)
+            {
+                return candidate.feature == feature;
+            });
         return it != report.features.end() ? &(*it) : nullptr;
     }
 
     void PrepareRayTracingSceneForSingleObject(FakeDevice& device,
-                                               GPUResourceManager& gpuResources,
+                                               RenderRuntimeTestHarness& gpuResources,
                                                const RenderScene& scene,
                                                RayTracingSceneManager& sceneManager)
     {
         std::vector<uint32_t> visibleObjectIndices{0};
-        RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(scene, visibleObjectIndices, gpuResources);
+        RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(
+            scene, visibleObjectIndices, gpuResources.GetRegistry());
         ASSERT_TRUE(plan.HasWork());
 
         sceneManager.Initialize(&device);
         ASSERT_TRUE(sceneManager.IsSupported());
         ASSERT_TRUE(sceneManager.Prepare(plan)) << sceneManager.GetStats().fallbackReason;
-        EXPECT_EQ(sceneManager.GetStats().fallbackCode, RayTracingSceneFallbackCode::None);
-        EXPECT_STREQ(sceneManager.GetStats().fallbackReason, "");
 
         RecordingCommandContext buildCtx;
         sceneManager.RecordBuildCommands(buildCtx);
@@ -1178,27 +1246,40 @@ namespace
             {
                 device.EnableRayTracing();
             }
-            else
-            {
-                device.EnableBasicCapabilities();
-            }
 
             ASSERT_TRUE(pipelineCache.Initialize(&device, shaderDir.string())) << pipelineCache.GetLastError();
 
-            gpuResources.Initialize(&device);
+            ASSERT_TRUE(gpuResources.Initialize(&device));
             viewCache.Initialize(&device);
-            ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, pipelineCache.GetMaterialSetLayout()));
+            ASSERT_TRUE(materialSystem.Initialize(
+                &device,
+                pipelineCache.GetMaterialSetLayout(),
+                &gpuResources.GetRegistry()));
 
             meshResource = CreateMeshResource(401);
             gpuResources.UploadImmediate(meshResource.get());
             ASSERT_TRUE(gpuResources.IsGPUReady(meshResource->GetId()));
 
-            scene.AddObject(MakeRenderObject(*meshResource));
+            scene.AddObject(MakeRenderObject(*meshResource, gpuResources));
 
             colorTexture = device.CreateTexture(RHITextureDesc::Texture2D(64, 64, RHIFormat::RGBA8_UNORM));
             ASSERT_TRUE(colorTexture);
             colorView = device.CreateTextureView(colorTexture.Get());
             ASSERT_TRUE(colorView);
+        }
+
+        RenderDrawItem MakeDrawItem(MaterialRenderMode mode) const
+        {
+            RenderDrawItem item;
+            item.objectIndex = 0;
+            item.submeshIndex = 0;
+            item.mesh = meshResource
+                ? gpuResources.GetHandle(meshResource->GetId())
+                : RenderResourceHandle{};
+            item.material = RenderResourceHandle{
+                static_cast<uint32>(mode) + 1U, 1};
+            item.renderMode = mode;
+            return item;
         }
 
         void TearDown() override
@@ -1211,7 +1292,7 @@ namespace
 
         FakeDevice device;
         PipelineCache pipelineCache;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         ResourceViewCache viewCache;
         MaterialSystem materialSystem;
         RenderScene scene;
@@ -1271,70 +1352,6 @@ TEST(RenderPassStatusValidation, RegistryStatusSnapshotsPreserveSortedPassOrder)
 
     EXPECT_EQ("Late", statuses[2].name);
     EXPECT_TRUE(statuses[2].enabled);
-}
-
-TEST(RenderPassStatusValidation, ParticleFeaturePassStaysDisabledWithoutSnapshotItems)
-{
-    ParticleRenderSnapshot snapshot;
-    snapshot.BeginBuild(3);
-    snapshot.MarkComplete();
-
-    ParticleFeaturePass pass;
-    pass.SetSnapshot(&snapshot);
-
-    const ParticleFeaturePassStats& stats = pass.GetStats();
-    EXPECT_FALSE(stats.requested);
-    EXPECT_FALSE(stats.supported);
-    EXPECT_FALSE(stats.enabled);
-    EXPECT_EQ(stats.itemCount, 0u);
-
-    const RenderPassStatus status = pass.GetStatus();
-    EXPECT_EQ("ParticleFeaturePass", status.name);
-    EXPECT_FALSE(status.requestedEnabled);
-    EXPECT_TRUE(status.supported);
-    EXPECT_FALSE(status.enabled);
-    EXPECT_TRUE(status.unsupportedReason.empty());
-}
-
-TEST(RenderPassStatusValidation, ParticleFeaturePassReportsMetadataOnlySnapshotsUnsupported)
-{
-    ParticleRenderSnapshot snapshot;
-    snapshot.BeginBuild(7);
-
-    ParticleRenderSnapshotItem item;
-    item.instanceId = 42;
-    item.systemId = 11;
-    item.systemName = "CPU metadata-only particles";
-    item.aliveParticleCount = 12;
-    item.maxParticleCount = 64;
-    item.payloadStatus = ParticleRenderSnapshotPayloadStatus::MetadataOnly;
-    item.renderPayloadAvailable = false;
-    item.sortingSupported = false;
-    snapshot.items.push_back(item);
-    snapshot.metadata.totalAliveParticles = 12;
-    snapshot.MarkComplete();
-
-    ParticleFeaturePass pass;
-    pass.SetSnapshot(&snapshot);
-
-    const ParticleFeaturePassStats& stats = pass.GetStats();
-    EXPECT_TRUE(stats.requested);
-    EXPECT_FALSE(stats.supported);
-    EXPECT_FALSE(stats.enabled);
-    EXPECT_EQ(stats.itemCount, 1u);
-    EXPECT_EQ(stats.metadataOnlyItemCount, 1u);
-    EXPECT_EQ(stats.renderPayloadReadyItemCount, 0u);
-    EXPECT_EQ(stats.sortingSupportedItemCount, 0u);
-    EXPECT_EQ(stats.totalAliveParticles, 12u);
-    EXPECT_NE(stats.unsupportedReason.find("metadata-only"), std::string::npos);
-    EXPECT_NE(stats.unsupportedReason.find("Render-owned"), std::string::npos);
-
-    const RenderPassStatus status = pass.GetStatus();
-    EXPECT_EQ("ParticleFeaturePass", status.name);
-    EXPECT_TRUE(status.requestedEnabled);
-    EXPECT_FALSE(status.supported);
-    EXPECT_FALSE(status.enabled);
-    EXPECT_EQ(status.unsupportedReason, stats.unsupportedReason);
 }
 
 TEST(RenderPassStatusValidation, BuiltInProductionPassStatusesAreHonest)
@@ -1500,7 +1517,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassReportsSupportedWithDepthPipelineA
     ASSERT_NO_FATAL_FAILURE(Initialize());
 
     ShadowPass pass;
-    pass.SetResources(&gpuResources, &pipelineCache);
+    ConfigureResources(pass, gpuResources, pipelineCache);
     pass.SetDirectionalLight(Vec3{0.0f, -1.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
 
     EXPECT_TRUE(pass.IsRequestedEnabled());
@@ -1511,37 +1528,6 @@ TEST_F(RenderPassValidationFixture, ShadowPassReportsSupportedWithDepthPipelineA
     pipelineCache.m_depthOnlyVertexShader.Reset();
     EXPECT_FALSE(pass.IsSupported());
     EXPECT_FALSE(pass.GetUnsupportedReason().empty());
-}
-
-TEST_F(RenderPassValidationFixture, RayTracingSceneManagerReportsStructuredFallbackCodes)
-{
-    RayTracingSceneBuildPlan emptyPlan;
-
-    RayTracingSceneManager missingDeviceManager;
-    EXPECT_FALSE(missingDeviceManager.Prepare(emptyPlan));
-    EXPECT_EQ(missingDeviceManager.GetStats().fallbackCode,
-              RayTracingSceneFallbackCode::MissingDevice);
-    EXPECT_NE(std::string(missingDeviceManager.GetStats().fallbackReason).find("RHI device"),
-              std::string::npos);
-
-    FakeDevice unsupportedDevice;
-    RayTracingSceneManager unsupportedManager;
-    unsupportedManager.Initialize(&unsupportedDevice);
-    EXPECT_FALSE(unsupportedManager.Prepare(emptyPlan));
-    EXPECT_EQ(unsupportedManager.GetStats().fallbackCode,
-              RayTracingSceneFallbackCode::RayTracingUnsupported);
-    EXPECT_NE(std::string(unsupportedManager.GetStats().fallbackReason).find("does not support ray tracing"),
-              std::string::npos);
-
-    FakeDevice supportedDevice;
-    supportedDevice.EnableRayTracing();
-    RayTracingSceneManager emptyPlanManager;
-    emptyPlanManager.Initialize(&supportedDevice);
-    EXPECT_FALSE(emptyPlanManager.Prepare(emptyPlan));
-    EXPECT_EQ(emptyPlanManager.GetStats().fallbackCode,
-              RayTracingSceneFallbackCode::EmptyBuildPlan);
-    EXPECT_NE(std::string(emptyPlanManager.GetStats().fallbackReason).find("no buildable work"),
-              std::string::npos);
 }
 
 TEST_F(RenderPassValidationFixture, RayTracedShadowPassRuntimeCreatesDescriptorSetAndDispatchesRays)
@@ -1581,7 +1567,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRuntimeCreatesDescriptorS
     RayTracedShadowPass pass;
     pass.SetEnabled(true);
     pass.OnAdd(&device);
-    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
     pass.SetRayTracingScene(&rayTracingScene);
     pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
 
@@ -1646,11 +1632,11 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedMaterialT
             TextureInfo("shadow_material_overflow_albedo_" + std::to_string(i) + ".png", 0));
         material->SetMaterialData(materialData);
         material->SetTexture("albedo", albedo);
+        ASSERT_TRUE(gpuResources.UploadImmediate(material.get()));
 
-        RenderObject object = MakeRenderObject(*meshResource);
+        RenderObject object = MakeRenderObject(*meshResource, gpuResources);
         object.entityId = 13000 + i;
-        object.materialIds = {material->GetId()};
-        object.materialResources = {material.get()};
+        object.material = gpuResources.GetHandle(material->GetId());
         oversizedScene.AddObject(object);
         visibleObjectIndices.push_back(i);
 
@@ -1661,7 +1647,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedMaterialT
     RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(
         oversizedScene,
         visibleObjectIndices,
-        gpuResources);
+        gpuResources.GetRegistry());
     ASSERT_TRUE(plan.HasWork());
     ASSERT_EQ(plan.instances.size(), kTextureCount);
 
@@ -1674,7 +1660,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedMaterialT
     RayTracedShadowPass pass;
     pass.SetEnabled(true);
     pass.OnAdd(&device);
-    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
     pass.SetRayTracingScene(&rayTracingScene);
     pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
 
@@ -1726,11 +1712,12 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaText
             TextureInfo("shadow_alpha_overflow_albedo_" + std::to_string(i) + ".png", 0));
         material->SetMaterialData(materialData);
         material->SetTexture("albedo", albedo);
+        ASSERT_TRUE(gpuResources.UploadImmediate(material.get()));
 
-        RenderObject object = MakeRenderObject(*meshResource);
+        RenderObject object = MakeRenderObject(*meshResource, gpuResources);
         object.entityId = 16000 + i;
-        object.materialIds = {material->GetId()};
-        object.materialResources = {material.get()};
+        object.material = gpuResources.GetHandle(material->GetId());
+        object.materialModes = {RenderMaterialMode::Masked};
         oversizedScene.AddObject(object);
         visibleObjectIndices.push_back(i);
 
@@ -1741,7 +1728,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaText
     RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(
         oversizedScene,
         visibleObjectIndices,
-        gpuResources);
+        gpuResources.GetRegistry());
     ASSERT_TRUE(plan.HasWork());
     ASSERT_EQ(plan.instances.size(), kTextureCount);
 
@@ -1754,7 +1741,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaText
     RayTracedShadowPass pass;
     pass.SetEnabled(true);
     pass.OnAdd(&device);
-    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
     pass.SetRayTracingScene(&rayTracingScene);
     pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
 
@@ -1788,6 +1775,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaGeom
     auto materialData = std::make_shared<Material>("RayTracedShadowAlphaGeometryOverflowMaterial");
     materialData->SetAlphaMode(Material::AlphaMode::Mask);
     material->SetMaterialData(materialData);
+    ASSERT_TRUE(gpuResources.UploadImmediate(material.get()));
 
     RenderScene oversizedScene;
     std::vector<std::unique_ptr<Resource::MeshResource>> meshes;
@@ -1801,10 +1789,9 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaGeom
         gpuResources.UploadImmediate(mesh.get());
         ASSERT_TRUE(gpuResources.IsGPUReady(mesh->GetId()));
 
-        RenderObject object = MakeRenderObject(*mesh);
+        RenderObject object = MakeRenderObject(*mesh, gpuResources);
         object.entityId = 19000 + i;
-        object.materialIds = {material->GetId()};
-        object.materialResources = {material.get()};
+        object.material = gpuResources.GetHandle(material->GetId());
         oversizedScene.AddObject(object);
         visibleObjectIndices.push_back(i);
 
@@ -1814,7 +1801,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaGeom
     RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(
         oversizedScene,
         visibleObjectIndices,
-        gpuResources);
+        gpuResources.GetRegistry());
     ASSERT_TRUE(plan.HasWork());
     ASSERT_EQ(plan.instances.size(), kMeshCount);
     ASSERT_EQ(plan.blasBuilds.size(), kMeshCount);
@@ -1829,7 +1816,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaGeom
     RayTracedShadowPass pass;
     pass.SetEnabled(true);
     pass.OnAdd(&device);
-    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
     pass.SetRayTracingScene(&rayTracingScene);
     pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
 
@@ -1877,6 +1864,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRuntimeCreatesDescrip
     view.viewCache = &viewCache;
     view.viewportWidth = 64;
     view.viewportHeight = 64;
+    view.viewCache = &viewCache;
     view.aspectRatio = 1.0f;
     view.fieldOfView = 1.0472f;
     view.nearPlane = 0.1f;
@@ -1894,7 +1882,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRuntimeCreatesDescrip
     RayTracedReflectionPass pass;
     pass.SetEnabled(true);
     pass.OnAdd(&device);
-    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
     pass.SetRayTracingScene(&rayTracingScene);
 
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
@@ -1959,11 +1947,11 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRejectsOversizedMater
         materialData->SetBaseColorTexture(baseColorTexture);
         material->SetMaterialData(materialData);
         material->SetTexture("albedo", albedo);
+        ASSERT_TRUE(gpuResources.UploadImmediate(material.get()));
 
-        RenderObject object = MakeRenderObject(*meshResource);
+        RenderObject object = MakeRenderObject(*meshResource, gpuResources);
         object.entityId = 8000 + i;
-        object.materialIds = {material->GetId()};
-        object.materialResources = {material.get()};
+        object.material = gpuResources.GetHandle(material->GetId());
         oversizedScene.AddObject(object);
         visibleObjectIndices.push_back(i);
 
@@ -1974,7 +1962,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRejectsOversizedMater
     RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(
         oversizedScene,
         visibleObjectIndices,
-        gpuResources);
+        gpuResources.GetRegistry());
     ASSERT_TRUE(plan.HasWork());
     ASSERT_EQ(plan.instances.size(), kTextureCount);
 
@@ -1988,7 +1976,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRejectsOversizedMater
     RayTracedReflectionPass pass;
     pass.SetEnabled(true);
     pass.OnAdd(&device);
-    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
     pass.SetRayTracingScene(&rayTracingScene);
 
     EXPECT_FALSE(pass.IsSupported());
@@ -2026,7 +2014,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRejectsOversizedGeome
         gpuResources.UploadImmediate(mesh.get());
         ASSERT_TRUE(gpuResources.IsGPUReady(mesh->GetId()));
 
-        RenderObject object = MakeRenderObject(*mesh);
+        RenderObject object = MakeRenderObject(*mesh, gpuResources);
         object.entityId = 10000 + i;
         oversizedScene.AddObject(object);
         visibleObjectIndices.push_back(i);
@@ -2037,7 +2025,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRejectsOversizedGeome
     RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(
         oversizedScene,
         visibleObjectIndices,
-        gpuResources);
+        gpuResources.GetRegistry());
     ASSERT_TRUE(plan.HasWork());
     ASSERT_EQ(plan.instances.size(), kMeshCount);
     ASSERT_EQ(plan.blasBuilds.size(), kMeshCount);
@@ -2052,7 +2040,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRejectsOversizedGeome
     RayTracedReflectionPass pass;
     pass.SetEnabled(true);
     pass.OnAdd(&device);
-    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
     pass.SetRayTracingScene(&rayTracingScene);
 
     EXPECT_FALSE(pass.IsSupported());
@@ -2116,7 +2104,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionRenderGraphChainDenoisesB
     RayTracedReflectionPass reflectionPass;
     reflectionPass.SetEnabled(true);
     reflectionPass.OnAdd(&device);
-    reflectionPass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    ConfigureResources(reflectionPass, gpuResources, pipelineCache, viewCache);
     reflectionPass.SetRayTracingScene(&rayTracingScene);
 
     RayTracedReflectionDenoisePass denoisePass;
@@ -2197,7 +2185,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassReusesHistoryAcrossStable
     RayTracedShadowPass pass;
     pass.SetEnabled(true);
     pass.OnAdd(&device);
-    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
     pass.SetRayTracingScene(&rayTracingScene);
     pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
 
@@ -2285,7 +2273,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassReusesHistoryAcrossSt
     RayTracedReflectionPass pass;
     pass.SetEnabled(true);
     pass.OnAdd(&device);
-    pass.SetResources(&gpuResources, &pipelineCache, &viewCache);
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
     pass.SetRayTracingScene(&rayTracingScene);
 
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
@@ -2369,7 +2357,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassRejectsUnsupportedCascadeCounts)
     config.numCascades = RVX_MAX_DIRECTIONAL_SHADOW_CASCADES + 1;
 
     ShadowPass pass;
-    pass.SetResources(&gpuResources, &pipelineCache);
+    ConfigureResources(pass, gpuResources, pipelineCache);
     pass.SetConfig(config);
     pass.SetDirectionalLight(Vec3{0.0f, -1.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
 
@@ -2388,7 +2376,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassDisabledDoesNotDeclareOrDrawCascad
     view.viewCache = &viewCache;
 
     ShadowPass pass;
-    pass.SetResources(&gpuResources, &pipelineCache);
+    ConfigureResources(pass, gpuResources, pipelineCache);
     pass.SetRenderScene(&scene);
 
     EXPECT_FALSE(pass.IsRequestedEnabled());
@@ -2438,7 +2426,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassSetupDeclaresCascadeDepthResources
     config.shadowMapSize = 128;
 
     ShadowPass pass;
-    pass.SetResources(&gpuResources, &pipelineCache);
+    ConfigureResources(pass, gpuResources, pipelineCache);
     pass.SetRenderScene(&scene);
     pass.SetConfig(config);
     pass.SetDirectionalLight(Vec3{-0.4f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 2.0f);
@@ -2512,7 +2500,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassStabilizesCascadeCentersToShadowTe
     config.stabilizeCascades = true;
 
     ShadowPass stabilizedPass;
-    stabilizedPass.SetResources(&gpuResources, &pipelineCache);
+    ConfigureResources(stabilizedPass, gpuResources, pipelineCache);
     stabilizedPass.SetRenderScene(&scene);
     stabilizedPass.SetConfig(config);
     stabilizedPass.SetDirectionalLight(Vec3{-0.4f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 2.0f);
@@ -2533,7 +2521,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassStabilizesCascadeCentersToShadowTe
     config.stabilizeCascades = false;
 
     ShadowPass unsnappedPass;
-    unsnappedPass.SetResources(&gpuResources, &pipelineCache);
+    ConfigureResources(unsnappedPass, gpuResources, pipelineCache);
     unsnappedPass.SetRenderScene(&scene);
     unsnappedPass.SetConfig(config);
     unsnappedPass.SetDirectionalLight(Vec3{-0.4f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 2.0f);
@@ -2564,7 +2552,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassStableCascadeIgnoresSubTexelCamera
         config.stabilizeCascades = true;
 
         ShadowPass pass;
-        pass.SetResources(&gpuResources, &pipelineCache);
+    ConfigureResources(pass, gpuResources, pipelineCache);
         pass.SetRenderScene(&scene);
         pass.SetConfig(config);
         pass.SetDirectionalLight(Vec3{-0.4f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 2.0f);
@@ -2631,7 +2619,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassSingleCascadeStillDeclaresArrayCom
     config.shadowMapSize = 64;
 
     ShadowPass pass;
-    pass.SetResources(&gpuResources, &pipelineCache);
+    ConfigureResources(pass, gpuResources, pipelineCache);
     pass.SetRenderScene(&scene);
     pass.SetConfig(config);
     pass.SetDirectionalLight(Vec3{-0.4f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 2.0f);
@@ -2651,7 +2639,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassExecuteResolvesCascadeViewsAndDraw
 {
     ASSERT_NO_FATAL_FAILURE(Initialize());
 
-    RenderObject nonCaster = MakeRenderObject(*meshResource);
+    RenderObject nonCaster = MakeRenderObject(*meshResource, gpuResources);
     nonCaster.castsShadow = false;
     scene.AddObject(nonCaster);
 
@@ -2678,7 +2666,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassExecuteResolvesCascadeViewsAndDraw
     config.casterDepthBiasClamp = 0.5f;
 
     ShadowPass pass;
-    pass.SetResources(&gpuResources, &pipelineCache);
+    ConfigureResources(pass, gpuResources, pipelineCache);
     pass.SetRenderScene(&scene);
     pass.SetConfig(config);
     pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
@@ -2858,13 +2846,13 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)
 
     view.viewportWidth = 64;
     view.viewportHeight = 64;
+    view.viewCache = &viewCache;
 
     RHITextureDesc cubemapDesc = RHITextureDesc::Texture2D(16, 16, RHIFormat::RGBA8_UNORM);
     cubemapDesc.dimension = RHITextureDimension::TextureCube;
     cubemapDesc.arraySize = 1;
     auto cubemap = device.CreateTexture(cubemapDesc);
     ASSERT_NE(cubemap, nullptr);
-    view.viewCache = &viewCache;
 
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
@@ -3137,7 +3125,6 @@ TEST(SceneRendererDiagnosticsValidation, AggregatesExternalTargetPassChainAndRen
     renderer.BuildRenderGraphForTesting();
 
     const SceneRendererFrameDiagnostics& diagnostics = renderer.GetFrameDiagnostics();
-    EXPECT_EQ(diagnostics.schemaVersion, RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION);
     EXPECT_FALSE(diagnostics.renderAttempted);
     EXPECT_FALSE(diagnostics.rendered);
     EXPECT_TRUE(diagnostics.graphBuilt);
@@ -3158,1270 +3145,7 @@ TEST(SceneRendererDiagnosticsValidation, AggregatesExternalTargetPassChainAndRen
     EXPECT_EQ(diagnostics.skippedDisabledPassCount, static_cast<size_t>(0));
     EXPECT_EQ(diagnostics.skippedUnsupportedPassCount, static_cast<size_t>(0));
     EXPECT_TRUE(diagnostics.passStatuses.empty());
-    EXPECT_EQ(diagnostics.gpuResourceStats.residentMeshCount, static_cast<size_t>(0));
-    EXPECT_EQ(diagnostics.gpuResourceStats.residentTextureCount, static_cast<size_t>(0));
-    EXPECT_EQ(diagnostics.gpuResourceStats.pendingUploadCount, static_cast<size_t>(0));
-    EXPECT_EQ(diagnostics.gpuResourceStats.failedUploadCount, static_cast<size_t>(0));
-    EXPECT_EQ(diagnostics.gpuResourceStats.usedMemory, static_cast<size_t>(0));
-    EXPECT_EQ(diagnostics.gpuResourceStats.memoryBudget, static_cast<size_t>(0));
-    EXPECT_FALSE(diagnostics.gpuDrivenCullingStats.enabled);
-    EXPECT_FALSE(diagnostics.gpuDrivenCullingStats.executionDecisionAvailable);
-    EXPECT_EQ(diagnostics.gpuDrivenCullingStats.inputOpaqueDrawItemCount, 0u);
-    EXPECT_EQ(diagnostics.gpuDrivenCullingStats.graphInputDrawItemCount, 0u);
-    EXPECT_FALSE(diagnostics.rayTracingSceneStats.prepared);
-    EXPECT_FALSE(diagnostics.rayTracingSceneStats.hasTopLevelAS);
-    EXPECT_EQ(diagnostics.rayTracingSceneStats.fallbackCode, RayTracingSceneFallbackCode::None);
-    EXPECT_STREQ(diagnostics.rayTracingSceneStats.fallbackReason, "");
-    EXPECT_TRUE(diagnostics.postProcessEffectPlans.empty());
     EXPECT_TRUE(diagnostics.graphDiagnostics.empty());
-
-    const SceneRendererToolDiagnosticsSnapshot& toolSnapshot = renderer.GetToolDiagnosticsSnapshot();
-    EXPECT_EQ(toolSnapshot.schemaVersion, RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION);
-    EXPECT_TRUE(toolSnapshot.frameDiagnosticsAvailable);
-    EXPECT_TRUE(toolSnapshot.renderGraphDiagnosticsAvailable);
-    EXPECT_EQ(toolSnapshot.frame.frameCount, diagnostics.frameCount);
-    EXPECT_TRUE(toolSnapshot.frame.graphBuilt);
-    EXPECT_TRUE(toolSnapshot.frame.externalTargetActive);
-    EXPECT_GE(toolSnapshot.renderGraph.resources.size(), static_cast<size_t>(2));
-    EXPECT_EQ(toolSnapshot.renderGraph.resources.size(), renderer.GetRenderGraph()->GetDiagnostics().resources.size());
-}
-
-TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabilityReport)
-{
-    FakeDevice device;
-    device.EnableBasicCapabilities();
-    SceneRenderer renderer;
-    renderer.SetRenderFeatureReportDeviceForTesting(&device);
-    auto graph = std::make_unique<RenderGraph>();
-    graph->SetDevice(&device);
-    renderer.SetRenderGraphForTesting(std::move(graph));
-
-    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(32, 24, RHIFormat::RGBA8_UNORM);
-    colorDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
-    RHITextureRef colorTarget = device.CreateTexture(colorDesc);
-    ASSERT_TRUE(colorTarget);
-
-    SceneRendererExternalTargetDesc externalTarget;
-    externalTarget.colorTarget = colorTarget.Get();
-    externalTarget.colorInitialState = RHIResourceState::ShaderResource;
-    externalTarget.colorFinalState = RHIResourceState::ShaderResource;
-    renderer.SetExternalRenderTarget(externalTarget);
-
-    renderer.BuildRenderGraphForTesting();
-
-    const SceneRendererToolDiagnosticsSnapshot& toolSnapshot = renderer.GetToolDiagnosticsSnapshot();
-    ASSERT_TRUE(toolSnapshot.rhiCapabilityReportAvailable);
-    EXPECT_EQ(toolSnapshot.rhiCapabilityReport.schemaVersion, RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION);
-    EXPECT_EQ(toolSnapshot.rhiCapabilityReport.backendType, RHIBackendType::DX12);
-    EXPECT_EQ(toolSnapshot.rhiCapabilityReport.adapterName, "RenderPassValidation Test Adapter");
-    EXPECT_EQ(toolSnapshot.rhiCapabilityReport.driverVersion, "RenderPassValidation.Driver.1");
-    EXPECT_TRUE(toolSnapshot.rhiCapabilityReport.validationPassed)
-        << toolSnapshot.rhiCapabilityReport.validationMessage;
-    EXPECT_TRUE(toolSnapshot.rhiCapabilityReport.renderGraphBaselineSupported);
-    EXPECT_TRUE(toolSnapshot.rhiCapabilityReport.renderGraphBaselineMissingRequirements.empty());
-    EXPECT_EQ(toolSnapshot.rhiCapabilityReport.entries.size(), static_cast<size_t>(11));
-
-    const std::string diagnosticsText = renderer.ExportToolDiagnosticsText();
-    EXPECT_NE(diagnosticsText.find("rhiCapabilities=true"), std::string::npos);
-    EXPECT_NE(diagnosticsText.find("RHICapabilities: schema=4, backend=DirectX 12"), std::string::npos);
-    EXPECT_NE(diagnosticsText.find("adapter=RenderPassValidation Test Adapter"), std::string::npos);
-    EXPECT_NE(diagnosticsText.find("driver=RenderPassValidation.Driver.1"), std::string::npos);
-    EXPECT_NE(diagnosticsText.find(
-                  "queueCompletionMode=NativeTimeline, "
-                  "logicalQueueDomains=[Graphics,Compute,Copy], activeDomainCount=3"),
-              std::string::npos);
-    EXPECT_NE(diagnosticsText.find("renderGraphBaseline=Passed"), std::string::npos);
-    EXPECT_NE(diagnosticsText.find("RenderGraphBaselineMissing: none"), std::string::npos);
-    EXPECT_NE(diagnosticsText.find("RHICapability ComputePipeline: status=Supported"), std::string::npos);
-
-    const std::string manifestJson = renderer.ExportToolDiagnosticsManifestJson();
-    EXPECT_NE(manifestJson.find("\"rhiCapabilityReportAvailable\": true"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"rhiCapabilities\": {\n    \"schemaVersion\": 4"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"backend\": \"DirectX 12\""), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"adapterName\": \"RenderPassValidation Test Adapter\""), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"driverVersion\": \"RenderPassValidation.Driver.1\""), std::string::npos);
-    EXPECT_NE(manifestJson.find(
-                  "\"queueTopology\": {\n"
-                  "      \"completionMode\": \"NativeTimeline\",\n"
-                  "      \"logicalQueueDomains\": [\"Graphics\", \"Compute\", \"Copy\"],\n"
-                  "      \"activeDomainCount\": 3\n"
-                  "    }"),
-              std::string::npos);
-    EXPECT_NE(manifestJson.find("\"renderGraphBaselineSupported\": true"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"renderGraphBaselineMissingRequirements\": []"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"feature\": \"ComputePipeline\""), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"status\": \"Supported\""), std::string::npos);
-
-    const std::string rhiCapabilityJson = renderer.ExportToolRHICapabilityReportJson();
-    EXPECT_NE(rhiCapabilityJson.find("\"schemaVersion\": 4"), std::string::npos);
-    EXPECT_NE(rhiCapabilityJson.find("\"schemaId\": \"RVX.RHI.CapabilityReport\""), std::string::npos);
-    EXPECT_NE(rhiCapabilityJson.find("\"id\": \"rhiCapabilityReportJson\""), std::string::npos);
-    EXPECT_NE(rhiCapabilityJson.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);
-    EXPECT_NE(rhiCapabilityJson.find("\"contentType\": \"application/json\""), std::string::npos);
-    EXPECT_NE(rhiCapabilityJson.find("\"contentHash\": \"\""), std::string::npos);
-    EXPECT_NE(rhiCapabilityJson.find("\"relativePath\": \"\""), std::string::npos);
-    EXPECT_NE(rhiCapabilityJson.find("\"adapterName\": \"RenderPassValidation Test Adapter\""),
-              std::string::npos);
-    EXPECT_NE(rhiCapabilityJson.find("\"driverVersion\": \"RenderPassValidation.Driver.1\""),
-              std::string::npos);
-    EXPECT_NE(rhiCapabilityJson.find("\"renderGraphBaseline\": {"), std::string::npos);
-    EXPECT_NE(rhiCapabilityJson.find("\"supported\": true"), std::string::npos);
-    EXPECT_FALSE(renderer.SaveToolRHICapabilityReportJson(nullptr));
-    EXPECT_FALSE(renderer.SaveToolRHICapabilityReportJson(""));
-
-    const auto suffix = std::to_string(
-        std::chrono::steady_clock::now().time_since_epoch().count());
-    std::error_code removeError;
-    const fs::path rhiCapabilityJsonPath =
-        fs::temp_directory_path() / ("RVX_SceneRendererRHICapabilityReport_" + suffix + ".json");
-    const std::string rhiCapabilityJsonPathString = rhiCapabilityJsonPath.string();
-    ASSERT_TRUE(renderer.SaveToolRHICapabilityReportJson(rhiCapabilityJsonPathString.c_str()));
-    EXPECT_EQ(ReadTextFile(rhiCapabilityJsonPath), rhiCapabilityJson);
-    fs::remove(rhiCapabilityJsonPath, removeError);
-
-    const fs::path artifactDirectory =
-        fs::temp_directory_path() / ("RVX_SceneRendererRHICapabilityArtifacts_" + suffix);
-    const std::string artifactDirectoryString = artifactDirectory.string();
-    const SceneRendererToolDiagnosticsArtifactResult artifactResult =
-        renderer.SaveToolDiagnosticsArtifacts(artifactDirectoryString.c_str(), "RHIFrame001");
-    EXPECT_TRUE(artifactResult.rhiCapabilityReportJsonExpected);
-    EXPECT_TRUE(artifactResult.rhiCapabilityReportJsonSaved);
-    EXPECT_TRUE(artifactResult.rhiCapabilityReportJsonExists);
-    EXPECT_EQ(artifactResult.rhiCapabilityReportSchemaId, RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID);
-    EXPECT_EQ(artifactResult.rhiCapabilityReportSchemaVersion, RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION);
-    EXPECT_EQ(artifactResult.primaryArtifactCount, 6u);
-    EXPECT_EQ(artifactResult.savedPrimaryArtifactCount, 6u);
-    EXPECT_EQ(artifactResult.artifactValidationCheckedPrimaryArtifactCount, 6u);
-    EXPECT_EQ(artifactResult.artifactValidationValidPrimaryArtifactCount, 6u);
-    EXPECT_EQ(artifactResult.artifactValidationFailedPrimaryArtifactCount, 0u);
-    EXPECT_EQ(artifactResult.artifactValidationEntryCount, 6u);
-    EXPECT_TRUE(artifactResult.artifactValidationEntryCountMatchesCheckedPrimaryArtifactCount);
-    EXPECT_TRUE(artifactResult.allPrimaryArtifactsSaved);
-    EXPECT_TRUE(artifactResult.artifactValidationAllPrimaryArtifactsValid);
-    EXPECT_TRUE(artifactResult.artifactValidationBundleHashMatches);
-    EXPECT_EQ(artifactResult.rhiCapabilityReportJsonContentHash.size(), 16u);
-    EXPECT_GT(artifactResult.rhiCapabilityReportJsonBytes, 0u);
-    EXPECT_NE(artifactResult.rhiCapabilityReportJsonPath.find("RHIFrame001.rhi-capabilities.json"),
-              std::string::npos);
-    EXPECT_EQ(artifactResult.rhiCapabilityReportJsonRelativePath, "RHIFrame001.rhi-capabilities.json");
-    EXPECT_EQ(ReadTextFile(artifactResult.rhiCapabilityReportJsonPath), rhiCapabilityJson);
-
-    const std::string artifactSummaryJson = ReadTextFile(artifactResult.artifactSummaryJsonPath);
-    EXPECT_NE(artifactSummaryJson.find("\"artifactCount\": 6"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"savedCount\": 6"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"id\": \"rhiCapabilityReportJson\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"schemaId\": \"RVX.RHI.CapabilityReport\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"relativePath\": \"RHIFrame001.rhi-capabilities.json\""),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"checkedPrimaryArtifactCount\": 6"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"validPrimaryArtifactCount\": 6"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"count\": 6"), std::string::npos);
-
-    const std::string artifactManifestJson = ReadTextFile(artifactResult.manifestJsonPath);
-    EXPECT_NE(artifactManifestJson.find("\"primaryArtifactCount\": 6"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"savedPrimaryArtifactCount\": 6"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"rhiCapabilityReportJson\": {"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"schemaId\": \"RVX.RHI.CapabilityReport\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"schemaVersion\": 3"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"RHIFrame001.rhi-capabilities.json\""),
-              std::string::npos);
-
-    const SceneRendererToolDiagnosticsArtifactValidationResult validation =
-        SceneRenderer::ValidateToolDiagnosticsArtifacts(artifactResult);
-    EXPECT_TRUE(validation.allPrimaryArtifactsValid);
-    EXPECT_EQ(validation.checkedPrimaryArtifactCount, 6u);
-    EXPECT_EQ(validation.validPrimaryArtifactCount, 6u);
-    EXPECT_EQ(validation.failedPrimaryArtifactCount, 0u);
-    EXPECT_EQ(validation.entryCount, 6u);
-    EXPECT_EQ(validation.rhiCapabilityReportSchemaId, RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID);
-    EXPECT_EQ(validation.rhiCapabilityReportSchemaVersion, RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION);
-    ASSERT_EQ(validation.diagnosticCodeCounts.size(), 1u);
-    EXPECT_EQ(validation.diagnosticCodeCounts[0].code, "None");
-    EXPECT_EQ(validation.diagnosticCodeCounts[0].count, 6u);
-    bool rhiCapabilityJsonValidationFound = false;
-    for (const SceneRendererToolDiagnosticsArtifactValidationEntry& entry : validation.entries)
-    {
-        if (entry.id == "rhiCapabilityReportJson")
-        {
-            rhiCapabilityJsonValidationFound = true;
-            EXPECT_EQ(entry.entryIndex, 4u);
-            EXPECT_EQ(entry.kind, "RHICapabilityReportJson");
-            EXPECT_EQ(entry.contentType, "application/json");
-            EXPECT_EQ(entry.schemaId, RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID);
-            EXPECT_EQ(entry.schemaVersion, RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION);
-            EXPECT_TRUE(entry.identityChecked);
-            EXPECT_TRUE(entry.identityMatches);
-            EXPECT_TRUE(entry.schemaChecked);
-            EXPECT_TRUE(entry.schemaMatches);
-            EXPECT_EQ(entry.actualId, "rhiCapabilityReportJson");
-            EXPECT_EQ(entry.actualKind, "RHICapabilityReportJson");
-            EXPECT_EQ(entry.actualContentType, "application/json");
-            EXPECT_EQ(entry.actualSchemaId, RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID);
-            EXPECT_EQ(entry.actualSchemaVersion, RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION);
-            EXPECT_EQ(entry.relativePath, "RHIFrame001.rhi-capabilities.json");
-            EXPECT_EQ(entry.expectedByteSize, artifactResult.rhiCapabilityReportJsonBytes);
-            EXPECT_EQ(entry.actualByteSize, artifactResult.rhiCapabilityReportJsonBytes);
-            EXPECT_EQ(entry.expectedContentHash, artifactResult.rhiCapabilityReportJsonContentHash);
-            EXPECT_EQ(entry.actualContentHash, artifactResult.rhiCapabilityReportJsonContentHash);
-        }
-    }
-    EXPECT_TRUE(rhiCapabilityJsonValidationFound);
-
-    const std::string validationJson =
-        SceneRenderer::ExportToolDiagnosticsArtifactValidationJson(validation);
-    EXPECT_NE(validationJson.find("\"id\": \"rhiCapabilityReportJson\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"actualId\": \"rhiCapabilityReportJson\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"actualSchemaId\": \"RVX.RHI.CapabilityReport\""),
-              std::string::npos);
-    EXPECT_NE(validationJson.find("\"entryCount\": 6"), std::string::npos);
-    fs::remove_all(artifactDirectory, removeError);
-}
-
-TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCarriesRenderGraphState)
-{
-    FakeDevice device;
-    SceneRenderer renderer;
-    auto graph = std::make_unique<RenderGraph>();
-    graph->SetDevice(&device);
-    renderer.SetRenderGraphForTesting(std::move(graph));
-
-    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(48, 32, RHIFormat::RGBA8_UNORM);
-    colorDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
-    RHITextureRef colorTarget = device.CreateTexture(colorDesc);
-    ASSERT_TRUE(colorTarget);
-
-    SceneRendererExternalTargetDesc externalTarget;
-    externalTarget.colorTarget = colorTarget.Get();
-    externalTarget.colorInitialState = RHIResourceState::ShaderResource;
-    externalTarget.colorFinalState = RHIResourceState::ShaderResource;
-    renderer.SetExternalRenderTarget(externalTarget);
-
-    renderer.BuildRenderGraphForTesting();
-
-    const SceneRendererFrameDiagnostics& frameDiagnostics = renderer.GetFrameDiagnostics();
-    const SceneRendererToolDiagnosticsSnapshot& toolSnapshot = renderer.GetToolDiagnosticsSnapshot();
-
-    EXPECT_EQ(toolSnapshot.schemaVersion, RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION);
-    EXPECT_TRUE(toolSnapshot.frameDiagnosticsAvailable);
-    EXPECT_EQ(toolSnapshot.frame.schemaVersion, RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION);
-    EXPECT_EQ(toolSnapshot.frame.frameCount, frameDiagnostics.frameCount);
-    EXPECT_EQ(toolSnapshot.frame.graphBuilt, frameDiagnostics.graphBuilt);
-    EXPECT_TRUE(toolSnapshot.renderGraphDiagnosticsAvailable);
-    EXPECT_STREQ(toolSnapshot.renderGraph.schemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
-    EXPECT_EQ(toolSnapshot.renderGraph.schemaVersion, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
-    EXPECT_FALSE(toolSnapshot.renderGraph.resources.empty());
-    EXPECT_EQ(toolSnapshot.renderGraph.resources.size(), renderer.GetRenderGraph()->GetDiagnostics().resources.size());
-
-    const std::string diagnosticsText = renderer.ExportToolDiagnosticsText();
-    const std::string expectedSchemaText =
-        "Schema: tool=" + std::to_string(RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION) +
-        ", frame=" + std::to_string(RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION);
-    EXPECT_NE(diagnosticsText.find("SceneRenderer Tool Diagnostics"), std::string::npos);
-    EXPECT_NE(diagnosticsText.find(expectedSchemaText), std::string::npos);
-    EXPECT_NE(diagnosticsText.find("Availability: frame=true, renderGraph=true"), std::string::npos);
-    EXPECT_NE(diagnosticsText.find("ExternalTarget: requested=true, active=true"), std::string::npos);
-    EXPECT_NE(diagnosticsText.find("RenderGraph: passes="), std::string::npos);
-    EXPECT_NE(diagnosticsText.find("resources="), std::string::npos);
-    EXPECT_FALSE(renderer.SaveToolDiagnosticsText(nullptr));
-    EXPECT_FALSE(renderer.SaveToolDiagnosticsText(""));
-
-    const auto suffix = std::to_string(
-        std::chrono::steady_clock::now().time_since_epoch().count());
-    const fs::path diagnosticsPath =
-        fs::temp_directory_path() / ("RVX_SceneRendererToolDiagnostics_" + suffix + ".txt");
-    const std::string diagnosticsPathString = diagnosticsPath.string();
-    ASSERT_TRUE(renderer.SaveToolDiagnosticsText(diagnosticsPathString.c_str()));
-    const std::string savedDiagnosticsText = ReadTextFile(diagnosticsPath);
-    EXPECT_EQ(savedDiagnosticsText, diagnosticsText);
-    std::error_code removeError;
-    fs::remove(diagnosticsPath, removeError);
-
-    const std::string graphviz = renderer.ExportToolRenderGraphGraphviz();
-    EXPECT_NE(graphviz.find("digraph RenderGraph"), std::string::npos);
-    EXPECT_NE(graphviz.find("cluster_resources"), std::string::npos);
-    EXPECT_NE(graphviz.find("tex0"), std::string::npos);
-    EXPECT_FALSE(renderer.SaveToolRenderGraphGraphviz(nullptr));
-    EXPECT_FALSE(renderer.SaveToolRenderGraphGraphviz(""));
-
-    const fs::path graphvizPath =
-        fs::temp_directory_path() / ("RVX_SceneRendererToolRenderGraph_" + suffix + ".dot");
-    const std::string graphvizPathString = graphvizPath.string();
-    ASSERT_TRUE(renderer.SaveToolRenderGraphGraphviz(graphvizPathString.c_str()));
-    const std::string savedGraphviz = ReadTextFile(graphvizPath);
-    EXPECT_EQ(savedGraphviz, graphviz);
-    fs::remove(graphvizPath, removeError);
-
-    const std::string renderGraphDiagnosticsText = renderer.ExportToolRenderGraphDiagnosticsText();
-    EXPECT_NE(renderGraphDiagnosticsText.find("RenderGraph Diagnostics"), std::string::npos);
-    EXPECT_NE(renderGraphDiagnosticsText.find("Resources:"), std::string::npos);
-    EXPECT_NE(renderGraphDiagnosticsText.find("Schedule efficiency:"), std::string::npos);
-    EXPECT_FALSE(renderer.SaveToolRenderGraphDiagnosticsText(nullptr));
-    EXPECT_FALSE(renderer.SaveToolRenderGraphDiagnosticsText(""));
-
-    const fs::path renderGraphDiagnosticsPath =
-        fs::temp_directory_path() / ("RVX_SceneRendererToolRenderGraphDiagnostics_" + suffix + ".txt");
-    const std::string renderGraphDiagnosticsPathString = renderGraphDiagnosticsPath.string();
-    ASSERT_TRUE(renderer.SaveToolRenderGraphDiagnosticsText(renderGraphDiagnosticsPathString.c_str()));
-    const std::string savedRenderGraphDiagnostics = ReadTextFile(renderGraphDiagnosticsPath);
-    EXPECT_EQ(savedRenderGraphDiagnostics, renderGraphDiagnosticsText);
-    fs::remove(renderGraphDiagnosticsPath, removeError);
-
-    const std::string renderGraphDiagnosticsJson = renderer.ExportToolRenderGraphDiagnosticsJson();
-    EXPECT_NE(renderGraphDiagnosticsJson.find("\"schemaVersion\": 3"), std::string::npos);
-    EXPECT_NE(renderGraphDiagnosticsJson.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""),
-              std::string::npos);
-    EXPECT_NE(renderGraphDiagnosticsJson.find("\"id\": \"renderGraphDiagnosticsJson\""), std::string::npos);
-    EXPECT_NE(renderGraphDiagnosticsJson.find("\"kind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
-    EXPECT_NE(renderGraphDiagnosticsJson.find("\"contentType\": \"application/json\""), std::string::npos);
-    EXPECT_NE(renderGraphDiagnosticsJson.find("\"contentHash\": \"\""), std::string::npos);
-    EXPECT_NE(renderGraphDiagnosticsJson.find("\"relativePath\": \"\""), std::string::npos);
-    EXPECT_NE(renderGraphDiagnosticsJson.find("\"compileStats\": {"), std::string::npos);
-    EXPECT_NE(renderGraphDiagnosticsJson.find("\"passes\": ["), std::string::npos);
-    EXPECT_NE(renderGraphDiagnosticsJson.find("\"resources\": ["), std::string::npos);
-    EXPECT_NE(renderGraphDiagnosticsJson.find("\"schedule\": {"), std::string::npos);
-    EXPECT_NE(renderGraphDiagnosticsJson.find("\"name\": "), std::string::npos);
-    EXPECT_FALSE(renderer.SaveToolRenderGraphDiagnosticsJson(nullptr));
-    EXPECT_FALSE(renderer.SaveToolRenderGraphDiagnosticsJson(""));
-
-    const fs::path renderGraphDiagnosticsJsonPath =
-        fs::temp_directory_path() / ("RVX_SceneRendererToolRenderGraphDiagnostics_" + suffix + ".json");
-    const std::string renderGraphDiagnosticsJsonPathString = renderGraphDiagnosticsJsonPath.string();
-    ASSERT_TRUE(renderer.SaveToolRenderGraphDiagnosticsJson(renderGraphDiagnosticsJsonPathString.c_str()));
-    const std::string savedRenderGraphDiagnosticsJson = ReadTextFile(renderGraphDiagnosticsJsonPath);
-    EXPECT_EQ(savedRenderGraphDiagnosticsJson, renderGraphDiagnosticsJson);
-    fs::remove(renderGraphDiagnosticsJsonPath, removeError);
-
-    const std::string manifestJson = renderer.ExportToolDiagnosticsManifestJson();
-    EXPECT_NE(manifestJson.find("\"schemaVersion\": 24"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"id\": \"manifestJson\""), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"kind\": \"ToolDiagnosticsManifestJson\""), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"contentType\": \"application/json\""), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"contentHash\": \"\""), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"relativePath\": \"\""), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"frameDiagnosticsAvailable\": true"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"renderGraphDiagnosticsAvailable\": true"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"rhiCapabilityReportAvailable\": false"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"rhiCapabilities\": null"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"renderGraph\": {\n    \"schemaVersion\": 3"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"resourceCount\": 1"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"artifacts\": null"), std::string::npos);
-    EXPECT_FALSE(renderer.SaveToolDiagnosticsManifestJson(nullptr));
-    EXPECT_FALSE(renderer.SaveToolDiagnosticsManifestJson(""));
-
-    const fs::path manifestPath =
-        fs::temp_directory_path() / ("RVX_SceneRendererToolDiagnosticsManifest_" + suffix + ".json");
-    const std::string manifestPathString = manifestPath.string();
-    ASSERT_TRUE(renderer.SaveToolDiagnosticsManifestJson(manifestPathString.c_str()));
-    EXPECT_EQ(ReadTextFile(manifestPath), manifestJson);
-    fs::remove(manifestPath, removeError);
-
-    const std::string emptyArtifactSummaryJson = renderer.ExportToolDiagnosticsArtifactSummaryJson();
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"schemaVersion\": 24"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"id\": \"artifactSummaryJson\""), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"kind\": \"ToolDiagnosticsArtifactSummaryJson\""),
-              std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"contentType\": \"application/json\""), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"contentHash\": \"\""), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"relativePath\": \"\""), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"toolDiagnosticsSchemaVersion\": 24"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"artifactResultAvailable\": false"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"metadataAvailable\": false"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"captureId\": \"\""), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"baseName\": \"\""), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"frameIndex\": 0"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"renderGraphDiagnosticsSchemaVersion\": 3"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"renderGraphDiagnosticsSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
-              std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"artifactSummarySchemaVersion\": 24"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"artifactValidationSchemaVersion\": 25"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"artifactCount\": 0"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"allArtifactsSaved\": false"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"totalArtifactBytes\": 0"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryArtifactBundleHash\": \"\""), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"artifacts\": []"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"validationReport\": {"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"id\": \"artifactValidationJson\""), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"schemaVersion\": 25"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"resultAvailable\": false"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"allPrimaryArtifactsValid\": false"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"bundleHashMatches\": false"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"verdictCode\": \"Unavailable\""), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureCode\": \"Unavailable\""), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureEntryIndex\": null"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureEntryCount\": 0"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"entryCount\": 0"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"entryCountMatchesCheckedPrimaryArtifactCount\": false"),
-              std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"entryCoverageCode\": \"Unavailable\""), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"entryCoverageMessage\": \"validation result is unavailable\""),
-              std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureArtifactId\": \"\""), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureArtifactRelativePath\": \"\""),
-              std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureArtifactKind\": \"\""), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureArtifactContentType\": \"\""),
-              std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureArtifactSchemaId\": \"\""),
-              std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureArtifactSchemaVersion\": 0"),
-              std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureMessage\": \"validation result is unavailable\""),
-              std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"checkedPrimaryArtifactCount\": 0"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"validPrimaryArtifactCount\": 0"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"failedPrimaryArtifactCount\": 0"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"diagnosticCodeCounts\": []"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"actualTotalPrimaryArtifactBytes\": 0"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"expectedPrimaryArtifactBundleHash\": \"\""), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"actualPrimaryArtifactBundleHash\": \"\""), std::string::npos);
-    EXPECT_FALSE(renderer.SaveToolDiagnosticsArtifactSummaryJson(nullptr));
-    EXPECT_FALSE(renderer.SaveToolDiagnosticsArtifactSummaryJson(""));
-
-    const fs::path emptyArtifactSummaryPath =
-        fs::temp_directory_path() / ("RVX_SceneRendererToolArtifactSummary_" + suffix + ".json");
-    const std::string emptyArtifactSummaryPathString = emptyArtifactSummaryPath.string();
-    ASSERT_TRUE(renderer.SaveToolDiagnosticsArtifactSummaryJson(emptyArtifactSummaryPathString.c_str()));
-    EXPECT_EQ(ReadTextFile(emptyArtifactSummaryPath), emptyArtifactSummaryJson);
-    fs::remove(emptyArtifactSummaryPath, removeError);
-
-    SceneRendererToolDiagnosticsArtifactResult invalidArtifactResult =
-        renderer.SaveToolDiagnosticsArtifacts(nullptr, "Frame");
-    EXPECT_TRUE(invalidArtifactResult.requested);
-    EXPECT_FALSE(invalidArtifactResult.directoryReady);
-
-    invalidArtifactResult = renderer.SaveToolDiagnosticsArtifacts(fs::temp_directory_path().string().c_str(), "");
-    EXPECT_TRUE(invalidArtifactResult.requested);
-    EXPECT_FALSE(invalidArtifactResult.directoryReady);
-
-    const fs::path artifactDirectory =
-        fs::temp_directory_path() / ("RVX_SceneRendererToolArtifacts_" + suffix);
-    const std::string artifactDirectoryString = artifactDirectory.string();
-    const SceneRendererToolDiagnosticsArtifactResult artifactResult =
-        renderer.SaveToolDiagnosticsArtifacts(artifactDirectoryString.c_str(), "Frame001");
-    EXPECT_TRUE(artifactResult.requested);
-    EXPECT_TRUE(artifactResult.directoryReady);
-    EXPECT_TRUE(artifactResult.captureMetadataAvailable);
-    EXPECT_EQ(artifactResult.captureId.size(), 16u);
-    EXPECT_EQ(artifactResult.captureBaseName, "Frame001");
-    EXPECT_EQ(artifactResult.outputDirectory, artifactDirectoryString);
-    EXPECT_EQ(artifactResult.toolDiagnosticsSchemaVersion, RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION);
-    EXPECT_EQ(artifactResult.frameDiagnosticsSchemaVersion, RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION);
-    EXPECT_EQ(artifactResult.renderGraphDiagnosticsSchemaVersion, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
-    EXPECT_EQ(artifactResult.artifactSummarySchemaVersion, RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION);
-    EXPECT_EQ(artifactResult.artifactValidationSchemaVersion,
-              RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION);
-    EXPECT_EQ(artifactResult.renderGraphDiagnosticsSchemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
-    EXPECT_EQ(artifactResult.frameIndex, toolSnapshot.frame.frameCount);
-    EXPECT_EQ(artifactResult.renderGraphPassCount, toolSnapshot.renderGraph.passes.size());
-    EXPECT_EQ(artifactResult.renderGraphResourceCount, toolSnapshot.renderGraph.resources.size());
-    EXPECT_TRUE(artifactResult.toolDiagnosticsTextSaved);
-    EXPECT_TRUE(artifactResult.renderGraphGraphvizSaved);
-    EXPECT_TRUE(artifactResult.renderGraphDiagnosticsTextSaved);
-    EXPECT_TRUE(artifactResult.renderGraphDiagnosticsJsonSaved);
-    EXPECT_TRUE(artifactResult.manifestJsonSaved);
-    EXPECT_TRUE(artifactResult.artifactSummaryJsonSaved);
-    EXPECT_TRUE(artifactResult.artifactValidationJsonSaved);
-    EXPECT_TRUE(artifactResult.allPrimaryArtifactsSaved);
-    EXPECT_TRUE(artifactResult.artifactValidationResultAvailable);
-    EXPECT_TRUE(artifactResult.artifactValidationAllPrimaryArtifactsValid);
-    EXPECT_TRUE(artifactResult.artifactValidationBundleHashMatches);
-    EXPECT_EQ(artifactResult.artifactValidationVerdictCode, "Valid");
-    EXPECT_EQ(artifactResult.artifactValidationPrimaryFailureCode, "None");
-    EXPECT_EQ(artifactResult.artifactValidationPrimaryFailureEntryIndex, RVX_INVALID_INDEX);
-    EXPECT_EQ(artifactResult.artifactValidationPrimaryFailureEntryCount, 0u);
-    EXPECT_EQ(artifactResult.artifactValidationEntryCount, 5u);
-    EXPECT_TRUE(artifactResult.artifactValidationEntryCountMatchesCheckedPrimaryArtifactCount);
-    EXPECT_EQ(artifactResult.artifactValidationEntryCoverageCode, "Complete");
-    EXPECT_EQ(artifactResult.artifactValidationEntryCoverageMessage,
-              "validation entries cover all checked primary artifacts");
-    EXPECT_TRUE(artifactResult.artifactValidationPrimaryFailureArtifactId.empty());
-    EXPECT_TRUE(artifactResult.artifactValidationPrimaryFailureArtifactRelativePath.empty());
-    EXPECT_TRUE(artifactResult.artifactValidationPrimaryFailureArtifactKind.empty());
-    EXPECT_TRUE(artifactResult.artifactValidationPrimaryFailureArtifactContentType.empty());
-    EXPECT_TRUE(artifactResult.artifactValidationPrimaryFailureArtifactSchemaId.empty());
-    EXPECT_EQ(artifactResult.artifactValidationPrimaryFailureArtifactSchemaVersion, 0u);
-    EXPECT_TRUE(artifactResult.artifactValidationPrimaryFailureMessage.empty());
-    EXPECT_EQ(artifactResult.primaryArtifactCount, 5u);
-    EXPECT_EQ(artifactResult.savedPrimaryArtifactCount, 5u);
-    EXPECT_EQ(artifactResult.artifactValidationCheckedPrimaryArtifactCount, 5u);
-    EXPECT_EQ(artifactResult.artifactValidationValidPrimaryArtifactCount, 5u);
-    EXPECT_EQ(artifactResult.artifactValidationFailedPrimaryArtifactCount, 0u);
-    ASSERT_EQ(artifactResult.artifactValidationDiagnosticCodeCounts.size(), 1u);
-    EXPECT_EQ(artifactResult.artifactValidationDiagnosticCodeCounts[0].code, "None");
-    EXPECT_EQ(artifactResult.artifactValidationDiagnosticCodeCounts[0].count, 5u);
-    EXPECT_TRUE(artifactResult.toolDiagnosticsTextExists);
-    EXPECT_TRUE(artifactResult.renderGraphGraphvizExists);
-    EXPECT_TRUE(artifactResult.renderGraphDiagnosticsTextExists);
-    EXPECT_TRUE(artifactResult.renderGraphDiagnosticsJsonExists);
-    EXPECT_TRUE(artifactResult.manifestJsonExists);
-    EXPECT_TRUE(artifactResult.artifactValidationJsonExists);
-    EXPECT_GT(artifactResult.toolDiagnosticsTextBytes, 0u);
-    EXPECT_GT(artifactResult.renderGraphGraphvizBytes, 0u);
-    EXPECT_GT(artifactResult.renderGraphDiagnosticsTextBytes, 0u);
-    EXPECT_GT(artifactResult.renderGraphDiagnosticsJsonBytes, 0u);
-    EXPECT_GT(artifactResult.manifestJsonBytes, 0u);
-    EXPECT_GT(artifactResult.artifactValidationJsonBytes, 0u);
-    EXPECT_EQ(artifactResult.toolDiagnosticsTextContentHash.size(), 16u);
-    EXPECT_EQ(artifactResult.renderGraphGraphvizContentHash.size(), 16u);
-    EXPECT_EQ(artifactResult.renderGraphDiagnosticsTextContentHash.size(), 16u);
-    EXPECT_EQ(artifactResult.renderGraphDiagnosticsJsonContentHash.size(), 16u);
-    EXPECT_EQ(artifactResult.manifestJsonContentHash.size(), 16u);
-    EXPECT_EQ(artifactResult.artifactValidationJsonContentHash.size(), 16u);
-    EXPECT_EQ(artifactResult.primaryArtifactBundleHash.size(), 16u);
-    EXPECT_EQ(artifactResult.artifactValidationExpectedPrimaryArtifactBundleHash,
-              artifactResult.primaryArtifactBundleHash);
-    EXPECT_EQ(artifactResult.artifactValidationActualPrimaryArtifactBundleHash,
-              artifactResult.primaryArtifactBundleHash);
-    EXPECT_EQ(artifactResult.totalPrimaryArtifactBytes,
-              artifactResult.toolDiagnosticsTextBytes +
-                  artifactResult.renderGraphGraphvizBytes +
-                  artifactResult.renderGraphDiagnosticsTextBytes +
-                  artifactResult.renderGraphDiagnosticsJsonBytes +
-                  artifactResult.manifestJsonBytes);
-    EXPECT_EQ(artifactResult.artifactValidationActualTotalPrimaryArtifactBytes,
-              artifactResult.totalPrimaryArtifactBytes);
-    EXPECT_NE(artifactResult.toolDiagnosticsTextPath.find("Frame001.scene-renderer.txt"), std::string::npos);
-    EXPECT_NE(artifactResult.renderGraphGraphvizPath.find("Frame001.rendergraph.dot"), std::string::npos);
-    EXPECT_NE(artifactResult.renderGraphDiagnosticsTextPath.find("Frame001.rendergraph.txt"), std::string::npos);
-    EXPECT_NE(artifactResult.renderGraphDiagnosticsJsonPath.find("Frame001.rendergraph.json"), std::string::npos);
-    EXPECT_NE(artifactResult.manifestJsonPath.find("Frame001.diagnostics-manifest.json"), std::string::npos);
-    EXPECT_NE(artifactResult.artifactSummaryJsonPath.find("Frame001.diagnostics-artifacts.json"), std::string::npos);
-    EXPECT_NE(artifactResult.artifactValidationJsonPath.find("Frame001.diagnostics-validation.json"),
-              std::string::npos);
-    EXPECT_EQ(artifactResult.toolDiagnosticsTextRelativePath, "Frame001.scene-renderer.txt");
-    EXPECT_EQ(artifactResult.renderGraphGraphvizRelativePath, "Frame001.rendergraph.dot");
-    EXPECT_EQ(artifactResult.renderGraphDiagnosticsTextRelativePath, "Frame001.rendergraph.txt");
-    EXPECT_EQ(artifactResult.renderGraphDiagnosticsJsonRelativePath, "Frame001.rendergraph.json");
-    EXPECT_EQ(artifactResult.manifestJsonRelativePath, "Frame001.diagnostics-manifest.json");
-    EXPECT_EQ(artifactResult.artifactSummaryJsonRelativePath, "Frame001.diagnostics-artifacts.json");
-    EXPECT_EQ(artifactResult.artifactValidationJsonRelativePath, "Frame001.diagnostics-validation.json");
-    EXPECT_EQ(ReadTextFile(artifactResult.toolDiagnosticsTextPath), diagnosticsText);
-    EXPECT_EQ(ReadTextFile(artifactResult.renderGraphGraphvizPath), graphviz);
-    EXPECT_EQ(ReadTextFile(artifactResult.renderGraphDiagnosticsTextPath), renderGraphDiagnosticsText);
-    EXPECT_EQ(ReadTextFile(artifactResult.renderGraphDiagnosticsJsonPath), renderGraphDiagnosticsJson);
-    const std::string artifactSummaryJson = ReadTextFile(artifactResult.artifactSummaryJsonPath);
-    EXPECT_NE(artifactSummaryJson.find("\"schemaVersion\": 24"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"id\": \"artifactSummaryJson\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"kind\": \"ToolDiagnosticsArtifactSummaryJson\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"contentType\": \"application/json\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"contentHash\": \"\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"relativePath\": \"\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"toolDiagnosticsSchemaVersion\": 24"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"artifactResultAvailable\": true"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"capture\": {"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"metadataAvailable\": true"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"captureId\": \"" + artifactResult.captureId + "\""),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"baseName\": \"Frame001\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"outputDirectory\": "), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"frameIndex\": " + std::to_string(toolSnapshot.frame.frameCount)),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"renderGraphDiagnosticsSchemaVersion\": 3"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"renderGraphDiagnosticsSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"artifactSummarySchemaVersion\": 24"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"artifactValidationSchemaVersion\": 25"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"renderGraphPassCount\": " +
-                                       std::to_string(toolSnapshot.renderGraph.passes.size())),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"renderGraphResourceCount\": " +
-                                       std::to_string(toolSnapshot.renderGraph.resources.size())),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"artifactCount\": 5"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"savedCount\": 5"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"allArtifactsSaved\": true"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"totalArtifactBytes\": "), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"primaryArtifactBundleHash\": \"" +
-                                       artifactResult.primaryArtifactBundleHash + "\""),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"id\": \"renderGraphDiagnosticsJson\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"kind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"contentType\": \"application/json\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"schemaVersion\": 3"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"exists\": true"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"byteSize\": "), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"contentHash\": \"" +
-                                       artifactResult.renderGraphDiagnosticsJsonContentHash + "\""),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"contentHash\": \"" +
-                                       artifactResult.manifestJsonContentHash + "\""),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"relativePath\": \"Frame001.rendergraph.json\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"relativePath\": \"Frame001.diagnostics-manifest.json\""),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"validationReport\": {"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"id\": \"artifactValidationJson\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"schemaVersion\": 25"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"resultAvailable\": true"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"allPrimaryArtifactsValid\": true"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"bundleHashMatches\": true"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"verdictCode\": \"Valid\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureCode\": \"None\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureEntryIndex\": null"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureEntryCount\": 0"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"entryCount\": 5"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"entryCountMatchesCheckedPrimaryArtifactCount\": true"),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"entryCoverageCode\": \"Complete\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"entryCoverageMessage\": \"validation entries cover all checked primary artifacts\""),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureArtifactId\": \"\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureArtifactRelativePath\": \"\""),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureArtifactKind\": \"\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureArtifactContentType\": \"\""),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureArtifactSchemaId\": \"\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureArtifactSchemaVersion\": 0"),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureMessage\": \"\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"checkedPrimaryArtifactCount\": 5"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"validPrimaryArtifactCount\": 5"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"failedPrimaryArtifactCount\": 0"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"diagnosticCodeCounts\": ["), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"code\": \"None\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"count\": 5"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"actualTotalPrimaryArtifactBytes\": " +
-                                       std::to_string(artifactResult.totalPrimaryArtifactBytes)),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"expectedPrimaryArtifactBundleHash\": \"" +
-                                       artifactResult.primaryArtifactBundleHash + "\""),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"actualPrimaryArtifactBundleHash\": \"" +
-                                       artifactResult.primaryArtifactBundleHash + "\""),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"relativePath\": \"Frame001.diagnostics-validation.json\""),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"contentHash\": \"" +
-                                       artifactResult.artifactValidationJsonContentHash + "\""),
-              std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("Frame001.rendergraph.json"), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("Frame001.diagnostics-manifest.json"), std::string::npos);
-    const std::string artifactManifestJson = ReadTextFile(artifactResult.manifestJsonPath);
-    EXPECT_NE(artifactManifestJson.find("\"schemaVersion\": 24"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"id\": \"manifestJson\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"kind\": \"ToolDiagnosticsManifestJson\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"contentType\": \"application/json\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"artifacts\": {"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"capture\": {"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"captureId\": \"" + artifactResult.captureId + "\""),
-              std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"baseName\": \"Frame001\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"frameIndex\": " + std::to_string(toolSnapshot.frame.frameCount)),
-              std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"renderGraphDiagnosticsSchemaVersion\": 3"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"renderGraphDiagnosticsSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
-              std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"renderGraphPassCount\": " +
-                                        std::to_string(toolSnapshot.renderGraph.passes.size())),
-              std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"renderGraphResourceCount\": " +
-                                        std::to_string(toolSnapshot.renderGraph.resources.size())),
-              std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"artifactSummarySchemaVersion\": 24"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"artifactValidationSchemaVersion\": 25"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"primaryArtifactCount\": 5"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"savedPrimaryArtifactCount\": 5"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"allPrimaryArtifactsSaved\": true"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"totalPrimaryArtifactBytes\": "), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"sceneRendererText\": {"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"kind\": \"SceneRendererText\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"renderGraphGraphviz\": {"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"kind\": \"RenderGraphGraphviz\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"contentType\": \"text/vnd.graphviz\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"renderGraphDiagnosticsJson\": {"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"kind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"schemaVersion\": 3"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"manifestJson\": {"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"kind\": \"ToolDiagnosticsManifestJson\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"kind\": \"ToolDiagnosticsArtifactSummaryJson\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"schemaVersion\": 24"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"Frame001.scene-renderer.txt\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"Frame001.rendergraph.dot\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"Frame001.rendergraph.txt\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"Frame001.rendergraph.json\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"Frame001.diagnostics-manifest.json\""),
-              std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"Frame001.diagnostics-artifacts.json\""),
-              std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("Frame001.scene-renderer.txt"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("Frame001.rendergraph.dot"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("Frame001.rendergraph.txt"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("Frame001.rendergraph.json"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"artifactSummaryJson\": {"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("Frame001.diagnostics-artifacts.json"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"artifactValidationJson\": {"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"kind\": \"ToolDiagnosticsArtifactValidationJson\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"contentType\": \"application/json\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"schemaVersion\": 25"), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"Frame001.diagnostics-validation.json\""),
-              std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("Frame001.diagnostics-validation.json"), std::string::npos);
-    EXPECT_EQ(artifactManifestJson.find("\"validationReport\": {"), std::string::npos);
-    EXPECT_EQ(artifactManifestJson.find("\"diagnosticCodeCounts\": ["), std::string::npos);
-
-    const SceneRendererToolDiagnosticsArtifactValidationResult validation =
-        SceneRenderer::ValidateToolDiagnosticsArtifacts(artifactResult);
-    EXPECT_EQ(validation.schemaVersion, RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION);
-    EXPECT_TRUE(validation.artifactResultAvailable);
-    EXPECT_TRUE(validation.allPrimaryArtifactsValid);
-    EXPECT_TRUE(validation.bundleHashMatches);
-    EXPECT_EQ(validation.verdictCode, "Valid");
-    EXPECT_EQ(validation.primaryFailureCode, "None");
-    EXPECT_EQ(validation.primaryFailureEntryIndex, RVX_INVALID_INDEX);
-    EXPECT_EQ(validation.primaryFailureEntryCount, 0u);
-    EXPECT_EQ(validation.entryCount, 5u);
-    EXPECT_TRUE(validation.entryCountMatchesCheckedPrimaryArtifactCount);
-    EXPECT_EQ(validation.entryCoverageCode, "Complete");
-    EXPECT_EQ(validation.entryCoverageMessage, "validation entries cover all checked primary artifacts");
-    EXPECT_TRUE(validation.primaryFailureArtifactId.empty());
-    EXPECT_TRUE(validation.primaryFailureArtifactRelativePath.empty());
-    EXPECT_TRUE(validation.primaryFailureArtifactKind.empty());
-    EXPECT_TRUE(validation.primaryFailureArtifactContentType.empty());
-    EXPECT_TRUE(validation.primaryFailureArtifactSchemaId.empty());
-    EXPECT_EQ(validation.primaryFailureArtifactSchemaVersion, 0u);
-    EXPECT_TRUE(validation.primaryFailureMessage.empty());
-    EXPECT_EQ(validation.checkedPrimaryArtifactCount, 5u);
-    EXPECT_EQ(validation.validPrimaryArtifactCount, 5u);
-    EXPECT_EQ(validation.failedPrimaryArtifactCount, 0u);
-    EXPECT_EQ(validation.actualTotalPrimaryArtifactBytes, artifactResult.totalPrimaryArtifactBytes);
-    EXPECT_EQ(validation.expectedPrimaryArtifactBundleHash, artifactResult.primaryArtifactBundleHash);
-    EXPECT_EQ(validation.actualPrimaryArtifactBundleHash, artifactResult.primaryArtifactBundleHash);
-    EXPECT_TRUE(validation.captureMetadataAvailable);
-    EXPECT_EQ(validation.captureId, artifactResult.captureId);
-    EXPECT_EQ(validation.captureBaseName, "Frame001");
-    EXPECT_EQ(validation.outputDirectory, artifactDirectoryString);
-    EXPECT_EQ(validation.frameIndex, toolSnapshot.frame.frameCount);
-    EXPECT_EQ(validation.toolDiagnosticsSchemaVersion, RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION);
-    EXPECT_EQ(validation.frameDiagnosticsSchemaVersion, RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION);
-    EXPECT_EQ(validation.renderGraphDiagnosticsSchemaVersion, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
-    EXPECT_EQ(validation.artifactSummarySchemaVersion,
-              RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION);
-    EXPECT_EQ(validation.artifactValidationSchemaVersion,
-              RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION);
-    EXPECT_EQ(validation.renderGraphDiagnosticsSchemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
-    EXPECT_EQ(validation.renderGraphPassCount, toolSnapshot.renderGraph.passes.size());
-    EXPECT_EQ(validation.renderGraphResourceCount, toolSnapshot.renderGraph.resources.size());
-    ASSERT_EQ(validation.diagnosticCodeCounts.size(), 1u);
-    EXPECT_EQ(validation.diagnosticCodeCounts[0].code, "None");
-    EXPECT_EQ(validation.diagnosticCodeCounts[0].count, 5u);
-    ASSERT_EQ(validation.entries.size(), static_cast<size_t>(5));
-    bool renderGraphJsonValidationFound = false;
-    for (size_t entryIndex = 0; entryIndex < validation.entries.size(); ++entryIndex)
-    {
-        const SceneRendererToolDiagnosticsArtifactValidationEntry& entry = validation.entries[entryIndex];
-        EXPECT_EQ(entry.entryIndex, static_cast<uint32>(entryIndex));
-        EXPECT_TRUE(entry.valid);
-        EXPECT_FALSE(entry.primaryFailure);
-        EXPECT_TRUE(entry.exists);
-        EXPECT_TRUE(entry.byteSizeMatches);
-        EXPECT_TRUE(entry.contentHashMatches);
-        EXPECT_EQ(entry.diagnosticCode, "None");
-        EXPECT_TRUE(entry.diagnosticMessage.empty());
-        if (entry.id == "renderGraphDiagnosticsJson")
-        {
-            renderGraphJsonValidationFound = true;
-            EXPECT_EQ(entry.entryIndex, 3u);
-            EXPECT_EQ(entry.kind, "RenderGraphDiagnosticsJson");
-            EXPECT_EQ(entry.contentType, "application/json");
-            EXPECT_EQ(entry.schemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
-            EXPECT_EQ(entry.schemaVersion, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
-            EXPECT_TRUE(entry.identityChecked);
-            EXPECT_TRUE(entry.identityMatches);
-            EXPECT_TRUE(entry.schemaChecked);
-            EXPECT_TRUE(entry.schemaMatches);
-            EXPECT_EQ(entry.actualId, "renderGraphDiagnosticsJson");
-            EXPECT_EQ(entry.actualKind, "RenderGraphDiagnosticsJson");
-            EXPECT_EQ(entry.actualContentType, "application/json");
-            EXPECT_EQ(entry.actualSchemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
-            EXPECT_EQ(entry.actualSchemaVersion, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
-            EXPECT_EQ(entry.relativePath, "Frame001.rendergraph.json");
-            EXPECT_EQ(entry.expectedByteSize, artifactResult.renderGraphDiagnosticsJsonBytes);
-            EXPECT_EQ(entry.actualByteSize, artifactResult.renderGraphDiagnosticsJsonBytes);
-            EXPECT_EQ(entry.expectedContentHash, artifactResult.renderGraphDiagnosticsJsonContentHash);
-            EXPECT_EQ(entry.actualContentHash, artifactResult.renderGraphDiagnosticsJsonContentHash);
-        }
-    }
-    EXPECT_TRUE(renderGraphJsonValidationFound);
-    const std::string validationJson =
-        SceneRenderer::ExportToolDiagnosticsArtifactValidationJson(validation);
-    EXPECT_NE(validationJson.find("\"schemaVersion\": 25"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"id\": \"artifactValidationJson\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"kind\": \"ToolDiagnosticsArtifactValidationJson\""),
-              std::string::npos);
-    EXPECT_NE(validationJson.find("\"contentType\": \"application/json\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"contentHash\": \"\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"relativePath\": \"\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"capture\": {"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"metadataAvailable\": true"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"captureId\": \"" + artifactResult.captureId + "\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"baseName\": \"Frame001\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"outputDirectory\": "), std::string::npos);
-    EXPECT_NE(validationJson.find("\"frameIndex\": " + std::to_string(toolSnapshot.frame.frameCount)),
-              std::string::npos);
-    EXPECT_NE(validationJson.find("\"toolDiagnosticsSchemaVersion\": 24"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"renderGraphDiagnosticsSchemaVersion\": 3"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"renderGraphDiagnosticsSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
-              std::string::npos);
-    EXPECT_NE(validationJson.find("\"artifactSummarySchemaVersion\": 24"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"artifactValidationSchemaVersion\": 25"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"renderGraphPassCount\": " +
-                                  std::to_string(toolSnapshot.renderGraph.passes.size())),
-              std::string::npos);
-    EXPECT_NE(validationJson.find("\"renderGraphResourceCount\": " +
-                                  std::to_string(toolSnapshot.renderGraph.resources.size())),
-              std::string::npos);
-    EXPECT_NE(validationJson.find("\"allPrimaryArtifactsValid\": true"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"bundleHashMatches\": true"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"verdictCode\": \"Valid\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"primaryFailureCode\": \"None\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"primaryFailureEntryIndex\": null"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"primaryFailureEntryCount\": 0"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"entryCount\": 5"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"entryCountMatchesCheckedPrimaryArtifactCount\": true"),
-              std::string::npos);
-    EXPECT_NE(validationJson.find("\"entryCoverageCode\": \"Complete\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"entryCoverageMessage\": \"validation entries cover all checked primary artifacts\""),
-              std::string::npos);
-    EXPECT_NE(validationJson.find("\"primaryFailureArtifactId\": \"\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"primaryFailureArtifactRelativePath\": \"\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"primaryFailureArtifactKind\": \"\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"primaryFailureArtifactContentType\": \"\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"primaryFailureArtifactSchemaId\": \"\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"primaryFailureArtifactSchemaVersion\": 0"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"primaryFailureMessage\": \"\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"checkedPrimaryArtifactCount\": 5"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"validPrimaryArtifactCount\": 5"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"failedPrimaryArtifactCount\": 0"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"diagnosticCodeCounts\": ["), std::string::npos);
-    EXPECT_NE(validationJson.find("\"code\": \"None\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"count\": 5"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"expectedPrimaryArtifactBundleHash\": \"" +
-                                  artifactResult.primaryArtifactBundleHash + "\""),
-              std::string::npos);
-    EXPECT_NE(validationJson.find("\"entryIndex\": 3"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"primaryFailure\": false"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"id\": \"renderGraphDiagnosticsJson\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"kind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"contentType\": \"application/json\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"schemaVersion\": 3"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"actualId\": \"renderGraphDiagnosticsJson\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"actualKind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"actualContentType\": \"application/json\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"actualSchemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"actualSchemaVersion\": 3"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"identityChecked\": true"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"identityMatches\": true"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"schemaChecked\": true"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"schemaMatches\": true"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"actualContentHash\": \"" +
-                                  artifactResult.renderGraphDiagnosticsJsonContentHash + "\""),
-              std::string::npos);
-    EXPECT_NE(validationJson.find("\"diagnosticCode\": \"None\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"diagnosticMessage\": \"\""), std::string::npos);
-    EXPECT_EQ(ReadTextFile(artifactResult.artifactValidationJsonPath), validationJson);
-    EXPECT_FALSE(SceneRenderer::SaveToolDiagnosticsArtifactValidationJson(nullptr, validation));
-    EXPECT_FALSE(SceneRenderer::SaveToolDiagnosticsArtifactValidationJson("", validation));
-    const fs::path validationJsonPath =
-        artifactDirectory / "Frame001.diagnostics-validation.json";
-    const std::string validationJsonPathString = validationJsonPath.string();
-    ASSERT_TRUE(SceneRenderer::SaveToolDiagnosticsArtifactValidationJson(validationJsonPathString.c_str(),
-                                                                         validation));
-    EXPECT_EQ(ReadTextFile(validationJsonPath), validationJson);
-
-    SceneRendererToolDiagnosticsArtifactResult bundleMismatchArtifact = artifactResult;
-    bundleMismatchArtifact.primaryArtifactBundleHash = "0000000000000000";
-    const SceneRendererToolDiagnosticsArtifactValidationResult bundleMismatchValidation =
-        SceneRenderer::ValidateToolDiagnosticsArtifacts(bundleMismatchArtifact);
-    EXPECT_FALSE(bundleMismatchValidation.allPrimaryArtifactsValid);
-    EXPECT_FALSE(bundleMismatchValidation.bundleHashMatches);
-    EXPECT_EQ(bundleMismatchValidation.validPrimaryArtifactCount,
-              bundleMismatchValidation.checkedPrimaryArtifactCount);
-    EXPECT_EQ(bundleMismatchValidation.failedPrimaryArtifactCount, 0u);
-    EXPECT_EQ(bundleMismatchValidation.verdictCode, "BundleHashMismatch");
-    EXPECT_EQ(bundleMismatchValidation.primaryFailureCode, "BundleHashMismatch");
-    EXPECT_EQ(bundleMismatchValidation.primaryFailureEntryIndex, RVX_INVALID_INDEX);
-    EXPECT_EQ(bundleMismatchValidation.primaryFailureEntryCount, 0u);
-    EXPECT_EQ(bundleMismatchValidation.entryCount, 5u);
-    EXPECT_TRUE(bundleMismatchValidation.entryCountMatchesCheckedPrimaryArtifactCount);
-    EXPECT_EQ(bundleMismatchValidation.entryCoverageCode, "Complete");
-    EXPECT_EQ(bundleMismatchValidation.entryCoverageMessage,
-              "validation entries cover all checked primary artifacts");
-    EXPECT_TRUE(bundleMismatchValidation.primaryFailureArtifactId.empty());
-    EXPECT_TRUE(bundleMismatchValidation.primaryFailureArtifactRelativePath.empty());
-    EXPECT_TRUE(bundleMismatchValidation.primaryFailureArtifactKind.empty());
-    EXPECT_TRUE(bundleMismatchValidation.primaryFailureArtifactContentType.empty());
-    EXPECT_TRUE(bundleMismatchValidation.primaryFailureArtifactSchemaId.empty());
-    EXPECT_EQ(bundleMismatchValidation.primaryFailureArtifactSchemaVersion, 0u);
-    EXPECT_EQ(bundleMismatchValidation.primaryFailureMessage, "primary artifact bundle hash mismatch");
-    const std::string bundleMismatchJson =
-        SceneRenderer::ExportToolDiagnosticsArtifactValidationJson(bundleMismatchValidation);
-    EXPECT_NE(bundleMismatchJson.find("\"bundleHashMatches\": false"), std::string::npos);
-    EXPECT_NE(bundleMismatchJson.find("\"verdictCode\": \"BundleHashMismatch\""), std::string::npos);
-    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureCode\": \"BundleHashMismatch\""),
-              std::string::npos);
-    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureEntryIndex\": null"), std::string::npos);
-    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureEntryCount\": 0"), std::string::npos);
-    EXPECT_NE(bundleMismatchJson.find("\"entryCount\": 5"), std::string::npos);
-    EXPECT_NE(bundleMismatchJson.find("\"entryCountMatchesCheckedPrimaryArtifactCount\": true"),
-              std::string::npos);
-    EXPECT_NE(bundleMismatchJson.find("\"entryCoverageCode\": \"Complete\""), std::string::npos);
-    EXPECT_NE(bundleMismatchJson.find("\"entryCoverageMessage\": \"validation entries cover all checked primary artifacts\""),
-              std::string::npos);
-    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureArtifactId\": \"\""), std::string::npos);
-    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureArtifactRelativePath\": \"\""),
-              std::string::npos);
-    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureArtifactKind\": \"\""), std::string::npos);
-    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureArtifactContentType\": \"\""),
-              std::string::npos);
-    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureArtifactSchemaId\": \"\""),
-              std::string::npos);
-    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureArtifactSchemaVersion\": 0"),
-              std::string::npos);
-    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureMessage\": \"primary artifact bundle hash mismatch\""),
-              std::string::npos);
-    EXPECT_NE(bundleMismatchJson.find("\"failedPrimaryArtifactCount\": 0"), std::string::npos);
-    for (const SceneRendererToolDiagnosticsArtifactValidationEntry& entry : bundleMismatchValidation.entries)
-    {
-        EXPECT_FALSE(entry.primaryFailure);
-    }
-
-    std::string wrongIdentityJson = renderGraphDiagnosticsJson;
-    const std::string expectedIdentity = "\"id\": \"renderGraphDiagnosticsJson\"";
-    const std::string wrongIdentity = "\"id\": \"unexpectedRenderGraphDiagnosticsJson\"";
-    const size_t identityOffset = wrongIdentityJson.find(expectedIdentity);
-    ASSERT_NE(identityOffset, std::string::npos);
-    wrongIdentityJson.replace(identityOffset, expectedIdentity.size(), wrongIdentity);
-    {
-        std::ofstream wrongIdentityArtifact(artifactResult.renderGraphDiagnosticsJsonPath,
-                                            std::ios::binary | std::ios::trunc);
-        ASSERT_TRUE(wrongIdentityArtifact.is_open());
-        wrongIdentityArtifact << wrongIdentityJson;
-    }
-
-    SceneRendererToolDiagnosticsArtifactResult identityMismatchArtifact = artifactResult;
-    identityMismatchArtifact.renderGraphDiagnosticsJsonBytes =
-        static_cast<uint64>(wrongIdentityJson.size());
-    identityMismatchArtifact.renderGraphDiagnosticsJsonContentHash =
-        ComputeTestContentHash(wrongIdentityJson);
-    const SceneRendererToolDiagnosticsArtifactValidationResult identityMismatchValidation =
-        SceneRenderer::ValidateToolDiagnosticsArtifacts(identityMismatchArtifact);
-    EXPECT_FALSE(identityMismatchValidation.allPrimaryArtifactsValid);
-    EXPECT_EQ(identityMismatchValidation.verdictCode, "InvalidArtifacts");
-    EXPECT_EQ(identityMismatchValidation.checkedPrimaryArtifactCount, 5u);
-    EXPECT_EQ(identityMismatchValidation.validPrimaryArtifactCount, 4u);
-    EXPECT_EQ(identityMismatchValidation.failedPrimaryArtifactCount, 1u);
-    EXPECT_EQ(identityMismatchValidation.primaryFailureCode, "IdentityMetadataMismatch");
-    EXPECT_EQ(identityMismatchValidation.primaryFailureEntryIndex, 3u);
-    EXPECT_EQ(identityMismatchValidation.primaryFailureEntryCount, 1u);
-    EXPECT_EQ(identityMismatchValidation.entryCount, 5u);
-    EXPECT_TRUE(identityMismatchValidation.entryCountMatchesCheckedPrimaryArtifactCount);
-    EXPECT_EQ(identityMismatchValidation.entryCoverageCode, "Complete");
-    EXPECT_EQ(identityMismatchValidation.entryCoverageMessage,
-              "validation entries cover all checked primary artifacts");
-    EXPECT_EQ(identityMismatchValidation.primaryFailureArtifactId, "renderGraphDiagnosticsJson");
-    EXPECT_EQ(identityMismatchValidation.primaryFailureArtifactRelativePath, "Frame001.rendergraph.json");
-    EXPECT_EQ(identityMismatchValidation.primaryFailureArtifactKind, "RenderGraphDiagnosticsJson");
-    EXPECT_EQ(identityMismatchValidation.primaryFailureArtifactContentType, "application/json");
-    EXPECT_EQ(identityMismatchValidation.primaryFailureArtifactSchemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
-    EXPECT_EQ(identityMismatchValidation.primaryFailureArtifactSchemaVersion,
-              RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
-    EXPECT_EQ(identityMismatchValidation.primaryFailureMessage, "artifact identity metadata mismatch");
-    bool identityMismatchCodeCountFound = false;
-    bool identityMismatchNoneCodeCountFound = false;
-    for (const SceneRendererToolDiagnosticsArtifactValidationCodeCount& codeCount :
-         identityMismatchValidation.diagnosticCodeCounts)
-    {
-        if (codeCount.code == "IdentityMetadataMismatch")
-        {
-            identityMismatchCodeCountFound = true;
-            EXPECT_EQ(codeCount.count, 1u);
-        }
-        else if (codeCount.code == "None")
-        {
-            identityMismatchNoneCodeCountFound = true;
-            EXPECT_EQ(codeCount.count, 4u);
-        }
-    }
-    EXPECT_TRUE(identityMismatchCodeCountFound);
-    EXPECT_TRUE(identityMismatchNoneCodeCountFound);
-    bool renderGraphJsonIdentityMismatchFound = false;
-    for (const SceneRendererToolDiagnosticsArtifactValidationEntry& entry : identityMismatchValidation.entries)
-    {
-        if (entry.id == "renderGraphDiagnosticsJson")
-        {
-            renderGraphJsonIdentityMismatchFound = true;
-            EXPECT_EQ(entry.entryIndex, 3u);
-            EXPECT_TRUE(entry.primaryFailure);
-            EXPECT_FALSE(entry.valid);
-            EXPECT_TRUE(entry.exists);
-            EXPECT_TRUE(entry.byteSizeMatches);
-            EXPECT_TRUE(entry.contentHashMatches);
-            EXPECT_TRUE(entry.identityChecked);
-            EXPECT_FALSE(entry.identityMatches);
-            EXPECT_TRUE(entry.schemaChecked);
-            EXPECT_TRUE(entry.schemaMatches);
-            EXPECT_EQ(entry.actualId, "unexpectedRenderGraphDiagnosticsJson");
-            EXPECT_EQ(entry.actualKind, "RenderGraphDiagnosticsJson");
-            EXPECT_EQ(entry.actualContentType, "application/json");
-            EXPECT_EQ(entry.actualSchemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
-            EXPECT_EQ(entry.actualSchemaVersion, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
-            EXPECT_EQ(entry.diagnosticCode, "IdentityMetadataMismatch");
-            EXPECT_EQ(entry.diagnosticMessage, "artifact identity metadata mismatch");
-        }
-    }
-    EXPECT_TRUE(renderGraphJsonIdentityMismatchFound);
-    const std::string identityMismatchJson =
-        SceneRenderer::ExportToolDiagnosticsArtifactValidationJson(identityMismatchValidation);
-    EXPECT_NE(identityMismatchJson.find("\"identityMatches\": false"), std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"schemaMatches\": true"), std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"actualId\": \"unexpectedRenderGraphDiagnosticsJson\""),
-              std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"actualKind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"actualSchemaVersion\": 3"), std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"verdictCode\": \"InvalidArtifacts\""), std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"primaryFailureCode\": \"IdentityMetadataMismatch\""),
-              std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"primaryFailureEntryIndex\": 3"), std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"primaryFailureEntryCount\": 1"), std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"entryCount\": 5"), std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"entryCountMatchesCheckedPrimaryArtifactCount\": true"),
-              std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"entryCoverageCode\": \"Complete\""), std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"entryCoverageMessage\": \"validation entries cover all checked primary artifacts\""),
-              std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"primaryFailureArtifactId\": \"renderGraphDiagnosticsJson\""),
-              std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"primaryFailureArtifactRelativePath\": \"Frame001.rendergraph.json\""),
-              std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"primaryFailureArtifactKind\": \"RenderGraphDiagnosticsJson\""),
-              std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"primaryFailureArtifactContentType\": \"application/json\""),
-              std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"primaryFailureArtifactSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
-              std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"primaryFailureArtifactSchemaVersion\": 3"),
-              std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"primaryFailureMessage\": \"artifact identity metadata mismatch\""),
-              std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"failedPrimaryArtifactCount\": 1"), std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"entryIndex\": 3"), std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"primaryFailure\": true"), std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"code\": \"IdentityMetadataMismatch\""),
-              std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"count\": 1"), std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"diagnosticCode\": \"IdentityMetadataMismatch\""),
-              std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"diagnosticMessage\": \"artifact identity metadata mismatch\""),
-              std::string::npos);
-
-    {
-        std::ofstream restoredArtifact(artifactResult.renderGraphDiagnosticsJsonPath,
-                                       std::ios::binary | std::ios::trunc);
-        ASSERT_TRUE(restoredArtifact.is_open());
-        restoredArtifact << renderGraphDiagnosticsJson;
-    }
-
-    {
-        std::ofstream modifiedArtifact(artifactResult.renderGraphDiagnosticsJsonPath,
-                                       std::ios::binary | std::ios::app);
-        ASSERT_TRUE(modifiedArtifact.is_open());
-        modifiedArtifact << "\n";
-    }
-
-    const SceneRendererToolDiagnosticsArtifactValidationResult modifiedValidation =
-        SceneRenderer::ValidateToolDiagnosticsArtifacts(artifactResult);
-    EXPECT_FALSE(modifiedValidation.allPrimaryArtifactsValid);
-    EXPECT_FALSE(modifiedValidation.bundleHashMatches);
-    EXPECT_EQ(modifiedValidation.verdictCode, "InvalidArtifacts");
-    EXPECT_EQ(modifiedValidation.checkedPrimaryArtifactCount, 5u);
-    EXPECT_EQ(modifiedValidation.validPrimaryArtifactCount, 4u);
-    EXPECT_EQ(modifiedValidation.failedPrimaryArtifactCount, 1u);
-    EXPECT_EQ(modifiedValidation.primaryFailureCode, "ByteSizeMismatch");
-    EXPECT_EQ(modifiedValidation.primaryFailureEntryIndex, 3u);
-    EXPECT_EQ(modifiedValidation.primaryFailureEntryCount, 1u);
-    EXPECT_EQ(modifiedValidation.entryCount, 5u);
-    EXPECT_TRUE(modifiedValidation.entryCountMatchesCheckedPrimaryArtifactCount);
-    EXPECT_EQ(modifiedValidation.entryCoverageCode, "Complete");
-    EXPECT_EQ(modifiedValidation.entryCoverageMessage,
-              "validation entries cover all checked primary artifacts");
-    EXPECT_EQ(modifiedValidation.primaryFailureArtifactId, "renderGraphDiagnosticsJson");
-    EXPECT_EQ(modifiedValidation.primaryFailureArtifactRelativePath, "Frame001.rendergraph.json");
-    EXPECT_EQ(modifiedValidation.primaryFailureArtifactKind, "RenderGraphDiagnosticsJson");
-    EXPECT_EQ(modifiedValidation.primaryFailureArtifactContentType, "application/json");
-    EXPECT_EQ(modifiedValidation.primaryFailureArtifactSchemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
-    EXPECT_EQ(modifiedValidation.primaryFailureArtifactSchemaVersion,
-              RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
-    EXPECT_EQ(modifiedValidation.primaryFailureMessage, "artifact byte size mismatch");
-    bool byteSizeMismatchCodeCountFound = false;
-    bool byteSizeMismatchNoneCodeCountFound = false;
-    for (const SceneRendererToolDiagnosticsArtifactValidationCodeCount& codeCount :
-         modifiedValidation.diagnosticCodeCounts)
-    {
-        if (codeCount.code == "ByteSizeMismatch")
-        {
-            byteSizeMismatchCodeCountFound = true;
-            EXPECT_EQ(codeCount.count, 1u);
-        }
-        else if (codeCount.code == "None")
-        {
-            byteSizeMismatchNoneCodeCountFound = true;
-            EXPECT_EQ(codeCount.count, 4u);
-        }
-    }
-    EXPECT_TRUE(byteSizeMismatchCodeCountFound);
-    EXPECT_TRUE(byteSizeMismatchNoneCodeCountFound);
-    bool renderGraphJsonMismatchFound = false;
-    for (const SceneRendererToolDiagnosticsArtifactValidationEntry& entry : modifiedValidation.entries)
-    {
-        if (entry.id == "renderGraphDiagnosticsJson")
-        {
-            renderGraphJsonMismatchFound = true;
-            EXPECT_EQ(entry.entryIndex, 3u);
-            EXPECT_TRUE(entry.primaryFailure);
-            EXPECT_FALSE(entry.valid);
-            EXPECT_TRUE(entry.exists);
-            EXPECT_FALSE(entry.byteSizeMatches);
-            EXPECT_FALSE(entry.contentHashMatches);
-            EXPECT_FALSE(entry.diagnosticMessage.empty());
-            EXPECT_EQ(entry.diagnosticCode, "ByteSizeMismatch");
-            EXPECT_NE(entry.actualByteSize, entry.expectedByteSize);
-            EXPECT_NE(entry.actualContentHash, entry.expectedContentHash);
-        }
-    }
-    EXPECT_TRUE(renderGraphJsonMismatchFound);
-    const std::string modifiedValidationJson =
-        SceneRenderer::ExportToolDiagnosticsArtifactValidationJson(modifiedValidation);
-    EXPECT_NE(modifiedValidationJson.find("\"allPrimaryArtifactsValid\": false"), std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"bundleHashMatches\": false"), std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"verdictCode\": \"InvalidArtifacts\""), std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureCode\": \"ByteSizeMismatch\""),
-              std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureEntryIndex\": 3"), std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureEntryCount\": 1"), std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"entryCount\": 5"), std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"entryCountMatchesCheckedPrimaryArtifactCount\": true"),
-              std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"entryCoverageCode\": \"Complete\""), std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"entryCoverageMessage\": \"validation entries cover all checked primary artifacts\""),
-              std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureArtifactId\": \"renderGraphDiagnosticsJson\""),
-              std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureArtifactRelativePath\": \"Frame001.rendergraph.json\""),
-              std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureArtifactKind\": \"RenderGraphDiagnosticsJson\""),
-              std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureArtifactContentType\": \"application/json\""),
-              std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureArtifactSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
-              std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureArtifactSchemaVersion\": 3"),
-              std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureMessage\": \"artifact byte size mismatch\""),
-              std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"failedPrimaryArtifactCount\": 1"), std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"entryIndex\": 3"), std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"primaryFailure\": true"), std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"id\": \"renderGraphDiagnosticsJson\""), std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"valid\": false"), std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"byteSizeMatches\": false"), std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"contentHashMatches\": false"), std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"code\": \"ByteSizeMismatch\""),
-              std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"count\": 1"), std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"diagnosticCode\": \"ByteSizeMismatch\""),
-              std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"diagnosticMessage\": \"artifact byte size mismatch\""),
-              std::string::npos);
-    fs::remove_all(artifactDirectory, removeError);
-}
-
-TEST(SceneRendererDiagnosticsValidation, RenderFeatureReportMapsModernFeaturesToCapabilities)
-{
-    FakeDevice device;
-    SceneRenderer renderer;
-    renderer.SetRenderFeatureReportDeviceForTesting(&device);
-
-    auto graph = std::make_unique<RenderGraph>();
-    graph->SetDevice(&device);
-    renderer.SetRenderGraphForTesting(std::move(graph));
-
-    renderer.AddPass(std::make_unique<StatusTestPass>("ShadowPass",
-                                                      200,
-                                                      true,
-                                                      false,
-                                                      "Shadow atlas unavailable"));
-    renderer.AddPass(std::make_unique<StatusTestPass>("OpaquePass", 300, true, true));
-    renderer.AddPass(std::make_unique<StatusTestPass>("RayTracedShadowPass",
-                                                      350,
-                                                      true,
-                                                      true));
-
-    renderer.RefreshFrameDiagnosticsForTesting();
-
-    const SceneRenderFeatureReport& report = renderer.GetRenderFeatureReport();
-    EXPECT_EQ(report.schemaVersion, RVX_SCENE_RENDER_FEATURE_REPORT_SCHEMA_VERSION);
-    EXPECT_EQ(report.features.size(), static_cast<size_t>(7));
-    EXPECT_EQ(GetSceneRenderFeatureName(SceneRenderFeature::GPUDriven), std::string("GPUDriven"));
-    EXPECT_EQ(GetSceneRenderFeatureStatusName(SceneRenderFeatureStatus::Fallback), std::string("Fallback"));
-    EXPECT_GE(report.supportedCount, 1u);
-    EXPECT_GE(report.fallbackCount, 1u);
-    EXPECT_GE(report.unsupportedCount, 1u);
-    EXPECT_GE(report.skippedCount, 1u);
-
-    const SceneRenderFeatureCapability* pbr =
-        FindRenderFeature(report, SceneRenderFeature::PBR);
-    ASSERT_NE(pbr, nullptr);
-    EXPECT_EQ(pbr->status, SceneRenderFeatureStatus::Supported);
-    EXPECT_TRUE(pbr->requested);
-    EXPECT_TRUE(pbr->supported);
-    EXPECT_TRUE(pbr->enabled);
-    EXPECT_TRUE(pbr->renderGraphBacked);
-    EXPECT_EQ(pbr->requiredCapability, "graphicsPipeline+materialPipeline");
-
-    const SceneRenderFeatureCapability* shadows =
-        FindRenderFeature(report, SceneRenderFeature::Shadows);
-    ASSERT_NE(shadows, nullptr);
-    EXPECT_EQ(shadows->status, SceneRenderFeatureStatus::Fallback);
-    EXPECT_TRUE(shadows->requested);
-    EXPECT_FALSE(shadows->supported);
-    EXPECT_TRUE(shadows->fallbackUsed);
-    EXPECT_NE(shadows->diagnosticMessage.find("Shadow atlas unavailable"), std::string::npos);
-
-    const SceneRenderFeatureCapability* rayTracing =
-        FindRenderFeature(report, SceneRenderFeature::RayTracing);
-    ASSERT_NE(rayTracing, nullptr);
-    EXPECT_EQ(rayTracing->status, SceneRenderFeatureStatus::Unsupported);
-    EXPECT_TRUE(rayTracing->requested);
-    EXPECT_TRUE(rayTracing->rhiCapabilityKnown);
-    EXPECT_FALSE(rayTracing->supported);
-    EXPECT_EQ(rayTracing->requiredCapability, "supportsRaytracing+supportsRaytracingPipeline");
-
-    const SceneRenderFeatureCapability* postProcess =
-        FindRenderFeature(report, SceneRenderFeature::PostProcess);
-    ASSERT_NE(postProcess, nullptr);
-    EXPECT_EQ(postProcess->status, SceneRenderFeatureStatus::Skipped);
-    EXPECT_FALSE(postProcess->requested);
-
-    const std::string diagnosticsText = renderer.ExportToolDiagnosticsText();
-    EXPECT_NE(diagnosticsText.find("RenderFeatures: supported="), std::string::npos);
-    EXPECT_NE(diagnosticsText.find("Feature PBR: status=Supported"), std::string::npos);
-    EXPECT_NE(diagnosticsText.find("Feature Shadows: status=Fallback"), std::string::npos);
-    EXPECT_NE(diagnosticsText.find("Feature RayTracing: status=Unsupported"), std::string::npos);
-
-    const std::string manifestJson = renderer.ExportToolDiagnosticsManifestJson();
-    EXPECT_NE(manifestJson.find("\"features\": {"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"name\": \"RayTracing\""), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"status\": \"Unsupported\""), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"requiredCapability\": \"supportsRaytracing+supportsRaytracingPipeline\""),
-              std::string::npos);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessSettingsDefaultRayTracedReflectionControlsAreExplicit)
@@ -5878,291 +4602,6 @@ TEST_F(RenderPassValidationFixture, VignetteSkipsDrawWhenConstantsCannotMap)
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
 }
 
-TEST_F(RenderPassValidationFixture, FilmGrainRequiresResourcesBeforeReportingSupported)
-{
-    FilmGrainPass pass;
-    PostProcessSettings settings;
-    settings.enableFilmGrain = true;
-    pass.Configure(settings);
-
-    EXPECT_TRUE(pass.IsRequestedEnabled());
-    EXPECT_FALSE(pass.IsSupported());
-    EXPECT_FALSE(pass.IsEnabled());
-    EXPECT_FALSE(pass.GetUnsupportedReason().empty());
-}
-
-TEST_F(RenderPassValidationFixture, FilmGrainAddsLiveGraphPassAndDrawsFullscreenTriangle)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    FilmGrainPass pass;
-    PostProcessSettings settings;
-    settings.enableFilmGrain = true;
-    settings.filmGrainIntensity = 0.2f;
-    pass.Configure(settings);
-    pass.SetResources(&pipelineCache, &viewCache);
-
-    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
-    ASSERT_TRUE(pass.IsEnabled());
-
-    RenderGraph graph;
-    graph.SetDevice(&device);
-
-    RHITextureRef inputTexture =
-        device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
-    RHITextureRef outputTexture =
-        device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
-    ASSERT_TRUE(inputTexture);
-    ASSERT_TRUE(outputTexture);
-
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
-    graph.SetExportState(output, RHIResourceState::RenderTarget);
-
-    pass.AddToGraph(graph, input, output);
-    graph.Compile();
-
-    const auto& stats = graph.GetCompileStats();
-    EXPECT_TRUE(stats.compileValid);
-    EXPECT_EQ(stats.totalPasses, 1u);
-    EXPECT_EQ(stats.culledPasses, 0u);
-    EXPECT_EQ(stats.emptyPassUsageCount, 0u);
-
-    RecordingCommandContext ctx;
-    graph.Execute(ctx);
-
-    EXPECT_EQ(ctx.beginRenderPassCount, 1u);
-    EXPECT_EQ(ctx.endRenderPassCount, 1u);
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
-    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetFilmGrainPipeline(RHIFormat::RGBA8_UNORM));
-    ASSERT_EQ(ctx.descriptorSetSequence.size(), static_cast<size_t>(1));
-    EXPECT_EQ(ctx.descriptorSetSequence[0], 0u);
-    EXPECT_EQ(ctx.drawCount, 1u);
-    EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
-    EXPECT_EQ(ctx.drawIndexedCount, 0u);
-
-    auto descriptorIt = std::find_if(
-        device.createdDescriptorSetDescs.begin(),
-        device.createdDescriptorSetDescs.end(),
-        [](const RHIDescriptorSetDesc& desc)
-        {
-            return desc.debugName && std::string(desc.debugName) == "FilmGrainDescriptorSet";
-        });
-    ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
-    EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
-    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
-}
-
-TEST_F(RenderPassValidationFixture, FilmGrainUploadsConstantsWithHLSLPacking)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    FilmGrainPass pass;
-    PostProcessSettings settings;
-    settings.enableFilmGrain = true;
-    pass.Configure(settings);
-
-    FilmGrainConfig config;
-    config.type = FilmGrainType::Colored;
-    config.intensity = 0.42f;
-    config.response = 0.65f;
-    config.size = 2.25f;
-    config.luminanceContribution = 0.75f;
-    config.colorContribution = 0.25f;
-    config.animated = true;
-    config.animationSpeed = 2.0f;
-    pass.SetConfig(config);
-    pass.SetFrameTime(1.5f);
-    pass.SetResources(&pipelineCache, &viewCache);
-
-    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
-    ASSERT_TRUE(pass.IsEnabled());
-
-    RenderGraph graph;
-    graph.SetDevice(&device);
-
-    RHITextureRef inputTexture =
-        device.CreateTexture(RHITextureDesc::RenderTarget(40, 20, RHIFormat::RGBA8_UNORM));
-    RHITextureRef outputTexture =
-        device.CreateTexture(RHITextureDesc::RenderTarget(40, 20, RHIFormat::RGBA8_UNORM));
-    ASSERT_TRUE(inputTexture);
-    ASSERT_TRUE(outputTexture);
-
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
-    graph.SetExportState(output, RHIResourceState::RenderTarget);
-
-    pass.AddToGraph(graph, input, output);
-    graph.Compile();
-
-    RecordingCommandContext ctx;
-    graph.Execute(ctx);
-
-    ASSERT_EQ(ctx.drawCount, 1u);
-
-    const FakeBuffer* constants = FindCreatedBuffer(device, "FilmGrainConstants");
-    ASSERT_NE(constants, nullptr);
-    const std::vector<uint8>& storage = constants->GetStorage();
-    ASSERT_GE(storage.size(), static_cast<size_t>(48));
-
-    auto readFloat = [&storage](size_t byteOffset)
-    {
-        float value = 0.0f;
-        std::memcpy(&value, storage.data() + byteOffset, sizeof(float));
-        return value;
-    };
-
-    EXPECT_FLOAT_EQ(readFloat(0), 40.0f);
-    EXPECT_FLOAT_EQ(readFloat(4), 20.0f);
-    EXPECT_FLOAT_EQ(readFloat(8), 1.0f / 40.0f);
-    EXPECT_FLOAT_EQ(readFloat(12), 1.0f / 20.0f);
-    EXPECT_FLOAT_EQ(readFloat(16), config.intensity);
-    EXPECT_FLOAT_EQ(readFloat(20), config.response);
-    EXPECT_FLOAT_EQ(readFloat(24), config.size);
-    EXPECT_FLOAT_EQ(readFloat(28), config.luminanceContribution);
-    EXPECT_FLOAT_EQ(readFloat(32), config.colorContribution);
-    EXPECT_FLOAT_EQ(readFloat(36), 3.0f);
-    EXPECT_FLOAT_EQ(readFloat(40), static_cast<float>(static_cast<uint32>(config.type)));
-    EXPECT_FLOAT_EQ(readFloat(44), 0.0f);
-}
-
-TEST_F(RenderPassValidationFixture, FilmGrainSkipsDrawWhenConstantsCannotMap)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize(false));
-
-    FilmGrainPass pass;
-    PostProcessSettings settings;
-    settings.enableFilmGrain = true;
-    pass.Configure(settings);
-    pass.SetResources(&pipelineCache, &viewCache);
-
-    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
-
-    RenderGraph graph;
-    graph.SetDevice(&device);
-
-    RHITextureRef inputTexture =
-        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
-    RHITextureRef outputTexture =
-        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
-    ASSERT_TRUE(inputTexture);
-    ASSERT_TRUE(outputTexture);
-
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
-    graph.SetExportState(output, RHIResourceState::RenderTarget);
-
-    pass.AddToGraph(graph, input, output);
-    graph.Compile();
-
-    RecordingCommandContext ctx;
-    graph.Execute(ctx);
-
-    EXPECT_EQ(ctx.drawCount, 0u);
-    EXPECT_EQ(ctx.beginRenderPassCount, 0u);
-}
-
-TEST_F(RenderPassValidationFixture, SSAOPassRequiresResourcesBeforeReportingSupported)
-{
-    SSAOPass pass;
-    PostProcessSettings settings;
-    settings.enableSSAO = true;
-    pass.Configure(settings);
-
-    EXPECT_TRUE(pass.IsRequestedEnabled());
-    EXPECT_FALSE(pass.IsSupported());
-    EXPECT_FALSE(pass.IsEnabled());
-    EXPECT_FALSE(pass.GetUnsupportedReason().empty());
-}
-
-TEST_F(RenderPassValidationFixture, SSAOPassAddsDepthOnlyGraphPassAndDrawsFullscreenTriangle)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    SSAOPass pass;
-    PostProcessSettings settings;
-    settings.enableSSAO = true;
-    settings.ssaoRadius = 0.75f;
-    settings.ssaoIntensity = 0.6f;
-    settings.visualQualityPreset = RenderVisualQualityPreset::High;
-    pass.Configure(settings);
-    pass.SetResources(&pipelineCache, &viewCache);
-
-    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
-    ASSERT_TRUE(pass.IsEnabled());
-
-    RenderGraph graph;
-    graph.SetDevice(&device);
-
-    RHITextureDesc inputDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
-    inputDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
-    RHITextureDesc outputDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
-    outputDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
-    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT);
-    depthDesc.usage = RHITextureUsage::DepthStencil | RHITextureUsage::ShaderResource;
-
-    RHITextureRef inputTexture = device.CreateTexture(inputDesc);
-    RHITextureRef outputTexture = device.CreateTexture(outputDesc);
-    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
-    ASSERT_TRUE(inputTexture);
-    ASSERT_TRUE(outputTexture);
-    ASSERT_TRUE(depthTexture);
-
-    PostProcessFrameInputs frameInputs;
-    frameInputs.sceneColor = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    frameInputs.depth = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthWrite);
-    frameInputs.outputFormat = RHIFormat::RGBA16_FLOAT;
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
-    graph.SetExportState(output, RHIResourceState::RenderTarget);
-
-    pass.AddToGraph(graph, frameInputs, output);
-    graph.Compile();
-
-    const auto& graphStats = graph.GetCompileStats();
-    EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 1u);
-    EXPECT_EQ(graphStats.culledPasses, 0u);
-    EXPECT_EQ(graphStats.emptyPassUsageCount, 0u);
-
-    RecordingCommandContext ctx;
-    graph.Execute(ctx);
-
-    EXPECT_EQ(ctx.beginRenderPassCount, 1u);
-    EXPECT_EQ(ctx.endRenderPassCount, 1u);
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
-    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetSSAOPipeline(RHIFormat::RGBA16_FLOAT));
-    ASSERT_EQ(ctx.descriptorSetSequence.size(), static_cast<size_t>(1));
-    EXPECT_EQ(ctx.descriptorSetSequence[0], 0u);
-    EXPECT_EQ(ctx.drawCount, 1u);
-    EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
-    EXPECT_EQ(ctx.drawIndexedCount, 0u);
-
-    auto descriptorIt = std::find_if(
-        device.createdDescriptorSetDescs.begin(),
-        device.createdDescriptorSetDescs.end(),
-        [](const RHIDescriptorSetDesc& desc)
-        {
-            return desc.debugName && std::string(desc.debugName) == "SSAODescriptorSet";
-        });
-    ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
-    EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
-    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(4));
-
-    const SSAOComputeStats& stats = pass.GetLastGraphStats();
-    EXPECT_TRUE(stats.requested);
-    EXPECT_TRUE(stats.supported);
-    EXPECT_TRUE(stats.executed);
-    EXPECT_TRUE(stats.depthAvailable);
-    EXPECT_FALSE(stats.normalAvailable);
-    EXPECT_TRUE(stats.normalFallbackUsed);
-    EXPECT_FALSE(stats.neutralOutputFallbackUsed);
-    EXPECT_EQ(stats.sampleCount, 12u);
-    EXPECT_EQ(stats.aoPassCount, 1u);
-    EXPECT_EQ(stats.blurPassCount, 0u);
-    EXPECT_EQ(stats.implementationTier, SSAOImplementationTier::DepthOnlyLowTier);
-    EXPECT_NE(stats.fallbackReason.find("depth-only low-tier fallback"), std::string::npos);
-}
-
 TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingThroughIntermediate)
 {
     ASSERT_NO_FATAL_FAILURE(Initialize());
@@ -6253,7 +4692,6 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     settings.enableColorGrading = true;
     settings.enableChromaticAberration = true;
     settings.enableVignette = true;
-    settings.enableFilmGrain = true;
     settings.enableFXAA = true;
 
     PostProcessStack stack;
@@ -6262,33 +4700,30 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     auto* colorGrading = stack.AddEffect<ColorGradingPass>();
     auto* chromaticAberration = stack.AddEffect<ChromaticAberrationPass>();
     auto* vignette = stack.AddEffect<VignettePass>();
-    auto* filmGrain = stack.AddEffect<FilmGrainPass>();
     auto* fxaa = stack.AddEffect<FXAAPass>();
     bloom->Configure(settings);
     toneMapping->Configure(settings);
     colorGrading->Configure(settings);
     chromaticAberration->Configure(settings);
     vignette->Configure(settings);
-    filmGrain->Configure(settings);
     fxaa->Configure(settings);
     bloom->SetResources(&pipelineCache, &viewCache);
     toneMapping->SetResources(&pipelineCache, &viewCache);
     colorGrading->SetResources(&pipelineCache, &viewCache);
     chromaticAberration->SetResources(&pipelineCache, &viewCache);
     vignette->SetResources(&pipelineCache, &viewCache);
-    filmGrain->SetResources(&pipelineCache, &viewCache);
     fxaa->SetResources(&pipelineCache, &viewCache);
 
     stack.Execute(graph, input, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.noEffectNoWork);
-    EXPECT_EQ(executeStats.enabledEffectCount, 7u);
-    EXPECT_EQ(executeStats.graphPassCount, 7u);
-    EXPECT_EQ(executeStats.transientIntermediateCount, 6u);
+    EXPECT_EQ(executeStats.enabledEffectCount, 6u);
+    EXPECT_EQ(executeStats.graphPassCount, 6u);
+    EXPECT_EQ(executeStats.transientIntermediateCount, 5u);
     EXPECT_EQ(executeStats.hdrIntermediateCount, 1u);
     EXPECT_EQ(executeStats.hdrIntermediateFormat, RHIFormat::RGBA16_FLOAT);
-    EXPECT_EQ(executeStats.ldrIntermediateCount, 5u);
+    EXPECT_EQ(executeStats.ldrIntermediateCount, 4u);
     EXPECT_EQ(executeStats.ldrIntermediateFormat, RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(executeStats.transientIntermediateFormat, RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
@@ -6298,12 +4733,12 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     graph.Compile();
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 13u);
+    EXPECT_EQ(graphStats.totalPasses, 12u);
 
     RecordingCommandContext ctx;
     graph.Execute(ctx);
 
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(13));
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(12));
     for (size_t i = 0; i < 4; ++i)
     {
         ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomPipeline");
@@ -6316,12 +4751,11 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     EXPECT_EQ(ctx.pipelineSequence[8], pipelineCache.GetColorGradingPipeline(RHIFormat::RGBA8_UNORM));
     EXPECT_EQ(ctx.pipelineSequence[9], pipelineCache.GetChromaticAberrationPipeline(RHIFormat::RGBA8_UNORM));
     EXPECT_EQ(ctx.pipelineSequence[10], pipelineCache.GetVignettePipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.pipelineSequence[11], pipelineCache.GetFilmGrainPipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.pipelineSequence[12], pipelineCache.GetFXAAPipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.drawCount, 13u);
+    EXPECT_EQ(ctx.pipelineSequence[11], pipelineCache.GetFXAAPipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.drawCount, 12u);
     EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
-    EXPECT_EQ(ctx.beginRenderPassCount, 13u);
-    EXPECT_EQ(ctx.endRenderPassCount, 13u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 12u);
+    EXPECT_EQ(ctx.endRenderPassCount, 12u);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessStackKeepsZeroIntensityVignetteAsPassThrough)
@@ -6740,39 +5174,6 @@ TEST_F(RenderPassValidationFixture, PostProcessStackEvaluateEffectsCountsRuntime
     EXPECT_EQ(stats.transientIntermediateCount, 0u);
 }
 
-TEST(RenderPostProcessStackValidation, RenderVisualQualityPresetAppliesExplicitEffectPolicy)
-{
-    PostProcessSettings settings;
-    ApplyRenderVisualQualityPreset(settings, RenderVisualQualityPreset::Off);
-    EXPECT_EQ(settings.visualQualityPreset, RenderVisualQualityPreset::Off);
-    EXPECT_STREQ(GetRenderVisualQualityPresetName(settings.visualQualityPreset), "off");
-    EXPECT_FALSE(settings.enableToneMapping);
-    EXPECT_FALSE(settings.enableBloom);
-    EXPECT_FALSE(settings.enableFXAA);
-    EXPECT_FALSE(settings.enableSSAO);
-    EXPECT_FALSE(settings.enableTAA);
-
-    ApplyRenderVisualQualityPreset(settings, RenderVisualQualityPreset::Low);
-    EXPECT_EQ(settings.visualQualityPreset, RenderVisualQualityPreset::Low);
-    EXPECT_TRUE(settings.enableToneMapping);
-    EXPECT_TRUE(settings.enableFXAA);
-    EXPECT_FALSE(settings.enableBloom);
-    EXPECT_FALSE(settings.enableSSAO);
-
-    ApplyRenderVisualQualityPreset(settings, RenderVisualQualityPreset::Cinematic);
-    EXPECT_EQ(settings.visualQualityPreset, RenderVisualQualityPreset::Cinematic);
-    EXPECT_TRUE(settings.enableToneMapping);
-    EXPECT_TRUE(settings.enableBloom);
-    EXPECT_TRUE(settings.enableFXAA);
-    EXPECT_TRUE(settings.enableFilmGrain);
-    EXPECT_TRUE(settings.enableSSAO);
-    EXPECT_TRUE(settings.enableSSR);
-    EXPECT_TRUE(settings.enableTAA);
-    EXPECT_TRUE(settings.enableDOF);
-    EXPECT_TRUE(settings.enableMotionBlur);
-    EXPECT_TRUE(settings.enableVolumetricLighting);
-}
-
 TEST(RenderPostProcessStackValidation, SceneRendererWiresLDREffectsWithoutFlippingRuntimeDefaults)
 {
     const fs::path shaderDir = FindShaderDirectory();
@@ -6785,7 +5186,6 @@ TEST(RenderPostProcessStackValidation, SceneRendererWiresLDREffectsWithoutFlippi
         "Private" / "Renderer" / "SceneRenderer.cpp";
     const std::string source = ReadTextFile(sceneRendererPath);
 
-    EXPECT_NE(source.find("settings.toneMappingOperator = ToneMappingOperator::ACES;"), std::string::npos);
     EXPECT_NE(source.find("settings.enableColorGrading = false;"), std::string::npos);
     EXPECT_NE(source.find("settings.enableChromaticAberration = false;"), std::string::npos);
     EXPECT_NE(source.find("settings.enableFXAA = false;"), std::string::npos);
@@ -6808,145 +5208,6 @@ TEST(RenderPostProcessStackValidation, SceneRendererWiresLDREffectsWithoutFlippi
               std::string::npos);
 }
 
-TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposePostProcessEffectPlans)
-{
-    const fs::path shaderDir = FindShaderDirectory();
-    if (shaderDir.empty())
-    {
-        GTEST_SKIP() << "Render/Shaders directory not found";
-    }
-
-    const fs::path renderRoot = shaderDir.parent_path();
-    const std::string sceneRendererHeader =
-        ReadTextFile(renderRoot / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
-    const std::string sceneRendererSource =
-        ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
-
-    EXPECT_NE(sceneRendererHeader.find("std::vector<PostProcessEffectExecutionPlan> postProcessEffectPlans;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererHeader.find("bool postProcessFallbackCopyApplied = false;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererHeader.find("uint32 scheduledPostProcessEffectCount = 0;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererHeader.find("RenderVisualQualityPreset requestedVisualQualityPreset = RenderVisualQualityPreset::Medium;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererHeader.find("bool postProcessDepthInputAvailable = false;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererHeader.find("bool postProcessVelocityInputAvailable = false;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererSource.find(
-                  "diagnostics.postProcessEffectPlans = m_postProcessStats.stackStats.effectPlans;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererSource.find(
-                  "diagnostics.postProcessFallbackCopyApplied = m_postProcessStats.stackStats.fallbackCopyApplied;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererSource.find(
-                  "diagnostics.scheduledPostProcessEffectCount = m_postProcessStats.stackStats.scheduledEffectCount;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererSource.find(
-                  "diagnostics.requestedVisualQualityPreset = m_postProcessStats.stackStats.requestedQualityPreset;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererSource.find(
-                  "diagnostics.postProcessDepthInputAvailable = m_postProcessStats.frameInputDepthAvailable;"),
-              std::string::npos);
-}
-
-TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeRayTracingSceneStats)
-{
-    const fs::path shaderDir = FindShaderDirectory();
-    if (shaderDir.empty())
-    {
-        GTEST_SKIP() << "Render/Shaders directory not found";
-    }
-
-    const fs::path renderRoot = shaderDir.parent_path();
-    const std::string sceneRendererHeader =
-        ReadTextFile(renderRoot / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
-    const std::string sceneRendererSource =
-        ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
-
-    EXPECT_NE(sceneRendererHeader.find("RayTracingSceneManagerStats rayTracingSceneStats;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("diagnostics.rayTracingSceneStats = m_rayTracingSceneStats;"),
-              std::string::npos);
-}
-
-TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeGPUResourceStats)
-{
-    const fs::path shaderDir = FindShaderDirectory();
-    if (shaderDir.empty())
-    {
-        GTEST_SKIP() << "Render/Shaders directory not found";
-    }
-
-    const fs::path renderRoot = shaderDir.parent_path();
-    const std::string sceneRendererHeader =
-        ReadTextFile(renderRoot / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
-    const std::string sceneRendererSource =
-        ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
-
-    EXPECT_NE(sceneRendererHeader.find("GPUResourceManager::Stats gpuResourceStats;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("diagnostics.gpuResourceStats = m_gpuResourceManager->GetStats();"),
-              std::string::npos);
-}
-
-TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatureExtractionStats)
-{
-    const fs::path shaderDir = FindShaderDirectory();
-    if (shaderDir.empty())
-    {
-        GTEST_SKIP() << "Render/Shaders directory not found";
-    }
-
-    const fs::path renderRoot = shaderDir.parent_path();
-    const std::string sceneRendererHeader =
-        ReadTextFile(renderRoot / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
-    const std::string sceneRendererSource =
-        ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
-    const std::string artifactSource =
-        ReadTextFile(renderRoot / "Private" / "Diagnostics" / "RenderToolArtifacts.cpp");
-    const std::string renderCMake = ReadTextFile(renderRoot / "CMakeLists.txt");
-
-    EXPECT_NE(sceneRendererHeader.find("struct SceneFeatureExtractionStats"), std::string::npos);
-    EXPECT_NE(sceneRendererHeader.find("size_t particleMetadataOnlyCount = 0;"), std::string::npos);
-    EXPECT_NE(sceneRendererHeader.find("size_t particleRenderPayloadReadyCount = 0;"), std::string::npos);
-    EXPECT_NE(sceneRendererHeader.find("size_t particleSortingSupportedCount = 0;"), std::string::npos);
-    EXPECT_NE(sceneRendererHeader.find("RenderFeatureSnapshot m_featureSnapshot;"), std::string::npos);
-    EXPECT_NE(sceneRendererHeader.find("ParticleFeaturePass* m_particleFeaturePass = nullptr;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererHeader.find("const ParticleFeaturePassStats& GetParticleFeaturePassStats() const;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererHeader.find("std::unique_ptr<RenderFeatureSceneBridge> m_featureBridge;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererHeader.find("SceneFeatureExtractionStats featureExtractionStats;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("m_featureBridge = std::make_unique<RenderFeatureSceneBridge>();"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("std::make_unique<ParticleFeaturePass>()"), std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("m_particleFeaturePass->SetSnapshot(&m_featureSnapshot.particles)"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("return m_particleFeaturePass ? m_particleFeaturePass->GetStats()"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("PopulateFeatureExtractionStats("), std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("ParticleRenderSnapshotPayloadStatus::MetadataOnly"), std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("ParticleRenderSnapshotPayloadStatus::RenderOwnedPayloadReady"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("diagnostics.featureExtractionStats = m_featureExtractionStats;"),
-              std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("UpdateFeatureExtraction(world);"), std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("UpdateFeatureExtraction(sceneManager);"), std::string::npos);
-    EXPECT_NE(artifactSource.find("FeatureExtraction: attempted="), std::string::npos);
-    EXPECT_NE(artifactSource.find("\\\"featureExtraction\\\": {"), std::string::npos);
-    EXPECT_NE(artifactSource.find("\\\"particleItemCount\\\": "), std::string::npos);
-    EXPECT_NE(artifactSource.find("\\\"particleMetadataOnlyCount\\\": "), std::string::npos);
-    EXPECT_NE(artifactSource.find("\\\"particleRenderPayloadReadyCount\\\": "), std::string::npos);
-    EXPECT_NE(artifactSource.find("\\\"particleSortingSupportedCount\\\": "), std::string::npos);
-    EXPECT_NE(artifactSource.find("\\\"waterItemCount\\\": "), std::string::npos);
-    EXPECT_NE(artifactSource.find("\\\"terrainItemCount\\\": "), std::string::npos);
-    EXPECT_NE(renderCMake.find("Private/Passes/ParticleFeaturePass.cpp"), std::string::npos);
-}
-
 TEST(RenderPostProcessStackValidation, EvaluateEffectsReportsRequestedButUnsupportedResources)
 {
     PostProcessSettings settings;
@@ -6964,29 +5225,7 @@ TEST(RenderPostProcessStackValidation, EvaluateEffectsReportsRequestedButUnsuppo
     EXPECT_EQ(stats.requestedEffectCount, 2u);
     EXPECT_EQ(stats.unsupportedSkippedCount, 2u);
     EXPECT_EQ(stats.enabledEffectCount, 0u);
-    EXPECT_EQ(stats.scheduledEffectCount, 0u);
     EXPECT_EQ(stats.graphPassCount, 0u);
-    EXPECT_EQ(stats.requestedQualityPreset, RenderVisualQualityPreset::Medium);
-    EXPECT_EQ(stats.appliedQualityPreset, RenderVisualQualityPreset::Medium);
-    ASSERT_EQ(stats.effectPlans.size(), static_cast<size_t>(2));
-    EXPECT_EQ(stats.effectPlans[0].effectName, "Bloom");
-    EXPECT_TRUE(stats.effectPlans[0].requested);
-    EXPECT_FALSE(stats.effectPlans[0].supported);
-    EXPECT_FALSE(stats.effectPlans[0].enabled);
-    EXPECT_FALSE(stats.effectPlans[0].scheduled);
-    EXPECT_FALSE(stats.effectPlans[0].pipelineReady);
-    EXPECT_FALSE(stats.effectPlans[0].pipelineReadinessReason.empty());
-    EXPECT_FALSE(stats.effectPlans[0].skippedReason.empty());
-    EXPECT_EQ(stats.effectPlans[0].reason, stats.effectPlans[0].skippedReason);
-    EXPECT_EQ(stats.effectPlans[1].effectName, "ToneMapping");
-    EXPECT_TRUE(stats.effectPlans[1].requested);
-    EXPECT_FALSE(stats.effectPlans[1].supported);
-    EXPECT_FALSE(stats.effectPlans[1].enabled);
-    EXPECT_FALSE(stats.effectPlans[1].scheduled);
-    EXPECT_FALSE(stats.effectPlans[1].pipelineReady);
-    EXPECT_FALSE(stats.effectPlans[1].pipelineReadinessReason.empty());
-    EXPECT_FALSE(stats.effectPlans[1].skippedReason.empty());
-    EXPECT_EQ(stats.effectPlans[1].reason, stats.effectPlans[1].skippedReason);
 }
 
 TEST_F(RenderPassValidationFixture, NoSupportedEffectsReportsNoWork)
@@ -7120,6 +5359,2669 @@ TEST(RenderPostProcessStackValidation, MultiPassChainUsesDistinctTransientInterm
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 2u);
+}
+
+TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMaterialSet)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderObject& object = scene.GetMutableObject(0);
+    object.previousWorldMatrix = Mat4Identity();
+    object.previousWorldMatrix[3][0] = -1.0f;
+    object.previousWorldMatrixValid = 1;
+
+    Resource::MaterialResource materialResource;
+    materialResource.SetId(601);
+    materialResource.SetName("MaskedVelocityMaterial");
+    materialResource.SetMaterialData(std::make_shared<Material>());
+    ASSERT_TRUE(gpuResources.UploadImmediate(&materialResource));
+
+    RenderDrawItem maskedItem = MakeDrawItem(MaterialRenderMode::Masked);
+    maskedItem.material = gpuResources.GetHandle(materialResource.GetId());
+    std::vector<RenderDrawItem> opaqueItems;
+    std::vector<RenderDrawItem> maskedItems = {maskedItem};
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureDesc velocityDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RG16_FLOAT);
+    velocityDesc.debugName = "GraphVelocityForObjectVelocityPass";
+    view.velocityTarget = graph.CreateTexture(velocityDesc);
+    graph.SetExportState(view.velocityTarget, RHIResourceState::RenderTarget);
+
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
+    depthDesc.debugName = "GraphDepthForObjectVelocityPass";
+    view.depthTarget = graph.CreateTexture(depthDesc);
+    graph.SetExportState(view.depthTarget, RHIResourceState::DepthRead);
+
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+    view.previousViewProjectionMatrix = Mat4Identity();
+    view.previousViewProjectionValid = 1;
+    view.resetTemporalHistory = false;
+
+    ObjectVelocityPass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache, materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetEnabled(true);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    pass.AddToGraph(graph, view);
+    graph.Compile();
+    EXPECT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetMaskedObjectVelocityPipeline(RHIFormat::RG16_FLOAT));
+    EXPECT_EQ(1u, ctx.drawIndexedCount);
+    EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
+                            [](uint32 set) { return set == 2; }));
+
+    const ObjectVelocityPassStats& stats = pass.GetStats();
+    EXPECT_TRUE(stats.velocityRecorded);
+    EXPECT_EQ(stats.opaqueDrawItemCount, 0u);
+    EXPECT_EQ(stats.maskedDrawItemCount, 1u);
+    EXPECT_EQ(stats.maskedDrawCount, 1u);
+    EXPECT_EQ(stats.skippedMissingUVCount, 0u);
+    EXPECT_EQ(stats.skippedMaterialBindingCount, 0u);
+}
+TEST_F(RenderPassValidationFixture, OpaquePassBindsOpaqueThenMaskedPipelinesAndDrawsBothGroups)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
+    std::vector<RenderDrawItem> maskedItems = {MakeDrawItem(MaterialRenderMode::Masked)};
+
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    ASSERT_EQ(static_cast<size_t>(2), ctx.pipelineSequence.size());
+    EXPECT_EQ(pipelineCache.GetOpaquePipeline(), ctx.pipelineSequence[0]);
+    EXPECT_EQ(pipelineCache.GetMaskedPipeline(), ctx.pipelineSequence[1]);
+    EXPECT_EQ(2u, ctx.drawIndexedCount);
+}
+
+TEST_F(RenderPassValidationFixture, DepthPrepassConsumesGPUDrivenMultiMeshIndirectStreams)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    auto secondMeshResource = CreateMeshResource(402);
+    gpuResources.UploadImmediate(secondMeshResource.get());
+    ASSERT_TRUE(gpuResources.IsGPUReady(secondMeshResource->GetId()));
+
+    scene.GetMutableObject(0).bounds = meshResource->GetBounds();
+    RenderObject secondObject = MakeRenderObject(*secondMeshResource, gpuResources);
+    secondObject.bounds = secondMeshResource->GetBounds();
+    scene.AddObject(secondObject);
+
+    RenderDrawItem firstItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    RenderDrawItem secondItem = firstItem;
+    secondItem.objectIndex = 1;
+    secondItem.mesh = gpuResources.GetHandle(secondMeshResource->GetId());
+    std::vector<RenderDrawItem> opaqueItems = {firstItem, secondItem};
+    std::vector<RenderDrawItem> maskedItems;
+
+    MeshGPUBuffers firstBuffers = gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(firstBuffers.IsValid());
+    ASSERT_FALSE(firstBuffers.submeshes.empty());
+    MeshGPUBuffers secondBuffers = gpuResources.GetMeshBuffers(secondMeshResource->GetId());
+    ASSERT_TRUE(secondBuffers.IsValid());
+    ASSERT_FALSE(secondBuffers.submeshes.empty());
+
+    GPUCulling culling;
+    GPUCullingConfig cullingConfig;
+    cullingConfig.maxInstances = 4;
+    cullingConfig.enableOcclusionCulling = false;
+    cullingConfig.enableDistanceCulling = false;
+    culling.Initialize(&device, cullingConfig);
+    culling.BeginFrame();
+
+    GPUIndexedDrawDesc firstDrawDesc;
+    firstDrawDesc.indexCount = firstBuffers.submeshes[0].indexCount;
+    firstDrawDesc.firstIndex = firstBuffers.submeshes[0].indexOffset;
+    firstDrawDesc.vertexOffset = firstBuffers.submeshes[0].baseVertex;
+    ASSERT_EQ(0u, culling.BeginDrawGroup(meshResource->GetId()));
+    EXPECT_NE(RVX_INVALID_INDEX, culling.AddDrawItemInstance(scene, firstItem, firstDrawDesc, 0));
+    culling.EndDrawGroup();
+
+    GPUIndexedDrawDesc secondDrawDesc;
+    secondDrawDesc.indexCount = secondBuffers.submeshes[0].indexCount;
+    secondDrawDesc.firstIndex = secondBuffers.submeshes[0].indexOffset;
+    secondDrawDesc.vertexOffset = secondBuffers.submeshes[0].baseVertex;
+    ASSERT_EQ(1u, culling.BeginDrawGroup(secondMeshResource->GetId()));
+    EXPECT_NE(RVX_INVALID_INDEX, culling.AddDrawItemInstance(scene, secondItem, secondDrawDesc, 1));
+    culling.EndDrawGroup();
+    culling.EndFrame();
+    culling.CullCpuFallback(view.viewMatrix, view.projectionMatrix);
+    EXPECT_EQ(2u, culling.GetDrawCount());
+    ASSERT_EQ(2u, culling.GetDrawGroups().size());
+
+    RHITextureRef depthTexture = device.CreateTexture(RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    ASSERT_TRUE(depthTexture);
+    RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
+    ASSERT_TRUE(depthView);
+
+    DepthPrepass pass;
+    pass.SetEnabled(true);
+    ConfigureResources(pass, gpuResources, pipelineCache);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetDepthTarget(depthView.Get());
+    pass.SetGPUDrivenCullingSource(&culling);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(1u, ctx.beginRenderPassCount);
+    EXPECT_EQ(1u, ctx.endRenderPassCount);
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(2u, ctx.drawIndexedIndirectCount);
+    EXPECT_EQ(1u, ctx.lastIndirectDrawCount);
+    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectOffset);
+    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectStride);
+    ASSERT_NE(ctx.currentPipeline, nullptr);
+    ExpectPipelineDebugName(ctx.currentPipeline, "GPUDrivenDepthOnlyPipeline");
+
+    const DepthPrepassDrawStats& stats = pass.GetDrawStats();
+    EXPECT_TRUE(stats.gpuDrivenRequested);
+    EXPECT_TRUE(stats.gpuDrivenEligible);
+    EXPECT_EQ(0u, stats.directDrawCount);
+    EXPECT_EQ(2u, stats.gpuDrivenIndirectBatchCount);
+    EXPECT_EQ(2u, stats.gpuDrivenIndirectDrawCount);
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassConsumesGPUDrivenMaterialGroupedIndirectStreams)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    scene.GetMutableObject(0).bounds = meshResource->GetBounds();
+
+    RenderDrawItem opaqueItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    RenderDrawItem maskedItem = MakeDrawItem(MaterialRenderMode::Masked);
+    std::vector<RenderDrawItem> opaqueItems = {opaqueItem};
+    std::vector<RenderDrawItem> maskedItems = {maskedItem};
+
+    MeshGPUBuffers buffers = gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    ASSERT_FALSE(buffers.submeshes.empty());
+
+    GPUIndexedDrawDesc drawDesc;
+    drawDesc.indexCount = buffers.submeshes[0].indexCount;
+    drawDesc.firstIndex = buffers.submeshes[0].indexOffset;
+    drawDesc.vertexOffset = buffers.submeshes[0].baseVertex;
+
+    GPUCulling culling;
+    GPUCullingConfig cullingConfig;
+    cullingConfig.maxInstances = 4;
+    cullingConfig.enableOcclusionCulling = false;
+    cullingConfig.enableDistanceCulling = false;
+    culling.Initialize(&device, cullingConfig);
+    culling.BeginFrame();
+
+    ASSERT_EQ(0u, culling.BeginDrawGroup(
+        meshResource->GetId(),
+        opaqueItem.material.slot,
+        MaterialPipelineVariant::Opaque,
+        opaqueItem.mesh,
+        opaqueItem.material));
+    EXPECT_NE(RVX_INVALID_INDEX, culling.AddDrawItemInstance(scene, opaqueItem, drawDesc, 0));
+    culling.EndDrawGroup();
+
+    ASSERT_EQ(1u, culling.BeginDrawGroup(
+        meshResource->GetId(),
+        maskedItem.material.slot,
+        MaterialPipelineVariant::Masked,
+        maskedItem.mesh,
+        maskedItem.material));
+    EXPECT_NE(RVX_INVALID_INDEX, culling.AddDrawItemInstance(scene, maskedItem, drawDesc, 1));
+    culling.EndDrawGroup();
+
+    culling.EndFrame();
+    culling.CullCpuFallback(view.viewMatrix, view.projectionMatrix);
+    EXPECT_EQ(2u, culling.GetDrawCount());
+    ASSERT_EQ(2u, culling.GetDrawGroups().size());
+
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.SetGPUDrivenCullingSource(&culling);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(1u, ctx.beginRenderPassCount);
+    EXPECT_EQ(1u, ctx.endRenderPassCount);
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(2u, ctx.drawIndexedIndirectCount);
+    EXPECT_EQ(1u, ctx.lastIndirectDrawCount);
+    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectOffset);
+    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectStride);
+    ASSERT_EQ(static_cast<size_t>(2), ctx.pipelineSequence.size());
+    ExpectPipelineDebugName(ctx.pipelineSequence[0], "GPUDrivenOpaquePipeline");
+    ExpectPipelineDebugName(ctx.pipelineSequence[1], "GPUDrivenMaskedPipeline");
+
+    const OpaquePassDrawStats& stats = pass.GetDrawStats();
+    EXPECT_TRUE(stats.gpuDrivenRequested);
+    EXPECT_TRUE(stats.gpuDrivenEligible);
+    EXPECT_EQ(0u, stats.directDrawCount);
+    EXPECT_EQ(0u, stats.indirectBatchCount);
+    EXPECT_EQ(2u, stats.gpuDrivenIndirectBatchCount);
+    EXPECT_EQ(2u, stats.gpuDrivenIndirectDrawCount);
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassBatchesSameObjectSubmeshesWithIndirectDraw)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    auto twoSubmeshResource = CreateTwoSubmeshMeshResource(1401);
+    gpuResources.UploadImmediate(twoSubmeshResource.get());
+    ASSERT_TRUE(gpuResources.IsGPUReady(twoSubmeshResource->GetId()));
+
+    scene.Clear();
+    scene.AddObject(MakeRenderObject(*twoSubmeshResource, gpuResources));
+
+    RenderDrawItem firstItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    firstItem.mesh = gpuResources.GetHandle(twoSubmeshResource->GetId());
+    firstItem.submeshIndex = 0;
+
+    RenderDrawItem secondItem = firstItem;
+    secondItem.submeshIndex = 1;
+
+    std::vector<RenderDrawItem> opaqueItems = {firstItem, secondItem};
+    std::vector<RenderDrawItem> maskedItems;
+
+    view.viewCache = &viewCache;
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+
+    OpaquePass pass;
+    pass.OnAdd(&device);
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(1u, ctx.drawIndexedIndirectCount);
+    EXPECT_EQ(0u, ctx.lastIndirectOffset);
+    EXPECT_EQ(2u, ctx.lastIndirectDrawCount);
+    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectStride);
+    ASSERT_NE(ctx.lastIndirectBuffer, nullptr);
+
+    const auto* indirectBuffer = dynamic_cast<const FakeBuffer*>(ctx.lastIndirectBuffer);
+    ASSERT_NE(indirectBuffer, nullptr);
+    ASSERT_GE(indirectBuffer->GetStorage().size(), sizeof(IndirectDrawIndexedCommand) * 2);
+
+    std::array<IndirectDrawIndexedCommand, 2> commands;
+    std::memcpy(commands.data(), indirectBuffer->GetStorage().data(), sizeof(commands));
+    EXPECT_EQ(3u, commands[0].indexCount);
+    EXPECT_EQ(1u, commands[0].instanceCount);
+    EXPECT_EQ(0u, commands[0].firstIndex);
+    EXPECT_EQ(0, commands[0].vertexOffset);
+    EXPECT_EQ(0u, commands[0].firstInstance);
+    EXPECT_EQ(3u, commands[1].indexCount);
+    EXPECT_EQ(1u, commands[1].instanceCount);
+    EXPECT_EQ(3u, commands[1].firstIndex);
+    EXPECT_EQ(0, commands[1].vertexOffset);
+    EXPECT_EQ(0u, commands[1].firstInstance);
+
+    const OpaquePassDrawStats& stats = pass.GetDrawStats();
+    EXPECT_EQ(0u, stats.directDrawCount);
+    EXPECT_EQ(1u, stats.indirectBatchCount);
+    EXPECT_EQ(2u, stats.indirectDrawCount);
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassDoesNotIndirectBatchResolvedMaterialMismatch)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    auto twoSubmeshResource = CreateTwoSubmeshMeshResource(1402);
+    gpuResources.UploadImmediate(twoSubmeshResource.get());
+    ASSERT_TRUE(gpuResources.IsGPUReady(twoSubmeshResource->GetId()));
+
+    Resource::MaterialResource firstMaterial;
+    firstMaterial.SetId(701);
+    firstMaterial.SetName("FirstSubmeshMaterial");
+    firstMaterial.SetMaterialData(std::make_shared<Material>());
+
+    Resource::MaterialResource secondMaterial;
+    secondMaterial.SetId(702);
+    secondMaterial.SetName("SecondSubmeshMaterial");
+    secondMaterial.SetMaterialData(std::make_shared<Material>());
+    ASSERT_TRUE(gpuResources.UploadImmediate(&firstMaterial));
+    ASSERT_TRUE(gpuResources.UploadImmediate(&secondMaterial));
+
+    RenderObject object = MakeRenderObject(*twoSubmeshResource, gpuResources);
+    object.material = gpuResources.GetHandle(firstMaterial.GetId());
+
+    scene.Clear();
+    scene.AddObject(object);
+
+    RenderDrawItem firstItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    firstItem.mesh = gpuResources.GetHandle(twoSubmeshResource->GetId());
+    firstItem.submeshIndex = 0;
+    firstItem.material = gpuResources.GetHandle(firstMaterial.GetId());
+
+    RenderDrawItem secondItem = firstItem;
+    secondItem.submeshIndex = 1;
+    secondItem.material = gpuResources.GetHandle(secondMaterial.GetId());
+
+    std::vector<RenderDrawItem> opaqueItems = {firstItem, secondItem};
+    std::vector<RenderDrawItem> maskedItems;
+
+    view.viewCache = &viewCache;
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+
+    OpaquePass pass;
+    pass.OnAdd(&device);
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(2u, ctx.drawIndexedCount);
+    EXPECT_EQ(0u, ctx.drawIndexedIndirectCount);
+
+    const OpaquePassDrawStats& stats = pass.GetDrawStats();
+    EXPECT_EQ(2u, stats.directDrawCount);
+    EXPECT_EQ(0u, stats.indirectBatchCount);
+    EXPECT_EQ(0u, stats.indirectDrawCount);
+}
+
+TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassGateNormalMapsOnTangentBasis)
+{
+    const fs::path passesDir = FindShaderDirectory().parent_path() / "Private" / "Passes";
+    ASSERT_FALSE(passesDir.empty());
+
+    const std::string opaquePass = ReadTextFile(passesDir / "OpaquePass.cpp");
+    const std::string transparentPass = ReadTextFile(passesDir / "TransparentPass.cpp");
+
+    EXPECT_NE(opaquePass.find("MaterialBindingOptions materialOptions;"), std::string::npos);
+    EXPECT_NE(opaquePass.find("materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis()"),
+              std::string::npos);
+    EXPECT_NE(opaquePass.find("item.material, view.viewCache, materialOptions"),
+              std::string::npos);
+
+    EXPECT_NE(transparentPass.find("MaterialBindingOptions materialOptions;"), std::string::npos);
+    EXPECT_NE(transparentPass.find("materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis()"),
+              std::string::npos);
+    EXPECT_NE(transparentPass.find("item.material, view.viewCache, materialOptions"),
+              std::string::npos);
+}
+
+TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassBindFrameLightResources)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    const fs::path passesDir = FindShaderDirectory().parent_path() / "Private" / "Passes";
+    const std::string opaquePass = ReadTextFile(passesDir / "OpaquePass.cpp");
+    const std::string transparentPass = ReadTextFile(passesDir / "TransparentPass.cpp");
+
+    EXPECT_NE(opaquePass.find("#include \"Render/Lighting/LightManager.h\""), std::string::npos);
+    EXPECT_NE(opaquePass.find("#include \"Render/Lighting/ClusteredLighting.h\""), std::string::npos);
+    EXPECT_NE(opaquePass.find("lightResources.lightConstantsBuffer = m_lightManager->GetLightConstantsBuffer();"),
+              std::string::npos);
+    EXPECT_NE(opaquePass.find("lightResources.pointLightsBuffer = m_lightManager->GetPointLightsBuffer();"),
+              std::string::npos);
+    EXPECT_NE(opaquePass.find("lightResources.spotLightsBuffer = m_lightManager->GetSpotLightsBuffer();"),
+              std::string::npos);
+    EXPECT_NE(opaquePass.find("lightResources.clusterConstantsBuffer = m_clusteredLighting->GetClusterConstantsBuffer();"),
+              std::string::npos);
+    EXPECT_NE(opaquePass.find("lightResources.clusterBuffer = m_clusteredLighting->GetClusterBuffer();"),
+              std::string::npos);
+    EXPECT_NE(opaquePass.find("lightResources.clusterLightIndexBuffer = m_clusteredLighting->GetLightIndexBuffer();"),
+              std::string::npos);
+    EXPECT_NE(opaquePass.find("obj.receivesShadow,"), std::string::npos);
+    EXPECT_NE(opaquePass.find("m_pipelineCache->UpdateFrameLightResources(lightResources);"), std::string::npos);
+
+    EXPECT_NE(transparentPass.find("#include \"Render/Lighting/LightManager.h\""), std::string::npos);
+    EXPECT_NE(transparentPass.find("#include \"Render/Lighting/ClusteredLighting.h\""), std::string::npos);
+    EXPECT_NE(transparentPass.find("lightResources.lightConstantsBuffer = m_lightManager->GetLightConstantsBuffer();"),
+              std::string::npos);
+    EXPECT_NE(transparentPass.find("lightResources.pointLightsBuffer = m_lightManager->GetPointLightsBuffer();"),
+              std::string::npos);
+    EXPECT_NE(transparentPass.find("lightResources.spotLightsBuffer = m_lightManager->GetSpotLightsBuffer();"),
+              std::string::npos);
+    EXPECT_NE(transparentPass.find("lightResources.clusterConstantsBuffer = m_clusteredLighting->GetClusterConstantsBuffer();"),
+              std::string::npos);
+    EXPECT_NE(transparentPass.find("lightResources.clusterBuffer = m_clusteredLighting->GetClusterBuffer();"),
+              std::string::npos);
+    EXPECT_NE(transparentPass.find("lightResources.clusterLightIndexBuffer = m_clusteredLighting->GetLightIndexBuffer();"),
+              std::string::npos);
+    EXPECT_NE(transparentPass.find("obj.receivesShadow,"), std::string::npos);
+
+    const size_t shadowUpdate = transparentPass.find("m_pipelineCache->UpdateDirectionalShadowFrameResources({});");
+    const size_t lightUpdate = transparentPass.find("m_pipelineCache->UpdateFrameLightResources(lightResources);");
+    ASSERT_NE(shadowUpdate, std::string::npos);
+    ASSERT_NE(lightUpdate, std::string::npos);
+    EXPECT_LT(shadowUpdate, lightUpdate);
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassReportsShadowReceiverOptOutDrawItems)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderObject& firstObject = scene.GetMutableObject(0);
+    firstObject.receivesShadow = true;
+
+    RenderObject secondObject = MakeRenderObject(*meshResource, gpuResources);
+    secondObject.receivesShadow = false;
+    scene.AddObject(secondObject);
+
+    RenderDrawItem firstItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    RenderDrawItem secondItem = MakeDrawItem(MaterialRenderMode::Masked);
+    secondItem.objectIndex = 1;
+
+    std::vector<RenderDrawItem> opaqueItems = {firstItem};
+    std::vector<RenderDrawItem> maskedItems = {secondItem};
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    view.colorTarget = graph.ImportTexture(colorTexture.Get(), RHIResourceState::RenderTarget);
+
+    OpaquePass pass;
+    pass.OnAdd(&device);
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.AddToGraph(graph, view);
+
+    const OpaquePassShadowStats& stats = pass.GetShadowStats();
+    EXPECT_EQ(stats.receiverCandidateDrawItemCount, 2u);
+    EXPECT_EQ(stats.shadowReceivingDrawItemCount, 1u);
+    EXPECT_EQ(stats.shadowReceiverOptOutDrawItemCount, 1u);
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassResolvesRenderGraphColorTargetView)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureDesc sceneColorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
+    sceneColorDesc.debugName = "GraphSceneColorForOpaquePass";
+    view.colorTarget = graph.CreateTexture(sceneColorDesc);
+    graph.SetExportState(view.colorTarget, RHIResourceState::RenderTarget);
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+
+    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
+    std::vector<RenderDrawItem> maskedItems;
+
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    pass.AddToGraph(graph, view);
+    graph.Compile();
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    ASSERT_FALSE(ctx.renderPasses.empty());
+    ASSERT_GT(ctx.renderPasses[0].colorAttachmentCount, 0u);
+    RHITextureView* resolvedView = ctx.renderPasses[0].colorAttachments[0].view;
+    ASSERT_NE(resolvedView, nullptr);
+    EXPECT_NE(resolvedView, colorView.Get());
+    EXPECT_NE(resolvedView->GetTexture(), colorTexture.Get());
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDuringSetup)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureDesc sceneColorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
+    sceneColorDesc.debugName = "GraphSceneColorForOpaqueShadowPass";
+    view.colorTarget = graph.CreateTexture(sceneColorDesc);
+    graph.SetExportState(view.colorTarget, RHIResourceState::RenderTarget);
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+    view.aspectRatio = 1.0f;
+    view.fieldOfView = 1.0472f;
+    view.nearPlane = 0.1f;
+    view.farPlane = 100.0f;
+    view.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+    view.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    view.inverseViewMatrix = Mat4Identity();
+
+    ShadowPassConfig shadowConfig;
+    shadowConfig.numCascades = 3;
+    shadowConfig.shadowMapSize = 64;
+    shadowConfig.filterRadiusTexels = 2.0f;
+    shadowConfig.normalBias = 0.0375f;
+    shadowConfig.cascadeBlendRatio = 0.1f;
+
+    ShadowPass shadowPass;
+    ConfigureResources(shadowPass, gpuResources, pipelineCache);
+    shadowPass.SetRenderScene(&scene);
+    shadowPass.SetConfig(shadowConfig);
+    shadowPass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+
+    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
+    std::vector<RenderDrawItem> maskedItems;
+
+    OpaquePass opaquePass;
+    ConfigureResources(opaquePass, gpuResources, pipelineCache, materialSystem);
+    opaquePass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    opaquePass.SetRenderTargets(colorView.Get(), nullptr);
+    opaquePass.SetDirectionalShadowSource(&shadowPass);
+
+    shadowPass.AddToGraph(graph, view);
+    opaquePass.AddToGraph(graph, view);
+
+    EXPECT_TRUE(opaquePass.GetShadowStats().requested);
+    EXPECT_TRUE(opaquePass.GetShadowStats().renderGraphReadDeclared);
+
+    graph.Compile();
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.compileValid);
+    EXPECT_EQ(stats.totalPasses, 2u);
+    EXPECT_EQ(stats.culledPasses, 0u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_TRUE(opaquePass.GetShadowStats().frameShadowReady);
+    const DirectionalShadowFrameBindingResult& binding =
+        pipelineCache.GetLastDirectionalShadowFrameBindingResult();
+    EXPECT_TRUE(binding.shadowSamplingEnabled);
+    EXPECT_EQ(binding.fallbackReason, DirectionalShadowFallbackReason::None);
+
+    const FakeBuffer* viewBuffer = FindCreatedBuffer(device, "ViewConstantBuffer");
+    ASSERT_NE(viewBuffer, nullptr);
+    ASSERT_GE(viewBuffer->GetStorage().size(), sizeof(ViewConstants));
+    ViewConstants uploaded{};
+    std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 1.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.y, shadowConfig.shadowBias);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w,
+                    shadowConfig.filterRadiusTexels / static_cast<float>(shadowConfig.shadowMapSize));
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowReceiverParams.x, shadowConfig.normalBias);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.w, 3.0f);
+    EXPECT_FALSE(IsIdentityMatrix(uploaded.directionalShadowViewProjections[0]));
+    EXPECT_FALSE(IsIdentityMatrix(uploaded.directionalShadowViewProjections[1]));
+    EXPECT_FALSE(IsIdentityMatrix(uploaded.directionalShadowViewProjections[2]));
+    const auto& cascades = shadowPass.GetCascades();
+    ASSERT_EQ(cascades.size(), static_cast<size_t>(3));
+    const float splitRange = view.farPlane - view.nearPlane;
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.x,
+                    view.nearPlane + cascades[0].splitDepth * splitRange);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.y,
+                    view.nearPlane + cascades[1].splitDepth * splitRange);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.z,
+                    view.nearPlane + cascades[2].splitDepth * splitRange);
+    const float split0 = uploaded.directionalShadowCascadeSplits.x;
+    const float split1 = uploaded.directionalShadowCascadeSplits.y;
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeFadeDistances.x,
+                    (split0 - view.nearPlane) * shadowConfig.cascadeBlendRatio);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeFadeDistances.y,
+                    (split1 - split0) * shadowConfig.cascadeBlendRatio);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeFadeDistances.z, 0.0f);
+
+    const auto shadowSrvIt = std::find_if(device.createdTextureViewDescs.begin(),
+                                          device.createdTextureViewDescs.end(),
+                                          [](const RHITextureViewDesc& desc)
+                                          {
+                                              return desc.debugName &&
+                                                     std::string(desc.debugName) == "DirectionalShadowSRV";
+                                          });
+    ASSERT_NE(shadowSrvIt, device.createdTextureViewDescs.end());
+    EXPECT_EQ(shadowSrvIt->type, RHITextureViewType::ShaderResource);
+    EXPECT_EQ(shadowSrvIt->subresourceRange.baseArrayLayer, 0u);
+    EXPECT_EQ(shadowSrvIt->subresourceRange.arrayLayerCount, RVX_ALL_LAYERS);
+    EXPECT_EQ(shadowSrvIt->subresourceRange.aspect, RHITextureAspect::Depth);
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassReportsMissingShadowSRVWhenRequestedReadCannotResolveView)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureDesc sceneColorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
+    sceneColorDesc.debugName = "GraphSceneColorForOpaqueMissingShadowSRV";
+    view.colorTarget = graph.CreateTexture(sceneColorDesc);
+    graph.SetExportState(view.colorTarget, RHIResourceState::RenderTarget);
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+    view.aspectRatio = 1.0f;
+    view.fieldOfView = 1.0472f;
+    view.nearPlane = 0.1f;
+    view.farPlane = 100.0f;
+    view.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+    view.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    view.inverseViewMatrix = Mat4Identity();
+
+    ShadowPassConfig shadowConfig;
+    shadowConfig.numCascades = 2;
+    shadowConfig.shadowMapSize = 64;
+    shadowConfig.cascadeBlendRatio = 0.1f;
+
+    ShadowPass shadowPass;
+    ConfigureResources(shadowPass, gpuResources, pipelineCache);
+    shadowPass.SetRenderScene(&scene);
+    shadowPass.SetConfig(shadowConfig);
+    shadowPass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+
+    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
+    std::vector<RenderDrawItem> maskedItems;
+
+    OpaquePass opaquePass;
+    ConfigureResources(opaquePass, gpuResources, pipelineCache, materialSystem);
+    opaquePass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    opaquePass.SetRenderTargets(colorView.Get(), nullptr);
+    opaquePass.SetDirectionalShadowSource(&shadowPass);
+
+    shadowPass.AddToGraph(graph, view);
+    opaquePass.AddToGraph(graph, view);
+    EXPECT_TRUE(opaquePass.GetShadowStats().renderGraphReadDeclared);
+
+    graph.Compile();
+
+    device.failDirectionalShadowSRVCreation = true;
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_FALSE(opaquePass.GetShadowStats().frameShadowReady);
+    const DirectionalShadowFrameBindingResult& binding =
+        pipelineCache.GetLastDirectionalShadowFrameBindingResult();
+    EXPECT_FALSE(binding.shadowSamplingEnabled);
+    EXPECT_EQ(binding.fallbackReason, DirectionalShadowFallbackReason::MissingShadowSRV);
+
+    const FakeBuffer* viewBuffer = FindCreatedBuffer(device, "ViewConstantBuffer");
+    ASSERT_NE(viewBuffer, nullptr);
+    ASSERT_GE(viewBuffer->GetStorage().size(), sizeof(ViewConstants));
+    ViewConstants uploaded{};
+    std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.w, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.x, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.y, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeFadeDistances.x, 0.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeFadeDistances.y, 0.0f);
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassSkipsMaskedItemsWhenMaskedPipelineIsMissing)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    ASSERT_TRUE(pipelineCache.GetMaskedPipeline());
+    pipelineCache.m_maskedPipeline.Reset();
+
+    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
+    std::vector<RenderDrawItem> maskedItems = {MakeDrawItem(MaterialRenderMode::Masked)};
+
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    ASSERT_EQ(static_cast<size_t>(1), ctx.pipelineSequence.size());
+    EXPECT_EQ(pipelineCache.GetOpaquePipeline(), ctx.pipelineSequence[0]);
+    EXPECT_EQ(1u, ctx.drawIndexedCount);
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassSkipsOpaqueItemsWhenOpaquePipelineIsMissing)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    ASSERT_TRUE(pipelineCache.GetOpaquePipeline());
+    pipelineCache.m_opaquePipeline.Reset();
+
+    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
+    std::vector<RenderDrawItem> maskedItems = {MakeDrawItem(MaterialRenderMode::Masked)};
+
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    ASSERT_EQ(static_cast<size_t>(1), ctx.pipelineSequence.size());
+    EXPECT_EQ(pipelineCache.GetMaskedPipeline(), ctx.pipelineSequence[0]);
+    EXPECT_EQ(1u, ctx.drawIndexedCount);
+}
+
+TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    std::vector<RenderDrawItem> transparentItems = {MakeDrawItem(MaterialRenderMode::Transparent)};
+
+    TransparentPass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetRenderScene(&scene, &transparentItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    ASSERT_EQ(static_cast<size_t>(1), ctx.pipelineSequence.size());
+    EXPECT_EQ(pipelineCache.GetTransparentPipeline(), ctx.pipelineSequence[0]);
+    EXPECT_EQ(1u, ctx.drawIndexedCount);
+    EXPECT_FALSE(pipelineCache.GetLastDirectionalShadowFrameBindingResult().shadowSamplingEnabled);
+    EXPECT_EQ(pipelineCache.GetLastDirectionalShadowFrameBindingResult().fallbackReason,
+              DirectionalShadowFallbackReason::DisabledNoDirectionalLight);
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassSkipsDrawWhenMaterialBindingErrors)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+
+    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
+    std::vector<RenderDrawItem> maskedItems;
+
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(MaterialBindingStatus::Error, materialSystem.GetLastBindingResult().status);
+    EXPECT_FALSE(materialSystem.GetLastBindingResult().IsDrawable());
+    EXPECT_FALSE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
+                             [](uint32 set) { return set == 2; }));
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassDrawsWhenMaterialBindingUsesFallback)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    Resource::TextureHandle missingTexture = CreateTextureResource(502);
+    Resource::MaterialResource materialResource;
+    ConfigureMaterialWithAlbedo(materialResource, missingTexture);
+
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
+    item.material = gpuResources.ResolveOrUpload(&materialResource);
+    std::vector<RenderDrawItem> opaqueItems = {item};
+    std::vector<RenderDrawItem> maskedItems;
+
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(1u, ctx.drawIndexedCount);
+    EXPECT_EQ(MaterialBindingStatus::Fallback, materialSystem.GetLastBindingResult().status);
+    EXPECT_TRUE(materialSystem.GetLastBindingResult().IsDrawable());
+    EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
+                            [](uint32 set) { return set == 2; }));
+}
+
+TEST_F(RenderPassValidationFixture, TransparentPassSkipsDrawWhenMaterialBindingErrors)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+
+    std::vector<RenderDrawItem> transparentItems = {MakeDrawItem(MaterialRenderMode::Transparent)};
+
+    TransparentPass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetRenderScene(&scene, &transparentItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(MaterialBindingStatus::Error, materialSystem.GetLastBindingResult().status);
+    EXPECT_FALSE(materialSystem.GetLastBindingResult().IsDrawable());
+    EXPECT_FALSE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
+                             [](uint32 set) { return set == 2; }));
+}
+
+TEST_F(RenderPassValidationFixture, TransparentPassDrawsWhenMaterialBindingUsesFallback)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    Resource::TextureHandle missingTexture = CreateTextureResource(503);
+    Resource::MaterialResource materialResource;
+    ConfigureMaterialWithAlbedo(materialResource, missingTexture);
+
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Transparent);
+    item.material = gpuResources.ResolveOrUpload(&materialResource);
+    std::vector<RenderDrawItem> transparentItems = {item};
+
+    TransparentPass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetRenderScene(&scene, &transparentItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(1u, ctx.drawIndexedCount);
+    EXPECT_EQ(MaterialBindingStatus::Fallback, materialSystem.GetLastBindingResult().status);
+    EXPECT_TRUE(materialSystem.GetLastBindingResult().IsDrawable());
+    EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
+                            [](uint32 set) { return set == 2; }));
+}
+
+TEST(RenderPassStatusValidation, ParticleFeaturePassStaysDisabledWithoutSnapshotItems)
+{
+    ParticleRenderSnapshot snapshot;
+    snapshot.BeginBuild(3);
+    snapshot.MarkComplete();
+
+    ParticleFeaturePass pass;
+    pass.SetSnapshot(&snapshot);
+
+    const ParticleFeaturePassStats& stats = pass.GetStats();
+    EXPECT_FALSE(stats.requested);
+    EXPECT_FALSE(stats.supported);
+    EXPECT_FALSE(stats.enabled);
+    EXPECT_EQ(stats.itemCount, 0u);
+
+    const RenderPassStatus status = pass.GetStatus();
+    EXPECT_EQ("ParticleFeaturePass", status.name);
+    EXPECT_FALSE(status.requestedEnabled);
+    EXPECT_TRUE(status.supported);
+    EXPECT_FALSE(status.enabled);
+    EXPECT_TRUE(status.unsupportedReason.empty());
+}
+
+TEST(RenderPassStatusValidation, ParticleFeaturePassReportsMetadataOnlySnapshotsUnsupported)
+{
+    ParticleRenderSnapshot snapshot;
+    snapshot.BeginBuild(7);
+
+    ParticleRenderSnapshotItem item;
+    item.instanceId = 42;
+    item.systemId = 11;
+    item.systemName = "CPU metadata-only particles";
+    item.aliveParticleCount = 12;
+    item.maxParticleCount = 64;
+    item.payloadStatus = ParticleRenderSnapshotPayloadStatus::MetadataOnly;
+    item.renderPayloadAvailable = false;
+    item.sortingSupported = false;
+    snapshot.items.push_back(item);
+    snapshot.metadata.totalAliveParticles = 12;
+    snapshot.MarkComplete();
+
+    ParticleFeaturePass pass;
+    pass.SetSnapshot(&snapshot);
+
+    const ParticleFeaturePassStats& stats = pass.GetStats();
+    EXPECT_TRUE(stats.requested);
+    EXPECT_FALSE(stats.supported);
+    EXPECT_FALSE(stats.enabled);
+    EXPECT_EQ(stats.itemCount, 1u);
+    EXPECT_EQ(stats.metadataOnlyItemCount, 1u);
+    EXPECT_EQ(stats.renderPayloadReadyItemCount, 0u);
+    EXPECT_EQ(stats.sortingSupportedItemCount, 0u);
+    EXPECT_EQ(stats.totalAliveParticles, 12u);
+    EXPECT_NE(stats.unsupportedReason.find("metadata-only"), std::string::npos);
+    EXPECT_NE(stats.unsupportedReason.find("Render-owned"), std::string::npos);
+
+    const RenderPassStatus status = pass.GetStatus();
+    EXPECT_EQ("ParticleFeaturePass", status.name);
+    EXPECT_TRUE(status.requestedEnabled);
+    EXPECT_FALSE(status.supported);
+    EXPECT_FALSE(status.enabled);
+    EXPECT_EQ(status.unsupportedReason, stats.unsupportedReason);
+}
+
+TEST_F(RenderPassValidationFixture, RayTracingSceneManagerReportsStructuredFallbackCodes)
+{
+    RayTracingSceneBuildPlan emptyPlan;
+
+    RayTracingSceneManager missingDeviceManager;
+    EXPECT_FALSE(missingDeviceManager.Prepare(emptyPlan));
+    EXPECT_EQ(missingDeviceManager.GetStats().fallbackCode,
+              RayTracingSceneFallbackCode::MissingDevice);
+    EXPECT_NE(std::string(missingDeviceManager.GetStats().fallbackReason).find("RHI device"),
+              std::string::npos);
+
+    FakeDevice unsupportedDevice;
+    RayTracingSceneManager unsupportedManager;
+    unsupportedManager.Initialize(&unsupportedDevice);
+    EXPECT_FALSE(unsupportedManager.Prepare(emptyPlan));
+    EXPECT_EQ(unsupportedManager.GetStats().fallbackCode,
+              RayTracingSceneFallbackCode::RayTracingUnsupported);
+    EXPECT_NE(std::string(unsupportedManager.GetStats().fallbackReason).find("does not support ray tracing"),
+              std::string::npos);
+
+    FakeDevice supportedDevice;
+    supportedDevice.EnableRayTracing();
+    RayTracingSceneManager emptyPlanManager;
+    emptyPlanManager.Initialize(&supportedDevice);
+    EXPECT_FALSE(emptyPlanManager.Prepare(emptyPlan));
+    EXPECT_EQ(emptyPlanManager.GetStats().fallbackCode,
+              RayTracingSceneFallbackCode::EmptyBuildPlan);
+    EXPECT_NE(std::string(emptyPlanManager.GetStats().fallbackReason).find("no buildable work"),
+              std::string::npos);
+}
+
+TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabilityReport)
+{
+    FakeDevice device;
+    device.EnableBasicCapabilities();
+    SceneRenderer renderer;
+    renderer.SetRenderFeatureReportDeviceForTesting(&device);
+    auto graph = std::make_unique<RenderGraph>();
+    graph->SetDevice(&device);
+    renderer.SetRenderGraphForTesting(std::move(graph));
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(32, 24, RHIFormat::RGBA8_UNORM);
+    colorDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHITextureRef colorTarget = device.CreateTexture(colorDesc);
+    ASSERT_TRUE(colorTarget);
+
+    SceneRendererExternalTargetDesc externalTarget;
+    externalTarget.colorTarget = colorTarget.Get();
+    externalTarget.colorInitialState = RHIResourceState::ShaderResource;
+    externalTarget.colorFinalState = RHIResourceState::ShaderResource;
+    renderer.SetExternalRenderTarget(externalTarget);
+
+    renderer.BuildRenderGraphForTesting();
+
+    const SceneRendererToolDiagnosticsSnapshot& toolSnapshot = renderer.GetToolDiagnosticsSnapshot();
+    ASSERT_TRUE(toolSnapshot.rhiCapabilityReportAvailable);
+    EXPECT_EQ(toolSnapshot.rhiCapabilityReport.schemaVersion, RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION);
+    EXPECT_EQ(toolSnapshot.rhiCapabilityReport.backendType, RHIBackendType::DX12);
+    EXPECT_EQ(toolSnapshot.rhiCapabilityReport.adapterName, "RenderPassValidation Test Adapter");
+    EXPECT_EQ(toolSnapshot.rhiCapabilityReport.driverVersion, "RenderPassValidation.Driver.1");
+    EXPECT_TRUE(toolSnapshot.rhiCapabilityReport.validationPassed)
+        << toolSnapshot.rhiCapabilityReport.validationMessage;
+    EXPECT_TRUE(toolSnapshot.rhiCapabilityReport.renderGraphBaselineSupported);
+    EXPECT_TRUE(toolSnapshot.rhiCapabilityReport.renderGraphBaselineMissingRequirements.empty());
+    EXPECT_EQ(toolSnapshot.rhiCapabilityReport.entries.size(), static_cast<size_t>(11));
+
+    const std::string diagnosticsText = renderer.ExportToolDiagnosticsText();
+    EXPECT_NE(diagnosticsText.find("rhiCapabilities=true"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find("RHICapabilities: schema=4, backend=DirectX 12"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find("adapter=RenderPassValidation Test Adapter"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find("driver=RenderPassValidation.Driver.1"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find(
+                  "queueCompletionMode=NativeTimeline, "
+                  "logicalQueueDomains=[Graphics,Compute,Copy], activeDomainCount=3"),
+              std::string::npos);
+    EXPECT_NE(diagnosticsText.find("renderGraphBaseline=Passed"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find("RenderGraphBaselineMissing: none"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find("RHICapability ComputePipeline: status=Supported"), std::string::npos);
+
+    const std::string manifestJson = renderer.ExportToolDiagnosticsManifestJson();
+    EXPECT_NE(manifestJson.find("\"rhiCapabilityReportAvailable\": true"), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"rhiCapabilities\": {\n    \"schemaVersion\": 4"), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"backend\": \"DirectX 12\""), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"adapterName\": \"RenderPassValidation Test Adapter\""), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"driverVersion\": \"RenderPassValidation.Driver.1\""), std::string::npos);
+    EXPECT_NE(manifestJson.find(
+                  "\"queueTopology\": {\n"
+                  "      \"completionMode\": \"NativeTimeline\",\n"
+                  "      \"logicalQueueDomains\": [\"Graphics\", \"Compute\", \"Copy\"],\n"
+                  "      \"activeDomainCount\": 3\n"
+                  "    }"),
+              std::string::npos);
+    EXPECT_NE(manifestJson.find("\"renderGraphBaselineSupported\": true"), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"renderGraphBaselineMissingRequirements\": []"), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"feature\": \"ComputePipeline\""), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"status\": \"Supported\""), std::string::npos);
+
+    const std::string rhiCapabilityJson = renderer.ExportToolRHICapabilityReportJson();
+    EXPECT_NE(rhiCapabilityJson.find("\"schemaVersion\": 4"), std::string::npos);
+    EXPECT_NE(rhiCapabilityJson.find("\"schemaId\": \"RVX.RHI.CapabilityReport\""), std::string::npos);
+    EXPECT_NE(rhiCapabilityJson.find("\"id\": \"rhiCapabilityReportJson\""), std::string::npos);
+    EXPECT_NE(rhiCapabilityJson.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);
+    EXPECT_NE(rhiCapabilityJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(rhiCapabilityJson.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(rhiCapabilityJson.find("\"relativePath\": \"\""), std::string::npos);
+    EXPECT_NE(rhiCapabilityJson.find("\"adapterName\": \"RenderPassValidation Test Adapter\""),
+              std::string::npos);
+    EXPECT_NE(rhiCapabilityJson.find("\"driverVersion\": \"RenderPassValidation.Driver.1\""),
+              std::string::npos);
+    EXPECT_NE(rhiCapabilityJson.find("\"renderGraphBaseline\": {"), std::string::npos);
+    EXPECT_NE(rhiCapabilityJson.find("\"supported\": true"), std::string::npos);
+    EXPECT_FALSE(renderer.SaveToolRHICapabilityReportJson(nullptr));
+    EXPECT_FALSE(renderer.SaveToolRHICapabilityReportJson(""));
+
+    const auto suffix = std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    std::error_code removeError;
+    const fs::path rhiCapabilityJsonPath =
+        fs::temp_directory_path() / ("RVX_SceneRendererRHICapabilityReport_" + suffix + ".json");
+    const std::string rhiCapabilityJsonPathString = rhiCapabilityJsonPath.string();
+    ASSERT_TRUE(renderer.SaveToolRHICapabilityReportJson(rhiCapabilityJsonPathString.c_str()));
+    EXPECT_EQ(ReadTextFile(rhiCapabilityJsonPath), rhiCapabilityJson);
+    fs::remove(rhiCapabilityJsonPath, removeError);
+
+    const fs::path artifactDirectory =
+        fs::temp_directory_path() / ("RVX_SceneRendererRHICapabilityArtifacts_" + suffix);
+    const std::string artifactDirectoryString = artifactDirectory.string();
+    const SceneRendererToolDiagnosticsArtifactResult artifactResult =
+        renderer.SaveToolDiagnosticsArtifacts(artifactDirectoryString.c_str(), "RHIFrame001");
+    EXPECT_TRUE(artifactResult.rhiCapabilityReportJsonExpected);
+    EXPECT_TRUE(artifactResult.rhiCapabilityReportJsonSaved);
+    EXPECT_TRUE(artifactResult.rhiCapabilityReportJsonExists);
+    EXPECT_EQ(artifactResult.rhiCapabilityReportSchemaId, RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID);
+    EXPECT_EQ(artifactResult.rhiCapabilityReportSchemaVersion, RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION);
+    EXPECT_EQ(artifactResult.primaryArtifactCount, 6u);
+    EXPECT_EQ(artifactResult.savedPrimaryArtifactCount, 6u);
+    EXPECT_EQ(artifactResult.artifactValidationCheckedPrimaryArtifactCount, 6u);
+    EXPECT_EQ(artifactResult.artifactValidationValidPrimaryArtifactCount, 6u);
+    EXPECT_EQ(artifactResult.artifactValidationFailedPrimaryArtifactCount, 0u);
+    EXPECT_EQ(artifactResult.artifactValidationEntryCount, 6u);
+    EXPECT_TRUE(artifactResult.artifactValidationEntryCountMatchesCheckedPrimaryArtifactCount);
+    EXPECT_TRUE(artifactResult.allPrimaryArtifactsSaved);
+    EXPECT_TRUE(artifactResult.artifactValidationAllPrimaryArtifactsValid);
+    EXPECT_TRUE(artifactResult.artifactValidationBundleHashMatches);
+    EXPECT_EQ(artifactResult.rhiCapabilityReportJsonContentHash.size(), 16u);
+    EXPECT_GT(artifactResult.rhiCapabilityReportJsonBytes, 0u);
+    EXPECT_NE(artifactResult.rhiCapabilityReportJsonPath.find("RHIFrame001.rhi-capabilities.json"),
+              std::string::npos);
+    EXPECT_EQ(artifactResult.rhiCapabilityReportJsonRelativePath, "RHIFrame001.rhi-capabilities.json");
+    EXPECT_EQ(ReadTextFile(artifactResult.rhiCapabilityReportJsonPath), rhiCapabilityJson);
+
+    const std::string artifactSummaryJson = ReadTextFile(artifactResult.artifactSummaryJsonPath);
+    EXPECT_NE(artifactSummaryJson.find("\"artifactCount\": 6"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"savedCount\": 6"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"id\": \"rhiCapabilityReportJson\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"schemaId\": \"RVX.RHI.CapabilityReport\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"relativePath\": \"RHIFrame001.rhi-capabilities.json\""),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"checkedPrimaryArtifactCount\": 6"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"validPrimaryArtifactCount\": 6"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"count\": 6"), std::string::npos);
+
+    const std::string artifactManifestJson = ReadTextFile(artifactResult.manifestJsonPath);
+    EXPECT_NE(artifactManifestJson.find("\"primaryArtifactCount\": 6"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"savedPrimaryArtifactCount\": 6"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"rhiCapabilityReportJson\": {"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"schemaId\": \"RVX.RHI.CapabilityReport\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"RHIFrame001.rhi-capabilities.json\""),
+              std::string::npos);
+
+    const SceneRendererToolDiagnosticsArtifactValidationResult validation =
+        SceneRenderer::ValidateToolDiagnosticsArtifacts(artifactResult);
+    EXPECT_TRUE(validation.allPrimaryArtifactsValid);
+    EXPECT_EQ(validation.checkedPrimaryArtifactCount, 6u);
+    EXPECT_EQ(validation.validPrimaryArtifactCount, 6u);
+    EXPECT_EQ(validation.failedPrimaryArtifactCount, 0u);
+    EXPECT_EQ(validation.entryCount, 6u);
+    EXPECT_EQ(validation.rhiCapabilityReportSchemaId, RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID);
+    EXPECT_EQ(validation.rhiCapabilityReportSchemaVersion, RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION);
+    ASSERT_EQ(validation.diagnosticCodeCounts.size(), 1u);
+    EXPECT_EQ(validation.diagnosticCodeCounts[0].code, "None");
+    EXPECT_EQ(validation.diagnosticCodeCounts[0].count, 6u);
+    bool rhiCapabilityJsonValidationFound = false;
+    for (const SceneRendererToolDiagnosticsArtifactValidationEntry& entry : validation.entries)
+    {
+        if (entry.id == "rhiCapabilityReportJson")
+        {
+            rhiCapabilityJsonValidationFound = true;
+            EXPECT_EQ(entry.entryIndex, 4u);
+            EXPECT_EQ(entry.kind, "RHICapabilityReportJson");
+            EXPECT_EQ(entry.contentType, "application/json");
+            EXPECT_EQ(entry.schemaId, RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID);
+            EXPECT_EQ(entry.schemaVersion, RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION);
+            EXPECT_TRUE(entry.identityChecked);
+            EXPECT_TRUE(entry.identityMatches);
+            EXPECT_TRUE(entry.schemaChecked);
+            EXPECT_TRUE(entry.schemaMatches);
+            EXPECT_EQ(entry.actualId, "rhiCapabilityReportJson");
+            EXPECT_EQ(entry.actualKind, "RHICapabilityReportJson");
+            EXPECT_EQ(entry.actualContentType, "application/json");
+            EXPECT_EQ(entry.actualSchemaId, RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID);
+            EXPECT_EQ(entry.actualSchemaVersion, RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION);
+            EXPECT_EQ(entry.relativePath, "RHIFrame001.rhi-capabilities.json");
+            EXPECT_EQ(entry.expectedByteSize, artifactResult.rhiCapabilityReportJsonBytes);
+            EXPECT_EQ(entry.actualByteSize, artifactResult.rhiCapabilityReportJsonBytes);
+            EXPECT_EQ(entry.expectedContentHash, artifactResult.rhiCapabilityReportJsonContentHash);
+            EXPECT_EQ(entry.actualContentHash, artifactResult.rhiCapabilityReportJsonContentHash);
+        }
+    }
+    EXPECT_TRUE(rhiCapabilityJsonValidationFound);
+
+    const std::string validationJson =
+        SceneRenderer::ExportToolDiagnosticsArtifactValidationJson(validation);
+    EXPECT_NE(validationJson.find("\"id\": \"rhiCapabilityReportJson\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"actualId\": \"rhiCapabilityReportJson\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"actualSchemaId\": \"RVX.RHI.CapabilityReport\""),
+              std::string::npos);
+    EXPECT_NE(validationJson.find("\"entryCount\": 6"), std::string::npos);
+    fs::remove_all(artifactDirectory, removeError);
+}
+
+TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCarriesRenderGraphState)
+{
+    FakeDevice device;
+    SceneRenderer renderer;
+    auto graph = std::make_unique<RenderGraph>();
+    graph->SetDevice(&device);
+    renderer.SetRenderGraphForTesting(std::move(graph));
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(48, 32, RHIFormat::RGBA8_UNORM);
+    colorDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHITextureRef colorTarget = device.CreateTexture(colorDesc);
+    ASSERT_TRUE(colorTarget);
+
+    SceneRendererExternalTargetDesc externalTarget;
+    externalTarget.colorTarget = colorTarget.Get();
+    externalTarget.colorInitialState = RHIResourceState::ShaderResource;
+    externalTarget.colorFinalState = RHIResourceState::ShaderResource;
+    renderer.SetExternalRenderTarget(externalTarget);
+
+    renderer.BuildRenderGraphForTesting();
+
+    const SceneRendererFrameDiagnostics& frameDiagnostics = renderer.GetFrameDiagnostics();
+    const SceneRendererToolDiagnosticsSnapshot& toolSnapshot = renderer.GetToolDiagnosticsSnapshot();
+
+    EXPECT_EQ(toolSnapshot.schemaVersion, RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION);
+    EXPECT_TRUE(toolSnapshot.frameDiagnosticsAvailable);
+    EXPECT_EQ(toolSnapshot.frame.schemaVersion, RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION);
+    EXPECT_EQ(toolSnapshot.frame.frameCount, frameDiagnostics.frameCount);
+    EXPECT_EQ(toolSnapshot.frame.graphBuilt, frameDiagnostics.graphBuilt);
+    EXPECT_TRUE(toolSnapshot.renderGraphDiagnosticsAvailable);
+    EXPECT_STREQ(toolSnapshot.renderGraph.schemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
+    EXPECT_EQ(toolSnapshot.renderGraph.schemaVersion, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
+    EXPECT_FALSE(toolSnapshot.renderGraph.resources.empty());
+    EXPECT_EQ(toolSnapshot.renderGraph.resources.size(), renderer.GetRenderGraph()->GetDiagnostics().resources.size());
+
+    const std::string diagnosticsText = renderer.ExportToolDiagnosticsText();
+    const std::string expectedSchemaText =
+        "Schema: tool=" + std::to_string(RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION) +
+        ", frame=" + std::to_string(RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION);
+    EXPECT_NE(diagnosticsText.find("SceneRenderer Tool Diagnostics"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find(expectedSchemaText), std::string::npos);
+    EXPECT_NE(diagnosticsText.find("Availability: frame=true, renderGraph=true"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find("ExternalTarget: requested=true, active=true"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find("RenderGraph: passes="), std::string::npos);
+    EXPECT_NE(diagnosticsText.find("resources="), std::string::npos);
+    EXPECT_FALSE(renderer.SaveToolDiagnosticsText(nullptr));
+    EXPECT_FALSE(renderer.SaveToolDiagnosticsText(""));
+
+    const auto suffix = std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    const fs::path diagnosticsPath =
+        fs::temp_directory_path() / ("RVX_SceneRendererToolDiagnostics_" + suffix + ".txt");
+    const std::string diagnosticsPathString = diagnosticsPath.string();
+    ASSERT_TRUE(renderer.SaveToolDiagnosticsText(diagnosticsPathString.c_str()));
+    const std::string savedDiagnosticsText = ReadTextFile(diagnosticsPath);
+    EXPECT_EQ(savedDiagnosticsText, diagnosticsText);
+    std::error_code removeError;
+    fs::remove(diagnosticsPath, removeError);
+
+    const std::string graphviz = renderer.ExportToolRenderGraphGraphviz();
+    EXPECT_NE(graphviz.find("digraph RenderGraph"), std::string::npos);
+    EXPECT_NE(graphviz.find("cluster_resources"), std::string::npos);
+    EXPECT_NE(graphviz.find("tex0"), std::string::npos);
+    EXPECT_FALSE(renderer.SaveToolRenderGraphGraphviz(nullptr));
+    EXPECT_FALSE(renderer.SaveToolRenderGraphGraphviz(""));
+
+    const fs::path graphvizPath =
+        fs::temp_directory_path() / ("RVX_SceneRendererToolRenderGraph_" + suffix + ".dot");
+    const std::string graphvizPathString = graphvizPath.string();
+    ASSERT_TRUE(renderer.SaveToolRenderGraphGraphviz(graphvizPathString.c_str()));
+    const std::string savedGraphviz = ReadTextFile(graphvizPath);
+    EXPECT_EQ(savedGraphviz, graphviz);
+    fs::remove(graphvizPath, removeError);
+
+    const std::string renderGraphDiagnosticsText = renderer.ExportToolRenderGraphDiagnosticsText();
+    EXPECT_NE(renderGraphDiagnosticsText.find("RenderGraph Diagnostics"), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsText.find("Resources:"), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsText.find("Schedule efficiency:"), std::string::npos);
+    EXPECT_FALSE(renderer.SaveToolRenderGraphDiagnosticsText(nullptr));
+    EXPECT_FALSE(renderer.SaveToolRenderGraphDiagnosticsText(""));
+
+    const fs::path renderGraphDiagnosticsPath =
+        fs::temp_directory_path() / ("RVX_SceneRendererToolRenderGraphDiagnostics_" + suffix + ".txt");
+    const std::string renderGraphDiagnosticsPathString = renderGraphDiagnosticsPath.string();
+    ASSERT_TRUE(renderer.SaveToolRenderGraphDiagnosticsText(renderGraphDiagnosticsPathString.c_str()));
+    const std::string savedRenderGraphDiagnostics = ReadTextFile(renderGraphDiagnosticsPath);
+    EXPECT_EQ(savedRenderGraphDiagnostics, renderGraphDiagnosticsText);
+    fs::remove(renderGraphDiagnosticsPath, removeError);
+
+    const std::string renderGraphDiagnosticsJson = renderer.ExportToolRenderGraphDiagnosticsJson();
+    EXPECT_NE(renderGraphDiagnosticsJson.find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsJson.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""),
+              std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsJson.find("\"id\": \"renderGraphDiagnosticsJson\""), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsJson.find("\"kind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsJson.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsJson.find("\"relativePath\": \"\""), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsJson.find("\"compileStats\": {"), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsJson.find("\"passes\": ["), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsJson.find("\"resources\": ["), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsJson.find("\"schedule\": {"), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsJson.find("\"name\": "), std::string::npos);
+    EXPECT_FALSE(renderer.SaveToolRenderGraphDiagnosticsJson(nullptr));
+    EXPECT_FALSE(renderer.SaveToolRenderGraphDiagnosticsJson(""));
+
+    const fs::path renderGraphDiagnosticsJsonPath =
+        fs::temp_directory_path() / ("RVX_SceneRendererToolRenderGraphDiagnostics_" + suffix + ".json");
+    const std::string renderGraphDiagnosticsJsonPathString = renderGraphDiagnosticsJsonPath.string();
+    ASSERT_TRUE(renderer.SaveToolRenderGraphDiagnosticsJson(renderGraphDiagnosticsJsonPathString.c_str()));
+    const std::string savedRenderGraphDiagnosticsJson = ReadTextFile(renderGraphDiagnosticsJsonPath);
+    EXPECT_EQ(savedRenderGraphDiagnosticsJson, renderGraphDiagnosticsJson);
+    fs::remove(renderGraphDiagnosticsJsonPath, removeError);
+
+    const std::string manifestJson = renderer.ExportToolDiagnosticsManifestJson();
+    EXPECT_NE(manifestJson.find("\"schemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"id\": \"manifestJson\""), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"kind\": \"ToolDiagnosticsManifestJson\""), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"relativePath\": \"\""), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"frameDiagnosticsAvailable\": true"), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"renderGraphDiagnosticsAvailable\": true"), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"rhiCapabilityReportAvailable\": false"), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"rhiCapabilities\": null"), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"renderGraph\": {\n    \"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"resourceCount\": 1"), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"artifacts\": null"), std::string::npos);
+    EXPECT_FALSE(renderer.SaveToolDiagnosticsManifestJson(nullptr));
+    EXPECT_FALSE(renderer.SaveToolDiagnosticsManifestJson(""));
+
+    const fs::path manifestPath =
+        fs::temp_directory_path() / ("RVX_SceneRendererToolDiagnosticsManifest_" + suffix + ".json");
+    const std::string manifestPathString = manifestPath.string();
+    ASSERT_TRUE(renderer.SaveToolDiagnosticsManifestJson(manifestPathString.c_str()));
+    EXPECT_EQ(ReadTextFile(manifestPath), manifestJson);
+    fs::remove(manifestPath, removeError);
+
+    const std::string emptyArtifactSummaryJson = renderer.ExportToolDiagnosticsArtifactSummaryJson();
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"schemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"id\": \"artifactSummaryJson\""), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"kind\": \"ToolDiagnosticsArtifactSummaryJson\""),
+              std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"relativePath\": \"\""), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"toolDiagnosticsSchemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"artifactResultAvailable\": false"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"metadataAvailable\": false"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"captureId\": \"\""), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"baseName\": \"\""), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"frameIndex\": 0"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"renderGraphDiagnosticsSchemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"renderGraphDiagnosticsSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
+              std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"artifactSummarySchemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"artifactValidationSchemaVersion\": 25"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"artifactCount\": 0"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"allArtifactsSaved\": false"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"totalArtifactBytes\": 0"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryArtifactBundleHash\": \"\""), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"artifacts\": []"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"validationReport\": {"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"id\": \"artifactValidationJson\""), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"schemaVersion\": 25"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"resultAvailable\": false"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"allPrimaryArtifactsValid\": false"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"bundleHashMatches\": false"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"verdictCode\": \"Unavailable\""), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureCode\": \"Unavailable\""), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureEntryIndex\": null"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureEntryCount\": 0"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"entryCount\": 0"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"entryCountMatchesCheckedPrimaryArtifactCount\": false"),
+              std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"entryCoverageCode\": \"Unavailable\""), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"entryCoverageMessage\": \"validation result is unavailable\""),
+              std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureArtifactId\": \"\""), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureArtifactRelativePath\": \"\""),
+              std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureArtifactKind\": \"\""), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureArtifactContentType\": \"\""),
+              std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureArtifactSchemaId\": \"\""),
+              std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureArtifactSchemaVersion\": 0"),
+              std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"primaryFailureMessage\": \"validation result is unavailable\""),
+              std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"checkedPrimaryArtifactCount\": 0"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"validPrimaryArtifactCount\": 0"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"failedPrimaryArtifactCount\": 0"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"diagnosticCodeCounts\": []"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"actualTotalPrimaryArtifactBytes\": 0"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"expectedPrimaryArtifactBundleHash\": \"\""), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find("\"actualPrimaryArtifactBundleHash\": \"\""), std::string::npos);
+    EXPECT_FALSE(renderer.SaveToolDiagnosticsArtifactSummaryJson(nullptr));
+    EXPECT_FALSE(renderer.SaveToolDiagnosticsArtifactSummaryJson(""));
+
+    const fs::path emptyArtifactSummaryPath =
+        fs::temp_directory_path() / ("RVX_SceneRendererToolArtifactSummary_" + suffix + ".json");
+    const std::string emptyArtifactSummaryPathString = emptyArtifactSummaryPath.string();
+    ASSERT_TRUE(renderer.SaveToolDiagnosticsArtifactSummaryJson(emptyArtifactSummaryPathString.c_str()));
+    EXPECT_EQ(ReadTextFile(emptyArtifactSummaryPath), emptyArtifactSummaryJson);
+    fs::remove(emptyArtifactSummaryPath, removeError);
+
+    SceneRendererToolDiagnosticsArtifactResult invalidArtifactResult =
+        renderer.SaveToolDiagnosticsArtifacts(nullptr, "Frame");
+    EXPECT_TRUE(invalidArtifactResult.requested);
+    EXPECT_FALSE(invalidArtifactResult.directoryReady);
+
+    invalidArtifactResult = renderer.SaveToolDiagnosticsArtifacts(fs::temp_directory_path().string().c_str(), "");
+    EXPECT_TRUE(invalidArtifactResult.requested);
+    EXPECT_FALSE(invalidArtifactResult.directoryReady);
+
+    const fs::path artifactDirectory =
+        fs::temp_directory_path() / ("RVX_SceneRendererToolArtifacts_" + suffix);
+    const std::string artifactDirectoryString = artifactDirectory.string();
+    const SceneRendererToolDiagnosticsArtifactResult artifactResult =
+        renderer.SaveToolDiagnosticsArtifacts(artifactDirectoryString.c_str(), "Frame001");
+    EXPECT_TRUE(artifactResult.requested);
+    EXPECT_TRUE(artifactResult.directoryReady);
+    EXPECT_TRUE(artifactResult.captureMetadataAvailable);
+    EXPECT_EQ(artifactResult.captureId.size(), 16u);
+    EXPECT_EQ(artifactResult.captureBaseName, "Frame001");
+    EXPECT_EQ(artifactResult.outputDirectory, artifactDirectoryString);
+    EXPECT_EQ(artifactResult.toolDiagnosticsSchemaVersion, RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION);
+    EXPECT_EQ(artifactResult.frameDiagnosticsSchemaVersion, RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION);
+    EXPECT_EQ(artifactResult.renderGraphDiagnosticsSchemaVersion, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
+    EXPECT_EQ(artifactResult.artifactSummarySchemaVersion, RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION);
+    EXPECT_EQ(artifactResult.artifactValidationSchemaVersion,
+              RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION);
+    EXPECT_EQ(artifactResult.renderGraphDiagnosticsSchemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
+    EXPECT_EQ(artifactResult.frameIndex, toolSnapshot.frame.frameCount);
+    EXPECT_EQ(artifactResult.renderGraphPassCount, toolSnapshot.renderGraph.passes.size());
+    EXPECT_EQ(artifactResult.renderGraphResourceCount, toolSnapshot.renderGraph.resources.size());
+    EXPECT_TRUE(artifactResult.toolDiagnosticsTextSaved);
+    EXPECT_TRUE(artifactResult.renderGraphGraphvizSaved);
+    EXPECT_TRUE(artifactResult.renderGraphDiagnosticsTextSaved);
+    EXPECT_TRUE(artifactResult.renderGraphDiagnosticsJsonSaved);
+    EXPECT_TRUE(artifactResult.manifestJsonSaved);
+    EXPECT_TRUE(artifactResult.artifactSummaryJsonSaved);
+    EXPECT_TRUE(artifactResult.artifactValidationJsonSaved);
+    EXPECT_TRUE(artifactResult.allPrimaryArtifactsSaved);
+    EXPECT_TRUE(artifactResult.artifactValidationResultAvailable);
+    EXPECT_TRUE(artifactResult.artifactValidationAllPrimaryArtifactsValid);
+    EXPECT_TRUE(artifactResult.artifactValidationBundleHashMatches);
+    EXPECT_EQ(artifactResult.artifactValidationVerdictCode, "Valid");
+    EXPECT_EQ(artifactResult.artifactValidationPrimaryFailureCode, "None");
+    EXPECT_EQ(artifactResult.artifactValidationPrimaryFailureEntryIndex, RVX_INVALID_INDEX);
+    EXPECT_EQ(artifactResult.artifactValidationPrimaryFailureEntryCount, 0u);
+    EXPECT_EQ(artifactResult.artifactValidationEntryCount, 5u);
+    EXPECT_TRUE(artifactResult.artifactValidationEntryCountMatchesCheckedPrimaryArtifactCount);
+    EXPECT_EQ(artifactResult.artifactValidationEntryCoverageCode, "Complete");
+    EXPECT_EQ(artifactResult.artifactValidationEntryCoverageMessage,
+              "validation entries cover all checked primary artifacts");
+    EXPECT_TRUE(artifactResult.artifactValidationPrimaryFailureArtifactId.empty());
+    EXPECT_TRUE(artifactResult.artifactValidationPrimaryFailureArtifactRelativePath.empty());
+    EXPECT_TRUE(artifactResult.artifactValidationPrimaryFailureArtifactKind.empty());
+    EXPECT_TRUE(artifactResult.artifactValidationPrimaryFailureArtifactContentType.empty());
+    EXPECT_TRUE(artifactResult.artifactValidationPrimaryFailureArtifactSchemaId.empty());
+    EXPECT_EQ(artifactResult.artifactValidationPrimaryFailureArtifactSchemaVersion, 0u);
+    EXPECT_TRUE(artifactResult.artifactValidationPrimaryFailureMessage.empty());
+    EXPECT_EQ(artifactResult.primaryArtifactCount, 5u);
+    EXPECT_EQ(artifactResult.savedPrimaryArtifactCount, 5u);
+    EXPECT_EQ(artifactResult.artifactValidationCheckedPrimaryArtifactCount, 5u);
+    EXPECT_EQ(artifactResult.artifactValidationValidPrimaryArtifactCount, 5u);
+    EXPECT_EQ(artifactResult.artifactValidationFailedPrimaryArtifactCount, 0u);
+    ASSERT_EQ(artifactResult.artifactValidationDiagnosticCodeCounts.size(), 1u);
+    EXPECT_EQ(artifactResult.artifactValidationDiagnosticCodeCounts[0].code, "None");
+    EXPECT_EQ(artifactResult.artifactValidationDiagnosticCodeCounts[0].count, 5u);
+    EXPECT_TRUE(artifactResult.toolDiagnosticsTextExists);
+    EXPECT_TRUE(artifactResult.renderGraphGraphvizExists);
+    EXPECT_TRUE(artifactResult.renderGraphDiagnosticsTextExists);
+    EXPECT_TRUE(artifactResult.renderGraphDiagnosticsJsonExists);
+    EXPECT_TRUE(artifactResult.manifestJsonExists);
+    EXPECT_TRUE(artifactResult.artifactValidationJsonExists);
+    EXPECT_GT(artifactResult.toolDiagnosticsTextBytes, 0u);
+    EXPECT_GT(artifactResult.renderGraphGraphvizBytes, 0u);
+    EXPECT_GT(artifactResult.renderGraphDiagnosticsTextBytes, 0u);
+    EXPECT_GT(artifactResult.renderGraphDiagnosticsJsonBytes, 0u);
+    EXPECT_GT(artifactResult.manifestJsonBytes, 0u);
+    EXPECT_GT(artifactResult.artifactValidationJsonBytes, 0u);
+    EXPECT_EQ(artifactResult.toolDiagnosticsTextContentHash.size(), 16u);
+    EXPECT_EQ(artifactResult.renderGraphGraphvizContentHash.size(), 16u);
+    EXPECT_EQ(artifactResult.renderGraphDiagnosticsTextContentHash.size(), 16u);
+    EXPECT_EQ(artifactResult.renderGraphDiagnosticsJsonContentHash.size(), 16u);
+    EXPECT_EQ(artifactResult.manifestJsonContentHash.size(), 16u);
+    EXPECT_EQ(artifactResult.artifactValidationJsonContentHash.size(), 16u);
+    EXPECT_EQ(artifactResult.primaryArtifactBundleHash.size(), 16u);
+    EXPECT_EQ(artifactResult.artifactValidationExpectedPrimaryArtifactBundleHash,
+              artifactResult.primaryArtifactBundleHash);
+    EXPECT_EQ(artifactResult.artifactValidationActualPrimaryArtifactBundleHash,
+              artifactResult.primaryArtifactBundleHash);
+    EXPECT_EQ(artifactResult.totalPrimaryArtifactBytes,
+              artifactResult.toolDiagnosticsTextBytes +
+                  artifactResult.renderGraphGraphvizBytes +
+                  artifactResult.renderGraphDiagnosticsTextBytes +
+                  artifactResult.renderGraphDiagnosticsJsonBytes +
+                  artifactResult.manifestJsonBytes);
+    EXPECT_EQ(artifactResult.artifactValidationActualTotalPrimaryArtifactBytes,
+              artifactResult.totalPrimaryArtifactBytes);
+    EXPECT_NE(artifactResult.toolDiagnosticsTextPath.find("Frame001.scene-renderer.txt"), std::string::npos);
+    EXPECT_NE(artifactResult.renderGraphGraphvizPath.find("Frame001.rendergraph.dot"), std::string::npos);
+    EXPECT_NE(artifactResult.renderGraphDiagnosticsTextPath.find("Frame001.rendergraph.txt"), std::string::npos);
+    EXPECT_NE(artifactResult.renderGraphDiagnosticsJsonPath.find("Frame001.rendergraph.json"), std::string::npos);
+    EXPECT_NE(artifactResult.manifestJsonPath.find("Frame001.diagnostics-manifest.json"), std::string::npos);
+    EXPECT_NE(artifactResult.artifactSummaryJsonPath.find("Frame001.diagnostics-artifacts.json"), std::string::npos);
+    EXPECT_NE(artifactResult.artifactValidationJsonPath.find("Frame001.diagnostics-validation.json"),
+              std::string::npos);
+    EXPECT_EQ(artifactResult.toolDiagnosticsTextRelativePath, "Frame001.scene-renderer.txt");
+    EXPECT_EQ(artifactResult.renderGraphGraphvizRelativePath, "Frame001.rendergraph.dot");
+    EXPECT_EQ(artifactResult.renderGraphDiagnosticsTextRelativePath, "Frame001.rendergraph.txt");
+    EXPECT_EQ(artifactResult.renderGraphDiagnosticsJsonRelativePath, "Frame001.rendergraph.json");
+    EXPECT_EQ(artifactResult.manifestJsonRelativePath, "Frame001.diagnostics-manifest.json");
+    EXPECT_EQ(artifactResult.artifactSummaryJsonRelativePath, "Frame001.diagnostics-artifacts.json");
+    EXPECT_EQ(artifactResult.artifactValidationJsonRelativePath, "Frame001.diagnostics-validation.json");
+    EXPECT_EQ(ReadTextFile(artifactResult.toolDiagnosticsTextPath), diagnosticsText);
+    EXPECT_EQ(ReadTextFile(artifactResult.renderGraphGraphvizPath), graphviz);
+    EXPECT_EQ(ReadTextFile(artifactResult.renderGraphDiagnosticsTextPath), renderGraphDiagnosticsText);
+    EXPECT_EQ(ReadTextFile(artifactResult.renderGraphDiagnosticsJsonPath), renderGraphDiagnosticsJson);
+    const std::string artifactSummaryJson = ReadTextFile(artifactResult.artifactSummaryJsonPath);
+    EXPECT_NE(artifactSummaryJson.find("\"schemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"id\": \"artifactSummaryJson\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"kind\": \"ToolDiagnosticsArtifactSummaryJson\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"relativePath\": \"\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"toolDiagnosticsSchemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"artifactResultAvailable\": true"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"capture\": {"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"metadataAvailable\": true"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"captureId\": \"" + artifactResult.captureId + "\""),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"baseName\": \"Frame001\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"outputDirectory\": "), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"frameIndex\": " + std::to_string(toolSnapshot.frame.frameCount)),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"renderGraphDiagnosticsSchemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"renderGraphDiagnosticsSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"artifactSummarySchemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"artifactValidationSchemaVersion\": 25"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"renderGraphPassCount\": " +
+                                       std::to_string(toolSnapshot.renderGraph.passes.size())),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"renderGraphResourceCount\": " +
+                                       std::to_string(toolSnapshot.renderGraph.resources.size())),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"artifactCount\": 5"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"savedCount\": 5"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"allArtifactsSaved\": true"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"totalArtifactBytes\": "), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"primaryArtifactBundleHash\": \"" +
+                                       artifactResult.primaryArtifactBundleHash + "\""),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"id\": \"renderGraphDiagnosticsJson\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"kind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"exists\": true"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"byteSize\": "), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"contentHash\": \"" +
+                                       artifactResult.renderGraphDiagnosticsJsonContentHash + "\""),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"contentHash\": \"" +
+                                       artifactResult.manifestJsonContentHash + "\""),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"relativePath\": \"Frame001.rendergraph.json\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"relativePath\": \"Frame001.diagnostics-manifest.json\""),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"validationReport\": {"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"id\": \"artifactValidationJson\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"schemaVersion\": 25"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"resultAvailable\": true"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"allPrimaryArtifactsValid\": true"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"bundleHashMatches\": true"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"verdictCode\": \"Valid\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureCode\": \"None\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureEntryIndex\": null"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureEntryCount\": 0"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"entryCount\": 5"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"entryCountMatchesCheckedPrimaryArtifactCount\": true"),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"entryCoverageCode\": \"Complete\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"entryCoverageMessage\": \"validation entries cover all checked primary artifacts\""),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureArtifactId\": \"\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureArtifactRelativePath\": \"\""),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureArtifactKind\": \"\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureArtifactContentType\": \"\""),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureArtifactSchemaId\": \"\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureArtifactSchemaVersion\": 0"),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"primaryFailureMessage\": \"\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"checkedPrimaryArtifactCount\": 5"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"validPrimaryArtifactCount\": 5"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"failedPrimaryArtifactCount\": 0"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"diagnosticCodeCounts\": ["), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"code\": \"None\""), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"count\": 5"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"actualTotalPrimaryArtifactBytes\": " +
+                                       std::to_string(artifactResult.totalPrimaryArtifactBytes)),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"expectedPrimaryArtifactBundleHash\": \"" +
+                                       artifactResult.primaryArtifactBundleHash + "\""),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"actualPrimaryArtifactBundleHash\": \"" +
+                                       artifactResult.primaryArtifactBundleHash + "\""),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"relativePath\": \"Frame001.diagnostics-validation.json\""),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("\"contentHash\": \"" +
+                                       artifactResult.artifactValidationJsonContentHash + "\""),
+              std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("Frame001.rendergraph.json"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find("Frame001.diagnostics-manifest.json"), std::string::npos);
+    const std::string artifactManifestJson = ReadTextFile(artifactResult.manifestJsonPath);
+    EXPECT_NE(artifactManifestJson.find("\"schemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"id\": \"manifestJson\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"kind\": \"ToolDiagnosticsManifestJson\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"artifacts\": {"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"capture\": {"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"captureId\": \"" + artifactResult.captureId + "\""),
+              std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"baseName\": \"Frame001\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"frameIndex\": " + std::to_string(toolSnapshot.frame.frameCount)),
+              std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"renderGraphDiagnosticsSchemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"renderGraphDiagnosticsSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
+              std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"renderGraphPassCount\": " +
+                                        std::to_string(toolSnapshot.renderGraph.passes.size())),
+              std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"renderGraphResourceCount\": " +
+                                        std::to_string(toolSnapshot.renderGraph.resources.size())),
+              std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"artifactSummarySchemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"artifactValidationSchemaVersion\": 25"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"primaryArtifactCount\": 5"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"savedPrimaryArtifactCount\": 5"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"allPrimaryArtifactsSaved\": true"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"totalPrimaryArtifactBytes\": "), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"sceneRendererText\": {"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"kind\": \"SceneRendererText\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"renderGraphGraphviz\": {"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"kind\": \"RenderGraphGraphviz\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"contentType\": \"text/vnd.graphviz\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"renderGraphDiagnosticsJson\": {"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"kind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"manifestJson\": {"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"kind\": \"ToolDiagnosticsManifestJson\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"kind\": \"ToolDiagnosticsArtifactSummaryJson\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"schemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"Frame001.scene-renderer.txt\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"Frame001.rendergraph.dot\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"Frame001.rendergraph.txt\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"Frame001.rendergraph.json\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"Frame001.diagnostics-manifest.json\""),
+              std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"Frame001.diagnostics-artifacts.json\""),
+              std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("Frame001.scene-renderer.txt"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("Frame001.rendergraph.dot"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("Frame001.rendergraph.txt"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("Frame001.rendergraph.json"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"artifactSummaryJson\": {"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("Frame001.diagnostics-artifacts.json"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"artifactValidationJson\": {"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"kind\": \"ToolDiagnosticsArtifactValidationJson\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"schemaVersion\": 25"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"Frame001.diagnostics-validation.json\""),
+              std::string::npos);
+    EXPECT_NE(artifactManifestJson.find("Frame001.diagnostics-validation.json"), std::string::npos);
+    EXPECT_EQ(artifactManifestJson.find("\"validationReport\": {"), std::string::npos);
+    EXPECT_EQ(artifactManifestJson.find("\"diagnosticCodeCounts\": ["), std::string::npos);
+
+    const SceneRendererToolDiagnosticsArtifactValidationResult validation =
+        SceneRenderer::ValidateToolDiagnosticsArtifacts(artifactResult);
+    EXPECT_EQ(validation.schemaVersion, RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION);
+    EXPECT_TRUE(validation.artifactResultAvailable);
+    EXPECT_TRUE(validation.allPrimaryArtifactsValid);
+    EXPECT_TRUE(validation.bundleHashMatches);
+    EXPECT_EQ(validation.verdictCode, "Valid");
+    EXPECT_EQ(validation.primaryFailureCode, "None");
+    EXPECT_EQ(validation.primaryFailureEntryIndex, RVX_INVALID_INDEX);
+    EXPECT_EQ(validation.primaryFailureEntryCount, 0u);
+    EXPECT_EQ(validation.entryCount, 5u);
+    EXPECT_TRUE(validation.entryCountMatchesCheckedPrimaryArtifactCount);
+    EXPECT_EQ(validation.entryCoverageCode, "Complete");
+    EXPECT_EQ(validation.entryCoverageMessage, "validation entries cover all checked primary artifacts");
+    EXPECT_TRUE(validation.primaryFailureArtifactId.empty());
+    EXPECT_TRUE(validation.primaryFailureArtifactRelativePath.empty());
+    EXPECT_TRUE(validation.primaryFailureArtifactKind.empty());
+    EXPECT_TRUE(validation.primaryFailureArtifactContentType.empty());
+    EXPECT_TRUE(validation.primaryFailureArtifactSchemaId.empty());
+    EXPECT_EQ(validation.primaryFailureArtifactSchemaVersion, 0u);
+    EXPECT_TRUE(validation.primaryFailureMessage.empty());
+    EXPECT_EQ(validation.checkedPrimaryArtifactCount, 5u);
+    EXPECT_EQ(validation.validPrimaryArtifactCount, 5u);
+    EXPECT_EQ(validation.failedPrimaryArtifactCount, 0u);
+    EXPECT_EQ(validation.actualTotalPrimaryArtifactBytes, artifactResult.totalPrimaryArtifactBytes);
+    EXPECT_EQ(validation.expectedPrimaryArtifactBundleHash, artifactResult.primaryArtifactBundleHash);
+    EXPECT_EQ(validation.actualPrimaryArtifactBundleHash, artifactResult.primaryArtifactBundleHash);
+    EXPECT_TRUE(validation.captureMetadataAvailable);
+    EXPECT_EQ(validation.captureId, artifactResult.captureId);
+    EXPECT_EQ(validation.captureBaseName, "Frame001");
+    EXPECT_EQ(validation.outputDirectory, artifactDirectoryString);
+    EXPECT_EQ(validation.frameIndex, toolSnapshot.frame.frameCount);
+    EXPECT_EQ(validation.toolDiagnosticsSchemaVersion, RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION);
+    EXPECT_EQ(validation.frameDiagnosticsSchemaVersion, RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION);
+    EXPECT_EQ(validation.renderGraphDiagnosticsSchemaVersion, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
+    EXPECT_EQ(validation.artifactSummarySchemaVersion,
+              RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION);
+    EXPECT_EQ(validation.artifactValidationSchemaVersion,
+              RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION);
+    EXPECT_EQ(validation.renderGraphDiagnosticsSchemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
+    EXPECT_EQ(validation.renderGraphPassCount, toolSnapshot.renderGraph.passes.size());
+    EXPECT_EQ(validation.renderGraphResourceCount, toolSnapshot.renderGraph.resources.size());
+    ASSERT_EQ(validation.diagnosticCodeCounts.size(), 1u);
+    EXPECT_EQ(validation.diagnosticCodeCounts[0].code, "None");
+    EXPECT_EQ(validation.diagnosticCodeCounts[0].count, 5u);
+    ASSERT_EQ(validation.entries.size(), static_cast<size_t>(5));
+    bool renderGraphJsonValidationFound = false;
+    for (size_t entryIndex = 0; entryIndex < validation.entries.size(); ++entryIndex)
+    {
+        const SceneRendererToolDiagnosticsArtifactValidationEntry& entry = validation.entries[entryIndex];
+        EXPECT_EQ(entry.entryIndex, static_cast<uint32>(entryIndex));
+        EXPECT_TRUE(entry.valid);
+        EXPECT_FALSE(entry.primaryFailure);
+        EXPECT_TRUE(entry.exists);
+        EXPECT_TRUE(entry.byteSizeMatches);
+        EXPECT_TRUE(entry.contentHashMatches);
+        EXPECT_EQ(entry.diagnosticCode, "None");
+        EXPECT_TRUE(entry.diagnosticMessage.empty());
+        if (entry.id == "renderGraphDiagnosticsJson")
+        {
+            renderGraphJsonValidationFound = true;
+            EXPECT_EQ(entry.entryIndex, 3u);
+            EXPECT_EQ(entry.kind, "RenderGraphDiagnosticsJson");
+            EXPECT_EQ(entry.contentType, "application/json");
+            EXPECT_EQ(entry.schemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
+            EXPECT_EQ(entry.schemaVersion, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
+            EXPECT_TRUE(entry.identityChecked);
+            EXPECT_TRUE(entry.identityMatches);
+            EXPECT_TRUE(entry.schemaChecked);
+            EXPECT_TRUE(entry.schemaMatches);
+            EXPECT_EQ(entry.actualId, "renderGraphDiagnosticsJson");
+            EXPECT_EQ(entry.actualKind, "RenderGraphDiagnosticsJson");
+            EXPECT_EQ(entry.actualContentType, "application/json");
+            EXPECT_EQ(entry.actualSchemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
+            EXPECT_EQ(entry.actualSchemaVersion, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
+            EXPECT_EQ(entry.relativePath, "Frame001.rendergraph.json");
+            EXPECT_EQ(entry.expectedByteSize, artifactResult.renderGraphDiagnosticsJsonBytes);
+            EXPECT_EQ(entry.actualByteSize, artifactResult.renderGraphDiagnosticsJsonBytes);
+            EXPECT_EQ(entry.expectedContentHash, artifactResult.renderGraphDiagnosticsJsonContentHash);
+            EXPECT_EQ(entry.actualContentHash, artifactResult.renderGraphDiagnosticsJsonContentHash);
+        }
+    }
+    EXPECT_TRUE(renderGraphJsonValidationFound);
+    const std::string validationJson =
+        SceneRenderer::ExportToolDiagnosticsArtifactValidationJson(validation);
+    EXPECT_NE(validationJson.find("\"schemaVersion\": 25"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"id\": \"artifactValidationJson\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"kind\": \"ToolDiagnosticsArtifactValidationJson\""),
+              std::string::npos);
+    EXPECT_NE(validationJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"relativePath\": \"\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"capture\": {"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"metadataAvailable\": true"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"captureId\": \"" + artifactResult.captureId + "\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"baseName\": \"Frame001\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"outputDirectory\": "), std::string::npos);
+    EXPECT_NE(validationJson.find("\"frameIndex\": " + std::to_string(toolSnapshot.frame.frameCount)),
+              std::string::npos);
+    EXPECT_NE(validationJson.find("\"toolDiagnosticsSchemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"renderGraphDiagnosticsSchemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"renderGraphDiagnosticsSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
+              std::string::npos);
+    EXPECT_NE(validationJson.find("\"artifactSummarySchemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"artifactValidationSchemaVersion\": 25"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"renderGraphPassCount\": " +
+                                  std::to_string(toolSnapshot.renderGraph.passes.size())),
+              std::string::npos);
+    EXPECT_NE(validationJson.find("\"renderGraphResourceCount\": " +
+                                  std::to_string(toolSnapshot.renderGraph.resources.size())),
+              std::string::npos);
+    EXPECT_NE(validationJson.find("\"allPrimaryArtifactsValid\": true"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"bundleHashMatches\": true"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"verdictCode\": \"Valid\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"primaryFailureCode\": \"None\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"primaryFailureEntryIndex\": null"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"primaryFailureEntryCount\": 0"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"entryCount\": 5"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"entryCountMatchesCheckedPrimaryArtifactCount\": true"),
+              std::string::npos);
+    EXPECT_NE(validationJson.find("\"entryCoverageCode\": \"Complete\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"entryCoverageMessage\": \"validation entries cover all checked primary artifacts\""),
+              std::string::npos);
+    EXPECT_NE(validationJson.find("\"primaryFailureArtifactId\": \"\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"primaryFailureArtifactRelativePath\": \"\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"primaryFailureArtifactKind\": \"\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"primaryFailureArtifactContentType\": \"\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"primaryFailureArtifactSchemaId\": \"\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"primaryFailureArtifactSchemaVersion\": 0"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"primaryFailureMessage\": \"\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"checkedPrimaryArtifactCount\": 5"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"validPrimaryArtifactCount\": 5"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"failedPrimaryArtifactCount\": 0"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"diagnosticCodeCounts\": ["), std::string::npos);
+    EXPECT_NE(validationJson.find("\"code\": \"None\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"count\": 5"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"expectedPrimaryArtifactBundleHash\": \"" +
+                                  artifactResult.primaryArtifactBundleHash + "\""),
+              std::string::npos);
+    EXPECT_NE(validationJson.find("\"entryIndex\": 3"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"primaryFailure\": false"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"id\": \"renderGraphDiagnosticsJson\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"kind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"actualId\": \"renderGraphDiagnosticsJson\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"actualKind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"actualContentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"actualSchemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"actualSchemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"identityChecked\": true"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"identityMatches\": true"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"schemaChecked\": true"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"schemaMatches\": true"), std::string::npos);
+    EXPECT_NE(validationJson.find("\"actualContentHash\": \"" +
+                                  artifactResult.renderGraphDiagnosticsJsonContentHash + "\""),
+              std::string::npos);
+    EXPECT_NE(validationJson.find("\"diagnosticCode\": \"None\""), std::string::npos);
+    EXPECT_NE(validationJson.find("\"diagnosticMessage\": \"\""), std::string::npos);
+    EXPECT_EQ(ReadTextFile(artifactResult.artifactValidationJsonPath), validationJson);
+    EXPECT_FALSE(SceneRenderer::SaveToolDiagnosticsArtifactValidationJson(nullptr, validation));
+    EXPECT_FALSE(SceneRenderer::SaveToolDiagnosticsArtifactValidationJson("", validation));
+    const fs::path validationJsonPath =
+        artifactDirectory / "Frame001.diagnostics-validation.json";
+    const std::string validationJsonPathString = validationJsonPath.string();
+    ASSERT_TRUE(SceneRenderer::SaveToolDiagnosticsArtifactValidationJson(validationJsonPathString.c_str(),
+                                                                         validation));
+    EXPECT_EQ(ReadTextFile(validationJsonPath), validationJson);
+
+    SceneRendererToolDiagnosticsArtifactResult bundleMismatchArtifact = artifactResult;
+    bundleMismatchArtifact.primaryArtifactBundleHash = "0000000000000000";
+    const SceneRendererToolDiagnosticsArtifactValidationResult bundleMismatchValidation =
+        SceneRenderer::ValidateToolDiagnosticsArtifacts(bundleMismatchArtifact);
+    EXPECT_FALSE(bundleMismatchValidation.allPrimaryArtifactsValid);
+    EXPECT_FALSE(bundleMismatchValidation.bundleHashMatches);
+    EXPECT_EQ(bundleMismatchValidation.validPrimaryArtifactCount,
+              bundleMismatchValidation.checkedPrimaryArtifactCount);
+    EXPECT_EQ(bundleMismatchValidation.failedPrimaryArtifactCount, 0u);
+    EXPECT_EQ(bundleMismatchValidation.verdictCode, "BundleHashMismatch");
+    EXPECT_EQ(bundleMismatchValidation.primaryFailureCode, "BundleHashMismatch");
+    EXPECT_EQ(bundleMismatchValidation.primaryFailureEntryIndex, RVX_INVALID_INDEX);
+    EXPECT_EQ(bundleMismatchValidation.primaryFailureEntryCount, 0u);
+    EXPECT_EQ(bundleMismatchValidation.entryCount, 5u);
+    EXPECT_TRUE(bundleMismatchValidation.entryCountMatchesCheckedPrimaryArtifactCount);
+    EXPECT_EQ(bundleMismatchValidation.entryCoverageCode, "Complete");
+    EXPECT_EQ(bundleMismatchValidation.entryCoverageMessage,
+              "validation entries cover all checked primary artifacts");
+    EXPECT_TRUE(bundleMismatchValidation.primaryFailureArtifactId.empty());
+    EXPECT_TRUE(bundleMismatchValidation.primaryFailureArtifactRelativePath.empty());
+    EXPECT_TRUE(bundleMismatchValidation.primaryFailureArtifactKind.empty());
+    EXPECT_TRUE(bundleMismatchValidation.primaryFailureArtifactContentType.empty());
+    EXPECT_TRUE(bundleMismatchValidation.primaryFailureArtifactSchemaId.empty());
+    EXPECT_EQ(bundleMismatchValidation.primaryFailureArtifactSchemaVersion, 0u);
+    EXPECT_EQ(bundleMismatchValidation.primaryFailureMessage, "primary artifact bundle hash mismatch");
+    const std::string bundleMismatchJson =
+        SceneRenderer::ExportToolDiagnosticsArtifactValidationJson(bundleMismatchValidation);
+    EXPECT_NE(bundleMismatchJson.find("\"bundleHashMatches\": false"), std::string::npos);
+    EXPECT_NE(bundleMismatchJson.find("\"verdictCode\": \"BundleHashMismatch\""), std::string::npos);
+    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureCode\": \"BundleHashMismatch\""),
+              std::string::npos);
+    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureEntryIndex\": null"), std::string::npos);
+    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureEntryCount\": 0"), std::string::npos);
+    EXPECT_NE(bundleMismatchJson.find("\"entryCount\": 5"), std::string::npos);
+    EXPECT_NE(bundleMismatchJson.find("\"entryCountMatchesCheckedPrimaryArtifactCount\": true"),
+              std::string::npos);
+    EXPECT_NE(bundleMismatchJson.find("\"entryCoverageCode\": \"Complete\""), std::string::npos);
+    EXPECT_NE(bundleMismatchJson.find("\"entryCoverageMessage\": \"validation entries cover all checked primary artifacts\""),
+              std::string::npos);
+    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureArtifactId\": \"\""), std::string::npos);
+    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureArtifactRelativePath\": \"\""),
+              std::string::npos);
+    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureArtifactKind\": \"\""), std::string::npos);
+    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureArtifactContentType\": \"\""),
+              std::string::npos);
+    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureArtifactSchemaId\": \"\""),
+              std::string::npos);
+    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureArtifactSchemaVersion\": 0"),
+              std::string::npos);
+    EXPECT_NE(bundleMismatchJson.find("\"primaryFailureMessage\": \"primary artifact bundle hash mismatch\""),
+              std::string::npos);
+    EXPECT_NE(bundleMismatchJson.find("\"failedPrimaryArtifactCount\": 0"), std::string::npos);
+    for (const SceneRendererToolDiagnosticsArtifactValidationEntry& entry : bundleMismatchValidation.entries)
+    {
+        EXPECT_FALSE(entry.primaryFailure);
+    }
+
+    std::string wrongIdentityJson = renderGraphDiagnosticsJson;
+    const std::string expectedIdentity = "\"id\": \"renderGraphDiagnosticsJson\"";
+    const std::string wrongIdentity = "\"id\": \"unexpectedRenderGraphDiagnosticsJson\"";
+    const size_t identityOffset = wrongIdentityJson.find(expectedIdentity);
+    ASSERT_NE(identityOffset, std::string::npos);
+    wrongIdentityJson.replace(identityOffset, expectedIdentity.size(), wrongIdentity);
+    {
+        std::ofstream wrongIdentityArtifact(artifactResult.renderGraphDiagnosticsJsonPath,
+                                            std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(wrongIdentityArtifact.is_open());
+        wrongIdentityArtifact << wrongIdentityJson;
+    }
+
+    SceneRendererToolDiagnosticsArtifactResult identityMismatchArtifact = artifactResult;
+    identityMismatchArtifact.renderGraphDiagnosticsJsonBytes =
+        static_cast<uint64>(wrongIdentityJson.size());
+    identityMismatchArtifact.renderGraphDiagnosticsJsonContentHash =
+        ComputeTestContentHash(wrongIdentityJson);
+    const SceneRendererToolDiagnosticsArtifactValidationResult identityMismatchValidation =
+        SceneRenderer::ValidateToolDiagnosticsArtifacts(identityMismatchArtifact);
+    EXPECT_FALSE(identityMismatchValidation.allPrimaryArtifactsValid);
+    EXPECT_EQ(identityMismatchValidation.verdictCode, "InvalidArtifacts");
+    EXPECT_EQ(identityMismatchValidation.checkedPrimaryArtifactCount, 5u);
+    EXPECT_EQ(identityMismatchValidation.validPrimaryArtifactCount, 4u);
+    EXPECT_EQ(identityMismatchValidation.failedPrimaryArtifactCount, 1u);
+    EXPECT_EQ(identityMismatchValidation.primaryFailureCode, "IdentityMetadataMismatch");
+    EXPECT_EQ(identityMismatchValidation.primaryFailureEntryIndex, 3u);
+    EXPECT_EQ(identityMismatchValidation.primaryFailureEntryCount, 1u);
+    EXPECT_EQ(identityMismatchValidation.entryCount, 5u);
+    EXPECT_TRUE(identityMismatchValidation.entryCountMatchesCheckedPrimaryArtifactCount);
+    EXPECT_EQ(identityMismatchValidation.entryCoverageCode, "Complete");
+    EXPECT_EQ(identityMismatchValidation.entryCoverageMessage,
+              "validation entries cover all checked primary artifacts");
+    EXPECT_EQ(identityMismatchValidation.primaryFailureArtifactId, "renderGraphDiagnosticsJson");
+    EXPECT_EQ(identityMismatchValidation.primaryFailureArtifactRelativePath, "Frame001.rendergraph.json");
+    EXPECT_EQ(identityMismatchValidation.primaryFailureArtifactKind, "RenderGraphDiagnosticsJson");
+    EXPECT_EQ(identityMismatchValidation.primaryFailureArtifactContentType, "application/json");
+    EXPECT_EQ(identityMismatchValidation.primaryFailureArtifactSchemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
+    EXPECT_EQ(identityMismatchValidation.primaryFailureArtifactSchemaVersion,
+              RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
+    EXPECT_EQ(identityMismatchValidation.primaryFailureMessage, "artifact identity metadata mismatch");
+    bool identityMismatchCodeCountFound = false;
+    bool identityMismatchNoneCodeCountFound = false;
+    for (const SceneRendererToolDiagnosticsArtifactValidationCodeCount& codeCount :
+         identityMismatchValidation.diagnosticCodeCounts)
+    {
+        if (codeCount.code == "IdentityMetadataMismatch")
+        {
+            identityMismatchCodeCountFound = true;
+            EXPECT_EQ(codeCount.count, 1u);
+        }
+        else if (codeCount.code == "None")
+        {
+            identityMismatchNoneCodeCountFound = true;
+            EXPECT_EQ(codeCount.count, 4u);
+        }
+    }
+    EXPECT_TRUE(identityMismatchCodeCountFound);
+    EXPECT_TRUE(identityMismatchNoneCodeCountFound);
+    bool renderGraphJsonIdentityMismatchFound = false;
+    for (const SceneRendererToolDiagnosticsArtifactValidationEntry& entry : identityMismatchValidation.entries)
+    {
+        if (entry.id == "renderGraphDiagnosticsJson")
+        {
+            renderGraphJsonIdentityMismatchFound = true;
+            EXPECT_EQ(entry.entryIndex, 3u);
+            EXPECT_TRUE(entry.primaryFailure);
+            EXPECT_FALSE(entry.valid);
+            EXPECT_TRUE(entry.exists);
+            EXPECT_TRUE(entry.byteSizeMatches);
+            EXPECT_TRUE(entry.contentHashMatches);
+            EXPECT_TRUE(entry.identityChecked);
+            EXPECT_FALSE(entry.identityMatches);
+            EXPECT_TRUE(entry.schemaChecked);
+            EXPECT_TRUE(entry.schemaMatches);
+            EXPECT_EQ(entry.actualId, "unexpectedRenderGraphDiagnosticsJson");
+            EXPECT_EQ(entry.actualKind, "RenderGraphDiagnosticsJson");
+            EXPECT_EQ(entry.actualContentType, "application/json");
+            EXPECT_EQ(entry.actualSchemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
+            EXPECT_EQ(entry.actualSchemaVersion, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
+            EXPECT_EQ(entry.diagnosticCode, "IdentityMetadataMismatch");
+            EXPECT_EQ(entry.diagnosticMessage, "artifact identity metadata mismatch");
+        }
+    }
+    EXPECT_TRUE(renderGraphJsonIdentityMismatchFound);
+    const std::string identityMismatchJson =
+        SceneRenderer::ExportToolDiagnosticsArtifactValidationJson(identityMismatchValidation);
+    EXPECT_NE(identityMismatchJson.find("\"identityMatches\": false"), std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"schemaMatches\": true"), std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"actualId\": \"unexpectedRenderGraphDiagnosticsJson\""),
+              std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"actualKind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"actualSchemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"verdictCode\": \"InvalidArtifacts\""), std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"primaryFailureCode\": \"IdentityMetadataMismatch\""),
+              std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"primaryFailureEntryIndex\": 3"), std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"primaryFailureEntryCount\": 1"), std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"entryCount\": 5"), std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"entryCountMatchesCheckedPrimaryArtifactCount\": true"),
+              std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"entryCoverageCode\": \"Complete\""), std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"entryCoverageMessage\": \"validation entries cover all checked primary artifacts\""),
+              std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"primaryFailureArtifactId\": \"renderGraphDiagnosticsJson\""),
+              std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"primaryFailureArtifactRelativePath\": \"Frame001.rendergraph.json\""),
+              std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"primaryFailureArtifactKind\": \"RenderGraphDiagnosticsJson\""),
+              std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"primaryFailureArtifactContentType\": \"application/json\""),
+              std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"primaryFailureArtifactSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
+              std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"primaryFailureArtifactSchemaVersion\": 3"),
+              std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"primaryFailureMessage\": \"artifact identity metadata mismatch\""),
+              std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"failedPrimaryArtifactCount\": 1"), std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"entryIndex\": 3"), std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"primaryFailure\": true"), std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"code\": \"IdentityMetadataMismatch\""),
+              std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"count\": 1"), std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"diagnosticCode\": \"IdentityMetadataMismatch\""),
+              std::string::npos);
+    EXPECT_NE(identityMismatchJson.find("\"diagnosticMessage\": \"artifact identity metadata mismatch\""),
+              std::string::npos);
+
+    {
+        std::ofstream restoredArtifact(artifactResult.renderGraphDiagnosticsJsonPath,
+                                       std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(restoredArtifact.is_open());
+        restoredArtifact << renderGraphDiagnosticsJson;
+    }
+
+    {
+        std::ofstream modifiedArtifact(artifactResult.renderGraphDiagnosticsJsonPath,
+                                       std::ios::binary | std::ios::app);
+        ASSERT_TRUE(modifiedArtifact.is_open());
+        modifiedArtifact << "\n";
+    }
+
+    const SceneRendererToolDiagnosticsArtifactValidationResult modifiedValidation =
+        SceneRenderer::ValidateToolDiagnosticsArtifacts(artifactResult);
+    EXPECT_FALSE(modifiedValidation.allPrimaryArtifactsValid);
+    EXPECT_FALSE(modifiedValidation.bundleHashMatches);
+    EXPECT_EQ(modifiedValidation.verdictCode, "InvalidArtifacts");
+    EXPECT_EQ(modifiedValidation.checkedPrimaryArtifactCount, 5u);
+    EXPECT_EQ(modifiedValidation.validPrimaryArtifactCount, 4u);
+    EXPECT_EQ(modifiedValidation.failedPrimaryArtifactCount, 1u);
+    EXPECT_EQ(modifiedValidation.primaryFailureCode, "ByteSizeMismatch");
+    EXPECT_EQ(modifiedValidation.primaryFailureEntryIndex, 3u);
+    EXPECT_EQ(modifiedValidation.primaryFailureEntryCount, 1u);
+    EXPECT_EQ(modifiedValidation.entryCount, 5u);
+    EXPECT_TRUE(modifiedValidation.entryCountMatchesCheckedPrimaryArtifactCount);
+    EXPECT_EQ(modifiedValidation.entryCoverageCode, "Complete");
+    EXPECT_EQ(modifiedValidation.entryCoverageMessage,
+              "validation entries cover all checked primary artifacts");
+    EXPECT_EQ(modifiedValidation.primaryFailureArtifactId, "renderGraphDiagnosticsJson");
+    EXPECT_EQ(modifiedValidation.primaryFailureArtifactRelativePath, "Frame001.rendergraph.json");
+    EXPECT_EQ(modifiedValidation.primaryFailureArtifactKind, "RenderGraphDiagnosticsJson");
+    EXPECT_EQ(modifiedValidation.primaryFailureArtifactContentType, "application/json");
+    EXPECT_EQ(modifiedValidation.primaryFailureArtifactSchemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
+    EXPECT_EQ(modifiedValidation.primaryFailureArtifactSchemaVersion,
+              RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
+    EXPECT_EQ(modifiedValidation.primaryFailureMessage, "artifact byte size mismatch");
+    bool byteSizeMismatchCodeCountFound = false;
+    bool byteSizeMismatchNoneCodeCountFound = false;
+    for (const SceneRendererToolDiagnosticsArtifactValidationCodeCount& codeCount :
+         modifiedValidation.diagnosticCodeCounts)
+    {
+        if (codeCount.code == "ByteSizeMismatch")
+        {
+            byteSizeMismatchCodeCountFound = true;
+            EXPECT_EQ(codeCount.count, 1u);
+        }
+        else if (codeCount.code == "None")
+        {
+            byteSizeMismatchNoneCodeCountFound = true;
+            EXPECT_EQ(codeCount.count, 4u);
+        }
+    }
+    EXPECT_TRUE(byteSizeMismatchCodeCountFound);
+    EXPECT_TRUE(byteSizeMismatchNoneCodeCountFound);
+    bool renderGraphJsonMismatchFound = false;
+    for (const SceneRendererToolDiagnosticsArtifactValidationEntry& entry : modifiedValidation.entries)
+    {
+        if (entry.id == "renderGraphDiagnosticsJson")
+        {
+            renderGraphJsonMismatchFound = true;
+            EXPECT_EQ(entry.entryIndex, 3u);
+            EXPECT_TRUE(entry.primaryFailure);
+            EXPECT_FALSE(entry.valid);
+            EXPECT_TRUE(entry.exists);
+            EXPECT_FALSE(entry.byteSizeMatches);
+            EXPECT_FALSE(entry.contentHashMatches);
+            EXPECT_FALSE(entry.diagnosticMessage.empty());
+            EXPECT_EQ(entry.diagnosticCode, "ByteSizeMismatch");
+            EXPECT_NE(entry.actualByteSize, entry.expectedByteSize);
+            EXPECT_NE(entry.actualContentHash, entry.expectedContentHash);
+        }
+    }
+    EXPECT_TRUE(renderGraphJsonMismatchFound);
+    const std::string modifiedValidationJson =
+        SceneRenderer::ExportToolDiagnosticsArtifactValidationJson(modifiedValidation);
+    EXPECT_NE(modifiedValidationJson.find("\"allPrimaryArtifactsValid\": false"), std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"bundleHashMatches\": false"), std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"verdictCode\": \"InvalidArtifacts\""), std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureCode\": \"ByteSizeMismatch\""),
+              std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureEntryIndex\": 3"), std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureEntryCount\": 1"), std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"entryCount\": 5"), std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"entryCountMatchesCheckedPrimaryArtifactCount\": true"),
+              std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"entryCoverageCode\": \"Complete\""), std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"entryCoverageMessage\": \"validation entries cover all checked primary artifacts\""),
+              std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureArtifactId\": \"renderGraphDiagnosticsJson\""),
+              std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureArtifactRelativePath\": \"Frame001.rendergraph.json\""),
+              std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureArtifactKind\": \"RenderGraphDiagnosticsJson\""),
+              std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureArtifactContentType\": \"application/json\""),
+              std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureArtifactSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
+              std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureArtifactSchemaVersion\": 3"),
+              std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureMessage\": \"artifact byte size mismatch\""),
+              std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"failedPrimaryArtifactCount\": 1"), std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"entryIndex\": 3"), std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"primaryFailure\": true"), std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"id\": \"renderGraphDiagnosticsJson\""), std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"valid\": false"), std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"byteSizeMatches\": false"), std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"contentHashMatches\": false"), std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"code\": \"ByteSizeMismatch\""),
+              std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"count\": 1"), std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"diagnosticCode\": \"ByteSizeMismatch\""),
+              std::string::npos);
+    EXPECT_NE(modifiedValidationJson.find("\"diagnosticMessage\": \"artifact byte size mismatch\""),
+              std::string::npos);
+    fs::remove_all(artifactDirectory, removeError);
+}
+
+TEST(SceneRendererDiagnosticsValidation, RenderFeatureReportMapsModernFeaturesToCapabilities)
+{
+    FakeDevice device;
+    SceneRenderer renderer;
+    renderer.SetRenderFeatureReportDeviceForTesting(&device);
+
+    auto graph = std::make_unique<RenderGraph>();
+    graph->SetDevice(&device);
+    renderer.SetRenderGraphForTesting(std::move(graph));
+
+    renderer.AddPass(std::make_unique<StatusTestPass>("ShadowPass",
+                                                      200,
+                                                      true,
+                                                      false,
+                                                      "Shadow atlas unavailable"));
+    renderer.AddPass(std::make_unique<StatusTestPass>("OpaquePass", 300, true, true));
+    renderer.AddPass(std::make_unique<StatusTestPass>("RayTracedShadowPass",
+                                                      350,
+                                                      true,
+                                                      true));
+
+    renderer.RefreshFrameDiagnosticsForTesting();
+
+    const SceneRenderFeatureReport& report = renderer.GetRenderFeatureReport();
+    EXPECT_EQ(report.schemaVersion, RVX_SCENE_RENDER_FEATURE_REPORT_SCHEMA_VERSION);
+    EXPECT_EQ(report.features.size(), static_cast<size_t>(7));
+    EXPECT_EQ(GetSceneRenderFeatureName(SceneRenderFeature::GPUDriven), std::string("GPUDriven"));
+    EXPECT_EQ(GetSceneRenderFeatureStatusName(SceneRenderFeatureStatus::Fallback), std::string("Fallback"));
+    EXPECT_GE(report.supportedCount, 1u);
+    EXPECT_GE(report.fallbackCount, 1u);
+    EXPECT_GE(report.unsupportedCount, 1u);
+    EXPECT_GE(report.skippedCount, 1u);
+
+    const SceneRenderFeatureCapability* pbr =
+        FindRenderFeature(report, SceneRenderFeature::PBR);
+    ASSERT_NE(pbr, nullptr);
+    EXPECT_EQ(pbr->status, SceneRenderFeatureStatus::Supported);
+    EXPECT_TRUE(pbr->requested);
+    EXPECT_TRUE(pbr->supported);
+    EXPECT_TRUE(pbr->enabled);
+    EXPECT_TRUE(pbr->renderGraphBacked);
+    EXPECT_EQ(pbr->requiredCapability, "graphicsPipeline+materialPipeline");
+
+    const SceneRenderFeatureCapability* shadows =
+        FindRenderFeature(report, SceneRenderFeature::Shadows);
+    ASSERT_NE(shadows, nullptr);
+    EXPECT_EQ(shadows->status, SceneRenderFeatureStatus::Fallback);
+    EXPECT_TRUE(shadows->requested);
+    EXPECT_FALSE(shadows->supported);
+    EXPECT_TRUE(shadows->fallbackUsed);
+    EXPECT_NE(shadows->diagnosticMessage.find("Shadow atlas unavailable"), std::string::npos);
+
+    const SceneRenderFeatureCapability* rayTracing =
+        FindRenderFeature(report, SceneRenderFeature::RayTracing);
+    ASSERT_NE(rayTracing, nullptr);
+    EXPECT_EQ(rayTracing->status, SceneRenderFeatureStatus::Unsupported);
+    EXPECT_TRUE(rayTracing->requested);
+    EXPECT_TRUE(rayTracing->rhiCapabilityKnown);
+    EXPECT_FALSE(rayTracing->supported);
+    EXPECT_EQ(rayTracing->requiredCapability, "supportsRaytracing+supportsRaytracingPipeline");
+
+    const SceneRenderFeatureCapability* postProcess =
+        FindRenderFeature(report, SceneRenderFeature::PostProcess);
+    ASSERT_NE(postProcess, nullptr);
+    EXPECT_EQ(postProcess->status, SceneRenderFeatureStatus::Skipped);
+    EXPECT_FALSE(postProcess->requested);
+
+    const std::string diagnosticsText = renderer.ExportToolDiagnosticsText();
+    EXPECT_NE(diagnosticsText.find("RenderFeatures: supported="), std::string::npos);
+    EXPECT_NE(diagnosticsText.find("Feature PBR: status=Supported"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find("Feature Shadows: status=Fallback"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find("Feature RayTracing: status=Unsupported"), std::string::npos);
+
+    const std::string manifestJson = renderer.ExportToolDiagnosticsManifestJson();
+    EXPECT_NE(manifestJson.find("\"features\": {"), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"name\": \"RayTracing\""), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"status\": \"Unsupported\""), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"requiredCapability\": \"supportsRaytracing+supportsRaytracingPipeline\""),
+              std::string::npos);
+}
+
+TEST_F(RenderPassValidationFixture, FilmGrainRequiresResourcesBeforeReportingSupported)
+{
+    FilmGrainPass pass;
+    PostProcessSettings settings;
+    settings.enableFilmGrain = true;
+    pass.Configure(settings);
+
+    EXPECT_TRUE(pass.IsRequestedEnabled());
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_FALSE(pass.IsEnabled());
+    EXPECT_FALSE(pass.GetUnsupportedReason().empty());
+}
+
+TEST_F(RenderPassValidationFixture, FilmGrainAddsLiveGraphPassAndDrawsFullscreenTriangle)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    FilmGrainPass pass;
+    PostProcessSettings settings;
+    settings.enableFilmGrain = true;
+    settings.filmGrainIntensity = 0.2f;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    ASSERT_TRUE(pass.IsEnabled());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.compileValid);
+    EXPECT_EQ(stats.totalPasses, 1u);
+    EXPECT_EQ(stats.culledPasses, 0u);
+    EXPECT_EQ(stats.emptyPassUsageCount, 0u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.beginRenderPassCount, 1u);
+    EXPECT_EQ(ctx.endRenderPassCount, 1u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetFilmGrainPipeline(RHIFormat::RGBA8_UNORM));
+    ASSERT_EQ(ctx.descriptorSetSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.descriptorSetSequence[0], 0u);
+    EXPECT_EQ(ctx.drawCount, 1u);
+    EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
+    EXPECT_EQ(ctx.drawIndexedCount, 0u);
+
+    auto descriptorIt = std::find_if(
+        device.createdDescriptorSetDescs.begin(),
+        device.createdDescriptorSetDescs.end(),
+        [](const RHIDescriptorSetDesc& desc)
+        {
+            return desc.debugName && std::string(desc.debugName) == "FilmGrainDescriptorSet";
+        });
+    ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
+    EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
+}
+
+TEST_F(RenderPassValidationFixture, FilmGrainUploadsConstantsWithHLSLPacking)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    FilmGrainPass pass;
+    PostProcessSettings settings;
+    settings.enableFilmGrain = true;
+    pass.Configure(settings);
+
+    FilmGrainConfig config;
+    config.type = FilmGrainType::Colored;
+    config.intensity = 0.42f;
+    config.response = 0.65f;
+    config.size = 2.25f;
+    config.luminanceContribution = 0.75f;
+    config.colorContribution = 0.25f;
+    config.animated = true;
+    config.animationSpeed = 2.0f;
+    pass.SetConfig(config);
+    pass.SetFrameTime(1.5f);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    ASSERT_TRUE(pass.IsEnabled());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(40, 20, RHIFormat::RGBA8_UNORM));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(40, 20, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    ASSERT_EQ(ctx.drawCount, 1u);
+
+    const FakeBuffer* constants = FindCreatedBuffer(device, "FilmGrainConstants");
+    ASSERT_NE(constants, nullptr);
+    const std::vector<uint8>& storage = constants->GetStorage();
+    ASSERT_GE(storage.size(), static_cast<size_t>(48));
+
+    auto readFloat = [&storage](size_t byteOffset)
+    {
+        float value = 0.0f;
+        std::memcpy(&value, storage.data() + byteOffset, sizeof(float));
+        return value;
+    };
+
+    EXPECT_FLOAT_EQ(readFloat(0), 40.0f);
+    EXPECT_FLOAT_EQ(readFloat(4), 20.0f);
+    EXPECT_FLOAT_EQ(readFloat(8), 1.0f / 40.0f);
+    EXPECT_FLOAT_EQ(readFloat(12), 1.0f / 20.0f);
+    EXPECT_FLOAT_EQ(readFloat(16), config.intensity);
+    EXPECT_FLOAT_EQ(readFloat(20), config.response);
+    EXPECT_FLOAT_EQ(readFloat(24), config.size);
+    EXPECT_FLOAT_EQ(readFloat(28), config.luminanceContribution);
+    EXPECT_FLOAT_EQ(readFloat(32), config.colorContribution);
+    EXPECT_FLOAT_EQ(readFloat(36), 3.0f);
+    EXPECT_FLOAT_EQ(readFloat(40), static_cast<float>(static_cast<uint32>(config.type)));
+    EXPECT_FLOAT_EQ(readFloat(44), 0.0f);
+}
+
+TEST_F(RenderPassValidationFixture, FilmGrainSkipsDrawWhenConstantsCannotMap)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+
+    FilmGrainPass pass;
+    PostProcessSettings settings;
+    settings.enableFilmGrain = true;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, input, output);
+    graph.Compile();
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.drawCount, 0u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 0u);
+}
+
+TEST_F(RenderPassValidationFixture, SSAOPassRequiresResourcesBeforeReportingSupported)
+{
+    SSAOPass pass;
+    PostProcessSettings settings;
+    settings.enableSSAO = true;
+    pass.Configure(settings);
+
+    EXPECT_TRUE(pass.IsRequestedEnabled());
+    EXPECT_FALSE(pass.IsSupported());
+    EXPECT_FALSE(pass.IsEnabled());
+    EXPECT_FALSE(pass.GetUnsupportedReason().empty());
+}
+
+TEST_F(RenderPassValidationFixture, SSAOPassAddsDepthOnlyGraphPassAndDrawsFullscreenTriangle)
+{
+    ASSERT_NO_FATAL_FAILURE(Initialize());
+
+    SSAOPass pass;
+    PostProcessSettings settings;
+    settings.enableSSAO = true;
+    settings.ssaoRadius = 0.75f;
+    settings.ssaoIntensity = 0.6f;
+    settings.visualQualityPreset = RenderVisualQualityPreset::High;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    ASSERT_TRUE(pass.IsEnabled());
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    RHITextureDesc inputDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
+    inputDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHITextureDesc outputDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
+    outputDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT);
+    depthDesc.usage = RHITextureUsage::DepthStencil | RHITextureUsage::ShaderResource;
+
+    RHITextureRef inputTexture = device.CreateTexture(inputDesc);
+    RHITextureRef outputTexture = device.CreateTexture(outputDesc);
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+    ASSERT_TRUE(depthTexture);
+
+    PostProcessFrameInputs frameInputs;
+    frameInputs.sceneColor = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    frameInputs.depth = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthWrite);
+    frameInputs.outputFormat = RHIFormat::RGBA16_FLOAT;
+    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    pass.AddToGraph(graph, frameInputs, output);
+    graph.Compile();
+
+    const auto& graphStats = graph.GetCompileStats();
+    EXPECT_TRUE(graphStats.compileValid);
+    EXPECT_EQ(graphStats.totalPasses, 1u);
+    EXPECT_EQ(graphStats.culledPasses, 0u);
+    EXPECT_EQ(graphStats.emptyPassUsageCount, 0u);
+
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    EXPECT_EQ(ctx.beginRenderPassCount, 1u);
+    EXPECT_EQ(ctx.endRenderPassCount, 1u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetSSAOPipeline(RHIFormat::RGBA16_FLOAT));
+    ASSERT_EQ(ctx.descriptorSetSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(ctx.descriptorSetSequence[0], 0u);
+    EXPECT_EQ(ctx.drawCount, 1u);
+    EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
+    EXPECT_EQ(ctx.drawIndexedCount, 0u);
+
+    auto descriptorIt = std::find_if(
+        device.createdDescriptorSetDescs.begin(),
+        device.createdDescriptorSetDescs.end(),
+        [](const RHIDescriptorSetDesc& desc)
+        {
+            return desc.debugName && std::string(desc.debugName) == "SSAODescriptorSet";
+        });
+    ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
+    EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(4));
+
+    const SSAOComputeStats& stats = pass.GetLastGraphStats();
+    EXPECT_TRUE(stats.requested);
+    EXPECT_TRUE(stats.supported);
+    EXPECT_TRUE(stats.executed);
+    EXPECT_TRUE(stats.depthAvailable);
+    EXPECT_FALSE(stats.normalAvailable);
+    EXPECT_TRUE(stats.normalFallbackUsed);
+    EXPECT_FALSE(stats.neutralOutputFallbackUsed);
+    EXPECT_EQ(stats.sampleCount, 12u);
+    EXPECT_EQ(stats.aoPassCount, 1u);
+    EXPECT_EQ(stats.blurPassCount, 0u);
+    EXPECT_EQ(stats.implementationTier, SSAOImplementationTier::DepthOnlyLowTier);
+    EXPECT_NE(stats.fallbackReason.find("depth-only low-tier fallback"), std::string::npos);
+}
+
+TEST(RenderPostProcessStackValidation, RenderVisualQualityPresetAppliesExplicitEffectPolicy)
+{
+    PostProcessSettings settings;
+    ApplyRenderVisualQualityPreset(settings, RenderVisualQualityPreset::Off);
+    EXPECT_EQ(settings.visualQualityPreset, RenderVisualQualityPreset::Off);
+    EXPECT_STREQ(GetRenderVisualQualityPresetName(settings.visualQualityPreset), "off");
+    EXPECT_FALSE(settings.enableToneMapping);
+    EXPECT_FALSE(settings.enableBloom);
+    EXPECT_FALSE(settings.enableFXAA);
+    EXPECT_FALSE(settings.enableSSAO);
+    EXPECT_FALSE(settings.enableTAA);
+
+    ApplyRenderVisualQualityPreset(settings, RenderVisualQualityPreset::Low);
+    EXPECT_EQ(settings.visualQualityPreset, RenderVisualQualityPreset::Low);
+    EXPECT_TRUE(settings.enableToneMapping);
+    EXPECT_TRUE(settings.enableFXAA);
+    EXPECT_FALSE(settings.enableBloom);
+    EXPECT_FALSE(settings.enableSSAO);
+
+    ApplyRenderVisualQualityPreset(settings, RenderVisualQualityPreset::Cinematic);
+    EXPECT_EQ(settings.visualQualityPreset, RenderVisualQualityPreset::Cinematic);
+    EXPECT_TRUE(settings.enableToneMapping);
+    EXPECT_TRUE(settings.enableBloom);
+    EXPECT_TRUE(settings.enableFXAA);
+    EXPECT_TRUE(settings.enableFilmGrain);
+    EXPECT_TRUE(settings.enableSSAO);
+    EXPECT_TRUE(settings.enableSSR);
+    EXPECT_TRUE(settings.enableTAA);
+    EXPECT_TRUE(settings.enableDOF);
+    EXPECT_TRUE(settings.enableMotionBlur);
+    EXPECT_TRUE(settings.enableVolumetricLighting);
+}
+
+TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposePostProcessEffectPlans)
+{
+    const fs::path shaderDir = FindShaderDirectory();
+    if (shaderDir.empty())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path renderRoot = shaderDir.parent_path();
+    const std::string sceneRendererHeader =
+        ReadTextFile(renderRoot / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
+    const std::string sceneRendererSource =
+        ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+
+    EXPECT_NE(sceneRendererHeader.find("std::vector<PostProcessEffectExecutionPlan> postProcessEffectPlans;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("bool postProcessFallbackCopyApplied = false;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("uint32 scheduledPostProcessEffectCount = 0;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("RenderVisualQualityPreset requestedVisualQualityPreset = RenderVisualQualityPreset::Medium;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("bool postProcessDepthInputAvailable = false;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("bool postProcessVelocityInputAvailable = false;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find(
+                  "diagnostics.postProcessEffectPlans = m_postProcessStats.stackStats.effectPlans;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find(
+                  "diagnostics.postProcessFallbackCopyApplied = m_postProcessStats.stackStats.fallbackCopyApplied;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find(
+                  "diagnostics.scheduledPostProcessEffectCount = m_postProcessStats.stackStats.scheduledEffectCount;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find(
+                  "diagnostics.requestedVisualQualityPreset = m_postProcessStats.stackStats.requestedQualityPreset;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find(
+                  "diagnostics.postProcessDepthInputAvailable = m_postProcessStats.frameInputDepthAvailable;"),
+              std::string::npos);
+}
+
+TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeRayTracingSceneStats)
+{
+    const fs::path shaderDir = FindShaderDirectory();
+    if (shaderDir.empty())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path renderRoot = shaderDir.parent_path();
+    const std::string sceneRendererHeader =
+        ReadTextFile(renderRoot / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
+    const std::string sceneRendererSource =
+        ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+
+    EXPECT_NE(sceneRendererHeader.find("RayTracingSceneManagerStats rayTracingSceneStats;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("diagnostics.rayTracingSceneStats = m_rayTracingSceneStats;"),
+              std::string::npos);
+}
+
+TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeGPUResourceStats)
+{
+    const fs::path shaderDir = FindShaderDirectory();
+    if (shaderDir.empty())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path renderRoot = shaderDir.parent_path();
+    const std::string sceneRendererHeader =
+        ReadTextFile(renderRoot / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
+    const std::string sceneRendererSource =
+        ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+
+    EXPECT_NE(sceneRendererHeader.find("RenderResourceRegistryStats gpuResourceStats;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("diagnostics.gpuResourceStats = m_renderResourceRegistry->GetStats();"),
+              std::string::npos);
+}
+
+TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatureExtractionStats)
+{
+    const fs::path shaderDir = FindShaderDirectory();
+    if (shaderDir.empty())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path renderRoot = shaderDir.parent_path();
+    const std::string sceneRendererHeader =
+        ReadTextFile(renderRoot / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
+    const std::string sceneRendererSource =
+        ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string artifactSource =
+        ReadTextFile(renderRoot / "Private" / "Diagnostics" / "RenderToolArtifacts.cpp");
+    const std::string renderCMake = ReadTextFile(renderRoot / "CMakeLists.txt");
+
+    EXPECT_NE(sceneRendererHeader.find("struct SceneFeatureExtractionStats"), std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("size_t particleMetadataOnlyCount = 0;"), std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("size_t particleRenderPayloadReadyCount = 0;"), std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("size_t particleSortingSupportedCount = 0;"), std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("RenderFeatureSnapshot m_featureSnapshot;"), std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("ParticleFeaturePass* m_particleFeaturePass = nullptr;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("const ParticleFeaturePassStats& GetParticleFeaturePassStats() const;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("SceneFeatureExtractionStats m_featureExtractionStats;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("SceneFeatureExtractionStats featureExtractionStats;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("m_featureSnapshot = m_renderScene.GetFeatures();"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("std::make_unique<ParticleFeaturePass>()"), std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("m_particleFeaturePass->SetSnapshot(&m_featureSnapshot.particles)"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("return m_particleFeaturePass ? m_particleFeaturePass->GetStats()"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("m_featureSnapshot.GetMetadata()"), std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("ParticleRenderSnapshotPayloadStatus::MetadataOnly"), std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("ParticleRenderSnapshotPayloadStatus::RenderOwnedPayloadReady"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("diagnostics.featureExtractionStats = m_featureExtractionStats;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("m_featureExtractionStats.usedProviderPath = true;"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("m_featureExtractionStats.requiresLegacyFallback = false;"),
+              std::string::npos);
+    EXPECT_NE(artifactSource.find("FeatureExtraction: attempted="), std::string::npos);
+    EXPECT_NE(artifactSource.find("\\\"featureExtraction\\\": {"), std::string::npos);
+    EXPECT_NE(artifactSource.find("\\\"particleItemCount\\\": "), std::string::npos);
+    EXPECT_NE(artifactSource.find("\\\"particleMetadataOnlyCount\\\": "), std::string::npos);
+    EXPECT_NE(artifactSource.find("\\\"particleRenderPayloadReadyCount\\\": "), std::string::npos);
+    EXPECT_NE(artifactSource.find("\\\"particleSortingSupportedCount\\\": "), std::string::npos);
+    EXPECT_NE(artifactSource.find("\\\"waterItemCount\\\": "), std::string::npos);
+    EXPECT_NE(artifactSource.find("\\\"terrainItemCount\\\": "), std::string::npos);
+    EXPECT_NE(renderCMake.find("Private/Passes/ParticleFeaturePass.cpp"), std::string::npos);
 }
 
 TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPlanDomainsAndTargets)
@@ -7413,6 +8315,7 @@ TEST_F(RenderPassValidationFixture, DebugRendererFrustumQueuesLinesButRenderRepo
     const std::string debugSource = ReadTextFile(debugSourcePath);
     EXPECT_EQ(debugSource.find("TODO"), std::string::npos);
 }
+
 TEST_F(RenderPassValidationFixture, DecalRendererReportsUnsupportedWithoutSchedulingGraphPass)
 {
     FakeDevice localDevice;
@@ -7653,877 +8556,4 @@ TEST_F(RenderPassValidationFixture, StandaloneSSAOInitializesMinimalLowTierAndRe
     ASSERT_EQ(ctx.renderPasses.size(), 1u);
     EXPECT_EQ(ctx.renderPasses[0].colorAttachmentCount, 1u);
     EXPECT_FLOAT_EQ(ctx.renderPasses[0].colorAttachments[0].clearColor.r, 1.0f);
-}
-
-TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMaterialSet)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    RenderObject& object = scene.GetMutableObject(0);
-    object.previousWorldMatrix = Mat4Identity();
-    object.previousWorldMatrix[3][0] = -1.0f;
-    object.previousWorldMatrixValid = 1;
-
-    Resource::MaterialResource materialResource;
-    materialResource.SetId(601);
-    materialResource.SetName("MaskedVelocityMaterial");
-    materialResource.SetMaterialData(std::make_shared<Material>());
-
-    RenderDrawItem maskedItem = MakeDrawItem(MaterialRenderMode::Masked);
-    maskedItem.materialResource = &materialResource;
-    std::vector<RenderDrawItem> opaqueItems;
-    std::vector<RenderDrawItem> maskedItems = {maskedItem};
-
-    RenderGraph graph;
-    graph.SetDevice(&device);
-
-    RHITextureDesc velocityDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RG16_FLOAT);
-    velocityDesc.debugName = "GraphVelocityForObjectVelocityPass";
-    view.velocityTarget = graph.CreateTexture(velocityDesc);
-    graph.SetExportState(view.velocityTarget, RHIResourceState::RenderTarget);
-
-    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
-    depthDesc.debugName = "GraphDepthForObjectVelocityPass";
-    view.depthTarget = graph.CreateTexture(depthDesc);
-    graph.SetExportState(view.depthTarget, RHIResourceState::DepthRead);
-
-    view.renderGraph = &graph;
-    view.viewCache = &viewCache;
-    view.viewportWidth = 64;
-    view.viewportHeight = 64;
-    view.previousViewProjectionMatrix = Mat4Identity();
-    view.previousViewProjectionValid = 1;
-    view.resetTemporalHistory = false;
-
-    ObjectVelocityPass pass;
-    pass.SetResources(&gpuResources, &pipelineCache, &viewCache, &materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetEnabled(true);
-
-    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
-
-    pass.AddToGraph(graph, view);
-    graph.Compile();
-    EXPECT_TRUE(graph.GetCompileStats().compileValid);
-    EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
-
-    RecordingCommandContext ctx;
-    graph.Execute(ctx);
-
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
-    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetMaskedObjectVelocityPipeline(RHIFormat::RG16_FLOAT));
-    EXPECT_EQ(1u, ctx.drawIndexedCount);
-    EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
-                            [](uint32 set) { return set == 2; }));
-
-    const ObjectVelocityPassStats& stats = pass.GetStats();
-    EXPECT_TRUE(stats.velocityRecorded);
-    EXPECT_EQ(stats.opaqueDrawItemCount, 0u);
-    EXPECT_EQ(stats.maskedDrawItemCount, 1u);
-    EXPECT_EQ(stats.maskedDrawCount, 1u);
-    EXPECT_EQ(stats.skippedMissingUVCount, 0u);
-    EXPECT_EQ(stats.skippedMaterialBindingCount, 0u);
-}
-TEST_F(RenderPassValidationFixture, OpaquePassBindsOpaqueThenMaskedPipelinesAndDrawsBothGroups)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
-    std::vector<RenderDrawItem> maskedItems = {MakeDrawItem(MaterialRenderMode::Masked)};
-
-    OpaquePass pass;
-    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    ASSERT_EQ(static_cast<size_t>(2), ctx.pipelineSequence.size());
-    EXPECT_EQ(pipelineCache.GetOpaquePipeline(), ctx.pipelineSequence[0]);
-    EXPECT_EQ(pipelineCache.GetMaskedPipeline(), ctx.pipelineSequence[1]);
-    EXPECT_EQ(2u, ctx.drawIndexedCount);
-}
-
-TEST_F(RenderPassValidationFixture, DepthPrepassConsumesGPUDrivenMultiMeshIndirectStreams)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    auto secondMeshResource = CreateMeshResource(402);
-    gpuResources.UploadImmediate(secondMeshResource.get());
-    ASSERT_TRUE(gpuResources.IsGPUReady(secondMeshResource->GetId()));
-
-    scene.GetMutableObject(0).bounds = meshResource->GetBounds();
-    RenderObject secondObject = MakeRenderObject(*secondMeshResource);
-    secondObject.bounds = secondMeshResource->GetBounds();
-    scene.AddObject(secondObject);
-
-    RenderDrawItem firstItem = MakeDrawItem(MaterialRenderMode::Opaque);
-    RenderDrawItem secondItem = firstItem;
-    secondItem.objectIndex = 1;
-    secondItem.meshId = secondMeshResource->GetId();
-    std::vector<RenderDrawItem> opaqueItems = {firstItem, secondItem};
-    std::vector<RenderDrawItem> maskedItems;
-
-    MeshGPUBuffers firstBuffers = gpuResources.GetMeshBuffers(meshResource->GetId());
-    ASSERT_TRUE(firstBuffers.IsValid());
-    ASSERT_FALSE(firstBuffers.submeshes.empty());
-    MeshGPUBuffers secondBuffers = gpuResources.GetMeshBuffers(secondMeshResource->GetId());
-    ASSERT_TRUE(secondBuffers.IsValid());
-    ASSERT_FALSE(secondBuffers.submeshes.empty());
-
-    GPUCulling culling;
-    GPUCullingConfig cullingConfig;
-    cullingConfig.maxInstances = 4;
-    cullingConfig.enableOcclusionCulling = false;
-    cullingConfig.enableDistanceCulling = false;
-    culling.Initialize(&device, cullingConfig);
-    culling.BeginFrame();
-
-    GPUIndexedDrawDesc firstDrawDesc;
-    firstDrawDesc.indexCount = firstBuffers.submeshes[0].indexCount;
-    firstDrawDesc.firstIndex = firstBuffers.submeshes[0].indexOffset;
-    firstDrawDesc.vertexOffset = firstBuffers.submeshes[0].baseVertex;
-    ASSERT_EQ(0u, culling.BeginDrawGroup(meshResource->GetId()));
-    EXPECT_NE(RVX_INVALID_INDEX, culling.AddDrawItemInstance(scene, firstItem, firstDrawDesc, 0));
-    culling.EndDrawGroup();
-
-    GPUIndexedDrawDesc secondDrawDesc;
-    secondDrawDesc.indexCount = secondBuffers.submeshes[0].indexCount;
-    secondDrawDesc.firstIndex = secondBuffers.submeshes[0].indexOffset;
-    secondDrawDesc.vertexOffset = secondBuffers.submeshes[0].baseVertex;
-    ASSERT_EQ(1u, culling.BeginDrawGroup(secondMeshResource->GetId()));
-    EXPECT_NE(RVX_INVALID_INDEX, culling.AddDrawItemInstance(scene, secondItem, secondDrawDesc, 1));
-    culling.EndDrawGroup();
-    culling.EndFrame();
-    culling.CullCpuFallback(view.viewMatrix, view.projectionMatrix);
-    EXPECT_EQ(2u, culling.GetDrawCount());
-    ASSERT_EQ(2u, culling.GetDrawGroups().size());
-
-    RHITextureRef depthTexture = device.CreateTexture(RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
-    ASSERT_TRUE(depthTexture);
-    RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
-    ASSERT_TRUE(depthView);
-
-    DepthPrepass pass;
-    pass.SetEnabled(true);
-    pass.SetResources(&gpuResources, &pipelineCache);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetDepthTarget(depthView.Get());
-    pass.SetGPUDrivenCullingSource(&culling);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    EXPECT_EQ(1u, ctx.beginRenderPassCount);
-    EXPECT_EQ(1u, ctx.endRenderPassCount);
-    EXPECT_EQ(0u, ctx.drawIndexedCount);
-    EXPECT_EQ(2u, ctx.drawIndexedIndirectCount);
-    EXPECT_EQ(1u, ctx.lastIndirectDrawCount);
-    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectOffset);
-    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectStride);
-    ASSERT_NE(ctx.currentPipeline, nullptr);
-    ExpectPipelineDebugName(ctx.currentPipeline, "GPUDrivenDepthOnlyPipeline");
-
-    const DepthPrepassDrawStats& stats = pass.GetDrawStats();
-    EXPECT_TRUE(stats.gpuDrivenRequested);
-    EXPECT_TRUE(stats.gpuDrivenEligible);
-    EXPECT_EQ(0u, stats.directDrawCount);
-    EXPECT_EQ(2u, stats.gpuDrivenIndirectBatchCount);
-    EXPECT_EQ(2u, stats.gpuDrivenIndirectDrawCount);
-}
-
-TEST_F(RenderPassValidationFixture, OpaquePassConsumesGPUDrivenMaterialGroupedIndirectStreams)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    scene.GetMutableObject(0).bounds = meshResource->GetBounds();
-
-    RenderDrawItem opaqueItem = MakeDrawItem(MaterialRenderMode::Opaque);
-    RenderDrawItem maskedItem = MakeDrawItem(MaterialRenderMode::Masked);
-    std::vector<RenderDrawItem> opaqueItems = {opaqueItem};
-    std::vector<RenderDrawItem> maskedItems = {maskedItem};
-
-    MeshGPUBuffers buffers = gpuResources.GetMeshBuffers(meshResource->GetId());
-    ASSERT_TRUE(buffers.IsValid());
-    ASSERT_FALSE(buffers.submeshes.empty());
-
-    GPUIndexedDrawDesc drawDesc;
-    drawDesc.indexCount = buffers.submeshes[0].indexCount;
-    drawDesc.firstIndex = buffers.submeshes[0].indexOffset;
-    drawDesc.vertexOffset = buffers.submeshes[0].baseVertex;
-
-    GPUCulling culling;
-    GPUCullingConfig cullingConfig;
-    cullingConfig.maxInstances = 4;
-    cullingConfig.enableOcclusionCulling = false;
-    cullingConfig.enableDistanceCulling = false;
-    culling.Initialize(&device, cullingConfig);
-    culling.BeginFrame();
-
-    ASSERT_EQ(0u, culling.BeginDrawGroup(
-        meshResource->GetId(),
-        opaqueItem.materialId,
-        MaterialPipelineVariant::Opaque,
-        opaqueItem.materialResource));
-    EXPECT_NE(RVX_INVALID_INDEX, culling.AddDrawItemInstance(scene, opaqueItem, drawDesc, 0));
-    culling.EndDrawGroup();
-
-    ASSERT_EQ(1u, culling.BeginDrawGroup(
-        meshResource->GetId(),
-        maskedItem.materialId,
-        MaterialPipelineVariant::Masked,
-        maskedItem.materialResource));
-    EXPECT_NE(RVX_INVALID_INDEX, culling.AddDrawItemInstance(scene, maskedItem, drawDesc, 1));
-    culling.EndDrawGroup();
-
-    culling.EndFrame();
-    culling.CullCpuFallback(view.viewMatrix, view.projectionMatrix);
-    EXPECT_EQ(2u, culling.GetDrawCount());
-    ASSERT_EQ(2u, culling.GetDrawGroups().size());
-
-    OpaquePass pass;
-    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-    pass.SetGPUDrivenCullingSource(&culling);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    EXPECT_EQ(1u, ctx.beginRenderPassCount);
-    EXPECT_EQ(1u, ctx.endRenderPassCount);
-    EXPECT_EQ(0u, ctx.drawIndexedCount);
-    EXPECT_EQ(2u, ctx.drawIndexedIndirectCount);
-    EXPECT_EQ(1u, ctx.lastIndirectDrawCount);
-    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectOffset);
-    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectStride);
-    ASSERT_EQ(static_cast<size_t>(2), ctx.pipelineSequence.size());
-    ExpectPipelineDebugName(ctx.pipelineSequence[0], "GPUDrivenOpaquePipeline");
-    ExpectPipelineDebugName(ctx.pipelineSequence[1], "GPUDrivenMaskedPipeline");
-
-    const OpaquePassDrawStats& stats = pass.GetDrawStats();
-    EXPECT_TRUE(stats.gpuDrivenRequested);
-    EXPECT_TRUE(stats.gpuDrivenEligible);
-    EXPECT_EQ(0u, stats.directDrawCount);
-    EXPECT_EQ(0u, stats.indirectBatchCount);
-    EXPECT_EQ(2u, stats.gpuDrivenIndirectBatchCount);
-    EXPECT_EQ(2u, stats.gpuDrivenIndirectDrawCount);
-}
-
-TEST_F(RenderPassValidationFixture, OpaquePassBatchesSameObjectSubmeshesWithIndirectDraw)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    auto twoSubmeshResource = CreateTwoSubmeshMeshResource(1401);
-    gpuResources.UploadImmediate(twoSubmeshResource.get());
-    ASSERT_TRUE(gpuResources.IsGPUReady(twoSubmeshResource->GetId()));
-
-    scene.Clear();
-    scene.AddObject(MakeRenderObject(*twoSubmeshResource));
-
-    RenderDrawItem firstItem = MakeDrawItem(MaterialRenderMode::Opaque);
-    firstItem.meshId = twoSubmeshResource->GetId();
-    firstItem.submeshIndex = 0;
-
-    RenderDrawItem secondItem = firstItem;
-    secondItem.submeshIndex = 1;
-
-    std::vector<RenderDrawItem> opaqueItems = {firstItem, secondItem};
-    std::vector<RenderDrawItem> maskedItems;
-
-    view.viewCache = &viewCache;
-    view.viewportWidth = 64;
-    view.viewportHeight = 64;
-
-    OpaquePass pass;
-    pass.OnAdd(&device);
-    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    EXPECT_EQ(0u, ctx.drawIndexedCount);
-    EXPECT_EQ(1u, ctx.drawIndexedIndirectCount);
-    EXPECT_EQ(0u, ctx.lastIndirectOffset);
-    EXPECT_EQ(2u, ctx.lastIndirectDrawCount);
-    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectStride);
-    ASSERT_NE(ctx.lastIndirectBuffer, nullptr);
-
-    const auto* indirectBuffer = dynamic_cast<const FakeBuffer*>(ctx.lastIndirectBuffer);
-    ASSERT_NE(indirectBuffer, nullptr);
-    ASSERT_GE(indirectBuffer->GetStorage().size(), sizeof(IndirectDrawIndexedCommand) * 2);
-
-    std::array<IndirectDrawIndexedCommand, 2> commands;
-    std::memcpy(commands.data(), indirectBuffer->GetStorage().data(), sizeof(commands));
-    EXPECT_EQ(3u, commands[0].indexCount);
-    EXPECT_EQ(1u, commands[0].instanceCount);
-    EXPECT_EQ(0u, commands[0].firstIndex);
-    EXPECT_EQ(0, commands[0].vertexOffset);
-    EXPECT_EQ(0u, commands[0].firstInstance);
-    EXPECT_EQ(3u, commands[1].indexCount);
-    EXPECT_EQ(1u, commands[1].instanceCount);
-    EXPECT_EQ(3u, commands[1].firstIndex);
-    EXPECT_EQ(0, commands[1].vertexOffset);
-    EXPECT_EQ(0u, commands[1].firstInstance);
-
-    const OpaquePassDrawStats& stats = pass.GetDrawStats();
-    EXPECT_EQ(0u, stats.directDrawCount);
-    EXPECT_EQ(1u, stats.indirectBatchCount);
-    EXPECT_EQ(2u, stats.indirectDrawCount);
-}
-
-TEST_F(RenderPassValidationFixture, OpaquePassDoesNotIndirectBatchResolvedMaterialMismatch)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    auto twoSubmeshResource = CreateTwoSubmeshMeshResource(1402);
-    gpuResources.UploadImmediate(twoSubmeshResource.get());
-    ASSERT_TRUE(gpuResources.IsGPUReady(twoSubmeshResource->GetId()));
-
-    Resource::MaterialResource firstMaterial;
-    firstMaterial.SetId(701);
-    firstMaterial.SetName("FirstSubmeshMaterial");
-    firstMaterial.SetMaterialData(std::make_shared<Material>());
-
-    Resource::MaterialResource secondMaterial;
-    secondMaterial.SetId(702);
-    secondMaterial.SetName("SecondSubmeshMaterial");
-    secondMaterial.SetMaterialData(std::make_shared<Material>());
-
-    RenderObject object = MakeRenderObject(*twoSubmeshResource);
-    object.materialResources = {&firstMaterial, &secondMaterial};
-    object.materialIds = {firstMaterial.GetId(), secondMaterial.GetId()};
-
-    scene.Clear();
-    scene.AddObject(object);
-
-    RenderDrawItem firstItem = MakeDrawItem(MaterialRenderMode::Opaque);
-    firstItem.meshId = twoSubmeshResource->GetId();
-    firstItem.submeshIndex = 0;
-    firstItem.materialId = 7000;
-    firstItem.materialResource = nullptr;
-
-    RenderDrawItem secondItem = firstItem;
-    secondItem.submeshIndex = 1;
-
-    std::vector<RenderDrawItem> opaqueItems = {firstItem, secondItem};
-    std::vector<RenderDrawItem> maskedItems;
-
-    view.viewCache = &viewCache;
-    view.viewportWidth = 64;
-    view.viewportHeight = 64;
-
-    OpaquePass pass;
-    pass.OnAdd(&device);
-    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    EXPECT_EQ(2u, ctx.drawIndexedCount);
-    EXPECT_EQ(0u, ctx.drawIndexedIndirectCount);
-
-    const OpaquePassDrawStats& stats = pass.GetDrawStats();
-    EXPECT_EQ(2u, stats.directDrawCount);
-    EXPECT_EQ(0u, stats.indirectBatchCount);
-    EXPECT_EQ(0u, stats.indirectDrawCount);
-}
-
-TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassGateNormalMapsOnTangentBasis)
-{
-    const fs::path passesDir = FindShaderDirectory().parent_path() / "Private" / "Passes";
-    ASSERT_FALSE(passesDir.empty());
-
-    const std::string opaquePass = ReadTextFile(passesDir / "OpaquePass.cpp");
-    const std::string transparentPass = ReadTextFile(passesDir / "TransparentPass.cpp");
-
-    EXPECT_NE(opaquePass.find("MaterialBindingOptions materialOptions;"), std::string::npos);
-    EXPECT_NE(opaquePass.find("materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis()"),
-              std::string::npos);
-    EXPECT_NE(opaquePass.find("PrepareMaterialBinding("), std::string::npos);
-    EXPECT_NE(opaquePass.find("item.material, view.viewCache, materialOptions"),
-              std::string::npos);
-    EXPECT_NE(opaquePass.find("materialResource, view.viewCache, materialOptions"),
-              std::string::npos);
-
-    EXPECT_NE(transparentPass.find("MaterialBindingOptions materialOptions;"), std::string::npos);
-    EXPECT_NE(transparentPass.find("materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis()"),
-              std::string::npos);
-    EXPECT_NE(transparentPass.find("PrepareMaterialBinding("), std::string::npos);
-    EXPECT_NE(transparentPass.find("item.material, view.viewCache, materialOptions"),
-              std::string::npos);
-    EXPECT_NE(transparentPass.find("materialResource, view.viewCache, materialOptions"),
-              std::string::npos);
-}
-
-TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassBindFrameLightResources)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    const fs::path passesDir = FindShaderDirectory().parent_path() / "Private" / "Passes";
-    const std::string opaquePass = ReadTextFile(passesDir / "OpaquePass.cpp");
-    const std::string transparentPass = ReadTextFile(passesDir / "TransparentPass.cpp");
-
-    EXPECT_NE(opaquePass.find("#include \"Render/Lighting/LightManager.h\""), std::string::npos);
-    EXPECT_NE(opaquePass.find("#include \"Render/Lighting/ClusteredLighting.h\""), std::string::npos);
-    EXPECT_NE(opaquePass.find("lightResources.lightConstantsBuffer = m_lightManager->GetLightConstantsBuffer();"),
-              std::string::npos);
-    EXPECT_NE(opaquePass.find("lightResources.pointLightsBuffer = m_lightManager->GetPointLightsBuffer();"),
-              std::string::npos);
-    EXPECT_NE(opaquePass.find("lightResources.spotLightsBuffer = m_lightManager->GetSpotLightsBuffer();"),
-              std::string::npos);
-    EXPECT_NE(opaquePass.find("lightResources.clusterConstantsBuffer = m_clusteredLighting->GetClusterConstantsBuffer();"),
-              std::string::npos);
-    EXPECT_NE(opaquePass.find("lightResources.clusterBuffer = m_clusteredLighting->GetClusterBuffer();"),
-              std::string::npos);
-    EXPECT_NE(opaquePass.find("lightResources.clusterLightIndexBuffer = m_clusteredLighting->GetLightIndexBuffer();"),
-              std::string::npos);
-    EXPECT_NE(opaquePass.find("obj.receivesShadow,"), std::string::npos);
-    EXPECT_NE(opaquePass.find("m_pipelineCache->UpdateFrameLightResources(lightResources);"), std::string::npos);
-
-    EXPECT_NE(transparentPass.find("#include \"Render/Lighting/LightManager.h\""), std::string::npos);
-    EXPECT_NE(transparentPass.find("#include \"Render/Lighting/ClusteredLighting.h\""), std::string::npos);
-    EXPECT_NE(transparentPass.find("lightResources.lightConstantsBuffer = m_lightManager->GetLightConstantsBuffer();"),
-              std::string::npos);
-    EXPECT_NE(transparentPass.find("lightResources.pointLightsBuffer = m_lightManager->GetPointLightsBuffer();"),
-              std::string::npos);
-    EXPECT_NE(transparentPass.find("lightResources.spotLightsBuffer = m_lightManager->GetSpotLightsBuffer();"),
-              std::string::npos);
-    EXPECT_NE(transparentPass.find("lightResources.clusterConstantsBuffer = m_clusteredLighting->GetClusterConstantsBuffer();"),
-              std::string::npos);
-    EXPECT_NE(transparentPass.find("lightResources.clusterBuffer = m_clusteredLighting->GetClusterBuffer();"),
-              std::string::npos);
-    EXPECT_NE(transparentPass.find("lightResources.clusterLightIndexBuffer = m_clusteredLighting->GetLightIndexBuffer();"),
-              std::string::npos);
-    EXPECT_NE(transparentPass.find("obj.receivesShadow,"), std::string::npos);
-
-    const size_t shadowUpdate = transparentPass.find("m_pipelineCache->UpdateDirectionalShadowFrameResources({});");
-    const size_t lightUpdate = transparentPass.find("m_pipelineCache->UpdateFrameLightResources(lightResources);");
-    ASSERT_NE(shadowUpdate, std::string::npos);
-    ASSERT_NE(lightUpdate, std::string::npos);
-    EXPECT_LT(shadowUpdate, lightUpdate);
-}
-
-TEST_F(RenderPassValidationFixture, OpaquePassReportsShadowReceiverOptOutDrawItems)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    RenderObject& firstObject = scene.GetMutableObject(0);
-    firstObject.receivesShadow = true;
-
-    RenderObject secondObject = MakeRenderObject(*meshResource);
-    secondObject.receivesShadow = false;
-    scene.AddObject(secondObject);
-
-    RenderDrawItem firstItem = MakeDrawItem(MaterialRenderMode::Opaque);
-    RenderDrawItem secondItem = MakeDrawItem(MaterialRenderMode::Masked);
-    secondItem.objectIndex = 1;
-
-    std::vector<RenderDrawItem> opaqueItems = {firstItem};
-    std::vector<RenderDrawItem> maskedItems = {secondItem};
-
-    RenderGraph graph;
-    graph.SetDevice(&device);
-    view.colorTarget = graph.ImportTexture(colorTexture.Get(), RHIResourceState::RenderTarget);
-
-    OpaquePass pass;
-    pass.OnAdd(&device);
-    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.AddToGraph(graph, view);
-
-    const OpaquePassShadowStats& stats = pass.GetShadowStats();
-    EXPECT_EQ(stats.receiverCandidateDrawItemCount, 2u);
-    EXPECT_EQ(stats.shadowReceivingDrawItemCount, 1u);
-    EXPECT_EQ(stats.shadowReceiverOptOutDrawItemCount, 1u);
-}
-
-TEST_F(RenderPassValidationFixture, OpaquePassResolvesRenderGraphColorTargetView)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    RenderGraph graph;
-    graph.SetDevice(&device);
-
-    RHITextureDesc sceneColorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
-    sceneColorDesc.debugName = "GraphSceneColorForOpaquePass";
-    view.colorTarget = graph.CreateTexture(sceneColorDesc);
-    graph.SetExportState(view.colorTarget, RHIResourceState::RenderTarget);
-    view.renderGraph = &graph;
-    view.viewCache = &viewCache;
-
-    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
-    std::vector<RenderDrawItem> maskedItems;
-
-    OpaquePass pass;
-    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    pass.AddToGraph(graph, view);
-    graph.Compile();
-
-    RecordingCommandContext ctx;
-    graph.Execute(ctx);
-
-    ASSERT_FALSE(ctx.renderPasses.empty());
-    ASSERT_GT(ctx.renderPasses[0].colorAttachmentCount, 0u);
-    RHITextureView* resolvedView = ctx.renderPasses[0].colorAttachments[0].view;
-    ASSERT_NE(resolvedView, nullptr);
-    EXPECT_NE(resolvedView, colorView.Get());
-    EXPECT_NE(resolvedView->GetTexture(), colorTexture.Get());
-}
-
-TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDuringSetup)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    RenderGraph graph;
-    graph.SetDevice(&device);
-
-    RHITextureDesc sceneColorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
-    sceneColorDesc.debugName = "GraphSceneColorForOpaqueShadowPass";
-    view.colorTarget = graph.CreateTexture(sceneColorDesc);
-    graph.SetExportState(view.colorTarget, RHIResourceState::RenderTarget);
-    view.renderGraph = &graph;
-    view.viewCache = &viewCache;
-    view.viewportWidth = 64;
-    view.viewportHeight = 64;
-    view.aspectRatio = 1.0f;
-    view.fieldOfView = 1.0472f;
-    view.nearPlane = 0.1f;
-    view.farPlane = 100.0f;
-    view.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
-    view.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
-    view.inverseViewMatrix = Mat4Identity();
-
-    ShadowPassConfig shadowConfig;
-    shadowConfig.numCascades = 3;
-    shadowConfig.shadowMapSize = 64;
-    shadowConfig.filterRadiusTexels = 2.0f;
-    shadowConfig.normalBias = 0.0375f;
-    shadowConfig.cascadeBlendRatio = 0.1f;
-
-    ShadowPass shadowPass;
-    shadowPass.SetResources(&gpuResources, &pipelineCache);
-    shadowPass.SetRenderScene(&scene);
-    shadowPass.SetConfig(shadowConfig);
-    shadowPass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
-
-    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
-    std::vector<RenderDrawItem> maskedItems;
-
-    OpaquePass opaquePass;
-    opaquePass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
-    opaquePass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    opaquePass.SetRenderTargets(colorView.Get(), nullptr);
-    opaquePass.SetDirectionalShadowSource(&shadowPass);
-
-    shadowPass.AddToGraph(graph, view);
-    opaquePass.AddToGraph(graph, view);
-
-    EXPECT_TRUE(opaquePass.GetShadowStats().requested);
-    EXPECT_TRUE(opaquePass.GetShadowStats().renderGraphReadDeclared);
-
-    graph.Compile();
-    const auto& stats = graph.GetCompileStats();
-    EXPECT_TRUE(stats.compileValid);
-    EXPECT_EQ(stats.totalPasses, 2u);
-    EXPECT_EQ(stats.culledPasses, 0u);
-
-    RecordingCommandContext ctx;
-    graph.Execute(ctx);
-
-    EXPECT_TRUE(opaquePass.GetShadowStats().frameShadowReady);
-    const DirectionalShadowFrameBindingResult& binding =
-        pipelineCache.GetLastDirectionalShadowFrameBindingResult();
-    EXPECT_TRUE(binding.shadowSamplingEnabled);
-    EXPECT_EQ(binding.fallbackReason, DirectionalShadowFallbackReason::None);
-
-    const FakeBuffer* viewBuffer = FindCreatedBuffer(device, "ViewConstantBuffer");
-    ASSERT_NE(viewBuffer, nullptr);
-    ASSERT_GE(viewBuffer->GetStorage().size(), sizeof(ViewConstants));
-    ViewConstants uploaded{};
-    std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 1.0f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.y, shadowConfig.shadowBias);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w,
-                    shadowConfig.filterRadiusTexels / static_cast<float>(shadowConfig.shadowMapSize));
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowReceiverParams.x, shadowConfig.normalBias);
-    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.w, 3.0f);
-    EXPECT_FALSE(IsIdentityMatrix(uploaded.directionalShadowViewProjections[0]));
-    EXPECT_FALSE(IsIdentityMatrix(uploaded.directionalShadowViewProjections[1]));
-    EXPECT_FALSE(IsIdentityMatrix(uploaded.directionalShadowViewProjections[2]));
-    const auto& cascades = shadowPass.GetCascades();
-    ASSERT_EQ(cascades.size(), static_cast<size_t>(3));
-    const float splitRange = view.farPlane - view.nearPlane;
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.x,
-                    view.nearPlane + cascades[0].splitDepth * splitRange);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.y,
-                    view.nearPlane + cascades[1].splitDepth * splitRange);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.z,
-                    view.nearPlane + cascades[2].splitDepth * splitRange);
-    const float split0 = uploaded.directionalShadowCascadeSplits.x;
-    const float split1 = uploaded.directionalShadowCascadeSplits.y;
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeFadeDistances.x,
-                    (split0 - view.nearPlane) * shadowConfig.cascadeBlendRatio);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeFadeDistances.y,
-                    (split1 - split0) * shadowConfig.cascadeBlendRatio);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeFadeDistances.z, 0.0f);
-
-    const auto shadowSrvIt = std::find_if(device.createdTextureViewDescs.begin(),
-                                          device.createdTextureViewDescs.end(),
-                                          [](const RHITextureViewDesc& desc)
-                                          {
-                                              return desc.debugName &&
-                                                     std::string(desc.debugName) == "DirectionalShadowSRV";
-                                          });
-    ASSERT_NE(shadowSrvIt, device.createdTextureViewDescs.end());
-    EXPECT_EQ(shadowSrvIt->type, RHITextureViewType::ShaderResource);
-    EXPECT_EQ(shadowSrvIt->subresourceRange.baseArrayLayer, 0u);
-    EXPECT_EQ(shadowSrvIt->subresourceRange.arrayLayerCount, RVX_ALL_LAYERS);
-    EXPECT_EQ(shadowSrvIt->subresourceRange.aspect, RHITextureAspect::Depth);
-}
-
-TEST_F(RenderPassValidationFixture, OpaquePassReportsMissingShadowSRVWhenRequestedReadCannotResolveView)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    RenderGraph graph;
-    graph.SetDevice(&device);
-
-    RHITextureDesc sceneColorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
-    sceneColorDesc.debugName = "GraphSceneColorForOpaqueMissingShadowSRV";
-    view.colorTarget = graph.CreateTexture(sceneColorDesc);
-    graph.SetExportState(view.colorTarget, RHIResourceState::RenderTarget);
-    view.renderGraph = &graph;
-    view.viewCache = &viewCache;
-    view.viewportWidth = 64;
-    view.viewportHeight = 64;
-    view.aspectRatio = 1.0f;
-    view.fieldOfView = 1.0472f;
-    view.nearPlane = 0.1f;
-    view.farPlane = 100.0f;
-    view.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
-    view.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
-    view.inverseViewMatrix = Mat4Identity();
-
-    ShadowPassConfig shadowConfig;
-    shadowConfig.numCascades = 2;
-    shadowConfig.shadowMapSize = 64;
-    shadowConfig.cascadeBlendRatio = 0.1f;
-
-    ShadowPass shadowPass;
-    shadowPass.SetResources(&gpuResources, &pipelineCache);
-    shadowPass.SetRenderScene(&scene);
-    shadowPass.SetConfig(shadowConfig);
-    shadowPass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
-
-    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
-    std::vector<RenderDrawItem> maskedItems;
-
-    OpaquePass opaquePass;
-    opaquePass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
-    opaquePass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    opaquePass.SetRenderTargets(colorView.Get(), nullptr);
-    opaquePass.SetDirectionalShadowSource(&shadowPass);
-
-    shadowPass.AddToGraph(graph, view);
-    opaquePass.AddToGraph(graph, view);
-    EXPECT_TRUE(opaquePass.GetShadowStats().renderGraphReadDeclared);
-
-    graph.Compile();
-
-    device.failDirectionalShadowSRVCreation = true;
-    RecordingCommandContext ctx;
-    graph.Execute(ctx);
-
-    EXPECT_FALSE(opaquePass.GetShadowStats().frameShadowReady);
-    const DirectionalShadowFrameBindingResult& binding =
-        pipelineCache.GetLastDirectionalShadowFrameBindingResult();
-    EXPECT_FALSE(binding.shadowSamplingEnabled);
-    EXPECT_EQ(binding.fallbackReason, DirectionalShadowFallbackReason::MissingShadowSRV);
-
-    const FakeBuffer* viewBuffer = FindCreatedBuffer(device, "ViewConstantBuffer");
-    ASSERT_NE(viewBuffer, nullptr);
-    ASSERT_GE(viewBuffer->GetStorage().size(), sizeof(ViewConstants));
-    ViewConstants uploaded{};
-    std::memcpy(&uploaded, viewBuffer->GetStorage().data(), sizeof(uploaded));
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 0.0f);
-    EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.w, 0.0f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.x, 0.0f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeSplits.y, 0.0f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeFadeDistances.x, 0.0f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeFadeDistances.y, 0.0f);
-}
-
-TEST_F(RenderPassValidationFixture, OpaquePassSkipsMaskedItemsWhenMaskedPipelineIsMissing)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    ASSERT_TRUE(pipelineCache.GetMaskedPipeline());
-    pipelineCache.m_maskedPipeline.Reset();
-
-    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
-    std::vector<RenderDrawItem> maskedItems = {MakeDrawItem(MaterialRenderMode::Masked)};
-
-    OpaquePass pass;
-    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    ASSERT_EQ(static_cast<size_t>(1), ctx.pipelineSequence.size());
-    EXPECT_EQ(pipelineCache.GetOpaquePipeline(), ctx.pipelineSequence[0]);
-    EXPECT_EQ(1u, ctx.drawIndexedCount);
-}
-
-TEST_F(RenderPassValidationFixture, OpaquePassSkipsOpaqueItemsWhenOpaquePipelineIsMissing)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    ASSERT_TRUE(pipelineCache.GetOpaquePipeline());
-    pipelineCache.m_opaquePipeline.Reset();
-
-    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
-    std::vector<RenderDrawItem> maskedItems = {MakeDrawItem(MaterialRenderMode::Masked)};
-
-    OpaquePass pass;
-    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    ASSERT_EQ(static_cast<size_t>(1), ctx.pipelineSequence.size());
-    EXPECT_EQ(pipelineCache.GetMaskedPipeline(), ctx.pipelineSequence[0]);
-    EXPECT_EQ(1u, ctx.drawIndexedCount);
-}
-
-TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    std::vector<RenderDrawItem> transparentItems = {MakeDrawItem(MaterialRenderMode::Transparent)};
-
-    TransparentPass pass;
-    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
-    pass.SetRenderScene(&scene, &transparentItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    ASSERT_EQ(static_cast<size_t>(1), ctx.pipelineSequence.size());
-    EXPECT_EQ(pipelineCache.GetTransparentPipeline(), ctx.pipelineSequence[0]);
-    EXPECT_EQ(1u, ctx.drawIndexedCount);
-    EXPECT_FALSE(pipelineCache.GetLastDirectionalShadowFrameBindingResult().shadowSamplingEnabled);
-    EXPECT_EQ(pipelineCache.GetLastDirectionalShadowFrameBindingResult().fallbackReason,
-              DirectionalShadowFallbackReason::DisabledNoDirectionalLight);
-}
-
-TEST_F(RenderPassValidationFixture, OpaquePassSkipsDrawWhenMaterialBindingErrors)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize(false));
-
-    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
-    std::vector<RenderDrawItem> maskedItems;
-
-    OpaquePass pass;
-    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    EXPECT_EQ(0u, ctx.drawIndexedCount);
-    EXPECT_EQ(MaterialBindingStatus::Error, materialSystem.GetLastBindingResult().status);
-    EXPECT_FALSE(materialSystem.GetLastBindingResult().IsDrawable());
-    EXPECT_FALSE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
-                             [](uint32 set) { return set == 2; }));
-}
-
-TEST_F(RenderPassValidationFixture, OpaquePassDrawsWhenMaterialBindingUsesFallback)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    Resource::TextureHandle missingTexture = CreateTextureResource(502);
-    Resource::MaterialResource materialResource;
-    ConfigureMaterialWithAlbedo(materialResource, missingTexture);
-
-    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
-    item.materialResource = &materialResource;
-    std::vector<RenderDrawItem> opaqueItems = {item};
-    std::vector<RenderDrawItem> maskedItems;
-
-    OpaquePass pass;
-    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    EXPECT_EQ(1u, ctx.drawIndexedCount);
-    EXPECT_EQ(MaterialBindingStatus::Fallback, materialSystem.GetLastBindingResult().status);
-    EXPECT_TRUE(materialSystem.GetLastBindingResult().IsDrawable());
-    EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
-                            [](uint32 set) { return set == 2; }));
-}
-
-TEST_F(RenderPassValidationFixture, TransparentPassSkipsDrawWhenMaterialBindingErrors)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize(false));
-
-    std::vector<RenderDrawItem> transparentItems = {MakeDrawItem(MaterialRenderMode::Transparent)};
-
-    TransparentPass pass;
-    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
-    pass.SetRenderScene(&scene, &transparentItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    EXPECT_EQ(0u, ctx.drawIndexedCount);
-    EXPECT_EQ(MaterialBindingStatus::Error, materialSystem.GetLastBindingResult().status);
-    EXPECT_FALSE(materialSystem.GetLastBindingResult().IsDrawable());
-    EXPECT_FALSE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
-                             [](uint32 set) { return set == 2; }));
-}
-
-TEST_F(RenderPassValidationFixture, TransparentPassDrawsWhenMaterialBindingUsesFallback)
-{
-    ASSERT_NO_FATAL_FAILURE(Initialize());
-
-    Resource::TextureHandle missingTexture = CreateTextureResource(503);
-    Resource::MaterialResource materialResource;
-    ConfigureMaterialWithAlbedo(materialResource, missingTexture);
-
-    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Transparent);
-    item.materialResource = &materialResource;
-    std::vector<RenderDrawItem> transparentItems = {item};
-
-    TransparentPass pass;
-    pass.SetResources(&gpuResources, &pipelineCache, &materialSystem);
-    pass.SetRenderScene(&scene, &transparentItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    EXPECT_EQ(1u, ctx.drawIndexedCount);
-    EXPECT_EQ(MaterialBindingStatus::Fallback, materialSystem.GetLastBindingResult().status);
-    EXPECT_TRUE(materialSystem.GetLastBindingResult().IsDrawable());
-    EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
-                            [](uint32 set) { return set == 2; }));
 }

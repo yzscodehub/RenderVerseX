@@ -8,7 +8,6 @@
 #include "Core/Math/AABB.h"
 #include "Geometry/Asset/AssetMetadata.h"
 #include "Geometry/Asset/Mesh.h"
-#include "RenderContracts/RenderResource.h"
 #include "Resource/IResource.h"
 #include "Resource/ResourceHandle.h"
 
@@ -17,16 +16,11 @@
 
 namespace RVX::Resource
 {
-    using MeshAttributeUploadView = RenderMeshAttributeUploadView;
-    using MeshSubmeshUploadInfo = RenderMeshSubmeshUploadInfo;
-    using MeshUploadData = RenderMeshUploadData;
-
     /**
      * @brief Mesh resource - encapsulates Mesh data with resource lifecycle
      */
     class MeshResource : public IResource,
-                         public IMeshAssetMetadata,
-                         public IRenderMeshUploadSource
+                         public IMeshAssetMetadata
     {
     public:
         MeshResource();
@@ -44,14 +38,6 @@ namespace RVX::Resource
         AABB GetAssetMeshBounds() const override { return GetBounds(); }
         size_t GetAssetMeshSubmeshCount() const override;
 
-        uint64 GetRenderResourceId() const override { return GetId(); }
-        std::string_view GetRenderResourceName() const override { return GetName(); }
-        uint32 GetRenderResourceRefCount() const override { return GetRefCount(); }
-        RefCounted* GetRenderResourceRefCounted() override { return this; }
-        RenderMeshUploadData GetRenderMeshUploadData() const override { return GetUploadData(); }
-        AABB GetRenderMeshBounds() const override { return GetBounds(); }
-        size_t GetRenderMeshSubmeshCount() const override;
-
         // =====================================================================
         // Mesh Data
         // =====================================================================
@@ -63,8 +49,6 @@ namespace RVX::Resource
         size_t GetLODCount() const;
         std::shared_ptr<Mesh> GetLODMesh(size_t lodIndex) const;
         const std::vector<std::shared_ptr<Mesh>>& GetLODMeshes() const { return m_lodMeshes; }
-
-        MeshUploadData GetUploadData() const;
 
         // =====================================================================
         // Bounds

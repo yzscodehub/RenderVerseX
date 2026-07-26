@@ -1,9 +1,9 @@
 #include "Resources/RenderResourceRegistry.h"
 
 #include "Core/Assert.h"
-#include "Render/GPUResourceManager.h"
 #include "Resources/RenderRetirementQueue.h"
 #include "Runtime/RenderResourceStatusTable.h"
+#include "RHI/RHICommandContext.h"
 
 #include <algorithm>
 
@@ -13,8 +13,6 @@ namespace RVX
     {
         RVX_ASSERT_MSG(m_entries.empty(),
                        "Exact registry requires explicit Render shutdown");
-        RVX_ASSERT_MSG(m_legacy == nullptr,
-                       "Legacy registry requires explicit facade shutdown");
     }
 
     bool RenderResourceRegistry::Initialize(
@@ -449,6 +447,32 @@ namespace RVX
         return texture == nullptr ? nullptr : texture->texture.Get();
     }
 
+    bool RenderResourceRegistry::TransitionTexture(
+        RenderResourceHandle handle,
+        RHICommandContext& context,
+        RHIResourceState desiredState)
+    {
+        Entry* entry = FindExact(handle);
+        if (entry == nullptr || !entry->committed)
+        {
+            return false;
+        }
+        auto* texture = std::get_if<RenderTextureResourceData>(
+            &*entry->committed);
+        if (texture == nullptr || !texture->texture)
+        {
+            return false;
+        }
+        if (texture->state != desiredState)
+        {
+            context.TextureBarrier(texture->texture.Get(),
+                                   texture->state,
+                                   desiredState);
+            texture->state = desiredState;
+        }
+        return true;
+    }
+
     const std::vector<RenderResourceHandle>*
         RenderResourceRegistry::GetDependencies(
             RenderResourceHandle handle) const
@@ -493,6 +517,50 @@ namespace RVX
     uint32 RenderResourceRegistry::GetEntryCount() const
     {
         return static_cast<uint32>(m_entries.size());
+    }
+
+    RenderResourceRegistryStats RenderResourceRegistry::GetStats() const
+    {
+        RenderResourceRegistryStats stats;
+        for (const auto& [slot, entry] : m_entries)
+        {
+            static_cast<void>(slot);
+            if (entry.pending)
+            {
+                ++stats.pendingUploadCount;
+            }
+            if (!entry.committed)
+            {
+                continue;
+            }
+            if (const auto* mesh = std::get_if<RenderMeshResourceData>(
+                    &*entry.committed))
+            {
+                ++stats.residentMeshCount;
+                for (const RenderOwnedBuffer& buffer : mesh->buffers)
+                {
+                    stats.usedMemory += static_cast<size_t>(
+                        buffer.estimatedBytes);
+                }
+            }
+            else if (const auto* texture =
+                         std::get_if<RenderTextureResourceData>(
+                             &*entry.committed))
+            {
+                ++stats.residentTextureCount;
+                stats.usedMemory += static_cast<size_t>(
+                    texture->estimatedBytes);
+            }
+            else if (const auto* material =
+                         std::get_if<RenderMaterialResourceData>(
+                             &*entry.committed))
+            {
+                ++stats.residentMaterialCount;
+                stats.usedMemory += static_cast<size_t>(
+                    material->constantBytes);
+            }
+        }
+        return stats;
     }
 
     RenderResourceRegistry::Entry* RenderResourceRegistry::FindExact(

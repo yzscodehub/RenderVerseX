@@ -22,7 +22,7 @@
  * ---------------
  * - Runtime/     : Window, Input, Time, Camera subsystems
  * - World/       : Scene, Spatial, Picking (integrated)
- * - Render/      : RenderSubsystem, RenderService, RenderGraph integration
+ * - Render/      : RenderSubsystem, dedicated runtime, RenderGraph integration
  * - Resource/    : ResourceManager, ResourceSubsystem, IResource, ResourceHandle
  * - Animation/   : Animation playback
  * 

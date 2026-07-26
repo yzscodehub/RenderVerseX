@@ -9,7 +9,6 @@
 #include "Render/Renderer/ViewData.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/RenderDrawItem.h"
-#include "Render/GPUResourceManager.h"
 #include "Resources/RenderResourceResolver.h"
 #include "Render/PipelineCache.h"
 #include "RHI/RHIRenderPass.h"
@@ -37,9 +36,8 @@ DepthPrepass::DepthPrepass()
     SetEnabled(false);
 }
 
-void DepthPrepass::SetResources(GPUResourceManager* gpuResources, PipelineCache* pipelineCache)
+void DepthPrepass::SetResources(PipelineCache* pipelineCache)
 {
-    m_gpuResources = gpuResources;
     m_pipelineCache = pipelineCache;
 }
 
@@ -111,7 +109,7 @@ bool DepthPrepass::AreGPUDrivenDepthGroupsDrawable(uint32& outDrawItemCount) con
 {
     outDrawItemCount = 0;
     if (!m_renderScene ||
-        (m_resourceRegistry == nullptr && !m_gpuResources) ||
+        m_resourceRegistry == nullptr ||
         !m_gpuCulling)
     {
         return false;
@@ -135,7 +133,7 @@ bool DepthPrepass::AreGPUDrivenDepthGroupsDrawable(uint32& outDrawItemCount) con
     {
         outDrawItemCount += group.maxDrawCount;
         MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
-            m_resourceRegistry, m_gpuResources, group.mesh, group.meshId);
+            m_resourceRegistry, group.mesh);
         if (!buffers.IsValid() || group.maxDrawCount == 0)
         {
             return false;
@@ -206,7 +204,7 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx, const ViewDa
     {
         const GPUCullingDrawGroup& group = groups[groupIndex];
         MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
-            m_resourceRegistry, m_gpuResources, group.mesh, group.meshId);
+            m_resourceRegistry, group.mesh);
         if (!buffers.IsValid())
         {
             return false;
@@ -286,7 +284,7 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
     ctx.SetPipeline(depthPipeline);
 
     // Draw all visible opaque objects with depth-only shader
-    if (m_resourceRegistry != nullptr || m_gpuResources != nullptr)
+    if (m_resourceRegistry != nullptr)
     {
         const auto drawItem = [&](const RenderDrawItem& item)
         {
@@ -301,9 +299,7 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
             // Get GPU buffers for this mesh
             MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
                 m_resourceRegistry,
-                m_gpuResources,
-                obj.mesh,
-                obj.meshId);
+                obj.mesh);
             if (!buffers.IsValid())
             {
                 ++m_drawStats.skippedMissingMeshCount;

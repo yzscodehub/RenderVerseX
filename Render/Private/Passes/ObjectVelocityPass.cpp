@@ -1,7 +1,6 @@
 #include "Render/Passes/ObjectVelocityPass.h"
 
 #include "Core/Log.h"
-#include "Render/GPUResourceManager.h"
 #include "Resources/RenderResourceResolver.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialSystem.h"
@@ -14,16 +13,6 @@ namespace RVX
 {
     namespace
     {
-        const IRenderMaterialSource* ResolveMaterialResource(const RenderObject& object, uint32 submeshIndex)
-        {
-            if (submeshIndex >= object.materialResources.size())
-            {
-                return nullptr;
-            }
-
-            return object.materialResources[submeshIndex];
-        }
-
         std::span<const Mat4> ResolveSkinningMatrices(const RenderObject& object, const MeshGPUBuffers& buffers)
         {
             if (!object.HasSkinningData() || !buffers.HasSkinningVertexData())
@@ -43,7 +32,6 @@ namespace RVX
     void ObjectVelocityPass::OnRemove()
     {
         m_device = nullptr;
-        m_gpuResources = nullptr;
         m_pipelineCache = nullptr;
         m_viewCache = nullptr;
         m_materialSystem = nullptr;
@@ -56,12 +44,10 @@ namespace RVX
         m_enabled = false;
     }
 
-    void ObjectVelocityPass::SetResources(GPUResourceManager* gpuResources,
-                                          PipelineCache* pipelineCache,
+    void ObjectVelocityPass::SetResources(PipelineCache* pipelineCache,
                                           ResourceViewCache* viewCache,
                                           MaterialSystem* materialSystem)
     {
-        m_gpuResources = gpuResources;
         m_pipelineCache = pipelineCache;
         m_viewCache = viewCache;
         m_materialSystem = materialSystem;
@@ -85,9 +71,9 @@ namespace RVX
             return false;
         }
 
-        if (m_resourceRegistry == nullptr && !m_gpuResources)
+        if (m_resourceRegistry == nullptr)
         {
-            m_unsupportedReason = "Object velocity pass requires a GPUResourceManager";
+            m_unsupportedReason = "Object velocity pass requires a RenderResourceRegistry";
             return false;
         }
 
@@ -162,7 +148,7 @@ namespace RVX
         if (!m_stats.outputDeclared ||
             !view.renderGraph ||
             !m_pipelineCache ||
-            (m_resourceRegistry == nullptr && !m_gpuResources) ||
+            m_resourceRegistry == nullptr ||
             !m_viewCache ||
             !m_materialSystem ||
             !m_renderScene ||
@@ -270,9 +256,7 @@ namespace RVX
 
                 MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
                     m_resourceRegistry,
-                    m_gpuResources,
-                    object.mesh,
-                    object.meshId);
+                    object.mesh);
                 if (!buffers.IsValid() || item.submeshIndex >= buffers.submeshes.size())
                 {
                     ++m_stats.skippedMissingResourceCount;
@@ -320,9 +304,7 @@ namespace RVX
 
                 MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
                     m_resourceRegistry,
-                    m_gpuResources,
-                    object.mesh,
-                    object.meshId);
+                    object.mesh);
                 if (!buffers.IsValid() || item.submeshIndex >= buffers.submeshes.size())
                 {
                     ++m_stats.skippedMissingResourceCount;
@@ -335,16 +317,11 @@ namespace RVX
                     continue;
                 }
 
-                const IRenderMaterialSource* materialResource =
-                    item.materialResource ? item.materialResource : ResolveMaterialResource(object, item.submeshIndex);
                 MaterialBindingOptions materialOptions;
                 materialOptions.allowNormalMap = false;
                 const MaterialBindingResult materialBinding =
-                    m_resourceRegistry
-                        ? m_materialSystem->PrepareMaterialBinding(
-                              item.material, view.viewCache, materialOptions)
-                        : m_materialSystem->PrepareMaterialBinding(
-                              materialResource, view.viewCache, materialOptions);
+                    m_materialSystem->PrepareMaterialBinding(
+                        item.material, view.viewCache, materialOptions);
                 if (!materialBinding.IsDrawable())
                 {
                     ++m_stats.skippedMaterialBindingCount;

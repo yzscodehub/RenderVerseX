@@ -18,7 +18,6 @@ namespace RVX
     // Forward declarations
     class ClusteredLighting;
     class GPUCulling;
-    class GPUResourceManager;
     class LightManager;
     class MaterialSystem;
     class PipelineCache;
@@ -85,13 +84,8 @@ namespace RVX
         // Resource Dependencies
         // =====================================================================
 
-        /**
-         * @brief Set resource dependencies before rendering
-         * @param gpuMgr GPU resource manager for mesh buffers
-         * @param pipelines Pipeline cache for shaders and pipelines
-         */
-        void SetResources(GPUResourceManager* gpuMgr,
-                          PipelineCache* pipelines,
+        /** @brief Set render-owned resource dependencies before rendering. */
+        void SetResources(PipelineCache* pipelines,
                           MaterialSystem* materialSystem,
                           LightManager* lightManager = nullptr,
                           ClusteredLighting* clusteredLighting = nullptr);
@@ -142,7 +136,6 @@ namespace RVX
         OpaquePassDrawStats m_drawStats;
 
         // Resource dependencies
-        GPUResourceManager* m_gpuResources = nullptr;
         const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         MaterialSystem* m_materialSystem = nullptr;

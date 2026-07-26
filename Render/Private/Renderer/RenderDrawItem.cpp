@@ -20,17 +20,11 @@ namespace RVX
         }
 
         MaterialRenderMode ResolveMaterialRenderMode(const RenderObject& object,
-                                                     size_t submeshIndex,
-                                                     const IRenderMaterialSource* materialResource)
+                                                     size_t submeshIndex)
         {
             if (submeshIndex < object.materialModes.size())
             {
                 return object.materialModes[submeshIndex];
-            }
-
-            if (materialResource)
-            {
-                return ClassifyMaterialRenderMode(materialResource->GetRenderMaterialSourceData());
             }
 
             return MaterialRenderMode::Opaque;
@@ -54,29 +48,17 @@ namespace RVX
                 continue;
 
             const RenderObject& obj = scene.GetObject(objectIndex);
-            const size_t submeshCount = obj.mesh.IsValid()
-                                            ? 1
-                                            : std::max({
-                size_t{1},
-                obj.materialIds.size(),
-                obj.materialModes.size(),
-                obj.materialResources.size()
-            });
+            const size_t submeshCount = 1;
 
             for (size_t submeshIndex = 0; submeshIndex < submeshCount; ++submeshIndex)
             {
-                IRenderMaterialSource* materialResource =
-                    submeshIndex < obj.materialResources.size() ? obj.materialResources[submeshIndex] : nullptr;
-                const MaterialRenderMode mode = ResolveMaterialRenderMode(obj, submeshIndex, materialResource);
+                const MaterialRenderMode mode = ResolveMaterialRenderMode(obj, submeshIndex);
 
                 RenderDrawItem item;
                 item.objectIndex = objectIndex;
                 item.submeshIndex = static_cast<uint32>(submeshIndex);
                 item.mesh = obj.mesh;
                 item.material = obj.material;
-                item.meshId = obj.meshId;
-                item.materialId = submeshIndex < obj.materialIds.size() ? obj.materialIds[submeshIndex] : 0;
-                item.materialResource = materialResource;
                 item.renderMode = mode;
                 item.depthFromCamera = length(Vec3(obj.worldMatrix[3]) - cameraPosition);
 
@@ -117,11 +99,11 @@ namespace RVX
         const uint64 materialIdentity = item.material.IsValid()
                                             ? (static_cast<uint64>(item.material.slot) << 32U) |
                                                   item.material.generation
-                                            : item.materialId;
+                                            : 0;
         const uint64 meshIdentity = item.mesh.IsValid()
                                         ? (static_cast<uint64>(item.mesh.slot) << 32U) |
                                               item.mesh.generation
-                                        : item.meshId;
+                                        : 0;
         const uint64 materialBits =
             MixSortBits(materialIdentity) & 0xFFFF'FFFFULL;
         const uint64 meshBits = MixSortBits(meshIdentity) & 0xFFFF'0000ULL;
@@ -136,7 +118,7 @@ namespace RVX
         const uint64 materialIdentity = item.material.IsValid()
                                             ? (static_cast<uint64>(item.material.slot) << 32U) |
                                                   item.material.generation
-                                            : item.materialId;
+                                            : 0;
         return (depthBits << 24) |
                (MixSortBits(materialIdentity) & 0x00FF'FFFFULL);
     }

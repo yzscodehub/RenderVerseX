@@ -9,7 +9,6 @@
 #include "Core/Types.h"
 #include "Render/Material/MaterialClassification.h"
 #include "RenderContracts/RenderIdentity.h"
-#include "RenderContracts/RenderResource.h"
 
 #include <vector>
 
@@ -23,9 +22,6 @@ namespace RVX
         uint32 submeshIndex = 0;
         RenderResourceHandle mesh;
         RenderResourceHandle material;
-        uint64 meshId = 0;
-        uint64 materialId = 0;
-        IRenderMaterialSource* materialResource = nullptr;
         MaterialRenderMode renderMode = MaterialRenderMode::Opaque;
         float depthFromCamera = 0.0f;
         uint64 sortKey = 0;

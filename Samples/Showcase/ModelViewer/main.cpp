@@ -4418,7 +4418,7 @@ int main(int argc, char* argv[])
         // Engine tick handles:
         // 1. Window events
         // 2. World updates
-        // 3. GPU resource uploads (via GPUResourceManager)
+        // 3. Resource upload request publication
         // 4. Rendering (auto-render is enabled)
         engine.Tick();
     }

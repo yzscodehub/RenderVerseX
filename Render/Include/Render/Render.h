@@ -62,6 +62,4 @@
 // Sky
 #include "Render/Sky/AtmosphericScattering.h"
 
-// Legacy components (deprecated, use RenderContext instead)
-#include "Render/RenderService.h"
 #include "Render/SwapChainManager.h"

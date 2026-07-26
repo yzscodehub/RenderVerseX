@@ -54,61 +54,6 @@ namespace
         }
     }
 
-    RenderTextureWrapMode ToRenderTextureWrapMode(TextureInfo::WrapMode mode)
-    {
-        switch (mode)
-        {
-            case TextureInfo::WrapMode::MirrorRepeat:
-                return RenderTextureWrapMode::MirrorRepeat;
-            case TextureInfo::WrapMode::ClampToEdge:
-                return RenderTextureWrapMode::ClampToEdge;
-            case TextureInfo::WrapMode::ClampToBorder:
-                return RenderTextureWrapMode::ClampToBorder;
-            case TextureInfo::WrapMode::Repeat:
-            default:
-                return RenderTextureWrapMode::Repeat;
-        }
-    }
-
-    RenderTextureFilterMode ToRenderTextureFilterMode(TextureInfo::FilterMode mode)
-    {
-        switch (mode)
-        {
-            case TextureInfo::FilterMode::Nearest:
-                return RenderTextureFilterMode::Nearest;
-            case TextureInfo::FilterMode::NearestMipmapNearest:
-                return RenderTextureFilterMode::NearestMipmapNearest;
-            case TextureInfo::FilterMode::LinearMipmapNearest:
-                return RenderTextureFilterMode::LinearMipmapNearest;
-            case TextureInfo::FilterMode::NearestMipmapLinear:
-                return RenderTextureFilterMode::NearestMipmapLinear;
-            case TextureInfo::FilterMode::LinearMipmapLinear:
-                return RenderTextureFilterMode::LinearMipmapLinear;
-            case TextureInfo::FilterMode::Linear:
-            default:
-                return RenderTextureFilterMode::Linear;
-        }
-    }
-
-    void ApplyTextureInfo(RenderMaterialTextureBinding& binding,
-                          const std::optional<TextureInfo>& textureInfo)
-    {
-        if (!textureInfo)
-        {
-            return;
-        }
-
-        binding.hasTextureInfo = true;
-        binding.uvSet = textureInfo->uvSet;
-        binding.offset = textureInfo->offset;
-        binding.scale = textureInfo->scale;
-        binding.rotation = textureInfo->rotation;
-        binding.wrapS = ToRenderTextureWrapMode(textureInfo->wrapS);
-        binding.wrapT = ToRenderTextureWrapMode(textureInfo->wrapT);
-        binding.minFilter = ToRenderTextureFilterMode(textureInfo->minFilter);
-        binding.magFilter = ToRenderTextureFilterMode(textureInfo->magFilter);
-    }
-
 } // namespace
 
 MaterialResource::MaterialResource() = default;
@@ -209,7 +154,7 @@ bool MaterialResource::IsDoubleSided() const
     return m_material ? m_material->IsDoubleSided() : false;
 }
 
-MaterialSourceData MaterialResource::GetRenderMaterialSourceData() const
+MaterialSourceData MaterialResource::GetMaterialSourceData() const
 {
     MaterialSourceData source;
     source.baseColorFactor = GetBaseColor();
@@ -224,60 +169,6 @@ MaterialSourceData MaterialResource::GetRenderMaterialSourceData() const
     source.workflow = ToMaterialSourceWorkflow(GetWorkflowMode());
     source.doubleSided = IsDoubleSided();
     return source;
-}
-
-IRenderTextureUploadSource* MaterialResource::GetRenderMaterialTexture(RenderMaterialTextureSlot slot) const
-{
-    switch (slot)
-    {
-        case RenderMaterialTextureSlot::BaseColor:
-            return GetAlbedoTexture().Get();
-        case RenderMaterialTextureSlot::Normal:
-            return GetNormalTexture().Get();
-        case RenderMaterialTextureSlot::MetallicRoughness:
-            return GetMetallicRoughnessTexture().Get();
-        case RenderMaterialTextureSlot::Occlusion:
-            return GetAOTexture().Get();
-        case RenderMaterialTextureSlot::Emissive:
-            return GetEmissiveTexture().Get();
-        default:
-            return nullptr;
-    }
-}
-
-RenderMaterialTextureBinding MaterialResource::GetRenderMaterialTextureBinding(RenderMaterialTextureSlot slot) const
-{
-    RenderMaterialTextureBinding binding;
-    binding.texture = GetRenderMaterialTexture(slot);
-    binding.textureId = binding.texture ? binding.texture->GetRenderResourceId() : 0;
-
-    if (!m_material)
-    {
-        return binding;
-    }
-
-    switch (slot)
-    {
-        case RenderMaterialTextureSlot::BaseColor:
-            ApplyTextureInfo(binding, m_material->GetBaseColorTexture());
-            break;
-        case RenderMaterialTextureSlot::Normal:
-            ApplyTextureInfo(binding, m_material->GetNormalTexture());
-            break;
-        case RenderMaterialTextureSlot::MetallicRoughness:
-            ApplyTextureInfo(binding, m_material->GetMetallicRoughnessTexture());
-            break;
-        case RenderMaterialTextureSlot::Occlusion:
-            ApplyTextureInfo(binding, m_material->GetOcclusionTexture());
-            break;
-        case RenderMaterialTextureSlot::Emissive:
-            ApplyTextureInfo(binding, m_material->GetEmissiveTexture());
-            break;
-        default:
-            break;
-    }
-
-    return binding;
 }
 
 void MaterialResource::SetTexture(const std::string& slot, ResourceHandle<TextureResource> texture)

@@ -320,7 +320,7 @@ namespace RVX::Tests
             ReadSource("Render/Private/RenderSubsystem.cpp");
 
         EXPECT_NE(renderHeader.find(
-                      "bool SetWindow(const NativeSurfaceDesc& surface)"),
+                      "RenderResizeResult RequestResize(const NativeSurfaceDesc& surface)"),
                   std::string::npos);
         EXPECT_NE(contextHeader.find(
                       "bool ResizeSwapChain(const NativeSurfaceDesc& surface)"),
@@ -330,23 +330,23 @@ namespace RVX::Tests
         const size_t classify =
             renderSubsystem.find("ClassifyNativeSurfaceUpdate(");
         const size_t resizeCase = renderSubsystem.find(
-            "case NativeSurfaceUpdateKind::Resize:", classify);
+            "if (updateKind == NativeSurfaceUpdateKind::Resize)", classify);
         const size_t replaceCase = renderSubsystem.find(
-            "case NativeSurfaceUpdateKind::Replace:", classify);
+            "else if (updateKind == NativeSurfaceUpdateKind::Replace", classify);
         ASSERT_NE(classify, std::string::npos);
         ASSERT_NE(resizeCase, std::string::npos);
         ASSERT_NE(replaceCase, std::string::npos);
-        EXPECT_NE(renderSubsystem.find("ResizeSwapChain(surface)", resizeCase),
+        EXPECT_NE(renderSubsystem.find("m_context->ResizeSwapChain(surface)", resizeCase),
                   std::string::npos);
-        EXPECT_NE(renderSubsystem.find("CreateSwapChain(surface)", replaceCase),
+        EXPECT_NE(renderSubsystem.find("m_context->CreateSwapChain(surface)", replaceCase),
                   std::string::npos);
-        EXPECT_NE(renderSubsystem.find("return false;", classify),
+        EXPECT_NE(renderSubsystem.find("Surface update could not be applied", classify),
                   std::string::npos);
 
-        const size_t onResize = renderSubsystem.find(
-            "void RenderSubsystem::OnResize(uint32_t width, uint32_t height)");
-        ASSERT_NE(onResize, std::string::npos);
-        EXPECT_NE(renderSubsystem.find("ResizeSwapChain(width, height)", onResize),
+        const size_t requestResize = renderSubsystem.find(
+            "RenderResizeResult RenderSubsystem::RequestResize(");
+        ASSERT_NE(requestResize, std::string::npos);
+        EXPECT_NE(renderSubsystem.find("m_runtime->RequestResize(surface)", requestResize),
                   std::string::npos);
     }
 
@@ -420,28 +420,28 @@ namespace RVX::Tests
         const std::string renderHeader =
             ReadSource("Render/Include/Render/RenderSubsystem.h");
         const std::string engine = ReadSource("Engine/Private/Engine.cpp");
-        const std::string renderSubsystem =
-            ReadSource("Render/Private/RenderSubsystem.cpp");
+        const std::string renderComposition =
+            ReadSource("Engine/Private/RenderRuntimeComposition.cpp");
         const std::string showcase =
             ReadSource("Samples/Showcase/RenderingShowcase/main.cpp");
 
-        EXPECT_NE(renderHeader.find("RVX_SUBSYSTEM_DEPENDENCIES(WindowSubsystem)"),
+        EXPECT_NE(renderHeader.find("void Configure(const RenderRuntimeConfig& config,"),
                   std::string::npos);
         const size_t inject =
-            engine.find("render->SetWindowSubsystem(window)");
+            engine.find("CreateEngineRenderRuntimeCompositionServices(");
         const size_t initialize =
-            engine.find("return m_subsystems.InitializeAll()");
+            engine.find("return m_subsystems.InitializeAll(");
         ASSERT_NE(inject, std::string::npos);
         ASSERT_NE(initialize, std::string::npos);
         EXPECT_LT(inject, initialize);
 
-        const size_t capture = renderSubsystem.find(
-            "initialSurface = m_windowSubsystem->CaptureRenderSurface()");
-        const size_t release = renderSubsystem.find(
-            "m_windowSubsystem->ReleaseGraphicsContextFromCurrentThread()",
+        const size_t capture = renderComposition.find(
+            "NativeSurfaceDesc surface = m_services->CaptureRenderSurface()");
+        const size_t release = renderComposition.find(
+            "m_services->ReleaseGraphicsContextFromUpdateThread()",
             capture);
-        const size_t rhiStartup = renderSubsystem.find(
-            "m_renderContext->Initialize(ctxConfig, initialSurface)",
+        const size_t rhiStartup = renderComposition.find(
+            "m_services->ConfigureRender(m_config, surface)",
             release);
         ASSERT_NE(capture, std::string::npos);
         ASSERT_NE(release, std::string::npos);
@@ -525,13 +525,13 @@ namespace RVX::Tests
         EXPECT_LT(rejection, clearSnapshot);
 
         const size_t replaceCase = renderSubsystem.find(
-            "case NativeSurfaceUpdateKind::Replace:");
+            "else if (updateKind == NativeSurfaceUpdateKind::Replace");
         const size_t subsystemPolicy = renderSubsystem.find(
             "SupportsSurfaceRebind(", replaceCase);
         const size_t subsystemRejection = renderSubsystem.find(
-            "return false;", subsystemPolicy);
+            "Surface update could not be applied", subsystemPolicy);
         const size_t waitForSurfaceGeneration = renderSubsystem.find(
-            "m_renderContext->WaitForSurfaceGeneration()", replaceCase);
+            "m_context->WaitForSurfaceGeneration()", replaceCase);
         const size_t prepare = renderSubsystem.find(
             "m_sceneRenderer->PrepareForSwapChainResize()", replaceCase);
         ASSERT_NE(replaceCase, std::string::npos);
@@ -539,9 +539,9 @@ namespace RVX::Tests
         ASSERT_NE(subsystemRejection, std::string::npos);
         ASSERT_NE(waitForSurfaceGeneration, std::string::npos);
         ASSERT_NE(prepare, std::string::npos);
-        EXPECT_LT(subsystemRejection, waitForSurfaceGeneration);
+        EXPECT_LT(subsystemPolicy, waitForSurfaceGeneration);
         EXPECT_LT(waitForSurfaceGeneration, prepare);
-        EXPECT_LT(subsystemRejection, prepare);
+        EXPECT_LT(prepare, subsystemRejection);
     }
 
     TEST(RHIContractValidation, OpenGLFactoryRequiresItsOwnedCurrentContext)

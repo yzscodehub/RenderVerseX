@@ -1,5 +1,5 @@
 #include "Core/Core.h"
-#include "Render/GPUResourceManager.h"
+#include "Common/RenderRuntimeTestHarness.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialBinder.h"
 #include "Render/Material/MaterialClassification.h"
@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -44,6 +45,7 @@ namespace
         RHIBufferUsage GetUsage() const override { return m_desc.usage; }
         RHIMemoryType GetMemoryType() const override { return m_desc.memoryType; }
         uint32 GetStride() const override { return m_desc.stride; }
+        const std::string& GetDebugName() const { return m_debugName; }
 
         void* Map() override
         {
@@ -58,6 +60,7 @@ namespace
 
     private:
         RHIBufferDesc m_desc;
+        std::string m_debugName = m_desc.debugName ? m_desc.debugName : "";
         std::vector<uint8> m_storage;
         bool m_mapSucceeds = true;
     };
@@ -283,7 +286,7 @@ namespace
         FakeDevice()
         {
             capabilities.backendType = RHIBackendType::DX12;
-            capabilities.adapterName = "MaterialSystemFake";
+            capabilities.adapterName = "MaterialSystemValidation";
             capabilities.driverVersion = "1";
             capabilities.supportsComputePipeline = true;
             capabilities.supportsDescriptorSets = true;
@@ -299,8 +302,7 @@ namespace
             capabilities.queueTopology.logicalQueueDomains = {
                 GPUQueueDomain::Graphics,
                 GPUQueueDomain::Compute,
-                GPUQueueDomain::Copy,
-            };
+                GPUQueueDomain::Copy};
             capabilities.queueTopology.activeDomainCount = 3;
         }
 
@@ -312,6 +314,7 @@ namespace
 
             auto buffer = RHIBufferRef(new FakeBuffer(desc, bufferMapSucceeds));
             lastCreatedBuffer = static_cast<FakeBuffer*>(buffer.Get());
+            retainedBuffers.push_back(buffer);
             return buffer;
         }
 
@@ -399,11 +402,6 @@ namespace
         void WaitIdle() override
         {
             ++waitIdleCount;
-            for (const RHIFenceRef& fence : retainedFences)
-            {
-                if (fence)
-                    fence->Signal(UINT64_MAX);
-            }
         }
 
         void BeginFrame() override {}
@@ -421,9 +419,17 @@ namespace
         void BeginResourceGroup(const char*) override {}
         void EndResourceGroup() override {}
         const RHICapabilities& GetCapabilities() const override { return capabilities; }
-        RHIBackendType GetBackendType() const override
+        RHIBackendType GetBackendType() const override { return RHIBackendType::DX12; }
+
+        FakeBuffer* FindBuffer(const std::string& debugName) const
         {
-            return capabilities.backendType;
+            for (const RHIBufferRef& buffer : retainedBuffers)
+            {
+                auto* fakeBuffer = static_cast<FakeBuffer*>(buffer.Get());
+                if (fakeBuffer && fakeBuffer->GetDebugName() == debugName)
+                    return fakeBuffer;
+            }
+            return nullptr;
         }
 
         uint32 createdBufferCount = 0;
@@ -442,6 +448,7 @@ namespace
         RHICommandQueueType lastCommandQueueType = RHICommandQueueType::Graphics;
         FakeCommandContext* lastCommandContext = nullptr;
         FakeBuffer* lastCreatedBuffer = nullptr;
+        std::vector<RHIBufferRef> retainedBuffers;
         std::vector<RHISamplerDesc> createdSamplerDescs;
         std::vector<RHIFenceRef> retainedFences;
         RHICapabilities capabilities;
@@ -669,20 +676,75 @@ namespace
         return constants;
     }
 
+    MaterialSourceData MakeMaterialSourceData(const Material& material)
+    {
+        MaterialSourceData source;
+        source.baseColorFactor = material.GetBaseColor();
+        source.metallicFactor = material.GetMetallicFactor();
+        source.roughnessFactor = material.GetRoughnessFactor();
+        source.normalScale = material.GetNormalScale();
+        source.occlusionStrength = material.GetOcclusionStrength();
+        source.emissiveColor = material.GetEmissiveColor();
+        source.emissiveStrength = material.GetEmissiveStrength();
+        source.alphaCutoff = material.GetAlphaCutoff();
+        source.doubleSided = material.IsDoubleSided();
+
+        if (material.GetBaseColorTexture())
+            source.textureFlags |= static_cast<uint32>(MaterialTextureFlags::HasBaseColor);
+        if (material.GetNormalTexture())
+            source.textureFlags |= static_cast<uint32>(MaterialTextureFlags::HasNormal);
+        if (material.GetMetallicRoughnessTexture())
+            source.textureFlags |= static_cast<uint32>(MaterialTextureFlags::HasMetallicRoughness);
+        if (material.GetOcclusionTexture())
+            source.textureFlags |= static_cast<uint32>(MaterialTextureFlags::HasOcclusion);
+        if (material.GetEmissiveTexture())
+            source.textureFlags |= static_cast<uint32>(MaterialTextureFlags::HasEmissive);
+
+        switch (material.GetAlphaMode())
+        {
+        case Material::AlphaMode::Opaque:
+            source.alphaMode = MaterialSourceAlphaMode::Opaque;
+            break;
+        case Material::AlphaMode::Mask:
+            source.alphaMode = MaterialSourceAlphaMode::Mask;
+            break;
+        case Material::AlphaMode::Blend:
+            source.alphaMode = MaterialSourceAlphaMode::Blend;
+            break;
+        }
+
+        switch (material.GetWorkflow())
+        {
+        case MaterialWorkflow::MetallicRoughness:
+            source.workflow = MaterialSourceWorkflow::MetallicRoughness;
+            break;
+        case MaterialWorkflow::SpecularGlossiness:
+            source.workflow = MaterialSourceWorkflow::SpecularGlossiness;
+            break;
+        case MaterialWorkflow::Unlit:
+            source.workflow = MaterialSourceWorkflow::Unlit;
+            break;
+        }
+
+        return source;
+    }
+
     TEST(MaterialSystemValidation, ClassifiesMaterialAlphaModes)
     {
+        auto opaque = std::make_shared<Material>();
+        opaque->SetAlphaMode(Material::AlphaMode::Opaque);
         EXPECT_EQ(MaterialRenderMode::Opaque,
                   ClassifyMaterialRenderMode(MaterialSourceAlphaMode::Opaque));
 
+        auto masked = std::make_shared<Material>();
+        masked->SetAlphaMode(Material::AlphaMode::Mask);
         EXPECT_EQ(MaterialRenderMode::Masked,
                   ClassifyMaterialRenderMode(MaterialSourceAlphaMode::Mask));
 
+        auto transparent = std::make_shared<Material>();
+        transparent->SetAlphaMode(Material::AlphaMode::Blend);
         EXPECT_EQ(MaterialRenderMode::Transparent,
                   ClassifyMaterialRenderMode(MaterialSourceAlphaMode::Blend));
-
-        MaterialSourceData defaultSource;
-        EXPECT_EQ(MaterialRenderMode::Opaque,
-                  ClassifyMaterialRenderMode(defaultSource));
 
         EXPECT_EQ(MaterialPipelineVariant::Opaque,
                   GetPipelineVariantForRenderMode(MaterialRenderMode::Opaque));
@@ -742,20 +804,20 @@ namespace
 
     TEST(MaterialSystemValidation, MaterialBinderConvertToGPUUsesMaterialProperties)
     {
-        MaterialSourceData material;
-        material.baseColorFactor = {0.25f, 0.5f, 0.75f, 0.9f};
-        material.metallicFactor = 0.35f;
-        material.roughnessFactor = 0.65f;
-        material.normalScale = 0.8f;
-        material.occlusionStrength = 0.7f;
-        material.emissiveColor = {0.1f, 0.2f, 0.3f};
-        material.emissiveStrength = 2.5f;
-        material.alphaMode = MaterialSourceAlphaMode::Blend;
-        material.alphaCutoff = 0.42f;
-        material.workflow = MaterialSourceWorkflow::SpecularGlossiness;
-        material.doubleSided = true;
+        Material material("gpu-material");
+        material.SetBaseColor(0.25f, 0.5f, 0.75f, 0.9f);
+        material.SetMetallicFactor(0.35f);
+        material.SetRoughnessFactor(0.65f);
+        material.SetNormalScale(0.8f);
+        material.SetOcclusionStrength(0.7f);
+        material.SetEmissiveColor({0.1f, 0.2f, 0.3f});
+        material.SetEmissiveStrength(2.5f);
+        material.SetAlphaMode(Material::AlphaMode::Blend);
+        material.SetAlphaCutoff(0.42f);
+        material.SetWorkflow(MaterialWorkflow::SpecularGlossiness);
+        material.SetDoubleSided(true);
 
-        const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(material);
+        const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(MakeMaterialSourceData(material));
 
         EXPECT_FLOAT_EQ(constants.baseColorFactor.x, 0.25f);
         EXPECT_FLOAT_EQ(constants.baseColorFactor.y, 0.5f);
@@ -777,23 +839,33 @@ namespace
 
     TEST(MaterialSystemValidation, MaterialBinderConvertToGPUTextureFlagsReflectOptionalTextures)
     {
-        MaterialSourceData material;
+        Material material("texture-flags");
 
-        MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(material);
+        MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(MakeMaterialSourceData(material));
         EXPECT_EQ(constants.textureFlags, 0u);
 
+        material.SetBaseColorTexture(TextureInfo("base-color.png"));
+        material.SetNormalTexture(TextureInfo("normal.png"));
+        material.SetMetallicRoughnessTexture(TextureInfo("mr.png"));
+        material.SetOcclusionTexture(TextureInfo("ao.png"));
+        material.SetEmissiveTexture(TextureInfo("emissive.png"));
+
+        constants = MaterialBinder::ConvertToGPU(MakeMaterialSourceData(material));
         const uint32 expectedFlags =
             static_cast<uint32>(MaterialTextureFlags::HasBaseColor) |
             static_cast<uint32>(MaterialTextureFlags::HasNormal) |
             static_cast<uint32>(MaterialTextureFlags::HasMetallicRoughness) |
             static_cast<uint32>(MaterialTextureFlags::HasOcclusion) |
             static_cast<uint32>(MaterialTextureFlags::HasEmissive);
-        material.textureFlags = expectedFlags;
-        constants = MaterialBinder::ConvertToGPU(material);
         EXPECT_EQ(constants.textureFlags, expectedFlags);
 
-        material.textureFlags = 0;
-        constants = MaterialBinder::ConvertToGPU(material);
+        material.ClearBaseColorTexture();
+        material.ClearNormalTexture();
+        material.ClearMetallicRoughnessTexture();
+        material.ClearOcclusionTexture();
+        material.ClearEmissiveTexture();
+
+        constants = MaterialBinder::ConvertToGPU(MakeMaterialSourceData(material));
         EXPECT_EQ(constants.textureFlags, 0u);
     }
 
@@ -805,12 +877,12 @@ namespace
         ASSERT_TRUE(binder.IsInitialized());
         ASSERT_NE(device.lastCreatedBuffer, nullptr);
 
-        MaterialSourceData material;
-        material.baseColorFactor = {0.2f, 0.3f, 0.4f, 1.0f};
-        material.roughnessFactor = 0.55f;
+        Material material("bind-material");
+        material.SetBaseColor(0.2f, 0.3f, 0.4f, 1.0f);
+        material.SetRoughnessFactor(0.55f);
 
         FakeCommandContext ctx;
-        binder.Bind(ctx, material);
+        binder.Bind(ctx, MakeMaterialSourceData(material));
 
         EXPECT_EQ(binder.GetLastBindStatus(), MaterialBindStatus::Unsupported);
         EXPECT_FALSE(binder.GetLastBindMessage().empty());
@@ -871,9 +943,9 @@ namespace
             binder.Initialize(&device, nullptr);
             ASSERT_TRUE(binder.IsInitialized());
 
-            MaterialSourceData material;
+            Material material("map-fail");
             FakeCommandContext ctx;
-            binder.Bind(ctx, material);
+            binder.Bind(ctx, MakeMaterialSourceData(material));
 
             EXPECT_EQ(binder.GetLastBindStatus(), MaterialBindStatus::Error);
             EXPECT_FALSE(binder.GetLastBindMessage().empty());
@@ -905,7 +977,7 @@ namespace
     {
         MaterialSystem materialSystem;
 
-        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(nullptr, nullptr);
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding({}, nullptr);
 
         EXPECT_EQ(MaterialBindingStatus::NotInitialized, result.status);
         EXPECT_FALSE(result.IsDrawable());
@@ -919,14 +991,14 @@ namespace
         FakeDevice device;
         device.bufferMapSucceeds = false;
 
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         FakeDescriptorSetLayout materialLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialLayout, &gpuResources.GetRegistry()));
 
-        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(nullptr, nullptr);
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding({}, nullptr);
 
         EXPECT_EQ(MaterialBindingStatus::Error, result.status);
         EXPECT_FALSE(result.IsDrawable());
@@ -942,15 +1014,15 @@ namespace
     TEST(MaterialSystemValidation, MaterialBindingDescriptorFailureUsesExplicitDefaultFallback)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         FakeDescriptorSetLayout materialLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialLayout, &gpuResources.GetRegistry()));
 
         device.failDescriptorSetCreation = true;
-        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(nullptr, nullptr);
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding({}, nullptr);
 
         EXPECT_EQ(MaterialBindingStatus::Fallback, result.status);
         EXPECT_TRUE(result.IsDrawable());
@@ -966,14 +1038,14 @@ namespace
     TEST(MaterialSystemValidation, MaterialBindingNullMaterialUsesExplicitFallback)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         FakeDescriptorSetLayout materialLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialLayout, &gpuResources.GetRegistry()));
 
-        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(nullptr, nullptr);
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding({}, nullptr);
 
         EXPECT_EQ(MaterialBindingStatus::Fallback, result.status);
         EXPECT_TRUE(result.IsDrawable());
@@ -987,7 +1059,7 @@ namespace
     TEST(MaterialSystemValidation, MaterialBindingResidentTexturesAreReady)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         ResourceViewCache viewCache;
@@ -995,7 +1067,7 @@ namespace
 
         FakeDescriptorSetLayout materialLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialLayout, &gpuResources.GetRegistry()));
 
         auto texture = CreateTextureResource(306);
         Resource::MaterialResource materialResource;
@@ -1004,7 +1076,7 @@ namespace
         gpuResources.UploadImmediate(texture.Get());
         ASSERT_TRUE(gpuResources.IsGPUReady(texture.GetId()));
 
-        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(&materialResource, &viewCache);
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache);
 
         EXPECT_EQ(MaterialBindingStatus::Ready, result.status);
         EXPECT_TRUE(result.IsDrawable());
@@ -1018,9 +1090,10 @@ namespace
             static_cast<uint32>(MaterialTextureFlags::HasOcclusion) |
             static_cast<uint32>(MaterialTextureFlags::HasEmissive);
         EXPECT_EQ(expectedFlags, result.textureFlags);
-        EXPECT_EQ("FullyTexturedMaterialResource", result.materialName);
+        EXPECT_TRUE(Contains(result.materialName, "render-material["));
         EXPECT_EQ(expectedFlags, materialSystem.GetLastBindingResult().textureFlags);
-        EXPECT_EQ("FullyTexturedMaterialResource", materialSystem.GetLastBindingResult().materialName);
+        EXPECT_EQ(result.materialName,
+                  materialSystem.GetLastBindingResult().materialName);
         EXPECT_TRUE(Contains(result.message, "ready"));
 
         materialSystem.Shutdown();
@@ -1031,7 +1104,7 @@ namespace
     TEST(MaterialSystemValidation, MaterialBindingDefaultOptionsKeepReadyNormalTextureEnabled)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         ResourceViewCache viewCache;
@@ -1039,7 +1112,7 @@ namespace
 
         FakeDescriptorSetLayout materialLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialLayout, &gpuResources.GetRegistry()));
 
         auto normalTexture = CreateTextureResource(320);
         Resource::MaterialResource materialResource;
@@ -1051,7 +1124,7 @@ namespace
         gpuResources.UploadImmediate(normalTexture.Get());
         ASSERT_TRUE(gpuResources.IsGPUReady(normalTexture.GetId()));
 
-        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(&materialResource, &viewCache);
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache);
         const uint32 normalFlag = static_cast<uint32>(MaterialTextureFlags::HasNormal);
 
         EXPECT_EQ(MaterialBindingStatus::Ready, result.status);
@@ -1068,7 +1141,7 @@ namespace
     TEST(MaterialSystemValidation, MaterialBindingCanDisableNormalMapWhenTangentBasisIsUnavailable)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         ResourceViewCache viewCache;
@@ -1076,7 +1149,7 @@ namespace
 
         FakeDescriptorSetLayout materialLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialLayout, &gpuResources.GetRegistry()));
 
         auto normalTexture = CreateTextureResource(321);
         Resource::MaterialResource materialResource;
@@ -1091,7 +1164,7 @@ namespace
         MaterialBindingOptions options;
         options.allowNormalMap = false;
         const MaterialBindingResult result =
-            materialSystem.PrepareMaterialBinding(&materialResource, &viewCache, options);
+            materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache, options);
         const uint32 normalFlag = static_cast<uint32>(MaterialTextureFlags::HasNormal);
 
         EXPECT_EQ(MaterialBindingStatus::Fallback, result.status);
@@ -1100,8 +1173,9 @@ namespace
         EXPECT_EQ(0u, result.textureFlags & normalFlag);
         EXPECT_EQ(normalFlag, result.fallbackTextureFlags & normalFlag);
         EXPECT_TRUE(Contains(result.message, "normal map disabled"));
-        ASSERT_NE(device.lastCreatedBuffer, nullptr);
-        const MaterialGPUConstants constants = ReadMaterialConstants(*device.lastCreatedBuffer);
+        FakeBuffer* materialConstants = device.FindBuffer("MaterialConstantBuffer");
+        ASSERT_NE(materialConstants, nullptr);
+        const MaterialGPUConstants constants = ReadMaterialConstants(*materialConstants);
         EXPECT_EQ(0u, constants.textureFlags & normalFlag);
 
         materialSystem.Shutdown();
@@ -1112,7 +1186,7 @@ namespace
     TEST(MaterialSystemValidation, MaterialBindingDoesNotReportFallbackForOmittedNormalTextureWhenNormalMapsDisabled)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         ResourceViewCache viewCache;
@@ -1120,7 +1194,7 @@ namespace
 
         FakeDescriptorSetLayout materialLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialLayout, &gpuResources.GetRegistry()));
 
         Resource::MaterialResource materialResource;
         materialResource.SetId(222);
@@ -1130,7 +1204,7 @@ namespace
         MaterialBindingOptions options;
         options.allowNormalMap = false;
         const MaterialBindingResult result =
-            materialSystem.PrepareMaterialBinding(&materialResource, &viewCache, options);
+            materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache, options);
         const uint32 normalFlag = static_cast<uint32>(MaterialTextureFlags::HasNormal);
 
         EXPECT_EQ(MaterialBindingStatus::Ready, result.status);
@@ -1147,7 +1221,7 @@ namespace
     TEST(MaterialSystemValidation, MaterialBindingDefaultFallbackTextureDoesNotSetTextureFlag)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         ResourceViewCache viewCache;
@@ -1155,7 +1229,7 @@ namespace
 
         FakeDescriptorSetLayout materialLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialLayout, &gpuResources.GetRegistry()));
 
         auto fallbackTexture = CreateTextureResource(307);
         fallbackTexture->MarkDefaultFallback("test default fallback");
@@ -1169,7 +1243,7 @@ namespace
         fallbackMaterial.SetTexture("albedo", fallbackTexture);
 
         const MaterialBindingResult fallbackResult =
-            materialSystem.PrepareMaterialBinding(&fallbackMaterial, &viewCache);
+            materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&fallbackMaterial), &viewCache);
 
         EXPECT_EQ(MaterialBindingStatus::Fallback, fallbackResult.status);
         EXPECT_TRUE(fallbackResult.IsDrawable());
@@ -1184,7 +1258,7 @@ namespace
         omittedTextureMaterial.SetMaterialData(std::make_shared<Material>("OmittedTextureMaterialResource"));
 
         const MaterialBindingResult omittedResult =
-            materialSystem.PrepareMaterialBinding(&omittedTextureMaterial, &viewCache);
+            materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&omittedTextureMaterial), &viewCache);
 
         EXPECT_EQ(MaterialBindingStatus::Ready, omittedResult.status);
         EXPECT_TRUE(omittedResult.IsDrawable());
@@ -1200,7 +1274,7 @@ namespace
     TEST(MaterialSystemValidation, MaterialBindingNonResidentTextureReportsFallback)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         ResourceViewCache viewCache;
@@ -1208,13 +1282,13 @@ namespace
 
         FakeDescriptorSetLayout materialLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialLayout, &gpuResources.GetRegistry()));
 
         auto texture = CreateTextureResource(307);
         Resource::MaterialResource materialResource;
         ConfigureMaterialWithAlbedo(materialResource, texture);
 
-        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(&materialResource, &viewCache);
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache);
 
         EXPECT_EQ(MaterialBindingStatus::Fallback, result.status);
         EXPECT_TRUE(result.IsDrawable());
@@ -1230,14 +1304,14 @@ namespace
     {
         {
             FakeDevice device;
-            GPUResourceManager gpuResources;
+            RenderRuntimeTestHarness gpuResources;
             gpuResources.Initialize(&device);
 
             FakeDescriptorSetLayout materialLayout;
             MaterialSystem materialSystem;
-            ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+            ASSERT_TRUE(materialSystem.Initialize(&device, &materialLayout, &gpuResources.GetRegistry()));
 
-            EXPECT_TRUE(materialSystem.UpdateMaterialConstants(nullptr, nullptr));
+            EXPECT_TRUE(materialSystem.PrepareMaterialBinding({}, nullptr).IsDrawable());
             EXPECT_EQ(MaterialBindingStatus::Fallback, materialSystem.GetLastBindingResult().status);
             EXPECT_TRUE(materialSystem.GetLastBindingResult().constantsUpdated);
 
@@ -1249,14 +1323,14 @@ namespace
             FakeDevice device;
             device.bufferMapSucceeds = false;
 
-            GPUResourceManager gpuResources;
+            RenderRuntimeTestHarness gpuResources;
             gpuResources.Initialize(&device);
 
             FakeDescriptorSetLayout materialLayout;
             MaterialSystem materialSystem;
-            ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialLayout));
+            ASSERT_TRUE(materialSystem.Initialize(&device, &materialLayout, &gpuResources.GetRegistry()));
 
-            EXPECT_FALSE(materialSystem.UpdateMaterialConstants(nullptr, nullptr));
+            EXPECT_FALSE(materialSystem.PrepareMaterialBinding({}, nullptr).IsDrawable());
             EXPECT_EQ(MaterialBindingStatus::Error, materialSystem.GetLastBindingResult().status);
             EXPECT_FALSE(materialSystem.GetLastBindingResult().constantsUpdated);
 
@@ -1267,7 +1341,7 @@ namespace
         {
             MaterialSystem materialSystem;
 
-            EXPECT_FALSE(materialSystem.UpdateMaterialConstants(nullptr, nullptr));
+            EXPECT_FALSE(materialSystem.PrepareMaterialBinding({}, nullptr).IsDrawable());
             EXPECT_EQ(MaterialBindingStatus::NotInitialized, materialSystem.GetLastBindingResult().status);
         }
     }
@@ -1275,7 +1349,7 @@ namespace
     TEST(MaterialSystemValidation, MaterialSetUsesResidentTextureViewForAlbedo)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         ResourceViewCache viewCache;
@@ -1283,15 +1357,15 @@ namespace
 
         FakeDescriptorSetLayout materialSetLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialSetLayout, &gpuResources.GetRegistry()));
 
         Resource::TextureHandle albedo = CreateTextureResource(301);
         gpuResources.UploadImmediate(albedo.Get());
-        ASSERT_EQ(GPUResourceState::GPUReady, gpuResources.GetResourceState(albedo.GetId()));
+        ASSERT_EQ(RenderResourcePublicState::GPUReady, gpuResources.GetResourceState(albedo.GetId()));
 
         Resource::MaterialResource materialResource;
         ConfigureMaterialWithAlbedo(materialResource, albedo);
-        RHIDescriptorSet* descriptorSet = materialSystem.GetOrCreateMaterialSet(&materialResource, &viewCache);
+        RHIDescriptorSet* descriptorSet = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache).descriptorSet;
 
         ASSERT_NE(nullptr, descriptorSet);
         ASSERT_NE(materialSystem.GetDefaultMaterialSet(), descriptorSet);
@@ -1353,7 +1427,7 @@ namespace
         EXPECT_EQ(Resource::TextureUsage::Normal, normal->GetUsage());
 
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         ResourceViewCache viewCache;
@@ -1361,14 +1435,14 @@ namespace
 
         FakeDescriptorSetLayout materialSetLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialSetLayout, &gpuResources.GetRegistry()));
 
         gpuResources.UploadImmediate(albedo.Get());
         gpuResources.UploadImmediate(metallicRoughness.Get());
         gpuResources.UploadImmediate(normal.Get());
-        ASSERT_EQ(GPUResourceState::GPUReady, gpuResources.GetResourceState(albedo.GetId()));
-        ASSERT_EQ(GPUResourceState::GPUReady, gpuResources.GetResourceState(metallicRoughness.GetId()));
-        ASSERT_EQ(GPUResourceState::GPUReady, gpuResources.GetResourceState(normal.GetId()));
+        ASSERT_EQ(RenderResourcePublicState::GPUReady, gpuResources.GetResourceState(albedo.GetId()));
+        ASSERT_EQ(RenderResourcePublicState::GPUReady, gpuResources.GetResourceState(metallicRoughness.GetId()));
+        ASSERT_EQ(RenderResourcePublicState::GPUReady, gpuResources.GetResourceState(normal.GetId()));
 
         Resource::MaterialResource materialResource;
         materialResource.SetId(223);
@@ -1378,7 +1452,7 @@ namespace
         materialResource.SetTexture("metallic_roughness", metallicRoughness);
         materialResource.SetTexture("normal", normal);
 
-        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(&materialResource, &viewCache);
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache);
 
         ASSERT_EQ(MaterialBindingStatus::Ready, result.status);
         ASSERT_NE(nullptr, result.descriptorSet);
@@ -1408,8 +1482,9 @@ namespace
                   metallicRoughnessBinding->textureView->GetTexture());
         EXPECT_EQ(RHIFormat::BC3_UNORM, metallicRoughnessBinding->textureView->GetFormat());
 
-        ASSERT_NE(device.lastCreatedBuffer, nullptr);
-        const MaterialGPUConstants constants = ReadMaterialConstants(*device.lastCreatedBuffer);
+        FakeBuffer* materialConstants = device.FindBuffer("MaterialConstantBuffer");
+        ASSERT_NE(materialConstants, nullptr);
+        const MaterialGPUConstants constants = ReadMaterialConstants(*materialConstants);
         EXPECT_EQ(expectedFlags, constants.textureFlags);
 
         materialSystem.Shutdown();
@@ -1420,12 +1495,12 @@ namespace
     TEST(MaterialSystemValidation, MaterialSystemCreatesExplicitMipFilteredMaterialSampler)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         FakeDescriptorSetLayout materialSetLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialSetLayout, &gpuResources.GetRegistry()));
 
         ASSERT_FALSE(device.createdSamplerDescs.empty());
         const RHISamplerDesc& samplerDesc = device.createdSamplerDescs.back();
@@ -1445,12 +1520,12 @@ namespace
     TEST(MaterialSystemValidation, DefaultMaterialSetBindsIBLFallbackViews)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         FakeDescriptorSetLayout materialSetLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialSetLayout, &gpuResources.GetRegistry()));
 
         RHIDescriptorSet* descriptorSet = materialSystem.GetDefaultMaterialSet();
         ASSERT_NE(nullptr, descriptorSet);
@@ -1477,7 +1552,7 @@ namespace
     TEST(MaterialSystemValidation, MaterialSetUsesResidentTextureIBLViews)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         ResourceViewCache viewCache;
@@ -1485,7 +1560,7 @@ namespace
 
         FakeDescriptorSetLayout materialSetLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialSetLayout, &gpuResources.GetRegistry()));
 
         Resource::TextureHandle irradiance = CreateIBLCubemapResource(401);
         Resource::TextureHandle prefiltered = CreateIBLCubemapResource(402, 2);
@@ -1498,9 +1573,9 @@ namespace
         ASSERT_TRUE(gpuResources.IsGPUReady(brdfLUT.GetId()));
 
         MaterialSystem::EnvironmentIBLResources iblResources;
-        iblResources.irradianceMap = irradiance.Get();
-        iblResources.prefilteredMap = prefiltered.Get();
-        iblResources.brdfLUT = brdfLUT.Get();
+        iblResources.irradianceHandle = gpuResources.ResolveOrUpload(irradiance.Get());
+        iblResources.prefilteredHandle = gpuResources.ResolveOrUpload(prefiltered.Get());
+        iblResources.brdfLUTHandle = gpuResources.ResolveOrUpload(brdfLUT.Get());
         iblResources.prefilteredMipLevels = 2;
         iblResources.textureIBLEnabled = true;
         materialSystem.SetEnvironmentIBLResources(iblResources);
@@ -1510,7 +1585,7 @@ namespace
         materialResource.SetName("IBLReadyMaterial");
         materialResource.SetMaterialData(std::make_shared<Material>());
 
-        RHIDescriptorSet* descriptorSet = materialSystem.GetOrCreateMaterialSet(&materialResource, &viewCache);
+        RHIDescriptorSet* descriptorSet = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache).descriptorSet;
         ASSERT_NE(nullptr, descriptorSet);
 
         const RHIDescriptorBinding* irradianceBinding = FindBinding(descriptorSet, 7);
@@ -1535,7 +1610,7 @@ namespace
     TEST(MaterialSystemValidation, MaterialSetFallsBackWhenTextureIBLIsNotReady)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         ResourceViewCache viewCache;
@@ -1543,16 +1618,16 @@ namespace
 
         FakeDescriptorSetLayout materialSetLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialSetLayout, &gpuResources.GetRegistry()));
 
         Resource::TextureHandle irradiance = CreateIBLCubemapResource(411);
         Resource::TextureHandle prefiltered = CreateIBLCubemapResource(412, 2);
         Resource::TextureHandle brdfLUT = CreateIBLBRDFLUTResource(413);
 
         MaterialSystem::EnvironmentIBLResources iblResources;
-        iblResources.irradianceMap = irradiance.Get();
-        iblResources.prefilteredMap = prefiltered.Get();
-        iblResources.brdfLUT = brdfLUT.Get();
+        iblResources.irradianceHandle = gpuResources.Reserve(irradiance.Get());
+        iblResources.prefilteredHandle = gpuResources.Reserve(prefiltered.Get());
+        iblResources.brdfLUTHandle = gpuResources.Reserve(brdfLUT.Get());
         iblResources.prefilteredMipLevels = 2;
         iblResources.textureIBLEnabled = true;
         materialSystem.SetEnvironmentIBLResources(iblResources);
@@ -1562,7 +1637,7 @@ namespace
         materialResource.SetName("IBLFallbackMaterial");
         materialResource.SetMaterialData(std::make_shared<Material>());
 
-        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(&materialResource, &viewCache);
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache);
         EXPECT_EQ(MaterialBindingStatus::Fallback, result.status);
         EXPECT_TRUE(result.usedFallback);
         ASSERT_NE(nullptr, result.descriptorSet);
@@ -1581,7 +1656,7 @@ namespace
     TEST(MaterialSystemValidation, EnvironmentIBLResourceChangeInvalidatesMaterialDescriptorCache)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         ResourceViewCache viewCache;
@@ -1589,7 +1664,7 @@ namespace
 
         FakeDescriptorSetLayout materialSetLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialSetLayout, &gpuResources.GetRegistry()));
 
         auto upload = [&gpuResources](const Resource::TextureHandle& texture)
         {
@@ -1617,22 +1692,22 @@ namespace
         materialResource.SetMaterialData(std::make_shared<Material>());
 
         MaterialSystem::EnvironmentIBLResources firstIBL;
-        firstIBL.irradianceMap = irradianceA.Get();
-        firstIBL.prefilteredMap = prefilteredA.Get();
-        firstIBL.brdfLUT = brdfA.Get();
+        firstIBL.irradianceHandle = gpuResources.ResolveOrUpload(irradianceA.Get());
+        firstIBL.prefilteredHandle = gpuResources.ResolveOrUpload(prefilteredA.Get());
+        firstIBL.brdfLUTHandle = gpuResources.ResolveOrUpload(brdfA.Get());
         firstIBL.textureIBLEnabled = true;
         materialSystem.SetEnvironmentIBLResources(firstIBL);
-        RHIDescriptorSet* firstSet = materialSystem.GetOrCreateMaterialSet(&materialResource, &viewCache);
+        RHIDescriptorSet* firstSet = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache).descriptorSet;
         ASSERT_NE(nullptr, firstSet);
         const uint32 descriptorSetCountAfterFirstIBL = device.createdDescriptorSetCount;
 
         MaterialSystem::EnvironmentIBLResources secondIBL;
-        secondIBL.irradianceMap = irradianceB.Get();
-        secondIBL.prefilteredMap = prefilteredB.Get();
-        secondIBL.brdfLUT = brdfB.Get();
+        secondIBL.irradianceHandle = gpuResources.ResolveOrUpload(irradianceB.Get());
+        secondIBL.prefilteredHandle = gpuResources.ResolveOrUpload(prefilteredB.Get());
+        secondIBL.brdfLUTHandle = gpuResources.ResolveOrUpload(brdfB.Get());
         secondIBL.textureIBLEnabled = true;
         materialSystem.SetEnvironmentIBLResources(secondIBL);
-        RHIDescriptorSet* secondSet = materialSystem.GetOrCreateMaterialSet(&materialResource, &viewCache);
+        RHIDescriptorSet* secondSet = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache).descriptorSet;
         ASSERT_NE(nullptr, secondSet);
 
         EXPECT_GT(device.createdDescriptorSetCount, descriptorSetCountAfterFirstIBL);
@@ -1649,7 +1724,7 @@ namespace
     TEST(MaterialSystemValidation, EnvironmentIBLScalarChangesReuseMaterialDescriptorCache)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         ResourceViewCache viewCache;
@@ -1657,7 +1732,7 @@ namespace
 
         FakeDescriptorSetLayout materialSetLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialSetLayout, &gpuResources.GetRegistry()));
 
         auto upload = [&gpuResources](const Resource::TextureHandle& texture)
         {
@@ -1678,14 +1753,14 @@ namespace
         materialResource.SetMaterialData(std::make_shared<Material>());
 
         MaterialSystem::EnvironmentIBLResources firstIBL;
-        firstIBL.irradianceMap = irradiance.Get();
-        firstIBL.prefilteredMap = prefiltered.Get();
-        firstIBL.brdfLUT = brdf.Get();
+        firstIBL.irradianceHandle = gpuResources.ResolveOrUpload(irradiance.Get());
+        firstIBL.prefilteredHandle = gpuResources.ResolveOrUpload(prefiltered.Get());
+        firstIBL.brdfLUTHandle = gpuResources.ResolveOrUpload(brdf.Get());
         firstIBL.prefilteredMipLevels = 2;
         firstIBL.intensity = 1.0f;
         firstIBL.textureIBLEnabled = true;
         materialSystem.SetEnvironmentIBLResources(firstIBL);
-        RHIDescriptorSet* firstSet = materialSystem.GetOrCreateMaterialSet(&materialResource, &viewCache);
+        RHIDescriptorSet* firstSet = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache).descriptorSet;
         ASSERT_NE(nullptr, firstSet);
         const uint32 descriptorSetCountAfterFirstIBL = device.createdDescriptorSetCount;
 
@@ -1693,7 +1768,7 @@ namespace
         secondIBL.prefilteredMipLevels = 6;
         secondIBL.intensity = 2.5f;
         materialSystem.SetEnvironmentIBLResources(secondIBL);
-        RHIDescriptorSet* secondSet = materialSystem.GetOrCreateMaterialSet(&materialResource, &viewCache);
+        RHIDescriptorSet* secondSet = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache).descriptorSet;
         ASSERT_NE(nullptr, secondSet);
 
         EXPECT_EQ(firstSet, secondSet);
@@ -1709,7 +1784,7 @@ namespace
     TEST(MaterialSystemValidation, MaterialSetFallsBackWhenTextureIsNotGPUReady)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         ResourceViewCache viewCache;
@@ -1717,14 +1792,14 @@ namespace
 
         FakeDescriptorSetLayout materialSetLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialSetLayout, &gpuResources.GetRegistry()));
 
         Resource::TextureHandle albedo = CreateTextureResource(302);
-        ASSERT_NE(GPUResourceState::GPUReady, gpuResources.GetResourceState(albedo.GetId()));
+        ASSERT_NE(RenderResourcePublicState::GPUReady, gpuResources.GetResourceState(albedo.GetId()));
 
         Resource::MaterialResource materialResource;
         ConfigureMaterialWithAlbedo(materialResource, albedo);
-        RHIDescriptorSet* descriptorSet = materialSystem.GetOrCreateMaterialSet(&materialResource, &viewCache);
+        RHIDescriptorSet* descriptorSet = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache).descriptorSet;
 
         ASSERT_NE(nullptr, descriptorSet);
 
@@ -1746,7 +1821,7 @@ namespace
     TEST(MaterialSystemValidation, MaterialSetFallsBackWhenTextureUploadFailed)
     {
         FakeDevice device;
-        GPUResourceManager gpuResources;
+        RenderRuntimeTestHarness gpuResources;
         gpuResources.Initialize(&device);
 
         ResourceViewCache viewCache;
@@ -1754,18 +1829,19 @@ namespace
 
         FakeDescriptorSetLayout materialSetLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &gpuResources, &materialSetLayout));
+        ASSERT_TRUE(materialSystem.Initialize(&device, &materialSetLayout, &gpuResources.GetRegistry()));
 
         Resource::TextureHandle albedo = CreateTextureResource(
             303,
             Resource::TextureFormat::RGBA8,
             {255, 255, 255});
         gpuResources.UploadImmediate(albedo.Get());
-        ASSERT_EQ(GPUResourceState::Failed, gpuResources.GetResourceState(albedo.GetId()));
+        ASSERT_EQ(RenderResourcePublicState::Reserved,
+                  gpuResources.GetResourceState(albedo.GetId()));
 
         Resource::MaterialResource materialResource;
         ConfigureMaterialWithAlbedo(materialResource, albedo);
-        RHIDescriptorSet* descriptorSet = materialSystem.GetOrCreateMaterialSet(&materialResource, &viewCache);
+        RHIDescriptorSet* descriptorSet = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache).descriptorSet;
 
         ASSERT_NE(nullptr, descriptorSet);
 

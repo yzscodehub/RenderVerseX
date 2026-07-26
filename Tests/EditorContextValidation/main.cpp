@@ -1,3 +1,4 @@
+#include "Core/Camera/Camera.h"
 #include "Core/Log.h"
 #include "Core/Serialization/PropertyReflection.h"
 #include "Editor/EditorApplication.h"
@@ -110,7 +111,6 @@
 #include "Editor/Panels/IEditorPanel.h"
 #include "Editor/Panels/Viewport.h"
 #include "RHI/RHI.h"
-#include "Runtime/Camera/Camera.h"
 #include "Scene/ActorComponent.h"
 #include "Scene/Component.h"
 #include "Scene/ComponentFactory.h"
@@ -9682,8 +9682,10 @@ namespace
                       "*desc.editorUIRenderer = "
                       "std::make_unique<UI::UIRenderer>();"),
                   std::string::npos);
+        EXPECT_NE(renderBootstrapService.find("desc.sceneRenderer->reset();"),
+                  std::string::npos);
         EXPECT_NE(renderBootstrapService.find(
-                      "*desc.sceneRenderer = std::make_unique<SceneRenderer>()"),
+                      "Editor SceneRenderer publication integration is deferred"),
                   std::string::npos);
         EXPECT_EQ(renderBootstrapService.find("EditorApplication"),
                   std::string::npos);
@@ -9711,7 +9713,10 @@ namespace
         EXPECT_NE(viewportService.find("m_stats.submittedInEditorRHIFrame = "
                                        "desc.submittedInEditorRHIFrame;"),
                   std::string::npos);
-        EXPECT_NE(viewportService.find("SceneRendererExternalTargetDesc"),
+        EXPECT_EQ(viewportService.find("SceneRendererExternalTargetDesc"),
+                  std::string::npos);
+        EXPECT_NE(viewportService.find(
+                      "Editor scene publication is deferred; using fallback clear"),
                   std::string::npos);
         EXPECT_NE(viewportService.find("viewport->RenderRuntimeUIOverlay"),
                   std::string::npos);

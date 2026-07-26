@@ -65,7 +65,7 @@
     },
     "Engine": {
       "path": "Engine",
-      "allowed": ["Core", "Engine", "HAL", "Render", "Resource", "RHI", "Runtime", "World"]
+      "allowed": ["Core", "Engine", "HAL", "Render", "RenderContracts", "RenderExtraction", "Resource", "RHI", "Runtime", "World"]
     },
     "Geometry": {
       "path": "Geometry",
@@ -93,7 +93,7 @@
     },
     "Render": {
       "path": "Render",
-      "allowed": ["Core", "HAL", "Render", "RenderContracts", "RenderExtraction", "RHI", "Runtime", "ShaderCompiler", "Spatial"]
+      "allowed": ["Core", "Render", "RenderContracts", "RHI", "ShaderCompiler", "Spatial"]
     },
     "RenderContracts": {
       "path": "RenderContracts",
@@ -101,7 +101,7 @@
     },
     "RenderExtraction": {
       "path": "RenderExtraction",
-      "allowed": ["Core", "RenderContracts", "RenderExtraction", "Resource", "Scene", "World"]
+      "allowed": ["Core", "Geometry", "RenderContracts", "RenderExtraction", "Resource", "Scene", "World"]
     },
     "Resource": {
       "path": "Resource",

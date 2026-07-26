@@ -9,7 +9,7 @@
 #include "Core/Types.h"
 #include "Render/Material/MaterialGPUData.h"
 #include "RenderContracts/RenderIdentity.h"
-#include "RenderContracts/RenderResource.h"
+#include "RenderContracts/RenderMaterial.h"
 #include "RHI/RHI.h"
 
 #include <array>
@@ -20,7 +20,6 @@
 
 namespace RVX
 {
-    class GPUResourceManager;
     class RenderRetirementQueue;
     class RenderResourceRegistry;
     class ResourceViewCache;
@@ -86,9 +85,9 @@ namespace RVX
         // Lifecycle
         // =====================================================================
 
-        bool Initialize(IRHIDevice* device, GPUResourceManager* gpuResources,
+        bool Initialize(IRHIDevice* device,
                         RHIDescriptorSetLayout* materialSetLayout,
-                        const RenderResourceRegistry* resourceRegistry = nullptr);
+                        RenderResourceRegistry* resourceRegistry);
         void Shutdown();
         bool IsInitialized() const { return m_initialized; }
 
@@ -106,22 +105,12 @@ namespace RVX
         // Material Binding Data
         // =====================================================================
 
-        MaterialBindingResult PrepareMaterialBinding(const IRenderMaterialSource* materialResource,
-                                                     ResourceViewCache* viewCache,
-                                                     MaterialBindingOptions options = {});
         MaterialBindingResult PrepareMaterialBinding(RenderResourceHandle material,
                                                      ResourceViewCache* viewCache,
                                                      MaterialBindingOptions options = {});
-        void RequestMaterialTextures(const IRenderMaterialSource* materialResource) const;
-        void TransitionMaterialTextures(const IRenderMaterialSource* materialResource,
+        void TransitionMaterialTextures(RenderResourceHandle material,
                                         RHICommandContext& ctx,
                                         MaterialBindingOptions options = {}) const;
-        bool UpdateMaterialConstants(const IRenderMaterialSource* materialResource,
-                                     ResourceViewCache* viewCache,
-                                     MaterialBindingOptions options = {});
-        RHIDescriptorSet* GetOrCreateMaterialSet(const IRenderMaterialSource* materialResource,
-                                                 ResourceViewCache* viewCache,
-                                                 MaterialBindingOptions options = {});
         RHIDescriptorSet* GetDefaultMaterialSet();
 
         std::array<uint32, 1> GetCurrentMaterialDynamicOffset() const;
@@ -130,9 +119,6 @@ namespace RVX
 
         struct EnvironmentIBLResources
         {
-            IRenderTextureUploadSource* irradianceMap = nullptr;
-            IRenderTextureUploadSource* prefilteredMap = nullptr;
-            IRenderTextureUploadSource* brdfLUT = nullptr;
             RenderResourceHandle irradianceHandle;
             RenderResourceHandle prefilteredHandle;
             RenderResourceHandle brdfLUTHandle;
@@ -226,21 +212,9 @@ namespace RVX
 
         bool CreateConstantBuffer();
         bool CreateDefaultResources();
-        RHITextureView* ResolveTextureView(IRenderTextureUploadSource* textureResource,
-                                           RHITextureView* fallbackView,
-                                           ResourceViewCache* viewCache,
-                                           uint32 textureFlag,
-                                           uint32& textureFlags,
-                                           uint32& fallbackTextureFlags,
-                                           bool& usedFallback) const;
-        ResolvedMaterialTextures ResolveMaterialTextures(const IRenderMaterialSource* materialResource,
-                                                        ResourceViewCache* viewCache,
-                                                        MaterialBindingOptions options) const;
         ResolvedMaterialTextures ResolveMaterialTextures(RenderResourceHandle material,
                                                         ResourceViewCache* viewCache,
                                                         MaterialBindingOptions options) const;
-        MaterialGPUConstants BuildConstants(const IRenderMaterialSource* materialResource,
-                                            const ResolvedMaterialTextures& textures) const;
         MaterialBindingResult PrepareResolvedMaterialBinding(
             MaterialSourceData source,
             const ResolvedMaterialTextures& textures,
@@ -251,8 +225,7 @@ namespace RVX
         uint64 AllocateMaterialConstantSlot();
 
         IRHIDevice* m_device = nullptr;
-        GPUResourceManager* m_gpuResources = nullptr;
-        const RenderResourceRegistry* m_resourceRegistry = nullptr;
+        RenderResourceRegistry* m_resourceRegistry = nullptr;
         RHIDescriptorSetLayout* m_materialSetLayout = nullptr;
         bool m_initialized = false;
 

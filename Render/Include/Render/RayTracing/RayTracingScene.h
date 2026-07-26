@@ -9,7 +9,6 @@
 #include "Core/Types.h"
 #include "Render/Material/MaterialClassification.h"
 #include "RenderContracts/RenderIdentity.h"
-#include "RenderContracts/RenderResource.h"
 #include "RHI/RHIRayTracing.h"
 
 #include <span>
@@ -18,7 +17,6 @@
 
 namespace RVX
 {
-    class GPUResourceManager;
     class RenderResourceRegistry;
     class RenderScene;
 
@@ -224,12 +222,6 @@ namespace RVX
 
         bool HasWork() const { return !blasBuilds.empty() && !instances.empty(); }
     };
-
-    RayTracingSceneBuildPlan BuildRayTracingSceneBuildPlan(
-        const RenderScene& scene,
-        std::span<const uint32_t> visibleObjectIndices,
-        const GPUResourceManager& gpuResources,
-        const RayTracingSceneOptions& options = {});
 
     RayTracingSceneBuildPlan BuildRayTracingSceneBuildPlan(
         const RenderScene& scene,

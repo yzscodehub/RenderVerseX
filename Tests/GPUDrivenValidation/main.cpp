@@ -237,8 +237,9 @@ namespace
         object.worldMatrix = Mat4(1.0f);
         object.worldMatrix[3] = Vec4(center, 1.0f);
         object.bounds = AABB(center - Vec3(extent), center + Vec3(extent));
-        object.meshId = meshId;
-        object.materialIds = {meshId + 1000u};
+        object.mesh = {static_cast<uint32>(meshId), 1};
+        object.material = {static_cast<uint32>(meshId + 1000u), 1};
+        object.drawable = true;
         object.visible = true;
         return object;
     }
@@ -248,8 +249,8 @@ namespace
         RenderDrawItem item;
         item.objectIndex = objectIndex;
         item.submeshIndex = 0;
-        item.meshId = meshId;
-        item.materialId = materialId;
+        item.mesh = {static_cast<uint32>(meshId), 1};
+        item.material = {static_cast<uint32>(materialId), 1};
         item.renderMode = MaterialRenderMode::Opaque;
         return item;
     }
@@ -676,7 +677,7 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresGpuCullingBeforePassResourc
     EXPECT_NE(source.find("m_gpuCulling->BeginDrawGroup("), std::string::npos);
     EXPECT_NE(source.find("group.materialId"), std::string::npos);
     EXPECT_NE(source.find("group.pipelineVariant"), std::string::npos);
-    EXPECT_NE(source.find("group.materialResource"), std::string::npos);
+    EXPECT_NE(source.find("group.material = item.material"), std::string::npos);
 
     const size_t buildGraph = source.find("void SceneRenderer::BuildRenderGraph()");
     ASSERT_NE(buildGraph, std::string::npos);
@@ -825,7 +826,9 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
     EXPECT_NE(modelViewer.find("--expect-gpu-driven-culling-ready"), std::string::npos);
     EXPECT_NE(modelViewer.find("--gpu-driven-culling-test-scene"), std::string::npos);
     EXPECT_NE(modelViewer.find("--disable-gpu-driven-culling"), std::string::npos);
-    EXPECT_NE(modelViewer.find("SetGPUDrivenCullingEnabled(false)"), std::string::npos);
+    EXPECT_NE(modelViewer.find(
+                  "frameSettings.gpuCulling.enabled = !options.disableGPUDrivenCulling"),
+              std::string::npos);
     EXPECT_NE(modelViewer.find("IsGPUDrivenCullingReady"), std::string::npos);
     EXPECT_NE(modelViewer.find("opaqueGpuDrivenIndirectDrawCount"), std::string::npos);
     EXPECT_NE(modelViewer.find("stats.graphInputDrawItemCount > stats.visibleCullableDrawItemCount"),

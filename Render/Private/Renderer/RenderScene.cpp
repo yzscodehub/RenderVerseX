@@ -5,10 +5,8 @@
 
 #include "Render/Renderer/RenderScene.h"
 
-#include "Core/Camera/Camera.h"
 #include "Core/Log.h"
 #include "Core/Math/Frustum.h"
-#include "RenderExtraction/RenderProxySceneBridge.h"
 #include "Resources/RenderResourceRegistry.h"
 
 #include <algorithm>
@@ -86,7 +84,6 @@ void RenderScene::Clear()
     m_lastRenderedView = {};
     m_lastRenderedObjectTransforms.clear();
     m_lastRenderedSurfaceCompatibilityKey = m_surfaceCompatibilityKey;
-    m_sourceSnapshotMetadata = {};
 }
 
 RenderFrameApplyResult RenderScene::ApplyFramePacket(
@@ -331,86 +328,4 @@ void RenderScene::SortVisibleObjects(
         });
 }
 
-void RenderScene::CollectFromWorld(World* world)
-{
-    RenderProxySceneBridge bridge;
-    RenderProxySnapshot snapshot;
-    RenderProxySceneBridgeResult result;
-    if (bridge.BuildSnapshot(world, snapshot, &result))
-    {
-        ApplyProxySnapshot(snapshot);
-        return;
-    }
-    Clear();
-    RVX_CORE_WARN(
-        "RenderScene legacy proxy extraction failed, reason={}, ownerId={}",
-        ToString(result.fallbackReason),
-        result.fallbackOwnerId);
-}
-
-void RenderScene::CollectFromSceneManager(SceneManager* sceneManager)
-{
-    RenderProxySceneBridge bridge;
-    RenderProxySnapshot snapshot;
-    RenderProxySceneBridgeResult result;
-    if (bridge.BuildSnapshot(sceneManager, snapshot, &result))
-    {
-        ApplyProxySnapshot(snapshot);
-        return;
-    }
-    Clear();
-}
-
-void RenderScene::ApplyProxySnapshot(const RenderProxySnapshot& snapshot)
-{
-    Clear();
-    m_sourceSnapshotMetadata = snapshot.GetMetadata();
-    for (const RenderPrimitiveProxy& proxy : snapshot.primitives)
-    {
-        RenderObject object;
-        object.worldMatrix = proxy.worldMatrix;
-        object.previousWorldMatrix = proxy.worldMatrix;
-        object.normalMatrix = proxy.normalMatrix;
-        object.bounds = proxy.bounds;
-        object.meshId = proxy.meshAssetId.value;
-        object.materialModes = proxy.materialModes;
-        object.materialIds.reserve(proxy.materialAssetIds.size());
-        for (AssetId material : proxy.materialAssetIds)
-        {
-            object.materialIds.push_back(material.value);
-        }
-        object.skinningMatrices = proxy.skinningMatrices;
-        object.entityId = proxy.ownerId;
-        object.sortKey = proxy.sortKey;
-        object.layerMask = proxy.layerMask;
-        object.visible = proxy.visible;
-        object.castsShadow = proxy.castsShadow;
-        object.receivesShadow = proxy.receivesShadow;
-        m_objects.push_back(std::move(object));
-    }
-    for (const RenderLightProxy& proxy : snapshot.lights)
-    {
-        RenderLight light;
-        light.lightId = proxy.ownerId;
-        light.type = static_cast<RenderLight::Type>(proxy.type);
-        light.position = proxy.position;
-        light.direction = proxy.direction;
-        light.color = proxy.color;
-        light.intensity = proxy.intensity;
-        light.range = proxy.range;
-        light.innerConeAngle = proxy.innerConeAngle;
-        light.outerConeAngle = proxy.outerConeAngle;
-        light.castsShadow = proxy.castsShadow;
-        m_lights.push_back(std::move(light));
-    }
-}
-
-void RenderScene::CullAgainstCamera(
-    const Camera& camera,
-    std::vector<uint32>& outVisibleIndices) const
-{
-    RenderViewSnapshot view;
-    view.viewProjectionMatrix = camera.GetViewProjection();
-    CullAgainstView(view, outVisibleIndices);
-}
 } // namespace RVX

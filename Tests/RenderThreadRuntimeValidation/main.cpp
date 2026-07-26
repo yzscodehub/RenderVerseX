@@ -2128,33 +2128,14 @@ namespace
     }
 
     TEST(RenderThreadRuntimeValidation,
-         ConfigureAfterEitherLegacyInitializeEntryIsRejected)
+         ConfigureAfterUnconfiguredInitializeAttemptIsRejected)
     {
-        RenderConfig legacyConfig;
-#if RVX_ENABLE_METAL
-        legacyConfig.backendType = RHIBackendType::DX11;
-#else
-        legacyConfig.backendType = RHIBackendType::Metal;
-#endif
-        legacyConfig.autoBindWindow = false;
-
-        {
-            RenderSubsystem subsystem;
-            subsystem.SetConfig(legacyConfig);
-            subsystem.Initialize();
-            EXPECT_THROW(
-                subsystem.Configure(RenderRuntimeConfig{}, MakeSurface()),
-                std::logic_error);
-            EXPECT_FALSE(subsystem.IsReady());
-        }
-        {
-            RenderSubsystem subsystem;
-            subsystem.Initialize(legacyConfig);
-            EXPECT_THROW(
-                subsystem.Configure(RenderRuntimeConfig{}, MakeSurface()),
-                std::logic_error);
-            EXPECT_FALSE(subsystem.IsReady());
-        }
+        RenderSubsystem subsystem;
+        EXPECT_THROW(subsystem.Initialize(), std::logic_error);
+        EXPECT_THROW(
+            subsystem.Configure(RenderRuntimeConfig{}, MakeSurface()),
+            std::logic_error);
+        EXPECT_FALSE(subsystem.IsReady());
     }
 
     TEST(RenderThreadRuntimeValidation, SubsystemDelegatesItsResourceGatewayCore)

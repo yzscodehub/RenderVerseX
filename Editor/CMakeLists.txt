@@ -148,6 +148,7 @@ target_link_libraries(RVX_Editor PUBLIC
     RVX::Core
     RVX::RHI
     RVX::Render
+    RVX::RenderContracts
     RVX::Resource
     RVX::Scene
     RVX::Tools

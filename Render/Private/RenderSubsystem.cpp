@@ -5,23 +5,16 @@
 
 #include "Render/RenderSubsystem.h"
 #include "Context/RenderContextInternal.h"
-#include "Core/Camera/Camera.h"
-#include "Core/Event/EventBus.h"
 #include "Core/Log.h"
-#include "HAL/Window/WindowEvents.h"
 #include "Render/Context/RenderContext.h"
-#include "Render/GPUResourceManager.h"
-#include "Render/Passes/OpaquePass.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/SceneRenderer.h"
-#include "RenderExtraction/WorldCameraBridge.h"
 #include "Resources/RenderResourceRegistry.h"
 #include "Resources/RenderRetirementQueue.h"
 #include "Resources/RenderUploadProcessor.h"
 #include "Resources/RenderSubmissionTracker.h"
 #include "Runtime/DedicatedRenderExecutor.h"
 #include "Runtime/RenderThreadRuntime.h"
-#include "Runtime/Window/WindowSubsystem.h"
 
 #include <limits>
 #include <stdexcept>
@@ -31,48 +24,8 @@
 namespace RVX
 {
 
-class LegacySynchronousRenderBridge final : public NonMovable
-{
-public:
-    RenderConfig config{};
-    WindowSubsystem* windowSubsystem = nullptr;
-    std::unique_ptr<RenderContext> renderContext;
-    std::unique_ptr<SceneRenderer> sceneRenderer;
-    bool frameActive = false;
-};
-
 namespace
 {
-    [[nodiscard]] bool IsBackendEnabledInBuild(
-        RHIBackendType backend) noexcept
-    {
-        switch (backend)
-        {
-#if RVX_ENABLE_DX11
-            case RHIBackendType::DX11:
-                return true;
-#endif
-#if RVX_ENABLE_DX12
-            case RHIBackendType::DX12:
-                return true;
-#endif
-#if RVX_ENABLE_VULKAN
-            case RHIBackendType::Vulkan:
-                return true;
-#endif
-#if RVX_ENABLE_METAL
-            case RHIBackendType::Metal:
-                return true;
-#endif
-#if RVX_ENABLE_OPENGL
-            case RHIBackendType::OpenGL:
-                return true;
-#endif
-            default:
-                return false;
-        }
-    }
-
     class ClearPresentFrameConsumer final : public IRenderFrameConsumer,
                                             public NonMovable
     {
@@ -545,7 +498,7 @@ namespace
             RVX_COPY_RAY_TRACING_FIELD(reflectionWidth);
             RVX_COPY_RAY_TRACING_FIELD(reflectionHeight);
 #undef RVX_COPY_RAY_TRACING_FIELD
-            features.gpuMemoryBudget = frame.gpuResourceStats.memoryBudget;
+            features.gpuMemoryBudget = 0;
             features.gpuUsedMemory = frame.gpuResourceStats.usedMemory;
             features.residentMeshCount = static_cast<uint32>(
                 frame.gpuResourceStats.residentMeshCount);
@@ -553,10 +506,8 @@ namespace
                 frame.gpuResourceStats.residentTextureCount);
             features.pendingUploadCount = static_cast<uint32>(
                 frame.gpuResourceStats.pendingUploadCount);
-            features.queuedUploadCount = static_cast<uint32>(
-                frame.gpuResourceStats.queuedUploadCount);
-            features.failedUploadCount = static_cast<uint32>(
-                frame.gpuResourceStats.failedUploadCount);
+            features.queuedUploadCount = 0;
+            features.failedUploadCount = 0;
 
             const auto appendReason = [&features](const std::string& reason)
             {
@@ -1040,10 +991,7 @@ namespace
     };
 } // namespace
 
-RenderSubsystem::RenderSubsystem()
-    : m_legacyBridge(std::make_unique<LegacySynchronousRenderBridge>())
-{
-}
+RenderSubsystem::RenderSubsystem() = default;
 RenderSubsystem::~RenderSubsystem() = default;
 
 void RenderSubsystem::Initialize()
@@ -1062,16 +1010,11 @@ void RenderSubsystem::Initialize()
     }
     m_initializeAttempted = true;
 
-    if (m_runtimeConfigured)
+    if (!m_runtimeConfigured || m_runtime == nullptr)
     {
-        InitializeRuntime();
-        return;
+        throw std::logic_error(
+            "RenderSubsystem requires Configure before Initialize");
     }
-    InitializeLegacy(m_legacyBridge->config);
-}
-
-void RenderSubsystem::InitializeRuntime()
-{
     const RenderRuntimeResult result = m_runtime->Start();
     m_preRuntimeResult = result;
     if (result.code != RenderRuntimeCode::Running)
@@ -1155,468 +1098,15 @@ RenderShutdownResult RenderSubsystem::GetLastShutdownResult() const
                                 : m_preShutdownResult;
 }
 
-void RenderSubsystem::Initialize(const RenderConfig& config)
-{
-    if (m_initializeAttempted)
-    {
-        if (m_runtimeConfigured)
-        {
-            const RenderRuntimeResult result = GetLastRuntimeResult();
-            if (result.code != RenderRuntimeCode::Running)
-            {
-                throw RenderSubsystemInitializationError(result);
-            }
-        }
-        return;
-    }
-    m_initializeAttempted = true;
-
-    if (m_runtimeConfigured)
-    {
-        InitializeRuntime();
-        return;
-    }
-    InitializeLegacy(config);
-}
-
-void RenderSubsystem::InitializeLegacy(const RenderConfig& config)
-{
-    m_legacyBridge->config = config;
-
-    // Handle Auto backend selection
-    RHIBackendType actualBackend = config.backendType;
-    if (actualBackend == RHIBackendType::Auto)
-    {
-        actualBackend = SelectBestBackend();
-    }
-    if (!IsBackendEnabledInBuild(actualBackend))
-    {
-        return;
-    }
-    if (config.backendType == RHIBackendType::Auto)
-    {
-        RVX_CORE_INFO("RenderSubsystem auto-selected backend: {}", ToString(actualBackend));
-    }
-    else
-    {
-        RVX_CORE_INFO("RenderSubsystem initializing with backend: {}", ToString(actualBackend));
-    }
-
-    // Create render context
-    m_legacyBridge->renderContext = std::make_unique<RenderContext>();
-    // Preserve the frozen legacy source-contract names until Task 18 removes
-    // this synchronous bridge; ownership remains inside m_legacyBridge.
-    RenderContext* const m_renderContext =
-        m_legacyBridge->renderContext.get();
-    WindowSubsystem* const m_windowSubsystem =
-        m_legacyBridge->windowSubsystem;
-
-    // Initialize render context with RHI device
-    RenderContextConfig ctxConfig;
-    ctxConfig.backendType = actualBackend;
-    ctxConfig.enableValidation = config.enableValidation;
-    ctxConfig.vsync = config.vsync;
-    ctxConfig.frameBuffering = config.frameBuffering;
-    ctxConfig.appName = "RenderVerseX";
-
-    NativeSurfaceDesc initialSurface;
-    if (m_legacyBridge->config.autoBindWindow && m_windowSubsystem)
-    {
-        initialSurface = m_windowSubsystem->CaptureRenderSurface();
-        initialSurface.vsync = config.vsync;
-        m_windowSubsystem->ReleaseGraphicsContextFromCurrentThread();
-    }
-
-    if (!m_renderContext->Initialize(ctxConfig, initialSurface))
-    {
-        RVX_CORE_ERROR("RenderSubsystem: Failed to initialize render context");
-        m_legacyBridge->renderContext.reset();
-        return;
-    }
-
-    // Create scene renderer
-    m_legacyBridge->sceneRenderer = std::make_unique<SceneRenderer>();
-    m_legacyBridge->sceneRenderer->Initialize(
-        m_legacyBridge->renderContext.get());
-
-    // Note: Default passes (OpaquePass) are added by SceneRenderer::SetupDefaultPasses()
-
-    // Auto-bind to window if enabled
-    if (m_legacyBridge->config.autoBindWindow)
-    {
-        if (initialSurface.IsValidFor(actualBackend))
-        {
-            if (!SetWindow(initialSurface))
-            {
-                RVX_CORE_ERROR("RenderSubsystem: Initial surface binding failed");
-            }
-        }
-        else
-        {
-            AutoBindWindow();
-        }
-    }
-
-    // Subscribe to window resize events
-    EventBus::Get().Subscribe<HAL::WindowResizedEvent>(
-        [this](const HAL::WindowResizedEvent& e) {
-            if (e.width > 0 && e.height > 0)
-            {
-                OnResize(e.width, e.height);
-            }
-        });
-
-    RVX_CORE_INFO("RenderSubsystem initialized successfully");
-}
-
 void RenderSubsystem::Deinitialize()
 {
     RVX_CORE_DEBUG("RenderSubsystem deinitializing...");
 
-    if (m_runtimeConfigured)
+    if (m_runtime != nullptr)
     {
-        if (m_runtime != nullptr)
-        {
-            m_preShutdownResult = m_runtime->Stop();
-        }
-        RVX_CORE_INFO("RenderSubsystem dedicated runtime deinitialized");
-        return;
+        m_preShutdownResult = m_runtime->Stop();
     }
-
-    // Wait for GPU to finish all pending work before destroying resources
-    if (m_legacyBridge->renderContext)
-    {
-        m_legacyBridge->renderContext->WaitIdle();
-    }
-
-    // Shutdown in reverse order
-    if (m_legacyBridge->sceneRenderer)
-    {
-        m_legacyBridge->sceneRenderer->Shutdown();
-        m_legacyBridge->sceneRenderer.reset();
-    }
-
-    if (m_legacyBridge->renderContext)
-    {
-        m_legacyBridge->renderContext->Shutdown();
-        m_legacyBridge->renderContext.reset();
-    }
-
-    RVX_CORE_INFO("RenderSubsystem deinitialized");
-}
-
-void RenderSubsystem::BeginFrame()
-{
-    if (m_runtimeConfigured)
-    {
-        RVX_CORE_WARN("BeginFrame is unavailable after Configure; publish a frame packet");
-        return;
-    }
-    if (m_legacyBridge->frameActive)
-    {
-        RVX_CORE_WARN("BeginFrame called while frame already active");
-        return;
-    }
-
-    if (m_legacyBridge->renderContext)
-    {
-        m_legacyBridge->frameActive = m_legacyBridge->renderContext->BeginFrame();
-        return;
-    }
-
-    m_legacyBridge->frameActive = false;
-}
-
-void RenderSubsystem::Render(World* world, Camera* camera)
-{
-    if (m_runtimeConfigured)
-    {
-        RVX_CORE_WARN("Render is unavailable after Configure; publish a frame packet");
-        return;
-    }
-    if (!m_legacyBridge->frameActive)
-    {
-        RVX_CORE_WARN("Render called without BeginFrame");
-        return;
-    }
-
-    if (!m_legacyBridge->sceneRenderer || !camera)
-    {
-        return;
-    }
-
-    // Setup view and collect scene data
-    m_legacyBridge->sceneRenderer->SetupView(*camera, world);
-
-    // SceneRenderer::SetupView() requests uploads for visible resources.
-    // Rendering skips objects whose GPU resources are not ready yet.
-
-    // Execute render graph
-    m_legacyBridge->sceneRenderer->Render();
-}
-
-void RenderSubsystem::EnsureVisibleResourcesResident()
-{
-    auto* gpuMgr = m_legacyBridge->sceneRenderer
-                       ? m_legacyBridge->sceneRenderer->GetGPUResourceManager()
-                       : nullptr;
-    if (!gpuMgr)
-        return;
-
-    const auto& renderScene = m_legacyBridge->sceneRenderer->GetRenderScene();
-    const auto& visibleIndices =
-        m_legacyBridge->sceneRenderer->GetVisibleObjectIndices();
-
-    for (uint32_t idx : visibleIndices)
-    {
-        const auto& obj = renderScene.GetObject(idx);
-        
-        if (gpuMgr->IsResident(obj.meshId))
-        {
-            gpuMgr->MarkUsed(obj.meshId);
-            continue;
-        }
-
-        GPUResourceState state = gpuMgr->GetResourceState(obj.meshId);
-        if (state == GPUResourceState::UploadQueued || state == GPUResourceState::Uploading)
-            continue;
-
-        if (obj.meshResource)
-        {
-            gpuMgr->RequestUpload(obj.meshResource, UploadPriority::High);
-        }
-        else
-        {
-            RVX_CORE_WARN("RenderSubsystem: Mesh {} has no CPU resource for async upload", obj.meshId);
-        }
-    }
-}
-
-void RenderSubsystem::EndFrame()
-{
-    if (m_runtimeConfigured)
-    {
-        RVX_CORE_WARN("EndFrame is unavailable after Configure; publish a frame packet");
-        return;
-    }
-    if (!m_legacyBridge->frameActive)
-    {
-        RVX_CORE_WARN("EndFrame called without BeginFrame");
-        return;
-    }
-
-    if (m_legacyBridge->renderContext)
-    {
-        m_legacyBridge->renderContext->EndFrame();
-    }
-
-    m_legacyBridge->frameActive = false;
-}
-
-void RenderSubsystem::Present()
-{
-    if (m_runtimeConfigured)
-    {
-        RVX_CORE_WARN("Present is unavailable after Configure; runtime owns presentation");
-        return;
-    }
-    if (m_legacyBridge->renderContext)
-    {
-        m_legacyBridge->renderContext->Present();
-    }
-}
-
-RenderContext* RenderSubsystem::GetRenderContext() const
-{
-    return m_runtimeConfigured ? nullptr :
-                                 m_legacyBridge->renderContext.get();
-}
-
-SceneRenderer* RenderSubsystem::GetSceneRenderer() const
-{
-    return m_runtimeConfigured ? nullptr :
-                                 m_legacyBridge->sceneRenderer.get();
-}
-
-IRHIDevice* RenderSubsystem::GetDevice() const
-{
-    return !m_runtimeConfigured && m_legacyBridge->renderContext
-               ? m_legacyBridge->renderContext->GetDevice()
-               : nullptr;
-}
-
-RHISwapChain* RenderSubsystem::GetSwapChain() const
-{
-    return !m_runtimeConfigured && m_legacyBridge->renderContext
-               ? m_legacyBridge->renderContext->GetSwapChain()
-               : nullptr;
-}
-
-RenderGraph* RenderSubsystem::GetRenderGraph() const
-{
-    return !m_runtimeConfigured && m_legacyBridge->sceneRenderer
-               ? m_legacyBridge->sceneRenderer->GetRenderGraph()
-               : nullptr;
-}
-
-bool RenderSubsystem::SetWindow(const NativeSurfaceDesc& surface)
-{
-    if (m_runtimeConfigured)
-    {
-        const RenderResizeResult result = RequestResize(surface);
-        return result.code == RenderResizeCode::Accepted ||
-               result.code == RenderResizeCode::CoalescedOlder;
-    }
-    RVX_CORE_INFO("RenderSubsystem setting window: {}x{}",
-                  surface.width,
-                  surface.height);
-
-    // Preserve the frozen legacy source-contract names until Task 18 removes
-    // this synchronous bridge; ownership remains inside m_legacyBridge.
-    RenderContext* const m_renderContext =
-        m_legacyBridge->renderContext.get();
-    SceneRenderer* const m_sceneRenderer =
-        m_legacyBridge->sceneRenderer.get();
-
-    if (!m_renderContext || !m_renderContext->GetDevice())
-    {
-        RVX_CORE_ERROR("RenderSubsystem: Cannot bind a surface without a render device");
-        return false;
-    }
-
-    if (!surface.IsValidFor(m_renderContext->GetDevice()->GetBackendType()))
-    {
-        RVX_CORE_ERROR("RenderSubsystem: Invalid native surface update");
-        return false;
-    }
-
-    if (!m_renderContext->HasSwapChain())
-    {
-        return m_renderContext->CreateSwapChain(surface);
-    }
-
-    const NativeSurfaceUpdateKind updateKind = ClassifyNativeSurfaceUpdate(
-        m_renderContext->GetSurface(), surface);
-    switch (updateKind)
-    {
-        case NativeSurfaceUpdateKind::Reject:
-            RVX_CORE_WARN("RenderSubsystem: Rejected stale surface generation {}",
-                          surface.generation);
-            return false;
-
-        case NativeSurfaceUpdateKind::Resize:
-            if (!m_renderContext->WaitForSurfaceGeneration())
-            {
-                return false;
-            }
-            if (m_sceneRenderer)
-            {
-                m_sceneRenderer->PrepareForSwapChainResize();
-            }
-            return m_renderContext->ResizeSwapChain(surface);
-
-        case NativeSurfaceUpdateKind::Replace:
-            if (!m_renderContext->GetDevice()->SupportsSurfaceRebind(
-                    m_renderContext->GetSurface(), surface))
-            {
-                RVX_CORE_WARN(
-                    "RenderSubsystem: Surface replacement requires device recreation");
-                return false;
-            }
-            if (!m_renderContext->WaitForSurfaceGeneration())
-            {
-                return false;
-            }
-            if (m_sceneRenderer)
-            {
-                m_sceneRenderer->PrepareForSwapChainResize();
-            }
-            return m_renderContext->CreateSwapChain(surface);
-    }
-
-    RVX_UNREACHABLE();
-}
-
-void RenderSubsystem::SetWindowSubsystem(WindowSubsystem* windowSubsystem)
-{
-    m_legacyBridge->windowSubsystem = windowSubsystem;
-    if (!m_runtimeConfigured &&
-        m_legacyBridge->config.autoBindWindow &&
-        m_legacyBridge->renderContext &&
-        !m_legacyBridge->renderContext->HasSwapChain())
-    {
-        AutoBindWindow();
-    }
-}
-
-void RenderSubsystem::OnResize(uint32_t width, uint32_t height)
-{
-    RVX_CORE_INFO("RenderSubsystem resize: {}x{}", width, height);
-
-    if (m_runtimeConfigured)
-    {
-        NativeSurfaceDesc surface = m_runtimeSurface;
-        surface.width = width;
-        surface.height = height;
-        ++surface.generation;
-        const RenderResizeResult result = RequestResize(surface);
-        if (result.code == RenderResizeCode::Accepted ||
-            result.code == RenderResizeCode::CoalescedOlder)
-        {
-            m_runtimeSurface = surface;
-        }
-        return;
-    }
-
-    if (m_legacyBridge->renderContext)
-    {
-        // Ensure no submitted frame still references views/resources before releasing them.
-        if (!m_legacyBridge->renderContext->WaitForSurfaceGeneration())
-        {
-            return;
-        }
-        if (m_legacyBridge->sceneRenderer)
-        {
-            m_legacyBridge->sceneRenderer->PrepareForSwapChainResize();
-        }
-        m_legacyBridge->renderContext->ResizeSwapChain(width, height);
-    }
-}
-
-void RenderSubsystem::RenderFrame(World* world)
-{
-    if (!world)
-    {
-        return;
-    }
-
-    const WorldCameraBridge cameraBridge;
-    Camera* camera = cameraBridge.GetActiveCamera(world);
-    if (!camera)
-    {
-        RVX_CORE_WARN("RenderFrame: World has no active camera");
-        return;
-    }
-
-    BeginFrame();
-    Render(world, camera);
-    EndFrame();
-    Present();
-}
-
-void RenderSubsystem::ProcessGPUUploads(float timeBudgetMs)
-{
-    if (auto* gpuManager = GetGPUResourceManager())
-    {
-        gpuManager->ProcessPendingUploads(timeBudgetMs);
-    }
-}
-
-GPUResourceManager* RenderSubsystem::GetGPUResourceManager() const
-{
-    return !m_runtimeConfigured && m_legacyBridge->sceneRenderer
-               ? m_legacyBridge->sceneRenderer->GetGPUResourceManager()
-               : nullptr;
+    RVX_CORE_INFO("RenderSubsystem dedicated runtime deinitialized");
 }
 
 RenderResourceReserveResult RenderSubsystem::ReserveResource(
@@ -1650,63 +1140,7 @@ RenderResourceStatus RenderSubsystem::QueryResourceStatus(
 
 bool RenderSubsystem::IsReady() const
 {
-    if (m_runtimeConfigured)
-    {
-        return m_runtime != nullptr && m_runtime->IsReady();
-    }
-    return m_legacyBridge->renderContext != nullptr &&
-           m_legacyBridge->renderContext->GetDevice() != nullptr &&
-           m_legacyBridge->renderContext->HasSwapChain();
-}
-
-void RenderSubsystem::SetConfig(const RenderConfig& config)
-{
-    if (m_runtimeConfigured)
-    {
-        throw std::logic_error(
-            "Legacy RenderConfig is unavailable after Configure");
-    }
-    m_legacyBridge->config = config;
-}
-
-const RenderConfig& RenderSubsystem::GetConfig() const
-{
-    return m_legacyBridge->config;
-}
-
-void RenderSubsystem::AutoBindWindow()
-{
-    if (!m_legacyBridge->windowSubsystem)
-    {
-        RVX_CORE_WARN("RenderSubsystem: Cannot auto-bind window - WindowSubsystem dependency was not injected");
-        return;
-    }
-
-    if (!m_legacyBridge->renderContext ||
-        !m_legacyBridge->renderContext->GetDevice())
-    {
-        RVX_CORE_WARN("RenderSubsystem: RenderContext has no valid device");
-        return;
-    }
-
-    NativeSurfaceDesc surface =
-        m_legacyBridge->windowSubsystem->CaptureRenderSurface();
-    surface.vsync = m_legacyBridge->config.vsync;
-    if (!surface.IsValidFor(
-            m_legacyBridge->renderContext->GetDevice()->GetBackendType()))
-    {
-        RVX_CORE_WARN("RenderSubsystem: WindowSubsystem has no valid native surface");
-        return;
-    }
-
-    m_legacyBridge->windowSubsystem->ReleaseGraphicsContextFromCurrentThread();
-    RVX_CORE_INFO("RenderSubsystem: Auto-binding to window {}x{}",
-                  surface.width,
-                  surface.height);
-    if (!SetWindow(surface))
-    {
-        RVX_CORE_WARN("RenderSubsystem: Auto-binding the native surface failed");
-    }
+    return m_runtime != nullptr && m_runtime->IsReady();
 }
 
 } // namespace RVX

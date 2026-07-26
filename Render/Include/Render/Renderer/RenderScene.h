@@ -10,18 +10,13 @@
 #include "Core/Types.h"
 #include "RenderContracts/RenderFramePacket.h"
 #include "RenderContracts/RenderMaterial.h"
-#include "RenderContracts/RenderProxy.h"
-#include "RenderContracts/RenderResource.h"
 
 #include <unordered_map>
 #include <vector>
 
 namespace RVX
 {
-    class Camera;
     class RenderResourceRegistry;
-    class SceneManager;
-    class World;
 
     enum class RenderFrameApplyCode : uint8
     {
@@ -92,12 +87,7 @@ namespace RVX
         bool castsShadow = true;
         bool receivesShadow = true;
 
-        // Task-18 compatibility storage for the dormant synchronous path.
-        uint64 meshId = 0;
-        IRenderMeshUploadSource* meshResource = nullptr;
-        std::vector<uint64> materialIds;
         std::vector<RenderMaterialMode> materialModes;
-        std::vector<IRenderMaterialSource*> materialResources;
 
         [[nodiscard]] bool HasSkinningData() const
         {
@@ -225,17 +215,6 @@ namespace RVX
             return m_lights[index];
         }
 
-        // Task-18 compatibility API for the dormant synchronous renderer.
-        void CollectFromWorld(World* world);
-        void CollectFromSceneManager(SceneManager* sceneManager);
-        void ApplyProxySnapshot(const RenderProxySnapshot& snapshot);
-        void CullAgainstCamera(
-            const Camera& camera,
-            std::vector<uint32>& outVisibleIndices) const;
-        const RenderProxySnapshotMetadata& GetSourceSnapshotMetadata() const
-        {
-            return m_sourceSnapshotMetadata;
-        }
         void AddObject(const RenderObject& object)
         {
             m_objects.push_back(object);
@@ -265,7 +244,6 @@ namespace RVX
         uint64 m_surfaceCompatibilityKey = 0;
         uint64 m_lastRenderedSurfaceCompatibilityKey = 0;
 
-        RenderProxySnapshotMetadata m_sourceSnapshotMetadata{};
     };
 
     static_assert(static_cast<uint8>(RenderFrameApplyCode::Applied) == 0);

@@ -99,11 +99,17 @@ def scan(root: Path, config: dict) -> tuple[list[IncludeUse], int]:
                 prefix = include_prefix(include)
                 if prefix not in project_prefixes:
                     continue
+                local_private_include = module_root / "Private" / include
+                to_module = (
+                    module_name
+                    if local_private_include.is_file()
+                    else prefix
+                )
 
                 uses.append(
                     IncludeUse(
                         from_module=module_name,
-                        to_module=prefix,
+                        to_module=to_module,
                         include=include,
                         path=path.relative_to(root),
                         line=line_number,

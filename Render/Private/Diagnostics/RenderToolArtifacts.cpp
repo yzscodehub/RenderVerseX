@@ -608,10 +608,9 @@ std::string SceneRenderer::ExportToolDiagnosticsText() const
        << ", unsupportedSkipped=" << frame.skippedUnsupportedPassCount << "\n";
     ss << "GPUResources: meshes=" << frame.gpuResourceStats.residentMeshCount
        << ", textures=" << frame.gpuResourceStats.residentTextureCount
+       << ", materials=" << frame.gpuResourceStats.residentMaterialCount
        << ", pendingUploads=" << frame.gpuResourceStats.pendingUploadCount
-       << ", failedUploads=" << frame.gpuResourceStats.failedUploadCount
-       << ", usedMemory=" << frame.gpuResourceStats.usedMemory
-       << ", memoryBudget=" << frame.gpuResourceStats.memoryBudget << "\n";
+       << ", usedMemory=" << frame.gpuResourceStats.usedMemory << "\n";
     ss << "GPUDriven: enabled=" << frame.gpuDrivenCullingStats.enabled
        << ", fallback=" << frame.gpuDrivenCullingStats.fallbackUsed
        << ", decisionAvailable=" << frame.gpuDrivenCullingStats.executionDecisionAvailable
