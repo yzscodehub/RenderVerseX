@@ -8,11 +8,13 @@
  * GPU skinning and skeletal animation.
  */
 
-#include "Scene/Component.h"
 #include "Core/MathTypes.h"
+#include "Scene/Component.h"
+#include "Scene/Components/ISkinningPaletteProvider.h"
+
 #include <memory>
-#include <vector>
 #include <string>
+#include <vector>
 
 // Forward declarations
 namespace RVX::Animation
@@ -52,7 +54,8 @@ enum class SkeletonUpdateMode : uint8_t
  * Mat4 handTransform = skel->GetBoneWorldTransform("RightHand");
  * @endcode
  */
-class SkeletonComponent : public Component
+class SkeletonComponent : public Component,
+                          public ISkinningPaletteProvider
 {
 public:
     SkeletonComponent();
@@ -151,6 +154,11 @@ public:
     /// Get skinning matrices for GPU upload
     /// These are: SkinningMatrix[i] = GlobalPose[i] * InverseBindPose[i]
     const std::vector<Mat4>& GetSkinningMatrices() const { return m_skinningMatrices; }
+
+    std::span<const Mat4> GetSkinningPalette() const noexcept override
+    {
+        return std::span<const Mat4>(m_skinningMatrices);
+    }
 
     /// Force update of skinning matrices
     void UpdateSkinningMatrices();

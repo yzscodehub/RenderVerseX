@@ -2,7 +2,6 @@
   "name": "renderversex",
   "version": "0.1.0",
   "description": "A cross-platform rendering framework with DX11/DX12/Vulkan/Metal/OpenGL backends",
-  "builtin-baseline": "c3173be258001c60814b6adf161322b6eb3688ee",
   "overrides": [
     {
       "name": "lua",
@@ -11,7 +10,15 @@
   ],
   "dependencies": [
     "spdlog",
-    "glfw3",
+    {
+      "name": "glfw3",
+      "features": ["wayland"],
+      "platform": "linux"
+    },
+    {
+      "name": "glfw3",
+      "platform": "!linux"
+    },
     "gtest",
     "glm",
     "tinygltf",

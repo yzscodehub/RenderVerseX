@@ -2,7 +2,7 @@
 
 #include "Geometry/Asset/AssetMetadata.h"
 #include "RenderContracts/RenderProxy.h"
-#include "Scene/Components/SkeletonComponent.h"
+#include "Scene/Components/ISkinningPaletteProvider.h"
 #include "Scene/SceneEntity.h"
 
 #include <glm/gtc/matrix_inverse.hpp>
@@ -103,6 +103,27 @@ bool StaticMeshComponent::CreateRenderProxy(RenderPrimitiveProxy& outProxy) cons
     if (!HasRenderData())
         return false;
 
+    const ISkinningPaletteProvider* skinningProvider = nullptr;
+    if (auto* entity = dynamic_cast<SceneEntity*>(GetOwner()))
+    {
+        for (const auto& [componentType, component] : entity->GetComponents())
+        {
+            (void)componentType;
+            auto* candidate =
+                dynamic_cast<ISkinningPaletteProvider*>(component.get());
+            if (!candidate)
+            {
+                continue;
+            }
+
+            if (skinningProvider)
+            {
+                return false;
+            }
+            skinningProvider = candidate;
+        }
+    }
+
     const Mat4 worldMatrix = GetWorldTransform();
 
     outProxy = RenderPrimitiveProxy();
@@ -131,12 +152,11 @@ bool StaticMeshComponent::CreateRenderProxy(RenderPrimitiveProxy& outProxy) cons
                            ? 0
                            : outProxy.materialAssetIds[0].value;
 
-    if (auto* entity = dynamic_cast<SceneEntity*>(GetOwner()))
+    if (skinningProvider)
     {
-        if (auto* skeleton = entity->GetComponent<SkeletonComponent>())
-        {
-            outProxy.skinningMatrices = skeleton->GetSkinningMatrices();
-        }
+        const std::span<const Mat4> palette =
+            skinningProvider->GetSkinningPalette();
+        outProxy.skinningMatrices.assign(palette.begin(), palette.end());
     }
 
     return true;

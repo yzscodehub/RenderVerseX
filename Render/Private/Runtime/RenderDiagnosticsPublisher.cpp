@@ -68,13 +68,13 @@ namespace RVX
     {
         auto publication =
             std::make_shared<const RenderDiagnosticsSnapshot>(std::move(snapshot));
-        m_snapshot.store(std::move(publication), std::memory_order_release);
+        m_snapshot.Store(std::move(publication));
     }
 
     std::shared_ptr<const RenderDiagnosticsSnapshot>
         RenderDiagnosticsPublisher::AcquireShared() const noexcept
     {
-        return m_snapshot.load(std::memory_order_acquire);
+        return m_snapshot.Load();
     }
 
     RenderDiagnosticsSnapshot RenderDiagnosticsPublisher::GetSnapshot() const

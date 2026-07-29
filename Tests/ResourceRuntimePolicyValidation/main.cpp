@@ -22,6 +22,7 @@
 #include <iterator>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -32,6 +33,21 @@ using namespace RVX::Resource;
 namespace
 {
     namespace fs = std::filesystem;
+
+    void ExpectEquivalentExistingPath(const std::string& actualPath,
+                                      const fs::path& expectedPath)
+    {
+        std::error_code error;
+        const bool equivalent =
+            fs::equivalent(fs::path(actualPath), expectedPath, error);
+        EXPECT_FALSE(error)
+            << "filesystem equivalence failed for actual='" << actualPath
+            << "' expected='" << expectedPath.string()
+            << "': " << error.message();
+        EXPECT_TRUE(equivalent)
+            << "paths do not identify the same existing file: actual='"
+            << actualPath << "' expected='" << expectedPath.string() << "'";
+    }
 
     class LogEnvironment : public ::testing::Environment
     {
@@ -321,7 +337,7 @@ TEST(ResourceRuntimePolicyValidation, MapsCookedArtifactsThroughCookedRoot)
     IResource* resource = manager.LoadResource("cooked://textures/albedo.rva");
     ASSERT_NE(resource, nullptr);
     EXPECT_EQ(loaderPtr->loadCount, 1u);
-    EXPECT_EQ(loaderPtr->lastPath, cookedPath.string());
+    ExpectEquivalentExistingPath(loaderPtr->lastPath, cookedPath);
 
     const ResourceLoadDiagnostic diagnostic = manager.GetLastLoadDiagnostic();
     EXPECT_TRUE(diagnostic.success);
@@ -438,7 +454,7 @@ TEST(ResourceRuntimePolicyValidation, MapsRuntimePackageEntriesThroughMountedPac
     IResource* resource = manager.LoadResource("package://Base/shaders/basic.rva");
     ASSERT_NE(resource, nullptr);
     EXPECT_EQ(loaderPtr->loadCount, 1u);
-    EXPECT_EQ(loaderPtr->lastPath, packageEntryPath.string());
+    ExpectEquivalentExistingPath(loaderPtr->lastPath, packageEntryPath);
 
     const ResourceLoadDiagnostic diagnostic = manager.GetLastLoadDiagnostic();
     EXPECT_TRUE(diagnostic.success);
@@ -491,7 +507,7 @@ TEST(ResourceRuntimePolicyValidation, MapsRuntimePackageEntriesThroughMountTable
     IResource* resource = manager.LoadResource("package://Base/shaders/basic.rva");
     ASSERT_NE(resource, nullptr);
     EXPECT_EQ(loaderPtr->loadCount, 1u);
-    EXPECT_EQ(loaderPtr->lastPath, highArtifactPath.string());
+    ExpectEquivalentExistingPath(loaderPtr->lastPath, highArtifactPath);
 
     const ResourceLoadDiagnostic diagnostic = manager.GetLastLoadDiagnostic();
     EXPECT_TRUE(diagnostic.success);
@@ -1056,7 +1072,7 @@ TEST(ResourceRuntimePolicyValidation, LoadAsyncRunsInlineWhenAsyncDisabledAndJob
     ResourceHandle<RecordingResource> handle = future.get();
     EXPECT_TRUE(handle.IsValid());
     EXPECT_EQ(loaderPtr->loadCount, 1u);
-    EXPECT_EQ(loaderPtr->lastPath, sourcePath.string());
+    ExpectEquivalentExistingPath(loaderPtr->lastPath, sourcePath);
     EXPECT_EQ(manager.GetStats().pendingLoads, static_cast<size_t>(0));
 
     std::error_code removeError;
@@ -1094,7 +1110,7 @@ TEST(ResourceRuntimePolicyValidation, LoadAsyncUsesCoreJobSystemWhenEnabled)
     ResourceHandle<RecordingResource> handle = future.get();
     EXPECT_TRUE(handle.IsValid());
     EXPECT_EQ(loaderPtr->loadCount.load(std::memory_order_relaxed), 1u);
-    EXPECT_EQ(loaderPtr->lastPath, sourcePath.string());
+    ExpectEquivalentExistingPath(loaderPtr->lastPath, sourcePath);
     EXPECT_NE(loaderPtr->loaderThreadId, std::this_thread::get_id());
     EXPECT_EQ(manager.GetStats().pendingLoads, static_cast<size_t>(0));
 
@@ -1137,7 +1153,7 @@ TEST(ResourceRuntimePolicyValidation, LoadAsyncCallbackDispatchesOnlyFromProcess
         });
 
     EXPECT_EQ(loaderPtr->loadCount, 1u);
-    EXPECT_EQ(loaderPtr->lastPath, sourcePath.string());
+    ExpectEquivalentExistingPath(loaderPtr->lastPath, sourcePath);
     EXPECT_FALSE(callbackCalled);
     EXPECT_EQ(manager.GetStats().pendingLoads, static_cast<size_t>(1));
 
@@ -1254,7 +1270,7 @@ TEST(ResourceRuntimePolicyValidation, EditorHotReloadTracksSourceResourceLoads)
         IResource* resource = manager.LoadResource("source://textures/albedo.png");
         ASSERT_NE(resource, nullptr);
         EXPECT_EQ(loaderPtr->loadCount, 1u);
-        EXPECT_EQ(loaderPtr->lastPath, sourcePath.string());
+        ExpectEquivalentExistingPath(loaderPtr->lastPath, sourcePath);
 
         const ResourceHotReloadDiagnostic diagnostic = manager.GetHotReloadDiagnostic();
         EXPECT_TRUE(diagnostic.requested);

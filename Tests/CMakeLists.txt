@@ -733,11 +733,21 @@ rvx_add_gtest(
         RVX::Core
         RVX::Scene
         RVX::Animation
+        RVX::Resource
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Animation/Include
         ${CMAKE_SOURCE_DIR}/Scene/Include
     LABELS unit
     TIMEOUT 120
+)
+
+# Scene must link independently of Animation-owned component adapters.
+rvx_add_gtest(
+    NAME SceneLinkClosureValidation
+    SOURCES SceneLinkClosureValidation/main.cpp
+    LIBS RVX::Scene
+    LABELS "unit;architecture"
+    TIMEOUT 30
 )
 
 # Render Scene Validation Tests

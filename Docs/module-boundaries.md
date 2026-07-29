@@ -60,7 +60,9 @@ Current legacy groups:
   handles and query render-facing interfaces instead of including concrete
   Resource handles.
 - `Scene -> Animation`: closed. Animator and skeleton component implementations
-  are compiled by the Animation module as Scene adapters.
+  are compiled by the Animation module as Scene adapters. Render extraction
+  consumes the Scene-owned `ISkinningPaletteProvider` contract and never names
+  the concrete Animation adapter.
 - `Scene -> Audio`: closed. `AudioComponent` exposes only forward-declared
   audio handles/clips from Scene; playback implementation is compiled by the
   Audio module.

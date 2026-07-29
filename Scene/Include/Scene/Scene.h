@@ -36,6 +36,7 @@
 #include "Scene/VertexAttribute.h"
 
 // Components
+#include "Scene/Components/ISkinningPaletteProvider.h"
 #include "Scene/Components/StaticMeshComponent.h"
 #include "Scene/Components/MeshRendererComponent.h"
 #include "Scene/Components/LightComponent.h"

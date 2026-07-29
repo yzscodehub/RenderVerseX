@@ -31,7 +31,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-cache
-          key: vcpkg-windows-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
           restore-keys: vcpkg-windows-
 
       - name: Build truth (Windows Debug)
@@ -81,7 +81,7 @@ jobs:
 
   linux:
     name: Linux (Vulkan/OpenGL configure)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       VCPKG_ROOT: /usr/local/share/vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
@@ -95,7 +95,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build clang pkg-config xvfb mesa-vulkan-drivers \
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
-            libwayland-dev libgl1-mesa-dev autoconf libtool
+            libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool
 
       - name: Prepare vcpkg binary cache dir
         run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
@@ -104,7 +104,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-cache
-          key: vcpkg-linux-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-linux-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
           restore-keys: vcpkg-linux-
 
       - name: Build truth (Linux Debug)
@@ -166,7 +166,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-cache
-          key: vcpkg-macos-arm64-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-macos-arm64-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
           restore-keys: vcpkg-macos-arm64-
 
       - name: Build truth (macOS ARM64 Debug)

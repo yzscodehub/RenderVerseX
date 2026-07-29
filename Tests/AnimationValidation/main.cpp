@@ -3,10 +3,19 @@
 #include "Animation/Runtime/AnimationPlayer.h"
 #include "Animation/State/AnimationStateMachine.h"
 #include "Core/Job/JobSystem.h"
+#include "Geometry/Asset/Mesh.h"
+#include "RenderContracts/RenderProxy.h"
+#include "Resource/ResourceHandle.h"
+#include "Resource/Types/MeshResource.h"
 #include "Scene/Components/AnimatorComponent.h"
+#include "Scene/Components/ISkinningPaletteProvider.h"
+#include "Scene/Components/SkeletonComponent.h"
+#include "Scene/Components/StaticMeshComponent.h"
+#include "Scene/SceneEntity.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <memory>
 #include <string>
 #include <utility>
@@ -88,6 +97,54 @@ public:
 
 private:
     bool m_initializedHere = false;
+};
+
+class LoadedMeshResource final : public Resource::MeshResource
+{
+public:
+    void MarkLoaded()
+    {
+        SetState(ResourceState::Loaded);
+    }
+};
+
+Resource::ResourceHandle<Resource::MeshResource> CreateLoadedMesh()
+{
+    auto* resource = new LoadedMeshResource();
+    resource->SetId(1);
+    resource->SetMesh(std::make_shared<Mesh>());
+    resource->MarkLoaded();
+    return Resource::ResourceHandle<Resource::MeshResource>(resource);
+}
+
+class FirstSkinningProvider final : public Component,
+                                    public ISkinningPaletteProvider
+{
+public:
+    const char* GetTypeName() const override { return "FirstSkinningProvider"; }
+
+    std::span<const Mat4> GetSkinningPalette() const noexcept override
+    {
+        return std::span<const Mat4>(m_palette);
+    }
+
+private:
+    std::array<Mat4, 1> m_palette{Mat4(1.0f)};
+};
+
+class SecondSkinningProvider final : public Component,
+                                     public ISkinningPaletteProvider
+{
+public:
+    const char* GetTypeName() const override { return "SecondSkinningProvider"; }
+
+    std::span<const Mat4> GetSkinningPalette() const noexcept override
+    {
+        return std::span<const Mat4>(m_palette);
+    }
+
+private:
+    std::array<Mat4, 1> m_palette{Mat4(1.0f)};
 };
 } // namespace
 
@@ -245,4 +302,42 @@ TEST(AnimationValidation, AnimatorComponentTickCanUseJobifiedPoseEvaluation)
     EXPECT_NEAR(15.0f, sampledTranslation.x, 0.0001f);
     EXPECT_NEAR(10.0f, sampledTranslation.y, 0.0001f);
     EXPECT_NEAR(0.5f, sampledTranslation.z, 0.0001f);
+}
+
+TEST(AnimationValidation, SkeletonProvidesPaletteToStaticMeshProxy)
+{
+    SceneEntity entity("SkinnedMesh");
+    auto* staticMesh = entity.AddComponent<StaticMeshComponent>();
+    auto* skeleton = entity.AddComponent<SkeletonComponent>();
+    ASSERT_NE(nullptr, staticMesh);
+    ASSERT_NE(nullptr, skeleton);
+
+    skeleton->SetSkeleton(CreateSingleBoneSkeleton());
+    staticMesh->SetMesh(CreateLoadedMesh());
+
+    const auto* provider =
+        dynamic_cast<const ISkinningPaletteProvider*>(skeleton);
+    ASSERT_NE(nullptr, provider);
+    ASSERT_EQ(1u, provider->GetSkinningPalette().size());
+
+    RenderPrimitiveProxy proxy;
+    ASSERT_TRUE(staticMesh->CreateRenderProxy(proxy));
+    ASSERT_EQ(1u, proxy.skinningMatrices.size());
+    EXPECT_FLOAT_EQ(1.0f, proxy.skinningMatrices[0][0][0]);
+}
+
+TEST(AnimationValidation, StaticMeshProxyRejectsMultipleSkinningProviders)
+{
+    SceneEntity entity("AmbiguousSkinnedMesh");
+    auto* staticMesh = entity.AddComponent<StaticMeshComponent>();
+    ASSERT_NE(nullptr, staticMesh);
+    ASSERT_NE(nullptr, entity.AddComponent<FirstSkinningProvider>());
+    ASSERT_NE(nullptr, entity.AddComponent<SecondSkinningProvider>());
+    staticMesh->SetMesh(CreateLoadedMesh());
+
+    RenderPrimitiveProxy proxy;
+    proxy.meshAssetId = AssetId{99};
+
+    EXPECT_FALSE(staticMesh->CreateRenderProxy(proxy));
+    EXPECT_EQ(99u, proxy.meshAssetId.value);
 }
