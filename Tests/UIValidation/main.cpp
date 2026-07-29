@@ -1927,6 +1927,9 @@ TEST(UIValidation, TextRendererPositionsPackedGlyphsWithKerning)
     atlasDesc.fontSize = RVX_TEST_FONT_SIZE;
     atlasDesc.width = 512;
     atlasDesc.height = 512;
+    atlasDesc.codepoints = {
+        sample.previousCodepoint,
+        sample.codepoint};
     ASSERT_TRUE(font.BuildAtlas(atlas, atlasDesc));
 
     const UIFontAtlasGlyph* firstGlyph = atlas.FindGlyph(sample.previousCodepoint);
@@ -2023,6 +2026,7 @@ TEST(UIValidation, SubmitUploadsAtlasAndDrawsCommandsThroughRHI)
     atlasDesc.fontSize = 20.0f;
     atlasDesc.width = 256;
     atlasDesc.height = 256;
+    atlasDesc.codepoints = {'U', 'I'};
     ASSERT_TRUE(font.BuildAtlas(atlas, atlasDesc));
 
     FakeDevice device;

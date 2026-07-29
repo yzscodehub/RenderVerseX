@@ -623,6 +623,11 @@ namespace
 
 PipelineCache::PipelineCache() = default;
 
+PipelineCache::PipelineCache(ShaderCompilerFactory shaderCompilerFactory)
+    : m_shaderCompilerFactory(std::move(shaderCompilerFactory))
+{
+}
+
 PipelineCache::~PipelineCache()
 {
     Shutdown();
@@ -697,7 +702,24 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
     ShaderManagerConfig shaderConfig;
     shaderConfig.cacheDirectory = std::filesystem::current_path() / "ShaderCache";
     shaderConfig.shaderDirectories.push_back(std::filesystem::path(shaderDir));
-    m_shaderManager = std::make_unique<ShaderManager>(shaderConfig);
+    if (m_shaderCompilerFactory)
+    {
+        std::unique_ptr<IShaderCompiler> compiler = m_shaderCompilerFactory();
+        if (!compiler)
+        {
+            SetLastError("Shader compiler factory returned no compiler");
+            return false;
+        }
+
+        shaderConfig.enableMemoryCache = false;
+        shaderConfig.enableDiskCache = false;
+        m_shaderManager = std::make_unique<ShaderManager>(
+            shaderConfig, std::move(compiler));
+    }
+    else
+    {
+        m_shaderManager = std::make_unique<ShaderManager>(shaderConfig);
+    }
 
     if (!CompileShaders())
     {

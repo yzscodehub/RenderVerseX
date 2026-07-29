@@ -64,6 +64,34 @@ namespace RVX
 
         ~AppleGlslangShaderCompiler() = default;
 
+        ShaderCompileSupport QuerySupport(
+            const ShaderCompileOptions& options) const override
+        {
+            if (options.targetBackend != RHIBackendType::Vulkan &&
+                options.targetBackend != RHIBackendType::Metal)
+            {
+                return {
+                    ShaderCompileSupportCode::BackendUnsupported,
+                    "Apple glslang shader compiler supports Vulkan and Metal targets only"};
+            }
+
+            switch (options.stage)
+            {
+                case RHIShaderStage::Vertex:
+                case RHIShaderStage::Pixel:
+                case RHIShaderStage::Compute:
+                case RHIShaderStage::Geometry:
+                case RHIShaderStage::Hull:
+                case RHIShaderStage::Domain:
+                    return ShaderCompileSupport::Supported();
+
+                default:
+                    return {
+                        ShaderCompileSupportCode::StageUnsupported,
+                        "Apple glslang shader compiler does not support the requested shader stage"};
+            }
+        }
+
         ShaderCompileResult Compile(const ShaderCompileOptions& options) override
         {
             ShaderCompileResult result;
@@ -74,16 +102,23 @@ namespace RVX
                 return result;
             }
 
+            const ShaderCompileSupport support = QuerySupport(options);
+            if (!support.IsSupported())
+            {
+                result.errorMessage = support.reason;
+                return result;
+            }
+
             // Step 1: Compile HLSL to SPIR-V using glslang
             std::vector<uint8_t> spirvBytecode;
             std::string compileError;
-            
+
             if (!CompileHLSLToSPIRV(options, spirvBytecode, compileError))
             {
                 result.errorMessage = compileError;
                 return result;
             }
-            
+
             RVX_CORE_DEBUG("glslang: Compiled HLSL to {} bytes of SPIR-V", spirvBytecode.size());
 
             // For Vulkan backend, return SPIR-V directly
@@ -141,7 +176,7 @@ namespace RVX
             const char* sourceStrings[] = { options.sourceCode };
             const int sourceLengths[] = { static_cast<int>(strlen(options.sourceCode)) };
             const char* sourceNames[] = { options.sourcePath ? options.sourcePath : "shader" };
-            
+
             shader.setStringsWithLengthsAndNames(sourceStrings, sourceLengths, sourceNames, 1);
 
             // Set entry point and source type

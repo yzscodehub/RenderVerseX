@@ -90,6 +90,47 @@ namespace RVX
             }
         }
 
+        bool IsShaderModel5Stage(RHIShaderStage stage)
+        {
+            switch (stage)
+            {
+                case RHIShaderStage::Vertex:
+                case RHIShaderStage::Pixel:
+                case RHIShaderStage::Compute:
+                case RHIShaderStage::Geometry:
+                case RHIShaderStage::Hull:
+                case RHIShaderStage::Domain:
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
+        bool IsShaderModel6Stage(RHIShaderStage stage)
+        {
+            if (IsShaderModel5Stage(stage))
+            {
+                return true;
+            }
+
+            switch (stage)
+            {
+                case RHIShaderStage::Mesh:
+                case RHIShaderStage::Amplification:
+                case RHIShaderStage::RayGeneration:
+                case RHIShaderStage::AnyHit:
+                case RHIShaderStage::ClosestHit:
+                case RHIShaderStage::Miss:
+                case RHIShaderStage::Intersection:
+                case RHIShaderStage::Callable:
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
         uint32 GetDX11FlattenedRegisterBase(char registerType, uint32 space)
         {
             const char lowerType = static_cast<char>(std::tolower(static_cast<unsigned char>(registerType)));
@@ -311,12 +352,71 @@ namespace RVX
             RVX_CORE_INFO("DXCShaderCompiler: Initialized with DXC support");
         }
 
+        ShaderCompileSupport QuerySupport(
+            const ShaderCompileOptions& options) const override
+        {
+            switch (options.targetBackend)
+            {
+                case RHIBackendType::DX11:
+                    if (!IsShaderModel5Stage(options.stage))
+                    {
+                        return {
+                            ShaderCompileSupportCode::StageUnsupported,
+                            "FXC does not support the requested shader stage"};
+                    }
+                    return ShaderCompileSupport::Supported();
+
+                case RHIBackendType::DX12:
+                case RHIBackendType::Vulkan:
+                    if (!IsShaderModel6Stage(options.stage))
+                    {
+                        return {
+                            ShaderCompileSupportCode::StageUnsupported,
+                            "DXC does not support the requested shader stage"};
+                    }
+                    if (!m_utils || !m_compiler)
+                    {
+                        return {
+                            ShaderCompileSupportCode::RuntimeCompilerUnavailable,
+                            "DXC not initialized"};
+                    }
+                    return ShaderCompileSupport::Supported();
+
+                case RHIBackendType::OpenGL:
+                    if (!IsShaderModel5Stage(options.stage))
+                    {
+                        return {
+                            ShaderCompileSupportCode::StageUnsupported,
+                            "The OpenGL shader path does not support the requested shader stage"};
+                    }
+                    if (!m_utils || !m_compiler)
+                    {
+                        return {
+                            ShaderCompileSupportCode::RuntimeCompilerUnavailable,
+                            "DXC not initialized"};
+                    }
+                    return ShaderCompileSupport::Supported();
+
+                default:
+                    return {
+                        ShaderCompileSupportCode::BackendUnsupported,
+                        "DXC shader compiler does not support the requested backend"};
+            }
+        }
+
         ShaderCompileResult Compile(const ShaderCompileOptions& options) override
         {
             ShaderCompileResult result;
             if (!options.sourceCode || !options.entryPoint)
             {
                 result.errorMessage = "Missing shader source or entry point";
+                return result;
+            }
+
+            const ShaderCompileSupport support = QuerySupport(options);
+            if (!support.IsSupported())
+            {
+                result.errorMessage = support.reason;
                 return result;
             }
 
@@ -337,7 +437,7 @@ namespace RVX
                     return CompileWithDXC_SPIRV(options);
 
                 default:
-                    result.errorMessage = "Unsupported backend type";
+                    result.errorMessage = support.reason;
                     return result;
             }
         }

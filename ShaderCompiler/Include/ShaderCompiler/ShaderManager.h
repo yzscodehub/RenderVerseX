@@ -97,6 +97,10 @@ namespace RVX
         /** @brief Create ShaderManager with configuration */
         explicit ShaderManager(const ShaderManagerConfig& config = {});
 
+        /** @brief Create ShaderManager with an explicit compiler dependency. */
+        ShaderManager(const ShaderManagerConfig& config,
+                      std::unique_ptr<IShaderCompiler> compiler);
+
         /** @brief Legacy constructor for backward compatibility */
         [[deprecated("Use ShaderManager(const ShaderManagerConfig&) instead")]]
         explicit ShaderManager(std::unique_ptr<IShaderCompiler> compiler);
@@ -232,7 +236,8 @@ namespace RVX
         // =====================================================================
         uint64 BuildCacheKey(const ShaderLoadDesc& desc, uint64 sourceHash) const;
         bool LoadFile(const std::string& path, std::string& outSource) const;
-        void Initialize(const ShaderManagerConfig& config);
+        void Initialize(const ShaderManagerConfig& config,
+                        std::unique_ptr<IShaderCompiler> compiler = {});
         ShaderPermutationLoadDesc ConvertToPermutationDesc(const ShaderLoadDesc& desc) const;
 
         ShaderManagerConfig m_config;

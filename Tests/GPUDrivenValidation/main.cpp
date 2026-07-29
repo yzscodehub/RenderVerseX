@@ -866,12 +866,14 @@ TEST_F(GPUDrivenValidationFixture, GPUCullingComputeShaderEntriesCompileForDX12)
     options.enableDebugInfo = false;
     options.enableOptimization = true;
 
+    const ShaderCompileSupport support = compiler->QuerySupport(options);
+    if (!support.IsSupported())
+    {
+        GTEST_SKIP() << support.reason;
+    }
+
     options.entryPoint = "CSFrustumCull";
     ShaderCompileResult frustumResult = compiler->Compile(options);
-    if (!frustumResult.success && frustumResult.errorMessage.find("DXC not initialized") != std::string::npos)
-    {
-        GTEST_SKIP() << "DXC unavailable in this environment";
-    }
     ASSERT_TRUE(frustumResult.success) << frustumResult.errorMessage;
     EXPECT_FALSE(frustumResult.bytecode.empty());
 

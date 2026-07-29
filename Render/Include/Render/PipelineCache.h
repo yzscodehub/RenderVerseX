@@ -19,6 +19,7 @@
 
 #include <array>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <span>
@@ -30,6 +31,7 @@ namespace RVX
 {
     // Forward declarations
     struct GPUCompletionToken;
+    class IShaderCompiler;
     class RenderRetirementQueue;
     class ShaderManager;
     struct ShaderCompileResult;
@@ -203,7 +205,12 @@ namespace RVX
     class PipelineCache
     {
     public:
+        using ShaderCompilerFactory =
+            std::function<std::unique_ptr<IShaderCompiler>()>;
+
         PipelineCache();
+        /** @brief Create a cache with an explicit compiler composition factory. */
+        explicit PipelineCache(ShaderCompilerFactory shaderCompilerFactory);
         ~PipelineCache();
 
         PipelineCache(const PipelineCache&) = delete;
@@ -758,6 +765,7 @@ namespace RVX
         std::string m_lastError;
 
         // Shader manager
+        ShaderCompilerFactory m_shaderCompilerFactory;
         std::unique_ptr<ShaderManager> m_shaderManager;
 
         // Shaders

@@ -38,6 +38,21 @@ capability leak in the architecture baseline:
    unrelated platform compiler capability instead of the post-process
    accounting contract it named.
 
+CI run 30444227766 then passed the complete Windows Build Truth and Editor
+compile-only gate. Linux and macOS exposed the remaining test-infrastructure
+coupling rather than new runtime defects:
+
+8. `PipelineCacheValidation` and most render-pass behavior tests constructed
+   the platform compiler even though they validate cache, layout, and pass
+   orchestration contracts. Linux has no runtime compiler by design, and the
+   Apple compiler supports Metal/Vulkan rather than the fake DX12 device.
+9. The real GPU-driven shader compilation test inferred compiler availability
+   from diagnostic strings instead of a typed capability contract.
+10. Two UI tests populated broad font ranges for assertions involving only a
+    few glyphs, making atlas capacity depend on platform fonts.
+11. Build-time GoogleTest discovery intermittently omitted an already-linked
+    validation executable from the architecture inventory on macOS.
+
 ## Scope
 
 - provide a Render-runtime-local immutable snapshot storage compatibility
@@ -54,8 +69,17 @@ capability leak in the architecture baseline:
   backend archive without creating a native device;
 - make post-process accounting coverage deterministic and independent of a
   runtime shader compiler;
-- keep runtime-pipeline integration coverage active where the current portable
-  HLSL compiler capability is present and report an explicit skip elsewhere.
+- expose typed shader compiler backend/stage capability queries;
+- preserve explicit compiler injection through `ShaderManager` and
+  `PipelineCache` composition roots;
+- use a deterministic compiler test double for pipeline-cache and render-pass
+  behavior contracts while keeping production construction on the real
+  platform compiler;
+- keep true compiler integration coverage active where the requested target is
+  supported and report a typed capability skip elsewhere;
+- build UI font atlases from the exact codepoints required by each test;
+- defer GoogleTest discovery until test time and evaluate architecture coverage
+  from one authoritative CTest inventory snapshot.
 
 ## Non-goals
 
@@ -64,8 +88,10 @@ capability leak in the architecture baseline:
 - no Scene-to-Animation CMake dependency;
 - no weakening of Build Truth or removal of sample targets;
 - no broad Core-level shared-pointer abstraction for a single consumer.
-- no Linux runtime shader compiler replacement or Apple shader compiler
+- no Linux runtime shader compiler replacement, Apple shader compiler
   redesign in M1.
+- no fake compiler in production construction paths and no blanket skipping of
+  pipeline-cache or render-pass behavior coverage.
 
 ## Ordered execution
 
@@ -81,6 +107,11 @@ capability leak in the architecture baseline:
 8. Decouple the post-process accounting baseline from runtime shader
    compilation, preserve the real runtime-pipeline integration test behind an
    explicit capability declaration, and repeat three-platform CI.
+9. Add the typed shader compiler capability contract and composition-root
+   injection, migrate pipeline-cache/render-pass behavior tests to deterministic
+   artifacts, keep true compiler tests capability-gated, minimize UI atlas
+   fixtures, harden test discovery/inventory, and repeat exact-SHA Build Truth
+   plus three-platform CI.
 
 ## Exit criteria
 
@@ -96,7 +127,12 @@ capability leak in the architecture baseline:
   enabled backend through a dedicated link-closure gate;
 - post-process accounting is validated on every platform without requiring
   runtime shader compilation;
-- platforms without the current portable HLSL compiler path report runtime
-  render-pass integration as an explicit unsupported capability, not a false
-  pass;
+- production shader compilation remains selected by the platform factory;
+- pipeline-cache and render-pass behavior suites execute on every platform
+  using deterministic artifacts rather than compiler-availability skips;
+- true shader compiler integration tests query a typed backend/stage capability
+  and skip only when that requested compilation path is unsupported;
+- font atlas capacity is independent of unrelated glyph ranges;
+- test discovery is deferred until the final test environment is available and
+  the architecture baseline evaluates one consistent inventory snapshot;
 - the exact pushed SHA passes all three required CI jobs.

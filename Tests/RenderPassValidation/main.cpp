@@ -21,6 +21,7 @@
 #include "Render/PipelineCache.h"
 #undef private
 
+#include "Common/DeterministicShaderCompiler.h"
 #include "Common/RenderRuntimeTestHarness.h"
 #include "Render/Debug/DebugRenderer.h"
 #include "Render/Decal/DecalRenderer.h"
@@ -79,15 +80,8 @@ namespace
     namespace RTShadowBindings = RayTracingResourceBindings::Shadow;
     namespace RTReflectionBindings = RayTracingResourceBindings::Reflection;
 
-#if defined(_WIN32)
 #define RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(...) \
     ASSERT_NO_FATAL_FAILURE(Initialize(__VA_ARGS__))
-#else
-#define RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(...)                                          \
-    GTEST_SKIP() << "RenderPassValidation runtime-pipeline integration requires the "     \
-                    "portable HLSL compiler path; this platform currently exposes that "  \
-                    "capability as unsupported"
-#endif
 
     fs::path FindShaderDirectory()
     {
@@ -1301,7 +1295,8 @@ namespace
         }
 
         FakeDevice device;
-        PipelineCache pipelineCache;
+        PipelineCache pipelineCache{
+            RVX::Tests::CreateDeterministicShaderCompiler};
         RenderRuntimeTestHarness gpuResources;
         ResourceViewCache viewCache;
         MaterialSystem materialSystem;

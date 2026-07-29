@@ -19,12 +19,19 @@ namespace RVX
         class UnsupportedShaderCompiler final : public IShaderCompiler
         {
         public:
-            ShaderCompileResult Compile(const ShaderCompileOptions& options) override
+            ShaderCompileSupport QuerySupport(
+                const ShaderCompileOptions& options) const override
             {
                 (void)options;
+                return {
+                    ShaderCompileSupportCode::RuntimeCompilerUnavailable,
+                    "Shader compilation is not available on this platform"};
+            }
 
+            ShaderCompileResult Compile(const ShaderCompileOptions& options) override
+            {
                 ShaderCompileResult result;
-                result.errorMessage = "Shader compilation is not available on this platform";
+                result.errorMessage = QuerySupport(options).reason;
                 RVX_CORE_ERROR("{}", result.errorMessage);
                 return result;
             }

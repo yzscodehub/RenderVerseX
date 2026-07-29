@@ -104,12 +104,16 @@ function(rvx_add_gtest)
     if(RVX_GTEST_WORKING_DIRECTORY)
         gtest_discover_tests(${RVX_GTEST_NAME}
             WORKING_DIRECTORY "${RVX_GTEST_WORKING_DIRECTORY}"
+            DISCOVERY_MODE PRE_TEST
+            DISCOVERY_TIMEOUT 30
             PROPERTIES
                 LABELS "${RVX_GTEST_LABELS}"
                 TIMEOUT ${RVX_GTEST_TIMEOUT}
         )
     else()
         gtest_discover_tests(${RVX_GTEST_NAME}
+            DISCOVERY_MODE PRE_TEST
+            DISCOVERY_TIMEOUT 30
             PROPERTIES
                 LABELS "${RVX_GTEST_LABELS}"
                 TIMEOUT ${RVX_GTEST_TIMEOUT}
@@ -702,7 +706,9 @@ rvx_add_gtest(
         RVX::Core
         RVX::Render
         RVX::RHI
+        RVX::ShaderCompiler
     INCLUDES
+        ${CMAKE_SOURCE_DIR}/Tests
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/RHI/Include
     LABELS unit

@@ -5,6 +5,7 @@
 #include "ShaderCompiler/ShaderCompileService.h"
 #include "ShaderCompiler/ShaderHotReloader.h"
 #include "ShaderCompiler/ShaderLayout.h"
+#include "ShaderCompiler/ShaderManager.h"
 #include "ShaderCompiler/ShaderPermutation.h"
 #include "RHI/RHI.h"
 
@@ -68,12 +69,6 @@ namespace
         file << text;
     }
 
-    bool IsCompilerUnavailable(const RVX::ShaderCompileResult& result)
-    {
-        return result.errorMessage.find("not available") != std::string::npos ||
-               result.errorMessage.find("not initialized") != std::string::npos;
-    }
-
     std::string TestVertexShaderSource()
     {
         return R"(
@@ -118,6 +113,12 @@ VSOutput main(VSInput input)
         {
         }
 
+        RVX::ShaderCompileSupport QuerySupport(
+            const RVX::ShaderCompileOptions&) const override
+        {
+            return RVX::ShaderCompileSupport::Supported();
+        }
+
         RVX::ShaderCompileResult Compile(const RVX::ShaderCompileOptions& options) override
         {
             m_entered->set_value();
@@ -154,6 +155,12 @@ VSOutput main(VSInput input)
         explicit StaticResultCompiler(RVX::ShaderCompileResult result)
             : m_result(std::move(result))
         {
+        }
+
+        RVX::ShaderCompileSupport QuerySupport(
+            const RVX::ShaderCompileOptions&) const override
+        {
+            return RVX::ShaderCompileSupport::Supported();
         }
 
         RVX::ShaderCompileResult Compile(const RVX::ShaderCompileOptions&) override
@@ -259,6 +266,66 @@ TEST_F(ShaderCompilerValidationFixture, InvalidCompileOptionsReturnVisibleFailur
     RVX::ShaderCompileResult result = compiler->Compile(options);
     EXPECT_FALSE(result.success);
     EXPECT_FALSE(result.errorMessage.empty());
+}
+
+TEST_F(ShaderCompilerValidationFixture, QuerySupportProvidesStructuredFailureForUnsupportedBackend)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    const std::string source = "float4 main() : SV_Target { return 1.0; }";
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Pixel;
+    options.sourceCode = source.c_str();
+    options.entryPoint = "main";
+    options.sourcePath = "UnsupportedBackend.hlsl";
+    options.targetBackend = RVX::RHIBackendType::None;
+
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    EXPECT_FALSE(support.IsSupported());
+    EXPECT_NE(support.code, RVX::ShaderCompileSupportCode::Supported);
+    EXPECT_FALSE(support.reason.empty());
+
+    const RVX::ShaderCompileResult result = compiler->Compile(options);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, support.reason);
+}
+
+TEST_F(ShaderCompilerValidationFixture, ShaderManagerUsesInjectedCompiler)
+{
+    RVX::ShaderCompileResult injectedResult;
+    injectedResult.success = true;
+    injectedResult.bytecode = {'R', 'V', 'X'};
+    injectedResult.reflection.resources.push_back(
+        {"InjectedConstants", 0, 0, RVX::RHIBindingType::UniformBuffer, 1});
+
+    TempDirectory temp("rvx_shader_manager_injection");
+    RVX::ShaderManagerConfig config;
+    config.cacheDirectory = temp.Path() / "Cache";
+    config.enableMemoryCache = false;
+    config.enableDiskCache = false;
+
+    RVX::ShaderManager manager(
+        config,
+        std::make_unique<StaticResultCompiler>(std::move(injectedResult)));
+    CapturingDevice device(RVX::RHIBackendType::DX12);
+
+    RVX::ShaderLoadDesc desc;
+    desc.path = "InjectedCompiler.hlsl";
+    desc.entryPoint = "main";
+    desc.stage = RVX::RHIShaderStage::Vertex;
+    desc.backend = RVX::RHIBackendType::DX12;
+
+    const RVX::ShaderLoadResult result = manager.LoadFromSource(
+        &device,
+        desc,
+        "float4 main() : SV_Position { return 0.0; }");
+
+    ASSERT_TRUE(result.compileResult.success)
+        << result.compileResult.errorMessage;
+    ASSERT_NE(result.shader, nullptr);
+    EXPECT_EQ(device.createShaderCalls, 1u);
+    EXPECT_EQ(device.lastShaderSource, "RVX");
 }
 
 TEST_F(ShaderCompilerValidationFixture, AsyncCompileOwnsOptionStrings)
@@ -392,12 +459,13 @@ TEST_F(ShaderCompilerValidationFixture, DX12CompileProducesReflectionAndSourceIn
     options.targetBackend = RVX::RHIBackendType::DX12;
     options.enableOptimization = false;
 
-    RVX::ShaderCompileResult result = compiler->Compile(options);
-    if (!result.success && IsCompilerUnavailable(result))
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    if (!support.IsSupported())
     {
-        GTEST_SKIP() << result.errorMessage;
+        GTEST_SKIP() << support.reason;
     }
 
+    RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
     EXPECT_FALSE(result.bytecode.empty());
     EXPECT_FALSE(result.sourceInfo.IsEmpty());
@@ -471,12 +539,13 @@ VSOutput main(VSInput input)
     options.targetBackend = RVX::RHIBackendType::DX11;
     options.enableOptimization = false;
 
-    RVX::ShaderCompileResult result = compiler->Compile(options);
-    if (!result.success && IsCompilerUnavailable(result))
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    if (!support.IsSupported())
     {
-        GTEST_SKIP() << result.errorMessage;
+        GTEST_SKIP() << support.reason;
     }
 
+    RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
     EXPECT_FALSE(result.bytecode.empty());
 
@@ -514,12 +583,13 @@ TEST_F(ShaderCompilerValidationFixture, OpenGLCompileProducesGLSLSource)
     options.targetBackend = RVX::RHIBackendType::OpenGL;
     options.enableOptimization = false;
 
-    RVX::ShaderCompileResult result = compiler->Compile(options);
-    if (!result.success && IsCompilerUnavailable(result))
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    if (!support.IsSupported())
     {
-        GTEST_SKIP() << result.errorMessage;
+        GTEST_SKIP() << support.reason;
     }
 
+    RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
     EXPECT_FALSE(result.bytecode.empty());
     EXPECT_FALSE(result.glslSource.empty());
@@ -574,12 +644,13 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
     options.targetBackend = RVX::RHIBackendType::OpenGL;
     options.enableOptimization = false;
 
-    RVX::ShaderCompileResult result = compiler->Compile(options);
-    if (!result.success && IsCompilerUnavailable(result))
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    if (!support.IsSupported())
     {
-        GTEST_SKIP() << result.errorMessage;
+        GTEST_SKIP() << support.reason;
     }
 
+    RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
     EXPECT_FALSE(result.glslSource.empty());
 

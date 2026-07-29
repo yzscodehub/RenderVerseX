@@ -18,12 +18,17 @@ namespace RVX
         Initialize(config);
     }
 
-    ShaderManager::ShaderManager(std::unique_ptr<IShaderCompiler> /* compiler */)
+    ShaderManager::ShaderManager(const ShaderManagerConfig& config,
+                                 std::unique_ptr<IShaderCompiler> compiler)
     {
-        // Legacy constructor - create with default config
+        Initialize(config, std::move(compiler));
+    }
+
+    ShaderManager::ShaderManager(std::unique_ptr<IShaderCompiler> compiler)
+    {
         ShaderManagerConfig config;
         config.cacheDirectory = std::filesystem::current_path() / "ShaderCache";
-        Initialize(config);
+        Initialize(config, std::move(compiler));
     }
 
     ShaderManager::~ShaderManager()
@@ -31,7 +36,8 @@ namespace RVX
         // Services are cleaned up automatically via unique_ptr
     }
 
-    void ShaderManager::Initialize(const ShaderManagerConfig& config)
+    void ShaderManager::Initialize(const ShaderManagerConfig& config,
+                                   std::unique_ptr<IShaderCompiler> compiler)
     {
         m_config = config;
 
@@ -45,7 +51,15 @@ namespace RVX
         ShaderCompileService::Config compileConfig;
         compileConfig.maxConcurrentCompiles = m_config.maxConcurrentCompiles;
         compileConfig.enableStatistics = m_config.enableStatistics;
-        m_compileService = std::make_unique<ShaderCompileService>(compileConfig);
+        if (compiler)
+        {
+            m_compileService = std::make_unique<ShaderCompileService>(
+                std::move(compiler), compileConfig);
+        }
+        else
+        {
+            m_compileService = std::make_unique<ShaderCompileService>(compileConfig);
+        }
 
         // Create cache manager
         ShaderCacheManager::Config cacheConfig;

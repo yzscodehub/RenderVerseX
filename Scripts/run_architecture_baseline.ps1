@@ -73,20 +73,24 @@ try {
     }
     $sourceCommit = ($sourceCommitLines -join "`n").Trim()
 
-    $missingPatterns = @()
-    foreach ($pattern in $baselinePatterns) {
-        $probe = Get-CTestInventory $pattern
-        if (@($probe.tests).Count -eq 0) {
-            $missingPatterns += $pattern
+    # Capture one authoritative inventory snapshot. Re-querying CTest once per
+    # pattern can observe different deferred-discovery states and obscures
+    # which exact test set the baseline is about to execute.
+    $selectedInventory = Get-CTestInventory $baselineRegex
+    $selectedNames = @($selectedInventory.tests | ForEach-Object { $_.name })
+    $missingPatterns = @(
+        foreach ($pattern in $baselinePatterns) {
+            $matches = @($selectedNames | Where-Object { $_ -match $pattern })
+            if ($matches.Count -eq 0) {
+                $pattern
+            }
         }
-    }
+    )
 
     if ($missingPatterns.Count -ne 0) {
         throw "Architecture baseline requirements are not discovered: $($missingPatterns -join ', ')"
     }
 
-    $selectedInventory = Get-CTestInventory $baselineRegex
-    $selectedNames = @($selectedInventory.tests | ForEach-Object { $_.name })
     $unbuiltNames = @($selectedNames | Where-Object { $_ -match "_NOT_BUILT$" })
     if ($unbuiltNames.Count -ne 0) {
         throw "Architecture baseline contains unbuilt tests: $($unbuiltNames -join ', ')"
