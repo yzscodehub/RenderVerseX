@@ -79,6 +79,16 @@ namespace
     namespace RTShadowBindings = RayTracingResourceBindings::Shadow;
     namespace RTReflectionBindings = RayTracingResourceBindings::Reflection;
 
+#if defined(_WIN32)
+#define RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(...) \
+    ASSERT_NO_FATAL_FAILURE(Initialize(__VA_ARGS__))
+#else
+#define RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(...)                                          \
+    GTEST_SKIP() << "RenderPassValidation runtime-pipeline integration requires the "     \
+                    "portable HLSL compiler path; this platform currently exposes that "  \
+                    "capability as unsupported"
+#endif
+
     fs::path FindShaderDirectory()
     {
         fs::path cursor = fs::current_path();
@@ -1514,7 +1524,7 @@ TEST(RenderPassValidation, RayTracingPipelineValidationRejectsInvalidShaderGroup
 
 TEST_F(RenderPassValidationFixture, ShadowPassReportsSupportedWithDepthPipelineAndResources)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     ShadowPass pass;
     ConfigureResources(pass, gpuResources, pipelineCache);
@@ -1532,7 +1542,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassReportsSupportedWithDepthPipelineA
 
 TEST_F(RenderPassValidationFixture, RayTracedShadowPassRuntimeCreatesDescriptorSetAndDispatchesRays)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
 
     RayTracingSceneManager rayTracingScene;
     ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(device, gpuResources, scene, rayTracingScene));
@@ -1604,7 +1614,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRuntimeCreatesDescriptorS
 
 TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedMaterialTextureTable)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
 
     constexpr uint32 kMaterialTextureLimit = RTShadowBindings::RVX_RT_SHADOW_MAX_MATERIAL_TEXTURES;
     constexpr uint32 kTextureCount = kMaterialTextureLimit + 1;
@@ -1683,7 +1693,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedMaterialT
 
 TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaTextureTable)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
 
     constexpr uint32 kAlphaTextureLimit = RTShadowBindings::RVX_RT_SHADOW_MAX_ALPHA_TEXTURES;
     constexpr uint32 kTextureCount = kAlphaTextureLimit + 1;
@@ -1764,7 +1774,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaText
 
 TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaGeometryBufferTable)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
 
     constexpr uint32 kAlphaGeometryBufferLimit = RTShadowBindings::RVX_RT_SHADOW_MAX_ALPHA_GEOMETRY_BUFFERS;
     constexpr uint32 kMeshCount = kAlphaGeometryBufferLimit + 1;
@@ -1840,7 +1850,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaGeom
 
 TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRuntimeCreatesDescriptorSetAndDispatchesRays)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
 
     RayTracingSceneManager rayTracingScene;
     ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(device, gpuResources, scene, rayTracingScene));
@@ -1918,7 +1928,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRuntimeCreatesDescrip
 
 TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRejectsOversizedMaterialTextureTable)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
 
     constexpr uint32 kMaterialTextureLimit = RTReflectionBindings::RVX_RT_REFLECTION_MAX_MATERIAL_TEXTURES;
     constexpr uint32 kTextureCount = kMaterialTextureLimit + 1;
@@ -1997,7 +2007,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRejectsOversizedMater
 
 TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRejectsOversizedGeometryBufferTable)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
 
     constexpr uint32 kGeometryBufferLimit = RTReflectionBindings::RVX_RT_REFLECTION_MAX_GEOMETRY_BUFFERS;
     constexpr uint32 kMeshCount = kGeometryBufferLimit + 1;
@@ -2061,7 +2071,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRejectsOversizedGeome
 
 TEST_F(RenderPassValidationFixture, RayTracedReflectionRenderGraphChainDenoisesBeforeComposite)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
 
     RayTracingSceneManager rayTracingScene;
     ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(device, gpuResources, scene, rayTracingScene));
@@ -2172,7 +2182,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionRenderGraphChainDenoisesB
 }
 TEST_F(RenderPassValidationFixture, RayTracedShadowPassReusesHistoryAcrossStableFrames)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
 
     RayTracingSceneManager rayTracingScene;
     ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(device, gpuResources, scene, rayTracingScene));
@@ -2255,7 +2265,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassReusesHistoryAcrossStable
 
 TEST_F(RenderPassValidationFixture, RayTracedReflectionPassReusesHistoryAcrossStableFrames)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(true, true));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
 
     RayTracingSceneManager rayTracingScene;
     ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(device, gpuResources, scene, rayTracingScene));
@@ -2351,7 +2361,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassConfigDefaultsToComplementaryRayTr
 
 TEST_F(RenderPassValidationFixture, ShadowPassRejectsUnsupportedCascadeCounts)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     ShadowPassConfig config;
     config.numCascades = RVX_MAX_DIRECTIONAL_SHADOW_CASCADES + 1;
@@ -2367,7 +2377,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassRejectsUnsupportedCascadeCounts)
 
 TEST_F(RenderPassValidationFixture, ShadowPassDisabledDoesNotDeclareOrDrawCascadeResources)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -2404,7 +2414,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassDisabledDoesNotDeclareOrDrawCascad
 
 TEST_F(RenderPassValidationFixture, ShadowPassSetupDeclaresCascadeDepthResourcesAndPSSMMatrices)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -2477,7 +2487,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassSetupDeclaresCascadeDepthResources
 
 TEST_F(RenderPassValidationFixture, ShadowPassStabilizesCascadeCentersToShadowTexels)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -2535,7 +2545,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassStabilizesCascadeCentersToShadowTe
 
 TEST_F(RenderPassValidationFixture, ShadowPassStableCascadeIgnoresSubTexelCameraMotion)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     auto buildFirstCascade = [&](const ViewData& inputView)
     {
@@ -2597,7 +2607,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassStableCascadeIgnoresSubTexelCamera
 
 TEST_F(RenderPassValidationFixture, ShadowPassSingleCascadeStillDeclaresArrayCompatibleTexture)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -2637,7 +2647,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassSingleCascadeStillDeclaresArrayCom
 
 TEST_F(RenderPassValidationFixture, ShadowPassExecuteResolvesCascadeViewsAndDrawsOnlyShadowCasters)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderObject nonCaster = MakeRenderObject(*meshResource, gpuResources);
     nonCaster.castsShadow = false;
@@ -2708,7 +2718,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassExecuteResolvesCascadeViewsAndDraw
 
 TEST_F(RenderPassValidationFixture, SkyboxPassWithoutSelectedSkyboxDoesNotBindOrDraw)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
@@ -2729,7 +2739,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassWithoutSelectedSkyboxDoesNotBindOr
 
 TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleThroughRenderGraph)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -2816,7 +2826,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleT
 
 TEST_F(RenderPassValidationFixture, SkyboxPassDrawsFullscreenBackgroundWithoutDepthTarget)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     view.viewportWidth = 64;
     view.viewportHeight = 64;
@@ -2842,7 +2852,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsFullscreenBackgroundWithoutDe
 
 TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     view.viewportWidth = 64;
     view.viewportHeight = 64;
@@ -2892,7 +2902,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)
 
 TEST_F(RenderPassValidationFixture, SkyboxPassSkipsCubemapDrawWhenSRVCreationFails)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RHITextureDesc cubemapDesc = RHITextureDesc::Texture2D(16, 16, RHIFormat::RGBA8_UNORM);
     cubemapDesc.dimension = RHITextureDimension::TextureCube;
@@ -2917,7 +2927,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassSkipsCubemapDrawWhenSRVCreationFai
 
 TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenSamplerCannotBeCreated)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     device.samplerCreationSucceeds = false;
 
@@ -2939,7 +2949,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenSamplerCannotBeCreate
 
 TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenConstantsCannotMap)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
 
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
@@ -3315,7 +3325,7 @@ TEST_F(RenderPassValidationFixture, ToneMappingConfigureFallsBackForInvalidCamer
 
 TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscreenTriangle)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     ToneMappingPass pass;
     PostProcessSettings settings;
@@ -3436,7 +3446,7 @@ TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscre
 
 TEST_F(RenderPassValidationFixture, ToneMappingSkipsDrawWhenConstantsCannotMap)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
 
     ToneMappingPass pass;
     PostProcessSettings settings;
@@ -3485,7 +3495,7 @@ TEST_F(RenderPassValidationFixture, BloomRequiresResourcesBeforeReportingSupport
 
 TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTriangle)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     BloomPass pass;
     PostProcessSettings settings;
@@ -3626,7 +3636,7 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
 
 TEST_F(RenderPassValidationFixture, BloomZeroIntensityCopiesSceneOnly)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     BloomPass pass;
     PostProcessSettings settings;
@@ -3674,7 +3684,7 @@ TEST_F(RenderPassValidationFixture, BloomZeroIntensityCopiesSceneOnly)
 
 TEST_F(RenderPassValidationFixture, BloomSkipsDrawWhenConstantsCannotMap)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
 
     BloomPass pass;
     PostProcessSettings settings;
@@ -3723,7 +3733,7 @@ TEST_F(RenderPassValidationFixture, FXAARequiresResourcesBeforeReportingSupporte
 
 TEST_F(RenderPassValidationFixture, FXAAAddsLiveGraphPassAndDrawsFullscreenTriangle)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     FXAAPass pass;
     PostProcessSettings settings;
@@ -3828,7 +3838,7 @@ TEST_F(RenderPassValidationFixture, FXAAAddsLiveGraphPassAndDrawsFullscreenTrian
 
 TEST_F(RenderPassValidationFixture, FXAASkipsDrawWhenConstantsCannotMap)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
 
     FXAAPass pass;
     PostProcessSettings settings;
@@ -3878,7 +3888,7 @@ TEST_F(RenderPassValidationFixture, ColorGradingRequiresResourcesBeforeReporting
 
 TEST_F(RenderPassValidationFixture, ColorGradingDefaultConfiguredPathIsLDRAndSupportedWithResources)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     ColorGradingPass pass;
     PostProcessSettings settings;
@@ -3893,7 +3903,7 @@ TEST_F(RenderPassValidationFixture, ColorGradingDefaultConfiguredPathIsLDRAndSup
 
 TEST_F(RenderPassValidationFixture, ColorGradingRejectsHDRModeBeforeGraphScheduling)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     ColorGradingPass pass;
     PostProcessSettings settings;
@@ -3934,7 +3944,7 @@ TEST_F(RenderPassValidationFixture, ColorGradingRejectsHDRModeBeforeGraphSchedul
 
 TEST_F(RenderPassValidationFixture, ColorGradingRejectsRequestedLUTBeforeGraphScheduling)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     ColorGradingPass pass;
     PostProcessSettings settings;
@@ -3968,7 +3978,7 @@ TEST_F(RenderPassValidationFixture, ColorGradingRejectsRequestedLUTBeforeGraphSc
 
 TEST_F(RenderPassValidationFixture, ColorGradingRejectsSetLUTBeforeGraphScheduling)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     ColorGradingPass pass;
     PostProcessSettings settings;
@@ -4007,7 +4017,7 @@ TEST_F(RenderPassValidationFixture, ColorGradingRejectsSetLUTBeforeGraphScheduli
 
 TEST_F(RenderPassValidationFixture, ColorGradingNeutralSettingsStillWritesFullscreenPass)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     ColorGradingPass pass;
     PostProcessSettings settings;
@@ -4077,7 +4087,7 @@ TEST_F(RenderPassValidationFixture, ColorGradingNeutralSettingsStillWritesFullsc
 
 TEST_F(RenderPassValidationFixture, ColorGradingUploadsConstantsWithHLSLPacking)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     ColorGradingPass pass;
     PostProcessSettings settings;
@@ -4193,7 +4203,7 @@ TEST_F(RenderPassValidationFixture, ColorGradingUploadsConstantsWithHLSLPacking)
 
 TEST_F(RenderPassValidationFixture, ColorGradingSkipsDrawWhenConstantsCannotMap)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
 
     ColorGradingPass pass;
     PostProcessSettings settings;
@@ -4242,7 +4252,7 @@ TEST_F(RenderPassValidationFixture, ChromaticAberrationRequiresResourcesBeforeRe
 
 TEST_F(RenderPassValidationFixture, ChromaticAberrationSupportedWithResources)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     ChromaticAberrationPass pass;
     PostProcessSettings settings;
@@ -4257,7 +4267,7 @@ TEST_F(RenderPassValidationFixture, ChromaticAberrationSupportedWithResources)
 
 TEST_F(RenderPassValidationFixture, ChromaticAberrationRejectsSpectralBeforeGraphScheduling)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     ChromaticAberrationPass pass;
     PostProcessSettings settings;
@@ -4294,7 +4304,7 @@ TEST_F(RenderPassValidationFixture, ChromaticAberrationRejectsSpectralBeforeGrap
 
 TEST_F(RenderPassValidationFixture, ChromaticAberrationZeroIntensityStillWritesFullscreenPass)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     ChromaticAberrationPass pass;
     PostProcessSettings settings;
@@ -4352,7 +4362,7 @@ TEST_F(RenderPassValidationFixture, ChromaticAberrationZeroIntensityStillWritesF
 
 TEST_F(RenderPassValidationFixture, ChromaticAberrationUploadsConstantsWithHLSLPacking)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     ChromaticAberrationPass pass;
     PostProcessSettings settings;
@@ -4427,7 +4437,7 @@ TEST_F(RenderPassValidationFixture, ChromaticAberrationUploadsConstantsWithHLSLP
 
 TEST_F(RenderPassValidationFixture, ChromaticAberrationSkipsDrawWhenConstantsCannotMap)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
 
     ChromaticAberrationPass pass;
     PostProcessSettings settings;
@@ -4476,7 +4486,7 @@ TEST_F(RenderPassValidationFixture, VignetteRequiresResourcesBeforeReportingSupp
 
 TEST_F(RenderPassValidationFixture, VignetteAddsLiveGraphPassAndDrawsFullscreenTriangle)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     VignettePass pass;
     PostProcessSettings settings;
@@ -4568,7 +4578,7 @@ TEST_F(RenderPassValidationFixture, VignetteAddsLiveGraphPassAndDrawsFullscreenT
 
 TEST_F(RenderPassValidationFixture, VignetteSkipsDrawWhenConstantsCannotMap)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
 
     VignettePass pass;
     PostProcessSettings settings;
@@ -4604,7 +4614,7 @@ TEST_F(RenderPassValidationFixture, VignetteSkipsDrawWhenConstantsCannotMap)
 
 TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingThroughIntermediate)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -4670,7 +4680,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingTh
 
 TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGradingChromaticVignetteFXAAWithHDRAndLDRIntermediates)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -4760,7 +4770,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
 
 TEST_F(RenderPassValidationFixture, PostProcessStackKeepsZeroIntensityVignetteAsPassThrough)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -4822,7 +4832,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackKeepsZeroIntensityVignetteAs
 
 TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterToneMapping)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -4861,7 +4871,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterTo
 
 TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterLDRChain)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -4898,7 +4908,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterLD
 
 TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterColorGradingLDRChain)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -4935,7 +4945,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterCo
 
 TEST_F(RenderPassValidationFixture, PostProcessStackRejectsHDRChainWritingLDROutputWithoutToneMapping)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -4973,7 +4983,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRejectsHDRChainWritingLDROut
 
 TEST_F(RenderPassValidationFixture, PostProcessStackAllowsHDRChainWritingHDROutputWithoutToneMapping)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -5011,7 +5021,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackAllowsHDRChainWritingHDROutp
 
 TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidLDREffectBeforeToneMapping)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -5046,7 +5056,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidLDREffectBefor
 
 TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidColorGradingBeforeToneMapping)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -5081,7 +5091,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidColorGradingBe
 
 TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidChromaticAberrationBeforeToneMapping)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -5116,7 +5126,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidChromaticAberr
 
 TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidVignetteBeforeToneMapping)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -5149,9 +5159,24 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidVignetteBefore
     EXPECT_EQ(graphStats.totalPasses, 0u);
 }
 
-TEST_F(RenderPassValidationFixture, PostProcessStackEvaluateEffectsCountsRuntimeSupportedEffects)
+TEST(RenderPostProcessStackValidation, EvaluateEffectsCountsRuntimeSupportedEffects)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    PostProcessStack stack;
+    (void)stack.AddEffect<RecordingPostProcessPass>("Bloom", 500);
+    (void)stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 900);
+
+    const PostProcessStackExecuteStats stats = stack.EvaluateEffects();
+    EXPECT_FALSE(stats.noEffectNoWork);
+    EXPECT_EQ(stats.requestedEffectCount, 2u);
+    EXPECT_EQ(stats.unsupportedSkippedCount, 0u);
+    EXPECT_EQ(stats.enabledEffectCount, 2u);
+    EXPECT_EQ(stats.graphPassCount, 0u);
+    EXPECT_EQ(stats.transientIntermediateCount, 0u);
+}
+
+TEST_F(RenderPassValidationFixture, PostProcessRuntimeResourcesReportSupportedWhenCompilerAvailable)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     PostProcessSettings settings;
     settings.enableBloom = true;
@@ -5363,7 +5388,7 @@ TEST(RenderPostProcessStackValidation, MultiPassChainUsesDistinctTransientInterm
 
 TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMaterialSet)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderObject& object = scene.GetMutableObject(0);
     object.previousWorldMatrix = Mat4Identity();
@@ -5433,7 +5458,7 @@ TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMateri
 }
 TEST_F(RenderPassValidationFixture, OpaquePassBindsOpaqueThenMaskedPipelinesAndDrawsBothGroups)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
     std::vector<RenderDrawItem> maskedItems = {MakeDrawItem(MaterialRenderMode::Masked)};
@@ -5454,7 +5479,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassBindsOpaqueThenMaskedPipelinesAndD
 
 TEST_F(RenderPassValidationFixture, DepthPrepassConsumesGPUDrivenMultiMeshIndirectStreams)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     auto secondMeshResource = CreateMeshResource(402);
     gpuResources.UploadImmediate(secondMeshResource.get());
@@ -5542,7 +5567,7 @@ TEST_F(RenderPassValidationFixture, DepthPrepassConsumesGPUDrivenMultiMeshIndire
 
 TEST_F(RenderPassValidationFixture, OpaquePassConsumesGPUDrivenMaterialGroupedIndirectStreams)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     scene.GetMutableObject(0).bounds = meshResource->GetBounds();
 
@@ -5622,7 +5647,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassConsumesGPUDrivenMaterialGroupedIn
 
 TEST_F(RenderPassValidationFixture, OpaquePassBatchesSameObjectSubmeshesWithIndirectDraw)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     auto twoSubmeshResource = CreateTwoSubmeshMeshResource(1401);
     gpuResources.UploadImmediate(twoSubmeshResource.get());
@@ -5686,7 +5711,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassBatchesSameObjectSubmeshesWithIndi
 
 TEST_F(RenderPassValidationFixture, OpaquePassDoesNotIndirectBatchResolvedMaterialMismatch)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     auto twoSubmeshResource = CreateTwoSubmeshMeshResource(1402);
     gpuResources.UploadImmediate(twoSubmeshResource.get());
@@ -5767,7 +5792,7 @@ TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassGateNormalMapsOnTang
 
 TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassBindFrameLightResources)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     const fs::path passesDir = FindShaderDirectory().parent_path() / "Private" / "Passes";
     const std::string opaquePass = ReadTextFile(passesDir / "OpaquePass.cpp");
@@ -5815,7 +5840,7 @@ TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassBindFrameLightResour
 
 TEST_F(RenderPassValidationFixture, OpaquePassReportsShadowReceiverOptOutDrawItems)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderObject& firstObject = scene.GetMutableObject(0);
     firstObject.receivesShadow = true;
@@ -5849,7 +5874,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassReportsShadowReceiverOptOutDrawIte
 
 TEST_F(RenderPassValidationFixture, OpaquePassResolvesRenderGraphColorTargetView)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -5885,7 +5910,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassResolvesRenderGraphColorTargetView
 
 TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDuringSetup)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -5996,7 +6021,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDurin
 
 TEST_F(RenderPassValidationFixture, OpaquePassReportsMissingShadowSRVWhenRequestedReadCannotResolveView)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
     graph.SetDevice(&device);
@@ -6068,7 +6093,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassReportsMissingShadowSRVWhenRequest
 
 TEST_F(RenderPassValidationFixture, OpaquePassSkipsMaskedItemsWhenMaskedPipelineIsMissing)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     ASSERT_TRUE(pipelineCache.GetMaskedPipeline());
     pipelineCache.m_maskedPipeline.Reset();
@@ -6091,7 +6116,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassSkipsMaskedItemsWhenMaskedPipeline
 
 TEST_F(RenderPassValidationFixture, OpaquePassSkipsOpaqueItemsWhenOpaquePipelineIsMissing)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     ASSERT_TRUE(pipelineCache.GetOpaquePipeline());
     pipelineCache.m_opaquePipeline.Reset();
@@ -6114,7 +6139,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassSkipsOpaqueItemsWhenOpaquePipeline
 
 TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     std::vector<RenderDrawItem> transparentItems = {MakeDrawItem(MaterialRenderMode::Transparent)};
 
@@ -6136,7 +6161,7 @@ TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
 
 TEST_F(RenderPassValidationFixture, OpaquePassSkipsDrawWhenMaterialBindingErrors)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
 
     std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
     std::vector<RenderDrawItem> maskedItems;
@@ -6158,7 +6183,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassSkipsDrawWhenMaterialBindingErrors
 
 TEST_F(RenderPassValidationFixture, OpaquePassDrawsWhenMaterialBindingUsesFallback)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     Resource::TextureHandle missingTexture = CreateTextureResource(502);
     Resource::MaterialResource materialResource;
@@ -6186,7 +6211,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassDrawsWhenMaterialBindingUsesFallba
 
 TEST_F(RenderPassValidationFixture, TransparentPassSkipsDrawWhenMaterialBindingErrors)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
 
     std::vector<RenderDrawItem> transparentItems = {MakeDrawItem(MaterialRenderMode::Transparent)};
 
@@ -6207,7 +6232,7 @@ TEST_F(RenderPassValidationFixture, TransparentPassSkipsDrawWhenMaterialBindingE
 
 TEST_F(RenderPassValidationFixture, TransparentPassDrawsWhenMaterialBindingUsesFallback)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     Resource::TextureHandle missingTexture = CreateTextureResource(503);
     Resource::MaterialResource materialResource;
@@ -7580,7 +7605,7 @@ TEST_F(RenderPassValidationFixture, FilmGrainRequiresResourcesBeforeReportingSup
 
 TEST_F(RenderPassValidationFixture, FilmGrainAddsLiveGraphPassAndDrawsFullscreenTriangle)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     FilmGrainPass pass;
     PostProcessSettings settings;
@@ -7642,7 +7667,7 @@ TEST_F(RenderPassValidationFixture, FilmGrainAddsLiveGraphPassAndDrawsFullscreen
 
 TEST_F(RenderPassValidationFixture, FilmGrainUploadsConstantsWithHLSLPacking)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     FilmGrainPass pass;
     PostProcessSettings settings;
@@ -7715,7 +7740,7 @@ TEST_F(RenderPassValidationFixture, FilmGrainUploadsConstantsWithHLSLPacking)
 
 TEST_F(RenderPassValidationFixture, FilmGrainSkipsDrawWhenConstantsCannotMap)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize(false));
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
 
     FilmGrainPass pass;
     PostProcessSettings settings;
@@ -7764,7 +7789,7 @@ TEST_F(RenderPassValidationFixture, SSAOPassRequiresResourcesBeforeReportingSupp
 
 TEST_F(RenderPassValidationFixture, SSAOPassAddsDepthOnlyGraphPassAndDrawsFullscreenTriangle)
 {
-    ASSERT_NO_FATAL_FAILURE(Initialize());
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     SSAOPass pass;
     PostProcessSettings settings;
@@ -8557,3 +8582,5 @@ TEST_F(RenderPassValidationFixture, StandaloneSSAOInitializesMinimalLowTierAndRe
     EXPECT_EQ(ctx.renderPasses[0].colorAttachmentCount, 1u);
     EXPECT_FLOAT_EQ(ctx.renderPasses[0].colorAttachments[0].clearColor.r, 1.0f);
 }
+
+#undef RVX_REQUIRE_RENDER_RUNTIME_PIPELINE

@@ -27,6 +27,17 @@ defects:
 6. Two resource diagnostic assertions still compared equivalent Windows paths
    by spelling after loader-path assertions had moved to filesystem identity.
 
+CI run 30429579148 verified the backend-factory link closure on Windows, Linux,
+and macOS and passed the complete Windows job. It also exposed a platform
+capability leak in the architecture baseline:
+
+7. A pure post-process effect-accounting contract initialized the complete
+   runtime `PipelineCache`. Linux intentionally reports runtime shader
+   compilation as unsupported, while the Apple compiler cannot consume the
+   DX12-only fake-device contract. The baseline therefore measured an
+   unrelated platform compiler capability instead of the post-process
+   accounting contract it named.
+
 ## Scope
 
 - provide a Render-runtime-local immutable snapshot storage compatibility
@@ -40,7 +51,11 @@ defects:
 - isolate enabled-backend selection in an explicit `RHI_BackendFactory`
   composition module;
 - add a backend-factory link-closure executable that requires every enabled
-  backend archive without creating a native device.
+  backend archive without creating a native device;
+- make post-process accounting coverage deterministic and independent of a
+  runtime shader compiler;
+- keep runtime-pipeline integration coverage active where the current portable
+  HLSL compiler capability is present and report an explicit skip elsewhere.
 
 ## Non-goals
 
@@ -49,6 +64,8 @@ defects:
 - no Scene-to-Animation CMake dependency;
 - no weakening of Build Truth or removal of sample targets;
 - no broad Core-level shared-pointer abstraction for a single consumer.
+- no Linux runtime shader compiler replacement or Apple shader compiler
+  redesign in M1.
 
 ## Ordered execution
 
@@ -61,6 +78,9 @@ defects:
    require Windows/Linux/macOS CI evidence.
 7. Move enabled-backend dispatch out of `RVX_RHI`, close the remaining Windows
    path assertions, and repeat exact-SHA Build Truth plus three-platform CI.
+8. Decouple the post-process accounting baseline from runtime shader
+   compilation, preserve the real runtime-pipeline integration test behind an
+   explicit capability declaration, and repeat three-platform CI.
 
 ## Exit criteria
 
@@ -74,4 +94,9 @@ defects:
 - `RVX_RHI` has no symbol dependency on concrete backends;
 - `RVX::RHI_BackendFactory` owns the public factory surface and links every
   enabled backend through a dedicated link-closure gate;
+- post-process accounting is validated on every platform without requiring
+  runtime shader compilation;
+- platforms without the current portable HLSL compiler path report runtime
+  render-pass integration as an explicit unsupported capability, not a false
+  pass;
 - the exact pushed SHA passes all three required CI jobs.
