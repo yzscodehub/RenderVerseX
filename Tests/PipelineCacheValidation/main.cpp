@@ -2318,7 +2318,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
     view.rayTracedShadowMode = RVX::RayTracedShadowMode::ReplaceRaster;
 
     FakeDevice dxDevice(RVX::RHIBackendType::DX12);
-    RVX::PipelineCache dxCache;
+    PipelineCacheForValidation dxCache;
     ASSERT_TRUE(dxCache.Initialize(&dxDevice, FindShaderDirectory().string())) << dxCache.GetLastError();
     dxCache.UpdateViewConstants(view);
 
@@ -2354,7 +2354,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
     EXPECT_FLOAT_EQ(uploaded.rayTracedShadowParams.z, 1.0f);
 
     FakeDevice vkDevice(RVX::RHIBackendType::Vulkan);
-    RVX::PipelineCache vkCache;
+    PipelineCacheForValidation vkCache;
     ASSERT_TRUE(vkCache.Initialize(&vkDevice, FindShaderDirectory().string())) << vkCache.GetLastError();
     vkCache.UpdateViewConstants(view);
 
@@ -2371,7 +2371,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
     EXPECT_FLOAT_EQ(uploaded.rayTracedShadowParams.z, 1.0f);
 
     FakeDevice reverseZDevice(RVX::RHIBackendType::DX12);
-    RVX::PipelineCache reverseZCache;
+    PipelineCacheForValidation reverseZCache;
     RVX::PipelineCacheConfig config;
     config.reverseZ = true;
     reverseZCache.SetConfig(config);
@@ -2425,7 +2425,7 @@ TEST_F(PipelineCacheValidationFixture, DirectionalShadowFrameResourcesReportFall
     EXPECT_TRUE(result.shadowSamplingEnabled);
     EXPECT_EQ(result.fallbackReason, RVX::DirectionalShadowFallbackReason::None);
 
-    RVX::PipelineCache reverseZCache;
+    PipelineCacheForValidation reverseZCache;
     RVX::PipelineCacheConfig config;
     config.reverseZ = true;
     reverseZCache.SetConfig(config);
@@ -6214,11 +6214,11 @@ TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAwa
     }
 
     FakeDevice firstDevice;
-    RVX::PipelineCache firstCache;
+    PipelineCacheForValidation firstCache;
     ASSERT_TRUE(firstCache.Initialize(&firstDevice, FindShaderDirectory().string())) << firstCache.GetLastError();
 
     FakeDevice secondDevice;
-    RVX::PipelineCache secondCache;
+    PipelineCacheForValidation secondCache;
     ASSERT_TRUE(secondCache.Initialize(&secondDevice, FindShaderDirectory().string())) << secondCache.GetLastError();
 
     EXPECT_EQ(firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque),
@@ -6431,11 +6431,11 @@ TEST_F(PipelineCacheValidationFixture, RenderTargetFormatChangesPipelineHash)
     }
 
     FakeDevice firstDevice;
-    RVX::PipelineCache firstCache;
+    PipelineCacheForValidation firstCache;
     ASSERT_TRUE(firstCache.Initialize(&firstDevice, FindShaderDirectory().string())) << firstCache.GetLastError();
 
     FakeDevice secondDevice;
-    RVX::PipelineCache secondCache;
+    PipelineCacheForValidation secondCache;
     secondCache.SetRenderTargetFormat(RVX::RHIFormat::RGBA16_FLOAT);
     ASSERT_TRUE(secondCache.Initialize(&secondDevice, FindShaderDirectory().string())) << secondCache.GetLastError();
 

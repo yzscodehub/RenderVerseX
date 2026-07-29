@@ -1936,6 +1936,13 @@ TEST(UIValidation, TextRendererPositionsPackedGlyphsWithKerning)
     const UIFontAtlasGlyph* secondGlyph = atlas.FindGlyph(sample.codepoint);
     ASSERT_NE(nullptr, firstGlyph);
     ASSERT_NE(nullptr, secondGlyph);
+    EXPECT_NEAR(font.GetKerningAdvance(sample.previousCodepoint,
+                                      sample.codepoint,
+                                      RVX_TEST_FONT_SIZE),
+                atlas.GetKerningAdvance(sample.previousCodepoint,
+                                        sample.codepoint,
+                                        RVX_TEST_FONT_SIZE),
+                0.001f);
 
     FakeDevice device;
     UIRenderer renderer;
@@ -1956,9 +1963,9 @@ TEST(UIValidation, TextRendererPositionsPackedGlyphsWithKerning)
     const float rawSecondLeft =
         bounds.x +
         firstGlyph->advance * atlasScale +
-        font.GetKerningAdvance(sample.previousCodepoint,
-                               sample.codepoint,
-                               RVX_TEST_FONT_SIZE) +
+        atlas.GetKerningAdvance(sample.previousCodepoint,
+                                sample.codepoint,
+                                RVX_TEST_FONT_SIZE) +
         secondGlyph->offset.x * atlasScale;
     const float baselineY = bounds.y + font.GetAscent(RVX_TEST_FONT_SIZE);
     const Rect expectedSecondRect = GlyphRectForExpectation(

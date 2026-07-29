@@ -666,6 +666,7 @@ rvx_add_gtest(
         RVX::Terrain
         Particle
     INCLUDES
+        ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/Particle/Private
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Resource/Include

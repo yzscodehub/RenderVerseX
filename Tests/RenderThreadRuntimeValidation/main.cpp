@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -264,9 +265,19 @@ namespace
         void AfterFalseWaitPredicate() noexcept override
         {
             std::unique_lock lock(m_mutex);
+            if (!m_armed)
+            {
+                return;
+            }
             m_entered = true;
             m_cv.notify_all();
             m_cv.wait(lock, [this]() { return m_released; });
+        }
+
+        void Arm()
+        {
+            std::lock_guard lock(m_mutex);
+            m_armed = true;
         }
 
         [[nodiscard]] bool WaitUntilEntered(
@@ -290,6 +301,7 @@ namespace
     private:
         std::mutex m_mutex;
         std::condition_variable m_cv;
+        bool m_armed = false;
         bool m_entered = false;
         bool m_released = false;
     };
@@ -442,6 +454,23 @@ namespace
         while (std::chrono::steady_clock::now() < deadline)
         {
             if (runtime.GetLastRuntimeResult().lifecycle == lifecycle)
+            {
+                return true;
+            }
+            std::this_thread::sleep_for(1ms);
+        }
+        return false;
+    }
+
+    bool WaitForPumpIterationCount(const RenderThreadRuntime& runtime,
+                                   uint64 minimumCount)
+    {
+        const auto deadline =
+            std::chrono::steady_clock::now() + RVX_TEST_TIMEOUT;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            if (runtime.GetDiagnosticsSnapshot().pumpIterationCount >=
+                minimumCount)
             {
                 return true;
             }
@@ -985,9 +1014,6 @@ namespace
          WakeCannotBeLostBetweenPredicateAndWaitRegistration)
     {
         auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
-        auto publicationHook =
-            std::make_shared<BlockingPublicationHook>(
-                RenderPublicationPath::Frame);
         auto waitHook = std::make_shared<BlockingWaitPredicateHook>();
         RenderRuntimeConfig config;
         config.backendType = RHIBackendType::DX11;
@@ -999,9 +1025,11 @@ namespace
             CreateRecordingRenderFrameConsumer(probe),
             nullptr,
             nullptr,
-            publicationHook,
+            nullptr,
             waitHook);
         ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        waitHook->Arm();
+        runtime.Wake();
 
         const bool waitWindowEntered =
             waitHook->WaitUntilEntered(RVX_TEST_TIMEOUT);
@@ -1012,34 +1040,27 @@ namespace
             FAIL() << "Render thread did not enter the guarded wait window";
             return;
         }
-        RenderFramePublishResult publishResult;
-        CompletionSignal publicationComplete;
-        std::thread publisher([&]() {
-            publishResult = runtime.TryPublishFrame(MakePacket(7401));
-            publicationComplete.Complete();
+        const uint64 pumpIterationsBeforeWake =
+            runtime.GetDiagnosticsSnapshot().pumpIterationCount;
+        CompletionSignal wakeComplete;
+        std::thread waker([&]() {
+            runtime.Wake();
+            wakeComplete.Complete();
         });
-        const bool mutationEntered =
-            publicationHook->WaitUntilEntered(RVX_TEST_TIMEOUT);
-        if (!mutationEntered)
-        {
-            publicationHook->Release();
-            waitHook->Release();
-            publisher.join();
-            EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
-            FAIL() << "Publisher did not enter the guarded mutation window";
-            return;
-        }
-        publicationHook->Release();
         const bool completedBeforeWaitRelease =
-            publicationComplete.Wait(100ms);
+            wakeComplete.Wait(100ms);
         waitHook->Release();
-        publisher.join();
+        waker.join();
 
         EXPECT_FALSE(completedBeforeWaitRelease);
-        EXPECT_EQ(publishResult.code, RenderFramePublishCode::Accepted);
-        EXPECT_TRUE(probe->WaitForEventCount(RenderRuntimeTestEvent::Frame,
-                                             1U,
-                                             RVX_TEST_TIMEOUT));
+        const bool wakeObserved = WaitForPumpIterationCount(
+            runtime, pumpIterationsBeforeWake + 1U);
+        if (!wakeObserved)
+        {
+            EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+            FAIL() << "Render thread did not consume the guarded wake";
+            return;
+        }
         EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
     }
 
@@ -2610,10 +2631,9 @@ namespace
             nullptr,
             nullptr,
             timeoutClock);
-        std::thread startupRelease([probe]() {
-            if (probe->WaitForEventCount(RenderRuntimeTestEvent::Started,
-                                         1U,
-                                         500ms))
+        std::thread startupRelease([probe, &runtime]() {
+            if (WaitForRuntimeLifecycle(runtime,
+                                        RenderLifecycleState::Failed))
             {
                 probe->ReleaseStartup();
             }

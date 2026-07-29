@@ -1,3 +1,4 @@
+#include "Common/DeterministicShaderCompiler.h"
 #include "Core/Log.h"
 #include "Core/Serialization/Serialization.h"
 #include "Render/Debug/GPUProfiler.h"
@@ -513,13 +514,6 @@ namespace
 #else
         return command;
 #endif
-    }
-
-    bool IsShaderImporterCompilerUnavailable(const RVX::Tools::ImportResult& result)
-    {
-        return result.error.find("not available") != std::string::npos ||
-               result.error.find("not initialized") != std::string::npos ||
-               result.error.find("compiler is unavailable") != std::string::npos;
     }
 
     size_t MipOffset(uint32_t width, uint32_t height, uint32_t mipLevel)
@@ -1996,19 +1990,14 @@ float4 main() : SV_Target
 }
 )");
 
-    RVX::Tools::ShaderImporter importer;
+    RVX::Tools::ShaderImporter importer(
+        RVX::Tests::CreateDeterministicShaderCompiler);
     RVX::Tools::ShaderImportOptions options;
     options.stage = RVX::RHIShaderStage::Pixel;
     options.targetBackend = RVX::RHIBackendType::DX12;
     options.enableOptimization = false;
 
     const RVX::Tools::ImportResult result = importer.Import(source, output, &options);
-    if (!result.success && IsShaderImporterCompilerUnavailable(result))
-    {
-        fs::remove_all(dir);
-        GTEST_SKIP() << result.error;
-    }
-
     ASSERT_TRUE(result.success) << result.error;
     ASSERT_TRUE(fs::exists(output));
     ASSERT_EQ(1u, result.outputPaths.size());
@@ -2111,21 +2100,10 @@ float4 main() : SV_Target
     EXPECT_TRUE(entry->isDirty);
 
     RVX::Tools::AssetPipeline pipeline;
-    pipeline.RegisterImporter(std::make_unique<RVX::Tools::ShaderImporter>());
+    pipeline.RegisterImporter(std::make_unique<RVX::Tools::ShaderImporter>(
+        RVX::Tests::CreateDeterministicShaderCompiler));
 
     const bool imported = database.ReimportAsset(guid, pipeline);
-    if (!imported)
-    {
-        RVX::Tools::ShaderImporter importer;
-        const RVX::Tools::ImportResult directResult =
-            importer.Import(source, importedRoot / "Probe.rva");
-        if (!directResult.success && IsShaderImporterCompilerUnavailable(directResult))
-        {
-            fs::remove_all(dir);
-            GTEST_SKIP() << directResult.error;
-        }
-    }
-
     ASSERT_TRUE(imported);
     const fs::path importedPath = importedRoot / "Shaders" / "Fullscreen.ps.rva";
     ASSERT_TRUE(fs::exists(importedPath));

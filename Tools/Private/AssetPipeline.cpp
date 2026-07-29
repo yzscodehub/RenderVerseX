@@ -1858,6 +1858,16 @@ ImportResult MeshImporter::Import(const fs::path& sourcePath,
 // ShaderImporter
 // ============================================================================
 
+ShaderImporter::ShaderImporter()
+    : ShaderImporter([]() { return CreateShaderCompiler(); })
+{
+}
+
+ShaderImporter::ShaderImporter(CompilerFactory compilerFactory)
+    : m_compilerFactory(std::move(compilerFactory))
+{
+}
+
 ImportResult ShaderImporter::Import(const fs::path& sourcePath,
                                      const fs::path& outputPath,
                                      const void* options)
@@ -1895,7 +1905,13 @@ ImportResult ShaderImporter::Import(const fs::path& sourcePath,
 
     RVX_CORE_INFO("Compiling shader: {}", sourcePath.string());
 
-    auto compiler = CreateShaderCompiler();
+    if (!m_compilerFactory)
+    {
+        result.error = "Shader compiler factory is unavailable";
+        return result;
+    }
+
+    auto compiler = m_compilerFactory();
     if (!compiler)
     {
         result.error = "Shader compiler is unavailable";
@@ -1914,6 +1930,16 @@ ImportResult ShaderImporter::Import(const fs::path& sourcePath,
     compileOptions.targetBackend = importOptions.targetBackend;
     compileOptions.enableDebugInfo = importOptions.enableDebugInfo;
     compileOptions.enableOptimization = importOptions.enableOptimization;
+
+    const ShaderCompileSupport support =
+        compiler->QuerySupport(compileOptions);
+    if (!support.IsSupported())
+    {
+        result.error = support.reason.empty()
+            ? "Shader compiler does not support the requested target"
+            : support.reason;
+        return result;
+    }
 
     ShaderCompileResult compileResult = compiler->Compile(compileOptions);
     if (!compileResult.success)

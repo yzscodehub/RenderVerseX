@@ -53,6 +53,27 @@ coupling rather than new runtime defects:
 11. Build-time GoogleTest discovery intermittently omitted an already-linked
     validation executable from the architecture inventory on macOS.
 
+CI run 30459643303 built successfully on Linux and proved that the capability
+and injection design was sound, while exposing two final validation-fixture
+gaps:
+
+12. Four pipeline-cache tests used nonstandard local variable names and
+    therefore escaped the mechanical migration to the deterministic compiler
+    fixture.
+13. The startup-watchdog test released a blocked render initialization as soon
+    as the worker announced `Started`, allowing fast schedulers to acknowledge
+    startup before the timeout predicate was first evaluated.
+14. Shader-importer artifact tests still constructed the platform compiler,
+    so an importer behavior contract requested DX12 from the Metal compiler.
+15. The lost-wake test armed its blocking wait hook before `Start()` returned;
+    the worker could hold the wake mutex while startup itself tried to notify
+    the executor.
+16. An Actor test declared its lifecycle observer after the entity that
+    referenced it, leaving destruction callbacks with a dangling pointer.
+17. A custom font atlas carried packed glyph geometry but not the layout source
+    that produced it, so rendering mixed custom glyph advances with default
+    system-font kerning and baseline metrics.
+
 ## Scope
 
 - provide a Render-runtime-local immutable snapshot storage compatibility
@@ -77,7 +98,11 @@ coupling rather than new runtime defects:
   platform compiler;
 - keep true compiler integration coverage active where the requested target is
   supported and report a typed capability skip elsewhere;
+- preserve compiler injection and typed capability checks through the shader
+  asset importer;
 - build UI font atlases from the exact codepoints required by each test;
+- keep packed atlas glyphs and their font layout metrics as one self-contained
+  runtime asset;
 - defer GoogleTest discovery until test time and evaluate architecture coverage
   from one authoritative CTest inventory snapshot.
 
@@ -112,6 +137,11 @@ coupling rather than new runtime defects:
    artifacts, keep true compiler tests capability-gated, minimize UI atlas
    fixtures, harden test discovery/inventory, and repeat exact-SHA Build Truth
    plus three-platform CI.
+10. Close the four pipeline-cache fixture omissions, synchronize watchdog
+    release with the timeout lifecycle decision, arm the lost-wake hook only
+    after startup, inject the importer compiler, correct observer lifetime,
+    bind atlas layout metrics to packed glyphs, stress the timing-sensitive
+    contracts, and repeat exact-SHA Build Truth plus three-platform CI.
 
 ## Exit criteria
 
@@ -132,7 +162,13 @@ coupling rather than new runtime defects:
   using deterministic artifacts rather than compiler-availability skips;
 - true shader compiler integration tests query a typed backend/stage capability
   and skip only when that requested compilation path is unsupported;
+- shader importer behavior tests use deterministic artifacts while production
+  importers query the real compiler's typed capability;
 - font atlas capacity is independent of unrelated glyph ranges;
+- custom font atlases use their own kerning, ascent, descent, and line-gap data
+  during measurement and rendering;
 - test discovery is deferred until the final test environment is available and
   the architecture baseline evaluates one consistent inventory snapshot;
+- watchdog validation observes the lifecycle decision rather than depending on
+  worker scheduling speed;
 - the exact pushed SHA passes all three required CI jobs.

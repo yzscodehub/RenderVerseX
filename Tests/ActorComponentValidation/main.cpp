@@ -1214,10 +1214,10 @@ namespace
 
     TEST(ActorComponentValidation, SceneEntityActorPointerTickDispatchesLegacyComponents)
     {
+        LegacyLifecycleCounters counters;
         RVX::SceneEntity entity("LegacyActorPointerTickEntity");
         RVX::Actor* actor = &entity;
 
-        LegacyLifecycleCounters counters;
         auto* component = entity.AddComponent<SceneManagedLegacyLifecycleComponent>(&counters);
         ASSERT_NE(nullptr, component);
 

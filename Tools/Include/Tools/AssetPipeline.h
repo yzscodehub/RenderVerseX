@@ -7,12 +7,18 @@
 
 #include "Core/Types.h"
 #include "RHI/RHIDefinitions.h"
-#include <string>
-#include <vector>
-#include <memory>
-#include <functional>
+
 #include <filesystem>
+#include <functional>
+#include <memory>
+#include <string>
 #include <unordered_map>
+#include <vector>
+
+namespace RVX
+{
+    class IShaderCompiler;
+} // namespace RVX
 
 namespace RVX::Tools
 {
@@ -261,6 +267,12 @@ public:
 class ShaderImporter : public IAssetImporter
 {
 public:
+    using CompilerFactory =
+        std::function<std::unique_ptr<RVX::IShaderCompiler>()>;
+
+    ShaderImporter();
+    explicit ShaderImporter(CompilerFactory compilerFactory);
+
     const char* GetName() const override { return "ShaderImporter"; }
 
     std::vector<std::string> GetSupportedExtensions() const override
@@ -273,6 +285,9 @@ public:
     ImportResult Import(const fs::path& sourcePath,
                         const fs::path& outputPath,
                         const void* options = nullptr) override;
+
+private:
+    CompilerFactory m_compilerFactory;
 };
 
 /**
