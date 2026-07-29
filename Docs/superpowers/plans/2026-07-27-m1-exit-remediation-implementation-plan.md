@@ -74,6 +74,13 @@ gaps:
     that produced it, so rendering mixed custom glyph advances with default
     system-font kerning and baseline metrics.
 
+CI run 30464801873 passed all 1,343 Linux unit/lint tests and exposed one
+native-environment integration gap:
+
+18. The Vulkan RHI linked a valid loader, but GLFW independently searched the
+    host's default library paths and therefore could not report the required
+    X11 surface extensions on the hosted runner.
+
 ## Scope
 
 - provide a Render-runtime-local immutable snapshot storage compatibility
@@ -103,6 +110,8 @@ gaps:
 - build UI font atlases from the exact codepoints required by each test;
 - keep packed atlas glyphs and their font layout metrics as one self-contained
   runtime asset;
+- bind the native Vulkan lifecycle harness to the linked loader before GLFW
+  initialization;
 - defer GoogleTest discovery until test time and evaluate architecture coverage
   from one authoritative CTest inventory snapshot.
 
@@ -142,6 +151,9 @@ gaps:
     after startup, inject the importer compiler, correct observer lifetime,
     bind atlas layout metrics to packed glyphs, stress the timing-sensitive
     contracts, and repeat exact-SHA Build Truth plus three-platform CI.
+11. Bind the native lifecycle harness to the linked Vulkan loader before GLFW
+    initialization, retain the GLFW error code in RHI failure diagnostics, and
+    repeat exact-SHA Build Truth plus three-platform CI.
 
 ## Exit criteria
 
@@ -167,6 +179,7 @@ gaps:
 - font atlas capacity is independent of unrelated glyph ranges;
 - custom font atlases use their own kerning, ascent, descent, and line-gap data
   during measurement and rendering;
+- the Vulkan native lifecycle harness initializes GLFW with the linked loader;
 - test discovery is deferred until the final test environment is available and
   the architecture baseline evaluates one consistent inventory snapshot;
 - watchdog validation observes the lifecycle decision rather than depending on

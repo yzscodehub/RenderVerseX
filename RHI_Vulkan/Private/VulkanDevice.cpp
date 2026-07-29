@@ -298,7 +298,13 @@ namespace RVX
                 glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
             if (!glfwExtensions || glfwExtensionCount == 0)
             {
-                RVX_RHI_ERROR("GLFW did not provide required Vulkan instance extensions");
+                const char* glfwDescription = nullptr;
+                const int glfwError = glfwGetError(&glfwDescription);
+                RVX_RHI_ERROR(
+                    "GLFW did not provide required Vulkan instance extensions "
+                    "(error {}: {})",
+                    glfwError,
+                    glfwDescription ? glfwDescription : "no GLFW diagnostic");
                 return false;
             }
             extensions.assign(glfwExtensions, glfwExtensions + glfwExtensionCount);

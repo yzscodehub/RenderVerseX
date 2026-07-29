@@ -7,6 +7,9 @@
 #include "Render/RenderSubsystem.h"
 #include "RenderExtraction/RenderFramePacketBuilder.h"
 
+#if defined(RVX_NATIVE_BACKEND_VULKAN)
+#define GLFW_INCLUDE_VULKAN
+#endif
 #include <GLFW/glfw3.h>
 
 #if defined(RVX_NATIVE_BACKEND_DX12)
@@ -84,6 +87,12 @@ namespace
 
         [[nodiscard]] bool Initialize(uint32 width, uint32 height)
         {
+#if defined(RVX_NATIVE_BACKEND_VULKAN)
+            // The CI loader is supplied by vcpkg and may not be discoverable
+            // under the host's default dynamic-library search paths. GLFW
+            // must receive the linked loader before its first initialization.
+            glfwInitVulkanLoader(vkGetInstanceProcAddr);
+#endif
             if (glfwInit() != GLFW_TRUE)
             {
                 return false;
