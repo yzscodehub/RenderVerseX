@@ -270,6 +270,130 @@ def check_production_executor_boundary(root: Path, findings: list[Finding]) -> N
                     )
 
 
+def check_rhi_backend_factory_boundary(root: Path, findings: list[Finding]) -> None:
+    core_cmake_path = root / "RHI/CMakeLists.txt"
+    core_cmake = read_text(core_cmake_path)
+    if "RHIModule.cpp" in core_cmake or "RHIBackendFactory.cpp" in core_cmake:
+        findings.append(
+            Finding(
+                core_cmake_path.relative_to(root),
+                1,
+                "RVX_RHI must not compile the enabled-backend factory",
+            )
+        )
+
+    device_header_path = root / "RHI/Include/RHI/RHIDevice.h"
+    device_header = read_text(device_header_path)
+    if "CreateRHIDevice" in device_header:
+        findings.append(
+            Finding(
+                device_header_path.relative_to(root),
+                1,
+                "RHIDevice.h must remain independent of enabled-backend composition",
+            )
+        )
+
+    factory_cmake_path = root / "RHI_BackendFactory/CMakeLists.txt"
+    factory_header_path = (
+        root
+        / "RHI_BackendFactory/Include/RHI_BackendFactory/RHIBackendFactory.h"
+    )
+    factory_source_path = (
+        root / "RHI_BackendFactory/Private/RHIBackendFactory.cpp"
+    )
+    for required_path in (
+        factory_cmake_path,
+        factory_header_path,
+        factory_source_path,
+    ):
+        if not required_path.is_file():
+            findings.append(
+                Finding(
+                    required_path.relative_to(root),
+                    1,
+                    "RHI backend factory boundary file is missing",
+                )
+            )
+    if not all(
+        path.is_file()
+        for path in (factory_cmake_path, factory_header_path, factory_source_path)
+    ):
+        return
+
+    factory_cmake = read_text(factory_cmake_path)
+    for dependency in (
+        "RVX::RHI",
+        "RVX::RHI_DX11",
+        "RVX::RHI_DX12",
+        "RVX::RHI_Vulkan",
+        "RVX::RHI_Metal",
+        "RVX::RHI_OpenGL",
+    ):
+        if dependency not in factory_cmake:
+            findings.append(
+                Finding(
+                    factory_cmake_path.relative_to(root),
+                    1,
+                    f"RHI backend factory must compose {dependency}",
+                )
+            )
+
+    factory_header = read_text(factory_header_path)
+    if "CreateRHIDevice" not in factory_header:
+        findings.append(
+            Finding(
+                factory_header_path.relative_to(root),
+                1,
+                "RHI backend factory must own the CreateRHIDevice declaration",
+            )
+        )
+
+    render_cmake_path = root / "Render/CMakeLists.txt"
+    render_cmake = read_text(render_cmake_path)
+    render_links = "\n".join(
+        match.group("body")
+        for match in re.finditer(
+            r"target_link_libraries\s*\(\s*RVX_Render\b(?P<body>.*?)\)",
+            render_cmake,
+            re.DOTALL,
+        )
+    )
+    if "RVX::RHI_BackendFactory" not in render_links:
+        findings.append(
+            Finding(
+                render_cmake_path.relative_to(root),
+                1,
+                "RVX_Render must link the enabled-backend factory privately",
+            )
+        )
+
+    tests_cmake_path = root / "Tests/CMakeLists.txt"
+    tests_cmake = read_text(tests_cmake_path)
+    for token in (
+        "RHIBackendFactoryLinkClosureValidation",
+        "Architecture.RHIBackendFactoryLinkClosure",
+    ):
+        if token not in tests_cmake:
+            findings.append(
+                Finding(
+                    tests_cmake_path.relative_to(root),
+                    1,
+                    f"RHI backend factory link-closure gate is missing '{token}'",
+                )
+            )
+
+    baseline_path = root / "Scripts/run_architecture_baseline.ps1"
+    baseline = read_text(baseline_path)
+    if "Architecture\\.RHIBackendFactoryLinkClosure" not in baseline:
+        findings.append(
+            Finding(
+                baseline_path.relative_to(root),
+                1,
+                "architecture baseline must execute the RHI backend factory link-closure gate",
+            )
+        )
+
+
 def check_validation_inventory(root: Path, findings: list[Finding]) -> None:
     path = root / "Tests/CMakeLists.txt"
     text = read_text(path)
@@ -288,6 +412,7 @@ def main() -> int:
     check_subsystem_surface(root, findings)
     check_scene_renderer_surface(root, findings)
     check_production_executor_boundary(root, findings)
+    check_rhi_backend_factory_boundary(root, findings)
     check_validation_inventory(root, findings)
 
     if findings:

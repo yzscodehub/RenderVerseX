@@ -11,6 +11,7 @@
 #include "Core/Core.h"
 #include "Core/MathTypes.h"
 #include "RHI/RHI.h"
+#include "RHI_BackendFactory/RHIBackendFactory.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Samples/SampleCLI.h"
 #include "ShaderCompiler/ShaderManager.h"

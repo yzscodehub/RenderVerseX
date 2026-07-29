@@ -19,6 +19,7 @@ function(rvx_add_basic_sample TARGET_NAME SAMPLE_KIND)
         RVX::Physics
         RVX::Render
         RVX::RenderContracts
+        RVX::RHI_BackendFactory
         RVX::Resource
         RVX::SampleCommon
     )

@@ -336,6 +336,7 @@ def check_m1_render_ownership_cut(root: Path) -> list[Finding]:
         "Render",
         "RenderContracts",
         "RHI",
+        "RHI_BackendFactory",
         "ShaderCompiler",
         "Spatial",
     }

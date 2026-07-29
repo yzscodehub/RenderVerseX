@@ -203,6 +203,8 @@ if(RVX_ENABLE_OPENGL)
     add_subdirectory(RHI_OpenGL)
 endif()
 
+add_subdirectory(RHI_BackendFactory) # Enabled RHI backend composition
+
 add_subdirectory(Resource)   # Resource module (canonical resource management)
 add_subdirectory(ResourceSceneAdapters) # Resource model data to Scene actor adapters
 add_subdirectory(Physics)    # Physics subsystem

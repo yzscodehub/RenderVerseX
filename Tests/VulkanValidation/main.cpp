@@ -2,6 +2,7 @@
 #include "Core/Core.h"
 #include "Render/Context/RenderContext.h"
 #include "RHI/RHI.h"
+#include "RHI_BackendFactory/RHIBackendFactory.h"
 #include "VulkanDevice.h"
 
 #include <gtest/gtest.h>

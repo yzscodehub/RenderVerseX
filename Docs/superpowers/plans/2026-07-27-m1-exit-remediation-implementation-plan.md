@@ -17,6 +17,16 @@ platform fixes and exposed four deeper baseline defects:
 4. Windows path tests compared equivalent existing paths by spelling instead
    of filesystem identity.
 
+CI run 30420680090 then verified that the compatibility and dependency work
+advanced all platforms deeper into the build, and exposed two final closure
+defects:
+
+5. `RVX_RHI` owned the enabled-backend dispatcher while every `RHI_*` archive
+   depended back on `RVX_RHI`, creating a static-library cycle that GNU and
+   Apple linkers rejected.
+6. Two resource diagnostic assertions still compared equivalent Windows paths
+   by spelling after loader-path assertions had moved to filesystem identity.
+
 ## Scope
 
 - provide a Render-runtime-local immutable snapshot storage compatibility
@@ -26,11 +36,15 @@ platform fixes and exposed four deeper baseline defects:
 - replace the Scene-to-Animation concrete skinning query with a Scene-owned
   provider interface;
 - add a Scene-only link-closure executable and provider integration coverage;
-- compare existing test files with `std::filesystem::equivalent`.
+- compare existing test files with `std::filesystem::equivalent`;
+- isolate enabled-backend selection in an explicit `RHI_BackendFactory`
+  composition module;
+- add a backend-factory link-closure executable that requires every enabled
+  backend archive without creating a native device.
 
 ## Non-goals
 
-- no RHI contract, command, resource, barrier, or backend behavior changes;
+- no RHI command, resource, barrier, or backend behavior changes;
 - no Task 21 case-catalog implementation;
 - no Scene-to-Animation CMake dependency;
 - no weakening of Build Truth or removal of sample targets;
@@ -45,6 +59,8 @@ platform fixes and exposed four deeper baseline defects:
 5. Replace the seven path-spelling assertions with semantic equivalence.
 6. Run focused validation, fresh Windows Build Truth, push the exact SHA, and
    require Windows/Linux/macOS CI evidence.
+7. Move enabled-backend dispatch out of `RVX_RHI`, close the remaining Windows
+   path assertions, and repeat exact-SHA Build Truth plus three-platform CI.
 
 ## Exit criteria
 
@@ -55,4 +71,7 @@ platform fixes and exposed four deeper baseline defects:
   deterministically;
 - Windows path tests accept only filesystem-equivalent existing files and
   surface comparison errors;
+- `RVX_RHI` has no symbol dependency on concrete backends;
+- `RVX::RHI_BackendFactory` owns the public factory surface and links every
+  enabled backend through a dedicated link-closure gate;
 - the exact pushed SHA passes all three required CI jobs.

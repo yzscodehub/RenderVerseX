@@ -1,5 +1,6 @@
 #include "Core/Core.h"
 #include "RHI/RHI.h"
+#include "RHI_BackendFactory/RHIBackendFactory.h"
 #include "Common/GpuTestUtils.h"
 #include "ShaderCompiler/ShaderCompiler.h"
 #include "DX11Device.h"

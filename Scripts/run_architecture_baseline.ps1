@@ -25,6 +25,7 @@ $junitPath = Join-Path $reportDirectory "ArchitectureBaseline.junit.xml"
 
 $baselinePatterns = @(
     "Architecture\.GateInputsFailClosed",
+    "Architecture\.RHIBackendFactoryLinkClosure",
     "Architecture\.ModuleBoundaries",
     "Architecture\.ModuleBoundaryManifest",
     "Architecture\.CMakeModuleVisibility",

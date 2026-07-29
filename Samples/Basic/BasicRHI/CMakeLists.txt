@@ -13,6 +13,7 @@ add_executable(BasicRHI
 target_link_libraries(BasicRHI PRIVATE
     RVX::Core
     RVX::RHI
+    RVX::RHI_BackendFactory
     RVX::Render          # Includes RenderGraph
     RVX::Runtime         # Camera
     RVX::SampleCommon

@@ -21,6 +21,7 @@ function(rvx_add_engine_showcase TARGET_NAME SOURCE_FILE DEFAULT_MODE)
         RVX::SampleCommon
         RVX::World
         RVX::RHI
+        RVX::RHI_BackendFactory
         RVX::ShaderCompiler
         RVX::HAL
     )

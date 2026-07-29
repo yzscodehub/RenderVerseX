@@ -272,9 +272,4 @@ namespace RVX
         }
     };
 
-    // =============================================================================
-    // Device Factory
-    // =============================================================================
-    std::unique_ptr<IRHIDevice> CreateRHIDevice(RHIBackendType backend, const RHIDeviceDesc& desc);
-
 } // namespace RVX

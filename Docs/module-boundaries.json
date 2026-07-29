@@ -20,6 +20,7 @@
     "Resource",
     "ResourceSceneAdapters",
     "RHI",
+    "RHI_BackendFactory",
     "RHI_DX11",
     "RHI_DX12",
     "RHI_Metal",
@@ -93,7 +94,7 @@
     },
     "Render": {
       "path": "Render",
-      "allowed": ["Core", "Render", "RenderContracts", "RHI", "ShaderCompiler", "Spatial"]
+      "allowed": ["Core", "Render", "RenderContracts", "RHI", "RHI_BackendFactory", "ShaderCompiler", "Spatial"]
     },
     "RenderContracts": {
       "path": "RenderContracts",
@@ -114,6 +115,10 @@
     "RHI": {
       "path": "RHI",
       "allowed": ["Core", "RHI"]
+    },
+    "RHI_BackendFactory": {
+      "path": "RHI_BackendFactory",
+      "allowed": ["Core", "RHI", "RHI_BackendFactory", "RHI_DX11", "RHI_DX12", "RHI_Metal", "RHI_OpenGL", "RHI_Vulkan"]
     },
     "RHI_DX11": {
       "path": "RHI_DX11",

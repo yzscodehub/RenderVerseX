@@ -159,6 +159,10 @@ target_link_libraries(RVX_Editor PUBLIC
     OpenGL::GL
 )
 
+target_link_libraries(RVX_Editor PRIVATE
+    RVX::RHI_BackendFactory
+)
+
 if(RVX_ENABLE_DX11)
     target_link_libraries(RVX_Editor PRIVATE RVX::RHI_DX11)
 endif()

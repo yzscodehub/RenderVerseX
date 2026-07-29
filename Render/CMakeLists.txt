@@ -168,6 +168,7 @@ target_link_libraries(RVX_Render PUBLIC
 )
 
 target_link_libraries(RVX_Render PRIVATE
+    RVX::RHI_BackendFactory
     RVX_RenderRuntimeCore
 )
 

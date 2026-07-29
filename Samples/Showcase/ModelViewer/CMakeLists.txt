@@ -16,6 +16,7 @@ target_link_libraries(ModelViewer PRIVATE
     RVX::Scene
     RVX::World
     RVX::RHI
+    RVX::RHI_BackendFactory
     RVX::ShaderCompiler
     RVX::HAL
     RVX::SampleCommon

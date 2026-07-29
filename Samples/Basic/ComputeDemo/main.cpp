@@ -1,5 +1,6 @@
 #include "Core/Core.h"
 #include "RHI/RHI.h"
+#include "RHI_BackendFactory/RHIBackendFactory.h"
 
 #include <GLFW/glfw3.h>
 

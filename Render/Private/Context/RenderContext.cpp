@@ -5,6 +5,7 @@
 
 #include "Render/Context/RenderContext.h"
 #include "Core/Log.h"
+#include "RHI_BackendFactory/RHIBackendFactory.h"
 
 namespace RVX
 {

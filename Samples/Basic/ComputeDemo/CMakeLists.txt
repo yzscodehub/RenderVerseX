@@ -7,6 +7,7 @@ add_executable(ComputeDemo main.cpp)
 target_link_libraries(ComputeDemo PRIVATE
     RVX::Core
     RVX::RHI
+    RVX::RHI_BackendFactory
     RVX::RenderGraph
     RVX::ShaderCompiler
     glfw

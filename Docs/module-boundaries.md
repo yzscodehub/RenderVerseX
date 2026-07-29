@@ -16,7 +16,7 @@ The intended dependency direction is:
 3. Runtime and feature modules: `Runtime`, `World`, `Render`, `Resource`,
    `Scene`, `Animation`, `Audio`, `Physics`, `Particle`, `Terrain`, `Water`
 4. Contracts and extraction: `RenderContracts`, `RenderExtraction`
-5. HAL and backend abstraction: `HAL`, `RHI`, `RHI_*`
+5. HAL and backend abstraction: `HAL`, `RHI`, `RHI_BackendFactory`, `RHI_*`
 6. Foundation: `Core`, `Geometry`, `Spatial`, `ShaderCompiler`
 
 Higher layers may depend downward. Lower layers should not reach upward into
@@ -86,6 +86,11 @@ extraction module.
 `ResourceSceneAdapters` is the explicit composition adapter for model resource
 data that needs to create Scene actors/components. Resource owns asset lifetime
 and loading; the adapter owns Scene construction.
+
+`RHI_BackendFactory` is the explicit composition owner for the enabled backend
+set. `RHI` remains backend-neutral, each `RHI_*` implementation depends on the
+RHI contracts, and Render reaches concrete backend factories only through the
+factory composition target.
 
 Run with `--fail-on-legacy` when a phase is ready to prove one or more legacy
 edges have been burned down.

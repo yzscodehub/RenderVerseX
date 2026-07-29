@@ -117,6 +117,25 @@ function(rvx_add_gtest)
     endif()
 endfunction()
 
+add_executable(RHIBackendFactoryLinkClosureValidation
+    RHIBackendFactoryLinkClosureValidation/main.cpp
+)
+set_property(GLOBAL APPEND PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
+    RHIBackendFactoryLinkClosureValidation
+)
+target_link_libraries(RHIBackendFactoryLinkClosureValidation PRIVATE
+    RVX::RHI_BackendFactory
+)
+target_compile_features(RHIBackendFactoryLinkClosureValidation PRIVATE cxx_std_20)
+add_test(
+    NAME Architecture.RHIBackendFactoryLinkClosure
+    COMMAND RHIBackendFactoryLinkClosureValidation
+)
+set_tests_properties(Architecture.RHIBackendFactoryLinkClosure PROPERTIES
+    LABELS "unit;architecture"
+    TIMEOUT 30
+)
+
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 add_test(
@@ -339,6 +358,7 @@ rvx_add_gtest(
     LIBS
         RVX::Engine
         RVX::RenderExtraction
+        RVX::RHI_BackendFactory
         ${RVX_ALL_BACKENDS}
     INCLUDES ${CMAKE_SOURCE_DIR}/Engine/Private
     DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -393,6 +413,7 @@ rvx_add_gtest(
         RVX::RenderExtraction
         RVX_RenderTestSupport
         RVX_RenderRuntimeCore
+        RVX::RHI_BackendFactory
         ${RVX_ALL_BACKENDS}
     INCLUDES
         ${CMAKE_CURRENT_SOURCE_DIR}
@@ -489,6 +510,7 @@ if(RVX_NATIVE_LIFECYCLE_BACKEND)
             RVX::HAL
             RVX::Render
             RVX::RenderExtraction
+            RVX::RHI_BackendFactory
             ${RVX_ALL_BACKENDS}
         INCLUDES
             ${CMAKE_CURRENT_SOURCE_DIR}
@@ -512,6 +534,7 @@ if(RVX_ENABLE_DX12)
             RVX::Render
             RVX::RenderGraph
             RVX::RHI
+            RVX::RHI_BackendFactory
             ${RVX_ALL_BACKENDS}
             glfw
         INCLUDES
@@ -532,6 +555,7 @@ if(RVX_ENABLE_VULKAN)
             RVX::Render
             RVX::RenderGraph
             RVX::RHI
+            RVX::RHI_BackendFactory
             ${RVX_ALL_BACKENDS}
             glfw
         INCLUDES
@@ -552,6 +576,7 @@ if(RVX_ENABLE_DX11)
             RVX::RenderGraph
             RVX::RHI
             RVX::ShaderCompiler
+            RVX::RHI_BackendFactory
             ${RVX_ALL_BACKENDS}
             glfw
         INCLUDES
@@ -829,6 +854,7 @@ rvx_add_gtest(
         RVX::Render
         RVX::Resource
         RVX::RHI
+        RVX::RHI_BackendFactory
         ${RVX_ALL_BACKENDS}
         RVX::Scene
     INCLUDES
@@ -850,6 +876,7 @@ rvx_add_gtest(
         RVX::Core
         RVX::Render
         RVX::RHI
+        RVX::RHI_BackendFactory
         RVX::Scene
         Particle
     INCLUDES
@@ -860,18 +887,6 @@ rvx_add_gtest(
     LABELS unit
     TIMEOUT 120
 )
-if(RVX_ENABLE_DX11)
-    target_link_libraries(ParticleValidation PRIVATE RVX::RHI_DX11)
-endif()
-if(RVX_ENABLE_DX12)
-    target_link_libraries(ParticleValidation PRIVATE RVX::RHI_DX12)
-endif()
-if(RVX_ENABLE_VULKAN)
-    target_link_libraries(ParticleValidation PRIVATE RVX::RHI_Vulkan)
-endif()
-if(RVX_ENABLE_OPENGL)
-    target_link_libraries(ParticleValidation PRIVATE RVX::RHI_OpenGL)
-endif()
 
 # Feature boundary validation tests
 rvx_add_gtest(
@@ -934,6 +949,7 @@ if(TARGET RVX::Editor)
             RVX::Editor
             RVX::ResourceSceneAdapters
             RVX::Scene
+            RVX::RHI_BackendFactory
             ${RVX_ALL_BACKENDS}
         INCLUDES
             ${CMAKE_SOURCE_DIR}/Editor/Include
@@ -2453,6 +2469,7 @@ if(RVX_ENABLE_DX12 AND RVX_ENABLE_VULKAN)
             RVX::Core
             RVX::RenderGraph
             RVX::RHI
+            RVX::RHI_BackendFactory
             ${RVX_ALL_BACKENDS}
             glfw
         INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
