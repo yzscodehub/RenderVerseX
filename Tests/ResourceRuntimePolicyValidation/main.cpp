@@ -346,7 +346,7 @@ TEST(ResourceRuntimePolicyValidation, MapsCookedArtifactsThroughCookedRoot)
     EXPECT_FALSE(diagnostic.sourceAssetRead);
     EXPECT_TRUE(diagnostic.cookedArtifactRead);
     EXPECT_FALSE(diagnostic.runtimePackageRead);
-    EXPECT_EQ(diagnostic.resolvedPath, cookedPath.string());
+    ExpectEquivalentExistingPath(diagnostic.resolvedPath, cookedPath);
 
     const std::string diagnosticJson = manager.ExportLastLoadDiagnosticJson();
     EXPECT_EQ(diagnosticJson, ExportResourceLoadDiagnosticJson(diagnostic));
@@ -463,7 +463,7 @@ TEST(ResourceRuntimePolicyValidation, MapsRuntimePackageEntriesThroughMountedPac
     EXPECT_FALSE(diagnostic.sourceAssetRead);
     EXPECT_FALSE(diagnostic.cookedArtifactRead);
     EXPECT_TRUE(diagnostic.runtimePackageRead);
-    EXPECT_EQ(diagnostic.resolvedPath, packageEntryPath.string());
+    ExpectEquivalentExistingPath(diagnostic.resolvedPath, packageEntryPath);
 
     std::error_code removeError;
     fs::remove_all(root, removeError);
