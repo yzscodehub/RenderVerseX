@@ -445,6 +445,14 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME RHIConformanceValidation
+    SOURCES RHIConformanceValidation/main.cpp
+    LIBS RVX::RHI
+    LABELS unit
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME RenderSubmissionValidation
     SOURCES RenderSubmissionValidation/main.cpp
     LIBS

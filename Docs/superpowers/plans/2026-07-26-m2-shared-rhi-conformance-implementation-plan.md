@@ -1,6 +1,7 @@
 # M2 Shared RHI Conformance and Contract Implementation Plan
 
-**Status:** Ready for implementation; M1/Task 20 entry gate satisfied; CH1 next
+**Status:** In progress; M1/Task 20 entry gate satisfied; CH1 complete;
+CH2 next
 **Parent:** `2026-07-26-m2-tier1-rhi-proof-master-plan.md`
 **Scope:** RHI/ShaderCompiler/RenderGraph shared semantics and conformance
 infrastructure
@@ -256,11 +257,32 @@ Validation is layered:
 
 ### CH1: Freeze case IDs and report schema
 
-- [ ] Add report structs and JSON serialization.
-- [ ] Add deterministic ordering and schema tests.
-- [ ] Add outcome classification tests.
-- [ ] Add capability-consistency tests.
-- [ ] Add requested-versus-realized backend rejection.
+- [x] Add report structs and JSON serialization.
+- [x] Add deterministic ordering and schema tests.
+- [x] Add outcome classification tests.
+- [x] Add capability-consistency tests.
+- [x] Add requested-versus-realized backend rejection.
+
+CH1 implementation record (2026-07-30):
+
+- added the versioned `RVX.RHI.ConformanceReport` schema and frozen eleven-case
+  `RVX.RHI.BaseConformance` catalog in `RHIConformance`;
+- records source commit, platform, requested/realized backend, hardware versus
+  software adapter classification, validation enablement, surface realization,
+  process exit code, public capability report, case results, and bounded native
+  messages;
+- canonicalizes capabilities, cases, and messages before deterministic JSON
+  export;
+- fails closed on backend fallback, incomplete execution identity, non-zero
+  available-run exit, validation-request mismatch, inconsistent capability
+  reports, dishonest surface success, and environment/result contradictions;
+- keeps Tier 1 required-case rejection distinct from honest compatibility
+  `Unsupported` reporting;
+- `RHIConformanceValidation`: 11/11 passed;
+- combined `RHIContractValidation`, `RHIConformanceValidation`, and
+  `CrossBackendValidation`: 56/56 passed;
+- architecture regressions `CMakeModuleLinks`, `PublicHeaderLinkage`, and
+  `M1ArchitectureCut`: 3/3 passed.
 
 ### CH2: Add validation message sink
 
