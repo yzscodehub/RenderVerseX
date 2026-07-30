@@ -79,7 +79,7 @@ namespace
                 RenderDiagnosticsSnapshot snapshot;
                 snapshot.publicationSequence = sequence;
                 snapshot.surfaceGeneration = sequence;
-                snapshot.lastFailure.message =
+                snapshot.lastFailure.context =
                     "diagnostic-" + std::to_string(sequence);
                 diagnostics.Publish(std::move(snapshot));
             }

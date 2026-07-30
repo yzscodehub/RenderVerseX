@@ -115,6 +115,14 @@ dependency gap in the TSAN build:
     the focused TSAN consumer correctly failed because the public usage
     requirement was incomplete.
 
+CI run 30518182410 confirmed that the public usage requirement reached the TSAN
+compiler, then exposed one stale stress-fixture field:
+
+23. The TSAN diagnostics publisher workload still populated the removed
+    `RenderFailureDiagnostics::message` member. The production contract now
+    carries the diagnostic string in `context`; the stress must exercise that
+    current value instead of reviving a retired compatibility field.
+
 ## Scope
 
 - provide a Render-runtime-local immutable snapshot storage compatibility
@@ -152,6 +160,8 @@ dependency gap in the TSAN build:
   so its capabilities match the GLFW window-system build;
 - publish `RVX::RHI` as a usage requirement of `RVX_RenderRuntimeCore` because
   its public runtime types include the RHI definitions contract;
+- keep the TSAN diagnostics publication stress aligned with the current
+  `RenderFailureDiagnostics::context` contract;
 - defer GoogleTest discovery until test time and evaluate architecture coverage
   from one authoritative CTest inventory snapshot.
 
@@ -209,6 +219,9 @@ dependency gap in the TSAN build:
     headers receive the `RVX::RHI` include usage requirement, then repeat
     exact-SHA Build Truth plus three-platform CI including the focused TSAN
     target.
+16. Update the TSAN diagnostics publication workload to populate the current
+    failure `context` field, then repeat exact-SHA Build Truth plus
+    three-platform CI including TSAN build and execution.
 
 ## Exit criteria
 
@@ -241,6 +254,8 @@ dependency gap in the TSAN build:
   support consistent with the GLFW build;
 - `RVX_RenderRuntimeCore` exports every dependency required to compile its
   public headers, including `RVX::RHI`;
+- the focused TSAN diagnostics workload compiles against and stresses the
+  current failure diagnostics contract;
 - test discovery is deferred until the final test environment is available and
   the architecture baseline evaluates one consistent inventory snapshot;
 - watchdog validation observes the lifecycle decision rather than depending on
