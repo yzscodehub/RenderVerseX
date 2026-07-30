@@ -6,6 +6,7 @@
  */
 
 #include "RHI/RHICapabilities.h"
+#include "RHI/RHIValidationMessageSink.h"
 
 #include <string>
 #include <vector>
@@ -18,8 +19,6 @@ namespace RVX
     inline constexpr const char* RVX_RHI_BASE_CONFORMANCE_CATALOG_ID =
         "RVX.RHI.BaseConformance";
     inline constexpr uint32 RVX_RHI_BASE_CONFORMANCE_CATALOG_VERSION = 1;
-    inline constexpr uint32 RVX_RHI_CONFORMANCE_MAX_VALIDATION_MESSAGES = 64;
-
     enum class RHIConformanceCaseId : uint8
     {
         ResourceAndViews = 0,
@@ -67,13 +66,6 @@ namespace RVX
         NativeFailure = 10,
     };
 
-    enum class RHIConformanceValidationSeverity : uint8
-    {
-        Info = 0,
-        Warning = 1,
-        Error = 2,
-    };
-
     enum class RHIConformanceAdapterType : uint8
     {
         Unknown = 0,
@@ -98,16 +90,6 @@ namespace RVX
         std::string diagnosticMessage;
     };
 
-    struct RHIConformanceValidationMessage
-    {
-        RHIConformanceValidationSeverity severity = RHIConformanceValidationSeverity::Info;
-        std::string category;
-        std::string nativeId;
-        std::string text;
-        bool allowlisted = false;
-        std::string allowlistEntryId;
-    };
-
     struct RHIConformanceReportDesc
     {
         std::string sourceCommit;
@@ -125,7 +107,7 @@ namespace RVX
         int32 processExitCode = 0;
         RHICapabilityReport capabilityReport;
         std::vector<RHIConformanceCaseResult> caseResults;
-        std::vector<RHIConformanceValidationMessage> validationMessages;
+        RHIConformanceValidationSnapshot validationSnapshot;
     };
 
     struct RHIConformanceReport
@@ -151,6 +133,7 @@ namespace RVX
         std::vector<std::string> validationDiagnostics;
         RHIConformanceOutcome outcome = RHIConformanceOutcome::NotRun;
         std::vector<RHIConformanceCaseResult> caseResults;
+        std::string validationEvaluationDate;
         std::vector<RHIConformanceValidationMessage> validationMessages;
         uint32 passedCount = 0;
         uint32 failedCount = 0;
@@ -173,8 +156,6 @@ namespace RVX
     const char* GetRHIConformanceRequirementName(RHIConformanceRequirement requirement);
     const char* GetRHIConformanceOutcomeName(RHIConformanceOutcome outcome);
     const char* GetRHIConformanceReasonCodeName(RHIConformanceReasonCode reasonCode);
-    const char* GetRHIConformanceValidationSeverityName(
-        RHIConformanceValidationSeverity severity);
     const char* GetRHIConformanceAdapterTypeName(
         RHIConformanceAdapterType adapterType);
 

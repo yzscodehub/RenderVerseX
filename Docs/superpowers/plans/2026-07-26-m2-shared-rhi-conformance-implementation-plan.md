@@ -1,7 +1,7 @@
 # M2 Shared RHI Conformance and Contract Implementation Plan
 
-**Status:** In progress; M1/Task 20 entry gate satisfied; CH1 complete;
-CH2 next
+**Status:** In progress; M1/Task 20 entry gate satisfied; CH1-CH2 complete;
+CH3 next
 **Parent:** `2026-07-26-m2-tier1-rhi-proof-master-plan.md`
 **Scope:** RHI/ShaderCompiler/RenderGraph shared semantics and conformance
 infrastructure
@@ -286,13 +286,32 @@ CH1 implementation record (2026-07-30):
 
 ### CH2: Add validation message sink
 
-- [ ] Define normalized severity, category, native ID, and bounded text.
-- [ ] Collect without suppressing native messages.
-- [ ] Count warnings and errors separately.
-- [ ] Add an allowlist mechanism only for reviewed non-errors; every allowlist
+- [x] Define normalized severity, category, native ID, and bounded text.
+- [x] Collect without suppressing native messages.
+- [x] Count warnings and errors separately.
+- [x] Add an allowlist mechanism only for reviewed non-errors; every allowlist
   entry requires backend, native ID, justification, and expiry/review owner.
-- [ ] Do not allow message-text-only wildcard suppression.
-- [ ] Fail required gates on unexpected warnings as well as errors.
+- [x] Do not allow message-text-only wildcard suppression.
+- [x] Fail required gates on unexpected warnings as well as errors.
+
+CH2 implementation record (2026-07-30):
+
+- added a thread-safe `RHIConformanceValidationMessageSink` with fixed-size,
+  deterministically ordered evidence and separate total/dropped counts;
+- preserves allowlisted warnings in the report instead of suppressing them;
+- caps message text at 2048 bytes and records truncation explicitly;
+- applies reviewed warning exceptions only by concrete backend plus exact native
+  ID; message text is never a match key and errors are never exempted;
+- validates stable allowlist ID, justification, review owner, ISO expiry, and
+  evaluation date; expired entries stop matching;
+- publishes the evaluation date and matched allowlist entry ID for audit;
+- `RHIConformanceValidation`: 15/15 passed, including concurrent producers,
+  deterministic bounding, strict backend/ID matching, expiry, malformed
+  metadata, error rejection, and text bounds;
+- combined `RHIContractValidation`, `RHIConformanceValidation`, and
+  `CrossBackendValidation`: 60/60 passed;
+- architecture regressions `CMakeModuleLinks`, `PublicHeaderLinkage`, and
+  `M1ArchitectureCut`: 3/3 passed.
 
 ### CH3: Add shader/pipeline preflight contract
 

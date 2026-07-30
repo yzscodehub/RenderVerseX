@@ -20,5 +20,6 @@
 #include "RHI/RHISynchronization.h"
 #include "RHI/RHICapabilities.h"
 #include "RHI/RHIConformance.h"
+#include "RHI/RHIValidationMessageSink.h"
 #include "RHI/RHIUpload.h"
 #include "RHI/RHIDevice.h"

@@ -1,7 +1,7 @@
 # M2 Tier 1 RHI Proof Master Implementation Plan
 
 **Status:** In progress; best-practice review incorporated; Task 20 complete;
-Task 21 CH1 complete; CH2 next
+Task 21 CH1-CH2 complete; CH3 next
 **Branch:** `codex/architecture-implementation`
 **M1 entry commit:** `6c93300618026ca1068acebe61d399669bf5c8e0`
 **M1 entry CI:** `https://github.com/yzscodehub/RenderVerseX/actions/runs/30521739421`
@@ -175,7 +175,7 @@ Exit:
 
 - [x] Freeze the backend-neutral case IDs, report schema, deterministic JSON,
   capability-honesty rules, and requested-versus-realized rejection (CH1).
-- [ ] Add the normalized native validation-message sink and reviewed allowlist
+- [x] Add the normalized native validation-message sink and reviewed allowlist
   policy (CH2).
 - [ ] Add one backend-neutral case/report library, thin executable runner, and
   versioned JSON report.

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <set>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -140,6 +141,10 @@ namespace RVX::Tests
             desc.adapterType = RHIConformanceAdapterType::Hardware;
             desc.validationRequested = true;
             desc.validationEnabled = true;
+            RHIConformanceValidationMessageSink validationSink(
+                backend,
+                "2026-07-30");
+            desc.validationSnapshot = validationSink.GetSnapshot();
             desc.surfaceRequested = true;
             desc.surfaceRealized = true;
             desc.capabilityReport = BuildRHICapabilityReport(
@@ -172,6 +177,22 @@ namespace RVX::Tests
                 {
                     return diagnostic.find(text) != std::string::npos;
                 });
+        }
+
+        RHIConformanceValidationSnapshot MakeValidationSnapshot(
+            RHIBackendType backend,
+            const std::vector<RHIConformanceValidationMessage>& messages,
+            std::vector<RHIConformanceValidationAllowlistEntry> allowlist = {})
+        {
+            RHIConformanceValidationMessageSink sink(
+                backend,
+                "2026-07-30",
+                std::move(allowlist));
+            for (const RHIConformanceValidationMessage& message : messages)
+            {
+                sink.Record(message);
+            }
+            return sink.GetSnapshot();
         }
     } // namespace
 
@@ -221,7 +242,9 @@ namespace RVX::Tests
     {
         RHIConformanceReportDesc ordered =
             MakeCompleteReportDesc(RHIBackendType::DX12, true);
-        ordered.validationMessages = {
+        ordered.validationSnapshot = MakeValidationSnapshot(
+            RHIBackendType::DX12,
+            {
             {RHIConformanceValidationSeverity::Info,
              "Device",
              "DX12-2",
@@ -230,15 +253,15 @@ namespace RVX::Tests
              "Device",
              "DX12-1",
              "First deterministic message."},
-        };
+            });
 
         RHIConformanceReportDesc reversed = ordered;
         std::reverse(reversed.caseResults.begin(),
                      reversed.caseResults.end());
         std::reverse(reversed.capabilityReport.entries.begin(),
                      reversed.capabilityReport.entries.end());
-        std::reverse(reversed.validationMessages.begin(),
-                     reversed.validationMessages.end());
+        std::reverse(reversed.validationSnapshot.messages.begin(),
+                     reversed.validationSnapshot.messages.end());
 
         const RHIConformanceReport orderedReport =
             BuildRHIConformanceReport(ordered);
@@ -275,6 +298,9 @@ namespace RVX::Tests
                   std::string::npos);
         EXPECT_NE(orderedJson.find(
                       "\"validationEnabled\": true"),
+                  std::string::npos);
+        EXPECT_NE(orderedJson.find(
+                      "\"evaluationDate\": \"2026-07-30\""),
                   std::string::npos);
         EXPECT_NE(orderedJson.find(
                       "\"id\": \"RVX.RHI.BaseConformance\""),
@@ -501,20 +527,36 @@ namespace RVX::Tests
 
         RHIConformanceReportDesc warning =
             MakeCompleteReportDesc(RHIBackendType::DX12);
-        warning.validationMessages.push_back(
+        warning.validationSnapshot = MakeValidationSnapshot(
+            RHIBackendType::DX12,
+            {
             {RHIConformanceValidationSeverity::Warning,
              "Descriptor",
              "D3D12-1001",
-             "Unexpected descriptor warning."});
+             "Unexpected descriptor warning."},
+            });
 
         report = BuildRHIConformanceReport(warning);
         EXPECT_TRUE(report.validationPassed);
         EXPECT_EQ(report.unexpectedValidationWarningCount, 1u);
         EXPECT_EQ(report.outcome, RHIConformanceOutcome::Failed);
 
-        warning.validationMessages.front().allowlisted = true;
-        warning.validationMessages.front().allowlistEntryId =
-            "dx12-reviewed-1001";
+        warning.validationSnapshot = MakeValidationSnapshot(
+            RHIBackendType::DX12,
+            {
+                {RHIConformanceValidationSeverity::Warning,
+                 "Descriptor",
+                 "D3D12-1001",
+                 "Unexpected descriptor warning."},
+            },
+            {
+                {"dx12-reviewed-1001",
+                 RHIBackendType::DX12,
+                 "D3D12-1001",
+                 "Reviewed driver warning with no correctness impact.",
+                 "rendering-owner",
+                 "2026-08-30"},
+            });
         report = BuildRHIConformanceReport(warning);
         EXPECT_TRUE(report.validationPassed);
         EXPECT_EQ(report.unexpectedValidationWarningCount, 0u);
@@ -522,10 +564,199 @@ namespace RVX::Tests
     }
 
     TEST(RHIConformanceValidation,
+         ValidationAllowlistMatchesOnlyBackendAndExactNativeId)
+    {
+        const RHIConformanceValidationAllowlistEntry reviewedWarning = {
+            "dx12-reviewed-1001",
+            RHIBackendType::DX12,
+            "D3D12-1001",
+            "Reviewed driver warning with no correctness impact.",
+            "rendering-owner",
+            "2026-08-30",
+        };
+
+        RHIConformanceValidationMessageSink exactSink(
+            RHIBackendType::DX12,
+            "2026-07-30",
+            {reviewedWarning});
+        exactSink.Record(
+            RHIConformanceValidationSeverity::Warning,
+            "Descriptor",
+            "D3D12-1001",
+            "Text may change without becoming the suppression identity.");
+        RHIConformanceValidationSnapshot snapshot =
+            exactSink.GetSnapshot();
+        ASSERT_TRUE(snapshot.configurationValid);
+        ASSERT_EQ(snapshot.messages.size(), 1u);
+        EXPECT_TRUE(snapshot.messages.front().allowlisted);
+        EXPECT_EQ(snapshot.messages.front().allowlistEntryId,
+                  "dx12-reviewed-1001");
+        EXPECT_EQ(snapshot.unexpectedWarningCount, 0u);
+
+        RHIConformanceValidationMessageSink wrongBackendSink(
+            RHIBackendType::Vulkan,
+            "2026-07-30",
+            {reviewedWarning});
+        wrongBackendSink.Record(
+            RHIConformanceValidationSeverity::Warning,
+            "Descriptor",
+            "D3D12-1001",
+            "Same native ID on a different backend.");
+        snapshot = wrongBackendSink.GetSnapshot();
+        EXPECT_FALSE(snapshot.messages.front().allowlisted);
+        EXPECT_EQ(snapshot.unexpectedWarningCount, 1u);
+
+        RHIConformanceValidationMessageSink wrongIdSink(
+            RHIBackendType::DX12,
+            "2026-07-30",
+            {reviewedWarning});
+        wrongIdSink.Record(
+            RHIConformanceValidationSeverity::Warning,
+            "Descriptor",
+            "D3D12-9999",
+            "Same text cannot wildcard a different native ID.");
+        snapshot = wrongIdSink.GetSnapshot();
+        EXPECT_FALSE(snapshot.messages.front().allowlisted);
+        EXPECT_EQ(snapshot.unexpectedWarningCount, 1u);
+
+        RHIConformanceValidationMessageSink expiredSink(
+            RHIBackendType::DX12,
+            "2026-09-01",
+            {reviewedWarning});
+        expiredSink.Record(
+            RHIConformanceValidationSeverity::Warning,
+            "Descriptor",
+            "D3D12-1001",
+            "Expired review.");
+        snapshot = expiredSink.GetSnapshot();
+        EXPECT_FALSE(snapshot.messages.front().allowlisted);
+        EXPECT_EQ(snapshot.unexpectedWarningCount, 1u);
+
+        RHIConformanceValidationMessageSink errorSink(
+            RHIBackendType::DX12,
+            "2026-07-30",
+            {reviewedWarning});
+        errorSink.Record(
+            RHIConformanceValidationSeverity::Error,
+            "Descriptor",
+            "D3D12-1001",
+            "Errors are never allowlisted.");
+        snapshot = errorSink.GetSnapshot();
+        EXPECT_FALSE(snapshot.messages.front().allowlisted);
+        EXPECT_EQ(snapshot.unexpectedErrorCount, 1u);
+    }
+
+    TEST(RHIConformanceValidation,
+         ValidationAllowlistRequiresReviewedMetadata)
+    {
+        const RHIConformanceValidationAllowlistEntry incomplete = {
+            "",
+            RHIBackendType::Auto,
+            "",
+            "",
+            "",
+            "2026-02-30",
+        };
+        RHIConformanceValidationMessageSink sink(
+            RHIBackendType::DX12,
+            "2026-07-30",
+            {incomplete});
+
+        const RHIConformanceValidationSnapshot snapshot =
+            sink.GetSnapshot();
+
+        EXPECT_FALSE(snapshot.configurationValid);
+        EXPECT_GE(snapshot.configurationDiagnostics.size(), 5u);
+
+        RHIConformanceReportDesc desc =
+            MakeCompleteReportDesc(RHIBackendType::DX12);
+        desc.validationSnapshot = snapshot;
+        const RHIConformanceReport report =
+            BuildRHIConformanceReport(desc);
+        EXPECT_FALSE(report.validationPassed);
+        EXPECT_EQ(report.outcome, RHIConformanceOutcome::Failed);
+        EXPECT_TRUE(HasDiagnostic(report, "sink configuration is invalid"));
+    }
+
+    TEST(RHIConformanceValidation,
+         ValidationSinkIsThreadSafeAndBoundsDeterministicEvidence)
+    {
+        RHIConformanceValidationMessageSink sink(
+            RHIBackendType::DX12,
+            "2026-07-30");
+        std::vector<std::thread> producers;
+        for (uint32 producer = 0; producer < 4; ++producer)
+        {
+            producers.emplace_back(
+                [&sink, producer]()
+                {
+                    for (uint32 messageIndex = 0;
+                         messageIndex < 40;
+                         ++messageIndex)
+                    {
+                        sink.Record(
+                            RHIConformanceValidationSeverity::Info,
+                            "Threaded",
+                            "INFO-" + std::to_string(producer) + "-" +
+                                std::to_string(1000 + messageIndex),
+                            "Concurrent native validation message.");
+                    }
+                });
+        }
+        for (std::thread& producer : producers)
+        {
+            producer.join();
+        }
+
+        const RHIConformanceValidationSnapshot snapshot =
+            sink.GetSnapshot();
+
+        EXPECT_TRUE(snapshot.configurationValid);
+        EXPECT_EQ(snapshot.infoCount, 160u);
+        EXPECT_EQ(snapshot.messages.size(),
+                  RVX_RHI_CONFORMANCE_MAX_VALIDATION_MESSAGES);
+        EXPECT_EQ(snapshot.droppedMessageCount, 96u);
+        EXPECT_TRUE(std::is_sorted(
+            snapshot.messages.begin(),
+            snapshot.messages.end(),
+            [](const RHIConformanceValidationMessage& left,
+               const RHIConformanceValidationMessage& right)
+            {
+                return left.nativeId < right.nativeId;
+            }));
+    }
+
+    TEST(RHIConformanceValidation,
+         ValidationSinkBoundsNativeMessageText)
+    {
+        RHIConformanceValidationMessageSink sink(
+            RHIBackendType::DX12,
+            "2026-07-30");
+        sink.Record(
+            RHIConformanceValidationSeverity::Info,
+            "Device",
+            "INFO-LONG",
+            std::string(
+                RVX_RHI_CONFORMANCE_MAX_VALIDATION_TEXT_BYTES + 128,
+                'x'));
+
+        const RHIConformanceValidationSnapshot snapshot =
+            sink.GetSnapshot();
+
+        ASSERT_EQ(snapshot.messages.size(), 1u);
+        EXPECT_TRUE(snapshot.messages.front().textTruncated);
+        EXPECT_EQ(snapshot.messages.front().text.size(),
+                  RVX_RHI_CONFORMANCE_MAX_VALIDATION_TEXT_BYTES);
+    }
+
+    TEST(RHIConformanceValidation,
          ValidationMessagesAreBoundedWithoutLosingCounts)
     {
         RHIConformanceReportDesc desc =
             MakeCompleteReportDesc(RHIBackendType::DX12);
+        RHIConformanceValidationMessageSink sink(
+            RHIBackendType::DX12,
+            "2026-07-30");
         for (uint32 i = 0;
              i < RVX_RHI_CONFORMANCE_MAX_VALIDATION_MESSAGES + 6;
              ++i)
@@ -535,8 +766,9 @@ namespace RVX::Tests
             message.category = "Info";
             message.nativeId = "INFO-" + std::to_string(i);
             message.text = "Message " + std::to_string(i);
-            desc.validationMessages.push_back(std::move(message));
+            sink.Record(message);
         }
+        desc.validationSnapshot = sink.GetSnapshot();
 
         const RHIConformanceReport report =
             BuildRHIConformanceReport(desc);

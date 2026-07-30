@@ -277,30 +277,20 @@ namespace RVX
             }
         }
 
-        void CountValidationMessage(RHIConformanceReport& report,
-                                    const RHIConformanceValidationMessage& message)
+        void ValidateValidationMessage(
+            RHIConformanceReport& report,
+            const RHIConformanceValidationMessage& message)
         {
-            switch (message.severity)
+            if (message.severity !=
+                    RHIConformanceValidationSeverity::Info &&
+                message.severity !=
+                    RHIConformanceValidationSeverity::Warning &&
+                message.severity !=
+                    RHIConformanceValidationSeverity::Error)
             {
-                case RHIConformanceValidationSeverity::Info:
-                    ++report.validationInfoCount;
-                    break;
-                case RHIConformanceValidationSeverity::Warning:
-                    ++report.validationWarningCount;
-                    if (!message.allowlisted)
-                    {
-                        ++report.unexpectedValidationWarningCount;
-                    }
-                    break;
-                case RHIConformanceValidationSeverity::Error:
-                    ++report.validationErrorCount;
-                    ++report.unexpectedValidationErrorCount;
-                    break;
-                default:
-                    AddValidationDiagnostic(
-                        report,
-                        "Validation message has an invalid severity.");
-                    break;
+                AddValidationDiagnostic(
+                    report,
+                    "Validation message has an invalid severity.");
             }
 
             if (message.allowlisted && message.allowlistEntryId.empty())
@@ -309,12 +299,20 @@ namespace RVX
                     report,
                     "Allowlisted validation message is missing its reviewed entry ID.");
             }
-            if (message.severity == RHIConformanceValidationSeverity::Error &&
-                message.allowlisted)
+            if (message.allowlisted &&
+                message.severity !=
+                    RHIConformanceValidationSeverity::Warning)
             {
                 AddValidationDiagnostic(
                     report,
-                    "Native validation errors cannot be allowlisted.");
+                    "Only native validation warnings can be allowlisted.");
+            }
+            if (!message.allowlisted &&
+                !message.allowlistEntryId.empty())
+            {
+                AddValidationDiagnostic(
+                    report,
+                    "A non-allowlisted validation message cannot publish an allowlist entry ID.");
             }
             if (message.severity != RHIConformanceValidationSeverity::Info &&
                 message.nativeId.empty())
@@ -322,6 +320,33 @@ namespace RVX
                 AddValidationDiagnostic(
                     report,
                     "Native validation warning/error is missing its native ID.");
+            }
+            if (message.category.empty())
+            {
+                AddValidationDiagnostic(
+                    report,
+                    "Native validation message is missing its normalized category.");
+            }
+            if (message.text.empty())
+            {
+                AddValidationDiagnostic(
+                    report,
+                    "Native validation message is missing diagnostic text.");
+            }
+            if (message.text.size() >
+                RVX_RHI_CONFORMANCE_MAX_VALIDATION_TEXT_BYTES)
+            {
+                AddValidationDiagnostic(
+                    report,
+                    "Native validation message text exceeds the bounded contract.");
+            }
+            if (message.textTruncated &&
+                message.text.size() !=
+                    RVX_RHI_CONFORMANCE_MAX_VALIDATION_TEXT_BYTES)
+            {
+                AddValidationDiagnostic(
+                    report,
+                    "A truncated validation message must retain the full bounded prefix.");
             }
         }
 
@@ -529,22 +554,6 @@ namespace RVX
         }
     }
 
-    const char* GetRHIConformanceValidationSeverityName(
-        RHIConformanceValidationSeverity severity)
-    {
-        switch (severity)
-        {
-            case RHIConformanceValidationSeverity::Info:
-                return "Info";
-            case RHIConformanceValidationSeverity::Warning:
-                return "Warning";
-            case RHIConformanceValidationSeverity::Error:
-                return "Error";
-            default:
-                return "Unknown";
-        }
-    }
-
     const char* GetRHIConformanceAdapterTypeName(
         RHIConformanceAdapterType adapterType)
     {
@@ -721,7 +730,32 @@ namespace RVX
             ValidateCapabilityReport(report);
         }
 
-        report.validationMessages = desc.validationMessages;
+        const RHIConformanceValidationSnapshot& validationSnapshot =
+            desc.validationSnapshot;
+        if (desc.validationEnabled &&
+            validationSnapshot.evaluationDate.empty())
+        {
+            AddValidationDiagnostic(
+                report,
+                "Enabled native validation requires an allowlist evaluation date.");
+        }
+        if (!validationSnapshot.configurationValid)
+        {
+            AddValidationDiagnostic(
+                report,
+                "Native validation message sink configuration is invalid.");
+        }
+        for (const std::string& diagnostic :
+             validationSnapshot.configurationDiagnostics)
+        {
+            AddValidationDiagnostic(
+                report,
+                "Native validation sink: " + diagnostic);
+        }
+
+        report.validationEvaluationDate =
+            validationSnapshot.evaluationDate;
+        report.validationMessages = validationSnapshot.messages;
         std::sort(
             report.validationMessages.begin(),
             report.validationMessages.end(),
@@ -732,29 +766,62 @@ namespace RVX
                                 left.category,
                                 left.nativeId,
                                 left.text,
+                                left.textTruncated,
                                 left.allowlisted,
                                 left.allowlistEntryId) <
                        std::tie(right.severity,
                                 right.category,
                                 right.nativeId,
                                 right.text,
+                                right.textTruncated,
                                 right.allowlisted,
                                 right.allowlistEntryId);
             });
-        for (const RHIConformanceValidationMessage& message :
-             report.validationMessages)
-        {
-            CountValidationMessage(report, message);
-        }
+        report.validationInfoCount = validationSnapshot.infoCount;
+        report.validationWarningCount = validationSnapshot.warningCount;
+        report.validationErrorCount = validationSnapshot.errorCount;
+        report.unexpectedValidationWarningCount =
+            validationSnapshot.unexpectedWarningCount;
+        report.unexpectedValidationErrorCount =
+            validationSnapshot.unexpectedErrorCount;
+        report.droppedValidationMessageCount =
+            validationSnapshot.droppedMessageCount;
+
+        const uint64 validationMessageCount =
+            static_cast<uint64>(report.validationInfoCount) +
+            static_cast<uint64>(report.validationWarningCount) +
+            static_cast<uint64>(report.validationErrorCount);
         if (report.validationMessages.size() >
             RVX_RHI_CONFORMANCE_MAX_VALIDATION_MESSAGES)
         {
-            report.droppedValidationMessageCount =
-                static_cast<uint32>(
-                    report.validationMessages.size() -
-                    RVX_RHI_CONFORMANCE_MAX_VALIDATION_MESSAGES);
+            AddValidationDiagnostic(
+                report,
+                "Native validation snapshot exceeds the bounded message count.");
             report.validationMessages.resize(
                 RVX_RHI_CONFORMANCE_MAX_VALIDATION_MESSAGES);
+        }
+        if (validationMessageCount < report.validationMessages.size() ||
+            validationMessageCount -
+                    static_cast<uint64>(report.validationMessages.size()) !=
+                report.droppedValidationMessageCount)
+        {
+            AddValidationDiagnostic(
+                report,
+                "Native validation snapshot counts do not match its bounded messages.");
+        }
+        if (report.unexpectedValidationWarningCount >
+                report.validationWarningCount ||
+            report.unexpectedValidationErrorCount >
+                report.validationErrorCount)
+        {
+            AddValidationDiagnostic(
+                report,
+                "Native validation unexpected-message counts exceed their totals.");
+        }
+        for (const RHIConformanceValidationMessage& message :
+             report.validationMessages)
+        {
+            ValidateValidationMessage(report, message);
         }
 
         bool hasFailedCase = false;
@@ -926,6 +993,8 @@ namespace RVX
         ss << "    \"notRun\": " << report.notRunCount << "\n";
         ss << "  },\n";
         ss << "  \"nativeValidation\": {\n";
+        ss << "    \"evaluationDate\": "
+           << JsonString(report.validationEvaluationDate) << ",\n";
         ss << "    \"infoCount\": " << report.validationInfoCount << ",\n";
         ss << "    \"warningCount\": " << report.validationWarningCount << ",\n";
         ss << "    \"errorCount\": " << report.validationErrorCount << ",\n";
@@ -951,6 +1020,8 @@ namespace RVX
                << JsonString(message.nativeId) << ",\n";
             ss << "        \"text\": "
                << JsonString(message.text) << ",\n";
+            ss << "        \"textTruncated\": "
+               << JsonBool(message.textTruncated) << ",\n";
             ss << "        \"allowlisted\": "
                << JsonBool(message.allowlisted) << ",\n";
             ss << "        \"allowlistEntryId\": "
