@@ -60,10 +60,10 @@ target_include_directories(RVX_RenderRuntimeCore PRIVATE
 target_link_libraries(RVX_RenderRuntimeCore PUBLIC
     RVX::Core
     RVX::RenderContracts
+    RVX::RHI
 )
 
 target_link_libraries(RVX_RenderRuntimeCore PRIVATE
-    RVX::RHI
     Threads::Threads
 )
 

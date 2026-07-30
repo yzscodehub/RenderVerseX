@@ -105,6 +105,16 @@ Linux unit/lint tests, then exposed a linked-loader capability gap:
     loader explicitly supplied to GLFW could not report a compatible surface
     extension.
 
+The same CI run then passed Linux Build Truth, including all 1,343 unit/lint
+tests and the native Vulkan lifecycle, before exposing a minimal-target
+dependency gap in the TSAN build:
+
+22. `RVX_RenderRuntimeCore` publishes `RenderRuntimeTypes.h`, which directly
+    includes `RHI/RHIDefinitions.h`, but declared `RVX::RHI` as a private link
+    dependency. Large targets received the include path from unrelated edges;
+    the focused TSAN consumer correctly failed because the public usage
+    requirement was incomplete.
+
 ## Scope
 
 - provide a Render-runtime-local immutable snapshot storage compatibility
@@ -140,6 +150,8 @@ Linux unit/lint tests, then exposed a linked-loader capability gap:
   Linux native lifecycle gate to that software ICD;
 - declare Wayland, XCB, and Xlib WSI support on the Linux vcpkg Vulkan Loader
   so its capabilities match the GLFW window-system build;
+- publish `RVX::RHI` as a usage requirement of `RVX_RenderRuntimeCore` because
+  its public runtime types include the RHI definitions contract;
 - defer GoogleTest discovery until test time and evaluate architecture coverage
   from one authoritative CTest inventory snapshot.
 
@@ -193,6 +205,10 @@ Linux unit/lint tests, then exposed a linked-loader capability gap:
     `xcb`, and `xlib` features so the loader linked into the engine exposes the
     WSI extensions expected by GLFW, then repeat exact-SHA Build Truth plus
     three-platform CI.
+15. Correct `RVX_RenderRuntimeCore` link visibility so consumers of its public
+    headers receive the `RVX::RHI` include usage requirement, then repeat
+    exact-SHA Build Truth plus three-platform CI including the focused TSAN
+    target.
 
 ## Exit criteria
 
@@ -223,6 +239,8 @@ Linux unit/lint tests, then exposed a linked-loader capability gap:
   package inventory and selects that deterministic software Vulkan ICD;
 - the Linux loader linked into the engine exposes Wayland, XCB, and Xlib WSI
   support consistent with the GLFW build;
+- `RVX_RenderRuntimeCore` exports every dependency required to compile its
+  public headers, including `RVX::RHI`;
 - test discovery is deferred until the final test environment is available and
   the architecture baseline evaluates one consistent inventory snapshot;
 - watchdog validation observes the lifecycle decision rather than depending on
