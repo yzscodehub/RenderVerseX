@@ -77,9 +77,16 @@ gaps:
 CI run 30464801873 passed all 1,343 Linux unit/lint tests and exposed one
 native-environment integration gap:
 
-18. The Vulkan RHI linked a valid loader, but GLFW independently searched the
-    host's default library paths and therefore could not report the required
-    X11 surface extensions on the hosted runner.
+18. The native harness allowed GLFW to resolve a Vulkan loader independently
+    from the RHI and did not preserve GLFW's failure diagnostic. It now binds
+    the linked loader before initialization and reports the exact GLFW error.
+
+CI run 30467297024 confirmed that explicit loader ownership alone was
+insufficient:
+
+19. The hosted Linux image exposed multiple mutable Vulkan driver candidates,
+    and the loader produced no X11 WSI extension set until the native gate
+    selected a concrete software ICD.
 
 ## Scope
 
@@ -112,6 +119,7 @@ native-environment integration gap:
   runtime asset;
 - bind the native Vulkan lifecycle harness to the linked loader before GLFW
   initialization;
+- pin the Linux native lifecycle gate to the Lavapipe software ICD;
 - defer GoogleTest discovery until test time and evaluate architecture coverage
   from one authoritative CTest inventory snapshot.
 
@@ -154,6 +162,9 @@ native-environment integration gap:
 11. Bind the native lifecycle harness to the linked Vulkan loader before GLFW
     initialization, retain the GLFW error code in RHI failure diagnostics, and
     repeat exact-SHA Build Truth plus three-platform CI.
+12. Install and preflight the system Vulkan loader and tools, pin both current
+    and legacy Vulkan driver-selection variables to the Lavapipe ICD for the
+    Linux native gate, and repeat exact-SHA Build Truth plus three-platform CI.
 
 ## Exit criteria
 
@@ -180,6 +191,7 @@ native-environment integration gap:
 - custom font atlases use their own kerning, ascent, descent, and line-gap data
   during measurement and rendering;
 - the Vulkan native lifecycle harness initializes GLFW with the linked loader;
+- the Linux native lifecycle gate selects a deterministic software Vulkan ICD;
 - test discovery is deferred until the final test environment is available and
   the architecture baseline evaluates one consistent inventory snapshot;
 - watchdog validation observes the lifecycle decision rather than depending on
