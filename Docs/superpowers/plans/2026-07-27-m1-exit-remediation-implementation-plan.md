@@ -96,6 +96,15 @@ Truth started:
     gate must resolve the manifest from the installed package inventory, verify
     the file, and only then export the loader-selection variables.
 
+CI run 30515317673 passed Lavapipe selection and preflight plus all 1,343
+Linux unit/lint tests, then exposed a linked-loader capability gap:
+
+21. The Linux manifest enabled GLFW Wayland/X11 support but relied on the
+    `vulkan` vcpkg meta-package alone. The transitive `vulkan-loader` dependency
+    therefore omitted its opt-in Wayland, XCB, and Xlib WSI features, so the
+    loader explicitly supplied to GLFW could not report a compatible surface
+    extension.
+
 ## Scope
 
 - provide a Render-runtime-local immutable snapshot storage compatibility
@@ -129,6 +138,8 @@ Truth started:
   initialization;
 - resolve the installed Lavapipe manifest from package inventory and pin the
   Linux native lifecycle gate to that software ICD;
+- declare Wayland, XCB, and Xlib WSI support on the Linux vcpkg Vulkan Loader
+  so its capabilities match the GLFW window-system build;
 - defer GoogleTest discovery until test time and evaluate architecture coverage
   from one authoritative CTest inventory snapshot.
 
@@ -178,6 +189,10 @@ Truth started:
     `mesa-vulkan-drivers` package inventory, verify it exists, export both
     loader-selection variables, and repeat exact-SHA Build Truth plus
     three-platform CI.
+14. Declare the Linux `vulkan-loader` dependency directly with `wayland`,
+    `xcb`, and `xlib` features so the loader linked into the engine exposes the
+    WSI extensions expected by GLFW, then repeat exact-SHA Build Truth plus
+    three-platform CI.
 
 ## Exit criteria
 
@@ -206,6 +221,8 @@ Truth started:
 - the Vulkan native lifecycle harness initializes GLFW with the linked loader;
 - the Linux native lifecycle gate resolves the installed Lavapipe manifest from
   package inventory and selects that deterministic software Vulkan ICD;
+- the Linux loader linked into the engine exposes Wayland, XCB, and Xlib WSI
+  support consistent with the GLFW build;
 - test discovery is deferred until the final test environment is available and
   the architecture baseline evaluates one consistent inventory snapshot;
 - watchdog validation observes the lifecycle decision rather than depending on
