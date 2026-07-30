@@ -86,8 +86,6 @@ jobs:
       LIBGL_ALWAYS_SOFTWARE: "1"
       VCPKG_ROOT: /usr/local/share/vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
-      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
     steps:
       - uses: actions/checkout@v4
         with:
@@ -100,8 +98,28 @@ jobs:
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
             libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool
 
+      - name: Select Lavapipe Vulkan ICD
+        shell: bash
+        run: |
+          mapfile -t lavapipe_icds < <(
+            dpkg-query -L mesa-vulkan-drivers |
+              awk '/\/lvp_icd[^/]*\.json$/ { print }' |
+              sort -u
+          )
+          if [[ "${#lavapipe_icds[@]}" -ne 1 || ! -f "${lavapipe_icds[0]}" ]]; then
+            echo "::error::mesa-vulkan-drivers did not install exactly one usable Lavapipe ICD manifest"
+            dpkg-query -L mesa-vulkan-drivers | sort
+            exit 1
+          fi
+          lavapipe_icd="${lavapipe_icds[0]}"
+          echo "VK_DRIVER_FILES=$lavapipe_icd" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=$lavapipe_icd" >> "$GITHUB_ENV"
+          echo "Using Lavapipe ICD: $lavapipe_icd"
+
       - name: Verify Lavapipe Vulkan ICD
-        run: xvfb-run -a vulkaninfo --summary
+        run: |
+          test -f "$VK_DRIVER_FILES"
+          xvfb-run -a vulkaninfo --summary
 
       - name: Prepare vcpkg binary cache dir
         run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"

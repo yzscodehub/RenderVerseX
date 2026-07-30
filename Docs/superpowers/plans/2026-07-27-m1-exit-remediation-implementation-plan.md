@@ -88,6 +88,14 @@ insufficient:
     and the loader produced no X11 WSI extension set until the native gate
     selected a concrete software ICD.
 
+CI run 30514612288 then exposed a packaging-boundary assumption before Build
+Truth started:
+
+20. The workflow selected Lavapipe by a hard-coded distribution path, but the
+    installed package did not expose a manifest at that assumed location. The
+    gate must resolve the manifest from the installed package inventory, verify
+    the file, and only then export the loader-selection variables.
+
 ## Scope
 
 - provide a Render-runtime-local immutable snapshot storage compatibility
@@ -119,7 +127,8 @@ insufficient:
   runtime asset;
 - bind the native Vulkan lifecycle harness to the linked loader before GLFW
   initialization;
-- pin the Linux native lifecycle gate to the Lavapipe software ICD;
+- resolve the installed Lavapipe manifest from package inventory and pin the
+  Linux native lifecycle gate to that software ICD;
 - defer GoogleTest discovery until test time and evaluate architecture coverage
   from one authoritative CTest inventory snapshot.
 
@@ -165,6 +174,10 @@ insufficient:
 12. Install and preflight the system Vulkan loader and tools, pin both current
     and legacy Vulkan driver-selection variables to the Lavapipe ICD for the
     Linux native gate, and repeat exact-SHA Build Truth plus three-platform CI.
+13. Remove the distribution-path assumption, resolve the Lavapipe manifest from
+    `mesa-vulkan-drivers` package inventory, verify it exists, export both
+    loader-selection variables, and repeat exact-SHA Build Truth plus
+    three-platform CI.
 
 ## Exit criteria
 
@@ -191,7 +204,8 @@ insufficient:
 - custom font atlases use their own kerning, ascent, descent, and line-gap data
   during measurement and rendering;
 - the Vulkan native lifecycle harness initializes GLFW with the linked loader;
-- the Linux native lifecycle gate selects a deterministic software Vulkan ICD;
+- the Linux native lifecycle gate resolves the installed Lavapipe manifest from
+  package inventory and selects that deterministic software Vulkan ICD;
 - test discovery is deferred until the final test environment is available and
   the architecture baseline evaluates one consistent inventory snapshot;
 - watchdog validation observes the lifecycle decision rather than depending on
