@@ -4,6 +4,7 @@
 #include "VulkanCommandContext.h"
 #include "VulkanPipeline.h"
 #include "VulkanUpload.h"
+#include "RHI/RHIPipelineValidation.h"
 #include "RHI/RHITexture.h"
 
 #include <GLFW/glfw3.h>
@@ -1561,6 +1562,15 @@ namespace RVX
 
     RHIPipelineRef VulkanDevice::CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc)
     {
+        const RHIPipelineValidationResult validation =
+            ValidateRHIGraphicsPipelineDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR(
+                "Vulkan graphics pipeline preflight failed: {}",
+                FormatRHIPipelineValidationResult(validation));
+            return nullptr;
+        }
         return CreateVulkanGraphicsPipeline(this, desc);
     }
 

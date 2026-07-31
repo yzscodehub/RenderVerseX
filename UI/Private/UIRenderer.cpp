@@ -2234,7 +2234,14 @@ bool UIRenderer::EnsureTextureDescriptorResources()
     {
         RHIDescriptorSetLayoutDesc layoutDesc;
         layoutDesc.debugName = "UI.TextureSetLayout";
-        layoutDesc.AddBinding(0, RHIBindingType::CombinedTextureSampler, RHIShaderStage::Pixel);
+        layoutDesc.AddBinding(
+            0,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
+        layoutDesc.AddBinding(
+            1,
+            RHIBindingType::Sampler,
+            RHIShaderStage::Pixel);
         m_textureSetLayout = m_device->CreateDescriptorSetLayout(layoutDesc);
     }
 
@@ -2306,7 +2313,8 @@ bool UIRenderer::EnsureWhiteTexture(RHICommandContext& context)
     RHIDescriptorSetDesc descriptorDesc;
     descriptorDesc.debugName = "UI.WhiteTextureSet";
     descriptorDesc.SetLayout(textureSetLayout)
-                  .BindCombined(0, m_whiteTextureView.Get(), m_textureSampler.Get());
+                  .BindTexture(0, m_whiteTextureView.Get())
+                  .BindSampler(1, m_textureSampler.Get());
     m_whiteDescriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
     if (!m_whiteDescriptorSet)
     {
@@ -2394,7 +2402,8 @@ bool UIRenderer::EnsureFontAtlasTexture(RHICommandContext& context)
     RHIDescriptorSetDesc descriptorDesc;
     descriptorDesc.debugName = "UI.FontAtlasTextureSet";
     descriptorDesc.SetLayout(textureSetLayout)
-                  .BindCombined(0, m_fontAtlasTextureView.Get(), m_fontSampler.Get());
+                  .BindTexture(0, m_fontAtlasTextureView.Get())
+                  .BindSampler(1, m_fontSampler.Get());
     m_fontAtlasDescriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
     if (!m_fontAtlasDescriptorSet)
     {
@@ -2428,7 +2437,8 @@ RHIDescriptorSet* UIRenderer::GetOrCreateTextureDescriptor(RHITextureView* textu
     RHIDescriptorSetDesc descriptorDesc;
     descriptorDesc.debugName = "UI.ImageTextureSet";
     descriptorDesc.SetLayout(textureSetLayout)
-                  .BindCombined(0, textureView, m_textureSampler.Get());
+                  .BindTexture(0, textureView)
+                  .BindSampler(1, m_textureSampler.Get());
     RHIDescriptorSetRef descriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
     if (!descriptorSet)
     {

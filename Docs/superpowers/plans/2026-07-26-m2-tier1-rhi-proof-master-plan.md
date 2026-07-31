@@ -1,7 +1,7 @@
 # M2 Tier 1 RHI Proof Master Implementation Plan
 
 **Status:** In progress; best-practice review incorporated; Task 20 complete;
-Task 21 CH1-CH2 complete; CH3 next
+Task 21 CH1-CH2 complete; Task 22/CH3 complete; Task 23/CH4 next
 **Branch:** `codex/architecture-implementation`
 **M1 entry commit:** `6c93300618026ca1068acebe61d399669bf5c8e0`
 **M1 entry CI:** `https://github.com/yzscodehub/RenderVerseX/actions/runs/30521739421`
@@ -197,20 +197,20 @@ Exit:
 
 ### Task 22: Compact shader interface and graphics pipeline contract
 
-- [ ] Extend reflection with explicit location, format, D3D semantic
+- [x] Extend reflection with explicit location, format, D3D semantic
   name/index where applicable, and system-value identity.
-- [ ] Carry only a compact immutable backend-neutral shader interface and
+- [x] Carry only a compact immutable backend-neutral shader interface and
   stable hash into `RHIShader`; do not retain the full compiler reflection
   graph.
-- [ ] Validate graphics pipeline descriptors before native PSO creation:
+- [x] Validate graphics pipeline descriptors before native PSO creation:
   shader stages, vertex inputs, formats, sample count, attachment count,
   depth/RT formats, and pipeline layout.
-- [ ] Produce a structured mismatch report naming pipeline, shader entry point,
+- [x] Produce a structured mismatch report naming pipeline, shader entry point,
   missing/extra semantic, expected/actual format, and attachment mismatch.
-- [ ] Split GPU-driven rigid vertex input from the skinned direct-draw input;
+- [x] Split GPU-driven rigid vertex input from the skinned direct-draw input;
   do not depend on compiler dead-input elimination.
-- [ ] Include the shader-interface identity in pipeline cache keys.
-- [ ] Complete a DX12/Vulkan/Metal translation design checkpoint before the
+- [x] Include the shader-interface identity in pipeline cache keys.
+- [x] Complete a DX12/Vulkan/Metal translation design checkpoint before the
   shared contract is frozen.
 
 Exit:
@@ -218,6 +218,12 @@ Exit:
 - the current `BLENDINDICES0`/`BLENDWEIGHT0` mismatch is caught in a unit test;
 - `GPUDrivenOpaquePipeline` and `GPUDrivenDepthOnlyPipeline` create on DX12;
 - intentionally invalid pipeline cases fail before native creation.
+
+Task 22 completed on 2026-07-30. The shared preflight and translation contract
+is covered by 10 focused tests, real DX12 GPU-driven enabled/disabled smoke
+tests, and the 181-test shader/pipeline/RHI/architecture regression selection.
+Metal evidence at this checkpoint is structural; Task 27 remains responsible
+for macOS compilation, validation messages, and real-device closure.
 
 ### Task 23: Descriptor completeness and data-volatility contract
 

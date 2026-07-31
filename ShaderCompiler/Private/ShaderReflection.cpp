@@ -20,10 +20,66 @@
 #define HAS_SPIRV_REFLECT 0
 #endif
 
+#include <algorithm>
+#include <cctype>
+
 namespace RVX
 {
     namespace
     {
+        void SetSemantic(ShaderReflection::InputAttribute& attribute,
+                         const char* semantic,
+                         uint32 explicitIndex = RVX_INVALID_INDEX)
+        {
+            attribute.semantic = semantic ? semantic : "";
+            if (explicitIndex != RVX_INVALID_INDEX)
+            {
+                attribute.semanticIndex = explicitIndex;
+                return;
+            }
+
+            size_t suffixBegin = attribute.semantic.size();
+            while (suffixBegin > 0 &&
+                   std::isdigit(static_cast<unsigned char>(
+                       attribute.semantic[suffixBegin - 1])))
+            {
+                --suffixBegin;
+            }
+            if (suffixBegin < attribute.semantic.size())
+            {
+                uint64 parsedIndex = 0;
+                for (size_t i = suffixBegin;
+                     i < attribute.semantic.size();
+                     ++i)
+                {
+                    parsedIndex =
+                        parsedIndex * 10 +
+                        static_cast<uint64>(
+                            attribute.semantic[i] - '0');
+                    if (parsedIndex > UINT32_MAX)
+                    {
+                        return;
+                    }
+                }
+                attribute.semanticIndex =
+                    static_cast<uint32>(parsedIndex);
+                attribute.semantic.resize(suffixBegin);
+            }
+        }
+
+        std::string UpperAscii(std::string value)
+        {
+            std::transform(
+                value.begin(),
+                value.end(),
+                value.begin(),
+                [](unsigned char character)
+                {
+                    return static_cast<char>(std::toupper(character));
+                });
+            return value;
+        }
+
 #if HAS_SPIRV_REFLECT
         RHIBindingType ToBindingType(SpvReflectDescriptorType type)
         {
@@ -72,6 +128,59 @@ namespace RVX
 #endif // HAS_SPIRV_REFLECT
 
 #if defined(_WIN32)
+        bool IsD3DBufferDimension(D3D_SRV_DIMENSION dimension)
+        {
+            return dimension == D3D_SRV_DIMENSION_BUFFER ||
+                   dimension == D3D_SRV_DIMENSION_BUFFEREX;
+        }
+
+        bool TryGetD3DBindingType(
+            const D3D12_SHADER_INPUT_BIND_DESC& desc,
+            RHIBindingType& bindingType)
+        {
+            switch (desc.Type)
+            {
+                case D3D_SIT_CBUFFER:
+                    bindingType = RHIBindingType::UniformBuffer;
+                    return true;
+                case D3D_SIT_SAMPLER:
+                    bindingType = RHIBindingType::Sampler;
+                    return true;
+                case D3D_SIT_TBUFFER:
+                case D3D_SIT_STRUCTURED:
+                case D3D_SIT_BYTEADDRESS:
+                    bindingType =
+                        RHIBindingType::ShaderResourceBuffer;
+                    return true;
+                case D3D_SIT_TEXTURE:
+                    bindingType = IsD3DBufferDimension(desc.Dimension)
+                        ? RHIBindingType::ShaderResourceBuffer
+                        : RHIBindingType::SampledTexture;
+                    return true;
+                case D3D_SIT_UAV_RWTYPED:
+                    bindingType = IsD3DBufferDimension(desc.Dimension)
+                        ? RHIBindingType::StorageBuffer
+                        : RHIBindingType::StorageTexture;
+                    return true;
+                case D3D_SIT_UAV_RWSTRUCTURED:
+                case D3D_SIT_UAV_RWBYTEADDRESS:
+                case D3D_SIT_UAV_APPEND_STRUCTURED:
+                case D3D_SIT_UAV_CONSUME_STRUCTURED:
+                case D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER:
+                    bindingType = RHIBindingType::StorageBuffer;
+                    return true;
+                case D3D_SIT_RTACCELERATIONSTRUCTURE:
+                    bindingType =
+                        RHIBindingType::AccelerationStructure;
+                    return true;
+                case D3D_SIT_UAV_FEEDBACKTEXTURE:
+                    bindingType = RHIBindingType::StorageTexture;
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
         RHIFormat ToRhiFormat(const D3D12_SIGNATURE_PARAMETER_DESC& desc)
         {
             uint32 comps = 0;
@@ -113,6 +222,58 @@ namespace RVX
 
             return RHIFormat::Unknown;
         }
+
+        void AppendD3DSignature(
+            ID3D12ShaderReflection* shaderReflection,
+            const D3D12_SHADER_DESC& shaderDesc,
+            ShaderReflection& reflection)
+        {
+            for (UINT i = 0; i < shaderDesc.InputParameters; ++i)
+            {
+                D3D12_SIGNATURE_PARAMETER_DESC inputDesc{};
+                if (FAILED(shaderReflection->GetInputParameterDesc(
+                        i,
+                        &inputDesc)))
+                {
+                    reflection.valid = false;
+                    continue;
+                }
+
+                ShaderReflection::InputAttribute attribute{};
+                SetSemantic(
+                    attribute,
+                    inputDesc.SemanticName,
+                    inputDesc.SemanticIndex);
+                attribute.location = inputDesc.Register;
+                attribute.format = ToRhiFormat(inputDesc);
+                attribute.systemValue =
+                    inputDesc.SystemValueType != D3D_NAME_UNDEFINED;
+                reflection.inputs.push_back(std::move(attribute));
+            }
+
+            for (UINT i = 0; i < shaderDesc.OutputParameters; ++i)
+            {
+                D3D12_SIGNATURE_PARAMETER_DESC outputDesc{};
+                if (FAILED(shaderReflection->GetOutputParameterDesc(
+                        i,
+                        &outputDesc)))
+                {
+                    reflection.valid = false;
+                    continue;
+                }
+
+                ShaderReflection::InputAttribute attribute{};
+                SetSemantic(
+                    attribute,
+                    outputDesc.SemanticName,
+                    outputDesc.SemanticIndex);
+                attribute.location = outputDesc.Register;
+                attribute.format = ToRhiFormat(outputDesc);
+                attribute.systemValue =
+                    outputDesc.SystemValueType != D3D_NAME_UNDEFINED;
+                reflection.outputs.push_back(std::move(attribute));
+            }
+        }
 #endif
     }
 
@@ -129,6 +290,7 @@ namespace RVX
             RVX_CORE_WARN("SPIRV reflection failed: {}", static_cast<int>(result));
             return reflection;
         }
+        reflection.valid = true;
 
         uint32 bindingCount = 0;
         spvReflectEnumerateDescriptorBindings(&module, &bindingCount, nullptr);
@@ -165,14 +327,46 @@ namespace RVX
 
         for (auto* input : inputs)
         {
-            if (input->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN)
-                continue;
-
             ShaderReflection::InputAttribute attr{};
-            attr.location = input->location;
+            attr.systemValue =
+                (input->decoration_flags &
+                 SPV_REFLECT_DECORATION_BUILT_IN) != 0;
+            attr.location =
+                attr.systemValue ? RVX_INVALID_INDEX : input->location;
             attr.format = ToRhiFormat(input->format);
-            attr.semantic = input->name ? input->name : "";
+            SetSemantic(
+                attr,
+                input->semantic && input->semantic[0] != '\0'
+                    ? input->semantic
+                    : input->name);
             reflection.inputs.push_back(std::move(attr));
+        }
+
+        uint32 outputCount = 0;
+        spvReflectEnumerateOutputVariables(
+            &module,
+            &outputCount,
+            nullptr);
+        std::vector<SpvReflectInterfaceVariable*> outputs(outputCount);
+        spvReflectEnumerateOutputVariables(
+            &module,
+            &outputCount,
+            outputs.data());
+        for (auto* output : outputs)
+        {
+            ShaderReflection::InputAttribute attr{};
+            attr.systemValue =
+                (output->decoration_flags &
+                 SPV_REFLECT_DECORATION_BUILT_IN) != 0;
+            attr.location =
+                attr.systemValue ? RVX_INVALID_INDEX : output->location;
+            attr.format = ToRhiFormat(output->format);
+            SetSemantic(
+                attr,
+                output->semantic && output->semantic[0] != '\0'
+                    ? output->semantic
+                    : output->name);
+            reflection.outputs.push_back(std::move(attr));
         }
 
         spvReflectDestroyShaderModule(&module);
@@ -202,7 +396,11 @@ namespace RVX
         }
 
         D3D12_SHADER_DESC shaderDesc{};
-        shaderReflection->GetDesc(&shaderDesc);
+        if (FAILED(shaderReflection->GetDesc(&shaderDesc)))
+        {
+            return reflection;
+        }
+        reflection.valid = true;
 
         for (UINT i = 0; i < shaderDesc.BoundResources; ++i)
         {
@@ -215,48 +413,23 @@ namespace RVX
             res.set = bindDesc.Space;
             res.count = bindDesc.BindCount;
 
-            switch (bindDesc.Type)
+            if (!TryGetD3DBindingType(bindDesc, res.type))
             {
-                case D3D_SIT_CBUFFER:
-                    res.type = RHIBindingType::UniformBuffer;
-                    break;
-                case D3D_SIT_SAMPLER:
-                    res.type = RHIBindingType::Sampler;
-                    break;
-                case D3D_SIT_TBUFFER:
-                case D3D_SIT_TEXTURE:
-                    res.type = RHIBindingType::SampledTexture;
-                    break;
-                case D3D_SIT_UAV_RWTYPED:
-                    res.type = RHIBindingType::StorageTexture;
-                    break;
-                case D3D_SIT_UAV_RWSTRUCTURED:
-                case D3D_SIT_UAV_RWBYTEADDRESS:
-                    res.type = RHIBindingType::StorageBuffer;
-                    break;
-                case D3D_SIT_STRUCTURED:
-                case D3D_SIT_BYTEADDRESS:
-                    res.type = RHIBindingType::ShaderResourceBuffer;
-                    break;
-                default:
-                    res.type = RHIBindingType::UniformBuffer;
-                    break;
+                reflection.valid = false;
+                RVX_CORE_WARN(
+                    "DXBC reflection found unsupported resource type {} for '{}'",
+                    static_cast<uint32>(bindDesc.Type),
+                    res.name);
+                continue;
             }
 
             reflection.resources.push_back(std::move(res));
         }
 
-        for (UINT i = 0; i < shaderDesc.InputParameters; ++i)
-        {
-            D3D12_SIGNATURE_PARAMETER_DESC inputDesc{};
-            shaderReflection->GetInputParameterDesc(i, &inputDesc);
-
-            ShaderReflection::InputAttribute attr{};
-            attr.semantic = inputDesc.SemanticName ? inputDesc.SemanticName : "";
-            attr.location = inputDesc.Register;
-            attr.format = ToRhiFormat(inputDesc);
-            reflection.inputs.push_back(std::move(attr));
-        }
+        AppendD3DSignature(
+            shaderReflection.Get(),
+            shaderDesc,
+            reflection);
 
         return reflection;
     }
@@ -300,7 +473,11 @@ namespace RVX
         }
 
         D3D12_SHADER_DESC shaderDesc{};
-        shaderReflection->GetDesc(&shaderDesc);
+        if (FAILED(shaderReflection->GetDesc(&shaderDesc)))
+        {
+            return reflection;
+        }
+        reflection.valid = true;
 
         for (UINT i = 0; i < shaderDesc.BoundResources; ++i)
         {
@@ -313,48 +490,23 @@ namespace RVX
             res.set = bindDesc.Space;
             res.count = bindDesc.BindCount;
 
-            switch (bindDesc.Type)
+            if (!TryGetD3DBindingType(bindDesc, res.type))
             {
-                case D3D_SIT_CBUFFER:
-                    res.type = RHIBindingType::UniformBuffer;
-                    break;
-                case D3D_SIT_SAMPLER:
-                    res.type = RHIBindingType::Sampler;
-                    break;
-                case D3D_SIT_TBUFFER:
-                case D3D_SIT_TEXTURE:
-                    res.type = RHIBindingType::SampledTexture;
-                    break;
-                case D3D_SIT_UAV_RWTYPED:
-                    res.type = RHIBindingType::StorageTexture;
-                    break;
-                case D3D_SIT_UAV_RWSTRUCTURED:
-                case D3D_SIT_UAV_RWBYTEADDRESS:
-                    res.type = RHIBindingType::StorageBuffer;
-                    break;
-                case D3D_SIT_STRUCTURED:
-                case D3D_SIT_BYTEADDRESS:
-                    res.type = RHIBindingType::ShaderResourceBuffer;
-                    break;
-                default:
-                    res.type = RHIBindingType::UniformBuffer;
-                    break;
+                reflection.valid = false;
+                RVX_CORE_WARN(
+                    "DXIL reflection found unsupported resource type {} for '{}'",
+                    static_cast<uint32>(bindDesc.Type),
+                    res.name);
+                continue;
             }
 
             reflection.resources.push_back(std::move(res));
         }
 
-        for (UINT i = 0; i < shaderDesc.InputParameters; ++i)
-        {
-            D3D12_SIGNATURE_PARAMETER_DESC inputDesc{};
-            shaderReflection->GetInputParameterDesc(i, &inputDesc);
-
-            ShaderReflection::InputAttribute attr{};
-            attr.semantic = inputDesc.SemanticName ? inputDesc.SemanticName : "";
-            attr.location = inputDesc.Register;
-            attr.format = ToRhiFormat(inputDesc);
-            reflection.inputs.push_back(std::move(attr));
-        }
+        AppendD3DSignature(
+            shaderReflection.Get(),
+            shaderDesc,
+            reflection);
 
         return reflection;
     }
@@ -389,6 +541,58 @@ namespace RVX
             default:
                 return {};
         }
+    }
+
+    RHIShaderInterface BuildRHIShaderInterface(
+        RHIShaderStage stage,
+        const ShaderReflection& reflection)
+    {
+        RHIShaderInterface shaderInterface;
+        shaderInterface.available = reflection.valid;
+        shaderInterface.stage = stage;
+
+        auto appendVariables =
+            [](const std::vector<ShaderReflection::InputAttribute>& source,
+               std::vector<RHIShaderInterfaceVariable>& destination)
+        {
+            destination.reserve(source.size());
+            for (const ShaderReflection::InputAttribute& attribute : source)
+            {
+                RHIShaderInterfaceVariable variable;
+                variable.location = attribute.location;
+                variable.format = attribute.format;
+                variable.systemValue = attribute.systemValue;
+                variable.semanticName =
+                    UpperAscii(attribute.semantic);
+                variable.semanticIndex = attribute.semanticIndex;
+                destination.push_back(std::move(variable));
+            }
+        };
+        appendVariables(reflection.inputs, shaderInterface.inputs);
+        appendVariables(reflection.outputs, shaderInterface.outputs);
+
+        shaderInterface.bindings.reserve(
+            reflection.resources.size());
+        for (const ShaderReflection::ResourceBinding& resource :
+             reflection.resources)
+        {
+            shaderInterface.bindings.push_back(
+                {resource.set,
+                 resource.binding,
+                 resource.type,
+                 resource.count});
+        }
+        shaderInterface.pushConstants.reserve(
+            reflection.pushConstants.size());
+        for (const ShaderReflection::PushConstantRange& range :
+             reflection.pushConstants)
+        {
+            shaderInterface.pushConstants.push_back(
+                {range.offset, range.size});
+        }
+
+        return FinalizeRHIShaderInterface(
+            std::move(shaderInterface));
     }
 
 } // namespace RVX

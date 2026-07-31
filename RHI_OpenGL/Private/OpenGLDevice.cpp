@@ -8,6 +8,7 @@
 #include "OpenGLSync.h"
 #include "OpenGLQuery.h"
 #include "OpenGLUpload.h"
+#include "RHI/RHIPipelineValidation.h"
 
 namespace RVX
 {
@@ -534,6 +535,15 @@ namespace RVX
     {
         GL_DEBUG_SCOPE("CreateGraphicsPipeline");
 
+        const RHIPipelineValidationResult validation =
+            ValidateRHIGraphicsPipelineDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR(
+                "OpenGL graphics pipeline preflight failed: {}",
+                FormatRHIPipelineValidationResult(validation));
+            return nullptr;
+        }
         auto pipeline = MakeRef<OpenGLGraphicsPipeline>(this, desc);
         if (!pipeline->IsValid())
         {

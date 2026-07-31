@@ -1,7 +1,7 @@
 #include "VulkanPipeline.h"
 #include "VulkanDevice.h"
 #include "VulkanResources.h"
-#include <unordered_map>
+#include "RHI/RHIPipelineValidation.h"
 
 namespace RVX
 {
@@ -64,7 +64,8 @@ namespace RVX
     // Vulkan Pipeline Layout
     // =============================================================================
     VulkanPipelineLayout::VulkanPipelineLayout(VulkanDevice* device, const RHIPipelineLayoutDesc& desc)
-        : m_device(device)
+        : RHIPipelineLayout(desc)
+        , m_device(device)
     {
         if (desc.debugName)
         {
@@ -208,47 +209,36 @@ namespace RVX
         // Vertex input
         std::vector<VkVertexInputBindingDescription> bindingDescs;
         std::vector<VkVertexInputAttributeDescription> attributeDescs;
-        
-        // Track per-binding offsets and strides for separate vertex buffer slots
-        std::unordered_map<uint32, uint32> bindingOffsets;  // Current offset per binding
-        std::unordered_map<uint32, uint32> bindingStrides;  // Total stride per binding
-        std::unordered_map<uint32, bool> bindingPerInstance; // Per-instance rate per binding
+        const RHIVertexInputTranslation vertexInputTranslation =
+            BuildRHIVertexInputTranslation(desc.inputLayout);
+        attributeDescs.reserve(
+            vertexInputTranslation.attributes.size());
+        bindingDescs.reserve(
+            vertexInputTranslation.bindings.size());
 
-        for (const auto& elem : desc.inputLayout.elements)
+        for (const RHIVertexInputAttributeTranslation& attribute :
+             vertexInputTranslation.attributes)
         {
-            uint32 bindingSlot = elem.inputSlot;
-            
-            // Initialize binding tracking if this is a new slot
-            if (bindingOffsets.find(bindingSlot) == bindingOffsets.end())
-            {
-                bindingOffsets[bindingSlot] = 0;
-                bindingStrides[bindingSlot] = 0;
-                bindingPerInstance[bindingSlot] = elem.perInstance;
-            }
+            const RHIInputElement& elem =
+                desc.inputLayout.elements[attribute.elementIndex];
 
             VkVertexInputAttributeDescription attr = {};
-            attr.location = static_cast<uint32>(attributeDescs.size());
-            attr.binding = bindingSlot;
+            attr.location = attribute.location;
+            attr.binding = attribute.inputSlot;
             attr.format = ToVkFormat(elem.format);
-            
-            // Calculate offset within this binding
-            uint32& currentOffset = bindingOffsets[bindingSlot];
-            attr.offset = (elem.alignedByteOffset == 0xFFFFFFFF) ? currentOffset : elem.alignedByteOffset;
+            attr.offset = attribute.alignedByteOffset;
             attributeDescs.push_back(attr);
-            
-            // Update stride for this binding
-            uint32 elemSize = GetFormatBytesPerPixel(elem.format);
-            currentOffset = attr.offset + elemSize;
-            bindingStrides[bindingSlot] = currentOffset;
         }
 
-        // Create a binding description for each unique input slot
-        for (const auto& [slot, stride] : bindingStrides)
+        for (const RHIVertexInputBindingTranslation& translatedBinding :
+             vertexInputTranslation.bindings)
         {
             VkVertexInputBindingDescription binding = {};
-            binding.binding = slot;
-            binding.stride = stride;
-            binding.inputRate = bindingPerInstance[slot] ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX;
+            binding.binding = translatedBinding.inputSlot;
+            binding.stride = translatedBinding.stride;
+            binding.inputRate = translatedBinding.perInstance
+                ? VK_VERTEX_INPUT_RATE_INSTANCE
+                : VK_VERTEX_INPUT_RATE_VERTEX;
             bindingDescs.push_back(binding);
         }
 

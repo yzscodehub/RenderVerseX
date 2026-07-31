@@ -82,17 +82,27 @@ cbuffer Camera : register(b0, space0)
 struct VSInput
 {
     float3 position : POSITION;
+    float2 texCoord : TEXCOORD1;
+    uint4 blendIndices : BLENDINDICES0;
 };
 
 struct VSOutput
 {
     float4 position : SV_POSITION;
+    float2 texCoord : TEXCOORD1;
 };
 
 VSOutput main(VSInput input)
 {
     VSOutput output;
-    output.position = mul(gViewProjection, float4(input.position + RVX_TEST_OFFSET, 1.0));
+    float blendOffset = float(input.blendIndices.x) * 0.000001;
+    output.position = mul(
+        gViewProjection,
+        float4(
+            input.position + RVX_TEST_OFFSET +
+                float3(blendOffset, 0.0, 0.0),
+            1.0));
+    output.texCoord = input.texCoord;
     return output;
 }
 )";
@@ -176,7 +186,8 @@ VSOutput main(VSInput input)
     {
     public:
         explicit CapturedShader(const RVX::RHIShaderDesc& desc)
-            : m_stage(desc.stage)
+            : RHIShader(desc)
+            , m_stage(desc.stage)
         {
             if (desc.bytecode && desc.bytecodeSize > 0)
             {
@@ -296,8 +307,11 @@ TEST_F(ShaderCompilerValidationFixture, ShaderManagerUsesInjectedCompiler)
     RVX::ShaderCompileResult injectedResult;
     injectedResult.success = true;
     injectedResult.bytecode = {'R', 'V', 'X'};
+    injectedResult.reflection.valid = true;
     injectedResult.reflection.resources.push_back(
         {"InjectedConstants", 0, 0, RVX::RHIBindingType::UniformBuffer, 1});
+    injectedResult.reflection.inputs.push_back(
+        {"POSITION", 0, 0, RVX::RHIFormat::RGB32_FLOAT, false});
 
     TempDirectory temp("rvx_shader_manager_injection");
     RVX::ShaderManagerConfig config;
@@ -326,6 +340,15 @@ TEST_F(ShaderCompilerValidationFixture, ShaderManagerUsesInjectedCompiler)
     ASSERT_NE(result.shader, nullptr);
     EXPECT_EQ(device.createShaderCalls, 1u);
     EXPECT_EQ(device.lastShaderSource, "RVX");
+    ASSERT_TRUE(result.shader->HasInterface());
+    EXPECT_EQ(
+        result.shader->GetInterface().stage,
+        RVX::RHIShaderStage::Vertex);
+    ASSERT_EQ(result.shader->GetInterface().inputs.size(), 1u);
+    EXPECT_EQ(
+        result.shader->GetInterface().inputs.front().semanticName,
+        "POSITION");
+    EXPECT_EQ(result.shader->GetEntryPoint(), "main");
 }
 
 TEST_F(ShaderCompilerValidationFixture, AsyncCompileOwnsOptionStrings)
@@ -437,6 +460,66 @@ TEST_F(ShaderCompilerValidationFixture, MemoryShaderCacheInvalidatesOnIncludeMut
     EXPECT_FALSE(cache.Load(key).has_value());
 }
 
+TEST_F(
+    ShaderCompilerValidationFixture,
+    DiskShaderCacheRoundTripsCompleteInterfaceReflection)
+{
+    TempDirectory temp("rvx_shader_cache_reflection");
+
+    RVX::ShaderCacheManager::Config config;
+    config.cacheDirectory = temp.Path() / "Cache";
+    config.enableMemoryCache = true;
+    config.enableDiskCache = true;
+    config.validateOnLoad = false;
+    RVX::ShaderCacheManager cache(config);
+
+    RVX::ShaderCacheEntry entry;
+    entry.bytecode = {1, 2, 3, 4};
+    entry.backend = RVX::RHIBackendType::Vulkan;
+    entry.stage = RVX::RHIShaderStage::Vertex;
+    entry.reflection.valid = true;
+    entry.reflection.resources.push_back(
+        {"ObjectData", 2, 3, RVX::RHIBindingType::StorageBuffer, 4});
+    entry.reflection.pushConstants.push_back({16, 32});
+    entry.reflection.inputs.push_back(
+        {"TEXCOORD", 1, 5, RVX::RHIFormat::RG32_FLOAT, false});
+    entry.reflection.outputs.push_back(
+        {"SV_POSITION",
+         0,
+         RVX::RVX_INVALID_INDEX,
+         RVX::RHIFormat::RGBA32_FLOAT,
+         true});
+
+    constexpr RVX::uint64 key = 0xA11CE;
+    cache.Save(key, entry);
+    cache.ClearMemoryCache();
+
+    const std::optional<RVX::ShaderCacheEntry> loaded =
+        cache.Load(key);
+    ASSERT_TRUE(loaded.has_value());
+    EXPECT_TRUE(loaded->reflection.valid);
+    ASSERT_EQ(loaded->reflection.resources.size(), 1u);
+    EXPECT_EQ(loaded->reflection.resources[0].set, 2u);
+    EXPECT_EQ(loaded->reflection.resources[0].binding, 3u);
+    EXPECT_EQ(loaded->reflection.resources[0].count, 4u);
+    ASSERT_EQ(loaded->reflection.pushConstants.size(), 1u);
+    EXPECT_EQ(loaded->reflection.pushConstants[0].offset, 16u);
+    EXPECT_EQ(loaded->reflection.pushConstants[0].size, 32u);
+    ASSERT_EQ(loaded->reflection.inputs.size(), 1u);
+    EXPECT_EQ(loaded->reflection.inputs[0].semantic, "TEXCOORD");
+    EXPECT_EQ(loaded->reflection.inputs[0].semanticIndex, 1u);
+    EXPECT_EQ(loaded->reflection.inputs[0].location, 5u);
+    EXPECT_EQ(
+        loaded->reflection.inputs[0].format,
+        RVX::RHIFormat::RG32_FLOAT);
+    EXPECT_FALSE(loaded->reflection.inputs[0].systemValue);
+    ASSERT_EQ(loaded->reflection.outputs.size(), 1u);
+    EXPECT_TRUE(loaded->reflection.outputs[0].systemValue);
+    EXPECT_EQ(
+        loaded->reflection.outputs[0].location,
+        RVX::RVX_INVALID_INDEX);
+}
+
 TEST_F(ShaderCompilerValidationFixture, DX12CompileProducesReflectionAndSourceInfo)
 {
     TempDirectory temp("rvx_shader_compile_dx12");
@@ -491,10 +574,135 @@ TEST_F(ShaderCompilerValidationFixture, DX12CompileProducesReflectionAndSourceIn
     EXPECT_EQ(cameraIt->binding, 0u);
     EXPECT_EQ(cameraIt->type, RVX::RHIBindingType::UniformBuffer);
 
+    ASSERT_TRUE(result.reflection.valid);
+    auto texCoordIt = std::find_if(
+        result.reflection.inputs.begin(),
+        result.reflection.inputs.end(),
+        [](const RVX::ShaderReflection::InputAttribute& input)
+        {
+            return input.semantic == "TEXCOORD" &&
+                   input.semanticIndex == 1;
+        });
+    ASSERT_NE(texCoordIt, result.reflection.inputs.end());
+    EXPECT_EQ(texCoordIt->format, RVX::RHIFormat::RG32_FLOAT);
+    EXPECT_FALSE(texCoordIt->systemValue);
+
+    auto blendIndicesIt = std::find_if(
+        result.reflection.inputs.begin(),
+        result.reflection.inputs.end(),
+        [](const RVX::ShaderReflection::InputAttribute& input)
+        {
+            return input.semantic == "BLENDINDICES" &&
+                   input.semanticIndex == 0;
+        });
+    ASSERT_NE(blendIndicesIt, result.reflection.inputs.end());
+    EXPECT_EQ(
+        blendIndicesIt->format,
+        RVX::RHIFormat::RGBA32_UINT);
+
+    auto positionOutputIt = std::find_if(
+        result.reflection.outputs.begin(),
+        result.reflection.outputs.end(),
+        [](const RVX::ShaderReflection::InputAttribute& output)
+        {
+            return output.semantic == "SV_POSITION";
+        });
+    ASSERT_NE(positionOutputIt, result.reflection.outputs.end());
+    EXPECT_TRUE(positionOutputIt->systemValue);
+
+    const RVX::RHIShaderInterface shaderInterface =
+        RVX::BuildRHIShaderInterface(
+            RVX::RHIShaderStage::Vertex,
+            result.reflection);
+    EXPECT_TRUE(shaderInterface.available);
+    EXPECT_NE(shaderInterface.hash, 0u);
+    EXPECT_EQ(
+        shaderInterface.inputs.size(),
+        result.reflection.inputs.size());
+    EXPECT_EQ(
+        shaderInterface.outputs.size(),
+        result.reflection.outputs.size());
+
     RVX::AutoPipelineLayout layout = RVX::BuildAutoPipelineLayout({{result.reflection, RVX::RHIShaderStage::Vertex}});
     ASSERT_FALSE(layout.setLayouts.empty());
     ASSERT_FALSE(layout.setLayouts[0].entries.empty());
     EXPECT_EQ(layout.setLayouts[0].entries[0].type, RVX::RHIBindingType::UniformBuffer);
+}
+
+TEST_F(
+    ShaderCompilerValidationFixture,
+    VulkanCompilePreservesPortableInterfaceSemantics)
+{
+    TempDirectory temp("rvx_shader_compile_vulkan");
+    const fs::path shaderPath = temp.Path() / "Main.hlsl";
+    const fs::path includePath = temp.Path() / "Common.hlsli";
+    const std::string source = TestVertexShaderSource();
+
+    WriteTextFile(
+        includePath,
+        "static const float3 RVX_TEST_OFFSET = "
+        "float3(0.0, 0.0, 0.0);\n");
+    WriteTextFile(shaderPath, source);
+
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    const std::string shaderPathString = shaderPath.string();
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Vertex;
+    options.entryPoint = "main";
+    options.sourceCode = source.c_str();
+    options.sourcePath = shaderPathString.c_str();
+    options.targetBackend = RVX::RHIBackendType::Vulkan;
+    options.enableOptimization = false;
+
+    const RVX::ShaderCompileSupport support =
+        compiler->QuerySupport(options);
+    if (!support.IsSupported())
+    {
+        GTEST_SKIP() << support.reason;
+    }
+
+    const RVX::ShaderCompileResult result =
+        compiler->Compile(options);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    ASSERT_TRUE(result.reflection.valid);
+
+    auto findInput =
+        [&result](const char* semantic, RVX::uint32 semanticIndex)
+    {
+        return std::find_if(
+            result.reflection.inputs.begin(),
+            result.reflection.inputs.end(),
+            [semantic, semanticIndex](
+                const RVX::ShaderReflection::InputAttribute& input)
+            {
+                return input.semantic == semantic &&
+                       input.semanticIndex == semanticIndex;
+            });
+    };
+
+    const auto positionIt = findInput("POSITION", 0);
+    ASSERT_NE(positionIt, result.reflection.inputs.end());
+    EXPECT_EQ(positionIt->location, 0u);
+    EXPECT_EQ(positionIt->format, RVX::RHIFormat::RGB32_FLOAT);
+
+    const auto texCoordIt = findInput("TEXCOORD", 1);
+    ASSERT_NE(texCoordIt, result.reflection.inputs.end());
+    EXPECT_EQ(texCoordIt->format, RVX::RHIFormat::RG32_FLOAT);
+
+    const auto blendIndicesIt = findInput("BLENDINDICES", 0);
+    ASSERT_NE(blendIndicesIt, result.reflection.inputs.end());
+    EXPECT_EQ(
+        blendIndicesIt->format,
+        RVX::RHIFormat::RGBA32_UINT);
+
+    const RVX::RHIShaderInterface shaderInterface =
+        RVX::BuildRHIShaderInterface(
+            RVX::RHIShaderStage::Vertex,
+            result.reflection);
+    EXPECT_TRUE(shaderInterface.available);
+    EXPECT_NE(shaderInterface.hash, 0u);
 }
 
 TEST_F(ShaderCompilerValidationFixture, DX11DefaultProfileSupportsRegisterSpaces)

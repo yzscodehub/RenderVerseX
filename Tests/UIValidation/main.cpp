@@ -2104,16 +2104,18 @@ TEST(UIValidation, SubmitUploadsAtlasAndDrawsCommandsThroughRHI)
 
     EXPECT_EQ(3u, device.createdDescriptorSetDescs.size());
     EXPECT_EQ(1u, device.createdDescriptorSetLayoutDescs.size());
-    ASSERT_EQ(1u, device.createdDescriptorSetLayoutDescs[0].entries.size());
-    EXPECT_EQ(RHIBindingType::CombinedTextureSampler,
+    ASSERT_EQ(2u, device.createdDescriptorSetLayoutDescs[0].entries.size());
+    EXPECT_EQ(RHIBindingType::SampledTexture,
               device.createdDescriptorSetLayoutDescs[0].entries[0].type);
-    ASSERT_EQ(1u, device.createdDescriptorSetDescs[0].bindings.size());
-    ASSERT_EQ(1u, device.createdDescriptorSetDescs[1].bindings.size());
-    ASSERT_EQ(1u, device.createdDescriptorSetDescs[2].bindings.size());
-    EXPECT_EQ(device.createdDescriptorSetDescs[0].bindings[0].sampler,
-              device.createdDescriptorSetDescs[2].bindings[0].sampler);
-    EXPECT_NE(device.createdDescriptorSetDescs[0].bindings[0].sampler,
-              device.createdDescriptorSetDescs[1].bindings[0].sampler);
+    EXPECT_EQ(RHIBindingType::Sampler,
+              device.createdDescriptorSetLayoutDescs[0].entries[1].type);
+    ASSERT_EQ(2u, device.createdDescriptorSetDescs[0].bindings.size());
+    ASSERT_EQ(2u, device.createdDescriptorSetDescs[1].bindings.size());
+    ASSERT_EQ(2u, device.createdDescriptorSetDescs[2].bindings.size());
+    EXPECT_EQ(device.createdDescriptorSetDescs[0].bindings[1].sampler,
+              device.createdDescriptorSetDescs[2].bindings[1].sampler);
+    EXPECT_NE(device.createdDescriptorSetDescs[0].bindings[1].sampler,
+              device.createdDescriptorSetDescs[1].bindings[1].sampler);
 
     EXPECT_NE(nullptr, renderer.GetWhiteTextureView());
     EXPECT_NE(nullptr, renderer.GetFontAtlasTextureView());

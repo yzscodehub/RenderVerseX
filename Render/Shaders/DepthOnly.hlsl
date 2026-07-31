@@ -62,6 +62,11 @@ struct VSInput
     float4 BoneWeights : BLENDWEIGHT;
 };
 
+struct RigidVSInput
+{
+    float3 Position : POSITION;
+};
+
 struct VSOutput
 {
     float4 Position : SV_POSITION;
@@ -99,7 +104,9 @@ VSOutput VSMain(VSInput input)
     return output;
 }
 
-VSOutput VSMainGPUDriven(VSInput input, uint instanceId : SV_InstanceID)
+VSOutput VSMainGPUDriven(
+    RigidVSInput input,
+    uint instanceId : SV_InstanceID)
 {
     VSOutput output;
     float4x4 world = GPUDrivenInstances[instanceId].worldMatrix;

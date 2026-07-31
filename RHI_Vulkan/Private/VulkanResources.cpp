@@ -484,7 +484,8 @@ namespace RVX
     // Vulkan Shader
     // =============================================================================
     VulkanShader::VulkanShader(VulkanDevice* device, const RHIShaderDesc& desc)
-        : m_device(device)
+        : RHIShader(desc)
+        , m_device(device)
         , m_stage(desc.stage)
         , m_entryPoint(desc.entryPoint ? desc.entryPoint : "main")
     {

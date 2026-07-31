@@ -1,11 +1,11 @@
 #include "DX12Pipeline.h"
 #include "DX12Device.h"
 #include "DX12Resources.h"
+#include "RHI/RHIPipelineValidation.h"
 #include <algorithm>
 #include <cstring>
 #include <limits>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 #include <d3d12sdklayers.h>
@@ -290,7 +290,8 @@ namespace RVX
     // DX12 Pipeline Layout
     // =============================================================================
     DX12PipelineLayout::DX12PipelineLayout(DX12Device* device, const RHIPipelineLayoutDesc& desc)
-        : m_device(device)
+        : RHIPipelineLayout(desc)
+        , m_device(device)
     {
         if (desc.debugName)
         {
@@ -596,35 +597,29 @@ namespace RVX
         }
 
         // Input layout
-        // Track offset per input slot for correct auto-offset calculation
+        const RHIVertexInputTranslation vertexInputTranslation =
+            BuildRHIVertexInputTranslation(desc.inputLayout);
         std::vector<D3D12_INPUT_ELEMENT_DESC> inputElements;
-        std::unordered_map<uint32, uint32> slotOffsets;
-        for (const auto& elem : desc.inputLayout.elements)
+        inputElements.reserve(vertexInputTranslation.attributes.size());
+        for (const RHIVertexInputAttributeTranslation& attribute :
+             vertexInputTranslation.attributes)
         {
-            uint32 slot = elem.inputSlot;
-
-            // Initialize offset for new slots
-            if (slotOffsets.find(slot) == slotOffsets.end())
-            {
-                slotOffsets[slot] = 0;
-            }
+            const RHIInputElement& elem =
+                desc.inputLayout.elements[attribute.elementIndex];
 
             D3D12_INPUT_ELEMENT_DESC d3dElem = {};
             d3dElem.SemanticName = elem.semanticName;
             d3dElem.SemanticIndex = elem.semanticIndex;
             d3dElem.Format = ToDXGIFormat(elem.format);
-            d3dElem.InputSlot = slot;
-            // Use explicit offset if provided, otherwise use auto-calculated per-slot offset
-            d3dElem.AlignedByteOffset = (elem.alignedByteOffset == 0xFFFFFFFF)
-                ? slotOffsets[slot] : elem.alignedByteOffset;
+            d3dElem.InputSlot = attribute.inputSlot;
+            d3dElem.AlignedByteOffset =
+                attribute.alignedByteOffset;
             d3dElem.InputSlotClass = elem.perInstance
                 ? D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA
                 : D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
             d3dElem.InstanceDataStepRate = elem.instanceDataStepRate;
 
             inputElements.push_back(d3dElem);
-            // Update offset for this slot
-            slotOffsets[slot] = d3dElem.AlignedByteOffset + GetFormatBytesPerPixel(elem.format);
         }
 
         psoDesc.InputLayout.pInputElementDescs = inputElements.data();

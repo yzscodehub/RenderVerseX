@@ -7,6 +7,7 @@
 #include "MetalSynchronization.h"
 #include "MetalQuery.h"
 #include "MetalUpload.h"
+#include "RHI/RHIPipelineValidation.h"
 
 namespace RVX
 {
@@ -395,6 +396,15 @@ namespace RVX
 
     RHIPipelineRef MetalDevice::CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc)
     {
+        const RHIPipelineValidationResult validation =
+            ValidateRHIGraphicsPipelineDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR(
+                "Metal graphics pipeline preflight failed: {}",
+                FormatRHIPipelineValidationResult(validation));
+            return nullptr;
+        }
         return MakeRef<MetalGraphicsPipeline>(m_device, desc);
     }
 

@@ -6,6 +6,7 @@
 #include "DX12Query.h"
 #include "DX12Upload.h"
 #include "Core/Log.h"
+#include "RHI/RHIPipelineValidation.h"
 #include "RHI/RHITexture.h"
 
 #include <limits>
@@ -1297,6 +1298,15 @@ namespace RVX
 
     RHIPipelineRef DX12Device::CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc)
     {
+        const RHIPipelineValidationResult validation =
+            ValidateRHIGraphicsPipelineDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR(
+                "DX12 graphics pipeline preflight failed: {}",
+                FormatRHIPipelineValidationResult(validation));
+            return nullptr;
+        }
         return CreateDX12GraphicsPipeline(this, desc);
     }
 

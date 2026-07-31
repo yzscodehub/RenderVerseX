@@ -42174,6 +42174,108 @@ ctest --test-dir build\win_x64_debug -C Debug -R "UIValidation|RVXEditorWorkspac
 
 ---
 
+### R-SP313 M2 compact shader interface and graphics pipeline preflight
+
+**Date:** 2026-07-30
+**Commit:** Pending
+**Spark plan review agent:** N/A
+**Spark code review agent:** N/A
+
+**Plan source:**
+
+- Document:
+  `Docs/superpowers/plans/2026-07-26-m2-tier1-rhi-proof-master-plan.md`
+- Section: Task 22 / shared-plan CH3
+- Lines checked: compact shader interface, graphics-pipeline preflight, rigid
+  GPU-driven signatures, and three-primary-backend translation checkpoint
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: M2 Task 21 CH2 normalized native validation message sink
+- Evidence: M1 entry gate and CH1-CH2 records are locked in the M2 plans.
+
+**Approved scope:**
+
+- Enrich shader reflection and retain only a compact owned RHI interface.
+- Fail invalid graphics pipeline descriptors before native PSO creation.
+- Split rigid GPU-driven and skinned direct-draw vertex signatures.
+- Complete DX12/Vulkan/Metal vertex translation structure checks.
+
+**Out of scope:**
+
+- Descriptor completeness and in-flight replacement (Task 23).
+- Scoped dependency/state handoff (Task 24).
+- Metal real-device closure (Task 27).
+- Editor implementation.
+
+**Files changed:**
+
+- `RHI/Include/RHI/RHIShader.h`
+- `RHI/Include/RHI/RHIPipelineValidation.h`
+- `RHI/Private/RHIShader.cpp`
+- `RHI/Private/RHIPipelineValidation.cpp`
+- `ShaderCompiler/`
+- `RHI_DX12/`, `RHI_Vulkan/`, `RHI_Metal/`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Render/Shaders/DepthOnly.hlsl`
+- `Render/Shaders/UI.hlsl`
+- `UI/Private/UIRenderer.cpp`
+- `Tests/RHIPipelineValidation/` and related regression tests
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  RHIPipelineValidation ShaderCompilerValidation PipelineCacheValidation `
+  UIValidation CrossBackendValidation RHIConformanceValidation ModelViewer
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure `
+  -R "^(RHIPipelineValidation\.|ShaderCompilerValidationFixture\.|ModelViewerGPUDrivenSmoke$)"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -j 4 `
+  -R "^(ShaderCompilerValidationFixture\.|PipelineCacheValidationFixture\.|CrossBackendValidation\.|RHIConformanceValidation\.|Architecture\.)"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure `
+  -R "^(UIValidation\.|ModelViewerGPUDrivenDisabledSmoke$)"
+```
+
+**Validation result:**
+
+- Build: PASS for RHI, ShaderCompiler, Render, ModelViewer, DX12, Vulkan,
+  DX11, and OpenGL targets on Windows.
+- Tests: PASS; focused pipeline/shader/DX12 smoke 25/25, combined
+  shader/pipeline/RHI/architecture 181/181, UI 43 passed with 2
+  environment-dependent skips, and disabled GPU-driven smoke passed.
+- Visual gate: N/A for Task 22. The bounded GPU-driven integration smoke
+  passed; the historical color golden remains a separately tracked baseline
+  review and was not updated.
+
+**Artifacts:**
+
+- Logs: CTest output in the local build tree.
+- Screenshots: No source artifact added.
+- Diffs: No generated golden checked in.
+
+**Spark plan review result:**
+
+- Verdict: N/A
+- Blockers resolved: N/A
+
+**Spark code review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: endian-independent interface hash, effective-location
+  collisions, portable input-rate validation, per-slot translation, complete
+  supported D3D resource mapping, and portable UI texture/sampler bindings.
+
+**Notes / follow-ups:**
+
+- Metal passed the structural source checkpoint only; macOS compile and
+  real-device validation remain Task 27 evidence.
+- Descriptor snapshot completeness and Metal binding-index allocation belong
+  to Task 23 and must be resolved before the shared descriptor contract is
+  frozen.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

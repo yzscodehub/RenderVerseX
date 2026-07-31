@@ -453,6 +453,15 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME RHIPipelineValidation
+    SOURCES RHIPipelineValidation/main.cpp
+    LIBS RVX::RHI
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    LABELS unit
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME RenderSubmissionValidation
     SOURCES RenderSubmissionValidation/main.cpp
     LIBS

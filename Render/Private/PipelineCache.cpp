@@ -2231,7 +2231,14 @@ bool PipelineCache::CreateUIPipelineLayout()
 {
     RHIDescriptorSetLayoutDesc setLayoutDesc;
     setLayoutDesc.debugName = "UITextureSetLayout";
-    setLayoutDesc.AddBinding(0, RHIBindingType::CombinedTextureSampler, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(
+        0,
+        RHIBindingType::SampledTexture,
+        RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(
+        1,
+        RHIBindingType::Sampler,
+        RHIShaderStage::Pixel);
 
     m_uiTextureSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
     if (!m_uiTextureSetLayout)
@@ -5767,6 +5774,31 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
 
     HashValue(hash, shaderHashFor(desc.vertexShader));
     HashValue(hash, shaderHashFor(desc.pixelShader));
+    HashValue(
+        hash,
+        desc.vertexShader
+            ? desc.vertexShader->GetInterface().hash
+            : 0ull);
+    HashValue(
+        hash,
+        desc.pixelShader
+            ? desc.pixelShader->GetInterface().hash
+            : 0ull);
+    HashValue(
+        hash,
+        desc.geometryShader
+            ? desc.geometryShader->GetInterface().hash
+            : 0ull);
+    HashValue(
+        hash,
+        desc.hullShader
+            ? desc.hullShader->GetInterface().hash
+            : 0ull);
+    HashValue(
+        hash,
+        desc.domainShader
+            ? desc.domainShader->GetInterface().hash
+            : 0ull);
 
     if (desc.pipelineLayout == m_skyboxPipelineLayout.Get() && m_skyboxSetLayout)
     {
@@ -5857,6 +5889,7 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
     {
         HashString(hash, element.semanticName);
         HashValue(hash, element.semanticIndex);
+        HashValue(hash, element.location);
         HashValue(hash, element.format);
         HashValue(hash, element.inputSlot);
         HashValue(hash, element.alignedByteOffset);

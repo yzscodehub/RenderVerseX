@@ -167,7 +167,8 @@ namespace
     {
     public:
         explicit FakeShader(const RVX::RHIShaderDesc& desc)
-            : m_stage(desc.stage)
+            : RHIShader(desc)
+            , m_stage(desc.stage)
         {
             if (desc.bytecode && desc.bytecodeSize > 0)
             {
@@ -200,6 +201,12 @@ namespace
 
     class FakePipelineLayout final : public RVX::RHIPipelineLayout
     {
+    public:
+        explicit FakePipelineLayout(
+            const RVX::RHIPipelineLayoutDesc& desc)
+            : RHIPipelineLayout(desc)
+        {
+        }
     };
 
     class FakePipeline final : public RVX::RHIPipeline
@@ -291,7 +298,7 @@ namespace
             capturedPipelineLayoutDescs.push_back(desc);
             if (failPipelineLayoutCreation)
                 return {};
-            return RVX::MakeRef<FakePipelineLayout>();
+            return RVX::MakeRef<FakePipelineLayout>(desc);
         }
 
         RVX::RHIPipelineRef CreateGraphicsPipeline(const RVX::RHIGraphicsPipelineDesc& desc) override
@@ -1582,11 +1589,15 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_NE(cache.GetPostProcessSetLayout(), nullptr);
     EXPECT_NE(cache.GetPostProcessLayout(), nullptr);
 
-    ASSERT_EQ(uiLayout.entries.size(), static_cast<size_t>(1));
+    ASSERT_EQ(uiLayout.entries.size(), static_cast<size_t>(2));
     const auto* uiTexture = FindBinding(uiLayout, 0);
     ASSERT_NE(uiTexture, nullptr);
-    EXPECT_EQ(uiTexture->type, RVX::RHIBindingType::CombinedTextureSampler);
+    EXPECT_EQ(uiTexture->type, RVX::RHIBindingType::SampledTexture);
     EXPECT_TRUE(RVX::HasFlag(uiTexture->visibility, RVX::RHIShaderStage::Pixel));
+    const auto* uiSampler = FindBinding(uiLayout, 1);
+    ASSERT_NE(uiSampler, nullptr);
+    EXPECT_EQ(uiSampler->type, RVX::RHIBindingType::Sampler);
+    EXPECT_TRUE(RVX::HasFlag(uiSampler->visibility, RVX::RHIShaderStage::Pixel));
     EXPECT_NE(cache.GetUITextureSetLayout(), nullptr);
     EXPECT_NE(cache.GetUILayout(), nullptr);
 
@@ -6840,10 +6851,13 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
                                                  std::string(desc.debugName) == "UITextureSetLayout";
                                       });
     ASSERT_NE(uiSetLayoutIt, device.capturedSetLayouts.end());
-    ASSERT_EQ(uiSetLayoutIt->entries.size(), 1u);
+    ASSERT_EQ(uiSetLayoutIt->entries.size(), 2u);
     EXPECT_EQ(uiSetLayoutIt->entries[0].binding, 0u);
-    EXPECT_EQ(uiSetLayoutIt->entries[0].type, RVX::RHIBindingType::CombinedTextureSampler);
+    EXPECT_EQ(uiSetLayoutIt->entries[0].type, RVX::RHIBindingType::SampledTexture);
     EXPECT_TRUE(RVX::HasFlag(uiSetLayoutIt->entries[0].visibility, RVX::RHIShaderStage::Pixel));
+    EXPECT_EQ(uiSetLayoutIt->entries[1].binding, 1u);
+    EXPECT_EQ(uiSetLayoutIt->entries[1].type, RVX::RHIBindingType::Sampler);
+    EXPECT_TRUE(RVX::HasFlag(uiSetLayoutIt->entries[1].visibility, RVX::RHIShaderStage::Pixel));
 
     auto uiPipelineLayoutIt = std::find_if(device.capturedPipelineLayoutDescs.begin(),
                                            device.capturedPipelineLayoutDescs.end(),

@@ -149,6 +149,11 @@ namespace RVX
                 shaderDesc.stage = desc.stage;
                 shaderDesc.entryPoint = desc.entryPoint.c_str();
                 shaderDesc.debugName = desc.path.empty() ? "Shader" : desc.path.c_str();
+                RHIShaderInterface shaderInterface =
+                    BuildRHIShaderInterface(
+                        desc.stage,
+                        cached->reflection);
+                shaderDesc.shaderInterface = &shaderInterface;
 
                 // Handle backend-specific bytecode
                 if (desc.backend == RHIBackendType::OpenGL)
@@ -239,9 +244,7 @@ namespace RVX
         }
 
         // Extract reflection if not provided
-        if (result.compileResult.reflection.resources.empty() &&
-            result.compileResult.reflection.inputs.empty() &&
-            result.compileResult.reflection.pushConstants.empty())
+        if (!result.compileResult.reflection.valid)
         {
             result.compileResult.reflection = ReflectShader(
                 desc.backend, desc.stage, result.compileResult.bytecode);
@@ -252,6 +255,11 @@ namespace RVX
         shaderDesc.stage = desc.stage;
         shaderDesc.entryPoint = desc.entryPoint.c_str();
         shaderDesc.debugName = desc.path.empty() ? "Shader" : desc.path.c_str();
+        RHIShaderInterface shaderInterface =
+            BuildRHIShaderInterface(
+                desc.stage,
+                result.compileResult.reflection);
+        shaderDesc.shaderInterface = &shaderInterface;
 
         if (desc.backend == RHIBackendType::OpenGL)
         {
@@ -408,6 +416,11 @@ namespace RVX
                     shaderDesc.stage = descCopy.stage;
                     shaderDesc.entryPoint = descCopy.entryPoint.c_str();
                     shaderDesc.debugName = descCopy.path.empty() ? "Shader" : descCopy.path.c_str();
+                    RHIShaderInterface shaderInterface =
+                        BuildRHIShaderInterface(
+                            descCopy.stage,
+                            compileResult.reflection);
+                    shaderDesc.shaderInterface = &shaderInterface;
 
                     if (descCopy.backend == RHIBackendType::OpenGL)
                     {

@@ -92,7 +92,46 @@ namespace RVX
     class RHIPipelineLayout : public RHIResource
     {
     public:
+        RHIPipelineLayout() = default;
+        explicit RHIPipelineLayout(const RHIPipelineLayoutDesc& desc)
+            : m_setLayouts(desc.setLayouts)
+            , m_pushConstantSize(desc.pushConstantSize)
+            , m_pushConstantStages(desc.pushConstantStages)
+            , m_hasDescription(true)
+        {
+            if (desc.debugName)
+            {
+                SetDebugName(desc.debugName);
+            }
+        }
         virtual ~RHIPipelineLayout() = default;
+
+        [[nodiscard]] bool HasDescription() const
+        {
+            return m_hasDescription;
+        }
+
+        [[nodiscard]] const std::vector<RHIDescriptorSetLayout*>&
+        GetDescriptorSetLayouts() const
+        {
+            return m_setLayouts;
+        }
+
+        [[nodiscard]] uint32 GetDeclaredPushConstantSize() const
+        {
+            return m_pushConstantSize;
+        }
+
+        [[nodiscard]] RHIShaderStage GetDeclaredPushConstantStages() const
+        {
+            return m_pushConstantStages;
+        }
+
+    private:
+        std::vector<RHIDescriptorSetLayout*> m_setLayouts;
+        uint32 m_pushConstantSize = 0;
+        RHIShaderStage m_pushConstantStages = RHIShaderStage::None;
+        bool m_hasDescription = false;
     };
 
     // =============================================================================

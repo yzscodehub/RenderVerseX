@@ -7,6 +7,8 @@ target_sources(RVX_RHI PRIVATE
     Private/RHIValidation.cpp
     Private/RHIValidationMessageSink.cpp
     Private/RHIConformance.cpp
+    Private/RHIShader.cpp
+    Private/RHIPipelineValidation.cpp
     Private/DescriptorCache.cpp
 )
 

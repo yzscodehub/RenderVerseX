@@ -1,7 +1,7 @@
 #include "MetalPipeline.h"
 #include "MetalResources.h"
 #include "MetalConversions.h"
-#include <map>
+#include "RHI/RHIPipelineValidation.h"
 
 namespace RVX
 {
@@ -9,7 +9,8 @@ namespace RVX
     // MetalPipelineLayout
     // =============================================================================
     MetalPipelineLayout::MetalPipelineLayout(const RHIPipelineLayoutDesc& desc)
-        : m_desc(desc)
+        : RHIPipelineLayout(desc)
+        , m_desc(desc)
     {
         // Metal doesn't have explicit pipeline layouts
         // This is just metadata for descriptor set binding
@@ -41,44 +42,41 @@ namespace RVX
             MTLVertexDescriptor* vertexDesc = [[MTLVertexDescriptor alloc] init];
 
             // Track slot strides for layout setup
-            std::map<uint32, uint32> slotStrides;
-            std::map<uint32, bool> slotPerInstance;
-
-            uint32 currentOffset = 0;
-            for (uint32 i = 0; i < desc.inputLayout.elements.size(); ++i)
+            const RHIVertexInputTranslation vertexInputTranslation =
+                BuildRHIVertexInputTranslation(desc.inputLayout);
+            for (const RHIVertexInputAttributeTranslation& attribute :
+                 vertexInputTranslation.attributes)
             {
-                const auto& elem = desc.inputLayout.elements[i];
-
-                // Calculate offset (0xFFFFFFFF means append)
-                uint32 offset = (elem.alignedByteOffset == 0xFFFFFFFF) ? currentOffset : elem.alignedByteOffset;
+                const auto& elem =
+                    desc.inputLayout.elements[attribute.elementIndex];
 
                 // Use high buffer index for vertex buffers to avoid conflict with constant buffers
                 // Constant buffers use indices 0-29, vertex buffers use 30+
                 constexpr uint32 kVertexBufferIndexBase = 30;
-                
-                vertexDesc.attributes[i].format = ToMTLVertexFormat(elem.format);
-                vertexDesc.attributes[i].offset = offset;
-                vertexDesc.attributes[i].bufferIndex = kVertexBufferIndexBase + elem.inputSlot;
 
-                // Update stride tracking
-                uint32 elemSize = GetFormatBytesPerPixel(elem.format);
-                if (slotStrides.find(elem.inputSlot) == slotStrides.end())
-                {
-                    slotStrides[elem.inputSlot] = 0;
-                }
-                slotStrides[elem.inputSlot] = std::max(slotStrides[elem.inputSlot], offset + elemSize);
-                slotPerInstance[elem.inputSlot] = elem.perInstance;
-
-                currentOffset = offset + elemSize;
+                vertexDesc.attributes[attribute.location].format =
+                    ToMTLVertexFormat(elem.format);
+                vertexDesc.attributes[attribute.location].offset =
+                    attribute.alignedByteOffset;
+                vertexDesc.attributes[attribute.location].bufferIndex =
+                    kVertexBufferIndexBase + attribute.inputSlot;
             }
 
             // Setup vertex buffer layouts (using offset indices to match attributes)
             constexpr uint32 kLayoutBufferIndexBase = 30;
-            for (const auto& [slot, stride] : slotStrides)
+            for (const RHIVertexInputBindingTranslation& binding :
+                 vertexInputTranslation.bindings)
             {
-                vertexDesc.layouts[kLayoutBufferIndexBase + slot].stride = stride;
-                vertexDesc.layouts[kLayoutBufferIndexBase + slot].stepRate = slotPerInstance[slot] ? 1 : 1;
-                vertexDesc.layouts[kLayoutBufferIndexBase + slot].stepFunction = slotPerInstance[slot] ?
+                const uint32 bufferIndex =
+                    kLayoutBufferIndexBase + binding.inputSlot;
+                vertexDesc.layouts[bufferIndex].stride =
+                    binding.stride;
+                vertexDesc.layouts[bufferIndex].stepRate =
+                    binding.perInstance
+                        ? binding.instanceDataStepRate
+                        : 1;
+                vertexDesc.layouts[bufferIndex].stepFunction =
+                    binding.perInstance ?
                     MTLVertexStepFunctionPerInstance : MTLVertexStepFunctionPerVertex;
             }
 

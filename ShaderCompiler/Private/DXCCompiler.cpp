@@ -721,6 +721,7 @@ namespace RVX
             args.push_back(L"2021");
             args.push_back(L"-Zpc");
             args.push_back(L"-spirv");
+            args.push_back(L"-fspv-reflect");
             args.push_back(L"-fvk-use-dx-position-w");
 
             if (options.targetBackend == RHIBackendType::Vulkan)

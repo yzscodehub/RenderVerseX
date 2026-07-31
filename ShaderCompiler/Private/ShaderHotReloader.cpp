@@ -389,6 +389,11 @@ namespace RVX
             shaderDesc.stage = shader.loadDesc.stage;
             shaderDesc.entryPoint = shader.loadDesc.entryPoint.c_str();
             shaderDesc.debugName = shader.path.c_str();
+            RHIShaderInterface shaderInterface =
+                BuildRHIShaderInterface(
+                    shader.loadDesc.stage,
+                    result.reflection);
+            shaderDesc.shaderInterface = &shaderInterface;
 
             if (shader.loadDesc.backend == RHIBackendType::OpenGL)
             {

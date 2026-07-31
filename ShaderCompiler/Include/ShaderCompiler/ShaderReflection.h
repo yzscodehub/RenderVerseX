@@ -1,6 +1,6 @@
 #pragma once
 
-#include "RHI/RHIDefinitions.h"
+#include "RHI/RHIShader.h"
 #include <string>
 #include <vector>
 
@@ -26,16 +26,27 @@ namespace RVX
         struct InputAttribute
         {
             std::string semantic;
-            uint32 location = 0;
+            uint32 semanticIndex = 0;
+            uint32 location = RVX_INVALID_INDEX;
             RHIFormat format = RHIFormat::Unknown;
+            bool systemValue = false;
         };
 
+        bool valid = false;
         std::vector<ResourceBinding> resources;
         std::vector<PushConstantRange> pushConstants;
         std::vector<InputAttribute> inputs;
+        std::vector<InputAttribute> outputs;
     };
 
     ShaderReflection ReflectShader(RHIBackendType backend,
                                    RHIShaderStage stage,
                                    const std::vector<uint8>& bytecode);
+
+    /**
+     * @brief Convert compiler reflection into the compact owned RHI contract.
+     */
+    RHIShaderInterface BuildRHIShaderInterface(
+        RHIShaderStage stage,
+        const ShaderReflection& reflection);
 } // namespace RVX

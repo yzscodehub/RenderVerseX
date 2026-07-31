@@ -935,7 +935,8 @@ namespace RVX
     // DX11 Shader Implementation
     // =============================================================================
     DX11Shader::DX11Shader(DX11Device* device, const RHIShaderDesc& desc)
-        : m_stage(desc.stage)
+        : RHIShader(desc)
+        , m_stage(desc.stage)
     {
         if (desc.bytecode && desc.bytecodeSize > 0)
         {

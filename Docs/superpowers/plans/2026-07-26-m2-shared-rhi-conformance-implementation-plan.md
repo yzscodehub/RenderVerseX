@@ -1,7 +1,7 @@
 # M2 Shared RHI Conformance and Contract Implementation Plan
 
-**Status:** In progress; M1/Task 20 entry gate satisfied; CH1-CH2 complete;
-CH3 next
+**Status:** In progress; M1/Task 20 entry gate satisfied; CH1-CH3 complete;
+CH4 next
 **Parent:** `2026-07-26-m2-tier1-rhi-proof-master-plan.md`
 **Scope:** RHI/ShaderCompiler/RenderGraph shared semantics and conformance
 infrastructure
@@ -315,14 +315,53 @@ CH2 implementation record (2026-07-30):
 
 ### CH3: Add shader/pipeline preflight contract
 
-- [ ] Enrich DXIL/DXBC/SPIR-V reflection.
-- [ ] Normalize a compact immutable shader interface with explicit locations
+- [x] Enrich DXIL/DXBC/SPIR-V reflection.
+- [x] Normalize a compact immutable shader interface with explicit locations
   and a stable hash into RHI shader objects.
-- [ ] Add common validation result codes.
-- [ ] Unit-test missing semantic, wrong semantic index, wrong format, duplicate
+- [x] Add common validation result codes.
+- [x] Unit-test missing semantic, wrong semantic index, wrong format, duplicate
   input, system values, attachment mismatch, and valid no-input shaders.
-- [ ] Add DX12, Vulkan, and Metal translation-structure tests before freezing
+- [x] Add DX12, Vulkan, and Metal translation-structure tests before freezing
   the shared interface.
+
+CH3 implementation record (2026-07-30):
+
+- enriched DXIL/DXBC and SPIR-V reflection with semantic name/index, explicit
+  location, format, system-value identity, stage outputs, complete supported
+  D3D resource-kind mapping, and SPIRV-Cross fallback reflection for Metal;
+- added an owned, schema-versioned `RHIShaderInterface` to `RHIShader`, with
+  canonical ordering and an endian-independent stable hash; shader disk-cache
+  ABI 6 round-trips the complete reflection contract;
+- added backend-neutral graphics-pipeline preflight with structured result
+  codes and diagnostics for stages, vertex inputs, attachment/depth/sample
+  compatibility, descriptor layout visibility/types/counts, and push constants;
+- added one deterministic vertex-input translation consumed by DX12, Vulkan,
+  and Metal; it resolves offsets per input slot, preserves explicit locations,
+  sorts bindings, and rejects duplicate locations, unsupported formats/slots,
+  or non-portable input rates before native creation;
+- split rigid GPU-driven vertex signatures from skinned direct-draw signatures
+  in `DefaultLit.hlsl` and `DepthOnly.hlsl`, so correctness does not depend on
+  compiler dead-input elimination;
+- included shader-interface hashes and explicit input locations in pipeline
+  cache identity;
+- corrected the UI contract discovered by preflight to use separate sampled
+  texture and sampler bindings, avoiding a D3D register-namespace collision in
+  Vulkan/Metal translation;
+- `RHIPipelineValidation`: 10/10 passed, including the permanent
+  `BLENDINDICES0`/`BLENDWEIGHT0` pre-native failure regression and the
+  three-primary-backend translation checkpoint;
+- `ShaderCompilerValidation`: 14/14 passed; combined shader, pipeline-cache,
+  RHI conformance, cross-backend, and architecture selection: 181/181 passed;
+- `UIValidation`: 43 passed and 2 environment-dependent kerning cases skipped;
+- `ModelViewerGPUDrivenSmoke` and `ModelViewerGPUDrivenDisabledSmoke`: passed
+  on real DX12; the enabled smoke creates both rigid opaque and depth-only
+  GPU-driven pipelines;
+- Windows compiled DX12 and Vulkan translations (plus DX11/OpenGL compatibility
+  backends). Metal received the same structural translation checkpoint but
+  still requires macOS compilation and real-device evidence in Task 27;
+- the non-gating `GPUDrivenVisualGoldenValidation` baseline remains under
+  review because its historical color/background image no longer matches the
+  current renderer output. No generated golden image was checked in.
 
 ### CH4: Add descriptor completeness contract
 

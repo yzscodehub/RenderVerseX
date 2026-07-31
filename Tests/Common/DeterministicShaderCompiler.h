@@ -116,6 +116,7 @@ namespace RVX::Tests
             RHIShaderStage stage,
             ShaderReflection& reflection)
         {
+            reflection.valid = true;
             if (stage == RHIShaderStage::Vertex)
             {
                 AddResource(

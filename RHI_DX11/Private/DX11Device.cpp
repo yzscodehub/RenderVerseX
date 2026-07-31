@@ -4,6 +4,7 @@
 #include "DX11CommandContext.h"
 #include "DX11SwapChain.h"
 #include "DX11Upload.h"
+#include "RHI/RHIPipelineValidation.h"
 
 namespace RVX
 {
@@ -681,6 +682,15 @@ namespace RVX
 
     RHIPipelineRef DX11Device::CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc)
     {
+        const RHIPipelineValidationResult validation =
+            ValidateRHIGraphicsPipelineDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR(
+                "DX11 graphics pipeline preflight failed: {}",
+                FormatRHIPipelineValidationResult(validation));
+            return nullptr;
+        }
         return MakeRef<DX11GraphicsPipeline>(this, desc);
     }
 

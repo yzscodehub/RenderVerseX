@@ -181,6 +181,14 @@ struct VSInput
     float4 BoneWeights : BLENDWEIGHT;
 };
 
+struct RigidVSInput
+{
+    float3 Position : POSITION;
+    float3 Normal   : NORMAL;
+    float2 TexCoord : TEXCOORD0;
+    float4 Tangent  : TANGENT;
+};
+
 struct PSInput
 {
     float4 Position    : SV_POSITION;
@@ -263,7 +271,9 @@ PSInput VSMain(VSInput input)
     return output;
 }
 
-PSInput VSMainGPUDriven(VSInput input, uint instanceId : SV_InstanceID)
+PSInput VSMainGPUDriven(
+    RigidVSInput input,
+    uint instanceId : SV_InstanceID)
 {
     GPUInstanceData instance = GPUDrivenInstances[instanceId];
 

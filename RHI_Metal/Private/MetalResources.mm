@@ -378,7 +378,8 @@ namespace RVX
     // MetalShader
     // =============================================================================
     MetalShader::MetalShader(id<MTLDevice> device, const RHIShaderDesc& desc)
-        : m_stage(desc.stage)
+        : RHIShader(desc)
+        , m_stage(desc.stage)
         , m_entryPoint(desc.entryPoint ? desc.entryPoint : "main")
     {
         // The shader bytecode should be MSL source code (as string)

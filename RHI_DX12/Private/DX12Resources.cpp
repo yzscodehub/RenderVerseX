@@ -999,7 +999,8 @@ namespace RVX
     // DX12 Shader Implementation
     // =============================================================================
     DX12Shader::DX12Shader(DX12Device* device, const RHIShaderDesc& desc)
-        : m_stage(desc.stage)
+        : RHIShader(desc)
+        , m_stage(desc.stage)
         , m_entryPoint(desc.entryPoint ? desc.entryPoint : "main")
     {
         if (desc.debugName)

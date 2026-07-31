@@ -34,7 +34,8 @@ namespace RVX
     // DX11 Pipeline Layout
     // =============================================================================
     DX11PipelineLayout::DX11PipelineLayout(DX11Device* device, const RHIPipelineLayoutDesc& desc)
-        : m_setLayouts(desc.setLayouts)
+        : RHIPipelineLayout(desc)
+        , m_setLayouts(desc.setLayouts)
         , m_pushConstantSize(desc.pushConstantSize)
     {
         // Create push constant buffer if needed

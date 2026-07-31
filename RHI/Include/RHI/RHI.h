@@ -12,6 +12,7 @@
 #include "RHI/RHIShader.h"
 #include "RHI/RHIRayTracing.h"
 #include "RHI/RHIPipeline.h"
+#include "RHI/RHIPipelineValidation.h"
 #include "RHI/RHIDescriptor.h"
 #include "RHI/RHIRenderPass.h"
 #include "RHI/RHIQueueTopology.h"

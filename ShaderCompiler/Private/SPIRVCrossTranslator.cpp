@@ -8,6 +8,7 @@
 #include <spirv_cross/spirv_glsl.hpp>
 #include <spirv_cross/spirv_cross.hpp>
 #include <algorithm>
+#include <cctype>
 
 namespace RVX
 {
@@ -99,6 +100,67 @@ namespace RVX
                     break;
             }
             return RHIFormat::Unknown;
+        }
+
+        void PopulateInterfaceAttribute(
+            spirv_cross::Compiler& compiler,
+            const spirv_cross::Resource& resource,
+            ShaderReflection::InputAttribute& attribute)
+        {
+            if (compiler.has_decoration(
+                    resource.id,
+                    spv::DecorationHlslSemanticGOOGLE))
+            {
+                attribute.semantic = compiler.get_decoration_string(
+                    resource.id,
+                    spv::DecorationHlslSemanticGOOGLE);
+            }
+            if (attribute.semantic.empty())
+            {
+                attribute.semantic = compiler.get_name(resource.id);
+            }
+            if (attribute.semantic.empty())
+            {
+                attribute.semantic =
+                    compiler.get_fallback_name(resource.id);
+            }
+
+            size_t suffixBegin = attribute.semantic.size();
+            while (suffixBegin > 0 &&
+                   std::isdigit(static_cast<unsigned char>(
+                       attribute.semantic[suffixBegin - 1])))
+            {
+                --suffixBegin;
+            }
+            if (suffixBegin < attribute.semantic.size())
+            {
+                uint64 parsedIndex = 0;
+                for (size_t i = suffixBegin;
+                     i < attribute.semantic.size();
+                     ++i)
+                {
+                    parsedIndex =
+                        parsedIndex * 10 +
+                        static_cast<uint64>(
+                            attribute.semantic[i] - '0');
+                    if (parsedIndex > UINT32_MAX)
+                    {
+                        parsedIndex = 0;
+                        suffixBegin = attribute.semantic.size();
+                        break;
+                    }
+                }
+                attribute.semanticIndex =
+                    static_cast<uint32>(parsedIndex);
+                attribute.semantic.resize(suffixBegin);
+            }
+
+            attribute.location = compiler.get_decoration(
+                resource.id,
+                spv::DecorationLocation);
+            const auto& type = compiler.get_type(resource.type_id);
+            attribute.format =
+                ToRHIFormat(type.basetype, type.vecsize);
         }
 
         void ExtractReflection(spirv_cross::Compiler& compiler, ShaderReflection& reflection)
@@ -209,16 +271,25 @@ namespace RVX
             for (const auto& input : stageInputs)
             {
                 ShaderReflection::InputAttribute attr;
-                attr.semantic = compiler.get_name(input.id);
-                if (attr.semantic.empty())
-                    attr.semantic = compiler.get_fallback_name(input.id);
-                attr.location = compiler.get_decoration(input.id, spv::DecorationLocation);
-
-                const auto& type = compiler.get_type(input.type_id);
-                attr.format = ToRHIFormat(type.basetype, type.vecsize);
-
+                PopulateInterfaceAttribute(
+                    compiler,
+                    input,
+                    attr);
                 reflection.inputs.push_back(attr);
             }
+
+            auto stageOutputs =
+                compiler.get_shader_resources().stage_outputs;
+            for (const auto& output : stageOutputs)
+            {
+                ShaderReflection::InputAttribute attr;
+                PopulateInterfaceAttribute(
+                    compiler,
+                    output,
+                    attr);
+                reflection.outputs.push_back(attr);
+            }
+            reflection.valid = true;
         }
     }
 
