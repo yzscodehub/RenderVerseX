@@ -43,6 +43,8 @@ namespace RVX
         uint32 heapIndex = UINT32_MAX;      // Which heap this resource is allocated from
         uint64 heapOffset = 0;               // Offset within the heap
         bool isAliased = false;              // Whether this resource shares memory with others
+        ResourceType predecessorType = ResourceType::Texture;
+        uint32 predecessorResourceIndex = RVX_INVALID_INDEX;
     };
 
     // =============================================================================
@@ -152,7 +154,8 @@ namespace RVX
     // =============================================================================
     struct AliasingBarrier
     {
-        ResourceType type = ResourceType::Texture;
+        ResourceType beforeType = ResourceType::Texture;
+        ResourceType afterType = ResourceType::Texture;
         uint32 beforeResourceIndex = RVX_INVALID_INDEX;  // Resource that was using this memory before
         uint32 afterResourceIndex = RVX_INVALID_INDEX;   // Resource that will use this memory now
     };

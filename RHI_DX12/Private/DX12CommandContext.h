@@ -3,6 +3,7 @@
 #include "DX12Common.h"
 #include "DX12DescriptorHeap.h"
 #include "RHI/RHICommandContext.h"
+#include <array>
 
 namespace RVX
 {
@@ -41,6 +42,8 @@ namespace RVX
         void Barriers(
             std::span<const RHIBufferBarrier> bufferBarriers,
             std::span<const RHITextureBarrier> textureBarriers) override;
+        void AliasingBarriers(
+            std::span<const RHIResourceAliasingBarrier> barriers) override;
 
         // Split Barriers
         void BeginBarrier(const RHIBufferBarrier& barrier) override;
@@ -172,6 +175,11 @@ namespace RVX
         // Current state
         DX12Pipeline* m_currentPipeline = nullptr;
         std::vector<DX12DescriptorSetLayout*> m_boundRayTracingDescriptorSetLayouts;
+        std::array<RHIFormat, RVX_MAX_RENDER_TARGETS> m_renderPassColorFormats{};
+        uint32 m_renderPassColorAttachmentCount = 0;
+        RHIFormat m_renderPassDepthFormat = RHIFormat::Unknown;
+        RHISampleCount m_renderPassSampleCount = RHISampleCount::Count1;
+        bool m_renderPassAttachmentSnapshotValid = false;
         bool m_isRecording = false;
         bool m_inRenderPass = false;
 

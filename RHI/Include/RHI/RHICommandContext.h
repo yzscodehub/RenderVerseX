@@ -9,6 +9,13 @@
 
 namespace RVX
 {
+    /** @brief Order two placed resources that reuse overlapping heap memory. */
+    struct RHIResourceAliasingBarrier
+    {
+        RHIResource* resourceBefore = nullptr;
+        RHIResource* resourceAfter = nullptr;
+    };
+
     // =============================================================================
     // Buffer Barrier
     // =============================================================================
@@ -173,6 +180,16 @@ namespace RVX
         virtual void Barriers(
             std::span<const RHIBufferBarrier> bufferBarriers,
             std::span<const RHITextureBarrier> textureBarriers) = 0;
+
+        /**
+         * @brief Batch explicit placed-resource aliasing barriers.
+         *
+         * Backends advertise real support through
+         * RHICapabilities::supportsExplicitAliasingBarriers. The default is a
+         * compatibility no-op and must never be used when the capability is false.
+         */
+        virtual void AliasingBarriers(
+            std::span<const RHIResourceAliasingBarrier>) {}
 
         // Convenience overloads
         void BufferBarrier(RHIBuffer* buffer, RHIResourceState before, RHIResourceState after)

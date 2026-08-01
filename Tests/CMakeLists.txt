@@ -2223,6 +2223,29 @@ if(RVX_ENABLE_DX12 AND TARGET ModelViewer)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
+    if(RVX_ENABLE_GPU_VALIDATION_TESTS)
+        add_test(
+            NAME ModelViewerGPUDrivenGBVSmoke
+            COMMAND $<TARGET_FILE:ModelViewer>
+                --smoke
+                --model "${CMAKE_CURRENT_SOURCE_DIR}/Fixtures/ModelViewer/R7Triangle.gltf"
+                --backend dx12
+                --width ${RVX_MODELVIEWER_GPU_DRIVEN_SMOKE_WIDTH}
+                --height ${RVX_MODELVIEWER_GPU_DRIVEN_SMOKE_HEIGHT}
+                --frames 1
+                --no-ibl
+                --gpu-driven-culling-test-scene
+                --expect-gpu-driven-culling-ready
+                --validation
+                --gpu-validation
+        )
+        set_tests_properties(ModelViewerGPUDrivenGBVSmoke PROPERTIES
+            LABELS "nightly;gpu;gpu-driven;gpu-validation"
+            TIMEOUT 180
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+    endif()
+
     add_test(
         NAME GPUDrivenVisualGoldenValidation
         COMMAND $<TARGET_FILE:VisualGoldenValidation>

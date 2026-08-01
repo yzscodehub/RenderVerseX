@@ -358,6 +358,49 @@ TEST(DX12Validation, DepthStencilTexture)
     EXPECT_EQ(texture->GetFormat(), RHIFormat::D24_UNORM_S8_UINT);
 }
 
+TEST(DX12Validation, OptionalOptimizedClearUsesExactColorAndReverseDepthValues)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    RHITextureDesc absentDesc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA16_FLOAT);
+    absentDesc.debugName = "OptimizedClearAbsent";
+    RHITextureRef absent = device->CreateTexture(absentDesc);
+    ASSERT_NE(absent.Get(), nullptr);
+    EXPECT_EQ(static_cast<DX12Texture*>(absent.Get())
+                  ->GetDesc()
+                  .optimizedClearValue.type,
+              RHIOptimizedClearValueType::None);
+
+    const RHIClearColor sceneClear = {0.1f, 0.1f, 0.15f, 1.0f};
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA16_FLOAT);
+    colorDesc.SetOptimizedClearColor(sceneClear);
+    colorDesc.debugName = "OptimizedClearColor";
+    RHITextureRef color = device->CreateTexture(colorDesc);
+    ASSERT_NE(color.Get(), nullptr);
+    EXPECT_TRUE(AreRHIClearColorsEqual(
+        static_cast<DX12Texture*>(color.Get())
+            ->GetDesc()
+            .optimizedClearValue.color,
+        sceneClear));
+
+    const RHIClearDepthStencil reverseZClear = {0.0f, 0};
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
+        64, 64, RHIFormat::D32_FLOAT);
+    depthDesc.SetOptimizedClearDepthStencil(reverseZClear);
+    depthDesc.debugName = "OptimizedClearReverseZDepth";
+    RHITextureRef depth = device->CreateTexture(depthDesc);
+    ASSERT_NE(depth.Get(), nullptr);
+    EXPECT_TRUE(AreRHIClearDepthStencilValuesEqual(
+        static_cast<DX12Texture*>(depth.Get())
+            ->GetDesc()
+            .optimizedClearValue.depthStencil,
+        reverseZClear));
+}
+
 TEST(DX12Validation, TextureView)
 {
     RHIDeviceDesc deviceDesc;
@@ -599,6 +642,7 @@ TEST(DX12Validation, DescriptorAndBarrierCapabilities)
     EXPECT_TRUE(caps.supportsDynamicDescriptorOffsets);
     EXPECT_GE(caps.maxDescriptorSets, 4u);
     EXPECT_TRUE(caps.supportsExplicitResourceBarriers);
+    EXPECT_TRUE(caps.supportsExplicitAliasingBarriers);
     EXPECT_FALSE(caps.emulatesResourceBarriers);
     EXPECT_TRUE(caps.supportsSplitBarrier);
 }
@@ -749,6 +793,7 @@ TEST(DX12Validation, PlacedTexture)
 
     // Create placed texture
     auto textureDesc = RHITextureDesc::RenderTarget(1024, 1024, RHIFormat::RGBA16_FLOAT);
+    textureDesc.SetOptimizedClearColor({0.1f, 0.1f, 0.15f, 1.0f});
     textureDesc.debugName = "PlacedRenderTarget";
 
     auto memReq = device->GetTextureMemoryRequirements(textureDesc);
@@ -759,6 +804,59 @@ TEST(DX12Validation, PlacedTexture)
     ASSERT_NE(nullptr, texture.Get());
     EXPECT_EQ(texture->GetWidth(), 1024u);
     EXPECT_EQ(texture->GetHeight(), 1024u);
+    EXPECT_TRUE(static_cast<DX12Texture*>(texture.Get())
+                    ->GetDesc()
+                    .optimizedClearValue.IsPresent());
+}
+
+TEST(DX12Validation, PlacedTextureAliasingBarrierRecordsOnNativeCommandList)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    RHITextureDesc textureDesc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA16_FLOAT);
+    textureDesc.SetOptimizedClearColor({0.1f, 0.1f, 0.15f, 1.0f});
+
+    const IRHIDevice::MemoryRequirements requirements =
+        device->GetTextureMemoryRequirements(textureDesc);
+    ASSERT_GT(requirements.size, 0u);
+
+    RHIHeapDesc heapDesc;
+    heapDesc.size = requirements.size;
+    heapDesc.alignment = requirements.alignment;
+    heapDesc.type = RHIHeapType::Default;
+    heapDesc.flags = RHIHeapFlags::AllowRenderTargets;
+    heapDesc.debugName = "AliasingBarrierHeap";
+    RHIHeapRef heap = device->CreateHeap(heapDesc);
+    ASSERT_NE(heap.Get(), nullptr);
+
+    RHITextureRef before = device->CreatePlacedTexture(
+        heap.Get(), 0, textureDesc);
+    RHITextureRef after = device->CreatePlacedTexture(
+        heap.Get(), 0, textureDesc);
+    ASSERT_NE(before.Get(), nullptr);
+    ASSERT_NE(after.Get(), nullptr);
+
+    RHICommandContextRef context = device->CreateCommandContext(
+        RHICommandQueueType::Graphics);
+    ASSERT_NE(context.Get(), nullptr);
+    context->Begin();
+    const RHIResourceAliasingBarrier aliasingBarrier = {
+        before.Get(),
+        after.Get()};
+    context->AliasingBarriers(
+        std::span<const RHIResourceAliasingBarrier>(&aliasingBarrier, 1));
+    context->End();
+    RHIFenceRef fence = device->CreateFence(0);
+    ASSERT_NE(fence.Get(), nullptr);
+    const uint64 submittedValue =
+        device->SubmitCommandContext(context.Get(), fence.Get());
+    ASSERT_GT(submittedValue, 0u);
+    device->WaitForFence(fence.Get(), submittedValue);
+    EXPECT_GE(fence->GetCompletedValue(), submittedValue);
+    device->WaitIdle();
 }
 
 TEST(DX12Validation, PlacedBuffer)

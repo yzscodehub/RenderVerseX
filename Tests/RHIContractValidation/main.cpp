@@ -1044,6 +1044,15 @@ namespace RVX::Tests
 
         EXPECT_FALSE(result);
         EXPECT_NE(result.message.find("split barriers"), std::string::npos);
+
+        capabilities = MakeValidCapabilities(RHIBackendType::DX11);
+        capabilities.supportsExplicitResourceBarriers = false;
+        capabilities.supportsExplicitAliasingBarriers = true;
+
+        result = ValidateRHICapabilities(capabilities);
+
+        EXPECT_FALSE(result);
+        EXPECT_NE(result.message.find("aliasing barriers"), std::string::npos);
     }
 
     TEST(RHIContractValidation, RejectsQueueFenceContradictions)
@@ -1396,6 +1405,35 @@ namespace RVX::Tests
         EXPECT_EQ(renderCmake.find("RHI_DX12"), std::string::npos);
         EXPECT_EQ(renderCmake.find("RHI_Vulkan"), std::string::npos);
         EXPECT_EQ(renderCmake.find("RHI_Metal"), std::string::npos);
+    }
+
+    TEST(RHIContractValidation, OptimizedClearIsOptionalTypedAndPartOfTextureIdentity)
+    {
+        RHITextureDesc absent = RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA16_FLOAT);
+        EXPECT_TRUE(IsRHIOptimizedClearValueCompatible(absent));
+        EXPECT_FALSE(absent.optimizedClearValue.IsPresent());
+
+        RHITextureDesc color = absent;
+        color.SetOptimizedClearColor({0.1f, 0.2f, 0.3f, 1.0f});
+        EXPECT_TRUE(IsRHIOptimizedClearValueCompatible(color));
+        EXPECT_FALSE(AreRHITextureDescsEquivalent(absent, color));
+
+        RHITextureDesc sameColor = color;
+        EXPECT_TRUE(AreRHITextureDescsEquivalent(color, sameColor));
+        sameColor.optimizedClearValue.color.b = 0.4f;
+        EXPECT_FALSE(AreRHITextureDescsEquivalent(color, sameColor));
+
+        RHITextureDesc depth = RHITextureDesc::DepthStencil(
+            64, 64, RHIFormat::D32_FLOAT);
+        depth.SetOptimizedClearDepthStencil({0.0f, 0});
+        EXPECT_TRUE(IsRHIOptimizedClearValueCompatible(depth));
+
+        depth.SetOptimizedClearColor({0.0f, 0.0f, 0.0f, 1.0f});
+        EXPECT_FALSE(IsRHIOptimizedClearValueCompatible(depth));
+
+        color.SetOptimizedClearDepthStencil({1.0f, 0});
+        EXPECT_FALSE(IsRHIOptimizedClearValueCompatible(color));
     }
 
 } // namespace RVX::Tests

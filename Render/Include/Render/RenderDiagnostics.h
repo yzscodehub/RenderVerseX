@@ -6,6 +6,7 @@
  */
 
 #include "Render/RenderRuntimeTypes.h"
+#include "Render/GPUDriven/GPUDrivenDiagnostics.h"
 #include "RenderContracts/RenderFramePacket.h"
 
 #include <array>
@@ -157,9 +158,15 @@ namespace RVX
         uint32 distanceCulledDrawItemCount = 0;
         uint32 skippedMissingGpuDataCount = 0;
         bool opaqueIndirectRequested = false;
+        bool opaqueCullingReady = false;
+        bool opaquePipelineReady = false;
         bool opaqueIndirectEligible = false;
+        bool opaqueIndirectSubmitted = false;
+        uint32 opaqueDirectDrawCount = 0;
         uint32 opaqueGpuDrivenIndirectBatchCount = 0;
         uint32 opaqueGpuDrivenIndirectDrawCount = 0;
+        GPUDrivenDrawFallbackReason opaqueFallbackReason =
+            GPUDrivenDrawFallbackReason::Disabled;
     };
 
     struct RenderParticleFeatureDiagnostics

@@ -12,6 +12,7 @@
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Context/RenderContext.h"
 #include "Render/GPUDriven/GPUCulling.h"
+#include "Render/GPUDriven/GPUDrivenDiagnostics.h"
 #include "Render/Resources/RenderResourceTypes.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/IRenderPass.h"
@@ -205,13 +206,19 @@ namespace RVX
         uint32 frustumCulledDrawItemCount = 0;
         uint32 distanceCulledDrawItemCount = 0;
         bool opaqueIndirectRequested = false;
+        bool opaqueCullingReady = false;
+        bool opaquePipelineReady = false;
         bool opaqueIndirectEligible = false;
+        bool opaqueIndirectSubmitted = false;
+        uint32 opaqueDirectDrawCount = 0;
         uint32 opaqueGpuDrivenIndirectBatchCount = 0;
         uint32 opaqueGpuDrivenIndirectDrawCount = 0;
+        GPUDrivenDrawFallbackReason opaqueFallbackReason =
+            GPUDrivenDrawFallbackReason::Disabled;
     };
 
     inline constexpr uint32 RVX_SCENE_RENDER_FEATURE_REPORT_SCHEMA_VERSION = 1;
-    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 2;
+    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 3;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 24;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION = 24;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION = 25;
@@ -1142,7 +1149,7 @@ namespace RVX
         const SceneGPUDrivenCullingStats& GetGPUDrivenCullingStats() const { return m_gpuDrivenCullingStats; }
 
         /// Enable or disable GPU-driven draw-list culling. CPU fallback is used until compute pipelines are ready.
-        void SetGPUDrivenCullingEnabled(bool enabled) { m_gpuDrivenCullingEnabled = enabled; }
+        void SetGPUDrivenCullingEnabled(bool enabled);
         bool IsGPUDrivenCullingEnabled() const { return m_gpuDrivenCullingEnabled; }
         void SetGPUDrivenCullingConfig(const GPUCullingConfig& config)
         {

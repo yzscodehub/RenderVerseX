@@ -4,6 +4,7 @@
  */
 
 #include "Render/Passes/OpaquePass.h"
+#include "Render/Passes/RenderPassClearValues.h"
 #include "Core/Log.h"
 #include "Render/GPUDriven/GPUCulling.h"
 #include "Resources/RenderResourceResolver.h"
@@ -385,20 +386,45 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
                                           RHIFormat colorTargetFormat,
                                           RHIDescriptorSet* frameSet)
 {
-    m_drawStats.gpuDrivenRequested = m_gpuDrivenOpaqueIndirectEnabled && m_gpuCulling != nullptr;
-    if (!m_gpuDrivenOpaqueIndirectEnabled ||
-        !m_pipelineCache ||
-        !m_materialSystem ||
-        !m_gpuCulling ||
-        !m_gpuCulling->GetInstanceBuffer() ||
-        (!m_gpuCulling->WasGpuExecutionUsedLastCull() && !m_gpuCulling->WasCpuFallbackUsedLastCull()))
+    m_drawStats.gpuDrivenRequested = m_gpuDrivenOpaqueIndirectEnabled;
+    m_drawStats.gpuDrivenFallbackReason = GPUDrivenDrawFallbackReason::Disabled;
+    if (!m_gpuDrivenOpaqueIndirectEnabled)
     {
         return false;
     }
+    if (!m_pipelineCache)
+    {
+        m_drawStats.gpuDrivenFallbackReason =
+            GPUDrivenDrawFallbackReason::PipelineCacheUnavailable;
+        return false;
+    }
+    if (!m_materialSystem)
+    {
+        m_drawStats.gpuDrivenFallbackReason =
+            GPUDrivenDrawFallbackReason::MaterialSystemUnavailable;
+        return false;
+    }
+    if (!m_gpuCulling)
+    {
+        m_drawStats.gpuDrivenFallbackReason =
+            GPUDrivenDrawFallbackReason::CullingUnavailable;
+        return false;
+    }
+    if (!m_gpuCulling->GetInstanceBuffer() ||
+        (!m_gpuCulling->WasGpuExecutionUsedLastCull() &&
+         !m_gpuCulling->WasCpuFallbackUsedLastCull()))
+    {
+        m_drawStats.gpuDrivenFallbackReason =
+            GPUDrivenDrawFallbackReason::CullingOutputUnavailable;
+        return false;
+    }
+    m_drawStats.gpuDrivenCullingReady = true;
 
     uint32 drawItemCount = 0;
     if (!AreGPUDrivenOpaqueGroupsDrawable(drawItemCount))
     {
+        m_drawStats.gpuDrivenFallbackReason =
+            GPUDrivenDrawFallbackReason::DrawGroupsUnavailable;
         return false;
     }
 
@@ -420,14 +446,17 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         const RenderDrawItem* representativeItem = FindGPUDrivenGroupRepresentative(group);
         if (!representativeItem || representativeItem->objectIndex >= m_renderScene->GetObjectCount())
         {
+            m_drawStats.gpuDrivenFallbackReason =
+                GPUDrivenDrawFallbackReason::DrawItemUnavailable;
             return false;
         }
 
-        const RenderObject& obj = m_renderScene->GetObject(representativeItem->objectIndex);
         MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
             m_resourceRegistry, group.mesh);
         if (!buffers.IsValid())
         {
+            m_drawStats.gpuDrivenFallbackReason =
+                GPUDrivenDrawFallbackReason::MeshResourcesUnavailable;
             return false;
         }
 
@@ -435,6 +464,8 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
             m_pipelineCache->GetGPUDrivenPipelineForVariant(group.pipelineVariant, colorTargetFormat);
         if (!pipeline)
         {
+            m_drawStats.gpuDrivenFallbackReason =
+                GPUDrivenDrawFallbackReason::PipelineUnavailable;
             return false;
         }
 
@@ -445,6 +476,8 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
                 group.material, view.viewCache, materialOptions);
         if (!materialBinding.IsDrawable())
         {
+            m_drawStats.gpuDrivenFallbackReason =
+                GPUDrivenDrawFallbackReason::MaterialBindingUnavailable;
             return false;
         }
 
@@ -455,6 +488,14 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         batch.materialBinding = std::move(materialBinding);
         batches.push_back(std::move(batch));
     }
+    m_drawStats.gpuDrivenPipelineReady = true;
+
+    if (!frameSet)
+    {
+        m_drawStats.gpuDrivenFallbackReason =
+            GPUDrivenDrawFallbackReason::FrameBindingsUnavailable;
+        return false;
+    }
 
     m_pipelineCache->UpdateObjectConstants(Mat4Identity(),
                                            Mat4Identity(),
@@ -463,13 +504,22 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
                                            false);
     if (!m_pipelineCache->UpdateObjectInstanceBuffer(m_gpuCulling->GetInstanceBuffer()))
     {
+        m_drawStats.gpuDrivenFallbackReason =
+            GPUDrivenDrawFallbackReason::ObjectBindingUnavailable;
         return false;
     }
 
     RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
+    if (!objectSet)
+    {
+        m_drawStats.gpuDrivenFallbackReason =
+            GPUDrivenDrawFallbackReason::ObjectBindingUnavailable;
+        return false;
+    }
     const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
     m_drawStats.gpuDrivenEligible = true;
 
+    bool submittedAny = false;
     for (const GPUDrivenOpaqueBatch& batch : batches)
     {
         ctx.SetPipeline(batch.pipeline);
@@ -509,12 +559,30 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         const uint32 submittedDraws = m_gpuCulling->DrawIndexedIndirectGroup(ctx, batch.groupIndex);
         if (submittedDraws > 0)
         {
+            submittedAny = true;
             ++m_drawStats.gpuDrivenIndirectBatchCount;
             m_drawStats.gpuDrivenIndirectDrawCount += submittedDraws;
         }
     }
 
-    return true;
+    if (submittedAny)
+    {
+        m_drawStats.gpuDrivenSubmitted = true;
+        m_drawStats.gpuDrivenFallbackReason = GPUDrivenDrawFallbackReason::None;
+        return true;
+    }
+
+    if (m_gpuCulling->WasCpuFallbackUsedLastCull() &&
+        m_gpuCulling->GetDrawCount() == 0)
+    {
+        m_drawStats.gpuDrivenFallbackReason =
+            GPUDrivenDrawFallbackReason::CulledAllDraws;
+        return true;
+    }
+
+    m_drawStats.gpuDrivenFallbackReason =
+        GPUDrivenDrawFallbackReason::NoIndirectSubmission;
+    return false;
 }
 
 void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
@@ -696,8 +764,10 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
 
     // 1. Begin render pass using builder pattern
     RHIRenderPassDesc rpDesc;
-    rpDesc.AddColorAttachment(colorTargetView, RHILoadOp::Clear, RHIStoreOp::Store,
-                              {0.1f, 0.1f, 0.15f, 1.0f});
+    rpDesc.AddColorAttachment(colorTargetView,
+                              RHILoadOp::Clear,
+                              RHIStoreOp::Store,
+                              RVX_SCENE_COLOR_CLEAR_VALUE);
 
     if (m_depthTargetView)
     {

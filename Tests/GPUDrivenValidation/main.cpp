@@ -1,5 +1,6 @@
 #include "Core/Log.h"
 #include "Render/GPUDriven/GPUCulling.h"
+#include "Render/GPUDriven/GPUDrivenDiagnostics.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderScene.h"
 #include "RHI/RHI.h"
@@ -725,6 +726,11 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererFrameDiagnosticsExposeGPUDrivenE
 
     EXPECT_NE(header.find("bool executionDecisionAvailable = false;"), std::string::npos);
     EXPECT_NE(header.find("GPUCullingExecutionDecision executionDecision;"), std::string::npos);
+    EXPECT_NE(header.find("bool opaqueCullingReady = false;"), std::string::npos);
+    EXPECT_NE(header.find("bool opaquePipelineReady = false;"), std::string::npos);
+    EXPECT_NE(header.find("bool opaqueIndirectSubmitted = false;"), std::string::npos);
+    EXPECT_NE(header.find("GPUDrivenDrawFallbackReason opaqueFallbackReason"),
+              std::string::npos);
     EXPECT_NE(header.find("SceneGPUDrivenCullingStats gpuDrivenCullingStats;"), std::string::npos);
     EXPECT_NE(source.find("diagnostics.gpuDrivenCullingStats = m_gpuDrivenCullingStats;"),
               std::string::npos);
@@ -732,6 +738,19 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererFrameDiagnosticsExposeGPUDrivenE
               std::string::npos);
     EXPECT_NE(source.find("m_gpuDrivenCullingStats.executionDecision = m_gpuCulling->GetExecutionDecision();"),
               std::string::npos);
+}
+
+TEST_F(GPUDrivenValidationFixture, GPUDrivenDrawFallbackReasonNamesAreStable)
+{
+    EXPECT_STREQ(GetGPUDrivenDrawFallbackReasonName(
+                     GPUDrivenDrawFallbackReason::None),
+                 "None");
+    EXPECT_STREQ(GetGPUDrivenDrawFallbackReasonName(
+                     GPUDrivenDrawFallbackReason::PipelineUnavailable),
+                 "PipelineUnavailable");
+    EXPECT_STREQ(GetGPUDrivenDrawFallbackReasonName(
+                     GPUDrivenDrawFallbackReason::Disabled),
+                 "Disabled");
 }
 
 TEST_F(GPUDrivenValidationFixture, GPUCullingDeclaresComputeCompactionAndIndirectCountContracts)
@@ -831,6 +850,11 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
                   "frameSettings.gpuCulling.enabled = !options.disableGPUDrivenCulling"),
               std::string::npos);
     EXPECT_NE(modelViewer.find("IsGPUDrivenCullingReady"), std::string::npos);
+    EXPECT_NE(modelViewer.find("IsGPUDrivenDirectFallbackReady"), std::string::npos);
+    EXPECT_NE(modelViewer.find("opaquePipelineReady"), std::string::npos);
+    EXPECT_NE(modelViewer.find("opaqueIndirectSubmitted"), std::string::npos);
+    EXPECT_NE(modelViewer.find("opaqueDirectDrawCount"), std::string::npos);
+    EXPECT_NE(modelViewer.find("opaqueFallbackReason"), std::string::npos);
     EXPECT_NE(modelViewer.find("opaqueGpuDrivenIndirectDrawCount"), std::string::npos);
     EXPECT_NE(modelViewer.find("stats.graphInputDrawItemCount > stats.visibleCullableDrawItemCount"),
               std::string::npos);

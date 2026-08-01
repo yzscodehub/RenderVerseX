@@ -930,6 +930,9 @@ TEST(ParticleValidation, ParticleSoftDepthSourceGuardrails)
     ASSERT_FALSE(sceneRendererSource.empty());
     EXPECT_NE(sceneRendererSource.find("RHITextureUsage::DepthStencil | RHITextureUsage::ShaderResource"),
               std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("SetExportState(m_viewData.depthTarget, RHIResourceState::DepthWrite)"),
+    EXPECT_NE(sceneRendererSource.find("m_renderGraph->SetExportAccess("),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find(
+                  "MakeRHIAccessSnapshot(RHIResourceState::DepthWrite"),
               std::string::npos);
 }

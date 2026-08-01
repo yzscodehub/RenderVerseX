@@ -539,6 +539,9 @@ namespace RVX
     void RenderGraph::SetDevice(IRHIDevice* device)
     {
         m_impl->device = device;
+        m_impl->enableMemoryAliasing =
+            m_impl->memoryAliasingRequested && device &&
+            device->GetCapabilities().supportsExplicitAliasingBarriers;
     }
 
     void RenderGraph::SetTransientResourcePool(TransientResourcePool* pool)
@@ -958,7 +961,7 @@ namespace RVX
         if (!m_impl || !m_impl->pass || !buffer.IsValid())
             return buffer;
 
-        ResourceUsage usage;
+        ResourceUsage usage{};
         usage.type = ResourceType::Buffer;
         usage.index = buffer.index;
         usage.desiredState = state;
@@ -1006,7 +1009,6 @@ namespace RVX
         m_impl->pass->usages.push_back(usage);
         return buffer;
     }
-
     RGTextureHandle RenderGraphBuilder::ReadWrite(RGTextureHandle texture)
     {
         if (m_impl && m_impl->compatibilityStateProjectionCount)
@@ -1040,7 +1042,6 @@ namespace RVX
         m_impl->pass->usages.push_back(usage);
         return texture;
     }
-
     RGBufferHandle RenderGraphBuilder::ReadWrite(RGBufferHandle buffer)
     {
         if (m_impl && m_impl->compatibilityStateProjectionCount)
@@ -1878,11 +1879,13 @@ namespace RVX
     void RenderGraph::SetMemoryAliasingEnabled(bool enabled)
     {
         m_impl->memoryAliasingRequested = enabled;
-        if (enabled)
+        m_impl->enableMemoryAliasing =
+            enabled && m_impl->device &&
+            m_impl->device->GetCapabilities().supportsExplicitAliasingBarriers;
+        if (enabled && m_impl->device && !m_impl->enableMemoryAliasing)
         {
             RVX_CORE_WARN("RenderGraph memory aliasing requested, but explicit aliasing barriers are unsupported; keeping aliasing disabled");
         }
-        m_impl->enableMemoryAliasing = false;
     }
 
     bool RenderGraph::IsMemoryAliasingEnabled() const

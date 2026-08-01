@@ -1,6 +1,6 @@
 # M2 DX12 Correctness Closure Implementation Plan
 
-**Status:** Proposed; best-practice review incorporated
+**Status:** Complete (2026-08-01); native, visual, fallback, and dedicated GBV gates passed
 **Parent:** `2026-07-26-m2-tier1-rhi-proof-master-plan.md`
 **Depends on:** Shared RHI conformance Tasks CH1-CH5
 **Scope:** Native DX12 translation and the current ModelViewer regression
@@ -143,32 +143,32 @@ Scene color and reverse-Z depth owners provide a value only when stable.
 
 ### DX1: Add red contract regressions
 
-- [ ] Pipeline validation rejects a GPU-driven shader requiring bone semantics
+- [x] Pipeline validation rejects a GPU-driven shader requiring bone semantics
   with the four-element layout.
-- [ ] Descriptor validation rejects one missing binding and one missing array
+- [x] Descriptor validation rejects one missing binding and one missing array
   element.
-- [ ] Binding an incomplete DX12 descriptor set records a deterministic
+- [x] Binding an incomplete DX12 descriptor set records a deterministic
   failure.
-- [ ] A mutable UAV/SRV binding does not map to `DATA_STATIC`.
-- [ ] A two-frame GPU-culling import starts from the prior export state.
-- [ ] A pooled post-process texture reacquires its prior state.
-- [ ] Same-state UAV write/read and write/write cases emit a memory dependency.
-- [ ] A discarded pooled texture retains its real before state while marking
+- [x] A mutable UAV/SRV binding does not map to `DATA_STATIC`.
+- [x] A two-frame GPU-culling import starts from the prior export state.
+- [x] A pooled post-process texture reacquires its prior state.
+- [x] Same-state UAV write/read and write/write cases emit a memory dependency.
+- [x] A discarded pooled texture retains its real before state while marking
   previous contents invalid.
-- [ ] An absent optimized clear creates a valid render target without a
+- [x] An absent optimized clear creates a valid render target without a
   mismatch contract.
 
 ### DX2: Fix and validate shader/pipeline interfaces
 
-- [ ] Add rigid GPU-driven input structs to DefaultLit and DepthOnly shaders.
-- [ ] Preserve skinned direct-draw entry points and layouts.
-- [ ] Enrich DXIL reflection with semantic index/system-value data.
-- [ ] Normalize a compact shader interface into the DX12 shader object; keep
+- [x] Add rigid GPU-driven input structs to DefaultLit and DepthOnly shaders.
+- [x] Preserve skinned direct-draw entry points and layouts.
+- [x] Enrich DXIL reflection with semantic index/system-value data.
+- [x] Normalize a compact shader interface into the DX12 shader object; keep
   full compiler reflection out of the runtime RHI object.
-- [ ] Run common pipeline preflight before
+- [x] Run common pipeline preflight before
   `CreateGraphicsPipelineState`.
-- [ ] Include normalized interface identity in cache hashing.
-- [ ] Add structured DX12 native failure details as a final fallback.
+- [x] Include normalized interface identity in cache hashing.
+- [x] Add structured DX12 native failure details as a final fallback.
 
 Focused exit:
 
@@ -177,14 +177,14 @@ Focused exit:
 
 ### DX3: Close descriptor table initialization
 
-- [ ] Map each layout binding/array element to a deterministic table slot.
-- [ ] Track initialized bits for CBV/SRV/UAV and sampler ranges.
-- [ ] Validate completeness after construction/update.
-- [ ] Make `IsValid()` include allocation and completeness.
-- [ ] Refuse all graphics/compute/ray-tracing bindings of invalid sets.
-- [ ] Ensure frame, object, material, GPU-culling, and ray-tracing sets provide
+- [x] Map each layout binding/array element to a deterministic table slot.
+- [x] Track initialized bits for CBV/SRV/UAV and sampler ranges.
+- [x] Validate completeness after construction/update.
+- [x] Make `IsValid()` include allocation and completeness.
+- [x] Refuse all graphics/compute/ray-tracing bindings of invalid sets.
+- [x] Ensure frame, object, material, GPU-culling, and ray-tracing sets provide
   fallbacks for every required binding.
-- [ ] Keep replacement snapshots in the existing retirement flow.
+- [x] Keep replacement snapshots in the existing retirement flow.
 
 Focused exit:
 
@@ -193,13 +193,13 @@ Focused exit:
 
 ### DX4: Correct root-signature descriptor/data flags
 
-- [ ] Translate complete snapshot lifetime and resource-data volatility
+- [x] Translate complete snapshot lifetime and resource-data volatility
   independently to root descriptors/ranges.
-- [ ] Default mutable SRV/UAV data to legal data-volatility semantics without
+- [x] Default mutable SRV/UAV data to legal data-volatility semantics without
   unnecessarily making stable descriptor tables volatile.
-- [ ] Keep constant-buffer root descriptors valid for their update pattern.
-- [ ] Add structural and native tests for the realized root signature.
-- [ ] Do not globally disable Root Signature 1.1 or native validation.
+- [x] Keep constant-buffer root descriptors valid for their update pattern.
+- [x] Add structural and native tests for the realized root signature.
+- [x] Do not globally disable Root Signature 1.1 or native validation.
 
 Focused exit:
 
@@ -208,19 +208,19 @@ Focused exit:
 
 ### DX5: Close scoped dependencies and persistent/pooled access handoff
 
-- [ ] Translate shared dependencies to transition, UAV/memory, and aliasing
+- [x] Translate shared dependencies to transition, UAV/memory, and aliasing
   barriers.
-- [ ] Do not skip a dependency solely because before/after states match.
-- [ ] Add access/content snapshots to GPU-culling owned buffers.
-- [ ] Feed snapshot exports back after graph execution.
-- [ ] Add state-bearing transient texture/buffer leases.
-- [ ] Persist subresource/range state where a resource uses partial tracking.
-- [ ] Preserve completion-safety before pool reuse.
-- [ ] Verify swapchain buffers remain Present-owned and depth state remains
+- [x] Do not skip a dependency solely because before/after states match.
+- [x] Add access/content snapshots to GPU-culling owned buffers.
+- [x] Feed snapshot exports back after graph execution.
+- [x] Add state-bearing transient texture/buffer leases.
+- [x] Persist subresource/range state where a resource uses partial tracking.
+- [x] Preserve completion-safety before pool reuse.
+- [x] Verify swapchain buffers remain Present-owned and depth state remains
   SceneRenderer-owned.
-- [ ] Make upload/presentation and other non-graph paths commit their final
+- [x] Make upload/presentation and other non-graph paths commit their final
   snapshots at the ownership boundary.
-- [ ] Remove compatibility `Common` imports from production GPU-culling paths.
+- [x] Remove compatibility `Common` imports from production GPU-culling paths.
 
 Focused exit:
 
@@ -232,11 +232,11 @@ Focused exit:
 
 ### DX6: Close RenderPass clear contract
 
-- [ ] Add optional optimized clear translation in normal and placed textures.
-- [ ] Include it in texture descriptor equality/hash.
-- [ ] Set or omit Scene color/PostProcess clear hints deliberately.
-- [ ] Use the configured reverse-Z depth clear value.
-- [ ] Validate pass attachment format/sample count against PSO preflight.
+- [x] Add optional optimized clear translation in normal and placed textures.
+- [x] Include it in texture descriptor equality/hash.
+- [x] Set or omit Scene color/PostProcess clear hints deliberately.
+- [x] Use the configured reverse-Z depth clear value.
+- [x] Validate pass attachment format/sample count against PSO preflight.
 
 Focused exit:
 
@@ -248,14 +248,14 @@ Focused exit:
 The direct-draw fallback already exists in `OpaquePass` and `DepthPrepass`.
 Preserve it and make the selection honest:
 
-- [ ] Record `Requested`, `CullingReady`, `PipelineReady`, `Eligible`,
+- [x] Record `Requested`, `CullingReady`, `PipelineReady`, `Eligible`,
   `Submitted`, and fallback reason separately.
-- [ ] Do not mark eligible before all batches, material sets, buffers, and PSOs
+- [x] Do not mark eligible before all batches, material sets, buffers, and PSOs
   are ready.
-- [ ] If indirect preparation fails, keep the unfiltered direct draw list.
-- [ ] Add a forced-PSO-failure test that produces direct draws and zero indirect
+- [x] If indirect preparation fails, keep the unfiltered direct draw list.
+- [x] Add a forced-PSO-failure test that produces direct draws and zero indirect
   draws.
-- [ ] Add a successful indirect test that produces no duplicate direct draws.
+- [x] Add a successful indirect test that produces no duplicate direct draws.
 
 ### DX8: Native and integration gates
 
@@ -273,11 +273,11 @@ cmake --build --preset win_x64_debug `
            ModelViewer -- /m:1
 
 ctest --test-dir build\win_x64_debug -C Debug `
-  -R "^(RHIContractValidation|PipelineCacheValidation|RenderGraphValidation|GPUDrivenValidation|RenderPassValidation|DX12Validation|RHIConformanceValidation)\." `
+  -R "^(RHIContractValidation|PipelineCacheValidationFixture|RenderGraphValidation|GPUDrivenValidationFixture|RenderPassValidation|RenderPassValidationFixture|RenderPassStatusValidation|RenderPostProcessStackValidation|SceneRendererDiagnosticsValidation|SceneRendererExternalTargetValidation|DX12Validation|RHIConformanceValidation)\." `
   --output-on-failure
 
 ctest --test-dir build\win_x64_debug -C Debug `
-  -R "^(ModelViewerGPUDrivenSmoke|GPUDrivenVisualGoldenValidation|ModelViewerGPUDrivenDisabledSmoke)$" `
+  -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenGBVSmoke|GPUDrivenVisualGoldenValidation|ModelViewerGPUDrivenDisabledSmoke)$" `
   --output-on-failure
 ```
 
@@ -326,3 +326,19 @@ DX12 closure is complete when:
 - forced unavailability deterministically uses direct draws;
 - repeated frames, resize, and transient reuse have no resource-state errors;
 - no native validation suppression is required.
+
+## Completion Evidence
+
+- Clean configure and full build completed with DX11, DX12, Vulkan, and OpenGL
+  enabled; the full unit/lint inventory passed 1386/1386 tests, with three
+  platform-dependent tests skipped.
+- The architecture baseline passed 171/171 selected tests, with one
+  platform-dependent symlink test skipped.
+- `ModelViewerGPUDrivenSmoke`, the zero-tolerance visual golden comparison,
+  `ModelViewerGPUDrivenDisabledSmoke`, and the dedicated one-frame
+  `ModelViewerGPUDrivenGBVSmoke` all passed on the native DX12 adapter.
+- The combined integration log contains zero RHI/DX12 errors or warnings,
+  zero `DATA_STATIC` diagnostics, zero state mismatches, zero optimized-clear
+  mismatches, and zero uninitialized-descriptor diagnostics.
+- The enabled smoke recorded one indirect batch; the disabled smoke recorded
+  two direct draws with fallback reason `Disabled`.

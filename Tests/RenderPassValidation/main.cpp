@@ -676,6 +676,11 @@ namespace
 
         RHIPipelineRef CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc) override
         {
+            if (!failGraphicsPipelineDebugName.empty() && desc.debugName &&
+                failGraphicsPipelineDebugName == desc.debugName)
+            {
+                return {};
+            }
             return RHIPipelineRef(new FakePipeline(desc));
         }
 
@@ -845,6 +850,7 @@ namespace
         bool bufferMapSucceeds = true;
         bool textureViewCreationSucceeds = true;
         bool failDirectionalShadowSRVCreation = false;
+        std::string failGraphicsPipelineDebugName;
         bool samplerCreationSucceeds = true;
         uint32 bottomLevelSizeQueryCount = 0;
         uint32 topLevelSizeQueryCount = 0;
@@ -3392,7 +3398,7 @@ TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscre
         });
     ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
     EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
-    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(4));
 
     const auto hasBinding = [descriptorIt](uint32 binding,
                                            bool expectBuffer,
@@ -3416,6 +3422,8 @@ TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscre
     EXPECT_TRUE(hasBinding(0, true, false, false));
     EXPECT_TRUE(hasBinding(1, false, true, false));
     EXPECT_TRUE(hasBinding(2, false, false, true));
+    EXPECT_TRUE(hasBinding(3, false, true, false));
+    EXPECT_EQ(descriptorIt->bindings[3].textureView, descriptorIt->bindings[1].textureView);
 
     const FakeBuffer* constants = FindCreatedBuffer(device, "ToneMappingConstants");
     ASSERT_NE(constants, nullptr);
@@ -3596,7 +3604,7 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
         });
     ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
     EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
-    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(4));
 
     const auto hasBinding = [descriptorIt](uint32 binding,
                                            bool expectBuffer,
@@ -3620,6 +3628,8 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
     EXPECT_TRUE(hasBinding(0, true, false, false));
     EXPECT_TRUE(hasBinding(1, false, true, false));
     EXPECT_TRUE(hasBinding(2, false, false, true));
+    EXPECT_TRUE(hasBinding(3, false, true, false));
+    EXPECT_EQ(descriptorIt->bindings[3].textureView, descriptorIt->bindings[1].textureView);
 
     auto descriptorCall = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), "SetDescriptorSet");
     auto drawCall = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), "Draw");
@@ -3798,7 +3808,7 @@ TEST_F(RenderPassValidationFixture, FXAAAddsLiveGraphPassAndDrawsFullscreenTrian
         });
     ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
     EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
-    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(4));
 
     const auto hasBinding = [descriptorIt](uint32 binding,
                                            bool expectBuffer,
@@ -3822,6 +3832,8 @@ TEST_F(RenderPassValidationFixture, FXAAAddsLiveGraphPassAndDrawsFullscreenTrian
     EXPECT_TRUE(hasBinding(0, true, false, false));
     EXPECT_TRUE(hasBinding(1, false, true, false));
     EXPECT_TRUE(hasBinding(2, false, false, true));
+    EXPECT_TRUE(hasBinding(3, false, true, false));
+    EXPECT_EQ(descriptorIt->bindings[3].textureView, descriptorIt->bindings[1].textureView);
 
     auto descriptorCall = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), "SetDescriptorSet");
     auto drawCall = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), "Draw");
@@ -4077,7 +4089,9 @@ TEST_F(RenderPassValidationFixture, ColorGradingNeutralSettingsStillWritesFullsc
         });
     ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
     EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
-    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(4));
+    EXPECT_EQ(descriptorIt->bindings[3].binding, 3u);
+    EXPECT_EQ(descriptorIt->bindings[3].textureView, descriptorIt->bindings[1].textureView);
 }
 
 TEST_F(RenderPassValidationFixture, ColorGradingUploadsConstantsWithHLSLPacking)
@@ -4352,7 +4366,9 @@ TEST_F(RenderPassValidationFixture, ChromaticAberrationZeroIntensityStillWritesF
         });
     ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
     EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
-    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(4));
+    EXPECT_EQ(descriptorIt->bindings[3].binding, 3u);
+    EXPECT_EQ(descriptorIt->bindings[3].textureView, descriptorIt->bindings[1].textureView);
 }
 
 TEST_F(RenderPassValidationFixture, ChromaticAberrationUploadsConstantsWithHLSLPacking)
@@ -4545,7 +4561,7 @@ TEST_F(RenderPassValidationFixture, VignetteAddsLiveGraphPassAndDrawsFullscreenT
         });
     ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
     EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
-    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(4));
 
     const auto hasBinding = [descriptorIt](uint32 binding,
                                            bool expectBuffer,
@@ -4569,6 +4585,8 @@ TEST_F(RenderPassValidationFixture, VignetteAddsLiveGraphPassAndDrawsFullscreenT
     EXPECT_TRUE(hasBinding(0, true, false, false));
     EXPECT_TRUE(hasBinding(1, false, true, false));
     EXPECT_TRUE(hasBinding(2, false, false, true));
+    EXPECT_TRUE(hasBinding(3, false, true, false));
+    EXPECT_EQ(descriptorIt->bindings[3].textureView, descriptorIt->bindings[1].textureView);
 }
 
 TEST_F(RenderPassValidationFixture, VignetteSkipsDrawWhenConstantsCannotMap)
@@ -5560,6 +5578,68 @@ TEST_F(RenderPassValidationFixture, DepthPrepassConsumesGPUDrivenMultiMeshIndire
     EXPECT_EQ(2u, stats.gpuDrivenIndirectDrawCount);
 }
 
+TEST_F(RenderPassValidationFixture, OpaquePassFallsBackToDirectDrawWhenGPUDrivenPipelineFails)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    scene.GetMutableObject(0).bounds = meshResource->GetBounds();
+    RenderDrawItem opaqueItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    std::vector<RenderDrawItem> opaqueItems = {opaqueItem};
+    std::vector<RenderDrawItem> maskedItems;
+
+    MeshGPUBuffers buffers = gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    ASSERT_FALSE(buffers.submeshes.empty());
+
+    GPUIndexedDrawDesc drawDesc;
+    drawDesc.indexCount = buffers.submeshes[0].indexCount;
+    drawDesc.firstIndex = buffers.submeshes[0].indexOffset;
+    drawDesc.vertexOffset = buffers.submeshes[0].baseVertex;
+
+    GPUCulling culling;
+    GPUCullingConfig cullingConfig;
+    cullingConfig.maxInstances = 4;
+    cullingConfig.enableOcclusionCulling = false;
+    cullingConfig.enableDistanceCulling = false;
+    culling.Initialize(&device, cullingConfig);
+    culling.BeginFrame();
+    ASSERT_EQ(0u, culling.BeginDrawGroup(
+        meshResource->GetId(),
+        opaqueItem.material.slot,
+        MaterialPipelineVariant::Opaque,
+        opaqueItem.mesh,
+        opaqueItem.material));
+    EXPECT_NE(RVX_INVALID_INDEX,
+              culling.AddDrawItemInstance(scene, opaqueItem, drawDesc, 0));
+    culling.EndDrawGroup();
+    culling.EndFrame();
+    culling.CullCpuFallback(view.viewMatrix, view.projectionMatrix);
+
+    device.failGraphicsPipelineDebugName = "GPUDrivenOpaquePipeline";
+
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.SetGPUDrivenCullingSource(&culling);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(1u, ctx.drawIndexedCount);
+    EXPECT_EQ(0u, ctx.drawIndexedIndirectCount);
+
+    const OpaquePassDrawStats& stats = pass.GetDrawStats();
+    EXPECT_TRUE(stats.gpuDrivenRequested);
+    EXPECT_TRUE(stats.gpuDrivenCullingReady);
+    EXPECT_FALSE(stats.gpuDrivenPipelineReady);
+    EXPECT_FALSE(stats.gpuDrivenEligible);
+    EXPECT_FALSE(stats.gpuDrivenSubmitted);
+    EXPECT_EQ(1u, stats.directDrawCount);
+    EXPECT_EQ(stats.gpuDrivenFallbackReason,
+              GPUDrivenDrawFallbackReason::PipelineUnavailable);
+}
+
 TEST_F(RenderPassValidationFixture, OpaquePassConsumesGPUDrivenMaterialGroupedIndirectStreams)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
@@ -5633,7 +5713,11 @@ TEST_F(RenderPassValidationFixture, OpaquePassConsumesGPUDrivenMaterialGroupedIn
 
     const OpaquePassDrawStats& stats = pass.GetDrawStats();
     EXPECT_TRUE(stats.gpuDrivenRequested);
+    EXPECT_TRUE(stats.gpuDrivenCullingReady);
+    EXPECT_TRUE(stats.gpuDrivenPipelineReady);
     EXPECT_TRUE(stats.gpuDrivenEligible);
+    EXPECT_TRUE(stats.gpuDrivenSubmitted);
+    EXPECT_EQ(stats.gpuDrivenFallbackReason, GPUDrivenDrawFallbackReason::None);
     EXPECT_EQ(0u, stats.directDrawCount);
     EXPECT_EQ(0u, stats.indirectBatchCount);
     EXPECT_EQ(2u, stats.gpuDrivenIndirectBatchCount);
@@ -6485,7 +6569,9 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
     EXPECT_NE(artifactManifestJson.find("\"rhiCapabilityReportJson\": {"), std::string::npos);
     EXPECT_NE(artifactManifestJson.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);
     EXPECT_NE(artifactManifestJson.find("\"schemaId\": \"RVX.RHI.CapabilityReport\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find(
+                  "\"schemaVersion\": " + std::to_string(RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(artifactManifestJson.find("\"relativePath\": \"RHIFrame001.rhi-capabilities.json\""),
               std::string::npos);
 
@@ -6631,7 +6717,9 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     fs::remove(renderGraphDiagnosticsPath, removeError);
 
     const std::string renderGraphDiagnosticsJson = renderer.ExportToolRenderGraphDiagnosticsJson();
-    EXPECT_NE(renderGraphDiagnosticsJson.find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsJson.find(
+                  "\"schemaVersion\": " + std::to_string(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(renderGraphDiagnosticsJson.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""),
               std::string::npos);
     EXPECT_NE(renderGraphDiagnosticsJson.find("\"id\": \"renderGraphDiagnosticsJson\""), std::string::npos);
@@ -6666,7 +6754,10 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(manifestJson.find("\"renderGraphDiagnosticsAvailable\": true"), std::string::npos);
     EXPECT_NE(manifestJson.find("\"rhiCapabilityReportAvailable\": false"), std::string::npos);
     EXPECT_NE(manifestJson.find("\"rhiCapabilities\": null"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"renderGraph\": {\n    \"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(manifestJson.find(
+                  "\"renderGraph\": {\n    \"schemaVersion\": " +
+                  std::to_string(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(manifestJson.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
     EXPECT_NE(manifestJson.find("\"resourceCount\": 1"), std::string::npos);
     EXPECT_NE(manifestJson.find("\"artifacts\": null"), std::string::npos);
@@ -6694,7 +6785,10 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(emptyArtifactSummaryJson.find("\"captureId\": \"\""), std::string::npos);
     EXPECT_NE(emptyArtifactSummaryJson.find("\"baseName\": \"\""), std::string::npos);
     EXPECT_NE(emptyArtifactSummaryJson.find("\"frameIndex\": 0"), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"renderGraphDiagnosticsSchemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find(
+                  "\"renderGraphDiagnosticsSchemaVersion\": " +
+                  std::to_string(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(emptyArtifactSummaryJson.find("\"renderGraphDiagnosticsSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
               std::string::npos);
     EXPECT_NE(emptyArtifactSummaryJson.find("\"artifactSummarySchemaVersion\": 24"), std::string::npos);
@@ -6881,7 +6975,10 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(artifactSummaryJson.find("\"outputDirectory\": "), std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"frameIndex\": " + std::to_string(toolSnapshot.frame.frameCount)),
               std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"renderGraphDiagnosticsSchemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find(
+                  "\"renderGraphDiagnosticsSchemaVersion\": " +
+                  std::to_string(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"renderGraphDiagnosticsSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
               std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"artifactSummarySchemaVersion\": 24"), std::string::npos);
@@ -6903,7 +7000,9 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(artifactSummaryJson.find("\"kind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"contentType\": \"application/json\""), std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find(
+                  "\"schemaVersion\": " + std::to_string(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"exists\": true"), std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"byteSize\": "), std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"contentHash\": \"" +
@@ -6975,7 +7074,10 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(artifactManifestJson.find("\"baseName\": \"Frame001\""), std::string::npos);
     EXPECT_NE(artifactManifestJson.find("\"frameIndex\": " + std::to_string(toolSnapshot.frame.frameCount)),
               std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"renderGraphDiagnosticsSchemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find(
+                  "\"renderGraphDiagnosticsSchemaVersion\": " +
+                  std::to_string(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(artifactManifestJson.find("\"renderGraphDiagnosticsSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
               std::string::npos);
     EXPECT_NE(artifactManifestJson.find("\"renderGraphPassCount\": " +
@@ -6998,7 +7100,9 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(artifactManifestJson.find("\"renderGraphDiagnosticsJson\": {"), std::string::npos);
     EXPECT_NE(artifactManifestJson.find("\"kind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
     EXPECT_NE(artifactManifestJson.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
-    EXPECT_NE(artifactManifestJson.find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find(
+                  "\"schemaVersion\": " + std::to_string(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(artifactManifestJson.find("\"manifestJson\": {"), std::string::npos);
     EXPECT_NE(artifactManifestJson.find("\"kind\": \"ToolDiagnosticsManifestJson\""), std::string::npos);
     EXPECT_NE(artifactManifestJson.find("\"kind\": \"ToolDiagnosticsArtifactSummaryJson\""), std::string::npos);
@@ -7127,7 +7231,10 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(validationJson.find("\"frameIndex\": " + std::to_string(toolSnapshot.frame.frameCount)),
               std::string::npos);
     EXPECT_NE(validationJson.find("\"toolDiagnosticsSchemaVersion\": 24"), std::string::npos);
-    EXPECT_NE(validationJson.find("\"renderGraphDiagnosticsSchemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(validationJson.find(
+                  "\"renderGraphDiagnosticsSchemaVersion\": " +
+                  std::to_string(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(validationJson.find("\"renderGraphDiagnosticsSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
               std::string::npos);
     EXPECT_NE(validationJson.find("\"artifactSummarySchemaVersion\": 24"), std::string::npos);
@@ -7172,12 +7279,17 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(validationJson.find("\"kind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
     EXPECT_NE(validationJson.find("\"contentType\": \"application/json\""), std::string::npos);
     EXPECT_NE(validationJson.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(validationJson.find(
+                  "\"schemaVersion\": " + std::to_string(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(validationJson.find("\"actualId\": \"renderGraphDiagnosticsJson\""), std::string::npos);
     EXPECT_NE(validationJson.find("\"actualKind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
     EXPECT_NE(validationJson.find("\"actualContentType\": \"application/json\""), std::string::npos);
     EXPECT_NE(validationJson.find("\"actualSchemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
-    EXPECT_NE(validationJson.find("\"actualSchemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(validationJson.find(
+                  "\"actualSchemaVersion\": " +
+                  std::to_string(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(validationJson.find("\"identityChecked\": true"), std::string::npos);
     EXPECT_NE(validationJson.find("\"identityMatches\": true"), std::string::npos);
     EXPECT_NE(validationJson.find("\"schemaChecked\": true"), std::string::npos);
@@ -7346,7 +7458,10 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(identityMismatchJson.find("\"actualId\": \"unexpectedRenderGraphDiagnosticsJson\""),
               std::string::npos);
     EXPECT_NE(identityMismatchJson.find("\"actualKind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"actualSchemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(identityMismatchJson.find(
+                  "\"actualSchemaVersion\": " +
+                  std::to_string(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(identityMismatchJson.find("\"verdictCode\": \"InvalidArtifacts\""), std::string::npos);
     EXPECT_NE(identityMismatchJson.find("\"primaryFailureCode\": \"IdentityMetadataMismatch\""),
               std::string::npos);
@@ -7368,7 +7483,9 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
               std::string::npos);
     EXPECT_NE(identityMismatchJson.find("\"primaryFailureArtifactSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
               std::string::npos);
-    EXPECT_NE(identityMismatchJson.find("\"primaryFailureArtifactSchemaVersion\": 3"),
+    EXPECT_NE(identityMismatchJson.find(
+                  "\"primaryFailureArtifactSchemaVersion\": " +
+                  std::to_string(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION)),
               std::string::npos);
     EXPECT_NE(identityMismatchJson.find("\"primaryFailureMessage\": \"artifact identity metadata mismatch\""),
               std::string::npos);
@@ -7483,7 +7600,9 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
               std::string::npos);
     EXPECT_NE(modifiedValidationJson.find("\"primaryFailureArtifactSchemaId\": \"RVX.RenderGraph.Diagnostics\""),
               std::string::npos);
-    EXPECT_NE(modifiedValidationJson.find("\"primaryFailureArtifactSchemaVersion\": 3"),
+    EXPECT_NE(modifiedValidationJson.find(
+                  "\"primaryFailureArtifactSchemaVersion\": " +
+                  std::to_string(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION)),
               std::string::npos);
     EXPECT_NE(modifiedValidationJson.find("\"primaryFailureMessage\": \"artifact byte size mismatch\""),
               std::string::npos);
@@ -7657,7 +7776,9 @@ TEST_F(RenderPassValidationFixture, FilmGrainAddsLiveGraphPassAndDrawsFullscreen
         });
     ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
     EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
-    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(4));
+    EXPECT_EQ(descriptorIt->bindings[3].binding, 3u);
+    EXPECT_EQ(descriptorIt->bindings[3].textureView, descriptorIt->bindings[1].textureView);
 }
 
 TEST_F(RenderPassValidationFixture, FilmGrainUploadsConstantsWithHLSLPacking)

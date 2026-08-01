@@ -331,9 +331,14 @@ namespace
             RVX_COPY_GPU_CULLING_FIELD(distanceCulledDrawItemCount);
             RVX_COPY_GPU_CULLING_FIELD(skippedMissingGpuDataCount);
             RVX_COPY_GPU_CULLING_FIELD(opaqueIndirectRequested);
+            RVX_COPY_GPU_CULLING_FIELD(opaqueCullingReady);
+            RVX_COPY_GPU_CULLING_FIELD(opaquePipelineReady);
             RVX_COPY_GPU_CULLING_FIELD(opaqueIndirectEligible);
+            RVX_COPY_GPU_CULLING_FIELD(opaqueIndirectSubmitted);
+            RVX_COPY_GPU_CULLING_FIELD(opaqueDirectDrawCount);
             RVX_COPY_GPU_CULLING_FIELD(opaqueGpuDrivenIndirectBatchCount);
             RVX_COPY_GPU_CULLING_FIELD(opaqueGpuDrivenIndirectDrawCount);
+            RVX_COPY_GPU_CULLING_FIELD(opaqueFallbackReason);
 #undef RVX_COPY_GPU_CULLING_FIELD
 
             const ParticleFeaturePassStats& particles =

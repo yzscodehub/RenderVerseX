@@ -28,6 +28,9 @@ option(RVX_BUILD_EDITOR "Build the Editor application and Editor-only validation
 option(RVX_BUILD_SAMPLES "Build sample applications" ON)
 option(RVX_BUILD_TESTS "Build validation tests" ON)
 option(RVX_ENABLE_TSAN "Enable ThreadSanitizer instrumentation" OFF)
+option(RVX_ENABLE_GPU_VALIDATION_TESTS
+    "Register bounded GPU-based validation tests (dedicated/nightly only)"
+    OFF)
 
 # =============================================================================
 # Platform Detection

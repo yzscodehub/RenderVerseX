@@ -506,7 +506,13 @@ namespace RVX
         : m_device(device)
         , m_isCompute(false)
         , m_primitiveTopology(ToD3DPrimitiveTopology(desc.primitiveTopology))
+        , m_renderTargetCount(desc.numRenderTargets)
+        , m_depthStencilFormat(desc.depthStencilFormat)
+        , m_sampleCount(desc.sampleCount)
     {
+        std::copy(std::begin(desc.renderTargetFormats),
+                  std::end(desc.renderTargetFormats),
+                  m_renderTargetFormats.begin());
         if (desc.debugName)
         {
             SetDebugName(desc.debugName);

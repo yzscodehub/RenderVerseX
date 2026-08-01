@@ -159,6 +159,7 @@ struct ModelViewerOptions
     uint32 rayTracingResizeWidth = 0;
     uint32 rayTracingResizeHeight = 0;
     bool enableValidation = true;
+    bool enableGPUValidation = false;
     bool showHelp = false;
     bool backendSet = false;
     bool widthSet = false;
@@ -319,6 +320,7 @@ namespace
             << "  --disable-gpu-driven-culling Disable SceneRenderer GPU-driven culling for comparison gates\n"
             << "  --particle-test-scene Add a deterministic CPU billboard particle system\n"
             << "  --validation         Enable backend validation\n"
+            << "  --gpu-validation     Enable DX12 GPU-based validation for dedicated bounded runs\n"
             << "  --no-validation      Disable backend validation\n"
             << "  --help               Show this help\n";
     }
@@ -1104,6 +1106,10 @@ namespace
             {
                 options.enableValidation = true;
             }
+            else if (arg == "--gpu-validation")
+            {
+                options.enableGPUValidation = true;
+            }
             else if (arg == "--no-validation")
             {
                 options.enableValidation = false;
@@ -1164,6 +1170,18 @@ namespace
         if (options.disableGPUDrivenCulling && !options.smoke)
         {
             RVX_CORE_ERROR("--disable-gpu-driven-culling requires --smoke");
+            return false;
+        }
+
+        if (options.enableGPUValidation && options.backend != RHIBackendType::DX12)
+        {
+            RVX_CORE_ERROR("--gpu-validation currently requires --backend dx12");
+            return false;
+        }
+
+        if (options.enableGPUValidation && !options.enableValidation)
+        {
+            RVX_CORE_ERROR("--gpu-validation requires --validation");
             return false;
         }
 
@@ -2228,9 +2246,15 @@ namespace
                ", gpuExecutionRecorded=" + BoolText(stats.gpuExecutionRecorded) +
                ", graphInputDrawItemCount=" + std::to_string(stats.graphInputDrawItemCount) +
                ", opaqueIndirectRequested=" + BoolText(stats.opaqueIndirectRequested) +
+               ", opaqueCullingReady=" + BoolText(stats.opaqueCullingReady) +
+               ", opaquePipelineReady=" + BoolText(stats.opaquePipelineReady) +
                ", opaqueIndirectEligible=" + BoolText(stats.opaqueIndirectEligible) +
+               ", opaqueIndirectSubmitted=" + BoolText(stats.opaqueIndirectSubmitted) +
+               ", opaqueDirectDraws=" + std::to_string(stats.opaqueDirectDrawCount) +
                ", opaqueIndirectBatches=" + std::to_string(stats.opaqueGpuDrivenIndirectBatchCount) +
                ", opaqueIndirectDraws=" + std::to_string(stats.opaqueGpuDrivenIndirectDrawCount) +
+               ", opaqueFallbackReason=" +
+                   GetGPUDrivenDrawFallbackReasonName(stats.opaqueFallbackReason) +
                ", visibleCullableDrawItemCount=" + std::to_string(stats.visibleCullableDrawItemCount) +
                ", frustumCulledDrawItemCount=" + std::to_string(stats.frustumCulledDrawItemCount) +
                ", distanceCulledDrawItemCount=" + std::to_string(stats.distanceCulledDrawItemCount) +
@@ -2258,10 +2282,43 @@ namespace
                            stats.graphPassRecorded &&
                            stats.gpuExecutionRecorded &&
                            stats.opaqueIndirectRequested &&
+                           stats.opaqueCullingReady &&
+                           stats.opaquePipelineReady &&
                            stats.opaqueIndirectEligible &&
+                           stats.opaqueIndirectSubmitted &&
                            stats.opaqueGpuDrivenIndirectBatchCount > 0 &&
                            stats.opaqueGpuDrivenIndirectDrawCount > 0 &&
                            (!requireCullAffectsDrawCount || cullAffectsDrawCount);
+        if (ready)
+        {
+            outReason.clear();
+            return true;
+        }
+
+        outReason = DescribeGPUDrivenCullingReadiness(stats);
+        return false;
+    }
+
+    bool IsGPUDrivenDirectFallbackReady(
+        const RenderFrameFeatureDiagnostics* sceneRenderer,
+        std::string& outReason)
+    {
+        if (!sceneRenderer)
+        {
+            outReason = "NoSceneRenderer";
+            return false;
+        }
+
+        const RenderGPUDrivenCullingDiagnostics& stats =
+            sceneRenderer->gpuDrivenCulling;
+        const bool ready = !stats.enabled &&
+                           !stats.opaqueIndirectRequested &&
+                           !stats.opaqueIndirectEligible &&
+                           !stats.opaqueIndirectSubmitted &&
+                           stats.opaqueGpuDrivenIndirectDrawCount == 0 &&
+                           stats.opaqueDirectDrawCount > 0 &&
+                           stats.opaqueFallbackReason ==
+                               GPUDrivenDrawFallbackReason::Disabled;
         if (ready)
         {
             outReason.clear();
@@ -3221,12 +3278,13 @@ int main(int argc, char* argv[])
 
     if (options.smoke)
     {
-        RVX_CORE_INFO("Smoke mode: backend={}, frames={}, resolution={}x{}, validation={}",
+        RVX_CORE_INFO("Smoke mode: backend={}, frames={}, resolution={}x{}, validation={}, gpuValidation={}",
                       ToString(options.backend),
                       options.frames,
                       options.width,
                       options.height,
-                      options.enableValidation);
+                      options.enableValidation,
+                      options.enableGPUValidation);
     }
 
     // Create and configure engine
@@ -3235,6 +3293,7 @@ int main(int argc, char* argv[])
     engineConfig.enableJobSystem = false;
     engineConfig.renderRuntime.backendType = options.backend;
     engineConfig.renderRuntime.enableValidation = options.enableValidation;
+    engineConfig.renderRuntime.enableGPUValidation = options.enableGPUValidation;
     engine.SetConfig(engineConfig);
 
     // Add window subsystem
@@ -3714,7 +3773,7 @@ int main(int argc, char* argv[])
             RuntimeFrameWaitRequest waitRequest;
             waitRequest.minimumPresentedSequence = nextPresentedSequence;
             waitRequest.captureRequestId = captureFrame ? captureRequestId : 0;
-            waitRequest.maxTicks = 5000;
+            waitRequest.maxTicks = options.enableGPUValidation ? 120000 : 5000;
             waitRequest.advanceEngine = false;
             const RuntimeFrameWaitResult waitResult =
                 frameDriver.WaitFor(waitRequest);
@@ -4312,6 +4371,29 @@ int main(int argc, char* argv[])
                                         options.screenshotPath))
                 {
                     smokeSucceeded = false;
+                }
+            }
+
+            if (options.disableGPUDrivenCulling &&
+                options.gpuDrivenCullingTestScene &&
+                (frameIndex + 1 == options.frames))
+            {
+                std::string gpuDrivenFallbackReason;
+                if (!IsGPUDrivenDirectFallbackReady(sceneRenderer,
+                                                    gpuDrivenFallbackReason))
+                {
+                    RVX_CORE_ERROR("ModelViewer smoke expected GPU-driven direct-draw fallback; stats: {}",
+                                   gpuDrivenFallbackReason);
+                    smokeSucceeded = false;
+                }
+                else
+                {
+                    const RenderGPUDrivenCullingDiagnostics& stats =
+                        sceneRenderer->gpuDrivenCulling;
+                    RVX_CORE_INFO("ModelViewer smoke GPU-driven direct-draw fallback ready: directDraws={}, fallbackReason={}",
+                                  stats.opaqueDirectDrawCount,
+                                  GetGPUDrivenDrawFallbackReasonName(
+                                      stats.opaqueFallbackReason));
                 }
             }
 

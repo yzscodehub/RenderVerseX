@@ -194,6 +194,7 @@ namespace RVX
             AlignCameraVelocityConstantBufferSize(sizeof(CameraVelocityGPUConstants)));
         descriptorDesc.BindTexture(1, depthView);
         descriptorDesc.BindSampler(2, m_sampler.Get());
+        descriptorDesc.BindTexture(3, depthView);
 
         RHIDescriptorSetRef descriptorSet = device->CreateDescriptorSet(descriptorDesc);
         if (!descriptorSet)

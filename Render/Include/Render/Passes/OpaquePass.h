@@ -6,6 +6,7 @@
  */
 
 #include "Render/Graph/RenderGraph.h"
+#include "Render/GPUDriven/GPUDrivenDiagnostics.h"
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "RHI/RHICommandContext.h"
@@ -45,9 +46,14 @@ namespace RVX
         uint32 indirectBatchCount = 0;
         uint32 indirectDrawCount = 0;
         bool gpuDrivenRequested = false;
+        bool gpuDrivenCullingReady = false;
+        bool gpuDrivenPipelineReady = false;
         bool gpuDrivenEligible = false;
+        bool gpuDrivenSubmitted = false;
         uint32 gpuDrivenIndirectBatchCount = 0;
         uint32 gpuDrivenIndirectDrawCount = 0;
+        GPUDrivenDrawFallbackReason gpuDrivenFallbackReason =
+            GPUDrivenDrawFallbackReason::Disabled;
         uint32 skippedInvalidObjectCount = 0;
         uint32 skippedMissingMeshCount = 0;
         uint32 skippedInvalidSubmeshCount = 0;

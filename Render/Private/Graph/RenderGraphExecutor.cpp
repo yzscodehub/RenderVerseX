@@ -109,8 +109,39 @@ namespace RVX
 
             ctx.BeginEvent(pass.name.c_str());
 
-            // Note: Aliasing barriers for placed resources are currently handled
-            // implicitly through Undefined -> desired state transitions.
+            if (!pass.aliasingBarriers.empty())
+            {
+                std::vector<RHIResourceAliasingBarrier> aliasingBarriers;
+                aliasingBarriers.reserve(pass.aliasingBarriers.size());
+                const auto resolveResource = [&graph](ResourceType type,
+                                                      uint32 index) -> RHIResource*
+                {
+                    if (type == ResourceType::Texture)
+                    {
+                        return index < graph.textures.size()
+                            ? graph.textures[index].texture.Get()
+                            : nullptr;
+                    }
+                    return index < graph.buffers.size()
+                        ? graph.buffers[index].buffer.Get()
+                        : nullptr;
+                };
+                for (const AliasingBarrier& barrier : pass.aliasingBarriers)
+                {
+                    RHIResourceAliasingBarrier nativeBarrier;
+                    nativeBarrier.resourceBefore = resolveResource(
+                        barrier.beforeType,
+                        barrier.beforeResourceIndex);
+                    nativeBarrier.resourceAfter = resolveResource(
+                        barrier.afterType,
+                        barrier.afterResourceIndex);
+                    if (nativeBarrier.resourceBefore && nativeBarrier.resourceAfter)
+                    {
+                        aliasingBarriers.push_back(nativeBarrier);
+                    }
+                }
+                ctx.AliasingBarriers(aliasingBarriers);
+            }
             if (!pass.bufferBarriers.empty() || !pass.textureBarriers.empty())
             {
                 ctx.Barriers(pass.bufferBarriers, pass.textureBarriers);

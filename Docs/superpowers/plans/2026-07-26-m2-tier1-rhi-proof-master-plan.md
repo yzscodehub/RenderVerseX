@@ -304,17 +304,17 @@ release and destination acquire submission closure.
 
 ### Task 25: DX12 native correctness closure
 
-- [ ] Complete Tasks 22-24 DX12 translations.
-- [ ] Translate scoped dependencies to transition, UAV/memory, and aliasing
+- [x] Complete Tasks 22-24 DX12 translations.
+- [x] Translate scoped dependencies to transition, UAV/memory, and aliasing
   barriers without treating equal states as automatic no-work.
-- [ ] Add an optional optimized clear contract to texture creation.
-- [ ] Make RenderPass clear behavior match, or omit, the optimized clear value.
-- [ ] Verify reverse-Z depth clear values.
-- [ ] Preserve CPU direct-draw fallback when GPU-driven preparation or PSO
+- [x] Add an optional optimized clear contract to texture creation.
+- [x] Make RenderPass clear behavior match, or omit, the optimized clear value.
+- [x] Verify reverse-Z depth clear values.
+- [x] Preserve CPU direct-draw fallback when GPU-driven preparation or PSO
   creation fails.
-- [ ] Expose the exact GPU-driven fallback reason in frame diagnostics.
-- [ ] Run the shared conformance suite and bounded ModelViewer integration.
-- [ ] Run the normal Debug Layer gate on every required DX12 fixture and
+- [x] Expose the exact GPU-driven fallback reason in frame diagnostics.
+- [x] Run the shared conformance suite and bounded ModelViewer integration.
+- [x] Run the normal Debug Layer gate on every required DX12 fixture and
   bounded GPU-Based Validation in a dedicated/nightly gate.
 
 Exit:
@@ -324,6 +324,17 @@ Exit:
 - `ModelViewerGPUDrivenSmoke` reports actual indirect batches/draws;
 - `ModelViewerGPUDrivenDisabledSmoke` proves direct-draw fallback;
 - the fixed R7 golden passes under the approved tolerance.
+
+Task 25 completed on 2026-08-01. DX12 now consumes the shared scoped-access
+contract with explicit transition, same-state memory, and placed-resource
+aliasing barriers. Texture creation carries an optional exact optimized-clear
+hint, render-pass/PSO compatibility is checked before binding, and GPU-driven
+selection exposes requested/readiness/eligibility/submission plus a stable
+fallback reason. The clean build and full 1386-test unit/lint inventory passed;
+the 171-test architecture baseline passed; and the normal, zero-tolerance
+golden, disabled-fallback, and dedicated GBV ModelViewer gates passed with zero
+unexpected RHI/DX12 diagnostics. Task 26 is next and owns Vulkan-native
+synchronization2 and paired queue-family release/acquire closure.
 
 ### Task 26: Vulkan native correctness closure
 

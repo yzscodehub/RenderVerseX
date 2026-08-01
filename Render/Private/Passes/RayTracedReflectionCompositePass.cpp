@@ -225,6 +225,7 @@ namespace RVX
                 sizeof(RayTracedReflectionCompositeGPUConstants)));
         descriptorDesc.BindTexture(1, reflectionView);
         descriptorDesc.BindSampler(2, m_sampler.Get());
+        descriptorDesc.BindTexture(3, reflectionView);
 
         RHIDescriptorSetRef descriptorSet = device->CreateDescriptorSet(descriptorDesc);
         if (!descriptorSet)

@@ -364,6 +364,11 @@ namespace RVX
         {
             fail("split barriers require explicit resource barriers");
         }
+        if (capabilities.supportsExplicitAliasingBarriers &&
+            !capabilities.supportsExplicitResourceBarriers)
+        {
+            fail("explicit aliasing barriers require explicit resource barriers");
+        }
 
         if (capabilities.supportsQueueFenceWait && !capabilities.supportsExplicitQueueFenceSignal)
         {

@@ -15,6 +15,7 @@
 #include "Render/Passes/ObjectVelocityPass.h"
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Passes/OpaquePass.h"
+#include "Render/Passes/RenderPassClearValues.h"
 #include "Render/Passes/RayTracedReflectionCompositePass.h"
 #include "Render/Passes/RayTracedReflectionDenoisePass.h"
 #include "Render/Passes/RayTracedReflectionPass.h"
@@ -633,6 +634,19 @@ void SceneRenderer::ClearExternalRenderTarget()
     RequestTemporalHistoryReset();
 }
 
+void SceneRenderer::SetGPUDrivenCullingEnabled(bool enabled)
+{
+    m_gpuDrivenCullingEnabled = enabled;
+    if (m_depthPrepass)
+    {
+        m_depthPrepass->SetGPUDrivenDepthIndirectEnabled(enabled);
+    }
+    if (m_opaquePass)
+    {
+        m_opaquePass->SetGPUDrivenOpaqueIndirectEnabled(enabled);
+    }
+}
+
 void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
                                             bool rendered,
                                             bool graphBuilt,
@@ -829,7 +843,7 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
                                  result.temporalHistoryReset);
 
     const RenderFrameSettings& frameSettings = m_renderScene.GetSettings();
-    m_gpuDrivenCullingEnabled = frameSettings.gpuCulling.enabled;
+    SetGPUDrivenCullingEnabled(frameSettings.gpuCulling.enabled);
     m_postProcessSettings.enableBloom =
         frameSettings.postProcess.enabled &&
         frameSettings.postProcess.enableBloom;
@@ -1929,11 +1943,17 @@ void SceneRenderer::Render()
         {
             const OpaquePassDrawStats& opaqueStats = m_opaquePass->GetDrawStats();
             m_gpuDrivenCullingStats.opaqueIndirectRequested = opaqueStats.gpuDrivenRequested;
+            m_gpuDrivenCullingStats.opaqueCullingReady = opaqueStats.gpuDrivenCullingReady;
+            m_gpuDrivenCullingStats.opaquePipelineReady = opaqueStats.gpuDrivenPipelineReady;
             m_gpuDrivenCullingStats.opaqueIndirectEligible = opaqueStats.gpuDrivenEligible;
+            m_gpuDrivenCullingStats.opaqueIndirectSubmitted = opaqueStats.gpuDrivenSubmitted;
+            m_gpuDrivenCullingStats.opaqueDirectDrawCount = opaqueStats.directDrawCount;
             m_gpuDrivenCullingStats.opaqueGpuDrivenIndirectBatchCount =
                 opaqueStats.gpuDrivenIndirectBatchCount;
             m_gpuDrivenCullingStats.opaqueGpuDrivenIndirectDrawCount =
                 opaqueStats.gpuDrivenIndirectDrawCount;
+            m_gpuDrivenCullingStats.opaqueFallbackReason =
+                opaqueStats.gpuDrivenFallbackReason;
         }
     }
     else
@@ -2770,6 +2790,10 @@ void SceneRenderer::EnsureDepthBuffer(uint32_t width, uint32_t height)
         depthDesc.format = PipelineCache::GetDefaultDepthStencilFormat();
         depthDesc.dimension = RHITextureDimension::Texture2D;
         depthDesc.usage = RHITextureUsage::DepthStencil | RHITextureUsage::ShaderResource;
+        depthDesc.SetOptimizedClearDepthStencil({
+            m_pipelineCache ? m_pipelineCache->GetDepthClearValue()
+                            : PipelineCache::GetDepthClearValue(false),
+            0});
         depthDesc.debugName = "SceneDepthBuffer";
 
         m_depthTexture = device->CreateTexture(depthDesc);
@@ -3309,6 +3333,7 @@ void SceneRenderer::BuildRenderGraph()
             RHITextureDesc sceneColorDesc = *backBufferDesc;
             sceneColorDesc.format = m_sceneColorFormatPolicy.actualSceneColorFormat;
             sceneColorDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+            sceneColorDesc.SetOptimizedClearColor(RVX_SCENE_COLOR_CLEAR_VALUE);
             sceneColorDesc.debugName = "SceneColorPostProcessInput";
 
             sceneColorTarget = m_renderGraph->CreateTexture(sceneColorDesc);
@@ -3601,6 +3626,7 @@ void SceneRenderer::SetupDefaultPasses()
     depthPrepass->SetResources(m_pipelineCache.get());
     depthPrepass->SetResourceRegistry(m_renderResourceRegistry);
     depthPrepass->SetGPUDrivenCullingSource(m_gpuCulling.get());
+    depthPrepass->SetGPUDrivenDepthIndirectEnabled(m_gpuDrivenCullingEnabled);
     m_depthPrepass = depthPrepass.get();
     AddPass(std::move(depthPrepass));
 
@@ -3667,6 +3693,7 @@ void SceneRenderer::SetupDefaultPasses()
                              m_clusteredLighting.get());
     opaquePass->SetResourceRegistry(m_renderResourceRegistry);
     opaquePass->SetGPUDrivenCullingSource(m_gpuCulling.get());
+    opaquePass->SetGPUDrivenOpaqueIndirectEnabled(m_gpuDrivenCullingEnabled);
     m_opaquePass = opaquePass.get();
     AddPass(std::move(opaquePass));
 

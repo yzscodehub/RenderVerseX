@@ -42500,6 +42500,122 @@ build\win_x64_debug\Tests\Debug\RenderHonestyValidation.exe
 
 ---
 
+### R-SP316 M2 DX12 native correctness closure
+
+**Date:** 2026-08-01
+**Commit:** Pending
+**Spark plan review agent:** N/A
+**Spark code review agent:** N/A
+
+**Plan source:**
+
+- Document:
+  `Docs/superpowers/plans/2026-07-26-m2-dx12-correctness-closure-implementation-plan.md`
+- Parent:
+  `Docs/superpowers/plans/2026-07-26-m2-tier1-rhi-proof-master-plan.md`
+- Section: Task 25 / DX1-DX8
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP315 M2 scoped access and lifetime handoff closure
+- Evidence: Task 24 is committed at `48216400`; Tasks 22-24 shared contracts
+  were present before native DX12 closure began.
+
+**Approved scope:**
+
+- Translate optional optimized clear metadata exactly for committed and placed
+  DX12 textures, including reverse-Z depth and pooled-resource identity.
+- Validate render-pass attachment format/sample compatibility before native PSO
+  binding.
+- Add explicit placed-resource alias ownership barriers and prevent reuse of a
+  byte range while any overlapping replacement remains live.
+- Preserve direct drawing on indirect-preparation failure and publish stable
+  requested/readiness/eligibility/submission/fallback diagnostics.
+- Close shared post-process descriptor tables with deterministic fallback
+  resources.
+- Add normal Debug Layer, visual, disabled-fallback, and dedicated GBV gates.
+
+**Out of scope:**
+
+- Vulkan synchronization2 and paired queue-family ownership transfer (Task 26).
+- Metal compilation and real-device evidence (Task 27).
+- DX11/OpenGL optimization beyond conservative compatibility behavior.
+- Editor implementation.
+
+**Files changed:**
+
+- `RHI/Include/RHI/RHITexture.h`, `RHICommandContext.h`, and
+  `RHICapabilities.h`
+- `RHI_DX12/Private/DX12Resources.*`, `DX12Pipeline.*`,
+  `DX12CommandContext.*`, and `DX12Device.cpp`
+- RenderGraph compiler/executor/transient-pool implementation
+- SceneRenderer, OpaquePass, render diagnostics, and post-process pass bindings
+- ModelViewer smoke/GBV CLI and `Tests/CMakeLists.txt`
+- Focused RHI, RenderGraph, GPU-driven, RenderPass, DX12, particle guardrail,
+  architecture-gate, and golden artifacts
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  RHIContractValidation PipelineCacheValidation RenderGraphValidation `
+  GPUDrivenValidation RenderPassValidation DX12Validation `
+  RHIConformanceValidation ModelViewer VisualGoldenValidation -- /m:1
+ctest --preset win_x64_debug_unit_lint
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File Scripts\run_architecture_baseline.ps1 `
+  -BuildDir build\win_x64_debug -Configuration Debug
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenGBVSmoke|GPUDrivenVisualGoldenValidation|ModelViewerGPUDrivenDisabledSmoke)$" `
+  --output-on-failure
+```
+
+**Validation result:**
+
+- Build: PASS from a clean configure/build with DX11, DX12, Vulkan, and OpenGL
+  enabled; all Task 25 targets also pass after GBV registration.
+- Tests: PASS; full unit/lint 1386/1386 with three platform-condition skips,
+  architecture baseline 171/171 with one platform-condition skip, and the
+  focused RHI/Render/DX12 suites pass in the same CTest inventory.
+- Visual gate: PASS; normal GPU-driven smoke, zero-tolerance R7 golden,
+  disabled direct fallback, and dedicated one-frame GBV smoke are 4/4.
+- Native diagnostics: zero RHI/DX12 errors or warnings, `DATA_STATIC`
+  diagnostics, state mismatches, optimized-clear mismatches, and incomplete
+  descriptor diagnostics in the combined integration log.
+
+**Artifacts:**
+
+- Logs: `build/win_x64_debug/Testing/Temporary/LastTest.log` and local
+  `build/win_x64_debug/BuildTruth/` reports.
+- Golden: `Tests/Golden/ModelViewer/R11_GPUDriven_DX12_320x180.ppm`.
+- Diffs: generated visual diff is empty under zero tolerance and remains in the
+  ignored build artifact tree.
+
+**Spark plan review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: incomplete descriptor fallbacks, implicit optimized-clear
+  defaults, missing alias ownership barriers, and a validation regex that
+  omitted Fixture-named suites.
+
+**Spark code review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: alias allocation now checks every overlapping live byte
+  range; schema assertions follow public constants; the particle depth guard
+  follows scoped `SetExportAccess`; and normal/GBV logs remain zero-error.
+
+**Notes / follow-ups:**
+
+- The first Fresh Build Truth configure required restoring the existing
+  `VCPKG_ROOT=E:\WorkSpace\vcpkg`. Its first full test pass then exposed one
+  stale Task 24 source guard; after correction the complete 1386-test inventory
+  passed.
+- Task 26 is next and must preserve the frozen shared semantics while adding
+  Vulkan-native synchronization2 and paired queue-family release/acquire.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

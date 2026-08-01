@@ -8,6 +8,7 @@
 #include "Resources/RenderSubmissionTracker.h"
 
 #include <algorithm>
+#include <bit>
 #include <functional>
 #include <unordered_map>
 
@@ -28,6 +29,7 @@ namespace RVX
         struct PooledTexture
         {
             RHITextureRef texture;
+            RHITextureDesc desc;
             RHITextureAccessSnapshot accessSnapshot;
             GPUCompletionToken availableAfter;
             uint64 descHash = 0;
@@ -222,6 +224,7 @@ namespace RVX
         for (auto it = range.first; it != range.second; ++it)
         {
             if (!it->second.inUse &&
+                AreRHITextureDescsEquivalent(it->second.desc, desc) &&
                 m_impl->CanReuse(it->second.availableAfter))
             {
                 it->second.inUse = true;
@@ -241,6 +244,7 @@ namespace RVX
 
         Impl::PooledTexture pooled;
         pooled.texture = std::move(texture);
+        pooled.desc = desc;
         pooled.descHash = hash;
         pooled.lastUsedFrame = m_impl->currentFrame;
         pooled.memorySize = EstimateTextureMemory(desc);
@@ -468,6 +472,21 @@ namespace RVX
         hashCombine(static_cast<uint64>(desc.dimension));
         hashCombine(static_cast<uint64>(desc.usage));
         hashCombine(static_cast<uint64>(desc.sampleCount));
+        hashCombine(static_cast<uint64>(desc.optimizedClearValue.type));
+        if (desc.optimizedClearValue.type == RHIOptimizedClearValueType::Color)
+        {
+            hashCombine(std::bit_cast<uint32>(desc.optimizedClearValue.color.r));
+            hashCombine(std::bit_cast<uint32>(desc.optimizedClearValue.color.g));
+            hashCombine(std::bit_cast<uint32>(desc.optimizedClearValue.color.b));
+            hashCombine(std::bit_cast<uint32>(desc.optimizedClearValue.color.a));
+        }
+        else if (desc.optimizedClearValue.type ==
+                 RHIOptimizedClearValueType::DepthStencil)
+        {
+            hashCombine(std::bit_cast<uint32>(
+                desc.optimizedClearValue.depthStencil.depth));
+            hashCombine(desc.optimizedClearValue.depthStencil.stencil);
+        }
         return hash;
     }
 

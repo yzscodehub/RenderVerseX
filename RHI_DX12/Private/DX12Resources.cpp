@@ -18,6 +18,34 @@ namespace RVX
             return texture.GetDimension() == RHITextureDimension::Texture2D &&
                    GetTexturePhysicalLayerCount(texture) > 1;
         }
+
+        const D3D12_CLEAR_VALUE* BuildDX12OptimizedClearValue(
+            const RHITextureDesc& desc,
+            DXGI_FORMAT format,
+            D3D12_CLEAR_VALUE& clearValue)
+        {
+            clearValue = {};
+            switch (desc.optimizedClearValue.type)
+            {
+                case RHIOptimizedClearValueType::None:
+                    return nullptr;
+                case RHIOptimizedClearValueType::Color:
+                    clearValue.Format = format;
+                    clearValue.Color[0] = desc.optimizedClearValue.color.r;
+                    clearValue.Color[1] = desc.optimizedClearValue.color.g;
+                    clearValue.Color[2] = desc.optimizedClearValue.color.b;
+                    clearValue.Color[3] = desc.optimizedClearValue.color.a;
+                    return &clearValue;
+                case RHIOptimizedClearValueType::DepthStencil:
+                    clearValue.Format = format;
+                    clearValue.DepthStencil.Depth =
+                        desc.optimizedClearValue.depthStencil.depth;
+                    clearValue.DepthStencil.Stencil =
+                        desc.optimizedClearValue.depthStencil.stencil;
+                    return &clearValue;
+            }
+            return nullptr;
+        }
     } // namespace
 
     // =============================================================================
@@ -435,25 +463,8 @@ namespace RVX
         D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
 
         D3D12_CLEAR_VALUE clearValue = {};
-        D3D12_CLEAR_VALUE* pClearValue = nullptr;
-
-        if (HasFlag(desc.usage, RHITextureUsage::RenderTarget))
-        {
-            clearValue.Format = m_dxgiFormat;
-            clearValue.Color[0] = 0.0f;
-            clearValue.Color[1] = 0.0f;
-            clearValue.Color[2] = 0.0f;
-            clearValue.Color[3] = 1.0f;
-            pClearValue = &clearValue;
-        }
-        else if (HasFlag(desc.usage, RHITextureUsage::DepthStencil))
-        {
-            clearValue.Format = m_dxgiFormat;
-            clearValue.DepthStencil.Depth = 1.0f;
-            clearValue.DepthStencil.Stencil = 0;
-            pClearValue = &clearValue;
-            initialState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-        }
+        const D3D12_CLEAR_VALUE* pClearValue =
+            BuildDX12OptimizedClearValue(desc, m_dxgiFormat, clearValue);
 
         #ifdef RVX_USE_D3D12MA
         if (device->GetMemoryAllocator())
@@ -1094,6 +1105,12 @@ namespace RVX
 
     RHITextureRef CreateDX12Texture(DX12Device* device, const RHITextureDesc& desc)
     {
+        if (!IsRHIOptimizedClearValueCompatible(desc))
+        {
+            RVX_RHI_ERROR("DX12: texture '{}' has an incompatible optimized clear value",
+                          desc.debugName ? desc.debugName : "<unnamed>");
+            return nullptr;
+        }
         return Ref<DX12Texture>(new DX12Texture(device, desc));
     }
 
@@ -1278,6 +1295,12 @@ namespace RVX
             RVX_RHI_ERROR("Invalid heap for placed texture");
             return nullptr;
         }
+        if (!IsRHIOptimizedClearValueCompatible(desc))
+        {
+            RVX_RHI_ERROR("DX12: placed texture '{}' has an incompatible optimized clear value",
+                          desc.debugName ? desc.debugName : "<unnamed>");
+            return nullptr;
+        }
 
         DXGI_FORMAT dxgiFormat = ToDXGIFormat(desc.format);
 
@@ -1334,25 +1357,8 @@ namespace RVX
         D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
 
         D3D12_CLEAR_VALUE clearValue = {};
-        D3D12_CLEAR_VALUE* pClearValue = nullptr;
-
-        if (HasFlag(desc.usage, RHITextureUsage::RenderTarget))
-        {
-            clearValue.Format = dxgiFormat;
-            clearValue.Color[0] = 0.0f;
-            clearValue.Color[1] = 0.0f;
-            clearValue.Color[2] = 0.0f;
-            clearValue.Color[3] = 1.0f;
-            pClearValue = &clearValue;
-        }
-        else if (HasFlag(desc.usage, RHITextureUsage::DepthStencil))
-        {
-            clearValue.Format = dxgiFormat;
-            clearValue.DepthStencil.Depth = 1.0f;
-            clearValue.DepthStencil.Stencil = 0;
-            pClearValue = &clearValue;
-            initialState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-        }
+        const D3D12_CLEAR_VALUE* pClearValue =
+            BuildDX12OptimizedClearValue(desc, dxgiFormat, clearValue);
 
         ComPtr<ID3D12Resource> resource;
         HRESULT hr = device->GetD3DDevice()->CreatePlacedResource(

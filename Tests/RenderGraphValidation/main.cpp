@@ -62,6 +62,22 @@ namespace
         RHIBufferDesc m_desc;
     };
 
+    class FakeHeap final : public RHIHeap
+    {
+    public:
+        explicit FakeHeap(const RHIHeapDesc& desc)
+            : m_desc(desc)
+        {
+        }
+
+        uint64 GetSize() const override { return m_desc.size; }
+        RHIHeapType GetType() const override { return m_desc.type; }
+        RHIHeapFlags GetFlags() const override { return m_desc.flags; }
+
+    private:
+        RHIHeapDesc m_desc;
+    };
+
     class FakeCommandContext final : public RHICommandContext
     {
     public:
@@ -83,6 +99,13 @@ namespace
         {
             bufferBarriers.insert(bufferBarriers.end(), buffers.begin(), buffers.end());
             textureBarriers.insert(textureBarriers.end(), textures.begin(), textures.end());
+        }
+        void AliasingBarriers(
+            std::span<const RHIResourceAliasingBarrier> barriers) override
+        {
+            aliasingBarriers.insert(aliasingBarriers.end(),
+                                    barriers.begin(),
+                                    barriers.end());
         }
         void BeginBarrier(const RHIBufferBarrier&) override {}
         void BeginBarrier(const RHITextureBarrier&) override {}
@@ -127,6 +150,7 @@ namespace
         std::vector<std::string> events;
         std::vector<RHIBufferBarrier> bufferBarriers;
         std::vector<RHITextureBarrier> textureBarriers;
+        std::vector<RHIResourceAliasingBarrier> aliasingBarriers;
         std::vector<uint64> signaledFenceValues;
         std::vector<uint64> waitedFenceValues;
     };
@@ -166,11 +190,44 @@ namespace
         RHITextureViewRef CreateTextureView(RHITexture*, const RHITextureViewDesc& = {}) override { return {}; }
         RHISamplerRef CreateSampler(const RHISamplerDesc&) override { return {}; }
         RHIShaderRef CreateShader(const RHIShaderDesc&) override { return {}; }
-        RHIHeapRef CreateHeap(const RHIHeapDesc&) override { return {}; }
-        RHITextureRef CreatePlacedTexture(RHIHeap*, uint64, const RHITextureDesc&) override { return {}; }
-        RHIBufferRef CreatePlacedBuffer(RHIHeap*, uint64, const RHIBufferDesc&) override { return {}; }
-        MemoryRequirements GetTextureMemoryRequirements(const RHITextureDesc&) override { return {}; }
-        MemoryRequirements GetBufferMemoryRequirements(const RHIBufferDesc&) override { return {}; }
+        RHIHeapRef CreateHeap(const RHIHeapDesc& desc) override
+        {
+            return m_capabilities.supportsExplicitAliasingBarriers
+                ? RHIHeapRef(new FakeHeap(desc))
+                : RHIHeapRef{};
+        }
+        RHITextureRef CreatePlacedTexture(
+            RHIHeap*, uint64, const RHITextureDesc& desc) override
+        {
+            if (!m_capabilities.supportsExplicitAliasingBarriers)
+            {
+                return {};
+            }
+            ++createPlacedTextureCount;
+            return RHITextureRef(new FakeTexture(desc));
+        }
+        RHIBufferRef CreatePlacedBuffer(
+            RHIHeap*, uint64, const RHIBufferDesc& desc) override
+        {
+            if (!m_capabilities.supportsExplicitAliasingBarriers)
+            {
+                return {};
+            }
+            ++createPlacedBufferCount;
+            return RHIBufferRef(new FakeBuffer(desc));
+        }
+        MemoryRequirements GetTextureMemoryRequirements(const RHITextureDesc&) override
+        {
+            return m_capabilities.supportsExplicitAliasingBarriers
+                ? MemoryRequirements{65536, 65536}
+                : MemoryRequirements{};
+        }
+        MemoryRequirements GetBufferMemoryRequirements(const RHIBufferDesc&) override
+        {
+            return m_capabilities.supportsExplicitAliasingBarriers
+                ? MemoryRequirements{65536, 256}
+                : MemoryRequirements{};
+        }
         RHIDescriptorSetLayoutRef CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc&) override { return {}; }
         RHIPipelineLayoutRef CreatePipelineLayout(const RHIPipelineLayoutDesc&) override { return {}; }
         RHIPipelineRef CreateGraphicsPipeline(const RHIGraphicsPipelineDesc&) override { return {}; }
@@ -199,6 +256,8 @@ namespace
 
         uint32 createTextureCount = 0;
         uint32 createBufferCount = 0;
+        uint32 createPlacedTextureCount = 0;
+        uint32 createPlacedBufferCount = 0;
 
     private:
         RHICapabilities m_capabilities;
@@ -396,6 +455,34 @@ TEST(RenderGraphValidation, TransientBufferLeasePreservesRangeSnapshot)
     EXPECT_EQ(second.buffer, first.buffer);
     EXPECT_EQ(second.accessSnapshot, finalAccess);
     pool.ReleaseBuffer(second.buffer, second.accessSnapshot);
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, TransientTexturePoolSeparatesOptimizedClearIdentity)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+
+    RHITextureDesc firstDesc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA16_FLOAT);
+    firstDesc.SetOptimizedClearColor({0.1f, 0.1f, 0.15f, 1.0f});
+    RHITextureDesc secondDesc = firstDesc;
+    secondDesc.SetOptimizedClearColor({0.0f, 0.0f, 0.0f, 1.0f});
+
+    pool.BeginFrame();
+    TransientTextureLease first = pool.AcquireTextureLease(firstDesc);
+    ASSERT_TRUE(first);
+    EXPECT_FALSE(first.reused);
+    pool.ReleaseTexture(first.texture, first.accessSnapshot);
+
+    TransientTextureLease second = pool.AcquireTextureLease(secondDesc);
+    ASSERT_TRUE(second);
+    EXPECT_FALSE(second.reused);
+    EXPECT_NE(second.texture, first.texture);
+    EXPECT_EQ(device.createTextureCount, 2u);
+    pool.ReleaseTexture(second.texture, second.accessSnapshot);
     pool.EndFrame();
     pool.Shutdown();
 }
@@ -1033,6 +1120,146 @@ TEST(RenderGraphValidation, MemoryAliasing)
     EXPECT_FALSE(stats.explicitAliasingBarriersSupported);
     EXPECT_EQ(stats.aliasedTextureCount, 0u);
     EXPECT_EQ(stats.aliasedBufferCount, 0u);
+}
+
+TEST(RenderGraphValidation, ExplicitAliasingReusesMemoryAndEmitsOwnershipBarrier)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsExplicitResourceBarriers = true;
+    device.MutableCapabilities().supportsExplicitAliasingBarriers = true;
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    graph.SetMemoryAliasingEnabled(true);
+
+    const RHITextureDesc textureDesc =
+        RHITextureDesc::RenderTarget(128, 128, RHIFormat::RGBA16_FLOAT);
+    const RGTextureHandle first = graph.CreateTexture(textureDesc);
+    const RGTextureHandle bridge = graph.CreateTexture(textureDesc);
+    const RGTextureHandle reused = graph.CreateTexture(textureDesc);
+
+    struct TwoTexturePass
+    {
+        RGTextureHandle input;
+        RGTextureHandle output;
+    };
+
+    graph.AddPass<SimplePassData>(
+        "ProduceFirst",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, SimplePassData& data)
+        {
+            data.colorTarget = builder.Write(
+                first,
+                RHIResourceState::RenderTarget);
+        },
+        [](const SimplePassData&, RHICommandContext&) {});
+    graph.AddPass<TwoTexturePass>(
+        "BridgeLifetime",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, TwoTexturePass& data)
+        {
+            data.input = builder.Read(first);
+            data.output = builder.Write(
+                bridge,
+                RHIResourceState::RenderTarget);
+        },
+        [](const TwoTexturePass&, RHICommandContext&) {});
+    graph.AddPass<TwoTexturePass>(
+        "ReuseFirstAllocation",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, TwoTexturePass& data)
+        {
+            data.input = builder.Read(bridge);
+            data.output = builder.Write(
+                reused,
+                RHIResourceState::RenderTarget);
+        },
+        [](const TwoTexturePass&, RHICommandContext&) {});
+
+    graph.SetExportState(reused, RHIResourceState::ShaderResource);
+    graph.Compile();
+
+    const RenderGraph::CompileStats& stats = graph.GetCompileStats();
+    EXPECT_TRUE(graph.IsMemoryAliasingEnabled());
+    EXPECT_TRUE(stats.memoryAliasingEnabled);
+    EXPECT_FALSE(stats.memoryAliasingUnsupportedRequested);
+    EXPECT_TRUE(stats.explicitAliasingBarriersSupported);
+    EXPECT_EQ(stats.aliasedTextureCount, 2u);
+    EXPECT_EQ(stats.aliasedBufferCount, 0u);
+    EXPECT_EQ(device.createPlacedTextureCount, 3u);
+    EXPECT_LT(stats.memoryWithAliasing, stats.memoryWithoutAliasing);
+
+    FakeCommandContext context;
+    graph.Execute(context);
+
+    ASSERT_EQ(context.aliasingBarriers.size(), 1u);
+    EXPECT_NE(context.aliasingBarriers[0].resourceBefore, nullptr);
+    EXPECT_NE(context.aliasingBarriers[0].resourceAfter, nullptr);
+    EXPECT_NE(context.aliasingBarriers[0].resourceBefore,
+              context.aliasingBarriers[0].resourceAfter);
+}
+
+TEST(RenderGraphValidation, AliasingNeverOverlapsAStillLiveReplacement)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsExplicitResourceBarriers = true;
+    device.MutableCapabilities().supportsExplicitAliasingBarriers = true;
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    graph.SetMemoryAliasingEnabled(true);
+
+    const RHITextureDesc textureDesc =
+        RHITextureDesc::RenderTarget(128, 128, RHIFormat::RGBA16_FLOAT);
+    const RGTextureHandle first = graph.CreateTexture(textureDesc);
+    const RGTextureHandle liveReplacement = graph.CreateTexture(textureDesc);
+    const RGTextureHandle concurrent = graph.CreateTexture(textureDesc);
+
+    graph.AddPass<SimplePassData>(
+        "ProduceFirst",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, SimplePassData& data)
+        {
+            data.colorTarget = builder.Write(first);
+        },
+        [](const SimplePassData&, RHICommandContext&) {});
+    graph.AddPass<SimplePassData>(
+        "ReuseFirstAllocation",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, SimplePassData& data)
+        {
+            data.colorTarget = builder.Write(liveReplacement);
+        },
+        [](const SimplePassData&, RHICommandContext&) {});
+
+    struct ReadWritePass
+    {
+        RGTextureHandle input;
+        RGTextureHandle output;
+    };
+    graph.AddPass<ReadWritePass>(
+        "KeepReplacementLive",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, ReadWritePass& data)
+        {
+            data.input = builder.Read(liveReplacement);
+            data.output = builder.Write(concurrent);
+        },
+        [](const ReadWritePass&, RHICommandContext&) {});
+
+    graph.SetExportState(first, RHIResourceState::ShaderResource);
+    graph.SetExportState(concurrent, RHIResourceState::ShaderResource);
+    graph.Compile();
+
+    const RenderGraph::CompileStats& stats = graph.GetCompileStats();
+    EXPECT_EQ(stats.memoryWithoutAliasing, 3u * 65536u);
+    EXPECT_EQ(stats.memoryWithAliasing, 2u * 65536u);
+    EXPECT_EQ(stats.aliasedTextureCount, 2u);
+
+    FakeCommandContext context;
+    graph.Execute(context);
+    EXPECT_EQ(context.aliasingBarriers.size(), 1u);
 }
 
 TEST(RenderGraphValidation, ComputePass)

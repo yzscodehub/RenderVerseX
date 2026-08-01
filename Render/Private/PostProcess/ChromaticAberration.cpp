@@ -160,6 +160,7 @@ void ChromaticAberrationPass::AddToGraph(RenderGraph& graph, RGTextureHandle inp
                                       AlignPostProcessConstantBufferSize(sizeof(ChromaticAberrationGPUConstants)));
             descriptorDesc.BindTexture(1, inputView);
             descriptorDesc.BindSampler(2, m_sampler.Get());
+            descriptorDesc.BindTexture(3, inputView);
 
             RHIDescriptorSetRef descriptorSet = device->CreateDescriptorSet(descriptorDesc);
             if (!descriptorSet)

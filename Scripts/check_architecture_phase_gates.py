@@ -1737,7 +1737,7 @@ def check_p36_render_graph_diagnostics_json_artifact_identity_contract(root: Pat
     for rel_path, needle, message in [
         (
             "Render/Include/Render/Graph/RenderGraph.h",
-            "RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 3",
+            "RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 4",
             "P36 RenderGraph diagnostics schema must be bumped for JSON artifact identity metadata.",
         ),
         (
@@ -1979,7 +1979,7 @@ def check_p40_validation_entry_actual_identity_contract(root: Path) -> list[Find
         ),
         (
             "Tests/RenderPassValidation/main.cpp",
-            "\\\"actualSchemaVersion\\\": 3",
+            "\\\"actualSchemaVersion\\\": \" +",
             "P40 validation JSON must expose actual RenderGraph schema version.",
         ),
     ]:
@@ -2353,7 +2353,7 @@ def check_p48_validation_primary_failure_artifact_identity_contract(root: Path) 
         ),
         (
             "Tests/RenderPassValidation/main.cpp",
-            "\\\"primaryFailureArtifactSchemaVersion\\\": 3",
+            "\\\"primaryFailureArtifactSchemaVersion\\\": \" +",
             "P48 render pass validation must prove primary failure artifact schema version is exported.",
         ),
         (

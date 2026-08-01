@@ -1080,7 +1080,11 @@ namespace RVX
         {
             uint64 offset;
             uint64 size;
+            uint32 firstUsePass;
             uint32 lastUsePass;
+            ResourceType type;
+            uint32 resourceIndex;
+            MemoryAlias* alias;
         };
         struct Heap
         {
@@ -1106,18 +1110,38 @@ namespace RVX
                 auto& heap = heaps[heapIdx];
 
                 // Check if we can reuse any freed allocation's space
-                uint64 currentOffset = 0;
                 for (const auto& alloc : heap.allocations)
                 {
                     // If this allocation's lifetime doesn't overlap with ours
                     if (alloc.lastUsePass < firstUse)
                     {
                         // Check if we can fit in this space
-                        uint64 alignedOffset = (currentOffset + alignment - 1) & ~(alignment - 1);
-                        if (alignedOffset >= alloc.offset && 
+                        uint64 alignedOffset = (alloc.offset + alignment - 1) & ~(alignment - 1);
+                        if (alignedOffset >= alloc.offset &&
                             alignedOffset + requiredSize <= alloc.offset + alloc.size)
                         {
-                            uint64 waste = alloc.size - requiredSize;
+                            const bool overlapsLiveAllocation =
+                                std::any_of(
+                                    heap.allocations.begin(),
+                                    heap.allocations.end(),
+                                    [alignedOffset,
+                                     requiredSize,
+                                     firstUse](const HeapAllocation& existing)
+                                    {
+                                        const bool rangesOverlap =
+                                            alignedOffset < existing.offset + existing.size &&
+                                            existing.offset < alignedOffset + requiredSize;
+                                        return rangesOverlap &&
+                                               existing.lastUsePass >= firstUse;
+                                    });
+                            if (overlapsLiveAllocation)
+                            {
+                                continue;
+                            }
+
+                            const uint64 usableSize =
+                                alloc.offset + alloc.size - alignedOffset;
+                            uint64 waste = usableSize - requiredSize;
                             if (waste < bestWaste)
                             {
                                 bestHeap = static_cast<int32>(heapIdx);
@@ -1126,7 +1150,6 @@ namespace RVX
                             }
                         }
                     }
-                    currentOffset = alloc.offset + alloc.size;
                 }
 
                 // Note: Could also check appending at the end, but we prefer aliasing over just appending
@@ -1173,19 +1196,78 @@ namespace RVX
 
             // Assign the resource to this heap
             auto& heap = heaps[static_cast<size_t>(bestHeap)];
-            heap.allocations.push_back({bestOffset, requiredSize, lastUse});
+            const HeapAllocation* predecessor = nullptr;
+            for (const HeapAllocation& allocation : heap.allocations)
+            {
+                const bool rangesOverlap =
+                    bestOffset < allocation.offset + allocation.size &&
+                    allocation.offset < bestOffset + requiredSize;
+                if (rangesOverlap && allocation.lastUsePass < firstUse &&
+                    (!predecessor ||
+                     allocation.lastUsePass > predecessor->lastUsePass))
+                {
+                    predecessor = &allocation;
+                }
+            }
+
+            if (predecessor)
+            {
+                res.alias->predecessorType = predecessor->type;
+                res.alias->predecessorResourceIndex =
+                    predecessor->resourceIndex;
+            }
+
+            heap.allocations.push_back({bestOffset,
+                                        requiredSize,
+                                        firstUse,
+                                        lastUse,
+                                        res.type,
+                                        res.index,
+                                        res.alias});
             heap.totalSize = std::max(heap.totalSize, bestOffset + requiredSize);
 
             res.alias->heapIndex = static_cast<uint32>(bestHeap);
             res.alias->heapOffset = bestOffset;
-            res.alias->isAliased = (heap.allocations.size() > 1);
+        }
 
-            if (res.alias->isAliased)
+        // A heap may contain many resources at disjoint offsets. Only resources
+        // whose byte ranges actually overlap participate in aliasing and require
+        // ownership barriers.
+        for (const Heap& heap : heaps)
+        {
+            for (size_t first = 0; first < heap.allocations.size(); ++first)
             {
-                if (res.type == ResourceType::Texture)
-                    graph.aliasedTextureCount++;
-                else
-                    graph.aliasedBufferCount++;
+                for (size_t second = first + 1;
+                     second < heap.allocations.size();
+                     ++second)
+                {
+                    const HeapAllocation& a = heap.allocations[first];
+                    const HeapAllocation& b = heap.allocations[second];
+                    const bool rangesOverlap =
+                        a.offset < b.offset + b.size &&
+                        b.offset < a.offset + a.size;
+                    if (rangesOverlap)
+                    {
+                        a.alias->isAliased = true;
+                        b.alias->isAliased = true;
+                    }
+                }
+            }
+        }
+
+        for (const ResourceInfo& resource : resources)
+        {
+            if (!resource.alias->isAliased)
+            {
+                continue;
+            }
+            if (resource.type == ResourceType::Texture)
+            {
+                ++graph.aliasedTextureCount;
+            }
+            else
+            {
+                ++graph.aliasedBufferCount;
             }
         }
 
@@ -1219,74 +1301,47 @@ namespace RVX
         if (!graph.enableMemoryAliasing)
             return;
 
-        // Track which resource last used each (heapIndex, offset) location
-        // This is a simplified implementation - a full implementation would track
-        // exact memory ranges, but for now we just track per-resource
-        std::unordered_map<uint64, std::pair<ResourceType, uint32>> lastResourceAtLocation;
+        const auto appendBarrier = [&graph](ResourceType afterType,
+                                            uint32 afterResourceIndex,
+                                            const ResourceLifetime& lifetime,
+                                            const MemoryAlias& alias)
+        {
+            if (!alias.isAliased ||
+                alias.predecessorResourceIndex == RVX_INVALID_INDEX ||
+                lifetime.firstUsePass >= graph.executionOrder.size())
+            {
+                return;
+            }
 
-        auto makeLocationKey = [](uint32 heapIndex, uint64 offset) -> uint64 {
-            return (static_cast<uint64>(heapIndex) << 48) | (offset & 0x0000FFFFFFFFFFFF);
+            const uint32 passIndex =
+                graph.executionOrder[lifetime.firstUsePass];
+            AliasingBarrier barrier;
+            barrier.beforeType = alias.predecessorType;
+            barrier.afterType = afterType;
+            barrier.beforeResourceIndex = alias.predecessorResourceIndex;
+            barrier.afterResourceIndex = afterResourceIndex;
+            graph.passes[passIndex].aliasingBarriers.push_back(barrier);
         };
 
-        for (uint32 order = 0; order < static_cast<uint32>(graph.executionOrder.size()); ++order)
+        for (Pass& pass : graph.passes)
         {
-            uint32 passIndex = graph.executionOrder[order];
-            auto& pass = graph.passes[passIndex];
-            if (pass.culled) continue;
-
             pass.aliasingBarriers.clear();
-
-            for (const auto& usage : pass.usages)
-            {
-                if (usage.type == ResourceType::Texture)
-                {
-                    if (usage.index >= graph.textures.size()) continue;
-                    auto& texture = graph.textures[usage.index];
-                    if (!texture.alias.isAliased) continue;
-
-                    uint64 key = makeLocationKey(texture.alias.heapIndex, texture.alias.heapOffset);
-                    auto it = lastResourceAtLocation.find(key);
-
-                    if (it != lastResourceAtLocation.end())
-                    {
-                        // Different resource was using this memory location before
-                        if (it->second.second != usage.index)
-                        {
-                            AliasingBarrier ab;
-                            ab.type = ResourceType::Texture;
-                            ab.beforeResourceIndex = it->second.second;
-                            ab.afterResourceIndex = usage.index;
-                            pass.aliasingBarriers.push_back(ab);
-                        }
-                    }
-
-                    // Update the last resource at this location
-                    lastResourceAtLocation[key] = {ResourceType::Texture, usage.index};
-                }
-                else
-                {
-                    if (usage.index >= graph.buffers.size()) continue;
-                    auto& buffer = graph.buffers[usage.index];
-                    if (!buffer.alias.isAliased) continue;
-
-                    uint64 key = makeLocationKey(buffer.alias.heapIndex, buffer.alias.heapOffset);
-                    auto it = lastResourceAtLocation.find(key);
-
-                    if (it != lastResourceAtLocation.end())
-                    {
-                        if (it->second.second != usage.index)
-                        {
-                            AliasingBarrier ab;
-                            ab.type = ResourceType::Buffer;
-                            ab.beforeResourceIndex = it->second.second;
-                            ab.afterResourceIndex = usage.index;
-                            pass.aliasingBarriers.push_back(ab);
-                        }
-                    }
-
-                    lastResourceAtLocation[key] = {ResourceType::Buffer, usage.index};
-                }
-            }
+        }
+        for (uint32 index = 0; index < graph.textures.size(); ++index)
+        {
+            const TextureResource& texture = graph.textures[index];
+            appendBarrier(ResourceType::Texture,
+                          index,
+                          texture.lifetime,
+                          texture.alias);
+        }
+        for (uint32 index = 0; index < graph.buffers.size(); ++index)
+        {
+            const BufferResource& buffer = graph.buffers[index];
+            appendBarrier(ResourceType::Buffer,
+                          index,
+                          buffer.lifetime,
+                          buffer.alias);
         }
     }
 
@@ -1440,7 +1495,9 @@ namespace RVX
         graph.stats.asyncComputeSupported = false;
         graph.stats.memoryAliasingEnabled = graph.enableMemoryAliasing;
         graph.stats.memoryAliasingUnsupportedRequested = graph.memoryAliasingRequested && !graph.enableMemoryAliasing;
-        graph.stats.explicitAliasingBarriersSupported = false;
+        graph.stats.explicitAliasingBarriersSupported =
+            graph.device &&
+            graph.device->GetCapabilities().supportsExplicitAliasingBarriers;
         graph.stats.compatibilityStateProjectionCount =
             graph.compatibilityStateProjectionCount;
         graph.passDependencies.clear();

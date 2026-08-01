@@ -4,6 +4,7 @@
 #include "DX12Pipeline.h"
 #include "DX12Query.h"
 
+#include <algorithm>
 #include <limits>
 
 namespace RVX
@@ -379,6 +380,19 @@ namespace RVX
             barrier.UAV.pResource = accelerationStructure->GetResource();
             commandList->ResourceBarrier(1, &barrier);
         }
+
+        ID3D12Resource* GetDX12AliasingResource(RHIResource* resource)
+        {
+            if (auto* buffer = dynamic_cast<DX12Buffer*>(resource))
+            {
+                return buffer->GetResource();
+            }
+            if (auto* texture = dynamic_cast<DX12Texture*>(resource))
+            {
+                return texture->GetResource();
+            }
+            return nullptr;
+        }
     } // namespace
 
     // =============================================================================
@@ -697,6 +711,111 @@ namespace RVX
     {
         FlushBarriers();
 
+        m_renderPassColorFormats.fill(RHIFormat::Unknown);
+        m_renderPassColorAttachmentCount = desc.colorAttachmentCount;
+        m_renderPassDepthFormat = RHIFormat::Unknown;
+        m_renderPassSampleCount = RHISampleCount::Count1;
+        m_renderPassAttachmentSnapshotValid = true;
+
+        bool sampleCountInitialized = false;
+        const auto validateSampleCount = [this, &sampleCountInitialized](
+                                             RHITexture* texture,
+                                             const char* attachmentLabel)
+        {
+            if (!texture)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: render pass {} attachment has no texture",
+                              attachmentLabel);
+                m_renderPassAttachmentSnapshotValid = false;
+                return;
+            }
+            if (!sampleCountInitialized)
+            {
+                m_renderPassSampleCount = texture->GetSampleCount();
+                sampleCountInitialized = true;
+                return;
+            }
+            if (m_renderPassSampleCount != texture->GetSampleCount())
+            {
+                RVX_RHI_ERROR("DX12CommandContext: render pass attachments use different sample counts");
+                m_renderPassAttachmentSnapshotValid = false;
+            }
+        };
+
+        if (desc.colorAttachmentCount > RVX_MAX_RENDER_TARGETS)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: render pass color attachment count {} exceeds {}",
+                          desc.colorAttachmentCount,
+                          RVX_MAX_RENDER_TARGETS);
+            m_renderPassAttachmentSnapshotValid = false;
+        }
+        for (uint32 i = 0; i < std::min(desc.colorAttachmentCount,
+                                        static_cast<uint32>(RVX_MAX_RENDER_TARGETS)); ++i)
+        {
+            RHITextureView* view = desc.colorAttachments[i].view;
+            if (!view)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: render pass color attachment {} is null", i);
+                m_renderPassAttachmentSnapshotValid = false;
+                continue;
+            }
+            RHITexture* texture = view->GetTexture();
+            m_renderPassColorFormats[i] = view->GetFormat() == RHIFormat::Unknown
+                ? (texture ? texture->GetFormat() : RHIFormat::Unknown)
+                : view->GetFormat();
+            validateSampleCount(texture, "color");
+
+            if (texture && desc.colorAttachments[i].loadOp == RHILoadOp::Clear)
+            {
+                const auto* dx12Texture = static_cast<const DX12Texture*>(texture);
+                const RHIOptimizedClearValue& optimized =
+                    dx12Texture->GetDesc().optimizedClearValue;
+                if (optimized.type == RHIOptimizedClearValueType::Color &&
+                    !AreRHIClearColorsEqual(optimized.color,
+                                            desc.colorAttachments[i].clearColor))
+                {
+                    RVX_RHI_ERROR("DX12CommandContext: color attachment {} clear does not match its optimized clear value",
+                                  i);
+                }
+            }
+        }
+        if (desc.hasDepthStencil)
+        {
+            RHITextureView* view = desc.depthStencilAttachment.view;
+            if (!view)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: render pass depth attachment is null");
+                m_renderPassAttachmentSnapshotValid = false;
+            }
+            else
+            {
+                RHITexture* texture = view->GetTexture();
+                m_renderPassDepthFormat = view->GetFormat() == RHIFormat::Unknown
+                    ? (texture ? texture->GetFormat() : RHIFormat::Unknown)
+                    : view->GetFormat();
+                validateSampleCount(texture, "depth");
+                if (texture &&
+                    desc.depthStencilAttachment.depthLoadOp == RHILoadOp::Clear)
+                {
+                    const auto* dx12Texture = static_cast<const DX12Texture*>(texture);
+                    const RHIOptimizedClearValue& optimized =
+                        dx12Texture->GetDesc().optimizedClearValue;
+                    if (optimized.type == RHIOptimizedClearValueType::DepthStencil &&
+                        !AreRHIClearDepthStencilValuesEqual(
+                            optimized.depthStencil,
+                            desc.depthStencilAttachment.clearValue))
+                    {
+                        RVX_RHI_ERROR("DX12CommandContext: depth attachment clear does not match its optimized clear value");
+                    }
+                }
+            }
+        }
+
+        if (!m_renderPassAttachmentSnapshotValid)
+        {
+            return;
+        }
+
         m_inRenderPass = true;
 
         // Collect RTVs
@@ -776,6 +895,9 @@ namespace RVX
     void DX12CommandContext::EndRenderPass()
     {
         m_inRenderPass = false;
+        m_renderPassAttachmentSnapshotValid = false;
+        m_renderPassColorAttachmentCount = 0;
+        m_renderPassDepthFormat = RHIFormat::Unknown;
     }
 
     // =============================================================================
@@ -793,6 +915,11 @@ namespace RVX
         }
 
         auto* dx12Pipeline = static_cast<DX12Pipeline*>(pipeline);
+        if (!dx12Pipeline->IsValid())
+        {
+            RVX_RHI_ERROR("DX12CommandContext: SetPipeline requires a valid native pipeline");
+            return;
+        }
         if (dx12Pipeline->IsRayTracing())
         {
             if (m_queueType == RHICommandQueueType::Copy)
@@ -833,6 +960,30 @@ namespace RVX
             }
             m_currentPipeline = dx12Pipeline;
             return;
+        }
+
+        if (!dx12Pipeline->IsCompute() && m_inRenderPass &&
+            m_renderPassAttachmentSnapshotValid)
+        {
+            bool compatible =
+                dx12Pipeline->GetRenderTargetCount() ==
+                    m_renderPassColorAttachmentCount &&
+                dx12Pipeline->GetDepthStencilFormat() ==
+                    m_renderPassDepthFormat &&
+                dx12Pipeline->GetSampleCount() == m_renderPassSampleCount;
+            for (uint32 i = 0;
+                 compatible && i < m_renderPassColorAttachmentCount;
+                 ++i)
+            {
+                compatible = dx12Pipeline->GetRenderTargetFormat(i) ==
+                             m_renderPassColorFormats[i];
+            }
+            if (!compatible)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: graphics pipeline '{}' is incompatible with the active render-pass attachment formats or sample count",
+                              dx12Pipeline->GetDebugName());
+                return;
+            }
         }
 
         m_currentPipeline = dx12Pipeline;
@@ -1981,6 +2132,30 @@ namespace RVX
             {
                 RVX_RHI_ERROR("DX12CommandContext::SignalFence: invalid command queue");
             }
+        }
+    }
+
+    void DX12CommandContext::AliasingBarriers(
+        std::span<const RHIResourceAliasingBarrier> barriers)
+    {
+        for (const RHIResourceAliasingBarrier& barrier : barriers)
+        {
+            ID3D12Resource* before = GetDX12AliasingResource(
+                barrier.resourceBefore);
+            ID3D12Resource* after = GetDX12AliasingResource(
+                barrier.resourceAfter);
+            if (!before || !after || before == after)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: aliasing barrier requires two distinct native buffer/texture resources");
+                continue;
+            }
+
+            D3D12_RESOURCE_BARRIER nativeBarrier = {};
+            nativeBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
+            nativeBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+            nativeBarrier.Aliasing.pResourceBefore = before;
+            nativeBarrier.Aliasing.pResourceAfter = after;
+            m_pendingBarriers.push_back(nativeBarrier);
         }
     }
 

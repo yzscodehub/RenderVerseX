@@ -88,6 +88,7 @@ namespace RVX
         // DX12 Specific
         ID3D12Resource* GetResource() const { return m_resource.Get(); }
         DXGI_FORMAT GetDXGIFormat() const { return m_dxgiFormat; }
+        const RHITextureDesc& GetDesc() const { return m_desc; }
 
         const DX12DescriptorHandle& GetSRVHandle() const { return m_srvHandle; }
         const DX12DescriptorHandle& GetUAVHandle() const { return m_uavHandle; }

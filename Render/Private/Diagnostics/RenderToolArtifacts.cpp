@@ -615,7 +615,17 @@ std::string SceneRenderer::ExportToolDiagnosticsText() const
        << ", fallback=" << frame.gpuDrivenCullingStats.fallbackUsed
        << ", decisionAvailable=" << frame.gpuDrivenCullingStats.executionDecisionAvailable
        << ", inputOpaque=" << frame.gpuDrivenCullingStats.inputOpaqueDrawItemCount
-       << ", outputOpaque=" << frame.gpuDrivenCullingStats.outputOpaqueDrawItemCount << "\n";
+       << ", outputOpaque=" << frame.gpuDrivenCullingStats.outputOpaqueDrawItemCount
+       << ", requested=" << frame.gpuDrivenCullingStats.opaqueIndirectRequested
+       << ", cullingReady=" << frame.gpuDrivenCullingStats.opaqueCullingReady
+       << ", pipelineReady=" << frame.gpuDrivenCullingStats.opaquePipelineReady
+       << ", eligible=" << frame.gpuDrivenCullingStats.opaqueIndirectEligible
+       << ", submitted=" << frame.gpuDrivenCullingStats.opaqueIndirectSubmitted
+       << ", directDraws=" << frame.gpuDrivenCullingStats.opaqueDirectDrawCount
+       << ", fallbackReason="
+       << GetGPUDrivenDrawFallbackReasonName(
+              frame.gpuDrivenCullingStats.opaqueFallbackReason)
+       << "\n";
     ss << "RayTracingScene: prepared=" << frame.rayTracingSceneStats.prepared
        << ", hasTLAS=" << frame.rayTracingSceneStats.hasTopLevelAS
        << ", fallbackCode=" << static_cast<uint32>(frame.rayTracingSceneStats.fallbackCode)
