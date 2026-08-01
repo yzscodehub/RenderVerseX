@@ -1224,6 +1224,7 @@ namespace RVX
         void PrepareRayTracingScene();
         void AddRayTracingSceneBuildPass();
         void AddGPUDrivenCullingPass();
+        void CommitGPUDrivenAccessSnapshots();
         void BuildMaterialDrawLists();
         void ApplyGPUDrivenCullingToDrawLists();
         void ApplyGPUDrivenCullingToDrawList(std::vector<RenderDrawItem>& drawItems,
@@ -1275,6 +1276,23 @@ namespace RVX
         std::unique_ptr<ResourceViewCache> m_resourceViewCache;
         std::unique_ptr<RenderPassRegistry> m_passRegistry;
         std::unique_ptr<GPUCulling> m_gpuCulling;
+        struct GPUCullingGraphHandles
+        {
+            RGBufferHandle constants;
+            RGBufferHandle instances;
+            RGBufferHandle visibility;
+            RGBufferHandle visibleInstances;
+            RGBufferHandle indirectDraws;
+            RGBufferHandle drawCount;
+
+            bool IsValid() const
+            {
+                return constants.IsValid() && instances.IsValid() &&
+                       visibility.IsValid() && visibleInstances.IsValid() &&
+                       indirectDraws.IsValid() && drawCount.IsValid();
+            }
+        };
+        GPUCullingGraphHandles m_gpuCullingGraphHandles;
         std::unique_ptr<PostProcessStack> m_postProcessStack;
         std::unique_ptr<RayTracingSceneManager> m_rayTracingSceneManager;
 
@@ -1361,8 +1379,11 @@ namespace RVX
         uint32_t m_depthHeight = 0;
 
         // Back buffer state tracking
-        std::vector<RHIResourceState> m_backBufferStates;
-        RHIResourceState m_depthBufferState = RHIResourceState::Undefined;
+        std::vector<RHITextureAccessSnapshot> m_backBufferAccessSnapshots;
+        RHITextureAccessSnapshot m_depthAccessSnapshot;
+        RGTextureHandle m_depthGraphHandle;
+        RGTextureHandle m_backBufferGraphHandle;
+        uint32 m_activeBackBufferIndex = RVX_INVALID_INDEX;
 
         // Track swap chain dimensions to detect resize
         uint32_t m_lastSwapChainWidth = 0;

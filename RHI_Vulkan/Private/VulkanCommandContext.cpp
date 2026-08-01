@@ -9,6 +9,36 @@
 
 namespace RVX
 {
+    namespace
+    {
+        bool RequiresScopedBarrier(bool hasScopedAccess,
+                                   RHIDependencyKind dependencyKind)
+        {
+            return hasScopedAccess && dependencyKind != RHIDependencyKind::None;
+        }
+
+        uint32 GetQueueFamilyIndex(VulkanDevice* device, GPUQueueDomain domain)
+        {
+            switch (domain)
+            {
+                case GPUQueueDomain::Compute: return device->GetComputeQueueFamily();
+                case GPUQueueDomain::Copy: return device->GetTransferQueueFamily();
+                case GPUQueueDomain::Graphics:
+                default: return device->GetGraphicsQueueFamily();
+            }
+        }
+
+        bool RequiresPairedQueueFamilyTransfer(VulkanDevice* device,
+                                               const RHIAccessSnapshot& before,
+                                               const RHIAccessSnapshot& after,
+                                               RHIDependencyKind dependencyKind)
+        {
+            return HasDependencyKind(dependencyKind, RHIDependencyKind::Ownership) &&
+                   GetQueueFamilyIndex(device, before.domain) !=
+                       GetQueueFamilyIndex(device, after.domain);
+        }
+    } // namespace
+
     VulkanCommandContext::VulkanCommandContext(VulkanDevice* device, RHICommandQueueType type)
         : m_device(device)
         , m_queueType(type)
@@ -111,7 +141,9 @@ namespace RVX
 
     void VulkanCommandContext::BufferBarrier(const RHIBufferBarrier& barrier)
     {
-        if (!barrier.buffer || barrier.stateBefore == barrier.stateAfter)
+        if (!barrier.buffer ||
+            (barrier.stateBefore == barrier.stateAfter &&
+             !RequiresScopedBarrier(barrier.hasScopedAccess, barrier.dependencyKind)))
         {
             return;
         }
@@ -123,12 +155,34 @@ namespace RVX
         }
 
         VkBufferMemoryBarrier2 bufferBarrier = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-        bufferBarrier.srcStageMask = ToVkPipelineStageFlags(barrier.stateBefore);
-        bufferBarrier.srcAccessMask = ToVkAccessFlags(barrier.stateBefore);
-        bufferBarrier.dstStageMask = ToVkPipelineStageFlags(barrier.stateAfter);
-        bufferBarrier.dstAccessMask = ToVkAccessFlags(barrier.stateAfter);
+        bufferBarrier.srcStageMask = barrier.hasScopedAccess
+            ? ToVkPipelineStageFlags2(barrier.accessBefore.executionScope)
+            : ToVkPipelineStageFlags(barrier.stateBefore);
+        bufferBarrier.srcAccessMask = barrier.hasScopedAccess
+            ? ToVkAccessFlags2(barrier.accessBefore.memoryAccess)
+            : ToVkAccessFlags(barrier.stateBefore);
+        bufferBarrier.dstStageMask = barrier.hasScopedAccess
+            ? ToVkPipelineStageFlags2(barrier.accessAfter.executionScope)
+            : ToVkPipelineStageFlags(barrier.stateAfter);
+        bufferBarrier.dstAccessMask = barrier.hasScopedAccess
+            ? ToVkAccessFlags2(barrier.accessAfter.memoryAccess)
+            : ToVkAccessFlags(barrier.stateAfter);
         bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        if (barrier.hasScopedAccess && RequiresPairedQueueFamilyTransfer(
+                                           m_device,
+                                           barrier.accessBefore,
+                                           barrier.accessAfter,
+                                           barrier.dependencyKind))
+        {
+            // A Vulkan ownership transfer is a release on the source queue plus
+            // an acquire on the destination queue. The shared access contract
+            // carries both domains, but this context owns only one command
+            // buffer. Keep the native indices ignored until the submission
+            // planner emits the paired barriers (Task 26).
+            RVX_RHI_ERROR(
+                "Vulkan cross-family buffer ownership transfer requires paired release/acquire barriers");
+        }
         bufferBarrier.buffer = vkBuffer->GetBuffer();
         bufferBarrier.offset = barrier.offset;
         bufferBarrier.size = barrier.size == RVX_WHOLE_SIZE ? VK_WHOLE_SIZE : barrier.size;
@@ -139,7 +193,9 @@ namespace RVX
 
     void VulkanCommandContext::TextureBarrier(const RHITextureBarrier& barrier)
     {
-        if (!barrier.texture || barrier.stateBefore == barrier.stateAfter)
+        if (!barrier.texture ||
+            (barrier.stateBefore == barrier.stateAfter &&
+             !RequiresScopedBarrier(barrier.hasScopedAccess, barrier.dependencyKind)))
         {
             return;
         }
@@ -151,14 +207,35 @@ namespace RVX
         }
 
         VkImageMemoryBarrier2 imageBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-        imageBarrier.srcStageMask = ToVkPipelineStageFlags(barrier.stateBefore);
-        imageBarrier.srcAccessMask = ToVkAccessFlags(barrier.stateBefore);
-        imageBarrier.dstStageMask = ToVkPipelineStageFlags(barrier.stateAfter);
-        imageBarrier.dstAccessMask = ToVkAccessFlags(barrier.stateAfter);
-        imageBarrier.oldLayout = ToVkImageLayout(barrier.stateBefore);
-        imageBarrier.newLayout = ToVkImageLayout(barrier.stateAfter);
+        imageBarrier.srcStageMask = barrier.hasScopedAccess
+            ? ToVkPipelineStageFlags2(barrier.accessBefore.executionScope)
+            : ToVkPipelineStageFlags(barrier.stateBefore);
+        imageBarrier.srcAccessMask = barrier.hasScopedAccess
+            ? ToVkAccessFlags2(barrier.accessBefore.memoryAccess)
+            : ToVkAccessFlags(barrier.stateBefore);
+        imageBarrier.dstStageMask = barrier.hasScopedAccess
+            ? ToVkPipelineStageFlags2(barrier.accessAfter.executionScope)
+            : ToVkPipelineStageFlags(barrier.stateAfter);
+        imageBarrier.dstAccessMask = barrier.hasScopedAccess
+            ? ToVkAccessFlags2(barrier.accessAfter.memoryAccess)
+            : ToVkAccessFlags(barrier.stateAfter);
+        imageBarrier.oldLayout = barrier.hasScopedAccess
+            ? ToVkImageLayout(barrier.accessBefore.layout)
+            : ToVkImageLayout(barrier.stateBefore);
+        imageBarrier.newLayout = barrier.hasScopedAccess
+            ? ToVkImageLayout(barrier.accessAfter.layout)
+            : ToVkImageLayout(barrier.stateAfter);
         imageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        if (barrier.hasScopedAccess && RequiresPairedQueueFamilyTransfer(
+                                           m_device,
+                                           barrier.accessBefore,
+                                           barrier.accessAfter,
+                                           barrier.dependencyKind))
+        {
+            RVX_RHI_ERROR(
+                "Vulkan cross-family texture ownership transfer requires paired release/acquire barriers");
+        }
         imageBarrier.image = vkTexture->GetImage();
 
         // Subresource range

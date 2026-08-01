@@ -36,6 +36,28 @@ namespace
                request.GetKind() != RenderResourceKind::Invalid;
     }
 
+    GPUQueueDomain GetPhysicalUploadDomain(const IRHIDevice* device)
+    {
+        GPUQueueDomain domain = GPUQueueDomain::Graphics;
+        if (device)
+        {
+            TryGetGPUQueueDomain(
+                device->GetCapabilities().queueTopology,
+                RHICommandQueueType::Copy,
+                domain);
+        }
+        return domain;
+    }
+
+    RHIAccessSnapshot MakeUploadFinalAccess(const IRHIDevice* device)
+    {
+        return MakeRHIAccessSnapshot(
+            RHIResourceState::Common,
+            RHIShaderStage::All,
+            GetPhysicalUploadDomain(device),
+            RHIContentValidity::Valid);
+    }
+
     struct PreparedTextureSlice
     {
         uint32 subresource = 0;
@@ -200,6 +222,11 @@ namespace
             result.succeeded = true;
             result.mode = GPUUploadMode::ImmediateMapped;
             result.bytesUploaded = dataSize;
+            result.finalAccess = MakeRHIAccessSnapshot(
+                RHIResourceState::Common,
+                RHIShaderStage::All,
+                GPUQueueDomain::Graphics,
+                RHIContentValidity::Valid);
             return result;
         }
 
@@ -272,6 +299,7 @@ namespace
             result.succeeded = true;
             result.mode = GPUUploadMode::StagedCopy;
             result.bytesUploaded = dataSize;
+            result.finalAccess = MakeUploadFinalAccess(device);
             result.uploadId = TrackPending(std::move(staging),
                                            context,
                                            dataSize);
@@ -468,6 +496,7 @@ namespace
             result.succeeded = true;
             result.mode = GPUUploadMode::StagedCopy;
             result.bytesUploaded = sourceSize;
+            result.finalAccess = MakeUploadFinalAccess(device);
             result.uploadId = TrackPending(std::move(staging),
                                            context,
                                            uploadSize);
@@ -1303,7 +1332,12 @@ namespace
         if (!texture ||
             !m_registry->SetPendingTexture(handle,
                                            texture,
-                                           payload.bytes.size()))
+                                           payload.bytes.size(),
+                                           MakeRHITextureAccessSnapshot(
+                                               RHIResourceState::Common,
+                                               RHIShaderStage::All,
+                                               GetPhysicalUploadDomain(m_device),
+                                               RHIContentValidity::Valid)))
         {
             return false;
         }
@@ -1443,7 +1477,12 @@ namespace
             !m_registry->AddPendingMeshBuffer(handle,
                                               semantic,
                                               buffer,
-                                              range.size))
+                                              range.size,
+                                              MakeRHIBufferAccessSnapshot(
+                                                  RHIResourceState::Common,
+                                                  RHIShaderStage::All,
+                                                  GetPhysicalUploadDomain(m_device),
+                                                  RHIContentValidity::Valid)))
         {
             return false;
         }
@@ -1493,7 +1532,12 @@ namespace
         if (!buffer ||
             !m_registry->SetPendingMaterialConstants(handle,
                                                      buffer,
-                                                     constantBytes))
+                                                     constantBytes,
+                                                     MakeRHIBufferAccessSnapshot(
+                                                         RHIResourceState::Common,
+                                                         RHIShaderStage::All,
+                                                         GetPhysicalUploadDomain(m_device),
+                                                         RHIContentValidity::Valid)))
         {
             return false;
         }

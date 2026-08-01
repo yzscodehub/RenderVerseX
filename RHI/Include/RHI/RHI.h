@@ -16,6 +16,7 @@
 #include "RHI/RHIDescriptor.h"
 #include "RHI/RHIRenderPass.h"
 #include "RHI/RHIQueueTopology.h"
+#include "RHI/RHIAccess.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHISwapChain.h"
 #include "RHI/RHISynchronization.h"

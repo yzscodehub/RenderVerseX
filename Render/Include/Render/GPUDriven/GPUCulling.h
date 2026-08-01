@@ -114,6 +114,19 @@ namespace RVX
         bool pipelineReady = false;
     };
 
+    /** @brief Persistent access ownership for GPU-culling buffers across frames. */
+    struct GPUCullingAccessSnapshots
+    {
+        RHIBufferAccessSnapshot constants;
+        RHIBufferAccessSnapshot instances;
+        RHIBufferAccessSnapshot visibility;
+        RHIBufferAccessSnapshot visibleInstances;
+        RHIBufferAccessSnapshot indirectDraws;
+        RHIBufferAccessSnapshot drawCount;
+
+        bool operator==(const GPUCullingAccessSnapshots&) const = default;
+    };
+
     /**
      * @brief GPU-driven culling system
      *
@@ -315,6 +328,17 @@ namespace RVX
          */
         GPUCullingExecutionDecision GetExecutionDecision() const;
 
+        const GPUCullingAccessSnapshots& GetAccessSnapshots() const
+        {
+            return m_accessSnapshots;
+        }
+
+        /** @brief Commit RenderGraph's realized final buffer accesses. */
+        void CommitAccessSnapshots(const GPUCullingAccessSnapshots& snapshots)
+        {
+            m_accessSnapshots = snapshots;
+        }
+
         /**
          * @brief Whether the current device/capability/pipeline state can execute GPU culling
          */
@@ -402,6 +426,7 @@ namespace RVX
         RHIBufferRef m_indirectBuffer;           // Indirect draw commands
         RHIBufferRef m_drawCountBuffer;          // Number of draws
         RHIBufferRef m_cullingConstantsBuffer;   // View/proj, frustum planes
+        GPUCullingAccessSnapshots m_accessSnapshots;
 
         // Pipelines
         RHIShaderRef m_frustumCullShader;

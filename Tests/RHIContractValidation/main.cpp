@@ -349,6 +349,103 @@ namespace RVX::Tests
         EXPECT_NE(metalCommands.find("binding.binding + binding.arrayElement"), std::string::npos);
     }
 
+    TEST(RHIContractValidation, ScopedAccessSeparatesMemoryLayoutDomainAndDiscard)
+    {
+        const RHIAccessSnapshot write = MakeRHIAccessSnapshot(
+            RHIResourceState::UnorderedAccess,
+            RHIShaderStage::Compute,
+            GPUQueueDomain::Compute,
+            RHIContentValidity::Valid);
+        RHIAccessSnapshot read = write;
+        read.memoryAccess = RHIMemoryAccess::ShaderRead;
+
+        const RHIDependencyKind dependency = ClassifyRHIDependency(write, read);
+        EXPECT_TRUE(HasDependencyKind(dependency, RHIDependencyKind::Memory));
+        EXPECT_FALSE(HasDependencyKind(dependency, RHIDependencyKind::Transition));
+        EXPECT_FALSE(HasDependencyKind(dependency, RHIDependencyKind::Ownership));
+        EXPECT_EQ(ProjectRHIResourceState(write), RHIResourceState::UnorderedAccess);
+        EXPECT_EQ(ProjectRHIResourceState(read), RHIResourceState::UnorderedAccess);
+        EXPECT_TRUE(HasDependencyKind(
+            ClassifyRHIDependency(read, write),
+            RHIDependencyKind::Memory));
+
+        RHIAccessSnapshot graphicsRead = read;
+        graphicsRead.domain = GPUQueueDomain::Graphics;
+        const RHIDependencyKind ownership = ClassifyRHIDependency(
+            read,
+            graphicsRead,
+            RHIDiscardIntent::Discard);
+        EXPECT_TRUE(HasDependencyKind(ownership, RHIDependencyKind::Ownership));
+        EXPECT_TRUE(HasDependencyKind(ownership, RHIDependencyKind::Discard));
+
+        RHIBufferBarrier barrier = MakeRHIBufferBarrier(
+            nullptr,
+            read,
+            graphicsRead,
+            64,
+            128,
+            RHIDiscardIntent::Discard);
+        EXPECT_EQ(barrier.accessBefore, read);
+        EXPECT_EQ(barrier.discardIntent, RHIDiscardIntent::Discard);
+        EXPECT_NE(DescribeRHIAccessSnapshot(barrier.accessBefore).find("domain=Compute"),
+                  std::string::npos);
+    }
+
+    TEST(RHIContractValidation, PrimaryBackendsTranslateScopedDependenciesStructurally)
+    {
+        const std::string accessHeader = ReadSource("RHI/Include/RHI/RHIAccess.h");
+        const std::string dx12 = ReadSource("RHI_DX12/Private/DX12CommandContext.cpp");
+        const std::string vulkanCommon = ReadSource("RHI_Vulkan/Private/VulkanCommon.h");
+        const std::string vulkan = ReadSource("RHI_Vulkan/Private/VulkanCommandContext.cpp");
+        const std::string metal = ReadSource("RHI_Metal/Private/MetalCommandContext.mm");
+
+        EXPECT_NE(accessHeader.find("struct RHIAccessSnapshot"), std::string::npos);
+        EXPECT_NE(accessHeader.find("RHIContentValidity"), std::string::npos);
+        EXPECT_NE(accessHeader.find("RHIDiscardIntent"), std::string::npos);
+        EXPECT_NE(dx12.find("D3D12_RESOURCE_BARRIER_TYPE_UAV"), std::string::npos);
+        EXPECT_NE(dx12.find("RHIDependencyKind::Memory"), std::string::npos);
+        EXPECT_NE(vulkanCommon.find("ToVkPipelineStageFlags2(RHIExecutionScope"), std::string::npos);
+        EXPECT_NE(vulkanCommon.find("ToVkAccessFlags2(RHIMemoryAccess"), std::string::npos);
+        EXPECT_NE(vulkan.find("GetQueueFamilyIndex(device, before.domain)"), std::string::npos);
+        EXPECT_NE(vulkan.find("GetQueueFamilyIndex(device, after.domain)"), std::string::npos);
+        EXPECT_NE(vulkan.find("requires paired release/acquire barriers"), std::string::npos);
+        EXPECT_NE(vulkan.find("VK_QUEUE_FAMILY_IGNORED"), std::string::npos);
+        EXPECT_NE(metal.find("barrier.accessBefore.executionScope"), std::string::npos);
+        EXPECT_NE(metal.find("RequiresMetalBarrier"), std::string::npos);
+    }
+
+    TEST(RHIContractValidation, LifetimeOwnersCommitScopedSnapshots)
+    {
+        const std::string poolHeader = ReadSource(
+            "Render/Include/Render/Graph/TransientResourcePool.h");
+        const std::string poolSource = ReadSource(
+            "Render/Private/Graph/TransientResourcePool.cpp");
+        const std::string sceneRenderer = ReadSource(
+            "Render/Private/Renderer/SceneRenderer.cpp");
+        const std::string uploadTypes = ReadSource(
+            "Render/Include/Render/GPUUploadTypes.h");
+        const std::string uploadProcessor = ReadSource(
+            "Render/Private/Resources/RenderUploadProcessor.cpp");
+        const std::string resourceRegistry = ReadSource(
+            "Render/Private/Resources/RenderResourceRegistry.h");
+
+        EXPECT_NE(poolHeader.find("TransientTextureLease"), std::string::npos);
+        EXPECT_NE(poolHeader.find("RHITextureAccessSnapshot accessSnapshot"), std::string::npos);
+        EXPECT_NE(poolSource.find("pooled.accessSnapshot = finalAccess"), std::string::npos);
+        EXPECT_NE(sceneRenderer.find("m_gpuCulling->GetAccessSnapshots()"), std::string::npos);
+        EXPECT_NE(sceneRenderer.find("CommitGPUDrivenAccessSnapshots()"), std::string::npos);
+        EXPECT_EQ(sceneRenderer.find(
+                      "ImportBuffer(visibilityBuffer, RHIResourceState::Common)"),
+                  std::string::npos);
+        EXPECT_NE(uploadTypes.find("RHIAccessSnapshot finalAccess"), std::string::npos);
+        EXPECT_NE(uploadProcessor.find("result.finalAccess = MakeRHIAccessSnapshot"),
+                  std::string::npos);
+        EXPECT_NE(uploadProcessor.find("GetPhysicalUploadDomain"), std::string::npos);
+        EXPECT_NE(resourceRegistry.find("RHIBufferAccessSnapshot accessSnapshot"),
+                  std::string::npos);
+        EXPECT_NE(resourceRegistry.find("constantsAccessSnapshot"), std::string::npos);
+    }
+
     TEST(RHIContractValidation, DeviceRuntimeFaultContractIsOwnedAndStable)
     {
         RHIDeviceFault fault;

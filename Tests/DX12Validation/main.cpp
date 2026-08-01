@@ -281,7 +281,7 @@ TEST(DX12Validation, BufferCreation)
     // Test Default buffer
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 1024;
-    bufferDesc.usage = RHIBufferUsage::Vertex;
+    bufferDesc.usage = RHIBufferUsage::Vertex | RHIBufferUsage::UnorderedAccess;
     bufferDesc.memoryType = RHIMemoryType::Default;
     bufferDesc.debugName = "TestVertexBuffer";
 
@@ -690,7 +690,7 @@ TEST(DX12Validation, BarrierNoWorkInputsAreSafe)
 
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 256;
-    bufferDesc.usage = RHIBufferUsage::Vertex;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
     bufferDesc.memoryType = RHIMemoryType::Default;
     bufferDesc.stride = sizeof(float);
     auto buffer = device->CreateBuffer(bufferDesc);
@@ -698,6 +698,16 @@ TEST(DX12Validation, BarrierNoWorkInputsAreSafe)
     ctx->BufferBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
     ctx->BeginBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
     ctx->EndBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
+    const RHIAccessSnapshot unorderedAccess = MakeRHIAccessSnapshot(
+        RHIResourceState::UnorderedAccess,
+        RHIShaderStage::Compute,
+        GPUQueueDomain::Graphics,
+        RHIContentValidity::Valid);
+    ctx->BufferBarrier(buffer.Get(),
+                       RHIResourceState::Common,
+                       RHIResourceState::UnorderedAccess);
+    ctx->BufferBarrier(MakeRHIBufferBarrier(
+        buffer.Get(), unorderedAccess, unorderedAccess));
 
     ctx->End();
     EXPECT_EQ(device->SubmitCommandContext(ctx.Get(), nullptr), 0u);

@@ -3,6 +3,7 @@
 /** @file GPUUploadTypes.h @brief Transitional upload values shared with Render internals */
 
 #include "RHI/RHIBuffer.h"
+#include "RHI/RHIAccess.h"
 #include "RHI/RHITexture.h"
 
 namespace RVX
@@ -36,6 +37,7 @@ namespace RVX
         uint64 bytesUploaded = 0;
         uint64 uploadId = 0;
         bool isPending = false;
+        RHIAccessSnapshot finalAccess;
 
         explicit operator bool() const { return succeeded; }
     };

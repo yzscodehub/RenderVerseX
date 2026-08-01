@@ -16,7 +16,7 @@
 namespace RVX
 {
     inline constexpr const char* RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID = "RVX.RenderGraph.Diagnostics";
-    inline constexpr uint32 RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 3;
+    inline constexpr uint32 RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 4;
 
     class RenderSubmissionResourceBatch;
     class TransientResourcePool;
@@ -72,18 +72,32 @@ namespace RVX
         RGTextureHandle Read(RGTextureHandle texture,
                              RHIResourceState state,
                              RHIShaderStage stages = RHIShaderStage::AllGraphics);
+        RGTextureHandle Read(RGTextureHandle texture, const RHIAccessSnapshot& access);
         RGBufferHandle Read(RGBufferHandle buffer, RHIShaderStage stages = RHIShaderStage::AllGraphics);
         RGBufferHandle Read(RGBufferHandle buffer,
                             RHIResourceState state,
                             RHIShaderStage stages = RHIShaderStage::AllGraphics);
+        RGBufferHandle Read(RGBufferHandle buffer, const RHIAccessSnapshot& access);
 
         // Write resources
-        RGTextureHandle Write(RGTextureHandle texture, RHIResourceState state = RHIResourceState::RenderTarget);
-        RGBufferHandle Write(RGBufferHandle buffer, RHIResourceState state = RHIResourceState::UnorderedAccess);
+        RGTextureHandle Write(RGTextureHandle texture,
+                              RHIResourceState state = RHIResourceState::RenderTarget,
+                              RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve);
+        RGTextureHandle Write(RGTextureHandle texture,
+                              const RHIAccessSnapshot& access,
+                              RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve);
+        RGBufferHandle Write(RGBufferHandle buffer,
+                             RHIResourceState state = RHIResourceState::UnorderedAccess,
+                             RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve);
+        RGBufferHandle Write(RGBufferHandle buffer,
+                             const RHIAccessSnapshot& access,
+                             RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve);
 
         // Read-write resources
         RGTextureHandle ReadWrite(RGTextureHandle texture);
+        RGTextureHandle ReadWrite(RGTextureHandle texture, const RHIAccessSnapshot& access);
         RGBufferHandle ReadWrite(RGBufferHandle buffer);
+        RGBufferHandle ReadWrite(RGBufferHandle buffer, const RHIAccessSnapshot& access);
 
         // Subresource-level access
         RGTextureHandle ReadMip(RGTextureHandle texture, uint32 mipLevel);
@@ -117,10 +131,18 @@ namespace RVX
         // Import external resources
         RGTextureHandle ImportTexture(RHITexture* texture, RHIResourceState initialState);
         RGBufferHandle ImportBuffer(RHIBuffer* buffer, RHIResourceState initialState);
+        RGTextureHandle ImportTexture(RHITexture* texture, const RHITextureAccessSnapshot& initialAccess);
+        RGBufferHandle ImportBuffer(RHIBuffer* buffer, const RHIBufferAccessSnapshot& initialAccess);
 
         // Export final state for external usage
         void SetExportState(RGTextureHandle texture, RHIResourceState finalState);
         void SetExportState(RGBufferHandle buffer, RHIResourceState finalState);
+        void SetExportAccess(RGTextureHandle texture, const RHIAccessSnapshot& finalAccess);
+        void SetExportAccess(RGBufferHandle buffer, const RHIAccessSnapshot& finalAccess);
+
+        /** @brief Get the realized snapshot after Execute, or the supplied initial snapshot otherwise. */
+        RHITextureAccessSnapshot GetRealizedAccess(RGTextureHandle texture) const;
+        RHIBufferAccessSnapshot GetRealizedAccess(RGBufferHandle buffer) const;
 
         // Get actual RHI resources from handles (valid after Compile)
         RHITexture* GetTexture(RGTextureHandle handle) const;
@@ -205,6 +227,8 @@ namespace RVX
             uint32 shaderStageMismatchUsageCount = 0;
             uint32 readBeforeWriteHazardCount = 0;
             uint32 uninitializedExportCount = 0;
+            uint32 accessSnapshotMismatchCount = 0;
+            uint32 compatibilityStateProjectionCount = 0;
 
             // Barrier statistics
             uint32 barrierCount = 0;
@@ -264,6 +288,7 @@ namespace RVX
             DiagnosticAccessType access = DiagnosticAccessType::Read;
             uint32 resourceIndex = RVX_INVALID_INDEX;
             RHIResourceState desiredState = RHIResourceState::Common;
+            RHIAccessSnapshot desiredAccess;
             RHIShaderStage stages = RHIShaderStage::None;
             bool hasSubresourceRange = false;
             RHISubresourceRange subresourceRange = RHISubresourceRange::All();
@@ -306,8 +331,12 @@ namespace RVX
             uint64 aliasHeapOffset = 0;
             RHIResourceState initialState = RHIResourceState::Undefined;
             RHIResourceState currentState = RHIResourceState::Undefined;
+            RHIAccessSnapshot initialAccess;
+            RHIAccessSnapshot currentAccess;
             bool hasExportState = false;
             RHIResourceState exportState = RHIResourceState::Undefined;
+            bool hasExportAccess = false;
+            RHIAccessSnapshot exportAccess;
 
             // Texture fields
             uint32 width = 0;

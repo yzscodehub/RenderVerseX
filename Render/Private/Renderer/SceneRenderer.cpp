@@ -582,9 +582,16 @@ void SceneRenderer::PrepareForSwapChainResize()
     m_depthTexture.Reset();
     m_depthWidth = 0;
     m_depthHeight = 0;
-    m_depthBufferState = RHIResourceState::Undefined;
+    m_depthAccessSnapshot = MakeRHITextureAccessSnapshot(
+        RHIResourceState::Undefined,
+        RHIShaderStage::None,
+        GPUQueueDomain::Graphics,
+        RHIContentValidity::Invalid);
 
-    m_backBufferStates.clear();
+    m_backBufferAccessSnapshots.clear();
+    m_depthGraphHandle = {};
+    m_backBufferGraphHandle = {};
+    m_activeBackBufferIndex = RVX_INVALID_INDEX;
     m_lastSwapChainWidth = 0;
     m_lastSwapChainHeight = 0;
     m_viewData.colorTarget = {};
@@ -1906,6 +1913,18 @@ void SceneRenderer::Render()
     {
         m_renderGraph->Execute(*ctx);
         graphExecuted = true;
+        CommitGPUDrivenAccessSnapshots();
+        if (m_depthTexture && m_depthGraphHandle.IsValid())
+        {
+            m_depthAccessSnapshot = m_renderGraph->GetRealizedAccess(
+                m_depthGraphHandle);
+        }
+        if (m_backBufferGraphHandle.IsValid() &&
+            m_activeBackBufferIndex < m_backBufferAccessSnapshots.size())
+        {
+            m_backBufferAccessSnapshots[m_activeBackBufferIndex] =
+                m_renderGraph->GetRealizedAccess(m_backBufferGraphHandle);
+        }
         if (m_opaquePass)
         {
             const OpaquePassDrawStats& opaqueStats = m_opaquePass->GetDrawStats();
@@ -1929,13 +1948,6 @@ void SceneRenderer::Render()
                             true,
                             true,
                             executionSkippedReason);
-
-    // Update depth buffer state after RenderGraph execution
-    // RenderGraph may have transitioned it to DepthWrite
-    if (m_depthTexture)
-    {
-        m_depthBufferState = RHIResourceState::DepthWrite;
-    }
 
     // Log compile stats periodically for debugging
     static uint64_t frameCount = 0;
@@ -1977,27 +1989,56 @@ void SceneRenderer::ExecutePasses(RHICommandContext& ctx)
     // State tracking is managed by BuildRenderGraph(), but if called standalone,
     // ensure we have valid state tracking
     uint32_t bufferCount = swapChain->GetBufferCount();
-    if (m_backBufferStates.size() != bufferCount)
+    if (m_backBufferAccessSnapshots.size() != bufferCount)
     {
-        m_backBufferStates.assign(bufferCount, RHIResourceState::Undefined);
+        m_backBufferAccessSnapshots.assign(
+            bufferCount,
+            MakeRHITextureAccessSnapshot(
+                RHIResourceState::Undefined,
+                RHIShaderStage::None,
+                GPUQueueDomain::Graphics,
+                RHIContentValidity::Invalid));
     }
 
     uint32_t backBufferIndex = swapChain->GetCurrentBackBufferIndex();
     RHITexture* backBuffer = m_renderContext->GetCurrentBackBuffer();
-    RHIResourceState& backBufferState = m_backBufferStates[backBufferIndex];
+    RHITextureAccessSnapshot& backBufferAccess =
+        m_backBufferAccessSnapshots[backBufferIndex];
+    const RHIAccessSnapshot renderTargetAccess = MakeRHIAccessSnapshot(
+        RHIResourceState::RenderTarget,
+        RHIShaderStage::None,
+        GPUQueueDomain::Graphics);
 
     // Transition back buffer to RenderTarget (from Undefined on first use, Present thereafter)
-    if (backBuffer && backBufferState != RHIResourceState::RenderTarget)
+    if (backBuffer && backBufferAccess.uniformAccess != renderTargetAccess)
     {
-        ctx.TextureBarrier(backBuffer, backBufferState, RHIResourceState::RenderTarget);
-        backBufferState = RHIResourceState::RenderTarget;
+        ctx.TextureBarrier(
+            backBuffer,
+            backBufferAccess.uniformAccess,
+            renderTargetAccess,
+            RHISubresourceRange::All(),
+            backBufferAccess.uniformAccess.contentValidity == RHIContentValidity::Valid
+                ? RHIDiscardIntent::Preserve
+                : RHIDiscardIntent::Discard);
+        backBufferAccess.uniformAccess = renderTargetAccess;
     }
 
     // Transition depth buffer to DepthWrite if it exists
-    if (m_depthTexture && m_depthBufferState != RHIResourceState::DepthWrite)
+    const RHIAccessSnapshot depthWriteAccess = MakeRHIAccessSnapshot(
+        RHIResourceState::DepthWrite,
+        RHIShaderStage::None,
+        GPUQueueDomain::Graphics);
+    if (m_depthTexture && m_depthAccessSnapshot.uniformAccess != depthWriteAccess)
     {
-        ctx.TextureBarrier(m_depthTexture.Get(), m_depthBufferState, RHIResourceState::DepthWrite);
-        m_depthBufferState = RHIResourceState::DepthWrite;
+        ctx.TextureBarrier(
+            m_depthTexture.Get(),
+            m_depthAccessSnapshot.uniformAccess,
+            depthWriteAccess,
+            RHISubresourceRange::All(),
+            m_depthAccessSnapshot.uniformAccess.contentValidity == RHIContentValidity::Valid
+                ? RHIDiscardIntent::Preserve
+                : RHIDiscardIntent::Discard);
+        m_depthAccessSnapshot.uniformAccess = depthWriteAccess;
     }
 
     if (!m_passRegistry)
@@ -2012,10 +2053,17 @@ void SceneRenderer::ExecutePasses(RHICommandContext& ctx)
     }
 
     // Transition back buffer from RenderTarget back to Present
-    if (backBuffer && backBufferState != RHIResourceState::Present)
+    const RHIAccessSnapshot presentAccess = MakeRHIAccessSnapshot(
+        RHIResourceState::Present,
+        RHIShaderStage::None,
+        GPUQueueDomain::Graphics);
+    if (backBuffer && backBufferAccess.uniformAccess != presentAccess)
     {
-        ctx.TextureBarrier(backBuffer, backBufferState, RHIResourceState::Present);
-        backBufferState = RHIResourceState::Present;
+        ctx.TextureBarrier(
+            backBuffer,
+            backBufferAccess.uniformAccess,
+            presentAccess);
+        backBufferAccess.uniformAccess = presentAccess;
     }
 }
 
@@ -2750,7 +2798,11 @@ void SceneRenderer::EnsureDepthBuffer(uint32_t width, uint32_t height)
 
         m_depthWidth = width;
         m_depthHeight = height;
-        m_depthBufferState = RHIResourceState::Undefined;  // Reset state for new buffer
+        m_depthAccessSnapshot = MakeRHITextureAccessSnapshot(
+            RHIResourceState::Undefined,
+            RHIShaderStage::None,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Invalid);
 
         RVX_CORE_INFO("SceneRenderer: Created depth buffer {}x{}", width, height);
     }
@@ -2858,6 +2910,7 @@ void SceneRenderer::AddRayTracingSceneBuildPass()
 
 void SceneRenderer::AddGPUDrivenCullingPass()
 {
+    m_gpuCullingGraphHandles = {};
     if (m_depthPrepass)
     {
         m_depthPrepass->SetGPUDrivenRenderGraphResources({}, {}, {});
@@ -2870,6 +2923,16 @@ void SceneRenderer::AddGPUDrivenCullingPass()
     if (!m_renderGraph || !m_gpuDrivenCullingEnabled || !m_gpuCulling ||
         m_gpuCulling->GetInstanceCount() == 0)
     {
+        return;
+    }
+
+    const GPUCullingExecutionDecision executionDecision =
+        m_gpuCulling->GetExecutionDecision();
+    if (executionDecision.mode != GPUCullingExecutionMode::GpuCompute)
+    {
+        m_gpuDrivenCullingStats.executionDecisionAvailable = true;
+        m_gpuDrivenCullingStats.executionDecision = executionDecision;
+        m_gpuDrivenCullingStats.fallbackUsed = true;
         return;
     }
 
@@ -2895,18 +2958,65 @@ void SceneRenderer::AddGPUDrivenCullingPass()
         RGBufferHandle drawCount;
     };
 
+    const GPUCullingAccessSnapshots& accessSnapshots =
+        m_gpuCulling->GetAccessSnapshots();
     GPUDrivenCullPassData handles;
-    handles.constants = m_renderGraph->ImportBuffer(constantsBuffer, RHIResourceState::ConstantBuffer);
-    handles.instances = m_renderGraph->ImportBuffer(instanceBuffer, RHIResourceState::ShaderResource);
-    handles.visibility = m_renderGraph->ImportBuffer(visibilityBuffer, RHIResourceState::Common);
-    handles.visibleInstances = m_renderGraph->ImportBuffer(visibleInstanceBuffer, RHIResourceState::Common);
-    handles.indirectDraws = m_renderGraph->ImportBuffer(indirectDrawBuffer, RHIResourceState::Common);
-    handles.drawCount = m_renderGraph->ImportBuffer(drawCountBuffer, RHIResourceState::Common);
+    handles.constants = m_renderGraph->ImportBuffer(constantsBuffer, accessSnapshots.constants);
+    handles.instances = m_renderGraph->ImportBuffer(instanceBuffer, accessSnapshots.instances);
+    handles.visibility = m_renderGraph->ImportBuffer(visibilityBuffer, accessSnapshots.visibility);
+    handles.visibleInstances = m_renderGraph->ImportBuffer(visibleInstanceBuffer, accessSnapshots.visibleInstances);
+    handles.indirectDraws = m_renderGraph->ImportBuffer(indirectDrawBuffer, accessSnapshots.indirectDraws);
+    handles.drawCount = m_renderGraph->ImportBuffer(drawCountBuffer, accessSnapshots.drawCount);
 
-    m_renderGraph->SetExportState(handles.visibility, RHIResourceState::UnorderedAccess);
-    m_renderGraph->SetExportState(handles.visibleInstances, RHIResourceState::ShaderResource);
-    m_renderGraph->SetExportState(handles.indirectDraws, RHIResourceState::IndirectArgument);
-    m_renderGraph->SetExportState(handles.drawCount, RHIResourceState::IndirectArgument);
+    GPUQueueDomain graphicsDomain = GPUQueueDomain::Graphics;
+    IRHIDevice* device = m_renderContext ? m_renderContext->GetDevice() : nullptr;
+    const RHIQueueTopology queueTopology = device
+        ? device->GetCapabilities().queueTopology
+        : RHIQueueTopology{};
+    TryGetGPUQueueDomain(
+        queueTopology,
+        RHICommandQueueType::Graphics,
+        graphicsDomain);
+    // SceneRenderer currently submits RenderGraph through Execute(graphicsCtx),
+    // so compute shader execution still belongs to the graphics physical domain.
+    const GPUQueueDomain computeExecutionDomain = graphicsDomain;
+    m_renderGraph->SetExportAccess(
+        handles.constants,
+        MakeRHIAccessSnapshot(RHIResourceState::ConstantBuffer,
+                              RHIShaderStage::Compute,
+                              computeExecutionDomain));
+    m_renderGraph->SetExportAccess(
+        handles.instances,
+        MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                              RHIShaderStage::AllGraphics,
+                              graphicsDomain));
+    m_renderGraph->SetExportAccess(
+        handles.visibility,
+        MakeRHIAccessSnapshot(RHIResourceState::UnorderedAccess,
+                              RHIShaderStage::Compute,
+                              computeExecutionDomain));
+    m_renderGraph->SetExportAccess(
+        handles.visibleInstances,
+        MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                              RHIShaderStage::AllGraphics,
+                              graphicsDomain));
+    m_renderGraph->SetExportAccess(
+        handles.indirectDraws,
+        MakeRHIAccessSnapshot(RHIResourceState::IndirectArgument,
+                              RHIShaderStage::None,
+                              graphicsDomain));
+    m_renderGraph->SetExportAccess(
+        handles.drawCount,
+        MakeRHIAccessSnapshot(RHIResourceState::IndirectArgument,
+                              RHIShaderStage::None,
+                              graphicsDomain));
+    m_gpuCullingGraphHandles = {
+        handles.constants,
+        handles.instances,
+        handles.visibility,
+        handles.visibleInstances,
+        handles.indirectDraws,
+        handles.drawCount};
     if (m_depthPrepass)
     {
         m_depthPrepass->SetGPUDrivenRenderGraphResources(
@@ -2926,15 +3036,27 @@ void SceneRenderer::AddGPUDrivenCullingPass()
     m_renderGraph->AddPass<GPUDrivenCullPassData>(
         "GPUDrivenCull",
         RenderGraphPassType::Compute,
-        [handles](RenderGraphBuilder& builder, GPUDrivenCullPassData& data)
+        [handles, computeExecutionDomain](RenderGraphBuilder& builder, GPUDrivenCullPassData& data)
         {
             data = handles;
-            data.constants = builder.Read(data.constants, RHIResourceState::ConstantBuffer, RHIShaderStage::Compute);
-            data.instances = builder.Read(data.instances, RHIShaderStage::Compute);
-            data.visibility = builder.Write(data.visibility, RHIResourceState::UnorderedAccess);
-            data.visibleInstances = builder.Write(data.visibleInstances, RHIResourceState::UnorderedAccess);
-            data.indirectDraws = builder.Write(data.indirectDraws, RHIResourceState::UnorderedAccess);
-            data.drawCount = builder.Write(data.drawCount, RHIResourceState::UnorderedAccess);
+            data.constants = builder.Read(
+                data.constants,
+                MakeRHIAccessSnapshot(RHIResourceState::ConstantBuffer,
+                                      RHIShaderStage::Compute,
+                                      computeExecutionDomain));
+            data.instances = builder.Read(
+                data.instances,
+                MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                      RHIShaderStage::Compute,
+                                      computeExecutionDomain));
+            const RHIAccessSnapshot unorderedAccess = MakeRHIAccessSnapshot(
+                RHIResourceState::UnorderedAccess,
+                RHIShaderStage::Compute,
+                computeExecutionDomain);
+            data.visibility = builder.Write(data.visibility, unorderedAccess);
+            data.visibleInstances = builder.Write(data.visibleInstances, unorderedAccess);
+            data.indirectDraws = builder.Write(data.indirectDraws, unorderedAccess);
+            data.drawCount = builder.Write(data.drawCount, unorderedAccess);
         },
         [this](const GPUDrivenCullPassData&, RHICommandContext& ctx)
         {
@@ -2953,12 +3075,38 @@ void SceneRenderer::AddGPUDrivenCullingPass()
         });
 }
 
+void SceneRenderer::CommitGPUDrivenAccessSnapshots()
+{
+    if (!m_renderGraph || !m_gpuCulling || !m_gpuCullingGraphHandles.IsValid())
+    {
+        return;
+    }
+
+    GPUCullingAccessSnapshots snapshots;
+    snapshots.constants = m_renderGraph->GetRealizedAccess(
+        m_gpuCullingGraphHandles.constants);
+    snapshots.instances = m_renderGraph->GetRealizedAccess(
+        m_gpuCullingGraphHandles.instances);
+    snapshots.visibility = m_renderGraph->GetRealizedAccess(
+        m_gpuCullingGraphHandles.visibility);
+    snapshots.visibleInstances = m_renderGraph->GetRealizedAccess(
+        m_gpuCullingGraphHandles.visibleInstances);
+    snapshots.indirectDraws = m_renderGraph->GetRealizedAccess(
+        m_gpuCullingGraphHandles.indirectDraws);
+    snapshots.drawCount = m_renderGraph->GetRealizedAccess(
+        m_gpuCullingGraphHandles.drawCount);
+    m_gpuCulling->CommitAccessSnapshots(snapshots);
+}
+
 void SceneRenderer::BuildRenderGraph()
 {
     // Store RenderGraph and ViewCache pointers in ViewData so passes can access resources
     m_viewData.renderGraph = m_renderGraph.get();
     m_viewData.viewCache = m_resourceViewCache.get();
     m_viewData.velocityTarget = {};
+    m_depthGraphHandle = {};
+    m_backBufferGraphHandle = {};
+    m_activeBackBufferIndex = RVX_INVALID_INDEX;
     const uint64 postProcessFrameCount = m_postProcessStats.frameCount + 1;
     m_postProcessStats = {};
     m_postProcessStats.frameCount = postProcessFrameCount;
@@ -3006,12 +3154,18 @@ void SceneRenderer::BuildRenderGraph()
             uint32_t currentHeight = swapChain->GetHeight();
             uint32_t bufferCount = swapChain->GetBufferCount();
 
-            if (m_backBufferStates.size() != bufferCount ||
+            if (m_backBufferAccessSnapshots.size() != bufferCount ||
                 m_lastSwapChainWidth != currentWidth ||
                 m_lastSwapChainHeight != currentHeight)
             {
                 // Swap chain was recreated, reset all buffer states to Undefined
-                m_backBufferStates.assign(bufferCount, RHIResourceState::Undefined);
+                m_backBufferAccessSnapshots.assign(
+                    bufferCount,
+                    MakeRHITextureAccessSnapshot(
+                        RHIResourceState::Undefined,
+                        RHIShaderStage::None,
+                        GPUQueueDomain::Graphics,
+                        RHIContentValidity::Invalid));
                 m_lastSwapChainWidth = currentWidth;
                 m_lastSwapChainHeight = currentHeight;
             }
@@ -3022,16 +3176,25 @@ void SceneRenderer::BuildRenderGraph()
                 // Get the current state for this back buffer
                 // First use: Undefined, subsequent uses: Present (after presentation)
                 uint32_t backBufferIndex = swapChain->GetCurrentBackBufferIndex();
-                RHIResourceState currentState = m_backBufferStates[backBufferIndex];
-
-                // Import with actual current state (Undefined on first use, Present after presentation)
-                backBufferTarget = m_renderGraph->ImportTexture(backBuffer, currentState);
+                // Import with the actual lifetime snapshot (invalid on first use,
+                // Present after a realized presentation export).
+                backBufferTarget = m_renderGraph->ImportTexture(
+                    backBuffer,
+                    m_backBufferAccessSnapshots[backBufferIndex]);
                 m_viewData.colorTarget = backBufferTarget;
                 // Export back to Present state for display
-                m_renderGraph->SetExportState(backBufferTarget, RHIResourceState::Present);
-
-                // After RenderGraph executes, the back buffer will be in Present state
-                m_backBufferStates[backBufferIndex] = RHIResourceState::Present;
+                GPUQueueDomain graphicsDomain = GPUQueueDomain::Graphics;
+                TryGetGPUQueueDomain(
+                    m_renderContext->GetDevice()->GetCapabilities().queueTopology,
+                    RHICommandQueueType::Graphics,
+                    graphicsDomain);
+                m_renderGraph->SetExportAccess(
+                    backBufferTarget,
+                    MakeRHIAccessSnapshot(RHIResourceState::Present,
+                                          RHIShaderStage::None,
+                                          graphicsDomain));
+                m_backBufferGraphHandle = backBufferTarget;
+                m_activeBackBufferIndex = backBufferIndex;
             }
         }
     }
@@ -3071,8 +3234,18 @@ void SceneRenderer::BuildRenderGraph()
             // Import the existing depth buffer so RenderGraph can manage its barriers
             m_viewData.depthTarget = m_renderGraph->ImportTexture(
                 m_depthTexture.Get(),
-                m_depthBufferState);
-            m_renderGraph->SetExportState(m_viewData.depthTarget, RHIResourceState::DepthWrite);
+                m_depthAccessSnapshot);
+            GPUQueueDomain graphicsDomain = GPUQueueDomain::Graphics;
+            TryGetGPUQueueDomain(
+                m_renderContext->GetDevice()->GetCapabilities().queueTopology,
+                RHICommandQueueType::Graphics,
+                graphicsDomain);
+            m_renderGraph->SetExportAccess(
+                m_viewData.depthTarget,
+                MakeRHIAccessSnapshot(RHIResourceState::DepthWrite,
+                                      RHIShaderStage::None,
+                                      graphicsDomain));
+            m_depthGraphHandle = m_viewData.depthTarget;
         }
     }
 

@@ -104,6 +104,7 @@ void GPUCulling::Shutdown()
     m_device = nullptr;
     m_lastFallbackReason = GPUCullingFallbackReason::None;
     m_pipelineFallbackReason = GPUCullingFallbackReason::None;
+    m_accessSnapshots = {};
 }
 
 void GPUCulling::RetireOwnerSnapshots(
@@ -152,6 +153,7 @@ void GPUCulling::CreateResources()
     QueueRenderOwnerRetirement(m_cullingConstantsBuffer, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_cullingDescriptorSet, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_statsBuffer, m_pendingOwnerRetirements);
+    m_accessSnapshots = {};
 
     const bool gpuWritableOutputs = SupportsGpuExecution();
     const RHIMemoryType cpuOutputMemoryType = RHIMemoryType::Upload;
@@ -215,6 +217,22 @@ void GPUCulling::CreateResources()
     desc.stride = 0;
     desc.debugName = "GPUCulling.ConstantsBuffer";
     m_cullingConstantsBuffer = m_device->CreateBuffer(desc);
+    if (m_instanceBuffer)
+    {
+        m_accessSnapshots.instances = MakeRHIBufferAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Compute,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Unknown);
+    }
+    if (m_cullingConstantsBuffer)
+    {
+        m_accessSnapshots.constants = MakeRHIBufferAccessSnapshot(
+            RHIResourceState::ConstantBuffer,
+            RHIShaderStage::Compute,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Unknown);
+    }
 
     // Statistics buffer (optional)
     if (m_statsEnabled)
@@ -608,6 +626,13 @@ void GPUCulling::UploadInstances()
         std::memcpy(mapped, m_instances.data(),
                     m_instances.size() * sizeof(GPUInstanceData));
         m_instanceBuffer->Unmap();
+        const GPUQueueDomain lastGpuDomain =
+            m_accessSnapshots.instances.uniformAccess.domain;
+        m_accessSnapshots.instances = MakeRHIBufferAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Compute,
+            lastGpuDomain,
+            RHIContentValidity::Valid);
     }
 
     m_stats.totalInstances = m_instanceCount;

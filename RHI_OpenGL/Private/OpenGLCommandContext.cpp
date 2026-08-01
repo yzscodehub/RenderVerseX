@@ -175,7 +175,10 @@ namespace RVX
 
     void OpenGLCommandContext::BufferBarrier(const RHIBufferBarrier& barrier)
     {
-        if (!barrier.buffer || barrier.stateBefore == barrier.stateAfter)
+        const bool scopedMemoryDependency = barrier.hasScopedAccess &&
+            HasDependencyKind(barrier.dependencyKind, RHIDependencyKind::Memory);
+        if (!barrier.buffer ||
+            (barrier.stateBefore == barrier.stateAfter && !scopedMemoryDependency))
         {
             return;
         }
@@ -189,7 +192,10 @@ namespace RVX
 
     void OpenGLCommandContext::TextureBarrier(const RHITextureBarrier& barrier)
     {
-        if (!barrier.texture || barrier.stateBefore == barrier.stateAfter)
+        const bool scopedMemoryDependency = barrier.hasScopedAccess &&
+            HasDependencyKind(barrier.dependencyKind, RHIDependencyKind::Memory);
+        if (!barrier.texture ||
+            (barrier.stateBefore == barrier.stateAfter && !scopedMemoryDependency))
         {
             return;
         }
@@ -210,7 +216,10 @@ namespace RVX
         // Accumulate barrier bits for all buffer transitions
         for (const auto& barrier : bufferBarriers)
         {
-            if (barrier.buffer && barrier.stateBefore != barrier.stateAfter)
+            const bool scopedMemoryDependency = barrier.hasScopedAccess &&
+                HasDependencyKind(barrier.dependencyKind, RHIDependencyKind::Memory);
+            if (barrier.buffer &&
+                (barrier.stateBefore != barrier.stateAfter || scopedMemoryDependency))
             {
                 combinedBits |= GetBufferBarrierBits(barrier.stateBefore, barrier.stateAfter);
             }
@@ -219,7 +228,10 @@ namespace RVX
         // Accumulate barrier bits for all texture transitions
         for (const auto& barrier : textureBarriers)
         {
-            if (barrier.texture && barrier.stateBefore != barrier.stateAfter)
+            const bool scopedMemoryDependency = barrier.hasScopedAccess &&
+                HasDependencyKind(barrier.dependencyKind, RHIDependencyKind::Memory);
+            if (barrier.texture &&
+                (barrier.stateBefore != barrier.stateAfter || scopedMemoryDependency))
             {
                 combinedBits |= GetTextureBarrierBits(barrier.stateBefore, barrier.stateAfter);
             }

@@ -28,6 +28,7 @@ namespace RVX
         struct PooledTexture
         {
             RHITextureRef texture;
+            RHITextureAccessSnapshot accessSnapshot;
             GPUCompletionToken availableAfter;
             uint64 descHash = 0;
             uint32 lastUsedFrame = 0;
@@ -38,6 +39,7 @@ namespace RVX
         struct PooledBuffer
         {
             RHIBufferRef buffer;
+            RHIBufferAccessSnapshot accessSnapshot;
             GPUCompletionToken availableAfter;
             uint64 descHash = 0;
             uint32 lastUsedFrame = 0;
@@ -204,9 +206,15 @@ namespace RVX
     RHITexture* TransientResourcePool::AcquireTexture(
         const RHITextureDesc& desc)
     {
+        return AcquireTextureLease(desc).texture;
+    }
+
+    TransientTextureLease TransientResourcePool::AcquireTextureLease(
+        const RHITextureDesc& desc)
+    {
         if (!m_impl->device)
         {
-            return nullptr;
+            return {};
         }
 
         const uint64 hash = HashTextureDesc(desc);
@@ -220,7 +228,7 @@ namespace RVX
                 it->second.lastUsedFrame = m_impl->currentFrame;
                 ++m_impl->stats.textureHits;
                 ++m_impl->stats.texturesInUse;
-                return it->second.texture.Get();
+                return {it->second.texture.Get(), it->second.accessSnapshot, true};
             }
         }
 
@@ -228,7 +236,7 @@ namespace RVX
         if (!texture)
         {
             RVX_CORE_ERROR("TransientResourcePool: Failed to create texture");
-            return nullptr;
+            return {};
         }
 
         Impl::PooledTexture pooled;
@@ -237,19 +245,31 @@ namespace RVX
         pooled.lastUsedFrame = m_impl->currentFrame;
         pooled.memorySize = EstimateTextureMemory(desc);
         pooled.inUse = true;
+        pooled.accessSnapshot = MakeRHITextureAccessSnapshot(
+            RHIResourceState::Undefined,
+            RHIShaderStage::None,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Invalid);
         RHITexture* result = pooled.texture.Get();
+        RHITextureAccessSnapshot accessSnapshot = pooled.accessSnapshot;
         m_impl->texturePool.emplace(hash, std::move(pooled));
         ++m_impl->stats.textureMisses;
         ++m_impl->stats.texturesInUse;
-        return result;
+        return {result, std::move(accessSnapshot), false};
     }
 
     RHIBuffer* TransientResourcePool::AcquireBuffer(
         const RHIBufferDesc& desc)
     {
+        return AcquireBufferLease(desc).buffer;
+    }
+
+    TransientBufferLease TransientResourcePool::AcquireBufferLease(
+        const RHIBufferDesc& desc)
+    {
         if (!m_impl->device)
         {
-            return nullptr;
+            return {};
         }
 
         const uint64 hash = HashBufferDesc(desc);
@@ -263,7 +283,7 @@ namespace RVX
                 it->second.lastUsedFrame = m_impl->currentFrame;
                 ++m_impl->stats.bufferHits;
                 ++m_impl->stats.buffersInUse;
-                return it->second.buffer.Get();
+                return {it->second.buffer.Get(), it->second.accessSnapshot, true};
             }
         }
 
@@ -271,7 +291,7 @@ namespace RVX
         if (!buffer)
         {
             RVX_CORE_ERROR("TransientResourcePool: Failed to create buffer");
-            return nullptr;
+            return {};
         }
 
         Impl::PooledBuffer pooled;
@@ -280,14 +300,32 @@ namespace RVX
         pooled.lastUsedFrame = m_impl->currentFrame;
         pooled.memorySize = EstimateBufferMemory(desc);
         pooled.inUse = true;
+        pooled.accessSnapshot = MakeRHIBufferAccessSnapshot(
+            RHIResourceState::Undefined,
+            RHIShaderStage::None,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Invalid);
         RHIBuffer* result = pooled.buffer.Get();
+        RHIBufferAccessSnapshot accessSnapshot = pooled.accessSnapshot;
         m_impl->bufferPool.emplace(hash, std::move(pooled));
         ++m_impl->stats.bufferMisses;
         ++m_impl->stats.buffersInUse;
-        return result;
+        return {result, std::move(accessSnapshot), false};
     }
 
     void TransientResourcePool::ReleaseTexture(RHITexture* texture)
+    {
+        RHITextureAccessSnapshot unknown = MakeRHITextureAccessSnapshot(
+            RHIResourceState::Common,
+            RHIShaderStage::All,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Unknown);
+        ReleaseTexture(texture, unknown);
+    }
+
+    void TransientResourcePool::ReleaseTexture(
+        RHITexture* texture,
+        const RHITextureAccessSnapshot& finalAccess)
     {
         if (!texture)
         {
@@ -300,6 +338,7 @@ namespace RVX
             {
                 pooled.inUse = false;
                 pooled.availableAfter = m_impl->lastSubmission;
+                pooled.accessSnapshot = finalAccess;
                 if (m_impl->stats.texturesInUse > 0)
                 {
                     --m_impl->stats.texturesInUse;
@@ -312,6 +351,18 @@ namespace RVX
 
     void TransientResourcePool::ReleaseBuffer(RHIBuffer* buffer)
     {
+        RHIBufferAccessSnapshot unknown = MakeRHIBufferAccessSnapshot(
+            RHIResourceState::Common,
+            RHIShaderStage::All,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Unknown);
+        ReleaseBuffer(buffer, unknown);
+    }
+
+    void TransientResourcePool::ReleaseBuffer(
+        RHIBuffer* buffer,
+        const RHIBufferAccessSnapshot& finalAccess)
+    {
         if (!buffer)
         {
             return;
@@ -323,6 +374,7 @@ namespace RVX
             {
                 pooled.inUse = false;
                 pooled.availableAfter = m_impl->lastSubmission;
+                pooled.accessSnapshot = finalAccess;
                 if (m_impl->stats.buffersInUse > 0)
                 {
                     --m_impl->stats.buffersInUse;

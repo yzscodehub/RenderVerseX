@@ -1,7 +1,7 @@
 # M2 Shared RHI Conformance and Contract Implementation Plan
 
-**Status:** In progress; M1/Task 20 entry gate satisfied; CH1-CH4 complete;
-CH5 next
+**Status:** In progress; M1/Task 20 entry gate satisfied; CH1-CH5 complete;
+CH6 next
 **Parent:** `2026-07-26-m2-tier1-rhi-proof-master-plan.md`
 **Scope:** RHI/ShaderCompiler/RenderGraph shared semantics and conformance
 infrastructure
@@ -384,19 +384,29 @@ argument/resource binding, and real-device validation in Task 27.
 
 ### CH5: Add scoped dependency and pool lease contract
 
-- [ ] Add execution scope, memory access, layout/usage, dependency-kind,
+- [x] Add execution scope, memory access, layout/usage, dependency-kind,
   physical-domain, range, and content-validity value types.
-- [ ] Add lifetime snapshot equality/diagnostic formatting.
-- [ ] Extend barrier batches so equal layouts can still carry memory
+- [x] Add lifetime snapshot equality/diagnostic formatting.
+- [x] Extend barrier batches so equal layouts can still carry memory
   dependencies.
-- [ ] Add RenderGraph import/export APIs.
-- [ ] Change transient acquire/release to carry state.
-- [ ] Make non-graph producers commit their final snapshots.
-- [ ] Add two-frame texture, buffer, subresource, range, same-state hazard,
+- [x] Add RenderGraph import/export APIs.
+- [x] Change transient acquire/release to carry state.
+- [x] Make non-graph producers commit their final snapshots.
+- [x] Add two-frame texture, buffer, subresource, range, same-state hazard,
   discard, and physical-domain tests.
-- [ ] Detect stale compatibility overload use in production Render paths.
-- [ ] Add DX12, Vulkan, and Metal translation-structure tests before freezing
+- [x] Detect stale compatibility overload use in production Render paths.
+- [x] Add DX12, Vulkan, and Metal translation-structure tests before freezing
   the shared contract.
+
+CH5 completed on 2026-08-01. The frozen shared contract carries scoped access
+and lifetime snapshots through RenderGraph, transient leases, persistent
+owners, and non-graph upload/registry paths. Equal-layout memory hazards and
+discard intent remain observable, and diagnostics report compatibility
+projections plus planned-versus-realized mismatches. DX12 and Vulkan have
+compiled real-device checkpoints on Windows; Metal is structurally checked.
+Paired Vulkan queue-family release/acquire barriers remain CH7/Task 26 native
+closure rather than being represented incorrectly by one destination-side
+barrier.
 
 ### CH6: Build shared real-device cases
 

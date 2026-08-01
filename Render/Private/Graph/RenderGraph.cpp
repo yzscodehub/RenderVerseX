@@ -49,6 +49,43 @@ namespace RVX
             return AlignUp(desc.size, 256);
         }
 
+        RHICommandQueueType GetQueueType(RenderGraphPassType passType)
+        {
+            switch (passType)
+            {
+                case RenderGraphPassType::Compute: return RHICommandQueueType::Compute;
+                case RenderGraphPassType::Copy: return RHICommandQueueType::Copy;
+                case RenderGraphPassType::Graphics:
+                case RenderGraphPassType::RayTracing:
+                default: return RHICommandQueueType::Graphics;
+            }
+        }
+
+        GPUQueueDomain GetPhysicalDomain(IRHIDevice* device, RenderGraphPassType passType)
+        {
+            GPUQueueDomain domain = GPUQueueDomain::Graphics;
+            if (device)
+            {
+                TryGetGPUQueueDomain(
+                    device->GetCapabilities().queueTopology,
+                    GetQueueType(passType),
+                    domain);
+            }
+            return domain;
+        }
+
+        RHIShaderStage GetDefaultShaderStages(RenderGraphPassType passType)
+        {
+            switch (passType)
+            {
+                case RenderGraphPassType::Compute: return RHIShaderStage::Compute;
+                case RenderGraphPassType::RayTracing: return RHIShaderStage::AllRayTracing;
+                case RenderGraphPassType::Copy: return RHIShaderStage::None;
+                case RenderGraphPassType::Graphics:
+                default: return RHIShaderStage::AllGraphics;
+            }
+        }
+
         RenderGraph::DiagnosticResourceType ToDiagnosticResourceType(ResourceType type)
         {
             return type == ResourceType::Texture
@@ -242,6 +279,7 @@ namespace RVX
                     usageDiagnostic.access = ToDiagnosticAccessType(usage.access);
                     usageDiagnostic.resourceIndex = usage.index;
                     usageDiagnostic.desiredState = usage.desiredState;
+                    usageDiagnostic.desiredAccess = usage.desiredAccess;
                     usageDiagnostic.stages = usage.stages;
                     usageDiagnostic.hasSubresourceRange = usage.hasSubresourceRange;
                     usageDiagnostic.subresourceRange = usage.subresourceRange;
@@ -491,6 +529,8 @@ namespace RVX
         std::vector<TextureResource>* textures = nullptr;
         std::vector<BufferResource>* buffers = nullptr;
         Pass* pass = nullptr;
+        IRHIDevice* device = nullptr;
+        uint32* compatibilityStateProjectionCount = nullptr;
     };
 
     RenderGraph::RenderGraph() : m_impl(std::make_unique<Impl>()) {}
@@ -512,6 +552,12 @@ namespace RVX
         resource.desc = desc;
         resource.initialState = RHIResourceState::Undefined;
         resource.currentState = resource.initialState;
+        resource.initialAccessSnapshot = MakeRHITextureAccessSnapshot(
+            RHIResourceState::Undefined,
+            RHIShaderStage::None,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Invalid);
+        resource.currentAccessSnapshot = resource.initialAccessSnapshot;
         resource.imported = false;
         m_impl->textures.push_back(std::move(resource));
         return RGTextureHandle{static_cast<uint32>(m_impl->textures.size() - 1)};
@@ -523,12 +569,26 @@ namespace RVX
         resource.desc = desc;
         resource.initialState = RHIResourceState::Undefined;
         resource.currentState = resource.initialState;
+        resource.initialAccessSnapshot = MakeRHIBufferAccessSnapshot(
+            RHIResourceState::Undefined,
+            RHIShaderStage::None,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Invalid);
+        resource.currentAccessSnapshot = resource.initialAccessSnapshot;
         resource.imported = false;
         m_impl->buffers.push_back(std::move(resource));
         return RGBufferHandle{static_cast<uint32>(m_impl->buffers.size() - 1)};
     }
 
     RGTextureHandle RenderGraph::ImportTexture(RHITexture* texture, RHIResourceState initialState)
+    {
+        ++m_impl->compatibilityStateProjectionCount;
+        return ImportTexture(texture, MakeRHITextureAccessSnapshot(initialState));
+    }
+
+    RGTextureHandle RenderGraph::ImportTexture(
+        RHITexture* texture,
+        const RHITextureAccessSnapshot& initialAccess)
     {
         TextureResource resource;
         // For imported textures, store a raw pointer without taking ownership
@@ -547,14 +607,24 @@ namespace RVX
             resource.desc.dimension = texture->GetDimension();
             resource.desc.sampleCount = texture->GetSampleCount();
         }
-        resource.initialState = initialState;
-        resource.currentState = initialState;
+        resource.initialAccessSnapshot = initialAccess;
+        resource.currentAccessSnapshot = initialAccess;
+        resource.initialState = ProjectRHIResourceState(initialAccess.uniformAccess);
+        resource.currentState = resource.initialState;
         resource.imported = true;
         m_impl->textures.push_back(std::move(resource));
         return RGTextureHandle{static_cast<uint32>(m_impl->textures.size() - 1)};
     }
 
     RGBufferHandle RenderGraph::ImportBuffer(RHIBuffer* buffer, RHIResourceState initialState)
+    {
+        ++m_impl->compatibilityStateProjectionCount;
+        return ImportBuffer(buffer, MakeRHIBufferAccessSnapshot(initialState));
+    }
+
+    RGBufferHandle RenderGraph::ImportBuffer(
+        RHIBuffer* buffer,
+        const RHIBufferAccessSnapshot& initialAccess)
     {
         BufferResource resource;
         // For imported buffers, store a raw pointer without taking ownership
@@ -566,8 +636,10 @@ namespace RVX
             resource.desc.memoryType = buffer->GetMemoryType();
             resource.desc.stride = buffer->GetStride();
         }
-        resource.initialState = initialState;
-        resource.currentState = initialState;
+        resource.initialAccessSnapshot = initialAccess;
+        resource.currentAccessSnapshot = initialAccess;
+        resource.initialState = ProjectRHIResourceState(initialAccess.uniformAccess);
+        resource.currentState = resource.initialState;
         resource.imported = true;
         m_impl->buffers.push_back(std::move(resource));
         return RGBufferHandle{static_cast<uint32>(m_impl->buffers.size() - 1)};
@@ -575,16 +647,91 @@ namespace RVX
 
     void RenderGraph::SetExportState(RGTextureHandle texture, RHIResourceState finalState)
     {
-        if (!texture.IsValid())
-            return;
-        m_impl->textures[texture.index].exportState = finalState;
+        ++m_impl->compatibilityStateProjectionCount;
+        SetExportAccess(texture, MakeRHIAccessSnapshot(finalState));
     }
 
     void RenderGraph::SetExportState(RGBufferHandle buffer, RHIResourceState finalState)
     {
-        if (!buffer.IsValid())
+        ++m_impl->compatibilityStateProjectionCount;
+        SetExportAccess(buffer, MakeRHIAccessSnapshot(finalState));
+    }
+
+    void RenderGraph::SetExportAccess(
+        RGTextureHandle texture,
+        const RHIAccessSnapshot& finalAccess)
+    {
+        if (!texture.IsValid() || texture.index >= m_impl->textures.size())
             return;
-        m_impl->buffers[buffer.index].exportState = finalState;
+        auto& resource = m_impl->textures[texture.index];
+        resource.exportAccess = finalAccess;
+        resource.exportState = ProjectRHIResourceState(finalAccess);
+    }
+
+    void RenderGraph::SetExportAccess(
+        RGBufferHandle buffer,
+        const RHIAccessSnapshot& finalAccess)
+    {
+        if (!buffer.IsValid() || buffer.index >= m_impl->buffers.size())
+            return;
+        auto& resource = m_impl->buffers[buffer.index];
+        resource.exportAccess = finalAccess;
+        resource.exportState = ProjectRHIResourceState(finalAccess);
+    }
+
+    RHITextureAccessSnapshot RenderGraph::GetRealizedAccess(RGTextureHandle texture) const
+    {
+        if (!texture.IsValid() || texture.index >= m_impl->textures.size())
+            return {};
+
+        const auto& resource = m_impl->textures[texture.index];
+        if (!m_impl->executionRealized)
+            return resource.initialAccessSnapshot;
+        RHITextureAccessSnapshot result = resource.currentAccessSnapshot;
+        result.subresourceOverrides.clear();
+        for (const auto& [key, access] : resource.subresourceAccesses)
+        {
+            const uint32 mipLevels = std::max(1u, resource.desc.mipLevels);
+            result.subresourceOverrides.push_back({
+                RHISubresourceRange{key % mipLevels,
+                                    1,
+                                    key / mipLevels,
+                                    1,
+                                    IsDepthFormat(resource.desc.format)
+                                        ? RHITextureAspect::Depth
+                                        : RHITextureAspect::Color},
+                access});
+        }
+        std::sort(
+            result.subresourceOverrides.begin(),
+            result.subresourceOverrides.end(),
+            [](const RHITextureSubresourceAccessSnapshot& lhs,
+               const RHITextureSubresourceAccessSnapshot& rhs)
+            {
+                if (lhs.range.baseArrayLayer != rhs.range.baseArrayLayer)
+                    return lhs.range.baseArrayLayer < rhs.range.baseArrayLayer;
+                if (lhs.range.baseMipLevel != rhs.range.baseMipLevel)
+                    return lhs.range.baseMipLevel < rhs.range.baseMipLevel;
+                return lhs.range.aspect < rhs.range.aspect;
+            });
+        return result;
+    }
+
+    RHIBufferAccessSnapshot RenderGraph::GetRealizedAccess(RGBufferHandle buffer) const
+    {
+        if (!buffer.IsValid() || buffer.index >= m_impl->buffers.size())
+            return {};
+
+        const auto& resource = m_impl->buffers[buffer.index];
+        if (!m_impl->executionRealized)
+            return resource.initialAccessSnapshot;
+        RHIBufferAccessSnapshot result = resource.currentAccessSnapshot;
+        result.rangeOverrides.clear();
+        for (const auto& range : resource.rangeStates)
+        {
+            result.rangeOverrides.push_back({range.offset, range.size, range.access});
+        }
+        return result;
     }
 
     RHITexture* RenderGraph::GetTexture(RGTextureHandle handle) const
@@ -631,6 +778,8 @@ namespace RVX
         builderImpl.textures = &m_impl->textures;
         builderImpl.buffers = &m_impl->buffers;
         builderImpl.pass = &pass;
+        builderImpl.device = m_impl->device;
+        builderImpl.compatibilityStateProjectionCount = &m_impl->compatibilityStateProjectionCount;
         builder.m_impl = &builderImpl;
         if (setup)
         {
@@ -656,8 +805,35 @@ namespace RVX
         usage.type = ResourceType::Texture;
         usage.index = texture.index;
         usage.desiredState = state;
+        usage.desiredAccess = MakeRHIAccessSnapshot(
+            state,
+            stages,
+            GetPhysicalDomain(m_impl->device, m_impl->pass->type));
         usage.access = RGAccessType::Read;
         usage.stages = stages;  // Use the stages parameter for fine-grained barrier optimization
+        usage.hasSubresourceRange = texture.hasSubresourceRange;
+        if (texture.hasSubresourceRange)
+            usage.subresourceRange = texture.subresourceRange;
+        m_impl->pass->usages.push_back(usage);
+        if (m_impl->compatibilityStateProjectionCount)
+            ++*m_impl->compatibilityStateProjectionCount;
+        return texture;
+    }
+
+    RGTextureHandle RenderGraphBuilder::Read(
+        RGTextureHandle texture,
+        const RHIAccessSnapshot& access)
+    {
+        if (!m_impl || !m_impl->pass || !texture.IsValid())
+            return texture;
+
+        ResourceUsage usage;
+        usage.type = ResourceType::Texture;
+        usage.index = texture.index;
+        usage.desiredState = ProjectRHIResourceState(access);
+        usage.desiredAccess = access;
+        usage.access = RGAccessType::Read;
+        usage.stages = GetDefaultShaderStages(m_impl->pass->type);
         usage.hasSubresourceRange = texture.hasSubresourceRange;
         if (texture.hasSubresourceRange)
             usage.subresourceRange = texture.subresourceRange;
@@ -681,8 +857,38 @@ namespace RVX
         usage.type = ResourceType::Buffer;
         usage.index = buffer.index;
         usage.desiredState = state;
+        usage.desiredAccess = MakeRHIAccessSnapshot(
+            state,
+            stages,
+            GetPhysicalDomain(m_impl->device, m_impl->pass->type));
         usage.access = RGAccessType::Read;
         usage.stages = stages;  // Use the stages parameter for fine-grained barrier optimization
+        usage.hasRange = buffer.hasRange;
+        if (buffer.hasRange)
+        {
+            usage.offset = buffer.rangeOffset;
+            usage.size = buffer.rangeSize;
+        }
+        m_impl->pass->usages.push_back(usage);
+        if (m_impl->compatibilityStateProjectionCount)
+            ++*m_impl->compatibilityStateProjectionCount;
+        return buffer;
+    }
+
+    RGBufferHandle RenderGraphBuilder::Read(
+        RGBufferHandle buffer,
+        const RHIAccessSnapshot& access)
+    {
+        if (!m_impl || !m_impl->pass || !buffer.IsValid())
+            return buffer;
+
+        ResourceUsage usage;
+        usage.type = ResourceType::Buffer;
+        usage.index = buffer.index;
+        usage.desiredState = ProjectRHIResourceState(access);
+        usage.desiredAccess = access;
+        usage.access = RGAccessType::Read;
+        usage.stages = GetDefaultShaderStages(m_impl->pass->type);
         usage.hasRange = buffer.hasRange;
         if (buffer.hasRange)
         {
@@ -693,7 +899,10 @@ namespace RVX
         return buffer;
     }
 
-    RGTextureHandle RenderGraphBuilder::Write(RGTextureHandle texture, RHIResourceState state)
+    RGTextureHandle RenderGraphBuilder::Write(
+        RGTextureHandle texture,
+        RHIResourceState state,
+        RHIDiscardIntent discardIntent)
     {
         if (!m_impl || !m_impl->pass || !texture.IsValid())
             return texture;
@@ -702,7 +911,38 @@ namespace RVX
         usage.type = ResourceType::Texture;
         usage.index = texture.index;
         usage.desiredState = state;
+        usage.stages = GetDefaultShaderStages(m_impl->pass->type);
+        usage.desiredAccess = MakeRHIAccessSnapshot(
+            state,
+            usage.stages,
+            GetPhysicalDomain(m_impl->device, m_impl->pass->type));
         usage.access = RGAccessType::Write;
+        usage.discardIntent = discardIntent;
+        usage.hasSubresourceRange = texture.hasSubresourceRange;
+        if (texture.hasSubresourceRange)
+            usage.subresourceRange = texture.subresourceRange;
+        m_impl->pass->usages.push_back(usage);
+        if (m_impl->compatibilityStateProjectionCount)
+            ++*m_impl->compatibilityStateProjectionCount;
+        return texture;
+    }
+
+    RGTextureHandle RenderGraphBuilder::Write(
+        RGTextureHandle texture,
+        const RHIAccessSnapshot& access,
+        RHIDiscardIntent discardIntent)
+    {
+        if (!m_impl || !m_impl->pass || !texture.IsValid())
+            return texture;
+
+        ResourceUsage usage;
+        usage.type = ResourceType::Texture;
+        usage.index = texture.index;
+        usage.desiredState = ProjectRHIResourceState(access);
+        usage.desiredAccess = access;
+        usage.access = RGAccessType::Write;
+        usage.discardIntent = discardIntent;
+        usage.stages = GetDefaultShaderStages(m_impl->pass->type);
         usage.hasSubresourceRange = texture.hasSubresourceRange;
         if (texture.hasSubresourceRange)
             usage.subresourceRange = texture.subresourceRange;
@@ -710,7 +950,10 @@ namespace RVX
         return texture;
     }
 
-    RGBufferHandle RenderGraphBuilder::Write(RGBufferHandle buffer, RHIResourceState state)
+    RGBufferHandle RenderGraphBuilder::Write(
+        RGBufferHandle buffer,
+        RHIResourceState state,
+        RHIDiscardIntent discardIntent)
     {
         if (!m_impl || !m_impl->pass || !buffer.IsValid())
             return buffer;
@@ -719,7 +962,41 @@ namespace RVX
         usage.type = ResourceType::Buffer;
         usage.index = buffer.index;
         usage.desiredState = state;
+        usage.stages = GetDefaultShaderStages(m_impl->pass->type);
+        usage.desiredAccess = MakeRHIAccessSnapshot(
+            state,
+            usage.stages,
+            GetPhysicalDomain(m_impl->device, m_impl->pass->type));
         usage.access = RGAccessType::Write;
+        usage.discardIntent = discardIntent;
+        usage.hasRange = buffer.hasRange;
+        if (buffer.hasRange)
+        {
+            usage.offset = buffer.rangeOffset;
+            usage.size = buffer.rangeSize;
+        }
+        m_impl->pass->usages.push_back(usage);
+        if (m_impl->compatibilityStateProjectionCount)
+            ++*m_impl->compatibilityStateProjectionCount;
+        return buffer;
+    }
+
+    RGBufferHandle RenderGraphBuilder::Write(
+        RGBufferHandle buffer,
+        const RHIAccessSnapshot& access,
+        RHIDiscardIntent discardIntent)
+    {
+        if (!m_impl || !m_impl->pass || !buffer.IsValid())
+            return buffer;
+
+        ResourceUsage usage;
+        usage.type = ResourceType::Buffer;
+        usage.index = buffer.index;
+        usage.desiredState = ProjectRHIResourceState(access);
+        usage.desiredAccess = access;
+        usage.access = RGAccessType::Write;
+        usage.discardIntent = discardIntent;
+        usage.stages = GetDefaultShaderStages(m_impl->pass->type);
         usage.hasRange = buffer.hasRange;
         if (buffer.hasRange)
         {
@@ -732,14 +1009,31 @@ namespace RVX
 
     RGTextureHandle RenderGraphBuilder::ReadWrite(RGTextureHandle texture)
     {
-        ResourceUsage usage;
+        if (m_impl && m_impl->compatibilityStateProjectionCount)
+            ++*m_impl->compatibilityStateProjectionCount;
+        const RHIShaderStage stages = m_impl && m_impl->pass
+            ? GetDefaultShaderStages(m_impl->pass->type)
+            : RHIShaderStage::AllGraphics;
+        const GPUQueueDomain domain = m_impl && m_impl->pass
+            ? GetPhysicalDomain(m_impl->device, m_impl->pass->type)
+            : GPUQueueDomain::Graphics;
+        return ReadWrite(texture, MakeRHIAccessSnapshot(
+            RHIResourceState::UnorderedAccess, stages, domain));
+    }
+
+    RGTextureHandle RenderGraphBuilder::ReadWrite(
+        RGTextureHandle texture,
+        const RHIAccessSnapshot& access)
+    {
         if (!m_impl || !m_impl->pass || !texture.IsValid())
             return texture;
-
+        ResourceUsage usage;
         usage.type = ResourceType::Texture;
         usage.index = texture.index;
-        usage.desiredState = RHIResourceState::UnorderedAccess;
+        usage.desiredState = ProjectRHIResourceState(access);
+        usage.desiredAccess = access;
         usage.access = RGAccessType::ReadWrite;
+        usage.stages = GetDefaultShaderStages(m_impl->pass->type);
         usage.hasSubresourceRange = texture.hasSubresourceRange;
         if (texture.hasSubresourceRange)
             usage.subresourceRange = texture.subresourceRange;
@@ -749,14 +1043,31 @@ namespace RVX
 
     RGBufferHandle RenderGraphBuilder::ReadWrite(RGBufferHandle buffer)
     {
-        ResourceUsage usage;
+        if (m_impl && m_impl->compatibilityStateProjectionCount)
+            ++*m_impl->compatibilityStateProjectionCount;
+        const RHIShaderStage stages = m_impl && m_impl->pass
+            ? GetDefaultShaderStages(m_impl->pass->type)
+            : RHIShaderStage::AllGraphics;
+        const GPUQueueDomain domain = m_impl && m_impl->pass
+            ? GetPhysicalDomain(m_impl->device, m_impl->pass->type)
+            : GPUQueueDomain::Graphics;
+        return ReadWrite(buffer, MakeRHIAccessSnapshot(
+            RHIResourceState::UnorderedAccess, stages, domain));
+    }
+
+    RGBufferHandle RenderGraphBuilder::ReadWrite(
+        RGBufferHandle buffer,
+        const RHIAccessSnapshot& access)
+    {
         if (!m_impl || !m_impl->pass || !buffer.IsValid())
             return buffer;
-
+        ResourceUsage usage;
         usage.type = ResourceType::Buffer;
         usage.index = buffer.index;
-        usage.desiredState = RHIResourceState::UnorderedAccess;
+        usage.desiredState = ProjectRHIResourceState(access);
+        usage.desiredAccess = access;
         usage.access = RGAccessType::ReadWrite;
+        usage.stages = GetDefaultShaderStages(m_impl->pass->type);
         usage.hasRange = buffer.hasRange;
         if (buffer.hasRange)
         {
@@ -986,8 +1297,12 @@ namespace RVX
             resource.aliasHeapOffset = texture.alias.heapOffset;
             resource.initialState = texture.initialState;
             resource.currentState = texture.currentState;
+            resource.initialAccess = texture.initialAccessSnapshot.uniformAccess;
+            resource.currentAccess = texture.currentAccessSnapshot.uniformAccess;
             resource.hasExportState = texture.exportState.has_value();
             resource.exportState = texture.exportState.value_or(RHIResourceState::Undefined);
+            resource.hasExportAccess = texture.exportAccess.has_value();
+            resource.exportAccess = texture.exportAccess.value_or(RHIAccessSnapshot{});
             resource.width = texture.desc.width;
             resource.height = texture.desc.height;
             resource.depth = texture.desc.depth;
@@ -1031,8 +1346,12 @@ namespace RVX
             resource.aliasHeapOffset = buffer.alias.heapOffset;
             resource.initialState = buffer.initialState;
             resource.currentState = buffer.currentState;
+            resource.initialAccess = buffer.initialAccessSnapshot.uniformAccess;
+            resource.currentAccess = buffer.currentAccessSnapshot.uniformAccess;
             resource.hasExportState = buffer.exportState.has_value();
             resource.exportState = buffer.exportState.value_or(RHIResourceState::Undefined);
+            resource.hasExportAccess = buffer.exportAccess.has_value();
+            resource.exportAccess = buffer.exportAccess.value_or(RHIAccessSnapshot{});
             resource.bufferSize = buffer.desc.size;
             resource.stride = buffer.desc.stride;
 
@@ -1070,6 +1389,10 @@ namespace RVX
         ss << "Barriers: " << diagnostics.compileStats.barrierCount
            << " total (" << diagnostics.compileStats.textureBarrierCount << " texture, "
            << diagnostics.compileStats.bufferBarrierCount << " buffer)\n";
+        ss << "Scoped access: mismatches="
+           << diagnostics.compileStats.accessSnapshotMismatchCount
+           << ", compatibility projections="
+           << diagnostics.compileStats.compatibilityStateProjectionCount << "\n";
         ss << "Last execution: passes=" << diagnostics.compileStats.lastExecutedPassCount
            << ", cpuNs=" << diagnostics.compileStats.lastExecutionCpuDurationNanoseconds << "\n";
         ss << "Estimated transient memory: " << diagnostics.estimatedTransientMemoryBytes << " bytes\n";
@@ -1287,6 +1610,8 @@ namespace RVX
         ss << "    \"barrierCount\": " << stats.barrierCount << ",\n";
         ss << "    \"textureBarrierCount\": " << stats.textureBarrierCount << ",\n";
         ss << "    \"bufferBarrierCount\": " << stats.bufferBarrierCount << ",\n";
+        ss << "    \"accessSnapshotMismatchCount\": " << stats.accessSnapshotMismatchCount << ",\n";
+        ss << "    \"compatibilityStateProjectionCount\": " << stats.compatibilityStateProjectionCount << ",\n";
         ss << "    \"asyncComputeSupported\": " << JsonBool(stats.asyncComputeSupported) << ",\n";
         ss << "    \"asyncFallbackUsed\": " << JsonBool(stats.asyncFallbackUsed) << ",\n";
         ss << "    \"asyncFallbackReason\": " << JsonString(ToDiagnosticString(stats.asyncFallbackReason)) << ",\n";
@@ -1380,6 +1705,8 @@ namespace RVX
                 WriteOptionalIndex(ss, usage.resourceIndex);
                 ss << ",\n";
                 ss << "          \"desiredState\": " << static_cast<uint32>(usage.desiredState) << ",\n";
+                ss << "          \"desiredAccess\": "
+                   << JsonString(DescribeRHIAccessSnapshot(usage.desiredAccess)) << ",\n";
                 ss << "          \"shaderStages\": " << static_cast<uint32>(usage.stages) << ",\n";
                 ss << "          \"hasSubresourceRange\": " << JsonBool(usage.hasSubresourceRange) << ",\n";
                 ss << "          \"hasRange\": " << JsonBool(usage.hasRange) << ",\n";
@@ -1417,8 +1744,12 @@ namespace RVX
             ss << "      \"aliasHeapOffset\": " << resource.aliasHeapOffset << ",\n";
             ss << "      \"initialState\": " << static_cast<uint32>(resource.initialState) << ",\n";
             ss << "      \"currentState\": " << static_cast<uint32>(resource.currentState) << ",\n";
+            ss << "      \"initialAccess\": " << JsonString(DescribeRHIAccessSnapshot(resource.initialAccess)) << ",\n";
+            ss << "      \"currentAccess\": " << JsonString(DescribeRHIAccessSnapshot(resource.currentAccess)) << ",\n";
             ss << "      \"hasExportState\": " << JsonBool(resource.hasExportState) << ",\n";
             ss << "      \"exportState\": " << static_cast<uint32>(resource.exportState) << ",\n";
+            ss << "      \"hasExportAccess\": " << JsonBool(resource.hasExportAccess) << ",\n";
+            ss << "      \"exportAccess\": " << JsonString(DescribeRHIAccessSnapshot(resource.exportAccess)) << ",\n";
             ss << "      \"width\": " << resource.width << ",\n";
             ss << "      \"height\": " << resource.height << ",\n";
             ss << "      \"depth\": " << resource.depth << ",\n";
@@ -1599,7 +1930,10 @@ namespace RVX
             {
                 if (m_impl->transientResourcePool)
                 {
-                    m_impl->transientResourcePool->ReleaseTexture(texture.pooledRaw);
+                    m_impl->transientResourcePool->ReleaseTexture(
+                        texture.pooledRaw,
+                        GetRealizedAccess(RGTextureHandle{
+                            static_cast<uint32>(&texture - m_impl->textures.data())}));
                 }
                 texture.pooledRaw = nullptr;
                 texture.pooled = false;
@@ -1611,7 +1945,10 @@ namespace RVX
             {
                 if (m_impl->transientResourcePool)
                 {
-                    m_impl->transientResourcePool->ReleaseBuffer(buffer.pooledRaw);
+                    m_impl->transientResourcePool->ReleaseBuffer(
+                        buffer.pooledRaw,
+                        GetRealizedAccess(RGBufferHandle{
+                            static_cast<uint32>(&buffer - m_impl->buffers.data())}));
                 }
                 buffer.pooledRaw = nullptr;
                 buffer.pooled = false;
@@ -1632,6 +1969,8 @@ namespace RVX
         m_impl->totalMemoryWithAliasing = 0;
         m_impl->aliasedTextureCount = 0;
         m_impl->aliasedBufferCount = 0;
+        m_impl->compatibilityStateProjectionCount = 0;
+        m_impl->executionRealized = false;
         m_impl->memoryAliasingRequested = false;
         m_impl->enableMemoryAliasing = false;
     }

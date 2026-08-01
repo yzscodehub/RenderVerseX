@@ -15,7 +15,7 @@
 #include <vulkan/vulkan.h>
 
 // Include RHI definitions after Vulkan to ensure proper ordering
-#include "RHI/RHIDefinitions.h"
+#include "RHI/RHIAccess.h"
 #include "Core/Log.h"
 #include "Core/Assert.h"
 
@@ -493,6 +493,84 @@ namespace RVX
             case RHIBindingType::AccelerationStructure: return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
             default: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         }
+    }
+
+    inline VkPipelineStageFlags2 ToVkPipelineStageFlags2(RHIExecutionScope scope)
+    {
+        if (scope == RHIExecutionScope::AllCommands)
+            return VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+
+        VkPipelineStageFlags2 flags = VK_PIPELINE_STAGE_2_NONE;
+        const auto has = [scope](RHIExecutionScope value)
+        {
+            return static_cast<uint32>(scope & value) != 0;
+        };
+        if (has(RHIExecutionScope::VertexInput)) flags |= VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
+        if (has(RHIExecutionScope::VertexShader)) flags |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+        if (has(RHIExecutionScope::HullShader)) flags |= VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT;
+        if (has(RHIExecutionScope::DomainShader)) flags |= VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT;
+        if (has(RHIExecutionScope::GeometryShader)) flags |= VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT;
+        if (has(RHIExecutionScope::PixelShader)) flags |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        if (has(RHIExecutionScope::ComputeShader)) flags |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        if (has(RHIExecutionScope::MeshShader)) flags |= VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
+        if (has(RHIExecutionScope::AmplificationShader)) flags |= VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT;
+        if (has(RHIExecutionScope::RayTracingShader)) flags |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+        if (has(RHIExecutionScope::ColorOutput)) flags |= VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        if (has(RHIExecutionScope::DepthStencil))
+            flags |= VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        if (has(RHIExecutionScope::Copy)) flags |= VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        if (has(RHIExecutionScope::Indirect)) flags |= VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+        if (has(RHIExecutionScope::AccelerationStructure)) flags |= VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        if (has(RHIExecutionScope::Host)) flags |= VK_PIPELINE_STAGE_2_HOST_BIT;
+        return flags;
+    }
+
+    inline VkAccessFlags2 ToVkAccessFlags2(RHIMemoryAccess access)
+    {
+        VkAccessFlags2 flags = VK_ACCESS_2_NONE;
+        const auto has = [access](RHIMemoryAccess value)
+        {
+            return HasAnyAccess(access, value);
+        };
+        if (has(RHIMemoryAccess::VertexRead)) flags |= VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
+        if (has(RHIMemoryAccess::IndexRead)) flags |= VK_ACCESS_2_INDEX_READ_BIT;
+        if (has(RHIMemoryAccess::ConstantRead)) flags |= VK_ACCESS_2_UNIFORM_READ_BIT;
+        if (has(RHIMemoryAccess::ShaderRead)) flags |= VK_ACCESS_2_SHADER_READ_BIT;
+        if (has(RHIMemoryAccess::ShaderWrite)) flags |= VK_ACCESS_2_SHADER_WRITE_BIT;
+        if (has(RHIMemoryAccess::ColorRead)) flags |= VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
+        if (has(RHIMemoryAccess::ColorWrite)) flags |= VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        if (has(RHIMemoryAccess::DepthStencilRead)) flags |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+        if (has(RHIMemoryAccess::DepthStencilWrite)) flags |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        if (has(RHIMemoryAccess::CopyRead)) flags |= VK_ACCESS_2_TRANSFER_READ_BIT;
+        if (has(RHIMemoryAccess::CopyWrite)) flags |= VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        if (has(RHIMemoryAccess::IndirectRead)) flags |= VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        if (has(RHIMemoryAccess::AccelerationStructureRead)) flags |= VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        if (has(RHIMemoryAccess::AccelerationStructureWrite)) flags |= VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        if (has(RHIMemoryAccess::HostRead)) flags |= VK_ACCESS_2_HOST_READ_BIT;
+        if (has(RHIMemoryAccess::HostWrite)) flags |= VK_ACCESS_2_HOST_WRITE_BIT;
+        if (has(RHIMemoryAccess::MemoryRead)) flags |= VK_ACCESS_2_MEMORY_READ_BIT;
+        if (has(RHIMemoryAccess::MemoryWrite)) flags |= VK_ACCESS_2_MEMORY_WRITE_BIT;
+        return flags;
+    }
+
+    inline VkImageLayout ToVkImageLayout(RHIResourceLayout layout)
+    {
+        switch (layout)
+        {
+            case RHIResourceLayout::Undefined: return VK_IMAGE_LAYOUT_UNDEFINED;
+            case RHIResourceLayout::General:
+            case RHIResourceLayout::Buffer:
+            case RHIResourceLayout::AccelerationStructure:
+            case RHIResourceLayout::ShaderBindingTable: return VK_IMAGE_LAYOUT_GENERAL;
+            case RHIResourceLayout::ShaderReadOnly: return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            case RHIResourceLayout::ColorAttachment: return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            case RHIResourceLayout::DepthStencilWrite: return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            case RHIResourceLayout::DepthStencilRead: return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            case RHIResourceLayout::CopySource: return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            case RHIResourceLayout::CopyDestination: return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            case RHIResourceLayout::Present: return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        }
+        return VK_IMAGE_LAYOUT_GENERAL;
     }
 
     inline VkShaderStageFlags ToVkShaderStageFlags(RHIShaderStage stage)

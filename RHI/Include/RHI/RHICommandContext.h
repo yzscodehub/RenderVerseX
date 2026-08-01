@@ -1,5 +1,6 @@
 #pragma once
 
+#include "RHI/RHIAccess.h"
 #include "RHI/RHIResources.h"
 #include "RHI/RHIRenderPass.h"
 #include "RHI/RHIQuery.h"
@@ -18,6 +19,11 @@ namespace RVX
         RHIResourceState stateAfter = RHIResourceState::Common;
         uint64 offset = 0;
         uint64 size = RVX_WHOLE_SIZE;
+        RHIAccessSnapshot accessBefore;
+        RHIAccessSnapshot accessAfter;
+        RHIDependencyKind dependencyKind = RHIDependencyKind::None;
+        RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve;
+        bool hasScopedAccess = false;
     };
 
     // =============================================================================
@@ -29,7 +35,54 @@ namespace RVX
         RHIResourceState stateBefore = RHIResourceState::Common;
         RHIResourceState stateAfter = RHIResourceState::Common;
         RHISubresourceRange subresourceRange;
+        RHIAccessSnapshot accessBefore;
+        RHIAccessSnapshot accessAfter;
+        RHIDependencyKind dependencyKind = RHIDependencyKind::None;
+        RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve;
+        bool hasScopedAccess = false;
     };
+
+    inline RHIBufferBarrier MakeRHIBufferBarrier(
+        RHIBuffer* buffer,
+        const RHIAccessSnapshot& before,
+        const RHIAccessSnapshot& after,
+        uint64 offset = 0,
+        uint64 size = RVX_WHOLE_SIZE,
+        RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve)
+    {
+        RHIBufferBarrier barrier;
+        barrier.buffer = buffer;
+        barrier.stateBefore = ProjectRHIResourceState(before);
+        barrier.stateAfter = ProjectRHIResourceState(after);
+        barrier.offset = offset;
+        barrier.size = size;
+        barrier.accessBefore = before;
+        barrier.accessAfter = after;
+        barrier.dependencyKind = ClassifyRHIDependency(before, after, discardIntent);
+        barrier.discardIntent = discardIntent;
+        barrier.hasScopedAccess = true;
+        return barrier;
+    }
+
+    inline RHITextureBarrier MakeRHITextureBarrier(
+        RHITexture* texture,
+        const RHIAccessSnapshot& before,
+        const RHIAccessSnapshot& after,
+        const RHISubresourceRange& range = RHISubresourceRange::All(),
+        RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve)
+    {
+        RHITextureBarrier barrier;
+        barrier.texture = texture;
+        barrier.stateBefore = ProjectRHIResourceState(before);
+        barrier.stateAfter = ProjectRHIResourceState(after);
+        barrier.subresourceRange = range;
+        barrier.accessBefore = before;
+        barrier.accessAfter = after;
+        barrier.dependencyKind = ClassifyRHIDependency(before, after, discardIntent);
+        barrier.discardIntent = discardIntent;
+        barrier.hasScopedAccess = true;
+        return barrier;
+    }
 
     // =============================================================================
     // Buffer-Texture Copy Description
@@ -103,19 +156,19 @@ namespace RVX
         // =========================================================================
         /**
          * @brief Transition a buffer between resource states.
-         * @note Null resources and same-state transitions are no-work and must not emit backend API calls.
+         * @note Equal legacy states may still carry a scoped memory dependency.
          */
         virtual void BufferBarrier(const RHIBufferBarrier& barrier) = 0;
 
         /**
          * @brief Transition a texture between resource states.
-         * @note Null resources and same-state transitions are no-work and must not emit backend API calls.
+         * @note Equal legacy states may still carry a scoped memory dependency.
          */
         virtual void TextureBarrier(const RHITextureBarrier& barrier) = 0;
 
         /**
          * @brief Batch resource barriers.
-         * @note Empty spans, null resources, and same-state transitions are valid no-work inputs.
+         * @note Empty spans and null resources are no-work; equal states may carry memory dependencies.
          */
         virtual void Barriers(
             std::span<const RHIBufferBarrier> bufferBarriers,
@@ -130,6 +183,25 @@ namespace RVX
         void TextureBarrier(RHITexture* texture, RHIResourceState before, RHIResourceState after)
         {
             TextureBarrier({texture, before, after, RHISubresourceRange::All()});
+        }
+
+        void BufferBarrier(RHIBuffer* buffer,
+                           const RHIAccessSnapshot& before,
+                           const RHIAccessSnapshot& after,
+                           uint64 offset = 0,
+                           uint64 size = RVX_WHOLE_SIZE,
+                           RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve)
+        {
+            BufferBarrier(MakeRHIBufferBarrier(buffer, before, after, offset, size, discardIntent));
+        }
+
+        void TextureBarrier(RHITexture* texture,
+                            const RHIAccessSnapshot& before,
+                            const RHIAccessSnapshot& after,
+                            const RHISubresourceRange& range = RHISubresourceRange::All(),
+                            RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve)
+        {
+            TextureBarrier(MakeRHITextureBarrier(texture, before, after, range, discardIntent));
         }
 
         // =========================================================================

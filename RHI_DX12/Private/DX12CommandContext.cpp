@@ -554,7 +554,7 @@ namespace RVX
     // =============================================================================
     void DX12CommandContext::BufferBarrier(const RHIBufferBarrier& barrier)
     {
-        if (!barrier.buffer || barrier.stateBefore == barrier.stateAfter)
+        if (!barrier.buffer)
         {
             return;
         }
@@ -562,6 +562,26 @@ namespace RVX
         auto* dx12Buffer = static_cast<DX12Buffer*>(barrier.buffer);
         if (!dx12Buffer || !dx12Buffer->GetResource())
         {
+            return;
+        }
+
+        if (barrier.stateBefore == barrier.stateAfter)
+        {
+            if (!barrier.hasScopedAccess ||
+                !HasDependencyKind(barrier.dependencyKind, RHIDependencyKind::Memory) ||
+                !HasAnyAccess(
+                    barrier.accessBefore.memoryAccess |
+                        barrier.accessAfter.memoryAccess,
+                    RHIMemoryAccess::ShaderWrite))
+            {
+                return;
+            }
+
+            D3D12_RESOURCE_BARRIER uavBarrier = {};
+            uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+            uavBarrier.UAV.pResource = dx12Buffer->GetResource();
+            m_pendingBarriers.push_back(uavBarrier);
             return;
         }
 
@@ -578,7 +598,7 @@ namespace RVX
 
     void DX12CommandContext::TextureBarrier(const RHITextureBarrier& barrier)
     {
-        if (!barrier.texture || barrier.stateBefore == barrier.stateAfter)
+        if (!barrier.texture)
         {
             return;
         }
@@ -586,6 +606,26 @@ namespace RVX
         auto* dx12Texture = static_cast<DX12Texture*>(barrier.texture);
         if (!dx12Texture || !dx12Texture->GetResource())
         {
+            return;
+        }
+
+        if (barrier.stateBefore == barrier.stateAfter)
+        {
+            if (!barrier.hasScopedAccess ||
+                !HasDependencyKind(barrier.dependencyKind, RHIDependencyKind::Memory) ||
+                !HasAnyAccess(
+                    barrier.accessBefore.memoryAccess |
+                        barrier.accessAfter.memoryAccess,
+                    RHIMemoryAccess::ShaderWrite))
+            {
+                return;
+            }
+
+            D3D12_RESOURCE_BARRIER uavBarrier = {};
+            uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+            uavBarrier.UAV.pResource = dx12Texture->GetResource();
+            m_pendingBarriers.push_back(uavBarrier);
             return;
         }
 

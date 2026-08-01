@@ -10,6 +10,48 @@
 
 namespace RVX
 {
+    namespace
+    {
+        bool RequiresMetalBarrier(bool hasScopedAccess,
+                                  RHIDependencyKind dependencyKind,
+                                  RHIResourceState before,
+                                  RHIResourceState after)
+        {
+            return before != after ||
+                   (hasScopedAccess && dependencyKind != RHIDependencyKind::None);
+        }
+
+        MTLRenderStages ToMTLRenderStages(RHIExecutionScope scope)
+        {
+            MTLRenderStages stages = 0;
+            const auto has = [scope](RHIExecutionScope value)
+            {
+                return static_cast<uint32>(scope & value) != 0;
+            };
+            if (scope == RHIExecutionScope::AllCommands ||
+                has(RHIExecutionScope::VertexInput) ||
+                has(RHIExecutionScope::VertexShader) ||
+                has(RHIExecutionScope::HullShader) ||
+                has(RHIExecutionScope::DomainShader) ||
+                has(RHIExecutionScope::GeometryShader) ||
+                has(RHIExecutionScope::MeshShader) ||
+                has(RHIExecutionScope::AmplificationShader))
+            {
+                stages |= MTLRenderStageVertex;
+            }
+            if (scope == RHIExecutionScope::AllCommands ||
+                has(RHIExecutionScope::PixelShader) ||
+                has(RHIExecutionScope::ColorOutput) ||
+                has(RHIExecutionScope::DepthStencil))
+            {
+                stages |= MTLRenderStageFragment;
+            }
+            return stages == 0
+                ? MTLRenderStageVertex | MTLRenderStageFragment
+                : stages;
+        }
+    } // namespace
+
     MetalCommandContext::MetalCommandContext(MetalDevice* device, RHICommandQueueType type)
         : m_device(device)
         , m_queueType(type)
@@ -137,7 +179,11 @@ namespace RVX
     // =============================================================================
     void MetalCommandContext::BufferBarrier(const RHIBufferBarrier& barrier)
     {
-        if (!barrier.buffer || barrier.stateBefore == barrier.stateAfter) return;
+        if (!barrier.buffer ||
+            !RequiresMetalBarrier(barrier.hasScopedAccess,
+                                  barrier.dependencyKind,
+                                  barrier.stateBefore,
+                                  barrier.stateAfter)) return;
 
         auto* metalBuffer = static_cast<MetalBuffer*>(barrier.buffer);
 
@@ -147,8 +193,12 @@ namespace RVX
             if (@available(macOS 10.14, iOS 12.0, *))
             {
                 // Determine stages based on resource states
-                MTLRenderStages afterStages = MTLRenderStageVertex | MTLRenderStageFragment;
-                MTLRenderStages beforeStages = MTLRenderStageVertex | MTLRenderStageFragment;
+                MTLRenderStages afterStages = barrier.hasScopedAccess
+                    ? ToMTLRenderStages(barrier.accessAfter.executionScope)
+                    : MTLRenderStageVertex | MTLRenderStageFragment;
+                MTLRenderStages beforeStages = barrier.hasScopedAccess
+                    ? ToMTLRenderStages(barrier.accessBefore.executionScope)
+                    : MTLRenderStageVertex | MTLRenderStageFragment;
 
                 id<MTLResource> resource = metalBuffer->GetMTLBuffer();
                 [m_renderEncoder memoryBarrierWithResources:&resource
@@ -169,7 +219,11 @@ namespace RVX
 
     void MetalCommandContext::TextureBarrier(const RHITextureBarrier& barrier)
     {
-        if (!barrier.texture || barrier.stateBefore == barrier.stateAfter) return;
+        if (!barrier.texture ||
+            !RequiresMetalBarrier(barrier.hasScopedAccess,
+                                  barrier.dependencyKind,
+                                  barrier.stateBefore,
+                                  barrier.stateAfter)) return;
 
         auto* metalTexture = static_cast<MetalTexture*>(barrier.texture);
 
@@ -178,16 +232,23 @@ namespace RVX
             if (@available(macOS 10.14, iOS 12.0, *))
             {
                 // Determine stages based on resource states
-                MTLRenderStages afterStages = MTLRenderStageFragment;
-                MTLRenderStages beforeStages = MTLRenderStageVertex | MTLRenderStageFragment;
+                MTLRenderStages afterStages = barrier.hasScopedAccess
+                    ? ToMTLRenderStages(barrier.accessAfter.executionScope)
+                    : MTLRenderStageFragment;
+                MTLRenderStages beforeStages = barrier.hasScopedAccess
+                    ? ToMTLRenderStages(barrier.accessBefore.executionScope)
+                    : MTLRenderStageVertex | MTLRenderStageFragment;
 
                 // Adjust stages based on transition
-                if (barrier.stateBefore == RHIResourceState::RenderTarget ||
+                if (!barrier.hasScopedAccess &&
+                    (barrier.stateBefore == RHIResourceState::RenderTarget ||
                     barrier.stateBefore == RHIResourceState::DepthWrite)
+                   )
                 {
                     afterStages = MTLRenderStageFragment;
                 }
-                if (barrier.stateAfter == RHIResourceState::ShaderResource)
+                if (!barrier.hasScopedAccess &&
+                    barrier.stateAfter == RHIResourceState::ShaderResource)
                 {
                     beforeStages = MTLRenderStageVertex | MTLRenderStageFragment;
                 }
@@ -220,7 +281,11 @@ namespace RVX
 
             for (const auto& barrier : bufferBarriers)
             {
-                if (barrier.buffer && barrier.stateBefore != barrier.stateAfter)
+                if (barrier.buffer &&
+                    RequiresMetalBarrier(barrier.hasScopedAccess,
+                                         barrier.dependencyKind,
+                                         barrier.stateBefore,
+                                         barrier.stateAfter))
                 {
                     auto* metalBuffer = static_cast<MetalBuffer*>(barrier.buffer);
                     resources.push_back(metalBuffer->GetMTLBuffer());
@@ -229,7 +294,11 @@ namespace RVX
 
             for (const auto& barrier : textureBarriers)
             {
-                if (barrier.texture && barrier.stateBefore != barrier.stateAfter)
+                if (barrier.texture &&
+                    RequiresMetalBarrier(barrier.hasScopedAccess,
+                                         barrier.dependencyKind,
+                                         barrier.stateBefore,
+                                         barrier.stateAfter))
                 {
                     auto* metalTexture = static_cast<MetalTexture*>(barrier.texture);
                     resources.push_back(metalTexture->GetMTLTexture());

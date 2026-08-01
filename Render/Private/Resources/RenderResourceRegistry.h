@@ -6,6 +6,7 @@
 #include "RenderContracts/ResourceUploadRequest.h"
 #include "Render/Resources/RenderResourceTypes.h"
 #include "Resources/RenderSubmissionTracker.h"
+#include "RHI/RHIAccess.h"
 #include "RHI/RHIBuffer.h"
 #include "RHI/RHISampler.h"
 #include "RHI/RHITexture.h"
@@ -39,6 +40,11 @@ namespace RVX
         RenderMeshBufferSemantic semantic = RenderMeshBufferSemantic::Position;
         RHIBufferRef buffer;
         uint64 estimatedBytes = 0;
+        RHIBufferAccessSnapshot accessSnapshot = MakeRHIBufferAccessSnapshot(
+            RHIResourceState::Common,
+            RHIShaderStage::All,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Valid);
     };
 
     struct RenderMeshResourceData
@@ -52,13 +58,22 @@ namespace RVX
     {
         RHITextureRef texture;
         uint64 estimatedBytes = 0;
-        RHIResourceState state = RHIResourceState::Common;
+        RHITextureAccessSnapshot accessSnapshot = MakeRHITextureAccessSnapshot(
+            RHIResourceState::Common,
+            RHIShaderStage::All,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Valid);
     };
 
     struct RenderMaterialResourceData
     {
         RHIBufferRef constants;
         uint64 constantBytes = 0;
+        RHIBufferAccessSnapshot constantsAccessSnapshot = MakeRHIBufferAccessSnapshot(
+            RHIResourceState::Common,
+            RHIShaderStage::All,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Valid);
         MaterialSourceData sourceData;
         std::vector<MaterialUploadTextureBinding> textureBindings;
         std::vector<RHISamplerRef> samplers;
@@ -92,7 +107,9 @@ namespace RVX
             RenderResourceHandle handle,
             RenderMeshBufferSemantic semantic,
             RHIBufferRef buffer,
-            uint64 estimatedBytes);
+            uint64 estimatedBytes,
+            const RHIBufferAccessSnapshot& finalAccess =
+                MakeRHIBufferAccessSnapshot(RHIResourceState::Common));
         [[nodiscard]] bool SetPendingMeshMetadata(
             RenderResourceHandle handle,
             const MeshUploadCreateInfo& createInfo,
@@ -100,11 +117,15 @@ namespace RVX
         [[nodiscard]] bool SetPendingTexture(
             RenderResourceHandle handle,
             RHITextureRef texture,
-            uint64 estimatedBytes);
+            uint64 estimatedBytes,
+            const RHITextureAccessSnapshot& finalAccess =
+                MakeRHITextureAccessSnapshot(RHIResourceState::Common));
         [[nodiscard]] bool SetPendingMaterialConstants(
             RenderResourceHandle handle,
             RHIBufferRef constants,
-            uint64 estimatedBytes);
+            uint64 estimatedBytes,
+            const RHIBufferAccessSnapshot& finalAccess =
+                MakeRHIBufferAccessSnapshot(RHIResourceState::Common));
         [[nodiscard]] bool SetPendingMaterialMetadata(
             RenderResourceHandle handle,
             const MaterialUploadPayload& payload);

@@ -92,7 +92,8 @@ namespace RVX
         RenderResourceHandle handle,
         RenderMeshBufferSemantic semantic,
         RHIBufferRef buffer,
-        uint64 estimatedBytes)
+        uint64 estimatedBytes,
+        const RHIBufferAccessSnapshot& finalAccess)
     {
         Entry* entry = FindExact(handle);
         if (entry == nullptr || !entry->pending || !buffer)
@@ -111,8 +112,11 @@ namespace RVX
                 return false;
             }
         }
-        mesh->buffers.push_back(
-            RenderOwnedBuffer{semantic, std::move(buffer), estimatedBytes});
+        mesh->buffers.push_back(RenderOwnedBuffer{
+            semantic,
+            std::move(buffer),
+            estimatedBytes,
+            finalAccess});
         return true;
     }
 
@@ -139,7 +143,8 @@ namespace RVX
     bool RenderResourceRegistry::SetPendingTexture(
         RenderResourceHandle handle,
         RHITextureRef texture,
-        uint64 estimatedBytes)
+        uint64 estimatedBytes,
+        const RHITextureAccessSnapshot& finalAccess)
     {
         Entry* entry = FindExact(handle);
         if (entry == nullptr || !entry->pending || !texture)
@@ -153,13 +158,15 @@ namespace RVX
         }
         data->texture = std::move(texture);
         data->estimatedBytes = estimatedBytes;
+        data->accessSnapshot = finalAccess;
         return true;
     }
 
     bool RenderResourceRegistry::SetPendingMaterialConstants(
         RenderResourceHandle handle,
         RHIBufferRef constants,
-        uint64 estimatedBytes)
+        uint64 estimatedBytes,
+        const RHIBufferAccessSnapshot& finalAccess)
     {
         Entry* entry = FindExact(handle);
         if (entry == nullptr || !entry->pending || !constants)
@@ -173,6 +180,7 @@ namespace RVX
         }
         data->constants = std::move(constants);
         data->constantBytes = estimatedBytes;
+        data->constantsAccessSnapshot = finalAccess;
         return true;
     }
 
@@ -463,12 +471,18 @@ namespace RVX
         {
             return false;
         }
-        if (texture->state != desiredState)
+        RHIAccessSnapshot desiredAccess = MakeRHIAccessSnapshot(
+            desiredState,
+            RHIShaderStage::All,
+            texture->accessSnapshot.uniformAccess.domain,
+            texture->accessSnapshot.uniformAccess.contentValidity);
+        if (texture->accessSnapshot.uniformAccess != desiredAccess)
         {
             context.TextureBarrier(texture->texture.Get(),
-                                   texture->state,
-                                   desiredState);
-            texture->state = desiredState;
+                                   texture->accessSnapshot.uniformAccess,
+                                   desiredAccess);
+            texture->accessSnapshot.uniformAccess = desiredAccess;
+            texture->accessSnapshot.subresourceOverrides.clear();
         }
         return true;
     }

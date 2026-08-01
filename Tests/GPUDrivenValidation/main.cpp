@@ -689,9 +689,10 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresGpuCullingBeforePassResourc
 
     EXPECT_NE(source.find("\"GPUDrivenCull\""), std::string::npos);
     EXPECT_NE(source.find("RenderGraphPassType::Compute"), std::string::npos);
-    EXPECT_NE(source.find("builder.Read(data.constants, RHIResourceState::ConstantBuffer"), std::string::npos);
-    EXPECT_NE(source.find("builder.Read(data.instances, RHIShaderStage::Compute)"), std::string::npos);
-    EXPECT_NE(source.find("builder.Write(data.indirectDraws, RHIResourceState::UnorderedAccess)"),
+    EXPECT_NE(source.find("MakeRHIAccessSnapshot(RHIResourceState::ConstantBuffer"), std::string::npos);
+    EXPECT_NE(source.find("MakeRHIAccessSnapshot(RHIResourceState::ShaderResource"), std::string::npos);
+    EXPECT_NE(source.find("RHIResourceState::UnorderedAccess,"), std::string::npos);
+    EXPECT_NE(source.find("data.indirectDraws = builder.Write(data.indirectDraws, unorderedAccess)"),
               std::string::npos);
     EXPECT_NE(source.find("m_depthPrepass->SetGPUDrivenRenderGraphResources"), std::string::npos);
     EXPECT_NE(source.find("m_opaquePass->SetGPUDrivenRenderGraphResources"), std::string::npos);

@@ -17,6 +17,24 @@ namespace RVX
     class RenderRetirementQueue;
     class RenderSubmissionTracker;
 
+    struct TransientTextureLease
+    {
+        RHITexture* texture = nullptr;
+        RHITextureAccessSnapshot accessSnapshot;
+        bool reused = false;
+
+        explicit operator bool() const { return texture != nullptr; }
+    };
+
+    struct TransientBufferLease
+    {
+        RHIBuffer* buffer = nullptr;
+        RHIBufferAccessSnapshot accessSnapshot;
+        bool reused = false;
+
+        explicit operator bool() const { return buffer != nullptr; }
+    };
+
     /**
      * @brief Pool for transient GPU resources
      * 
@@ -104,12 +122,18 @@ namespace RVX
          */
         RHITexture* AcquireTexture(const RHITextureDesc& desc);
 
+        /** @brief Acquire a texture together with its last realized access snapshot. */
+        TransientTextureLease AcquireTextureLease(const RHITextureDesc& desc);
+
         /**
          * @brief Acquire a buffer from the pool
          * @param desc The buffer description
          * @return A buffer matching the description, or nullptr on failure
          */
         RHIBuffer* AcquireBuffer(const RHIBufferDesc& desc);
+
+        /** @brief Acquire a buffer together with its last realized access snapshot. */
+        TransientBufferLease AcquireBufferLease(const RHIBufferDesc& desc);
 
         /**
          * @brief Release a texture back to the pool
@@ -119,11 +143,17 @@ namespace RVX
          */
         void ReleaseTexture(RHITexture* texture);
 
+        /** @brief Release a texture and commit its final realized access snapshot. */
+        void ReleaseTexture(RHITexture* texture, const RHITextureAccessSnapshot& finalAccess);
+
         /**
          * @brief Release a buffer back to the pool
          * @param buffer The buffer to release
          */
         void ReleaseBuffer(RHIBuffer* buffer);
+
+        /** @brief Release a buffer and commit its final realized access snapshot. */
+        void ReleaseBuffer(RHIBuffer* buffer, const RHIBufferAccessSnapshot& finalAccess);
 
         // =========================================================================
         // Eviction

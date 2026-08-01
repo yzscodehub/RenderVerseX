@@ -413,6 +413,20 @@ TEST(VulkanValidation, BarrierNoWorkInputsAreSafe)
     ctx->BufferBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
     ctx->BeginBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
     ctx->EndBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
+    GPUQueueDomain computeDomain = GPUQueueDomain::Graphics;
+    TryGetGPUQueueDomain(device->GetCapabilities().queueTopology,
+                         RHICommandQueueType::Compute,
+                         computeDomain);
+    const RHIAccessSnapshot unorderedAccess = MakeRHIAccessSnapshot(
+        RHIResourceState::UnorderedAccess,
+        RHIShaderStage::Compute,
+        computeDomain,
+        RHIContentValidity::Valid);
+    ctx->BufferBarrier(buffer.Get(),
+                       RHIResourceState::Common,
+                       RHIResourceState::UnorderedAccess);
+    ctx->BufferBarrier(MakeRHIBufferBarrier(
+        buffer.Get(), unorderedAccess, unorderedAccess));
 
     ctx->End();
     EXPECT_EQ(device->SubmitCommandContext(ctx.Get(), nullptr), 0u);

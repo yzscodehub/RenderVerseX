@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <unordered_map>
 #include <vector>
 
 namespace RVX
@@ -21,10 +22,17 @@ namespace RVX
             return range;
         }
 
+        RHIContentValidity MergeContentValidity(RHIContentValidity left,
+                                                RHIContentValidity right)
+        {
+            return left == right ? left : RHIContentValidity::Unknown;
+        }
+
         void ResetExecutionDiagnostics(RenderGraphImpl& graph)
         {
             graph.stats.lastExecutedPassCount = 0;
             graph.stats.lastExecutionCpuDurationNanoseconds = 0;
+            graph.stats.accessSnapshotMismatchCount = 0;
             graph.lastQueueSyncs.clear();
 
             for (Pass& pass : graph.passes)
@@ -33,6 +41,61 @@ namespace RVX
                 pass.lastExecutionQueue = RenderGraph::DiagnosticExecutionQueue::Unknown;
                 pass.lastExecutionSerial = RVX_INVALID_INDEX;
                 pass.lastCpuDurationNanoseconds = 0;
+            }
+        }
+
+        void ValidatePlannedAccessSources(RenderGraphImpl& graph)
+        {
+            std::unordered_map<uint32, RHIAccessSnapshot> textureAccesses;
+            std::unordered_map<uint32, RHIAccessSnapshot> bufferAccesses;
+            for (uint32 index = 0; index < graph.textures.size(); ++index)
+            {
+                textureAccesses[index] =
+                    graph.textures[index].initialAccessSnapshot.uniformAccess;
+            }
+            for (uint32 index = 0; index < graph.buffers.size(); ++index)
+            {
+                bufferAccesses[index] =
+                    graph.buffers[index].initialAccessSnapshot.uniformAccess;
+            }
+
+            const auto validatePass = [&](const Pass& pass)
+            {
+                if (pass.culled)
+                    return;
+                for (const ResourceUsage& usage : pass.usages)
+                {
+                    if (!usage.hasPlannedBeforeAccess)
+                        continue;
+
+                    RHIAccessSnapshot& realized = usage.type == ResourceType::Texture
+                        ? textureAccesses[usage.index]
+                        : bufferAccesses[usage.index];
+                    if (realized != usage.plannedBeforeAccess)
+                    {
+                        ++graph.stats.accessSnapshotMismatchCount;
+                        RVX_CORE_ERROR(
+                            "RenderGraph scoped access mismatch before pass '{}': planned [{}], realized [{}]",
+                            pass.name,
+                            DescribeRHIAccessSnapshot(usage.plannedBeforeAccess),
+                            DescribeRHIAccessSnapshot(realized));
+                    }
+                    realized = usage.desiredAccess;
+                }
+            };
+
+            if (!graph.executionOrder.empty())
+            {
+                for (uint32 passIndex : graph.executionOrder)
+                {
+                    if (passIndex < graph.passes.size())
+                        validatePass(graph.passes[passIndex]);
+                }
+            }
+            else
+            {
+                for (const Pass& pass : graph.passes)
+                    validatePass(pass);
             }
         }
 
@@ -75,73 +138,144 @@ namespace RVX
 
             for (auto& resource : graph.textures)
             {
-                if (!resource.exportState || !resource.GetTexture())
+                if (!resource.exportAccess || !resource.GetTexture())
                     continue;
 
-                RHIResourceState desired = *resource.exportState;
+                RHIAccessSnapshot desired = *resource.exportAccess;
                 if (resource.hasSubresourceTracking)
                 {
                     uint32 baseMip = 0;
                     uint32 mipCount = resource.desc.mipLevels;
                     uint32 baseLayer = 0;
-                    uint32 layerCount = resource.desc.arraySize;
+                    uint32 layerCount = GetTexturePhysicalLayerCount(resource.desc);
+                    bool hasRealizedValidity = false;
+                    RHIContentValidity realizedValidity = RHIContentValidity::Unknown;
+                    for (uint32 mip = baseMip; mip < baseMip + mipCount; ++mip)
+                    {
+                        for (uint32 layer = baseLayer; layer < baseLayer + layerCount; ++layer)
+                        {
+                            const uint32 key = mip + layer * resource.desc.mipLevels;
+                            const auto it = resource.subresourceAccesses.find(key);
+                            const RHIAccessSnapshot& current =
+                                it != resource.subresourceAccesses.end()
+                                    ? it->second
+                                    : resource.currentAccessSnapshot.uniformAccess;
+                            realizedValidity = hasRealizedValidity
+                                ? MergeContentValidity(realizedValidity,
+                                                       current.contentValidity)
+                                : current.contentValidity;
+                            hasRealizedValidity = true;
+                        }
+                    }
+                    desired.contentValidity = hasRealizedValidity
+                        ? realizedValidity
+                        : resource.currentAccessSnapshot.uniformAccess.contentValidity;
                     for (uint32 mip = baseMip; mip < baseMip + mipCount; ++mip)
                     {
                         for (uint32 layer = baseLayer; layer < baseLayer + layerCount; ++layer)
                         {
                             uint32 key = mip + layer * resource.desc.mipLevels;
-                            auto it = resource.subresourceStates.find(key);
-                            RHIResourceState current = (it != resource.subresourceStates.end()) ? it->second : resource.currentState;
-                            if (current != desired)
+                            auto it = resource.subresourceAccesses.find(key);
+                            const RHIAccessSnapshot current =
+                                it != resource.subresourceAccesses.end()
+                                    ? it->second
+                                    : resource.currentAccessSnapshot.uniformAccess;
+                            if (ClassifyRHIDependency(current, desired) !=
+                                RHIDependencyKind::None)
                             {
                                 exportTextureBarriers.push_back(
-                                    {resource.GetTexture(),
-                                     current,
-                                     desired,
-                                     RHISubresourceRange{mip, 1, layer, 1, GetDefaultTextureAspect(resource.desc)}});
+                                    MakeRHITextureBarrier(
+                                        resource.GetTexture(),
+                                        current,
+                                        desired,
+                                        RHISubresourceRange{mip, 1, layer, 1, GetDefaultTextureAspect(resource.desc)}));
                             }
                         }
                     }
                     resource.subresourceStates.clear();
+                    resource.subresourceAccesses.clear();
                     resource.hasSubresourceTracking = false;
-                    resource.currentState = desired;
+                    resource.currentAccessSnapshot.uniformAccess = desired;
+                    resource.currentAccessSnapshot.subresourceOverrides.clear();
+                    resource.currentState = ProjectRHIResourceState(desired);
                 }
-                else if (resource.currentState != desired)
+                else
                 {
-                    exportTextureBarriers.push_back(
-                        {resource.GetTexture(),
-                         resource.currentState,
-                         desired,
-                         AllSubresourcesForTexture(resource.desc)});
-                    resource.currentState = desired;
+                    const RHIAccessSnapshot current =
+                        resource.currentAccessSnapshot.uniformAccess;
+                    desired.contentValidity = current.contentValidity;
+                    if (ClassifyRHIDependency(current, desired) !=
+                        RHIDependencyKind::None)
+                    {
+                        exportTextureBarriers.push_back(
+                            MakeRHITextureBarrier(
+                                resource.GetTexture(),
+                                current,
+                                desired,
+                                AllSubresourcesForTexture(resource.desc)));
+                    }
+                    resource.currentAccessSnapshot.uniformAccess = desired;
+                    resource.currentState = ProjectRHIResourceState(desired);
                 }
             }
 
             for (auto& resource : graph.buffers)
             {
-                if (!resource.exportState || !resource.GetBuffer())
+                if (!resource.exportAccess || !resource.GetBuffer())
                     continue;
 
-                RHIResourceState desired = *resource.exportState;
+                RHIAccessSnapshot desired = *resource.exportAccess;
                 if (resource.hasRangeTracking)
                 {
+                    bool hasRealizedValidity = false;
+                    RHIContentValidity realizedValidity = RHIContentValidity::Unknown;
                     for (const auto& range : resource.rangeStates)
                     {
-                        if (range.state != desired)
+                        realizedValidity = hasRealizedValidity
+                            ? MergeContentValidity(realizedValidity,
+                                                   range.access.contentValidity)
+                            : range.access.contentValidity;
+                        hasRealizedValidity = true;
+                    }
+                    desired.contentValidity = hasRealizedValidity
+                        ? realizedValidity
+                        : resource.currentAccessSnapshot.uniformAccess.contentValidity;
+                    for (const auto& range : resource.rangeStates)
+                    {
+                        if (ClassifyRHIDependency(range.access, desired) !=
+                            RHIDependencyKind::None)
                         {
                             exportBufferBarriers.push_back(
-                                {resource.GetBuffer(), range.state, desired, range.offset, range.size});
+                                MakeRHIBufferBarrier(
+                                    resource.GetBuffer(),
+                                    range.access,
+                                    desired,
+                                    range.offset,
+                                    range.size));
                         }
                     }
                     resource.rangeStates.clear();
                     resource.hasRangeTracking = false;
-                    resource.currentState = desired;
+                    resource.currentAccessSnapshot.uniformAccess = desired;
+                    resource.currentAccessSnapshot.rangeOverrides.clear();
+                    resource.currentState = ProjectRHIResourceState(desired);
                 }
-                else if (resource.currentState != desired)
+                else
                 {
-                    exportBufferBarriers.push_back(
-                        {resource.GetBuffer(), resource.currentState, desired, 0, RVX_WHOLE_SIZE});
-                    resource.currentState = desired;
+                    const RHIAccessSnapshot current =
+                        resource.currentAccessSnapshot.uniformAccess;
+                    desired.contentValidity = current.contentValidity;
+                    if (ClassifyRHIDependency(current, desired) !=
+                        RHIDependencyKind::None)
+                    {
+                        exportBufferBarriers.push_back(
+                            MakeRHIBufferBarrier(
+                                resource.GetBuffer(),
+                                current,
+                                desired));
+                    }
+                    resource.currentAccessSnapshot.uniformAccess = desired;
+                    resource.currentState = ProjectRHIResourceState(desired);
                 }
             }
 
@@ -277,6 +411,8 @@ namespace RVX
             return;
         }
 
+        ValidatePlannedAccessSources(graph);
+
         if (!graph.executionOrder.empty())
         {
             uint32 executionSerial = 0;
@@ -311,6 +447,7 @@ namespace RVX
         }
 
         EmitExportBarriers(graph, ctx);
+        graph.executionRealized = true;
     }
 
     void ExecuteRenderGraphAsync(RenderGraphImpl& graph,
@@ -351,6 +488,7 @@ namespace RVX
 
         graph.stats.asyncFallbackUsed = false;
         graph.stats.asyncFallbackReason = RenderGraph::AsyncComputeFallbackReason::None;
+        ValidatePlannedAccessSources(graph);
 
         const uint64 fenceBaseValue = (frameIndex + 1u) << 32u;
         uint64 nextFenceValue = fenceBaseValue;
@@ -501,6 +639,7 @@ namespace RVX
             signalComputeForGraphics(RVX_INVALID_INDEX, true);
         }
         EmitExportBarriers(graph, graphicsCtx);
+        graph.executionRealized = true;
 
         if (graph.stats.asyncComputeScheduledPasses == 0)
         {

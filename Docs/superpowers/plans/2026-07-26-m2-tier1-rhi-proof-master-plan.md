@@ -2,7 +2,7 @@
 
 **Status:** In progress; best-practice review incorporated; Task 20 complete;
 Task 21 CH1-CH2 complete; Task 22/CH3 complete; Task 23/CH4 complete;
-Task 24/CH5 next
+Task 24/CH5 complete; Task 25 next
 **Branch:** `codex/architecture-implementation`
 **M1 entry commit:** `6c93300618026ca1068acebe61d399669bf5c8e0`
 **M1 entry CI:** `https://github.com/yzscodehub/RenderVerseX/actions/runs/30521739421`
@@ -262,26 +262,26 @@ evidence remains structural until the macOS gate.
 
 ### Task 24: Scoped dependencies, state handoff, and transient lease closure
 
-- [ ] Introduce scoped dependency/access snapshots with execution scope,
+- [x] Introduce scoped dependency/access snapshots with execution scope,
   memory access, layout/usage, range/subresources, content validity, and the
   M1 physical `GPUQueueDomain`.
-- [ ] Preserve same-layout/state memory dependencies such as UAV-write to
+- [x] Preserve same-layout/state memory dependencies such as UAV-write to
   UAV-write or shader-write to shader-read.
-- [ ] Separate discard intent from the actual realized before state.
-- [ ] Import external resources with a supplied snapshot.
-- [ ] Publish realized export snapshots after graph execution.
-- [ ] Return transient texture/buffer leases to the pool with their final
+- [x] Separate discard intent from the actual realized before state.
+- [x] Import external resources with a supplied snapshot.
+- [x] Publish realized export snapshots after graph execution.
+- [x] Return transient texture/buffer leases to the pool with their final
   snapshot.
-- [ ] Reacquire pooled resources with their stored snapshot rather than
+- [x] Reacquire pooled resources with their stored snapshot rather than
   `Undefined`.
-- [ ] Persist GPU-culling buffer states across frames.
-- [ ] Keep swapchain and Scene depth state ownership explicit.
-- [ ] Make uploads and other non-graph producers commit final snapshots.
-- [ ] Add debug validation that planned source access/layout/domain equals the
+- [x] Persist GPU-culling buffer states across frames.
+- [x] Keep swapchain and Scene depth state ownership explicit.
+- [x] Make uploads and other non-graph producers commit final snapshots.
+- [x] Add debug validation that planned source access/layout/domain equals the
   last realized snapshot.
-- [ ] Keep legacy `RHIResourceState` overloads only as an explicit migration
+- [x] Keep legacy `RHIResourceState` overloads only as an explicit migration
   projection for compatibility backends.
-- [ ] Complete a DX12/Vulkan/Metal translation design checkpoint before the
+- [x] Complete a DX12/Vulkan/Metal translation design checkpoint before the
   shared contract is frozen.
 
 Exit:
@@ -290,6 +290,17 @@ Exit:
 - GPU-culling buffers do not re-enter as `Common`;
 - post-process pooled resources do not produce before-state mismatches;
 - same-state hazards and discard/reuse cases have deterministic tests.
+
+Task 24 completed on 2026-08-01. Scoped access snapshots now separate
+execution, memory, layout, physical domain, content validity, range, and
+discard intent. RenderGraph imports owner snapshots, validates planned source
+access, publishes realized exports, and returns transient leases with their
+final texture subresource or buffer range snapshots. Swapchain, Scene depth,
+GPU-culling, upload, and registry owners now participate in the same handoff.
+Real DX12 and Vulkan validation passed on Windows; Metal remains a structural
+checkpoint until Task 27. Vulkan cross-family ownership is deliberately not
+encoded as a single native barrier: Task 26 owns the required paired source
+release and destination acquire submission closure.
 
 ### Task 25: DX12 native correctness closure
 

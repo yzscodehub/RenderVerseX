@@ -400,6 +400,9 @@ TEST(GPUUploadServiceValidation, StagedBufferUploadsBatchUntilFlush)
 
     EXPECT_TRUE(firstResult.succeeded);
     EXPECT_TRUE(secondResult.succeeded);
+    EXPECT_EQ(firstResult.finalAccess.layout, RHIResourceLayout::General);
+    EXPECT_EQ(firstResult.finalAccess.domain, GPUQueueDomain::Copy);
+    EXPECT_EQ(firstResult.finalAccess.contentValidity, RHIContentValidity::Valid);
     EXPECT_TRUE(firstResult.isPending);
     EXPECT_TRUE(secondResult.isPending);
     EXPECT_TRUE(uploadService.IsUploadPending(firstResult.uploadId));
@@ -596,6 +599,9 @@ TEST(GPUUploadServiceValidation, StagedTextureUploadCopiesEveryMipSubresource)
     auto result = uploadService.UploadTextureDataWithResult(desc, pixels.data());
 
     ASSERT_TRUE(result.succeeded);
+    EXPECT_EQ(result.finalAccess.layout, RHIResourceLayout::General);
+    EXPECT_EQ(result.finalAccess.domain, GPUQueueDomain::Copy);
+    EXPECT_EQ(result.finalAccess.contentValidity, RHIContentValidity::Valid);
     EXPECT_EQ(device.createdTextureCount, 1u);
     ASSERT_NE(nullptr, device.lastCommandContext);
     EXPECT_EQ(device.lastCommandContext->copyBufferToTextureCount, 3u);

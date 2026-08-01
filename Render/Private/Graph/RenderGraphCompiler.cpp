@@ -37,15 +37,20 @@ namespace RVX
                 return false;
             }
 
-            RHITexture* pooledTexture =
-                graph.transientResourcePool->AcquireTexture(resource.desc);
-            if (!pooledTexture)
+            TransientTextureLease lease =
+                graph.transientResourcePool->AcquireTextureLease(resource.desc);
+            if (!lease)
             {
                 return false;
             }
 
-            resource.pooledRaw = pooledTexture;
+            resource.pooledRaw = lease.texture;
             resource.pooled = true;
+            resource.initialAccessSnapshot = std::move(lease.accessSnapshot);
+            resource.currentAccessSnapshot = resource.initialAccessSnapshot;
+            resource.initialState = ProjectRHIResourceState(
+                resource.initialAccessSnapshot.uniformAccess);
+            resource.currentState = resource.initialState;
             return true;
         }
 
@@ -58,15 +63,20 @@ namespace RVX
                 return false;
             }
 
-            RHIBuffer* pooledBuffer =
-                graph.transientResourcePool->AcquireBuffer(resource.desc);
-            if (!pooledBuffer)
+            TransientBufferLease lease =
+                graph.transientResourcePool->AcquireBufferLease(resource.desc);
+            if (!lease)
             {
                 return false;
             }
 
-            resource.pooledRaw = pooledBuffer;
+            resource.pooledRaw = lease.buffer;
             resource.pooled = true;
+            resource.initialAccessSnapshot = std::move(lease.accessSnapshot);
+            resource.currentAccessSnapshot = resource.initialAccessSnapshot;
+            resource.initialState = ProjectRHIResourceState(
+                resource.initialAccessSnapshot.uniformAccess);
+            resource.currentState = resource.initialState;
             return true;
         }
 
@@ -81,7 +91,9 @@ namespace RVX
             baseMip = range.baseMipLevel;
             mipCount = (range.mipLevelCount == RVX_ALL_MIPS) ? resource.desc.mipLevels : range.mipLevelCount;
             baseLayer = range.baseArrayLayer;
-            layerCount = (range.arrayLayerCount == RVX_ALL_LAYERS) ? resource.desc.arraySize : range.arrayLayerCount;
+            layerCount = (range.arrayLayerCount == RVX_ALL_LAYERS)
+                ? GetTexturePhysicalLayerCount(resource.desc)
+                : range.arrayLayerCount;
         }
 
         bool IsWholeBufferRange(uint64 offset, uint64 size, uint64 fullSize)
@@ -105,8 +117,95 @@ namespace RVX
             if (resource.hasRangeTracking)
                 return;
             resource.rangeStates.clear();
-            resource.rangeStates.push_back({0, resource.desc.size, resource.currentState});
+            resource.rangeStates.push_back({
+                0,
+                resource.desc.size,
+                resource.currentState,
+                resource.currentAccessSnapshot.uniformAccess});
             resource.hasRangeTracking = true;
+
+            for (const RHIBufferRangeAccessSnapshot& accessOverride :
+                 resource.currentAccessSnapshot.rangeOverrides)
+            {
+                const uint64 overrideSize = ResolveBufferRangeSize(
+                    accessOverride.offset,
+                    accessOverride.size,
+                    resource.desc.size);
+                if (overrideSize == 0)
+                    continue;
+
+                const uint64 overrideEnd = accessOverride.offset + overrideSize;
+                std::vector<BufferResource::RangeState> updated;
+                updated.reserve(resource.rangeStates.size() + 2);
+                for (const auto& range : resource.rangeStates)
+                {
+                    const uint64 rangeEnd = range.offset + range.size;
+                    if (overrideEnd <= range.offset || accessOverride.offset >= rangeEnd)
+                    {
+                        updated.push_back(range);
+                        continue;
+                    }
+                    if (accessOverride.offset > range.offset)
+                    {
+                        updated.push_back({range.offset,
+                                           accessOverride.offset - range.offset,
+                                           range.state,
+                                           range.access});
+                    }
+                    const uint64 overlapStart = std::max(accessOverride.offset, range.offset);
+                    const uint64 overlapEnd = std::min(overrideEnd, rangeEnd);
+                    updated.push_back({overlapStart,
+                                       overlapEnd - overlapStart,
+                                       ProjectRHIResourceState(accessOverride.access),
+                                       accessOverride.access});
+                    if (overlapEnd < rangeEnd)
+                    {
+                        updated.push_back({overlapEnd,
+                                           rangeEnd - overlapEnd,
+                                           range.state,
+                                           range.access});
+                    }
+                }
+                resource.rangeStates.swap(updated);
+            }
+            resource.currentAccessSnapshot.rangeOverrides.clear();
+        }
+
+        void EnsureTextureSubresourceTracking(TextureResource& resource)
+        {
+            if (resource.hasSubresourceTracking ||
+                resource.currentAccessSnapshot.subresourceOverrides.empty())
+            {
+                return;
+            }
+
+            for (const RHITextureSubresourceAccessSnapshot& accessOverride :
+                 resource.currentAccessSnapshot.subresourceOverrides)
+            {
+                uint32 baseMip = 0;
+                uint32 mipCount = 0;
+                uint32 baseLayer = 0;
+                uint32 layerCount = 0;
+                ResolveSubresourceRange(
+                    accessOverride.range,
+                    resource,
+                    baseMip,
+                    mipCount,
+                    baseLayer,
+                    layerCount);
+                for (uint32 mip = baseMip; mip < baseMip + mipCount; ++mip)
+                {
+                    for (uint32 layer = baseLayer; layer < baseLayer + layerCount; ++layer)
+                    {
+                        const uint32 key = mip + layer * resource.desc.mipLevels;
+                        resource.subresourceAccesses[key] = accessOverride.access;
+                        resource.subresourceStates[key] =
+                            ProjectRHIResourceState(accessOverride.access);
+                    }
+                }
+            }
+            resource.currentAccessSnapshot.subresourceOverrides.clear();
+            resource.hasSubresourceTracking = true;
         }
 
         void MergeBufferRanges(std::vector<BufferResource::RangeState>& ranges)
@@ -128,7 +227,7 @@ namespace RVX
             {
                 auto& back = merged.back();
                 const auto& current = ranges[i];
-                if (back.state == current.state && back.offset + back.size == current.offset)
+                if (back.access == current.access && back.offset + back.size == current.offset)
                 {
                     back.size += current.size;
                 }
@@ -144,7 +243,9 @@ namespace RVX
             BufferResource& resource,
             uint64 offset,
             uint64 size,
-            RHIResourceState desiredState,
+            const RHIAccessSnapshot& desiredAccess,
+            RHIDiscardIntent discardIntent,
+            bool writeOnly,
             std::vector<RHIBufferBarrier>& outBarriers)
         {
             if (size == 0 || resource.desc.size == 0)
@@ -168,21 +269,43 @@ namespace RVX
 
                 if (offset > rangeStart)
                 {
-                    updated.push_back({rangeStart, offset - rangeStart, range.state});
+                    updated.push_back({rangeStart, offset - rangeStart, range.state, range.access});
                 }
 
                 uint64 overlapStart = std::max(offset, rangeStart);
                 uint64 overlapEnd = std::min(end, rangeEnd);
                 uint64 overlapSize = overlapEnd - overlapStart;
-                if (range.state != desiredState)
+                RHIDiscardIntent effectiveDiscard = discardIntent;
+                if (writeOnly &&
+                    range.access.contentValidity != RHIContentValidity::Valid)
                 {
-                    outBarriers.push_back({resource.GetBuffer(), range.state, desiredState, overlapStart, overlapSize});
+                    effectiveDiscard = RHIDiscardIntent::Discard;
                 }
-                updated.push_back({overlapStart, overlapSize, desiredState});
+                const RHIDependencyKind dependency = ClassifyRHIDependency(
+                    range.access,
+                    desiredAccess,
+                    effectiveDiscard);
+                if (dependency != RHIDependencyKind::None)
+                {
+                    outBarriers.push_back(MakeRHIBufferBarrier(
+                        resource.GetBuffer(),
+                        range.access,
+                        desiredAccess,
+                        overlapStart,
+                        overlapSize,
+                        effectiveDiscard));
+                }
+                updated.push_back({overlapStart,
+                                   overlapSize,
+                                   ProjectRHIResourceState(desiredAccess),
+                                   desiredAccess});
 
                 if (overlapEnd < rangeEnd)
                 {
-                    updated.push_back({overlapEnd, rangeEnd - overlapEnd, range.state});
+                    updated.push_back({overlapEnd,
+                                       rangeEnd - overlapEnd,
+                                       range.state,
+                                       range.access});
                 }
             }
 
@@ -311,6 +434,12 @@ namespace RVX
                 if (last.texture == barrier.texture &&
                     last.stateBefore == barrier.stateBefore &&
                     last.stateAfter == barrier.stateAfter &&
+                    last.hasScopedAccess == barrier.hasScopedAccess &&
+                    (!last.hasScopedAccess ||
+                     (last.accessBefore == barrier.accessBefore &&
+                      last.accessAfter == barrier.accessAfter &&
+                      last.dependencyKind == barrier.dependencyKind &&
+                      last.discardIntent == barrier.discardIntent)) &&
                     last.subresourceRange.aspect == barrier.subresourceRange.aspect)
                 {
                     if (IsAllRange(last.subresourceRange))
@@ -390,7 +519,13 @@ namespace RVX
                 auto& last = merged.back();
                 if (last.buffer == barrier.buffer &&
                     last.stateBefore == barrier.stateBefore &&
-                    last.stateAfter == barrier.stateAfter)
+                    last.stateAfter == barrier.stateAfter &&
+                    last.hasScopedAccess == barrier.hasScopedAccess &&
+                    (!last.hasScopedAccess ||
+                     (last.accessBefore == barrier.accessBefore &&
+                      last.accessAfter == barrier.accessAfter &&
+                      last.dependencyKind == barrier.dependencyKind &&
+                      last.discardIntent == barrier.discardIntent)))
                 {
                     if (IsAllBufferRange(last))
                         continue;
@@ -434,6 +569,12 @@ namespace RVX
 
             for (const auto& barrier : barriers)
             {
+                if (barrier.hasScopedAccess &&
+                    barrier.dependencyKind != RHIDependencyKind::Transition)
+                {
+                    filtered.push_back(barrier);
+                    continue;
+                }
                 if (!IsAllRange(barrier.subresourceRange))
                 {
                     filtered.push_back(barrier);
@@ -470,6 +611,12 @@ namespace RVX
 
             for (const auto& barrier : barriers)
             {
+                if (barrier.hasScopedAccess &&
+                    barrier.dependencyKind != RHIDependencyKind::Transition)
+                {
+                    filtered.push_back(barrier);
+                    continue;
+                }
                 if (!IsAllBufferRange(barrier))
                 {
                     filtered.push_back(barrier);
@@ -1197,6 +1344,12 @@ namespace RVX
                 
                 texture.initialState = RHIResourceState::Undefined;
                 texture.currentState = texture.initialState;
+                texture.initialAccessSnapshot = MakeRHITextureAccessSnapshot(
+                    RHIResourceState::Undefined,
+                    RHIShaderStage::None,
+                    GPUQueueDomain::Graphics,
+                    RHIContentValidity::Invalid);
+                texture.currentAccessSnapshot = texture.initialAccessSnapshot;
             }
 
             // Create Placed Buffers
@@ -1223,6 +1376,12 @@ namespace RVX
                 
                 buffer.initialState = RHIResourceState::Undefined;
                 buffer.currentState = buffer.initialState;
+                buffer.initialAccessSnapshot = MakeRHIBufferAccessSnapshot(
+                    RHIResourceState::Undefined,
+                    RHIShaderStage::None,
+                    GPUQueueDomain::Graphics,
+                    RHIContentValidity::Invalid);
+                buffer.currentAccessSnapshot = buffer.initialAccessSnapshot;
             }
         }
         else
@@ -1235,9 +1394,15 @@ namespace RVX
                     if (!AcquireTransientTexture(graph, texture))
                     {
                         texture.texture = graph.device->CreateTexture(texture.desc);
+                        texture.initialAccessSnapshot = MakeRHITextureAccessSnapshot(
+                            RHIResourceState::Undefined,
+                            RHIShaderStage::None,
+                            GPUQueueDomain::Graphics,
+                            RHIContentValidity::Invalid);
+                        texture.currentAccessSnapshot = texture.initialAccessSnapshot;
+                        texture.initialState = RHIResourceState::Undefined;
+                        texture.currentState = texture.initialState;
                     }
-                    texture.initialState = RHIResourceState::Undefined;
-                    texture.currentState = texture.initialState;
                 }
             }
 
@@ -1248,9 +1413,15 @@ namespace RVX
                     if (!AcquireTransientBuffer(graph, buffer))
                     {
                         buffer.buffer = graph.device->CreateBuffer(buffer.desc);
+                        buffer.initialAccessSnapshot = MakeRHIBufferAccessSnapshot(
+                            RHIResourceState::Undefined,
+                            RHIShaderStage::None,
+                            GPUQueueDomain::Graphics,
+                            RHIContentValidity::Invalid);
+                        buffer.currentAccessSnapshot = buffer.initialAccessSnapshot;
+                        buffer.initialState = RHIResourceState::Undefined;
+                        buffer.currentState = buffer.initialState;
                     }
-                    buffer.initialState = RHIResourceState::Undefined;
-                    buffer.currentState = buffer.initialState;
                 }
             }
         }
@@ -1261,6 +1432,7 @@ namespace RVX
     // =============================================================================
     void CompileRenderGraph(RenderGraphImpl& graph)
     {
+        graph.executionRealized = false;
         graph.compileDiagnostics.clear();
         graph.stats = {};
         graph.stats.totalPasses = static_cast<uint32>(graph.passes.size());
@@ -1269,6 +1441,8 @@ namespace RVX
         graph.stats.memoryAliasingEnabled = graph.enableMemoryAliasing;
         graph.stats.memoryAliasingUnsupportedRequested = graph.memoryAliasingRequested && !graph.enableMemoryAliasing;
         graph.stats.explicitAliasingBarriersSupported = false;
+        graph.stats.compatibilityStateProjectionCount =
+            graph.compatibilityStateProjectionCount;
         graph.passDependencies.clear();
         graph.passDependents.clear();
         graph.totalMemoryWithoutAliasing = 0;
@@ -1303,8 +1477,9 @@ namespace RVX
         for (uint32 passIndex = 0; passIndex < graph.passes.size(); ++passIndex)
         {
             auto& pass = graph.passes[passIndex];
-            for (const auto& usage : pass.usages)
+            for (auto& usage : pass.usages)
             {
+                usage.hasPlannedBeforeAccess = false;
                 if (usage.type == ResourceType::Texture)
                 {
                     if (usage.index >= graph.textures.size())
@@ -1561,6 +1736,22 @@ namespace RVX
         // Create transient resources (with optional placed resource aliasing)
         CreateTransientResources(graph);
 
+        for (auto& texture : graph.textures)
+        {
+            texture.currentState = texture.initialState;
+            texture.currentAccessSnapshot = texture.initialAccessSnapshot;
+            texture.subresourceStates.clear();
+            texture.subresourceAccesses.clear();
+            texture.hasSubresourceTracking = false;
+        }
+        for (auto& buffer : graph.buffers)
+        {
+            buffer.currentState = buffer.initialState;
+            buffer.currentAccessSnapshot = buffer.initialAccessSnapshot;
+            buffer.rangeStates.clear();
+            buffer.hasRangeTracking = false;
+        }
+
         // Compute aliasing barriers for resources that share memory
         ComputeAliasingBarriers(graph);
 
@@ -1569,7 +1760,7 @@ namespace RVX
             if (pass.culled)
                 return;
 
-            for (const auto& usage : pass.usages)
+            for (auto& usage : pass.usages)
             {
                 RVX_ASSERT_MSG(
                     IsStateAllowedForPass(pass.type, usage.desiredState),
@@ -1582,6 +1773,10 @@ namespace RVX
                     auto& resource = graph.textures[usage.index];
                     if (!resource.GetTexture())
                         continue;
+
+                    EnsureTextureSubresourceTracking(resource);
+
+                    const RHIAccessSnapshot desiredAccess = usage.desiredAccess;
 
                     RHISubresourceRange range = usage.hasSubresourceRange
                                                     ? usage.subresourceRange
@@ -1602,35 +1797,71 @@ namespace RVX
                             for (uint32 layer = baseLayer; layer < baseLayer + layerCount; ++layer)
                             {
                                 uint32 key = mip + layer * resource.desc.mipLevels;
-                                auto it = resource.subresourceStates.find(key);
-                                RHIResourceState current = (it != resource.subresourceStates.end()) ? it->second : resource.currentState;
-                                if (current != usage.desiredState)
+                                auto accessIt = resource.subresourceAccesses.find(key);
+                                const RHIAccessSnapshot currentAccess =
+                                    accessIt != resource.subresourceAccesses.end()
+                                        ? accessIt->second
+                                        : resource.currentAccessSnapshot.uniformAccess;
+                                const RHIDiscardIntent effectiveDiscard =
+                                    usage.access == RGAccessType::Write &&
+                                            currentAccess.contentValidity != RHIContentValidity::Valid
+                                        ? RHIDiscardIntent::Discard
+                                        : usage.discardIntent;
+                                if (ClassifyRHIDependency(
+                                        currentAccess,
+                                        desiredAccess,
+                                        effectiveDiscard) != RHIDependencyKind::None)
                                 {
                                     pass.textureBarriers.push_back(
-                                        {resource.GetTexture(),
-                                         current,
-                                         usage.desiredState,
-                                         RHISubresourceRange{mip, 1, layer, 1, range.aspect}});
+                                        MakeRHITextureBarrier(
+                                            resource.GetTexture(),
+                                            currentAccess,
+                                            desiredAccess,
+                                            RHISubresourceRange{mip, 1, layer, 1, range.aspect},
+                                            effectiveDiscard));
                                 }
-                                resource.subresourceStates[key] = usage.desiredState;
+                                resource.subresourceAccesses[key] = desiredAccess;
+                                resource.subresourceStates[key] =
+                                    ProjectRHIResourceState(desiredAccess);
                             }
                         }
 
                         if (rangeIsAll)
                         {
-                            resource.currentState = usage.desiredState;
+                            resource.currentAccessSnapshot.uniformAccess = desiredAccess;
+                            resource.currentAccessSnapshot.subresourceOverrides.clear();
+                            resource.currentState = ProjectRHIResourceState(desiredAccess);
                             resource.subresourceStates.clear();
+                            resource.subresourceAccesses.clear();
                             resource.hasSubresourceTracking = false;
                         }
                     }
-                    else if (resource.currentState != usage.desiredState)
+                    else
                     {
-                        pass.textureBarriers.push_back(
-                            {resource.GetTexture(),
-                             resource.currentState,
-                             usage.desiredState,
-                             AllSubresourcesForTexture(resource.desc)});
-                        resource.currentState = usage.desiredState;
+                        const RHIAccessSnapshot currentAccess =
+                            resource.currentAccessSnapshot.uniformAccess;
+                        usage.plannedBeforeAccess = currentAccess;
+                        usage.hasPlannedBeforeAccess = true;
+                        const RHIDiscardIntent effectiveDiscard =
+                            usage.access == RGAccessType::Write &&
+                                    currentAccess.contentValidity != RHIContentValidity::Valid
+                                ? RHIDiscardIntent::Discard
+                                : usage.discardIntent;
+                        if (ClassifyRHIDependency(
+                                currentAccess,
+                                desiredAccess,
+                                effectiveDiscard) != RHIDependencyKind::None)
+                        {
+                            pass.textureBarriers.push_back(
+                                MakeRHITextureBarrier(
+                                    resource.GetTexture(),
+                                    currentAccess,
+                                    desiredAccess,
+                                    AllSubresourcesForTexture(resource.desc),
+                                    effectiveDiscard));
+                        }
+                        resource.currentAccessSnapshot.uniformAccess = desiredAccess;
+                        resource.currentState = ProjectRHIResourceState(desiredAccess);
                     }
                 }
                 else
@@ -1638,6 +1869,8 @@ namespace RVX
                     auto& resource = graph.buffers[usage.index];
                     if (!resource.GetBuffer())
                         continue;
+
+                    const RHIAccessSnapshot desiredAccess = usage.desiredAccess;
 
                     uint64 offset = usage.hasRange ? usage.offset : 0;
                     uint64 size = usage.hasRange ? usage.size : RVX_WHOLE_SIZE;
@@ -1647,19 +1880,51 @@ namespace RVX
                     if (resource.hasRangeTracking || (usage.hasRange && !isWhole))
                     {
                         uint64 applySize = isWhole ? resource.desc.size : rangeSize;
-                        ApplyBufferRangeTransition(resource, offset, applySize, usage.desiredState, pass.bufferBarriers);
+                        EnsureBufferRangeTracking(resource);
+                        ApplyBufferRangeTransition(
+                            resource,
+                            offset,
+                            applySize,
+                            desiredAccess,
+                            usage.discardIntent,
+                            usage.access == RGAccessType::Write,
+                            pass.bufferBarriers);
                         if (isWhole)
                         {
-                            resource.currentState = usage.desiredState;
+                            resource.currentAccessSnapshot.uniformAccess = desiredAccess;
+                            resource.currentAccessSnapshot.rangeOverrides.clear();
+                            resource.currentState = ProjectRHIResourceState(desiredAccess);
                             resource.rangeStates.clear();
                             resource.hasRangeTracking = false;
                         }
                     }
-                    else if (resource.currentState != usage.desiredState)
+                    else
                     {
-                        pass.bufferBarriers.push_back(
-                            {resource.GetBuffer(), resource.currentState, usage.desiredState, offset, isWhole ? RVX_WHOLE_SIZE : rangeSize});
-                        resource.currentState = usage.desiredState;
+                        const RHIAccessSnapshot currentAccess =
+                            resource.currentAccessSnapshot.uniformAccess;
+                        usage.plannedBeforeAccess = currentAccess;
+                        usage.hasPlannedBeforeAccess = true;
+                        const RHIDiscardIntent effectiveDiscard =
+                            usage.access == RGAccessType::Write &&
+                                    currentAccess.contentValidity != RHIContentValidity::Valid
+                                ? RHIDiscardIntent::Discard
+                                : usage.discardIntent;
+                        if (ClassifyRHIDependency(
+                                currentAccess,
+                                desiredAccess,
+                                effectiveDiscard) != RHIDependencyKind::None)
+                        {
+                            pass.bufferBarriers.push_back(
+                                MakeRHIBufferBarrier(
+                                    resource.GetBuffer(),
+                                    currentAccess,
+                                    desiredAccess,
+                                    offset,
+                                    isWhole ? RVX_WHOLE_SIZE : rangeSize,
+                                    effectiveDiscard));
+                        }
+                        resource.currentAccessSnapshot.uniformAccess = desiredAccess;
+                        resource.currentState = ProjectRHIResourceState(desiredAccess);
                     }
                 }
             }

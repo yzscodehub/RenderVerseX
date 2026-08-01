@@ -65,9 +65,13 @@ namespace RVX
         RHITexture* pooledRaw = nullptr; // Non-owning pointer for pooled transient textures
         RHIResourceState initialState = RHIResourceState::Undefined;
         RHIResourceState currentState = RHIResourceState::Undefined;
+        RHITextureAccessSnapshot initialAccessSnapshot;
+        RHITextureAccessSnapshot currentAccessSnapshot;
         std::unordered_map<uint32, RHIResourceState> subresourceStates;
+        std::unordered_map<uint32, RHIAccessSnapshot> subresourceAccesses;
         bool hasSubresourceTracking = false;
         std::optional<RHIResourceState> exportState;
+        std::optional<RHIAccessSnapshot> exportAccess;
         bool imported = false;
         bool pooled = false;
         
@@ -94,12 +98,16 @@ namespace RVX
         RHIBuffer* pooledRaw = nullptr;    // Non-owning pointer for pooled transient buffers
         RHIResourceState initialState = RHIResourceState::Undefined;
         RHIResourceState currentState = RHIResourceState::Undefined;
+        RHIBufferAccessSnapshot initialAccessSnapshot;
+        RHIBufferAccessSnapshot currentAccessSnapshot;
         std::optional<RHIResourceState> exportState;
+        std::optional<RHIAccessSnapshot> exportAccess;
         struct RangeState
         {
             uint64 offset = 0;
             uint64 size = 0;
             RHIResourceState state = RHIResourceState::Common;
+            RHIAccessSnapshot access;
         };
         std::vector<RangeState> rangeStates;
         bool hasRangeTracking = false;
@@ -126,13 +134,17 @@ namespace RVX
         ResourceType type = ResourceType::Texture;
         uint32 index = RVX_INVALID_INDEX;
         RHIResourceState desiredState = RHIResourceState::Common;
+        RHIAccessSnapshot desiredAccess;
         RGAccessType access = RGAccessType::Read;
+        RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve;
         RHIShaderStage stages = RHIShaderStage::AllGraphics;  // Shader stages that will access this resource
         RHISubresourceRange subresourceRange = RHISubresourceRange::All();
         bool hasSubresourceRange = false;
         uint64 offset = 0;
         uint64 size = RVX_WHOLE_SIZE;
         bool hasRange = false;
+        RHIAccessSnapshot plannedBeforeAccess;
+        bool hasPlannedBeforeAccess = false;
     };
 
     // =============================================================================
@@ -198,6 +210,8 @@ namespace RVX
         uint64 totalMemoryWithAliasing = 0;
         uint32 aliasedTextureCount = 0;
         uint32 aliasedBufferCount = 0;
+        uint32 compatibilityStateProjectionCount = 0;
+        bool executionRealized = false;
     };
 
     void CompileRenderGraph(RenderGraphImpl& graph);

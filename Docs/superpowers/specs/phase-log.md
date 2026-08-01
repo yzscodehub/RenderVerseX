@@ -42391,6 +42391,115 @@ build\win_x64_debug\Tests\Debug\RenderHonestyValidation.exe `
 
 ---
 
+### R-SP315 M2 scoped access and lifetime handoff closure
+
+**Date:** 2026-08-01
+**Commit:** Pending
+**Spark plan review agent:** N/A
+**Spark code review agent:** N/A
+
+**Plan source:**
+
+- Document:
+  `Docs/superpowers/plans/2026-07-26-m2-tier1-rhi-proof-master-plan.md`
+- Section: Task 24 / shared-plan CH5
+- Lines checked: scoped dependency snapshots, owner import/export handoff,
+  transient leases, persistent GPU-culling state, and three-primary-backend
+  translation checkpoint
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP314 M2 complete immutable descriptor snapshots
+- Evidence: Task 23/CH4 is committed at `54defcd1` and its validation record
+  is complete.
+
+**Approved scope:**
+
+- Add a backend-neutral access snapshot separating execution scope, memory
+  access, layout, physical queue domain, content validity, and legacy state.
+- Preserve same-layout memory dependencies and explicit discard intent.
+- Carry realized snapshots through RenderGraph imports/exports, transient
+  texture/buffer leases, persistent owners, and non-graph producers.
+- Diagnose planned-before versus realized access and compatibility projections.
+- Establish DX12, Vulkan, and Metal translation-structure checkpoints while
+  retaining conservative DX11/OpenGL compatibility behavior.
+
+**Out of scope:**
+
+- DX12 optimized-clear and full native correctness closure (Task 25).
+- Vulkan paired queue-family release/acquire submission closure (Task 26).
+- Metal compilation and real-device validation (Task 27).
+- Editor implementation.
+
+**Files changed:**
+
+- `RHI/Include/RHI/RHIAccess.h` and `RHI/Private/RHIAccess.cpp`
+- `RHI/Include/RHI/RHICommandContext.h`
+- `RHI_DX12/`, `RHI_Vulkan/`, `RHI_Metal/`, and `RHI_OpenGL/` command paths
+- `Render/Include/Render/Graph/` and `Render/Private/Graph/`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- GPU-culling, upload, and render-resource registry owners
+- RHI, RenderGraph, upload, GPU-driven, DX12, and Vulkan validation tests
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  RenderGraphValidation RHIContractValidation `
+  RenderLifetimeCutoverValidation CrossBackendValidation `
+  DX12Validation VulkanValidation GPUUploadServiceValidation `
+  GPUDrivenValidation RenderHonestyValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure `
+  -R "^(RHIContractValidation|RenderGraphValidation|RenderLifetimeCutoverValidation|CrossBackendValidation|DX12Validation|VulkanValidation)\."
+build\win_x64_debug\Tests\Debug\GPUUploadServiceValidation.exe
+build\win_x64_debug\Tests\Debug\GPUDrivenValidation.exe
+build\win_x64_debug\Tests\Debug\RenderHonestyValidation.exe
+```
+
+**Validation result:**
+
+- Build: PASS for shared RHI/Render, DX12, Vulkan, OpenGL, and all selected
+  validation targets on Windows.
+- Tests: PASS; combined RHI/RenderGraph/lifetime/DX12/Vulkan/cross-backend
+  selection 162/162, GPU upload 12/12, GPU-driven 12/12, and Render honesty
+  75/75.
+- Real-device barrier checkpoint: PASS under the DX12 Debug Layer and Vulkan
+  validation layer for same-state scoped UAV dependencies.
+- Visual gate: N/A. Task 24 changes dependency/lifetime correctness and does
+  not approve or replace a visual golden.
+
+**Artifacts:**
+
+- Logs: CTest and validation executable output in the local build tree.
+- Screenshots: No source artifact added.
+- Diffs: No generated golden or runtime asset was checked in.
+
+**Spark plan review result:**
+
+- Verdict: N/A
+- Blockers resolved: the approved Task 24/CH5 boundary was implemented without
+  expanding into backend-native closure tasks.
+
+**Spark code review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: equal-state barrier elision, discard/state conflation,
+  pooled-resource reset to `Undefined`, GPU-culling reset to `Common`, stale
+  planned-before sources, and incomplete single-sided Vulkan ownership
+  transfer encoding.
+
+**Notes / follow-ups:**
+
+- Metal is a structural checkpoint on Windows; Task 27 owns macOS build and
+  real-device evidence.
+- The shared contract exposes physical ownership changes, but Vulkan keeps
+  native queue-family indices ignored until Task 26 emits the required source
+  release and destination acquire pair with submission synchronization.
+- Task 25 is next and closes DX12 native correctness, optimized clears,
+  GPU-driven fallback diagnostics, and bounded ModelViewer integration.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**
