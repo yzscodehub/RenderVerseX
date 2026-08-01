@@ -54,8 +54,6 @@ namespace RVX
         DX11DescriptorSet(DX11Device* device, const RHIDescriptorSetDesc& desc);
         ~DX11DescriptorSet() override;
 
-        bool Update(const std::vector<RHIDescriptorBinding>& bindings) override;
-
         // Apply bindings to context
         // setIndex is used for slot remapping when using multiple descriptor sets
         // dynamicOffsets are applied to DynamicUniformBuffer/DynamicStorageBuffer bindings

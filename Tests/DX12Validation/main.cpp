@@ -429,10 +429,14 @@ TEST(DX12Validation, TextureViewRolesAndStorageTextureBinding)
 
     RHIDescriptorSetDesc setDesc;
     setDesc.SetLayout(layout.Get());
-    auto set = device->CreateDescriptorSet(setDesc);
-    ASSERT_NE(nullptr, set.Get());
+    EXPECT_EQ(nullptr, device->CreateDescriptorSet(setDesc).Get());
 
-    EXPECT_TRUE(set->Update({RHIDescriptorBinding{0, nullptr, 0, 0, storageUAV.Get(), nullptr}}));
+    RHIDescriptorSetDesc immutableSetDesc;
+    immutableSetDesc.SetLayout(layout.Get()).BindTexture(0, storageUAV.Get());
+    auto set = device->CreateDescriptorSet(immutableSetDesc);
+    ASSERT_NE(nullptr, set.Get());
+    EXPECT_TRUE(set->Update({}));
+    EXPECT_FALSE(set->Update({RHIDescriptorBinding{0, nullptr, 0, 0, storageUAV.Get(), nullptr}}));
     EXPECT_FALSE(set->Update({RHIDescriptorBinding{0, nullptr, 0, 0, storageSRV.Get(), nullptr}}));
 
     RHIDescriptorSetDesc validInitialSetDesc;
@@ -623,7 +627,13 @@ TEST(DX12Validation, DescriptorValidationRejectsInvalidInputs)
     EXPECT_EQ(device->CreatePipelineLayout(invalidPipelineLayout).Get(), nullptr);
 
     RHIDescriptorSetDesc validSetDesc;
-    validSetDesc.SetLayout(layout.Get());
+    RHIBufferDesc bufferDesc;
+    bufferDesc.SetSize(256)
+        .SetUsage(RHIBufferUsage::Constant)
+        .SetMemoryType(RHIMemoryType::Upload);
+    auto buffer = device->CreateBuffer(bufferDesc);
+    ASSERT_NE(nullptr, buffer.Get());
+    validSetDesc.SetLayout(layout.Get()).BindBuffer(0, buffer.Get(), 0, 256);
     auto set = device->CreateDescriptorSet(validSetDesc);
     ASSERT_NE(nullptr, set.Get());
     EXPECT_TRUE(set->Update({}));

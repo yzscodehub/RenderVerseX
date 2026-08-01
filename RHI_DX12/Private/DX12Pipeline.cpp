@@ -14,6 +14,25 @@ namespace RVX
 {
     namespace
     {
+        D3D12_DESCRIPTOR_RANGE_FLAGS ToDX12DescriptorRangeDataFlags(
+            const RHIBindingLayoutEntry& entry)
+        {
+            return entry.resourceDataVolatility == RHIResourceDataVolatility::Immutable
+                ? D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC
+                : D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+        }
+
+        D3D12_ROOT_DESCRIPTOR_FLAGS ToDX12RootDescriptorDataFlags(
+            const RHIBindingLayoutEntry& entry)
+        {
+            return entry.resourceDataVolatility == RHIResourceDataVolatility::Immutable
+                ? D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC
+                : D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE;
+        }
+    } // namespace
+
+    namespace
+    {
         constexpr uint64 RVX_DX12_MAX_SHADER_RECORD_STRIDE = 4096;
 
         void DumpD3D12InfoQueue(ID3D12Device* device)
@@ -354,7 +373,7 @@ namespace RVX
                     param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
                     param.Descriptor.ShaderRegister = entry.binding;
                     param.Descriptor.RegisterSpace = setIndex;
-                    param.Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
+                    param.Descriptor.Flags = ToDX12RootDescriptorDataFlags(entry);
                     param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
                     m_rootCBVIndices[{setIndex, entry.binding}] = static_cast<uint32>(rootParams.size());
@@ -371,7 +390,9 @@ namespace RVX
                     range.NumDescriptors = std::max(1u, entry.count);
                     range.BaseShaderRegister = entry.binding;
                     range.RegisterSpace = setIndex;
-                    range.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+                    // Descriptor addresses are stable for the immutable set snapshot;
+                    // resource contents remain independently mutable by default.
+                    range.Flags = ToDX12DescriptorRangeDataFlags(entry);
                     range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
                     srvUavRanges.push_back(range);
                 }
@@ -384,7 +405,7 @@ namespace RVX
                     range.NumDescriptors = std::max(1u, entry.count);
                     range.BaseShaderRegister = entry.binding;
                     range.RegisterSpace = setIndex;
-                    range.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+                    range.Flags = ToDX12DescriptorRangeDataFlags(entry);
                     range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
                     srvUavRanges.push_back(range);
                 }
@@ -1375,7 +1396,8 @@ namespace RVX
     // DX12 Descriptor Set
     // =============================================================================
     DX12DescriptorSet::DX12DescriptorSet(DX12Device* device, const RHIDescriptorSetDesc& desc)
-        : m_device(device)
+        : RHIDescriptorSet(desc)
+        , m_device(device)
     {
         if (desc.debugName)
         {
@@ -1400,10 +1422,8 @@ namespace RVX
             }
         }
 
-        if (!desc.bindings.empty())
-        {
-            m_isValid = Update(desc.bindings);
-        }
+        m_bindings = GetDescriptorSnapshot();
+        m_isValid = IsReadyForBinding() && InitializeNativeSnapshot();
     }
 
     DX12DescriptorSet::~DX12DescriptorSet()
@@ -1421,100 +1441,27 @@ namespace RVX
         }
     }
 
-    bool DX12DescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
+    bool DX12DescriptorSet::InitializeNativeSnapshot()
     {
         if (!m_layout)
         {
-            RVX_RHI_ERROR("DX12DescriptorSet::Update failed: descriptor set has no layout");
+            RVX_RHI_ERROR("DX12DescriptorSet initialization failed: descriptor set has no layout");
             return false;
         }
 
-        auto validation = ValidateRHIDescriptorBindings(*m_layout, bindings);
-        if (!validation)
+        if ((m_cbvSrvUavCount > 0 && !m_cbvSrvUavHandle.IsValid()) ||
+            (m_samplerCount > 0 && !m_samplerHandle.IsValid()))
         {
-            RVX_RHI_ERROR("DX12DescriptorSet::Update failed: {} (binding {})",
-                          validation.message,
-                          validation.binding);
+            RVX_RHI_ERROR("DX12DescriptorSet initialization failed: native descriptor range allocation failed");
             return false;
         }
 
-        m_bindings = bindings;
-
-        // Update all bindings immediately
         for (const auto& binding : m_bindings)
         {
             if (!UpdateBindingInternal(binding))
                 return false;
         }
-        m_dirtyBindings.reset();
-        m_hasPendingUpdates = false;
         return true;
-    }
-
-    bool DX12DescriptorSet::UpdateSingle(uint32 bindingIndex, const RHIDescriptorBinding& binding)
-    {
-        if (!m_layout)
-        {
-            RVX_RHI_ERROR("DX12DescriptorSet::UpdateSingle failed: descriptor set has no layout");
-            return false;
-        }
-
-        std::vector<RHIDescriptorBinding> candidateBindings = m_bindings;
-
-        // Update the binding in our cached list
-        bool found = false;
-        for (auto& existing : candidateBindings)
-        {
-            if (existing.binding == binding.binding &&
-                existing.arrayElement == binding.arrayElement)
-            {
-                existing = binding;
-                found = true;
-                break;
-            }
-        }
-        if (!found)
-        {
-            candidateBindings.push_back(binding);
-        }
-
-        auto validation = ValidateRHIDescriptorBindings(*m_layout, candidateBindings);
-        if (!validation)
-        {
-            RVX_RHI_ERROR("DX12DescriptorSet::UpdateSingle failed: {} (binding {})",
-                          validation.message,
-                          validation.binding);
-            return false;
-        }
-
-        m_bindings = std::move(candidateBindings);
-
-        // Mark as dirty for deferred update, or update immediately
-        if (bindingIndex < 64)
-        {
-            m_dirtyBindings.set(bindingIndex);
-            m_hasPendingUpdates = true;
-        }
-        // For now, update immediately (can be deferred later)
-        return UpdateBindingInternal(binding);
-    }
-
-    void DX12DescriptorSet::FlushUpdates()
-    {
-        if (!m_hasPendingUpdates || !m_layout)
-            return;
-
-        // Update only dirty bindings
-        for (size_t i = 0; i < m_bindings.size() && i < 64; ++i)
-        {
-            if (m_dirtyBindings.test(i))
-            {
-                UpdateBindingInternal(m_bindings[i]);
-            }
-        }
-
-        m_dirtyBindings.reset();
-        m_hasPendingUpdates = false;
     }
 
     bool DX12DescriptorSet::UpdateBindingInternal(const RHIDescriptorBinding& binding)
@@ -1552,6 +1499,11 @@ namespace RVX
                     dst.ptr += static_cast<SIZE_T>(dstIndex + binding.arrayElement) * cbvSrvUavSize;
                     d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle->cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
                 }
+                else
+                {
+                    RVX_RHI_ERROR("DX12DescriptorSet: texture binding {} has no descriptor table slot", binding.binding);
+                    return false;
+                }
             }
             else if (entry)
             {
@@ -1581,11 +1533,22 @@ namespace RVX
                     dst.ptr += static_cast<SIZE_T>(dstIndex + binding.arrayElement) * samplerSize;
                     d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle.cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
                 }
+                else
+                {
+                    RVX_RHI_ERROR("DX12DescriptorSet: sampler binding {} has no descriptor table slot", binding.binding);
+                    return false;
+                }
+            }
+            else
+            {
+                RVX_RHI_ERROR("DX12DescriptorSet: sampler binding {} has no native sampler descriptor", binding.binding);
+                return false;
             }
         }
 
-        // Handle buffer (storage/uniform buffer)
-        if (binding.buffer && m_cbvSrvUavHandle.IsValid())
+        // Handle table-backed SRV/UAV buffers. Uniform buffers are validated
+        // below and bound as root CBVs.
+        if (binding.buffer)
         {
             auto* dx12Buffer = static_cast<DX12Buffer*>(binding.buffer);
             const RHIBindingLayoutEntry* entry = m_layout ? m_layout->FindEntry(binding.binding) : nullptr;
@@ -1599,13 +1562,21 @@ namespace RVX
             {
                 srcHandle = &dx12Buffer->GetUAVHandle();
             }
-            else
+            else if (!entry || (entry->type != RHIBindingType::UniformBuffer &&
+                                entry->type != RHIBindingType::DynamicUniformBuffer))
             {
-                return true;
+                RVX_RHI_ERROR("DX12DescriptorSet: buffer binding {} has an incompatible layout type", binding.binding);
+                return false;
             }
 
-            if (srcHandle && srcHandle->IsValid())
+            if (srcHandle)
             {
+                if (!m_cbvSrvUavHandle.IsValid() || !srcHandle->IsValid())
+                {
+                    RVX_RHI_ERROR("DX12DescriptorSet: buffer binding {} has no native buffer descriptor", binding.binding);
+                    return false;
+                }
+
                 uint32 dstIndex = m_layout->GetCbvSrvUavIndex(binding.binding);
                 if (dstIndex != UINT32_MAX)
                 {
@@ -1613,13 +1584,21 @@ namespace RVX
                     dst.ptr += static_cast<SIZE_T>(dstIndex + binding.arrayElement) * cbvSrvUavSize;
                     d3dDevice->CopyDescriptorsSimple(1, dst, srcHandle->cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
                 }
+                else
+                {
+                    RVX_RHI_ERROR("DX12DescriptorSet: buffer binding {} has no descriptor table slot", binding.binding);
+                    return false;
+                }
             }
-            else if (entry)
+
+            if (entry && (entry->type == RHIBindingType::UniformBuffer ||
+                          entry->type == RHIBindingType::DynamicUniformBuffer))
             {
-                RVX_RHI_ERROR("DX12DescriptorSet: missing native buffer descriptor for binding {} type {}",
-                              binding.binding,
-                              static_cast<uint32>(entry->type));
-                return false;
+                if (dx12Buffer->GetGPUVirtualAddress() == 0)
+                {
+                    RVX_RHI_ERROR("DX12DescriptorSet: uniform buffer binding {} has no GPU address", binding.binding);
+                    return false;
+                }
             }
         }
 
@@ -1673,13 +1652,28 @@ namespace RVX
     // =============================================================================
     RHIDescriptorSetLayoutRef CreateDX12DescriptorSetLayout(DX12Device* device, const RHIDescriptorSetLayoutDesc& desc)
     {
-        auto validation = ValidateRHIDescriptorSetLayoutDesc(desc);
+        auto validation = ValidateRHIDescriptorSetLayoutCapabilities(
+            desc,
+            device->GetCapabilities());
         if (!validation)
         {
             RVX_RHI_ERROR("DX12 descriptor set layout creation failed: {} (binding {})",
                           validation.message,
                           validation.binding);
             return nullptr;
+        }
+
+        for (const RHIBindingLayoutEntry& entry : desc.entries)
+        {
+            if ((entry.type == RHIBindingType::UniformBuffer ||
+                 entry.type == RHIBindingType::DynamicUniformBuffer) &&
+                entry.count != 1)
+            {
+                RVX_RHI_ERROR(
+                    "DX12 descriptor set layout creation failed: root-CBV binding {} must be scalar",
+                    entry.binding);
+                return nullptr;
+            }
         }
         return Ref<DX12DescriptorSetLayout>(new DX12DescriptorSetLayout(device, desc));
     }

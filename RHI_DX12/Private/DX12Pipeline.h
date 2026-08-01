@@ -6,7 +6,6 @@
 #include "RHI/RHIPipeline.h"
 #include "RHI/RHIDescriptor.h"
 #include "RHI/RHIRayTracing.h"
-#include <bitset>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -176,15 +175,6 @@ namespace RVX
         DX12DescriptorSet(DX12Device* device, const RHIDescriptorSetDesc& desc);
         ~DX12DescriptorSet() override;
 
-        // Update all bindings
-        bool Update(const std::vector<RHIDescriptorBinding>& bindings) override;
-
-        // Update a single binding (optimized path)
-        bool UpdateSingle(uint32 bindingIndex, const RHIDescriptorBinding& binding);
-
-        // Flush any pending descriptor updates
-        void FlushUpdates();
-
         const std::vector<RHIDescriptorBinding>& GetBindings() const { return m_bindings; }
         DX12DescriptorSetLayout* GetLayout() const { return m_layout; }
         bool IsValid() const { return m_isValid; }
@@ -194,6 +184,7 @@ namespace RVX
         D3D12_GPU_DESCRIPTOR_HANDLE GetSamplerGpuHandle() const { return m_samplerHandle.gpuHandle; }
 
     private:
+        bool InitializeNativeSnapshot();
         bool UpdateBindingInternal(const RHIDescriptorBinding& binding);
 
         DX12Device* m_device = nullptr;
@@ -205,9 +196,6 @@ namespace RVX
         uint32 m_samplerCount = 0;
         bool m_isValid = true;
 
-        // Dirty tracking for deferred updates
-        std::bitset<64> m_dirtyBindings;
-        bool m_hasPendingUpdates = false;
     };
 
     // =============================================================================

@@ -613,22 +613,64 @@ namespace RVX
         descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_PREVIOUS_NORMAL_BINDING, previousNormalHistorySRV);
         descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_OUTPUT_NORMAL_BINDING, currentNormalHistoryUAV);
         descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_ALPHA_METADATA_BINDING, alphaMetadataBuffer);
-        for (uint32 textureIndex = 0; textureIndex < alphaTextureViews.size(); ++textureIndex)
+        RHITextureView* alphaTextureFallback = alphaTextureViews.empty()
+            ? previousNormalHistorySRV
+            : alphaTextureViews.front();
+        for (uint32 textureIndex = 0;
+             textureIndex < RTShadowBindings::RVX_RT_SHADOW_MAX_ALPHA_TEXTURES;
+             ++textureIndex)
         {
-            descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_ALPHA_TEXTURES_BINDING, alphaTextureViews[textureIndex], textureIndex);
+            RHITextureView* textureView = textureIndex < alphaTextureViews.size()
+                ? alphaTextureViews[textureIndex]
+                : alphaTextureFallback;
+            descriptorDesc.BindTexture(
+                RTShadowBindings::RVX_RT_SHADOW_ALPHA_TEXTURES_BINDING,
+                textureView,
+                textureIndex);
         }
-        for (uint32 bufferIndex = 0; bufferIndex < alphaIndexBuffers.size(); ++bufferIndex)
+        for (uint32 bufferIndex = 0;
+             bufferIndex < RTShadowBindings::RVX_RT_SHADOW_MAX_ALPHA_GEOMETRY_BUFFERS;
+             ++bufferIndex)
         {
-            descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_ALPHA_INDEX_BUFFERS_BINDING, alphaIndexBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);
+            RHIBuffer* buffer = bufferIndex < alphaIndexBuffers.size()
+                ? alphaIndexBuffers[bufferIndex]
+                : alphaMetadataBuffer;
+            descriptorDesc.BindBuffer(
+                RTShadowBindings::RVX_RT_SHADOW_ALPHA_INDEX_BUFFERS_BINDING,
+                buffer,
+                0,
+                RVX_WHOLE_SIZE,
+                bufferIndex);
         }
-        for (uint32 bufferIndex = 0; bufferIndex < alphaUVBuffers.size(); ++bufferIndex)
+        for (uint32 bufferIndex = 0;
+             bufferIndex < RTShadowBindings::RVX_RT_SHADOW_MAX_ALPHA_GEOMETRY_BUFFERS;
+             ++bufferIndex)
         {
-            descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_ALPHA_UV_BUFFERS_BINDING, alphaUVBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);
+            RHIBuffer* buffer = bufferIndex < alphaUVBuffers.size()
+                ? alphaUVBuffers[bufferIndex]
+                : alphaMetadataBuffer;
+            descriptorDesc.BindBuffer(
+                RTShadowBindings::RVX_RT_SHADOW_ALPHA_UV_BUFFERS_BINDING,
+                buffer,
+                0,
+                RVX_WHOLE_SIZE,
+                bufferIndex);
         }
         descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_MATERIAL_METADATA_BINDING, materialMetadataBuffer);
-        for (uint32 textureIndex = 0; textureIndex < materialTextureViews.size(); ++textureIndex)
+        RHITextureView* materialTextureFallback = materialTextureViews.empty()
+            ? previousNormalHistorySRV
+            : materialTextureViews.front();
+        for (uint32 textureIndex = 0;
+             textureIndex < RTShadowBindings::RVX_RT_SHADOW_MAX_MATERIAL_TEXTURES;
+             ++textureIndex)
         {
-            descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_MATERIAL_TEXTURES_BINDING, materialTextureViews[textureIndex], textureIndex);
+            RHITextureView* textureView = textureIndex < materialTextureViews.size()
+                ? materialTextureViews[textureIndex]
+                : materialTextureFallback;
+            descriptorDesc.BindTexture(
+                RTShadowBindings::RVX_RT_SHADOW_MATERIAL_TEXTURES_BINDING,
+                textureView,
+                textureIndex);
         }
         descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_SCENE_VELOCITY_BINDING, sceneVelocitySRV);
 

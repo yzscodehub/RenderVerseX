@@ -868,29 +868,40 @@ namespace RVX
         }
 
         auto* dx12Set = static_cast<DX12DescriptorSet*>(set);
-        if (bindingRayTracingPipeline && !dx12Set->IsValid())
+        if (!dx12Set->IsValid())
         {
-            RVX_RHI_ERROR("DX12CommandContext: ray tracing descriptor set binding requires a valid DX12 descriptor set");
+            RVX_RHI_ERROR("DX12CommandContext: descriptor set binding requires a complete valid DX12 descriptor snapshot");
             return;
         }
 
         auto* pipelineLayout = m_currentPipeline->GetPipelineLayout();
         auto* setLayout = dx12Set->GetLayout();
+        if (!pipelineLayout)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: descriptor set binding requires a pipeline layout");
+            return;
+        }
+
+        DX12DescriptorSetLayout* expectedLayout = pipelineLayout->GetSetLayout(slot);
+        if (!setLayout || expectedLayout != setLayout ||
+            !dx12Set->IsReadyForBinding(expectedLayout))
+        {
+            RVX_RHI_ERROR("DX12CommandContext: descriptor set layout does not match pipeline slot {}", slot);
+            return;
+        }
+
+        if (dynamicOffsets.size() != dx12Set->GetRequiredDynamicOffsetCount())
+        {
+            RVX_RHI_ERROR(
+                "DX12CommandContext: descriptor set {} requires {} dynamic offsets, received {}",
+                slot,
+                dx12Set->GetRequiredDynamicOffsetCount(),
+                dynamicOffsets.size());
+            return;
+        }
+
         if (bindingRayTracingPipeline)
         {
-            if (!pipelineLayout)
-            {
-                RVX_RHI_ERROR("DX12CommandContext: ray tracing descriptor set binding requires a pipeline layout");
-                return;
-            }
-
-            DX12DescriptorSetLayout* expectedLayout = pipelineLayout->GetSetLayout(slot);
-            if (!setLayout || expectedLayout != setLayout)
-            {
-                RVX_RHI_ERROR("DX12CommandContext: ray tracing descriptor set binding layout does not match the pipeline layout slot");
-                return;
-            }
-
             if (slot >= m_boundRayTracingDescriptorSetLayouts.size())
             {
                 m_boundRayTracingDescriptorSetLayouts.resize(slot + 1, nullptr);
@@ -991,6 +1002,7 @@ namespace RVX
         {
             m_boundRayTracingDescriptorSetLayouts[slot] = setLayout;
         }
+        dx12Set->MarkBound();
     }
 
     void DX12CommandContext::SetPushConstants(const void* data, uint32 size, uint32 offset)

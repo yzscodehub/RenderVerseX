@@ -658,7 +658,9 @@ namespace RVX
     // =============================================================================
     RHIDescriptorSetLayoutRef DX11Device::CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc& desc)
     {
-        auto validation = ValidateRHIDescriptorSetLayoutDesc(desc);
+        auto validation = ValidateRHIDescriptorSetLayoutCapabilities(
+            desc,
+            GetCapabilities());
         if (!validation)
         {
             RVX_RHI_ERROR("DX11 descriptor set layout creation failed: {} (binding {})",

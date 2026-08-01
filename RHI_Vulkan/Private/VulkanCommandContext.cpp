@@ -361,6 +361,30 @@ namespace RVX
             return;
 
         auto* vkSet = static_cast<VulkanDescriptorSet*>(set);
+        VulkanPipelineLayout* pipelineLayout = m_currentPipeline->GetDescriptorPipelineLayout();
+        if (!pipelineLayout)
+        {
+            RVX_RHI_ERROR("VulkanCommandContext: descriptor binding requires a pipeline layout");
+            return;
+        }
+        const auto& expectedLayouts = pipelineLayout->GetDescriptorSetLayouts();
+        if (slot >= expectedLayouts.size() ||
+            !vkSet->IsReadyForBinding(expectedLayouts[slot]) ||
+            vkSet->GetLayout() != expectedLayouts[slot])
+        {
+            RVX_RHI_ERROR("VulkanCommandContext: descriptor set layout does not match pipeline slot {}", slot);
+            return;
+        }
+
+        if (dynamicOffsets.size() != vkSet->GetRequiredDynamicOffsetCount())
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: descriptor set {} requires {} dynamic offsets, received {}",
+                slot,
+                vkSet->GetRequiredDynamicOffsetCount(),
+                dynamicOffsets.size());
+            return;
+        }
         VkDescriptorSet descriptorSet = vkSet->GetDescriptorSet();
 
         VkPipelineBindPoint bindPoint = m_currentPipeline->IsCompute() ?
@@ -369,6 +393,7 @@ namespace RVX
         vkCmdBindDescriptorSets(m_commandBuffer, bindPoint, m_currentPipeline->GetPipelineLayout(),
             slot, 1, &descriptorSet,
             static_cast<uint32>(dynamicOffsets.size()), dynamicOffsets.data());
+        vkSet->MarkBound();
     }
 
     void VulkanCommandContext::SetPushConstants(const void* data, uint32 size, uint32 offset)

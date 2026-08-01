@@ -388,8 +388,36 @@ namespace RVX
         if (!set) return;
 
         auto* metalSet = static_cast<MetalDescriptorSet*>(set);
+        MetalPipelineLayout* pipelineLayout = m_currentGraphicsPipeline
+            ? m_currentGraphicsPipeline->GetDescriptorPipelineLayout()
+            : (m_currentComputePipeline
+                ? m_currentComputePipeline->GetDescriptorPipelineLayout()
+                : nullptr);
+        if (!pipelineLayout)
+        {
+            RVX_RHI_ERROR("MetalCommandContext: descriptor binding requires a pipeline layout");
+            return;
+        }
+
+        const auto& expectedLayouts = pipelineLayout->GetDescriptorSetLayouts();
+        if (slot >= expectedLayouts.size() ||
+            !metalSet->IsReadyForBinding(expectedLayouts[slot]))
+        {
+            RVX_RHI_ERROR("MetalCommandContext: descriptor set layout does not match pipeline slot {}", slot);
+            return;
+        }
+
+        if (dynamicOffsets.size() != metalSet->GetRequiredDynamicOffsetCount())
+        {
+            RVX_RHI_ERROR(
+                "MetalCommandContext: descriptor set {} requires {} dynamic offsets, received {}",
+                slot,
+                metalSet->GetRequiredDynamicOffsetCount(),
+                dynamicOffsets.size());
+            return;
+        }
+
         const auto& bindings = metalSet->GetBindings();
-        const auto& desc = metalSet->GetDesc();
 
         // Calculate slot offset based on set index (each set gets a range of binding points)
         // Set 0: indices 0-15, Set 1: indices 16-31, etc.
@@ -400,40 +428,15 @@ namespace RVX
         size_t dynamicOffsetIndex = 0;
 
         // Direct binding approach - bind each resource at its designated slot
-        for (size_t i = 0; i < bindings.size(); ++i)
+        for (const auto& binding : bindings)
         {
-            const auto& binding = bindings[i];
-            
-            // Skip empty bindings
-            if (!binding.buffer && !binding.texture && !binding.sampler)
-            {
-                continue;
-            }
-
-            // Calculate the final binding index
-            uint32 bindingIndex = slotOffset + static_cast<uint32>(i);
+            const uint32 bindingIndex =
+                slotOffset + binding.binding + binding.arrayElement;
 
             // Calculate effective offset (base offset + dynamic offset if applicable)
             uint64 effectiveOffset = binding.offset;
             
-            // Check if this is a dynamic buffer (from layout info if available)
-            bool isDynamicBuffer = false;
-            if (desc.layout)
-            {
-                auto* metalLayout = static_cast<MetalDescriptorSetLayout*>(desc.layout);
-                const auto& layoutDesc = metalLayout->GetDesc();
-                for (const auto& entry : layoutDesc.entries)
-                {
-                    if (entry.binding == static_cast<uint32>(i))
-                    {
-                        isDynamicBuffer = (entry.type == RHIBindingType::DynamicUniformBuffer ||
-                                          entry.type == RHIBindingType::DynamicStorageBuffer);
-                        break;
-                    }
-                }
-            }
-
-            if (isDynamicBuffer && dynamicOffsetIndex < dynamicOffsets.size())
+            if (binding.isDynamic)
             {
                 effectiveOffset += dynamicOffsets[dynamicOffsetIndex++];
             }
@@ -479,6 +482,7 @@ namespace RVX
                 }
             }
         }
+        metalSet->MarkBound();
     }
 
     void MetalCommandContext::SetPushConstants(const void* data, uint32 size, uint32 offset)

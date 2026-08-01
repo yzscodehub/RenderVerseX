@@ -1,13 +1,22 @@
 #pragma once
 
+#include "RHI/RHICapabilities.h"
 #include "RHI/RHIRayTracing.h"
 #include "RHI/RHIResources.h"
 
 #include <algorithm>
+#include <atomic>
 #include <vector>
 
 namespace RVX
 {
+    /** @brief Describes whether the resource contents referenced by a descriptor may change. */
+    enum class RHIResourceDataVolatility : uint8
+    {
+        Mutable = 0,
+        Immutable
+    };
+
     // =============================================================================
     // Binding Layout Entry
     // =============================================================================
@@ -18,6 +27,7 @@ namespace RVX
         RHIShaderStage visibility = RHIShaderStage::All;
         uint32 count = 1;
         bool isDynamic = false;  // For dynamic uniform/storage buffers
+        RHIResourceDataVolatility resourceDataVolatility = RHIResourceDataVolatility::Mutable;
     };
 
     // =============================================================================
@@ -32,9 +42,10 @@ namespace RVX
             uint32 binding,
             RHIBindingType type,
             RHIShaderStage visibility = RHIShaderStage::All,
-            uint32 count = 1)
+            uint32 count = 1,
+            RHIResourceDataVolatility resourceDataVolatility = RHIResourceDataVolatility::Mutable)
         {
-            entries.push_back({binding, type, visibility, count, false});
+            entries.push_back({binding, type, visibility, count, false, resourceDataVolatility});
             return *this;
         }
 
@@ -59,6 +70,7 @@ namespace RVX
             }
             entry.visibility = visibility;
             entry.isDynamic = true;
+            entry.resourceDataVolatility = RHIResourceDataVolatility::Mutable;
             entries.push_back(entry);
             return *this;
         }
@@ -216,20 +228,86 @@ namespace RVX
     class RHIDescriptorSet : public RHIResource
     {
     public:
+        RHIDescriptorSet() = default;
+        explicit RHIDescriptorSet(const RHIDescriptorSetDesc& desc);
         virtual ~RHIDescriptorSet() = default;
 
-        // Update bindings
-        virtual bool Update(const std::vector<RHIDescriptorBinding>& bindings) = 0;
+        /**
+         * @brief Descriptor sets are immutable snapshots after creation.
+         * @return true only for an empty no-op update on a ready set. Create a replacement set for changes.
+         */
+        virtual bool Update(const std::vector<RHIDescriptorBinding>& bindings)
+        {
+            return bindings.empty() && m_readyForBinding;
+        }
+
+        [[nodiscard]] bool IsReadyForBinding(
+            const RHIDescriptorSetLayout* expectedLayout = nullptr) const
+        {
+            return m_readyForBinding &&
+                   (!expectedLayout || expectedLayout == m_layoutIdentity);
+        }
+
+        [[nodiscard]] RHIDescriptorSetLayout* GetLayoutIdentity() const
+        {
+            return m_layoutIdentity;
+        }
+
+        [[nodiscard]] const std::vector<RHIDescriptorBinding>&
+        GetDescriptorSnapshot() const
+        {
+            return m_descriptorSnapshot;
+        }
+
+        [[nodiscard]] uint32 GetRequiredDynamicOffsetCount() const
+        {
+            return m_requiredDynamicOffsetCount;
+        }
+
+        [[nodiscard]] bool HasBeenBound() const
+        {
+            return m_hasBeenBound.load(std::memory_order_relaxed);
+        }
+
+        void MarkBound()
+        {
+            m_hasBeenBound.store(true, std::memory_order_relaxed);
+        }
+
+    protected:
+        void InitializeDescriptorSnapshot(const RHIDescriptorSetDesc& desc);
+        void InvalidateDescriptorSnapshot() { m_readyForBinding = false; }
+
+    private:
+        RHIDescriptorSetLayout* m_layoutIdentity = nullptr;
+        std::vector<RHIDescriptorBinding> m_descriptorSnapshot;
+        uint32 m_requiredDynamicOffsetCount = 0;
+        bool m_readyForBinding = false;
+        std::atomic<bool> m_hasBeenBound = false;
     };
 
     // =============================================================================
     // Descriptor Validation Helpers
     // =============================================================================
+    enum class RHIDescriptorValidationCode : uint8
+    {
+        None = 0,
+        NullLayout,
+        InvalidLayout,
+        DuplicateBinding,
+        UndeclaredBinding,
+        ArrayElementOutOfRange,
+        InvalidResource,
+        IncompleteSnapshot
+    };
+
     struct RHIDescriptorValidationResult
     {
         bool valid = true;
+        RHIDescriptorValidationCode code = RHIDescriptorValidationCode::None;
         const char* message = "";
         uint32 binding = RVX_INVALID_INDEX;
+        uint32 arrayElement = RVX_INVALID_INDEX;
 
         explicit operator bool() const { return valid; }
     };
@@ -241,9 +319,11 @@ namespace RVX
 
     inline RHIDescriptorValidationResult RHIDescriptorValidationFail(
         const char* message,
-        uint32 binding = RVX_INVALID_INDEX)
+        uint32 binding = RVX_INVALID_INDEX,
+        uint32 arrayElement = RVX_INVALID_INDEX,
+        RHIDescriptorValidationCode code = RHIDescriptorValidationCode::InvalidResource)
     {
-        return {false, message, binding};
+        return {false, code, message, binding, arrayElement};
     }
 
     inline bool IsRHIDynamicBindingType(RHIBindingType type)
@@ -287,25 +367,99 @@ namespace RVX
             const RHIBindingLayoutEntry& entry = desc.entries[i];
             if (entry.count == 0)
             {
-                return RHIDescriptorValidationFail("descriptor layout binding count must be greater than zero", entry.binding);
+                return RHIDescriptorValidationFail(
+                    "descriptor layout binding count must be greater than zero",
+                    entry.binding,
+                    RVX_INVALID_INDEX,
+                    RHIDescriptorValidationCode::InvalidLayout);
             }
 
             if (entry.isDynamic && !IsRHIDynamicBindingType(entry.type))
             {
-                return RHIDescriptorValidationFail("dynamic descriptor binding must use a dynamic buffer binding type", entry.binding);
+                return RHIDescriptorValidationFail(
+                    "dynamic descriptor binding must use a dynamic buffer binding type",
+                    entry.binding,
+                    RVX_INVALID_INDEX,
+                    RHIDescriptorValidationCode::InvalidLayout);
             }
 
             if (!entry.isDynamic && IsRHIDynamicBindingType(entry.type))
             {
-                return RHIDescriptorValidationFail("dynamic buffer binding type must be marked dynamic", entry.binding);
+                return RHIDescriptorValidationFail(
+                    "dynamic buffer binding type must be marked dynamic",
+                    entry.binding,
+                    RVX_INVALID_INDEX,
+                    RHIDescriptorValidationCode::InvalidLayout);
+            }
+
+            if ((entry.isDynamic ||
+                 entry.type == RHIBindingType::StorageBuffer ||
+                 entry.type == RHIBindingType::DynamicStorageBuffer ||
+                 entry.type == RHIBindingType::StorageTexture) &&
+                entry.resourceDataVolatility == RHIResourceDataVolatility::Immutable)
+            {
+                return RHIDescriptorValidationFail(
+                    "dynamic and writable descriptor resources must use mutable data volatility",
+                    entry.binding,
+                    RVX_INVALID_INDEX,
+                    RHIDescriptorValidationCode::InvalidLayout);
             }
 
             for (size_t j = i + 1; j < desc.entries.size(); ++j)
             {
                 if (desc.entries[j].binding == entry.binding)
                 {
-                    return RHIDescriptorValidationFail("duplicate descriptor layout binding", entry.binding);
+                    return RHIDescriptorValidationFail(
+                        "duplicate descriptor layout binding",
+                        entry.binding,
+                        RVX_INVALID_INDEX,
+                        RHIDescriptorValidationCode::DuplicateBinding);
                 }
+            }
+        }
+
+        return RHIDescriptorValidationPass();
+    }
+
+    inline RHIDescriptorValidationResult ValidateRHIDescriptorSetLayoutCapabilities(
+        const RHIDescriptorSetLayoutDesc& desc,
+        const RHICapabilities& capabilities)
+    {
+        const RHIDescriptorValidationResult layoutValidation =
+            ValidateRHIDescriptorSetLayoutDesc(desc);
+        if (!layoutValidation)
+        {
+            return layoutValidation;
+        }
+
+        if (!capabilities.supportsDescriptorSets || capabilities.maxDescriptorSets == 0)
+        {
+            return RHIDescriptorValidationFail(
+                "device does not support the descriptor-set contract",
+                RVX_INVALID_INDEX,
+                RVX_INVALID_INDEX,
+                RHIDescriptorValidationCode::InvalidLayout);
+        }
+
+        for (const RHIBindingLayoutEntry& entry : desc.entries)
+        {
+            if (entry.isDynamic && !capabilities.supportsDynamicDescriptorOffsets)
+            {
+                return RHIDescriptorValidationFail(
+                    "device does not support dynamic descriptor offsets",
+                    entry.binding,
+                    RVX_INVALID_INDEX,
+                    RHIDescriptorValidationCode::InvalidLayout);
+            }
+
+            if (IsRHIAccelerationStructureBindingType(entry.type) &&
+                !capabilities.supportsRaytracing)
+            {
+                return RHIDescriptorValidationFail(
+                    "device does not support acceleration-structure descriptors",
+                    entry.binding,
+                    RVX_INVALID_INDEX,
+                    RHIDescriptorValidationCode::InvalidLayout);
             }
         }
 
@@ -318,14 +472,22 @@ namespace RVX
     {
         if (desc.setLayouts.size() > maxDescriptorSets)
         {
-            return RHIDescriptorValidationFail("pipeline layout has too many descriptor sets");
+            return RHIDescriptorValidationFail(
+                "pipeline layout has too many descriptor sets",
+                RVX_INVALID_INDEX,
+                RVX_INVALID_INDEX,
+                RHIDescriptorValidationCode::InvalidLayout);
         }
 
         for (auto* layout : desc.setLayouts)
         {
             if (!layout)
             {
-                return RHIDescriptorValidationFail("pipeline layout contains a null descriptor set layout");
+                return RHIDescriptorValidationFail(
+                    "pipeline layout contains a null descriptor set layout",
+                    RVX_INVALID_INDEX,
+                    RVX_INVALID_INDEX,
+                    RHIDescriptorValidationCode::NullLayout);
             }
         }
 
@@ -344,19 +506,31 @@ namespace RVX
                 if (bindings[j].binding == binding.binding &&
                     bindings[j].arrayElement == binding.arrayElement)
                 {
-                    return RHIDescriptorValidationFail("duplicate descriptor binding update", binding.binding);
+                    return RHIDescriptorValidationFail(
+                        "duplicate descriptor binding element",
+                        binding.binding,
+                        binding.arrayElement,
+                        RHIDescriptorValidationCode::DuplicateBinding);
                 }
             }
 
             const RHIBindingLayoutEntry* entry = FindRHIBindingLayoutEntry(layout, binding.binding);
             if (!entry)
             {
-                return RHIDescriptorValidationFail("descriptor binding is not declared in the layout", binding.binding);
+                return RHIDescriptorValidationFail(
+                    "descriptor binding is not declared in the layout",
+                    binding.binding,
+                    binding.arrayElement,
+                    RHIDescriptorValidationCode::UndeclaredBinding);
             }
 
             if (binding.arrayElement >= entry->count)
             {
-                return RHIDescriptorValidationFail("descriptor binding array element is out of range", binding.binding);
+                return RHIDescriptorValidationFail(
+                    "descriptor binding array element is out of range",
+                    binding.binding,
+                    binding.arrayElement,
+                    RHIDescriptorValidationCode::ArrayElementOutOfRange);
             }
 
             const bool hasBuffer = binding.buffer != nullptr;
@@ -368,7 +542,10 @@ namespace RVX
             {
                 if (!hasBuffer || hasTexture || hasSampler || hasAccelerationStructure)
                 {
-                    return RHIDescriptorValidationFail("descriptor binding must contain exactly one buffer resource", binding.binding);
+                    return RHIDescriptorValidationFail(
+                        "descriptor binding must contain exactly one buffer resource",
+                        binding.binding,
+                        binding.arrayElement);
                 }
             }
             else if (entry->type == RHIBindingType::SampledTexture ||
@@ -376,42 +553,56 @@ namespace RVX
             {
                 if (!hasTexture || hasBuffer || hasSampler || hasAccelerationStructure)
                 {
-                    return RHIDescriptorValidationFail("descriptor binding must contain exactly one texture view", binding.binding);
+                    return RHIDescriptorValidationFail(
+                        "descriptor binding must contain exactly one texture view",
+                        binding.binding,
+                        binding.arrayElement);
                 }
             }
             else if (entry->type == RHIBindingType::Sampler)
             {
                 if (!hasSampler || hasBuffer || hasTexture || hasAccelerationStructure)
                 {
-                    return RHIDescriptorValidationFail("descriptor binding must contain exactly one sampler", binding.binding);
+                    return RHIDescriptorValidationFail(
+                        "descriptor binding must contain exactly one sampler",
+                        binding.binding,
+                        binding.arrayElement);
                 }
             }
             else if (entry->type == RHIBindingType::CombinedTextureSampler)
             {
                 if (!hasTexture || !hasSampler || hasBuffer || hasAccelerationStructure)
                 {
-                    return RHIDescriptorValidationFail("combined texture-sampler binding requires a texture view and sampler", binding.binding);
+                    return RHIDescriptorValidationFail(
+                        "combined texture-sampler binding requires a texture view and sampler",
+                        binding.binding,
+                        binding.arrayElement);
                 }
             }
             else if (IsRHIAccelerationStructureBindingType(entry->type))
             {
                 if (!hasAccelerationStructure || hasBuffer || hasTexture || hasSampler)
                 {
-                    return RHIDescriptorValidationFail("descriptor binding must contain exactly one acceleration structure", binding.binding);
+                    return RHIDescriptorValidationFail(
+                        "descriptor binding must contain exactly one acceleration structure",
+                        binding.binding,
+                        binding.arrayElement);
                 }
 
                 if (binding.accelerationStructure->GetType() != RHIAccelerationStructureType::TopLevel)
                 {
                     return RHIDescriptorValidationFail(
                         "descriptor acceleration structure binding requires a top-level acceleration structure",
-                        binding.binding);
+                        binding.binding,
+                        binding.arrayElement);
                 }
 
                 if (binding.accelerationStructure->GetGPUVirtualAddress() == 0)
                 {
                     return RHIDescriptorValidationFail(
                         "descriptor acceleration structure binding requires a non-zero GPU address",
-                        binding.binding);
+                        binding.binding,
+                        binding.arrayElement);
                 }
             }
         }
@@ -424,10 +615,90 @@ namespace RVX
     {
         if (!desc.layout)
         {
-            return RHIDescriptorValidationFail("descriptor set layout is null");
+            return RHIDescriptorValidationFail(
+                "descriptor set layout is null",
+                RVX_INVALID_INDEX,
+                RVX_INVALID_INDEX,
+                RHIDescriptorValidationCode::NullLayout);
         }
 
-        return ValidateRHIDescriptorBindings(*desc.layout, desc.bindings);
+        const RHIDescriptorValidationResult bindingValidation =
+            ValidateRHIDescriptorBindings(*desc.layout, desc.bindings);
+        if (!bindingValidation)
+        {
+            return bindingValidation;
+        }
+
+        for (const RHIBindingLayoutEntry& entry : desc.layout->GetEntries())
+        {
+            for (uint32 arrayElement = 0; arrayElement < entry.count; ++arrayElement)
+            {
+                const auto found = std::find_if(
+                    desc.bindings.begin(),
+                    desc.bindings.end(),
+                    [&entry, arrayElement](const RHIDescriptorBinding& binding)
+                    {
+                        return binding.binding == entry.binding &&
+                               binding.arrayElement == arrayElement;
+                    });
+                if (found == desc.bindings.end())
+                {
+                    return RHIDescriptorValidationFail(
+                        "descriptor set snapshot is missing a required binding element",
+                        entry.binding,
+                        arrayElement,
+                        RHIDescriptorValidationCode::IncompleteSnapshot);
+                }
+            }
+        }
+
+        return RHIDescriptorValidationPass();
+    }
+
+    inline RHIDescriptorSet::RHIDescriptorSet(const RHIDescriptorSetDesc& desc)
+    {
+        InitializeDescriptorSnapshot(desc);
+    }
+
+    inline void RHIDescriptorSet::InitializeDescriptorSnapshot(
+        const RHIDescriptorSetDesc& desc)
+    {
+        m_layoutIdentity = desc.layout;
+        m_descriptorSnapshot.clear();
+        m_requiredDynamicOffsetCount = 0;
+        m_readyForBinding = false;
+
+        if (!ValidateRHIDescriptorSetDesc(desc))
+        {
+            return;
+        }
+
+        m_descriptorSnapshot = desc.bindings;
+        std::sort(
+            m_descriptorSnapshot.begin(),
+            m_descriptorSnapshot.end(),
+            [](const RHIDescriptorBinding& lhs, const RHIDescriptorBinding& rhs)
+            {
+                if (lhs.binding != rhs.binding)
+                {
+                    return lhs.binding < rhs.binding;
+                }
+                return lhs.arrayElement < rhs.arrayElement;
+            });
+
+        for (const RHIBindingLayoutEntry& entry : desc.layout->GetEntries())
+        {
+            if (entry.isDynamic)
+            {
+                m_requiredDynamicOffsetCount += entry.count;
+            }
+        }
+
+        if (desc.debugName)
+        {
+            SetDebugName(desc.debugName);
+        }
+        m_readyForBinding = true;
     }
 
 } // namespace RVX

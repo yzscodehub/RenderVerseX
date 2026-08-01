@@ -508,7 +508,9 @@ namespace RVX
     RHIDescriptorSetLayoutRef OpenGLDevice::CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc& desc)
     {
         GL_DEBUG_SCOPE("CreateDescriptorSetLayout");
-        auto validation = ValidateRHIDescriptorSetLayoutDesc(desc);
+        auto validation = ValidateRHIDescriptorSetLayoutCapabilities(
+            desc,
+            GetCapabilities());
         if (!validation)
         {
             RVX_RHI_ERROR("OpenGL descriptor set layout creation failed: {} (binding {})",

@@ -1,4 +1,5 @@
 #include "RHI/RHICapabilities.h"
+#include "RHI/RHIBuffer.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
 #include "RHI/RHIDeviceStatus.h"
@@ -67,6 +68,43 @@ namespace RVX::Tests
 
         private:
             RHICapabilities m_capabilities;
+        };
+
+        class DescriptorContractBuffer final : public RHIBuffer
+        {
+        public:
+            uint64 GetSize() const override { return 256; }
+            RHIBufferUsage GetUsage() const override { return RHIBufferUsage::Constant; }
+            RHIMemoryType GetMemoryType() const override { return RHIMemoryType::Upload; }
+            uint32 GetStride() const override { return 0; }
+            void* Map() override { return nullptr; }
+            void Unmap() override {}
+        };
+
+        class DescriptorContractLayout final : public RHIDescriptorSetLayout
+        {
+        public:
+            explicit DescriptorContractLayout(RHIDescriptorSetLayoutDesc desc)
+                : m_entries(std::move(desc.entries))
+            {
+            }
+
+            const std::vector<RHIBindingLayoutEntry>& GetEntries() const override
+            {
+                return m_entries;
+            }
+
+        private:
+            std::vector<RHIBindingLayoutEntry> m_entries;
+        };
+
+        class DescriptorContractSet final : public RHIDescriptorSet
+        {
+        public:
+            explicit DescriptorContractSet(const RHIDescriptorSetDesc& desc)
+                : RHIDescriptorSet(desc)
+            {
+            }
         };
 
         RHICapabilities MakeValidCapabilities(RHIBackendType backend)
@@ -207,6 +245,108 @@ namespace RVX::Tests
         surface = MakeSurface(NativeSurfacePlatform::GLFW);
         surface.backendWindow = 0;
         EXPECT_FALSE(surface.IsValidFor(RHIBackendType::OpenGL));
+    }
+
+    TEST(RHIContractValidation, DescriptorSetsRequireCompleteImmutableSnapshots)
+    {
+        RHIDescriptorSetLayoutDesc layoutDesc;
+        layoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::All, 2);
+        layoutDesc.AddBinding(1, RHIBindingType::ShaderResourceBuffer);
+        DescriptorContractLayout layout(layoutDesc);
+        DescriptorContractBuffer buffer;
+
+        RHIDescriptorSetDesc incompleteDesc;
+        incompleteDesc.SetLayout(&layout).BindBuffer(0, &buffer, 0, 64, 0);
+        const RHIDescriptorValidationResult incomplete =
+            ValidateRHIDescriptorSetDesc(incompleteDesc);
+        EXPECT_FALSE(incomplete);
+        EXPECT_EQ(incomplete.code, RHIDescriptorValidationCode::IncompleteSnapshot);
+        EXPECT_EQ(incomplete.binding, 0u);
+        EXPECT_EQ(incomplete.arrayElement, 1u);
+
+        RHIDescriptorSetDesc completeDesc;
+        completeDesc.SetLayout(&layout)
+            .BindBuffer(1, &buffer)
+            .BindBuffer(0, &buffer, 0, 64, 1)
+            .BindBuffer(0, &buffer, 0, 64, 0);
+        ASSERT_TRUE(ValidateRHIDescriptorSetDesc(completeDesc));
+
+        DescriptorContractSet descriptorSet(completeDesc);
+        ASSERT_TRUE(descriptorSet.IsReadyForBinding(&layout));
+        ASSERT_EQ(descriptorSet.GetDescriptorSnapshot().size(), 3u);
+        EXPECT_EQ(descriptorSet.GetDescriptorSnapshot()[0].binding, 0u);
+        EXPECT_EQ(descriptorSet.GetDescriptorSnapshot()[0].arrayElement, 0u);
+        EXPECT_EQ(descriptorSet.GetDescriptorSnapshot()[1].binding, 0u);
+        EXPECT_EQ(descriptorSet.GetDescriptorSnapshot()[1].arrayElement, 1u);
+        EXPECT_EQ(descriptorSet.GetDescriptorSnapshot()[2].binding, 1u);
+        EXPECT_TRUE(descriptorSet.Update({}));
+        EXPECT_FALSE(descriptorSet.Update({completeDesc.bindings.front()}));
+        EXPECT_FALSE(descriptorSet.HasBeenBound());
+        descriptorSet.MarkBound();
+        EXPECT_TRUE(descriptorSet.HasBeenBound());
+        EXPECT_FALSE(descriptorSet.Update({completeDesc.bindings.front()}));
+
+        DescriptorContractLayout differentLayout(layoutDesc);
+        EXPECT_FALSE(descriptorSet.IsReadyForBinding(&differentLayout));
+    }
+
+    TEST(RHIContractValidation, DescriptorDataVolatilityIsIndependentFromSnapshotCompleteness)
+    {
+        RHIDescriptorSetLayoutDesc immutableReadLayout;
+        immutableReadLayout.AddBinding(
+            0,
+            RHIBindingType::ShaderResourceBuffer,
+            RHIShaderStage::Compute,
+            1,
+            RHIResourceDataVolatility::Immutable);
+        EXPECT_TRUE(ValidateRHIDescriptorSetLayoutDesc(immutableReadLayout));
+
+        RHIDescriptorSetLayoutDesc invalidWritableLayout;
+        invalidWritableLayout.AddBinding(
+            0,
+            RHIBindingType::StorageBuffer,
+            RHIShaderStage::Compute,
+            1,
+            RHIResourceDataVolatility::Immutable);
+        const RHIDescriptorValidationResult validation =
+            ValidateRHIDescriptorSetLayoutDesc(invalidWritableLayout);
+        EXPECT_FALSE(validation);
+        EXPECT_EQ(validation.code, RHIDescriptorValidationCode::InvalidLayout);
+
+        RHICapabilities capabilities = MakeValidCapabilities(RHIBackendType::Vulkan);
+        capabilities.supportsDynamicDescriptorOffsets = false;
+        RHIDescriptorSetLayoutDesc dynamicLayout;
+        dynamicLayout.AddDynamicBinding(0, RHIBindingType::DynamicUniformBuffer);
+        EXPECT_FALSE(ValidateRHIDescriptorSetLayoutCapabilities(dynamicLayout, capabilities));
+
+        capabilities.supportsDynamicDescriptorOffsets = true;
+        capabilities.supportsRaytracing = false;
+        RHIDescriptorSetLayoutDesc accelerationStructureLayout;
+        accelerationStructureLayout.AddBinding(
+            0,
+            RHIBindingType::AccelerationStructure,
+            RHIShaderStage::RayGeneration);
+        EXPECT_FALSE(ValidateRHIDescriptorSetLayoutCapabilities(
+            accelerationStructureLayout,
+            capabilities));
+    }
+
+    TEST(RHIContractValidation, PrimaryBackendsConsumeTheSharedDescriptorSnapshotContract)
+    {
+        const std::string descriptorHeader = ReadSource("RHI/Include/RHI/RHIDescriptor.h");
+        const std::string dx12Pipeline = ReadSource("RHI_DX12/Private/DX12Pipeline.cpp");
+        const std::string vulkanPipeline = ReadSource("RHI_Vulkan/Private/VulkanPipeline.cpp");
+        const std::string metalResources = ReadSource("RHI_Metal/Private/MetalResources.mm");
+        const std::string metalCommands = ReadSource("RHI_Metal/Private/MetalCommandContext.mm");
+
+        EXPECT_NE(descriptorHeader.find("RHIResourceDataVolatility"), std::string::npos);
+        EXPECT_NE(descriptorHeader.find("IncompleteSnapshot"), std::string::npos);
+        EXPECT_NE(dx12Pipeline.find("D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE"), std::string::npos);
+        EXPECT_NE(dx12Pipeline.find("ToDX12DescriptorRangeDataFlags"), std::string::npos);
+        EXPECT_NE(vulkanPipeline.find("GetDescriptorSnapshot()"), std::string::npos);
+        EXPECT_NE(vulkanPipeline.find("InitializeNativeSnapshot()"), std::string::npos);
+        EXPECT_NE(metalResources.find("snapshotBinding.arrayElement"), std::string::npos);
+        EXPECT_NE(metalCommands.find("binding.binding + binding.arrayElement"), std::string::npos);
     }
 
     TEST(RHIContractValidation, DeviceRuntimeFaultContractIsOwnedAndStable)

@@ -4291,14 +4291,15 @@ TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAn
     EXPECT_NE(passSource.find("ResolveMaterialTextureViews(materialTextureViews)"), std::string::npos);
     EXPECT_NE(passSource.find("m_stats.resourceViewsAvailable = true;"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_ALPHA_METADATA_BINDING, alphaMetadataBuffer);"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_ALPHA_TEXTURES_BINDING, alphaTextureViews[textureIndex], textureIndex);"),
+    EXPECT_NE(passSource.find("RHITextureView* alphaTextureFallback"), std::string::npos);
+    EXPECT_NE(passSource.find("textureIndex < RTShadowBindings::RVX_RT_SHADOW_MAX_ALPHA_TEXTURES"),
               std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_ALPHA_INDEX_BUFFERS_BINDING, alphaIndexBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);"),
+    EXPECT_NE(passSource.find("bufferIndex < RTShadowBindings::RVX_RT_SHADOW_MAX_ALPHA_GEOMETRY_BUFFERS"),
               std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_ALPHA_UV_BUFFERS_BINDING, alphaUVBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);"),
-              std::string::npos);
+    EXPECT_NE(passSource.find(": alphaMetadataBuffer;"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_MATERIAL_METADATA_BINDING, materialMetadataBuffer);"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_MATERIAL_TEXTURES_BINDING, materialTextureViews[textureIndex], textureIndex);"),
+    EXPECT_NE(passSource.find("RHITextureView* materialTextureFallback"), std::string::npos);
+    EXPECT_NE(passSource.find("textureIndex < RTShadowBindings::RVX_RT_SHADOW_MAX_MATERIAL_TEXTURES"),
               std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_SCENE_VELOCITY_BINDING, sceneVelocitySRV);"), std::string::npos);
     EXPECT_NE(passSource.find("m_stats.descriptorSetAvailable = true;"), std::string::npos);
@@ -4769,7 +4770,8 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
     EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_SCENE_DEPTH_BINDING, sceneDepthSRV);"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_CONSTANTS_BINDING,"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_MATERIAL_METADATA_BINDING, materialMetadataBuffer);"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_MATERIAL_TEXTURES_BINDING, materialTextureViews[textureIndex], textureIndex);"),
+    EXPECT_NE(passSource.find("RHITextureView* materialTextureFallback"), std::string::npos);
+    EXPECT_NE(passSource.find("textureIndex < RTReflectionBindings::RVX_RT_REFLECTION_MAX_MATERIAL_TEXTURES"),
               std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_PREVIOUS_HISTORY_BINDING, previousReflectionSRV);"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_OUTPUT_DEPTH_BINDING, currentDepthHistoryUAV);"), std::string::npos);
@@ -4795,13 +4797,16 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
     EXPECT_NE(passSource.find("m_stats.resourceViewsAvailable = true;"), std::string::npos);
     EXPECT_NE(passSource.find("m_sceneManager->GetInstanceAlphaTangentBufferTable()"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_GEOMETRY_METADATA_BINDING, geometryMetadataBuffer);"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_INDEX_BUFFERS_BINDING, geometryIndexBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);"),
+    EXPECT_NE(passSource.find("bufferIndex < RTReflectionBindings::RVX_RT_REFLECTION_MAX_GEOMETRY_BUFFERS"),
               std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_UV_BUFFERS_BINDING, geometryUVBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);"),
+    EXPECT_NE(passSource.find(": geometryMetadataBuffer;"), std::string::npos);
+    EXPECT_NE(passSource.find("RTReflectionBindings::RVX_RT_REFLECTION_INDEX_BUFFERS_BINDING"),
               std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_NORMAL_BUFFERS_BINDING, geometryNormalBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);"),
+    EXPECT_NE(passSource.find("RTReflectionBindings::RVX_RT_REFLECTION_UV_BUFFERS_BINDING"),
               std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_TANGENT_BUFFERS_BINDING, geometryTangentBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);"),
+    EXPECT_NE(passSource.find("RTReflectionBindings::RVX_RT_REFLECTION_NORMAL_BUFFERS_BINDING"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("RTReflectionBindings::RVX_RT_REFLECTION_TANGENT_BUFFERS_BINDING"),
               std::string::npos);
     EXPECT_NE(passSource.find("m_stats.geometryTangentBufferCount"), std::string::npos);
     EXPECT_NE(passSource.find("m_config.maxTraceDistance"), std::string::npos);
@@ -5520,13 +5525,13 @@ TEST_F(PipelineCacheValidationFixture, DX12BackendImplementsRayTracingPipelineSh
               std::string::npos);
     EXPECT_NE(commandSource.find("bindingRayTracingPipeline"), std::string::npos);
     EXPECT_NE(commandSource.find("ray tracing descriptor set binding"), std::string::npos);
-    EXPECT_NE(commandSource.find("ray tracing descriptor set binding requires a valid DX12 descriptor set"),
+    EXPECT_NE(commandSource.find("descriptor set binding requires a complete valid DX12 descriptor snapshot"),
               std::string::npos);
-    EXPECT_NE(commandSource.find("ray tracing descriptor set binding requires a pipeline layout"),
+    EXPECT_NE(commandSource.find("descriptor set binding requires a pipeline layout"),
               std::string::npos);
     EXPECT_NE(commandSource.find("pipelineLayout->GetSetLayout(slot)"), std::string::npos);
     EXPECT_NE(commandSource.find("expectedLayout != setLayout"), std::string::npos);
-    EXPECT_NE(commandSource.find("ray tracing descriptor set binding layout does not match the pipeline layout slot"),
+    EXPECT_NE(commandSource.find("descriptor set layout does not match pipeline slot"),
               std::string::npos);
     EXPECT_NE(commandSource.find("m_boundRayTracingDescriptorSetLayouts.clear();"), std::string::npos);
     EXPECT_NE(commandSource.find("m_boundRayTracingDescriptorSetLayouts.resize(pipelineLayout->GetSetLayoutCount(), nullptr)"),
@@ -5592,12 +5597,12 @@ TEST_F(PipelineCacheValidationFixture, DX12BackendImplementsRayTracingPipelineSh
     EXPECT_NE(setDescriptorSetBody.find("bindingRayTracingPipeline"), std::string::npos);
     EXPECT_NE(setDescriptorSetBody.find("ValidateDX12RayTracingCommandState(m_isRecording, m_inRenderPass, \"ray tracing descriptor set binding\")"),
               std::string::npos);
-    EXPECT_NE(setDescriptorSetBody.find("ray tracing descriptor set binding requires a valid DX12 descriptor set"),
+    EXPECT_NE(setDescriptorSetBody.find("descriptor set binding requires a complete valid DX12 descriptor snapshot"),
               std::string::npos);
     EXPECT_NE(setDescriptorSetBody.find("auto* setLayout = dx12Set->GetLayout();"), std::string::npos);
     EXPECT_NE(setDescriptorSetBody.find("pipelineLayout->GetSetLayout(slot)"), std::string::npos);
     EXPECT_NE(setDescriptorSetBody.find("expectedLayout != setLayout"), std::string::npos);
-    EXPECT_NE(setDescriptorSetBody.find("ray tracing descriptor set binding layout does not match the pipeline layout slot"),
+    EXPECT_NE(setDescriptorSetBody.find("descriptor set layout does not match pipeline slot"),
               std::string::npos);
     EXPECT_NE(setDescriptorSetBody.find("m_boundRayTracingDescriptorSetLayouts[slot] = setLayout;"),
               std::string::npos);

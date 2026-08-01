@@ -58,6 +58,7 @@ namespace RVX
 
         VkPipeline GetPipeline() const { return m_pipeline; }
         VkPipelineLayout GetPipelineLayout() const { return m_pipelineLayout; }
+        VulkanPipelineLayout* GetDescriptorPipelineLayout() const { return m_descriptorPipelineLayout; }
 
     private:
         void CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc);
@@ -66,6 +67,7 @@ namespace RVX
         VulkanDevice* m_device;
         VkPipeline m_pipeline = VK_NULL_HANDLE;
         VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
+        VulkanPipelineLayout* m_descriptorPipelineLayout = nullptr;
         bool m_isCompute = false;
     };
 
@@ -78,11 +80,11 @@ namespace RVX
         VulkanDescriptorSet(VulkanDevice* device, const RHIDescriptorSetDesc& desc);
         ~VulkanDescriptorSet() override;
 
-        bool Update(const std::vector<RHIDescriptorBinding>& bindings) override;
-
         VkDescriptorSet GetDescriptorSet() const { return m_descriptorSet; }
+        VulkanDescriptorSetLayout* GetLayout() const { return m_layoutWrapper; }
 
     private:
+        bool InitializeNativeSnapshot();
         VulkanDevice* m_device;
         VkDescriptorSet m_descriptorSet = VK_NULL_HANDLE;
         VkDescriptorSetLayout m_layout = VK_NULL_HANDLE;

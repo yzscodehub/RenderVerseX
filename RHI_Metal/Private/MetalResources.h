@@ -184,13 +184,13 @@ namespace RVX
         MetalDescriptorSet(const RHIDescriptorSetDesc& desc);
         ~MetalDescriptorSet() override = default;
 
-        bool Update(const std::vector<RHIDescriptorBinding>& bindings) override;
-
-        const RHIDescriptorSetDesc& GetDesc() const { return m_desc; }
-
         // Binding data for direct binding approach
         struct BindingData
         {
+            uint32 binding = 0;
+            uint32 arrayElement = 0;
+            RHIBindingType type = RHIBindingType::UniformBuffer;
+            bool isDynamic = false;
             id<MTLBuffer> buffer = nil;
             uint64 offset = 0;
             id<MTLTexture> texture = nil;
@@ -200,7 +200,7 @@ namespace RVX
         const std::vector<BindingData>& GetBindings() const { return m_bindings; }
 
     private:
-        RHIDescriptorSetDesc m_desc;
+        bool InitializeNativeSnapshot();
         std::vector<BindingData> m_bindings;
     };
 

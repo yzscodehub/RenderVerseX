@@ -1,7 +1,7 @@
 # M2 Shared RHI Conformance and Contract Implementation Plan
 
-**Status:** In progress; M1/Task 20 entry gate satisfied; CH1-CH3 complete;
-CH4 next
+**Status:** In progress; M1/Task 20 entry gate satisfied; CH1-CH4 complete;
+CH5 next
 **Parent:** `2026-07-26-m2-tier1-rhi-proof-master-plan.md`
 **Scope:** RHI/ShaderCompiler/RenderGraph shared semantics and conformance
 infrastructure
@@ -365,14 +365,22 @@ CH3 implementation record (2026-07-30):
 
 ### CH4: Add descriptor completeness contract
 
-- [ ] Add layout semantics and device capability checks.
-- [ ] Add complete-array validation.
-- [ ] Add bind-time readiness validation.
-- [ ] Add replacement/in-flight lifetime regressions.
-- [ ] Keep descriptor-set creation atomic: failure publishes no usable set.
-- [ ] Keep resource-data volatility separate from descriptor completeness.
-- [ ] Add DX12, Vulkan, and Metal translation-structure tests before freezing
+- [x] Add layout semantics and device capability checks.
+- [x] Add complete-array validation.
+- [x] Add bind-time readiness validation.
+- [x] Add replacement/in-flight lifetime regressions.
+- [x] Keep descriptor-set creation atomic: failure publishes no usable set.
+- [x] Keep resource-data volatility separate from descriptor completeness.
+- [x] Add DX12, Vulkan, and Metal translation-structure tests before freezing
   the shared contract.
+
+CH4 completed on 2026-08-01. The base tier intentionally exposes no partial
+binding declaration: every declared array element must contain a typed real or
+fallback resource. Descriptor-set mutation is rejected after creation, and
+existing render-owner replacement plus completion-point retirement remains the
+lifetime mechanism. Windows provides compiled/runtime evidence for DX12 and
+Vulkan; Metal translation structure is frozen here and receives compilation,
+argument/resource binding, and real-device validation in Task 27.
 
 ### CH5: Add scoped dependency and pool lease contract
 

@@ -480,15 +480,31 @@ namespace RVX
     void OpenGLCommandContext::SetDescriptorSet(uint32 slot, RHIDescriptorSet* set,
                                                 std::span<const uint32> dynamicOffsets)
     {
-        if (slot >= m_descriptorSetBindings.size())
+        auto* glSet = static_cast<OpenGLDescriptorSet*>(set);
+        OpenGLPipelineLayout* pipelineLayout = m_currentGraphicsPipeline
+            ? m_currentGraphicsPipeline->GetPipelineLayout()
+            : (m_currentComputePipeline
+                ? m_currentComputePipeline->GetPipelineLayout()
+                : nullptr);
+        if (!pipelineLayout)
         {
-            RVX_RHI_ERROR("Descriptor set slot {} exceeds maximum", slot);
+            RVX_RHI_ERROR("OpenGL descriptor binding requires a pipeline layout");
+            return;
+        }
+        const auto& expectedLayouts = pipelineLayout->GetDescriptorSetLayouts();
+        if (!glSet || slot >= m_descriptorSetBindings.size() ||
+            slot >= expectedLayouts.size() ||
+            !glSet->IsReadyForBinding(expectedLayouts[slot]) ||
+            dynamicOffsets.size() != glSet->GetRequiredDynamicOffsetCount())
+        {
+            RVX_RHI_ERROR("OpenGL descriptor set {} is incomplete or incompatible with the pipeline layout", slot);
             return;
         }
 
-        m_descriptorSetBindings[slot].set = static_cast<OpenGLDescriptorSet*>(set);
+        m_descriptorSetBindings[slot].set = glSet;
         m_descriptorSetBindings[slot].dynamicOffsets.assign(dynamicOffsets.begin(), dynamicOffsets.end());
         m_descriptorSetsDirty = true;
+        glSet->MarkBound();
     }
 
     void OpenGLCommandContext::SetPushConstants(const void* data, uint32 size, uint32 offset)

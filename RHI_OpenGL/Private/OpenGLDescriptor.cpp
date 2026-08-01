@@ -10,7 +10,8 @@
 namespace RVX
 {
     OpenGLDescriptorSet::OpenGLDescriptorSet(OpenGLDevice* device, const RHIDescriptorSetDesc& desc)
-        : m_device(device)
+        : RHIDescriptorSet(desc)
+        , m_device(device)
         , m_layout(static_cast<OpenGLDescriptorSetLayout*>(desc.layout))
     {
         if (desc.debugName)
@@ -18,43 +19,16 @@ namespace RVX
             SetDebugName(desc.debugName);
         }
 
-        if (!desc.bindings.empty())
+        if (IsReadyForBinding())
         {
-            Update(desc.bindings);
+            for (const RHIDescriptorBinding& binding : GetDescriptorSnapshot())
+            {
+                ResolveBinding(binding);
+            }
         }
 
         RVX_RHI_DEBUG("Created DescriptorSet '{}' with {} bindings",
                      GetDebugName(), m_bindings.size());
-    }
-
-    bool OpenGLDescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
-    {
-        if (!m_layout)
-        {
-            RVX_RHI_ERROR("OpenGLDescriptorSet::Update failed: descriptor set has no layout");
-            return false;
-        }
-
-        auto validation = ValidateRHIDescriptorBindings(*m_layout, bindings);
-        if (!validation)
-        {
-            RVX_RHI_ERROR("OpenGLDescriptorSet::Update failed: {} (binding {})",
-                          validation.message,
-                          validation.binding);
-            return false;
-        }
-
-        // Clear and re-resolve all bindings
-        m_bindings.clear();
-
-        for (const auto& binding : bindings)
-        {
-            ResolveBinding(binding);
-        }
-
-        RVX_RHI_DEBUG("Updated DescriptorSet '{}' with {} bindings",
-                     GetDebugName(), m_bindings.size());
-        return true;
     }
 
     void OpenGLDescriptorSet::ResolveBinding(const RHIDescriptorBinding& binding)

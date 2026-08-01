@@ -42276,6 +42276,121 @@ ctest --test-dir build\win_x64_debug -C Debug --output-on-failure `
 
 ---
 
+### R-SP314 M2 complete immutable descriptor snapshots
+
+**Date:** 2026-08-01
+**Commit:** Pending
+**Spark plan review agent:** N/A
+**Spark code review agent:** N/A
+
+**Plan source:**
+
+- Document:
+  `Docs/superpowers/plans/2026-07-26-m2-tier1-rhi-proof-master-plan.md`
+- Section: Task 23 / shared-plan CH4
+- Lines checked: descriptor completeness, resource-data volatility,
+  replacement/retirement, and three-primary-backend translation checkpoint
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP313 M2 compact shader interface and graphics pipeline
+  preflight
+- Evidence: Task 22/CH3 is committed at `8c28d8f5` and its validation record
+  is complete.
+
+**Approved scope:**
+
+- Materialize one canonical, complete descriptor snapshot at creation.
+- Reject every missing/duplicate/invalid binding array element and incompatible
+  bind-time layout/dynamic-offset combination.
+- Keep referenced resource-data volatility independent from snapshot lifetime.
+- Require descriptor changes to use owner replacement and completion-point
+  retirement.
+- Translate the frozen contract through DX12, Vulkan, and Metal structures,
+  while retaining DX11/OpenGL compatibility behavior.
+
+**Out of scope:**
+
+- Partial/null descriptor binding as a base-tier capability.
+- Bindless descriptor indexing and residency policy.
+- Metal argument-buffer optimization and macOS real-device closure (Task 27).
+- Scoped access/state handoff and transient-pool lease closure (Task 24/CH5).
+
+**Files changed:**
+
+- `RHI/Include/RHI/RHIDescriptor.h`
+- `RHI_DX12/`, `RHI_Vulkan/`, `RHI_Metal/`, `RHI_DX11/`, and `RHI_OpenGL/`
+- `Render/Private/Passes/RayTracedShadowPass.cpp`
+- `Render/Private/Passes/RayTracedReflectionPass.cpp`
+- RHI/backend/pipeline validation tests
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  RHIContractValidation PipelineCacheValidation DX12Validation `
+  VulkanValidation DX11Validation CrossBackendValidation
+build\win_x64_debug\Tests\Debug\RHIContractValidation.exe
+build\win_x64_debug\Tests\Debug\PipelineCacheValidation.exe
+build\win_x64_debug\Tests\Debug\DX12Validation.exe
+build\win_x64_debug\Tests\Debug\VulkanValidation.exe
+build\win_x64_debug\Tests\Debug\DX11Validation.exe
+build\win_x64_debug\Tests\Debug\CrossBackendValidation.exe
+build\win_x64_debug\Tests\Debug\RenderLifetimeCutoverValidation.exe
+build\win_x64_debug\Tests\Debug\MaterialSystemValidation.exe
+build\win_x64_debug\Tests\Debug\GPUDrivenValidation.exe
+build\win_x64_debug\Tests\Debug\UIValidation.exe
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe
+build\win_x64_debug\Tests\Debug\RenderHonestyValidation.exe `
+  --gtest_filter="*Descriptor*"
+```
+
+**Validation result:**
+
+- Build: PASS for the shared RHI, Render, DX12, Vulkan, DX11, OpenGL, and all
+  selected validation targets on Windows.
+- Tests: PASS; RHI contract 37/37, pipeline cache 126/126, DX12 30/30,
+  Vulkan 25/25, DX11 23/23, cross-backend 11/11, lifetime cutover 11/11,
+  material 32/32, GPU-driven 12/12, UI 43 passed with 2 environment-dependent
+  skips, RenderPass 139/139, and focused descriptor honesty 3/3.
+- Visual gate: N/A. Task 23 changes binding correctness and does not approve or
+  replace a visual golden.
+
+**Artifacts:**
+
+- Logs: validation executable output in the local build tree.
+- Screenshots: No source artifact added.
+- Diffs: complete ray-tracing arrays use explicit typed fallback resources; no
+  generated asset was checked in.
+
+**Spark plan review result:**
+
+- Verdict: N/A
+- Blockers resolved: device capability checks, complete array materialization,
+  atomic publication, bind-time readiness, and in-flight mutation refusal.
+
+**Spark code review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: DX12 descriptor/data volatility conflation, partial RT
+  arrays, mutable backend sets, layout-identity drift, and dynamic-offset count
+  mismatch.
+
+**Notes / follow-ups:**
+
+- Metal is a structural checkpoint on Windows. Task 27 owns macOS compilation,
+  argument/resource binding ABI closure, and real-device evidence.
+- A full `RenderHonestyValidation` run had one unrelated host temporary-folder
+  permission failure in `CookDirectoryManifestRejectsSuccessWithoutOutput`;
+  all three descriptor-focused honesty cases passed.
+- The Vulkan suite still reports its pre-existing signaled-fence submission and
+  placed-buffer device-address allocation validation messages; neither path was
+  changed by Task 23 and both remain follow-up work for Task 26.
+- Task 24/CH5 is next and introduces scoped dependency snapshots plus persistent
+  state handoff for external and pooled resources.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

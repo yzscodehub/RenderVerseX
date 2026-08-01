@@ -20,6 +20,7 @@ namespace RVX
     // MetalGraphicsPipeline
     // =============================================================================
     MetalGraphicsPipeline::MetalGraphicsPipeline(id<MTLDevice> device, const RHIGraphicsPipelineDesc& desc)
+        : m_descriptorPipelineLayout(static_cast<MetalPipelineLayout*>(desc.pipelineLayout))
     {
         MTLRenderPipelineDescriptor* pipelineDesc = [[MTLRenderPipelineDescriptor alloc] init];
 
@@ -172,6 +173,7 @@ namespace RVX
     // MetalComputePipeline
     // =============================================================================
     MetalComputePipeline::MetalComputePipeline(id<MTLDevice> device, const RHIComputePipelineDesc& desc)
+        : m_descriptorPipelineLayout(static_cast<MetalPipelineLayout*>(desc.pipelineLayout))
     {
         if (!desc.computeShader)
         {

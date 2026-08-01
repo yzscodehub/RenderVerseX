@@ -372,7 +372,9 @@ namespace RVX
     // =============================================================================
     RHIDescriptorSetLayoutRef MetalDevice::CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc& desc)
     {
-        auto validation = ValidateRHIDescriptorSetLayoutDesc(desc);
+        auto validation = ValidateRHIDescriptorSetLayoutCapabilities(
+            desc,
+            GetCapabilities());
         if (!validation)
         {
             RVX_RHI_ERROR("Metal descriptor set layout creation failed: {} (binding {})",
@@ -426,7 +428,13 @@ namespace RVX
                           validation.binding);
             return nullptr;
         }
-        return MakeRef<MetalDescriptorSet>(desc);
+        auto descriptorSet = MakeRef<MetalDescriptorSet>(desc);
+        if (!descriptorSet->IsReadyForBinding())
+        {
+            RVX_RHI_ERROR("Metal descriptor set creation failed: native snapshot initialization failed");
+            return nullptr;
+        }
+        return descriptorSet;
     }
 
     // =============================================================================

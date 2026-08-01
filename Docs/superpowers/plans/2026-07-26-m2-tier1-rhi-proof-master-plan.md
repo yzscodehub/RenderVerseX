@@ -1,7 +1,8 @@
 # M2 Tier 1 RHI Proof Master Implementation Plan
 
 **Status:** In progress; best-practice review incorporated; Task 20 complete;
-Task 21 CH1-CH2 complete; Task 22/CH3 complete; Task 23/CH4 next
+Task 21 CH1-CH2 complete; Task 22/CH3 complete; Task 23/CH4 complete;
+Task 24/CH5 next
 **Branch:** `codex/architecture-implementation`
 **M1 entry commit:** `6c93300618026ca1068acebe61d399669bf5c8e0`
 **M1 entry CI:** `https://github.com/yzscodehub/RenderVerseX/actions/runs/30521739421`
@@ -227,19 +228,19 @@ for macOS compilation, validation messages, and real-device closure.
 
 ### Task 23: Descriptor completeness and data-volatility contract
 
-- [ ] Model complete immutable descriptor snapshots separately from
+- [x] Model complete immutable descriptor snapshots separately from
   referenced resource-data volatility.
-- [ ] Make complete binding validation account for every array element.
-- [ ] Require explicit fallback/null resources for absent optional bindings.
-- [ ] Refuse to bind invalid or incomplete descriptor sets.
-- [ ] Keep public RHI free of DX12 range flags and update-frequency
+- [x] Make complete binding validation account for every array element.
+- [x] Require explicit fallback/null resources for absent optional bindings.
+- [x] Refuse to bind invalid or incomplete descriptor sets.
+- [x] Keep public RHI free of DX12 range flags and update-frequency
   optimization categories.
-- [ ] Map stable descriptors and mutable resource data independently to
+- [x] Map stable descriptors and mutable resource data independently to
   correctness-safe DX12 Root Signature 1.1 flags.
-- [ ] Preserve replacement-and-retirement behavior for frame, object, and
+- [x] Preserve replacement-and-retirement behavior for frame, object, and
   material descriptor snapshots.
-- [ ] Add validation for updates while a snapshot is in flight.
-- [ ] Complete a DX12/Vulkan/Metal translation design checkpoint before the
+- [x] Add validation for updates while a snapshot is in flight.
+- [x] Complete a DX12/Vulkan/Metal translation design checkpoint before the
   shared contract is frozen.
 
 Exit:
@@ -248,6 +249,16 @@ Exit:
 - resources used as UAV or transitioned in the same command list are not
   declared data-static unless their contract actually permits it;
 - descriptor replacement never mutates an in-flight native range.
+
+Task 23 completed on 2026-08-01. Descriptor sets now publish canonical,
+complete, immutable snapshots; replacement is required for every material
+change, while referenced resource data remains mutable by default. Layout
+creation fails closed against device descriptor, dynamic-offset, and
+acceleration-structure capabilities. DX12 maps snapshot stability separately
+from data volatility, Vulkan consumes the same canonical snapshot, and Metal
+preserves explicit binding/array-element metadata for its Task 27 native
+closure. Real DX12, Vulkan, DX11, and cross-backend validation passed; Metal
+evidence remains structural until the macOS gate.
 
 ### Task 24: Scoped dependencies, state handoff, and transient lease closure
 

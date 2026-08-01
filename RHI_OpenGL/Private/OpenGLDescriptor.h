@@ -53,9 +53,6 @@ namespace RVX
         OpenGLDescriptorSet(OpenGLDevice* device, const RHIDescriptorSetDesc& desc);
         ~OpenGLDescriptorSet() override = default;
 
-        // RHIDescriptorSet interface
-        bool Update(const std::vector<RHIDescriptorBinding>& bindings) override;
-
         // OpenGL specific
         const std::vector<OpenGLBindingEntry>& GetBindings() const { return m_bindings; }
         OpenGLDescriptorSetLayout* GetLayout() const { return m_layout; }

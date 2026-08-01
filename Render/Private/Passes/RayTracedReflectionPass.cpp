@@ -621,9 +621,20 @@ namespace RVX
                                   0,
                                   AlignRayTracedReflectionConstantBufferSize(sizeof(RayTracedReflectionGPUConstants)));
         descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_MATERIAL_METADATA_BINDING, materialMetadataBuffer);
-        for (uint32 textureIndex = 0; textureIndex < materialTextureViews.size(); ++textureIndex)
+        RHITextureView* materialTextureFallback = materialTextureViews.empty()
+            ? sceneColorSRV
+            : materialTextureViews.front();
+        for (uint32 textureIndex = 0;
+             textureIndex < RTReflectionBindings::RVX_RT_REFLECTION_MAX_MATERIAL_TEXTURES;
+             ++textureIndex)
         {
-            descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_MATERIAL_TEXTURES_BINDING, materialTextureViews[textureIndex], textureIndex);
+            RHITextureView* textureView = textureIndex < materialTextureViews.size()
+                ? materialTextureViews[textureIndex]
+                : materialTextureFallback;
+            descriptorDesc.BindTexture(
+                RTReflectionBindings::RVX_RT_REFLECTION_MATERIAL_TEXTURES_BINDING,
+                textureView,
+                textureIndex);
         }
         descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_PREVIOUS_HISTORY_BINDING, previousReflectionSRV);
         descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_PREVIOUS_DEPTH_BINDING, previousDepthHistorySRV);
@@ -631,21 +642,61 @@ namespace RVX
         descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_PREVIOUS_NORMAL_BINDING, previousNormalHistorySRV);
         descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_OUTPUT_NORMAL_BINDING, currentNormalHistoryUAV);
         descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_GEOMETRY_METADATA_BINDING, geometryMetadataBuffer);
-        for (uint32 bufferIndex = 0; bufferIndex < geometryIndexBuffers.size(); ++bufferIndex)
+        for (uint32 bufferIndex = 0;
+             bufferIndex < RTReflectionBindings::RVX_RT_REFLECTION_MAX_GEOMETRY_BUFFERS;
+             ++bufferIndex)
         {
-            descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_INDEX_BUFFERS_BINDING, geometryIndexBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);
+            RHIBuffer* buffer = bufferIndex < geometryIndexBuffers.size()
+                ? geometryIndexBuffers[bufferIndex]
+                : geometryMetadataBuffer;
+            descriptorDesc.BindBuffer(
+                RTReflectionBindings::RVX_RT_REFLECTION_INDEX_BUFFERS_BINDING,
+                buffer,
+                0,
+                RVX_WHOLE_SIZE,
+                bufferIndex);
         }
-        for (uint32 bufferIndex = 0; bufferIndex < geometryUVBuffers.size(); ++bufferIndex)
+        for (uint32 bufferIndex = 0;
+             bufferIndex < RTReflectionBindings::RVX_RT_REFLECTION_MAX_GEOMETRY_BUFFERS;
+             ++bufferIndex)
         {
-            descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_UV_BUFFERS_BINDING, geometryUVBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);
+            RHIBuffer* buffer = bufferIndex < geometryUVBuffers.size()
+                ? geometryUVBuffers[bufferIndex]
+                : geometryMetadataBuffer;
+            descriptorDesc.BindBuffer(
+                RTReflectionBindings::RVX_RT_REFLECTION_UV_BUFFERS_BINDING,
+                buffer,
+                0,
+                RVX_WHOLE_SIZE,
+                bufferIndex);
         }
-        for (uint32 bufferIndex = 0; bufferIndex < geometryNormalBuffers.size(); ++bufferIndex)
+        for (uint32 bufferIndex = 0;
+             bufferIndex < RTReflectionBindings::RVX_RT_REFLECTION_MAX_GEOMETRY_BUFFERS;
+             ++bufferIndex)
         {
-            descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_NORMAL_BUFFERS_BINDING, geometryNormalBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);
+            RHIBuffer* buffer = bufferIndex < geometryNormalBuffers.size()
+                ? geometryNormalBuffers[bufferIndex]
+                : geometryMetadataBuffer;
+            descriptorDesc.BindBuffer(
+                RTReflectionBindings::RVX_RT_REFLECTION_NORMAL_BUFFERS_BINDING,
+                buffer,
+                0,
+                RVX_WHOLE_SIZE,
+                bufferIndex);
         }
-        for (uint32 bufferIndex = 0; bufferIndex < geometryTangentBuffers.size(); ++bufferIndex)
+        for (uint32 bufferIndex = 0;
+             bufferIndex < RTReflectionBindings::RVX_RT_REFLECTION_MAX_GEOMETRY_BUFFERS;
+             ++bufferIndex)
         {
-            descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_TANGENT_BUFFERS_BINDING, geometryTangentBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);
+            RHIBuffer* buffer = bufferIndex < geometryTangentBuffers.size()
+                ? geometryTangentBuffers[bufferIndex]
+                : geometryMetadataBuffer;
+            descriptorDesc.BindBuffer(
+                RTReflectionBindings::RVX_RT_REFLECTION_TANGENT_BUFFERS_BINDING,
+                buffer,
+                0,
+                RVX_WHOLE_SIZE,
+                bufferIndex);
         }
         descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_SCENE_VELOCITY_BINDING, sceneVelocitySRV);
 
