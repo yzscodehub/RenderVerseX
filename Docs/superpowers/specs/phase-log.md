@@ -43719,6 +43719,131 @@ ctest --test-dir build\win_x64_debug -C Debug `
 
 ---
 
+### R-SP326 Render-policy Task 5C per-view frame-plan integration
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Implementation agents:** primary agent with bounded compiler assistance
+**Independent code review agent:** `task5c_independent_review` (`terra_worker`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- Section: Task 5C and Task 5D
+- Contract: `Docs/superpowers/specs/2026-08-03-render-policy-resolver-contract.md`
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP325 Render-policy Task 5A contracts and pure policy resolver
+- Evidence: commit `8a878bf8`, pure resolver matrix, stable value contracts,
+  and Direct/GPU visual parity.
+
+**Approved scope:**
+
+- Compile exactly one owned value plan for the current view after mesh-pass
+  preparation and before RenderGraph construction.
+- Require the complete canonical Depth, Opaque, Shadow, Transparent pass set;
+  fail closed on malformed streams, source mappings, counts, ranges, omission,
+  or reordering.
+- Preserve deterministic group order for GPU candidates, source order for
+  Direct/Skip lanes, and conservative whole-pass Direct fallback for mixed
+  candidates until Task 7 introduces persistent packet identity.
+- Sample device capability, qualification, culling readiness, exact Depth and
+  Opaque GPU pipeline readiness before graph construction, then project the
+  selected pass decisions to the temporary legacy pass switches.
+- Own and invalidate policy diagnostics across frame acceptance/rejection,
+  resize, target/view/config/pass/callback replacement, mode change, and
+  shutdown boundaries.
+- Export the request, selected plan, per-pass partitions, reason counts,
+  capability snapshot, and qualification snapshot through frame and subsystem
+  diagnostics.
+
+**Out of scope:**
+
+- Direct packet-range command recording and removal of legacy Depth/Opaque
+  consumers; these are Task 6.
+- True mixed GPU/Direct submission, persistent exactly-once packet identity,
+  and late-lane failure policy; these are Task 7.
+- Visibility-provider separation, Vulkan/Metal GPU execution, measured Auto
+  policy, compatibility hardening, or promotion gates from Tasks 8-16.
+
+**Files changed:**
+
+- `Render/Include/Render/Policy/RenderFramePlanCompiler.h`
+- `Render/Private/Policy/RenderFramePlanCompiler.cpp`
+- `Render/Include/Render/Policy/RenderFrameExecutionPlan.h`
+- `Render/Include/Render/Policy/RenderPolicyTypes.h`
+- `Render/Private/Policy/RenderPolicyResolver.cpp`
+- `Render/Include/Render/Passes/MeshPassProcessor.h`
+- `Render/Private/Passes/MeshPassProcessor.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Private/RenderSubsystem.cpp`
+- `Render/CMakeLists.txt`
+- `Tests/RenderPolicyValidation/main.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target `
+  RenderPolicyValidation GPUDrivenValidation RenderPassValidation
+
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
+  -R "(RenderPolicyValidation|GPUDrivenValidation|RenderPassValidation|RenderSceneValidation|MeshPassProcessorValidation)"
+
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$"
+```
+
+**Validation result:**
+
+- Focused builds: PASS for RenderPolicyValidation, GPUDrivenValidation, and
+  RenderPassValidation.
+- Standalone suites: PASS 17/17 RenderPolicy, 24/24 GPUDriven, and 142/142
+  RenderPass.
+- Adjacent Task 5C CTest gate: PASS 181/181 across RenderPolicy,
+  MeshPassProcessor, RenderScene, GPUDriven, and RenderPass.
+- Synthetic and Porsche Direct/GPU smoke plus pixel parity: PASS 6/6.
+- Source audit: Depth/Opaque pass execution contains no backend-type or
+  qualification probe; those decisions are sampled by SceneRenderer before
+  plan compilation.
+- `git diff --check`: PASS; only LF-to-CRLF conversion warnings.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for stale compatibility diagnostics after a
+  mode switch and acceptance of incomplete canonical pass resolutions.
+- Primary accepted both findings, reordered mode assignment/invalidation,
+  required exactly four canonical passes, and added fail-closed tests.
+- Follow-up requested direct regression assertions for both repairs; those
+  assertions were added and passed.
+- Final verdict: APPROVE; Task 5C is commit-ready.
+
+**Primary review result:**
+
+- Verdict: PASS. The compiler is value-only, deterministic, validates exact
+  source ownership and range conservation, and does not claim Task 7 identity.
+- SceneRenderer freezes the plan before graph construction and owns its
+  lifetime/diagnostics. Transparent and Shadow remain Direct-only.
+- The temporary recording-time validation/fallback path is retained only by
+  the stated Task 5C boundary. Task 6 must make plan ranges
+  execution-authoritative and report unexpected recording failures explicitly.
+
+**Notes / follow-ups:**
+
+- Next slice: Task 6A Direct Depth packet-range execution with dual-build
+  comparison and legacy reference parity.
+- Keep `RenderRuntimeFatalDiagnostics.json` and `Scripts/__pycache__/`
+  unstaged; they are unrelated local artifacts.
+- The pre-existing OpenGL ToneMapping SPIRV-Cross constant-buffer issue remains
+  a Task 14 compatibility gate.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

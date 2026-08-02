@@ -712,6 +712,7 @@ namespace RVX
               plan.qualification.backend == plan.capabilities.backend));
 
         std::vector<bool> referenced(plan.packetReferences.size(), false);
+        uint64 canonicalCursor = 0;
         RenderPassKind previousPass = RenderPassKind::None;
         bool hasGPUDrivenPackets = false;
         for (const RenderPassExecutionPlan& passPlan : plan.passes)
@@ -737,6 +738,16 @@ namespace RVX
                                  plan.packetReferences.size()) ||
                 !IsRangeInBounds(passPlan.skippedPackets,
                                  plan.packetReferences.size()))
+            {
+                return false;
+            }
+
+            uint64 reasonCountTotal = 0;
+            for (uint32 count : passPlan.reasonCounts)
+            {
+                reasonCountTotal += count;
+            }
+            if (reasonCountTotal != passPlan.partition.inputPacketCount)
             {
                 return false;
             }
@@ -769,19 +780,35 @@ namespace RVX
                 passPlan.directPackets,
                 passPlan.skippedPackets,
             };
+            std::vector<bool> sourceIndices(
+                passPlan.partition.inputPacketCount, false);
             for (const DrawPacketRange range : ranges)
             {
+                if (range.first != canonicalCursor)
+                {
+                    return false;
+                }
                 const uint64 end = static_cast<uint64>(range.first) + range.count;
                 for (uint64 index = range.first; index < end; ++index)
                 {
+                    const RenderDrawPacketReference& reference =
+                        plan.packetReferences[static_cast<size_t>(index)];
                     if (referenced[static_cast<size_t>(index)] ||
-                        plan.packetReferences[static_cast<size_t>(index)].pass !=
-                            passPlan.pass)
+                        reference.pass != passPlan.pass ||
+                        reference.sourcePacketIndex >= sourceIndices.size() ||
+                        sourceIndices[reference.sourcePacketIndex])
                     {
                         return false;
                     }
                     referenced[static_cast<size_t>(index)] = true;
+                    sourceIndices[reference.sourcePacketIndex] = true;
                 }
+                canonicalCursor = end;
+            }
+            if (!std::all_of(sourceIndices.begin(), sourceIndices.end(),
+                             [](bool value) { return value; }))
+            {
+                return false;
             }
             previousPass = passPlan.pass;
         }
@@ -789,7 +816,8 @@ namespace RVX
         const bool allReferencesCovered =
             std::all_of(referenced.begin(), referenced.end(),
                         [](bool value) { return value; });
-        if (!allReferencesCovered)
+        if (!allReferencesCovered ||
+            canonicalCursor != plan.packetReferences.size())
         {
             return false;
         }

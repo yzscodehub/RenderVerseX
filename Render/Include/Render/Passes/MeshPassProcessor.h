@@ -280,6 +280,9 @@ namespace RVX
     {
         std::vector<MeshPassProcessorResult> packets;
         std::vector<MeshPassProcessorResult> sortedGPUCandidates;
+        /// Source indices parallel to sortedGPUCandidates. sourceOrdinal is
+        /// deliberately not used as an identity because it may repeat.
+        std::vector<uint32> sortedGPUCandidatePacketIndices;
         std::vector<RenderDrawGroupRange> groups;
         MeshPassProcessorStats stats;
 
@@ -306,6 +309,13 @@ namespace RVX
     void BuildDeterministicRenderDrawGroups(
         std::span<const MeshPassProcessorResult> results,
         std::vector<MeshPassProcessorResult>& outSortedCandidates,
+        std::vector<RenderDrawGroupRange>& outGroups);
+
+    /** @brief Build groups while preserving an exact mapping to source packets. */
+    void BuildDeterministicRenderDrawGroups(
+        std::span<const MeshPassProcessorResult> results,
+        std::vector<MeshPassProcessorResult>& outSortedCandidates,
+        std::vector<uint32>& outSortedCandidatePacketIndices,
         std::vector<RenderDrawGroupRange>& outGroups);
 
     class MeshPassProcessor

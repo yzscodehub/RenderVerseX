@@ -846,10 +846,13 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresGpuCullingBeforePassResourc
         ReadTextFile(root / "Render" / "Include" / "Render" / "Passes" / "DepthPrepass.h");
     const std::string depthSource =
         ReadTextFile(root / "Render" / "Private" / "Passes" / "DepthPrepass.cpp");
+    const std::string subsystemSource =
+        ReadTextFile(root / "Render" / "Private" / "RenderSubsystem.cpp");
     ASSERT_FALSE(header.empty());
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(depthHeader.empty());
     ASSERT_FALSE(depthSource.empty());
+    ASSERT_FALSE(subsystemSource.empty());
 
     EXPECT_NE(header.find("SceneGPUDrivenCullingStats"), std::string::npos);
     EXPECT_NE(header.find("graphPassAdded"), std::string::npos);
@@ -864,19 +867,68 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresGpuCullingBeforePassResourc
     EXPECT_NE(header.find("void AddGPUDrivenCullingPass()"), std::string::npos);
     EXPECT_NE(header.find("void PrepareGPUDrivenGraphCullInputs()"), std::string::npos);
     EXPECT_NE(header.find("void PrepareMeshPassPackets()"), std::string::npos);
+    EXPECT_NE(header.find("void CompileRenderFramePlan()"), std::string::npos);
+    EXPECT_NE(header.find("RenderPolicyDiagnostics m_renderPolicyDiagnostics"),
+              std::string::npos);
     EXPECT_NE(header.find("const SceneMeshPassPreparation& GetMeshPassPreparation() const"),
               std::string::npos);
 
     const size_t buildDrawLists = source.find("void SceneRenderer::BuildMaterialDrawLists()");
     ASSERT_NE(buildDrawLists, std::string::npos);
-    const size_t cullingCall = source.find("ApplyGPUDrivenCullingToDrawLists();", buildDrawLists);
-    const size_t objectVelocityBind = source.find("m_objectVelocityPass->SetRenderScene", buildDrawLists);
-    ASSERT_NE(cullingCall, std::string::npos);
-    ASSERT_NE(objectVelocityBind, std::string::npos);
-    EXPECT_LT(cullingCall, objectVelocityBind);
     const size_t prepareMeshPasses = source.find("PrepareMeshPassPackets();", buildDrawLists);
+    const size_t objectVelocityBind = source.find("m_objectVelocityPass->SetRenderScene", buildDrawLists);
+    const size_t prepareMeshDefinition =
+        source.find("void SceneRenderer::PrepareMeshPassPackets()", buildDrawLists);
     ASSERT_NE(prepareMeshPasses, std::string::npos);
-    EXPECT_LT(prepareMeshPasses, cullingCall);
+    ASSERT_NE(objectVelocityBind, std::string::npos);
+    ASSERT_NE(prepareMeshDefinition, std::string::npos);
+    EXPECT_LT(prepareMeshPasses, objectVelocityBind);
+    EXPECT_EQ(source.substr(buildDrawLists,
+                            prepareMeshDefinition - buildDrawLists)
+                  .find("ApplyGPUDrivenCullingToDrawLists();"),
+              std::string::npos);
+
+    const size_t renderDefinition = source.find("void SceneRenderer::Render()");
+    const size_t compileCall = source.find("CompileRenderFramePlan();", renderDefinition);
+    const size_t cullingCall = source.find(
+        "ApplyGPUDrivenCullingToDrawLists();", compileCall);
+    const size_t clearGraph = source.find("m_renderGraph->Clear();", cullingCall);
+    const size_t buildGraphCall = source.find("BuildRenderGraph();", clearGraph);
+    ASSERT_NE(renderDefinition, std::string::npos);
+    ASSERT_NE(compileCall, std::string::npos);
+    ASSERT_NE(cullingCall, std::string::npos);
+    ASSERT_NE(clearGraph, std::string::npos);
+    ASSERT_NE(buildGraphCall, std::string::npos);
+    EXPECT_LT(compileCall, cullingCall);
+    EXPECT_LT(cullingCall, clearGraph);
+    EXPECT_LT(clearGraph, buildGraphCall);
+
+    const size_t setModeDefinition =
+        source.find("void SceneRenderer::SetGPUDrivenCullingMode");
+    const size_t setEnabledDefinition =
+        source.find("void SceneRenderer::SetGPUDrivenCullingEnabled", setModeDefinition);
+    ASSERT_NE(setModeDefinition, std::string::npos);
+    ASSERT_NE(setEnabledDefinition, std::string::npos);
+    const std::string setModeBody = source.substr(
+        setModeDefinition, setEnabledDefinition - setModeDefinition);
+    EXPECT_EQ(setModeBody.find("ResolveGPUDrivenPolicy"), std::string::npos);
+    EXPECT_EQ(setModeBody.find("GetExecutionDecision"), std::string::npos);
+
+    const size_t applyDefinition =
+        source.find("RenderFrameApplyResult SceneRenderer::ApplyFramePacket");
+    const size_t invalidateCall =
+        source.find("InvalidateRenderFramePlan();", applyDefinition);
+    const size_t registryAssignment =
+        source.find("m_renderResourceRegistry = &registry;", applyDefinition);
+    ASSERT_NE(applyDefinition, std::string::npos);
+    ASSERT_NE(invalidateCall, std::string::npos);
+    ASSERT_NE(registryAssignment, std::string::npos);
+    EXPECT_LT(invalidateCall, registryAssignment);
+    EXPECT_NE(subsystemSource.find("features.policy = frame.policy;"),
+              std::string::npos);
+    EXPECT_EQ(depthSource.find("GetBackendType"), std::string::npos);
+    EXPECT_EQ(depthSource.find("GetGPUDrivenBackendQualification"),
+              std::string::npos);
 
     EXPECT_NE(source.find("m_gpuCulling->CullCpuFallback"), std::string::npos);
     EXPECT_EQ(source.find("drawItems.swap(m_gpuCullingScratchDrawItems);"), std::string::npos);
@@ -898,6 +950,9 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresGpuCullingBeforePassResourc
         ReadTextFile(root / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
     EXPECT_EQ(opaqueHeader.find("FindGPUDrivenGroupRepresentative"), std::string::npos);
     EXPECT_EQ(opaqueSource.find("FindGPUDrivenGroupRepresentative"), std::string::npos);
+    EXPECT_EQ(opaqueSource.find("GetBackendType"), std::string::npos);
+    EXPECT_EQ(opaqueSource.find("GetGPUDrivenBackendQualification"),
+              std::string::npos);
 
     const size_t buildGraph = source.find("void SceneRenderer::BuildRenderGraph()");
     ASSERT_NE(buildGraph, std::string::npos);

@@ -324,6 +324,104 @@ namespace
         return settings;
     }
 
+    RenderPolicyReadiness ResolveGPUShaderReadiness(
+        const GPUCullingExecutionDecision& decision)
+    {
+        switch (decision.fallbackReason)
+        {
+            case GPUCullingFallbackReason::ShaderFileMissing:
+            case GPUCullingFallbackReason::ShaderCompilationFailed:
+                return RenderPolicyReadiness::Unavailable;
+            default:
+                return RenderPolicyReadiness::Ready;
+        }
+    }
+
+    RenderPolicyReadiness ResolveGPUBindingReadiness(
+        const GPUCullingExecutionDecision& decision)
+    {
+        switch (decision.fallbackReason)
+        {
+            case GPUCullingFallbackReason::DescriptorSetLayoutCreationFailed:
+            case GPUCullingFallbackReason::PipelineLayoutCreationFailed:
+            case GPUCullingFallbackReason::DescriptorSetCreationFailed:
+                return RenderPolicyReadiness::Unavailable;
+            default:
+                return RenderPolicyReadiness::Ready;
+        }
+    }
+
+    RenderPassPolicyFacts MakeRenderPassPolicyFacts(
+        RenderPassKind pass,
+        const IRenderPass* renderPass,
+        const MeshPassPacketStream& stream,
+        const GPUCullingExecutionDecision& gpuExecution,
+        bool gpuPassPipelineReady)
+    {
+        RenderPassPolicyFacts facts;
+        facts.pass = pass;
+        facts.requested = renderPass && renderPass->IsRequestedEnabled();
+        facts.supported = renderPass && renderPass->IsSupported();
+        facts.directAllowed = facts.supported;
+        facts.gpuDrivenAllowed = facts.supported &&
+            (pass == RenderPassKind::Depth || pass == RenderPassKind::Opaque);
+        facts.fixedCountIndirectAllowed = false;
+        const RenderPolicyReadiness directReadiness = facts.supported
+            ? RenderPolicyReadiness::Ready
+            : RenderPolicyReadiness::Unavailable;
+        facts.directShaderReadiness = directReadiness;
+        facts.directPipelineReadiness = directReadiness;
+        facts.directResourceReadiness = directReadiness;
+        facts.gpuDrivenShaderReadiness =
+            ResolveGPUShaderReadiness(gpuExecution);
+        facts.gpuDrivenPipelineReadiness =
+            gpuExecution.pipelineReady && gpuPassPipelineReady
+            ? RenderPolicyReadiness::Ready
+            : RenderPolicyReadiness::Unavailable;
+        facts.gpuDrivenResourceReadiness =
+            gpuExecution.fallbackReason ==
+                    GPUCullingFallbackReason::PipelineResourcesUnavailable
+                ? RenderPolicyReadiness::Unavailable
+                : RenderPolicyReadiness::Ready;
+        facts.inputPacketCount = stream.stats.inputPacketCount;
+        facts.relevantPacketCount = stream.stats.relevantPacketCount;
+        facts.candidatePacketCount = stream.stats.gpuCandidatePacketCount;
+        facts.directPacketCount = stream.stats.directPacketCount;
+        facts.skippedPacketCount = stream.stats.skippedPacketCount;
+        facts.drawGroupCount = static_cast<uint32>(stream.groups.size());
+        facts.workloadBeneficial = facts.candidatePacketCount != 0;
+        return facts;
+    }
+
+    GPUDrivenPolicyReason ProjectLegacyPolicyReason(RenderPolicyReason reason)
+    {
+        switch (reason)
+        {
+            case RenderPolicyReason::None:
+            case RenderPolicyReason::ForcedGPUDriven:
+                return GPUDrivenPolicyReason::None;
+            case RenderPolicyReason::InvalidRequest:
+                return GPUDrivenPolicyReason::InvalidMode;
+            case RenderPolicyReason::ForcedDirect:
+                return GPUDrivenPolicyReason::ForcedDisabled;
+            case RenderPolicyReason::BackendNotQualified:
+                return GPUDrivenPolicyReason::BackendNotQualified;
+            case RenderPolicyReason::QualificationInvalid:
+                return GPUDrivenPolicyReason::QualificationInvalid;
+            case RenderPolicyReason::PipelineUnavailable:
+            case RenderPolicyReason::PipelinePending:
+            case RenderPolicyReason::ShaderUnavailable:
+            case RenderPolicyReason::ShaderPending:
+            case RenderPolicyReason::BindingsUnavailable:
+            case RenderPolicyReason::BindingsPending:
+                return GPUDrivenPolicyReason::PipelineUnavailable;
+            case RenderPolicyReason::CapabilityUnavailable:
+                return GPUDrivenPolicyReason::IndirectDrawCountUnsupported;
+            default:
+                return GPUDrivenPolicyReason::PipelineUnavailable;
+        }
+    }
+
 }
 
 bool SceneRendererExternalTargetDesc::IsValid() const
@@ -595,6 +693,7 @@ void SceneRenderer::Initialize(
 
 void SceneRenderer::Shutdown()
 {
+    InvalidateRenderFramePlan();
     if (!m_initialized)
         return;
 
@@ -703,6 +802,7 @@ void SceneRenderer::RequestTemporalHistoryReset()
 
 void SceneRenderer::PrepareForSwapChainResize()
 {
+    InvalidateRenderFramePlan();
     if (!m_initialized)
         return;
 
@@ -765,12 +865,14 @@ void SceneRenderer::SetExternalRenderTarget(const SceneRendererExternalTargetDes
     m_externalRenderTarget = desc;
     if (targetChanged)
     {
+        InvalidateRenderFramePlan();
         RequestTemporalHistoryReset();
     }
 }
 
 void SceneRenderer::ClearExternalRenderTarget()
 {
+    InvalidateRenderFramePlan();
     m_externalRenderTarget = {};
     m_externalRenderTargetStats = {};
     RequestTemporalHistoryReset();
@@ -779,21 +881,8 @@ void SceneRenderer::ClearExternalRenderTarget()
 void SceneRenderer::SetGPUDrivenCullingMode(RenderGPUDrivenMode mode)
 {
     m_gpuDrivenCullingMode = mode;
-    const IRHIDevice* device = m_renderContext ? m_renderContext->GetDevice() : nullptr;
-    const bool pipelineReady = m_gpuCulling &&
-        m_gpuCulling->GetExecutionDecision().mode == GPUCullingExecutionMode::GpuCompute;
-    m_gpuDrivenPolicyDecision = ResolveGPUDrivenPolicy(
-        MakeGPUDrivenPolicyInput(mode, device, pipelineReady));
-    m_gpuDrivenCullingEnabled = m_gpuDrivenPolicyDecision.enabled;
-
-    if (m_depthPrepass)
-    {
-        m_depthPrepass->SetGPUDrivenDepthIndirectEnabled(m_gpuDrivenCullingEnabled);
-    }
-    if (m_opaquePass)
-    {
-        m_opaquePass->SetGPUDrivenOpaqueIndirectEnabled(m_gpuDrivenCullingEnabled);
-    }
+    InvalidateRenderFramePlan();
+    m_gpuDrivenCullingEnabled = false;
 }
 
 void SceneRenderer::SetGPUDrivenCullingEnabled(bool enabled)
@@ -870,6 +959,7 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
         diagnostics.gpuResourceStats = m_renderResourceRegistry->GetStats();
     }
     diagnostics.gpuDrivenCullingStats = m_gpuDrivenCullingStats;
+    diagnostics.policy = m_renderPolicyDiagnostics;
     diagnostics.rayTracingSceneStats = m_rayTracingSceneStats;
 
     diagnostics.requestedPostProcessEffectCount = m_postProcessStats.stackStats.requestedEffectCount;
@@ -950,6 +1040,7 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
     const RenderFramePacket& packet,
     RenderResourceRegistry& registry)
 {
+    InvalidateRenderFramePlan();
     m_renderResourceRegistry = &registry;
     if (m_depthPrepass)
     {
@@ -1349,7 +1440,6 @@ void SceneRenderer::BuildMaterialDrawLists()
                                 m_transparentDrawItems);
 
     PrepareMeshPassPackets();
-    ApplyGPUDrivenCullingToDrawLists();
 
     if (m_objectVelocityPass)
     {
@@ -1464,6 +1554,209 @@ void SceneRenderer::PrepareMeshPassPackets()
     validateStream(m_meshPassPreparation.opaque);
     validateStream(m_meshPassPreparation.transparent);
     validateStream(m_meshPassPreparation.shadow);
+}
+
+void SceneRenderer::InvalidateRenderFramePlan()
+{
+    m_renderPolicyDiagnostics = {};
+    m_frameDiagnostics.policy = {};
+    m_gpuDrivenCullingEnabled = false;
+    m_gpuDrivenPolicyDecision = {};
+    m_gpuDrivenPolicyDecision.requestedMode = m_gpuDrivenCullingMode;
+    if (m_depthPrepass)
+    {
+        m_depthPrepass->SetGPUDrivenDepthIndirectEnabled(false);
+    }
+    if (m_opaquePass)
+    {
+        m_opaquePass->SetGPUDrivenOpaqueIndirectEnabled(false);
+    }
+}
+
+void SceneRenderer::CompileRenderFramePlan()
+{
+    m_renderPolicyDiagnostics.planAvailable = false;
+    m_renderPolicyDiagnostics.reportAvailable = false;
+    m_renderPolicyDiagnostics.selectedPlan = {};
+    m_renderPolicyDiagnostics.executionReport = {};
+
+    RenderPolicyResolverInput input;
+    input.request.frameSequence = m_renderScene.GetAcceptedHeader().sequence;
+    input.request.gpuDrivenMode = m_gpuDrivenCullingMode;
+    input.viewOrdinal = 0;
+    m_renderPolicyDiagnostics.requestAvailable = true;
+    m_renderPolicyDiagnostics.request = input.request;
+
+    const IRHIDevice* device = m_renderContext
+        ? m_renderContext->GetDevice()
+        : nullptr;
+    if (device)
+    {
+        const RHICapabilities& capabilities = device->GetCapabilities();
+        input.capabilities.backend = device->GetBackendType();
+        input.capabilities.supportsComputeVisibility =
+            capabilities.supportsComputePipeline;
+        input.capabilities.supportsIndirectDrawCount =
+            capabilities.supportsIndirectDrawCount;
+        input.capabilities.supportsDescriptorResourceBindings =
+            capabilities.supportsDescriptorSets;
+    }
+    input.qualification = GetGPUDrivenBackendQualification(
+        input.capabilities.backend);
+
+    GPUCullingExecutionDecision gpuExecution;
+    if (m_gpuCulling)
+    {
+        gpuExecution = m_gpuCulling->GetExecutionDecision();
+    }
+
+    bool depthGPUPipelineReady = false;
+    bool opaqueGPUPipelineReady = false;
+    if (m_pipelineCache && m_pipelineCache->IsInitialized())
+    {
+        depthGPUPipelineReady =
+            m_pipelineCache->GetGPUDrivenDepthOnlyPipeline() != nullptr;
+
+        RHIFormat backBufferFormat = RHIFormat::Unknown;
+        if (m_externalRenderTarget.IsValid())
+        {
+            backBufferFormat =
+                m_externalRenderTarget.colorTarget->GetFormat();
+        }
+        else if (m_renderContext && m_renderContext->GetCurrentBackBuffer())
+        {
+            backBufferFormat =
+                m_renderContext->GetCurrentBackBuffer()->GetFormat();
+        }
+        const PostProcessStackExecuteStats stackStats = m_postProcessStack
+            ? m_postProcessStack->EvaluateEffects()
+            : PostProcessStackExecuteStats{};
+        const bool postProcessActive =
+            stackStats.enabledEffectCount > 0 &&
+            stackStats.toneMappingBoundaryValid;
+        const SceneColorFormatPolicy formatPolicy =
+            ResolveSceneColorFormatPolicy(backBufferFormat,
+                                          postProcessActive);
+        opaqueGPUPipelineReady =
+            formatPolicy.actualSceneColorFormat != RHIFormat::Unknown;
+        for (const RenderDrawGroupRange& group :
+             m_meshPassPreparation.opaque.groups)
+        {
+            opaqueGPUPipelineReady = opaqueGPUPipelineReady &&
+                m_pipelineCache->GetGPUDrivenPipelineForVariant(
+                    group.key.pipeline.materialVariant,
+                    formatPolicy.actualSceneColorFormat) != nullptr;
+        }
+    }
+    input.view.rendererAllowsGPUDriven = true;
+    input.view.viewAllowsGPUDriven = true;
+    input.view.implementationAvailable = m_gpuCulling &&
+        gpuExecution.fallbackReason != GPUCullingFallbackReason::DeviceMissing &&
+        gpuExecution.fallbackReason !=
+            GPUCullingFallbackReason::ShaderBackendUnsupported;
+    const GPUCullingConfig cullingConfig = m_gpuCulling
+        ? m_gpuCulling->GetConfig()
+        : GPUCullingConfig{};
+    input.view.requestedVisibility = cullingConfig.enableDistanceCulling
+        ? RenderVisibilityMode::GpuFrustumAndDistance
+        : RenderVisibilityMode::GpuFrustum;
+    input.view.visibilityShaderReadiness =
+        ResolveGPUShaderReadiness(gpuExecution);
+    input.view.visibilityPipelineReadiness = gpuExecution.pipelineReady
+        ? RenderPolicyReadiness::Ready
+        : RenderPolicyReadiness::Unavailable;
+    input.view.sharedResourceReadiness =
+        gpuExecution.fallbackReason ==
+                GPUCullingFallbackReason::PipelineResourcesUnavailable
+            ? RenderPolicyReadiness::Unavailable
+            : RenderPolicyReadiness::Ready;
+    input.view.requiredBindingReadiness =
+        ResolveGPUBindingReadiness(gpuExecution);
+
+    input.passes = {
+        MakeRenderPassPolicyFacts(RenderPassKind::Depth,
+                                  m_depthPrepass,
+                                  m_meshPassPreparation.depth,
+                                  gpuExecution,
+                                  depthGPUPipelineReady),
+        MakeRenderPassPolicyFacts(RenderPassKind::Opaque,
+                                  m_opaquePass,
+                                  m_meshPassPreparation.opaque,
+                                  gpuExecution,
+                                  opaqueGPUPipelineReady),
+        MakeRenderPassPolicyFacts(RenderPassKind::Shadow,
+                                  m_shadowPass,
+                                  m_meshPassPreparation.shadow,
+                                  gpuExecution,
+                                  false),
+        MakeRenderPassPolicyFacts(RenderPassKind::Transparent,
+                                  m_transparentPass,
+                                  m_meshPassPreparation.transparent,
+                                  gpuExecution,
+                                  false),
+    };
+
+    const RenderPolicyResolution resolution = ResolveRenderPolicy(input);
+    const RenderFramePlanCompileResult compiled =
+        CompileRenderFrameExecutionPlan(resolution, m_meshPassPreparation);
+    if (compiled.succeeded)
+    {
+        m_renderPolicyDiagnostics.planAvailable = true;
+        m_renderPolicyDiagnostics.selectedPlan = compiled.plan;
+    }
+    ApplyRenderFramePlanProjection();
+}
+
+void SceneRenderer::ApplyRenderFramePlanProjection()
+{
+    bool depthGPU = false;
+    bool opaqueGPU = false;
+    m_gpuDrivenPolicyDecision = {};
+    m_gpuDrivenPolicyDecision.requestedMode = m_gpuDrivenCullingMode;
+
+    if (m_renderPolicyDiagnostics.planAvailable)
+    {
+        const RenderFrameExecutionPlan& plan =
+            m_renderPolicyDiagnostics.selectedPlan;
+        for (const RenderPassExecutionPlan& pass : plan.passes)
+        {
+            const bool gpu = pass.partition.gpuDrivenPacketCount != 0;
+            depthGPU |= pass.pass == RenderPassKind::Depth && gpu;
+            opaqueGPU |= pass.pass == RenderPassKind::Opaque && gpu;
+        }
+        m_gpuDrivenPolicyDecision.reason =
+            ProjectLegacyPolicyReason(plan.viewPolicy.reason);
+        m_gpuDrivenPolicyDecision.qualificationLevel =
+            plan.qualification.level;
+        m_gpuDrivenPolicyDecision.qualificationRevision =
+            plan.qualification.revision;
+        m_gpuDrivenPolicyDecision.passedQualificationGateMask =
+            plan.qualification.passedGateMask;
+        m_gpuDrivenPolicyDecision.requiredQualificationGateMask =
+            plan.qualification.requiredGateMask;
+        m_gpuDrivenPolicyDecision.missingQualificationGateMask =
+            plan.qualification.requiredGateMask &
+            ~plan.qualification.passedGateMask;
+        m_gpuDrivenPolicyDecision.backendQualified =
+            plan.qualification.level ==
+            GPUDrivenQualificationLevel::Qualified;
+        m_gpuDrivenPolicyDecision.capabilitiesReady =
+            plan.capabilities.supportsComputeVisibility &&
+            plan.capabilities.supportsDescriptorResourceBindings &&
+            plan.capabilities.supportsIndirectDrawCount;
+        m_gpuDrivenPolicyDecision.pipelineReady = depthGPU || opaqueGPU;
+    }
+
+    m_gpuDrivenCullingEnabled = depthGPU || opaqueGPU;
+    m_gpuDrivenPolicyDecision.enabled = m_gpuDrivenCullingEnabled;
+    if (m_depthPrepass)
+    {
+        m_depthPrepass->SetGPUDrivenDepthIndirectEnabled(depthGPU);
+    }
+    if (m_opaquePass)
+    {
+        m_opaquePass->SetGPUDrivenOpaqueIndirectEnabled(opaqueGPU);
+    }
 }
 
 void SceneRenderer::ApplyGPUDrivenCullingToDrawLists()
@@ -2126,6 +2419,11 @@ void SceneRenderer::Render()
             m_rayTracedReflectionCompositePass->SetEnabled(false);
         }
     }
+
+    // Freeze the per-view policy after pass configuration is stable and before
+    // any RenderGraph construction or command-recording decisions occur.
+    CompileRenderFramePlan();
+    ApplyGPUDrivenCullingToDrawLists();
 
     // Clear the render graph for this frame
     m_renderGraph->Clear();
@@ -3178,16 +3476,6 @@ void SceneRenderer::AddGPUDrivenCullingPass()
         return;
     }
 
-    const GPUCullingExecutionDecision executionDecision =
-        m_gpuCulling->GetExecutionDecision();
-    if (executionDecision.mode != GPUCullingExecutionMode::GpuCompute)
-    {
-        m_gpuDrivenCullingStats.executionDecisionAvailable = true;
-        m_gpuDrivenCullingStats.executionDecision = executionDecision;
-        m_gpuDrivenCullingStats.fallbackUsed = true;
-        return;
-    }
-
     RHIBuffer* constantsBuffer = m_gpuCulling->GetCullingConstantsBuffer();
     RHIBuffer* instanceBuffer = m_gpuCulling->GetInstanceBuffer();
     RHIBuffer* instanceIndexBuffer = m_gpuCulling->GetInstanceIndexBuffer();
@@ -3669,6 +3957,7 @@ void SceneRenderer::BuildRenderGraph()
 
 void SceneRenderer::AddPass(std::unique_ptr<IRenderPass> pass)
 {
+    InvalidateRenderFramePlan();
     if (!m_passRegistry)
         m_passRegistry = std::make_unique<RenderPassRegistry>();
 
@@ -3712,11 +4001,13 @@ void SceneRenderer::RefreshFrameDiagnosticsForTesting(bool graphBuilt)
 
 bool SceneRenderer::RemovePass(const char* name)
 {
+    InvalidateRenderFramePlan();
     return m_passRegistry ? m_passRegistry->RemovePass(name) : false;
 }
 
 void SceneRenderer::ClearPasses()
 {
+    InvalidateRenderFramePlan();
     if (m_passRegistry)
         m_passRegistry->Clear();
 
@@ -3755,6 +4046,8 @@ bool SceneRenderer::AddPreGraphPrepareCallback(const void* owner, PreGraphPrepar
     if (it != m_preGraphPrepareCallbacks.end())
         return false;
 
+    InvalidateRenderFramePlan();
+
     PreGraphPrepareCallbackEntry entry;
     entry.owner = owner;
     entry.callback = std::move(callback);
@@ -3777,6 +4070,7 @@ bool SceneRenderer::RemovePreGraphPrepareCallback(const void* owner)
     if (it == m_preGraphPrepareCallbacks.end())
         return false;
 
+    InvalidateRenderFramePlan();
     m_preGraphPrepareCallbacks.erase(it);
     return true;
 }

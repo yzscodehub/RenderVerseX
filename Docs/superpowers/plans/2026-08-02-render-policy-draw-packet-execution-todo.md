@@ -1,7 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-4 and Task 5A/5B complete; Task 5C frame-plan compilation
-is the next implementation stage
+**Status:** Tasks 0-5 complete; Task 6A Direct Depth DrawPacket execution is
+the next implementation stage
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -112,17 +112,17 @@ Task 11/12/13 serialization.
 
 #### 5C. Compile and integrate one plan per view
 
-- [ ] Add `RenderFramePlanCompiler` and compile after pass-packet preparation
+- [x] Add `RenderFramePlanCompiler` and compile after pass-packet preparation
   but before RenderGraph construction.
-- [ ] Resolve current Depth/Opaque packet eligibility into planned lanes without
+- [x] Resolve current Depth/Opaque packet eligibility into planned lanes without
   changing command recording yet.
-- [ ] Carry Transparent as ordered Direct and Shadow as Direct-only for this
+- [x] Carry Transparent as ordered Direct and Shadow as Direct-only for this
   stage.
-- [ ] Move predictable backend/qualification/pipeline/residency decisions out
+- [x] Move predictable backend/qualification/pipeline/residency decisions out
   of pass execution; retain only validation of unexpected runtime failures.
-- [ ] Store frame plans in frame/view-owned lifetime and reset them on every
+- [x] Store frame plans in frame/view-owned lifetime and reset them on every
   accepted frame, rejected frame, resize, and view replacement.
-- [ ] Export selected policy plus per-pass relevant/GPU/Direct/Skip counts and
+- [x] Export selected policy plus per-pass relevant/GPU/Direct/Skip counts and
   reason counts through public render diagnostics.
 
 #### 5D. Validate and commit Task 5
@@ -132,14 +132,14 @@ Task 11/12/13 serialization.
   resource, and pass-disabled cases.
 - [x] Add determinism tests that permute identical input construction order and
   compare the complete plan.
-- [ ] Add two-view tests proving independent plans before pass-context migration.
-- [ ] Add source/contract checks proving pass execution no longer probes backend
+- [x] Add two-view tests proving independent plans before pass-context migration.
+- [x] Add source/contract checks proving pass execution no longer probes backend
   type or qualification state.
 - [x] Run RenderPolicy, MeshPassProcessor, RenderScene, GPUDriven, RenderPass,
   RenderContracts, extraction, and Direct/GPU parity gates.
 - [x] Record a phase-log entry and primary review.
 - [x] Commit slice 5A: `feat(render): add per-view render policy plans`.
-- [ ] Commit slice 5B if integration is too large for one review:
+- [x] Commit slice 5B if integration is too large for one review:
   `refactor(render): compile frame policy before graph construction`.
 
 **Stop gate:** Task 6 cannot start until identical inputs produce identical

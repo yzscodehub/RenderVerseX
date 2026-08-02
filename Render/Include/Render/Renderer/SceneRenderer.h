@@ -18,6 +18,8 @@
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Passes/MeshPassProcessor.h"
+#include "Render/Policy/RenderFramePlanCompiler.h"
+#include "Render/Policy/RenderPolicyDiagnostics.h"
 #include "Render/Passes/CameraVelocityPass.h"
 #include "Render/Passes/ObjectVelocityPass.h"
 #include "Render/Passes/ParticleFeaturePass.h"
@@ -223,8 +225,8 @@ namespace RVX
     };
 
     inline constexpr uint32 RVX_SCENE_RENDER_FEATURE_REPORT_SCHEMA_VERSION = 2;
-    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 4;
-    inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 25;
+    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 5;
+    inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 26;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION = 24;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION = 25;
 
@@ -342,6 +344,7 @@ namespace RVX
 
         RenderResourceRegistryStats gpuResourceStats;
         SceneGPUDrivenCullingStats gpuDrivenCullingStats;
+        RenderPolicyDiagnostics policy;
         RayTracingSceneManagerStats rayTracingSceneStats;
 
         uint32 requestedPostProcessEffectCount = 0;
@@ -996,6 +999,9 @@ namespace RVX
         /// Refresh frame diagnostics for focused validation without building a full RenderGraph.
         void RefreshFrameDiagnosticsForTesting(bool graphBuilt = false);
 
+        /// Compile an empty/current prepared frame policy for lifecycle validation.
+        void CompileRenderFramePlanForTesting() { CompileRenderFramePlan(); }
+
         /// Override the RHI capability source for focused feature-report tests.
         void SetRenderFeatureReportDeviceForTesting(IRHIDevice* device)
         {
@@ -1160,12 +1166,17 @@ namespace RVX
         {
             return m_gpuDrivenPolicyDecision;
         }
+        const RenderPolicyDiagnostics& GetRenderPolicyDiagnostics() const
+        {
+            return m_renderPolicyDiagnostics;
+        }
 
         /// Compatibility wrapper for callers that still use a binary override.
         void SetGPUDrivenCullingEnabled(bool enabled);
         bool IsGPUDrivenCullingEnabled() const { return m_gpuDrivenCullingEnabled; }
         void SetGPUDrivenCullingConfig(const GPUCullingConfig& config)
         {
+            InvalidateRenderFramePlan();
             if (m_gpuCulling)
             {
                 m_gpuCulling->SetConfig(config);
@@ -1251,6 +1262,9 @@ namespace RVX
         void CommitGPUDrivenAccessSnapshots();
         void BuildMaterialDrawLists();
         void PrepareMeshPassPackets();
+        void CompileRenderFramePlan();
+        void InvalidateRenderFramePlan();
+        void ApplyRenderFramePlanProjection();
         void ApplyGPUDrivenCullingToDrawLists();
         void ApplyGPUDrivenCullingToDrawList(std::vector<RenderDrawItem>& drawItems,
                                              uint32& cullableDrawItemCount);
@@ -1368,6 +1382,7 @@ namespace RVX
         RenderGPUDrivenMode m_gpuDrivenCullingMode = RenderGPUDrivenMode::Auto;
         GPUDrivenPolicyDecision m_gpuDrivenPolicyDecision;
         bool m_gpuDrivenCullingEnabled = false;
+        RenderPolicyDiagnostics m_renderPolicyDiagnostics;
         std::unordered_map<uint64, Mat4> m_previousObjectWorldMatrices;
         PostProcessSettings m_postProcessSettings;
         ShadowPassConfig m_shadowPassConfig;

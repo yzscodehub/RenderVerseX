@@ -7,6 +7,7 @@
 
 #include "Render/Policy/RenderPolicyTypes.h"
 
+#include <array>
 #include <vector>
 
 namespace RVX
@@ -51,6 +52,10 @@ namespace RVX
         DrawPacketRange skippedPackets{};
         RenderPacketPartitionSummary partition{};
         RenderPolicyReason reason = RenderPolicyReason::ConservativeDefault;
+        /// One deterministic outcome reason for every source packet, including
+        /// pass-irrelevant packets that enter the Skip lane.
+        std::array<uint32, static_cast<size_t>(RenderPolicyReason::Count)>
+            reasonCounts{};
 
         bool operator==(const RenderPassExecutionPlan&) const = default;
     };

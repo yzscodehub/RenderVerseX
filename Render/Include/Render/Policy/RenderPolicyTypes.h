@@ -150,7 +150,9 @@ namespace RVX
         ShaderPending = 23,
         PipelinePending = 24,
         BindingsPending = 25,
-        Count = 26,
+        PacketIrrelevant = 26,
+        PacketRequiresDirect = 27,
+        Count = 28,
     };
 
     inline const char* GetRenderPolicyReasonName(RenderPolicyReason reason)
@@ -201,6 +203,10 @@ namespace RVX
                 return "PipelinePending";
             case RenderPolicyReason::BindingsPending:
                 return "BindingsPending";
+            case RenderPolicyReason::PacketIrrelevant:
+                return "PacketIrrelevant";
+            case RenderPolicyReason::PacketRequiresDirect:
+                return "PacketRequiresDirect";
             case RenderPolicyReason::Count: return "Count";
             default: return "Invalid";
         }

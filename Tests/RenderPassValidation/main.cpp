@@ -3169,6 +3169,45 @@ TEST(SceneRendererDiagnosticsValidation, AggregatesExternalTargetPassChainAndRen
     EXPECT_TRUE(diagnostics.graphDiagnostics.empty());
 }
 
+TEST(SceneRendererDiagnosticsValidation,
+     RenderPolicyPlanUsesFrameLifetimeAndInvalidatesAtOwnershipBoundaries)
+{
+    SceneRenderer renderer;
+    renderer.SetGPUDrivenCullingMode(RenderGPUDrivenMode::ForceDisabled);
+    EXPECT_EQ(renderer.GetGPUDrivenCullingMode(),
+              renderer.GetGPUDrivenPolicyDecision().requestedMode);
+    renderer.CompileRenderFramePlanForTesting();
+    ASSERT_TRUE(renderer.GetRenderPolicyDiagnostics().requestAvailable);
+    ASSERT_TRUE(renderer.GetRenderPolicyDiagnostics().planAvailable);
+    const RenderFrameExecutionPlan ownedPlan =
+        renderer.GetRenderPolicyDiagnostics().selectedPlan;
+    EXPECT_EQ(0u, ownedPlan.viewOrdinal);
+    EXPECT_EQ(RenderGPUDrivenMode::ForceDisabled,
+              ownedPlan.viewPolicy.requestedMode);
+
+    renderer.PrepareForSwapChainResize();
+    EXPECT_FALSE(renderer.GetRenderPolicyDiagnostics().planAvailable);
+
+    renderer.CompileRenderFramePlanForTesting();
+    ASSERT_TRUE(renderer.GetRenderPolicyDiagnostics().planAvailable);
+    renderer.ClearExternalRenderTarget();
+    EXPECT_FALSE(renderer.GetRenderPolicyDiagnostics().planAvailable);
+
+    renderer.CompileRenderFramePlanForTesting();
+    ASSERT_TRUE(renderer.GetRenderPolicyDiagnostics().planAvailable);
+    renderer.SetGPUDrivenCullingConfig(GPUCullingConfig{});
+    EXPECT_FALSE(renderer.GetRenderPolicyDiagnostics().planAvailable);
+
+    renderer.CompileRenderFramePlanForTesting();
+    renderer.RefreshFrameDiagnosticsForTesting();
+    EXPECT_TRUE(renderer.GetFrameDiagnostics().policy.planAvailable);
+    renderer.Shutdown();
+    EXPECT_FALSE(renderer.GetRenderPolicyDiagnostics().planAvailable);
+    EXPECT_FALSE(renderer.GetFrameDiagnostics().policy.planAvailable);
+    EXPECT_EQ(RenderGPUDrivenMode::ForceDisabled,
+              ownedPlan.viewPolicy.requestedMode);
+}
+
 TEST_F(RenderPassValidationFixture, PostProcessSettingsDefaultRayTracedReflectionControlsAreExplicit)
 {
     PostProcessSettings settings;

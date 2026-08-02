@@ -215,6 +215,7 @@ void MeshPassPacketStream::Clear()
 {
     packets.clear();
     sortedGPUCandidates.clear();
+    sortedGPUCandidatePacketIndices.clear();
     groups.clear();
     stats = {};
 }
@@ -228,7 +229,10 @@ void MeshPassPacketStream::Record(MeshPassProcessorResult result)
 void MeshPassPacketStream::FinalizeGroups()
 {
     BuildDeterministicRenderDrawGroups(
-        packets, sortedGPUCandidates, groups);
+        packets,
+        sortedGPUCandidates,
+        sortedGPUCandidatePacketIndices,
+        groups);
 }
 
 void SceneMeshPassPreparation::Clear()
@@ -244,22 +248,36 @@ void BuildDeterministicRenderDrawGroups(
     std::vector<MeshPassProcessorResult>& outSortedCandidates,
     std::vector<RenderDrawGroupRange>& outGroups)
 {
+    std::vector<uint32> ignoredSourceIndices;
+    BuildDeterministicRenderDrawGroups(
+        results, outSortedCandidates, ignoredSourceIndices, outGroups);
+}
+
+void BuildDeterministicRenderDrawGroups(
+    std::span<const MeshPassProcessorResult> results,
+    std::vector<MeshPassProcessorResult>& outSortedCandidates,
+    std::vector<uint32>& outSortedCandidatePacketIndices,
+    std::vector<RenderDrawGroupRange>& outGroups)
+{
     outSortedCandidates.clear();
+    outSortedCandidatePacketIndices.clear();
     outGroups.clear();
-    outSortedCandidates.reserve(results.size());
-    for (const MeshPassProcessorResult& result : results)
+    outSortedCandidatePacketIndices.reserve(results.size());
+    for (uint32 index = 0; index < static_cast<uint32>(results.size()); ++index)
     {
-        if (result.IsGPUCandidate())
+        if (results[index].IsGPUCandidate())
         {
-            outSortedCandidates.push_back(result);
+            outSortedCandidatePacketIndices.push_back(index);
         }
     }
 
     const RenderDrawGroupKeyLess keyLess;
-    std::sort(outSortedCandidates.begin(), outSortedCandidates.end(),
-              [&keyLess](const MeshPassProcessorResult& lhs,
-                         const MeshPassProcessorResult& rhs)
+    std::sort(outSortedCandidatePacketIndices.begin(),
+              outSortedCandidatePacketIndices.end(),
+              [&keyLess, results](uint32 lhsIndex, uint32 rhsIndex)
               {
+                  const MeshPassProcessorResult& lhs = results[lhsIndex];
+                  const MeshPassProcessorResult& rhs = results[rhsIndex];
                   if (keyLess(lhs.groupKey, rhs.groupKey))
                   {
                       return true;
@@ -271,12 +289,20 @@ void BuildDeterministicRenderDrawGroups(
                   return std::tuple{lhs.sourceOrdinal,
                                     lhs.packet.objectId,
                                     lhs.packet.primitiveData,
-                                    lhs.packet.submeshIndex} <
+                                    lhs.packet.submeshIndex,
+                                    lhsIndex} <
                          std::tuple{rhs.sourceOrdinal,
                                     rhs.packet.objectId,
                                     rhs.packet.primitiveData,
-                                    rhs.packet.submeshIndex};
+                                    rhs.packet.submeshIndex,
+                                    rhsIndex};
               });
+
+    outSortedCandidates.reserve(outSortedCandidatePacketIndices.size());
+    for (uint32 sourceIndex : outSortedCandidatePacketIndices)
+    {
+        outSortedCandidates.push_back(results[sourceIndex]);
+    }
 
     for (uint32 index = 0;
          index < static_cast<uint32>(outSortedCandidates.size());

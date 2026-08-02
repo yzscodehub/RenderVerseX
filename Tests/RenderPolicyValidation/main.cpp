@@ -1,4 +1,5 @@
 #include "Render/Policy/RenderPolicyDiagnostics.h"
+#include "Render/Policy/RenderFramePlanCompiler.h"
 #include "Render/Policy/RenderPolicyResolver.h"
 #include "Render/RenderDiagnostics.h"
 
@@ -147,6 +148,86 @@ namespace
         return input;
     }
 
+    MeshPassProcessorResult MakePreparedPacket(
+        RenderPassKind pass,
+        MeshPassDisposition disposition,
+        MeshPassEligibilityReason reason,
+        uint32 sourceOrdinal,
+        RenderObjectId objectId,
+        MaterialPipelineVariant variant = MaterialPipelineVariant::Opaque)
+    {
+        MeshPassProcessorResult result;
+        result.disposition = disposition;
+        result.reason = reason;
+        result.sourceOrdinal = sourceOrdinal;
+        result.packet.pass = pass;
+        result.packet.objectId = objectId;
+        result.packet.pipelineKey.materialVariant = variant;
+        result.groupKey.pass = pass;
+        result.groupKey.pipeline = result.packet.pipelineKey;
+        return result;
+    }
+
+    RenderPassPolicyFacts MakeFacts(RenderPassKind pass,
+                                    const MeshPassPacketStream& stream)
+    {
+        RenderPassPolicyFacts facts;
+        facts.pass = pass;
+        facts.requested = true;
+        facts.supported = true;
+        facts.directAllowed = true;
+        facts.gpuDrivenAllowed = pass == RenderPassKind::Depth ||
+                                 pass == RenderPassKind::Opaque;
+        facts.fixedCountIndirectAllowed = true;
+        facts.directShaderReadiness = RenderPolicyReadiness::Ready;
+        facts.directPipelineReadiness = RenderPolicyReadiness::Ready;
+        facts.directResourceReadiness = RenderPolicyReadiness::Ready;
+        facts.gpuDrivenShaderReadiness = RenderPolicyReadiness::Ready;
+        facts.gpuDrivenPipelineReadiness = RenderPolicyReadiness::Ready;
+        facts.gpuDrivenResourceReadiness = RenderPolicyReadiness::Ready;
+        facts.inputPacketCount = stream.stats.inputPacketCount;
+        facts.relevantPacketCount = stream.stats.relevantPacketCount;
+        facts.candidatePacketCount = stream.stats.gpuCandidatePacketCount;
+        facts.directPacketCount = stream.stats.directPacketCount;
+        facts.skippedPacketCount = stream.stats.skippedPacketCount;
+        facts.drawGroupCount = static_cast<uint32>(stream.groups.size());
+        facts.workloadBeneficial = true;
+        return facts;
+    }
+
+    RenderPolicyResolution ResolvePreparation(
+        const SceneMeshPassPreparation& preparation,
+        uint64 frameSequence,
+        uint32 viewOrdinal)
+    {
+        RenderPolicyResolverInput input;
+        input.request.frameSequence = frameSequence;
+        input.request.gpuDrivenMode = RenderGPUDrivenMode::Auto;
+        input.viewOrdinal = viewOrdinal;
+        input.view.rendererAllowsGPUDriven = true;
+        input.view.viewAllowsGPUDriven = true;
+        input.view.implementationAvailable = true;
+        input.view.requestedVisibility = RenderVisibilityMode::GpuFrustum;
+        input.view.visibilityShaderReadiness = RenderPolicyReadiness::Ready;
+        input.view.visibilityPipelineReadiness = RenderPolicyReadiness::Ready;
+        input.view.sharedResourceReadiness = RenderPolicyReadiness::Ready;
+        input.view.requiredBindingReadiness = RenderPolicyReadiness::Ready;
+        input.capabilities.backend = RHIBackendType::DX12;
+        input.capabilities.supportsComputeVisibility = true;
+        input.capabilities.supportsDescriptorResourceBindings = true;
+        input.capabilities.supportsIndirectDrawCount = true;
+        input.qualification.backend = RHIBackendType::DX12;
+        input.qualification.revision = 1;
+        input.qualification.passedGateMask = input.qualification.requiredGateMask;
+        input.passes = {
+            MakeFacts(RenderPassKind::Transparent, preparation.transparent),
+            MakeFacts(RenderPassKind::Opaque, preparation.opaque),
+            MakeFacts(RenderPassKind::Shadow, preparation.shadow),
+            MakeFacts(RenderPassKind::Depth, preparation.depth),
+        };
+        return ResolveRenderPolicy(input);
+    }
+
     TEST(RenderPolicyValidation, EnumerationsHaveStableValuesAndNames)
     {
         ExpectEnumCases(
@@ -222,7 +303,9 @@ namespace
                 EnumCase<RenderPolicyReason>{RenderPolicyReason::ShaderPending, 23, "ShaderPending"},
                 EnumCase<RenderPolicyReason>{RenderPolicyReason::PipelinePending, 24, "PipelinePending"},
                 EnumCase<RenderPolicyReason>{RenderPolicyReason::BindingsPending, 25, "BindingsPending"},
-                EnumCase<RenderPolicyReason>{RenderPolicyReason::Count, 26, "Count"},
+                EnumCase<RenderPolicyReason>{RenderPolicyReason::PacketIrrelevant, 26, "PacketIrrelevant"},
+                EnumCase<RenderPolicyReason>{RenderPolicyReason::PacketRequiresDirect, 27, "PacketRequiresDirect"},
+                EnumCase<RenderPolicyReason>{RenderPolicyReason::Count, 28, "Count"},
             },
             GetRenderPolicyReasonName);
 
@@ -872,6 +955,206 @@ namespace
                   resolution.viewPolicy.reason);
     }
 
+    TEST(RenderPolicyValidation,
+         FramePlanCompilerPreservesCanonicalLaneAndSourceOrdering)
+    {
+        SceneMeshPassPreparation preparation;
+        preparation.depth.Record(MakePreparedPacket(
+            RenderPassKind::Depth, MeshPassDisposition::GPUCandidate,
+            MeshPassEligibilityReason::None, 7, 20,
+            MaterialPipelineVariant::Masked));
+        preparation.depth.Record(MakePreparedPacket(
+            RenderPassKind::Depth, MeshPassDisposition::GPUCandidate,
+            MeshPassEligibilityReason::None, 7, 10));
+        preparation.depth.Record(MakePreparedPacket(
+            RenderPassKind::Depth, MeshPassDisposition::Skip,
+            MeshPassEligibilityReason::PassIrrelevant, 9, 30));
+        preparation.opaque.Record(MakePreparedPacket(
+            RenderPassKind::Opaque, MeshPassDisposition::GPUCandidate,
+            MeshPassEligibilityReason::None, 0, 40));
+        preparation.shadow.Record(MakePreparedPacket(
+            RenderPassKind::Shadow, MeshPassDisposition::Direct,
+            MeshPassEligibilityReason::PassRequiresDirect, 3, 50));
+        preparation.transparent.Record(MakePreparedPacket(
+            RenderPassKind::Transparent, MeshPassDisposition::Direct,
+            MeshPassEligibilityReason::Transparent, 5, 60));
+        preparation.transparent.Record(MakePreparedPacket(
+            RenderPassKind::Transparent, MeshPassDisposition::Direct,
+            MeshPassEligibilityReason::Transparent, 4, 70));
+        preparation.depth.FinalizeGroups();
+        preparation.opaque.FinalizeGroups();
+        preparation.shadow.FinalizeGroups();
+        preparation.transparent.FinalizeGroups();
+
+        const RenderPolicyResolution resolution =
+            ResolvePreparation(preparation, 101, 0);
+        ASSERT_TRUE(ValidateRenderPolicyResolution(resolution));
+        const RenderFramePlanCompileResult compiled =
+            CompileRenderFrameExecutionPlan(resolution, preparation);
+        ASSERT_TRUE(compiled.succeeded);
+        ASSERT_TRUE(ValidateRenderFrameExecutionPlan(compiled.plan));
+        ASSERT_EQ(4u, compiled.plan.passes.size());
+        EXPECT_EQ(RenderPassKind::Depth, compiled.plan.passes[0].pass);
+        EXPECT_EQ(RenderPassKind::Opaque, compiled.plan.passes[1].pass);
+        EXPECT_EQ(RenderPassKind::Shadow, compiled.plan.passes[2].pass);
+        EXPECT_EQ(RenderPassKind::Transparent, compiled.plan.passes[3].pass);
+
+        const RenderPassExecutionPlan& depth = compiled.plan.passes[0];
+        ASSERT_EQ(2u, depth.gpuEligiblePackets.count);
+        EXPECT_EQ(1u, compiled.plan.packetReferences[0].sourcePacketIndex);
+        EXPECT_EQ(0u, compiled.plan.packetReferences[1].sourcePacketIndex);
+        EXPECT_EQ(2u, compiled.plan.packetReferences[2].sourcePacketIndex);
+        EXPECT_EQ(2u, depth.reasonCounts[static_cast<size_t>(
+                          RenderPolicyReason::None)]);
+        EXPECT_EQ(1u, depth.reasonCounts[static_cast<size_t>(
+                          RenderPolicyReason::PacketIrrelevant)]);
+
+        const RenderPassExecutionPlan& transparent = compiled.plan.passes[3];
+        ASSERT_EQ(2u, transparent.directPackets.count);
+        const uint32 first = transparent.directPackets.first;
+        EXPECT_EQ(0u,
+                  compiled.plan.packetReferences[first].sourcePacketIndex);
+        EXPECT_EQ(1u,
+                  compiled.plan.packetReferences[first + 1].sourcePacketIndex);
+    }
+
+    TEST(RenderPolicyValidation,
+         FramePlanCompilerMakesMixedPassExplicitWholePassDirect)
+    {
+        SceneMeshPassPreparation preparation;
+        preparation.opaque.Record(MakePreparedPacket(
+            RenderPassKind::Opaque, MeshPassDisposition::GPUCandidate,
+            MeshPassEligibilityReason::None, 11, 1));
+        preparation.opaque.Record(MakePreparedPacket(
+            RenderPassKind::Opaque, MeshPassDisposition::Direct,
+            MeshPassEligibilityReason::Skinned, 11, 2));
+        preparation.opaque.Record(MakePreparedPacket(
+            RenderPassKind::Opaque, MeshPassDisposition::GPUCandidate,
+            MeshPassEligibilityReason::None, 12, 3));
+        preparation.depth.FinalizeGroups();
+        preparation.opaque.FinalizeGroups();
+        preparation.shadow.FinalizeGroups();
+        preparation.transparent.FinalizeGroups();
+
+        const RenderPolicyResolution resolution =
+            ResolvePreparation(preparation, 202, 1);
+        ASSERT_EQ(2u, resolution.canonicalPassDecisions[1]
+                          .partition.gpuDrivenPacketCount);
+        const RenderFramePlanCompileResult first =
+            CompileRenderFrameExecutionPlan(resolution, preparation);
+        const RenderFramePlanCompileResult second =
+            CompileRenderFrameExecutionPlan(resolution, preparation);
+        ASSERT_TRUE(first.succeeded);
+        EXPECT_EQ(first, second);
+        EXPECT_EQ(202u, first.plan.frameSequence);
+        EXPECT_EQ(1u, first.plan.viewOrdinal);
+        EXPECT_EQ(GPUDrivenTier::Direct,
+                  first.plan.viewPolicy.selectedTier);
+        EXPECT_EQ(RenderPolicyReason::PlannedFallback,
+                  first.plan.viewPolicy.reason);
+        const RenderPassExecutionPlan& opaque = first.plan.passes[1];
+        EXPECT_EQ(RenderSubmissionMode::Direct, opaque.preferredSubmission);
+        EXPECT_EQ(RenderVisibilityMode::Cpu, opaque.visibility);
+        EXPECT_EQ(RenderPolicyReason::PlannedFallback, opaque.reason);
+        EXPECT_EQ(0u, opaque.gpuEligiblePackets.count);
+        EXPECT_EQ(3u, opaque.directPackets.count);
+        for (uint32 index = 0; index < 3; ++index)
+        {
+            EXPECT_EQ(index,
+                      first.plan.packetReferences[
+                          opaque.directPackets.first + index]
+                          .sourcePacketIndex);
+        }
+    }
+
+    TEST(RenderPolicyValidation,
+         FramePlanCompilerFailsClosedOnMalformedSourceMapping)
+    {
+        SceneMeshPassPreparation preparation;
+        preparation.depth.Record(MakePreparedPacket(
+            RenderPassKind::Depth, MeshPassDisposition::GPUCandidate,
+            MeshPassEligibilityReason::None, 4, 1));
+        preparation.depth.FinalizeGroups();
+        preparation.opaque.FinalizeGroups();
+        preparation.shadow.FinalizeGroups();
+        preparation.transparent.FinalizeGroups();
+        const RenderPolicyResolution resolution =
+            ResolvePreparation(preparation, 303, 0);
+        ASSERT_TRUE(CompileRenderFrameExecutionPlan(resolution, preparation)
+                        .succeeded);
+
+        preparation.depth.sortedGPUCandidatePacketIndices.front() = 9;
+        const RenderFramePlanCompileResult malformed =
+            CompileRenderFrameExecutionPlan(resolution, preparation);
+        EXPECT_FALSE(malformed.succeeded);
+        EXPECT_TRUE(malformed.plan.passes.empty());
+        EXPECT_TRUE(malformed.plan.packetReferences.empty());
+    }
+
+    TEST(RenderPolicyValidation,
+         FramePlanCompilerFailsClosedOnIncompleteCanonicalPassSet)
+    {
+        SceneMeshPassPreparation preparation;
+        preparation.depth.FinalizeGroups();
+        preparation.opaque.FinalizeGroups();
+        preparation.shadow.FinalizeGroups();
+        preparation.transparent.FinalizeGroups();
+
+        RenderPolicyResolution resolution =
+            ResolvePreparation(preparation, 304, 0);
+        ASSERT_EQ(4u, resolution.canonicalPassDecisions.size());
+        resolution.canonicalPassDecisions.pop_back();
+        ASSERT_TRUE(ValidateRenderPolicyResolution(resolution));
+
+        const RenderFramePlanCompileResult incomplete =
+            CompileRenderFrameExecutionPlan(resolution, preparation);
+        EXPECT_FALSE(incomplete.succeeded);
+        EXPECT_TRUE(incomplete.plan.passes.empty());
+        EXPECT_TRUE(incomplete.plan.packetReferences.empty());
+
+        resolution = ResolvePreparation(preparation, 305, 0);
+        ASSERT_EQ(4u, resolution.canonicalPassDecisions.size());
+        std::swap(resolution.canonicalPassDecisions[1],
+                  resolution.canonicalPassDecisions[2]);
+        EXPECT_FALSE(ValidateRenderPolicyResolution(resolution));
+
+        const RenderFramePlanCompileResult reordered =
+            CompileRenderFrameExecutionPlan(resolution, preparation);
+        EXPECT_FALSE(reordered.succeeded);
+        EXPECT_TRUE(reordered.plan.passes.empty());
+        EXPECT_TRUE(reordered.plan.packetReferences.empty());
+    }
+
+    TEST(RenderPolicyValidation,
+         FramePlanCompilerKeepsTwoViewsIndependentAndValueOwned)
+    {
+        SceneMeshPassPreparation preparation;
+        preparation.opaque.Record(MakePreparedPacket(
+            RenderPassKind::Opaque, MeshPassDisposition::GPUCandidate,
+            MeshPassEligibilityReason::None, 8, 88));
+        preparation.depth.FinalizeGroups();
+        preparation.opaque.FinalizeGroups();
+        preparation.shadow.FinalizeGroups();
+        preparation.transparent.FinalizeGroups();
+
+        const RenderFramePlanCompileResult view0 =
+            CompileRenderFrameExecutionPlan(
+                ResolvePreparation(preparation, 404, 0), preparation);
+        const RenderFramePlanCompileResult view1 =
+            CompileRenderFrameExecutionPlan(
+                ResolvePreparation(preparation, 404, 1), preparation);
+        ASSERT_TRUE(view0.succeeded);
+        ASSERT_TRUE(view1.succeeded);
+        EXPECT_EQ(0u, view0.plan.viewOrdinal);
+        EXPECT_EQ(1u, view1.plan.viewOrdinal);
+        EXPECT_EQ(view0.plan.packetReferences,
+                  view1.plan.packetReferences);
+        RenderFrameExecutionPlan ownedCopy = view0.plan;
+        ownedCopy.packetReferences.front().sourceOrdinal = 99;
+        EXPECT_EQ(8u, view0.plan.packetReferences.front().sourceOrdinal);
+        EXPECT_EQ(8u, view1.plan.packetReferences.front().sourceOrdinal);
+    }
+
     TEST(RenderPolicyValidation, ResolverRejectsMalformedCountsAndFramePlanRanges)
     {
         RenderPolicyResolverInput input = MakeValidResolverInput();
@@ -915,11 +1198,11 @@ namespace
         plan.capabilities = resolution.capabilities;
         plan.qualification = resolution.qualification;
         plan.packetReferences = {
-            {RenderPassKind::Opaque, 11, 0},
-            {RenderPassKind::Opaque, 12, 1},
-            {RenderPassKind::Opaque, 13, 2},
-            {RenderPassKind::Opaque, 14, 3},
-            {RenderPassKind::Opaque, 15, 4},
+            {RenderPassKind::Opaque, 0, 0},
+            {RenderPassKind::Opaque, 1, 1},
+            {RenderPassKind::Opaque, 2, 2},
+            {RenderPassKind::Opaque, 3, 3},
+            {RenderPassKind::Opaque, 4, 4},
         };
         RenderPassExecutionPlan passPlan;
         passPlan.pass = RenderPassKind::Opaque;
@@ -931,6 +1214,11 @@ namespace
         passPlan.skippedPackets = {4, 1};
         passPlan.partition = decision.partition;
         passPlan.reason = decision.reason;
+        passPlan.reasonCounts[static_cast<size_t>(decision.reason)] = 3;
+        passPlan.reasonCounts[static_cast<size_t>(
+            RenderPolicyReason::PacketRequiresDirect)] = 1;
+        passPlan.reasonCounts[static_cast<size_t>(
+            RenderPolicyReason::PacketIrrelevant)] = 1;
         plan.passes.push_back(passPlan);
         EXPECT_TRUE(ValidateRenderFrameExecutionPlan(plan));
 
@@ -940,7 +1228,7 @@ namespace
         plan.packetReferences.pop_back();
         EXPECT_FALSE(ValidateRenderFrameExecutionPlan(plan));
 
-        plan.packetReferences.push_back({RenderPassKind::Opaque, 15, 4});
+        plan.packetReferences.push_back({RenderPassKind::Opaque, 4, 4});
         plan.passes.front().gpuEligiblePackets = {UINT32_MAX, 3};
         EXPECT_FALSE(ValidateRenderFrameExecutionPlan(plan));
 

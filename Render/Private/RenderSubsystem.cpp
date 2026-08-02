@@ -342,6 +342,7 @@ namespace
             RVX_COPY_GPU_CULLING_FIELD(opaqueGpuDrivenIndirectDrawCount);
             RVX_COPY_GPU_CULLING_FIELD(opaqueFallbackReason);
 #undef RVX_COPY_GPU_CULLING_FIELD
+            features.policy = frame.policy;
 
             const ParticleFeaturePassStats& particles =
                 m_sceneRenderer->GetParticleFeaturePassStats();
