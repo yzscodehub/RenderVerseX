@@ -5231,6 +5231,10 @@ RHIGraphicsPipelineDesc PipelineCache::BuildGPUDrivenDefaultLitPipelineDesc(
                   {
                       return element.inputSlot == 4 || element.inputSlot == 5;
                   });
+    pipelineDesc.inputLayout.AddElement("INSTANCE_INDEX", RHIFormat::R32_UINT, 6);
+    RHIInputElement& instanceIndexElement = pipelineDesc.inputLayout.elements.back();
+    instanceIndexElement.perInstance = true;
+    instanceIndexElement.instanceDataStepRate = 1;
     return pipelineDesc;
 }
 
@@ -5274,6 +5278,10 @@ RHIGraphicsPipelineDesc PipelineCache::BuildGPUDrivenDepthOnlyPipelineDesc() con
                   {
                       return element.inputSlot == 4 || element.inputSlot == 5;
                   });
+    pipelineDesc.inputLayout.AddElement("INSTANCE_INDEX", RHIFormat::R32_UINT, 6);
+    RHIInputElement& instanceIndexElement = pipelineDesc.inputLayout.elements.back();
+    instanceIndexElement.perInstance = true;
+    instanceIndexElement.instanceDataStepRate = 1;
     return pipelineDesc;
 }
 

@@ -119,6 +119,7 @@ namespace RVX
     {
         RHIBufferAccessSnapshot constants;
         RHIBufferAccessSnapshot instances;
+        RHIBufferAccessSnapshot instanceIndices;
         RHIBufferAccessSnapshot visibility;
         RHIBufferAccessSnapshot visibleInstances;
         RHIBufferAccessSnapshot indirectDraws;
@@ -273,6 +274,9 @@ namespace RVX
          */
         RHIBuffer* GetInstanceBuffer() const { return m_instanceBuffer.Get(); }
 
+        /** @brief Identity per-instance vertex input used to resolve indirect firstInstance. */
+        RHIBuffer* GetInstanceIndexBuffer() const { return m_instanceIndexBuffer.Get(); }
+
         /**
          * @brief Get the culling constants buffer
          */
@@ -421,6 +425,7 @@ namespace RVX
 
         // GPU buffers
         RHIBufferRef m_instanceBuffer;           // All instance data
+        RHIBufferRef m_instanceIndexBuffer;      // Identity uint index fetched through IA firstInstance
         RHIBufferRef m_visibilityBuffer;         // Per-instance visibility flags
         RHIBufferRef m_visibleInstanceBuffer;    // Visible instance indices
         RHIBufferRef m_indirectBuffer;           // Indirect draw commands

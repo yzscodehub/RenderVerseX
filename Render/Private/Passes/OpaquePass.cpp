@@ -131,10 +131,12 @@ void OpaquePass::SetGPUDrivenCullingSource(const GPUCulling* gpuCulling)
 }
 
 void OpaquePass::SetGPUDrivenRenderGraphResources(RGBufferHandle instanceBuffer,
+                                                  RGBufferHandle instanceIndexBuffer,
                                                   RGBufferHandle indirectDrawBuffer,
                                                   RGBufferHandle drawCountBuffer)
 {
     m_gpuDrivenInstanceHandle = instanceBuffer;
+    m_gpuDrivenInstanceIndexHandle = instanceIndexBuffer;
     m_gpuDrivenIndirectHandle = indirectDrawBuffer;
     m_gpuDrivenDrawCountHandle = drawCountBuffer;
 }
@@ -278,6 +280,12 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         {
             builder.Read(m_gpuDrivenInstanceHandle, RHIShaderStage::Vertex);
         }
+        if (m_gpuDrivenInstanceIndexHandle.IsValid())
+        {
+            builder.Read(m_gpuDrivenInstanceIndexHandle,
+                         RHIResourceState::VertexBuffer,
+                         RHIShaderStage::Vertex);
+        }
         if (m_gpuDrivenIndirectHandle.IsValid())
         {
             builder.Read(m_gpuDrivenIndirectHandle, RHIResourceState::IndirectArgument);
@@ -411,6 +419,7 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         return false;
     }
     if (!m_gpuCulling->GetInstanceBuffer() ||
+        !m_gpuCulling->GetInstanceIndexBuffer() ||
         (!m_gpuCulling->WasGpuExecutionUsedLastCull() &&
          !m_gpuCulling->WasCpuFallbackUsedLastCull()))
     {
@@ -533,6 +542,7 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         }
 
         ctx.SetVertexBuffer(0, batch.buffers.positionBuffer);
+        ctx.SetVertexBuffer(6, m_gpuCulling->GetInstanceIndexBuffer());
         if (batch.buffers.normalBuffer)
         {
             ctx.SetVertexBuffer(1, batch.buffers.normalBuffer);

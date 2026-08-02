@@ -14,6 +14,7 @@
 //   Slot 3: Tangent buffer (float4)
 //   Slot 4: Bone indices buffer (uint4)
 //   Slot 5: Bone weights buffer (float4)
+//   Slot 6: GPU-driven global instance index buffer (uint)
 // =============================================================================
 
 #include "Include/BRDF.hlsli"
@@ -187,6 +188,7 @@ struct RigidVSInput
     float3 Normal   : NORMAL;
     float2 TexCoord : TEXCOORD0;
     float4 Tangent  : TANGENT;
+    uint InstanceIndex : INSTANCE_INDEX;
 };
 
 struct PSInput
@@ -272,10 +274,9 @@ PSInput VSMain(VSInput input)
 }
 
 PSInput VSMainGPUDriven(
-    RigidVSInput input,
-    uint instanceId : SV_InstanceID)
+    RigidVSInput input)
 {
-    GPUInstanceData instance = GPUDrivenInstances[instanceId];
+    GPUInstanceData instance = GPUDrivenInstances[input.InstanceIndex];
 
     PSInput output;
 

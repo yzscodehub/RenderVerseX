@@ -56,10 +56,12 @@ void DepthPrepass::SetGPUDrivenCullingSource(const GPUCulling* gpuCulling)
 }
 
 void DepthPrepass::SetGPUDrivenRenderGraphResources(RGBufferHandle instanceBuffer,
+                                                    RGBufferHandle instanceIndexBuffer,
                                                     RGBufferHandle indirectDrawBuffer,
                                                     RGBufferHandle drawCountBuffer)
 {
     m_gpuDrivenInstanceHandle = instanceBuffer;
+    m_gpuDrivenInstanceIndexHandle = instanceIndexBuffer;
     m_gpuDrivenIndirectHandle = indirectDrawBuffer;
     m_gpuDrivenDrawCountHandle = drawCountBuffer;
 }
@@ -93,6 +95,12 @@ void DepthPrepass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         if (m_gpuDrivenInstanceHandle.IsValid())
         {
             builder.Read(m_gpuDrivenInstanceHandle, RHIShaderStage::Vertex);
+        }
+        if (m_gpuDrivenInstanceIndexHandle.IsValid())
+        {
+            builder.Read(m_gpuDrivenInstanceIndexHandle,
+                         RHIResourceState::VertexBuffer,
+                         RHIShaderStage::Vertex);
         }
         if (m_gpuDrivenIndirectHandle.IsValid())
         {
@@ -157,6 +165,7 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx, const ViewDa
         !m_pipelineCache ||
         !m_gpuCulling ||
         !m_gpuCulling->GetInstanceBuffer() ||
+        !m_gpuCulling->GetInstanceIndexBuffer() ||
         (!m_gpuCulling->WasGpuExecutionUsedLastCull() && !m_gpuCulling->WasCpuFallbackUsedLastCull()))
     {
         return false;
@@ -211,6 +220,7 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx, const ViewDa
         }
 
         ctx.SetVertexBuffer(0, buffers.positionBuffer);
+        ctx.SetVertexBuffer(6, m_gpuCulling->GetInstanceIndexBuffer());
         if (buffers.boneIndicesBuffer)
         {
             ctx.SetVertexBuffer(4, buffers.boneIndicesBuffer);

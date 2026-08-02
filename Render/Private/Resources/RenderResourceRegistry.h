@@ -165,6 +165,9 @@ namespace RVX
             RenderResourceHandle handle) const;
         [[nodiscard]] bool HasExactEntry(RenderResourceHandle handle) const;
         [[nodiscard]] bool IsGPUReadyExact(RenderResourceHandle handle) const;
+        /** @brief Query the public lifecycle state for an exact generation. */
+        [[nodiscard]] RenderResourceStatus QueryStatus(
+            RenderResourceHandle handle) const noexcept;
         [[nodiscard]] bool HasPending(RenderResourceHandle handle) const;
         [[nodiscard]] uint32 GetEntryCount() const;
         [[nodiscard]] RenderResourceRegistryStats GetStats() const;

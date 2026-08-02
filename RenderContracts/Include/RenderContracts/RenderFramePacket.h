@@ -9,13 +9,14 @@
 #include "Core/Types.h"
 #include "RenderContracts/FeatureRenderSnapshot.h"
 #include "RenderContracts/RenderIdentity.h"
+#include "RenderContracts/RenderMaterial.h"
 
 #include <vector>
 
 namespace RVX
 {
     inline constexpr uint32 RVX_RENDER_FRAME_PACKET_SCHEMA_ID = 0x52565846U;
-    inline constexpr uint32 RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION = 1;
+    inline constexpr uint32 RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION = 3;
 
     enum class RenderLightType : uint8
     {
@@ -77,10 +78,20 @@ namespace RVX
         float32 exposure = 1.0f;
     };
 
+    /** @brief Owned per-submesh material selection carried across threads. */
+    struct RenderSubmeshMaterialBinding
+    {
+        uint32 submeshIndex = 0;
+        RenderResourceHandle material;
+        RenderMaterialMode materialMode = RenderMaterialMode::Opaque;
+    };
+
     struct RenderPrimitiveSnapshot
     {
         uint64 objectId = 0;
         RenderResourceHandle mesh;
+        std::vector<RenderSubmeshMaterialBinding> submeshes;
+        // Legacy first-submesh projections kept for existing packet consumers.
         RenderResourceHandle material;
         RenderResourceHandle fallbackMesh;
         RenderResourceHandle fallbackMaterial;
@@ -177,9 +188,28 @@ namespace RVX
         float32 cascadeBlendRatio = 0.05f;
     };
 
+    /** @brief Runtime policy for selecting the GPU-driven rendering path. */
+    enum class RenderGPUDrivenMode : uint8
+    {
+        Auto = 0,
+        ForceEnabled,
+        ForceDisabled,
+    };
+
+    inline const char* GetRenderGPUDrivenModeName(RenderGPUDrivenMode mode)
+    {
+        switch (mode)
+        {
+            case RenderGPUDrivenMode::Auto: return "Auto";
+            case RenderGPUDrivenMode::ForceEnabled: return "ForceEnabled";
+            case RenderGPUDrivenMode::ForceDisabled: return "ForceDisabled";
+            default: return "Invalid";
+        }
+    }
+
     struct RenderGPUCullingSettings
     {
-        bool enabled = true;
+        RenderGPUDrivenMode mode = RenderGPUDrivenMode::Auto;
         uint32 maxVisibleObjects = 65536;
         bool enableOcclusionCulling = true;
         bool enableDistanceCulling = true;

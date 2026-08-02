@@ -321,6 +321,8 @@ namespace
                 frame.gpuDrivenCullingStats;
 #define RVX_COPY_GPU_CULLING_FIELD(name) \
             features.gpuDrivenCulling.name = gpuCulling.name
+            RVX_COPY_GPU_CULLING_FIELD(policyDecisionAvailable);
+            RVX_COPY_GPU_CULLING_FIELD(policyDecision);
             RVX_COPY_GPU_CULLING_FIELD(enabled);
             RVX_COPY_GPU_CULLING_FIELD(graphPassAdded);
             RVX_COPY_GPU_CULLING_FIELD(graphPassRecorded);

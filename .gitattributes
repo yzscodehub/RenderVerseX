@@ -8,6 +8,7 @@
 *.jpeg binary
 *.tga binary
 *.bmp binary
+*.ppm binary
 *.ico binary
 *.dds binary
 *.ktx binary

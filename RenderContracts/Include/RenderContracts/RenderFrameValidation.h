@@ -50,7 +50,16 @@ namespace RVX
         {
             return false;
         }
-        if (settings.gpuCulling.enabled &&
+        switch (settings.gpuCulling.mode)
+        {
+            case RenderGPUDrivenMode::Auto:
+            case RenderGPUDrivenMode::ForceEnabled:
+            case RenderGPUDrivenMode::ForceDisabled:
+                break;
+            default:
+                return false;
+        }
+        if (settings.gpuCulling.mode != RenderGPUDrivenMode::ForceDisabled &&
             (settings.gpuCulling.maxVisibleObjects == 0 ||
              !std::isfinite(settings.gpuCulling.maxDrawDistance) ||
              settings.gpuCulling.maxDrawDistance <= 0.0f))

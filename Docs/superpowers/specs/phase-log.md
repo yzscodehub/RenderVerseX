@@ -42616,6 +42616,690 @@ ctest --test-dir build\win_x64_debug -C Debug `
 
 ---
 
+### R-SP317 GPU-driven backend qualification policy
+
+**Date:** 2026-08-02
+**Commit:** Pending
+**Spark plan review agent:** N/A
+**Spark code review agent:** N/A
+
+**Plan source:**
+
+- Document:
+  `Docs/superpowers/plans/2026-08-02-gpu-driven-backend-qualification-plan.md`
+- Section: Stage 1 / qualification infrastructure
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP316 M2 DX12 native correctness closure
+- Evidence: DX12 normal validation, deterministic visual golden, forced direct
+  fallback, and dedicated GPU-Based Validation gates are already green.
+
+**Approved scope:**
+
+- Make `Auto` the shipping policy while retaining forced development overrides.
+- Replace the backend qualification boolean with a reviewed, versioned evidence
+  record and derived maturity level.
+- Keep DX12 quarantined as Candidate until cross-path parity, real-asset, and
+  adapter/driver matrix gates close.
+- Export qualification revision and missing gates through render diagnostics.
+- Add a native DX12 smoke that validates either side of the unchanged Auto
+  policy as backend qualification evolves.
+
+**Out of scope:**
+
+- Promoting DX12 to Qualified before the three remaining gates exist.
+- Qualifying Vulkan or Metal without backend-native evidence.
+- Making GPU-driven a shipping user quality option.
+- Editor implementation.
+
+**Files changed:**
+
+- `Render/Include/Render/GPUDriven/GPUDrivenQualification.h`
+- `Render/Include/Render/GPUDriven/GPUDrivenPolicy.h`
+- SceneRenderer feature/tool diagnostics
+- ModelViewer GPU-driven policy smoke CLI
+- GPU-driven, RenderPass, and ModelViewer CTest registration
+- Qualification plan and phase log
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  GPUDrivenValidation RenderPassValidation ModelViewer -- /m:1
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(GPUDrivenValidationFixture\.|RenderPassValidationFixture\.(DepthPrepassConsumesGPUDrivenMultiMeshIndirectStreams|OpaquePassFallsBackToDirectDrawWhenGPUDrivenPipelineFails|OpaquePassConsumesGPUDrivenMaterialGroupedIndirectStreams)$)" `
+  --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^ModelViewerGPUDrivenAutoPolicySmoke$" --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenGBVSmoke|GPUDrivenVisualGoldenValidation|ModelViewerGPUDrivenDisabledSmoke|GPUDrivenDisabledVisualDiffValidation)$" `
+  --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^SceneRendererDiagnosticsValidation\." --output-on-failure
+```
+
+**Validation result:**
+
+- Build: PASS for GPUDrivenValidation, RenderPassValidation, and ModelViewer.
+- Tests: PASS; policy/unit/multi-batch selection 23/23, Auto-policy smoke 1/1,
+  forced-on/GBV/golden/forced-off suite 5/5, diagnostics 4/4.
+- Visual gate: PASS; forced GPU-driven retains the zero-tolerance golden and
+  the direct fallback remains observably distinct for the culling fixture.
+- Auto gate: PASS; DX12 Candidate resolves to the direct path with an explicit
+  `BackendNotQualified` reason and non-empty missing evidence.
+
+**Artifacts:**
+
+- Plan:
+  `Docs/superpowers/plans/2026-08-02-gpu-driven-backend-qualification-plan.md`
+- Existing golden: `Tests/Golden/ModelViewer/R11_GPUDriven_DX12_320x180.ppm`
+- CTest log: `build/win_x64_debug/Testing/Temporary/LastTest.log`
+
+**Spark plan review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: mutable qualification boolean, hidden evidence state,
+  and a default policy that could be promoted without an integration assertion.
+
+**Spark code review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: maturity is derived from required/passed masks, forced-on
+  still respects capabilities and pipeline readiness, and Auto remains fail
+  closed while exposing the exact missing gate names.
+
+**Notes / follow-ups:**
+
+- Stage 2 is completed and recorded under R-SP318.
+- The existing R7 culling scene remains valuable for work-reduction proof but
+  is intentionally insufficient for production qualification.
+
+---
+
+### R-SP318 GPU-driven DX12 cross-path parity
+
+**Date:** 2026-08-02
+**Commit:** Pending
+**Spark plan review agent:** N/A
+**Spark code review agent:** N/A
+
+**Plan source:**
+
+- Document:
+  `Docs/superpowers/plans/2026-08-02-gpu-driven-backend-qualification-plan.md`
+- Section: Stage 2 / Cross-path parity
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP317 GPU-driven backend qualification policy
+- Evidence: the versioned qualification policy and DX12 Candidate rev1 Auto
+  quarantine are active and covered by native smoke tests.
+
+**Approved scope:**
+
+- Capture the same deterministic visible set through forced GPU-driven and
+  forced direct paths.
+- Require compute culling plus indirect submission on the GPU-driven capture.
+- Require direct draws and zero indirect submission on the forced-off capture.
+- Compare both captures at zero per-channel tolerance and zero differing pixels.
+- Update the reviewed DX12 qualification manifest only after all gates pass.
+
+**Out of scope:**
+
+- Treating the single-object fixture as a real-asset regression.
+- Promoting DX12 to Qualified before real-asset and adapter/driver evidence.
+- Changing Auto behavior while DX12 remains Candidate.
+
+**Files changed:**
+
+- `Samples/Showcase/ModelViewer/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Render/Include/Render/GPUDriven/GPUDrivenQualification.h`
+- GPU-driven qualification plan and phase log
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  GPUDrivenValidation ModelViewer VisualGoldenValidation -- /m:1
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation)$" `
+  --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(GPUDrivenValidationFixture\.|RenderPassValidationFixture\.(DepthPrepassConsumesGPUDrivenMultiMeshIndirectStreams|OpaquePassFallsBackToDirectDrawWhenGPUDrivenPipelineFails|OpaquePassConsumesGPUDrivenMaterialGroupedIndirectStreams)$|SceneRendererDiagnosticsValidation\.|ModelViewerGPUDrivenSmoke$|ModelViewerGPUDrivenAutoPolicySmoke$|ModelViewerGPUDrivenParityGPUSmoke$|ModelViewerGPUDrivenParityDirectSmoke$|GPUDrivenCrossPathVisualParityValidation$|ModelViewerGPUDrivenGBVSmoke$|GPUDrivenVisualGoldenValidation$|ModelViewerGPUDrivenDisabledSmoke$|GPUDrivenDisabledVisualDiffValidation$)" `
+  --output-on-failure
+```
+
+**Validation result:**
+
+- Build: PASS for GPUDrivenValidation, ModelViewer, and VisualGoldenValidation.
+- Focused parity gate: PASS 3/3 on the native DX12 adapter with validation.
+- Combined qualification regression: PASS 36/36.
+- Visual result: 320x180, tolerance 0, different pixels 0, MSE 0, PSNR 100.
+- Qualification result: DX12 advances to Candidate rev2 with 11/13 gates;
+  Auto remains on the direct path because two required gates remain open.
+
+**Artifacts:**
+
+- Report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R11_GPUDrivenCrossPathParity_DX12_320x180.json`
+- Captures: `R11_GPUDrivenParityGPU_DX12_320x180.ppm` and
+  `R11_GPUDrivenParityDirect_DX12_320x180.ppm` in the same artifact directory.
+
+**Spark plan review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: comparison no longer mixes visible-set changes with path
+  equivalence, and each capture proves the intended submission path.
+
+**Spark code review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: the manifest is updated only after generated evidence
+  passes, and the existing culling-effect test remains a separate invariant.
+
+**Notes / follow-ups:**
+
+- Stage 3 is the checked-in, redistributable multi-mesh/material real-asset
+  regression.
+
+---
+
+### R-SP319 Production asset onboarding and deterministic camera fit
+
+**Date:** 2026-08-02
+**Commit:** Pending
+**Spark plan review agent:** N/A
+**Spark code review agent:** N/A
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-production-asset-onboarding-plan.md`
+- `Docs/superpowers/plans/2026-08-02-gpu-driven-backend-qualification-plan.md`
+- Sections: Production asset Stages 1-3; GPU-driven qualification Stage 3A-C
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP318 GPU-driven DX12 cross-path parity
+- Evidence: DX12 remains Candidate rev2; the synthetic direct/GPU parity gate
+  passes exactly while real-asset and adapter/driver gates remain open.
+
+**Approved scope:**
+
+- Audit the developer model library and select a license-complete static
+  multi-mesh/material asset for stress validation.
+- Add deterministic bounds camera fitting without changing existing smoke
+  goldens by default.
+- Fail real-asset smokes when the final frame contains no visible model object.
+- Add an opt-in external-asset CTest layer and keep it separate from hermetic
+  production qualification evidence.
+
+**Out of scope:**
+
+- Committing the 70-130 MiB downloaded source assets unchanged.
+- Claiming support for glTF required specular-glossiness, skins, or animations.
+- Marking `RealAssetRegression` passed before a checked-in qualification asset
+  and native direct/GPU evidence exist.
+
+**Files changed:**
+
+- `Samples/Common/Include/Samples/ModelCameraFraming.h`
+- `Samples/Common/Private/ModelCameraFraming.cpp`
+- `Samples/Common/CMakeLists.txt`
+- `Samples/Showcase/ModelViewer/main.cpp`
+- `Tests/ModelCameraFramingValidation/main.cpp`
+- `Tests/CMakeLists.txt`
+- `assets/README.md`
+- Production asset and GPU-driven qualification plans
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  ModelCameraFramingValidation ModelViewer GPUDrivenValidation RenderPassValidation
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelCameraFramingValidation\.|GPUDrivenValidationFixture\.|RenderPassValidationFixture\.(DepthPrepassConsumesGPUDrivenMultiMeshIndirectStreams|OpaquePassFallsBackToDirectDrawWhenGPUDrivenPipelineFails|OpaquePassConsumesGPUDrivenMaterialGroupedIndirectStreams)$)" `
+  --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug -N `
+  -R "ExternalPorsche|ModelViewerExternalPorsche"
+```
+
+**Validation result:**
+
+- Asset audit: PASS; seven external glTF packages have complete referenced
+  dependencies, and license/capability boundaries are recorded.
+- Porsche source identity: 30 files, 74,214,810 bytes, aggregate manifest
+  SHA-256 `54f715c0b6c12fc39326476f4cf6794c9720857fbaccde57326ad5e43c46b381`.
+- Pre-change native baseline: DamagedHelmet direct PASS with one draw; Porsche
+  and Spartan parse/instantiate but fail visibility with identical
+  background-only hashes and zero direct draws under the fixed camera.
+- Build: PASS for ModelCameraFramingValidation, ModelViewer,
+  GPUDrivenValidation, and RenderPassValidation.
+- CPU/unit regression: PASS 27/27, including camera framing 4/4.
+- External CTest registration: PASS; direct, GPU-driven multi-batch, and parity
+  tests register only with the explicit asset root.
+- Post-change native visual gate: PENDING; local GUI/DX12 execution was rejected
+  after the approval quota was exhausted, so no result is inferred.
+
+**Artifacts:**
+
+- Pre-change captures:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/UserAssets_*_Direct_DX12_320x180.ppm`
+- External post-change captures/report are configured under:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ExternalAssets/`
+
+**Spark plan review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: fixed-camera false negatives, parse-success false positives,
+  missing license guard, and accidental mandatory dependency on large assets.
+
+**Spark code review result:**
+
+- Verdict: PASS for build/CPU/CMake registration; native visual evidence pending
+- Blockers resolved: smoke/golden default remains fixed, automatic fit is
+  explicit in real-asset tests, and external evidence cannot promote the
+  qualification manifest.
+
+**Notes / follow-ups:**
+
+- Run the three `ExternalPorsche` tests when native execution approval is
+  available. Keep DX12 Candidate until the hermetic asset and adapter matrix
+  gates close.
+
+---
+
+### R-SP320 Render-policy Task 0 real-asset baseline closure
+
+**Date:** 2026-08-02
+**Commit:** Pending
+**Spark plan review agent:** N/A; primary architect plus read-only explorer review
+**Spark code review agent:** N/A; terra implementation with primary review
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- Task 0 - Freeze and record the reference baseline
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP319 Production asset onboarding and deterministic camera fit
+- Evidence: the synthetic cross-path parity gate was green, while the external
+  Porsche gates and dedicated GPU-Based Validation smoke still exposed two
+  independent runtime defects.
+
+**Approved scope:**
+
+- Add an explicit bounded model render-resource readiness wait for external
+  smoke tests without changing normal Sample startup behavior.
+- Give dedicated GPU-Based Validation frames a matching bounded wait timeout.
+- Restore DX12 indirect instance addressing without requiring Shader Model 6.8.
+- Add the missing intra-pass UAV memory dependency and N+1 draw-counter capacity.
+- Preserve the failing pre-closure evidence and record the green post-fix baseline.
+
+**Out of scope:**
+
+- Promoting DX12 from Candidate or changing Auto policy.
+- Updating golden images, visual thresholds, or qualification masks.
+- Implementing Task 1 policy vocabulary or Task 2 draw packets.
+- Vulkan/Metal GPU-driven qualification and Editor work.
+
+**Files changed:**
+
+- `Samples/Showcase/ModelViewer/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Render/Include/Render/GPUDriven/GPUCulling.h`
+- `Render/Private/GPUDriven/GPUCulling.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Include/Render/Passes/DepthPrepass.h`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Render/Shaders/DepthOnly.hlsl`
+- `Tests/GPUDrivenValidation/main.cpp`
+
+**Root cause:**
+
+- DX12 `SV_InstanceID` does not include indirect `StartInstanceLocation`.
+  Every one-instance indirect draw therefore indexed `GPUDrivenInstances[0]`,
+  applying one node transform to all 51 Porsche draw items.
+- `CSFrustumCull` and `CSCompactDraws` also lacked an explicit same-pass UAV
+  dependency, and the draw-count allocation/dispatch did not cover the final
+  per-group counter at exact 64-instance boundaries.
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  GPUDrivenValidation RenderPassValidation ModelViewer -- /m:1
+build\win_x64_debug\Tests\Debug\GPUDrivenValidation.exe
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe `
+  --gtest_filter="*GPUDriven*:*RenderGraph*"
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$" `
+  --output-on-failure
+```
+
+**Validation result:**
+
+- Focused build: PASS for GPUDrivenValidation, RenderPassValidation, and ModelViewer.
+- Focused unit/pass review: PASS 23/23 and 8/8.
+- Independent regression matrix: PASS 359/359 with no failures, skips,
+  timeouts, or retries; includes RenderContracts 201/201, RenderPass 114/114,
+  and non-Porsche ModelViewer GPU/GBV/visual gates 9/9.
+- Porsche native DX12 gates: PASS 3/3; 75 visible objects, 51 direct draws,
+  and 51 GPU-driven graph inputs/batches/indirect draws.
+- Cross-path result: tolerance 0, different pixels 0, MSE 0, PSNR 100;
+  Direct and GPU captures share SHA-256
+  `FD02DDBB1305528680072C6DD15696CB27A44B89D3441571741CB8D4BBF2B2CA`.
+
+**Artifacts:**
+
+- Closure summary:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/Baseline/Task0_baseline_summary.json`
+- Preserved failing summary:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/Baseline/Task0_baseline_preclosure_summary.json`
+- Porsche parity report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ExternalAssets/Porsche_CrossPath_DX12_320x180.json`
+- Post-fix logs: `build/win_x64_debug/BaselineEvidence/10_task0_*_postfix.log`
+  through `16_task0_modelviewer_gpu_lasttest_postfix.log`.
+
+**Review result:**
+
+- Verdict: PASS.
+- The fix keeps `vs_6_0` and uses a portable identity per-instance vertex
+  stream, so indirect `firstInstance` selects an explicit structured-buffer
+  index through IA on DX12 and remains suitable for future Vulkan/Metal paths.
+- The identity stream is tracked as a RenderGraph vertex-buffer read; the
+  compute producer/consumer dependency uses the existing scoped RHI barrier API.
+
+**Notes / follow-ups:**
+
+- DX12 remains Candidate; this external developer asset does not satisfy the
+  checked-in hermetic asset or adapter/driver matrix qualification gates.
+- Task 0 is closed. The next implementation stage is Task 1 immutable policy
+  vocabulary and execution-plan contracts.
+
+---
+
+### R-SP321 Render-policy Task 1 immutable contracts
+
+**Date:** 2026-08-02
+**Commit:** Pending
+**Plan review agent:** Primary architect plus read-only explorer
+**Code implementation agent:** terra worker with primary review
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- Task 1 - Add vocabulary and immutable policy contracts
+- Architectural invariants 3.2, 3.3, and target contract 4.3
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP320 Render-policy Task 0 real-asset baseline closure
+- Evidence: focused and full CPU suites were green; DX12 Direct/GPU synthetic
+  and Porsche captures had zero-pixel parity before Task 1.
+
+**Approved scope:**
+
+- Add stable policy vocabulary for GPU-driven tier, visibility, submission,
+  semantic pass kind, execution status, and stable reason codes.
+- Separate the external request, selected value-only execution plan, and
+  observed value-only execution report.
+- Preserve planned GPU and Direct packet partitions and report both lanes
+  independently for future hybrid execution.
+- Publish an unconnected, stage-aware diagnostics value projection.
+- Add CPU-only contract validation without changing renderer selection or
+  command recording.
+
+**Out of scope:**
+
+- Runtime policy resolution, per-view plan compilation, packet construction,
+  or migration of the existing `GPUDrivenPolicyDecision`.
+- RHI capability expansion, RenderGraph scheduling changes, and backend work.
+- Qualification promotion, golden or threshold changes, and Editor work.
+
+**Files changed:**
+
+- `Render/Include/Render/Policy/RenderPolicyTypes.h`
+- `Render/Include/Render/Policy/RenderFrameExecutionPlan.h`
+- `Render/Include/Render/Policy/RenderPolicyDiagnostics.h`
+- `Render/Include/Render/RenderDiagnostics.h`
+- `Tests/RenderPolicyValidation/main.cpp`
+- `Tests/CMakeLists.txt`
+
+**Contract review corrections:**
+
+- Default selection remains fail-closed: Direct tier, CPU visibility, Direct
+  submission, no planned packets, and no observed execution.
+- Default qualification now carries the full required gate mask rather than a
+  misleading zero-requirement mask.
+- Request, plan, and report availability are independent, so one stage cannot
+  imply completion of a later stage.
+- Per-pass reports retain independent GPU-driven and Direct lane facts plus a
+  skipped count; a hybrid pass is not collapsed into one submission mode.
+- `fallbackSubmission` is explicitly a graph-compile-time planned partition,
+  never permission for a recording-time silent fallback.
+- Plans and reports contain only owned values, enums, counts, and vectors; no
+  RHI object, command context, RenderGraph handle, pointer, or callback appears.
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  RenderPolicyValidation -- /m:1
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^RenderPolicyValidation\." --output-on-failure
+
+cmake --build build\win_x64_debug --config Debug --target `
+  RenderContractsValidation GPUDrivenValidation RenderSceneValidation `
+  RenderPassValidation -- /m:1
+
+cmake --build build\win_x64_debug --config Debug --target `
+  ModelViewer VisualGoldenValidation -- /m:1
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation)$" `
+  --output-on-failure
+```
+
+**Validation result:**
+
+- Task-local contract tests: PASS 5/5, including every legal enum value/name,
+  invalid enum names, fail-closed defaults, stage separation, copy/move value
+  semantics, and independent hybrid execution lanes.
+- Independent regression: PASS 372/372; RenderContracts 201/201,
+  GPUDriven 23/23, RenderScene 8/8, and RenderPass 140/140.
+- Synthetic DX12 Direct/GPU visual gate: PASS 3/3; different pixels 0,
+  MSE 0, PSNR 100, tolerance 0.
+- Direct and GPU capture SHA-256 both remain exactly equal to the Task 0
+  baseline: `DD0FDD9B0FB7A6BA85E4350359B6358BCF2D051070F1615AEE822A18B079FB06`.
+- `git diff --check`: PASS; only existing LF-to-CRLF conversion warnings.
+
+**Artifacts:**
+
+- Visual parity report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R11_GPUDrivenCrossPathParity_DX12_320x180.json`
+- Task 0 comparison baseline:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/Baseline/Task0_baseline_summary.json`
+
+**Review result:**
+
+- Verdict: PASS after contract revision.
+- The first implementation was revised to remove ambiguous zero-gate defaults,
+  lifecycle availability conflation, and single-lane execution reporting.
+- No renderer producer or consumer is connected yet, so Task 1 cannot change
+  screenshot content, draw counts, backend selection, or qualification.
+
+**Notes / follow-ups:**
+
+- Task 2 introduces stable packet identity and packet construction; Task 5 adds
+  per-view plan compilation and is the correct stage to introduce a stable
+  view/plan key and validated freeze boundary.
+- Task 7 adds packet-level exactly-once partition/skip diagnostics once stable
+  packet IDs exist. Do not invent pointer/span-based packet identity earlier.
+- The existing `rvx_add_gtest` helper publishes only the first label from a
+  semicolon-separated label list; the new test is still registered and runs by
+  name. Treat multi-label propagation as a separate test-infrastructure fix.
+- Task 1 is closed. The next implementation stage is Task 2 MeshBatch and
+  RenderDrawPacket.
+
+---
+
+### R-SP322 Render-policy Task 2 MeshBatch and RenderDrawPacket
+
+**Date:** 2026-08-02
+**Commit:** Pending
+**Plan review agent:** Primary architect plus two read-only explorers
+**Code implementation agent:** terra worker with primary review; luna worker
+for independent regression
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- Task 2 - Introduce MeshBatch and RenderDrawPacket
+- Target contracts 4.1 and 4.2, while preserving the legacy Direct execution
+  path
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP321 Render-policy Task 1 immutable contracts
+- Evidence: policy contracts, CPU regression, synthetic Direct/GPU parity, and
+  Porsche Direct/GPU parity were green before Task 2.
+
+**Approved scope:**
+
+- Introduce value-only `MeshBatch` and `RenderDrawPacket` contracts with exact
+  resource-generation identity and deterministic geometry, material, and
+  pipeline keys.
+- Preserve all per-submesh material bindings through extraction and raise the
+  owned frame-packet schema from version 2 to version 3.
+- Build one authoritative batch per active mesh submesh from render-registry
+  CPU metadata, including canonical submesh-0 synthesis for indexed meshes
+  without an explicit submesh table.
+- Keep `RenderDrawItem` as a compatibility projection so existing Direct and
+  GPU-driven passes continue to execute without a Task 2 pass migration.
+- Preserve missing-material/default-material behavior and fail closed for
+  malformed bounds, missing geometry, invalid ordinals, invalid modes, or
+  overflowing index ranges.
+
+**Out of scope:**
+
+- Retained packet caching, invalidation, MeshPassProcessors, policy resolution,
+  and execution-plan integration.
+- Pass, RenderGraph, RHI, backend, qualification, threshold, or golden changes.
+- Repairing the separate glTF multi-primitive importer/instantiation limitation.
+- Editor work.
+
+**Files changed:**
+
+- `Render/Include/Render/Renderer/MeshBatch.h`
+- `Render/Include/Render/Renderer/RenderDrawPacket.h`
+- `Render/Private/Renderer/RenderDrawPacket.cpp`
+- `Render/Include/Render/Renderer/RenderDrawItem.h`
+- `Render/Private/Renderer/RenderDrawItem.cpp`
+- `Render/Include/Render/Renderer/RenderScene.h`
+- `Render/Private/Renderer/RenderScene.cpp`
+- `RenderContracts/Include/RenderContracts/RenderFramePacket.h`
+- `RenderExtraction/Private/RenderFramePacketBuilder.cpp`
+- `RenderExtraction/Private/RenderFrameExtractor.cpp`
+- `Render/CMakeLists.txt`
+- `Tests/CMakeLists.txt`
+- `Tests/RenderDrawPacketValidation/main.cpp`
+- `Tests/RenderContractsValidation/main.cpp`
+- `Tests/RenderFrameExtractionValidation/main.cpp`
+- `Tests/RenderSceneValidation/main.cpp`
+
+**Contract review corrections:**
+
+- `RenderDrawPacket::pass` is independent from `PipelineKey`; a future group
+  key may combine pass and pipeline without making the pipeline identity
+  pass-specific.
+- Indexed arguments retain all five API-neutral values: index count, instance
+  count, first index, vertex offset, and first instance.
+- Stable key hashes use the standard FNV-1a 64-bit offset basis and full-field
+  equality; exact mesh and material generations participate in identity.
+- Masked, transparent, and missing-material flags are canonical derived values,
+  not trusted caller input, and submesh ranges reject unsigned overflow.
+- Preferred-mesh bindings must exactly match authoritative geometry metadata.
+  A selected fallback mesh instead uses its own actual submesh layout and the
+  legacy first-material projection, avoiding unsafe ordinal reuse.
+- An authoritative mesh with no drawable geometry produces no compatibility
+  item. Missing material remains a valid drawable batch with an explicit flag.
+- Skinning palettes remain dynamic object data and never enter static packet
+  keys; only a conservative skinned classification bit is carried.
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  RenderDrawPacketValidation RenderContractsValidation `
+  RenderFrameExtractionValidation RenderSceneValidation `
+  RenderPolicyValidation GPUDrivenValidation RenderPassValidation --parallel 1
+
+cmake --build build\win_x64_debug --config Debug --target `
+  ModelViewer VisualGoldenValidation -- /m:1
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation)$" `
+  --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$" `
+  --output-on-failure
+```
+
+**Validation result:**
+
+- Task-local and focused regression: PASS 394/394; RenderDrawPacket 5/5,
+  RenderContracts 203/203, RenderFrameExtraction 5/5, RenderScene 13/13,
+  RenderPolicy 5/5, GPUDriven 23/23, and RenderPass 140/140.
+- Synthetic DX12 Direct/GPU visual gate: PASS 3/3; different pixels 0,
+  MSE 0, PSNR 100, tolerance 0. Both captures retain Task 0 SHA-256
+  `DD0FDD9B0FB7A6BA85E4350359B6358BCF2D051070F1615AEE822A18B079FB06`.
+- Porsche native DX12 gates: PASS 3/3; 75 visible objects, 51 Direct draws,
+  and 51 GPU-driven graph inputs/batches/indirect draws.
+- Porsche cross-path result: different pixels 0, MSE 0, PSNR 100,
+  tolerance 0. Both captures retain Task 0 SHA-256
+  `FD02DDBB1305528680072C6DD15696CB27A44B89D3441571741CB8D4BBF2B2CA`.
+- Build emitted only pre-existing validation/deprecation warnings. Validation
+  fixtures logged their expected failure/fallback paths but all processes
+  exited successfully.
+- `git diff --check`: PASS; only existing LF-to-CRLF conversion warnings.
+
+**Artifacts:**
+
+- Synthetic parity report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R11_GPUDrivenCrossPathParity_DX12_320x180.json`
+- Porsche parity report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ExternalAssets/Porsche_CrossPath_DX12_320x180.json`
+- Task 0 comparison baseline:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/Baseline/Task0_baseline_summary.json`
+
+**Review result:**
+
+- Verdict: PASS after primary contract review and added fallback/canonical
+  submesh boundary tests.
+- Task 2 restores per-submesh data continuity and stable packet identity while
+  leaving command recording on the proven compatibility path.
+- No Pass, RenderGraph, RHI, backend, qualification, threshold, or golden file
+  was changed by Task 2.
+
+**Notes / follow-ups:**
+
+- The approved immediate slice stops after Task 2. Do not start Task 3 without
+  a new explicit user instruction.
+- Task 3 is retained packet caching and invalidation; Task 4 is the first pass
+  migration through MeshPassProcessors.
+- The glTF importer currently has a separate multi-primitive instantiation gap.
+  It should be addressed as an asset-pipeline task and tested with a checked-in
+  multi-primitive fixture, not hidden inside packet construction.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

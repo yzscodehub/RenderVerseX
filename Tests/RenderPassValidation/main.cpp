@@ -3557,6 +3557,16 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
     EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
     EXPECT_EQ(ctx.drawIndexedCount, 0u);
 
+    const size_t passConstantCount = static_cast<size_t>(std::count_if(
+        device.createdBufferDescs.begin(),
+        device.createdBufferDescs.end(),
+        [](const RHIBufferDesc& desc)
+        {
+            return desc.debugName &&
+                   std::string(desc.debugName) == "BloomPassConstants";
+        }));
+    EXPECT_EQ(passConstantCount, static_cast<size_t>(7));
+
     std::vector<RHITextureDesc> pyramidDescs;
     for (const RHITextureDesc& desc : device.createdTextureDescs)
     {
@@ -6670,6 +6680,10 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(diagnosticsText.find(expectedSchemaText), std::string::npos);
     EXPECT_NE(diagnosticsText.find("Availability: frame=true, renderGraph=true"), std::string::npos);
     EXPECT_NE(diagnosticsText.find("ExternalTarget: requested=true, active=true"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find("qualification=Unqualified"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find(
+                  "missingQualificationGates=RHIContractConformance"),
+              std::string::npos);
     EXPECT_NE(diagnosticsText.find("RenderGraph: passes="), std::string::npos);
     EXPECT_NE(diagnosticsText.find("resources="), std::string::npos);
     EXPECT_FALSE(renderer.SaveToolDiagnosticsText(nullptr));
@@ -6744,7 +6758,10 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     fs::remove(renderGraphDiagnosticsJsonPath, removeError);
 
     const std::string manifestJson = renderer.ExportToolDiagnosticsManifestJson();
-    EXPECT_NE(manifestJson.find("\"schemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(manifestJson.find(
+                  "\"schemaVersion\": " + std::to_string(
+                      RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(manifestJson.find("\"id\": \"manifestJson\""), std::string::npos);
     EXPECT_NE(manifestJson.find("\"kind\": \"ToolDiagnosticsManifestJson\""), std::string::npos);
     EXPECT_NE(manifestJson.find("\"contentType\": \"application/json\""), std::string::npos);
@@ -6779,7 +6796,10 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(emptyArtifactSummaryJson.find("\"contentType\": \"application/json\""), std::string::npos);
     EXPECT_NE(emptyArtifactSummaryJson.find("\"contentHash\": \"\""), std::string::npos);
     EXPECT_NE(emptyArtifactSummaryJson.find("\"relativePath\": \"\""), std::string::npos);
-    EXPECT_NE(emptyArtifactSummaryJson.find("\"toolDiagnosticsSchemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(emptyArtifactSummaryJson.find(
+                  "\"toolDiagnosticsSchemaVersion\": " + std::to_string(
+                      RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(emptyArtifactSummaryJson.find("\"artifactResultAvailable\": false"), std::string::npos);
     EXPECT_NE(emptyArtifactSummaryJson.find("\"metadataAvailable\": false"), std::string::npos);
     EXPECT_NE(emptyArtifactSummaryJson.find("\"captureId\": \"\""), std::string::npos);
@@ -6965,7 +6985,10 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(artifactSummaryJson.find("\"contentType\": \"application/json\""), std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"contentHash\": \"\""), std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"relativePath\": \"\""), std::string::npos);
-    EXPECT_NE(artifactSummaryJson.find("\"toolDiagnosticsSchemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(artifactSummaryJson.find(
+                  "\"toolDiagnosticsSchemaVersion\": " + std::to_string(
+                      RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"artifactResultAvailable\": true"), std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"capture\": {"), std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("\"metadataAvailable\": true"), std::string::npos);
@@ -7063,7 +7086,10 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(artifactSummaryJson.find("Frame001.rendergraph.json"), std::string::npos);
     EXPECT_NE(artifactSummaryJson.find("Frame001.diagnostics-manifest.json"), std::string::npos);
     const std::string artifactManifestJson = ReadTextFile(artifactResult.manifestJsonPath);
-    EXPECT_NE(artifactManifestJson.find("\"schemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(artifactManifestJson.find(
+                  "\"schemaVersion\": " + std::to_string(
+                      RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(artifactManifestJson.find("\"id\": \"manifestJson\""), std::string::npos);
     EXPECT_NE(artifactManifestJson.find("\"kind\": \"ToolDiagnosticsManifestJson\""), std::string::npos);
     EXPECT_NE(artifactManifestJson.find("\"contentType\": \"application/json\""), std::string::npos);
@@ -7230,7 +7256,10 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(validationJson.find("\"outputDirectory\": "), std::string::npos);
     EXPECT_NE(validationJson.find("\"frameIndex\": " + std::to_string(toolSnapshot.frame.frameCount)),
               std::string::npos);
-    EXPECT_NE(validationJson.find("\"toolDiagnosticsSchemaVersion\": 24"), std::string::npos);
+    EXPECT_NE(validationJson.find(
+                  "\"toolDiagnosticsSchemaVersion\": " + std::to_string(
+                      RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION)),
+              std::string::npos);
     EXPECT_NE(validationJson.find(
                   "\"renderGraphDiagnosticsSchemaVersion\": " +
                   std::to_string(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION)),

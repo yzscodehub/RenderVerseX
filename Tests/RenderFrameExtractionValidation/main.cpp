@@ -132,7 +132,10 @@ namespace
             mesh->SetPositions({{-1.0f, -1.0f, 0.0f},
                                 {1.0f, -1.0f, 0.0f},
                                 {0.0f, 1.0f, 0.0f}});
-            mesh->SetIndices(std::vector<uint16>{0, 1, 2});
+            mesh->SetIndices(std::vector<uint16>{0, 1, 2, 0, 2, 1});
+            mesh->SetSubMeshes({
+                SubMesh{0, 3, 0},
+                SubMesh{3, 3, 0}});
             mesh->SetBoundingBox({-1.0f, -1.0f, 0.0f},
                                  {1.0f, 1.0f, 0.0f});
             auto* resource = new Resource::MeshResource();
@@ -156,10 +159,13 @@ namespace
             return {".mat"};
         }
 
-        IResource* Load(const std::string&) override
+        IResource* Load(const std::string& path) override
         {
             auto source = std::make_shared<Material>("frame-material");
-            source->SetAlphaMode(Material::AlphaMode::Blend);
+            source->SetAlphaMode(
+                path.find("masked") != std::string::npos
+                    ? Material::AlphaMode::Mask
+                    : Material::AlphaMode::Blend);
             auto* resource = new Resource::MaterialResource();
             resource->SetMaterialData(std::move(source));
             return resource;
@@ -342,13 +348,17 @@ TEST(RenderFrameExtractionValidation, ExtractsCompleteOwnedPacketValues)
 {
     ExtractionFixture fixture("complete");
     WritePlaceholder(fixture.root / "frame.obj");
-    WritePlaceholder(fixture.root / "frame.mat");
+    WritePlaceholder(fixture.root / "frame-masked.mat");
+    WritePlaceholder(fixture.root / "frame-transparent.mat");
     auto mesh = fixture.subsystem.Load<Resource::MeshResource>(
         "source://frame.obj");
     auto material = fixture.subsystem.Load<Resource::MaterialResource>(
-        "source://frame.mat");
+        "source://frame-masked.mat");
+    auto transparentMaterial = fixture.subsystem.Load<Resource::MaterialResource>(
+        "source://frame-transparent.mat");
     ASSERT_TRUE(mesh.IsValid());
     ASSERT_TRUE(material.IsValid());
+    ASSERT_TRUE(transparentMaterial.IsValid());
     fixture.subsystem.Tick(0.0f);
 
     World world;
@@ -369,6 +379,7 @@ TEST(RenderFrameExtractionValidation, ExtractsCompleteOwnedPacketValues)
         primitiveEntity->GetRootComponent()));
     primitive->SetMesh(mesh);
     primitive->SetMaterial(0, material);
+    primitive->SetMaterial(1, transparentMaterial);
     primitive->SetLayerMask(0x55U);
 
     SceneEntity* lightEntity = CreateEntity(world, "Light");
@@ -415,6 +426,7 @@ TEST(RenderFrameExtractionValidation, ExtractsCompleteOwnedPacketValues)
     world.Shutdown();
     mesh.Reset();
     material.Reset();
+    transparentMaterial.Reset();
     unresolvedHandle.Reset();
 
     EXPECT_EQ(packet->GetHeader().sequence, 41U);
@@ -424,6 +436,15 @@ TEST(RenderFrameExtractionValidation, ExtractsCompleteOwnedPacketValues)
     ASSERT_EQ(packet->GetPrimitives().size(), 1U);
     EXPECT_TRUE(packet->GetPrimitives()[0].mesh.IsValid());
     EXPECT_TRUE(packet->GetPrimitives()[0].material.IsValid());
+    ASSERT_EQ(packet->GetPrimitives()[0].submeshes.size(), 2U);
+    EXPECT_EQ(packet->GetPrimitives()[0].material,
+              packet->GetPrimitives()[0].submeshes[0].material);
+    EXPECT_EQ(packet->GetPrimitives()[0].submeshes[0].materialMode,
+              RenderMaterialMode::Masked);
+    EXPECT_EQ(packet->GetPrimitives()[0].submeshes[1].materialMode,
+              RenderMaterialMode::Transparent);
+    EXPECT_NE(packet->GetPrimitives()[0].submeshes[0].material,
+              packet->GetPrimitives()[0].submeshes[1].material);
     EXPECT_EQ(packet->GetPrimitives()[0].layerMask, 0x55U);
     ASSERT_EQ(packet->GetLights().size(), 1U);
     EXPECT_EQ(packet->GetLights()[0].type, RenderLightType::Point);

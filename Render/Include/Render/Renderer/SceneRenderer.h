@@ -13,6 +13,7 @@
 #include "Render/Context/RenderContext.h"
 #include "Render/GPUDriven/GPUCulling.h"
 #include "Render/GPUDriven/GPUDrivenDiagnostics.h"
+#include "Render/GPUDriven/GPUDrivenPolicy.h"
 #include "Render/Resources/RenderResourceTypes.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/IRenderPass.h"
@@ -187,6 +188,8 @@ namespace RVX
 
     struct SceneGPUDrivenCullingStats
     {
+        bool policyDecisionAvailable = false;
+        GPUDrivenPolicyDecision policyDecision;
         bool enabled = false;
         bool fallbackUsed = false;
         bool graphPassAdded = false;
@@ -217,9 +220,9 @@ namespace RVX
             GPUDrivenDrawFallbackReason::Disabled;
     };
 
-    inline constexpr uint32 RVX_SCENE_RENDER_FEATURE_REPORT_SCHEMA_VERSION = 1;
-    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 3;
-    inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 24;
+    inline constexpr uint32 RVX_SCENE_RENDER_FEATURE_REPORT_SCHEMA_VERSION = 2;
+    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 4;
+    inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 25;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION = 24;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION = 25;
 
@@ -1148,7 +1151,15 @@ namespace RVX
         /// Get GPU-driven culling statistics from the last draw-list build.
         const SceneGPUDrivenCullingStats& GetGPUDrivenCullingStats() const { return m_gpuDrivenCullingStats; }
 
-        /// Enable or disable GPU-driven draw-list culling. CPU fallback is used until compute pipelines are ready.
+        /// Resolve and apply the requested GPU-driven runtime policy.
+        void SetGPUDrivenCullingMode(RenderGPUDrivenMode mode);
+        RenderGPUDrivenMode GetGPUDrivenCullingMode() const { return m_gpuDrivenCullingMode; }
+        const GPUDrivenPolicyDecision& GetGPUDrivenPolicyDecision() const
+        {
+            return m_gpuDrivenPolicyDecision;
+        }
+
+        /// Compatibility wrapper for callers that still use a binary override.
         void SetGPUDrivenCullingEnabled(bool enabled);
         bool IsGPUDrivenCullingEnabled() const { return m_gpuDrivenCullingEnabled; }
         void SetGPUDrivenCullingConfig(const GPUCullingConfig& config)
@@ -1287,6 +1298,7 @@ namespace RVX
         {
             RGBufferHandle constants;
             RGBufferHandle instances;
+            RGBufferHandle instanceIndices;
             RGBufferHandle visibility;
             RGBufferHandle visibleInstances;
             RGBufferHandle indirectDraws;
@@ -1295,6 +1307,7 @@ namespace RVX
             bool IsValid() const
             {
                 return constants.IsValid() && instances.IsValid() &&
+                       instanceIndices.IsValid() &&
                        visibility.IsValid() && visibleInstances.IsValid() &&
                        indirectDraws.IsValid() && drawCount.IsValid();
             }
@@ -1345,7 +1358,9 @@ namespace RVX
         Mat4 m_previousViewProjectionMatrix = Mat4Identity();
         bool m_previousViewProjectionValid = false;
         bool m_pendingTemporalHistoryReset = false;
-        bool m_gpuDrivenCullingEnabled = true;
+        RenderGPUDrivenMode m_gpuDrivenCullingMode = RenderGPUDrivenMode::Auto;
+        GPUDrivenPolicyDecision m_gpuDrivenPolicyDecision;
+        bool m_gpuDrivenCullingEnabled = false;
         std::unordered_map<uint64, Mat4> m_previousObjectWorldMatrices;
         PostProcessSettings m_postProcessSettings;
         ShadowPassConfig m_shadowPassConfig;

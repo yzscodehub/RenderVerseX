@@ -10,6 +10,7 @@
 #include "Core/Types.h"
 #include "RenderContracts/RenderFramePacket.h"
 #include "RenderContracts/RenderMaterial.h"
+#include "Render/Renderer/MeshBatch.h"
 
 #include <unordered_map>
 #include <vector>
@@ -88,6 +89,8 @@ namespace RVX
         bool receivesShadow = true;
 
         std::vector<RenderMaterialMode> materialModes;
+        std::vector<MeshBatch> meshBatches;
+        bool meshBatchesAuthoritative = false;
 
         [[nodiscard]] bool HasSkinningData() const
         {

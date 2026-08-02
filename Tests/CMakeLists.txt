@@ -5,6 +5,12 @@
 find_package(GTest CONFIG REQUIRED)
 include(GoogleTest)
 
+option(RVX_ENABLE_EXTERNAL_ASSET_TESTS
+    "Register opt-in rendering tests backed by a developer or CI asset library"
+    OFF)
+set(RVX_EXTERNAL_TEST_ASSET_ROOT "" CACHE PATH
+    "Asset library root used when RVX_ENABLE_EXTERNAL_ASSET_TESTS is ON")
+
 # Collect all enabled backend libraries
 set(RVX_ALL_BACKENDS "")
 if(RVX_ENABLE_DX11)
@@ -334,12 +340,29 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME ModelCameraFramingValidation
+    SOURCES ModelCameraFramingValidation/main.cpp
+    LIBS RVX::SampleCommon
+    LABELS "unit;samples;assets"
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME RenderContractsValidation
     SOURCES RenderContractsValidation/main.cpp
     LIBS RVX::Core RVX::RenderContracts RVX::RenderExtraction
     INCLUDES ${CMAKE_SOURCE_DIR}/RenderContracts/Private
     LABELS "unit;architecture"
     TIMEOUT 60
+)
+
+rvx_add_gtest(
+    NAME RenderPolicyValidation
+    SOURCES RenderPolicyValidation/main.cpp
+    LIBS RVX::Core RVX::RenderContracts RVX::RHI
+    INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
+    LABELS "unit;architecture;render-policy"
+    TIMEOUT 30
 )
 
 rvx_add_gtest(
@@ -354,6 +377,15 @@ rvx_add_gtest(
         RVX::World
     LABELS "unit;architecture"
     TIMEOUT 60
+)
+
+rvx_add_gtest(
+    NAME RenderDrawPacketValidation
+    SOURCES RenderDrawPacketValidation/main.cpp
+    LIBS RVX::Render
+    INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
+    LABELS "unit;architecture"
+    TIMEOUT 30
 )
 
 rvx_add_gtest(
@@ -806,6 +838,7 @@ rvx_add_gtest(
         RenderSceneValidation/main.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Material/MaterialClassification.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderDrawItem.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderDrawPacket.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderScene.cpp
     LIBS
         RVX::Core
@@ -2187,6 +2220,14 @@ if(RVX_ENABLE_DX12 AND TARGET ModelViewer)
         "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ModelViewer/R11_GPUDrivenDisabled_DX12_320x180.ppm")
     set(RVX_MODELVIEWER_GPU_DRIVEN_DISABLED_DIFF
         "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ModelViewer/R11_GPUDrivenDisabled_DX12_320x180.diff.ppm")
+    set(RVX_MODELVIEWER_GPU_DRIVEN_PARITY_GPU_ACTUAL
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ModelViewer/R11_GPUDrivenParityGPU_DX12_320x180.ppm")
+    set(RVX_MODELVIEWER_GPU_DRIVEN_PARITY_DIRECT_ACTUAL
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ModelViewer/R11_GPUDrivenParityDirect_DX12_320x180.ppm")
+    set(RVX_MODELVIEWER_GPU_DRIVEN_PARITY_DIFF
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ModelViewer/R11_GPUDrivenCrossPathParity_DX12_320x180.diff.ppm")
+    set(RVX_MODELVIEWER_GPU_DRIVEN_PARITY_REPORT
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ModelViewer/R11_GPUDrivenCrossPathParity_DX12_320x180.json")
     set(RVX_MODELVIEWER_GPU_DRIVEN_GOLDEN
         "${CMAKE_CURRENT_SOURCE_DIR}/Golden/ModelViewer/R11_GPUDriven_DX12_320x180.ppm")
     set(RVX_MODELVIEWER_RT_SHADOW_ACTUAL
@@ -2214,6 +2255,7 @@ if(RVX_ENABLE_DX12 AND TARGET ModelViewer)
             --screenshot "${RVX_MODELVIEWER_GPU_DRIVEN_ACTUAL}"
             --no-ibl
             --gpu-driven-culling-test-scene
+            --gpu-driven on
             --expect-gpu-driven-culling-ready
             --validation
     )
@@ -2222,6 +2264,182 @@ if(RVX_ENABLE_DX12 AND TARGET ModelViewer)
         TIMEOUT 120
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
+
+    add_test(
+        NAME ModelViewerGPUDrivenAutoPolicySmoke
+        COMMAND $<TARGET_FILE:ModelViewer>
+            --smoke
+            --model "${CMAKE_CURRENT_SOURCE_DIR}/Fixtures/ModelViewer/R7Triangle.gltf"
+            --backend dx12
+            --width ${RVX_MODELVIEWER_GPU_DRIVEN_SMOKE_WIDTH}
+            --height ${RVX_MODELVIEWER_GPU_DRIVEN_SMOKE_HEIGHT}
+            --frames 8
+            --no-ibl
+            --gpu-driven-culling-test-scene
+            --gpu-driven auto
+            --expect-gpu-driven-auto-policy-ready
+            --validation
+    )
+    set_tests_properties(ModelViewerGPUDrivenAutoPolicySmoke PROPERTIES
+        LABELS "gpu;gpu-driven;qualification"
+        TIMEOUT 120
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME ModelViewerGPUDrivenParityGPUSmoke
+        COMMAND $<TARGET_FILE:ModelViewer>
+            --smoke
+            --model "${CMAKE_CURRENT_SOURCE_DIR}/Fixtures/ModelViewer/R7Triangle.gltf"
+            --backend dx12
+            --width ${RVX_MODELVIEWER_GPU_DRIVEN_SMOKE_WIDTH}
+            --height ${RVX_MODELVIEWER_GPU_DRIVEN_SMOKE_HEIGHT}
+            --frames 8
+            --screenshot "${RVX_MODELVIEWER_GPU_DRIVEN_PARITY_GPU_ACTUAL}"
+            --no-ibl
+            --gpu-driven on
+            --expect-gpu-driven-culling-ready
+            --validation
+    )
+    set_tests_properties(ModelViewerGPUDrivenParityGPUSmoke PROPERTIES
+        LABELS "visual;gpu;gpu-driven;qualification;parity"
+        TIMEOUT 120
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME ModelViewerGPUDrivenParityDirectSmoke
+        COMMAND $<TARGET_FILE:ModelViewer>
+            --smoke
+            --model "${CMAKE_CURRENT_SOURCE_DIR}/Fixtures/ModelViewer/R7Triangle.gltf"
+            --backend dx12
+            --width ${RVX_MODELVIEWER_GPU_DRIVEN_SMOKE_WIDTH}
+            --height ${RVX_MODELVIEWER_GPU_DRIVEN_SMOKE_HEIGHT}
+            --frames 8
+            --screenshot "${RVX_MODELVIEWER_GPU_DRIVEN_PARITY_DIRECT_ACTUAL}"
+            --no-ibl
+            --gpu-driven off
+            --expect-gpu-driven-direct-ready
+            --validation
+    )
+    set_tests_properties(ModelViewerGPUDrivenParityDirectSmoke PROPERTIES
+        LABELS "visual;gpu;gpu-driven;qualification;parity"
+        TIMEOUT 120
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME GPUDrivenCrossPathVisualParityValidation
+        COMMAND $<TARGET_FILE:VisualGoldenValidation>
+            --expected "${RVX_MODELVIEWER_GPU_DRIVEN_PARITY_GPU_ACTUAL}"
+            --actual "${RVX_MODELVIEWER_GPU_DRIVEN_PARITY_DIRECT_ACTUAL}"
+            --diff "${RVX_MODELVIEWER_GPU_DRIVEN_PARITY_DIFF}"
+            --report "${RVX_MODELVIEWER_GPU_DRIVEN_PARITY_REPORT}"
+            --tolerance 0.0
+            --max-different-pixels 0
+    )
+    set_tests_properties(GPUDrivenCrossPathVisualParityValidation PROPERTIES
+        LABELS "visual;gpu;gpu-driven;qualification;parity"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+    set_property(TEST GPUDrivenCrossPathVisualParityValidation PROPERTY DEPENDS
+        "ModelViewerGPUDrivenParityGPUSmoke;ModelViewerGPUDrivenParityDirectSmoke")
+
+    if(RVX_ENABLE_EXTERNAL_ASSET_TESTS)
+        if(NOT RVX_EXTERNAL_TEST_ASSET_ROOT)
+            message(FATAL_ERROR
+                "RVX_ENABLE_EXTERNAL_ASSET_TESTS requires RVX_EXTERNAL_TEST_ASSET_ROOT")
+        endif()
+
+        cmake_path(ABSOLUTE_PATH RVX_EXTERNAL_TEST_ASSET_ROOT
+            NORMALIZE OUTPUT_VARIABLE RVX_EXTERNAL_TEST_ASSET_ROOT_ABSOLUTE)
+        set(RVX_PORSCHE_REAL_ASSET
+            "${RVX_EXTERNAL_TEST_ASSET_ROOT_ABSOLUTE}/models/free_1975_porsche_911_930_turbo/scene.gltf")
+        set(RVX_PORSCHE_REAL_ASSET_LICENSE
+            "${RVX_EXTERNAL_TEST_ASSET_ROOT_ABSOLUTE}/models/free_1975_porsche_911_930_turbo/license.txt")
+        if(NOT EXISTS "${RVX_PORSCHE_REAL_ASSET}" OR
+           NOT EXISTS "${RVX_PORSCHE_REAL_ASSET_LICENSE}")
+            message(FATAL_ERROR
+                "External Porsche gate requires scene.gltf and license.txt under ${RVX_EXTERNAL_TEST_ASSET_ROOT_ABSOLUTE}")
+        endif()
+
+        set(RVX_PORSCHE_REAL_ASSET_GPU_CAPTURE
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ExternalAssets/Porsche_GPUDriven_DX12_320x180.ppm")
+        set(RVX_PORSCHE_REAL_ASSET_DIRECT_CAPTURE
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ExternalAssets/Porsche_Direct_DX12_320x180.ppm")
+        set(RVX_PORSCHE_REAL_ASSET_PARITY_DIFF
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ExternalAssets/Porsche_CrossPath_DX12_320x180.diff.ppm")
+        set(RVX_PORSCHE_REAL_ASSET_PARITY_REPORT
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ExternalAssets/Porsche_CrossPath_DX12_320x180.json")
+
+        add_test(
+            NAME ModelViewerExternalPorscheDirectSmoke
+            COMMAND $<TARGET_FILE:ModelViewer>
+                --smoke
+                --model "${RVX_PORSCHE_REAL_ASSET}"
+                --backend dx12
+                --width 320
+                --height 180
+                --frames 4
+                --camera-fit auto
+                --screenshot "${RVX_PORSCHE_REAL_ASSET_DIRECT_CAPTURE}"
+                --gpu-driven off
+                --wait-model-ready
+                --model-ready-timeout-ms 120000
+                --expect-model-visible
+                --expect-gpu-driven-direct-ready
+                --validation
+        )
+        set_tests_properties(ModelViewerExternalPorscheDirectSmoke PROPERTIES
+            LABELS "visual;gpu;gpu-driven;external-assets;qualification-candidate"
+            TIMEOUT 300
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+
+        add_test(
+            NAME ModelViewerExternalPorscheGPUDrivenSmoke
+            COMMAND $<TARGET_FILE:ModelViewer>
+                --smoke
+                --model "${RVX_PORSCHE_REAL_ASSET}"
+                --backend dx12
+                --width 320
+                --height 180
+                --frames 4
+                --camera-fit auto
+                --screenshot "${RVX_PORSCHE_REAL_ASSET_GPU_CAPTURE}"
+                --gpu-driven on
+                --wait-model-ready
+                --model-ready-timeout-ms 120000
+                --expect-model-visible
+                --expect-gpu-driven-culling-ready
+                --expect-gpu-driven-multi-batch-ready
+                --validation
+        )
+        set_tests_properties(ModelViewerExternalPorscheGPUDrivenSmoke PROPERTIES
+            LABELS "visual;gpu;gpu-driven;external-assets;qualification-candidate"
+            TIMEOUT 300
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+
+        add_test(
+            NAME ExternalPorscheGPUDrivenCrossPathParityValidation
+            COMMAND $<TARGET_FILE:VisualGoldenValidation>
+                --expected "${RVX_PORSCHE_REAL_ASSET_GPU_CAPTURE}"
+                --actual "${RVX_PORSCHE_REAL_ASSET_DIRECT_CAPTURE}"
+                --diff "${RVX_PORSCHE_REAL_ASSET_PARITY_DIFF}"
+                --report "${RVX_PORSCHE_REAL_ASSET_PARITY_REPORT}"
+                --tolerance 0.0
+                --max-different-pixels 0
+        )
+        set_tests_properties(ExternalPorscheGPUDrivenCrossPathParityValidation PROPERTIES
+            LABELS "visual;gpu;gpu-driven;external-assets;qualification-candidate;parity"
+            TIMEOUT 30
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+        set_property(TEST ExternalPorscheGPUDrivenCrossPathParityValidation PROPERTY DEPENDS
+            "ModelViewerExternalPorscheGPUDrivenSmoke;ModelViewerExternalPorscheDirectSmoke")
+    endif()
 
     if(RVX_ENABLE_GPU_VALIDATION_TESTS)
         add_test(
@@ -2235,6 +2453,7 @@ if(RVX_ENABLE_DX12 AND TARGET ModelViewer)
                 --frames 1
                 --no-ibl
                 --gpu-driven-culling-test-scene
+                --gpu-driven on
                 --expect-gpu-driven-culling-ready
                 --validation
                 --gpu-validation

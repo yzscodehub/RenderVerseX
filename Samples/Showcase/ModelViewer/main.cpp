@@ -32,6 +32,7 @@
 #include "Scene/ComponentFactory.h"
 #include "Scene/Components/LightComponent.h"
 #include "Scene/Components/SkyboxComponent.h"
+#include "Scene/Components/StaticMeshComponent.h"
 #include "Resource/ResourceSubsystem.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/Loader/HDRTextureLoader.h"
@@ -39,6 +40,7 @@
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/TextureResource.h"
 #include "ResourceSceneAdapters/ResourceSceneAdapters.h"
+#include "Samples/ModelCameraFraming.h"
 #include "Samples/RuntimeFrameDriver.h"
 #include "Core/Log.h"
 #include "Core/MathTypes.h"
@@ -47,6 +49,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
@@ -55,9 +58,13 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace RVX;
+
+constexpr uint32 kDefaultModelReadyTimeoutMs = 120000;
+constexpr uint32 kMinimumModelReadyTimeoutMs = 1000;
 
 // Orbit camera controller state
 struct OrbitCamera
@@ -136,8 +143,16 @@ struct ModelViewerOptions
     bool expectMaterialReady = false;
     bool expectProceduralIBLQuality = false;
     bool expectGPUDrivenCullingReady = false;
+    bool expectGPUDrivenAutoPolicyReady = false;
+    bool expectGPUDrivenDirectReady = false;
+    bool expectGPUDrivenMultiBatchReady = false;
+    bool expectModelVisible = false;
+    bool waitModelReady = false;
+    uint32 modelReadyTimeoutMs = kDefaultModelReadyTimeoutMs;
+    bool modelReadyTimeoutSet = false;
     bool expectParticlesReady = false;
     bool gpuDrivenCullingTestScene = false;
+    RenderGPUDrivenMode gpuDrivenMode = RenderGPUDrivenMode::Auto;
     bool disableGPUDrivenCulling = false;
     bool particleTestScene = false;
     bool materialTestScene = false;
@@ -165,6 +180,8 @@ struct ModelViewerOptions
     bool widthSet = false;
     bool heightSet = false;
     bool framesSet = false;
+    bool fitModel = false;
+    bool cameraFitSet = false;
     ShadowQualityPreset shadowQualityPreset = ShadowQualityPreset::Default;
     ToneMapSelection tonemapSelection = ToneMapSelection::Default;
     bool postExposureSet = false;
@@ -218,6 +235,242 @@ namespace
     constexpr uint32 kSmokeDefaultHeight = 180;
     constexpr uint32 kSmokeDefaultFrames = 8;
     constexpr float kSmokeDeltaSeconds = 1.0f / 60.0f;
+    constexpr float kCameraVerticalFovRadians = glm::radians(45.0f);
+
+    struct ModelResourceReadiness
+    {
+        size_t expected = 0;
+        size_t ready = 0;
+        size_t pending = 0;
+        size_t failed = 0;
+        size_t expectedMeshes = 0;
+        size_t readyMeshes = 0;
+        size_t pendingMeshes = 0;
+        size_t failedMeshes = 0;
+        size_t expectedMaterials = 0;
+        size_t readyMaterials = 0;
+        size_t pendingMaterials = 0;
+        size_t failedMaterials = 0;
+        Resource::ResourceRenderStats resourceStats{};
+        RenderDiagnosticsSnapshot frameDiagnostics{};
+
+        [[nodiscard]] bool IsReady() const noexcept
+        {
+            return expected > 0 && ready == expected && pending == 0 &&
+                   failed == 0;
+        }
+    };
+
+    enum class ModelResourceReadinessState : uint8
+    {
+        Ready,
+        Pending,
+        Failed
+    };
+
+    ModelResourceReadinessState ClassifyModelRenderResource(
+        const Resource::RenderResourceResolveResult& resolved)
+    {
+        if (resolved.code == RenderResourceResolveCode::NotFound)
+        {
+            return ModelResourceReadinessState::Pending;
+        }
+
+        if (resolved.code != RenderResourceResolveCode::Resolved ||
+            !resolved.handle.IsValid())
+        {
+            return ModelResourceReadinessState::Failed;
+        }
+
+        switch (resolved.status.state)
+        {
+            case RenderResourcePublicState::GPUReady:
+                return ModelResourceReadinessState::Ready;
+            case RenderResourcePublicState::Reserved:
+            case RenderResourcePublicState::UploadQueued:
+            case RenderResourcePublicState::Uploading:
+                return ModelResourceReadinessState::Pending;
+            case RenderResourcePublicState::Released:
+            case RenderResourcePublicState::Failed:
+            case RenderResourcePublicState::Evicting:
+            default:
+                return ModelResourceReadinessState::Failed;
+        }
+    }
+
+    void AddModelResourceReadiness(
+        ModelResourceReadinessState state,
+        size_t& ready,
+        size_t& pending,
+        size_t& failed,
+        size_t& aggregateReady,
+        size_t& aggregatePending,
+        size_t& aggregateFailed)
+    {
+        switch (state)
+        {
+            case ModelResourceReadinessState::Ready:
+                ++ready;
+                ++aggregateReady;
+                break;
+            case ModelResourceReadinessState::Pending:
+                ++pending;
+                ++aggregatePending;
+                break;
+            case ModelResourceReadinessState::Failed:
+                ++failed;
+                ++aggregateFailed;
+                break;
+        }
+    }
+
+    ModelResourceReadiness InspectModelResourceReadiness(
+        const Resource::ModelResource& model,
+        const Resource::ResourceSubsystem& resourceSubsystem,
+        const RenderSubsystem& renderSubsystem)
+    {
+        ModelResourceReadiness readiness;
+        for (const Resource::MeshHandle& mesh : model.GetMeshes())
+        {
+            ++readiness.expected;
+            ++readiness.expectedMeshes;
+            if (!mesh.IsValid() || mesh.GetId() == Resource::InvalidResourceId)
+            {
+                ++readiness.failed;
+                ++readiness.failedMeshes;
+                continue;
+            }
+
+            const auto state = ClassifyModelRenderResource(
+                resourceSubsystem.ResolveRenderResource(
+                    AssetId{mesh.GetId()}, RenderResourceKind::Mesh));
+            AddModelResourceReadiness(state,
+                                      readiness.readyMeshes,
+                                      readiness.pendingMeshes,
+                                      readiness.failedMeshes,
+                                      readiness.ready,
+                                      readiness.pending,
+                                      readiness.failed);
+        }
+
+        for (const Resource::MaterialHandle& material : model.GetMaterials())
+        {
+            if (!material.IsValid() ||
+                material.GetId() == Resource::InvalidResourceId)
+            {
+                continue;
+            }
+
+            ++readiness.expected;
+            ++readiness.expectedMaterials;
+            const auto state = ClassifyModelRenderResource(
+                resourceSubsystem.ResolveRenderResource(
+                    AssetId{material.GetId()}, RenderResourceKind::Material));
+            AddModelResourceReadiness(state,
+                                      readiness.readyMaterials,
+                                      readiness.pendingMaterials,
+                                      readiness.failedMaterials,
+                                      readiness.ready,
+                                      readiness.pending,
+                                      readiness.failed);
+        }
+
+        readiness.resourceStats = resourceSubsystem.GetRenderResourceStats();
+        readiness.frameDiagnostics = renderSubsystem.GetDiagnosticsSnapshot();
+        return readiness;
+    }
+
+    std::string DescribeModelResourceReadiness(
+        const ModelResourceReadiness& readiness)
+    {
+        const Resource::ResourceRenderStats& resourceStats =
+            readiness.resourceStats;
+        const RenderFrameFeatureDiagnostics& frame =
+            readiness.frameDiagnostics.frameFeatures;
+        return std::string("expected=") + std::to_string(readiness.expected) +
+               ", ready=" + std::to_string(readiness.ready) +
+               ", pending=" + std::to_string(readiness.pending) +
+               ", failed=" + std::to_string(readiness.failed) +
+               ", meshes=" + std::to_string(readiness.readyMeshes) + "/" +
+                   std::to_string(readiness.expectedMeshes) +
+               ", materials=" + std::to_string(readiness.readyMaterials) + "/" +
+                   std::to_string(readiness.expectedMaterials) +
+               ", ResourceRenderStats{readyEvents=" +
+                   std::to_string(resourceStats.readyEvents) +
+               ", reloadEvents=" +
+                   std::to_string(resourceStats.reloadEvents) +
+               ", unloadEvents=" +
+                   std::to_string(resourceStats.unloadEvents) +
+               ", reservations=" +
+                   std::to_string(resourceStats.reservations) +
+               ", existingReservations=" +
+                   std::to_string(resourceStats.existingReservations) +
+               ", enqueueAccepted=" +
+                   std::to_string(resourceStats.enqueueAccepted) +
+               ", queueFullByCount=" +
+                   std::to_string(resourceStats.queueFullByCount) +
+               ", queueFullByBytes=" +
+                   std::to_string(resourceStats.queueFullByBytes) +
+               ", retryAttempts=" +
+                   std::to_string(resourceStats.retryAttempts) +
+               ", releasesAccepted=" +
+                   std::to_string(resourceStats.releasesAccepted) +
+               ", terminalRequestsReclaimed=" +
+                   std::to_string(resourceStats.terminalRequestsReclaimed) +
+               ", buildFailures=" +
+                   std::to_string(resourceStats.buildFailures) +
+               ", gatewayRejections=" +
+                   std::to_string(resourceStats.gatewayRejections) +
+               ", wrongThreadMutations=" +
+                   std::to_string(resourceStats.wrongThreadMutations) +
+               ", pendingResourceCount=" +
+                   std::to_string(resourceStats.pendingResourceCount) +
+               ", pendingUploadCount=" +
+                   std::to_string(resourceStats.pendingUploadCount) +
+               ", retainedRequestCount=" +
+                   std::to_string(resourceStats.retainedRequestCount) +
+               "}, frameDiagnostics{residentMeshCount=" +
+                   std::to_string(frame.residentMeshCount) +
+               ", residentTextureCount=" +
+                   std::to_string(frame.residentTextureCount) +
+               ", pendingUploadCount=" +
+                   std::to_string(frame.pendingUploadCount) +
+               ", visibleObjectCount=" +
+                   std::to_string(frame.visibleObjectCount) + "}";
+    }
+
+    bool WaitForModelRenderResourcesReady(
+        Engine& engine,
+        Resource::ResourceSubsystem& resourceSubsystem,
+        RenderSubsystem& renderSubsystem,
+        const Resource::ModelResource& model,
+        uint32 timeoutMs,
+        ModelResourceReadiness& outReadiness)
+    {
+        RuntimeFrameDriver frameDriver(engine, renderSubsystem);
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(timeoutMs);
+
+        for (;;)
+        {
+            outReadiness = InspectModelResourceReadiness(
+                model, resourceSubsystem, renderSubsystem);
+            if (outReadiness.IsReady() || outReadiness.failed > 0)
+            {
+                return outReadiness.IsReady();
+            }
+
+            if (engine.ShouldShutdown() ||
+                std::chrono::steady_clock::now() >= deadline)
+            {
+                return false;
+            }
+
+            static_cast<void>(frameDriver.TickOnce(kSmokeDeltaSeconds));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+
     void PrintUsage()
     {
         std::cout
@@ -233,6 +486,7 @@ namespace
             << "  --height <pixels>    Window height\n"
             << "  --backend <name>     auto, dx11, dx12, vulkan, metal, opengl\n"
             << "  --screenshot <path>  Write final smoke frame as binary PPM\n"
+            << "  --camera-fit <auto|fixed> Fit the camera to model bounds or use the deterministic fixed camera\n"
             << "  --hdri <path>        Use an HDR/EXR environment for skybox and texture IBL\n"
             << "  --no-ibl             Disable procedural ModelViewer IBL wiring\n"
             << "  --material-test-scene Add deterministic lighting for PBR material visual gates\n"
@@ -315,9 +569,16 @@ namespace
             << "  --expect-material-ready Smoke mode fails unless the PBR material swatch binds all texture maps\n"
             << "  --expect-procedural-ibl-quality Smoke mode fails unless default procedural IBL uses the CPU HDR pipeline\n"
             << "  --expect-gpu-driven-culling-ready Smoke mode fails unless GPU-driven culling feeds indirect draws\n"
+            << "  --expect-gpu-driven-auto-policy-ready Smoke mode validates Auto against backend qualification\n"
+            << "  --expect-gpu-driven-direct-ready Smoke mode fails unless forced-off uses direct draws\n"
+            << "  --expect-gpu-driven-multi-batch-ready Smoke mode requires multiple indirect material batches and draws\n"
+            << "  --expect-model-visible Smoke mode fails unless the final frame contains a visible model object\n"
+            << "  --wait-model-ready  Smoke mode waits for model mesh/material render resources to reach GPUReady\n"
+            << "  --model-ready-timeout-ms <ms>  Bounded resource readiness wait (default 120000, minimum 1000)\n"
             << "  --expect-particles-ready Smoke mode fails unless CPU billboard particles simulate and render\n"
             << "  --gpu-driven-culling-test-scene Add a deterministic distance-culled GPU-driven draw\n"
-            << "  --disable-gpu-driven-culling Disable SceneRenderer GPU-driven culling for comparison gates\n"
+            << "  --gpu-driven <auto|on|off> Select automatic, forced GPU-driven, or direct rendering\n"
+            << "  --disable-gpu-driven-culling Legacy alias for --gpu-driven off\n"
             << "  --particle-test-scene Add a deterministic CPU billboard particle system\n"
             << "  --validation         Enable backend validation\n"
             << "  --gpu-validation     Enable DX12 GPU-based validation for dedicated bounded runs\n"
@@ -358,6 +619,29 @@ namespace
         else if (value == "opengl" || value == "gl")
         {
             outBackend = RHIBackendType::OpenGL;
+        }
+        else
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    bool ParseGPUDrivenMode(const std::string& text, RenderGPUDrivenMode& outMode)
+    {
+        const std::string value = ToLower(text);
+        if (value == "auto")
+        {
+            outMode = RenderGPUDrivenMode::Auto;
+        }
+        else if (value == "on" || value == "enabled" || value == "force-enabled")
+        {
+            outMode = RenderGPUDrivenMode::ForceEnabled;
+        }
+        else if (value == "off" || value == "disabled" || value == "force-disabled")
+        {
+            outMode = RenderGPUDrivenMode::ForceDisabled;
         }
         else
         {
@@ -697,6 +981,26 @@ namespace
                 const char* value = requireValue("--screenshot");
                 if (!value) return false;
                 options.screenshotPath = value;
+            }
+            else if (arg == "--camera-fit")
+            {
+                const char* value = requireValue("--camera-fit");
+                if (!value) return false;
+                const std::string mode = ToLower(value);
+                if (mode == "auto")
+                {
+                    options.fitModel = true;
+                }
+                else if (mode == "fixed")
+                {
+                    options.fitModel = false;
+                }
+                else
+                {
+                    RVX_CORE_ERROR("Invalid --camera-fit value: {}", value);
+                    return false;
+                }
+                options.cameraFitSet = true;
             }
             else if (arg == "--hdri")
             {
@@ -1086,6 +1390,44 @@ namespace
             {
                 options.expectGPUDrivenCullingReady = true;
             }
+            else if (arg == "--expect-gpu-driven-auto-policy-ready")
+            {
+                options.expectGPUDrivenAutoPolicyReady = true;
+            }
+            else if (arg == "--expect-gpu-driven-direct-ready")
+            {
+                options.expectGPUDrivenDirectReady = true;
+            }
+            else if (arg == "--expect-gpu-driven-multi-batch-ready")
+            {
+                options.expectGPUDrivenMultiBatchReady = true;
+            }
+            else if (arg == "--expect-model-visible")
+            {
+                options.expectModelVisible = true;
+            }
+            else if (arg == "--wait-model-ready")
+            {
+                options.waitModelReady = true;
+            }
+            else if (arg == "--model-ready-timeout-ms")
+            {
+                const char* value = requireValue("--model-ready-timeout-ms");
+                uint32 parsed = 0;
+                if (!ParseUInt(value, parsed) ||
+                    parsed < kMinimumModelReadyTimeoutMs)
+                {
+                    RVX_CORE_ERROR(
+                        "Invalid --model-ready-timeout-ms value: {} "
+                        "(expected integer range [{}, {}])",
+                        value ? value : "",
+                        kMinimumModelReadyTimeoutMs,
+                        std::numeric_limits<uint32>::max());
+                    return false;
+                }
+                options.modelReadyTimeoutMs = parsed;
+                options.modelReadyTimeoutSet = true;
+            }
             else if (arg == "--expect-particles-ready")
             {
                 options.expectParticlesReady = true;
@@ -1094,9 +1436,19 @@ namespace
             {
                 options.gpuDrivenCullingTestScene = true;
             }
+            else if (arg == "--gpu-driven")
+            {
+                const char* value = requireValue("--gpu-driven");
+                if (!value || !ParseGPUDrivenMode(value, options.gpuDrivenMode))
+                {
+                    RVX_CORE_ERROR("Invalid --gpu-driven value: {}", value ? value : "");
+                    return false;
+                }
+            }
             else if (arg == "--disable-gpu-driven-culling")
             {
                 options.disableGPUDrivenCulling = true;
+                options.gpuDrivenMode = RenderGPUDrivenMode::ForceDisabled;
             }
             else if (arg == "--particle-test-scene")
             {
@@ -1143,6 +1495,64 @@ namespace
             return false;
         }
 
+        if (options.expectGPUDrivenAutoPolicyReady && !options.smoke)
+        {
+            RVX_CORE_ERROR("--expect-gpu-driven-auto-policy-ready requires --smoke");
+            return false;
+        }
+
+        if (options.expectGPUDrivenAutoPolicyReady &&
+            options.gpuDrivenMode != RenderGPUDrivenMode::Auto)
+        {
+            RVX_CORE_ERROR("--expect-gpu-driven-auto-policy-ready requires --gpu-driven auto");
+            return false;
+        }
+
+        if (options.expectGPUDrivenDirectReady && !options.smoke)
+        {
+            RVX_CORE_ERROR("--expect-gpu-driven-direct-ready requires --smoke");
+            return false;
+        }
+
+        if (options.expectGPUDrivenDirectReady &&
+            options.gpuDrivenMode != RenderGPUDrivenMode::ForceDisabled)
+        {
+            RVX_CORE_ERROR("--expect-gpu-driven-direct-ready requires --gpu-driven off");
+            return false;
+        }
+
+        if (options.expectGPUDrivenMultiBatchReady && !options.smoke)
+        {
+            RVX_CORE_ERROR("--expect-gpu-driven-multi-batch-ready requires --smoke");
+            return false;
+        }
+
+        if (options.expectGPUDrivenMultiBatchReady &&
+            options.gpuDrivenMode != RenderGPUDrivenMode::ForceEnabled)
+        {
+            RVX_CORE_ERROR("--expect-gpu-driven-multi-batch-ready requires --gpu-driven on");
+            return false;
+        }
+
+        if (options.expectModelVisible && !options.smoke)
+        {
+            RVX_CORE_ERROR("--expect-model-visible requires --smoke");
+            return false;
+        }
+
+        if (options.waitModelReady && !options.smoke)
+        {
+            RVX_CORE_ERROR("--wait-model-ready requires --smoke");
+            return false;
+        }
+
+        if (options.modelReadyTimeoutSet && !options.waitModelReady)
+        {
+            RVX_CORE_ERROR(
+                "--model-ready-timeout-ms requires --wait-model-ready");
+            return false;
+        }
+
         if (options.expectParticlesReady && !options.smoke)
         {
             RVX_CORE_ERROR("--expect-particles-ready requires --smoke");
@@ -1185,9 +1595,10 @@ namespace
             return false;
         }
 
-        if (options.expectGPUDrivenCullingReady && options.disableGPUDrivenCulling)
+        if (options.expectGPUDrivenCullingReady &&
+            options.gpuDrivenMode == RenderGPUDrivenMode::ForceDisabled)
         {
-            RVX_CORE_ERROR("--expect-gpu-driven-culling-ready cannot be combined with --disable-gpu-driven-culling");
+            RVX_CORE_ERROR("--expect-gpu-driven-culling-ready cannot be combined with --gpu-driven off");
             return false;
         }
 
@@ -1534,8 +1945,11 @@ namespace
                                                       options.expectRayTracingGpuBudgetRecovered;
                 const bool dx12SmokeRequested = rayTracingSmokeRequested ||
                                                 options.expectGPUDrivenCullingReady ||
+                                                options.expectGPUDrivenAutoPolicyReady ||
+                                                options.expectGPUDrivenDirectReady ||
+                                                options.expectGPUDrivenMultiBatchReady ||
                                                 options.gpuDrivenCullingTestScene ||
-                                                options.disableGPUDrivenCulling;
+                                                options.gpuDrivenMode != RenderGPUDrivenMode::Auto;
                 options.backend = dx12SmokeRequested ? RHIBackendType::DX12 : RHIBackendType::DX11;
             }
             if (!options.widthSet)
@@ -1550,6 +1964,19 @@ namespace
             {
                 options.frames = kSmokeDefaultFrames;
             }
+        }
+
+        if (!options.cameraFitSet)
+        {
+            options.fitModel = !options.smoke;
+        }
+
+        if (options.fitModel &&
+            (options.materialTestScene || options.shadowTestScene ||
+             options.particleTestScene || options.gpuDrivenCullingTestScene))
+        {
+            RVX_CORE_ERROR("--camera-fit auto cannot be combined with deterministic test-scene options");
+            return false;
         }
 
         if ((options.expectRayTracedShadowHistoryReady || options.expectRayTracedReflectionHistoryReady) &&
@@ -2240,7 +2667,15 @@ namespace
 
     std::string DescribeGPUDrivenCullingReadiness(const RenderGPUDrivenCullingDiagnostics& stats)
     {
-        return std::string("enabled=") + BoolText(stats.enabled) +
+        return std::string("policyAvailable=") + BoolText(stats.policyDecisionAvailable) +
+               ", policyMode=" +
+                   GetRenderGPUDrivenModeName(stats.policyDecision.requestedMode) +
+               ", policyReason=" +
+                   GetGPUDrivenPolicyReasonName(stats.policyDecision.reason) +
+               ", qualification=" +
+                   GetGPUDrivenQualificationLevelName(
+                       stats.policyDecision.qualificationLevel) +
+               ", enabled=" + BoolText(stats.enabled) +
                ", graphPassAdded=" + BoolText(stats.graphPassAdded) +
                ", graphPassRecorded=" + BoolText(stats.graphPassRecorded) +
                ", gpuExecutionRecorded=" + BoolText(stats.gpuExecutionRecorded) +
@@ -2276,7 +2711,10 @@ namespace
         const bool cullAffectsDrawCount =
             stats.graphInputDrawItemCount > stats.visibleCullableDrawItemCount &&
             (stats.frustumCulledDrawItemCount > 0 || stats.distanceCulledDrawItemCount > 0);
-        const bool ready = stats.enabled &&
+        const bool ready = stats.policyDecisionAvailable &&
+                           stats.policyDecision.enabled &&
+                           stats.policyDecision.reason == GPUDrivenPolicyReason::None &&
+                           stats.enabled &&
                            stats.graphInputDrawItemCount > 0 &&
                            stats.graphPassAdded &&
                            stats.graphPassRecorded &&
@@ -2301,6 +2739,8 @@ namespace
 
     bool IsGPUDrivenDirectFallbackReady(
         const RenderFrameFeatureDiagnostics* sceneRenderer,
+        RenderGPUDrivenMode expectedMode,
+        GPUDrivenPolicyReason expectedPolicyReason,
         std::string& outReason)
     {
         if (!sceneRenderer)
@@ -2311,7 +2751,12 @@ namespace
 
         const RenderGPUDrivenCullingDiagnostics& stats =
             sceneRenderer->gpuDrivenCulling;
-        const bool ready = !stats.enabled &&
+        const bool ready = stats.policyDecisionAvailable &&
+                           stats.policyDecision.requestedMode ==
+                               expectedMode &&
+                           stats.policyDecision.reason == expectedPolicyReason &&
+                           !stats.policyDecision.enabled &&
+                           !stats.enabled &&
                            !stats.opaqueIndirectRequested &&
                            !stats.opaqueIndirectEligible &&
                            !stats.opaqueIndirectSubmitted &&
@@ -2327,6 +2772,110 @@ namespace
 
         outReason = DescribeGPUDrivenCullingReadiness(stats);
         return false;
+    }
+
+    bool IsGPUDrivenMultiBatchReady(
+        const RenderFrameFeatureDiagnostics* sceneRenderer,
+        std::string& outReason)
+    {
+        if (!IsGPUDrivenCullingReady(sceneRenderer, false, outReason))
+        {
+            return false;
+        }
+
+        const RenderGPUDrivenCullingDiagnostics& stats =
+            sceneRenderer->gpuDrivenCulling;
+        const bool ready = sceneRenderer->visibleObjectCount > 1 &&
+                           stats.graphInputDrawItemCount > 1 &&
+                           stats.opaqueGpuDrivenIndirectBatchCount > 1 &&
+                           stats.opaqueGpuDrivenIndirectDrawCount > 1 &&
+                           stats.opaqueDirectDrawCount == 0;
+        if (ready)
+        {
+            outReason.clear();
+            return true;
+        }
+
+        outReason = "visibleObjects=" +
+                    std::to_string(sceneRenderer->visibleObjectCount) + ", " +
+                    DescribeGPUDrivenCullingReadiness(stats);
+        return false;
+    }
+
+    bool IsModelVisible(const RenderFrameFeatureDiagnostics* sceneRenderer,
+                        std::string& outReason)
+    {
+        if (sceneRenderer && sceneRenderer->available &&
+            sceneRenderer->rendered && sceneRenderer->visibleObjectCount > 0)
+        {
+            outReason.clear();
+            return true;
+        }
+
+        if (!sceneRenderer)
+        {
+            outReason = "NoSceneRenderer";
+        }
+        else
+        {
+            outReason = std::string("available=") + BoolText(sceneRenderer->available) +
+                        ", rendered=" + BoolText(sceneRenderer->rendered) +
+                        ", visibleObjects=" +
+                        std::to_string(sceneRenderer->visibleObjectCount);
+        }
+        return false;
+    }
+
+    bool IsGPUDrivenAutoPolicyReady(
+        const RenderFrameFeatureDiagnostics* sceneRenderer,
+        bool requireCullAffectsDrawCount,
+        std::string& outReason)
+    {
+        if (!sceneRenderer)
+        {
+            outReason = "NoSceneRenderer";
+            return false;
+        }
+
+        const RenderGPUDrivenCullingDiagnostics& stats =
+            sceneRenderer->gpuDrivenCulling;
+        const GPUDrivenPolicyDecision& policy = stats.policyDecision;
+        if (!stats.policyDecisionAvailable ||
+            policy.requestedMode != RenderGPUDrivenMode::Auto)
+        {
+            outReason = "AutoPolicyDecisionUnavailable: " +
+                        DescribeGPUDrivenCullingReadiness(stats);
+            return false;
+        }
+
+        if (policy.backendQualified)
+        {
+            if (policy.qualificationLevel != GPUDrivenQualificationLevel::Qualified)
+            {
+                outReason = "QualifiedBackendHasInvalidQualificationLevel";
+                return false;
+            }
+            return IsGPUDrivenCullingReady(sceneRenderer,
+                                           requireCullAffectsDrawCount,
+                                           outReason);
+        }
+
+        if (policy.reason != GPUDrivenPolicyReason::BackendNotQualified ||
+            policy.qualificationLevel == GPUDrivenQualificationLevel::Qualified ||
+            policy.missingQualificationGateMask == 0)
+        {
+            outReason = std::string("InvalidQualificationFallback: reason=") +
+                        GetGPUDrivenPolicyReasonName(policy.reason) +
+                        ", qualification=" +
+                        GetGPUDrivenQualificationLevelName(policy.qualificationLevel);
+            return false;
+        }
+
+        return IsGPUDrivenDirectFallbackReady(
+            sceneRenderer,
+            RenderGPUDrivenMode::Auto,
+            GPUDrivenPolicyReason::BackendNotQualified,
+            outReason);
     }
 
     std::string DescribeParticleReadiness(
@@ -3408,7 +3957,7 @@ int main(int argc, char* argv[])
 
     frameSettings.shadows =
         MakeShadowQualityConfig(options.shadowQualityPreset);
-    frameSettings.gpuCulling.enabled = !options.disableGPUDrivenCulling;
+    frameSettings.gpuCulling.mode = options.gpuDrivenMode;
     if (options.gpuDrivenCullingTestScene)
     {
         frameSettings.gpuCulling.enableDistanceCulling = true;
@@ -3457,9 +4006,15 @@ int main(int argc, char* argv[])
                       (options.smoke ? Vec3(0.0f, 1.5f, 4.0f) : Vec3(0.0f, 2.0f, 5.0f)));
     Vec3 target = options.materialTestScene ? Vec3(0.0f, 0.18f, 0.0f) :
                   (options.shadowTestScene ? Vec3(0.0f, 0.35f, 0.0f) : Vec3(0.0f, 0.0f, 0.0f));
+    float cameraNearPlane = 0.1f;
+    float cameraFarPlane = 1000.0f;
     camera->SetPosition(cameraPos);
     camera->LookAt(target);
-    camera->SetPerspective(glm::radians(45.0f), static_cast<float>(options.width) / static_cast<float>(options.height), 0.1f, 1000.0f);
+    camera->SetPerspective(kCameraVerticalFovRadians,
+                           static_cast<float>(options.width) /
+                               static_cast<float>(options.height),
+                           cameraNearPlane,
+                           cameraFarPlane);
     world->SetActiveCamera(camera);
 
     // Get scene manager
@@ -3647,6 +4202,111 @@ int main(int argc, char* argv[])
                   modelEntity->GetPosition().y, 
                   modelEntity->GetPosition().z);
 
+    size_t staticMeshPrimitiveCount = 0;
+    size_t renderableStaticMeshPrimitiveCount = 0;
+    for (PrimitiveComponent* primitive : sceneManager->GetPrimitives())
+    {
+        auto* staticMesh = dynamic_cast<StaticMeshComponent*>(primitive);
+        if (!staticMesh)
+        {
+            continue;
+        }
+
+        ++staticMeshPrimitiveCount;
+        if (staticMesh->HasRenderData() && staticMesh->GetWorldBounds().IsValid())
+        {
+            ++renderableStaticMeshPrimitiveCount;
+        }
+    }
+
+    const AABB modelBounds = modelEntity->GetWorldBounds();
+    RVX_CORE_INFO("Model scene diagnostics: primitives={}, renderableStaticMeshes={}, "
+                  "boundsValid={}, boundsMin=({}, {}, {}), boundsMax=({}, {}, {})",
+                  sceneManager->GetPrimitives().size(),
+                  renderableStaticMeshPrimitiveCount,
+                  modelBounds.IsValid(),
+                  modelBounds.GetMin().x,
+                  modelBounds.GetMin().y,
+                  modelBounds.GetMin().z,
+                  modelBounds.GetMax().x,
+                  modelBounds.GetMax().y,
+                  modelBounds.GetMax().z);
+
+    if (modelHandle.IsValid() && staticMeshPrimitiveCount == 0)
+    {
+        RVX_CORE_ERROR("Loaded model instantiated without StaticMeshComponent primitives");
+        engine.Shutdown();
+        return -1;
+    }
+
+    if (options.fitModel && modelHandle.IsValid())
+    {
+        const ModelCameraFrame fitted = BuildModelCameraFrame(
+            modelBounds,
+            static_cast<float>(options.width) /
+                static_cast<float>(options.height),
+            kCameraVerticalFovRadians);
+        if (!fitted.valid || renderableStaticMeshPrimitiveCount == 0)
+        {
+            RVX_CORE_ERROR("Model camera fit failed: validFrame={}, renderableStaticMeshes={}",
+                           fitted.valid,
+                           renderableStaticMeshPrimitiveCount);
+            engine.Shutdown();
+            return -1;
+        }
+
+        constexpr Vec3 cameraDirection = Vec3(0.0f, 0.35112345f, 0.93632918f);
+        target = fitted.target;
+        cameraPos = target + cameraDirection * fitted.distance;
+        cameraNearPlane = fitted.nearPlane;
+        cameraFarPlane = fitted.farPlane;
+        camera->SetPosition(cameraPos);
+        camera->LookAt(target);
+        camera->SetPerspective(kCameraVerticalFovRadians,
+                               static_cast<float>(options.width) /
+                                   static_cast<float>(options.height),
+                               cameraNearPlane,
+                               cameraFarPlane);
+        RVX_CORE_INFO("Model camera fit: target=({}, {}, {}), distance={}, near={}, far={}",
+                      target.x,
+                      target.y,
+                      target.z,
+                      fitted.distance,
+                      cameraNearPlane,
+                      cameraFarPlane);
+    }
+
+    if (options.waitModelReady)
+    {
+        if (!modelHandle.IsValid())
+        {
+            RVX_CORE_ERROR(
+                "ModelViewer model render-resource readiness requires a loaded model");
+            engine.Shutdown();
+            return -1;
+        }
+
+        ModelResourceReadiness modelReadiness;
+        if (!WaitForModelRenderResourcesReady(
+                engine,
+                *resourceSubsystem,
+                *renderSubsystem,
+                *modelHandle,
+                options.modelReadyTimeoutMs,
+                modelReadiness))
+        {
+            RVX_CORE_ERROR(
+                "ModelViewer model render-resource readiness failed: {}",
+                DescribeModelResourceReadiness(modelReadiness));
+            engine.Shutdown();
+            return -1;
+        }
+
+        RVX_CORE_INFO(
+            "ModelViewer model render-resource readiness succeeded: {}",
+            DescribeModelResourceReadiness(modelReadiness));
+    }
+
     if (options.particleTestScene)
     {
         ActorSpawnParams particleParams;
@@ -3714,8 +4374,6 @@ int main(int argc, char* argv[])
 
         for (uint32 frameIndex = 0; frameIndex < options.frames; ++frameIndex)
         {
-            cameraPos = options.materialTestScene ? Vec3(0.0f, 0.45f, 2.4f) :
-                        (options.shadowTestScene ? Vec3(0.0f, 1.35f, 4.0f) : Vec3(0.0f, 1.5f, 4.0f));
             camera->SetPosition(cameraPos);
             camera->LookAt(target);
 
@@ -3738,11 +4396,11 @@ int main(int argc, char* argv[])
                     RVX_CORE_ERROR("ModelViewer smoke render resize request was rejected");
                     smokeSucceeded = false;
                 }
-                camera->SetPerspective(glm::radians(45.0f),
+                camera->SetPerspective(kCameraVerticalFovRadians,
                                        static_cast<float>(options.rayTracingResizeWidth) /
                                            static_cast<float>(options.rayTracingResizeHeight),
-                                       0.1f,
-                                       1000.0f);
+                                       cameraNearPlane,
+                                       cameraFarPlane);
                 RVX_CORE_INFO("ModelViewer smoke resized RT history viewport on frame {}: {}x{}",
                               smokeFrameNumber,
                               options.rayTracingResizeWidth,
@@ -3774,6 +4432,9 @@ int main(int argc, char* argv[])
             waitRequest.minimumPresentedSequence = nextPresentedSequence;
             waitRequest.captureRequestId = captureFrame ? captureRequestId : 0;
             waitRequest.maxTicks = options.enableGPUValidation ? 120000 : 5000;
+            waitRequest.timeout = options.enableGPUValidation
+                                      ? std::chrono::milliseconds(120000)
+                                      : std::chrono::milliseconds(5000);
             waitRequest.advanceEngine = false;
             const RuntimeFrameWaitResult waitResult =
                 frameDriver.WaitFor(waitRequest);
@@ -3793,6 +4454,23 @@ int main(int argc, char* argv[])
             }
             const RenderFrameFeatureDiagnostics* sceneRenderer =
                 &lastDiagnostics.frameFeatures;
+
+            if (options.expectModelVisible &&
+                (frameIndex + 1 == options.frames))
+            {
+                std::string modelVisibilityReason;
+                if (!IsModelVisible(sceneRenderer, modelVisibilityReason))
+                {
+                    RVX_CORE_ERROR("ModelViewer smoke expected a visible model; stats: {}",
+                                   modelVisibilityReason);
+                    smokeSucceeded = false;
+                }
+                else
+                {
+                    RVX_CORE_INFO("ModelViewer smoke model visible: visibleObjects={}",
+                                  sceneRenderer->visibleObjectCount);
+                }
+            }
 
             if (options.expectRayTracingGpuBudgetRecovered &&
                 !gpuBudgetRecoveryTriggered &&
@@ -4374,13 +5052,65 @@ int main(int argc, char* argv[])
                 }
             }
 
-            if (options.disableGPUDrivenCulling &&
-                options.gpuDrivenCullingTestScene &&
+            if (options.expectGPUDrivenMultiBatchReady &&
+                (frameIndex + 1 == options.frames))
+            {
+                std::string gpuDrivenMultiBatchReason;
+                if (!IsGPUDrivenMultiBatchReady(sceneRenderer,
+                                                gpuDrivenMultiBatchReason))
+                {
+                    RVX_CORE_ERROR("ModelViewer smoke expected GPU-driven multi-batch asset readiness; stats: {}",
+                                   gpuDrivenMultiBatchReason);
+                    smokeSucceeded = false;
+                }
+                else
+                {
+                    const RenderGPUDrivenCullingDiagnostics& stats =
+                        sceneRenderer->gpuDrivenCulling;
+                    RVX_CORE_INFO("ModelViewer smoke GPU-driven multi-batch asset ready: "
+                                  "visibleObjects={}, batches={}, indirectDraws={}",
+                                  sceneRenderer->visibleObjectCount,
+                                  stats.opaqueGpuDrivenIndirectBatchCount,
+                                  stats.opaqueGpuDrivenIndirectDrawCount);
+                }
+            }
+
+            if (options.expectGPUDrivenAutoPolicyReady &&
+                (frameIndex + 1 == options.frames))
+            {
+                std::string gpuDrivenPolicyReason;
+                if (!IsGPUDrivenAutoPolicyReady(sceneRenderer,
+                                                options.gpuDrivenCullingTestScene,
+                                                gpuDrivenPolicyReason))
+                {
+                    RVX_CORE_ERROR("ModelViewer smoke expected GPU-driven Auto policy ready; stats: {}",
+                                   gpuDrivenPolicyReason);
+                    smokeSucceeded = false;
+                }
+                else
+                {
+                    const GPUDrivenPolicyDecision& policy =
+                        sceneRenderer->gpuDrivenCulling.policyDecision;
+                    RVX_CORE_INFO("ModelViewer smoke GPU-driven Auto policy ready: qualification={}, "
+                                  "revision={}, enabled={}, missingGateMask={}",
+                                  GetGPUDrivenQualificationLevelName(policy.qualificationLevel),
+                                  policy.qualificationRevision,
+                                  policy.enabled,
+                                  policy.missingQualificationGateMask);
+                }
+            }
+
+            if (options.gpuDrivenMode == RenderGPUDrivenMode::ForceDisabled &&
+                (options.gpuDrivenCullingTestScene ||
+                 options.expectGPUDrivenDirectReady) &&
                 (frameIndex + 1 == options.frames))
             {
                 std::string gpuDrivenFallbackReason;
-                if (!IsGPUDrivenDirectFallbackReady(sceneRenderer,
-                                                    gpuDrivenFallbackReason))
+                if (!IsGPUDrivenDirectFallbackReady(
+                        sceneRenderer,
+                        RenderGPUDrivenMode::ForceDisabled,
+                        GPUDrivenPolicyReason::ForcedDisabled,
+                        gpuDrivenFallbackReason))
                 {
                     RVX_CORE_ERROR("ModelViewer smoke expected GPU-driven direct-draw fallback; stats: {}",
                                    gpuDrivenFallbackReason);
@@ -4412,16 +5142,14 @@ int main(int argc, char* argv[])
 
     // Setup orbit camera
     OrbitCamera orbitCamera;
-    orbitCamera.distance = 5.0f;
+    const float initialOrbitDistance = glm::length(cameraPos - target);
+    orbitCamera.target = target;
+    orbitCamera.distance = std::max(initialOrbitDistance, 0.001f);
     orbitCamera.pitch = 0.4f;  // Slightly above
     orbitCamera.yaw = 0.0f;
-    
-    // Adjust camera distance based on model bounds (if available)
-    if (modelHandle.IsValid())
-    {
-        // Could compute bounds and adjust camera here
-        // For now, keep the default distance
-    }
+    orbitCamera.minDistance = std::max(orbitCamera.distance * 0.01f, 0.001f);
+    orbitCamera.maxDistance = std::max(orbitCamera.distance * 20.0f,
+                                       orbitCamera.minDistance * 2.0f);
     
     // Detect if using Vulkan (need to invert pitch direction due to Y-flip)
     const bool isVulkan =
@@ -4484,7 +5212,8 @@ int main(int argc, char* argv[])
             {
                 orbitCamera.yaw = 0.0f;
                 orbitCamera.pitch = 0.4f;
-                orbitCamera.distance = 5.0f;
+                orbitCamera.distance = std::max(initialOrbitDistance, 0.001f);
+                orbitCamera.target = target;
                 RVX_CORE_INFO("Camera reset");
             }
             

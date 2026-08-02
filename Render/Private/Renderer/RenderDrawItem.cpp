@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace RVX
 {
@@ -29,6 +30,73 @@ namespace RVX
 
             return MaterialRenderMode::Opaque;
         }
+
+        MeshBatch MakeLegacyBatch(const RenderObject& object,
+                                  uint32 objectIndex,
+                                  MaterialRenderMode mode)
+        {
+            RenderBatchFlags flags = RenderBatchFlags::None;
+            if (object.HasSkinningData())
+                flags |= RenderBatchFlags::Skinned;
+            if (object.castsShadow)
+                flags |= RenderBatchFlags::CastsShadow;
+            if (object.receivesShadow)
+                flags |= RenderBatchFlags::ReceivesShadow;
+            if (mode == MaterialRenderMode::Masked)
+                flags |= RenderBatchFlags::Masked;
+            if (mode == MaterialRenderMode::Transparent)
+                flags |= RenderBatchFlags::Transparent;
+            if (!object.material.IsValid())
+                flags |= RenderBatchFlags::MissingMaterial;
+
+            MeshBatch batch;
+            batch.objectId = object.entityId;
+            batch.mesh = object.mesh;
+            batch.material = object.material;
+            batch.submeshIndex = 0;
+            batch.primitiveData = objectIndex;
+            batch.materialMode = mode;
+            batch.flags = flags;
+            return batch;
+        }
+
+        RenderDrawItem MakeDrawItem(uint32 objectIndex,
+                                    const RenderObject& object,
+                                    const MeshBatch& batch,
+                                    const Vec3& cameraPosition)
+        {
+            RenderDrawItem item;
+            item.objectIndex = objectIndex;
+            item.submeshIndex = batch.submeshIndex;
+            item.mesh = batch.mesh;
+            item.material = batch.material;
+            item.renderMode = batch.materialMode;
+            item.depthFromCamera = length(Vec3(object.worldMatrix[3]) - cameraPosition);
+            item.packet = BuildLegacyMaterialDrawPacket(batch);
+            return item;
+        }
+
+        void AppendToMaterialList(RenderDrawItem item,
+                                  std::vector<RenderDrawItem>& opaque,
+                                  std::vector<RenderDrawItem>& masked,
+                                  std::vector<RenderDrawItem>& transparent)
+        {
+            if (item.renderMode == MaterialRenderMode::Transparent)
+            {
+                item.sortKey = BuildTransparentDrawSortKey(item);
+                transparent.push_back(std::move(item));
+            }
+            else if (item.renderMode == MaterialRenderMode::Masked)
+            {
+                item.sortKey = BuildOpaqueDrawSortKey(item);
+                masked.push_back(std::move(item));
+            }
+            else
+            {
+                item.sortKey = BuildOpaqueDrawSortKey(item);
+                opaque.push_back(std::move(item));
+            }
+        }
     } // namespace
 
     void BuildMaterialDrawLists(const RenderScene& scene,
@@ -48,36 +116,26 @@ namespace RVX
                 continue;
 
             const RenderObject& obj = scene.GetObject(objectIndex);
-            const size_t submeshCount = 1;
-
-            for (size_t submeshIndex = 0; submeshIndex < submeshCount; ++submeshIndex)
+            if (obj.meshBatchesAuthoritative)
             {
-                const MaterialRenderMode mode = ResolveMaterialRenderMode(obj, submeshIndex);
-
-                RenderDrawItem item;
-                item.objectIndex = objectIndex;
-                item.submeshIndex = static_cast<uint32>(submeshIndex);
-                item.mesh = obj.mesh;
-                item.material = obj.material;
-                item.renderMode = mode;
-                item.depthFromCamera = length(Vec3(obj.worldMatrix[3]) - cameraPosition);
-
-                if (mode == MaterialRenderMode::Transparent)
+                for (const MeshBatch& batch : obj.meshBatches)
                 {
-                    item.sortKey = BuildTransparentDrawSortKey(item);
-                    outTransparentDrawItems.push_back(item);
+                    AppendToMaterialList(
+                        MakeDrawItem(objectIndex, obj, batch, cameraPosition),
+                        outOpaqueDrawItems,
+                        outMaskedDrawItems,
+                        outTransparentDrawItems);
                 }
-                else if (mode == MaterialRenderMode::Masked)
-                {
-                    item.sortKey = BuildOpaqueDrawSortKey(item);
-                    outMaskedDrawItems.push_back(item);
-                }
-                else
-                {
-                    item.sortKey = BuildOpaqueDrawSortKey(item);
-                    outOpaqueDrawItems.push_back(item);
-                }
+                continue;
             }
+
+            const MeshBatch batch = MakeLegacyBatch(
+                obj, objectIndex, ResolveMaterialRenderMode(obj, 0));
+            AppendToMaterialList(
+                MakeDrawItem(objectIndex, obj, batch, cameraPosition),
+                outOpaqueDrawItems,
+                outMaskedDrawItems,
+                outTransparentDrawItems);
         }
 
         const auto sortFrontToBack = [](const RenderDrawItem& lhs, const RenderDrawItem& rhs)

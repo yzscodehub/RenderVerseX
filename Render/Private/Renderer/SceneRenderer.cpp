@@ -634,17 +634,31 @@ void SceneRenderer::ClearExternalRenderTarget()
     RequestTemporalHistoryReset();
 }
 
-void SceneRenderer::SetGPUDrivenCullingEnabled(bool enabled)
+void SceneRenderer::SetGPUDrivenCullingMode(RenderGPUDrivenMode mode)
 {
-    m_gpuDrivenCullingEnabled = enabled;
+    m_gpuDrivenCullingMode = mode;
+    const IRHIDevice* device = m_renderContext ? m_renderContext->GetDevice() : nullptr;
+    const bool pipelineReady = m_gpuCulling &&
+        m_gpuCulling->GetExecutionDecision().mode == GPUCullingExecutionMode::GpuCompute;
+    m_gpuDrivenPolicyDecision = ResolveGPUDrivenPolicy(
+        MakeGPUDrivenPolicyInput(mode, device, pipelineReady));
+    m_gpuDrivenCullingEnabled = m_gpuDrivenPolicyDecision.enabled;
+
     if (m_depthPrepass)
     {
-        m_depthPrepass->SetGPUDrivenDepthIndirectEnabled(enabled);
+        m_depthPrepass->SetGPUDrivenDepthIndirectEnabled(m_gpuDrivenCullingEnabled);
     }
     if (m_opaquePass)
     {
-        m_opaquePass->SetGPUDrivenOpaqueIndirectEnabled(enabled);
+        m_opaquePass->SetGPUDrivenOpaqueIndirectEnabled(m_gpuDrivenCullingEnabled);
     }
+}
+
+void SceneRenderer::SetGPUDrivenCullingEnabled(bool enabled)
+{
+    SetGPUDrivenCullingMode(enabled
+                                ? RenderGPUDrivenMode::ForceEnabled
+                                : RenderGPUDrivenMode::ForceDisabled);
 }
 
 void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
@@ -843,7 +857,7 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
                                  result.temporalHistoryReset);
 
     const RenderFrameSettings& frameSettings = m_renderScene.GetSettings();
-    SetGPUDrivenCullingEnabled(frameSettings.gpuCulling.enabled);
+    SetGPUDrivenCullingMode(frameSettings.gpuCulling.mode);
     m_postProcessSettings.enableBloom =
         frameSettings.postProcess.enabled &&
         frameSettings.postProcess.enableBloom;
@@ -1203,6 +1217,9 @@ void SceneRenderer::BuildMaterialDrawLists()
 void SceneRenderer::ApplyGPUDrivenCullingToDrawLists()
 {
     m_gpuDrivenCullingStats = {};
+    m_gpuDrivenCullingStats.policyDecisionAvailable = true;
+    m_gpuDrivenCullingStats.policyDecision = m_gpuDrivenPolicyDecision;
+    m_gpuDrivenCullingStats.enabled = m_gpuDrivenCullingEnabled;
     m_gpuDrivenCullingStats.inputOpaqueDrawItemCount = static_cast<uint32>(m_opaqueDrawItems.size());
     m_gpuDrivenCullingStats.inputMaskedDrawItemCount = static_cast<uint32>(m_maskedDrawItems.size());
     if (m_gpuCulling)
@@ -1219,7 +1236,6 @@ void SceneRenderer::ApplyGPUDrivenCullingToDrawLists()
         return;
     }
 
-    m_gpuDrivenCullingStats.enabled = true;
     ApplyGPUDrivenCullingToDrawList(m_opaqueDrawItems, m_gpuDrivenCullingStats.cullableOpaqueDrawItemCount);
     ApplyGPUDrivenCullingToDrawList(m_maskedDrawItems, m_gpuDrivenCullingStats.cullableMaskedDrawItemCount);
     m_gpuDrivenCullingStats.outputOpaqueDrawItemCount = static_cast<uint32>(m_opaqueDrawItems.size());
@@ -2937,11 +2953,11 @@ void SceneRenderer::AddGPUDrivenCullingPass()
     m_gpuCullingGraphHandles = {};
     if (m_depthPrepass)
     {
-        m_depthPrepass->SetGPUDrivenRenderGraphResources({}, {}, {});
+        m_depthPrepass->SetGPUDrivenRenderGraphResources({}, {}, {}, {});
     }
     if (m_opaquePass)
     {
-        m_opaquePass->SetGPUDrivenRenderGraphResources({}, {}, {});
+        m_opaquePass->SetGPUDrivenRenderGraphResources({}, {}, {}, {});
     }
 
     if (!m_renderGraph || !m_gpuDrivenCullingEnabled || !m_gpuCulling ||
@@ -2962,11 +2978,12 @@ void SceneRenderer::AddGPUDrivenCullingPass()
 
     RHIBuffer* constantsBuffer = m_gpuCulling->GetCullingConstantsBuffer();
     RHIBuffer* instanceBuffer = m_gpuCulling->GetInstanceBuffer();
+    RHIBuffer* instanceIndexBuffer = m_gpuCulling->GetInstanceIndexBuffer();
     RHIBuffer* visibilityBuffer = m_gpuCulling->GetVisibilityBuffer();
     RHIBuffer* visibleInstanceBuffer = m_gpuCulling->GetVisibleInstanceBuffer();
     RHIBuffer* indirectDrawBuffer = m_gpuCulling->GetIndirectBuffer();
     RHIBuffer* drawCountBuffer = m_gpuCulling->GetDrawCountBuffer();
-    if (!constantsBuffer || !instanceBuffer || !visibilityBuffer ||
+    if (!constantsBuffer || !instanceBuffer || !instanceIndexBuffer || !visibilityBuffer ||
         !visibleInstanceBuffer || !indirectDrawBuffer || !drawCountBuffer)
     {
         return;
@@ -2976,6 +2993,7 @@ void SceneRenderer::AddGPUDrivenCullingPass()
     {
         RGBufferHandle constants;
         RGBufferHandle instances;
+        RGBufferHandle instanceIndices;
         RGBufferHandle visibility;
         RGBufferHandle visibleInstances;
         RGBufferHandle indirectDraws;
@@ -2987,6 +3005,8 @@ void SceneRenderer::AddGPUDrivenCullingPass()
     GPUDrivenCullPassData handles;
     handles.constants = m_renderGraph->ImportBuffer(constantsBuffer, accessSnapshots.constants);
     handles.instances = m_renderGraph->ImportBuffer(instanceBuffer, accessSnapshots.instances);
+    handles.instanceIndices = m_renderGraph->ImportBuffer(
+        instanceIndexBuffer, accessSnapshots.instanceIndices);
     handles.visibility = m_renderGraph->ImportBuffer(visibilityBuffer, accessSnapshots.visibility);
     handles.visibleInstances = m_renderGraph->ImportBuffer(visibleInstanceBuffer, accessSnapshots.visibleInstances);
     handles.indirectDraws = m_renderGraph->ImportBuffer(indirectDrawBuffer, accessSnapshots.indirectDraws);
@@ -3015,6 +3035,11 @@ void SceneRenderer::AddGPUDrivenCullingPass()
                               RHIShaderStage::AllGraphics,
                               graphicsDomain));
     m_renderGraph->SetExportAccess(
+        handles.instanceIndices,
+        MakeRHIAccessSnapshot(RHIResourceState::VertexBuffer,
+                              RHIShaderStage::Vertex,
+                              graphicsDomain));
+    m_renderGraph->SetExportAccess(
         handles.visibility,
         MakeRHIAccessSnapshot(RHIResourceState::UnorderedAccess,
                               RHIShaderStage::Compute,
@@ -3037,6 +3062,7 @@ void SceneRenderer::AddGPUDrivenCullingPass()
     m_gpuCullingGraphHandles = {
         handles.constants,
         handles.instances,
+        handles.instanceIndices,
         handles.visibility,
         handles.visibleInstances,
         handles.indirectDraws,
@@ -3045,6 +3071,7 @@ void SceneRenderer::AddGPUDrivenCullingPass()
     {
         m_depthPrepass->SetGPUDrivenRenderGraphResources(
             handles.instances,
+            handles.instanceIndices,
             handles.indirectDraws,
             handles.drawCount);
     }
@@ -3052,6 +3079,7 @@ void SceneRenderer::AddGPUDrivenCullingPass()
     {
         m_opaquePass->SetGPUDrivenRenderGraphResources(
             handles.instances,
+            handles.instanceIndices,
             handles.indirectDraws,
             handles.drawCount);
     }
@@ -3111,6 +3139,8 @@ void SceneRenderer::CommitGPUDrivenAccessSnapshots()
         m_gpuCullingGraphHandles.constants);
     snapshots.instances = m_renderGraph->GetRealizedAccess(
         m_gpuCullingGraphHandles.instances);
+    snapshots.instanceIndices = m_renderGraph->GetRealizedAccess(
+        m_gpuCullingGraphHandles.instanceIndices);
     snapshots.visibility = m_renderGraph->GetRealizedAccess(
         m_gpuCullingGraphHandles.visibility);
     snapshots.visibleInstances = m_renderGraph->GetRealizedAccess(

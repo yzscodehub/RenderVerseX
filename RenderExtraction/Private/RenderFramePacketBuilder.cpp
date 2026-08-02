@@ -216,6 +216,19 @@ namespace
             {
                 return false;
             }
+            for (size_t index = 0; index < primitive.submeshes.size(); ++index)
+            {
+                const RenderSubmeshMaterialBinding& binding =
+                    primitive.submeshes[index];
+                const bool validMode =
+                    binding.materialMode == RenderMaterialMode::Opaque ||
+                    binding.materialMode == RenderMaterialMode::Masked ||
+                    binding.materialMode == RenderMaterialMode::Transparent;
+                if (binding.submeshIndex != index || !validMode)
+                {
+                    return false;
+                }
+            }
         }
         for (const RenderLightSnapshot& light : lights)
         {

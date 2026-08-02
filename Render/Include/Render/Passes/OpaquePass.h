@@ -114,6 +114,7 @@ namespace RVX
         void SetRayTracedShadowSource(const RayTracedShadowPass* shadowPass);
         void SetGPUDrivenCullingSource(const GPUCulling* gpuCulling);
         void SetGPUDrivenRenderGraphResources(RGBufferHandle instanceBuffer,
+                                              RGBufferHandle instanceIndexBuffer,
                                               RGBufferHandle indirectDrawBuffer,
                                               RGBufferHandle drawCountBuffer);
         const OpaquePassShadowStats& GetShadowStats() const { return m_shadowStats; }
@@ -136,6 +137,7 @@ namespace RVX
         RGTextureHandle m_directionalShadowReadHandle;
         RGTextureHandle m_rayTracedShadowMaskReadHandle;
         RGBufferHandle m_gpuDrivenInstanceHandle;
+        RGBufferHandle m_gpuDrivenInstanceIndexHandle;
         RGBufferHandle m_gpuDrivenIndirectHandle;
         RGBufferHandle m_gpuDrivenDrawCountHandle;
         OpaquePassShadowStats m_shadowStats;

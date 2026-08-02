@@ -8,6 +8,7 @@
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
 #include "Render/Material/MaterialClassification.h"
+#include "Render/Renderer/RenderDrawPacket.h"
 #include "RenderContracts/RenderIdentity.h"
 
 #include <vector>
@@ -25,6 +26,7 @@ namespace RVX
         MaterialRenderMode renderMode = MaterialRenderMode::Opaque;
         float depthFromCamera = 0.0f;
         uint64 sortKey = 0;
+        RenderDrawPacket packet;
     };
 
     void BuildMaterialDrawLists(const RenderScene& scene,

@@ -2,6 +2,7 @@
 # Sample Common - shared CLI and report helpers for sample applications
 # =============================================================================
 add_library(RVX_SampleCommon STATIC
+    Private/ModelCameraFraming.cpp
     Private/RuntimeFrameDriver.cpp
     Private/SampleCLI.cpp
 )

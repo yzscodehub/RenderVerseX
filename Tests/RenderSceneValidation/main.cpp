@@ -1,10 +1,12 @@
 #include "Render/Renderer/RenderScene.h"
+#include "Render/Renderer/RenderDrawPacket.h"
 #include "RenderContracts/RenderFramePacket.h"
 #include "RenderExtraction/RenderFramePacketBuilder.h"
 #include "Resources/RenderResourceRegistry.h"
 #include "Resources/RenderRetirementQueue.h"
 #include "Runtime/RenderResourceGateway.h"
 
+#include <algorithm>
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -66,6 +68,57 @@ namespace
                     gpuReady,
                     RenderStatusWriter::Render));
             }
+            return handle;
+        }
+
+        RenderResourceHandle AddQueuedWithoutRegistry(
+            AssetId asset,
+            RenderResourceKind kind)
+        {
+            const RenderResourceReserveResult reserved =
+                gateway.ReserveResource(asset, kind);
+            EXPECT_EQ(reserved.code, RenderResourceReserveCode::Reserved);
+            const RenderResourceHandle handle = reserved.handle;
+            const PackedRenderResourceStatus status{
+                handle.generation,
+                RenderResourcePublicState::Reserved,
+                RenderResourceFailureCode::None};
+            PackedRenderResourceStatus queued = status;
+            queued.state = RenderResourcePublicState::UploadQueued;
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, status, queued, RenderStatusWriter::Update));
+            return handle;
+        }
+
+        RenderResourceHandle AddMeshWithMetadata(
+            AssetId asset,
+            const MeshUploadCreateInfo& createInfo,
+            const std::vector<MeshUploadSubmesh>& submeshes)
+        {
+            const RenderResourceReserveResult reserved =
+                gateway.ReserveResource(asset, RenderResourceKind::Mesh);
+            EXPECT_EQ(reserved.code, RenderResourceReserveCode::Reserved);
+            const RenderResourceHandle handle = reserved.handle;
+            const PackedRenderResourceStatus status{
+                handle.generation,
+                RenderResourcePublicState::Reserved,
+                RenderResourceFailureCode::None};
+            PackedRenderResourceStatus queued = status;
+            queued.state = RenderResourcePublicState::UploadQueued;
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, status, queued, RenderStatusWriter::Update));
+            PackedRenderResourceStatus uploading = queued;
+            uploading.state = RenderResourcePublicState::Uploading;
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, queued, uploading, RenderStatusWriter::Render));
+            EXPECT_TRUE(registry.BeginPending(handle, RenderResourceKind::Mesh, {}));
+            EXPECT_TRUE(registry.SetPendingMeshMetadata(
+                handle, createInfo, submeshes));
+            EXPECT_TRUE(registry.Commit(handle));
+            PackedRenderResourceStatus gpuReady = uploading;
+            gpuReady.state = RenderResourcePublicState::GPUReady;
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, uploading, gpuReady, RenderStatusWriter::Render));
             return handle;
         }
 
@@ -205,6 +258,100 @@ TEST(RenderSceneValidation, AppliesTransactionallyAndOwnsPacketValues)
     EXPECT_EQ(scene.GetAcceptedHeader().sequence, 10U);
 }
 
+TEST(RenderSceneValidation,
+     BuildsAuthoritativeBatchesFromRegistrySubmeshesAndBindings)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 6;
+    createInfo.indexType = MeshUploadIndexType::UInt16;
+    createInfo.boundsMin = {-1.0f, -1.0f, -1.0f};
+    createInfo.boundsMax = {1.0f, 1.0f, 1.0f};
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {101}, createInfo,
+        {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles},
+         {3, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    const RenderResourceHandle maskedMaterial =
+        resources.Add({102}, RenderResourceKind::Material, true);
+    const RenderResourceHandle transparentMaterial =
+        resources.Add({103}, RenderResourceKind::Material, true);
+
+    RenderPrimitiveSnapshot primitive = MakePrimitive(mesh, maskedMaterial);
+    primitive.submeshes = {
+        {0, maskedMaterial, RenderMaterialMode::Masked},
+        {1, transparentMaterial, RenderMaterialMode::Transparent}};
+    std::unique_ptr<const RenderFramePacket> packet = MakePacket(
+        1, 1, 1, false, {primitive});
+    ASSERT_NE(packet, nullptr);
+
+    RenderScene scene;
+    ASSERT_TRUE(scene.ApplyFramePacket(*packet, resources.registry).IsApplied());
+    const RenderObject& object = scene.GetObject(0);
+    ASSERT_TRUE(object.meshBatchesAuthoritative);
+    ASSERT_EQ(object.meshBatches.size(), 2U);
+    EXPECT_EQ(object.meshBatches[0].material, maskedMaterial);
+    EXPECT_EQ(object.meshBatches[1].material, transparentMaterial);
+    EXPECT_EQ(object.meshBatches[0].materialMode, RenderMaterialMode::Masked);
+    EXPECT_EQ(object.meshBatches[1].materialMode,
+              RenderMaterialMode::Transparent);
+    EXPECT_EQ(object.material, maskedMaterial);
+    ASSERT_EQ(object.materialModes.size(), 2U);
+    EXPECT_EQ(object.materialModes[1], RenderMaterialMode::Transparent);
+    const auto& references = scene.GetReferencedResources();
+    EXPECT_NE(std::find(references.begin(), references.end(), maskedMaterial),
+              references.end());
+    EXPECT_NE(std::find(references.begin(), references.end(), transparentMaterial),
+              references.end());
+}
+
+TEST(RenderSceneValidation,
+     RejectsIncompleteAuthoritativeBindingsWithoutMutatingScene)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 6;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {111}, createInfo,
+        {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles},
+         {3, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    const RenderResourceHandle material =
+        resources.Add({112}, RenderResourceKind::Material, true);
+    RenderScene scene;
+    ASSERT_TRUE(Apply(scene, resources.registry, 1, 1, 1, false,
+                      MakePrimitive(mesh, material)).IsApplied());
+
+    RenderPrimitiveSnapshot incomplete = MakePrimitive(mesh, material);
+    incomplete.submeshes = {{0, material, RenderMaterialMode::Opaque}};
+    std::unique_ptr<const RenderFramePacket> packet = MakePacket(
+        2, 1, 1, false, {std::move(incomplete)});
+    ASSERT_NE(packet, nullptr);
+    EXPECT_EQ(scene.ApplyFramePacket(*packet, resources.registry).code,
+              RenderFrameApplyCode::InvalidPacket);
+    EXPECT_EQ(scene.GetAcceptedHeader().sequence, 1U);
+}
+
+TEST(RenderSceneValidation, MissingSubmeshMaterialStillBuildsDrawableBatch)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {121}, createInfo,
+        {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    RenderPrimitiveSnapshot primitive = MakePrimitive(mesh);
+    primitive.submeshes = {{0, {}, RenderMaterialMode::Opaque}};
+    RenderScene scene;
+    const RenderFrameApplyResult result = Apply(
+        scene, resources.registry, 1, 1, 1, false, std::move(primitive));
+    ASSERT_TRUE(result.IsApplied());
+    const RenderObject& object = scene.GetObject(0);
+    EXPECT_TRUE(object.drawable);
+    ASSERT_EQ(object.meshBatches.size(), 1U);
+    EXPECT_FALSE(object.meshBatches[0].material.IsValid());
+    EXPECT_TRUE(HasRenderBatchFlag(object.meshBatches[0].flags,
+                                   RenderBatchFlags::MissingMaterial));
+}
+
 TEST(RenderSceneValidation, RejectsSchemaOrderAndStaleHandlesWithoutMutation)
 {
     RegistryFixture resources;
@@ -271,6 +418,103 @@ TEST(RenderSceneValidation, UsesReadyFallbackForPendingRequiredMesh)
     EXPECT_EQ(result.skippedDrawCount, 0U);
     EXPECT_EQ(scene.GetObject(0).mesh, fallback);
     EXPECT_TRUE(scene.GetObject(0).drawable);
+}
+
+TEST(RenderSceneValidation,
+     UsesFallbackMeshMetadataWithLegacyMaterialForEverySubmesh)
+{
+    RegistryFixture resources;
+    const RenderResourceHandle pendingPreferred =
+        resources.Add({44}, RenderResourceKind::Mesh, false);
+    MeshUploadCreateInfo fallbackCreateInfo;
+    fallbackCreateInfo.indexCount = 6;
+    fallbackCreateInfo.indexType = MeshUploadIndexType::UInt16;
+    const RenderResourceHandle readyFallback = resources.AddMeshWithMetadata(
+        {45}, fallbackCreateInfo,
+        {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles},
+         {3, 3, 0, MeshUploadPrimitiveTopology::TriangleStrip}});
+    const RenderResourceHandle legacyMaterial =
+        resources.Add({46}, RenderResourceKind::Material, true);
+    const RenderResourceHandle ignoredSecondMaterial =
+        resources.Add({47}, RenderResourceKind::Material, true);
+
+    RenderPrimitiveSnapshot primitive = MakePrimitive(
+        pendingPreferred, legacyMaterial);
+    primitive.fallbackMesh = readyFallback;
+    primitive.flags |= static_cast<uint32>(RenderMaterialMode::Masked) << 8U;
+    primitive.submeshes = {
+        {0, legacyMaterial, RenderMaterialMode::Masked},
+        {1, ignoredSecondMaterial, RenderMaterialMode::Transparent}};
+
+    RenderScene scene;
+    const RenderFrameApplyResult result = Apply(
+        scene, resources.registry, 1, 1, 1, false, std::move(primitive));
+    ASSERT_TRUE(result.IsApplied());
+    EXPECT_EQ(result.pendingFallbackCount, 1U);
+    const RenderObject& object = scene.GetObject(0);
+    EXPECT_EQ(object.mesh, readyFallback);
+    ASSERT_TRUE(object.meshBatchesAuthoritative);
+    ASSERT_EQ(object.meshBatches.size(), 2U);
+    for (const MeshBatch& batch : object.meshBatches)
+    {
+        EXPECT_EQ(batch.material, legacyMaterial);
+        EXPECT_EQ(batch.materialMode, RenderMaterialMode::Masked);
+    }
+    ASSERT_EQ(object.materialModes.size(), 2U);
+    EXPECT_EQ(object.material, legacyMaterial);
+    EXPECT_EQ(object.materialModes[0], RenderMaterialMode::Masked);
+    EXPECT_EQ(object.materialModes[1], RenderMaterialMode::Masked);
+}
+
+TEST(RenderSceneValidation,
+     SynthesizesSingleSubmeshFromCreateInfoForGeometryAndDrawArguments)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 9;
+    createInfo.indexType = MeshUploadIndexType::UInt16;
+    createInfo.topology = MeshUploadPrimitiveTopology::TriangleStrip;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {48}, createInfo, {});
+    const RenderResourceHandle material =
+        resources.Add({49}, RenderResourceKind::Material, true);
+
+    RenderScene scene;
+    ASSERT_TRUE(Apply(scene, resources.registry, 1, 1, 1, false,
+                      MakePrimitive(mesh, material)).IsApplied());
+    const RenderObject& object = scene.GetObject(0);
+    ASSERT_TRUE(object.meshBatchesAuthoritative);
+    ASSERT_EQ(object.meshBatches.size(), 1U);
+    const MeshBatch& batch = object.meshBatches[0];
+    EXPECT_EQ(batch.submeshIndex, 0U);
+    EXPECT_EQ(batch.indexType, MeshUploadIndexType::UInt16);
+    EXPECT_EQ(batch.geometry.indexOffset, 0U);
+    EXPECT_EQ(batch.geometry.indexCount, 9U);
+    EXPECT_EQ(batch.geometry.baseVertex, 0);
+    EXPECT_EQ(batch.geometry.topology, MeshUploadPrimitiveTopology::TriangleStrip);
+
+    const RenderDrawPacket packet = BuildLegacyMaterialDrawPacket(batch);
+    EXPECT_EQ(packet.arguments.indexCount, 9U);
+    EXPECT_EQ(packet.arguments.firstIndex, 0U);
+    EXPECT_EQ(packet.arguments.vertexOffset, 0);
+    EXPECT_EQ(packet.arguments.instanceCount, 1U);
+    EXPECT_EQ(packet.arguments.firstInstance, 0U);
+}
+
+TEST(RenderSceneValidation, AcceptsQueuedRequiredMeshBeforeRegistryCreation)
+{
+    RegistryFixture resources;
+    const RenderResourceHandle queued =
+        resources.AddQueuedWithoutRegistry({41}, RenderResourceKind::Mesh);
+
+    RenderScene scene;
+    const RenderFrameApplyResult result = Apply(
+        scene, resources.registry, 1, 1, 1, false, MakePrimitive(queued));
+
+    ASSERT_TRUE(result.IsApplied());
+    EXPECT_EQ(result.skippedDrawCount, 1U);
+    EXPECT_FALSE(scene.GetObject(0).mesh.IsValid());
+    EXPECT_FALSE(scene.GetObject(0).drawable);
 }
 
 TEST(RenderSceneValidation, SequenceGapPreservesRenderedTemporalHistory)

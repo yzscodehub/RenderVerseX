@@ -85,6 +85,7 @@ void GPUCulling::Initialize(IRHIDevice* device, const GPUCullingConfig& config)
 void GPUCulling::Shutdown()
 {
     m_instanceBuffer.Reset();
+    m_instanceIndexBuffer.Reset();
     m_visibilityBuffer.Reset();
     m_visibleInstanceBuffer.Reset();
     m_indirectBuffer.Reset();
@@ -146,6 +147,7 @@ void GPUCulling::CreateResources()
     if (!m_device) return;
 
     QueueRenderOwnerRetirement(m_instanceBuffer, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_instanceIndexBuffer, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_visibilityBuffer, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_visibleInstanceBuffer, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_indirectBuffer, m_pendingOwnerRetirements);
@@ -167,6 +169,35 @@ void GPUCulling::CreateResources()
     desc.stride = sizeof(GPUInstanceData);
     desc.debugName = "GPUCulling.InstanceBuffer";
     m_instanceBuffer = m_device->CreateBuffer(desc);
+
+    // Indirect firstInstance offsets per-instance vertex fetches, but is not
+    // folded into SV_InstanceID. Keep an identity stream so GPU vertex shaders
+    // can recover the global structured-buffer index on every backend.
+    desc.size = static_cast<uint64>(m_config.maxInstances) * sizeof(uint32);
+    desc.usage = RHIBufferUsage::Vertex;
+    desc.memoryType = RHIMemoryType::Upload;
+    desc.stride = sizeof(uint32);
+    desc.debugName = "GPUCulling.InstanceIndexBuffer";
+    m_instanceIndexBuffer = m_device->CreateBuffer(desc);
+    if (m_instanceIndexBuffer && m_config.maxInstances > 0)
+    {
+        uint32* instanceIndices = static_cast<uint32*>(m_instanceIndexBuffer->Map());
+        if (!instanceIndices)
+        {
+            RVX_RENDER_ERROR("GPUCulling: failed to map instance index vertex buffer");
+            m_instanceIndexBuffer.Reset();
+        }
+        else
+        {
+            for (uint32 instanceIndex = 0;
+                 instanceIndex < m_config.maxInstances;
+                 ++instanceIndex)
+            {
+                instanceIndices[instanceIndex] = instanceIndex;
+            }
+            m_instanceIndexBuffer->Unmap();
+        }
+    }
 
     // Visibility flag buffer (GPU cull pass output, compact pass input)
     desc.size = m_config.maxInstances * sizeof(uint32);
@@ -201,7 +232,8 @@ void GPUCulling::CreateResources()
     // Draw count buffer. Element 0 is the legacy total draw count; grouped
     // draws use one counter per GPUCullingDrawGroup at the same index.
     desc.size = std::max<uint64>(sizeof(uint32) * 4,
-                                 static_cast<uint64>(m_config.maxInstances) * sizeof(uint32));
+                                 (static_cast<uint64>(m_config.maxInstances) + 1u) *
+                                     sizeof(uint32));
     desc.usage = gpuWritableOutputs
         ? MakeGpuWritableStructuredUsage(RHIBufferUsage::IndirectArgs)
         : RHIBufferUsage::None;
@@ -222,6 +254,14 @@ void GPUCulling::CreateResources()
         m_accessSnapshots.instances = MakeRHIBufferAccessSnapshot(
             RHIResourceState::ShaderResource,
             RHIShaderStage::Compute,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Unknown);
+    }
+    if (m_instanceIndexBuffer)
+    {
+        m_accessSnapshots.instanceIndices = MakeRHIBufferAccessSnapshot(
+            RHIResourceState::VertexBuffer,
+            RHIShaderStage::Vertex,
             GPUQueueDomain::Graphics,
             RHIContentValidity::Unknown);
     }
@@ -265,6 +305,7 @@ void GPUCulling::CreatePipelineResources()
     }
 
     if (!m_instanceBuffer ||
+        !m_instanceIndexBuffer ||
         !m_visibilityBuffer ||
         !m_visibleInstanceBuffer ||
         !m_indirectBuffer ||
@@ -946,8 +987,26 @@ void GPUCulling::Cull(RHICommandContext& ctx,
     // Dispatch frustum culling compute shader
     ctx.SetPipeline(m_frustumCullPipeline.Get());
     ctx.SetDescriptorSet(0, m_cullingDescriptorSet.Get());
-    uint32 groupCount = (m_instanceCount + 63) / 64;
+    // CSFrustumCull also clears gDrawCount[instanceCount]. Dispatch one
+    // additional thread at exact 64-instance boundaries so total plus every
+    // possible per-group counter is reset before compaction.
+    uint32 groupCount = (m_instanceCount / 64) + 1;
     ctx.Dispatch(groupCount, 1, 1);
+
+    const RHIAccessSnapshot computeUAVAccess = MakeRHIAccessSnapshot(
+        RHIResourceState::UnorderedAccess,
+        RHIShaderStage::Compute,
+        GPUQueueDomain::Graphics);
+    const auto insertCullUAVBarriers = [&ctx, this, &computeUAVAccess]()
+    {
+        ctx.BufferBarrier(m_visibilityBuffer.Get(), computeUAVAccess, computeUAVAccess);
+        ctx.BufferBarrier(m_indirectBuffer.Get(), computeUAVAccess, computeUAVAccess);
+        ctx.BufferBarrier(m_drawCountBuffer.Get(), computeUAVAccess, computeUAVAccess);
+    };
+
+    // Frustum writes are consumed by compaction. Keep the barrier before an
+    // optional occlusion pass as well, because it is another visibility consumer.
+    insertCullUAVBarriers();
 
     // Dispatch occlusion culling if enabled and HiZ available
     if (m_config.enableOcclusionCulling && hiZTexture && m_occlusionCullPipeline)
@@ -955,6 +1014,7 @@ void GPUCulling::Cull(RHICommandContext& ctx,
         ctx.SetPipeline(m_occlusionCullPipeline.Get());
         // Bind HiZ texture and buffers...
         ctx.Dispatch(groupCount, 1, 1);
+        insertCullUAVBarriers();
     }
 
     // Compact visible instances into draw commands

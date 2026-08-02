@@ -91,6 +91,7 @@ namespace RVX
          * @brief Set RenderGraph handles for GPU-driven culling outputs
          */
         void SetGPUDrivenRenderGraphResources(RGBufferHandle instanceBuffer,
+                                              RGBufferHandle instanceIndexBuffer,
                                               RGBufferHandle indirectDrawBuffer,
                                               RGBufferHandle drawCountBuffer);
 
@@ -129,6 +130,7 @@ namespace RVX
         RHITextureView* m_depthTargetView = nullptr;
         RGTextureHandle m_depthTargetHandle;
         RGBufferHandle m_gpuDrivenInstanceHandle;
+        RGBufferHandle m_gpuDrivenInstanceIndexHandle;
         RGBufferHandle m_gpuDrivenIndirectHandle;
         RGBufferHandle m_gpuDrivenDrawCountHandle;
         DepthPrepassDrawStats m_drawStats;

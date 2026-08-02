@@ -5,11 +5,11 @@
 
 #include "Render/Renderer/RenderScene.h"
 
-#include "Core/Log.h"
 #include "Core/Math/Frustum.h"
 #include "Resources/RenderResourceRegistry.h"
 
 #include <algorithm>
+#include <limits>
 #include <unordered_set>
 #include <utility>
 
@@ -63,6 +63,39 @@ namespace
             return fallback;
         }
         return {};
+    }
+
+    bool IsValidMaterialMode(RenderMaterialMode mode)
+    {
+        return mode == RenderMaterialMode::Opaque ||
+               mode == RenderMaterialMode::Masked ||
+               mode == RenderMaterialMode::Transparent;
+    }
+
+    RenderMaterialMode GetLegacyMaterialMode(
+        const RenderPrimitiveSnapshot& primitive)
+    {
+        const uint32 materialMode =
+            (primitive.flags >> PRIMITIVE_MATERIAL_MODE_SHIFT) & 0xFFU;
+        return materialMode <= static_cast<uint32>(RenderMaterialMode::Transparent)
+                   ? static_cast<RenderMaterialMode>(materialMode)
+                   : RenderMaterialMode::Opaque;
+    }
+
+    bool IsSkinned(const RenderPrimitiveSnapshot& primitive,
+                   const RenderMeshResourceData& mesh)
+    {
+        if (!primitive.skinMatrices.empty())
+        {
+            return true;
+        }
+        return std::any_of(
+            mesh.buffers.begin(), mesh.buffers.end(),
+            [](const RenderOwnedBuffer& buffer)
+            {
+                return buffer.semantic == RenderMeshBufferSemantic::BoneIndices ||
+                       buffer.semantic == RenderMeshBufferSemantic::BoneWeights;
+            });
     }
 } // namespace
 
@@ -125,8 +158,10 @@ RenderFrameApplyResult RenderScene::ApplyFramePacket(
 
     for (const RenderPrimitiveSnapshot& primitive : packet.GetPrimitives())
     {
+        const RenderResourceStatus meshStatus =
+            registry.QueryStatus(primitive.mesh);
         if (primitive.objectId == 0 || !primitive.mesh.IsValid() ||
-            !registry.HasExactEntry(primitive.mesh))
+            meshStatus.code != RenderResourceStatusCode::Current)
         {
             result.code = RenderFrameApplyCode::StaleRequiredHandle;
             return result;
@@ -155,31 +190,161 @@ RenderFrameApplyResult RenderScene::ApplyFramePacket(
                                      primitive.fallbackMesh,
                                      registry,
                                      result.pendingFallbackCount);
-        object.material = SelectOptional(primitive.material,
-                                         primitive.fallbackMaterial,
-                                         registry,
-                                         result.pendingFallbackCount);
         object.skinningMatrices = primitive.skinMatrices;
         object.sortKey = primitive.sortKey;
         object.layerMask = primitive.layerMask;
         object.flags = primitive.flags;
-        const uint32 materialMode =
-            (primitive.flags >> PRIMITIVE_MATERIAL_MODE_SHIFT) & 0xFFU;
-        object.materialModes.push_back(
-            materialMode <= static_cast<uint32>(RenderMaterialMode::Transparent)
-                ? static_cast<RenderMaterialMode>(materialMode)
-                : RenderMaterialMode::Opaque);
         object.visible = (primitive.flags & PRIMITIVE_VISIBLE) != 0;
         object.castsShadow =
             (primitive.flags & PRIMITIVE_CASTS_SHADOW) != 0;
         object.receivesShadow =
             (primitive.flags & PRIMITIVE_RECEIVES_SHADOW) != 0;
         object.drawable = object.mesh.IsValid();
+
+        const bool usingPreferredMesh = object.mesh == primitive.mesh;
+        const RenderMeshResourceData* meshData = object.mesh.IsValid()
+                                                     ? registry.ResolveMesh(object.mesh)
+                                                     : nullptr;
+        object.meshBatchesAuthoritative = meshData != nullptr;
+        const bool hasExplicitBindings = !primitive.submeshes.empty();
+        if (usingPreferredMesh && hasExplicitBindings)
+        {
+            if (meshData == nullptr)
+            {
+                result.code = RenderFrameApplyCode::InvalidPacket;
+                return result;
+            }
+        }
+
+        std::vector<MeshUploadSubmesh> actualSubmeshes;
+        if (meshData != nullptr)
+        {
+            actualSubmeshes = meshData->submeshes;
+            if (actualSubmeshes.empty() && meshData->createInfo.indexCount != 0)
+            {
+                if (meshData->createInfo.indexCount >
+                    std::numeric_limits<uint32>::max())
+                {
+                    result.code = RenderFrameApplyCode::InvalidPacket;
+                    return result;
+                }
+                actualSubmeshes.push_back(MeshUploadSubmesh{
+                    0,
+                    static_cast<uint32>(meshData->createInfo.indexCount),
+                    0,
+                    meshData->createInfo.topology});
+            }
+        }
+
+        if (usingPreferredMesh && hasExplicitBindings)
+        {
+            if (primitive.submeshes.size() != actualSubmeshes.size())
+            {
+                result.code = RenderFrameApplyCode::InvalidPacket;
+                return result;
+            }
+            for (size_t index = 0; index < primitive.submeshes.size(); ++index)
+            {
+                const RenderSubmeshMaterialBinding& binding =
+                    primitive.submeshes[index];
+                if (binding.submeshIndex != index ||
+                    !IsValidMaterialMode(binding.materialMode))
+                {
+                    result.code = RenderFrameApplyCode::InvalidPacket;
+                    return result;
+                }
+            }
+        }
+
+        const RenderMaterialMode legacyMode = GetLegacyMaterialMode(primitive);
+        std::vector<RenderResourceHandle> selectedMaterials;
+        std::vector<RenderMaterialMode> selectedModes;
+        selectedMaterials.reserve(actualSubmeshes.size());
+        selectedModes.reserve(actualSubmeshes.size());
+        if (meshData != nullptr && usingPreferredMesh && hasExplicitBindings)
+        {
+            for (const RenderSubmeshMaterialBinding& binding : primitive.submeshes)
+            {
+                selectedMaterials.push_back(SelectOptional(
+                    binding.material,
+                    primitive.fallbackMaterial,
+                    registry,
+                    result.pendingFallbackCount));
+                selectedModes.push_back(binding.materialMode);
+            }
+        }
+        else
+        {
+            const RenderResourceHandle legacyMaterial = SelectOptional(
+                primitive.material,
+                primitive.fallbackMaterial,
+                registry,
+                result.pendingFallbackCount);
+            if (actualSubmeshes.empty())
+            {
+                object.material = legacyMaterial;
+            }
+            else
+            {
+                selectedMaterials.assign(actualSubmeshes.size(), legacyMaterial);
+                selectedModes.assign(actualSubmeshes.size(), legacyMode);
+            }
+        }
+
+        if (!selectedMaterials.empty())
+        {
+            object.material = selectedMaterials.front();
+            object.materialModes = selectedModes;
+        }
+
+        if (meshData != nullptr && !actualSubmeshes.empty())
+        {
+            MeshBatchBuildInput batchInput;
+            batchInput.objectId = object.entityId;
+            batchInput.mesh = object.mesh;
+            batchInput.primitiveData =
+                static_cast<PrimitiveDataIndex>(candidateObjects.size());
+            batchInput.indexType = meshData->createInfo.indexType;
+            batchInput.boundsMin = primitive.boundsMin;
+            batchInput.boundsMax = primitive.boundsMax;
+            if (IsSkinned(primitive, *meshData))
+            {
+                batchInput.flags |= RenderBatchFlags::Skinned;
+            }
+            if (object.castsShadow)
+            {
+                batchInput.flags |= RenderBatchFlags::CastsShadow;
+            }
+            if (object.receivesShadow)
+            {
+                batchInput.flags |= RenderBatchFlags::ReceivesShadow;
+            }
+            batchInput.submeshes.reserve(actualSubmeshes.size());
+            for (size_t index = 0; index < actualSubmeshes.size(); ++index)
+            {
+                batchInput.submeshes.push_back(MeshBatchSourceSubmesh{
+                    static_cast<uint32>(index),
+                    actualSubmeshes[index],
+                    selectedMaterials[index],
+                    selectedModes[index]});
+            }
+            MeshBatchBuildResult batchResult = BuildMeshBatches(batchInput);
+            if (!batchResult.IsSuccess())
+            {
+                result.code = RenderFrameApplyCode::InvalidPacket;
+                return result;
+            }
+            object.meshBatches = std::move(batchResult.batches);
+        }
         if (!object.drawable)
         {
             ++result.skippedDrawCount;
         }
         AddUniqueHandle(candidateReferences, object.mesh);
+        for (const MeshBatch& batch : object.meshBatches)
+        {
+            AddUniqueHandle(candidateReferences, batch.material);
+        }
         AddUniqueHandle(candidateReferences, object.material);
         candidateObjects.push_back(std::move(object));
     }

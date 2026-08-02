@@ -284,8 +284,11 @@ SceneRenderFeatureReport SceneRenderer::BuildRenderFeatureReport(
         entry.feature = SceneRenderFeature::GPUDriven;
         entry.requiredCapability = "supportsComputePipeline+supportsDescriptorSets+supportsIndirectDrawCount";
         entry.rhiCapabilityKnown = capabilities != nullptr;
-        entry.requested = diagnostics.gpuDrivenCullingStats.enabled;
-        entry.enabled = diagnostics.gpuDrivenCullingStats.gpuExecutionRecorded;
+        const SceneGPUDrivenCullingStats& gpuDriven = diagnostics.gpuDrivenCullingStats;
+        const GPUDrivenPolicyDecision& policy = gpuDriven.policyDecision;
+        entry.requested = !gpuDriven.policyDecisionAvailable ||
+                          policy.requestedMode != RenderGPUDrivenMode::ForceDisabled;
+        entry.enabled = gpuDriven.enabled && gpuDriven.gpuExecutionRecorded;
         entry.fallbackUsed = diagnostics.gpuDrivenCullingStats.fallbackUsed;
         entry.renderGraphBacked = diagnostics.gpuDrivenCullingStats.graphPassAdded;
         entry.graphPassCount = diagnostics.gpuDrivenCullingStats.graphPassAdded ? 1u : 0u;
@@ -295,30 +298,39 @@ SceneRenderFeatureReport SceneRenderer::BuildRenderFeatureReport(
                                          capabilities->supportsComputePipeline &&
                                          capabilities->supportsDescriptorSets &&
                                          capabilities->supportsIndirectDrawCount;
-        entry.supported = diagnostics.gpuDrivenCullingStats.executionDecisionAvailable
-            ? diagnostics.gpuDrivenCullingStats.executionDecision.mode == GPUCullingExecutionMode::GpuCompute
-            : capabilitySupported;
+        entry.supported = gpuDriven.policyDecisionAvailable
+            ? policy.capabilitiesReady && policy.pipelineReady
+            : (gpuDriven.executionDecisionAvailable
+                   ? gpuDriven.executionDecision.mode == GPUCullingExecutionMode::GpuCompute
+                   : capabilitySupported);
 
         if (!entry.requested)
         {
             entry.status = SceneRenderFeatureStatus::Skipped;
-            entry.diagnosticMessage = "GPU-driven culling is disabled.";
+            entry.diagnosticMessage = "GPU-driven rendering was forced off.";
         }
         else if (!entry.rhiCapabilityKnown)
         {
             entry.status = SceneRenderFeatureStatus::Unknown;
             entry.diagnosticMessage = "RHI capabilities are unavailable for GPU-driven feature evaluation.";
         }
-        else if (entry.supported)
+        else if (entry.enabled)
         {
             entry.status = SceneRenderFeatureStatus::Supported;
-            entry.diagnosticMessage = "GPU-driven culling can execute through compute and indirect draw count.";
+            entry.diagnosticMessage = "GPU-driven rendering executed through compute and indirect draw count.";
         }
         else
         {
             entry.status = SceneRenderFeatureStatus::Fallback;
             entry.fallbackUsed = true;
-            entry.diagnosticMessage = "GPU-driven culling falls back to CPU draw-list culling.";
+            entry.diagnosticMessage = gpuDriven.policyDecisionAvailable
+                ? std::string("GPU-driven rendering resolved to the direct path: ") +
+                      GetGPUDrivenPolicyReasonName(policy.reason) +
+                      " (qualification=" +
+                      GetGPUDrivenQualificationLevelName(policy.qualificationLevel) +
+                      ", revision=" +
+                      std::to_string(policy.qualificationRevision) + ")."
+                : "GPU-driven rendering resolved to the direct path.";
         }
 
         AddRenderFeature(report, std::move(entry));

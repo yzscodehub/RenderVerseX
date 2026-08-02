@@ -152,6 +152,14 @@ RenderFrameExtractionResult RenderFrameExtractor::Extract(
     RenderFramePacketBuilder builder;
     for (const RenderPrimitiveProxy& proxy : proxies.primitives)
     {
+        if (proxy.materialAssetIds.size() != proxy.materialModes.size() ||
+            !FitsUint32(proxy.materialAssetIds.size()))
+        {
+            result.diagnostics.code = RenderExtractionCode::CountMismatch;
+            result.diagnostics.skippedPrimitiveCount = 1;
+            return fail(
+                RenderFrameExtractionResultCode::ProxyExtractionFailed);
+        }
         const Resource::RenderResourceResolveResult mesh =
             input.resources->ResolveRenderResource(
                 proxy.meshAssetId, RenderResourceKind::Mesh);
@@ -170,18 +178,29 @@ RenderFrameExtractionResult RenderFrameExtractor::Extract(
         primitive.objectId = proxy.ownerId != 0 ? proxy.ownerId
                                                 : proxy.id.value;
         primitive.mesh = mesh.handle;
-        if (!proxy.materialAssetIds.empty() &&
-            proxy.materialAssetIds.front().IsValid())
+        primitive.submeshes.reserve(proxy.materialAssetIds.size());
+        for (size_t index = 0; index < proxy.materialAssetIds.size(); ++index)
         {
-            const Resource::RenderResourceResolveResult material =
-                input.resources->ResolveRenderResource(
-                    proxy.materialAssetIds.front(),
-                    RenderResourceKind::Material);
-            if (material.code ==
-                Resource::RenderResourceResolveCode::Resolved)
+            RenderSubmeshMaterialBinding binding;
+            binding.submeshIndex = static_cast<uint32>(index);
+            binding.materialMode = proxy.materialModes[index];
+            if (proxy.materialAssetIds[index].IsValid())
             {
-                primitive.material = material.handle;
+                const Resource::RenderResourceResolveResult material =
+                    input.resources->ResolveRenderResource(
+                        proxy.materialAssetIds[index],
+                        RenderResourceKind::Material);
+                if (material.code ==
+                    Resource::RenderResourceResolveCode::Resolved)
+                {
+                    binding.material = material.handle;
+                }
             }
+            primitive.submeshes.push_back(binding);
+        }
+        if (!primitive.submeshes.empty())
+        {
+            primitive.material = primitive.submeshes.front().material;
         }
         primitive.worldTransform = proxy.worldMatrix;
         primitive.previousWorldTransform = proxy.worldMatrix;

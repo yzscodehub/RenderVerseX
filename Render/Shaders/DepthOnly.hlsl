@@ -10,6 +10,7 @@
 //   Slot 0: Position buffer (float3)
 //   Slot 4: Bone indices buffer (uint4)
 //   Slot 5: Bone weights buffer (float4)
+//   Slot 6: GPU-driven global instance index buffer (uint)
 // =============================================================================
 
 #define RVX_MAX_OBJECT_SKINNING_MATRICES 128
@@ -65,6 +66,7 @@ struct VSInput
 struct RigidVSInput
 {
     float3 Position : POSITION;
+    uint InstanceIndex : INSTANCE_INDEX;
 };
 
 struct VSOutput
@@ -105,11 +107,10 @@ VSOutput VSMain(VSInput input)
 }
 
 VSOutput VSMainGPUDriven(
-    RigidVSInput input,
-    uint instanceId : SV_InstanceID)
+    RigidVSInput input)
 {
     VSOutput output;
-    float4x4 world = GPUDrivenInstances[instanceId].worldMatrix;
+    float4x4 world = GPUDrivenInstances[input.InstanceIndex].worldMatrix;
     float4 worldPosition = mul(world, float4(input.Position, 1.0));
     output.Position = mul(ViewProjection, worldPosition);
     return output;

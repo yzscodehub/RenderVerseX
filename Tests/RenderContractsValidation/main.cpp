@@ -1080,7 +1080,7 @@ namespace
         RenderFramePacketBuilder builder;
         PopulateCompletePacketBuilder(builder);
         RenderFrameHeader invalid = MakeValidHeader();
-        invalid.schemaVersion = 2;
+        invalid.schemaVersion = RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION + 1;
         ASSERT_TRUE(builder.SetHeader(invalid));
 
         EXPECT_FALSE(builder.Seal());
@@ -1726,6 +1726,64 @@ namespace
         EXPECT_TRUE(builder.Seal());
     }
 
+    TEST(RenderContractsValidation,
+         UsesSchemaThreeOwnedCanonicalSubmeshMaterialBindings)
+    {
+        EXPECT_EQ(RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION, 3U);
+
+        RenderFramePacketBuilder builder;
+        PopulateCompletePacketBuilder(builder);
+        RenderPrimitiveSnapshot primitive;
+        primitive.objectId = 1;
+        primitive.mesh = RenderResourceHandle{1, 1};
+        primitive.submeshes = {
+            RenderSubmeshMaterialBinding{
+                0, RenderResourceHandle{2, 4}, RenderMaterialMode::Masked},
+            RenderSubmeshMaterialBinding{
+                1, RenderResourceHandle{}, RenderMaterialMode::Transparent}};
+        primitive.material = primitive.submeshes.front().material;
+        ASSERT_TRUE(builder.AddPrimitive(std::move(primitive)));
+
+        auto header = MakeValidHeader();
+        header.expectedPrimitiveCount = 1;
+        header.extractedPrimitiveCount = 1;
+        ASSERT_TRUE(builder.SetHeader(header));
+        const auto packet = builder.Seal();
+        ASSERT_NE(packet, nullptr);
+        ASSERT_EQ(packet->GetPrimitives()[0].submeshes.size(), 2U);
+        EXPECT_EQ(packet->GetPrimitives()[0].submeshes[0].material,
+                  (RenderResourceHandle{2, 4}));
+        EXPECT_EQ(packet->GetPrimitives()[0].submeshes[1].materialMode,
+                  RenderMaterialMode::Transparent);
+    }
+
+    TEST(RenderContractsValidation,
+         RejectsMalformedSubmeshBindingsButAllowsMissingMaterial)
+    {
+        const auto verifyRejected = [](RenderSubmeshMaterialBinding binding)
+        {
+            RenderFramePacketBuilder builder;
+            PopulateCompletePacketBuilder(builder);
+            RenderPrimitiveSnapshot primitive;
+            primitive.objectId = 1;
+            primitive.mesh = RenderResourceHandle{1, 1};
+            primitive.submeshes.push_back(binding);
+            EXPECT_TRUE(builder.AddPrimitive(std::move(primitive)));
+            auto header = MakeValidHeader();
+            header.expectedPrimitiveCount = 1;
+            header.extractedPrimitiveCount = 1;
+            EXPECT_TRUE(builder.SetHeader(header));
+            EXPECT_EQ(builder.Seal(), nullptr);
+            EXPECT_EQ(builder.GetLastSealCode(),
+                      RenderFrameSealCode::InvalidResourceReference);
+        };
+
+        verifyRejected(RenderSubmeshMaterialBinding{
+            1, RenderResourceHandle{}, RenderMaterialMode::Opaque});
+        verifyRejected(RenderSubmeshMaterialBinding{
+            0, RenderResourceHandle{}, static_cast<RenderMaterialMode>(255)});
+    }
+
     enum class CaptureRuleCase : uint8
     {
         NoneWithId,
@@ -1867,7 +1925,7 @@ namespace
 
         PopulateCompletePacketBuilder(builder);
         auto header = MakeValidHeader();
-        header.schemaVersion = 2;
+        header.schemaVersion = RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION + 1;
         header.sequence = 0;
         ASSERT_TRUE(builder.SetHeader(header));
         auto view = MakeValidView();

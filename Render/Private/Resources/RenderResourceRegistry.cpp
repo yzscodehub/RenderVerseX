@@ -521,6 +521,14 @@ namespace RVX
                status.state == RenderResourcePublicState::GPUReady;
     }
 
+    RenderResourceStatus RenderResourceRegistry::QueryStatus(
+        RenderResourceHandle handle) const noexcept
+    {
+        return m_statusTable != nullptr
+                   ? m_statusTable->Query(handle)
+                   : RenderResourceStatus{};
+    }
+
     bool RenderResourceRegistry::HasPending(
         RenderResourceHandle handle) const
     {

@@ -85,6 +85,33 @@ namespace
         return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
     }
 
+    std::string DescribeGPUDrivenQualificationGateMask(uint64 gateMask)
+    {
+        if (gateMask == 0)
+        {
+            return "None";
+        }
+
+        std::ostringstream ss;
+        bool first = true;
+        for (GPUDrivenQualificationGate gate : RVX_GPU_DRIVEN_QUALIFICATION_GATES)
+        {
+            const uint64 bit = GetGPUDrivenQualificationGateMask(gate);
+            if ((gateMask & bit) == 0)
+            {
+                continue;
+            }
+
+            if (!first)
+            {
+                ss << "|";
+            }
+            ss << GetGPUDrivenQualificationGateName(gate);
+            first = false;
+        }
+        return ss.str();
+    }
+
     std::string JsonExtractStringField(const std::string& json, const char* fieldName)
     {
         const std::string marker = "\"" + std::string(fieldName) + "\": \"";
@@ -611,7 +638,21 @@ std::string SceneRenderer::ExportToolDiagnosticsText() const
        << ", materials=" << frame.gpuResourceStats.residentMaterialCount
        << ", pendingUploads=" << frame.gpuResourceStats.pendingUploadCount
        << ", usedMemory=" << frame.gpuResourceStats.usedMemory << "\n";
-    ss << "GPUDriven: enabled=" << frame.gpuDrivenCullingStats.enabled
+    ss << "GPUDriven: mode="
+       << GetRenderGPUDrivenModeName(
+              frame.gpuDrivenCullingStats.policyDecision.requestedMode)
+       << ", policyReason="
+       << GetGPUDrivenPolicyReasonName(
+              frame.gpuDrivenCullingStats.policyDecision.reason)
+       << ", qualification="
+       << GetGPUDrivenQualificationLevelName(
+              frame.gpuDrivenCullingStats.policyDecision.qualificationLevel)
+       << ", qualificationRevision="
+       << frame.gpuDrivenCullingStats.policyDecision.qualificationRevision
+       << ", missingQualificationGates="
+       << DescribeGPUDrivenQualificationGateMask(
+              frame.gpuDrivenCullingStats.policyDecision.missingQualificationGateMask)
+       << ", enabled=" << frame.gpuDrivenCullingStats.enabled
        << ", fallback=" << frame.gpuDrivenCullingStats.fallbackUsed
        << ", decisionAvailable=" << frame.gpuDrivenCullingStats.executionDecisionAvailable
        << ", inputOpaque=" << frame.gpuDrivenCullingStats.inputOpaqueDrawItemCount
