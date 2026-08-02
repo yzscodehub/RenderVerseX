@@ -135,8 +135,9 @@ DirectDrawPacketBatchBuildResult BuildDirectDrawPacketBatch(
         const MeshPassProcessorResult& source =
             stream.packets[reference.sourcePacketIndex];
         if (source.disposition == MeshPassDisposition::Skip ||
-            source.packet.pass != pass ||
-            source.sourceOrdinal != reference.sourceOrdinal ||
+            !RenderDrawPacketReferenceMatchesSource(plan,
+                                                    reference,
+                                                    source) ||
             !IsValidDirectLayout(source.directLayout))
         {
             return result;
@@ -236,8 +237,8 @@ bool ValidateWholePassGPUDrivenPacketRange(
         if (sourceIndex >= stream.packets.size() ||
             reference.pass != pass ||
             reference.sourcePacketIndex != sourceIndex ||
-            reference.sourceOrdinal !=
-                stream.packets[sourceIndex].sourceOrdinal ||
+            !RenderDrawPacketReferenceMatchesSource(
+                plan, reference, stream.packets[sourceIndex]) ||
             !stream.packets[sourceIndex].IsGPUCandidate())
         {
             return false;
@@ -257,7 +258,9 @@ bool ValidateWholePassGPUDrivenPacketRange(
         const MeshPassProcessorResult& source =
             stream.packets[reference.sourcePacketIndex];
         if (source.disposition != MeshPassDisposition::Skip ||
-            reference.sourceOrdinal != source.sourceOrdinal)
+            !RenderDrawPacketReferenceMatchesSource(plan,
+                                                    reference,
+                                                    source))
         {
             return false;
         }

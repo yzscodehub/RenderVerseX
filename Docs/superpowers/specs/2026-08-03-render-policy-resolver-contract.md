@@ -82,14 +82,24 @@ streams and produces the final execution plan.
 
 ### 3.3 Frame execution plan
 
-`RenderFrameExecutionPlan` owns a compact vector of frame-local packet
-references. A reference identifies its pass, source-packet index, and source
-ordinal. GPU, Direct, and Skip ranges index that owned compact vector; the lane
-is defined by the field containing the range.
+`RenderFrameExecutionPlan` owns a vector of frame-local packet references. A
+reference retains its compatibility pass/source fields and also owns Task 7A's
+structured packet ID. The ID covers frame, view, pass, object/primitive, exact
+mesh generation, logical and geometry submesh, source index, and source
+ordinal; equality and ordering use the complete value rather than a lone hash.
 
-This reference is deterministic only within the compiled frame/view plan. It
-is not Task 7's persistent packet ID and does not by itself prove exactly-once
-execution.
+Each reference also freezes an exact prepared-source signature containing the
+full packet, draw-group key, Direct layout, disposition/reason, source ordinal,
+and view depth. This signature is separate from logical identity: it detects
+preparation drift before Direct or GPU command recording without making
+material or pipeline state part of the persistent packet ID.
+
+GPU, Direct, and Skip ranges index the owned vector; the lane is defined by the
+field containing the range. Every pass publishes expected, terminal, unique,
+duplicate, and unaccounted identity counts. Validation independently recomputes
+those values and accepts only a canonical, zero-duplicate, zero-unaccounted
+exactly-once partition. Task 7B may change mixed-pass lane selection, but not
+this identity or accounting contract.
 
 Every plan and resolver value provides full value comparison. Validation is a
 non-throwing, fail-closed operation over external or compiled data.

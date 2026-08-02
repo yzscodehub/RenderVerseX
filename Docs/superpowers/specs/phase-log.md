@@ -44237,6 +44237,100 @@ ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
 
 ---
 
+### R-SP330 Render-policy Task 7A stable packet identity and exactly-once accounting
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Plan review agent:** Primary architect with read-only identity/accounting inventory
+**Code review agent:** Independent terra worker; primary review of findings and revision
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- Task 7A identity/accounting slice; Task 7B recording changes excluded.
+
+**Prerequisite status:** PASS
+
+- Task 6C/M1 exit is committed at `991e749e`.
+- Depth and Opaque Direct/GPU consumers already preflight their published plan
+  and prepared packet stream before command recording.
+
+**Approved scope:**
+
+- Add a collision-safe structured per-frame/view packet ID covering pass,
+  object/primitive, exact mesh generation, both submesh identities, source
+  index, and source ordinal.
+- Freeze a separate exact preparation signature so material, pipeline,
+  arguments, flags, grouping, layout, disposition, reason, or depth drift is
+  rejected without changing logical ID semantics.
+- Publish and independently validate expected/terminal/unique/duplicate/
+  unaccounted counts for every GPU, Direct, or deliberate-Skip partition.
+- Preserve Task 5 whole-pass Direct behavior for mixed candidate/Direct passes.
+
+**Out of scope:**
+
+- Mixed GPU and Direct command recording, pass load/depth sequencing, and late
+  lane failure policy; those remain Task 7B.
+- Candidate visibility redesign and frame-owned pass contexts; Tasks 8 and 9.
+
+**Files changed:**
+
+- `Render/Include/Render/Policy/RenderFrameExecutionPlan.h`
+- `Render/Include/Render/Policy/RenderFramePlanCompiler.h`
+- `Render/Private/Policy/RenderFramePlanCompiler.cpp`
+- `Render/Private/Policy/RenderPolicyResolver.cpp`
+- `Render/Private/Passes/DirectDrawPacketBatch.cpp`
+- `Tests/RenderPolicyValidation/main.cpp`
+- resolver contract, execution ledger, and this phase log.
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderPolicyValidation RenderPassValidation GPUDrivenValidation
+build/win_x64_debug/Tests/Debug/RenderPolicyValidation.exe
+build/win_x64_debug/Tests/Debug/RenderPassValidation.exe
+build/win_x64_debug/Tests/Debug/GPUDrivenValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(RenderPolicyValidation\\.|MeshPassProcessorValidation\\.|RenderDrawPacketValidation\\.)"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS for all three targets and configured backend libraries.
+- Tests: RenderPolicy 19/19, RenderPass 153/153, GPUDriven 24/24, adjacent
+  identity/preparation CTest 35/35.
+- Visual gate: N/A; Task 7A changes no command selection or recording.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for one P1. Logical identity alone did not
+  detect material/pipeline/argument/flag/layout drift in the prepared source.
+- Primary accepted the finding but kept transient draw state out of logical
+  identity. A separate full-value `RenderPreparedDrawPacketSignature` now
+  freezes every `MeshPassProcessorResult` value and is checked by both Direct
+  and GPU consumers.
+- Final verdict: APPROVE; no remaining P0-P2 findings.
+
+**Primary review result:**
+
+- Verdict: PASS. The reviewer finding was valid, the separation between stable
+  logical identity and exact preparation integrity is deliberate, and the
+  revised tests cover material generation, pipeline, arguments, flags, Direct
+  layout, GPU stale-source rejection, duplicate IDs, accounting tamper, empty
+  passes, repeated ordinals, view/frame separation, mesh generation, and
+  submesh changes.
+- Task 7B remains the only owner of mixed Depth/Opaque recording and removal of
+  whole-pass GPU completeness gates.
+
+**Notes / follow-ups:**
+
+- Next slice: Task 7B hybrid Depth/Opaque execution and DX12 validation.
+- Keep `RenderRuntimeFatalDiagnostics.json` and `Scripts/__pycache__/`
+  unstaged.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

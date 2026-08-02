@@ -5,21 +5,79 @@
  * @brief Value-only render-frame policy plans and execution reports.
  */
 
+#include "Render/Passes/MeshPassProcessor.h"
 #include "Render/Policy/RenderPolicyTypes.h"
+#include "RenderContracts/RenderIdentity.h"
 
 #include <array>
+#include <compare>
 #include <vector>
 
 namespace RVX
 {
+    /** @brief Collision-safe identity for one packet in a compiled frame/view. */
+    struct RenderDrawPacketId
+    {
+        uint64 frameSequence = 0;
+        uint32 viewOrdinal = 0;
+        RenderPassKind pass = RenderPassKind::None;
+        uint64 objectId = 0;
+        uint32 primitiveData = 0;
+        RenderResourceHandle mesh{};
+        uint32 logicalSubmeshIndex = 0;
+        uint32 geometrySubmeshIndex = 0;
+        uint32 sourcePacketIndex = 0;
+        uint32 sourceOrdinal = 0;
+
+        auto operator<=>(const RenderDrawPacketId&) const = default;
+    };
+
+    /** @brief Exact prepared values guarded against post-plan source drift. */
+    struct RenderPreparedDrawPacketSignature
+    {
+        MeshPassDisposition disposition = MeshPassDisposition::Skip;
+        MeshPassEligibilityReason reason =
+            MeshPassEligibilityReason::PassIrrelevant;
+        RenderDrawPacket packet{};
+        RenderDrawGroupKey groupKey{};
+        RenderSubmissionLayout directLayout{};
+        uint32 sourceOrdinal = 0;
+        float32 viewDepth = 0.0f;
+
+        bool operator==(
+            const RenderPreparedDrawPacketSignature&) const = default;
+    };
+
     /** @brief Stable, owned source reference selected for a frame-local pass. */
     struct RenderDrawPacketReference
     {
         RenderPassKind pass = RenderPassKind::None;
         uint32 sourcePacketIndex = 0;
         uint32 sourceOrdinal = 0;
+        RenderDrawPacketId packetId{};
+        RenderPreparedDrawPacketSignature sourceSignature{};
 
         bool operator==(const RenderDrawPacketReference&) const = default;
+    };
+
+    /** @brief Exactly-once terminal-lane accounting for one compiled pass. */
+    struct RenderPacketIdentityAccounting
+    {
+        uint32 expectedPacketCount = 0;
+        uint32 terminalPacketCount = 0;
+        uint32 uniquePacketIdCount = 0;
+        uint32 duplicatePacketIdCount = 0;
+        uint32 unaccountedPacketIdCount = 0;
+
+        [[nodiscard]] bool IsExactlyOnce() const noexcept
+        {
+            return terminalPacketCount == expectedPacketCount &&
+                   uniquePacketIdCount == expectedPacketCount &&
+                   duplicatePacketIdCount == 0 &&
+                   unaccountedPacketIdCount == 0;
+        }
+
+        bool operator==(const RenderPacketIdentityAccounting&) const = default;
     };
 
     /** @brief Packet accounting for one pass before command recording. */
@@ -51,6 +109,7 @@ namespace RVX
         DrawPacketRange directPackets{};
         DrawPacketRange skippedPackets{};
         RenderPacketPartitionSummary partition{};
+        RenderPacketIdentityAccounting identityAccounting{};
         RenderPolicyReason reason = RenderPolicyReason::ConservativeDefault;
         /// One deterministic outcome reason for every source packet, including
         /// pass-irrelevant packets that enter the Skip lane.

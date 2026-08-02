@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
+#include <set>
 #include <vector>
 
 namespace RVX
@@ -782,6 +784,9 @@ namespace RVX
             };
             std::vector<bool> sourceIndices(
                 passPlan.partition.inputPacketCount, false);
+            std::set<RenderDrawPacketId> packetIds;
+            uint32 duplicatePacketIdCount = 0;
+            uint64 terminalPacketCount = 0;
             for (const DrawPacketRange range : ranges)
             {
                 if (range.first != canonicalCursor)
@@ -789,24 +794,70 @@ namespace RVX
                     return false;
                 }
                 const uint64 end = static_cast<uint64>(range.first) + range.count;
+                terminalPacketCount += range.count;
                 for (uint64 index = range.first; index < end; ++index)
                 {
                     const RenderDrawPacketReference& reference =
                         plan.packetReferences[static_cast<size_t>(index)];
+                    const RenderDrawPacketId& packetId = reference.packetId;
+                    const RenderPreparedDrawPacketSignature& sourceSignature =
+                        reference.sourceSignature;
                     if (referenced[static_cast<size_t>(index)] ||
                         reference.pass != passPlan.pass ||
                         reference.sourcePacketIndex >= sourceIndices.size() ||
-                        sourceIndices[reference.sourcePacketIndex])
+                        sourceIndices[reference.sourcePacketIndex] ||
+                        packetId.frameSequence != plan.frameSequence ||
+                        packetId.viewOrdinal != plan.viewOrdinal ||
+                        packetId.pass != reference.pass ||
+                        packetId.sourcePacketIndex !=
+                            reference.sourcePacketIndex ||
+                        packetId.sourceOrdinal != reference.sourceOrdinal ||
+                        sourceSignature.packet.pass != reference.pass ||
+                        sourceSignature.sourceOrdinal !=
+                            reference.sourceOrdinal ||
+                        static_cast<uint8>(sourceSignature.disposition) >
+                            static_cast<uint8>(MeshPassDisposition::Skip) ||
+                        static_cast<uint8>(sourceSignature.reason) >=
+                            static_cast<uint8>(
+                                MeshPassEligibilityReason::Count) ||
+                        packetId.objectId !=
+                            sourceSignature.packet.objectId ||
+                        packetId.primitiveData !=
+                            sourceSignature.packet.primitiveData ||
+                        packetId.mesh !=
+                            sourceSignature.packet.geometryKey.mesh ||
+                        packetId.logicalSubmeshIndex !=
+                            sourceSignature.packet.submeshIndex ||
+                        packetId.geometrySubmeshIndex !=
+                            sourceSignature.packet.geometryKey.submeshIndex)
                     {
                         return false;
                     }
                     referenced[static_cast<size_t>(index)] = true;
                     sourceIndices[reference.sourcePacketIndex] = true;
+                    if (!packetIds.insert(packetId).second)
+                    {
+                        ++duplicatePacketIdCount;
+                    }
                 }
                 canonicalCursor = end;
             }
-            if (!std::all_of(sourceIndices.begin(), sourceIndices.end(),
-                             [](bool value) { return value; }))
+            const uint32 unaccountedPacketIdCount = static_cast<uint32>(
+                std::count(sourceIndices.begin(), sourceIndices.end(), false));
+            if (terminalPacketCount > std::numeric_limits<uint32>::max() ||
+                packetIds.size() > std::numeric_limits<uint32>::max())
+            {
+                return false;
+            }
+            const RenderPacketIdentityAccounting actualAccounting = {
+                passPlan.partition.inputPacketCount,
+                static_cast<uint32>(terminalPacketCount),
+                static_cast<uint32>(packetIds.size()),
+                duplicatePacketIdCount,
+                unaccountedPacketIdCount,
+            };
+            if (actualAccounting != passPlan.identityAccounting ||
+                !actualAccounting.IsExactlyOnce())
             {
                 return false;
             }

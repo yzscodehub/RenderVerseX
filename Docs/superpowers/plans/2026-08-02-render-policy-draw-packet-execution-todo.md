@@ -1,7 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-6 complete; Task 7A stable packet identity and exactly-once
-partition accounting is the next implementation stage
+**Status:** Tasks 0-7A complete; Task 7B hybrid Depth/Opaque execution is the
+next implementation stage
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -205,11 +205,11 @@ with exact/documented parity and no legacy duplicate submission.
 
 ### Task 7 - Hybrid DX12 Packet Partition
 
-- [ ] Define a stable per-frame packet ID covering view, pass, object/primitive,
+- [x] Define a stable per-frame packet ID covering view, pass, object/primitive,
   exact mesh generation/submesh, and source identity.
-- [ ] Validate uniqueness and deterministic regeneration for identical frames.
-- [ ] Compile mutually exclusive GPU, Direct, and deliberate-Skip partitions.
-- [ ] Add exactly-once accounting: every relevant packet ID appears in exactly
+- [x] Validate uniqueness and deterministic regeneration for identical frames.
+- [x] Compile mutually exclusive GPU, Direct, and deliberate-Skip partitions.
+- [x] Add exactly-once accounting: every relevant packet ID appears in exactly
   one terminal lane.
 - [ ] Replace all-pass `AreGPUDriven*GroupsDrawable()` gates with validated plan
   partitions.

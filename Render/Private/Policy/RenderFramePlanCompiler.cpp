@@ -3,10 +3,63 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <set>
 #include <vector>
 
 namespace RVX
 {
+RenderDrawPacketId BuildRenderDrawPacketId(
+    uint64 frameSequence,
+    uint32 viewOrdinal,
+    RenderPassKind pass,
+    uint32 sourcePacketIndex,
+    const MeshPassProcessorResult& source) noexcept
+{
+    RenderDrawPacketId id;
+    id.frameSequence = frameSequence;
+    id.viewOrdinal = viewOrdinal;
+    id.pass = pass;
+    id.objectId = source.packet.objectId;
+    id.primitiveData = source.packet.primitiveData;
+    id.mesh = source.packet.geometryKey.mesh;
+    id.logicalSubmeshIndex = source.packet.submeshIndex;
+    id.geometrySubmeshIndex = source.packet.geometryKey.submeshIndex;
+    id.sourcePacketIndex = sourcePacketIndex;
+    id.sourceOrdinal = source.sourceOrdinal;
+    return id;
+}
+
+RenderPreparedDrawPacketSignature BuildRenderPreparedDrawPacketSignature(
+    const MeshPassProcessorResult& source) noexcept
+{
+    RenderPreparedDrawPacketSignature signature;
+    signature.disposition = source.disposition;
+    signature.reason = source.reason;
+    signature.packet = source.packet;
+    signature.groupKey = source.groupKey;
+    signature.directLayout = source.directLayout;
+    signature.sourceOrdinal = source.sourceOrdinal;
+    signature.viewDepth = source.viewDepth;
+    return signature;
+}
+
+bool RenderDrawPacketReferenceMatchesSource(
+    const RenderFrameExecutionPlan& plan,
+    const RenderDrawPacketReference& reference,
+    const MeshPassProcessorResult& source) noexcept
+{
+    return reference.pass == source.packet.pass &&
+           reference.sourceOrdinal == source.sourceOrdinal &&
+           reference.packetId == BuildRenderDrawPacketId(
+               plan.frameSequence,
+               plan.viewOrdinal,
+               reference.pass,
+               reference.sourcePacketIndex,
+               source) &&
+           reference.sourceSignature ==
+               BuildRenderPreparedDrawPacketSignature(source);
+}
+
 namespace
 {
     constexpr std::array<RenderPassKind, 4> kCanonicalPassOrder = {
@@ -198,8 +251,21 @@ namespace
         {
             return false;
         }
+        const MeshPassProcessorResult& source = stream.packets[sourceIndex];
+        if (source.packet.pass != pass)
+        {
+            return false;
+        }
         plan.packetReferences.push_back(RenderDrawPacketReference{
-            pass, sourceIndex, stream.packets[sourceIndex].sourceOrdinal});
+            pass,
+            sourceIndex,
+            source.sourceOrdinal,
+            BuildRenderDrawPacketId(plan.frameSequence,
+                                    plan.viewOrdinal,
+                                    pass,
+                                    sourceIndex,
+                                    source),
+            BuildRenderPreparedDrawPacketSignature(source)});
         return true;
     }
 
@@ -269,6 +335,60 @@ namespace
             ++outRange.count;
         }
         return true;
+    }
+
+    bool FinalizeIdentityAccounting(
+        const RenderFrameExecutionPlan& plan,
+        RenderPassExecutionPlan& passPlan)
+    {
+        RenderPacketIdentityAccounting accounting;
+        accounting.expectedPacketCount = passPlan.partition.inputPacketCount;
+
+        const std::array<DrawPacketRange, 3> ranges = {
+            passPlan.gpuEligiblePackets,
+            passPlan.directPackets,
+            passPlan.skippedPackets,
+        };
+        std::vector<bool> sourceIndices(accounting.expectedPacketCount, false);
+        std::set<RenderDrawPacketId> packetIds;
+        uint64 terminalPacketCount = 0;
+        for (const DrawPacketRange range : ranges)
+        {
+            const uint64 end = static_cast<uint64>(range.first) + range.count;
+            if (end > plan.packetReferences.size())
+            {
+                return false;
+            }
+            terminalPacketCount += range.count;
+            for (uint64 index = range.first; index < end; ++index)
+            {
+                const RenderDrawPacketReference& reference =
+                    plan.packetReferences[static_cast<size_t>(index)];
+                if (reference.sourcePacketIndex >= sourceIndices.size() ||
+                    sourceIndices[reference.sourcePacketIndex])
+                {
+                    return false;
+                }
+                sourceIndices[reference.sourcePacketIndex] = true;
+                if (!packetIds.insert(reference.packetId).second)
+                {
+                    ++accounting.duplicatePacketIdCount;
+                }
+            }
+        }
+        if (terminalPacketCount > std::numeric_limits<uint32>::max() ||
+            packetIds.size() > std::numeric_limits<uint32>::max())
+        {
+            return false;
+        }
+        accounting.terminalPacketCount =
+            static_cast<uint32>(terminalPacketCount);
+        accounting.uniquePacketIdCount =
+            static_cast<uint32>(packetIds.size());
+        accounting.unaccountedPacketIdCount = static_cast<uint32>(
+            std::count(sourceIndices.begin(), sourceIndices.end(), false));
+        passPlan.identityAccounting = accounting;
+        return accounting.IsExactlyOnce();
     }
 
     bool CompilePass(const RenderPassPolicyDecision& decision,
@@ -429,12 +549,16 @@ namespace
                                        plannedAllRelevantDirect,
                                        outPass.reason));
         }
-        return outPass.gpuEligiblePackets.count ==
-                   outPass.partition.gpuDrivenPacketCount &&
-               outPass.directPackets.count ==
-                   outPass.partition.directPacketCount &&
-               outPass.skippedPackets.count ==
-                   outPass.partition.skippedPacketCount;
+        if (outPass.gpuEligiblePackets.count !=
+                outPass.partition.gpuDrivenPacketCount ||
+            outPass.directPackets.count !=
+                outPass.partition.directPacketCount ||
+            outPass.skippedPackets.count !=
+                outPass.partition.skippedPacketCount)
+        {
+            return false;
+        }
+        return FinalizeIdentityAccounting(plan, outPass);
     }
 } // namespace
 
