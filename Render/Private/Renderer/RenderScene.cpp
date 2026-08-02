@@ -111,6 +111,7 @@ void RenderScene::Clear()
     m_captureRequest = {};
     m_features.Clear();
     m_referencedResources.clear();
+    m_drawPacketCache.Clear();
     m_hasAcceptedFrame = false;
     m_temporalHistoryReset = true;
     m_lastRenderedHeader = {};
@@ -404,6 +405,25 @@ RenderFrameApplyResult RenderScene::ApplyFramePacket(
     AddUniqueHandle(candidateReferences, environment.prefilteredTexture);
     AddUniqueHandle(candidateReferences, environment.brdfLutTexture);
 
+    // Every validation path above must succeed before the retained cache changes.
+    // The cache owns only static packet templates; the draw-list path rebinds
+    // frame-local primitive indices and object identity for every use.
+    m_drawPacketCache.BeginAcceptedPublication();
+    for (const RenderObject& object : candidateObjects)
+    {
+        for (const MeshBatch& batch : object.meshBatches)
+        {
+            RenderDrawPacket packetTemplate;
+            const RenderDrawPacketCacheResolveResult cacheResult =
+                m_drawPacketCache.Resolve(batch,
+                                          m_drawPacketCacheVersions,
+                                          false,
+                                          packetTemplate);
+            static_cast<void>(cacheResult);
+        }
+    }
+    m_drawPacketCache.EndAcceptedPublication();
+
     m_objects.swap(candidateObjects);
     m_lights.swap(candidateLights);
     m_referencedResources.swap(candidateReferences);
@@ -450,6 +470,20 @@ void RenderScene::MarkAcceptedFrameRendered()
 void RenderScene::SetSurfaceCompatibilityKey(uint64 key) noexcept
 {
     m_surfaceCompatibilityKey = key;
+}
+
+bool RenderScene::FindCachedDrawPacketTemplate(
+    const MeshBatch& batch,
+    RenderDrawPacket& outTemplate) const noexcept
+{
+    return m_drawPacketCache.Find(batch, m_drawPacketCacheVersions, outTemplate)
+        .IsHit();
+}
+
+RenderDrawPacketCacheStats RenderScene::GetDrawPacketCacheStats() const
+    noexcept
+{
+    return m_drawPacketCache.GetStats();
 }
 
 void RenderScene::CullAgainstView(

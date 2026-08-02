@@ -1,6 +1,6 @@
 # Render Policy, Draw Packet, and GPU-Driven Architecture Implementation Plan
 
-**Status:** Design reviewed; implementation not started
+**Status:** Tasks 0-3 complete; Task 4 not started
 **Date:** 2026-08-02
 **Scope:** Engine-core rendering architecture for DX12, Vulkan, and Metal;
 DX11 and OpenGL remain compatibility paths; Editor work is out of scope
@@ -418,23 +418,43 @@ Proposed files:
 
 Work:
 
-- cache pass-independent static packet inputs at primitive publication time;
-- key invalidation by object generation, mesh generation, material generation,
-  pass-contract version, and relevant shader-layout version;
-- keep transforms and other per-instance data in indexed frame/GPU primitive
-  buffers;
-- provide a dynamic path for particles, deforming geometry, or continuously
-  changing material state;
-- retire cached resource ownership using the existing completion-token and
-  retirement-queue contracts;
-- add cache hit, miss, invalidation, and stale-generation diagnostics.
+- retain pass-independent packet templates in a RenderScene-owned, value-only
+  cache after an accepted primitive publication has passed transactional
+  validation;
+- address entries by the process-unique object identity and submesh ordinal,
+  then require full static-signature equality across exact mesh/material
+  generations, geometry, material mode, packet flags, pass-contract version,
+  and an explicitly applicable shader-layout version;
+- normalize per-frame primitive-data indices out of retained templates and
+  patch them only into the frame-local compatibility projection; keep
+  transforms, camera depth, sorting, and visibility outside the cache;
+- keep skin palettes dynamic while allowing the static skinned packet template
+  to remain cacheable; expose an explicit dynamic/deforming bypass for future
+  geometry or binding state that can change without an exact resource-generation
+  change. Particles remain on their existing feature path and never enter the
+  mesh-packet cache;
+- store no RHI object, descriptor, pipeline, registry strong reference, or
+  completion token. Submitted resource lifetime continues through accepted
+  scene references, submission stamping, registry last-use closure, and the
+  existing retirement queue; stale CPU values can be erased immediately;
+- add cache hit, miss, packet-build, dynamic-bypass, object-removal,
+  contract-version, and stale exact-generation diagnostics.
 
 Acceptance:
 
-- unchanged static scenes do not rebuild packet state after warm-up;
+- unchanged static scene publications miss once, then reuse retained packet
+  templates from both raster and ray-tracing draw-list consumers without
+  increasing the packet-build count;
 - material or mesh generation changes invalidate exactly the affected packets;
-- no cached RHI object is released before its last submitted completion token;
-- no new per-frame heap allocation remains in the warmed static packet path.
+- explicitly dynamic/deforming inputs never populate or reuse a retained
+  static entry; changing a skin palette alone keeps the packet hit because the
+  palette is not packet state;
+- cache entries contain values and exact handles only, and every handle used by
+  a cached packet remains a member of the accepted scene resource-reference
+  closure that is stamped after submission;
+- a warmed cache hit performs no cache-owned entry/vector allocation. This is
+  deliberately narrower than claiming allocation-free full-frame extraction
+  or RenderScene publication, which still uses existing frame-local vectors.
 
 ### Task 4 - Add pass-specific MeshPassProcessors
 

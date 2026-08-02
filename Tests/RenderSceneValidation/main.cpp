@@ -1,5 +1,6 @@
-#include "Render/Renderer/RenderScene.h"
+#include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderDrawPacket.h"
+#include "Render/Renderer/RenderScene.h"
 #include "RenderContracts/RenderFramePacket.h"
 #include "RenderExtraction/RenderFramePacketBuilder.h"
 #include "Resources/RenderResourceRegistry.h"
@@ -350,6 +351,104 @@ TEST(RenderSceneValidation, MissingSubmeshMaterialStillBuildsDrawableBatch)
     EXPECT_FALSE(object.meshBatches[0].material.IsValid());
     EXPECT_TRUE(HasRenderBatchFlag(object.meshBatches[0].flags,
                                    RenderBatchFlags::MissingMaterial));
+}
+
+TEST(RenderSceneValidation,
+     RetainsAcceptedPacketTemplatesAndRejectsInvalidPublications)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {122}, createInfo,
+        {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    const RenderResourceHandle material =
+        resources.Add({123}, RenderResourceKind::Material, true);
+    RenderScene scene;
+
+    RenderPrimitiveSnapshot initial = MakePrimitive(
+        mesh, material, {1.0f, 0.0f, 0.0f});
+    initial.skinMatrices = {Mat4Identity()};
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      1,
+                      1,
+                      1,
+                      false,
+                      std::move(initial))
+                    .IsApplied());
+    const RenderDrawPacketCacheStats afterFirst =
+        scene.GetDrawPacketCacheStats();
+    ASSERT_EQ(afterFirst.entryCount, 1U);
+    EXPECT_EQ(afterFirst.packetBuildCount, 1U);
+
+    RenderPrimitiveSnapshot leading = MakePrimitive(mesh, material);
+    leading.objectId = 43;
+    RenderPrimitiveSnapshot retained = MakePrimitive(
+        mesh, material, {7.0f, 0.0f, 0.0f});
+    retained.skinMatrices = {Mat4Identity(), Mat4Identity()};
+    retained.skinMatrices[1][3] = Vec4{2.0f, 0.0f, 0.0f, 1.0f};
+    std::unique_ptr<const RenderFramePacket> secondPacket = MakePacket(
+        2, 1, 1, false, {std::move(leading), std::move(retained)});
+    ASSERT_NE(secondPacket, nullptr);
+    ASSERT_TRUE(scene.ApplyFramePacket(*secondPacket, resources.registry)
+                    .IsApplied());
+
+    const RenderDrawPacketCacheStats afterSecond =
+        scene.GetDrawPacketCacheStats();
+    EXPECT_EQ(afterSecond.packetBuildCount, afterFirst.packetBuildCount + 1U);
+    EXPECT_EQ(afterSecond.entryCreationCount,
+              afterFirst.entryCreationCount + 1U);
+    EXPECT_EQ(afterSecond.hitCount, afterFirst.hitCount + 1U);
+
+    std::vector<RenderDrawItem> opaque;
+    std::vector<RenderDrawItem> masked;
+    std::vector<RenderDrawItem> transparent;
+    BuildMaterialDrawLists(
+        scene, {1}, Vec3{0.0f}, opaque, masked, transparent);
+    ASSERT_EQ(opaque.size(), 1U);
+    EXPECT_EQ(opaque[0].packet,
+              BuildLegacyMaterialDrawPacket(scene.GetObject(1).meshBatches[0]));
+    EXPECT_EQ(opaque[0].packet.primitiveData, 1U);
+    const auto& referencedResources = scene.GetReferencedResources();
+    EXPECT_NE(std::find(referencedResources.begin(), referencedResources.end(),
+                        opaque[0].packet.geometryKey.mesh),
+              referencedResources.end());
+    EXPECT_NE(std::find(referencedResources.begin(), referencedResources.end(),
+                        opaque[0].packet.materialKey.material),
+              referencedResources.end());
+    const RenderDrawPacketCacheStats afterFirstDrawList =
+        scene.GetDrawPacketCacheStats();
+    EXPECT_EQ(afterFirstDrawList.packetBuildCount,
+              afterSecond.packetBuildCount);
+    EXPECT_EQ(afterFirstDrawList.entryCreationCount,
+              afterSecond.entryCreationCount);
+
+    BuildMaterialDrawLists(
+        scene, {1}, Vec3{0.0f}, opaque, masked, transparent);
+    const RenderDrawPacketCacheStats afterSecondDrawList =
+        scene.GetDrawPacketCacheStats();
+    EXPECT_EQ(afterSecondDrawList.packetBuildCount,
+              afterSecond.packetBuildCount);
+    EXPECT_EQ(afterSecondDrawList.entryCreationCount,
+              afterSecond.entryCreationCount);
+
+    const RenderResourceHandle stale{mesh.slot, mesh.generation + 1};
+    EXPECT_EQ(Apply(scene,
+                    resources.registry,
+                    3,
+                    1,
+                    1,
+                    false,
+                    MakePrimitive(stale, material))
+                  .code,
+              RenderFrameApplyCode::StaleRequiredHandle);
+    const RenderDrawPacketCacheStats afterRejected =
+        scene.GetDrawPacketCacheStats();
+    EXPECT_EQ(afterRejected.entryCount, afterSecond.entryCount);
+    EXPECT_EQ(afterRejected.packetBuildCount, afterSecond.packetBuildCount);
+    EXPECT_EQ(afterRejected.entryCreationCount,
+              afterSecond.entryCreationCount);
 }
 
 TEST(RenderSceneValidation, RejectsSchemaOrderAndStaleHandlesWithoutMutation)

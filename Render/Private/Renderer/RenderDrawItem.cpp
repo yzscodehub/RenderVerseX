@@ -60,7 +60,8 @@ namespace RVX
             return batch;
         }
 
-        RenderDrawItem MakeDrawItem(uint32 objectIndex,
+        RenderDrawItem MakeDrawItem(const RenderScene& scene,
+                                    uint32 objectIndex,
                                     const RenderObject& object,
                                     const MeshBatch& batch,
                                     const Vec3& cameraPosition)
@@ -72,7 +73,16 @@ namespace RVX
             item.material = batch.material;
             item.renderMode = batch.materialMode;
             item.depthFromCamera = length(Vec3(object.worldMatrix[3]) - cameraPosition);
-            item.packet = BuildLegacyMaterialDrawPacket(batch);
+            if (scene.FindCachedDrawPacketTemplate(batch, item.packet))
+            {
+                item.packet.objectId = batch.objectId;
+                item.packet.primitiveData = batch.primitiveData;
+                item.packet.submeshIndex = batch.submeshIndex;
+            }
+            else
+            {
+                item.packet = BuildLegacyMaterialDrawPacket(batch);
+            }
             return item;
         }
 
@@ -121,7 +131,11 @@ namespace RVX
                 for (const MeshBatch& batch : obj.meshBatches)
                 {
                     AppendToMaterialList(
-                        MakeDrawItem(objectIndex, obj, batch, cameraPosition),
+                        MakeDrawItem(scene,
+                                     objectIndex,
+                                     obj,
+                                     batch,
+                                     cameraPosition),
                         outOpaqueDrawItems,
                         outMaskedDrawItems,
                         outTransparentDrawItems);
@@ -132,7 +146,11 @@ namespace RVX
             const MeshBatch batch = MakeLegacyBatch(
                 obj, objectIndex, ResolveMaterialRenderMode(obj, 0));
             AppendToMaterialList(
-                MakeDrawItem(objectIndex, obj, batch, cameraPosition),
+                MakeDrawItem(scene,
+                             objectIndex,
+                             obj,
+                             batch,
+                             cameraPosition),
                 outOpaqueDrawItems,
                 outMaskedDrawItems,
                 outTransparentDrawItems);

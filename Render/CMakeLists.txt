@@ -83,6 +83,7 @@ target_sources(RVX_Render PRIVATE
     # Renderer
     Private/Renderer/ViewData.cpp
     Private/Renderer/RenderDrawPacket.cpp
+    Private/Renderer/RenderDrawPacketCache.cpp
     Private/Renderer/RenderScene.cpp
     Private/Renderer/RenderDrawItem.cpp
     Private/Renderer/RenderFrameResourceBinder.cpp

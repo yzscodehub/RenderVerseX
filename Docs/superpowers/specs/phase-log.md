@@ -43300,6 +43300,151 @@ ctest --test-dir build\win_x64_debug -C Debug `
 
 ---
 
+### R-SP323 Render-policy Task 3 retained draw-packet cache
+
+**Date:** 2026-08-02
+**Commit:** Pending
+**Plan review agent:** Primary architect plus two read-only explorers
+**Code implementation agent:** terra worker with primary review
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- Task 3 - Retain static draw-packet state and define invalidation
+- Revised value-only cache and accepted-publication lifecycle contract
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP322 Render-policy Task 2 MeshBatch and RenderDrawPacket
+- Evidence: exact resource identities, authoritative per-submesh batches, CPU
+  regression, and synthetic/Porsche Direct/GPU parity were green before Task 3.
+
+**Approved scope:**
+
+- Add a RenderScene-owned retained cache of value-only legacy material packet
+  templates, addressed by process-unique object identity and submesh ordinal.
+- Require full equality of exact mesh/material generations, geometry state,
+  material mode, batch flags, pass-contract version, and applicable shader-layout
+  version before reuse.
+- Normalize frame-local primitive-data indices out of retained templates and
+  rebind them when compatibility draw lists are built.
+- Mutate and prune the cache only during an accepted publication after the
+  complete frame packet has passed validation; rejected and stale packets leave
+  entries, statistics, and output templates unchanged.
+- Provide explicit diagnostics for hit, miss, packet build, exact-generation
+  invalidation, static/contract/layout changes, removal, clear, inactive
+  publication, and future dynamic/deforming bypass.
+
+**Lifecycle correction:**
+
+- Cache entries own no RHI object, descriptor, pipeline, registry reference,
+  completion token, or retirement responsibility. They contain copied packet
+  values and exact handles only.
+- GPU resource lifetime remains protected by accepted scene references,
+  submission stamping, registry last-use closure, and the existing retirement
+  queue. Consequently stale cache values can be erased immediately.
+- A warmed cache hit performs no cache-owned entry creation or packet build.
+  This does not claim allocation-free full-frame extraction or RenderScene
+  publication, whose existing frame-local vectors are unchanged.
+- Skin-palette values remain dynamic and do not invalidate an otherwise static
+  skinned packet. Particles stay outside this cache; a future deforming-geometry
+  caller can select the explicit dynamic bypass.
+
+**Out of scope:**
+
+- MeshPassProcessors, policy resolution, execution-plan integration, command
+  recording migration, or changes to Direct/GPU-driven qualification policy.
+- RHI, backend, RenderGraph, pass, descriptor, pipeline, frame-schema, golden,
+  or asset-importer changes.
+- The pre-existing material dependency hot-reload propagation gap.
+- Editor work.
+
+**Files changed:**
+
+- `Render/Include/Render/Renderer/RenderDrawPacketCache.h`
+- `Render/Private/Renderer/RenderDrawPacketCache.cpp`
+- `Render/Include/Render/Renderer/RenderScene.h`
+- `Render/Private/Renderer/RenderScene.cpp`
+- `Render/Private/Renderer/RenderDrawItem.cpp`
+- `Render/CMakeLists.txt`
+- `Tests/RenderDrawPacketCacheValidation/main.cpp`
+- `Tests/RenderSceneValidation/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  RenderDrawPacketCacheValidation RenderDrawPacketValidation `
+  RenderSceneValidation RenderPolicyValidation RenderContractsValidation `
+  RenderFrameExtractionValidation GPUDrivenValidation RenderPassValidation `
+  --parallel 1
+
+cmake --build build\win_x64_debug --config Debug --target `
+  ModelViewer VisualGoldenValidation --parallel 1
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation)$" `
+  --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$" `
+  --output-on-failure
+```
+
+**Validation result:**
+
+- Task-local and focused regression: PASS 401/401; draw-packet cache 6/6,
+  RenderDrawPacket 5/5, RenderScene 14/14, RenderPolicy 5/5,
+  RenderContracts 203/203, RenderFrameExtraction 5/5, GPUDriven 23/23,
+  and RenderPass 140/140.
+- Cache coverage includes inactive-publication immutability, first-miss/warm-hit
+  behavior, frame-local primitive rebind, targeted mesh/material generation
+  invalidation, contract/layout/static-state reasons, removal, clear, and
+  dynamic bypass.
+- Synthetic DX12 Direct/GPU visual gate: PASS 3/3; different pixels 0,
+  MSE 0, PSNR 100, tolerance 0. Both SHA-256 values remain
+  `DD0FDD9B0FB7A6BA85E4350359B6358BCF2D051070F1615AEE822A18B079FB06`.
+- Porsche native DX12 gates: PASS 3/3; 75 visible objects, 51 Direct draws,
+  and 51 GPU-driven graph inputs/batches/indirect draws.
+- Porsche cross-path result: different pixels 0, MSE 0, PSNR 100,
+  tolerance 0. Both SHA-256 values remain
+  `FD02DDBB1305528680072C6DD15696CB27A44B89D3441571741CB8D4BBF2B2CA`.
+- Validation fixtures emitted only their expected failure/fallback diagnostics;
+  all processes exited successfully.
+- `git diff --check`: PASS; only existing LF-to-CRLF conversion warnings.
+
+**Artifacts:**
+
+- Synthetic parity report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R11_GPUDrivenCrossPathParity_DX12_320x180.json`
+- Porsche parity report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ExternalAssets/Porsche_CrossPath_DX12_320x180.json`
+
+**Review result:**
+
+- Verdict: PASS after lifecycle-contract revision and primary code review.
+- The initial retirement-queue proposal was removed because the cache owns no
+  GPU resource. Publication-inactive resolution was also tightened to guarantee
+  zero mutation of entries, diagnostics, and caller output.
+- Raster and ray-tracing consumers continue to share the same material draw-list
+  projection, so both receive the retained template path without duplicating
+  cache ownership.
+- No Pass, RenderGraph, RHI, backend, qualification threshold, frame schema, or
+  golden file changed in Task 3.
+
+**Notes / follow-ups:**
+
+- Task 3 is closed. Task 4 introduces pass-specific MeshPassProcessors and is
+  the next implementation stage; it has not started.
+- Explicit scene-side dynamic/deforming classification is intentionally deferred
+  until such geometry enters the MeshBatch path. The cache API already supports
+  the bypass without incorrectly treating skin-palette updates as static-state
+  changes.
+- Repair material-to-texture dependency replacement on hot reload as a separate
+  resource-lifecycle task rather than hiding it inside draw-packet caching.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

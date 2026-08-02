@@ -11,6 +11,7 @@
 #include "RenderContracts/RenderFramePacket.h"
 #include "RenderContracts/RenderMaterial.h"
 #include "Render/Renderer/MeshBatch.h"
+#include "Render/Renderer/RenderDrawPacketCache.h"
 
 #include <unordered_map>
 #include <vector>
@@ -139,6 +140,13 @@ namespace RVX
         void SortVisibleObjects(std::vector<uint32>& visibleIndices,
                                 const Vec3& cameraPosition) const;
 
+        /** @brief Copy a fully matched retained packet template when available. */
+        [[nodiscard]] bool FindCachedDrawPacketTemplate(
+            const MeshBatch& batch,
+            RenderDrawPacket& outTemplate) const noexcept;
+        [[nodiscard]] RenderDrawPacketCacheStats
+            GetDrawPacketCacheStats() const noexcept;
+
         [[nodiscard]] const std::vector<RenderObject>& GetObjects() const
         {
             return m_objects;
@@ -238,6 +246,8 @@ namespace RVX
         RenderFrameCaptureRequest m_captureRequest{};
         RenderFeatureSnapshot m_features{};
         std::vector<RenderResourceHandle> m_referencedResources;
+        RenderDrawPacketCache m_drawPacketCache;
+        RenderDrawPacketCacheVersions m_drawPacketCacheVersions{};
         bool m_hasAcceptedFrame = false;
         bool m_temporalHistoryReset = true;
 

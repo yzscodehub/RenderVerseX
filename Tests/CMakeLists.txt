@@ -389,6 +389,15 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME RenderDrawPacketCacheValidation
+    SOURCES RenderDrawPacketCacheValidation/main.cpp
+    LIBS RVX::Render
+    INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
+    LABELS "unit;architecture"
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME EngineRenderCompositionValidation
     SOURCES EngineRenderCompositionValidation/main.cpp
     LIBS
@@ -839,6 +848,7 @@ rvx_add_gtest(
         ${CMAKE_SOURCE_DIR}/Render/Private/Material/MaterialClassification.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderDrawItem.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderDrawPacket.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderDrawPacketCache.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderScene.cpp
     LIBS
         RVX::Core
